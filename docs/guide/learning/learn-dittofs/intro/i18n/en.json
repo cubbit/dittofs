@@ -4,8 +4,8 @@
     "kicker": "Learn DittoFS · Introduction",
     "title": "DittoFS, from the outside in",
     "lead": "DittoFS is a file server for NFS and SMB clients that keeps its files in a bucket. This introduction shows who uses it, what runs inside it, and how one write travels from a client to the bucket.",
-    "built": "Built from DittoFS's design documents and code overview, at commit bc7aa99",
-    "notes": "The one deck not tied to a single RFC. Sources: docs/internals/rfcs/rfc-0-data-lifecycle.md ('Start here', Glossary, §1 Scope, §4.2, §5, §10) for the design, docs/internals/architecture.md for today's code, and README.md for what DittoFS is. Commit bc7aa99. The RFCs specify the target design; one slide near the end compares today's code with the design. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition. The badge's sources: RFC 0 and docs/internals/architecture.md at bc7aa99."
+    "built": "Built from DittoFS's design documents and code overview, at commit {commit}",
+    "notes": "The one deck not tied to a single RFC. Sources: docs/internals/rfcs/rfc-0-data-lifecycle.md ('Start here', Glossary, §1 Scope, §4.2, §5, §10) for the design, docs/internals/architecture.md for today's code, and README.md for what DittoFS is. Commit {commit}. The RFCs specify the target design; one slide near the end compares today's code with the design. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition. The badge's sources: RFC 0 and docs/internals/architecture.md at {commit}."
   },
   "learn": {
     "kicker": "Before we start",

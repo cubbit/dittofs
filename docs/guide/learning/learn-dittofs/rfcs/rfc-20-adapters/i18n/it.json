@@ -4,8 +4,8 @@
     "kicker": "Impara DittoFS · RFC 20",
     "title": "Il modello degli [[adapter]]",
     "lead": "Come il codice di un protocollo di rete parla con il filesystem, e perché non deve fare altro che tradurre.",
-    "built": "Basata sull'RFC 20, commit b0d540b",
-    "notes": "Fonte: docs/internals/rfcs/rfc-20-adapters.md, commit b0d540b. L'RFC specifica il comportamento, non il codice attuale; la sua Appendice B dice dove il codice differisce. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la sua definizione."
+    "built": "Basata sull'RFC 20, commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-20-adapters.md, commit {commit}. L'RFC specifica il comportamento, non il codice attuale; la sua Appendice B dice dove il codice differisce. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la sua definizione."
   },
   "intro": {
     "twoTitle": "L'RFC 20 in due frasi",

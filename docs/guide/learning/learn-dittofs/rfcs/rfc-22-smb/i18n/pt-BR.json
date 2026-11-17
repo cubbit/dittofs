@@ -4,8 +4,8 @@
     "kicker": "Aprenda DittoFS · RFC 22",
     "title": "Os [[adapter|adapters]], parte 2: SMB",
     "lead": "Como o DittoFS serve compartilhamentos de arquivos do Windows via SMB, e o que um cliente Windows vê quando some um nó do qual ele depende.",
-    "built": "Gerado do RFC 22 no commit b0d540b",
-    "notes": "Fonte: docs/internals/rfcs/rfc-22-smb.md, commit b0d540b. O RFC especifica um comportamento, não o código atual. A parte um desta seção é o deck do RFC 20, o modelo de adapters: este deck parte dele e não o repete. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique em qualquer termo sublinhado para ver a definição."
+    "built": "Gerado do RFC 22 no commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-22-smb.md, commit {commit}. O RFC especifica um comportamento, não o código atual. A parte um desta seção é o deck do RFC 20, o modelo de adapters: este deck parte dele e não o repete. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique em qualquer termo sublinhado para ver a definição."
   },
   "intro": {
     "twoTitle": "O RFC 22 em duas frases",

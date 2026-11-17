@@ -140,12 +140,15 @@ function render(ctx) {
   const { strings, glossary, lang, meta, usedTerms, ui } = ctx;
   document.documentElement.lang = lang;
   const missing = [];
+  // The RFC provenance commit lives in deck.json alone; {commit} fills each
+  // language's cover text from it, so the two cannot drift apart.
+  const commit = escapeHtml(String(meta?.rfc?.commit ?? '').slice(0, 7));
   const val = (el, key) => {
     const { value, missing: miss } = strings.get(key);
     el.classList.toggle('i18n-missing', miss);
     if (miss) missing.push(key);
     if (value === undefined) console.warn(`missing string ${key}`);
-    return value;
+    return typeof value === 'string' ? value.replaceAll('{commit}', commit) : value;
   };
 
   document.querySelectorAll('.reveal [data-i18n]').forEach((el) => {

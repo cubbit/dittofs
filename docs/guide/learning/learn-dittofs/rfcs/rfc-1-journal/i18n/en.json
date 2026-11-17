@@ -4,8 +4,8 @@
     "kicker": "Learn DittoFS · RFC 1",
     "title": "The [[journal|journal]]",
     "lead": "The journal is the local disk where every write lands first. This deck explains how it works, and why it answers “[[missing]]” instead of returning zeros.",
-    "built": "Built from RFC 1 at a34d0b8",
-    "notes": "Source: docs/internals/rfcs/rfc-1-journal.md, commit a34d0b8. The RFC specifies behaviour, not the current code. Its on-disk format and its recovery after a crash are RFC 28, not covered here. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
+    "built": "Built from RFC 1 at {commit}",
+    "notes": "Source: docs/internals/rfcs/rfc-1-journal.md, commit {commit}. The RFC specifies behaviour, not the current code. Its on-disk format and its recovery after a crash are RFC 28, not covered here. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
   },
   "intro": {
     "twoTitle": "RFC 1 in two sentences",

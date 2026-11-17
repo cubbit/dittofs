@@ -4,8 +4,8 @@
     "kicker": "Aprenda DittoFS · RFC 17",
     "title": "O [[filesystem-service]]",
     "lead": "Um único lugar onde toda chamada NFS e SMB é verificada, sempre na mesma ordem.",
-    "built": "Construído a partir do RFC 17 no commit b0d540b",
-    "notes": "Fonte: docs/internals/rfcs/rfc-17-vfs.md, commit b0d540b. O RFC descreve o comportamento desejado, não o código atual. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique em um termo sublinhado para ver a definição."
+    "built": "Construído a partir do RFC 17 no commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-17-vfs.md, commit {commit}. O RFC descreve o comportamento desejado, não o código atual. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique em um termo sublinhado para ver a definição."
   },
   "intro": {
     "twoTitle": "O RFC 17 em duas frases",

@@ -4,8 +4,8 @@
     "kicker": "Aprenda DittoFS · Introdução",
     "title": "DittoFS, de fora para dentro",
     "lead": "O DittoFS é um servidor de arquivos para clientes NFS e SMB que guarda os arquivos num bucket. Esta introdução mostra quem o usa, o que roda dentro dele e o caminho de uma escrita do cliente até o bucket.",
-    "built": "Baseado nos documentos de design do DittoFS e na visão geral do código, no commit bc7aa99",
-    "notes": "O único deck que não está ligado a um só RFC. Fontes: docs/internals/rfcs/rfc-0-data-lifecycle.md ('Start here', Glossary, §1 Scope, §4.2, §5, §10) para o design, docs/internals/architecture.md para o código de hoje, e README.md para o que é o DittoFS. Commit bc7aa99. Os RFCs especificam o design-alvo; um slide perto do fim compara o código de hoje com o design. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique num termo sublinhado para ver a definição. As fontes do selo: RFC 0 e docs/internals/architecture.md no commit bc7aa99."
+    "built": "Baseado nos documentos de design do DittoFS e na visão geral do código, no commit {commit}",
+    "notes": "O único deck que não está ligado a um só RFC. Fontes: docs/internals/rfcs/rfc-0-data-lifecycle.md ('Start here', Glossary, §1 Scope, §4.2, §5, §10) para o design, docs/internals/architecture.md para o código de hoje, e README.md para o que é o DittoFS. Commit {commit}. Os RFCs especificam o design-alvo; um slide perto do fim compara o código de hoje com o design. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique num termo sublinhado para ver a definição. As fontes do selo: RFC 0 e docs/internals/architecture.md no commit {commit}."
   },
   "learn": {
     "kicker": "Antes de começar",

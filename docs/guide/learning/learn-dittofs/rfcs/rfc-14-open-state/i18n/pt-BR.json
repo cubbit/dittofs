@@ -4,8 +4,8 @@
     "kicker": "Aprenda DittoFS · RFC 14",
     "title": "[[open-state|Open state]] e locks",
     "lead": "Quem mantém um arquivo aberto, o que pode fazer com ele, o que o servidor prometeu — e o que acontece com tudo isso quando alguém sai de cena.",
-    "built": "Feita a partir do RFC 14 no commit b0d540b",
-    "notes": "Fonte: docs/internals/rfcs/rfc-14-open-state.md, commit b0d540b. O RFC especifica o comportamento, não o código atual; o seu Apêndice B diz onde o código difere. Regras marcadas (cluster) só valem quando um segundo nó pode servir uma share; a primeira versão é um nó só (RFC 0 §1.4). Teclas: → avançar, S notas do apresentador, ? ajuda. Clique em um termo sublinhado para ver a definição."
+    "built": "Feita a partir do RFC 14 no commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-14-open-state.md, commit {commit}. O RFC especifica o comportamento, não o código atual; o seu Apêndice B diz onde o código difere. Regras marcadas (cluster) só valem quando um segundo nó pode servir uma share; a primeira versão é um nó só (RFC 0 §1.4). Teclas: → avançar, S notas do apresentador, ? ajuda. Clique em um termo sublinhado para ver a definição."
   },
   "intro": {
     "twoTitle": "O RFC 14 em duas frases",

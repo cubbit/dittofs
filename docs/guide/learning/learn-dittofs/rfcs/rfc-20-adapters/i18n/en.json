@@ -4,8 +4,8 @@
     "kicker": "Learn DittoFS · RFC 20",
     "title": "The [[adapter]] model",
     "lead": "How the code for one wire protocol talks to the filesystem, and why it must do nothing more than translate.",
-    "built": "Built from RFC 20 at b0d540b",
-    "notes": "Source: docs/internals/rfcs/rfc-20-adapters.md, commit b0d540b. The RFC specifies behaviour, not the current code; its Appendix B says where the code differs. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
+    "built": "Built from RFC 20 at {commit}",
+    "notes": "Source: docs/internals/rfcs/rfc-20-adapters.md, commit {commit}. The RFC specifies behaviour, not the current code; its Appendix B says where the code differs. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
   },
   "intro": {
     "twoTitle": "RFC 20 in two sentences",

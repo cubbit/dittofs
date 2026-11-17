@@ -4,8 +4,8 @@
     "kicker": "Learn DittoFS · RFC 16",
     "title": "The [[metadata-store|metadata store]]",
     "lead": "Where DittoFS remembers everything except the bytes — and why creates in one busy folder still run in parallel.",
-    "built": "Built from RFC 16 at e22639d",
-    "notes": "Source: docs/internals/rfcs/rfc-16-metadata-store.md, commit e22639d. The RFC specifies behaviour, not the current code. What each record means is owned by RFC 6 (content), RFC 7 (files and names) and RFC 14 (open state); this deck covers how they are stored together. Rules marked (cluster) bind only once a second node can serve a share. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
+    "built": "Built from RFC 16 at {commit}",
+    "notes": "Source: docs/internals/rfcs/rfc-16-metadata-store.md, commit {commit}. The RFC specifies behaviour, not the current code. What each record means is owned by RFC 6 (content), RFC 7 (files and names) and RFC 14 (open state); this deck covers how they are stored together. Rules marked (cluster) bind only once a second node can serve a share. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
   },
   "intro": {
     "twoTitle": "RFC 16 in two sentences",

@@ -4,8 +4,8 @@
     "kicker": "Learn DittoFS · RFC 22",
     "title": "[[adapter|Adapters]], part 2: SMB",
     "lead": "How DittoFS serves Windows file shares over SMB, and what a Windows client sees when a node it depends on goes away.",
-    "built": "Built from RFC 22 at b0d540b",
-    "notes": "Source: docs/internals/rfcs/rfc-22-smb.md, commit b0d540b. The RFC specifies behaviour, not the current code. Part one of this section is the RFC 20 deck, the adapter model; this deck assumes it and does not repeat it. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
+    "built": "Built from RFC 22 at {commit}",
+    "notes": "Source: docs/internals/rfcs/rfc-22-smb.md, commit {commit}. The RFC specifies behaviour, not the current code. Part one of this section is the RFC 20 deck, the adapter model; this deck assumes it and does not repeat it. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
   },
   "intro": {
     "twoTitle": "RFC 22 in two sentences",

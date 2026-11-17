@@ -4,8 +4,8 @@
     "kicker": "Learn DittoFS · RFC 14",
     "title": "[[open-state|Open state]] and locks",
     "lead": "Who holds a file open, what they may do with it, what the server promised them — and what happens to all of it when someone goes away.",
-    "built": "Built from RFC 14 at b0d540b",
-    "notes": "Source: docs/internals/rfcs/rfc-14-open-state.md, commit b0d540b. The RFC specifies behaviour, not the current code; its Appendix B says where the code differs. Rules marked (cluster) bind only once a second node can serve a share; the first release is one node (RFC 0 §1.4). Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
+    "built": "Built from RFC 14 at {commit}",
+    "notes": "Source: docs/internals/rfcs/rfc-14-open-state.md, commit {commit}. The RFC specifies behaviour, not the current code; its Appendix B says where the code differs. Rules marked (cluster) bind only once a second node can serve a share; the first release is one node (RFC 0 §1.4). Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
   },
   "intro": {
     "twoTitle": "RFC 14 in two sentences",

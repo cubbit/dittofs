@@ -4,8 +4,8 @@
     "kicker": "Aprenda DittoFS · RFC 29",
     "title": "Um só [[dt|test harness]]",
     "lead": "Um só comando roda todas as suítes de teste a partir de uma lista única e entrega os resultados num formato único. Uma execução que não testou nada nunca pode sair verde.",
-    "built": "Gerado a partir do RFC 29 em 9255091",
-    "notes": "Fonte: docs/internals/rfcs/rfc-29-test-harness.md, commit 9255091. O RFC descreve o harness a que o projeto quer chegar; esta apresentação segue a sua quinta revisão. Teclas: → avançar, S notas do apresentador. Clique em qualquer termo sublinhado para ver a definição."
+    "built": "Gerado a partir do RFC 29 em {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-29-test-harness.md, commit {commit}. O RFC descreve o harness a que o projeto quer chegar; esta apresentação segue a sua quinta revisão. Teclas: → avançar, S notas do apresentador. Clique em qualquer termo sublinhado para ver a definição."
   },
   "intro": {
     "twoTitle": "O RFC 29 em duas frases",
@@ -108,7 +108,7 @@
     "goTitle": "Go desde o início",
     "go": "Um `dt` anterior, escrito em bash, era um único script de 1.270 linhas. O que o RFC acrescenta é manipulação de dados — YAML, resultados, avaliação — que em bash exige `yq` e `jq` e não dá para testar de forma razoável. Em Go tem testes e roda em Linux, macOS e Windows.",
     "footer": "Essa versão em bash não é levada adiante. Ela fica só como referência dos comandos que o pessoal já usa.",
-    "notes": "§3 Decision: 'A CLI, not an API service' e 'In Go, from the start'. As dependências Go já estão no go.mod (gopkg.in/yaml.v3, cobra). Alternativas rejeitadas no §6: um serviço de API, primeiro bash depois Go. As demais alternativas rejeitadas (§6): um arquivo descritor por teste, uma suíte por variante (as 30 suítes do segundo rascunho), um tipo de resultado por ferramenta, escolher suítes pela camada alterada, manter o suites.json, manter os scripts de cada suíte e embrulhá-los, make ou um Taskfile (comandos com nome, mas sem matriz, needs, fixtures ou avaliação), comandos como strings de shell, listas de known failures em Markdown, JUnit ou um schema próprio, retry em pull requests, uma issue por teste com falha a cada execução, um runner self-hosted no host dedicado, uma merge queue agora."
+    "notes": "§3 Decision: 'A CLI, not an API service' e 'In Go, from the start'. As dependências Go já estão no go.mod (gopkg.in/yaml.v3, cobra). Alternativas rejeitadas no §6: um serviço de API, primeiro bash depois Go. As demais alternativas rejeitadas (§6): um arquivo descritor por teste, uma suíte por variante (as 30 suítes do segundo rascunho), um tipo de resultado por ferramenta, escolher suítes pela camada alterada, manter o suites.json, manter os scripts de cada suíte e embrulhá-los, make ou um Taskfile (comandos com nome, mas sem matriz, needs, fixtures ou avaliação), comandos como strings de shell, listas de known failures em Markdown, JUnit ou um schema próprio, retry em pull requests, uma issue por teste com falha a cada execução, um runner self-hosted no host dedicado, branches atualizados sem uma merge queue."
   },
   "carries": {
     "title": "O que vai para o `dt` e o que sai",

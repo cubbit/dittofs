@@ -4,8 +4,8 @@
     "kicker": "Impara DittoFS · RFC 1",
     "title": "Il [[journal|journal]]",
     "lead": "Il journal è il disco locale su cui arriva per prima ogni scrittura. Qui vediamo come funziona, e perché risponde “[[missing]]” invece di restituire zeri.",
-    "built": "Costruito dall'RFC 1 al commit a34d0b8",
-    "notes": "Fonte: docs/internals/rfcs/rfc-1-journal.md, commit a34d0b8. L'RFC specifica un comportamento, non il codice attuale. Il formato su disco e il recovery dopo un crash sono l'RFC 28, non trattato qui. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la definizione."
+    "built": "Costruito dall'RFC 1 al commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-1-journal.md, commit {commit}. L'RFC specifica un comportamento, non il codice attuale. Il formato su disco e il recovery dopo un crash sono l'RFC 28, non trattato qui. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la definizione."
   },
   "intro": {
     "twoTitle": "L'RFC 1 in due frasi",

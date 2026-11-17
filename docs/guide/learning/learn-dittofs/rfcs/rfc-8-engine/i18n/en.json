@@ -4,8 +4,8 @@
     "kicker": "Learn DittoFS · RFC 8",
     "title": "The [[engine|engine]]",
     "lead": "The engine is a coordinator that holds no bytes of its own. For every share on a node, it decides when new content is acknowledged, when it is uploaded, when its local copy is evicted and when it is fetched back.",
-    "built": "Built from RFC 8 at e22639d",
-    "notes": "Source: docs/internals/rfcs/rfc-8-engine.md, commit e22639d. The RFC specifies behaviour, not the current code: the engine it describes is built fresh, beside today's, which it replaces rather than fixes. A choice it labels proposal is not decided: it names the measurement that would overturn it. Rows marked (cluster) are not in the first release and are left out here. Keys: → next, S speaker notes. Click any underlined term for its definition."
+    "built": "Built from RFC 8 at {commit}",
+    "notes": "Source: docs/internals/rfcs/rfc-8-engine.md, commit {commit}. The RFC specifies behaviour, not the current code: the engine it describes is built fresh, beside today's, which it replaces rather than fixes. A choice it labels proposal is not decided: it names the measurement that would overturn it. Rows marked (cluster) are not in the first release and are left out here. Keys: → next, S speaker notes. Click any underlined term for its definition."
   },
   "intro": {
     "twoTitle": "RFC 8 in two sentences",

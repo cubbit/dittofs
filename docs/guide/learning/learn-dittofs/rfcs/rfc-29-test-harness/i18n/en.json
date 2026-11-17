@@ -4,8 +4,8 @@
     "kicker": "Learn DittoFS · RFC 29",
     "title": "One [[dt|test harness]]",
     "lead": "One command runs every test suite from one list and reports in one result format, and a run that tested nothing can never come out green.",
-    "built": "Built from RFC 29 at 9255091",
-    "notes": "Source: docs/internals/rfcs/rfc-29-test-harness.md, commit 9255091. The RFC describes the harness the project wants to end up with; this deck follows its fifth revision. Keys: → next, S speaker notes. Click any underlined term for its definition."
+    "built": "Built from RFC 29 at {commit}",
+    "notes": "Source: docs/internals/rfcs/rfc-29-test-harness.md, commit {commit}. The RFC describes the harness the project wants to end up with; this deck follows its fifth revision. Keys: → next, S speaker notes. Click any underlined term for its definition."
   },
   "intro": {
     "twoTitle": "RFC 29 in two sentences",
@@ -108,7 +108,7 @@
     "goTitle": "Go from the start",
     "go": "An earlier `dt`, written in bash, was one 1,270-line script. What the RFC adds is data handling — YAML, results, grading — which in bash needs `yq` and `jq` and can't reasonably be tested. In Go it has tests and runs on Linux, macOS and Windows.",
     "footer": "That bash version is not carried forward. It stays only as the reference for the commands people already use.",
-    "notes": "§3 Decision: 'A CLI, not an API service' and 'In Go, from the start'. Go's dependencies are already in go.mod (gopkg.in/yaml.v3, cobra). Rejected alternatives in §6: an API service, bash first then Go. The other rejected alternatives (§6): a descriptor file per test, a suite per variant (the second draft's 30 suites), a result kind per tool, selecting suites by changed layer, keeping suites.json, keeping each suite's scripts and wrapping them, make or a Taskfile (named commands but no matrix, needs, fixtures or grading), commands as shell strings, Markdown known-failure lists, JUnit or a schema of our own, retrying on pull requests, an issue per failing test per run, a self-hosted runner on the dedicated host, a merge queue now."
+    "notes": "§3 Decision: 'A CLI, not an API service' and 'In Go, from the start'. Go's dependencies are already in go.mod (gopkg.in/yaml.v3, cobra). Rejected alternatives in §6: an API service, bash first then Go. The other rejected alternatives (§6): a descriptor file per test, a suite per variant (the second draft's 30 suites), a result kind per tool, selecting suites by changed layer, keeping suites.json, keeping each suite's scripts and wrapping them, make or a Taskfile (named commands but no matrix, needs, fixtures or grading), commands as shell strings, Markdown known-failure lists, JUnit or a schema of our own, retrying on pull requests, an issue per failing test per run, a self-hosted runner on the dedicated host, up-to-date branches without a merge queue."
   },
   "carries": {
     "title": "What moves into `dt`, and what goes",

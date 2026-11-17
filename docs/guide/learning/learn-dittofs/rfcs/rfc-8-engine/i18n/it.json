@@ -4,8 +4,8 @@
     "kicker": "Impara DittoFS · RFC 8",
     "title": "L'[[engine|engine]]",
     "lead": "L'engine è un coordinatore che non conserva byte propri. Per ogni share di un nodo decide quando confermare il contenuto nuovo, quando caricarlo, quando rimuoverne la copia locale e quando riscaricarlo.",
-    "built": "Basato sull'RFC 8, commit e22639d",
-    "notes": "Fonte: docs/internals/rfcs/rfc-8-engine.md, commit e22639d. L'RFC specifica un comportamento, non il codice attuale: l'engine che descrive è costruito da zero, accanto a quello di oggi, che sostituisce invece di correggere. Una scelta etichettata proposal non è decisa: nomina la misura che la ribalterebbe. Le righe marcate (cluster) non sono nella prima release e qui sono omesse. Tasti: → avanti, S note del relatore. Clicca un termine sottolineato per la definizione."
+    "built": "Basato sull'RFC 8, commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-8-engine.md, commit {commit}. L'RFC specifica un comportamento, non il codice attuale: l'engine che descrive è costruito da zero, accanto a quello di oggi, che sostituisce invece di correggere. Una scelta etichettata proposal non è decisa: nomina la misura che la ribalterebbe. Le righe marcate (cluster) non sono nella prima release e qui sono omesse. Tasti: → avanti, S note del relatore. Clicca un termine sottolineato per la definizione."
   },
   "intro": {
     "twoTitle": "L'RFC 8 in due frasi",

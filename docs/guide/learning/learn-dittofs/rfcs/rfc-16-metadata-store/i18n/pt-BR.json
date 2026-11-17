@@ -4,8 +4,8 @@
     "kicker": "Aprenda DittoFS · RFC 16",
     "title": "O [[metadata-store|metadata store]]",
     "lead": "Onde o DittoFS lembra de tudo menos dos bytes — e por que as criações numa pasta movimentada continuam rodando em paralelo.",
-    "built": "Gerado a partir do RFC 16 no commit e22639d",
-    "notes": "Fonte: docs/internals/rfcs/rfc-16-metadata-store.md, commit e22639d. O RFC especifica comportamento, não o código atual. O que cada record significa é definido pelo RFC 6 (conteúdo), RFC 7 (arquivos e nomes) e RFC 14 (open state); este deck explica como eles são guardados juntos. Regras marcadas (cluster) só valem quando um segundo nó pode servir uma share. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique em um termo sublinhado para ver a definição."
+    "built": "Gerado a partir do RFC 16 no commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-16-metadata-store.md, commit {commit}. O RFC especifica comportamento, não o código atual. O que cada record significa é definido pelo RFC 6 (conteúdo), RFC 7 (arquivos e nomes) e RFC 14 (open state); este deck explica como eles são guardados juntos. Regras marcadas (cluster) só valem quando um segundo nó pode servir uma share. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique em um termo sublinhado para ver a definição."
   },
   "intro": {
     "twoTitle": "O RFC 16 em duas frases",

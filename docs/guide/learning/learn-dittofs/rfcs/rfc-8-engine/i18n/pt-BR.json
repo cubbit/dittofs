@@ -4,8 +4,8 @@
     "kicker": "Aprenda DittoFS · RFC 8",
     "title": "O [[engine|engine]]",
     "lead": "O engine é um coordenador que não guarda bytes próprios. Para cada share de um nó, ele decide quando o conteúdo novo é confirmado, quando é enviado, quando a cópia local é removida e quando ele é baixado de volta.",
-    "built": "Baseado no RFC 8, commit e22639d",
-    "notes": "Fonte: docs/internals/rfcs/rfc-8-engine.md, commit e22639d. O RFC especifica um comportamento, não o código atual: o engine que ela descreve é construído do zero, ao lado do de hoje, que ele substitui em vez de corrigir. Uma escolha marcada como proposal não está decidida: ela nomeia a medição que a derrubaria. As linhas marcadas (cluster) não estão na primeira versão e ficam de fora aqui. Teclas: → avançar, S notas do apresentador. Clique em qualquer termo sublinhado para ver a definição."
+    "built": "Baseado no RFC 8, commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-8-engine.md, commit {commit}. O RFC especifica um comportamento, não o código atual: o engine que ela descreve é construído do zero, ao lado do de hoje, que ele substitui em vez de corrigir. Uma escolha marcada como proposal não está decidida: ela nomeia a medição que a derrubaria. As linhas marcadas (cluster) não estão na primeira versão e ficam de fora aqui. Teclas: → avançar, S notas do apresentador. Clique em qualquer termo sublinhado para ver a definição."
   },
   "intro": {
     "twoTitle": "O RFC 8 em duas frases",
