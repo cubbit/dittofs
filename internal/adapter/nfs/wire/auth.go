@@ -17,11 +17,12 @@ type AuthSysParms struct {
 	NGIDs   int
 }
 
-// MachineName is the machine name's bytes.
-func (a AuthSysParms) MachineName() []byte { return a.Machine[:a.NameLen] }
+// MachineName is the machine name's bytes. A pointer receiver, so the parms
+// are not copied into the slice's escape.
+func (a *AuthSysParms) MachineName() []byte { return a.Machine[:a.NameLen] }
 
 // Groups is the credential's group list.
-func (a AuthSysParms) Groups() []uint32 { return a.GIDs[:a.NGIDs] }
+func (a *AuthSysParms) Groups() []uint32 { return a.GIDs[:a.NGIDs] }
 
 // DecodeAuthSys reads an AUTH_SYS credential's body: the stamp, the machine
 // name, the uid and gid, and the group list (RFC 5531 section 8.2, Appendix A).

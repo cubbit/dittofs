@@ -204,8 +204,12 @@ func TestParseMountCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Stamp != 0x55667788 || string(a.MachineName()) != "host1" || a.UID != 1000 || a.GID != 100 || a.NGIDs != 1 || a.GIDs[0] != 27 {
+	if a.Stamp != 0x55667788 || string(a.MachineName()) != "host1" || a.UID != 1000 || a.GID != 100 {
 		t.Errorf("the MOUNT credential is %+v", a)
+	}
+	// The accessors callers read: the group list through Groups, not the array.
+	if groups := a.Groups(); len(groups) != 1 || groups[0] != 27 {
+		t.Errorf("the MOUNT credential's groups are %v (of %d), want 27 alone", groups, a.NGIDs)
 	}
 	if _, ok := c.MinorVersion(); ok {
 		t.Error("a MOUNT call carries a COMPOUND's minor version")
@@ -361,6 +365,26 @@ func TestDecodeAuthSys(t *testing.T) {
 	over := append(parms([]byte("host"), 2), 9, 9, 9, 9)
 	if _, err := wire.DecodeAuthSys(over); err == nil {
 		t.Error("a body with bytes after its group list is accepted")
+	}
+
+	// The limits, at their edge: a machine name of 255 bytes and a group list
+	// of 16 decode, each the most RFC 5531 allows.
+	if a, err := wire.DecodeAuthSys(parms(nil, 16)); err != nil || a.NGIDs != 16 {
+		t.Errorf("a group list of 16 is %v (%v), want it decoded", a.NGIDs, err)
+	}
+	if a, err := wire.DecodeAuthSys(parms([]byte("host"), 2)); err != nil || a.NGIDs != 2 {
+		t.Errorf("a group list of 2 is %v (%v), want every group it named", a.NGIDs, err)
+	}
+	if a, err := wire.DecodeAuthSys(parms(bytes.Repeat([]byte{'a'}, 255), 0)); err != nil || a.NameLen != 255 {
+		t.Errorf("a machine name of 255 bytes is %d (%v), want it decoded", a.NameLen, err)
+	}
+
+	// A body cut inside its machine name: the name's length says more than the
+	// body holds.
+	whole := parms([]byte("0123456789"), 0)
+	cutName := whole[:len(whole)-20] // past the name's bytes, at its padding
+	if _, err := wire.DecodeAuthSys(cutName); err == nil {
+		t.Error("a body cut inside its machine name is accepted")
 	}
 }
 
