@@ -225,10 +225,10 @@ func walkImports(root string, tests bool, fn func(file string, imports []string)
 	})
 }
 
-// v1Paths are v1's control plane, which never returns at these paths.
-// pkg/identity comes back in v2 at the same path, so the compiler, not this
+// v1Paths are v1's control plane and its client, which never return at these
+// paths. pkg/identity comes back in v2 at the same path, so the compiler, not this
 // rule, guards its deletion.
-var v1Paths = []string{module + "pkg/controlplane", module + "internal/controlplane", module + "pkg/snapshot"}
+var v1Paths = []string{module + "pkg/controlplane", module + "internal/controlplane", module + "pkg/snapshot", module + "pkg/apiclient"}
 
 // v1Imports returns each import of a v1 path by a file under root, tests
 // included.
@@ -372,6 +372,7 @@ func TestImportRules(t *testing.T) {
 	}{
 		{"no v1 import", v1Imports, "no-v1",
 			[]string{
+				"pkg/cli/cli.go imports " + module + "pkg/apiclient",
 				"pkg/store/store.go imports " + module + "pkg/controlplane/runtime",
 				"pkg/store/store_test.go imports " + module + "pkg/controlplane/models",
 			}},

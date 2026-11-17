@@ -105,7 +105,7 @@ func (s *served) socket(t *testing.T) string {
 	t.Helper()
 	// A directory of its own under the temporary root, not t.TempDir(),
 	// whose path can pass the length a socket's path may have.
-	dir, err := os.MkdirTemp("", "apiclient")
+	dir, err := os.MkdirTemp("", "client")
 	if err != nil {
 		t.Fatalf("make the socket's directory: %v", err)
 	}
