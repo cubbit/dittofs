@@ -2634,10 +2634,11 @@ member's reservation on top.
 > transform's exact size, so a chain can split a little short of the cap.
 > Count the transform exactly if such splits are seen to cost a record.
 
-A single operation's reply never passes the cap on its own: it is bounded by
-its class, and the cap is that class's capacity, 8 MiB and 4 KiB for SMB and
-1 MiB and 4 KiB for an RPC record
-([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)). A single-reply
+A single operation's reply stays under the cap through its protocol's
+per-operation bound (§4.2), not through its class: SMB's cap, 8 MiB and 4 KiB,
+is the large class's capacity, but an RPC record's, 1 MiB and 4 KiB
+([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)), is below it, so an NFS
+reply is kept under the cap by its operation's bound alone. A single-reply
 compound can draw a larger class, and one whose reply bytes would pass the cap
 has each `READ` and `READ_PLUS` clamped by its row's `Bound` hook, or is
 refused where one would be left less than one byte (§4.3), so only a joined
