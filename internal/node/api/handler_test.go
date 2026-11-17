@@ -36,6 +36,7 @@ type served struct {
 	reg    *metrics.Registry
 	spans  *tracetest.SpanRecorder
 	store  kvstore.ControlPlane
+	nodes  kvstore.Nodes
 	log    *lockedBuffer
 	clock  *sim.TestClock
 }
@@ -71,7 +72,7 @@ func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), 
 func serveWith(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), before func(*api.Server), edit ...func(*api.Deps)) *served {
 	t.Helper()
 	h := nodetest.New(t, nodetest.InMemory(), nodetest.Watch())
-	s := &served{reg: metrics.New("test", "test"), spans: tracetest.NewSpanRecorder(), store: h.Store().ControlPlane(), log: &lockedBuffer{}, clock: h.Clock()}
+	s := &served{reg: metrics.New("test", "test"), spans: tracetest.NewSpanRecorder(), store: h.Store().ControlPlane(), nodes: h.Store().Nodes(), log: &lockedBuffer{}, clock: h.Clock()}
 	d := api.Deps{
 		Ready:        func() string { return "ready" },
 		Live:         func() bool { return true },
@@ -81,7 +82,7 @@ func serveWith(t *testing.T, authenticate func(*http.Request) (auth.Caller, erro
 		Logger:       slog.New(slog.NewJSONHandler(io.MultiWriter(t.Output(), s.log), nil)),
 		Authenticate: authenticate,
 		Store:        s.store,
-		Nodes:        h.Store().Nodes(),
+		Nodes:        s.nodes,
 		Clock:        s.clock,
 		Node:         testNode,
 		Tracer:       sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.spans)).Tracer("api"),
@@ -91,6 +92,9 @@ func serveWith(t *testing.T, authenticate func(*http.Request) (auth.Caller, erro
 	}
 	if cp, ok := d.Store.(kvstore.ControlPlane); ok {
 		s.store = cp
+	}
+	if n, ok := d.Nodes.(kvstore.Nodes); ok {
+		s.nodes = n
 	}
 	srv := api.NewWithTestRows(d)
 	before(srv)
@@ -510,8 +514,9 @@ func TestSeriesAndSpans(t *testing.T) {
 	}
 }
 
-// sample is the value of the series name with labels in reg: a counter's
-// value, or a histogram's count.
+// sample is the value of the first series name with labels in reg, nil
+// labels matching any: a counter's or a gauge's value, or a histogram's
+// count; 0 when there is none.
 func sample(t *testing.T, reg *metrics.Registry, name string, labels map[string]string) float64 {
 	t.Helper()
 	fams, err := reg.Registry().Gather()
@@ -531,6 +536,9 @@ func sample(t *testing.T, reg *metrics.Registry, name string, labels map[string]
 			}
 			if h := m.GetHistogram(); h != nil {
 				return float64(h.GetSampleCount())
+			}
+			if g := m.GetGauge(); g != nil {
+				return g.GetValue()
 			}
 			return m.GetCounter().GetValue()
 		}

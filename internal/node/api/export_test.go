@@ -53,7 +53,8 @@ func Rows() []Row {
 }
 
 // testRows are a read for viewer, two verbs on one path for operator, the
-// writes of a knob, its collection and of a vault for operator, a read of
+// writes of a knob, its collection and of a vault for operator, an action
+// starting an operation on a knob, a read of
 // accounts for admin, a call a caller that must change its password may
 // make, and a read failing with an error no row of the problem table names.
 var testRows = []route{
@@ -79,6 +80,9 @@ var testRows = []route{
 		}
 		k.Spec.Turns++
 		return putKnob(ctx, request[knob]{ID: rq.ID, Body: k, Expect: rq.Expect}, struct{}{}, tx)
+	})},
+	{method: http.MethodPost, pattern: "/api/v1/knobs/{id}", verb: "sweep", kind: entity.ResourceSetting, right: auth.Stores, serve: write(sweeps, nil, func(_ context.Context, rq request[knob], _ struct{}, _ entity.ControlPlaneTx) (knob, [16]byte, error) {
+		return knob{}, rq.ID, nil
 	})},
 	{method: http.MethodPut, pattern: "/api/v1/vaults/{id}", kind: entity.ResourceSecret, right: auth.Stores, serve: write(vaults, seal, func(_ context.Context, rq request[vault], sealed string, tx entity.ControlPlaneTx) (vault, [16]byte, error) {
 		_, err := tx.PutSetting(entity.Setting{Scope: nodeScope(rq.ID), Key: "vault", Value: []byte(sealed)}, rq.Expect)
@@ -137,6 +141,10 @@ var knobs = writing[knob]{kind: entity.ResourceSetting, raises: true, read: func
 	var k knob
 	return k, s.Generation, true, json.Unmarshal(s.Value, &k.Spec)
 }}
+
+// sweeps is knobs for :sweep, an action that changes nothing of the knob and
+// starts an operation on it, of a kind the closed set names.
+var sweeps = func() writing[knob] { w := knobs; w.op = apiv1.OpShareDelete; return w }()
 
 // turns is knobs for :turn, an action that changes the spec.
 var turns = func() writing[knob] { w := knobs; w.changesSpec = true; return w }()
