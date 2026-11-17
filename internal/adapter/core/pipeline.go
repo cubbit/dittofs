@@ -380,6 +380,11 @@ func (p *pipeline) serve(rec *resources.Buf) {
 	}
 	release, err := p.st.Flow.Admit(tr.ctx, u)
 	if err != nil {
+		if p.endedByClose(err) {
+			p.end(tr, false, 0, 0, nil)
+			rec.Release()
+			return
+		}
 		p.refuse(tr, rec, u, stageAdmit, err, true, false)
 		return
 	}
@@ -523,6 +528,11 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		return
 	}
 	if err != nil {
+		if p.endedByClose(err) {
+			release()
+			p.end(tr, false, 0, 0, err)
+			return
+		}
 		p.refused(tr, stageReplayCheck)
 	}
 	errs := p.st.Errors
@@ -614,6 +624,14 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		err = ts.chains[op.Code](ctx, r)
 	}
 
+	if err != nil && p.endedByClose(err) {
+		if reply != nil {
+			reply.Release()
+		}
+		release()
+		p.end(tr, false, 0, 0, err)
+		return
+	}
 	var s Status
 	send := true
 	switch {
@@ -813,6 +831,14 @@ func (p *pipeline) end(tr *track, sent bool, s Status, reply int, err error) {
 		tr.span.SetAttributes(a...)
 	}
 	tr.span.End()
+}
+
+// endedByClose reports whether err is the connection's close ending a wait
+// or a call under its context. That is no error: nothing can be sent, and the
+// request is neither counted as a refusal or an error no row maps nor logged
+// at error (§10.1).
+func (p *pipeline) endedByClose(err error) bool {
+	return p.ctx.Err() != nil && errors.Is(err, context.Canceled)
 }
 
 // reservationStage is the stage the request's reply reservation's refusal

@@ -950,6 +950,165 @@ func TestAnUnmappedErrorIsAnsweredTheFaultAndCounted(t *testing.T) {
 	}
 }
 
+// A wait the connection's close ends, for the request's reply reservation
+// or for a replay copy's, is no error: the request counts neither as an error
+// no row maps nor as a refusal, and logs nothing at error (RFC 20 §10.1).
+func TestAWaitTheCloseEndsIsNoError(t *testing.T) {
+	setup := []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
+		{Op: testproto.OpTree, Version: 1, ID: 3, Session: 7, Tree: 1},
+	}
+	// A Create with no filehandle is refused, and its reply stored for its
+	// sequence: the same Create again is answered from the replay cache.
+	create := testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 4, Session: 7, Tree: 1, Seq: 1, Name: "f"}
+	for _, c := range []struct {
+		name  string
+		first []testproto.Msg // served and answered before the pool fills
+		waits testproto.Msg   // served with the pool full, then the close
+		fill  func(s *seam, copies *resources.BufPool) func()
+	}{
+		{"the reply reservation", nil, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 5},
+			func(s *seam, _ *resources.BufPool) func() { return s.full() }},
+		{"a replay copy", append(setup, create), create,
+			func(s *seam, copies *resources.BufPool) func() {
+				held, ok := copies.TryGet(peer, 0)
+				if !ok {
+					t.Fatal("the replay copies' budget is not free to fill")
+				}
+				return held.Release
+			}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, logs := metrics.New("v", "c"), &logSink{}
+				copies := resources.NewWaitBudget("reply", smallCharge)
+				proto := testproto.New(adapter.Deps{Budgets: &resources.Budgets{Reply: copies}})
+				s := newSeamWith(t, proto, smallCharge, adapter.Deps{Metrics: m, Logger: logs.logger()})
+				for _, msg := range c.first {
+					s.serve(msg)
+					s.read()
+				}
+				synctest.Wait() // the last reply's buffer is given back after its send
+				free := c.fill(s, resources.NewBufPool(copies))
+				defer free()
+				s.serve(c.waits)
+				synctest.Wait()
+				s.p.Close()
+				if err := s.p.Wait(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				got, _ := scrape(t, m)
+				for _, k := range []string{
+					"adapter_unmapped_errors_total{protocol=" + testproto.Name + "}",
+					"adapter_refusals_total{protocol=" + testproto.Name + ",stage=replay_check}",
+				} {
+					if got[k] != 0 {
+						t.Errorf("%s = %v after a wait the close ended, want 0", k, got[k])
+					}
+				}
+				if e := logs.at(t, "ERROR"); len(e) != 0 {
+					t.Errorf("a wait the close ended logged at error: %v", e)
+				}
+			})
+		})
+	}
+}
+
+// A connection at its cap closed while the next request waits in Admit, and
+// the 64 admitted wait for their reply buffers: none of those waits is an
+// error. Nothing counts as refused or as an error no row maps, and nothing
+// logs at error.
+func TestAnAdmissionTheCloseEndsIsNoError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, logs := metrics.New("v", "c"), &logSink{}
+		s := newSeamWith(t, testproto.New(adapter.Deps{}).Bare(), smallCharge, adapter.Deps{Metrics: m, Logger: logs.logger()})
+		free := s.full()
+		defer free()
+		var served atomic.Int64
+		all := start(func() {
+			for i := range 65 {
+				s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: uint64(i + 1)})
+				served.Add(1)
+			}
+		})
+		synctest.Wait()
+		if n := served.Load(); n != 64 {
+			t.Fatalf("%d serves returned with the reply budget full, want 64, the 65th held in Admit", n)
+		}
+		s.p.Close()
+		<-all.done
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := scrape(t, m)
+		for _, k := range []string{
+			"adapter_unmapped_errors_total{protocol=" + testproto.Name + "}",
+			"adapter_refusals_total{protocol=" + testproto.Name + ",stage=admit}",
+		} {
+			if got[k] != 0 {
+				t.Errorf("%s = %v after the close ended the waits, want 0", k, got[k])
+			}
+		}
+		if e := logs.at(t, "ERROR"); len(e) != 0 {
+			t.Errorf("the waits the close ended logged at error: %v", e)
+		}
+	})
+}
+
+// failingLookup wraps the stages' replay cache, whose Lookup it fails with
+// err, after closing the connection where close is set.
+type failingLookup struct {
+	core.ReplayCache
+	err   error
+	close func()
+}
+
+func (l failingLookup) Lookup(context.Context, core.Header) (*resources.Buf, error) {
+	if l.close != nil {
+		l.close()
+	}
+	return nil, l.err
+}
+
+// Only a wait the close ended is no error. A cancel on a connection still
+// open is answered, here the fault status of an error no row maps; and an
+// error no row maps that meets the close is counted, as a bug is.
+func TestOnlyAWaitTheCloseEndedIsNoError(t *testing.T) {
+	unmapped := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"
+	t.Run("a cancel on an open connection", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			m := metrics.New("v", "c")
+			s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Replay = failingLookup{ReplayCache: st.Replay, err: context.Canceled} }}, 1<<20, adapter.Deps{Metrics: m})
+			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+			synctest.Wait()
+			if got, _ := scrape(t, m); got[unmapped] != 1 {
+				t.Fatalf("%s = %v, want 1: the request ended unanswered", unmapped, got[unmapped])
+			}
+			if r := s.read(); r.ID != 1 || r.Status != testproto.StatusFault {
+				t.Errorf("a cancel on an open connection is answered %+v, want the fault status", r)
+			}
+		})
+	})
+	t.Run("an error no row maps at the close", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			m := metrics.New("v", "c")
+			var s *seam
+			closing := edited{testproto.New(adapter.Deps{}), func(st *core.Stages) {
+				st.Replay = failingLookup{ReplayCache: st.Replay, err: errUnmappable, close: func() { s.p.Close() }}
+			}}
+			s = newSeamWith(t, closing, 1<<20, adapter.Deps{Metrics: m})
+			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+			if err := s.p.Wait(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := scrape(t, m); got[unmapped] != 1 {
+				t.Errorf("%s = %v for an error no row maps at the close, want 1", unmapped, got[unmapped])
+			}
+		})
+	})
+}
+
 // A service error a row answers counts under its name, here the reply
 // copy's delay that the stages' table maps, and logs at debug.
 func TestAMappedServiceErrorCountsUnderItsName(t *testing.T) {
