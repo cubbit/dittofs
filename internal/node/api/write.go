@@ -97,7 +97,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		if len(key) > maxKey {
 			return answer{}, &fieldError{field: "Idempotency-Key", detail: "longer than " + strconv.Itoa(maxKey) + " bytes"}
 		}
-		rq := request[B]{ID: id}
+		rq := request[B]{ID: id, Query: r.URL.Query()}
 		if err := decode(bytes.NewReader(body), &rq.Body); err != nil {
 			return answer{}, err
 		}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -29,11 +30,13 @@ var errNotFound = fmt.Errorf("api: no such resource: %w", vfserr.ErrNotFound)
 // request is a handler's decoded request: the ID its path names, its body,
 // decoded strictly, and, for a write, the tag its record must have, which the
 // handler passes to the store's write as its expect: the one If-Match names,
-// or zero under If-None-Match: *.
+// or zero under If-None-Match: *; and, for a write, its query, which a
+// handler reads the parameters it takes from.
 type request[B any] struct {
 	ID     [16]byte
 	Body   B
 	Expect uint64
+	Query  url.Values
 }
 
 // none is the body of a request that carries none.

@@ -19,6 +19,10 @@ import (
 type reads interface {
 	Netgroups(ctx context.Context, after string) iter.Seq2[entity.Netgroup, error]
 	Settings(ctx context.Context, scope entity.SettingScope) iter.Seq2[entity.Setting, error]
+	// Share is one share with its state and its export policy, a share
+	// with none stored having the default one; a share never created, or
+	// whose removal has ended, is not found.
+	Share(ctx context.Context, id entity.ShareID) (entity.Share, entity.ExportPolicy, error)
 	Operation(ctx context.Context, id entity.OperationID) (entity.Operation, bool, error)
 	Operations(ctx context.Context, after entity.OperationID) iter.Seq2[entity.Operation, error]
 	RunningOperations(ctx context.Context, after entity.Operation) iter.Seq2[entity.Operation, error]
