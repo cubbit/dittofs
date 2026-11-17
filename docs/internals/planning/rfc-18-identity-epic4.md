@@ -685,12 +685,8 @@ logon sink come in.
   event has the address only.
 - **The plan's "anonymous and guest sessions" for this epic**: RFC 20 §4.4 makes them `gss`'s;
   this epic builds only the refusals (R16, D3).
-- **A marked principal's outcome.** RFC 18 §3.7 gives a deleted principal logon outcome
-  `disabled`, but RFC 23's epic 2 (its R39, R40) removes a marked user's name index in the mark's
-  transaction, so sign-in cannot tell it from an unknown name and answers `logon_failure` (R14),
-  as RFC 23's epic 2 T2.11 also states, with a `decision:` at the mark. Either §3.7 gives a
-  marked principal outcome `logon_failure`, recommended, or both sides change to `disabled`,
-  which would need sign-in to find a marked principal by name; pending the RFC 18 edit.
+- **A marked principal's outcome.** Settled: RFC 18 §3.7 gives a marked principal
+  `logon_failure`, an unknown name's outcome, as RFC 23's epic 2 T2.11 states.
 - **"no local password for a directory user"**: the plan gives the row to E8; E2 takes its
   `NewHashes` half and this epic its sign-in half (R9), which needs no directory.
 - **The plan's §4.4 sketch** has `s.netlogon.SamLogonEx` return a `SignInResult`. A package

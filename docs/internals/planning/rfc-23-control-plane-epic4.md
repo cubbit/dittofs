@@ -355,7 +355,10 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
 - **D14, the `identity.ntlm` rule is one function of the write's transaction**, called by the
   settings route, writing `Off` and clearing `Deleted` through E2's `ControlPlaneTx.SetNTLMOff(gen)`, its one writer
   (setting `Deleted` is RFC 18's step's, through `SetNTHashDeleted`); a provisioning apply calls the same function once the provisioning file exists (a
-  ledger row). No marker.
+  ledger row). Beside it the route calls the `identity.netbios_name` validator RFC 18's epic 8 declares (its
+  "NetBIOS name while joined" row; T8.8 in that epic's breakdown), also a function of
+  the write's transaction: a put or delete of `identity.netbios_name` is refused while
+  `Installation.Join`, a tracked read, says joined. No marker.
 - **D15, `api_operations` and `api_operation_oldest_seconds` are read at scrape** from E2's running
   index, which holds only running operations, so a scrape reads O(running).
 - **D16, every row answers `503` `starting`, with `Retry-After`, while `Deps.Ready()` says
@@ -489,8 +492,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   (RFC 23 §5.2's rows, `public` among them) and the `404`/`403` choice; `routes.go`, the route table
   (D2) with `/api/version`; `handler.go`, the read, list, write and call adapters (D1), the
   must-change flag; `api_requests_total`, `api_request_seconds`, `api_unmapped_errors_total` and one
-  span per call; E3's import rule extended with `pkg/node/apiv1`, `pkg/metadata/entity` and
-  `internal/node/api/auth`. Consumed by every later subtask and by E5.
+  span per call; E3's import rule extended with `pkg/node/apiv1`, `pkg/metadata/entity`,
+  `pkg/vfs/vfserr` (the sign-in errors epic 5 maps) and `internal/node/api/auth`. Consumed by every later subtask and by E5.
 - **Acceptance criteria:**
   - With `Authenticate` nil, every `/api/v1` route answers `401`; `/api/version` and the health
     rows answer.

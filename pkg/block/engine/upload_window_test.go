@@ -77,7 +77,7 @@ func TestUploadWindowBoundsConcurrentCommits(t *testing.T) {
 		commitLocks: &carveCommitLocks{},
 	}}
 	closure, reap := newFlushClosure(f.local, chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
-		blockSize, engineDeduper{synced: f.syncer.syncedHashStore}, sink, syncer.NewDynamicSemaphore(window))
+		blockSize, engineDeduper{view: f.syncer.blockCommitter}, sink, syncer.NewDynamicSemaphore(window))
 
 	if err := f.local.Flush(ctx, carveFixturePayload,
 		journal.FlushOptions{Force: true, AfterFile: reap}, closure); err != nil {

@@ -312,6 +312,16 @@ func (s *BadgerMetadataStore) DecrLiveChunkCount(ctx context.Context, blockID st
 	if err != nil {
 		return 0, fmt.Errorf("badger DecrLiveChunkCount: %w", err)
 	}
+	// A count of 0 tells the caller it may delete the remote object, and the
+	// dedup guard refuses to dedup onto a block at 0. Under relaxed durability
+	// the commit above is not on disk yet, so a power loss after the delete would
+	// bring back the old count and let a later write dedup onto the deleted
+	// block. Make the 0 durable before the caller acts on it.
+	if remaining == 0 {
+		if err := s.syncIfRelaxed(); err != nil {
+			return 0, fmt.Errorf("badger DecrLiveChunkCount: sync: %w", err)
+		}
+	}
 	return remaining, nil
 }
 

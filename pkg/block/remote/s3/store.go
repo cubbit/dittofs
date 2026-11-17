@@ -40,6 +40,14 @@ const maxBlockReadSize = 8 * 1024 * 1024
 // their drain deadlines.
 const s3HTTPRequestTimeout = 2 * time.Minute
 
+// s3CallTimeout bounds one DeleteBlock call and one WalkBlocks listing page,
+// the client's retries included, so a store that stops answering ends the call
+// instead of holding the caller (GC, under its per-remote lock) for every
+// retry. 30 s is the small-call bound of the syncer's design, applied here to
+// the whole call rather than to each attempt: per attempt, ten attempts and
+// their backoff would still hold the lock for minutes.
+const s3CallTimeout = 30 * time.Second
+
 // maxS3ConnsPerHost sizes the HTTP connection pool so it never caps the
 // syncer's upload concurrency (#1407): it matches the maximum a user can pin
 // via --parallel-uploads (validateParallelUploads allows up to 256) and so also
@@ -107,14 +115,19 @@ type Store struct {
 	// (block.DurabilityReporter). S3 object storage is durable, so the type
 	// default is true; set via SetDurable from the controlplane config.
 	durable atomic.Bool
+
+	// callTimeout bounds one DeleteBlock call and one WalkBlocks listing
+	// page, the client's retries included.
+	callTimeout time.Duration
 }
 
 // New creates a new S3 remote block store with an existing client.
 func New(client *s3.Client, config Config) *Store {
 	s := &Store{
-		client:    client,
-		bucket:    config.Bucket,
-		keyPrefix: config.KeyPrefix,
+		client:      client,
+		bucket:      config.Bucket,
+		keyPrefix:   config.KeyPrefix,
+		callTimeout: s3CallTimeout,
 	}
 	s.durable.Store(true)
 	return s
@@ -626,6 +639,9 @@ func (s *Store) DeleteBlock(ctx context.Context, blockID string) error {
 		return err
 	}
 	key := s.blockKey(blockID)
+
+	ctx, cancel := context.WithTimeout(ctx, s.callTimeout)
+	defer cancel()
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -657,7 +673,8 @@ func (s *Store) WalkBlocks(ctx context.Context, fn func(blockID string, meta blo
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		page, err := paginator.NextPage(ctx)
+
+		page, err := s.nextPage(ctx, paginator)
 		if err != nil {
 			return fmt.Errorf("s3 walk blocks: %w", err)
 		}
@@ -698,6 +715,18 @@ func (s *Store) WalkBlocks(ctx context.Context, fn func(blockID string, meta blo
 		}
 	}
 	return nil
+}
+
+// nextPage fetches one listing page under its own deadline: a walk grows with
+// the bucket, so only each page is bounded, never the whole walk.
+func (s *Store) nextPage(
+	ctx context.Context,
+	p *s3.ListObjectsV2Paginator,
+) (*s3.ListObjectsV2Output, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.callTimeout)
+	defer cancel()
+
+	return p.NextPage(ctx)
 }
 
 // Close marks the store as closed.

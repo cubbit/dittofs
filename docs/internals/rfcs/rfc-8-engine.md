@@ -1412,7 +1412,9 @@ verified in-memory implementation of that component's whole interface ([RFC 29 �
 
 Every mechanism the engine calls is safe by its own definition: `Release` refuses
 an extent whose offloaded bit is unset ([RFC 1 §3.5](rfc-1-journal.md#3.5%20Release)), `Fill` refuses to overwrite held
-bytes ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)), an offloaded bit is set only on an offload report. A
+bytes ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)), an offloaded bit is set only by an offload report, from an
+offload or the reseed's `MarkOffloaded` (§2.5), or by a fill, whose bytes came from the remote tier
+([RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill)). A
 policy gate **MUST NOT** be the only thing standing between the system and data
 loss. The test: disable every gate — evict as eagerly as possible, fill
 everything, offload constantly — and the Group A checks still pass ([§15](#15.%20Conformance)).
@@ -3817,8 +3819,8 @@ func (e *Engine) Drop(ctx context.Context, id ShareID) error                   /
 // Content: called only by *vfs.Filesystem, at the file's primary (RFC 17 §2.1).
 // Every call names the file's share, which the filesystem has from the handle. A
 // share being removed or retired answers ErrStale (RFC 16 §2.3.1); any other with
-// no binding here answers ErrDelay (DelayFrozen); LossSeq, which returns no
-// error, answers 0.
+// no binding here, or with a quiesced one, answers ErrDelay (DelayFrozen); LossSeq,
+// which returns no error, answers 0 with no binding and the file's sequence otherwise.
 func (e *Engine) Write(ctx context.Context, s ShareID, f FileID, off int64, p []byte, o WriteOpts) (Verifier, error)
 func (e *Engine) Draw(ctx context.Context, s ShareID, f FileID) (Version, error)                                     // under the file's accept lock (§4.1)
 func (e *Engine) Commit(ctx context.Context, s ShareID, f FileID, off, n int64) (v Verifier, lossSeq uint64, err error) // n 0: the whole file
@@ -3894,7 +3896,7 @@ standard library and which `pkg/vfs` re-exports as aliases
 ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)), `ErrInvalid` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrIncomplete` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrCross` with
 `CrossNamespace` or **(cluster)** `OtherShard` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrDelay` with its
 `Delay` cause: `DelayCapacity`, `DelayCommit`, `DelayConflict`, `DelayClone`, `DelayJournal` (the local journal is read-only for now: a device error that may clear, or a removal past its journal step waiting for the reopen, §8.1, §11.2),
-`DelayFrozen` (a share with no binding here, §12.1, or a file the metadata reconcile has
+`DelayFrozen` (a share with no binding here or a quiesced one, §12.1, or a file the metadata reconcile has
 not yet visited, §2.5), and `ErrFileOpen`, a release a holder aborted ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), which only the service reads.
 
 ### 12.2 A retried mutation is answered, not re-applied

@@ -431,7 +431,9 @@ pkg/settings/
   name, each refused, and uid 1500 beside gid 1500 accepted (R6); §10's "name case" row, `Alice`
   then `aLICE` refused, `bob@example.com` and `CORP\bob` each refused on create and on rename (catches `\` allowed, which makes
   `CORP\bob` a spelling of `bob` too, R7, R8, R9); `Kelvin`
-  with U+212A in place of `K` colliding with `kelvin` (catches an ASCII-only or `ToLower` fold, R7);
+  with U+212A in place of `K` colliding with `kelvin` (catches an ASCII-only fold, R7; not a
+  `ToLower` one, which maps U+212A to `k`); `ſam`, U+017F in place of `s`, colliding with `sam`
+  (catches a `ToLower` fold, which leaves U+017F as it is, R7);
   a group `finance` beside a user `finance`, both accepted (catches a fold across kinds, R7); in
   `entity`, a machine principal round-tripping through `MarshalText` and `ParsePrincipal`
   (catches `PrincipalMachine` left out of `principalKinds`, R3); in `entity`, `PrincipalUserPart`

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 
 	"github.com/cubbit/dittofs/internal/logger"
 	"github.com/cubbit/dittofs/pkg/block"
@@ -120,7 +121,7 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*blockgc.R
 
 			var e error
 			if rep, e = blockgc.ReclaimRecords(ctx, views, rbs, opts); e != nil {
-				return e
+				return remoteStalled(ctx, entry.ConfigID, e)
 			}
 			if rbs == nil {
 				return nil // no remote store — nothing to sweep for class 3
@@ -133,10 +134,10 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*blockgc.R
 				return nil
 			}
 			orep, e := blockgc.ReclaimOrphanObjects(ctx, metaBlockIDs, rbs, opts)
-			if e != nil {
-				return e
-			}
 			rep.Merge(orep)
+			if e != nil {
+				return remoteStalled(ctx, entry.ConfigID, e)
+			}
 			return nil
 		}()
 		if err != nil {
@@ -169,4 +170,18 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*blockgc.R
 	}
 
 	return total, nil
+}
+
+// remoteStalled decides what a reclaim error means for the run. A remote that
+// did not answer within its own call deadline ends the pass for that remote
+// only: the run goes on to the next remote and keeps what this one reclaimed so
+// far. A deadline on the caller's own context, or any other error, still ends
+// the whole run.
+func remoteStalled(ctx context.Context, configID string, err error) error {
+	if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+		logger.Warn("ReconcileReclaim: remote store not answering, rest of this remote left for the next run",
+			"configID", configID, "err", err)
+		return nil
+	}
+	return err
 }

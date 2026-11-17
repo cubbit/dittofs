@@ -153,6 +153,11 @@ type GCStats struct {
 	// run (each one is logged at Debug) is a block no remote holds: drift.
 	KeptForOtherRemote int64 `json:"kept_for_other_remote,omitempty"`
 
+	// EndedOnDeadline is set when a remote call reached its deadline and the
+	// pass stopped there: the store is not answering, so the rest of the
+	// remote waits for the next run and nothing else calls it under the lock.
+	EndedOnDeadline bool `json:"ended_on_deadline,omitempty"`
+
 	// Legacy aggregator fields (compat aliases — see finalizeStats).
 
 	OrphanFiles    int   // = ObjectsSwept.

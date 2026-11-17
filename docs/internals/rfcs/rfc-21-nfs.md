@@ -2072,6 +2072,36 @@ left, a result left to right. Each mapping is a pure function of the request
 and, where named, the record's `Adapter` bytes, and each is total: a wire value
 maps to one core value or to a named refusal, never to a default (N26).
 
+**Decoding is not translation.** Every NFS-family program — NFSv3, NFSv4.x,
+MOUNT, NLM, NSM — is decoded and encoded by one XDR codec (RFC 4506),
+generated from tags on each procedure's or operation's request and reply
+structs ([RFC 20 §5.1](rfc-20-adapters.md#5.1%20Codecs%20are%20pure)). A
+procedure is one file, `ops/<table>/<proc>.go`, holding its `*args` and `*res`
+structs and its handler, and one `core.Row` line in its table; it has no codec
+of its own, and the translations of this chapter read decoded fields, never
+bytes. What the tags must carry beyond fixed fields:
+
+- the bounds: file handles at 64 bytes (NFSv3, RFC 1813) and 128 (NFSv4,
+  RFC 8881), `AUTH_SYS` gids and machine name at §11.1's limits, and every
+  other opaque, string and array at the transfer sizes of §2.3;
+- discriminated unions — every result by its status, `createhow3`,
+  `stable_how`, `open_claim4`, `createhow4`, the callback and state-protection
+  arms of `EXCHANGE_ID` and `CREATE_SESSION` — and optional data, `post_op_attr`
+  and `pre_op_attr` and `sattr3`'s `set_*` arms;
+- `fattr4`: its `attrlist4` decoded into one optional field per attribute the
+  `attrmask` bitmap selects, so §11.3's attribute translation reads fields;
+- a `WRITE`'s data as a slice of the receive buffer and a `READ`'s as its own
+  segment of the reply
+  ([RFC 20 §5.3](rfc-20-adapters.md#5.3%20No%20copies%20on%20the%20data%20path)).
+
+A `COMPOUND`'s own arguments are decoded by the same codec, and its members one
+by one, each by its own row's decoder through the compound row's `Op.Members`
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
+A member that does not decode is `NFS4ERR_BADXDR`; a `COMPOUND` whose own
+arguments do not, and a procedure of any other program, `GARBAGE_ARGS`. The credential is decoded with the RPC header, and
+the `Identity` and `r.Call` of §11.1 are built by the pipeline once per
+member, never by a handler, NFSv4's included.
+
 ### 11.1 Identity
 
 Each credential becomes RFC 17's neutral `Identity`
@@ -2564,9 +2594,15 @@ service, before any wire suite runs:
   Start the drain after that compound's `CLOSE` has run and before its
   `READ`: the compound runs whole and is answered
   ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
+- **The XDR codec is tested once, for every program.** One golden-vector
+  suite and one fuzz target cover every procedure and operation of every
+  program, the target checking the generated decoder against a second, written
+  by hand ([RFC 20 §5.4](rfc-20-adapters.md#5.4%20How%20codecs%20are%20tested));
+  no procedure has a codec test of its own. The targets below are the
+  translations'.
 - **Every decoder is fuzzed.** Go native fuzzing (`testing.F`) of the stateid ↔
-  `StateRef` codec, `share_access`/`share_deny` decoding, `LOCK` and NLM
-  lock-request decoding, owner-string parsing and the `Adapter`-bytes decoder,
+  `StateRef` codec, `share_access`/`share_deny` translation, the translation
+  of a decoded `LOCK` or NLM lock request into a `LockReq`, owner-string parsing and the `Adapter`-bytes decoder,
   seeded with truncated, corrupt, older- and newer-version bytes: no panic, and
   either a valid neutral request or a refusal, never a request that decodes to
   other state.
