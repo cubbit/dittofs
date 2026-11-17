@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -38,8 +39,10 @@ func getJSON(t *testing.T, addr, path string, v any) {
 
 // The node serves the management API on its API listener over what it
 // holds: its version to anyone; to a caller, its own record from the store's
-// node view, the shares from the store's control plane, and an operation's
-// progress read by the runner's step for its kind. Stop closes the listener.
+// node view, the shares from the store's control plane, an operation's
+// progress read by the runner's step for its kind, a poll parked on the
+// node's clock, and a refusal audited under the node's ID. Stop closes the
+// listener.
 func TestNodeServesTheAPI(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(admin)))
 	sh := addShare(t, h)
@@ -48,10 +51,11 @@ func TestNodeServesTheAPI(t *testing.T) {
 	if _, err := h.Store().ControlPlane().PutOperation(t.Context(), op, 0); err != nil {
 		t.Fatalf("create the operation: %v", err)
 	}
-	if err := h.Node().Start(t.Context()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	started(t, h)
 	addr, _ := h.Node().Addrs()
+	id := h.NodeID()
+	nodeID := entity.ShareID(id).String()
+	opPath := "/api/v1/operations/" + uuid.UUID(op.ID).String()
 
 	var v apiv1.Version
 	getJSON(t, addr, "/api/version", &v)
@@ -60,9 +64,8 @@ func TestNodeServesTheAPI(t *testing.T) {
 	}
 	var nodes apiv1.Page[apiv1.Node]
 	getJSON(t, addr, "/api/v1/nodes", &nodes)
-	id := h.NodeID()
-	if len(nodes.Items) != 1 || nodes.Items[0].ID != entity.ShareID(id).String() || nodes.Items[0].Status.Address != addr {
-		t.Errorf("GET /api/v1/nodes: %+v, want this node alone, at %s", nodes.Items, addr)
+	if len(nodes.Items) != 1 || nodes.Items[0].ID != nodeID || nodes.Items[0].Status.Address != addr {
+		t.Errorf("GET /api/v1/nodes: %+v, want node %s alone, at %s", nodes.Items, nodeID, addr)
 	}
 	var shares apiv1.Page[apiv1.Share]
 	getJSON(t, addr, "/api/v1/shares", &shares)
@@ -70,9 +73,47 @@ func TestNodeServesTheAPI(t *testing.T) {
 		t.Errorf("GET /api/v1/shares: %+v, want share %s alone", shares.Items, sh.ID)
 	}
 	var got apiv1.Operation
-	getJSON(t, addr, "/api/v1/operations/"+uuid.UUID(op.ID).String(), &got)
+	getJSON(t, addr, opPath, &got)
 	if want := (apiv1.Progress{Phase: "batches", Total: -1, Unit: "batches"}); got.Progress != want {
 		t.Errorf("GET the operation: progress %+v, want %+v, the deletion's step's", got.Progress, want)
+	}
+
+	// A poll parks on the node's clock: advanced a second at a time, it
+	// answers once its wait has passed.
+	polled := make(chan answer, 1)
+	go func() { polled <- get(t, addr, opPath+"?wait=2s") }()
+	var poll answer
+	for deadline := time.After(10 * time.Second); poll.status == 0; {
+		h.Clock().Advance(time.Second)
+		select {
+		case poll = <-polled:
+		case <-time.After(10 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("the parked poll: no answer within 10 s of advancing the clock")
+		}
+	}
+	if poll.status != http.StatusOK {
+		t.Errorf("GET the operation with ?wait=2s: answered %d %s, want 200 once the wait passed", poll.status, poll.body)
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+addr+opPath+":cancel", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Idempotency-Key", "cancel-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST the operation's cancel: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("POST the operation's cancel: answered %d, want 409 not_cancellable", resp.StatusCode)
+	}
+	var audit apiv1.Page[apiv1.AuditRecord]
+	getJSON(t, addr, "/api/v1/audit", &audit)
+	refused := slices.IndexFunc(audit.Items, func(r apiv1.AuditRecord) bool { return r.ActorName == "admin" })
+	if refused < 0 || audit.Items[refused].Node != nodeID {
+		t.Errorf("GET /api/v1/audit: %+v, want the cancel's refusal on node %s", audit.Items, nodeID)
 	}
 
 	if err := h.Node().Stop(t.Context()); err != nil {
