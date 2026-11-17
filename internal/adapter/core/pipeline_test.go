@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1081,13 +1082,20 @@ func TestTheInterimGoesOutUnderContention(t *testing.T) {
 		}
 		freeA()
 		freeB()
-		got := map[uint64]testproto.Reply{}
+		synctest.Wait() // ID 2's interim queued before any reply is read
+		got, order := map[uint64]testproto.Reply{}, []uint64{}
 		for range 3 {
 			r := s.read()
 			got[r.ID&^(1<<63)] = r
+			order = append(order, r.ID&^(1<<63))
 		}
 		if r, ok := got[2]; !ok || !r.Interim || r.Credits != 1 {
 			t.Errorf("the drained request got %+v, want an interim granting its credit", r)
+		}
+		// The interim goes out in the reservation its request already held,
+		// so it never waits behind ID 3 for the room that request gave back.
+		if slices.Index(order, 2) > slices.Index(order, 3) {
+			t.Errorf("the replies came %v: want the interim before ID 3's reply", order)
 		}
 	})
 }
@@ -1156,4 +1164,27 @@ func TestADecodeErrorsCauseIsNotMatched(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A refusal served after close, waiting for a status's room, is never
+// counted as running: the pipeline's close is checked once it counts, so a
+// wait for its runs is never handed one that starts later.
+func TestARefusalAfterCloseIsNotRun(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var s *seam
+		closing := edited{testproto.New(adapter.Deps{}), func(st *core.Stages) {
+			st.Security = closesOnUnwrap{st.Security, func() { s.p.Close() }}
+		}}
+		s = newSeam(t, closing, smallCharge)
+		free := s.full()
+		defer free()
+		bad := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Session: 5})
+		bad[len(bad)-1] ^= 0x01
+		for range 64 {
+			s.serveBody(bad)
+			if n := s.p.Runs(); n != 0 {
+				t.Fatalf("after close a refusal counts %d as running, want none", n)
+			}
+		}
+	})
 }

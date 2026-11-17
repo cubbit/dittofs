@@ -345,6 +345,9 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		return
 	}
 	if _, ok := p.st.Hold.Cancels(u); ok {
+		// ponytail: the key a cancel names is dropped, since nothing holds a
+		// request yet. End the hold it names, and keep an early cancel for
+		// HoldCodec's while, once the hold registry lands.
 		rec.Release()
 		return
 	}
@@ -399,7 +402,16 @@ func (p *pipeline) refuse(rec *resources.Buf, h Header, err error, wrap, closeAf
 		rec.Release()
 		return
 	}
+	// A close can make both cases ready, and the select picks one at random:
+	// the refusal counts as running before close is checked, as serve's
+	// request does, so a wait entered after the close never sees it start.
 	p.add()
+	if p.ctx.Err() != nil {
+		<-p.status
+		p.done()
+		rec.Release()
+		return
+	}
 	go func() {
 		defer p.done()
 		defer func() { <-p.status }()
@@ -492,6 +504,9 @@ func (p *pipeline) run(rec *resources.Buf, h Header, release func()) {
 	}
 	var reply *resources.Buf
 	if err == nil {
+		// ponytail: ctx is the connection's, which has no deadline, so the
+		// reservation can wait as long as the pool stays full. Wait under the
+		// attempt's deadline once the request context lands.
 		reply, err = p.sh.reserveReply(ctx, p.l.remote, inv.Bound()+p.st.Header.ReplyLen(h))
 	}
 	if err == nil {

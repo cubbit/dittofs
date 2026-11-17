@@ -190,3 +190,10 @@ func (p *pipeline) Serve(rec *resources.Buf)       { p.serve(rec) }
 func (p *pipeline) Drain()                         { p.drain() }
 func (p *pipeline) Wait(ctx context.Context) error { return p.wait(ctx) }
 func (p *pipeline) Close()                         { p.close() }
+
+// Runs is how many requests and refusals the pipeline counts as running.
+func (p *pipeline) Runs() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.runs
+}
