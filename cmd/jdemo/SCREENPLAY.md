@@ -180,3 +180,48 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
 - **"Can the journal reopen right now?"** — No: `recovering them is not
   built` is a live subtask's honest absence — the same rule the CLI enforces,
   surfacing at the exit-code the process would feel.
+
+---
+
+# SCENARIO 2 — crash (--story crash)
+
+*A six-beat story about durability: what survives, in what order, and the
+honest seam. Runs after a basic run if the room wants the safety half.*
+
+## the beats
+
+1. journal online (same opening)
+2. **write + sync mark — THE receipt beat.** Run, then read the mark out
+   loud: stream, segment, offset, sequence. *"Durability has a name. The
+   engine records THIS and hands it to the next Open."*
+3. **overwrite, retained.** Open `i` right after. The index shows the
+   narrowed old entry AND the retained range: *"the old bytes are still
+   findable — that is the crash story: nothing synced is lost."*
+4. **truncate, durable on return.** Watch the marker arrive unsettled.
+5. **the Since feed.** *"Everything a recovering caller replays — this is
+   the journal's side of the contract."*
+6. **close, restart refused.** The journal closes, `journal.Open` runs
+   against the state file's identity — and answers the roadmap verbatim:
+   *"recovering them is not built. The identity lives on disk; the pass
+   that reads it back is the next merge."* Don't apologize — point at it.
+
+# SCENARIO 3 — limits (--story limits)
+
+*A seven-beat story about space: the share budget, the reserve that must
+come first, and what truncate does not give back.*
+
+## the beats
+
+1. journal online — note the **2 GiB world** in the banner.
+2. **attach with a 512 MiB budget.** Basic passed zero for this same
+   call — the share IS the budget here.
+3. **reserve BEFORE the burst.** *"The reservation is charged the budget
+   too — you take it while budget remains or the hatch is gone."*
+4. **fill until the share says no.** 40 MiB at a time; the refusal is
+   the SHARE's, with the bytes it's missing. Read it verbatim.
+5. **the reserved write walks through it.** v-late, served — the escape
+   hatch in the only order that works.
+6. **headroom math.** Stats look: what's used vs the 2 GiB — the pool's
+   own quarter is overhead the budget lives under.
+7. **truncate gives back nothing — yet.** held falls, used doesn't:
+   *"reclaimed space is repack's to free."* The honesty ledger ends it.
