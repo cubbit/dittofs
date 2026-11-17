@@ -110,7 +110,7 @@
         "il format record, letto per primo"
       ]
     ],
-    "footer": "Un'operazione di un client su un file resta dentro uno o due prefissi `F‖`. La tabella elenca ogni chiave che lo store può contenere, quindi un nuovo tipo di record richiede un nuovo formato dello store.",
+    "footer": "Un'operazione di un client su un file resta dentro uno o due prefissi `F‖`. La tabella raggruppa i tipi di chiave per scope; la §4.2 ha l'elenco completo, quindi un nuovo tipo di record richiede un nuovo formato dello store.",
     "notes": "§4.2 (ogni chiave comincia con un byte di tipo; le etichette stanno per byte, §4.2.1) e le sue conseguenze. Ogni File è una chiave sola: una seconda chiave costava il 25% su GETATTR, il 60% su READDIRPLUS e il 30% sulle creazioni seriali, per evitare un conflitto raro ed economico da ritentare (marker ponytail). La share in ogni chiave per file rende l'export una scansione per prefisso e fa sì che un restore in una nuova share abbia chiavi nuove, quindi non confonde mai un handle; cancellare una share però percorre il prefisso a lotti, perché i conteggi nominati dai suoi ref stanno fuori. Solo l'offload commit, i lotti di rimozione e il GC toccano le chiavi indirizzate per contenuto."
   },
   "kv": {

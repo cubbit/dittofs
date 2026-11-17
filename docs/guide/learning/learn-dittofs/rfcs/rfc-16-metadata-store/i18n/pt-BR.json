@@ -110,7 +110,7 @@
         "o format record, lido primeiro"
       ]
     ],
-    "footer": "Uma operação de cliente sobre um arquivo fica dentro de um ou dois prefixos `F‖`. A tabela lista todas as chaves que o store pode ter, então um novo tipo de record exige um novo formato de store.",
+    "footer": "Uma operação de cliente sobre um arquivo fica dentro de um ou dois prefixos `F‖`. A tabela agrupa os tipos de chave por escopo; a §4.2 tem a lista completa, então um novo tipo de record exige um novo formato de store.",
     "notes": "§4.2 (toda chave começa com um byte de tipo; os rótulos representam bytes, §4.2.1) e as suas consequências. Cada File é uma única chave: uma segunda chave custava 25% no GETATTR, 60% no READDIRPLUS e 30% nas criações seriais, para evitar um conflito raro e barato de repetir (marcador ponytail). A share em toda chave por arquivo faz do export uma varredura por prefixo e dá chaves novas a um restore numa share nova, então ele nunca confunde um handle; apagar uma share, porém, percorre o prefixo em lotes, porque as contagens que os seus refs nomeiam ficam fora dele. Só o offload commit, os lotes de remoção e o GC tocam as chaves endereçadas por conteúdo."
   },
   "kv": {

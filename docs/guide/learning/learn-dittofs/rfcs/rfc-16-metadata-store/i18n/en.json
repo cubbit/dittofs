@@ -110,7 +110,7 @@
         "the format record, read first"
       ]
     ],
-    "footer": "A client's operation on a file stays inside one or two `F‖` prefixes. The table lists every key the store may hold, so a new kind of record needs a new store format.",
+    "footer": "A client's operation on a file stays inside one or two `F‖` prefixes. The table groups the kinds of key by scope; §4.2 has the full list, so a new kind of record needs a new store format.",
     "notes": "§4.2 (every key starts with a one-byte kind code; the labels stand for bytes, §4.2.1) and its consequences. Each File is one key: a second key cost 25% on GETATTR, 60% on READDIRPLUS and 30% on serial creates, to avoid a rare, cheap-to-retry conflict (ponytail marker). The share in every per-file key makes export a prefix scan and lets a restore into a new share get new keys, so it never aliases a handle; deleting a share still walks the prefix in batches, because the counts its refs name live outside it. Only the offload commit, removal batches and GC reach the content-addressed keys."
   },
   "kv": {

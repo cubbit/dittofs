@@ -58,9 +58,9 @@
     }
     return uiCache.get(l);
   };
-  const deckTitle = async (d) => {
+  const deckTitle = async (d, l) => {
     try {
-      const own = await loadJSON(`${d.path}i18n/${lang}.json`, { optional: true });
+      const own = await loadJSON(`${d.path}i18n/${l}.json`, { optional: true });
       const en = own ? null : await loadJSON(`${d.path}i18n/${SOURCE_LANG}.json`);
       return renderPlain(new Strings(own, en).get('cover.title').value ?? d.path, (id) => id);
     } catch {
@@ -68,9 +68,12 @@
     }
   };
 
+  let wanted = lang;
   async function render() {
-    document.documentElement.lang = lang;
-    const ui = await uiStrings(lang);
+    const mine = wanted;
+    document.documentElement.lang = mine;
+    const ui = await uiStrings(mine);
+    if (mine !== wanted) return; // a later language click won
     const t = (k) => ui.get(k).value ?? k;
     document.querySelectorAll('[data-ui]').forEach((el) => { el.textContent = t(el.dataset.ui); });
     document.title = t('catalogue.title');
@@ -81,11 +84,11 @@
         <div class="d">${escapeHtml(t(`sections.${sec.section}.blurb`))}</div>`;
       if (sec.decks.length === 1) {
         const d = sec.decks[0];
-        return `<li><a class="card" href="${d.path}?lang=${lang}">${head}<div class="s">${source(d, sec.section)}</div></a></li>`;
+        return `<li><a class="card" href="${d.path}?lang=${mine}">${head}<div class="s">${source(d, sec.section)}</div></a></li>`;
       }
       const names = ui.get(`sections.${sec.section}.parts`).value || [];
-      const parts = await Promise.all(sec.decks.map(async (d, i) => `<a class="part" href="${d.path}?lang=${lang}">
-        <div class="pt">${i + 1} · ${escapeHtml(names[i] ?? await deckTitle(d))}</div><div class="s">${source(d, sec.section)}</div></a>`));
+      const parts = await Promise.all(sec.decks.map(async (d, i) => `<a class="part" href="${d.path}?lang=${mine}">
+        <div class="pt">${i + 1} · ${escapeHtml(names[i] ?? await deckTitle(d, mine))}</div><div class="s">${source(d, sec.section)}</div></a>`));
       return `<li><div class="card">${head}<div class="parts">${parts.join('')}</div></div></li>`;
     }));
     document.querySelector('.decks').innerHTML = items.join('');
@@ -99,8 +102,8 @@
     b.textContent = l.label;
     b.setAttribute('aria-pressed', String(l.id === lang));
     b.addEventListener('click', async () => {
-      lang = l.id;
-      rememberLang(lang);
+      wanted = l.id;
+      rememberLang(wanted);
       bar.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
       await render().catch((err) => console.error(err));
     });
