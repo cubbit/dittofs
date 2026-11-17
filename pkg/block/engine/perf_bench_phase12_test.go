@@ -3,8 +3,7 @@
 //
 // This file is the in-tree microbench canary. Real-S3 performance is
 // verified separately at milestone-gate VER-02 against the bench/infra
-// lane. See test/e2e/BENCHMARKS.md for the microbench-vs-real-S3
-// disclaimer.
+// lane (in-tree microbench and real-S3 numbers are not comparable).
 //
 // Reproduce locally
 //
@@ -196,7 +195,7 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 
 // BenchmarkPerfGate_Phase12RandReadRegression enforces a rand-read
 // regression bound: IOPS must be within 5% of the per-machine in-tree
-// microbench floor recorded in test/e2e/BENCHMARKS.md. This is a TRUE
+// microbench floor recorded below. This is a TRUE
 // benchmark function (not a Test invoking testing.Benchmark()), invoked
 // via
 //
@@ -206,11 +205,10 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 // Local runs: make bench-phase12.
 //
 // The microbench uses an in-tree fixture (memory metadata + journal
-// local store), NOT real S3. The ~1,350 IOPS rand-read figure in
-// BENCHMARKS.md refers to the bench/infra real-S3 lane on a different
-// machine class. The gate here uses the per-machine microbench floor
-// — see test/e2e/BENCHMARKS.md for the disclaimer and re-baseline
-// procedure.
+// local store), NOT real S3, so its absolute numbers are not
+// comparable with the bench/infra real-S3 lane. The gate here uses the
+// per-machine microbench floor; bench/README.md, "Local perf gates",
+// has the re-baseline procedure.
 //
 // The 5% bound is tighter than the global 6% budget to leave headroom
 // for downstream changes stacking on this surface. PR merge is blocked
@@ -242,9 +240,9 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 	// (page-cached preads) + stub-fbs so absolute numbers depend on CPU +
 	// memory bandwidth + Go scheduler. On Apple M1 Max the bench lands
 	// ~670 K ops/s; on Linux amd64 CI it's a different absolute. The floor
-	// below is the conservative cross-platform anchor — re-baseline per
-	// BENCHMARKS.md after a confirmed regression-free run on a new
-	// machine class.
+	// below is the conservative cross-platform anchor — re-baseline after
+	// a confirmed regression-free run on a new machine class, as
+	// bench/README.md, "Local perf gates", describes.
 	const microbenchFloorIOPS = phase12MicrobenchFloorIOPS
 	const tolerance = 0.05
 
@@ -265,8 +263,8 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 }
 
 // phase12MicrobenchFloorIOPS is the per-machine in-tree microbench
-// floor used by BenchmarkPerfGate_Phase12RandReadRegression. Revise via
-// BENCHMARKS.md when re-baselining.
+// floor used by BenchmarkPerfGate_Phase12RandReadRegression. Revise it by the
+// procedure in bench/README.md, "Local perf gates".
 //
 // Conservative cross-platform anchor: 50 K ops/s. On the M1 Max the
 // steady-state measurement is ~670 K ops/s (journal local store + 4 KiB

@@ -39,8 +39,7 @@ import (
 // bench-infra lane.
 //
 // Dev-laptop variance can trip this gate. Re-baseline on the canonical
-// bench-infra lane via the procedure documented in test/e2e/BENCHMARKS.md
-// when a re-baseline is required.
+// bench-infra lane by the procedure in bench/README.md, "Local perf gates".
 //
 // Initial value 0 — sentinel meaning "no captured baseline yet; record
 // on the next clean canonical lane run". When 0, the gate runs in
@@ -71,8 +70,9 @@ const phase19RandSeed = 17
 // d21MaxRatio (1.00).
 //
 // **Load-bearing merge gate.** If this test fails, the mega-PR is
-// blocked from merging. Re-baseline on canonical bench-infra per
-// test/e2e/BENCHMARKS.md if the failure is dev-laptop variance.
+// blocked from merging. Re-baseline on canonical bench-infra, as
+// bench/README.md, "Local perf gates", describes, if the failure is
+// dev-laptop variance.
 func TestPhase19_AggregateRandWriteGate_LeqOne(t *testing.T) {
 	if testing.Short() {
 		t.Skip("D-21 aggregate gate skipped under -short")
@@ -100,7 +100,7 @@ func TestPhase19_AggregateRandWriteGate_LeqOne(t *testing.T) {
 		// canonical bench-infra capture step.
 		t.Logf("D-21 OBSERVATION MODE: phase11BaselineRandWriteNsPerOp = 0 (no baseline captured); "+
 			"measured = %.0f ns/op. Capture canonical baseline on bench-infra and update the constant "+
-			"per 19-09-SUMMARY.md procedure before merge.", measured)
+			"as bench/README.md, \"Local perf gates\", describes.", measured)
 		return
 	}
 
@@ -110,8 +110,8 @@ func TestPhase19_AggregateRandWriteGate_LeqOne(t *testing.T) {
 	if ratio > d21MaxRatio {
 		t.Fatalf("D-21 RandWrite warm-cache ratio %.4f EXCEEDS gate %.2f vs Phase 11 baseline "+
 			"(%.0f ns/op vs %.0f ns/op). Phase 19 mega-PR is BLOCKED FROM MERGE.\n\n"+
-			"If dev-laptop variance is suspected, re-run on the canonical bench-infra lane per "+
-			"test/e2e/BENCHMARKS.md. Otherwise: identify the offending Opt (1/2/3/4) via the per-opt "+
+			"If dev-laptop variance is suspected, re-run on the canonical bench-infra lane (bench/README.md, \"Local perf gates\"). "+
+			"Otherwise: identify the offending Opt (1/2/3/4) via the per-opt "+
 			"yellow-flag benches:\n"+
 			"  - Opt 1: BenchmarkRandWriteCAS_IdempotentBytes (stores_per_chunk should be ~0)\n"+
 			"  - Opt 2: BenchmarkAppendWrite_GroupCommit (fsyncs_per_op trend)\n"+
