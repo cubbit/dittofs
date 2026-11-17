@@ -789,10 +789,12 @@ func (f *Fixture) Handle() engine.Handle {
 }
 
 // addSecond creates the second share, with the fixture's administrator
-// granted on it.
+// granted on it, bound in the first share's namespace so a clone between the
+// two is admitted.
 func (f *Fixture) addSecond() {
 	ctx := f.t.Context()
 	f.Second = AddShare(f.t, f.FS.Store, "second", 0)
+	f.Second.Namespace = f.Share.Namespace
 	grant := entity.ShareGrant{
 		Share:     f.Second.ID,
 		Principal: f.FS.Admin.Principal,
