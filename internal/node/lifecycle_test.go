@@ -26,6 +26,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -584,9 +585,10 @@ func TestStopStepPastItsBound(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	// The delay waits on a clock of its own, so advancing the node's clock
-	// past the stop bound does not release it.
+	// past the stop bound does not release it. It holds the operation's own
+	// write, so the status writer's commits pass.
 	held := sim.NewTestClock(time.Unix(0, 0))
-	sched, err := sim.NewSchedule(1, held, sim.Rule{Op: kvtest.OpUpdate, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	sched, err := sim.NewSchedule(1, held, sim.Rule{Op: kvtest.OpSet, Key: keys.Describe([]byte{keys.KindOP}) + "‖*", Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
 	if err != nil {
 		t.Fatal(err)
 	}

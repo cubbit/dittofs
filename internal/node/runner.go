@@ -112,10 +112,7 @@ func (r *runner) turn(ctx context.Context) {
 //
 // decision: an operation whose kind has no step stays pending, so a binary
 // that gains the step later runs it. Its kind is logged once and kept for
-// refusedKinds.
-//
-// ponytail: refusedKinds has no reader yet. Report the kinds among the node
-// status's refused records once the status writer exists.
+// refusedKinds, which the node status reports among its refused records.
 func (r *runner) drive(ctx context.Context, op entity.Operation) {
 	row, ok := r.steps[op.Kind]
 	if !ok {

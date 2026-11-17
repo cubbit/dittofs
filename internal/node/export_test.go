@@ -2,7 +2,6 @@ package node
 
 import (
 	"context"
-	"slices"
 
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
@@ -84,15 +83,11 @@ func (n *Node) Moved() <-chan struct{} {
 func (n *Node) Woken() bool { return len(n.rec.wake) == 1 }
 
 // Refused is the records the node refused, the shares' first.
-func (n *Node) Refused() []entity.RefusedRecord {
-	n.rec.mu.Lock()
-	defer n.rec.mu.Unlock()
-	var out []entity.RefusedRecord
-	for _, f := range append(slices.Clone(n.rec.shares), n.rec.applied...) {
-		out = append(out, f.rec)
-	}
-	return out
-}
+func (n *Node) Refused() []entity.RefusedRecord { return n.rec.refusals() }
+
+// OnStatus has the status writer call turned at the end of each turn with
+// the status it built and whether it committed it. Call it before Start.
+func (n *Node) OnStatus(turned func(s entity.NodeStatus, wrote bool)) { n.status.turned = turned }
 
 // Bound is share id's state as reconcile last bound it in the engine, and
 // false when it has bound none.

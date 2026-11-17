@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
@@ -56,6 +57,37 @@ type reconciler struct {
 	// shares and applied are the records the last share pass and the last
 	// apply refused.
 	shares, applied []refusal
+	// above is each counter read above pos and not yet reconciled through,
+	// and aboveSince when it was first read so, on the clock's Elapsed.
+	above      [len(counterKinds)]bool
+	aboveSince [len(counterKinds)]time.Duration
+
+	// errors counts the reconcile steps that failed, by the kind they apply.
+	errors [len(counterKinds)]atomic.Uint64
+}
+
+// refusals is the records the node refused, the shares' first.
+func (r *reconciler) refusals() []entity.RefusedRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []entity.RefusedRecord
+	for _, f := range append(slices.Clone(r.shares), r.applied...) {
+		out = append(out, f.rec)
+	}
+	return out
+}
+
+// read notes the counters c a pass read at now: each above the position
+// reconciled through is marked so from now, unless it already was.
+func (r *reconciler) read(c kvstore.Counters, now time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	read, pos := countersOf(c), countersOf(r.pos)
+	for k := range read {
+		if read[k] > pos[k] && !r.above[k] {
+			r.above[k], r.aboveSince[k] = true, now
+		}
+	}
 }
 
 func newReconciler() reconciler {
@@ -236,13 +268,19 @@ func (n *Node) counters(ctx context.Context) (kvstore.Counters, error) {
 // pass reads the counters and acts on each kind due, then publishes the
 // counters it read as the positions reconciled through. A read that fails
 // leaves the running set and the positions as they were, and has the next
-// pass act on every kind. A share pass that fails still has apply run, so a
-// principals or settings change does not wait for the share store, and
-// publishes the principals position it applied through.
+// pass act on every kind. A share pass that fails counts an error of the
+// shares, and an apply that fails one of the settings. A share pass that
+// fails still has apply run, so a principals or settings change does not
+// wait for the share store, and publishes the principals position it
+// applied through.
 //
 // decision: after a failed share pass only the principals position moves.
 // The settings position stays, because a settings change also configures a
 // share's remote store, which only the share pass acts on.
+//
+// ponytail: apply's error counts against the settings alone, though apply
+// reads the principals generation too, as one call applies both. Count
+// each kind's own failure once apply applies them apart.
 //
 // decision: reconcile never unbinds a share: the removal's own driver does,
 // at the step its record names. A share whose removal is marked after the
@@ -261,6 +299,7 @@ func (n *Node) pass(ctx context.Context) error {
 		r.again = true
 		return err
 	}
+	r.read(c, n.cfg.Clock.Elapsed())
 	if r.paused != nil {
 		r.paused(c)
 	}
@@ -268,10 +307,14 @@ func (n *Node) pass(ctx context.Context) error {
 	var sharesErr error
 	if shares {
 		sharesErr = n.reconcileShares(ctx)
+		if sharesErr != nil {
+			r.errors[kindShares].Add(1)
+		}
 	}
 	if apply {
 		refusals, err := n.apply(ctx, c)
 		if err != nil {
+			r.errors[kindSettings].Add(1)
 			r.again = true
 			return errors.Join(sharesErr, err)
 		}
@@ -293,6 +336,7 @@ func (n *Node) pass(ctx context.Context) error {
 	retry := func(f refusal) bool { return f.retry }
 	r.again = slices.ContainsFunc(r.shares, retry) || slices.ContainsFunc(r.applied, retry)
 	r.pos = c
+	r.above = [len(counterKinds)]bool{}
 	close(r.moved)
 	r.moved = make(chan struct{})
 	r.mu.Unlock()
@@ -326,6 +370,7 @@ func (n *Node) reconcileShares(ctx context.Context) error {
 			r.binding(s)
 		}
 		if err := n.engine.Bind(ctx, enginewire.Binding(s, 0)); err != nil {
+			r.errors[kindShares].Add(1)
 			refusals = append(refusals, refused(s, true, err))
 			continue
 		}
@@ -396,24 +441,25 @@ func (n *Node) applied(ctx context.Context) error {
 	}
 }
 
-// startReconcile runs the first full reconcile, then the loop, watched by
-// the watchdog, until Stop.
+// startReconcile runs the first full reconcile, then the loop and the
+// status writer, each watched by the watchdog, until Stop.
 func (n *Node) startReconcile(ctx context.Context) error {
 	n.rec.again = true
 	if err := n.pass(ctx); err != nil {
 		return err
 	}
 	loopCtx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	loop := n.watchdog.Loop(stepReconcile)
-	go func() {
-		defer close(done)
-		defer loop.Close()
-		n.reconcileLoop(loopCtx, loop)
-	}()
+	var wg sync.WaitGroup
+	for name, run := range map[string]func(context.Context, *health.Loop){stepReconcile: n.reconcileLoop, stepStatus: n.statusLoop} {
+		loop := n.watchdog.Loop(name)
+		wg.Go(func() {
+			defer loop.Close()
+			run(loopCtx, loop)
+		})
+	}
 	n.started(stepReconcile, func(context.Context) error {
 		cancel()
-		<-done
+		wg.Wait()
 		return nil
 	})
 	return nil

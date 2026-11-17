@@ -51,6 +51,8 @@ type Node struct {
 	fs       *vfs.Filesystem
 	runner   *runner
 	rec      reconciler
+	status   statusWriter
+	health   *health.Evaluator
 	watchdog *health.Watchdog
 	api      *api.Server
 	life     lifecycle
@@ -121,6 +123,12 @@ func build(cfg Config) (*Node, error) {
 	if err := reg.Register(engineSeries{n.engine.Stats}); err != nil {
 		return nil, fmt.Errorf("node: engine series: %w", err)
 	}
+	if err := reg.Register(nodeSeries{n}); err != nil {
+		return nil, fmt.Errorf("node: node series: %w", err)
+	}
+	n.health = &health.Evaluator{}
+	n.health.Add(&engineConditions{n.engine.Stats})
+	n.health.Add(&nodeConditions{n})
 	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
