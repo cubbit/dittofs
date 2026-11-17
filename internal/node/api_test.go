@@ -80,20 +80,29 @@ func TestNodeServesTheAPI(t *testing.T) {
 
 	// A poll parks on the node's clock: advanced a second at a time, it
 	// answers once its wait has passed.
-	polled := make(chan answer, 1)
-	go func() { polled <- get(t, addr, opPath+"?wait=2s") }()
-	var poll answer
-	for deadline := time.After(10 * time.Second); poll.status == 0; {
+	polled := make(chan error, 1)
+	var poll *http.Response
+	go func() {
+		var err error
+		poll, err = http.Get("http://" + addr + opPath + "?wait=2s")
+		polled <- err
+	}()
+	for deadline, answered := time.After(10*time.Second), false; !answered; {
 		h.Clock().Advance(time.Second)
 		select {
-		case poll = <-polled:
+		case err := <-polled:
+			if err != nil {
+				t.Fatalf("GET the operation with ?wait=2s: %v", err)
+			}
+			_ = poll.Body.Close()
+			answered = true
 		case <-time.After(10 * time.Millisecond):
 		case <-deadline:
 			t.Fatal("the parked poll: no answer within 10 s of advancing the clock")
 		}
 	}
-	if poll.status != http.StatusOK {
-		t.Errorf("GET the operation with ?wait=2s: answered %d %s, want 200 once the wait passed", poll.status, poll.body)
+	if poll.StatusCode != http.StatusOK {
+		t.Errorf("GET the operation with ?wait=2s: answered %d, want 200 once the wait passed", poll.StatusCode)
 	}
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+addr+opPath+":cancel", nil)
@@ -121,6 +130,20 @@ func TestNodeServesTheAPI(t *testing.T) {
 	}
 	if got := get(t, addr, "/api/version"); got != closed {
 		t.Errorf("GET /api/version after Stop: got %+v, want the listener closed", got)
+	}
+}
+
+// A node New builds authenticates no caller: its API answers its version and
+// refuses every other call 401.
+func TestTheAPIAuthenticatesNoCaller(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	started(t, h)
+	addr, _ := h.Node().Addrs()
+	if got := get(t, addr, "/api/version"); got.status != http.StatusOK {
+		t.Errorf("GET /api/version: answered %+v, want 200", got)
+	}
+	if got := get(t, addr, "/api/v1/nodes"); got.status != http.StatusUnauthorized {
+		t.Errorf("GET /api/v1/nodes with no caller: answered %+v, want 401", got)
 	}
 }
 

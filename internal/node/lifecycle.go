@@ -136,10 +136,11 @@ func (n *Node) Start(ctx context.Context) error {
 		// listeners' step, refused 503 starting until readiness turns
 		// ready after the first full reconcile rather than from here, and
 		// they stop with the listeners, after the engine, rather than
-		// before the runner. The API reaches the store alone, which
-		// outlives every part, so a call taken while the node stops
-		// commits a record this node applies at its next start, and a
-		// write's wait for this node to apply it runs out its bound. Make
+		// before the runner. The API writes only to the store, which
+		// outlives every part, and reads stopped parts only through their
+		// statistics, so a call taken while the node stops commits a
+		// record this node applies at its next start, and a write's wait
+		// for this node to apply it runs out its bound. Make
 		// the calls' acceptance a part started here, apart from the health
 		// listener, once a call reaches a part the stop closes first.
 		{stepReconcile, n.startReconcile},

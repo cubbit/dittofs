@@ -87,7 +87,8 @@ type Node struct {
 // rebuild on one registry is needed.
 func New(cfg Config) (*Node, error) { return newNode(cfg, nil) }
 
-// newNode is New with authenticate as the API's Authenticate.
+// newNode is New with authenticate as the API's Authenticate, which only a
+// test sets.
 func newNode(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*Node, error) {
 	if cfg.KV == nil {
 		return nil, errors.New("node: Config.KV is missing")
@@ -152,8 +153,9 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 	// path, the installation's signing key is a secret no secret store
 	// reads, and Config names no tracer. So a start on an address but
 	// loopback is refused for want of a certificate, no local socket is
-	// served, every call but a public row's answers 401, a write carrying an
-	// Idempotency-Key answers 503, and spans go to the no-op tracer. Fill
+	// served, every call but a public row's answers 401, every POST and
+	// DELETE, which must carry an Idempotency-Key, answers 503 or 428, and
+	// spans go to the no-op tracer. Fill
 	// each from the bootstrap, the secret store, sign-in and the host's
 	// tracer as they land.
 	n.api = api.New(api.Deps{
