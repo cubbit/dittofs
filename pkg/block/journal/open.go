@@ -381,15 +381,24 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// the moment the journal is served. An appended record needs a
 		// spare to land in, so the pass waits for the pool's settle before
 		// the first record it appends — never for a pass the disk answers
-		// whole with found records, or one whose leftovers defer — keeping
-		// every clean reopen off the pool's refill entirely. A failure here
-		// closes the core the open built, leaving the directory to the next
-		// open: every record the pass landed is durable, and every failure
-		// the answer costs is on the directory's failed list.
+		// whole with found records — keeping every clean reopen off the
+		// pool's refill entirely. A pass whose corrupt drops would run past
+		// the open reserve refuses here, before any of its records appends
+		// (the refusal and its reasoning live with the pass itself): the
+		// open closes the core it built and answers nothing, so a retry
+		// over a journal whose reserve holds the drops answers whole. A
+		// failure here closes the core the open built, leaving the
+		// directory to the next open: every record the pass landed is
+		// durable, and every failure the answer costs is on the directory's
+		// failed list.
 		if err := recovery.OpenLosses(ctx, st, c.Durability(), s.HeadroomRecords, func() error {
 			return c.WaitSpares(ctx)
 		}); err != nil {
 			_ = c.Close()
+			var pastReserve *recovery.LostPastReserveError
+			if errors.As(err, &pastReserve) {
+				return nil, fmt.Errorf("%w: %s: %v", ErrNotImplemented, dir, pastReserve)
+			}
 			return nil, err
 		}
 		if cfg.SparesReady != nil {

@@ -19,10 +19,11 @@ import (
 )
 
 // The tests in this file drive the open turned on over a directory holding
-// segments: the public Open runs the recovery itself, refuses only the
-// directory whose open ends a segment, and appends its own loss records — the
-// failed-list records first on the open reserve, then the corrupt drops,
-// deferred past it — before it returns. Every check reads its answers through
+// segments: the public Open runs the recovery itself, refuses the
+// directory whose open ends a segment and the one whose corrupt drops
+// would run past the open reserve, and appends its own loss records — the
+// failed-list records first on the reserve, then the corrupt drops —
+// before it returns. Every check reads its answers through
 // the journal's public surface, so a recovery that drops what it rebuilt or
 // a loss pass that publishes what no ring holds fails at the caller that
 // consumes it.
@@ -338,12 +339,20 @@ func TestExhaustedHeadroomSyncedLossOnReserve(t *testing.T) {
 	}
 }
 
-// TestPastReserveDeferralServes holds the deferral past the open reserve at
-// the callers it reaches: more corrupt records than the reserve holds still
-// open, each loss past the reserve is published marked deferred, its extent
-// reads lost, and a synced one is yielded by Since until the caller settles
-// it.
-func TestPastReserveDeferralServes(t *testing.T) {
+// TestPastReserveLossRefusesTheOpen holds the reserve's far edge at the
+// open that reaches it: corrupt drops past what the open reserve holds
+// answer no served journal. The open refuses before it appends anything —
+// a deferred corrupt loss hands its record to the copy that retires the
+// segment holding the drop, but no retirement gate reads the deferral's
+// registry, so the running journal would unlink that segment and let the
+// drop's older copies serve over a write the crash had synced — and the
+// refusal burns nothing: each refused open leaves the rotted bytes, the
+// loss records and the failed list exactly as the last one found them, so
+// the open that finally holds a reserve answers whole. The row's
+// deferral-serving acceptance returns when the emptying that copies the
+// deferred records out exists to withdraw the refusal; this row asserts
+// behaviour, not history — retune it with that withdrawal.
+func TestPastReserveLossRefusesTheOpen(t *testing.T) {
 	f := seededJournal(t)
 	file := fileOf(4)
 	older := plantRecord(1, ownerTag, file, 10, 10, 0, 32)
@@ -351,59 +360,121 @@ func TestPastReserveDeferralServes(t *testing.T) {
 	offs := plantSealedAt(t, f.seam, f.id, 944, older, newer)
 	f.rotHeader(t, format.SegmentName(944), int64(offs[0]))
 	f.rotHeader(t, format.SegmentName(944), int64(offs[1]))
+	before, err := f.seam.Durable(format.SegmentName(944))
+	if err != nil {
+		t.Fatalf("read the planted segment: %v", err)
+	}
 
-	j := f.publicOpen(t, func(s *Settings) { s.HeadroomRecords = 2 })
+	// Two headroom records keep an open reserve of one: the two rotted
+	// records are two corrupt drops past what it holds. The refusal precedes
+	// every append, so no retry burns a record the reserve could have held.
+	refuse := func(nth string) {
+		_, err := Open(context.Background(), f.dir, Version{}, f.id, nil, f.opts(func(s *Settings) { s.HeadroomRecords = 2 })...)
+		if !errors.Is(err, ErrNotImplemented) {
+			t.Fatalf("the %s open of two corrupt drops past the reserve returned %v, want the ErrNotImplemented refusal", nth, err)
+		}
+		if !strings.Contains(err.Error(), "the first against segment 944") {
+			t.Fatalf("the %s refusal %q names no segment the losses past the reserve defer against, want it naming segment 944", nth, err)
+		}
+		if after, aerr := f.seam.Durable(format.SegmentName(944)); aerr != nil || !slices.Equal(before, after) {
+			t.Fatalf("the %s refusing open changed the rotted segment: got %x (err %v), want the planted bytes", nth, after, aerr)
+		}
+		if n := len(f.lossRecords(t)); n != 0 {
+			t.Fatalf("%d loss records on disk after the %s refusal, want none", n, nth)
+		}
+		failed, ferr := durability.FailedFor(f.dir, f.id)
+		if ferr != nil || len(failed) != 0 {
+			t.Fatalf("the %s refusal left %v on the directory's failed list (err %v), want none: the pass took no piece it owes a record for", nth, failed, ferr)
+		}
+	}
+	refuse("first")
+	refuse("second")
+
+	// The refusal is the reserve arithmetic's own, not a wall before the
+	// loss pass: a reserve that holds both drops serves them, all losses
+	// appended and none deferred.
+	j := f.publicOpen(t, func(s *Settings) { s.HeadroomRecords = 50 })
 	events := lossEvents(t, j, core.LossCorrupt)
-	if len(events) != 2 {
-		t.Fatalf("the open published %d corrupt losses, want the one event of each rotted drop: %+v", len(events), events)
+	if len(events) != 2 || events[0].Deferred || events[1].Deferred {
+		t.Fatalf("the open over a full reserve published %d corrupt losses %+v, want the two, none deferred", len(events), events)
 	}
-	nonDeferred, deferred := 0, 0
-	for _, ev := range events {
-		if ev.Deferred {
-			if !ev.Synced {
-				t.Fatalf("the deferred loss %+v is not synced, want the classing's own flag", ev)
-			}
-			deferred++
-			continue
-		}
-		nonDeferred++
+	if n := len(f.lossRecords(t)); n != 2 {
+		t.Fatalf("%d loss records on disk after the open over the full reserve, want the two", n)
 	}
-	if nonDeferred != 1 || deferred != 1 {
-		t.Fatalf("the open appended %d of the two corrupt losses and deferred %d, want 1 on the reserve and 1 past it", nonDeferred, deferred)
-	}
-	if n := len(f.lossRecords(t)); n != 1 {
-		t.Fatalf("%d loss records on disk, want the one the open reserve held: a deferred loss appends none", n)
-	}
-
 	h := shareOf(t, j, ownerTag)
-	for _, ext := range []Extent{{Off: 0, Len: 32}, {Off: 32, Len: 32}} {
-		p := make([]byte, ext.Len)
-		if _, missing, _, _, err := h.ReadAt(t.Context(), file, ext.Off, p); err != nil || len(missing) != 1 || missing[0] != ext {
-			t.Fatalf("reading the deferred loss's extent %+v: n 0, missing %+v, err %v, want the whole extent lost", ext, missing, err)
-		}
+	if _, missing, _, _, err := h.ReadAt(t.Context(), file, 0, make([]byte, 32)); err != nil || len(missing) != 1 || missing[0] != (Extent{Off: 0, Len: 32}) {
+		t.Fatalf("reading the first rotted extent after the serving open: missing %+v, err %v, want the whole extent lost", missing, err)
 	}
-	// The synced deferred loss yields its marker through Since until the
-	// caller settles it: the loss tells the metadata it lost a synced write.
-	var yielded int
-	for ch, err := range h.Since(t.Context(), file, Version{}) {
-		if err != nil {
-			t.Fatalf("Since after the deferred loss: %v", err)
-		}
-		if ch.Kind == ChangeLoss {
-			yielded++
-		}
+}
+
+// TestDeferredOnlySegmentStandsBehindTheRefusal holds the probe shape the
+// refusal answers: two corrupt drops over a one-record reserve, and the
+// past-reserve drop the only record of its own segment. Under the deferral
+// this open once served, that segment held nothing but the drop whose
+// loss deferred, so the running journal's retirement unlinked it and the
+// reopen after a close served the older record the dropped write
+// superseded, missing nothing over a synced write. The open refuses and
+// the deferred-only segment stands; and the served variant of this row —
+// a regression back to the deferral, or the emptying's withdrawal of the
+// refusal — must read the drop's own extent lost, never the retired
+// segment's older bytes, which is the row's negative verification: retune
+// the refusal assertion with that withdrawal, keep the read.
+func TestDeferredOnlySegmentStandsBehindTheRefusal(t *testing.T) {
+	f := seededJournal(t)
+	file := fileOf(5)
+	// The older write of the extent, whole in its own segment — the bytes a
+	// retired deferred-only segment would serve — beside the one corrupt
+	// drop that takes the reserve.
+	older := plantRecord(1, ownerTag, file, 10, 10, 0, 32)
+	reserveDrop := plantRecord(1, ownerTag, file, 13, 13, 32, 32)
+	offsA := plantSealedAt(t, f.seam, f.id, 947, older, reserveDrop)
+	f.rotHeader(t, format.SegmentName(947), int64(offsA[1]))
+	// The past-reserve drop, alone in its own segment: the whole of its
+	// holder is the drop whose loss once deferred against it.
+	newer := plantRecord(1, ownerTag, file, 11, 11, 0, 32)
+	offsB := plantSealedAt(t, f.seam, f.id, 948, newer)
+	f.rotHeader(t, format.SegmentName(948), int64(offsB[0]))
+
+	narrow := func(s *Settings) { s.HeadroomRecords = 2 }
+	nameB := format.SegmentName(948)
+	open := func() (*Journal, error) {
+		return Open(context.Background(), f.dir, Version{}, f.id, nil, f.opts(narrow)...)
 	}
-	if yielded != 2 {
-		t.Fatalf("Since yielded %d lost-write changes, want one per corrupt extent, the deferred included", yielded)
+	j, err := open()
+	if err == nil {
+		// The negative verification, kept for the day the refusal is
+		// withdrawn: a served open must still never serve the retired
+		// segment's older bytes for the dropped write — the loss that
+		// masks it answers wherever its record lives.
+		t.Cleanup(func() { _ = j.Close() })
+		h := shareOf(t, j, ownerTag)
+		p := make([]byte, 32)
+		n, missing, _, _, rerr := h.ReadAt(t.Context(), file, 0, p)
+		if rerr != nil || n != 0 || len(missing) != 1 || missing[0] != (Extent{Off: 0, Len: 32}) {
+			t.Fatalf("the served open answered the dropped extent n %d, missing %+v, err %v — the older record served over the synced write, want the whole extent lost", n, missing, rerr)
+		}
+		t.Fatalf("the open of two corrupt drops past the reserve served, want the ErrNotImplemented refusal")
 	}
-	h.Settle(file, v(12))
-	for ch, err := range h.Since(t.Context(), file, Version{}) {
-		if err != nil {
-			t.Fatalf("Since after the settle: %v", err)
-		}
-		if ch.Kind == ChangeLoss {
-			t.Fatalf("Since yielded the settled lost-write change %+v, want it settled away", ch)
-		}
+	if !errors.Is(err, ErrNotImplemented) {
+		t.Fatalf("the open of a deferred-only corrupt segment returned %v, want the ErrNotImplemented refusal", err)
+	}
+	if !strings.Contains(err.Error(), "the first against segment 948") {
+		t.Fatalf("the refusal %q names no segment the past-reserve loss defers against, want it naming the deferred-only segment 948", err)
+	}
+	// The refused open unlinked nothing: the deferred-only segment stands
+	// exactly where the planting left it.
+	if _, aerr := f.seam.Durable(nameB); aerr != nil {
+		t.Fatalf("the refusing open left no readable segment 948, the deferred drop's own holder: %v", aerr)
+	}
+	if n := len(f.lossRecords(t)); n != 0 {
+		t.Fatalf("%d loss records on disk after the refusal, want none", n)
+	}
+	// The refusal answers every retry the same way.
+	if _, err := open(); !errors.Is(err, ErrNotImplemented) {
+		t.Fatalf("the second open returned %v, want the same refusal", err)
+	}
+	if _, aerr := f.seam.Durable(nameB); aerr != nil {
+		t.Fatalf("the second refusing open left no readable segment 948: %v", aerr)
 	}
 }
 
