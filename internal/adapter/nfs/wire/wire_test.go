@@ -186,6 +186,103 @@ func TestParseV3Proc1(t *testing.T) {
 	}
 }
 
+// Procedure 1 of version 4 of a program other than NFS reads no COMPOUND
+// prefix: the tag and minor version belong to 100003 alone, and a call of any
+// other program that carries them is answered as arguments it does not decode.
+func TestProcedureOneOfAnotherProgramReadsNoCompound(t *testing.T) {
+	b := binary.BigEndian.AppendUint32(nil, 0x11223344)
+	for _, v := range []uint32{0, 2, 100005, 4, 1} { // MOUNT version 4, proc 1
+		b = binary.BigEndian.AppendUint32(b, v)
+	}
+	b = append(b, make([]byte, 16)...) // AUTH_NONE credential and verifier
+	tag := binary.BigEndian.AppendUint32(nil, 3)
+	tag = append(tag, "tag"...)
+	tag = append(tag, 0)
+	b = append(b, tag...)
+	b = binary.BigEndian.AppendUint32(b, 7) // a minor version, never read
+	b = binary.BigEndian.AppendUint32(b, 0) // one operation of arguments
+	c, err := wire.ParseCall(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.MinorVersion(); ok {
+		t.Error("procedure 1 of another program carries a COMPOUND's minor version")
+	}
+	if c.Tag() != nil {
+		t.Error("procedure 1 of another program carries a COMPOUND's tag")
+	}
+}
+
+// A COMPOUND cut after its tag still reports the tag it read: the minor
+// version is the field the record ran out of.
+func TestACutCompoundReportsItsTag(t *testing.T) {
+	b := binary.BigEndian.AppendUint32(nil, 0x11223344)
+	for _, v := range []uint32{0, 2, 100003, 4, 1} {
+		b = binary.BigEndian.AppendUint32(b, v)
+	}
+	b = append(b, make([]byte, 16)...) // AUTH_NONE credential and verifier
+	b = binary.BigEndian.AppendUint32(b, 3)
+	b = append(b, "tag"...)
+	b = append(b, 0) // the tag's padding and no minor version
+	c, err := wire.ParseCall(b)
+	if err == nil {
+		t.Fatal("a COMPOUND cut after its tag parses whole")
+	}
+	if tag := c.Tag(); string(tag) != "tag" {
+		t.Errorf("a COMPOUND cut after its tag reports %q, want the tag it read", tag)
+	}
+	if _, ok := c.MinorVersion(); ok {
+		t.Error("a COMPOUND cut after its tag carries a minor version")
+	}
+}
+
+// A call the parse did not accept names no credential and no verifier,
+// whatever its bytes would have read as: the router refuses it unread (RFC 21
+// section 11.5).
+func TestAnUnacceptedCallNamesNoCredential(t *testing.T) {
+	// An RPC version the parse stops at, before the credential.
+	v3 := binary.BigEndian.AppendUint32(nil, 0x11223344)
+	for _, v := range []uint32{0, 3, 1, 2, 3, 9, 9, 9} {
+		v3 = binary.BigEndian.AppendUint32(v3, v)
+	}
+	c, err := wire.ParseCall(v3)
+	if err != nil {
+		t.Fatalf("an RPC version 3 call: %v", err)
+	}
+	if fl, body := c.Credential(); fl != 0 || body != nil {
+		t.Errorf("an unaccepted call names a credential %d of %d bytes", fl, len(body))
+	}
+	if fl, body := c.Verifier(); fl != 0 || body != nil {
+		t.Errorf("an unaccepted call names a verifier %d of %d bytes", fl, len(body))
+	}
+
+	// A call whose credential runs past the record.
+	past := binary.BigEndian.AppendUint32(nil, 0x11223344)
+	for _, v := range []uint32{0, 2, 100003, 4, 0, 1} {
+		past = binary.BigEndian.AppendUint32(past, v)
+	}
+	past = binary.BigEndian.AppendUint32(past, 8) // a credential of 8 bytes, never sent
+	c, err = wire.ParseCall(past)
+	if err == nil {
+		t.Fatal("a credential cut by the record parses")
+	}
+	if fl, body := c.Credential(); fl != 0 || body != nil {
+		t.Errorf("an unaccepted call names a credential %d of %d bytes", fl, len(body))
+	}
+}
+
+// A record too short to address answers nothing, and reads no transaction ID:
+// XID is zero rather than a panic.
+func TestARecordTooShortToAddressReadsNoXID(t *testing.T) {
+	c, err := wire.ParseCall([]byte{1, 2, 3})
+	if err == nil || c != nil {
+		t.Fatalf("three bytes parse as %v (%v)", c, err)
+	}
+	if xid := c.XID(); xid != 0 {
+		t.Errorf("a record too short to address reads %#x", xid)
+	}
+}
+
 // A hand-written NULL call to MOUNT version 3 under AUTH_SYS parses too, with
 // no minor version read.
 func TestParseMountCall(t *testing.T) {

@@ -29,7 +29,9 @@ type fields struct {
 	verfAt, verfLen                int
 	tagAt, tagLen                  int
 	minor                          uint32
-	compound                       bool
+	compound                       bool // a COMPOUND whose prefix the parse entered
+	minorOK                        bool // its minor version, read whole
+	credOK, verfOK                 bool // the credential and verifier, read whole
 }
 
 // Call is a parsed call: a view over the record's bytes that allocates nothing
@@ -44,8 +46,9 @@ type Call []byte
 // 400 bytes (RFC 5531 section 8.2) and lies inside the record with its padding.
 //
 // A record too short for its transaction ID and message type is refused with
-// ErrUnaddressable, and a message of another type than a call with ErrNotCall;
-// both come back with no call. An RPC version other than 2 comes back with the
+// ErrUnaddressable, which comes back with no call; a message of another type
+// than a call comes back with ErrNotCall and the record, so its transaction
+// ID can still be read for a reply that says so. An RPC version other than 2 comes back with the
 // call and no error, its credential and verifier unread, so the router answers
 // RPC_MISMATCH rather than a decode error. A call whose later fields do not
 // decode comes back with its error (RFC 21 section 11.5).
@@ -90,17 +93,22 @@ func walk(c []byte) (fields, error) {
 	if f.credFlavour, f.credAt, f.credLen, err = r.opaqueAuth(); err != nil {
 		return f, err
 	}
+	f.credOK = true
 	if f.verfFlavour, f.verfAt, f.verfLen, err = r.opaqueAuth(); err != nil {
 		return f, err
 	}
+	f.verfOK = true
 	if isCompound(f) {
+		// The flag is set before the prefix is read: a COMPOUND cut past its
+		// tag still reports the tag it read.
+		f.compound = true
 		if f.tagAt, f.tagLen, err = r.opaque(); err != nil {
 			return f, fmt.Errorf("nfs/wire: a COMPOUND's tag: %w", err)
 		}
 		if f.minor, ok = r.u32(); !ok {
 			return f, fmt.Errorf("nfs/wire: %w: a COMPOUND's minor version", errPastRecord)
 		}
-		f.compound = true
+		f.minorOK = true
 	}
 	return f, nil
 }
@@ -111,43 +119,75 @@ func isCompound(f fields) bool {
 	return f.prog == ProgNFS && f.vers == VersNFS4 && f.proc == ProcCompound
 }
 
-// fields returns c's fields; its error cannot occur on a call ParseCall
-// accepted.
-func (c Call) fields() fields {
-	f, _ := walk(c)
-	return f
+// fields returns c's fields and the parse's error: an unaccepted call's
+// accessors read what the parse bounded before its refusal.
+func (c Call) fields() (fields, error) {
+	return walk(c)
 }
 
-// XID is the call's transaction ID.
-func (c Call) XID() uint32 { return binary.BigEndian.Uint32(c[0:]) }
+// XID is the call's transaction ID, and zero on a record too short to hold
+// one.
+func (c Call) XID() uint32 {
+	if len(c) < 4 {
+		return 0
+	}
+	return binary.BigEndian.Uint32(c)
+}
 
 // Type is the message type: a call, unless ParseCall refused it as one.
-func (c Call) Type() uint32 { return c.fields().typ }
+func (c Call) Type() uint32 {
+	f, _ := c.fields()
+	return f.typ
+}
 
 // RPCVersion is the call's RPC version, 2 for every call served.
-func (c Call) RPCVersion() uint32 { return c.fields().rpcvers }
+func (c Call) RPCVersion() uint32 {
+	f, _ := c.fields()
+	return f.rpcvers
+}
 
 // Program, Version and Procedure are the call's target.
-func (c Call) Program() uint32   { return c.fields().prog }
-func (c Call) Version() uint32   { return c.fields().vers }
-func (c Call) Procedure() uint32 { return c.fields().proc }
+func (c Call) Program() uint32 {
+	f, _ := c.fields()
+	return f.prog
+}
+
+func (c Call) Version() uint32 {
+	f, _ := c.fields()
+	return f.vers
+}
+
+func (c Call) Procedure() uint32 {
+	f, _ := c.fields()
+	return f.proc
+}
 
 // Credential is the call's credential: its flavour, and its body as a slice of
 // the record, never a copy.
 func (c Call) Credential() (flavour uint32, body []byte) {
-	f := c.fields()
+	f, err := c.fields()
+	if err != nil || !f.credOK {
+		// A call the parse did not accept, or one it did not read that far,
+		// names no credential, whatever its bytes would have read as: the
+		// router refuses it unread (RFC 21 section 11.5).
+		return 0, nil
+	}
 	return f.credFlavour, c[f.credAt : f.credAt+f.credLen]
 }
 
 // Verifier is the call's verifier, as a slice of the record.
 func (c Call) Verifier() (flavour uint32, body []byte) {
-	f := c.fields()
+	f, err := c.fields()
+	if err != nil || !f.verfOK {
+		// As the credential: a call that never read it names none.
+		return 0, nil
+	}
 	return f.verfFlavour, c[f.verfAt : f.verfAt+f.verfLen]
 }
 
 // Tag is a COMPOUND's tag, as a slice of the record; nil for any other call.
 func (c Call) Tag() []byte {
-	f := c.fields()
+	f, _ := c.fields()
 	if !f.compound {
 		return nil
 	}
@@ -156,8 +196,8 @@ func (c Call) Tag() []byte {
 
 // MinorVersion is a COMPOUND's minor version; ok is false for any other call.
 func (c Call) MinorVersion() (minor int, ok bool) {
-	f := c.fields()
-	return int(f.minor), f.compound
+	f, _ := c.fields()
+	return int(f.minor), f.minorOK
 }
 
 // reader reads the record's big-endian fields, refusing each that does not lie
