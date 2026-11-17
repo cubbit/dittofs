@@ -355,7 +355,8 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
 - **D14, the `identity.ntlm` rule is one function of the write's transaction**, called by the
   settings route, writing `Off` and clearing `Deleted` through E2's `ControlPlaneTx.SetNTLMOff(gen)`, its one writer
   (setting `Deleted` is RFC 18's step's, through `SetNTHashDeleted`); a provisioning apply calls the same function once the provisioning file exists (a
-  ledger row). Beside it the route calls the RFC 18 plan's epic 8's T8.8 rule, also a function of
+  ledger row). Beside it the route calls the `identity.netbios_name` validator RFC 18's epic 8 declares (its
+  "NetBIOS name while joined" row; T8.8 in that epic's breakdown), also a function of
   the write's transaction: a put or delete of `identity.netbios_name` is refused while
   `Installation.Join`, a tracked read, says joined. No marker.
 - **D15, `api_operations` and `api_operation_oldest_seconds` are read at scrape** from E2's running
