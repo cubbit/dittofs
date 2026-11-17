@@ -384,7 +384,7 @@ pkg/metadata/kvstore/
 
 **Subtask T3.3 estimate: 1.25 man-days.**
 
-- **Track:** A. **Depends on:** T3.1; #4567, for `State.Serial` in RFC 18 §2.6 (D2).
+- **Track:** A. **Depends on:** T3.1; #4567, for `State.Serial` in RFC 18 §2.6 (D2) and `Resolver.Current()` in §6.1 (D3).
 - **Covers:** R22, R23, R24, R28.
 - **Deliverables:** `Apply` raising `State.Serial` (RFC 18 §2.6 as #4567 amends it) when the `State` differs, under one lock across
   its load, compare, serial and store (D2), D2's marker; `Resolver.Current() uint64` in
