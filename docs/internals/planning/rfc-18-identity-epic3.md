@@ -122,7 +122,7 @@ number and title and not copied.
 | rule 4, profiling | T3.8 | the cache's tests, single flight included, run under the leak check; RFC 18 names no allocation budget |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T3.4, T3.5, T3.6, T3.8 | a squash proven by a refused file read, a `none` grant by a refused call, a disable by the next call refused, `identity.ntlm` off by an NTLM caller's next call refused; the key's completeness at the cache, its consumer |
 | rule 6, known failures shrink | none | no suite RFC 18 names keeps a `known.yaml`; every test lands green |
-| rule 7, v2 ignores v1 | T3.1 | `internal/vfs/admit/resolve.go`, which is v2, moves with `git mv` and is rewritten on RFC 18's types; nothing of v1's `pkg/identity` is read |
+| rule 7, v2 ignores v1 | T3.1, T3.6 | `internal/vfs/admit/resolve.go`, which is v2, is copied into `internal/identity` by T3.1 and rewritten on RFC 18's types, and T3.6 deletes the original once admission calls `Deps.Identity`; nothing of v1's `pkg/identity` is read |
 | rule 8, real dependencies for properties of those dependencies | none | no external system: the store is the memory KV that RFC 16's suite holds, and T3.5's grant read gains rows in that suite |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T3.1, T3.3, T3.4, T3.5, T3.6, T3.7, T3.8 | RFC 18's notes at their sites: §2.5's `decision:` and `ponytail:` (T3.4), §6.2's two `decision:` notes (T3.4, T3.5), §6.4's `decision:` and `ponytail:` (T3.5), §7.2's `ponytail:` (T3.8); this document's D1 to D10 markers at theirs |
 | rule 10, a test must be able to fail | all | every R row is held by a test named in its subtask that fails on its assertion, or by the compiler where named |
@@ -204,7 +204,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R39 | A well-known principal, anonymous or root, has no user record: resolution reads none for it, so neither is refused as disabled or deleted | invariant | RFC 16 §3 (`User`); §2.1 | T3.10 |
 | R40 | Each refusal counts in `identity_resolution_refusals_total{reason}`: `disabled`, `group_cap`, `store_unavailable`, `anonymous_missing`, `ntlm_off` | invariant | §9.2 | T3.1, T3.4, T3.10 |
 | R41 | A miss opens `identity.resolve`, a child of the service-call span, with the proof kind, the outcome and the principal's ID, never a name or SID | invariant | §9.2 | T3.1 |
-| R42 | A share whose policy names no `Anonymous` squashes to the well-known anonymous principal | invariant | §6.2, §2.1 | T3.10 |
+| R42 | A share whose policy names no `Anonymous` squashes to the well-known anonymous principal, and a `None` caller on a call that names no share, whose zero policy names none, maps to it too | invariant | §6.2, §6.1 (the installation's defaults), §2.1 | T3.10 |
 
 Which test holds each row is in its subtask's **Tests**. R1 is §10's "forwarded identity" unit
 row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight disable".
@@ -293,7 +293,7 @@ row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight di
 
 ```text
 internal/identity/
-  resolve.go          T3.1  Resolve: forwarded check, map, its refusals (git mv from internal/vfs/admit)
+  resolve.go          T3.1  Resolve: forwarded check, map, its refusals (rewritten from internal/vfs/admit's)
                       T3.4  squash, the closure, its cap, deny-only principals
                       T3.5  grants and flags
                       T3.10 root and anonymous as well-known principals; ntlm_off
@@ -313,7 +313,7 @@ internal/vfs/
   clients.go          T3.6  a client record's owner through Resolve (D5)
   opens.go            T3.6  a delete-on-close marker's admission through Deps.Identity
   shares.go           T3.2  Spell and Find through Deps.Names
-internal/vfs/admit/resolve.go     T3.1  removed
+internal/vfs/admit/resolve.go     T3.6  removed
 internal/identity/identitymem/    T3.6  the real server over a given store, for vfstest/memory
 pkg/vfs/vfstest/memory/memory.go  T3.6  Deps.Identity, Auth and Names from identitymem
 pkg/identity/arch_test.go         T3.6  only vfstest/memory imports identitymem, with its seed
@@ -331,8 +331,9 @@ pkg/metadata/kvstore/
 
 - **Track:** A. **Depends on:** S1.
 - **Covers:** R1, R2, R3, R4, R5, R6, R25, R40, R41.
-- **Deliverables:** `internal/vfs/admit/resolve.go` moved with `git mv` into
-  `internal/identity`, filling E1's stubbed `(*Server).Resolve(ctx, identity.Identity,
+- **Deliverables:** `internal/vfs/admit/resolve.go` copied into `internal/identity` and
+  rewritten there, the original kept until T3.6, since `vfs`'s admission, opens and client
+  records still call it and `vfs` may not import `internal/identity` (E1's T1.5); filling E1's stubbed `(*Server).Resolve(ctx, identity.Identity,
   entity.SharePolicy, narrowed identity.ReadOnlyCause) (*identity.Caller, error)`, as #4455 amended
   RFC 18 §6.1: the forwarded check first
   (R1), then the map step over the store's `Principals` view: evidence's principal for
@@ -360,7 +361,7 @@ pkg/metadata/kvstore/
   each call, allowed because the call reaching the store is the requirement (catches a table of
   callers kept in identity, R25). R41's span is checked with OpenTelemetry's in-memory span
   recorder, a sink of outputs.
-- **Rules:** rule 7 (`git mv`), rule 9 (D5, D6, D7's markers).
+- **Rules:** rule 7 (the copy; T3.6 deletes the original), rule 9 (D5, D6, D7's markers).
 
 ### T3.2 `Spell` and `Find` routed to `Names`
 
@@ -487,6 +488,7 @@ pkg/metadata/kvstore/
   makes a second read and T3.6 adds no `Principals` method; `S‖id‖gv` as RFC 23's plan's epic 2 writes it (T2.3 for `SetGrant` and
   `DeleteGrant` and in each principal deletion), already on `feat/storage-v2`; admission's
   step 4 calling `vfs.Deps.Identity.Resolve`, `vfs.New` refusing a `Deps` without it;
+  `internal/vfs/admit/resolve.go` deleted, its last callers moved (T3.1 copied it);
   `authz.Caller` rebuilt on `identity.Caller`, converted to `entity.Identity` for the
   chokepoint, carrying `Caller.Group` (zero for every caller this epic resolves, since `Claimed`
   is refused, D7) and the narrowing cause, folded onto `entity`'s three (`ReadOnlyGrant` to
@@ -620,7 +622,8 @@ pkg/metadata/kvstore/
 - **Covers:** R8, R24, R40, R39, R42.
 - **Deliverables:** `Squash = root` replacing a caller mapped to E2's well-known root;
   root unsquashed `Privileged`; a share's `Anonymous` defaulting to the well-known anonymous
-  (`entity.AnonymousPrincipal`, 0x0C) where its policy names none; no user record read for a well-known principal; every
+  (`entity.AnonymousPrincipal`, 0x0C) where its policy names none, the zero policy of a call
+  that names no share included (§6.1's installation defaults); no user record read for a well-known principal; every
   `Secret` identity refused while `State.Settings`' `NTLM` key, `identity.ntlm`, is off, reason
   `ntlm_off`.
 - **Acceptance criteria:**
@@ -637,7 +640,9 @@ pkg/metadata/kvstore/
   call on a share whose `Anonymous` is the well-known one is served, the fault wrapper failing
   every user read of it (catches a user read for a principal that has none, R39); a `None`
   caller on a share whose policy names no `Anonymous`: `Principal` is anonymous (0x0C) and its
-  access the everyone grant (catches a zero `Anonymous` left unresolved, R42).
+  access the everyone grant (catches a zero `Anonymous` left unresolved, R42); a `None` caller
+  on a call that names no share: `Mapped` is anonymous (0x0C), not the zero principal (catches
+  the default applied only to a share's policy, R42).
 
 ## 7. Order of work
 
