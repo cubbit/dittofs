@@ -174,6 +174,30 @@ func ofLive[T any](r kv.Reader, v T, account entity.Principal, found bool, err e
 	return v, true, nil
 }
 
+// ofLiveAccount is seq when account is live as the listing starts, and
+// empty otherwise.
+//
+// ponytail: the account is checked once, not per page, so a mark landing
+// mid-listing still lets the later pages through until the deletion's batch
+// drops the rows. Check it in each page's view if a listing must stop at
+// the mark.
+func ofLiveAccount[T any](ctx context.Context, db kv.KV, account entity.Principal, seq iter.Seq2[T, error]) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		var ok bool
+		if err := db.View(ctx, func(r kv.Reader) (err error) {
+			ok, err = live(r, account)
+			return err
+		}); err != nil {
+			var zero T
+			yield(zero, err)
+			return
+		}
+		if ok {
+			seq(yield)
+		}
+	}
+}
+
 // accountLive refuses a write for an account deleted or marked deleted. Its
 // read is tracked, so the write conflicts with the mark and with the batch
 // that deletes the record.
@@ -184,7 +208,10 @@ func accountLive(tx kv.Txn, account entity.Principal) error {
 	return nil
 }
 
-func (c controlTx) Session(id [16]byte) (entity.Session, bool, error) { return sessionIn(c.tx, id) }
+func (c controlTx) Session(id [16]byte) (entity.Session, bool, error) {
+	s, found, err := sessionIn(c.tx, id)
+	return ofLive(c.tx, s, s.Account, found, err)
+}
 
 func (c controlTx) SessionByRefresh(hash [32]byte) (entity.Session, bool, error) {
 	return sessionByRefreshIn(c.tx, hash)
@@ -291,7 +318,10 @@ func deleteRows(tx kv.Txn, rows [][]byte) error {
 	return nil
 }
 
-func (c controlTx) APIToken(id [16]byte) (entity.APIToken, bool, error) { return tokenIn(c.tx, id) }
+func (c controlTx) APIToken(id [16]byte) (entity.APIToken, bool, error) {
+	t, found, err := tokenIn(c.tx, id)
+	return ofLive(c.tx, t, t.Account, found, err)
+}
 
 func (c controlTx) APITokenByHash(hash [32]byte) (entity.APIToken, bool, error) {
 	return tokenByHashIn(c.tx, hash)
@@ -433,17 +463,17 @@ func (c ControlPlane) SessionByRefresh(ctx context.Context, hash [32]byte) (s en
 	return s, found, err
 }
 
-// Sessions lists an account's sessions.
+// Sessions lists an account's sessions; a deleted or marked account has none.
 func (c ControlPlane) Sessions(ctx context.Context, account entity.Principal) iter.Seq2[entity.Session, error] {
 	prefix := accountSessionsPrefix(account)
-	return pages(ctx, c.s.kv, prefix, nil, func(r kv.Reader, row kv.KeyValue) (entity.Session, error) {
+	return ofLiveAccount(ctx, c.s.kv, account, pages(ctx, c.s.kv, prefix, nil, func(r kv.Reader, row kv.KeyValue) (entity.Session, error) {
 		id := [16]byte(row.Key[len(prefix):])
 		b, err := r.Get(sessionKey(id))
 		if err != nil {
 			return entity.Session{}, err
 		}
 		return decodeSession(id, b)
-	})
+	}))
 }
 
 // PutSession creates a session.
@@ -488,17 +518,17 @@ func (c ControlPlane) APITokenByHash(ctx context.Context, hash [32]byte) (t enti
 	return t, found, err
 }
 
-// APITokens lists an account's tokens.
+// APITokens lists an account's tokens; a deleted or marked account has none.
 func (c ControlPlane) APITokens(ctx context.Context, account entity.Principal) iter.Seq2[entity.APIToken, error] {
 	prefix := accountTokensPrefix(account)
-	return pages(ctx, c.s.kv, prefix, nil, func(r kv.Reader, row kv.KeyValue) (entity.APIToken, error) {
+	return ofLiveAccount(ctx, c.s.kv, account, pages(ctx, c.s.kv, prefix, nil, func(r kv.Reader, row kv.KeyValue) (entity.APIToken, error) {
 		id := [16]byte(row.Key[len(prefix):])
 		b, err := r.Get(tokenKey(id))
 		if err != nil {
 			return entity.APIToken{}, err
 		}
 		return decodeToken(id, b)
-	})
+	}))
 }
 
 // PutAPIToken creates a token with its hash and account index rows.
