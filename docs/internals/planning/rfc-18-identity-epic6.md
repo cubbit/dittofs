@@ -101,7 +101,8 @@ directory step; the benchmarks; the NetBIOS cross-check and the section's write 
   T6.5's test call.
 - The computer account's LDAP: E7's T7.6 moves v1's join code into this epic's
   `internal/identity/directory` and T7.7 completes it, as concrete functions over `DialTLS`
-  outside `Conn` (E7's D3), so `Conn` and the in-memory directory gain nothing.
+  outside `Conn` (E7's D3), so `Conn` and the in-memory directory gain nothing; when the join
+  wants a double, T6.4's conformance suite is its upgrade path.
 - The rows "directory deadline", "disabled directory account", "PAC bound to the record" and "no
   local password for a directory user": E8. This epic builds the bound and the reads they check
   (T6.9, T6.11). "deny-only lookup error": E3's T3.4 and E5's T5.7.
@@ -404,13 +405,13 @@ pkg/settings/
   `x509negativeserial` godebug are gone; `docs/guide/identity.md` describes the network and the
   CA. Consumed by T6.4's and T6.6's suite runs in `integration/ad-dc`, and by E5's and E7's
   fixture parts. This subtask is also the one owner of moving the fixture to `feat/storage-v2`,
-  which E5's T5.1 and E7's T7.2 cite. The three branches are on `feat/storage-v2` and open there:
+  which E5's T5.1 and E7's T7.2 cite. The three branches are merged on `feat/storage-v2`:
   `test/ad-dc-network-tls-v2` (#4420), with E5's `test/ad-dc-kerberos-v2` (#4421) and E7's
-  `test/ad-dc-join-v2` (#4422) stacked on it (not ancestors of each other). #4420 also lifts the
+  `test/ad-dc-join-v2` (#4422) stacked on it (not ancestors of each other). #4420 lifted the
   `V2` skip that dropped the `integration/ad-dc` cell from the plan job's select in
   `.github/workflows/tests.yml`, since its tests no longer drive v1's SMB adapter. What is left is
-  merging #4420, then #4421 and #4422, the second of those rebased on the first; until #4420 merges,
-  no fixture test runs on `feat/storage-v2`.
+  the close-out: the `integration/ad-dc` cell green on `feat/storage-v2`'s plan job, and the
+  subtask marked done.
 - **Acceptance criteria:**
   - No test under `test/integration/ad-dc` sets `InsecureSkipVerify`.
   - Two runs on one Docker host use disjoint names.
@@ -895,7 +896,7 @@ a directory principal resolves end to end.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T6.1 | 1.5 | — | the fixture's TLS part, open on `feat/storage-v2` as #4420 with #4421 and #4422 stacked on it; may be open beside PR 2 |
+| 1 | T6.1 | 1.5 | — | the fixture's TLS part, merged (#4420, with #4421 and #4422 stacked on it); its close-out may land beside PR 2 |
 | 2 | T6.2, T6.3 | 2.75 | — | the mint path E5 waits for, and the record every later subtask reads |
 | 3 | T6.4, T6.5, T6.6 | 8.25 | PR 1, PR 2 | the LDAP side whole: connection, in-memory directory and suite, client, groups, held to Samba |
 | 4 | T6.7, T6.8 | 4.5 | PR 3 | the cache and its outage mode, one review of the grace |
@@ -983,4 +984,4 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
   it names the server's package, not the directory's, so the rule needs no change, but T6.4
   checks it.
 - The fixture branches were cut from `develop`; as asked in review, T6.1 moved all three onto
-  `feat/storage-v2` once #4334 had merged, as #4420 to #4422, open there.
+  `feat/storage-v2` once #4334 had merged, as #4420 to #4422, merged there.
