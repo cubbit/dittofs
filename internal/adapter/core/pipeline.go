@@ -34,6 +34,7 @@ type shared struct {
 	mu       sync.Mutex
 	tables   atomic.Pointer[map[*OpTable]*tableSeries]
 	labels   atomic.Pointer[map[string]*labelSeries]
+	panics   map[[2]string]*lineLimiter // by protocol and operation, under mu
 	clock    clock
 	log      *slog.Logger
 	tracer   trace.Tracer // nil: no spans
@@ -43,7 +44,7 @@ type shared struct {
 // d.Metrics, or recording nothing without one, on the runtime's clock,
 // d.Logger, or a logger that discards, and d.Tracer.
 func newShared(d adapter.Deps) *shared {
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer}
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, panics: map[[2]string]*lineLimiter{}}
 	if sh.log == nil {
 		sh.log = slog.New(slog.DiscardHandler)
 	}

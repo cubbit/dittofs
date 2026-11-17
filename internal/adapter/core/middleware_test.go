@@ -301,6 +301,91 @@ func TestRecoveryPassesAnErrorThrough(t *testing.T) {
 	}
 }
 
+// An operation's panic writes its error line at most once a minute, across
+// the protocol's tables and a compound row's members, the next line carrying
+// the count suppressed since the last, while the panic counter counts every
+// panic (RFC 25 §5.2). Another operation's panic writes its own line, and so
+// does the same operation's under another protocol.
+func TestAPanicLineIsWrittenOnceAMinutePerOperation(t *testing.T) {
+	tr := newTraced(t, false)
+	v2 := routed(t)[1]
+	v2s, err := tr.sh.Table(v2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alt := *routed(t)[1]
+	alt.Protocol = "alt"
+	alts, err := tr.sh.Table(&alt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2Echo, other := v2.Ops[testproto.OpEcho], v2.Ops[testproto.OpPutFH]
+	if v2Echo == nil || other == nil {
+		t.Fatal("version 2 has no Echo or no PutFH")
+	}
+	panics := func(ts *core.TableSeries, op *core.Op) {
+		t.Helper()
+		r := request(func(context.Context, *core.Request) error { panic("boom") })
+		if err := ts.Chain(op)(context.Background(), r); !errors.Is(err, core.ErrPanicked) {
+			t.Fatalf("a panic is answered %v, want ErrPanicked", err)
+		}
+	}
+	type line struct {
+		Msg, Op    string
+		Suppressed int64
+	}
+	lines := func() []line {
+		t.Helper()
+		var ls []line
+		for _, s := range strings.Split(strings.TrimSpace(tr.logged.String()), "\n") {
+			var l line
+			if err := json.Unmarshal([]byte(s), &l); err != nil {
+				t.Fatalf("logged %q: %v", s, err)
+			}
+			ls = append(ls, l)
+		}
+		tr.logged.Reset()
+		return ls
+	}
+	counted := func() float64 {
+		t.Helper()
+		got, _ := scrape(t, tr.m)
+		return got["adapter_handler_panics_total{op="+strings.ToLower(tr.topEcho.Name)+",protocol="+testproto.Name+"}"]
+	}
+	const msg = "handler panicked"
+	echo := tr.topEcho.Name
+
+	panics(tr.top, tr.topEcho)
+	tr.clk.Advance(59 * time.Second)
+	panics(tr.members, tr.mEcho)
+	panics(v2s, v2Echo)
+	panics(v2s, other)
+	panics(alts, alt.Ops[testproto.OpEcho])
+	if got, want := lines(), []line{{msg, echo, 0}, {msg, other.Name, 0}, {msg, echo, 0}}; !slices.Equal(got, want) {
+		t.Errorf("three %s panics, one %s and one %s under another protocol within the minute wrote %+v, want %+v", echo, other.Name, echo, got, want)
+	}
+	if n := counted(); n != 3 {
+		t.Errorf("three %s panics are counted %v, want 3", echo, n)
+	}
+
+	tr.clk.Advance(time.Second)
+	panics(tr.top, tr.topEcho)
+	if got, want := lines(), []line{{msg, echo, 2}}; !slices.Equal(got, want) {
+		t.Errorf("a %s panic a minute after its line wrote %+v, want %+v", echo, got, want)
+	}
+	if n := counted(); n != 4 {
+		t.Errorf("four %s panics are counted %v, want 4", echo, n)
+	}
+
+	tr.clk.Advance(30 * time.Second)
+	panics(tr.members, tr.mEcho)
+	tr.clk.Advance(30 * time.Second)
+	panics(tr.top, tr.topEcho)
+	if got, want := lines(), []line{{msg, echo, 1}}; !slices.Equal(got, want) {
+		t.Errorf("the next minute's %s line wrote %+v, want %+v, the one since the last line", echo, got, want)
+	}
+}
+
 var errHandler = errors.New("the handler's own error")
 
 // traced is a server on a recording tracer, a test clock and a registry of

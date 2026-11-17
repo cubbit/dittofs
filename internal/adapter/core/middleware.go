@@ -150,22 +150,26 @@ func (sh *shared) deadline(next Call) Call {
 // counted as an unmapped error.
 var errPanicked = errors.New("core: handler panicked")
 
-// recovery turns op's panic into errPanicked, logged at error with the
-// operation, the panic value's type and the stack, and counted under op in
-// ts. The value is the handler's own text and may hold a name a user chose,
-// which RFC 25 §5.4 keeps below Info, so it is logged at debug.
+// recovery turns op's panic into errPanicked, counted under op in ts and
+// logged at error with the operation, the panic value's type and the stack,
+// at most once a minute per operation with the count suppressed since the
+// last line. The value is the handler's own text and may hold a name a user
+// chose, which RFC 25 §5.4 keeps below Info, so it is logged at debug.
 //
-// decision: every panic writes its error line, as RFC 20 §4.2 asks, though
-// RFC 25 §5.2 writes a noisy subject once a minute. The ceiling: a client
-// that can make a handler panic can make it write a stack per request.
-// Overturned if §4.2 takes RFC 25's rate, one line per operation a minute
-// with the rest counted, which the panic counter already does.
+// decision: an operation's panic writes its error line once a minute, as
+// RFC 25 §5.2 writes a noisy subject, where RFC 20 §4.2 asks a line per
+// panic: a client that can make a handler panic would otherwise make it
+// write a stack per request. The panic counter counts every one. Overturned
+// if an incident needs every panic's stack.
 func (sh *shared) recovery(op *Op, ts *tableSeries) Middleware {
+	line := ts.panicLines[op.Code]
 	return func(next Call) Call {
 		return func(ctx context.Context, r *Request) (err error) {
 			defer func() {
 				if p := recover(); p != nil {
-					sh.log.ErrorContext(ctx, "handler panicked", "op", op.Name, "panic_type", fmt.Sprintf("%T", p), "stack", string(debug.Stack()))
+					if ok, suppressed := line.take(sh.clock.Now()); ok {
+						sh.log.ErrorContext(ctx, "handler panicked", "op", op.Name, "panic_type", fmt.Sprintf("%T", p), "suppressed", suppressed, "stack", string(debug.Stack()))
+					}
 					sh.log.DebugContext(ctx, "handler panicked", "op", op.Name, "panic", p)
 					ts.panicked(op)
 					err = errPanicked
@@ -174,6 +178,46 @@ func (sh *shared) recovery(op *Op, ts *tableSeries) Middleware {
 			return next(ctx, r)
 		}
 	}
+}
+
+// panicLineEvery is how often an operation's panic writes its error line
+// (RFC 25 §5.2).
+const panicLineEvery = time.Minute
+
+// lineLimiter decides when a noisy subject's line is written: the first,
+// then the first a minute or more after the last, with the count of those
+// in between.
+type lineLimiter struct {
+	mu         sync.Mutex
+	last       time.Time
+	suppressed int64
+}
+
+// take reports whether a line at now is written, and how many were
+// suppressed since the last.
+func (l *lineLimiter) take(now time.Time) (bool, int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.last.IsZero() && now.Sub(l.last) < panicLineEvery {
+		l.suppressed++
+		return false, 0
+	}
+	n := l.suppressed
+	l.last, l.suppressed = now, 0
+	return true, n
+}
+
+// panicLine is the limiter of op's panic line under protocol p, one per
+// operation across a protocol's tables and a compound row's members. The
+// caller holds sh.mu.
+func (sh *shared) panicLine(p, op string) *lineLimiter {
+	k := [2]string{p, op}
+	if l, ok := sh.panics[k]; ok {
+		return l
+	}
+	l := &lineLimiter{}
+	sh.panics[k] = l
+	return l
 }
 
 // clockCtx is a context whose deadline is on a clock: its Deadline, Done and

@@ -188,7 +188,8 @@ type tableSeries struct {
 	chains                                          map[uint32]Call // by operation code
 	unmapped, heldRequests, heldBytes, holdRefusals adder
 	splits                                          [splits]adder
-	panics                                          map[uint32]adder // by operation code
+	panics                                          map[uint32]adder        // by operation code
+	panicLines                                      map[uint32]*lineLimiter // by operation code
 	mapped                                          [len(serviceErrors)]adder
 }
 
@@ -311,12 +312,14 @@ func (sh *shared) newTable(p string, t *OpTable, member bool) *tableSeries {
 		heldBytes:      sh.fam[vHeldBytes](p),
 		holdRefusals:   sh.fam[vHoldRefusals](p),
 		panics:         make(map[uint32]adder, len(t.Ops)),
+		panicLines:     make(map[uint32]*lineLimiter, len(t.Ops)),
 	}
 	for r, reason := range splitReasons {
 		ts.splits[r] = sh.fam[vChainSplits](p, reason)
 	}
 	for code, op := range t.Ops {
 		ts.panics[code] = sh.fam[vPanics](p, strings.ToLower(op.Name))
+		ts.panicLines[code] = sh.panicLine(p, op.Name)
 	}
 	for i, e := range serviceErrors {
 		ts.mapped[i] = sh.fam[vStatusMapped](p, e.name)
