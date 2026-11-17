@@ -11,9 +11,10 @@ refusals; [RFC 24](../rfcs/rfc-24-resources.md) §3.2's cap before the reservati
 in several fragments. Cited, not owned: RFC 20 §4.4 (identity, which the protocols' plans
 build), §6.10's codec micro row (the operation codecs' gates), RFC 22 §3.1 and §3.3
 (`NEGOTIATE` and credits), RFC 24 §3.1 (buffer classes); MS-SMB2 2.1, 2.2.1 and 2.2.2, and
-RFC 5531 §9, §11 and Appendix A, for the bytes.
+RFC 5531 §9, §11 and Appendix A, for the bytes. For T6.5 and T6.6, the generated codecs: Marco's
+amendment of RFC 20, 21 and 22 (§1.3), whose tag rules they follow, MS-SMB2 2.2 and RFC 4506.
 **Track:** C.
-**Epic 6 estimate: 6 subtasks, 13.75 man-days.**
+**Epic 6 estimate: 8 subtasks, 22.75 man-days.**
 **Depends on:** **S2, `testproto` and the import test in CI**: E1's frozen surface of `core`,
 `pkg/adapter/settings` and the two public `New` stubs; E2's import test with its `wire` rule,
 `adaptertest.CheckLeaks` and the `unit/adapter-allocs` cell; E5's T5.7 and T5.2a, which gave
@@ -24,13 +25,15 @@ runner, T6.3b and T6.4b: E4's reader brings `Framer.BodyLen`'s `last` and `MaxRe
 T5.1a and T5.9 the `Stages.Errors`, `Stages.Protocol` and `OpTable.Protocol` that `NewConn`
 and the tables set. **The RFC 20 amendment, #4478**, which settles §9's
 G1 to G10. **The RFC 20 amendment #4533**, whose G7 has `Validate` refuse a TLS mode other than
-off until `StartTLS`, for T6.4b.
+off until `StartTLS`, for T6.4b. **Marco's amendment** (§1.3), for T6.5 and T6.6, and E5's
+`core.Row`, beside its T5.1a, for T6.3b and T6.4b.
 **Blocks:** the RFC 22 plan: its epic 2, whose handler harness decodes T6.1's header and which
 starts at RFC 20's S2 with T6.1; its SMB scaffold point, which is RFC 20's S3 with T6.3b; its
 T1.2, which moves T6.3b's empty table to `smb/ops`; its T3.1, T3.4 and T3.6, which extend
 T6.1's codec and T6.3a's header stage. E7, which builds each adapter through `New`. E8, whose
 T8.1 checks that `unit/adapter-allocs` runs this epic's gates. RFC 23's plan, whose O7 names
-`New`'s binding on `Port` here.
+`New`'s binding on `Port` here. The RFC 22 plan's first command and the RFC 21 plan's first
+procedure, written against T6.5's and T6.6's codecs.
 
 ---
 
@@ -59,18 +62,21 @@ package whose stages adapt those codecs to `core` and route every request to a t
 - one row declared in a test file is served end to end through each protocol's stages, as a
   command or a procedure of the protocols' plans will be;
 - RFC 20 §7.1's import test, with its `wire` rule, and the new-package check pass on the six
-  new packages.
+  new packages, and on the generators T6.5 and T6.6 add;
+- each protocol has its one codec, generated from struct tags (T6.5, T6.6), with a golden-vector
+  suite and a fuzz target checking it against a second decoder, and the test-only rows of T6.3b
+  and T6.4b are written against it.
 
-**What an SMB command is then written against.** As RFC 20 §2.5 and §4.8 lay it out: its codec
-in `smb/wire/<command>.go`, beside the header codec, with its golden vectors and fuzz target
-there; its row and handler in `smb/ops/<command>.go`, the row joining the codec pair and the
-handler with `core.Bind`; and one line in the table's row list. T6.3b's test-only row is that
-shape, in one test file. Before the first command, the RFC 22 plan's epic 1 moves T6.3b's empty
+**What an SMB command is then written against.** As RFC 20 §2.5 and §4.8 lay it out: its request
+and response structs and its handler in `smb/ops/<command>.go`, the structs tagged for the
+protocol's one generated codec, and one `core.Row` line in the table's row list, which takes the
+codec from the structs' types. Golden vectors and the fuzz target belong to the codec, not to the
+command. T6.3b's test-only row is that shape, in one test file. Before the first command, the RFC 22 plan's epic 1 moves T6.3b's empty
 table to `smb/ops` and adds the request state, its epic 2 adds the handler harness over T6.1's
 header, and its epic 3 adds `NEGOTIATE`, the error table and the `Security`, `Flow`, `Replay`
 and `HoldCodec` stages, which `NewConn` then sets. No command file frames a record, decodes a
 header, routes or answers a refusal: this epic and `core` do. An NFS procedure is written the
-same way against `nfs/wire` and T6.4b's tables.
+same way, against the XDR codec and T6.4b's tables.
 
 ### 1.1 In scope
 
@@ -78,7 +84,9 @@ same way against `nfs/wire` and T6.4b's tables.
 `internal/adapter/nfs/wire`, `internal/adapter/nfs/protocol` and `internal/adapter/nfs/nfs.go`,
 each with its tests; the bodies of `pkg/adapter/smb.New` and `pkg/adapter/nfs.New`, each a call
 into its implementation, and their tests moved from "not built" to a served adapter; each
-`wire` package's golden vectors and fuzz target; each header stage's allocation gate,
+`wire` package's golden vectors and fuzz target; each `wire` package's generated codec, its
+runtime, its generator, its golden-vector suite and its fuzz target (T6.5, T6.6); each header
+stage's allocation gate,
 registered in `unit/adapter-allocs`. The edits §9 proposes to the program's implementation
 plan and to the RFC 22 plan are made by other pull requests, not this epic.
 
@@ -111,8 +119,10 @@ plan and to the RFC 22 plan are made by other pull requests, not this epic.
   and its totality test: the ledger's rows "NFSv3 procedures; NFSv4.0, 4.1 and 4.2 operations;
   the `ops/` tables", the row for SMB's commands and `ioctl/`, and "each protocol's error-table
   rows and its totality test".
-- Operation codecs, their golden vectors and their 0-allocation gates, and their round trips:
-  the ledger's row "operation codecs, their golden vectors". The scripted client and a shared
+- Each operation's tagged structs, its handler and its row, and the 0-allocation gates of
+  `READ`, `WRITE`, `GETATTR` and `QUERY_INFO`: the ledger's row "operation codecs, their golden
+  vectors", which §9 proposes to reword now that the codec they are written against is this
+  epic's (T6.5, T6.6). The scripted client and a shared
   golden helper: the row "scripted client (§8.2)"; the loopback tests here write and read their
   few messages with a helper in the test file. The import test's 800-line allowlist: the row
   "import test: entry-method call sites (§4.10, §7.1) and the 800-line allowlist (§2.5)".
@@ -154,6 +164,9 @@ plan and to the RFC 22 plan are made by other pull requests, not this epic.
 - **Needs E4, Needs E5**: fields each subtask of §6 carries beside **Depends on**, since E4 has
   no subtask ids: what of either must have landed before the subtask can.
 - **G1 to G10**: the RFC gaps of §9, each settled in the RFC section §9 names.
+- **Marco's amendment**: the architect's amendment of RFC 20, 21 and 22, in a pull request
+  against develop (to be linked), which states that a command is its structs, its handler and
+  one row, that each protocol has one codec generated from struct tags, and `core.Row`.
 
 ## 2. How the general rules apply
 
@@ -164,7 +177,7 @@ cited by number and title, and how it applies here or why it does not.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests); [Verifying a change](../../../CLAUDE.md#verifying-a-change)) | all | `wire` is tested on golden vectors and a fuzz target, with no double. Each stage is tested alone at the interface `core` calls (`core.Framer`, `core.HeaderCodec`, `core.Router`, the stages' `ErrorTable`), with no socket. `New` is tested over loopback through `core`'s real pipeline, on `memory.New` and real budgets. A range is asserted on a connection accepted after the settings that set it. No `core` test imports `smb` or `nfs` |
-| rule 2, fuzz tests where relevant | T6.1, T6.2 | one record-level target per `wire` package, which runs every decoder of a peer's bytes in turn: the Direct TCP header and the SMB2 headers of a chain; the record mark, the RPC call header, its credential and verifier, the `AUTH_SYS` body and the `COMPOUND` prefix. Seeded with the golden vectors and the reference captures. The property: accepted or refused, never a panic, never a length past the cap or the record accepted, and an accepted header's reply carries its IDs |
+| rule 2, fuzz tests where relevant | T6.1, T6.2, T6.5, T6.6 | `FuzzCodec` per generated codec, checking its decoder against a second one written by hand (T6.5, T6.6); and one record-level target per `wire` package, which runs every decoder of a peer's bytes in turn: the Direct TCP header and the SMB2 headers of a chain; the record mark, the RPC call header, its credential and verifier, the `AUTH_SYS` body and the `COMPOUND` prefix. Seeded with the golden vectors and the reference captures. The property: accepted or refused, never a panic, never a length past the cap or the record accepted, and an accepted header's reply carries its IDs |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T6.3b, T6.4b | protocol code records nothing; it names the labels `core` records under: `Stages.Protocol` `smb` and `nfs3`, `OpTable.Protocol` `smb`, `nfs3` and `nfs4` (RFC 20 §10.1). Each loopback test reads one series `core` records under the label it expects |
 | rule 4, leaks and allocations | T6.3a, T6.4a, T6.3b, T6.4b | each protocol's header stage, the header codec `core` calls, decodes and encodes at 0 allocations, a chained SMB member past the first at one (D1), NFS's gate covering `Route`'s credential check too, at one allocation, its own `Request`; each gate registered in `unit/adapter-allocs` by the subtask that writes it. Every loopback test ends with `CheckLeaks` |
 | rule 5, v2 ignores v1 | all | nothing is lifted: RFC 20 Appendix B marks none of v1's framing, headers or routing keep. E1's TLS loading in `nfs.New` goes with the public stub: until `StartTLS`, `Validate` refuses every mode but off (RFC 20 §3.6), so there is nothing to load (T6.4b) |
@@ -172,7 +185,7 @@ cited by number and title, and how it applies here or why it does not.
 | rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | all | each decision of §4 leaves the marker it names at its code site. None of RFC 20's own notes that the rule lists is this epic's |
 | rule 8, a test must be able to fail ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests)) | all | each test in §6 names the change that fails it; a golden vector is written from the specification or cut from a reference capture, never produced by the codec under test |
 | rule 9, a symbol is exported only if RFC 20's interface uses it | all | the public surface does not change: `smb.golden` and `nfs.golden` keep their one line. `core` gains `Framer.Frame` and `HeaderCodec.Args` and `ReplyLen` with E5's T5.1a, and `Framer.BodyLen`'s `last` and `MaxRecord` with E4's reader, as RFC 20 §4.7 is amended; this epic implements them and exports nothing in `core`. Inside `internal/adapter/<protocol>`, `wire` exports what `protocol` calls, `protocol` exports `Protocol`, `New` and, for NFS, `Tables` (RFC 20 §4.8), which `smb.go` and `nfs.go` call, and each `New` returns the `*core.Server` its public `New` hands back. A `wire` accessor nothing here calls is exported by the RFC 21 or RFC 22 plan's subtask that first reads it |
-| rule 10, each subtask creates only what it declares | all | no `ops/`, `callbacks.go`, `gss/`, `translate/` or `dcerpc/`; no request encoder in `wire`, since nothing in this epic sends a request; the empty tables live in `smb.go` and `nfs.go`; each new package lands with a test that can fail, as `lint-repo`'s new-package check requires |
+| rule 10, each subtask creates only what it declares | all | no `ops/`, `callbacks.go`, `gss/`, `translate/` or `dcerpc/`; no request encoder in `wire`'s header codecs, since nothing in this epic sends a request; the empty tables live in `smb.go` and `nfs.go`; each new package lands with a test that can fail, as `lint-repo`'s new-package check requires |
 
 ## 3. Requirements and invariants
 
@@ -191,11 +204,11 @@ cited by number and title, and how it applies here or why it does not.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R5 | A codec does no I/O, calls no service, reads no clock and consults no setting; what it needs is passed in | MUST NOT | §5.1 | T6.1, T6.2 |
-| R6 | `wire` holds the codecs and nothing else: no state, no I/O, no import beyond the standard library and `pkg/resources`; every golden vector and fuzz target is there | invariant | §2.5 | T6.1, T6.2 |
+| R5 | A codec does no I/O, calls no service, reads no clock and consults no setting; what it needs is passed in | MUST NOT | §5.1 | T6.1, T6.2, T6.5, T6.6 |
+| R6 | `wire` holds the codecs and nothing else: no state, no I/O, no import beyond the standard library and `pkg/resources`; every golden vector and fuzz target is there | invariant | §2.5 | T6.1, T6.2, T6.5, T6.6 |
 | R7 | Operation codes, status codes, flag bits and structure sizes are taken from the specification once, in one place per protocol, and every use names them | invariant | §5.1 | T6.1, T6.2 |
-| R8 | A decoder checks every length, count and offset against the bytes remaining and the protocol's cap before it allocates or reads: an RPC credential's or verifier's body (at most 400 bytes), an `AUTH_SYS` machine name (at most 255 bytes) and group list (at most 16), a `COMPOUND`'s tag, an SMB2 `NextCommand` | MUST | §5.2, §9 A8; RFC 21 §11.1; RFC 5531's `opaque_auth`; MS-SMB2 2.2.1 | T6.1, T6.2 |
-| R9 | A decoder refuses trailing bytes the protocol forbids and accepts those it allows: SMB's 8-byte alignment of a chained message, XDR's 4-byte padding of an opaque | invariant | §5.2 | T6.1, T6.2 |
+| R8 | A decoder checks every length, count and offset against the bytes remaining and the protocol's cap before it allocates or reads: an RPC credential's or verifier's body (at most 400 bytes), an `AUTH_SYS` machine name (at most 255 bytes) and group list (at most 16), a `COMPOUND`'s tag, an SMB2 `NextCommand` | MUST | §5.2, §9 A8; RFC 21 §11.1; RFC 5531's `opaque_auth`; MS-SMB2 2.2.1 | T6.1, T6.2, T6.5, T6.6 |
+| R9 | A decoder refuses trailing bytes the protocol forbids and accepts those it allows: SMB's 8-byte alignment of a chained message, XDR's 4-byte padding of an opaque | invariant | §5.2 | T6.1, T6.2, T6.5, T6.6 |
 | R10 | A header that does not decode comes back with its error when enough decoded to address a reply, and is answered from the `ErrDecode` row; with no header, nothing is answered and the connection closes, as R39 and R40 list for each protocol | MUST | §4.1's decode-header row, §4.7 (`HeaderCodec.Decode`); RFC 22 §16.5; RFC 21 §11.5 | T6.3a, T6.4a, T6.3b, T6.4b |
 | R11 | `HeaderCodec.Encode` writes the reply's header for its status and, for a failure answered with a status alone, what that status needs: SMB's error response, `PROG_MISMATCH`'s and `RPC_MISMATCH`'s `mismatch_info`, an NFSv4 `COMPOUND`'s status, tag and empty results; a command's encoder writes the pairs RFC 22 §16.5 leaves to it | MUST | §4.7 (`HeaderCodec.Encode`, `Invocation.Encode`); RFC 22 §16.5; RFC 21 §11.5 | T6.3a, T6.4a |
 | R12 | `Chain` points a reply at the one appended after it, padded to 8 (SMB2's `NextCommand`), and does nothing where nothing chains (NFS) | MUST | §4.7 (`HeaderCodec.Chain`) | T6.1, T6.3a, T6.4a |
@@ -213,7 +226,17 @@ cited by number and title, and how it applies here or why it does not.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R15 | Each header has golden vectors: decoding them gives the fields, encoding the fields gives the bytes; they "come from the specifications' own examples where they have them, and from captures of the reference server (§8) for the rest", never only from the codec under test | test row | §5.4 | T6.1, T6.2 |
-| R16 | Every decoder of a peer's bytes has a fuzz target seeded with its golden vectors and the captures; a decoder that panics, allocates past the cap, or accepts what it then cannot encode, fails | test row | §5.4 | T6.1, T6.2 |
+| R16 | Every decoder of a peer's bytes has a fuzz target seeded with its golden vectors and the captures; a decoder that panics, allocates past the cap, or accepts what it then cannot encode, fails | test row | §5.4 | T6.1, T6.2, T6.5, T6.6 |
+
+**Generated codecs**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R43 | A command's request and response are structs whose tags state their encoding, and each protocol has one codec generated from those tags; no command file reads or writes bytes | MUST | §2.5, §4.7 (`Bind`), as Marco's amendment states them | T6.5, T6.6 |
+| R44 | SMB2's tags state fixed sizes, offset and length pairs, padding and chained contexts, under the rules Marco's amendment sets | MUST | RFC 22 as Marco's amendment states it; MS-SMB2 2.2 | T6.5 |
+| R45 | XDR's tags state discriminated unions, optional data, and strings and arrays with their bounds, under the rules Marco's amendment sets | MUST | RFC 21 as Marco's amendment states it; RFC 4506 §4.11, §4.13, §4.15, §4.19 | T6.6 |
+| R46 | Each generated codec has one golden-vector suite, and one fuzz target that checks its decoder against a second decoder written independently of the generator, not only a round trip | test row | §5.4 | T6.5, T6.6 |
+| R47 | A row is one `core.Row` line, which wraps `core.Bind` and takes the decoder and encoder from its structs' generated codec | MUST | §4.7 (`Bind`), as Marco's amendment states it | T6.3b, T6.4b |
 
 **Routing and versions**
 
@@ -343,6 +366,12 @@ internal/adapter/smb/
     const.go                    protocol IDs, flags and the statuses this epic's tables name
     wire_test.go  fuzz_test.go
     testdata/golden/            hand-written vectors and frames of the Samba capture (D3)
+    codec.go                    T6.5: the generated codec's runtime: fixed sizes, offset and
+                                length pairs, padding, chained contexts
+    gen/                        T6.5: the generator, which go generate runs (its place as T6.5
+                                says)
+    codec_test.go  codec_fuzz_test.go   T6.5: the golden-vector suite, FuzzCodec and the second
+                                decoder
   protocol/
     stages.go                   T6.3a: header stage and member header (D1), router
     stages_test.go              T6.3a: stage tests, the header stage's gate
@@ -361,6 +390,11 @@ internal/adapter/nfs/
     const.go                    programs, versions, flavours, the reply states (D2)
     wire_test.go  fuzz_test.go
     testdata/golden/            hand-written vectors and frames of the knfsd capture (D3)
+    codec.go                    T6.6: the generated codec's runtime: unions, optional data,
+                                bounded strings and arrays, padding
+    gen/                        T6.6: the generator, as T6.5's
+    codec_test.go  codec_fuzz_test.go   T6.6: the golden-vector suite, FuzzCodec and the second
+                                decoder
   protocol/
     tables.go                   T6.4a: Tables
     served.go                   T6.4a: the served set, from settings.NFS
@@ -409,6 +443,9 @@ Exported symbols added, all under `internal/adapter/`:
   Consumers: T6.4a and T6.4b; the RFC 21 plan's codecs.
 - `nfs/protocol`: `Tables` (T6.4a); `type Protocol`, `New(t Tables) *Protocol` (T6.4b). `nfs`
   (T6.4b): `New(d adapter.Deps, s settings.NFS) (*core.Server, error)`.
+- `smb/wire` (T6.5) and `nfs/wire` (T6.6): the generated codec's runtime, which the generated
+  code calls, and what the generator emits for `core.Row`; their names follow Marco's
+  amendment.
 
 Nothing else is exported, and `pkg/adapter` and `pkg/adapter/settings` export nothing new:
 T6.4b changes only `NFS.Validate`'s body. `core`
@@ -558,17 +595,68 @@ framer's.
   member, D4's `ponytail:`; rule 9: `ErrCancel` alone exported, which the table's error rows
   name.
 
+### T6.5 `smb/wire`: SMB2's generated codec
+
+**Subtask T6.5 estimate: 5 man-days.**
+
+- **Track:** C. **Owner:** Lucian, epic 6's. **Depends on:** T6.1, and Marco's amendment,
+  whose tag rules it follows.
+- **Needs E5:** nothing: `core.Row`, which takes this codec, is E5's, beside its T5.1a (§9).
+  **Needs E4:** nothing.
+- **Covers:** R5, R6, R8, R9 and R16 (the codec's half), R43, R44, R46.
+- **Deliverables:** in `internal/adapter/smb/wire`, the codec's runtime, pure (R5, R6): the
+  reads and writes the generated code calls for SMB2's fixed sizes, offset and length pairs,
+  padding and chained contexts, each offset, length and count checked against the bytes left
+  and the message's cap before anything is read or allocated (R8). The generator, a program
+  `go generate` runs over a package's tagged structs, which writes each struct's decoder and
+  encoder as Go source, so what runs is ordinary pure code; if E2's import test's `wire` rule
+  reaches the generator, which does file I/O, the generator sits where the rule allows and the
+  subtask says so. The tag rules, what the generator emits for `core.Row` and where the
+  generated code is written follow Marco's amendment, none settled here. One golden-vector
+  suite over structs declared in the test files that use every tag rule, each vector written
+  from MS-SMB2 2.2's layouts or cut from the Samba capture (D3); one fuzz target, `FuzzCodec`,
+  that decodes each input with the generated decoder and with a second decoder written by hand
+  in the test file from the same layouts, sharing no code with the generator, and fails when
+  the two disagree, besides a panic or an allocation past the cap. The header codec stays
+  hand-written (T6.1).
+- **Consumers:** T6.3b's test-only `ECHO` row; the RFC 22 plan's first command and every one
+  after it.
+- **Acceptance criteria:**
+  - Each golden vector decodes to its struct's fields and each struct encodes to its vector's
+    bytes: a fixed-size struct, one with an offset and length pair whose data lies past the
+    fixed part, one whose padding brings the next field to its alignment, and one with a chain
+    of three contexts.
+  - An offset or length past the message, an offset into the fixed part, a context whose next
+    offset is not aligned or points behind it, and a chain past the message are each refused;
+    each refusal that claims a length adds less than 4 KiB to `runtime.MemStats.TotalAlloc`.
+  - `FuzzCodec`, seeded with the golden vectors and the capture's frames, finds the two
+    decoders agreeing on every input it is given.
+  - The runtime and the generated code pass E2's import test's `wire` rule.
+- **Tests:** in `codec_test.go` and `codec_fuzz_test.go`, at the generated code's API. No
+  test double: the second decoder is an independent reading of the specification's layout,
+  not a stand-in. The vectors (catch an offset counted from the wrong origin, padding left out
+  or doubled, and a context chain that stops early or reads past its last entry). The
+  refusals (catch a length checked after the read, R8, and an alignment accepted that the
+  layout forbids, R9). `FuzzCodec` (catches a misreading the generator's decoder and encoder
+  share, which a round trip alone cannot fail). The claimed lengths (catch a buffer allocated
+  before its length is checked).
+- **Rules:** rule 2: `FuzzCodec`; rule 8: no vector produced by the codec under test; rule 10:
+  the runtime and the generator land with their suite and fuzz target. The 5 man-days: about
+  1.5 for the generator and its tags, 1 for the runtime's offsets, padding and contexts, 1 for
+  the suite, and 1.5 for the second decoder and the fuzz target. The least certain subtask of
+  the epic, with T6.6: its tag rules wait on Marco's amendment.
+
 ### T6.3b `smb.New`: the framer, the protocol, the table and the server
 
 **Subtask T6.3b estimate: 2 man-days.**
 
-- **Track:** C. **Depends on:** T6.3a.
+- **Track:** C. **Depends on:** T6.3a, T6.5.
 - **Needs E5:** its T5.1c, S3, after its T5.1a (`Framer.Frame`, `Stages.Errors`) and T5.9
-  (`Stages.Protocol`, `OpTable.Protocol`). **Needs E4:** `Server`, `Start` binding each listener
+  (`Stages.Protocol`, `OpTable.Protocol`), and `core.Row`, beside its T5.1a (§9). **Needs E4:** `Server`, `Start` binding each listener
   on each of the settings' addresses at `Port`, `Stop`, accept, the reader with `Framer.BodyLen`'s
   `last` and `MaxRecord`, the writer calling `Frame`, and `Addrs`.
 - **Covers:** R1, R2 and R4 (over loopback), R10 (over loopback), R24, R26, R27, R28, R30, R31,
-  R32 (SMB's rows), R33, R38 (over loopback), R39 (over loopback).
+  R32 (SMB's rows), R33, R38 (over loopback), R39 (over loopback), R47.
 - **Deliverables:** `protocol/protocol.go`: the framer, unexported, over `wire.FrameLen` and
   `wire.AppendFrame`, its `BodyLen` always ending the record and its `MaxRecord` 8 MiB and 4 KiB
   in one fragment; `Protocol`, `New(t *core.OpTable) *Protocol`, `Framer`, and `NewConn`, which
@@ -600,8 +688,9 @@ framer's.
     `STATUS_NOT_SUPPORTED` then `STATUS_INVALID_PARAMETER`, and the connection then closes.
   - A message of 63 bytes, a command code of `0x0013`, a protocol ID of `0xFC 'SMB'`, and a
     Direct TCP header past the cap each close the connection with nothing answered.
-  - A table of one row declared in the test file, an `ECHO` (MS-SMB2 2.2.28 and 2.2.29) joined
-    with `core.Bind` and served through `protocol.New` and `core.NewServer`, answers an `ECHO`
+  - A table of one row declared in the test file, an `ECHO` (MS-SMB2 2.2.28 and 2.2.29), its
+    request and response tagged structs and one `core.Row` line taking T6.5's generated codec,
+    served through `protocol.New` and `core.NewServer`, answers an `ECHO`
     `STATUS_SUCCESS` with its 4-byte body after the header and no error body.
   - Each answer counts under `protocol="smb"` in the series `core` records for it.
   - Every test ends with `CheckLeaks`.
@@ -614,8 +703,8 @@ framer's.
   The four closes (catch a framer that reads past its cap, and an undefined command, a short
   message or an unread protocol ID answered rather than closed, R39). The `ECHO` row (catches
   the success path broken between the header stage and `core`: a body written before the
-  header, an error body after a success, a row lost in routing; and shows a command as one row
-  file against this epic). The port (catches `New` binding a fixed port, or binding at `New`,
+  header, an error body after a success, a row lost in routing; and shows a command as tagged
+  structs and one `core.Row` line, the shape every command has). The port (catches `New` binding a fixed port, or binding at `New`,
   which a rebuild on a `port` change would collide on). The label (catches a stage or table
   labelled other than `smb`, whose series split from the rest). `pkg/adapter/smb`'s two tests
   (catch a typed nil server handed back in the interface).
@@ -770,15 +859,55 @@ framer's.
 - **Rules:** rule 4: the gate; rule 6: `RPCSEC_GSS`'s refusal points at the ledger's row (D5);
   rule 7: D1's, D2's and D5's markers.
 
+### T6.6 `nfs/wire`: XDR's generated codec
+
+**Subtask T6.6 estimate: 4 man-days.**
+
+- **Track:** C. **Owner:** Lucian, epic 6's. **Depends on:** T6.2, and Marco's amendment,
+  whose tag rules it follows.
+- **Needs E5:** nothing, as T6.5. **Needs E4:** nothing.
+- **Covers:** R5, R6, R8, R9 and R16 (the codec's half), R43, R45, R46.
+- **Deliverables:** in `internal/adapter/nfs/wire`, the codec's runtime, pure (R5, R6): XDR's
+  discriminated unions, optional data, and strings and variable-length arrays with their
+  bounds (RFC 4506 §4.15, §4.19, §4.11, §4.13), each padded to 4 (RFC 4506 §4.10, §4.11), each
+  count and length checked against its bound and the bytes left before anything is read or
+  allocated (R8). The generator, as T6.5's, for XDR's tags, with the same rule for where it
+  sits. The tag rules, what the generator emits for `core.Row` and where the generated code is
+  written follow Marco's amendment, none settled here. One golden-vector suite over structs
+  declared in the test files that use every tag rule, each vector written from RFC 4506's
+  encodings or cut from the knfsd capture (D3); `FuzzCodec`, against a second decoder written
+  by hand in the test file from RFC 4506, as T6.5's. The RPC header codec stays hand-written
+  (T6.2).
+- **Consumers:** T6.4b's test-only `NULL` row; the RFC 21 plan's first procedure and every one
+  after it.
+- **Acceptance criteria:**
+  - Each golden vector decodes to its struct's fields and each struct encodes to its vector's
+    bytes: a union through each arm, an optional field present and absent, a string and an
+    array each at its bound, and an opaque of 5 bytes with its 3 bytes of padding.
+  - A discriminant with no arm and no default, a string or array past its bound, a count past
+    the bytes left, and missing padding are each refused; each refusal that claims a length
+    adds less than 4 KiB to `runtime.MemStats.TotalAlloc`.
+  - `FuzzCodec`, seeded with the golden vectors and the capture's calls, finds the two
+    decoders agreeing on every input it is given.
+  - The runtime and the generated code pass E2's import test's `wire` rule.
+- **Tests:** in `codec_test.go` and `codec_fuzz_test.go`, as T6.5's. The vectors (catch an arm
+  chosen by the wrong discriminant, an absent optional read as present, and padding skipped).
+  The refusals (catch a bound checked after the allocation, R8, and a count trusted past the
+  bytes left). `FuzzCodec` (catches a misreading the generator's decoder and encoder share).
+- **Rules:** rule 2: `FuzzCodec`; rule 8: no vector produced by the codec under test; rule 10:
+  as T6.5. The 4 man-days: XDR's rules are fewer and regular, so about 1.25 for the generator,
+  0.75 for the runtime, 0.75 for the suite, and 1.25 for the second decoder and the fuzz
+  target. Least certain with T6.5, for the same reason.
+
 ### T6.4b `nfs.New`: the framer, the protocol, the tables and the server
 
 **Subtask T6.4b estimate: 2.25 man-days.**
 
-- **Track:** C. **Depends on:** T6.4a.
-- **Needs E5:** as T6.3b. **Needs E4:** as T6.3b, with `Conn.Settings`, `Conn.Established`
+- **Track:** C. **Depends on:** T6.4a, T6.6.
+- **Needs E5:** as T6.3b, `core.Row` included. **Needs E4:** as T6.3b, with `Conn.Settings`, `Conn.Established`
   and `Reconfigure`.
 - **Covers:** R1, R3 and R4 (over loopback), R10 (over loopback), R17, R18, R19, R21, R22, R42, R23,
-  R26, R27, R28, R29, R30, R31, R32 (the tables' rows), R33.
+  R26, R27, R28, R29, R30, R31, R32 (the tables' rows), R33, R47.
 - **Deliverables:** `protocol/protocol.go`: the framer, unexported, over `wire.Fragment` and
   `wire.AppendRecordMark`, its `BodyLen` passing the record mark's last-fragment bit, its
   `MaxRecord` 1 MiB and 4 KiB in 64 fragments (RFC 21 §2.3); `Protocol`, `New(t Tables)
@@ -815,8 +944,9 @@ framer's.
     past the record, `GARBAGE_ARGS`, and a `NULL` after it on the connection answered.
   - A `NULL` sent in two fragments is answered; a record whose fragments pass 1 MiB and 4 KiB
     in total, and one of 65 fragments, each close the connection.
-  - A table of one row declared in the test file, `NULL` on `V4`, served through
-    `protocol.New` and `core.NewServer`, answers the knfsd capture's `NULL` call (frame 4) with
+  - A table of one row declared in the test file, `NULL` on `V4`, its void arguments and
+    result as tagged structs and one `core.Row` line taking T6.6's generated codec, served
+    through `protocol.New` and `core.NewServer`, answers the knfsd capture's `NULL` call (frame 4) with
     the capture's reply (frame 6), byte for byte.
   - Of two connections accepted together, one that sends a `NULL` and one that sends nothing,
     the second is closed at the handshake deadline, and the first then still answers a second
@@ -836,7 +966,7 @@ framer's.
   closes the connection). The fragments (catch a framer that drops the last-fragment bit, so a
   fragmented call is read as two, and limits the reader cannot see, R3). The `NULL` row against
   the capture (catches the accepted path broken between the header stage and `core`, which no
-  refusal exercises, and shows a procedure as one row file). The two connections (catch a
+  refusal exercises, and shows a procedure as tagged structs and one `core.Row` line). The two connections (catch a
   router that never calls `Conn.Established`, which closes every NFS connection at the
   deadline, R23, synchronised on the silent one's close rather than on time). `Reconfigure`
   both ways (catch a range read from `New`'s copy or reread after accept, R18, and `New`
@@ -860,14 +990,24 @@ flowchart TD
   T6_1 --> C1(["after T6.1: the RFC 22 plan's harness can decode a header"]):::sync
   T6_1 --> T6_3a["T6.3a smb/protocol header stage and router"]
   H(["E5's T5.1a: HeaderCodec.Args, ReplyLen, Framer.Frame"]):::sync --> T6_3a
+  M(["Marco's RFC 20, 21 and 22 amendment"]):::sync --> T6_5["T6.5 SMB2's generated codec"]
+  T6_1 --> T6_5
+  T6_5 --> C3(["after T6.5: the RFC 22 plan's first command"]):::sync
   T6_3a --> T6_3b["T6.3b smb.New on the runner"]
+  T6_5 --> T6_3b
+  R(["E5: core.Row, beside its T5.1a"]):::sync --> T6_3b
   S3(["S3, after E4 and E5's T5.1c"]):::sync --> T6_3b
   T6_3b --> C2(["after T6.3b: the RFC 22 plan's SMB scaffold point"]):::sync
   S2 --> T6_2["T6.2 nfs/wire"]
   A --> T6_2
   T6_2 --> T6_4a["T6.4a nfs/protocol header stage and router"]
   H --> T6_4a
+  M --> T6_6["T6.6 XDR's generated codec"]
+  T6_2 --> T6_6
+  T6_6 --> C4(["after T6.6: the RFC 21 plan's first procedure"]):::sync
   T6_4a --> T6_4b["T6.4b nfs.New on the runner"]
+  T6_6 --> T6_4b
+  R --> T6_4b
   S3 --> T6_4b
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
@@ -882,13 +1022,16 @@ which lands first.
 | When | Subtasks | Man-days |
 | --- | --- | --- |
 | from S2, needing neither E4 nor E5 | T6.1, T6.2 | 5.5 |
+| once Marco's amendment lands, after T6.1 and T6.2 in turn, needing neither E4 nor E5 | T6.5, T6.6 | 9 |
 | once E5's T5.1a has landed `HeaderCodec.Args` and `ReplyLen`, needing nothing of E4 | T6.3a, T6.4a | 4 |
 | from S3, which needs E4's `Server`, `Start`, `Stop`, accept, reader (with `Framer.BodyLen`'s `last` and `MaxRecord`), writer and `Addrs`, and E5's T5.1c after its T5.1a and T5.9; T6.4b also needs E4's `Conn.Settings`, `Conn.Established` and `Reconfigure` | T6.3b, T6.4b | 4.25 |
 
-T6.3a and T6.4a need only E5, its T5.1a; T6.3b and T6.4b need E4 and E5 through S3. **The
-critical path** to the RFC 22 plan's SMB scaffold point is T6.1, T6.3a and T6.3b, 5.75
-man-days, of which T6.3a waits for E5's T5.1a and T6.3b's 2 for S3. T6.2 and T6.4a, 5.75
-man-days, fill those waits. The least certain subtasks are T6.2, T6.4a and T6.4b (§9).
+T6.3a and T6.4a need only E5, its T5.1a; T6.3b and T6.4b need E4 and E5 through S3, E5's
+`core.Row`, and T6.5 or T6.6. **The critical path** to the RFC 22 plan's SMB scaffold point is
+now T6.1, T6.5 and T6.3b, 9.5 man-days, T6.3a's 1.25 running beside T6.5; T6.5 also gates the
+RFC 22 plan's first command. T6.2, T6.6 and T6.4a fill the waits. The least certain subtasks
+are T6.5 and T6.6, whose tag rules wait on Marco's amendment, then T6.2, T6.4a and T6.4b
+(§9).
 
 ## 8. Suggested pull requests
 
@@ -896,10 +1039,13 @@ man-days, fill those waits. The least certain subtasks are T6.2, T6.4a and T6.4b
 | --- | --- | --- | --- | --- |
 | 1 | T6.1, T6.3a | 3.75 | the RFC 20 amendment (#4478); E5's T5.1a for T6.3a | SMB's bytes and header stage: what the RFC 22 plan's harness and stages build on |
 | 2 | T6.2, T6.4a | 5.75 | the RFC 20 amendment (#4478); E5's T5.1a for T6.4a | the RPC layer: the call header, the credential, the router; open beside PR 1 |
-| 3 | T6.3b | 2 | PR 1, S3 | SMB's framer and server end to end, the RFC 22 plan's SMB scaffold point |
-| 4 | T6.4b | 2.25 | PR 2, S3 | NFS's framer and server end to end; open beside PR 3 |
+| 3 | T6.5 | 5 | PR 1's T6.1, Marco's amendment | SMB2's generated codec, before the RFC 22 plan's first command |
+| 4 | T6.6 | 4 | PR 2's T6.2, Marco's amendment | XDR's generated codec, before the RFC 21 plan's first procedure; open beside PR 3 |
+| 5 | T6.3b | 2 | PR 1, PR 3, S3, E5's `core.Row` | SMB's framer and server end to end, the RFC 22 plan's SMB scaffold point |
+| 6 | T6.4b | 2.25 | PR 2, PR 4, S3, E5's `core.Row` | NFS's framer and server end to end; open beside PR 5 |
 
-A suggestion only: one pull request per subtask works as well.
+A suggestion only: one pull request per subtask works as well. T6.1 and T6.2 are open as #4539
+and #4540 and stay as they are.
 
 ## 9. Open points
 
@@ -926,11 +1072,17 @@ A suggestion only: one pull request per subtask works as well.
     `Invocation.Bound`, and the pipeline sketch.
   - **The RPC header's XDR:** hand-written, NFS's operation codecs generated: RFC 20 §2.5's
     layout, §4.9's table and §5.1.
-- **Open for the architect:** does "a single file called open.go" mean `ops/open.go` with its
-  codec in `wire/open.go`, RFC 20 §2.5's split (§1), or a change to §2.5? Either way it is
-  reached at the RFC 22 plan's point where a session runs over loopback, after its epics 3 to
-  5, not by this epic alone.
+- **Settled by the architect: how a command is written.** A command is `ops/<cmd>.go`, its
+  request and response structs and its handler, and one table row; nothing in it touches
+  bytes. Each protocol has one shared codec, generated from struct tags, so there is no
+  `wire/<cmd>.go`; `core.Row` wraps `core.Bind` and takes `dec` and `enc` from the generated
+  codec. The generators land in this epic, T6.5 and T6.6, before the RFC 21 and RFC 22 plans
+  write their first command. RFC 20, 21 and 22 follow in Marco's RFC 20/21/22 amendment PR
+  against develop (to be linked).
 - **Findings for other documents, not edited here.**
+  - The epic 5 document's T5.1a: `core.Row` lands with E5's `Bind`, beside T5.1a. It wraps
+    `core.Bind` and takes `dec` and `enc` from a struct's generated codec; T6.3b's and T6.4b's
+    test-only rows call it.
   - The epic 5 document's T5.1a and T5.4: T5.1a adds all three of `HeaderCodec.Args`,
     `ReplyLen` and `Framer.Frame` to `core`'s interfaces, to `testproto`'s stages and to
     `core.golden` (#4487), its pipeline reading `Args` and its writer's suite calling `Frame`;
@@ -950,11 +1102,15 @@ A suggestion only: one pull request per subtask works as well.
     amendment, #4478, brings both to RFC 20 §4.7.
 - **Edits this document proposes to the program's implementation plan**, for the coordinator's
   pull request, not made here:
-  - epic 6's description, its row in §2 and its estimate line: 6 subtasks, 13.75 man-days,
-    T6.3 and T6.4 split by letter, the `NEGOTIATE` item of T6.3 moved to the RFC 22 plan's
+  - epic 6's description, its row in §2 and its estimate line: 8 subtasks, 22.75 man-days,
+    T6.5 and T6.6 the generated codecs, T6.3 and T6.4 split by letter, the `NEGOTIATE` item of T6.3 moved to the RFC 22 plan's
     subtask T3.2, and "MS-SMB2's examples" and "RFC 5531's encodings" replaced by the field
     tables and the reference captures (D3);
   - rule 4's header codecs at 0 allocations: a chained SMB member past the first at one (D1);
+  - the ledger's row "operation codecs, their golden vectors": the codec every operation is
+    written against, its golden-vector suite and its fuzz target are this epic's T6.5 and T6.6;
+    each operation's tagged structs, handler and row, and the `READ`, `WRITE`, `GETATTR` and
+    `QUERY_INFO` gates, stay the RFC 21 and RFC 22 plans';
   - a new ledger row: "each request's `vfs.Call` and its `Identity`, built from NFS's
     credential and SMB's session (RFC 20 §4.4, RFC 21 §11.1, RFC 22 §16.1)", why "no row reads
     `Request.Call` before the protocols' first handler", owners the RFC 21 and RFC 22 plans,
@@ -976,7 +1132,10 @@ A suggestion only: one pull request per subtask works as well.
   tests, the two test-only rows, the fragment cases over loopback and the TLS modes' refusal in
 `Validate`, and about 1
   saved, by gating each protocol once at its header stage, cutting vectors from the reference
-  captures already in `test/pcap-corpus`, and fuzzing each `wire` package with one target.
-- **Least certain.** T6.2, T6.4a and T6.4b, for the edge cases of the RPC header, a record in
+  captures already in `test/pcap-corpus`, and fuzzing each `wire` package with one target. The
+  architect's decision on how a command is written adds T6.5 and T6.6, 9 man-days, for a total
+  of 22.75.
+- **Least certain.** T6.5 and T6.6, whose tag rules follow an amendment not yet written and
+  whose second decoders are new work; then T6.2, T6.4a and T6.4b, for the edge cases of the RPC header, a record in
   several fragments and the order of the router's refusals; T6.3b and T6.4b, whose loopback
   tests are written against E4's `Server`, reader, `Reconfigure` and handshake deadline.
