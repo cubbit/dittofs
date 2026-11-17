@@ -630,8 +630,8 @@ Each carries a `ponytail:` marker at the code site:
   scope per move, through epic 3's cross-scope read.
   - *Ceiling:* the scan and the diff at the settings count of 10⁴ shares, once per one-second poll
     while writes keep the generation moving; the trigger is their time passing a tenth of that
-    poll period, 100 ms, measured in epic 3's benchmark; epic 5 adds the secrets pass and the
-    `NodeStatus` write to it and judges the full figure. Every `Secret`
+    poll period, 100 ms, measured in epic 3's benchmark; epic 5 grows RFC 23's `BenchmarkReconcile`
+    (#4688) with the settings rows and the secrets pass and judges the full figure. Every `Secret`
     write raises the generation too, so a password change costs every node one such scan.
   - *Upgrade path:* read only the records above the reconciled position, with an index by position
     (RFC 23 §13 item 5).
@@ -1278,10 +1278,11 @@ adapter port" (§6.1).
   as its owner is" requires.
 - RFC 23's own section (its plan's epic 3) named in the table.
 - D3's Appendix B test.
-- Epic 3's reconcile benchmark grown to the full pass: the secrets pass and the `NodeStatus`
-  write added to `Read` and `Diff`, at the same 10⁴ shares' settings, its figure judged against
-  §4.3's 100 ms trigger. Neither exists before epic 4's `Resolve` and RFC 23's `NodeStatus`. Half
-  a man-day, on the reconcile subtask.
+- The full reconcile benchmark: RFC 23's `BenchmarkReconcile` (#4688, `internal/node`) grown with
+  10⁴ shares' settings and the secrets pass, its figure judged against §4.3's 100 ms trigger. The
+  `NodeStatus` write is not part of it: it runs in the node's own status loop, which reconcile
+  never waits on. The secrets pass does not exist before epic 4's `Resolve`. Half a man-day, on the
+  reconcile subtask.
 - RFC 13 §6's port rule, as #4050 amends it, the first cross-component rule built: code naming
   its three keys in epic 3's write check, run in the write's own transaction with the other
   ports, at both scopes and on every node the write reaches, read as tracked reads, the route the
