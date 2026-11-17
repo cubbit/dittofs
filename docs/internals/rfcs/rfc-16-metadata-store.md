@@ -2603,7 +2603,9 @@ path blocks until explained, as [Test tiers](rfc-index.md#Test%20tiers) sets out
 - Every operation runs under a profiler label naming it (`op=create`,
   `op=getattr`, …) and its area, so a CPU or allocation profile of a mixed
   workload splits by operation.
-- A trace span per operation carries one child span per `KV` call, with keys
+- Under a sampled parent
+  ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)), a trace span per
+  operation carries one child span per `KV` call, with keys
   read, keys written and retries as attributes. A slow operation shows whether
   it waited on the KV, on a conflict retry, or on itself.
 - The in-memory `KV`'s `Counts` of §6.3 are also a profiling tool: run a
