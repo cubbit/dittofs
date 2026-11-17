@@ -296,22 +296,32 @@ func TestStartThatFailsClosesWhatItOpened(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = held.Close() })
 	heldAt := held.Addr().(*net.TCPAddr).AddrPort()
-	// The first listener's port, known so a dial can find its socket closed.
-	free, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	freeAt := free.Addr().(*net.TCPAddr).AddrPort()
-	_ = free.Close()
-
-	srv, err := core.NewServer(deps, on("127.0.0.1"), tcp(p, freeAt.Port(), "a"), tcp(p, heldAt.Port(), "b"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	stopAtEnd(t, srv)
-	err = srv.Start(t.Context())
-	if err == nil {
-		t.Fatal("Start bound a port the test holds")
+	// The first listener's port is known, so a dial can find its socket closed;
+	// the leak check cannot, since a listener nobody holds is closed when it is
+	// collected. Another process can take that port between its release and
+	// Start, failing "a" before "b": then the test takes another port.
+	var srv *core.Server
+	var freeAt netip.AddrPort
+	for try := 1; ; try++ {
+		free, lerr := net.Listen("tcp4", "127.0.0.1:0")
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		freeAt = free.Addr().(*net.TCPAddr).AddrPort()
+		_ = free.Close()
+		srv, err = core.NewServer(deps, on("127.0.0.1"), tcp(p, freeAt.Port(), "a"), tcp(p, heldAt.Port(), "b"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		stopAtEnd(t, srv)
+		err = srv.Start(t.Context())
+		if err == nil {
+			t.Fatal("Start bound a port the test holds")
+		}
+		if strings.Contains(err.Error(), `["a"]`) && try < 3 {
+			continue
+		}
+		break
 	}
 	if !strings.Contains(err.Error(), `["b"]`) || !strings.Contains(err.Error(), heldAt.String()) {
 		t.Errorf("Start: %v; want it to name the listener [\"b\"] and the address %s", err, heldAt)
