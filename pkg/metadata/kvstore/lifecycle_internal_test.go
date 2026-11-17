@@ -15,7 +15,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
-	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -75,12 +74,6 @@ func shareWithID(t *testing.T, s *Store, name string, id entity.ShareID) entity.
 	}
 
 	return got
-}
-
-// encodeRemovalStep writes a SH‖shard‖rm value, standing in for the
-// removal's per-shard steps, which no code writes yet.
-func encodeRemovalStep(step removalStep) []byte {
-	return codec.NewWriter(v1).Uint8(uint8(step)).Encode()
 }
 
 // keysUnder lists the keys under prefix.
@@ -490,13 +483,13 @@ func TestRecordJournalMovesTheIndex(t *testing.T) {
 
 // The values the lifecycle view decodes were written by another process, so
 // each decoder accepts or refuses any bytes and never panics. An rm row is
-// accepted exactly when a known step follows the codec's version byte; what
-// follows the step belongs to the later steps and is ignored. A J‖journal or
-// JD value that is accepted decodes to the same value once written again.
+// accepted exactly when a known step alone follows the codec's version byte.
+// An rm row, J‖journal or JD value that is accepted decodes to the same value
+// once written again.
 func FuzzLifecycleValues(f *testing.F) {
 	for _, seed := range [][]byte{
 		nil, {1}, {1, 0}, {1, 1}, {1, 2}, {1, 3}, {1, 4}, {1, 5}, {1, 6}, {2, 1},
-		{1, 4, 0, 0, 0, 0, 0, 0, 0, 7}, // step 4 with a cursor after it
+		{1, 4, 0, 0, 0, 0, 0, 0, 0, 7}, // step 4 with bytes after it
 	} {
 		f.Add(seed)
 	}
@@ -512,7 +505,7 @@ func FuzzLifecycleValues(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, b []byte) {
 		step, err := decodeRemovalStep(b)
-		known := len(b) >= 2 && b[0] == v1 && b[1] >= byte(stepThree) && b[1] <= byte(stepDone)
+		known := len(b) == 2 && b[0] == v1 && b[1] >= byte(stepThree) && b[1] <= byte(stepDone)
 
 		if (err == nil) != known {
 			t.Errorf("rm row %x: %v, %v; want accepted %v", b, step, err, known)
@@ -532,6 +525,10 @@ func FuzzLifecycleValues(f *testing.F) {
 			if again, err := decodeJournalIndex(encodeJournalIndex(id)); err != nil || again != id {
 				t.Errorf("JD %x: %x, written again %x, %v", b, id, again, err)
 			}
+		}
+
+		if err == nil && !bytes.Equal(encodeRemovalStep(step), b) {
+			t.Errorf("rm row %x: step %d, written again %x", b, step, encodeRemovalStep(step))
 		}
 	})
 }

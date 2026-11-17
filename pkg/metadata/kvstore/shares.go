@@ -81,7 +81,8 @@ func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
 // share is created in the one namespace its Namespaces names, whose record
 // is read tracked and must exist, so a share never lands in a namespace that
 // names no remote store; a change ignores Namespaces, which only a re-home
-// and an import write.
+// and an import write. A share being removed is stale to it, and so is the
+// ShareID of one removed, which its retired state record keeps.
 //
 // No share's path is an ancestor of another's. An ancestor is found by a
 // point read of each of the path's prefixes, a descendant by a guarded scan
@@ -114,9 +115,9 @@ func (c controlTx) PutShare(s entity.Share, expect uint64) (uint64, error) {
 		if old, err = decodeShareInfo(s.ID, b); err != nil {
 			return 0, err
 		}
-		if err := liveShare(c.tx, s.ID); err != nil {
-			return 0, err
-		}
+	}
+	if err := liveShare(c.tx, s.ID); err != nil {
+		return 0, err
 	}
 	if err := expected(old.Generation, expect); err != nil {
 		return 0, err

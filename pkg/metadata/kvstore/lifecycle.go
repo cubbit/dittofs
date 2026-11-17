@@ -82,9 +82,7 @@ const (
 	stepDone
 )
 
-// decodeRemovalStep reads an rm row's step: the first field after the codec
-// version. The row may hold more after it, as step 4's cursor, which is that
-// step's to read, so trailing bytes are not refused.
+// decodeRemovalStep reads an rm row: its step after the codec version.
 func decodeRemovalStep(b []byte) (removalStep, error) {
 	r, err := open(b)
 	if err != nil {
@@ -103,7 +101,11 @@ func decodeRemovalStep(b []byte) (removalStep, error) {
 		return 0, fmt.Errorf("%w: removal step %d", errMalformed, step)
 	}
 
-	return step, nil
+	return step, r.Done()
+}
+
+func encodeRemovalStep(step removalStep) []byte {
+	return codec.NewWriter(v1).Uint8(uint8(step)).Encode()
 }
 
 func journalKey(id [16]byte) []byte {

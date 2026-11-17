@@ -4,8 +4,12 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 func testDeleteShareMark(t *testing.T, kvo Opener) {
@@ -98,5 +102,79 @@ func testDeleteShareRacesRename(t *testing.T, kvo Opener) {
 				must(t, errOf(CreateShare(ctx, cp, share("renamed", "/y"))))
 			})
 		}
+	}
+}
+
+// oneRowBatches reports a transaction entry limit that leaves a store's
+// batches room for one row each: the five records every batch may write, and
+// twelve keys. Every call passes through to the backend beneath.
+type oneRowBatches struct{ kv.KV }
+
+func (b oneRowBatches) Limits() kv.TxnLimits {
+	l := b.KV.Limits()
+	l.TxnEntries = 5 + 12
+	return l
+}
+
+// A share's removal runs to its end in batches of one row each, the store
+// reopened over its data before every batch, as a restart between batches
+// leaves it.
+func testShareRemovalAcrossReopens(t *testing.T, d Durable) {
+	open := d(t, newClock().Now)
+	reopen := func() *kvstore.Store {
+		s, err := kvstore.Open(ctx, oneRowBatches{open()})
+		must(t, err)
+		return s
+	}
+	db := open()
+	must(t, kvstore.Init(ctx, db, uuid.New()))
+	s := reopen()
+	cp := s.ControlPlane()
+	sh := share("gone", "/gone")
+	must(t, errOf(CreateShare(ctx, cp, sh)))
+	rows := 0
+	for _, p := range []entity.Principal{entity.AuthenticatedUsers, entity.Everyone} {
+		must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: p, Access: entity.AccessRead}, 0)))
+		rows++
+	}
+	for _, k := range []string{"a", "b", "c", "d"} {
+		must(t, errOf(cp.PutSetting(ctx, entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeShare, ID: sh.ID}, Key: k, Value: []byte{1}}, 0)))
+		rows++
+	}
+	got, _, err := s.ShareIndex().Share(ctx, sh.ID)
+	must(t, err)
+	must(t, cp.DeleteShare(ctx, sh.ID, entity.SnapshotsDelete, got.Generation))
+
+	atFive := 0
+	for done, batches := false, 0; !done; batches++ {
+		if batches > 100 {
+			t.Fatal("the removal has not finished after 100 batches")
+		}
+		var step uint8
+		step, done, err = reopen().Nodes().ContinueRemoval(ctx, sh.ID)
+		must(t, err)
+		if step == 5 {
+			atFive++
+		}
+		if reached, ok := map[uint8]entity.TagState{3: entity.TagOffloaded, 4: entity.TagForgotten}[step]; ok {
+			must(t, reopen().Nodes().RecordShardRemoval(ctx, sh.ID, got.Shard, reached))
+		}
+		for shardDone := step != 4; !shardDone; {
+			shardDone, err = reopen().Nodes().ContinueShardRemoval(ctx, sh.ID, got.Shard)
+			must(t, err)
+		}
+	}
+	if atFive < rows {
+		t.Errorf("batches at step 5: got %d, want one per grant and setting, %d", atFive, rows)
+	}
+	s = reopen()
+	if _, _, err := s.ShareIndex().Share(ctx, sh.ID); !merrs.IsNotFoundError(err) {
+		t.Errorf("the removed share after a reopen: %v, want not found", err)
+	}
+	if err := errOf(s.ControlPlane().PutShare(ctx, sh, 0)); !errors.Is(err, entity.ErrStale) {
+		t.Errorf("PutShare naming the removed share's ID: %v, want %v", err, entity.ErrStale)
+	}
+	if err := s.Check(ctx); err != nil {
+		t.Errorf("the store after the removal: %v", err)
 	}
 }

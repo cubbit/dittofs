@@ -117,8 +117,14 @@ func codecCases() []codecCase {
 				"00000002" + "02" + "000000000000000000000000000000000000000000000000000000000000005a" + "00000009" + "0000000000000004" + "000000000000000d",
 			func(b []byte) (any, error) { return decodeShareInfo(sid, b) }},
 		{"state", shareState{State: entity.ShareRemoving, Step: 1, Snapshots: entity.SnapshotsDetach},
-			encodeState(shareState{State: entity.ShareRemoving, Step: 1, Snapshots: entity.SnapshotsDetach}), "01" + "03" + "01" + "02",
+			encodeState(shareState{State: entity.ShareRemoving, Step: 1, Snapshots: entity.SnapshotsDetach}), "01" + "03" + "01" + "02" + "00",
 			func(b []byte) (any, error) { return decodeState(b) }},
+		{"state with a cursor", shareState{State: entity.ShareRemoving, Step: 5, Snapshots: entity.SnapshotsDelete, Cursor: []byte{0x24, 7}},
+			encodeState(shareState{State: entity.ShareRemoving, Step: 5, Snapshots: entity.SnapshotsDelete, Cursor: []byte{0x24, 7}}),
+			"01" + "03" + "05" + "01" + "02" + "2407",
+			func(b []byte) (any, error) { return decodeState(b) }},
+		{"rm row", stepForgotten, encodeRemovalStep(stepForgotten), "01" + "03",
+			func(b []byte) (any, error) { return decodeRemovalStep(b) }},
 		{"grant", grant, encodeGrant(grant), "01" + "02" + "02" + "0000000000000003",
 			func(b []byte) (any, error) { return decodeGrant(sid, gid, b) }},
 		{"policy", policy, encodePolicy(policy),
@@ -246,7 +252,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 	for _, c := range append(codecCases(), fileCodecCases()...) {
 		switch c.name {
 		case "user", "group", "share", "setting", "quota", "installation", "audit", "idempotency", "namespace",
-			"session", "api token", "sign-in failures", "operation", "node", "node status":
+			"session", "api token", "sign-in failures", "operation", "node", "node status", "state":
 			decoders[c.name] = c.dec
 			f.Add(c.enc)
 			f.Add(c.enc[:len(c.enc)/2])
@@ -269,6 +275,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 		"session":          func(v any) []byte { return encodeSession(v.(entity.Session)) },
 		"api token":        func(v any) []byte { return encodeToken(v.(entity.APIToken)) },
 		"sign-in failures": func(v any) []byte { return encodeSignIn(v.(entity.SignInFailures)) },
+		"state":            func(v any) []byte { return encodeState(v.(shareState)) },
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
 		for name, dec := range decoders {
