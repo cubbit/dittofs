@@ -953,7 +953,7 @@ pkg/resources/buf.go                  T5.5a: Buf.Recharge, Buf.Charge; T5.3: Buf
                                       BufPool.Ceiling; T5.4: BufPool.Charge, over chargeOf, and Join
 pkg/resources/budget.go               T5.3: the unexported try and ceiling they call
 pkg/vfs/hold.go                       T5.5d: WithHold, Hold
-internal/adapter/adaptertest/testproto/   the twelve changes of §1.1, each by its subtask
+internal/adapter/adaptertest/testproto/   the thirteen changes of §1.1, each by its subtask
 test/adapter/known.yaml  the end-to-end entry: removed by E4's T4.2a, not here
 test/suites.yaml         T5.10: ./internal/adapter/core/ added to unit/adapter-allocs
 docs/internals/rfcs/rfc-20-adapters.md   this pull request: §4.1, §4.3, §4.6, §4.7, §5.5,
