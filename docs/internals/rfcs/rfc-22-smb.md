@@ -2673,8 +2673,9 @@ pair's error is its own, a typed value only that pair's handler returns, never
 `ErrInvalid` or another class sentinel, since an `IOCTL` row names the command
 and not the FSCTL (RFC 20 §4.7's `ErrorRow`): copychunk's
 `STATUS_INVALID_PARAMETER` with an `SRV_COPYCHUNK_RESPONSE` maps from a value
-of its own, while an overlapping copy's `ErrInvalid` ([§10](#10.%20Control%20codes))
-stays a failure, and `STATUS_BUFFER_OVERFLOW` in an
+of its own, while a plain copychunk failure with the same status, as a
+`MaxOutputResponse` below the response's 12 bytes (MS-SMB2 3.3.5.15.6), stays
+one, and `STATUS_BUFFER_OVERFLOW` in an
 `FSCTL_QUERY_ALLOCATED_RANGES` response whose buffer holds at least one range
 but not every one the queried range has ([MS-FSA's `FSCTL_QUERY_ALLOCATED_RANGES`](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/385dec98-90fe-477f-9789-20a47a7b8467); below one range it is
 `STATUS_BUFFER_TOO_SMALL`) is not in 3.3.4.4's list and stays a failure. The
@@ -2683,16 +2684,18 @@ above, but the named-pipe `READ`, which never arises
 ([RFC 20 §7.3](rfc-20-adapters.md#7.3%20The%20error%20tables%20are%20total)).
 A `SESSION_SETUP` answered `STATUS_MORE_PROCESSING_REQUIRED` is no failure, so
 a related member after it reaches `Unwrap`, which looks its inherited session
-up before any signature is checked (RFC 20 §5.5). A new session still in setup,
-and an expired one being re-authenticated, are `InProgress` (MS-SMB2 3.3.5.5.2),
-and MS-SMB2 3.3.5.2.9 refuses every command on such a session but `LOGOFF`,
-`CLOSE` and `LOCK`: `Unwrap` refuses the member with `ErrNoSession`,
-`STATUS_USER_SESSION_DELETED`, which splits the chain
+up before it checks any signature (RFC 20 §5.5). A new session still in setup
+is `InProgress` (MS-SMB2 3.3.5.5.1), and MS-SMB2 3.3.5.2.9 refuses every
+command on it but `LOGOFF`, `CLOSE` and `LOCK`: `Unwrap` lets those three
+through, where a `CLOSE` or `LOCK` then names no open of the new session and
+fails on its own and a `LOGOFF` ends the setup, and refuses any other with
+`ErrNoSession`, `STATUS_USER_SESSION_DELETED`, which splits the chain
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
-A valid session being re-authenticated stays valid, its keys and identity
-unchanged until a leg succeeds (re-authentication in place, §4.1), so a related
-member after its leg runs as the identity the session already holds, which
-gains it nothing.
+A session being re-authenticated keeps its state until a leg succeeds
+(re-authentication in place, §4.1): a valid one stays valid, its keys and
+identity unchanged, so a related member after its leg runs as the identity the
+session already holds, which gains it nothing; an expired one keeps §4.1's
+rule for an expired session.
 
 > decision: a member on a session in setup is answered
 > `STATUS_USER_SESSION_DELETED`, the status 3.3.5.2.9 gives a session it does
@@ -2783,10 +2786,10 @@ service, before any wire suite runs:
 | §16.4 SMB deny-write against an NFS write open | Hold an SMB open with `FILE_SHARE_READ` only and no lease; open the file for write over NFSv4 and write it over NFSv3: refused, `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES`; close the SMB open and both succeed. | a deny mode enforced within one protocol only |
 | §16.4 persistent state | Fail the primary over under a persistent open with a lease and locks, reconnect: open, lease and locks as left. Open delete-on-close, revoke the client: the open is released and the pending delete runs as its marker. | a reconnect that loses the lease |
 | §3.3 parked pipe `READ` | Bind to `\pipe\srvsvc`, send a 64 KiB `READ` on the empty pipe so it parks, then write a `NetShareEnumAll` request whose reply is larger than 4 KiB, with a client that reports each `READ`'s status: the parked `READ` returns a short read with `STATUS_SUCCESS`, and the `READ`s after it return the rest. | a parked pipe `READ` that answers `STATUS_BUFFER_OVERFLOW` where an unparked one answers a short read |
-| §16.5 a non-failure in a chain | Send `CREATE`, then a related `QUERY_INFO` for `FileAllInformation` whose output buffer holds the fixed part but not the whole name, then a related `CLOSE`: the `QUERY_INFO` answers `STATUS_BUFFER_OVERFLOW` with the name cut to the buffer, the `CLOSE` answers `STATUS_SUCCESS`, and the open is gone (a `READ` on its `FileId` answers `STATUS_FILE_CLOSED`). A fixed-size class would answer `STATUS_INFO_LENGTH_MISMATCH`, a failure, so the row names a class with a name. | a related member after a status MS-SMB2 3.3.4.4 counts as no failure refused as after a failure, which leaves the open behind |
-| §16.5 a failure an `IOCTL` shares | Mark a file sparse (`FSCTL_SET_SPARSE`) and write two data ranges with a hole between. Send `CREATE`, then a related `IOCTL` `FSCTL_QUERY_ALLOCATED_RANGES` over the file with a 16-byte output buffer, then a related `CLOSE`: the `CLOSE` answers the `IOCTL`'s status with no call, and the open stays (a `READ` on its `FileId` succeeds). The file is marked sparse so the row holds against a server that reports a file not marked so as one range, which would fit. | a `NotFailure` row keyed by a sentinel other FSCTLs share, which runs the related members after a failure |
-| §16.5 an overlapping copy in a chain | Open a file and take its resume key (`FSCTL_SRV_REQUEST_RESUME_KEY`). Send `FSCTL_SRV_COPYCHUNK` on that open, copying a range onto an overlapping range of the same file, then a related `CLOSE`: the `CLOSE` answers the `IOCTL`'s `STATUS_INVALID_PARAMETER` with no call, and the open stays. | a `NotFailure` row for copychunk keyed on `ErrInvalid`, which would run the related members after an overlapping copy |
-| §16.5 a session in setup | Send a `SESSION_SETUP` for a new session that the server answers `STATUS_MORE_PROCESSING_REQUIRED`, then a related `TREE_CONNECT`: it is refused at `Unwrap` with `STATUS_USER_SESSION_DELETED`, in a record of its own, and no tree is connected. Then re-authenticate a valid session with a leg answered `STATUS_MORE_PROCESSING_REQUIRED`, followed by a related `TREE_CONNECT`: it runs as the identity the session already holds. | a related member run on a new session that has not finished its setup, or one refused on a valid session mid re-authentication |
+| §16.5 a non-failure in a chain | On a file whose name is longer than 2 characters, send `CREATE`, then a related `QUERY_INFO` for `FileAllInformation` with a 104-byte output buffer, MS-FSA's minimum for that class, which holds the fixed part but not the whole name, then a related `CLOSE`: the `QUERY_INFO` answers `STATUS_BUFFER_OVERFLOW` with the name cut to the buffer, the `CLOSE` answers `STATUS_SUCCESS`, and the open is gone (a `READ` on its `FileId` answers `STATUS_FILE_CLOSED`). A fixed-size class, or a buffer below the minimum, would answer `STATUS_INFO_LENGTH_MISMATCH`, a failure, so the row names this class and size. | a related member after a status MS-SMB2 3.3.4.4 counts as no failure refused as after a failure, which leaves the open behind |
+| §16.5 a failure an `IOCTL` shares | Mark a file sparse (`FSCTL_SET_SPARSE`) and write two data ranges with a hole between of at least 64 KiB, aligned to 64 KiB, as a Windows reference needs to report a hole. Send `CREATE`, then a related `IOCTL` `FSCTL_QUERY_ALLOCATED_RANGES` over the file with a 16-byte output buffer, then a related `CLOSE`: the `CLOSE` answers the `IOCTL`'s status with no call, and the open stays (a `READ` on its `FileId` succeeds). The file is marked sparse so the row holds against a server that reports a file not marked so as one range, which would fit. | a `NotFailure` row keyed by a sentinel other FSCTLs share, which runs the related members after a failure |
+| §16.5 a copychunk failure in a chain | Open a file and take its resume key (`FSCTL_SRV_REQUEST_RESUME_KEY`). Send `FSCTL_SRV_COPYCHUNK` on that open with a `MaxOutputResponse` of 8 bytes, below the 12-byte `SRV_COPYCHUNK_RESPONSE`, then a related `CLOSE`: the `IOCTL` is a plain `STATUS_INVALID_PARAMETER` failure (MS-SMB2 3.3.5.15.6), the status of copychunk's `NotFailure` pair, and the `CLOSE` answers it with no call, and the open stays. | a `NotFailure` row for copychunk keyed on its status or a shared error rather than its own value, which would run the related members after a plain failure |
+| §16.5 a session in setup | Send a `SESSION_SETUP` for a new session that the server answers `STATUS_MORE_PROCESSING_REQUIRED`, then a related `TREE_CONNECT`: it is refused at `Unwrap` with `STATUS_USER_SESSION_DELETED`, in a record of its own, its response's `SessionId` the new session's, and no tree is connected. Then re-authenticate a valid session with a leg answered `STATUS_MORE_PROCESSING_REQUIRED`, followed by a related `TREE_CONNECT`: it runs as the identity the session already holds. | a related member run on a new session that has not finished its setup, or one refused on a valid session mid re-authentication |
 | §16.4 end to end | smbtorture and the Windows Protocol Test Suites run through `dt` ([RFC 29](rfc-29-test-harness.md)) as the end-to-end layer above the vectors and fuzz targets. | a translation correct in vectors but wrong against a real client |
 
 ### 16.7 Monitoring

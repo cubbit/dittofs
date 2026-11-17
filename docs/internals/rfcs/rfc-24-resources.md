@@ -510,7 +510,10 @@ the reverse:
    ([RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own));
 3. **receive**, at frame, before the request's body is read (§3.2);
 4. the connection's one **status wait**, taken by a reply that carries a status
-   alone and holds no reply reservation, before it waits for its buffer (§3.3);
+   alone, holds no reply reservation and waits in no place of its own under
+   flow control (a refusal on the reader, or a chain's member), before it waits
+   for its buffer; an admitted request's status waits in its own place instead
+   (§3.3);
 5. **reply**, once the arguments are decoded and the reply's bound is known,
    before the service is called (§3.3);
 6. the **share cap**, at the service's admission (§4.2);
@@ -538,9 +541,9 @@ ends:
   call's deadline passes, and a reply that carries a status alone after at most
   30 s, closing its connection, since parked requests' reservations can leave
   no send to wait for (§3.3);
-- a connection's status wait once its holder's status has its buffer, and a
-  status waiting for it, as its holder, within one 30 s counted from when that
-  status started waiting, past which the connection closes (§3.3). A cycle can
+- a connection's status wait once its holder's status has its buffer; a status
+  waits for the status wait and then for its buffer within one 30 s, counted
+  from when it started waiting, past which the connection closes (§3.3). A cycle can
   run through it: a parked or held call that ends only on a record this
   connection's reader has not read, a `CANCEL` or a lease-break
   acknowledgement, while the reader waits for the status wait. The 30 s close
@@ -1189,6 +1192,7 @@ from here. The inventory, from the socket down:
 | requests read on one connection | its flow control: slots, credits, 64 | [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own), [§3.4](#3.4%20The%20per-connection%20cap%20for%20protocols%20without%20flow%20control) | not read |
 | readers waiting for receive bytes | one per connection | §3.2, §4.1 | turns |
 | requests waiting for reply bytes | the requests admitted | §3.3 | the call's deadline, then `DelayResources` |
+| statuses waiting for the connection's one status wait, then for their buffer | the receive pool, each holding its record; per connection, its flow-control bound plus one but for a chain's member that holds no place (§3.3's `decision:`) | §2.6, §3.3 | 30 s from when each started waiting, then the connection closes (`reply_wait`) |
 | the writer's queue | 64 messages for every protocol, [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own)'s default cap, where the reader stops; past it only the replies of requests already admitted or pending and callbacks, its bytes by the reply pool, from which they were reserved | [RFC 20 §6.2](rfc-20-adapters.md#6.2%20The%20writer) | the reader stops; queuing never blocks a worker; the write deadline closes |
 | datagram listeners (the port mapper, NLM and NSM over UDP) | a fixed queue | [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states) | dropped; the client retries |
 | held SMB requests | the floor per connection, the hold pool | [RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests), [§4.3](#4.3%20Held%20requests%3A%20where%20their%20bytes%20go) | `STATUS_INSUFFICIENT_RESOURCES`, from the adapter, for a hold that starts on a returned `ErrDelay`; a call still in the service is never refused |
