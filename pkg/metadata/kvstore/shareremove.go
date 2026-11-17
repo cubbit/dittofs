@@ -253,6 +253,32 @@ func (n Nodes) ContinueRemoval(ctx context.Context, share entity.ShareID) (step 
 	return step, done, nil
 }
 
+// RemovalStep reports the step a share's removal stands at, as
+// ContinueRemoval reports it, running no batch; done is the removal ended, or
+// a share that never existed. A share not being removed is refused.
+func (n Nodes) RemovalStep(ctx context.Context, share entity.ShareID) (step uint8, done bool, err error) {
+	err = n.s.kv.View(ctx, func(r kv.Reader) error {
+		b, ok, err := get(r, shareKey(share, keys.SSt))
+		if err != nil || !ok {
+			done = err == nil
+			return err
+		}
+		st, err := decodeState(b)
+		switch {
+		case err != nil:
+			return err
+		case st.State == entity.ShareRetired:
+			done = true
+		case st.State != entity.ShareRemoving:
+			return merrs.NewInvalidArgumentError("the share is not being removed")
+		default:
+			step = removalSteps[st.Step]
+		}
+		return nil
+	})
+	return step, done, err
+}
+
 func (s *Store) removalBatch(tx kv.Txn, share entity.ShareID) (step uint8, done bool, err error) {
 	st, ok, err := removingState(tx, share)
 	if err != nil || !ok {
