@@ -934,8 +934,8 @@ the domain controller's server credential (MS-NRPC 3.1.4.1); one that fails
 refuses the channel, so no NTLM response reaches a peer that does not hold the
 machine password.
 
-A local user or group name never holds `@` (§4.6), so a name with one is never
-local. `identity.netbios_name` **MUST NOT** equal the directory record's NetBIOS
+A local user or group name never holds `@` or `\` (§4.6), so a name with
+either is never local. `identity.netbios_name` **MUST NOT** equal the directory record's NetBIOS
 domain, or a domain would route to both sources: a settings change naming the
 record's domain, and a directory record naming the installation's own name as
 its domain, later records included, are each refused at validation, naming the
@@ -1459,9 +1459,11 @@ and RFC 21 carries it on the wire.
   a UPN's realm suffix (§3.5), a ticket's service name (§3.3), and
   `identity.netbios_name` against the directory's NetBIOS domain. A simple case
   fold would match the Kelvin sign U+212A to `k`.
-- A local user or group name **MUST NOT** hold `@`; a creation or rename naming
-  one is refused `ErrInvalid`, so an NTLM user name with `@` always names a
-  directory user (§3.5).
+- A local user or group name **MUST NOT** hold `@` or `\`; a creation or rename
+  naming one is refused `ErrInvalid`, so an NTLM user name with `@` always names
+  a directory user (§3.5), and no local name is ambiguous with the
+  `<NetBIOS name>\<name>` spelling below, whose domain `APISignIn.Lookup` strips
+  (§8.1): a local `CORP\alice` would be one string naming two principals.
 - A user and a group may share a name
   ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)); a
   name lookup always says which kind it wants.
