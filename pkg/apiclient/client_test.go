@@ -315,10 +315,15 @@ func TestAnswerTooLong(t *testing.T) {
 }
 
 // A redirect is not followed: the call is refused with the redirect's
-// status, and its token never reaches the redirect's target.
+// status, and its token never reaches the redirect's target. The version
+// check is passed through, so the call itself meets the redirect.
 func TestRedirectNotFollowed(t *testing.T) {
 	s := serve(t, admin())
 	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/version" {
+			s.front.ServeHTTP(w, r)
+			return
+		}
 		http.Redirect(w, r, s.url+r.URL.RequestURI(), http.StatusTemporaryRedirect)
 	}))
 	t.Cleanup(redirect.Close)
@@ -603,7 +608,8 @@ func TestUnauthorizedRefreshesOnce(t *testing.T) {
 	})
 	t.Run("refused again", func(t *testing.T) {
 		s := serve(t, nil)
-		_, err := client(t, s.url, newClock(), apiclient.WithTokenSource(tokens{"stale", fresh})).Shares().Get(t.Context(), uuid.NewString())
+		always := tokens{"stale", func(string) (string, error) { return "fresh", nil }}
+		_, err := client(t, s.url, newClock(), apiclient.WithTokenSource(always)).Shares().Get(t.Context(), uuid.NewString())
 		if p := problem(t, "Get refused 401 twice", err); p.Status != http.StatusUnauthorized {
 			t.Errorf("Get refused 401 twice: %d, want 401", p.Status)
 		}
