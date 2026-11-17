@@ -130,13 +130,32 @@ func dirtySeed(ix *index.Index) []index.HeldDelta {
 	return out
 }
 
-// Segments returns the accounting of every segment the journal owns. Stats
-// gives the totals; this is the breakdown behind them.
-//
-// decision: the per-segment accounting is not built yet, so Segments answers
-// nil until the step that maintains it lands.
+// Segments returns the accounting of every segment the journal owns: the
+// set's own row — id, stream, sealed, failed, allocated — beside the held
+// and retained bytes the index counts for it and the damaged flag the
+// durability layer holds. Spares are not among them. Stats gives the
+// totals; this is the breakdown behind them. A snapshot of three sources,
+// each consistent on its own, with no fall between them held: an emptying
+// or a retirement in flight appears in one before the others settle.
 func (in Inspector) Segments() []SegmentInfo {
-	return nil
+	if in.c == nil {
+		return nil
+	}
+	rows := in.c.SegmentInfos()
+	out := make([]SegmentInfo, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, SegmentInfo{
+			ID:            SegmentID(r.ID),
+			Stream:        0,
+			Sealed:        r.State == 2, // segment.Sealed
+			Failed:        r.State == 3, // segment.Ended: failed or cut by an open
+			Allocated:     r.Size,
+			HeldBytes:     r.Held,
+			RetainedBytes: r.Retain,
+			Damaged:       r.Damaged,
+		})
+	}
+	return out
 }
 
 // Verify checks the index against the segments and reports what does not

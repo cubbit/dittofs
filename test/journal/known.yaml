@@ -616,14 +616,6 @@
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
-- test: TestRFC28A_UnprovenTailVerifiedAtOpen
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The emptying serves the roomy leg: the verified record is copied out of its ended source and the source unlinked. The at-maximum leg still leaves the verified record at its original placement while its source leaves the journal: the emptying of a journal opened at its maximum carries nothing out, and whether that is the retained-extent rule or a deeper gap is the row the reviewer owes.'
-  issue: '#4033'
-  message: 'still sits at'
-
 - test: TestRFC28C_SourcesAgree
   status: fail
   fix: planned

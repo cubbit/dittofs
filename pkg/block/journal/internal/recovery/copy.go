@@ -314,8 +314,9 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	}
 	st.Proof.ReappendTarget = target
 	// The bytes the phase wrote back, the figure the served journal reports
-	// beside its own syncs' re-appends.
-	for _, rec := range st.Proof.Reappends {
+	// beside its own syncs' re-appends: the pending list alone, for the
+	// sealed copies the skip filtered out wrote nothing here.
+	for _, rec := range pending {
 		st.Proof.ReappendedBytes += int64(rec.Header.BodySize())
 	}
 	// The drawn spares are segments now — sealed targets and failed ones —

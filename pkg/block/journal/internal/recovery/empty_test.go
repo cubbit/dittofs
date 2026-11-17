@@ -7,6 +7,7 @@ import (
 	"math"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
@@ -771,4 +772,232 @@ func TestReadFoundRotRidesTheLossRecord(t *testing.T) {
 	if _, ok := st.Rebuilt.Index.Lookup(file, 0x4100); ok {
 		t.Errorf("the index still serves a record at 0x4100 from an unlinked segment, want the rot's cut leaving the extent missing")
 	}
+}
+
+// TestCrashAtEveryEmptyingStep holds the crash matrix over the emptying's
+// own seam points: the copy target's append and its seal's syncs, the
+// deferred loss record's ride on the same target, and the source's own
+// unlink. A power cut lands at each held step mid-flight — the seam's crash
+// discards the in-flight call and everything no sync proved — and the crash
+// shape runs the reopen twice: the process-killed open (the crash, then the
+// state settled), then a second power loss right after that open's own
+// unlink has gone durable. At each full settle the three invariants: no
+// record held twice — the survivor's seq verifies in exactly one placement
+// on disk, the equal-numbers collapse answering a copy the crash raced —
+// each deferred loss named by exactly one loss record, and the superseded
+// content never served (the survivor reads back whole wherever it sits,
+// never a hole an unmasked older piece would fill).
+//
+// decision: the second open's SyncDir durability — the fourth step the
+// acceptance names — is covered by the second power loss landing after the
+// second open's own unlink went durable: a removal already synced must
+// survive the loss, which is the one crash it cannot lose.
+//
+// ponytail: the retire step's own recycles are out of this matrix — the
+// fixture holds no dead sealed segments, so each run's retire step retires
+// nothing — and the pool's spare is prewarmed before the hold engages, so
+// a held write can only be the copy's own. Upgrade the fixture with a dead
+// full seal when the retire step's crash points owe their own rows.
+func TestCrashAtEveryEmptyingStep(t *testing.T) {
+	file := tailFile()
+	droppedFile := srcFileFileID()
+	// The survivor's numbers, the deferred loss's named record, and the
+	// deferred loss's own extent.
+	const (
+		survSeq   = core.Seq(2)
+		dropSeq   = core.Seq(22)
+		survOff   = 0x4100
+		survBytes = 32
+	)
+
+	// plantOne makes the directory the crash runs over: the ended source
+	// segment 2 holding the live survivor, and a deferred loss against the
+	// segment whose dropped record the copy leg owes the loss record of.
+	plantOne := func(t *testing.T) (*rig, Deps) {
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(2, damageHeader(buildSeg(2, collectWrite(7, file, uint64(survSeq), uint64(survSeq), survOff, survBytes))))
+		d := r.runDeps()
+		return r, d
+	}
+	// settle runs the recovery and the emptying over the crashed directory —
+	// the process-killed reopen — wiring the harness with the registry's
+	// own EndDeferral, and asserts the three invariants. Its answers name
+	// the state it settled for the caller that reads more from it.
+	settle := func(t *testing.T, r *rig, d Deps, dur *durability.Durability) *State {
+		t.Helper()
+		// The view the deps reach the directory through is bound to the
+		// crashes it had seen when it was made, so each reopen past a
+		// power cut takes a fresh one: the pinning is the seam's epoch rule.
+		d.FS, d.Dir = r.seam.FS(), r.dir
+		st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
+		if err != nil {
+			t.Fatalf("the reopen's Run: %v", err)
+		}
+		h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 1})
+		if dur != nil {
+			h.deps.EndDeferral = dur.EndDeferral
+		}
+		if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil); err != nil {
+			t.Fatalf("the reopen's Emptying: %v", err)
+		}
+		assertInvariants(t, r, &st, file, survSeq, survOff, dropSeq)
+		return &st
+	}
+
+	for _, tc := range []struct{ name, op, key string }{
+		{"target_append", "write", ""},
+		{"target_seal_sync", "sync", ""},
+		{"source_unlink", "remove", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, d := plantOne(t)
+
+			// The deferred loss against the ended source, planted the way a
+			// running journal's own deferral does.
+			dur := r.registryDurability(t, journalID)
+			RegistryPlant(t, dur, durability.Loss{
+				Share:    7,
+				File:     droppedFile,
+				Extent:   core.Extent{Off: 0, Len: 16},
+				Version:  core.Version{Counter: 30},
+				Seq:      dropSeq,
+				Reason:   core.LossCorrupt,
+				Synced:   false,
+				Deferred: true,
+				Seg:      2,
+			})
+			st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
+			if err != nil {
+				t.Fatalf("the first Run: %v", err)
+			}
+			h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 1})
+			h.deps.EndDeferral = dur.EndDeferral
+			// Prewarm the pool's spare so a held write is the copy's own:
+			// the settle the draw waits on already happened.
+			if err := h.pool.WaitSpares(context.Background()); err != nil {
+				t.Fatalf("the pool's prewarm: %v", err)
+			}
+			// The crash key: the spare the copy draws is the first id above
+			// every id the directory holds, the source's own name for the
+			// unlink leg.
+			key := tc.key
+			if key == "" {
+				key = format.SegmentName(st.Attached.MaxID + 1)
+				if tc.op == "remove" {
+					key = format.SegmentName(2)
+				}
+			}
+			hold := r.seam.Hold(t, kitOp(tc.op), key)
+
+			crashed := make(chan error, 1)
+			go func() {
+				crashed <- Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil)
+			}()
+			select {
+			case <-hold.Reached():
+			case err := <-crashed:
+				t.Fatalf("the emptying returned (%v) before the held step %s on %s", err, tc.op, key)
+			}
+			if err := r.seam.Crash(); err != nil {
+				t.Fatalf("the power cut at the held step: %v", err)
+			}
+			hold.Release()
+			select {
+			case err := <-crashed:
+				_ = err
+			case <-time.After(30 * time.Second):
+				t.Fatalf("the crashed emptying never returned: a hold at the %s step wedged the phase past the crash", tc.name)
+			}
+
+			// The process-killed reopen: settled state and invariants.
+			settle(t, r, d, dur)
+
+			// The second power loss, right after that open's own unlink
+			// went durable: the removal survives exactly and the third open
+			// settles the same invariants.
+			if err := r.seam.Crash(); err != nil {
+				t.Fatalf("the second power loss: %v", err)
+			}
+			settle(t, r, d, dur)
+		})
+	}
+}
+
+// assertInvariants holds the crash matrix's three answers over a settled
+// state: the survivor verifies in exactly one whole placement (no copy the
+// crash raced sits a second time), the deferred loss is named by exactly one
+// loss record on disk, and the survivor still serves its own extent whole
+// — never the hole an unmasked superseded piece would read as.
+func assertInvariants(t *testing.T, r *rig, st *State, file core.FileID, survSeq core.Seq, off int64, dropSeq core.Seq) {
+	t.Helper()
+	var copies, losses int
+	for _, name := range r.listing() {
+		kind, id := format.ClassifyName(name)
+		if kind != format.NameSegment {
+			continue
+		}
+		bs, err := r.seam.Durable(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		walk, werr := format.ScanSegmentHeaders(bytes.NewReader(bs), int64(len(bs)), journalID, id)
+		if werr != nil {
+			continue // a crashed target the next open re-reads and settles
+		}
+		for _, rec := range walk.Records {
+			if rec.Header.Seq == survSeq && rec.Header.Kind == format.KindWrite {
+				copies++
+			}
+			if rec.Header.Kind != format.KindLoss {
+				continue
+			}
+			if rec.Header.Offset+rec.Header.Size() > int64(len(bs)) {
+				continue
+			}
+			body, berr := format.VerifyRecordBody(bs[rec.Header.Offset+format.RecordHeaderSize:rec.Header.Offset+rec.Header.Size()], journalID, rec.Header)
+			if berr != nil {
+				continue
+			}
+			if body.Loss.Dropped == dropSeq {
+				losses++
+			}
+		}
+	}
+	if copies != 1 {
+		t.Errorf("the survivor of seq %d verifies %d times on disk, want the one copy the emptying settles: a crash raced a copy it must not leave twice", survSeq, copies)
+	}
+	if losses != 1 {
+		t.Errorf("%d loss records on disk name the dropped record %d, want exactly the one the copy leg owes", losses, dropSeq)
+	}
+	placed, ok := st.Rebuilt.Index.Lookup(file, off)
+	if !ok {
+		t.Fatalf("the index answers no record at %d of the survivor's file, want the settled copy serving it", off)
+	}
+	if placed.Seq != survSeq {
+		t.Errorf("the extent at %d serves the record of seq %d, want the survivor's %d: the superseded content must never serve", off, placed.Seq, survSeq)
+	}
+	if slices.Contains(r.listing(), format.SegmentName(2)) {
+		t.Errorf("the ended source's file is still on disk at the settle, want the unlink having taken it")
+	}
+}
+
+// srcFileFileID answers the clone-source fixture's file id as its own, the
+// one file the survivor's never shares.
+func srcFileFileID() core.FileID {
+	return core.NewFileID(srcFile())
+}
+
+// kitOp maps the crash-point table's kind word onto the seam's op string.
+func kitOp(op string) string {
+	switch op {
+	case "write":
+		return kit.OpWrite // the copy's own append into the target spare
+	case "sync":
+		return kit.OpSync // the seal writer's syncs over the target
+	case "remove":
+		return kit.OpRemove // the source's own unlink
+	}
+	t := op
+	panic("the crash table named an op the seam does not hold: " + t)
 }
