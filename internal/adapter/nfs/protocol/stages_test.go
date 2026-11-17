@@ -355,6 +355,19 @@ func TestTheMinorVersions(t *testing.T) {
 		t.Errorf("minor 1 under 4.0 to 4.1: %v", err)
 	}
 
+	// Under 4.1 to 4.1, a minor version below the range and one above it are
+	// each refused with the version 4 table.
+	s41 := stageOf(settings.VersionRange{Min: "4.1", Max: "4.1"})
+	for _, minor := range []uint32{0, 2} {
+		h, err := decode(t, s41, compoundCall(minor, "abcde"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if table, _, err := s41.Route(h, nil); !errors.Is(err, core.ErrVersion) || table != s41.tables.V4 {
+			t.Errorf("minor %d under 4.1 to 4.1: %p, %v; want the version 4 table and ErrVersion", minor, table, err)
+		}
+	}
+
 	// Two COMPOUNDs on one connection hold their own minor versions, and NFS
 	// version 4's other procedures read at version 0 right after one.
 	s2 := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
@@ -387,23 +400,24 @@ func TestTheMinorVersions(t *testing.T) {
 }
 
 // The credential and verifier rules of RFC 21 section 11.1, each refused with
-// no table.
+// no table and answered AUTH_ERROR with its own auth_stat.
 func TestTheCredentials(t *testing.T) {
 	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
 	for _, c := range []struct {
-		name string
-		body []byte
-		want error
+		name  string
+		body  []byte
+		want  error
+		reply string
 	}{
-		{"AUTH_DH", nullCall(progNFS, 3, 0, 3, nil, wire.AuthNone, nil, nil), errAuthCred},
-		{"flavour 99", nullCall(progNFS, 3, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred},
-		{"RPCSEC_GSS", nullCall(progNFS, 3, 0, wire.AuthGSS, []byte{0, 0, 0, 0}, wire.AuthNone, nil, nil), errAuthCred},
-		{"a truncated AUTH_SYS", nullCall(progNFS, 3, 0, wire.AuthSys, []byte{0, 0}, wire.AuthNone, nil, nil), errAuthCred},
-		{"17 groups", nullCall(progNFS, 3, 0, wire.AuthSys, authSys("h", 0, 0, make([]uint32, 17)...), wire.AuthNone, nil, nil), errAuthCred},
-		{"a 256-byte name", nullCall(progNFS, 3, 0, wire.AuthSys, authSys(string(make([]byte, 256)), 0, 0), wire.AuthNone, nil, nil), errAuthCred},
-		{"an AUTH_NONE credential with a body", nullCall(progNFS, 3, 0, wire.AuthNone, []byte{1, 2, 3, 4}, wire.AuthNone, nil, nil), errAuthCred},
-		{"an AUTH_SYS verifier", nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthSys, authSys("h", 0, 0), nil), errAuthVerf},
-		{"an AUTH_NONE verifier with a body", nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, []byte{1, 2, 3, 4}, nil), errAuthVerf},
+		{"AUTH_DH", nullCall(progNFS, 3, 0, 3, nil, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"flavour 99", nullCall(progNFS, 3, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"RPCSEC_GSS", nullCall(progNFS, 3, 0, wire.AuthGSS, []byte{0, 0, 0, 0}, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"a truncated AUTH_SYS", nullCall(progNFS, 3, 0, wire.AuthSys, []byte{0, 0}, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"17 groups", nullCall(progNFS, 3, 0, wire.AuthSys, authSys("h", 0, 0, make([]uint32, 17)...), wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"a 256-byte name", nullCall(progNFS, 3, 0, wire.AuthSys, authSys(string(make([]byte, 256)), 0, 0), wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"an AUTH_NONE credential with a body", nullCall(progNFS, 3, 0, wire.AuthNone, []byte{1, 2, 3, 4}, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"an AUTH_SYS verifier", nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthSys, authSys("h", 0, 0), nil), errAuthVerf, "deny-auth-badverf"},
+		{"an AUTH_NONE verifier with a body", nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, []byte{1, 2, 3, 4}, nil), errAuthVerf, "deny-auth-badverf"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h, err := decode(t, s, c.body)
@@ -414,18 +428,19 @@ func TestTheCredentials(t *testing.T) {
 			if table != nil || !errors.Is(err, c.want) {
 				t.Fatalf("%p, %v; want no table and %v", table, err, c.want)
 			}
-			if got := status(s, err); got != statusAuthCred && got != statusAuthVerf {
-				t.Errorf("status %#x, want an AUTH_ERROR", uint32(got))
-			}
+			reply(t, s, h, status(s, err), golden(t, c.reply))
 		})
 	}
-	// An RPC version other than 2 is the first refusal.
+	// An RPC version other than 2 is the first refusal, answered RPC_MISMATCH
+	// with 2 and 2.
 	b := nullCall(progNFS, 3, 0, wire.AuthSys, nil, wire.AuthNone, nil, nil)
 	b[11] = 3 // the RPC version's low byte: 3
 	h, _ := decode(t, s, b)
-	if _, _, err := s.Route(h, nil); !errors.Is(err, errRPCMismatch) {
-		t.Errorf("RPC version 3: %v, want RPC_MISMATCH", err)
+	table, _, err := s.Route(h, nil)
+	if table != nil || !errors.Is(err, errRPCMismatch) {
+		t.Fatalf("RPC version 3: %p, %v; want no table and RPC_MISMATCH", table, err)
 	}
+	reply(t, s, h, status(s, err), golden(t, "deny-rpc-mismatch"))
 }
 
 // A message that is not a call decodes, and Route drops it with no table
@@ -484,23 +499,30 @@ func TestTheDecodeRefusals(t *testing.T) {
 	}
 }
 
-// Args begins past the verifier, which for a COMPOUND is its tag.
+// Args begins past the verifier, which for a COMPOUND is its tag, wherever a
+// credential's length puts it.
 func TestArgsBeginAtTheTag(t *testing.T) {
 	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
-	body := nullCall(progNFS, versNFS4, 1, wire.AuthSys, authSys("dittofs-knfsd-ref", 0, 0), wire.AuthNone, nil, nil)
-	body = opaque(body, []byte("abcde"))
-	body = binary.BigEndian.AppendUint32(body, 0)
-	body = binary.BigEndian.AppendUint32(body, 1)
-	h, err := decode(t, s, body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := s.Args(&resources.Buf{B: body}, h)
-	if len(args) != 20 {
-		t.Errorf("args are %d bytes, want the tag, the minor version and the count", len(args))
-	}
-	if binary.BigEndian.Uint32(args) != 5 {
-		t.Errorf("args begin with %#x, not the tag's length", binary.BigEndian.Uint32(args))
+	for _, c := range []struct {
+		name string
+		at   int
+	}{
+		// Frame 8: six words, an AUTH_SYS credential of 40 bytes with its
+		// flavour and length, and an empty AUTH_NONE verifier; its tag is empty.
+		{"nfsv4-compound-call", 24 + 8 + 40 + 8},
+		// AUTH_NONE twice, then the tag "abcde".
+		{"nfsv4-compound-short-tag", 24 + 8 + 8},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			call := record(t, c.name)
+			h, err := decode(t, s, call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if args := s.Args(&resources.Buf{B: call}, h); !bytes.Equal(args, call[c.at:]) {
+				t.Errorf("args are %x, want %x", args, call[c.at:])
+			}
+		})
 	}
 }
 
@@ -665,5 +687,32 @@ func TestTheHeaderVersions(t *testing.T) {
 				t.Errorf("the request's version is %d, want %d", r.Version, c.want)
 			}
 		})
+	}
+}
+
+// The connection's first routed call ends its handshake deadline, and neither a
+// refused call before it nor a routed call after it does. core's Conn does not
+// implement Established yet and panics in it, so the panic shows the call.
+func TestTheFirstRoutedCallEstablishes(t *testing.T) {
+	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
+	s.conn = &core.Conn{}
+	establishes := func(body []byte) (called bool) {
+		t.Helper()
+		h, err := decode(t, s, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { called = recover() != nil }()
+		_, _, _ = s.Route(h, nil)
+		return false
+	}
+	if establishes(nullCall(progNFS, 3, 0, 99, nil, wire.AuthNone, nil, nil)) {
+		t.Error("a refused call establishes the connection")
+	}
+	if !establishes(call(progNFS, 3)) {
+		t.Error("the first routed call does not establish the connection")
+	}
+	if establishes(call(progNFS, 3)) {
+		t.Error("the second routed call establishes the connection again")
 	}
 }
