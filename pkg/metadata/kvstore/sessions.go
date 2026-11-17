@@ -402,7 +402,7 @@ func (c controlTx) PutSignInFailures(k entity.SignInKey, f entity.SignInFailures
 	if err != nil {
 		return err
 	}
-	if tag == keys.SFSource && unindexable(f.Failed, sourceCountLife) || tag == keys.SFPair && unindexable(f.Last, pairCountLife) {
+	if tag == keys.SFSource && unindexable(f.Failed, entity.SourceSignInLife) || tag == keys.SFPair && unindexable(f.Last, entity.PairSignInLife) {
 		return merrs.NewInvalidArgumentError("a count's expiry follows a time from 1970 to 2262")
 	}
 	if k.Account != (entity.Principal{}) {
