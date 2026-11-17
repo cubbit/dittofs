@@ -242,7 +242,8 @@ Out of scope, each named in O1:
      and `principals`, the store time of the write that raised the generation to the
      time this node applied it, which RFC 23's node feeds from the positions it reconciles and
      reads for its `config_generation_behind` condition;
-   - secrets: `config_secrets_behind`;
+   - secrets: `config_secrets_behind`, recorded by epic 5's reconcile, the one place that knows
+     which versions this node holds;
    - versions: `format_active_version`, `format_supported_min`, `format_supported_max`.
 
    The provisioning series are out with the file. No label carries a record or a secret (RFC 13
@@ -291,12 +292,12 @@ Out of scope, each named in O1:
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 4 | 6 | team | every epic |
 | E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 8 | 14.5 | A | E5; RFC 23's epics 3 and 5 (its X1) |
 | E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 8 | 18.5 | B | E5; partly RFC 18's plan's epic 6 |
-| E4 | Secrets | `keyprovider` moved, `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 6 | 14 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
+| E4 | Secrets | `keyprovider` moved, `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
 | E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule | 4 | 12 | team | E6; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty, off by default; the launchers on `dfs init` and the images' `init` as an explicit step, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
-| | **Total** | | **35** | **75** | | |
+| | **Total** | | **37** | **73** | | |
 
-**Plan estimate: 35 subtasks, 75 man-days.**
+**Plan estimate: 37 subtasks, 73 man-days.**
 
 The skill's estimate for RFC 13's 1,221 lines is 3 middle epics (`round(1221 / 400)`), and this plan
 has 3.
@@ -1174,7 +1175,7 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
 
 ### Epic 4 — Secrets
 
-**Epic 4 estimate: 6 subtasks, 14 man-days.**
+**Epic 4 estimate: 8 subtasks, 12 man-days.**
 
 A secret is a sealed record under its role's wrapping key. It rotates as a new version, the old one
 is pruned, and every version goes with the record that names it.
@@ -1183,8 +1184,8 @@ is pruned, and every version goes with the record that names it.
 §2.2's wrapping-key row; RFC 16's `Secret` record.
 
 **Done when:** RFC 13 §9's rows "§7 role keys" and "§7 user secrets" pass, the second with a
-`Secret` written through the kvstore view and removed by kvstore's `DeleteUser`, so it needs no
-RFC 18 piece, and without its restart clause, a deferral (§6.1); and library-layer tests pass: D9's refusal at `Seal` of a second version
+`Secret` written through the kvstore view and removed by kvstore's resumable `DeleteUser` (RFC
+23's plan's T2.11), its restart clause included, so it needs no RFC 18 piece; and library-layer tests pass: D9's refusal at `Seal` of a second version
 of a `remote credential` and of a reseal under another kind; D10's `Resolve` refusing a reference whose record is another kind; `Prune`
 keeping a version the node's status still holds; `Seal` refusing a kind under the other role; and,
 under one key so `keyprovider`'s key-ID check cannot answer first, an envelope moved to another
@@ -1206,7 +1207,7 @@ reference, version, role, kind or owner, or with its `HandedOver` flipped, faili
   but `Prune`, which drops only versions nothing resolves (§4.3 above).
 - Versions: a rotation writes a new version, and `Prune`, called by the rotation's owner, drops the
   versions below the lowest one any node's `NodeStatus.Secrets` holds (§4.3 above), counted by
-  `config_secrets_behind`.
+  `config_secrets_behind`, which epic 5 records (§1.5, rule 3).
 - A `manual`-tier benchmark of eight concurrent `Seal` and `tx.PutSecret` writers on Badger under
   `t.TempDir()`, with `ReportAllocs`, run with the `CFGGEN` raise and without it as the baseline,
   compared by `benchstat` over `-count=10`,
@@ -1218,9 +1219,9 @@ reference, version, role, kind or owner, or with its `HandedOver` flipped, faili
   `ControlPlaneTx` only, with which `Delete` changes to take the caller's transaction (§6.1). The commit that fails after a secret is sealed, faulted on Badger under `t.TempDir()`,
   leaves no secret behind. `DeleteUser` does not call it: kvstore deletes the
   user's `SEC` rows itself, in the transaction that deletes the user record (RFC 16 §3). The rows go
-  with that record's deletion: this epic adds them to today's `DeleteUser`, whose one transaction
-  is that deletion, and RFC 23's plan's resumable deletion (its epics 2 and 3) keeps them in its
-  last transaction, the one that deletes the record, so this epic's test holds across the change.
+  with that record's deletion, in the last transaction of RFC 23's plan's resumable `DeleteUser`
+  (its T2.11, landed), the `NTHash` reference added by the RFC 18 plan's T2.8. This epic changes
+  no deletion code and runs RFC 13 §9's row over it.
 
 ### Epic 5 — Integration
 
@@ -1424,7 +1425,6 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | "§2.2 explicit initialisation"'s clause recording a new identity by a recovery import (O1, §1.4) | needs RFC 26's recovery import | RFC 26 plan | RFC 26's plan builds the import |
 | The call that raises an active version, `raise-format` (RFC 13 §5.5), and with it D11's write of a section's newer `Schema` (header, §4.3's `ponytail:`, D11, O1) | each format has one version | unowned | a format gains a second version |
 | "§7 rotation"'s wrapping-key half and its reseal pass (§4.3's `ponytail:`, O1, §1.4) | a retired role key keeps every secret open | unowned | an operator must remove a role key, or a role key is compromised |
-| "§7 user secrets"'s restart clause (epic 4's **Done when:**) | it runs with the resumable user deletion | RFC 23 plan, epic 3 | its resumable deletion lands |
 | The namespace key table; "§5.1 encryption bound", "§7 namespace keys", "§7 chunk-ID key", "§7 key table" (header, O1, §1.4) | RFC 13 §7's material bullets are RFC 5's | RFC 5 plan | RFC 5's plan |
 | "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys |
 | The cluster rules: §5's two-step restart value, §5.4 and §5.5 across nodes, the two-node §9 rows; a lagging node refusing the raise (header, §4.3's `ponytail:`, O1, §1.4) | single node only | RFC 15 | a second node |
@@ -1461,7 +1461,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | RFC 13 §5.5 | E2 (single node); the raise call and cluster O1 |
 | RFC 13 §6 | E3; E5 (the port rule, at write); E6 (rows); the port rule at start O1; cross-component rule §4.3 above |
 | RFC 13 §7 | E4; E5 (the credential rotation, the reconcile's prune and revocation report); material bullets RFC 5's, O1; reseal and wrapping-key rotation §4.3 above, O1 |
-| RFC 13 §8 | E2, E3, E4 (series); E5 (as a whole); provisioning series O1 |
+| RFC 13 §8 | E2, E3 (series); E5 (as a whole, `config_secrets_behind` among them); provisioning series O1 |
 | RFC 13 §9 | E2, E3, E4, E5, E6 (rows); out rows §1.4, O1 |
 | RFC 13 §10 | — (edits already applied) |
 | RFC 13 §11 | — (open in their own RFCs) |
