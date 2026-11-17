@@ -601,6 +601,10 @@ before `vfs.Serve` stops (step 4), while other nodes can still reach it:
 2. The sidecars are synced with the empty set, so nothing is advertised that is
    about to stop; then every adapter is `Stop`ped, which drains it
    ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)), all of them concurrently, under one drain deadline.
+   The step's bound is that deadline plus 30 s, the longest a `Stop` waits for
+   its connections' `OnClose`. Then the retrier the adapters hand a failing
+   `Disconnect` to, `Deps.Retry`, stops, dropping what it still holds
+   ([RFC 20 §3.2](rfc-20-adapters.md#3.2%20A%20connection%27s%20lifecycle)).
 3. The management API stops accepting calls, and calls in flight run to their
    answer within the drain deadline; then the operation runner stops, leaving
    each operation it drives at its last durable step and releasing its claim

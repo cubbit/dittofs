@@ -416,11 +416,31 @@ var ErrTooLarge = errors.New("resources: charge past the ceiling")
 type Reservation struct{ /* unexported: the budget it came from, the key, the bytes */ }
 func (r *Reservation) Release()
 
-// Budgets is what an adapter is handed (RFC 20 §3.4): the four budgets on the request path.
+// Budgets is what an adapter is handed (RFC 20 §3.4): the four budgets on the
+// request path, and the node's connection count.
 type Budgets struct {
 	Receive, Reply   *WaitBudget
 	Connection, Hold *Budget
+	Conns            *ConnLimit // §4.4: one per node, shared by every adapter
 }
+
+// ConnLimit counts a node's open connections against connection_limit and
+// each address's quarter of it (§4.4), across every adapter. It counts
+// connections, not bytes: their memory is the connection-state budget's.
+type ConnLimit struct{ /* limit, open connections, open per address */ }
+func NewConnLimit(limit int) *ConnLimit
+// Take counts one connection from addr at accept, or refuses at once:
+// ErrConnLimit at the limit, ErrConnQuarter at addr's quarter.
+func (l *ConnLimit) Take(addr netip.Addr) error
+func (l *ConnLimit) Release(addr netip.Addr) // at the connection's teardown
+// SetLimit applies a changed connection_limit to connections accepted
+// afterwards; those open stay. An address's quarter is limit / 4, at least 1.
+func (l *ConnLimit) SetLimit(limit int)
+
+var (
+	ErrConnLimit   = errors.New("resources: at the connection limit")
+	ErrConnQuarter = errors.New("resources: address at its quarter of the connection limit")
+)
 
 func NewBufPool(b *WaitBudget) *BufPool // RFC 20 §6.8's buffers in §3.1's classes, each reserved from b, its Get keyed as Reserve is
 // TryGet is Get's one try with no context: it takes Get's charge for key, n's
@@ -544,6 +564,7 @@ budgets := &resources.Budgets{
 	Reply:      resources.NewWaitBudget("reply", sp.Reply),
 	Connection: resources.NewBudget("connection", sp.Conn),
 	Hold:       resources.NewBudget("hold", sp.Hold),
+	Conns:      resources.NewConnLimit(settings.ConnectionLimit), // §4.4: checked above; a change set live with SetLimit
 }
 ost := openstate.New(openstate.Deps{Budget: resources.NewBudget("open", sp.Open) /* … */})
 svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(budgets.Receive, budgets.Reply) /* … */})
@@ -556,7 +577,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(budgets.Receive, budget
 | --- | --- | --- | --- |
 | `Limit` | the root, first | the root | read once; never changes |
 | `Split` | the root, from `Limit` | the root, a value | recomputed only at the next start |
-| `Budgets`: receive, reply, connection state, hold | the root | shared by every adapter's `core` | none; checked at zero after the adapters stop |
+| `Budgets`: receive, reply, connection state, hold, and the `ConnLimit` count | the root | shared by every adapter's `core` | none; checked at zero after the adapters stop |
 | open-state `Budget` | the root | the open-state table; **(cluster)** also the dedup table | as above |
 | `ShareCap` | the root, over receive and reply | the service's admission, in `*vfs.Filesystem` | entries dropped at zero |
 | CPU tokens | the root, from `Split` | shared by background workers | none |
@@ -593,7 +614,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(budgets.Receive, budget
 pkg/resources/
   limit.go        Limit, Detect: the runtime limit, the control group, the host (§2.1)
   split.go        Split, SplitFor, Check: fractions, floors, the ceilings' sum, settings (§2.3, §2.4, §7)
-  budget.go       Budget, WaitBudget, Reservation, Budgets: counted pools and their turns (§2.5, §4.1)
+  budget.go       Budget, WaitBudget, Reservation, Budgets, ConnLimit: counted pools and their turns, and the connection count (§2.5, §4.1, §4.4)
   buf.go          Buf, BufPool, NewBufPool: §3.1's classes, a sync.Pool per class, reference counted, reserved before taken (RFC 20 §6.8)
   sharecap.go     ShareCap, WithCharge, ChargeOf (§4.2)
   fd.go           the open-file split and fd_limit_low (§6.3)
@@ -686,6 +707,12 @@ at its hold bound
 ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)),
 so the wait is bounded by the longest deadline or hold bound in flight, though
 no deadline of its own runs: the request it would read has not started.
+The frame deadline, RFC 20 §6.4's `read_timeout`, runs only while the reader
+cuts a record: from its first byte, one already read included, stopped while
+the reader waits for receive room and a full `read_timeout` again once the
+reservation is granted, and disarmed between records, so no connection is
+closed for the node's want of memory or while the reader is paused outside a
+record.
 
 > decision: memory at the receive ceiling is backpressure, not an error. An
 > answer the client must retry costs a read of the whole request it then
@@ -1008,15 +1035,23 @@ cannot be charged is closed at accept, before any byte is read
   sessions and their reply caches;
 - half the process's open-file limit (§6.3).
 
-A value set above either is refused at start, naming the bound it passes.
+A value set above either is refused at start, and when the node applies a
+change (§2.7), naming the bound it passes.
 
 > ponytail: half the pool for connections is a guess. Settle the split when
 > §8's M2 measures heap per connection and per session on the reference
 > workloads, or sessions are seen refused below the connection limit.
 
-**No address holds more than a quarter of the connection limit.** A connection
-from an address already holding a quarter is closed at accept, counted under its
-own reason (§10).
+**One count spans every adapter.** The limit is `Budgets.Conns` (§2.5), one
+per node: each adapter's accept takes from it and the connection's teardown
+gives back, so NFS's and SMB's connections share the limit and each address's
+quarter. `connection_limit` is live: once §2.7's check passes, the node sets a
+change with `SetLimit` for connections accepted afterwards, and connections
+already open stay.
+
+**No address holds more than a quarter of the connection limit**, rounded
+down and at least one. A connection from an address already holding a quarter
+is closed at accept, counted under its own reason (§10).
 
 > decision: a quarter per address. A multi-session desktop host or a build
 > farm's NAT legitimately opens many connections, but no one address needs more
@@ -1119,7 +1154,7 @@ from here. The inventory, from the socket down:
 | requests read on one connection | its flow control: slots, credits, 64 | [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own), [§3.4](#3.4%20The%20per-connection%20cap%20for%20protocols%20without%20flow%20control) | not read |
 | readers waiting for receive bytes | one per connection | §3.2, §4.1 | turns |
 | requests waiting for reply bytes | the requests admitted | §3.3 | the call's deadline, then `DelayResources` |
-| the writer's queue | the connection's flow-control bound | [RFC 20 §6.2](rfc-20-adapters.md#6.2%20The%20writer) | the reader stops; the write deadline closes |
+| the writer's queue | 64 messages for every protocol, [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own)'s default cap, where the reader stops; past it only the replies of requests already admitted or pending and callbacks, its bytes by the reply pool, from which they were reserved | [RFC 20 §6.2](rfc-20-adapters.md#6.2%20The%20writer) | the reader stops; queuing never blocks a worker; the write deadline closes |
 | datagram listeners (the port mapper, NLM and NSM over UDP) | a fixed queue | [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states) | dropped; the client retries |
 | held SMB requests | the floor per connection, the hold pool | [RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests), [§4.3](#4.3%20Held%20requests%3A%20where%20their%20bytes%20go) | `STATUS_INSUFFICIENT_RESOURCES`, from the adapter, for a hold that starts on a returned `ErrDelay`; a call still in the service is never refused |
 | blocked lock waiters | 1,024 per client per primary, charged to the open-state pool | [RFC 14 §5.5](rfc-14-open-state.md#5.5%20A%20client%27s%20grants%20are%20bounded), [§4.6](#4.6%20Open%20state) | `DelayResources` |
@@ -1138,6 +1173,14 @@ from here. The inventory, from the socket down:
 A queue whose entries hold a reference rather than bytes — a transfer waiting
 for a worker, a work item — is bounded by count, and its memory is in the
 unpooled quarter. A queue whose entries hold bytes is bounded by a pool.
+
+> ponytail: the reader stops at a fixed 64 queued messages, where an SMB
+> connection's credits or an NFSv4.1 session's slots may let more replies be
+> ready at once, so a client slow to read is paused before its credits or slots
+> run out. Stop it at the connection's flow-control bound, which
+> `FlowControl` would then expose, when an SMB or NFSv4.1 benchmark on the
+> reference box shows readers paused at the writer's bound while the client
+> still reads.
 
 ### 5.2 The chain from the socket to the remote
 
