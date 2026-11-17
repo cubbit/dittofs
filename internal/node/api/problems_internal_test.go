@@ -36,20 +36,19 @@ var covered = []struct{ dir, alias, prefix string }{
 }
 
 // Every error and code the covered packages declare, read from their source,
-// has a row in problems.go, and a component's row answers the error's own
-// name as its code: a new error with no row, or a row answering another name,
-// fails here.
+// has a row in problems.go, and that row answers the error's or the code's
+// own name as its code, written as a literal or as an apiv1 constant: a new
+// error with no row, or a row answering another name, fails here.
 func TestProblemTableNamesEveryDeclaredError(t *testing.T) {
 	named, codes := tableRows(t)
 	for _, c := range covered {
 		for _, name := range declared(t, c.dir, c.prefix) {
 			sel := c.alias + "." + name
+			want := snake(strings.TrimPrefix(name, c.prefix))
 			if !named[sel] {
 				t.Errorf("%s has no row in the problem table", sel)
-				continue
-			}
-			if code, ok := codes[sel]; ok && code != snake(strings.TrimPrefix(name, "Err")) {
-				t.Errorf("%s answers code %q, want %q", sel, code, snake(strings.TrimPrefix(name, "Err")))
+			} else if code := codes[sel]; code != want {
+				t.Errorf("%s answers code %q, want %q", sel, code, want)
 			}
 		}
 	}
@@ -71,8 +70,8 @@ func TestProblemTableIsTotal(t *testing.T) {
 			t.Errorf("%v: answered %d %q, named %v; want a row", err, p.Status, p.Code, ok)
 		}
 	}
-	if p, ok := problemOf(errors.New("no row names this")); ok || p.Status != http.StatusInternalServerError {
-		t.Errorf("an unnamed error: answered %d, named %v; want 500 and unnamed", p.Status, ok)
+	if p, ok := problemOf(errors.New("no row names this")); ok || p.Status != http.StatusInternalServerError || p.Code != "" {
+		t.Errorf("an unnamed error: answered %d %q, named %v; want 500 with no code, unnamed", p.Status, p.Code, ok)
 	}
 }
 
@@ -99,7 +98,9 @@ func TestProblemCodeIsTheComponentsName(t *testing.T) {
 		{&merrs.StoreError{Code: merrs.ErrIOError, Message: "read", Cause: context.DeadlineExceeded}, http.StatusServiceUnavailable, "unavailable"},
 		{errors.Join(context.Canceled, &merrs.StoreError{Code: merrs.ErrNotFound}), http.StatusServiceUnavailable, "unavailable"},
 		{&merrs.StoreError{Code: merrs.ErrIOError, Message: "read", Cause: errors.New("disk")}, http.StatusInternalServerError, "io_error"},
-		{kv.ErrConflict, http.StatusServiceUnavailable, "unavailable"},
+		{kv.ErrConflict, http.StatusConflict, "conflict"},
+		{errors.Join(context.DeadlineExceeded, kv.ErrConflict), http.StatusConflict, "conflict"},
+		{kv.ErrClosed, http.StatusServiceUnavailable, "closed"},
 	} {
 		p, _ := problemOf(tc.err)
 		if p.Status != tc.status || string(p.Code) != tc.code {
@@ -168,6 +169,59 @@ func TestProblemStatuses(t *testing.T) {
 	}
 }
 
+// Every code answers the status and the retryable flag RFC 23 gives its
+// condition, written here apart from the table: a 409 is retryable only
+// where the state refusing it passes by itself, a lock, a move, a re-home, a
+// running operation, a delay or a conflicting transaction.
+func TestProblemAnswers(t *testing.T) {
+	want := map[answerOf][]apiv1.Code{
+		{status: 400}: {"invalid", "invalid_name", "name_too_long", "syntax", "invalid_file", "wrong_share", "not_dir", "is_dir",
+			"past_end", "is_directory", "not_directory", "invalid_argument", "not_supported", "invalid_handle", "cross_share", "too_large"},
+		{status: 401}: {"unauthenticated"},
+		{status: 403}: {"forbidden", "password_change_required", "access", "perm", "wrong_security", "access_denied", "auth_required",
+			"permission_denied", "privilege_required"},
+		{status: 404}: {"not_found"},
+		{status: 409}: {"managed", "not_cancellable", "last_admin", "not_a_copy", "stale", "cross_project", "tags_exhausted", "exist",
+			"not_empty", "read_only", "no_space", "quota", "range_not_locked", "delete_pending", "state", "cross", "incomplete",
+			"already_exists", "quota_exceeded", "stale_handle", "lock_not_found"},
+		{status: 409, retryable: true}: {"operation_running", "delay", "moving", "rehoming", "locked", "share_violation", "blocked",
+			"deadlock", "lock_limit_exceeded", "lock_conflict", "conflict"},
+		{status: 412}:                  {"generation_mismatch"},
+		{status: 422}:                  {"idempotency_mismatch"},
+		{status: 428}:                  {"precondition_required"},
+		{status: 429, retryable: true}: {"throttled"},
+		{status: 500}:                  {"inconsistent", "lost", "corrupt", "io", "file_open", "io_error", "uncommitted_version"},
+		{status: 503, retryable: true}: {"starting", "unavailable", "grace", "grace_period", "connection_limit_reached", "closed"},
+	}
+	byCode := map[apiv1.Code]answerOf{}
+	for a, codes := range want {
+		for _, c := range codes {
+			a.code = c
+			byCode[c] = a
+		}
+	}
+	seen := map[apiv1.Code]bool{}
+	check := func(name string, a answerOf) {
+		seen[a.code] = true
+		if w, ok := byCode[a.code]; !ok {
+			t.Errorf("%s: code %q is not in this test's list", name, a.code)
+		} else if a != w {
+			t.Errorf("%s: code %q answers %d retryable %v, want %d retryable %v", name, a.code, a.status, a.retryable, w.status, w.retryable)
+		}
+	}
+	for code, a := range own {
+		check(string(code), a)
+	}
+	for _, c := range components {
+		check(c.err.Error(), c.answerOf)
+	}
+	for c := range byCode {
+		if !seen[c] {
+			t.Errorf("code %q is in this test's list, but no row answers it", c)
+		}
+	}
+}
+
 // declared returns the exported names starting with prefix that the
 // package's non-test files declare as a variable or a constant.
 func declared(t *testing.T, dir, prefix string) []string {
@@ -207,7 +261,8 @@ func declared(t *testing.T, dir, prefix string) []string {
 }
 
 // tableRows reads problems.go and returns each pkg.Name its rows and keys
-// name, and, for a component's row, the code it answers.
+// name, and the code each of those rows answers, a literal or an apiv1
+// constant resolved to its value; a row whose code is neither fails the test.
 func tableRows(t *testing.T) (named map[string]bool, codes map[string]string) {
 	t.Helper()
 	src, err := os.ReadFile("problems.go")
@@ -218,6 +273,7 @@ func tableRows(t *testing.T) (named map[string]bool, codes map[string]string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	consts := constants(t, covered[0].dir)
 	named, codes = map[string]bool{}, map[string]string{}
 	selector := func(e ast.Expr) string {
 		if c, ok := e.(*ast.CallExpr); ok && len(c.Args) == 1 {
@@ -230,29 +286,73 @@ func tableRows(t *testing.T) (named map[string]bool, codes map[string]string) {
 		}
 		return ""
 	}
+	// row records the code of a row naming s, its answer a.
+	row := func(s string, a ast.Expr) {
+		lit, ok := a.(*ast.CompositeLit)
+		if s == "" || !ok || len(lit.Elts) != 3 {
+			return
+		}
+		named[s] = true
+		switch e := lit.Elts[1].(type) {
+		case *ast.BasicLit:
+			codes[s], _ = strconv.Unquote(e.Value)
+		case *ast.SelectorExpr:
+			if v, ok := consts[selector(e)]; ok {
+				codes[s] = v
+				return
+			}
+			t.Errorf("%s: code %s is no apiv1 constant", s, selector(e))
+		default:
+			t.Errorf("%s: code is neither a literal nor an apiv1 constant", s)
+		}
+	}
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.KeyValueExpr:
 			if s := selector(n.Key); s != "" {
 				named[s] = true
+				row(s, n.Value)
 			}
 		case *ast.CompositeLit:
-			if len(n.Elts) != 2 {
-				return true
-			}
-			s := selector(n.Elts[0])
-			a, ok := n.Elts[1].(*ast.CompositeLit)
-			if s == "" || !ok || len(a.Elts) != 3 {
-				return true
-			}
-			named[s] = true
-			if lit, ok := a.Elts[1].(*ast.BasicLit); ok && lit.Kind == token.STRING {
-				codes[s], _ = strconv.Unquote(lit.Value)
+			if len(n.Elts) == 2 {
+				row(selector(n.Elts[0]), n.Elts[1])
 			}
 		}
 		return true
 	})
 	return named, codes
+}
+
+// constants returns each string constant the package in dir declares, by
+// apiv1.Name, read from its source.
+func constants(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, f := range files {
+		af, err := parser.ParseFile(token.NewFileSet(), f, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range af.Decls {
+			if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.CONST {
+				for _, sp := range g.Specs {
+					vs := sp.(*ast.ValueSpec)
+					for i, n := range vs.Names {
+						if i < len(vs.Values) {
+							if lit, ok := vs.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+								out["apiv1."+n.Name], _ = strconv.Unquote(lit.Value)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 // snake is a Go name in snake case, an acronym kept as one word: NotFound is
