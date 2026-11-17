@@ -539,7 +539,7 @@
     ],
     "notes": "§1.1. I valori di protocollo che devono sopravvivere a una connessione — una lease key, un create GUID, un app instance, una sequenza di lock — qui sono campi opachi, confrontati e mai interpretati. Non offerti neppure: i layout pNFS, riservati (§2.6); la copia asincrona — ogni copia è sincrona e non tiene open state (§2.7). Le epoch isolano un primary superato (§10). Nomi, permessi ed esistenza: RFC 7; shard record, node lease ed epoch: RFC 11."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "C'è un carico di lavoro che ha bisogno di una scadenza di [[recall]] NFS più corta del lease di 90 s?",
       "Quanto costano gli [[persistent-open|open persistent]]? Nessuno l'ha ancora misurato.",

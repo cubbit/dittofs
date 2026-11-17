@@ -598,7 +598,7 @@
     "w6": "A [[durable-handle|durable]] open's timeout when the client asks for none, and the most it may ask for",
     "notes": "8 MiB, 512, 256 and 32 MiB: §3.3. 35 s: §6.3, RFC 14's recall deadline for SMB grants. 60 s: §6.3 and RFC 13's settings. 60 and 300 s: §6.4's table. Others: the caching fence is 90 s (§6.3); grace lasts one lease period, 90 s; pending_timeout is 10 minutes by default; migration.freeze_timeout 5 minutes; clone_max_len 1 GiB."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "Is a per-open record of the last synced write worth its cost, so that durable opens that lost nothing could survive a failover?",
       "Does any target application need Windows' check for files open deeper inside a directory being renamed?",

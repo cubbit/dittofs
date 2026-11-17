@@ -96,7 +96,7 @@
     "promises": {
       "title": "O que o RFC promete"
     },
-    "open": {
+    "openQuestions": {
       "kicker": "Ainda em aberto",
       "title": "Questões em aberto"
     }

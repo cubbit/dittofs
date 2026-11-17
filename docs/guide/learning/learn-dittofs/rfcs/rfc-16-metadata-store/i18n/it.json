@@ -474,7 +474,7 @@
     "footer": "Nessuna entità ha un metodo `Save` o `Reload`, né un puntatore allo store. Le entità sono semplici valori, che si possono copiare e stampare liberamente.",
     "notes": "§1.1 Non-goals (MUST NOT). Il piè di pagina: §2.4."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "Il throughput che il fold riesce a sostenere per una share sullo store replicato.",
       "Se leggere a lotti le entry di una directory insieme ai loro attributi riduce abbastanza il divario di prestazioni su `READDIRPLUS` di NFS.",

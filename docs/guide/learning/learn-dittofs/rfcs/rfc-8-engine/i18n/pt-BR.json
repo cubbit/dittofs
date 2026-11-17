@@ -481,7 +481,7 @@
     "footer": "A deduplicação entre arquivos não está na primeira versão, então o offload envia todo chunk que corta, exceto um chunk só de zeros, que vira um ref zerado. Trazê-la de volta fica para um RFC futuro.",
     "notes": "§1.2 Non-goals (MUST NOT); §10.5 (o GC é um serviço por namespace remoto e se agenda sozinho); §6.5 V1 e E7 (um chunk todo de zeros vira um ref de zeros); §12.3 (o engine não grava residency)."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "Os parâmetros do [[fill]], ou seja, a marca mínima e o limite de varredura, ainda não foram medidos.",
       "O jeito como o pre-warm cede a vez e o teto do read-ahead ainda não foram medidos.",

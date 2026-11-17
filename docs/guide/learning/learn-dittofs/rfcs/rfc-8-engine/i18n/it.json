@@ -481,7 +481,7 @@
     "footer": "La deduplicazione tra file diversi non c'è nella prima release, quindi l'offload carica ogni chunk che taglia, tranne un chunk tutto di zeri, che diventa un ref a zero. Reintrodurla spetterà a un RFC successivo.",
     "notes": "§1.2 Non-goals (MUST NOT); §10.5 (il GC è un servizio per namespace remoto e si programma da sé); §6.5 V1 ed E7 (un chunk tutto a zero diventa un ref a zero); §12.3 (l'engine non scrive residency)."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "I parametri del [[fill]], cioè la soglia minima e la soglia di scansione, non sono ancora stati misurati.",
       "Il modo in cui il pre-warm si fa da parte e il limite del read-ahead non sono ancora stati misurati.",

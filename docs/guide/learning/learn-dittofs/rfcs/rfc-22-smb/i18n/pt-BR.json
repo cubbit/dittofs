@@ -598,7 +598,7 @@
     "w6": "O timeout de um [[durable-handle|durable]] open quando o cliente não pede nenhum, e o máximo que ele pode pedir",
     "notes": "8 MiB, 512, 256 e 32 MiB: §3.3. 35 s: §6.3, o prazo de recall do RFC 14 para grants SMB. 60 s: §6.3 e as configurações do RFC 13. 60 e 300 s: a tabela do §6.4. Outros: o caching fence dura 90 s (§6.3); o grace dura um período de lease, 90 s; pending_timeout é 10 minutos por padrão; migration.freeze_timeout 5 minutos; clone_max_len 1 GiB."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "Vale a pena guardar, por open, um registro da última escrita sincronizada, para que os durable opens que não perderam nada sobrevivam a um failover?",
       "Alguma aplicação de referência precisa da verificação do Windows sobre arquivos abertos mais fundo dentro de um diretório que está sendo renomeado?",

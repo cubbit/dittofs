@@ -461,7 +461,7 @@
     "footer": "La politica, per esempio cosa [[evict|rimuovere]] e quando fare [[repack|repack]], spetta all'[[engine|engine]]. Il journal fornisce il meccanismo.",
     "notes": "§1.1 Non-goals (ognuno un MUST NOT), §1.2. La nota in fondo: §3.5 ('the mechanism of eviction; the policy is the engine's') e §7.2 (l'engine chiama Repack con un budget e un ambito)."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "Non si è ancora misurato quante scritture in più causi il [[repack|repack]] sotto un carico con molte eviction.",
       "Dell'indice sono stati misurati la memoria e il costo di lookup, ma non il costo di inserimento.",

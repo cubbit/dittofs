@@ -474,7 +474,7 @@
     "footer": "Nenhuma entidade tem um método `Save` ou `Reload`, nem um ponteiro de volta para o store. Entidades são valores simples, que podem ser copiados e impressos livremente.",
     "notes": "§1.1 Non-goals (MUST NOT). O rodapé: §2.4."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "A vazão que o fold consegue sustentar para uma share no store replicado.",
       "Se ler em lotes as entries de um diretório junto com os seus atributos reduz o bastante a diferença de desempenho no `READDIRPLUS` do NFS.",

@@ -539,7 +539,7 @@
     ],
     "notes": "§1.1. Protocol values that must outlive a connection — a lease key, a create GUID, an app instance, a lock sequence — are opaque fields here, compared and never interpreted. Also not offered: pNFS layouts, reserved (§2.6); asynchronous copy — every copy is synchronous and holds no open state (§2.7). Epochs fence a superseded primary (§10). RFC 7 owns names, permissions and existence; RFC 11 owns shard records, node leases and epochs."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "Does any workload need an NFS [[recall]] deadline shorter than the 90 s lease?",
       "How much do [[persistent-open|persistent opens]] cost? Nobody has measured it yet.",

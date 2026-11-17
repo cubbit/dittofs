@@ -474,7 +474,7 @@
     "footer": "No entity has a `Save` or `Reload` method or a pointer back to the store. Entities are plain values that can be freely copied and printed.",
     "notes": "§1.1 Non-goals (MUST NOT). The footer: §2.4."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "The throughput the fold can sustain for one share on the replicated store.",
       "Whether reading a directory's entries with their attributes in batches closes enough of the performance gap on NFS's `READDIRPLUS`.",

@@ -459,7 +459,7 @@
     ],
     "notes": "§1.1 Non-goals. L'RFC 20 fissa solo che l'adapter esegue l'handshake del protocollo e passa al service ciò che ha dimostrato, e dove si applicano i limiti di memoria, non i loro valori."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "I [[codec]] SMB vanno generati dalle tabelle delle strutture di MS-SMB2, o restano scritti a mano con golden vector? Il costo delle due strade non è stato misurato.",
       "NFSv3 e NFSv4.0 tengono le risposte recenti nell'[[adapter]], così una richiesta ripetuta non viene eseguita due volte. In un cluster il service ha una [[dedup-table|tabella di dedup]] che risponde a una chiamata rimandata con il suo primo risultato, ma solo per le chiamate inoltrate tra nodi. Dovrebbe coprire anche questo caso? Lo deciderà l'RFC 21.",

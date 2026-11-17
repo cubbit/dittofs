@@ -481,7 +481,7 @@
     "footer": "Cross-file deduplication is not in the first release, so offload uploads every chunk it cuts, except an all-zero chunk, which becomes a zero ref. Bringing deduplication back is left to a later RFC.",
     "notes": "§1.2 Non-goals (MUST NOT); §10.5 (GC is one service per remote namespace and schedules itself); §6.5 V1 and E7 (an all-zero chunk becomes a zero ref); §12.3 (the engine writes no residency)."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "The [[fill]] parameters, the low-water mark and the scan threshold, have not been measured yet.",
       "Pre-warm's way of yielding and the read-ahead cap have not been measured yet.",

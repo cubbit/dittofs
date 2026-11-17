@@ -459,7 +459,7 @@
     ],
     "notes": "§1.1 Non-goals. RFC 20 fixes only that the adapter runs the protocol's handshake and hands the service what it proved, and where the memory bounds apply, not their values."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "Should the SMB [[codec|codecs]] be generated from the structure tables in MS-SMB2, or stay hand-written with golden vectors? The cost of each has not been measured.",
       "NFSv3 and NFSv4.0 keep recent replies in the [[adapter]] so a retried request is not run twice. In a cluster the service has a [[dedup-table|dedup table]] that answers a resent call with its first result, but only for calls forwarded between nodes. Should it cover this too? RFC 21 will settle it.",

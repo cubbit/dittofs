@@ -461,7 +461,7 @@
     "footer": "Policy, such as what to [[evict|evict]] and when to [[repack|repack]], belongs to the [[engine]]. The journal supplies the mechanism.",
     "notes": "§1.1 Non-goals (each a MUST NOT), §1.2. The footer: §3.5 ('the mechanism of eviction; the policy is the engine's') and §7.2 (the engine calls Repack with a budget and a scope)."
   },
-  "open": {
+  "openQuestions": {
     "questions": [
       "How much extra writing [[repack|repack]] causes under a load with many evictions has not been measured.",
       "The index's memory use and lookup cost were measured, but the cost of inserting into it was not.",
