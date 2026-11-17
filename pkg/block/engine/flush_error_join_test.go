@@ -77,7 +77,7 @@ func TestFlushErrorPathJoinsInFlightUploads(t *testing.T) {
 
 	sink := &failFirstHeldSink{release: make(chan struct{})}
 	closure, reap := newFlushClosure(f.local, params, blockSize,
-		engineDeduper{synced: f.syncer.syncedHashStore}, sink, syncer.NewDynamicSemaphore(window))
+		engineDeduper{view: f.syncer.blockCommitter}, sink, syncer.NewDynamicSemaphore(window))
 
 	flushDone := make(chan error, 1)
 	go func() {

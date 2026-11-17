@@ -51,7 +51,7 @@ func TestGCIndexSweep_ConcurrentDedupKeepsBytes(t *testing.T) {
 		h := hashFromString("dedup-race-before")
 		seedRemoteChunk(t, st, rs, h) // synced, backdated past grace, no manifest row
 
-		durable, err := engineDeduper{synced: st}.IsChunkDurable(ctx, ChunkHash(h))
+		durable, err := engineDeduper{view: st}.IsChunkDurable(ctx, ChunkHash(h))
 		if err != nil {
 			t.Fatalf("IsChunkDurable: %v", err)
 		}
@@ -103,7 +103,7 @@ func TestGCIndexSweep_ConcurrentDedupKeepsBytes(t *testing.T) {
 				if swept != h {
 					return
 				}
-				durable, dedupErr = engineDeduper{synced: st}.IsChunkDurable(ctx, ChunkHash(swept))
+				durable, dedupErr = engineDeduper{view: st}.IsChunkDurable(ctx, ChunkHash(swept))
 			},
 		}
 

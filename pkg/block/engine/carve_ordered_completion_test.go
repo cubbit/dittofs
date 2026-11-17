@@ -155,7 +155,7 @@ func TestCarveFlipsInWatermarkOrderThroughProductionSink(t *testing.T) {
 		committer:   f.syncer.blockCommitter,
 		commitLocks: &carveCommitLocks{},
 	})
-	closure, reap := newFlushClosure(f.local, chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10}, blockSize, engineDeduper{synced: f.syncer.syncedHashStore}, gated, nil)
+	closure, reap := newFlushClosure(f.local, chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10}, blockSize, engineDeduper{view: f.syncer.blockCommitter}, gated, nil)
 
 	// Distinct random payloads: identical bytes would dedup into one block and
 	// there would be nothing to order.

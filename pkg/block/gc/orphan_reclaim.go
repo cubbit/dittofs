@@ -22,6 +22,7 @@ package gc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -192,6 +193,9 @@ func ReclaimRecords(
 					slog.Warn("reclaim: delete remote block failed — record kept for retry",
 						"block_id", blockID, "err", err)
 					report.Errors++
+					if errors.Is(err, context.DeadlineExceeded) {
+						return report, err // store not answering: the rest waits for the next run
+					}
 					continue
 				}
 			}
@@ -281,6 +285,9 @@ func ReclaimOrphanObjects(
 			slog.Warn("reclaim: delete orphan object failed — will retry next run",
 				"block_id", c.blockID, "err", err)
 			report.Errors++
+			if errors.Is(err, context.DeadlineExceeded) {
+				return report, err // store not answering: the rest waits for the next run
+			}
 			continue
 		}
 		report.OrphanObjectsReclaimed.add(c.blockID, c.size, sampleCap)

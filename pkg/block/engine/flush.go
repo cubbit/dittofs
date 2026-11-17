@@ -135,21 +135,19 @@ func (c *carveCommitLocks) forKey(payloadID string) *sync.Mutex {
 }
 
 // engineDeduper answers the flush dedup oracle from the per-share synced-hash
-// store: a chunk is durable once its hash has been mirrored to the remote at
-// least once. A true result therefore means "remote-durable", the contract
-// before a record's synced bit may flip.
+// store and its block records: a chunk is durable once its hash has been
+// mirrored to the remote at least once and the block it names still holds it. A
+// true result therefore means "remote-durable", the contract before a record's
+// synced bit may flip.
 type engineDeduper struct {
-	synced metadata.SyncedHashStore
+	view gc.DedupView
 }
 
 // IsChunkDurable answers through gc.AdoptDedup, which records the adoption so a
 // remote sweep running concurrently cannot reclaim the hash the carver is
 // about to point a manifest row at.
 func (d engineDeduper) IsChunkDurable(ctx context.Context, hash ChunkHash) (bool, error) {
-	h := block.ContentHash(hash)
-	return gc.AdoptDedup(h, func() (bool, error) {
-		return d.synced.IsSynced(ctx, h)
-	})
+	return gc.AdoptDedup(ctx, block.ContentHash(hash), d.view)
 }
 
 // localDeduper is the dedup oracle for a share with NO remote block store.
