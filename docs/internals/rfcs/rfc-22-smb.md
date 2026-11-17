@@ -2823,8 +2823,10 @@ session, file or principal label.
 | `CREATE` and `LOCK` replays answered from the record (§6.5) | `adapter_record_replays_total{protocol}` | counter |
 
 **The request span.** One per SMB2 message, named `adapter.smb.<COMMAND>`, with
-one child per command of a compound chain and the service's span below it
-([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)). A request held pending
+the service's span below it
+([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)). Each member of a
+compound chain is a request of its own, with its own request span and no
+child per command ([RFC 20 §10.2](rfc-20-adapters.md#10.2%20Spans)). A request held pending
 keeps its span across its re-runs, one child per attempt. Its attributes are
 closed sets: protocol, dialect, command, NT status, the neutral error or
 result, request and reply bytes, and the stage that refused. Never a path, a

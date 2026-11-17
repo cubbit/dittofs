@@ -1073,10 +1073,13 @@ them.
 
 ### 6.1 Spans
 
-- The adapter opens one **request span** per wire request, in its pipeline, in the
-  fixed order of [RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline); a
-  compound has one span with a child per operation. A handler opens no span of its
-  own.
+- The adapter opens one **request span** per request: a wire request, or each
+  member of an SMB chain, a request of its own
+  ([RFC 20 §10.2](rfc-20-adapters.md#10.2%20Spans)). It opens it in its
+  pipeline, in the fixed order of
+  [RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline), only for a request it
+  sampled (§6.3); an NFSv4 compound has one span with a child per operation. A
+  handler opens no span of its own.
 - **Each service call opens a span** that parents the metadata store's and the
   engine's spans ([RFC 17 §7](rfc-17-vfs.md#7.%20Observability)); the metadata
   store opens one child per KV call
