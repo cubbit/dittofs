@@ -24,7 +24,15 @@ type Protocol interface {
 // Framer finds a record's length from its header.
 type Framer interface {
 	HeaderLen() int
-	BodyLen(hdr []byte) (int, error) // past the protocol's cap: an error, and the connection closes
+	// BodyLen reads a record's header: the length of the body that follows it,
+	// and whether that body ends the record. A header may say it does not, and
+	// the reader then reads the next fragment's header and body into the same
+	// record; SMB's header always ends it. Past the protocol's cap: an error,
+	// and the connection closes.
+	BodyLen(hdr []byte) (n int, last bool, err error)
+	// MaxRecord is the protocol's record cap and the most fragments a record
+	// may come in, 1 where every header ends its record.
+	MaxRecord() (bytes, fragments int)
 }
 
 // Stages are a protocol's implementations of the pipeline's stages for one

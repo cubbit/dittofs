@@ -1,8 +1,13 @@
 package core
 
 import (
+	"context"
+	"net"
+	"net/netip"
 	"sync/atomic"
 	"time"
+
+	"github.com/cubbit/dittofs/pkg/resources"
 )
 
 // What the package's external tests reach of core's unexported parts. It is
@@ -86,3 +91,19 @@ var (
 	ReserveStatus = reserveStatus
 	ErrReplyWait  = errReplyWait
 )
+
+// TestReader is one connection's record cut, reached by the reader's tests.
+type TestReader struct{ r *reader }
+
+// NewTestReader returns a record cut over nc, its records charged to key from
+// recv, with timeout as read_timeout.
+func NewTestReader(nc net.Conn, f Framer, recv *resources.BufPool, key netip.Addr, timeout time.Duration) *TestReader {
+	return &TestReader{r: newReader(nc, f, recv, key, timeout)}
+}
+
+// Read returns the next record.
+func (t *TestReader) Read(ctx context.Context) (*resources.Buf, error) { return t.r.Read(ctx) }
+
+// ErrFrame is the framing refusal every record-level error wraps, so a close
+// can name its reason.
+var ErrFrame = errFrame

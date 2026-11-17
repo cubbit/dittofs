@@ -9,6 +9,11 @@
 // Every integer is big-endian.
 //
 // A record is a 4-byte length and a body of that many bytes, at most 1 MiB.
+// The length's 31 low bits are the body's size, and its top bit set means the
+// body is one fragment of a record, followed by more such marks until one with
+// the bit clear ends it: every body may come in fragments, at most four of
+// them, and this protocol's own records never use the bit, writing every
+// record as one fragment with the bit clear.
 // The body is one or more messages. A message is a 40-byte header and its
 // arguments, which run to the next message or to the body's end:
 //
@@ -65,9 +70,11 @@ import (
 )
 
 const (
-	lengthLen = 4       // the record's length prefix
-	headerLen = 40      // a message's header
-	maxBody   = 1 << 20 // the cap on a record's body
+	lengthLen     = 4       // the record's length prefix
+	moreFragments = 1 << 31 // the length prefix's flag: set, more fragments follow
+	maxFragments  = 4       // the most fragments one record comes in
+	headerLen     = 40      // a message's header
+	maxBody       = 1 << 20 // the cap on a record's body
 
 	inherited = 1<<32 - 1 // the session field of a member that takes the one before's
 	sumKey    = 0x01000193
@@ -113,6 +120,10 @@ const (
 	OpCompound                    // version 1: the compound row, its members Msg.Members
 )
 
+// ErrFragmentedReply is a reply whose record mark says more fragments follow:
+// this protocol never sends one.
+var ErrFragmentedReply = errors.New("testproto: a reply in fragments")
+
 var (
 	errChecksum = errors.New("testproto: a message whose checksum does not match")
 	errTooLong  = errors.New("testproto: a record past the 1 MiB cap")
@@ -120,23 +131,34 @@ var (
 	errNext     = errors.New("testproto: a next offset that points backwards or past the record")
 )
 
-// framer finds a record's length from its 4-byte prefix.
+// framer finds a fragment's length from its 4-byte prefix, its top bit saying
+// whether more fragments follow.
 type framer struct{}
 
 func (framer) HeaderLen() int { return lengthLen }
 
-// BodyLen refuses a length past the cap, so nothing is reserved for it.
-func (framer) BodyLen(hdr []byte) (int, error) {
+// BodyLen reads a fragment's length and whether it ends the record. The prefix's
+// top bit set means more fragments follow.
+//
+// decision: the prefix's flag is inverted from RFC 5531 section 11's record
+// mark, which sets its top bit on the last fragment; this protocol's vectors are
+// written with the bits clear, so every one of them still ends with its first
+// header. Overturned if the test protocol ever needs to match the mark byte for
+// byte.
+func (framer) BodyLen(hdr []byte) (int, bool, error) {
 	if len(hdr) < lengthLen {
-		return 0, errShort
+		return 0, false, errShort
 	}
-	n := binary.BigEndian.Uint32(hdr)
+	m := binary.BigEndian.Uint32(hdr)
+	n, last := int(m&^moreFragments), m&moreFragments == 0
 	if n > maxBody {
-		return 0, fmt.Errorf("%w: %d bytes", errTooLong, n)
+		return 0, false, fmt.Errorf("%w: %d bytes", errTooLong, n)
 	}
-
-	return int(n), nil
+	return n, last, nil
 }
+
+// MaxRecord is the record cap and the most fragments a record comes in.
+func (framer) MaxRecord() (int, int) { return maxBody, maxFragments }
 
 // header is one message's header, read in place.
 //
