@@ -3,13 +3,13 @@ package core_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"net"
 	"net/netip"
-	"os"
 	"slices"
 	"strings"
-	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
@@ -94,17 +94,6 @@ func dialRefused(t *testing.T, a netip.AddrPort) {
 		_ = c.Close()
 		t.Fatalf("a dial to %s connects; want it refused", a)
 	}
-}
-
-// fds is the process's open descriptors, or -1 where the platform keeps no
-// /proc/self/fd to read: the count pins a leak only where it can be read, and
-// no test in this package runs in parallel with another.
-func fds() int {
-	es, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		return -1
-	}
-	return len(es)
 }
 
 // NewServer refuses no listener, each malformed set of listeners, naming the
@@ -335,42 +324,60 @@ func TestNewServerKeepsItsOwnListeners(t *testing.T) {
 }
 
 // A bind that fails fails Start, naming the listener and the address, and
-// closes what Start opened: the server is configured and bound nowhere.
+// closes what Start opened: the server is configured and bound nowhere. The
+// configured port is free on the wire - the refusal is injected on its first
+// bind alone, so a repick, which the configured-port gate owes to refuse,
+// would instead bind the port for real and the server would serve, which the
+// test sees as its own failure. The "a" socket the good listener opened
+// stands shut at the end: its address is dialed and refused. It runs in
+// parallel, with no leak watch - the watch is process-wide and runs beside no
+// parallel test - so the hook it sets being this server's alone is shown, and
+// its sockets' closure is pinned from outside, by the dials.
 func TestStartThatFailsClosesWhatItOpened(t *testing.T) {
+	t.Parallel()
 	deps := newDeps()
-	adaptertest.CheckLeaks(t, deps.Budgets)
 	p := testproto.New(deps)
 
-	held, err := net.Listen("tcp4", "127.0.0.1:0")
+	// A free port, found by binding one and letting go, for "b" to name.
+	probe, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = held.Close() })
-	heldAt := held.Addr().(*net.TCPAddr).AddrPort()
+	port := uint16(probe.Addr().(*net.TCPAddr).Port)
+	_ = probe.Close()
+	configured := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port)
 
-	// "a" asks the system for its port, so no port is freed for another to
-	// steal; "b" cannot bind the socket the test holds, so Start names it, and
-	// every socket "a" opened, the system-picked one too, must be closed by
-	// the failed Start. Each listener is bound once: a port the node
-	// configured that is taken is a real refusal, never repicked.
-	var binds atomic.Int64
-	restore := core.SwapListen(func(ctx context.Context, network, addr string) (net.Listener, error) {
-		binds.Add(1)
-		return lcListen(ctx, network, addr)
-	})
-	t.Cleanup(restore)
-	srv, err := core.NewServer(deps, on("127.0.0.1"), tcp(p, 0, "a"), tcp(p, heldAt.Port(), "b"))
+	var refused bool          // the injected refusal happened
+	var opened netip.AddrPort // the last socket bound on 127.0.0.1: "a"'s, that Start must close again
+	srv, err := core.NewServer(deps, on("127.0.0.1"), tcp(p, 0, "a"), tcp(p, port, "b"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	stopAtEnd(t, srv)
-	before := fds()
+	core.SetListen(srv, func(ctx context.Context, network, addr string) (net.Listener, error) {
+		if a, perr := netip.ParseAddrPort(addr); perr == nil && a == configured && !refused {
+			// The runtime's in-use refusal, on demand: nothing holds the
+			// port, and a second bind meets the free port and binds it,
+			// where the configured-port gate owes the repick refused.
+			refused = true
+			return nil, fmt.Errorf("%w: %s is spoken for", syscall.EADDRINUSE, configured)
+		}
+		ln, lerr := lcListen(ctx, network, addr)
+		if lerr == nil && network == "tcp4" {
+			opened = netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), ln.Addr().(*net.TCPAddr).AddrPort().Port())
+		}
+		return ln, lerr
+	})
+
 	err = srv.Start(t.Context())
 	if err == nil {
-		t.Fatal("Start bound nothing it would refuse")
+		t.Fatal("Start bound a port whose refusal was injected")
 	}
-	if !strings.Contains(err.Error(), `["b"]`) || !strings.Contains(err.Error(), heldAt.String()) {
-		t.Errorf("Start: %v; want it to name the listener [b] and the address %s", err, heldAt)
+	if !refused {
+		t.Fatal("Start failed without meeting the injected refusal: the test no longer reaches it")
+	}
+	if !strings.Contains(err.Error(), `["b"]`) || !strings.Contains(err.Error(), configured.String()) {
+		t.Errorf("Start: %v; want it to name the listener [b] and the address %s", err, configured)
 	}
 	if got := srv.Health().State; got != adapter.StateConfigured {
 		t.Errorf("after a failed Start the server is %s, want configured", got)
@@ -378,34 +385,36 @@ func TestStartThatFailsClosesWhatItOpened(t *testing.T) {
 	if got := srv.Addrs(); len(got) != 0 {
 		t.Errorf("after a failed Start Addrs is %v, want empty: every socket it opened was closed by the failure", got)
 	}
-	if before >= 0 {
-		if got := fds(); got != before {
-			t.Errorf("after a failed Start %d descriptors are open, want %d: Start left a socket it opened", got, before)
-		}
-	}
-	if got := binds.Load(); got != 2 {
-		t.Errorf("the failed Start opened %d sockets, want 2: a port the node configured that is taken is a real refusal, never repicked", got)
-	}
+	dialRefused(t, opened)
 }
 
 // A port-0 listener whose pick a later family holds repicks: IPv4 and IPv6
 // ports are allocated apart, so the port 127.0.0.1's socket picked can be
 // held on ::1 by another socket, and the whole group binds again with a
 // fresh pick, Start reporting one port. The hook holds the pick out before
-// delegating, so the refusal it meets is the runtime's own.
+// delegating, so the refusal it meets is the runtime's own. It runs in
+// parallel, with no leak watch - the watch is process-wide and runs beside no
+// parallel test - so the hook it sets being this server's alone is shown, and
+// its sockets' closure is pinned from outside, by the dials.
 func TestAPortZeroStartRepicksWhenALaterFamilyHoldsItsPick(t *testing.T) {
+	t.Parallel()
 	needIPv6Loopback(t)
 	deps := newDeps()
-	adaptertest.CheckLeaks(t, deps.Budgets)
 	p := testproto.New(deps)
 
 	var held net.Listener
+	srv, err := core.NewServer(deps, on("127.0.0.1", "::1"), tcp(p, 0, "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
 	var once bool
-	restore := core.SwapListen(func(ctx context.Context, network, addr string) (net.Listener, error) {
+	core.SetListen(srv, func(ctx context.Context, network, addr string) (net.Listener, error) {
 		// The first ::1 bind at the picked port finds it held: by this
 		// listener, so the real call below answers with the runtime's in-use
-		// refusal. The hold stays put for the rest of the test, so a repick
-		// that asks for the same port meets the same answer.
+		// refusal. The hold stays put to the test's end, where the old
+		// pick's socket is shown closed; a repick asks a fresh port, which no
+		// listener of this test holds.
 		if ap, perr := netip.ParseAddrPort(addr); perr == nil && !once && network == "tcp6" && ap.Port() != 0 {
 			if ln, err := net.Listen("tcp6", addr); err == nil {
 				once = true
@@ -415,13 +424,6 @@ func TestAPortZeroStartRepicksWhenALaterFamilyHoldsItsPick(t *testing.T) {
 		}
 		return lcListen(ctx, network, addr)
 	})
-	t.Cleanup(restore)
-
-	srv, err := core.NewServer(deps, on("127.0.0.1", "::1"), tcp(p, 0, "a"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	stopAtEnd(t, srv)
 	if err := srv.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v; want it to repick when ::1 holds the port 127.0.0.1 picked", err)
 	}
@@ -435,6 +437,91 @@ func TestAPortZeroStartRepicksWhenALaterFamilyHoldsItsPick(t *testing.T) {
 	if addrs[1].Port() == held.Addr().(*net.TCPAddr).AddrPort().Port() {
 		t.Errorf("Addrs[a] reports the port ::1 held, %d", addrs[1].Port())
 	}
+	// The abandoned pick's socket is closed behind the repick: the group it
+	// opened, 127.0.0.1 at the held port, refuses a dial.
+	dialRefused(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), held.Addr().(*net.TCPAddr).AddrPort().Port()))
+}
+
+// A configured port held on one of its two addresses fails Start at the
+// other, and the sockets the group opened before the refusal - the same
+// port's on 127.0.0.1 - are closed with it, so nothing stays bound at the
+// half that worked. Nothing is injected: the hold is a real socket, and the
+// refusal it meets the runtime's own.
+func TestAConfiguredPortHeldOnOneAddressClosesWhatItsGroupOpened(t *testing.T) {
+	needIPv6Loopback(t)
+	deps := newDeps()
+	adaptertest.CheckLeaks(t, deps.Budgets)
+	p := testproto.New(deps)
+
+	held, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	at := held.Addr().(*net.TCPAddr).AddrPort()
+	srv, err := core.NewServer(deps, on("127.0.0.1", "::1"), tcp(p, at.Port(), "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	if err := srv.Start(t.Context()); err == nil {
+		t.Fatal("Start bound a port ::1 holds")
+	} else if !strings.Contains(err.Error(), `["a"]`) || !strings.Contains(err.Error(), at.String()) {
+		t.Errorf("Start: %v; want it to name the listener [a] and the address %s", err, at)
+	}
+	if got := srv.Health().State; got != adapter.StateConfigured {
+		t.Errorf("after a failed Start the server is %s, want configured", got)
+	}
+	if got := srv.Addrs(); len(got) != 0 {
+		t.Errorf("after a failed Start Addrs is %v, want empty: the group's opened sockets were closed by the failure", got)
+	}
+	// The group's first socket, the port held on ::1 bound on 127.0.0.1: it
+	// listened there until its own group's failure closed it.
+	dialRefused(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), at.Port()))
+}
+
+// lieAboutAddr wraps a listener that reports a non-TCP address: an opener
+// answering with one is a bug in the opener's seat, and the bind owes the
+// socket closed and the group refused, not a port read off an address that
+// lies about what listens.
+type lieAboutAddr struct{ net.Listener }
+
+func (lieAboutAddr) Addr() net.Addr { return &net.UnixAddr{Name: "under test", Net: "unix"} }
+
+// A bind whose listener reports no TCP address is refused, and the listener
+// it opened is closed on the refusal: nothing stays bound at a port an
+// address like that can never name.
+func TestABindWhoseListenerReportsNoTCPAddressIsRefused(t *testing.T) {
+	deps := newDeps()
+	adaptertest.CheckLeaks(t, deps.Budgets)
+	p := testproto.New(deps)
+
+	srv, err := core.NewServer(deps, on("127.0.0.1"), tcp(p, 0, "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	var at netip.AddrPort // the wrapped listener's real address, dialable until the refusal closes it
+	core.SetListen(srv, func(ctx context.Context, network, addr string) (net.Listener, error) {
+		ln, lerr := lcListen(ctx, network, addr)
+		if lerr != nil {
+			return nil, lerr
+		}
+		if network == "tcp4" {
+			at = netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), ln.Addr().(*net.TCPAddr).AddrPort().Port())
+		}
+		return lieAboutAddr{Listener: ln}, nil
+	})
+
+	if err := srv.Start(t.Context()); err == nil {
+		t.Fatal("Start accepted a listener that reports no TCP address")
+	} else if !strings.Contains(err.Error(), "not a TCP listener") {
+		t.Errorf("Start: %v; want it to refuse the listener that answers no TCP address", err)
+	}
+	if got := srv.Addrs(); len(got) != 0 {
+		t.Errorf("Addrs after the refused Start %v, want empty", got)
+	}
+	dialRefused(t, at)
 }
 
 // The settings' addresses are the server's own copy: changing the caller's

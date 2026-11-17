@@ -260,13 +260,10 @@ func Judge(row *Op, inv Invocation, rest []byte, v Version, r *Request) (whole b
 	return judge(ms, err == nil, r)
 }
 
-// SwapListen swaps the socket opener Start binds with, and returns what
-// restores it. No address can be made to answer one bind with the runtime's
-// in-use refusal on demand, so the Start tests stand in for it: one holds a
-// family's port out from under a port-0 listener's pick, another counts the
-// binds a refusal takes.
-func SwapListen(f func(ctx context.Context, network, addr string) (net.Listener, error)) (restore func()) {
-	old := listen
-	listen = f
-	return func() { listen = old }
+// SetListen sets the socket opener s binds with, on s alone: no real bind
+// can be made to answer on demand with what a Start test needs - an
+// in-use refusal, or a listener whose address is no TCP one - so the test
+// injects it, without any other server's bind meeting the same hook.
+func SetListen(s *Server, f func(ctx context.Context, network, addr string) (net.Listener, error)) {
+	s.listen = f
 }

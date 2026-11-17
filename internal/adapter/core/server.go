@@ -21,6 +21,13 @@ import (
 // every protocol.
 type Server struct {
 	ls []Listener
+	// listen opens the socket a bind names. It is a field because no real
+	// bind can be made to answer with what a test needs on demand: an
+	// in-use refusal, to hold a family's port out from under a port-0
+	// listener's pick or to fault a configured one, or a listener that
+	// reports an address no TCP one is. A test's server injects its answer
+	// through SetListen alone; NewServer sets the real opener.
+	listen func(context.Context, string, string) (net.Listener, error)
 	// decision: the pointer is atomic because Reconfigure swaps the snapshot
 	// while connections read it; the one other store is NewServer's, before
 	// the server is shared.
@@ -93,9 +100,12 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 			return nil, fmt.Errorf("core: new server: listener %d %q: stages without Header, Router or Protocol", i, ls[i].Services)
 		}
 	}
-	srv := &Server{ls: ls}
-	// The settings are the server's own snapshot from here: the caller's copy
-	// may change under it, its Addrs included (RFC 20 section 3.6).
+	srv := &Server{ls: ls, listen: (&net.ListenConfig{}).Listen}
+	// The server owns the Addrs alone: srv.addrs is its own copy, and Start
+	// binds that. The rest of the settings is the snapshot as New handed it,
+	// shared with the caller where the settings sit behind a pointer - the
+	// DisabledOperations slice among them - and no field of it is read yet;
+	// the first one that is takes a copy of its own (RFC 20 section 3.6).
 	srv.addrs = slices.Clone(s.Common().Addrs)
 	srv.settings.Store(&s)
 	return srv, nil
@@ -217,7 +227,7 @@ func (s *Server) bindEach(ctx context.Context, i int) ([]bound, error) {
 			if j > 0 && port == 0 {
 				port = opened[len(opened)-1].addr.Port()
 			}
-			b, err := bind(ctx, &s.ls[i], a, port)
+			b, err := bind(ctx, s.listen, &s.ls[i], a, port)
 			if err == nil {
 				opened = append(opened, b)
 				continue
@@ -225,9 +235,9 @@ func (s *Server) bindEach(ctx context.Context, i int) ([]bound, error) {
 			for _, ob := range opened {
 				_ = ob.ln.Close()
 			}
-			// Only a system pick is repicked, and only on the in-use refusal
-			// of a family the pick could not reach: the group binds again,
-			// from its first address, with a fresh one.
+			// Only a system pick is repicked, and only on the runtime's
+			// in-use refusal, whichever family answered it: the group binds
+			// again, from its first address, with a fresh one.
 			if s.ls[i].Port == 0 && repick < portRepicks && errors.Is(err, syscall.EADDRINUSE) {
 				break
 			}
@@ -239,12 +249,6 @@ func (s *Server) bindEach(ctx context.Context, i int) ([]bound, error) {
 	}
 }
 
-// listen opens the socket a bind names. It is a variable because no address
-// can be made to answer one bind with the runtime's in-use refusal on
-// demand: the Start tests swap it to hold a family's port out from under a
-// port-0 listener, and to count the binds a refusal takes.
-var listen = (&net.ListenConfig{}).Listen
-
 // bind opens l's socket on a, at port (l's own, or the one the first address's
 // socket resolved). An IPv4-mapped address binds the IPv4 address it maps, as
 // the settings read it.
@@ -255,7 +259,7 @@ var listen = (&net.ListenConfig{}).Listen
 // reports [::] and collides with a second listener on :: at the same port; on
 // tcp6 it sets IPV6_V6ONLY. Withdraw it if a deployment needs one dual-stack
 // socket per wildcard.
-func bind(ctx context.Context, l *Listener, a netip.Addr, port uint16) (bound, error) {
+func bind(ctx context.Context, listen func(context.Context, string, string) (net.Listener, error), l *Listener, a netip.Addr, port uint16) (bound, error) {
 	ip, network := a.Unmap(), "tcp6"
 	if ip.Is4() {
 		network = "tcp4"
@@ -264,8 +268,16 @@ func bind(ctx context.Context, l *Listener, a netip.Addr, port uint16) (bound, e
 	if err != nil {
 		return bound{}, fmt.Errorf("listener %q on %s: %w", l.Services, netip.AddrPortFrom(a, port), err)
 	}
+	ta, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		// A listener that reports no TCP address cannot be named at the
+		// address the settings gave, so it is closed and refused, not read
+		// for a port that is not there.
+		_ = ln.Close()
+		return bound{}, fmt.Errorf("listener %q on %s: the opener answered a %T, not a TCP listener", l.Services, netip.AddrPortFrom(a, port), ln.Addr())
+	}
 	bound := bound{l: l, ln: ln}
-	bound.addr = netip.AddrPortFrom(a, ln.Addr().(*net.TCPAddr).AddrPort().Port())
+	bound.addr = netip.AddrPortFrom(a, ta.AddrPort().Port())
 	return bound, nil
 }
 
