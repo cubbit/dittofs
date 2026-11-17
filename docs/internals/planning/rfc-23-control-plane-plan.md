@@ -121,8 +121,8 @@ and A10 after it merged:
   §8.1's new `Lookup`, counts that principal and checks that principal's password; a source
   address is normalised; an account's count is reset by `:set-password` and deleted with the
   account; `POST /auth/password`'s current-password check is a counted attempt; a `429` raises no
-  count and commits nothing; a caller on the API's local socket, a Unix socket the host's
-  bootstrap names, has no source count and no pair, while a loopback address is a source like any
+  count and commits nothing; a caller on the API's local socket, a Unix socket,
+  `dfs.sock` in the runtime directory, has no source count and no pair, while a loopback address is a source like any
   other, since a proxy on the host delivers from one; a source's count is forgotten 15 min after its
   last failure and cleared by the break-glass reset, with a `decision:` for a shared source; a `429`
   has the code `throttled`. This touches RFC 23 §4.7, §5.3, §6, §7 and its "§5.3 throttling" row,
@@ -1346,7 +1346,7 @@ error to a status.
 - The server: TLS through `internal/tlsconfig`, the `Dockerfile`'s `HEALTHCHECK` moved to
   `https`, unverified (D13), and a start that refuses a non-loopback API address
   without the bootstrap's certificate and key (RFC 23 §5.3's Transport), tested on `127.0.0.1` and
-  on a non-loopback address; the local socket at the path the bootstrap names, served without TLS
+  on a non-loopback address; the local socket, `dfs.sock` in the runtime directory, served without TLS
   and created readable and writable by the server's user only, with a test that its mode is
   `0600` and that a connection on it reaches the API as a local caller (RFC 23 §5.3); `dfsctl`'s
   context takes the socket's path in place of a URL (RFC 23 §7, epic 6); the call bound and the parked long polls (RFC 23 §4.3), and

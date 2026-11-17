@@ -1670,9 +1670,10 @@ second store.
 - **Transport.** The API **MUST** be served over TLS on every address but
   loopback (`127.0.0.0/8` and `::1`, an IPv4-mapped address read as its IPv4
   address). Its certificate and key are bootstrap facts of the host. It is
-  also served without TLS on a **local socket**, a Unix socket at a path the
-  host's bootstrap names, readable and writable by the server's user only, so
-  a caller on it is a process of the host that holds that user's rights.
+  also served without TLS on a **local socket**, a Unix socket,
+  `dfs.sock` in the runtime directory ([RFC 13 Appendix C](rfc-13-configuration.md#Appendix%20C%3A%20the%20bootstrap%20file)),
+  readable and writable by the server's user only, in a directory only that user
+  owns, so a caller on it is a process of the host that holds that user's rights.
 
 ### 5.4 The bootstrap administrator and the first password
 

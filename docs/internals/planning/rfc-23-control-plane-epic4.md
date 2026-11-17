@@ -243,7 +243,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R55 | The API is served over TLS on every address but loopback (`127.0.0.0/8` and `::1`, an IPv4-mapped address read as its IPv4 address), its certificate and key bootstrap facts of the host | MUST | RFC 23 §5.3 | T4.3 |
-| R56 | It is also served without TLS on a local socket at the path the host's bootstrap names, readable and writable by the server's user only | MUST | RFC 23 §5.3 | T4.3 |
+| R56 | It is also served without TLS on a local socket, `dfs.sock` in the runtime directory, readable and writable by the server's user only | MUST | RFC 23 §5.3 | T4.3 |
 | R57 | Until epic 5's authentication is in, every route but the public ones (the health rows and `/api/version`) answers `401` | MUST | RFC 23 plan §5 epic 4 | T4.2 |
 | R58 | `GET /api/version` answers the major versions served, with no authentication and nothing else; `GET /api/v1/nodes` gives each node's binary version, for `viewer` | MUST | RFC 23 §9 | T4.2, T4.6 |
 | R59 | The client reaches a server named by a URL or by the local socket's path; resolves names to IDs with the list filters; echoes the `ETag` it read, opaque, in `If-Match`; generates one idempotency key per command and reuses it across that command's retries; stops on `412`; follows an operation with `?wait=`; ignores a response field it does not know; and refuses a server that serves no major version it speaks, naming both | MUST | RFC 23 §7, §9 | T4.8 |
@@ -519,7 +519,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   metrics listener under the same TLS rule as the API's; a TLS configuration naming a client CA
   refused at start, for both listeners, a `decision:` at `Start` naming its overturn, the API
   reached by client certificate; the
-  local socket at the bootstrap's path, created `0600`, its requests marked local on the context
+  local socket, `dfs.sock` in the runtime directory, created `0600`, its requests marked local on the context
   for E5 (`auth.Local`, D3); the call
   bound (D8) with `api_calls_in_flight` and its limit; `503` `starting` until `Deps.Ready()` says
   ready (D16); a store read failing `503` `unavailable`; `Retry-After` from the error (D19); the

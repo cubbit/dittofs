@@ -248,11 +248,11 @@ only these, come from the host — a file or the environment:
 | the local devices the node may use, and their paths                                                                   | a path means something only on its host ([§3](#3.%20Scopes)); a journal named by another path is new to the metadata store, as for a changed identity ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)) |
 | the scratch paths beside them: `backups.spill_path`, where copy staging spills ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), and `salvage.path`, where stranded journal tags are exported ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) | a path means something only on its host, and whether it shares space with a journal only the host can tell |
 | the process memory limit — the soft limit the language runtime enforces (on Go, `GOMEMLIMIT`) or the container's, else the host's memory | it sizes every node memory pool, the hold pool among them (RFC 24 §2.3, [§4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go)), read once at start in RFC 24 §2.1's order, and what memory a process has only its host knows |
-| listen addresses | a port conflict is a host's problem. An adapter's port is not bootstrap: it is the adapter's `adapters.<protocol>.port` setting, at installation scope with a node override (Appendix B), bound on these addresses |
+| listen addresses: the adapters', the management API's and the metrics listener's | a port conflict is a host's problem. An adapter's port is not bootstrap: it is the adapter's `adapters.<protocol>.port` setting, at installation scope with a node override (Appendix B), bound on `adapters.listen` |
 | the management API's TLS certificate and key (RFC 23 §5.3) | the API is served over TLS before anything is read from the control plane, and a certificate names its host |
-| the management API's local socket path (RFC 23 §5.3) | a path means something only on its host, and a caller on it is a process of that host, which the sign-in throttle exempts from a source count |
+| the management API's local socket, `dfs.sock` in the runtime directory (RFC 23 §5.3) | a caller on it is a process of that host, which the sign-in throttle exempts from a source count |
 | `events.path`, where the node spools its event streams (RFC 25 §4.6) | a path means something only on its host, and whether it shares space with a journal only the host can tell |
-| log destination and level                                                                                             | needed before the control plane answers, to say why it did not                                                                            |
+| log destination, format, rotation and level                                                                           | needed before the control plane answers, to say why it did not                                                                            |
 | the node's **roles** — `protocol` and `storage`, and both is the only accepted value ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)) | kept as a flag so a later split of the roles needs no new setting; a node configured with one refuses to start ([RFC 15 §2.2](rfc-15-topology.md#2.2%20Startup%20refuses%20what%20cannot%20work)); fixed for the life of the process |
 | the location of each wrapping key for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing |
 
@@ -276,8 +276,11 @@ be another's journal filesystem.
 names another, and from the environment, which wins over the file; a fact
 neither sets takes its default. Each fact has one key in the file and one
 environment name, and [Appendix C](#Appendix%20C%3A%20the%20bootstrap%20file)
-lists them with their types and defaults. A key or a `DITTOFS_` name that is not
-there refuses the start ([§6](#6.%20Validation)).
+lists them with their types and defaults. A key is matched exactly as declared,
+in the file as in a record, so `Logging.Level` is an unknown key, not `logging.level`.
+A key that is not in Appendix C, and a `DITTOFS_` name that is neither a key's
+environment name nor one of the names Appendix C lists as read elsewhere, refuses
+the start ([§6](#6.%20Validation)).
 
 A bootstrap fact **MUST NOT** also be a record field, and a record field
 **MUST NOT** be overridable from the host. An override from the host is a
@@ -729,14 +732,19 @@ record is written at. *Key* is the key as declared, or the environment name.
 *Rule* is the rule broken, in the component's words. *What to do* names the
 replacement of a key that moved, the closest declared key to an unknown one, or
 the way to change a value that is not the host's. All the refusals of one file,
-one environment or one write are reported together, so one pass fixes them. A
-refusal **MUST NOT** print the value of an environment variable or of a key that
-holds a credential, since either may hold a secret ([§7](#7.%20Secrets)); it
-prints any other value it refuses, which a setting may print since it never
-holds a secret.
+one environment or one write are reported together, so one pass fixes them; a
+rule that relates two keys runs only over keys that passed their own, so a bad
+`metadata.backend` does not also refuse the keys of a block it names. A refusal
+**MUST NOT** print the value of an environment variable or of a key that
+holds a credential, since either may hold a secret ([§7](#7.%20Secrets)), nor the
+value of a key it does not declare or no longer reads, since those are the keys
+most likely to be refused and where today's files hold secrets
+(`controlplane.jwt.secret`, `admin.password_hash`), as would a misspelled
+`pasword:`; it prints any other value it refuses, which a setting may print
+since it never holds a secret.
 
 ```text
-/etc/dittofs/config.yaml: database.type: no longer read; the metadata store is store.backend
+/etc/dittofs/config.yaml: database.type: no longer read; the metadata store is metadata.backend
 /etc/dittofs/config.yaml: loging.level: unknown key; did you mean logging.level?
 /etc/dittofs/config.yaml: adapters.smb.port: a setting, not a host fact; set it through the management API
 environment: DITTOFS_CONTROLPLANE_SECRET: no longer read; remove it
@@ -855,11 +863,13 @@ type Version struct {
   Nothing else names those secrets, so a later pass could not find them, and a
   password-equivalent left behind outlives the account in the store and every
   copy of it.
-- **A wrapping key rotates the same way.** A node's bootstrap **MAY** name two
-  keys for one role, the current and the next. Re-sealing every `Secret` of that
-  role under the next key is one pass, run by a node of that role, since it opens each; each record names the key ID it is sealed
-  under, and the current key is removed from bootstraps only once no record
-  names it.
+- **A wrapping key rotates the same way.** A node's bootstrap names, for one
+  role, the key that seals, and the retired keys that still open what they
+  sealed (Appendix C's `local.file` and `local.retired_files`). To rotate, the next key
+  becomes the one that seals and the old one is retired. Re-sealing every
+  `Secret` of that role under the new key is one pass, run by a node of that
+  role, since it opens each; each record names the key ID it is sealed under, and
+  a retired key is removed from bootstraps only once no record names it.
 - **Material is a secret with a lifecycle.** Encryption keys are resolved through
   the material provider, which also tracks which keys exist, are current or are
   destroyed. A secret provider need not.
@@ -910,8 +920,8 @@ type Version struct {
   retired key is refused, and is encrypted and authenticated under the export key ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)).
 
 - The only secrets on a host are the bootstrap credential for the configuration
-  store and its wrapping keys, or references to them in an
-  external key service ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
+  store, its wrapping keys and the passphrase of a key file, or references to
+  them in an external key service ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
 
 ## 8. Observability
 
@@ -1070,13 +1080,20 @@ host's file, so a value valid in one place is valid in all:
 
 - a key is lower case, its parts joined by dots and its words by underscores
   (`adapters.smb.drain_timeout`), matched exactly as declared;
-- a duration is a string of a number and a unit, `ms`, `s`, `m` or `h`
-  (`"30s"`, `"1h30m"`); a bare number is refused, since it names no unit;
-- a size is a string of a number and a unit, decimal `KB` to `TB` or binary
-  `KiB` to `TiB` (`"512MiB"`), or an integer of bytes;
-- a boolean is `true` or `false`, and nothing else;
+- a duration is a number and a unit, `ms`, `s`, `m` or `h`, in lower case
+  (`30s`, `1h30m`; quoted or not in the host's file); it is never negative, a
+  number is whole, `0s` is zero, and a bare number is refused, since it names no
+  unit;
+- a size is a number and a unit, decimal `KB` to `TB` or binary `KiB` to `TiB`
+  (`512MiB`), or `B`; in a record it may also be an integer of bytes, but a bare
+  integer in the host's file is refused, since an older file's `max_size: 100`
+  meant megabytes;
+- a boolean is `true` or `false`, and nothing else: `yes`, `on` and `1` are
+  refused;
 - a list and a map are JSON's in a record and YAML's in the host's file; in the
-  environment a list is comma-separated.
+  environment a list of values is comma-separated, a map is one variable per leaf
+  key, and a list of entries has no environment form but a named one (`journals`,
+  Appendix C).
 
 | Setting | Defined in | Scope | Class | Default |
 | --- | --- | --- | --- | --- |
@@ -1290,45 +1307,100 @@ host's file, so a value valid in one place is valid in all:
 
 ## Appendix C: the bootstrap file
 
-Every host fact of [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) but
-the scratch paths, which join this table with their first reader, and the
-process memory limit, which is read from the runtime, the container and the host
-(RFC 24 §2.1) and has no key. The environment name is `DITTOFS_` and the key in
-upper case, its dots as underscores; no two keys share one. A path is absolute
+Every host fact of [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap), listed
+with its key, its type and its default. The environment name is `DITTOFS_` and the
+key in upper case, its dots as underscores; no two keys share one. A key is
+matched exactly as declared, so a key that differs only in case is refused as
+unknown, with the declared one named. A path is absolute
 and written in its clean form: a journal's path is its identity in the metadata
 store ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)'s
 `JournalDir`), so `/data/j1/` beside `/data/j1` would be a second journal, and a
 relative path, a `~` or a trailing slash is refused rather than rewritten.
 
+Left out, since they have no reader yet or no key: the scratch paths
+`backups.spill_path`, `salvage.path` and `events.path`, which join this table
+with their first reader (a node that has one reads it from the file, and the
+table then lists all three, so `dfs config schema` stays complete), and the
+process memory limit, which is read from the runtime, the container and the host
+(RFC 24 §2.1).
+
+**The state and runtime directories** are not keys. The state directory is
+`$STATE_DIRECTORY` when the service manager sets it, else `$XDG_STATE_HOME/dittofs`,
+else `/var/lib/dittofs`; the runtime directory is `$RUNTIME_DIRECTORY`, else
+`$XDG_RUNTIME_DIR/dittofs`, else `/run/dittofs`. A systemd unit's `StateDirectory=`
+and `RuntimeDirectory=` set the first of each, so two nodes on one host each get
+their own from their own unit.
+
 | Key | Type | Default | Fact |
 | --- | --- | --- | --- |
 | `node.id` | UUID | none: the `node-id` copies give it | the node's identity, needed only when every copy is lost |
-| `node.roles` | list of `protocol`, `storage` | `[protocol, storage]` | the node's roles; both is the only accepted value |
-| `store.backend` | `badger` or `foundationdb` | `badger` | which metadata store |
-| `store.path` | path | the state directory's `metadata` | Badger's directory |
-| `store.cluster_file` | path | required with `foundationdb` | FoundationDB's cluster file |
-| `store.credential_file` | path | none | a file holding the store's credential, for a backend that asks for one; the credential is never written in this file |
-| `journals` | list of paths | required | the journal devices, one directory each |
-| `api.listen` | list of `host:port` | `127.0.0.1:8080` | the management API's addresses |
-| `api.tls.cert_file`, `api.tls.key_file` | path | required when an `api.listen` address is not loopback | the API's certificate and key (RFC 23 §5.3) |
-| `api.socket` | path | the runtime directory's `dfs.sock` | the API's local socket (RFC 23 §5.3) |
-| `metrics.listen` | `host:port` | `127.0.0.1:9090` | the metrics listener, served over the API's TLS off loopback (RFC 25 §2.8) |
-| `logging.level` | `debug`, `info`, `warn`, `error` | `info` | the log level |
+| `node.roles` | list of `protocol`, `storage` | `[protocol, storage]` | the node's roles, compared as a set, a repeated role refused; both is the only accepted value |
+| `metadata.backend` | `badger` or `foundationdb` | `badger` | which metadata store; only the block it names is read, and a key of the other block is refused |
+| `metadata.badger.path` | path | the state directory's `metadata` | Badger's directory |
+| `metadata.foundationdb.cluster_file` | path | required with `foundationdb` | FoundationDB's cluster file |
+| `metadata.foundationdb.tls.cert_file`, `.key_file`, `.ca_file` | path | none: named together, or none | the client certificate, its key and the CA file FoundationDB's TLS options take; the files are the credential, never a value in this file |
+| `journals` | list of entries, each with a `path` | required | the journal devices, one directory each; a path listed twice, or two that name one directory, is refused. The environment, `DITTOFS_JOURNALS=/data/j1,/data/j2`, sets the paths only, and replaces the file's list; a fact of one journal needs the file |
+| `adapters.listen` | list of IP literals, each an address to bind | every interface | the addresses the protocol adapters bind; each adapter's port is its own setting (Appendix B) |
+| `api.listen` | list of `ip:port` | `127.0.0.1:8080` | the management API's addresses |
+| `api.tls.cert_file`, `api.tls.key_file` | path | required when an `api.listen` or `metrics.listen` address is not loopback: an IP in `127.0.0.0/8` or `::1`, as [RFC 23 §5.3](rfc-23-control-plane.md#5.3%20Sign-in%2C%20tokens%20and%20sessions) reads it, so a host name and an unspecified address (`0.0.0.0`, `::`) are not | the API's certificate and key (RFC 23 §5.3) |
+| `metrics.listen` | `ip:port`, or empty for off | `127.0.0.1:9090` | the metrics listener, served over the API's TLS off loopback (RFC 25 §2.8) |
+| `logging.level` | `debug`, `info`, `warn`, `error` | `info` | the log level, in lower case |
 | `logging.format` | `text` or `json` | `text` | the log format |
 | `logging.output` | `stdout`, `stderr` or a path | the state directory's `dittofs.log` | where logs go |
 | `logging.rotation.max_size` | size | `"100MiB"` | a log file's size before it rotates |
-| `logging.rotation.max_backups`, `logging.rotation.max_age` | integer, duration | `5`, `"720h"` | rotated files kept |
+| `logging.rotation.max_backups`, `logging.rotation.max_age` | integer, duration | `5`, `"720h"` | rotated files kept; `0` keeps all |
 | `logging.rotation.compress` | boolean | `false` | whether rotated files are compressed |
-| `keys.protocol`, `keys.storage` | key location | required, both, and two different keys | each role's wrapping key ([§7](#7.%20Secrets)) |
+| `keys.<role>.kind` | `local` or `kmip` | required, for `protocol` and for `storage`, and the two roles name two different keys | each role's wrapping key ([§7](#7.%20Secrets)); only the block `kind` names is read |
+| `keys.<role>.local.file` | path | required with `local` | the key file that seals new `Secret` records |
+| `keys.<role>.local.retired_files` | list of paths | none | the files whose keys still open what they sealed |
+| `keys.<role>.kmip.endpoint`, `.server_ca`, `.client_cert`, `.client_key`, `.key_uid`, `.timeout`, `.retired_key_uids` | strings and paths, `timeout` a duration | none | a role's key held by a KMIP server; `key_uid` is the key that seals, `retired_key_uids` the ones that still open |
 
-A **key location** is `kind`, `local` or `kmip`. A `local` one names `file`, the
-current key file, and `retired_files`, the files whose keys still open what they
-sealed; a `kmip` one names `endpoint`, `server_ca`, `client_cert`, `client_key`,
-`key_uid`, `timeout` and `retired_key_uids`. A key file's passphrase is read from
-`DITTOFS_ENCRYPTION_PASSPHRASE`.
+`<role>` is `protocol` or `storage`, so a key is `keys.protocol.local.file`, its
+environment name `DITTOFS_KEYS_PROTOCOL_LOCAL_FILE`. A value from the environment
+replaces the same key's value from the file and merges with nothing else: a leaf
+is replaced alone, and the rest of the role's block stays as the file has it.
+A key file's passphrase is read from `DITTOFS_ENCRYPTION_PASSPHRASE`, one for
+every key file of the node until a split of the roles ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type))
+makes a node hold one role's key alone.
+
+**Names read outside the file.** A `DITTOFS_` name that is not a key is refused
+unless it is one of these, which are not keys:
+
+| Name | Read by |
+| --- | --- |
+| `DITTOFS_CONFIG` | the start, the path of the host's file when `--config` is not given |
+| `DITTOFS_ENCRYPTION_PASSPHRASE` | the local key provider, a key file's passphrase |
+| `DITTOFS_PASSWORD` | `dfsctl`, which a shell that runs both may export |
+| the names and prefixes the repository's development tools export (`DITTOFS_TEST_*`, `DITTOFS_E2E_*`, `DITTOFS_PREPUSH_*`, and the launchers' and git hooks' own names) | the tools, which a server they start inherits |
+
+**From the files of today.** The key a start refuses names its replacement
+(§6's *what to do*):
+
+| Today's key | Now |
+| --- | --- |
+| `database.*` | `metadata.*`: `database.type` is `metadata.backend`, its Badger path `metadata.badger.path`; the cache sizes are dropped |
+| `controlplane.host`, `controlplane.port` | `api.listen`; `controlplane.tls` is `api.tls`; its timeouts, `jwt.*` and `pprof*` are dropped |
+| `metrics.enabled`, `.host`, `.port` | `metrics.listen`; a metrics listener was off by default and is now on, on loopback |
+| `blockstore.journal.path`, a root directory | `journals`, one entry per device |
+| `logging.level` in upper case | lower case only: `DEBUG` is refused, `use debug` |
+| `logging.rotation.max_size: 100`, megabytes | a size with its unit, `"100MiB"`: a bare integer is refused in the file |
+| `logging.rotation.max_backups`, `.max_age` | the same keys, but their default moves from `0` (keep all) to `5` and `"720h"` |
+| `shutdown_timeout` | the setting `adapters.<protocol>.drain_timeout` |
+| `admin.*`, `kerberos.*`, `identity.*` (`machine_sid` included), `ldap.*`, `gc.*`, `snapshot.*`, `integrity.*` | no longer host facts: records and settings, set through the management API |
+| a v1 key not above | refused as unknown, with the closest declared key named |
+
+A start refuses all of these where today's loader only warns, so a file of
+today fails until it is migrated, `docker/config.yaml` and the operator's
+rendered file included. Off loopback the operator and the compose file need a
+certificate and key, or a listener on loopback behind the proxy that terminates
+TLS: [RFC 23 §5.3](rfc-23-control-plane.md#5.3%20Sign-in%2C%20tokens%20and%20sessions)
+already serves nothing off loopback without TLS, and this table only states it.
 
 **The file's commands.** `dfs config show` prints the effective bootstrap, each
-value with where it came from (the file, a variable, or the default), and a
-credential's file by its path only. `dfs config validate` refuses what a start
-would refuse, in §6's shape, and starts nothing. `dfs config schema` prints this
-table as a JSON Schema.
+value with where it came from (the file, a variable, or the default), a
+credential's file by its path only, and a value that came from the environment
+as the variable's name. `dfs config validate` refuses what a start would
+refuse, in §6's shape, and starts nothing; it alone checks a rule that relates
+two keys, such as "two different keys". `dfs config schema` prints this table as
+a JSON Schema, which covers the types, the enumerations and the requirements
+that do not depend on another key.
