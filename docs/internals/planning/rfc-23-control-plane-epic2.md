@@ -146,7 +146,7 @@ them.
 | R15 | Every `Put*`, `Set*` and `Delete*` of the view but `SetShareState` takes `expect`, reads the record with conflict tracking, refuses `ErrGenerationMismatch` when the stored generation or version differs, and raises it; zero expects the record absent, so the write is create-only. `SetShareState` takes none: its `from` argument is its compare-and-set | MUST | RFC 16 §3; RFC 23 §4.4, CP5 | T2.3 |
 | R16 | `SetGrant` and `DeleteGrant` each write the share's grant-list version, `S‖id‖gv`, as the writing commit's version in the same transaction; `DeleteGrant` deletes the grant and its `GR` key; a user's or a group's deletion moves `S‖id‖gv` of each share whose grant it drops | MUST | RFC 16 §3, §4.2 (`S‖id‖gv`) | T2.3 |
 | R17 | Every control-plane write that names a share — `PutShare`, `SetShareState`, `SetGrant`, `DeleteGrant`, `PutExportPolicy`, a share-scoped `PutSetting` — reads `S‖id‖st` with tracking and refuses a share being removed or retired with `ErrStale` | MUST | RFC 16 §2.3.2 (step 1) | T2.3 |
-| R18 | `Write` runs `fn` over a `ControlPlaneTx`, which carries the view's writes without their `ctx`, each checking its `expect`, and the tracked reads `Setting`, `User`, `Share`, `SignInFailures` and `RunningOperation`; a deletion's transaction form is its mark | MUST | RFC 16 §3 | T2.4, T2.7, T2.9 |
+| R18 | `Write` runs `fn` over a `ControlPlaneTx`, which carries the view's writes without their `ctx`, each checking its `expect`, and the tracked reads `Setting`, `User`, `Share`, `SignInFailures`, `RunningOperation` and `IDHighWater`; a deletion's transaction form is its mark | MUST | RFC 16 §3; RFC 18 §2.6 (`IDHighWater`) | T2.4, T2.7, T2.9 |
 | R19 | `Write` writes `meta`'s `AuditRecord` and, when `meta` names a key, its `IdempotencyRecord`, after `fn` returns, so `fn` may complete the audit record's `After` and `Outcome` and the idempotency record's `Answer`; the change and both records commit together or none of them | MUST | RFC 16 §3; RFC 23 §4.3, §6, CP12 | T2.4, T2.5 |
 | R20 | A transaction conflict retries the whole transaction, the key's read included, bounded by the call's deadline with randomised backoff, so `fn` holds no state between calls and what commits is the attempt that committed | MUST | RFC 16 §3 | T2.4 |
 | R21 | An `expect` that does not match returns `ErrGenerationMismatch` through `fn`, commits nothing and is not retried | MUST | RFC 16 §3 | T2.4 |
@@ -523,6 +523,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   	Share(id ShareID) (Share, bool, error)
   	ExportPolicy(share ShareID) (ExportPolicy, error) // tracked: the default policy, version 0, when none is stored; E4's export-policy routes
   	EnabledAdmins() (int, error) // D18
+	IDHighWater() (uid, gid uint32, err error) // tracked: the uid and gid counters' high-water marks, IDS‖0x04 and IDS‖0x05, zero while absent; the RFC 18 plan's epic 2's identity.id_range check (its T2.9)
 	Installation() (Installation, error) // tracked: NTLMOff for RFC 23 §4.1's rule
 	SetNTLMOff(gen uint64) error          // NTLMOff.Off, and clears Deleted on a turn-off, by E4's settings route alone
 	SetNTHashDeleted(op OperationID) error // sets NTLMOff.Deleted, by identity.nt-hash-delete's StepResult.End alone
@@ -590,6 +591,11 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   - an `ExportPolicy` read for a share with none stored answering the default policy at version 0,
     and a `Write` reading it while a concurrent `PutExportPolicy`, held open by a `FaultKV` delay,
     commits first: the `Write` retries and reads the new policy (catches an untracked read, R18);
+  - a `Write` that reads `IDHighWater()` and puts an `identity.id_range` whose `Hi` is one above
+    the uid mark, while a transaction raising the uid counter past that `Hi` (`IDS‖0x04`, raised
+    over `kv.Txn` as the RFC 18 plan's epic 2's `Minter` does), held open by a `FaultKV` delay,
+    commits first: the `Write` retries and reads the raised mark, so a range lowered below a
+    just-allocated ID is never committed (catches an untracked read of the counters, R18);
   - `SetMachinePassword`'s reference and `SetMachineJoin`'s join, each written after the other,
     both read back through `Installation()` (catches one set clobbering the other);
   - beside `SetMachineJoin`'s case, a `Join` with two `Names`, a `LastRotation.Version` and a
