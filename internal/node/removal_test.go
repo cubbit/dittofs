@@ -470,7 +470,10 @@ func TestStep3WaitsForTheSharesCallsWithinItsBound(t *testing.T) {
 	}
 	held.Advance(time.Hour)
 	select {
-	case <-answered:
+	case err := <-answered:
+		if !errors.Is(err, vfs.ErrStale) {
+			t.Fatalf("the call admitted before the mark, once released after the unbind: got %v, want %v", err, vfs.ErrStale)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the held call did not answer once released")
 	}
