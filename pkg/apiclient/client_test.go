@@ -454,6 +454,50 @@ func TestStaleTagStops(t *testing.T) {
 	}
 }
 
+// A PATCH or a PUT whose answer was lost is returned at once, not sent
+// again: it carries no key, and its second sending under the same tag would
+// be refused 412 for a write that applied.
+func TestLostWriteAnswerNotResent(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		write  func(context.Context, *apiclient.Client, apiclient.Tagged[apiv1.ShareSpec, apiv1.ShareStatus]) error
+	}{
+		{"Patch of a share", http.MethodPatch, "", func(ctx context.Context, c *apiclient.Client, sh apiclient.Tagged[apiv1.ShareSpec, apiv1.ShareStatus]) error {
+			_, err := c.Shares().Patch(ctx, sh.ID, map[string]any{"spec": map[string]any{"name": "ci"}}, sh.ETag)
+			return err
+		}},
+		{"Put of an export policy", http.MethodPut, "/export-policy", func(ctx context.Context, c *apiclient.Client, sh apiclient.Tagged[apiv1.ShareSpec, apiv1.ShareStatus]) error {
+			pol, err := c.ExportPolicies().Get(ctx, sh.ID)
+			if err != nil {
+				return fmt.Errorf("get the policy: %w", err)
+			}
+			_, err = c.ExportPolicies().Put(ctx, sh.ID, policy, pol.ETag)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := serve(t, admin())
+			clock := newClock()
+			c := client(t, s.url, clock)
+			sh, err := c.CreateShare(t.Context(), newShare("builds", s.namespace(t)))
+			if err != nil {
+				t.Fatalf("CreateShare: %v", err)
+			}
+			target := "/api/v1/shares/" + sh.ID + tc.path
+			s.front.add(fault{match: on(tc.method, target), drop: true})
+			err = settled(t, tc.name+", its answer lost", clock, func(ctx context.Context) error { return tc.write(ctx, c, sh) })
+			if err == nil || errors.As(err, new(*apiv1.Problem)) {
+				t.Errorf("%s, its answer lost: error %v, want the lost answer", tc.name, err)
+			}
+			if n := len(to(s.front.requests(tc.method), target)); n != 1 {
+				t.Errorf("%ss of %s sent: %d, want 1", tc.method, target, n)
+			}
+		})
+	}
+}
+
 // A share's export policy is read, replaced and merged at its own path, each
 // under the tag the last answered; a PUT with "*" sends If-None-Match: *,
 // refused 412 on a policy that exists. Only a POST or a DELETE carries a
@@ -546,6 +590,18 @@ func TestWithoutIdempotencyKey(t *testing.T) {
 	})
 	if p := problem(t, "Create without a key, refused 503", err); p.Status != http.StatusServiceUnavailable {
 		t.Errorf("Create without a key, refused 503: %d, want 503", p.Status)
+	}
+}
+
+// An action answered 202 returns the operation it started, and no resource.
+func TestActionAccepted(t *testing.T) {
+	s := serve(t, admin())
+	id := uuid.NewString()
+	s.front.add(fault{match: on(http.MethodPost, "/api/v1/shares/"+id+":quiesce"), status: http.StatusAccepted,
+		header: http.Header{"Content-Type": {"application/json"}}, body: `{"id":"op1","state":"pending"}`})
+	res, err := client(t, s.url, newClock()).Shares().Action(t.Context(), id, "quiesce", nil, "")
+	if err != nil || res.Operation == nil || res.Operation.ID != "op1" || res.Resource != nil {
+		t.Errorf(":quiesce answered 202: operation %+v resource %+v err %v, want operation op1 and no resource", res.Operation, res.Resource, err)
 	}
 }
 
