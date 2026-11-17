@@ -107,7 +107,7 @@ What replaces what:
 | `pkg/config/renamed_keys.go` (renamed keys refused; other unknown keys only warned) | the refused v1 keys, each naming its replacement: `database.*`, `controlplane.*` (its `port` and `tls` naming the bootstrap's API listen address and TLS, RFC 13 §2.2), `admin.*`, `kerberos.*`, `ldap.*`, `identity.machine_sid`, `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*`, `blockstore.*` but the journal path, `metrics.*` (the bootstrap's metrics listen address), `shutdown_timeout` (`adapters.<protocol>.drain_timeout`), and their `DITTOFS_*` forms | reworked in epic 2 |
 | `pkg/metadata/kvstore/settings.go` (`Settings`, `PutSetting`, `CFGGEN`, `Setting.Schema`) | the same, with a delete, a read across every scope in one scan, and a newer schema refused; `expect` is RFC 23's plan's (its epics 1 and 2) | extended in epic 3 |
 | `KindSEC` reserved, no code | `Secret` records with versions and sealing | built in epic 4 |
-| `pkg/block/middleware/encryption/keyprovider` | `pkg/keyprovider`, unchanged but for `mapstructure` tags and KMIP's `timeout_ms` renamed `timeout`, a duration | moved in epic 1 (D5) |
+| `pkg/block/middleware/encryption/keyprovider` | `pkg/keyprovider`, unchanged | moved in epic 1 (D5) |
 
 **Dependency limits.** Sealing uses `keyprovider` (AES-256-GCM, key IDs, retired keys, a local key
 file or KMIP) unchanged. A component's settings struct and validator live in that component's own
@@ -266,7 +266,7 @@ Out of scope, each named in O1:
    - `renamed_keys.go`'s `checkRenamedKeys` and its table, extended with the refused keys. It sees
      only the file's keys, so refusing their `DITTOFS_*` forms is new code: a scan of the
      environment;
-   - `keyprovider`, moved unchanged but for its `mapstructure` tags and KMIP's `timeout`.
+   - `keyprovider`, moved unchanged.
 8. **Real dependencies for properties of those dependencies**, as `CLAUDE.md`'s "Writing tests"
    says. For this RFC:
    - sealing runs on real key files, one per role;
@@ -289,15 +289,15 @@ Out of scope, each named in O1:
 
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
-| E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 4 | 6 | team | every epic |
+| E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 7 | 8.75 | team | every epic |
 | E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 8 | 14.5 | A | E5; partly E3; RFC 23's epics 3 and 5 (its X1) |
 | E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19.5 | B | E5; partly RFC 18's plan's epic 6 |
 | E4 | Secrets | `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
 | E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty, off by default; the launchers on `dfs init` and the images' `init` as an explicit step, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
-| | **Total** | | **38** | **74.5** | | |
+| | **Total** | | **41** | **77.25** | | |
 
-**Plan estimate: 38 subtasks, 74.5 man-days.**
+**Plan estimate: 41 subtasks, 77.25 man-days.**
 
 The skill's estimate for RFC 13's 1,221 lines is 3 middle epics (`round(1221 / 400)`), and this plan
 has 3.
@@ -454,7 +454,7 @@ and never changed (the RFC 18 plan's A10). This is the user's decision.
 - **Prior art (from memory).** Vault's barrier binds each entry to its path the same way.
 - **Applied by** epic 4.
 
-**D5. `keyprovider` moves to `pkg/keyprovider`** in epic 1, unchanged but for the move, a `mapstructure` tag on each field and KMIP's `timeout_ms` renamed `timeout`, a duration (RFC 13 Appendix C), so secrets and the
+**D5. `keyprovider` moves to `pkg/keyprovider`** in epic 1, unchanged but for the move, so secrets and the
 transform chain share it without one importing the other's middleware tree. Its importers on
 `feat/storage-v2` move with it:
 - `pkg/block/middleware/encryption/decorator.go`, `decorator_test.go` and `policy.go`;
@@ -764,11 +764,11 @@ func start(ctx context.Context, configFlag string) error {
 // pkg/bootstrap, the renamed pkg/config.Load (epic 2).
 func Load(path string, environ []string) (*Bootstrap, error) {
 	v := viper.New()
-	setupViper(v, path)
+	setupViper(v, path, environ) // binds each bootstrap key from environ; no AutomaticEnv, which reads the process (epic 2's D2)
 	if _, err := readConfigFile(v); err != nil {
 		return nil, err
 	}
-	if err := checkEnviron(os.Environ()); err != nil {
+	if err := checkEnviron(environ); err != nil {
 		return nil, err // a DITTOFS_* name that is no bootstrap key: viper never sees it (D7)
 	}
 	var md mapstructure.Metadata
@@ -795,26 +795,25 @@ A section, declared by its component and listed once in the node's table (D2):
 // internal/node/settings.go: the one table, read by Check and by reconcile.
 var Settings = settings.Table{
 	settings.Of[adaptersettings.SMB]("adapters.smb",
-		entity.ScopeInstallation, entity.ScopeNode, // installation, with a node override for port (RFC 13 Appendix B)
-		adaptersettings.DefaultSMB(),
-		settings.Classes{"port": settings.Restart, /* every other field named, Live */}), // Of panics on an unclassified field
+		settings.Override(entity.ScopeInstallation, entity.ScopeNode), // installation, with a node override for port (RFC 13 Appendix B)
+		adaptersettings.DefaultSMB()), // each field's class is its `class` tag (epic 1's D9); Of panics on an unclassified field
 	settings.Of[adaptersettings.NFS]("adapters.nfs", /* the same */),
 	settings.Of[apisettings.OIDC]("api.oidc_role_map", /* ... */,
 		settings.WriteRole(auth.Admin)), // Appendix B: written by admin only
 	// ...every other component's section (epic 5; identity.* is RFC 18's plan's)
 }
 
-// pkg/settings. Options: WriteRole, the lowest role that may write the section (operator by
-// default); Required, the keys with no default, which a snapshot missing one refuses (RFC 13 §4.2);
-// Per, the thing a "scope, per thing" form is per (RFC 13 §3: "node, per journal"), keying one value
-// per thing within the scope; SecretRef, a field holding a reference, with the kind it must name
-// (D10); CheckTx[T](func(entity.ControlPlaneTx, settings.Write, T) error), a check that reads store
-// state beyond settings, tracked, in the write's transaction, handed the write so it can return at
-// once for a key it does not guard (RFC 13 §6; RFC 18's plan's E2 refusing an
-// identity.id_range at or below the ID counters' marks). Of panics on a class, Required or SecretRef name that is not a field of T, so a typo fails
-// the table's first test instead of making a restart or bound key live.
-func Of[T interface{ Validate() error }](prefix string, scope, override entity.ScopeKind,
-	def T, classes Classes, opts ...Option) Section
+// pkg/settings. Scope is At, PerThing (the thing a "scope, per thing" form is per, RFC 13 §3: "node,
+// per journal") or Override. Options: WriteRole, the lowest role that may write the section (operator
+// by default); Required, the keys with no default, which a snapshot missing one refuses (RFC 13 §4.2);
+// SecretRef, a field holding a reference, with the kind it must name (D10); CheckTx[T](func(
+// entity.ControlPlaneTx, settings.Write, T) error), a check that reads store state beyond settings,
+// tracked, in the write's transaction, handed the write so it can return at once for a key it does
+// not guard (RFC 13 §6; RFC 18's plan's E2 refusing an identity.id_range at or below the ID counters'
+// marks). Of panics on a missing or unknown class, a duplicate field name, or a Required or SecretRef
+// name that is not a field of T, so a typo fails the table's first test instead of making a restart
+// or bound key live.
+func Of[T interface{ Validate() error }](prefix string, scope Scope, def T, opts ...Option) Section
 ```
 
 The write path: the API's settings route checks inside RFC 16's `Write`, so a related setting it
@@ -1030,7 +1029,7 @@ func (p *Provider) Prune(ctx context.Context, kind entity.SecretKind, owner enti
 
 ### Epic 1 — The configuration surface ⛔
 
-**Epic 1 estimate: 4 subtasks, 6 man-days.**
+**Epic 1 estimate: 7 subtasks, 8.75 man-days.**
 
 The three packages' exported surfaces and the kvstore views' signatures, frozen for the epics that
 fill them in.
@@ -1147,7 +1146,7 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   `Validate` (D2); its required keys, the ones with no default (RFC 13 §4.2), since a strict decode
   over a full `def T` cannot tell an omitted field from its zero value; its write role, `admin`
   for the sections RFC 13 Appendix B writes by `admin` only (`identity.oidc`, `api.oidc_role_map`,
-  `identity.directory`, A1, and the others RFC 23 §5.2 lists), compared by `entity.APIRole`'s order; its `Per` thing for Appendix B's
+  `identity.directory`, A1, and the others RFC 23 §5.2 lists), compared by `entity.APIRole`'s order; its `PerThing` scope for Appendix B's
   "per journal" rows; its `SecretRef` fields with their kinds (D10); and `Of` refusing a class,
   `Required` or `SecretRef` name that is not a field of `T`.
 - The snapshot, `Read` and `Get`: `Read` decodes each section on its own, takes the installation

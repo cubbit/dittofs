@@ -81,7 +81,7 @@ the move of `keyprovider` (D3); the export pins.
 - **S3**, RFC 23's node reconciles and its write path exists, outside this epic.
 - **S4**, RFC 23's `dfs init` exists, outside this epic.
 - **RFC 23's T2.4**, `Write`, `ControlPlaneTx` and the audit record, in RFC 23's epic 2.
-- **D1** to **D9** are this epic's decisions (§4). A decision of RFC 13's plan is always written
+- **D1** to **D11** are this epic's decisions (§4). A decision of RFC 13's plan is always written
   with the plan named ("RFC 13's plan, D8").
 
 ## 2. How the general rules apply
@@ -98,11 +98,11 @@ title and not copied.
 | rule 4, profiling | none | no test here starts a goroutine or opens a store, so the leak check has nothing to find |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T1.3, T1.4, T1.7 | the bootstrap key test reads the keys a user writes, not the Go fields; the redaction test reads what a log line and `%v` print; the export pins read the packages as an importer sees them |
 | rule 6, known failures shrink | none | no test lands red, and no suite with a `known.yaml` is touched |
-| rule 7, v2 ignores v1 | T1.2, T1.3 | `pkg/config`'s loader, path search, decode hooks and decoder configuration are kept and renamed, nothing else; `keyprovider` moves unchanged but for its `mapstructure` tags (D3) |
+| rule 7, v2 ignores v1 | T1.2, T1.3 | `pkg/config`'s loader and path search are kept and renamed, nothing else: `Load` has no decode hook today (it unmarshals with viper's default decoder, which E2 replaces with one strict value codec); `keyprovider` moves unchanged (D3) |
 | rule 8, real dependencies for properties of those dependencies | none | no property of a store, a key file or a journal directory is tested here; E2 and E4 test them on real ones |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T1.4, T1.6 | RFC 13 §7's `decision:` note (two wrapping keys) at `secrets.Role`, the site that declares the two roles; RFC 13's plan's D9 `decision:` note at `secrets.ErrUnproven` and `settings.ErrUnproven`; RFC 13's plan's D11 note is E3's, at `Check`'s body |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T1.4, T1.6 | RFC 13 §7's `decision:` note (two wrapping keys) at `secrets.Role`, the site that declares the two roles; RFC 13's plan's D9 `decision:` note at `secrets.ErrUnproven` and `settings.ErrUnproven`; RFC 13's plan's D11 note is E3's, at `Check`'s body, and T1.6's own note on a secret's rotation sits at `Check`'s declaration |
 | rule 10, a test must be able to fail | T1.2 to T1.7 | each test fails on a planted break: a bootstrap key missing from RFC 13's table, a role swapped in the kind table, a `Value` printed by `%v`, an extra export, a symbol with no caller listed |
-| rule 11, a symbol is exported only if RFC 13's interfaces use it, or a component declares through it | T1.3 to T1.7 | the surface frozen here is R5 to R18; T1.7 pins each package's exports and lists each symbol's first caller |
+| rule 11, a symbol is exported only if RFC 13's interfaces use it, or a component declares through it | T1.3 to T1.7 | the surface frozen here is R5 to R18; T1.7 pins each package's exports and lists each symbol's first caller, `ObserveLag` (E3's D5, first caller E5's reconcile) the one export added after the freeze |
 | rule 12, each subtask creates only what it declares | all | each package lands with the subtask that declares its whole surface; a stub is declared only where T1.7 names its caller in a later epic or plan (D4); no test helper lands without the test that uses it |
 
 ## 3. Requirements and invariants
@@ -116,7 +116,7 @@ declaration is another epic's, the row says which.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | Every bootstrap fact an operator sets has one key name, a type, a default or "required", and one environment form, stated in RFC 13 before it is built | invariant | RFC 13 §2.2; RFC 13 plan, E1 | T1.1, T1.3 |
-| R2 | A refusal of configuration names the field and the rule, and its source (the file, the variable or the record and its scope); it never prints the value, which may be a secret. E2 and E3 produce the refusals | MUST | RFC 13 §6 ("Refused, never replaced"), §7 ("Read never returns a secret") | T1.1 |
+| R2 | A refusal of configuration names the field and the rule, and its source (the file, the variable or the record and its scope). It never prints three kinds of value: an environment variable's, a credential key's, and the value of a key it does not declare or no longer reads (`controlplane.jwt.secret`, a misspelled `pasword:`), since each may be a secret. Any other value it refuses it prints (`got 70000`), since a setting never holds a secret. E2 and E3 produce the refusals, each with a canary test for each of the three kinds | MUST NOT | RFC 13 §6 ("A refusal says where, what and why, in one shape", as #4486 amends it), §7 ("Read never returns a secret") | T1.1 |
 | R3 | A duration, a size and a setting's key are written one way in every section, so that a value valid in one is valid in all. E3 decodes them | invariant | RFC 13 §6 ("Unknown fields are refused"), Appendix B | T1.1 |
 
 **The bootstrap**
@@ -124,11 +124,13 @@ declaration is another epic's, the row says which.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R4 | `pkg/config` is gone and `pkg/bootstrap` builds in its place, with every importer, `dfs config`'s commands among them | invariant | RFC 13 plan, D8 | T1.2 |
-| R5 | `Bootstrap` holds RFC 13 §2.2's facts but its scratch paths: the node's identity, the metadata store's address and credential, the journal devices and their paths, the listen addresses, the API's TLS certificate and key and its local socket path, the log destination and level, the roles and each role's wrapping-key location | MUST | RFC 13 §2.2 (its table) | T1.3 |
+| R5 | `Bootstrap` holds RFC 13 §2.2's facts but its scratch paths and the memory limit, each under Appendix C's key (#4486): the node's identity, the metadata store's backend, location and credential files, the journal devices and their paths, the adapters', the API's and the metrics listener's addresses, the API's TLS certificate and key, the log's destination, format, rotation and level, the roles and each role's wrapping key. No key names the API's local socket, `dfs.sock`, which sits in the runtime directory | MUST | RFC 13 §2.2 (its table), Appendix C | T1.3 |
 | R6 | A bootstrap fact is not a record field, and a record field is not overridable from the host: `Bootstrap` declares no field a setting also holds. E2 refuses the host's other names | MUST NOT | RFC 13 §2.2 | T1.3, T1.7 |
 | R7 | The roles flag names `protocol` and `storage`; both is the only accepted value, which E2 enforces | MUST | RFC 13 §2.2 (roles row); RFC 15 §2.1, §2.2 | T1.3 |
-| R8 | Each role names its wrapping key's location, and may name a next key beside the current one | MUST, MAY | RFC 13 §2.2 (wrapping-key row), §7 ("Two wrapping keys, one per role", "A wrapping key rotates the same way") | T1.3 |
+| R8 | Each role names a sealing key and its retired keys (`local.file` and `retired_files`, or `kmip.key_uid` and `retired_key_uids`). `keys.<role>.kind` is required for both roles, and the two roles name two different keys, since one key for both voids the split of RFC 13 §7. E2 refuses a file that breaks either | MUST | RFC 13 §2.2 (wrapping-key row), §7 ("Two wrapping keys, one per role", "A wrapping key rotates the same way"), Appendix C | T1.3 |
 | R9 | The node identity has three entry points: `NodeID`, which reads and compares every copy before the store opens and writes none; `InitNodeID`, for the initialisation step and a recovery import; `WriteMissingNodeIDs`, which writes a missing copy only beside a journal the store records for this node and device. E2 fills them | MUST | RFC 13 §2.2 (node identity row) | T1.3 |
+| R21 | An `api.listen` or `metrics.listen` address that is not loopback, without `api.tls.cert_file` and `api.tls.key_file`, refuses the start, whether it comes from the file or the environment. Loopback is `127.0.0.0/8` and `::1` only: `localhost`, `0.0.0.0` and `::` do not count. E2 enforces it, and `dfs config validate` with it | MUST | RFC 13 Appendix C (#4486); RFC 23 §5.3 | T1.1, E2 |
+| R22 | The runtime directory that holds `dfs.sock` is `$RUNTIME_DIRECTORY`, else `$XDG_RUNTIME_DIR/dittofs`, else a directory under the state directory that only the process's user owns (mode `0700`), and a caller on that socket is exempt from the sign-in throttle's source count. E2 makes the fallback directory with that mode, and the exemption is RFC 23's | MUST | RFC 13 Appendix C (#4486); RFC 23 §5.3 | T1.1, E2 |
 
 **Secrets**
 
@@ -138,7 +140,7 @@ declaration is another epic's, the row says which.
 | R11 | Two roles, `protocol` and `storage`; each secret kind is sealed under the key of the role §7's table gives it, so a kind's role is fixed data, not a caller's choice | MUST | RFC 13 §7 ("Two wrapping keys, one per role") | T1.4 |
 | R12 | No log line, metric, `%v` or `dfs config show` carries a secret: an opened `Version` never prints its value, and a `Bootstrap` field that holds a credential is a type that redacts itself | MUST NOT | RFC 13 §7 ("Read never returns a secret") | T1.3, T1.4 |
 | R13 | `entity.Secret`, `SecretKind` and `SecretOwner` are RFC 16 §2.3's: ID, kind, version, key ID, owner, sealed value, `KeyVersion` and `HandedOver`; an owner compared whole | MUST | RFC 16 §2.3 | T1.4 |
-| R14 | Configuration holds no secret value, only a reference: a section declares each field that holds one, with the kind it must name, and a reference names a secret of that kind and that owner. E3 checks it | MUST NOT | RFC 13 §7 (first paragraph); RFC 13 plan, D10 | T1.5, T1.6 |
+| R14 | Configuration holds no secret value, only a reference: a section declares each field that holds one, with the kind it must name, and a reference names a secret of that kind and that owner. T1.6 only declares the fields and the option, T1.5 the tracked read of a secret, and E3 checks the reference | MUST NOT | RFC 13 §7 (first paragraph); RFC 13 plan, D10 | T1.5, T1.6 |
 
 **The views**
 
@@ -178,11 +180,41 @@ bullets describe RFC 26's and RFC 5's records.
   `feat/storage-v2` (#4362) without the settings delete and the secret writes. So T1.6 waits on
   nothing outside the epic, and T1.5 adds those writes' transaction forms to `ControlPlaneTx`, as
   RFC 23's epic 2 says in its D4 for whichever lands second. No marker.
-- **D3, `keyprovider` moves here, not in E4.** `Bootstrap` names each role's wrapping key as a
-  `keyprovider.Config`, so the type must be importable from `pkg/bootstrap` without the block
-  middleware tree, which is why it moves at all. The move is unchanged but for one thing: each
-  field gains a `mapstructure` tag equal to its `json` tag, since viper decodes by the
-  `mapstructure` tag and would not match `retired_files` to `RetiredFiles`. The importers that move
+- **D3, `keyprovider` moves here, not in E4.** `Bootstrap` names each role's wrapping key, so
+  the type must be importable from `pkg/bootstrap` without the block
+  middleware tree, which is why it moves at all. The move is unchanged, with no tag added:
+  `keyprovider.Config` is flat (`kind`, then `file` and `retired_files`, or `endpoint` and
+  `timeout_ms`, all directly under the struct), so a `mapstructure` tag on each field cannot
+  carry Appendix C's keys, which nest by provider (`keys.<role>.local.file`,
+  `keys.<role>.kmip.endpoint`, the KMIP `timeout` a duration), and the struct's `json` shape
+  is the stored per-remote policy's, which `encryption.ParsePolicy` decodes with a plain
+  `json.Unmarshal`, so renaming a field would drop a stored value without an error (D10).
+  `Bootstrap` declares its own per-role struct instead, which reads the nested keys through
+  `mapstructure` tags (viper decodes by the `mapstructure` tag, and would not match
+  `retired_files` to `RetiredFiles` without one) and converts:
+  ```go
+  type WrappingKey struct {
+    Kind  keyprovider.Kind `mapstructure:"kind"`
+    Local struct {
+      File         string   `mapstructure:"file"`
+      RetiredFiles []string `mapstructure:"retired_files"`
+    } `mapstructure:"local"`
+    KMIP struct {
+      Endpoint       string        `mapstructure:"endpoint"`
+      ServerCA       string        `mapstructure:"server_ca"`
+      ClientCert     string        `mapstructure:"client_cert"`
+      ClientKey      string        `mapstructure:"client_key"`
+      KeyUID         string        `mapstructure:"key_uid"`
+      Timeout        time.Duration `mapstructure:"timeout"`
+      RetiredKeyUIDs []string      `mapstructure:"retired_key_uids"`
+    } `mapstructure:"kmip"`
+  }
+
+  // Provider converts to the keyprovider.Config NewProvider takes, with
+  // Timeout as TimeoutMS milliseconds.
+  func (k WrappingKey) Provider() keyprovider.Config
+  ```
+  The importers that move
   with it, RFC 13's plan's D5 list: `pkg/block/middleware/encryption/decorator.go`,
   `decorator_test.go`, `policy.go` and `README.md` (its relative `keyprovider/` link),
   `pkg/block/middleware/ordering_test.go`, `docs/guide/encryption.md`,
@@ -220,30 +252,41 @@ bullets describe RFC 26's and RFC 5's records.
   // PerThing(entity.ScopeNode, "journal"), or Override(entity.ScopeInstallation, entity.ScopeNode).
   ```
   The options are `WriteRole`, `Required` and `SecretRef(field, kind)`. `Of` panics on a `Required`
-  or `SecretRef` field name that `T` does not have, and on a class missing from a field. A field
+  or `SecretRef` field name that `T` does not have, on a class missing from a field, on a class that is not one of the four (`class:"Restart"`, `class:"restar"`), and on two fields that share a name after the flattening (`encoding/json` drops both without an error), so a security setting with a misspelled class never gets an unspecified binding. A field
   tagged `json:"-"` (the adapters' `Addrs`) is not a setting and needs no class, and an embedded
   struct (the adapters' `Adapter`) is read as its own fields, flattened as `json` does. Against a map of classes
   beside the struct, as RFC 13's plan sketched: the map repeats every field name as a string, which
   only a panic at start ties back to the struct. T1.1's review may revise this decision through a
   pull request before T1.6 freezes it. No marker.
 - **D10, a duration is a string with a unit everywhere an operator writes one, as T1.1 settles
-  it (#4486).** RFC 13 Appendix B, as #4486 writes it: "a duration is a number and a unit, `ms`,
+  it (#4486, provisional until it merges, §9).** RFC 13 Appendix B, as #4486 writes it: "a duration is a number and a unit, `ms`,
   `s`, `m` or `h`", and "a bare number is refused". Two types on `feat/storage-v2` hold a duration
   another way. `pkg/adapter/settings` declares `time.Duration` fields with plain `json` tags, which
   `encoding/json` writes as integer nanoseconds (`30000000000`): E3 gives those structs a string
   codec (`"30s"`), with a `Schema` raise by RFC 13's plan's D11. `keyprovider.Config` holds
-  `TimeoutMS int` (`timeout_ms`): #4486's Appendix C renames it to `timeout`, a duration, and T1.3
-  makes that change when it moves the package (D3's "unchanged" excepts it), with the refusal of
-  `timeout_ms` naming `timeout`. T1.6's example test, on the adapters' section, checks the string
-  form. No marker.
-- **D11, today's bootstrap keys each have a decision, in #4486's Appendix C.** `Bootstrap.Node`
+  `TimeoutMS int` (`timeout_ms`), and keeps it: `encryption.ParsePolicy` decodes that struct
+  out of the stored per-remote policy with a plain `json.Unmarshal`, which drops an unknown
+  field without an error, so renaming it would leave a stored `"timeout_ms": 5000` behind and
+  KMIP would run on its default timeout. The bootstrap names it the way Appendix C does
+  instead, `timeout`, a duration, on the per-role struct D3 declares, whose conversion maps
+  it into `TimeoutMS`. The stored JSON, the moved type and the guides' `timeout_ms` are
+  untouched. The string form of the adapters' durations is E3's codec test, since
+  the codec is E3's. No marker.
+- **D11, today's bootstrap keys each have a decision, in #4486's Appendix C (provisional until it
+  merges, §9).** `Bootstrap.Node`
   and `Devices` (`mapstructure:"-"`, with a `ponytail:` marker, `pkg/config/config.go`) are
   retagged to `node.id` and `journals`, and the marker goes. `blockstore.journal.path` becomes
   `journals`, one entry per device. `logging.format` and `logging.rotation.*` stay, the rotation
-  size as a size with its unit and the age as a duration. `database.*`, `controlplane.*`,
-  `metrics.enabled`, `.host` and `.port`, and `shutdown_timeout` are renamed as Appendix C's table
-  "From the files of today" says, and the keys that became records or settings are refused. T1.3
-  builds `renamed_keys.go` from that table, so nothing is left undecided. No marker.
+  size as a size with its unit and the age as a duration. Appendix C's table "From the files of
+  today" gives each of the others its fate: `controlplane.*` and `metrics.*` are renamed
+  (`api.listen`, `api.tls`, `metrics.listen`), `shutdown_timeout` becomes the setting
+  `adapters.<protocol>.drain_timeout`, `database.*` is dropped, and the keys that became records
+  or settings are refused. `renamed_keys.go` already exists (`checkRenamedKeys` and its table), and
+  its refusal runs as soon as an entry is added. So T1.3 adds no entry and leaves the table
+  alone: E2 extends it and turns the refusal on in the same change that moves the launchers off the
+  refused names (`docker/config.yaml`, the bench scripts, the operator's rendered file), and
+  `Blockstore.Journal.Path` stays, with `cmd/dfs/commands/config/validate.go:68` that prints it,
+  until E2 retires it. No marker.
 
 ## 5. Target tree
 
@@ -284,19 +327,24 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     list is written in the environment (the journal devices); which facts are paths, and whether a
     relative path is read against the file's directory; which facts are secrets or point at one
     (the store's credential, the wrapping keys), and how they are given without the secret in the
-    file (a path to read, or a value, which T1.3 types so that it redacts itself; #4486 gives files); how a role names its current and next wrapping key.
+    file (a path to read, or a value, which T1.3 types so that it redacts itself; #4486 gives files); how a role names its sealing key and its retired keys.
   - **Today's keys (D11).** For each key `pkg/config` has today, and `Node` and `Devices`: kept,
     renamed (with a `renamed_keys.go` entry) or dropped, in Appendix C (#4486).
   - **§6, the refusal's shape.** One shape for every refusal of configuration, the file's, the
     environment's and a record's: what was refused (the key, the variable, or the record and its
-    scope), the rule, and, for a v1 key, what replaced it; never the value. Two or more refusals in
+    scope), the rule, and, for a v1 key, what replaced it; never the value of an environment
+    variable, of a credential key, or of a key the refusal does not declare (R2). Two or more refusals in
     one file are reported together, so a user fixes the file in one pass. Examples for a v1 key, an
     unknown key, a value out of range and a bound setting refused while content exists.
   - **Appendix B's value conventions.** A key is lower case with dots and underscores, no two
     keys share an environment name, and an unknown `DITTOFS_*` variable or a mixed-case key is
-    stated as refused or ignored (today an unknown file key only warns); a duration
-    is a string with a unit (`"30s"`, D10), and a bare number refused; a size is a string or an integer
-    of bytes, with `internal/bytesize`'s grammar; a list and a map are JSON's.
+    refused, with an allowlist of names read elsewhere (today an unknown file key only warns); a
+    duration is a string with a unit (`"30s"`, D10), and a bare number refused; a size is a number
+    and a unit (`KB` to `TB`, `KiB` to `TiB`, `B`), an integer of bytes only in a record and refused
+    in the file, so `internal/bytesize`'s `Gi`, `Mi`, `m` and `g` are not Appendix B's and E3's
+    codec refuses them; a list and a map are JSON's in a record and YAML's in the file.
+  - **The two host rules (R21, R22)**, a non-loopback listener without TLS and the runtime
+    directory, stated in Appendix C for E2 to enforce.
   - **`dfs config`'s three commands on the bootstrap.** What `show` prints (the effective
     bootstrap, each value's source, secrets as references only), what `validate` refuses (what a
     start refuses), and what `schema` describes (Appendix C).
@@ -308,7 +356,9 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     `pkg/adapter/settings` and `keyprovider.Config` do (D10).
   - Every §2.2 fact but the scratch paths and the memory limit (D5) has one Appendix C row; no key
     there names a setting of Appendix B (R6).
-  - The refusal's shape is stated once, in §6, and its examples carry no value.
+  - The refusal's shape is stated once, in §6, and its examples print a value only where it is
+    none of R2's three kinds.
+  - Appendix C carries R21 and R22.
   - The plans that edit `docs/guide/configuration.md` and the API's settings routes can cite the
     conventions rather than restate them.
 - **Tests:** none in Go: the pull request is text. Appendix C is parsed by T1.3's test, and the
@@ -322,13 +372,14 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
 - **Covers:** R4.
 - **Deliverables:** `git mv pkg/config pkg/bootstrap`, the package clause renamed, and every
   importer on `feat/storage-v2` with it: `cmd/dfs/commands/config`'s `edit.go`, `schema.go`,
-  `show.go`, `validate.go` and `roundtrip_test.go`, `cmd/dfs/commands/start.go` and
-  `internal/node/node.go` and `internal/node/nodetest/harness.go`. The paths held as strings, which no compiler catches, change too:
+  `show.go`, `validate.go` and `roundtrip_test.go`, `cmd/dfs/commands/start.go`,
+  `internal/node/node.go`, `internal/node/node_test.go` and `internal/node/nodetest/harness.go`. The paths held as strings, which no compiler catches, change too:
   `test/harness/plan/plan_test.go`'s two `pkg/config/config.go` and `test/suites.yaml`'s
   `pkg/config/**` glob; and `pkg/metadata/types.go`'s comment naming `pkg/config.ServerConfig`,
   which no longer exists. Nothing else changes: no field, no function, no behaviour.
 - **Acceptance criteria:**
-  - No Go file on `feat/storage-v2` imports `pkg/config`, and the directory is gone.
+  - No Go file on `feat/storage-v2` imports `pkg/config`, and the directory is gone: a `git grep`
+    for `pkg/config` in `*.go` returns nothing outside `k8s/dittofs-operator` (O4), and `go vet ./internal/node/...` passes.
   - `test/suites.yaml`'s glob still selects the files it selected (now under `pkg/bootstrap`).
   - The build, `go vet` with every `lint-go` tag, and `dt`'s registry test pass.
 - **Tests:** `plan_test.go`'s two cases, now naming `pkg/bootstrap/config.go`, still assert which
@@ -342,23 +393,34 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
 - **Track:** the team. **Depends on:** T1.1 (the keys), T1.2.
 - **Covers:** R1, R5, R6, R7, R8, R9.
 - **Deliverables:**
-  - `Bootstrap`'s fields, each tagged with Appendix C's key: the node's identity (optional), the
-    metadata store's address and credential, the journal devices and their paths, the API's and
-    the metrics listener's addresses, the API's TLS certificate and key and its local socket path,
-    the log destination and level (kept), the roles, and each role's wrapping key as a
-    `keyprovider.Config` (D3). No field for the memory limit (D5), the scratch paths or
-    initialise-if-empty.
+  - `Bootstrap`'s fields, each tagged with Appendix C's key, one field for each of its rows: the
+    node's identity (optional), the metadata store's backend, path or cluster file, and its TLS
+    certificate, key and CA files, the journal devices and their paths, the adapters', the API's
+    and the metrics listener's addresses, the API's TLS certificate and key, the log's
+    destination, format, rotation and level (kept), the roles, and each role's wrapping key as the
+    nested per-role struct D3 declares, which converts to the `keyprovider.Config`
+    `keyprovider.NewProvider` takes (D3). No field for the memory limit (D5), the scratch paths, the local socket (it is in the
+    runtime directory) or initialise-if-empty.
+  - `entity.NodeID` is a `[16]byte` with no `UnmarshalText`, and `pkg/config` has no decode hook, so
+    viper cannot read `node.id` in the form Appendix C gives (a UUID): with a nested tag it fails
+    on `node.id[0]`, with a dotted one it returns no error and leaves the identity zero. `Load`'s
+    decoder gains a `DecodeHookFunc` that parses a UUID string into `entity.NodeID`, so the file's
+    `node.id` reaches `Bootstrap.Node`.
   - #4486 gives the store's credential as files (`metadata.foundationdb.tls.*`), so `Bootstrap`
     holds their paths only. If its review turns the credential into a value, a type for it whose `String`, `Format`,
     `LogValue`, `MarshalYAML` and `MarshalJSON` redact. Today `pkg/config` has no redaction hook,
     and `dfs config show` prints `yaml.Marshal(cfg)`, so without the type `show` would print the
     credential in clear from PR 3 until E2.
-  - `keyprovider` moved to `pkg/keyprovider` with its `mapstructure` tags and its importers (D3).
-    Its local provider still reads `DITTOFS_ENCRYPTION_PASSPHRASE` from the process, so both roles
-    share one passphrase: the plan's `ponytail:` note on that travels with the moved code.
+  - `keyprovider` moved to `pkg/keyprovider`, unchanged, with its importers (D3).
+    Its local provider still reads `DITTOFS_ENCRYPTION_PASSPHRASE` with `os.Getenv`, past `Load`'s
+    `environ`, so both roles share one passphrase and a test that seals sets it with `t.Setenv`:
+    the plan's `ponytail:` note on that travels with the moved code, and E2 moves the read onto
+    `environ`.
+  - `renamed_keys.go` is not touched, and `Blockstore.Journal.Path` stays until E2 (D11).
   - `Load` and `MustLoad` take the environment, `Load(path string, environ []string)`, and every
     caller passes `os.Environ()`, so epic 2's loader and its tests read no process state (epic 2's
-    D2). The body ignores the argument until epic 2.
+    D2). The body ignores the argument until epic 2, which feeds it to the key binding and the
+    scan of names alike, and drops viper's `AutomaticEnv`, the process-reading path of today.
   - The node identity's entry points, with stub bodies (D4), shaped for their callers, RFC 23's
     T3.10 and T5.4:
     ```go
@@ -383,8 +445,14 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     difference.
 - **Tests:** `keys_test.go` parses RFC 13's Appendix C from `docs/internals/rfcs/` and compares its
   keys with `Bootstrap`'s `mapstructure` paths, both ways (catches a field added without its RFC
-  row, a row with no field, and a misspelled tag). A case decodes a file naming `retired_files`
-  into the moved `keyprovider.Config` (catches the tag D3 adds being left out). The test fails if
+  row, a row with no field, and a misspelled tag), but for `blockstore.journal.path`, the one
+  named exception E2 removes (D11). Appendix C writes some key cells in shorthand (`.key_file`,
+  `.ca_file`, `keys.<role>.kmip.endpoint`, `.server_ca`): the test expands a leading dot into the
+  row's first key's prefix and `<role>` into both roles, and fails on any key cell it cannot
+  parse whole, so a skipped cell never passes the zero-rows guard. A case decodes a file that
+  sets `node.id` into a non-zero `Bootstrap.Node`. A case decodes a file naming
+  `keys.<role>.local.retired_files` into the per-role struct (catches a `mapstructure` tag the
+  declaration needs being left out). The test fails if
   Appendix C yields no rows (a renamed heading), and asserts that each key has its own environment
   name (`api.tls_cert` and `api.tls.cert` both map to `DITTOFS_API_TLS_CERT`). A canary test runs the
   credential through `show` in YAML and JSON.
@@ -399,9 +467,11 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
   - In `pkg/metadata/entity`: `Secret`, `SecretKind` with D8's constants, `SecretOwner`,
     over the existing `ResourceRef` (D6). No codec: E4's.
   - In `pkg/secrets`: `Role` (`Protocol`, `Storage`) with RFC 13 §7's `decision:` note; the kind
-    table giving each kind its role; `Meta`; `Version`, whose `String`, `Format` and `LogValue`
-    print its number and `Meta` and never its value; `Provider`, `New` (D7), and RFC 13 §7's five
-    methods with stub bodies (D4); the errors `ErrWrongRole`, `ErrWrongKind`, `ErrKindChanged` and
+    table giving each kind its role; `Meta`; `Version`, whose `String`, `Format`, `LogValue`, `MarshalJSON` and `MarshalYAML`
+    print its number and `Meta` and never its value (`Value` is an exported `[]byte`, which
+    `json.Marshal` and `yaml.Marshal` would otherwise print base64-encoded); `Provider`, `New` (D7), and RFC 13 §7's five
+    methods with stub bodies (D4), `Delete` provisional, as `AllSettings` is, since it gains a
+    transaction when E4 fills it; the errors `ErrWrongRole`, `ErrWrongKind`, `ErrKindChanged` and
     `ErrUnproven` with RFC 13's plan's D9 `decision:` note.
     ```go
     func New(cp kvstore.ControlPlane, keys map[Role]keyprovider.KeyProvider) (*Provider, error)
@@ -416,7 +486,7 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
   - Every declared kind has exactly one role, the one RFC 13 §7's table gives.
   - `pkg/secrets` and `pkg/settings` import neither each other.
 - **Tests:** `redact_test.go` prints a `Version` holding a canary through `%v`, `%+v`, `%#v`,
-  `fmt.Sprint` and an `slog` JSON handler, and fails if the canary appears (R12). `roles_test.go`
+  `fmt.Sprint`, `json.Marshal`, `yaml.Marshal` and an `slog` JSON handler, and fails if the canary appears (R12). `roles_test.go`
   compares the kind table with RFC 13 §7's table, parsed from the RFC and failing on zero rows (catches a kind sealed under
   the other role, which would let a protocol-only node open a storage secret).
 
@@ -425,7 +495,7 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
 **Subtask T1.5 estimate: 0.5 man-days.**
 
 - **Track:** the team. **Depends on:** T1.4 (`entity.Secret`).
-- **Covers:** R15, R16.
+- **Covers:** R14, R15, R16.
 - **Deliverables:** on kvstore's `ControlPlane`, with stub bodies (D4):
   `DeleteSetting(ctx, scope, key, expect)`, `AllSettings(ctx) iter.Seq2[entity.Setting, error]`
   (§9: the name waits on RFC 16), `Secret(ctx, id, version)`, `PutSecret(ctx, s, expect)` and
@@ -442,10 +512,13 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
 
 **Subtask T1.6 estimate: 1.5 man-days.**
 
-- **Track:** the team. **Depends on:** T1.1 (the review of D9), T1.4 (`entity.SecretKind`).
+- **Track:** the team. **Depends on:** T1.1 (the review of D9), T1.4 (`entity.SecretKind`), T1.5
+  (`ControlPlaneTx`'s tracked `Secret` read, which `Check`'s signature takes through its transaction).
 - **Covers:** R14, R17, R18.
 - **Deliverables:** with stub bodies (D4):
-  - `Class` (`Live`, `Restart`, `NextWrite`, `Bound`) and the `class` struct tag (D9);
+  - `Class` (`Live`, `Restart`, `NextWrite`, `Bound`) and the `class` struct tag (D9), and the tags
+    themselves on every field of `pkg/adapter/settings`' NFS and SMB structs, so the example test
+    below declares real sections;
   - `Scope` and its three constructors, `At`, `PerThing` and `Override`;
   - `Section`, `Of` and its options `WriteRole`, `Required` and `SecretRef(field, kind)`;
   - `Table`, `Snapshot`, `Read(ctx, cp, table, node)` returning the snapshot and the sections it
@@ -459,21 +532,24 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     keys stay unique across sections and the table's first test fails on a clash;
   - `Write`, `Put(s)`, `Delete(scope, key)`, `HoldsContent` (`func(scope entity.SettingScope) (bool, error)`, so that a write that is not
     bound never probes), and
-    `Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, holds HoldsContent) error`;
+    `Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, holds HoldsContent) error`,
+    which refuses the write when `holds` returns an error, so a bound setting never fails open;
   - the errors `ErrUnknownKey`, `ErrWrongScope`, `ErrNewerSchema`, `ErrForbidden`, `ErrRequired`,
     `ErrInvalid`, `ErrBound`, `ErrSecretRef`, `ErrUnproven` (with RFC 13's plan's D9 note) and
     `ErrFormatVersion`.
 - **Acceptance criteria:**
   - `pkg/settings` imports no store package and declares no store interface; `Check` reads only
-    through the `ControlPlaneTx` it is given, and refuses a reference to a secret of another kind
-    or another owner (R14).
+    through the `ControlPlaneTx` it is given. Its refusal of a reference to a secret of another kind
+    or another owner (R14) needs a real body and the tracked read of T1.5, so it is E3's criterion.
   - A section can be declared for `pkg/adapter/settings`' NFS and SMB structs, in a test, with the
     adapters' scope form (installation, node override).
 - **Decision note:** a secret's rotation never reaches `Check`, since a reference names the
   secret, not a version: the `decision:` note goes at `Check`'s declaration.
-- **Tests:** an example test declares the adapters' section with D9's tags (it fails to compile if
-  `Of`'s signature or an option changes, which is the freeze's point). The bodies are E3's, and
-  E3's first `Table` test builds two sections sharing a key and asserts the panic.
+- **Tests:** an `Example` function with no `// Output:` comment declares the adapters' section with
+  D9's tags: `go test` compiles it and never runs it, so it fails to compile if `Of`'s signature or
+  an option changes, which is the freeze's point, and the `Of` stub's panic (D4) is not reached.
+  The bodies are E3's: its first `Table` test builds two sections sharing a key and asserts the
+  panic, and the check of the adapters' string form (D10) is its codec's test.
 
 ### T1.7 The freeze review and the export pins
 
@@ -482,16 +558,28 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
 - **Track:** the team. **Depends on:** T1.3, T1.4, T1.5, T1.6.
 - **Covers:** R6, R19, R20.
 - **Deliverables:**
+  - The freeze review of `pkg/bootstrap`'s inherited exports. `pkg/config` exports 15 symbols
+    today on `feat/storage-v2`, and the review keeps those with a caller outside the package:
+    `Bootstrap` (`cmd/dfs/commands/config`, `internal/node` and its tests), `Load`
+    (`cmd/dfs/commands/config`), `MustLoad` (`cmd/dfs/commands/config` and `start.go`),
+    `GetDefaultConfigPath` (`edit.go`, `validate.go`), `GetDefaultConfig` (`roundtrip_test.go`) and
+    `InitLogger` (`start.go`). The nine others have none, and are
+    unexported unless a kept field's type needs them: `LoggingConfig` and `LogRotationConfig`
+    (the `Logging` field), `BlockstoreConfig` and `BlockstoreJournalConfig` (until E2 retires the
+    field, D11), `DefaultConfigExists`, `GetStateDir`, `GetDefaultLogPath`, `ApplyDefaults` and
+    `Validate`.
   - One `arch_test.go` per package, `pkg/bootstrap`, `pkg/settings` and `pkg/secrets`, pinning its
     exported set as `internal/node`'s does: an extra export, an exported field added to a
     frozen struct, or a changed signature fails it.
   - The caller list, in the pull request's description: each frozen symbol with its first caller
     (an E2 to E5 subtask, RFC 23's T3.10, T5.3 or T5.4, or the RFC 18 plan's epic 2), and each
     symbol of T1.3 to T1.6's deliverables checked present. `Delete`, pinned here without a transaction, is
-    listed as gaining one when E4 fills it.
+    provisional like `AllSettings` and listed as gaining one when E4 fills it, and `ObserveLag`,
+    which E3's D5 adds to `pkg/settings` after the freeze, is listed with E5's reconcile as its
+    first caller.
 - **Acceptance criteria:**
   - Every symbol T1.3 to T1.6 deliver is exported (they are RFC 13's plan's S1 list), and nothing
-    else is but D7's `New`.
+    else is but D7's `New` and the `pkg/bootstrap` exports kept above, each with its caller.
   - No `Bootstrap` key names a setting of RFC 13's Appendix B.
 - **Tests:** each pin runs over a planted extra export in `testdata` and fails on it (catches a pin
   that compares nothing). A case parses Appendix B's setting keys and fails if one is a
@@ -507,6 +595,7 @@ flowchart TD
   T1_4 --> T1_5["T1.5 kvstore views"]
   T1_1 --> T1_6["T1.6 pkg/settings' types"]
   T1_4 --> T1_6
+  T1_5 --> T1_6
   T1_3 & T1_5 & T1_6 --> T1_7["T1.7 Freeze review, export pins"]
   T1_7 --> S1(["after T1.7: S1, the surface frozen"]):::sync
   T1_2 --> C1(["after T1.2: pkg/bootstrap builds"]):::sync
@@ -523,10 +612,12 @@ outside the epic (D2).
 | --- | --- | --- | --- | --- |
 | 1 | T1.2 | 0.75 | none | the rename alone, mechanical and easy to review, on `feat/storage-v2` |
 | 2 | T1.1 | 2 | none | the RFC 13 amendment, on `develop`, the review of the user surface; parallel with PR 1 |
-| 3 | T1.3, T1.4, T1.5 | 3.75 | PR 1, PR 2 | the bootstrap's facts, the secrets surface and the views |
+| 3 | T1.3, T1.4, T1.5 | 3.75 | PR 1, PR 2 and its cherry-pick to `feat/storage-v2` | the bootstrap's facts, the secrets surface and the views |
 | 4 | T1.6, T1.7 | 2.25 | PR 3 | the settings surface and the pins that freeze all three packages: S1 |
 
-A suggestion only: one pull request per subtask works as well.
+PR 3's `keys_test.go` reads Appendix C from `docs/internals/rfcs/`, and RFC text reaches
+`feat/storage-v2` from `develop` (a merge or a cherry-pick), where RFC 13 ends at Appendix B today,
+so PR 3 starts once PR 2 is there. A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
@@ -537,7 +628,19 @@ A suggestion only: one pull request per subtask works as well.
   proposed in RFC 18's epic 6 breakdown (#4341, its D3). Pending #4472.
 - **The cross-scope read has no RFC 16 signature.** RFC 16 §3 has `Settings(ctx, scope)` only;
   T1.5 names the one-scan read `AllSettings` until RFC 16 §3 gains it. Pending #4473.
+- **D10 and D11 quote #4486 as amended, and it is not merged.** Appendix C, §6's shape and
+  Appendix B's conventions are read from its branch. This breakdown merges after #4486, or each
+  quote is re-read against the merged text. Pending #4486.
+- **`WriteMissingNodeIDs` differs from its caller.** RFC 23's epic 3 (T3.10) calls it with the
+  store's `JournalID`, while T1.3's stub takes `recorded func(dir string) (bool, error)`, a
+  callback the caller builds from that read. The stub keeps the callback until T3.10 and E2 agree
+  on one form.
+- **`kmip_fake_test.go` moves with `keyprovider`.** It is a canned-response KMIP server, which
+  `CLAUDE.md`'s "Writing tests" bans for a new or changed test. The move changes no line of it, so
+  it is not a touch that brings it under the rule, and its replacement by a fake that passes a
+  conformance suite is a follow-up, not part of E1.
 - **Moved from E4.** `keyprovider`'s move (D3), which RFC 13's plan gives E4; E4's estimate loses
   it.
 - **The estimate.** 8.75 man-days and 7 subtasks against the 6 and 4 first estimated: T1.1, the
-  review of the user surface, adds 2; D3's move adds the rest.
+  review of the user surface, adds 2; D3's move adds 0.75, the 0.5 E4 gives up and 0.25 for
+  the per-role `WrappingKey` struct and its conversion, which E4's plain move never had.
