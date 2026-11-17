@@ -301,8 +301,8 @@ func TestShareQuiesce(t *testing.T) {
 }
 
 // DELETE marks the share and answers 202 with a share.delete operation on
-// it; a second DELETE is refused 409 stale; a disposition that is not one is
-// refused naming ?snapshots=, and a parameter the DELETE does not take, or
+// it; a second DELETE is refused 409 stale; a disposition that is not one,
+// or two of them, is refused naming ?snapshots=, and a parameter the DELETE does not take, or
 // any on a write that takes none, is refused naming it.
 func TestShareDelete(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
@@ -310,6 +310,7 @@ func TestShareDelete(t *testing.T) {
 	tag := s.do(t, http.MethodGet, loc, "").header.Get("ETag")
 	for _, tc := range []struct{ method, query, body, field string }{
 		{http.MethodDelete, "?snapshots=sideways", "", "snapshots"},
+		{http.MethodDelete, "?snapshots=delete&snapshots=detach", "", "snapshots"},
 		{http.MethodDelete, "?snapshot=delete", "", "snapshot"},
 		{http.MethodPatch, "?snapshots=delete", `{"spec":{"name":"ci"}}`, "snapshots"},
 	} {
@@ -540,6 +541,28 @@ func TestExportPolicy(t *testing.T) {
 	}
 }
 
+// Each SMB flag of an export policy is written and read on its own bit: a
+// PUT setting one flag alone reads back that flag alone.
+func TestExportPolicySMBFlags(t *testing.T) {
+	s := serve(t, as(entity.RoleOperator, false))
+	_, loc := s.createShare(t, "builds", s.namespace(t))
+	path := loc + "/export-policy"
+	tag := s.do(t, http.MethodGet, path, "").header.Get("ETag")
+	for _, smb := range []apiv1.SMBShare{{Encrypt: true}, {Hidden: true}, {ContinuouslyAvailable: true}} {
+		spec := policy
+		spec.SMB = smb
+		put := s.do(t, http.MethodPut, path, jsonOf(t, map[string]any{"spec": spec}), "If-Match", tag)
+		if put.status != http.StatusOK {
+			t.Fatalf("PUT smb %+v: answered %d %s, want 200", smb, put.status, put.body)
+		}
+		tag = put.header.Get("ETag")
+		var got apiv1.ExportPolicy
+		if r := s.do(t, http.MethodGet, path, ""); json.Unmarshal(r.body, &got) != nil || got.Spec.SMB != smb {
+			t.Errorf("GET after PUT smb %+v: smb %+v, want %+v", smb, got.Spec.SMB, smb)
+		}
+	}
+}
+
 // A share with no export policy stored reads the default one at version 0,
 // which a PUT naming "0" replaces.
 func TestExportPolicyDefault(t *testing.T) {
@@ -626,8 +649,8 @@ func TestShareWaitServing(t *testing.T) {
 }
 
 // ?wait=serving parks while no node reports a status; it ends at once on a
-// quiesced share, claiming nothing, and is refused 409 stale once the share
-// is being removed. ?wait= a duration returns on a change of state.
+// quiesced share, claiming nothing, and is refused 409 stale, at once on a
+// share already being removed and on the next read once the share is. ?wait= a duration returns on a change of state.
 func TestShareWaitEnds(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	parked := func(what string, ch <-chan polled, base int) {
@@ -657,7 +680,14 @@ func TestShareWaitEnds(t *testing.T) {
 		t.Errorf("?wait=serving on a quiesced share: answered %d state %q, want 200 quiesced at once", p.status, got.Status.State)
 	}
 
-	id, loc := s.createShare(t, "doomed", s.namespace(t))
+	id, loc := s.createShare(t, "gone", s.namespace(t))
+	s.removing(t, id)
+	base = s.clock.Pending()
+	if p := s.settle(t, "?wait=serving on a share already being removed", s.poll(t.Context(), loc+"?wait=serving"), base); p.status != http.StatusConflict || p.problem(t).Code != "stale" {
+		t.Errorf("?wait=serving on a share already being removed: answered %d %s, want 409 stale at once", p.status, p.body)
+	}
+
+	id, loc = s.createShare(t, "doomed", s.namespace(t))
 	base = s.clock.Pending()
 	ch = s.poll(t.Context(), loc+"?wait=serving")
 	parked("?wait=serving before the removal", ch, base)
