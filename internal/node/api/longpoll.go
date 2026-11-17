@@ -35,22 +35,22 @@ type clock interface {
 // which reads it from the server's Deps; tag, its tag, which the answer carries as its ETag; and
 // until, which parses ?wait=, answering how long the call may park, above
 // zero, and done, whether a read now answers the wait, first being the read
-// the call began with.
+// the call began with, or the error the wait is refused with instead.
 type watching[R any] struct {
 	read  func(context.Context, Deps, request[none]) (R, error)
 	tag   func(R) uint64
-	until func(wait string) (time.Duration, func(first, now R) bool, error)
+	until func(wait string) (time.Duration, func(first, now R) (bool, error), error)
 }
 
 // changes is the ?wait= of a record a client waits on to change: a duration
 // above 0 and at most 60 s, done once differ reports the record changed.
-func changes[R any](differ func(first, now R) bool) func(string) (time.Duration, func(first, now R) bool, error) {
-	return func(w string) (time.Duration, func(first, now R) bool, error) {
+func changes[R any](differ func(first, now R) bool) func(string) (time.Duration, func(first, now R) (bool, error), error) {
+	return func(w string) (time.Duration, func(first, now R) (bool, error), error) {
 		d, err := time.ParseDuration(w)
 		if err != nil || d <= 0 || d > maxWait {
 			return 0, nil, &fieldError{field: "wait", detail: "not a duration above 0 and at most " + maxWait.String()}
 		}
-		return d, differ, nil
+		return d, func(first, now R) (bool, error) { return differ(first, now), nil }, nil
 	}
 }
 
@@ -58,8 +58,9 @@ func changes[R any](differ func(first, now R) bool) func(string) (time.Duration,
 // record and its tag as the ETag. Without ?wait= it reads once. With it, a
 // first read that is not already done parks the call, which then re-reads
 // once a second on the API's clock, under the context the first read had,
-// and answers the first read that is done, or the last one once the wait
-// has passed, on the clock's elapsed time, or the API listener shuts down.
+// and answers the first read that is done, or the error a read refuses the
+// wait with, or the last read once the wait has passed, on the clock's
+// elapsed time, or the API listener shuts down.
 // No query parameter but wait is accepted; with several at fault, the 400
 // names the first in name order. A node parks at most 256 calls,
 // apart from the calls it runs, and refuses the next 503.
@@ -73,7 +74,7 @@ func changes[R any](differ func(first, now R) bool) func(string) (time.Duration,
 func watch[R any](w watching[R]) adapter {
 	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
 		var wait time.Duration
-		var done func(first, now R) bool
+		var done func(first, now R) (bool, error)
 		q := r.URL.Query()
 		for _, k := range slices.Sorted(maps.Keys(q)) {
 			v := q[k]
@@ -93,7 +94,10 @@ func watch[R any](w watching[R]) adapter {
 		}
 		rq := request[none]{ID: id}
 		first, err := w.read(ctx, s.d, rq)
-		if err != nil || wait == 0 || done(first, first) {
+		if err != nil || wait == 0 {
+			return w.answer(first, err)
+		}
+		if ok, err := done(first, first); ok || err != nil {
 			return w.answer(first, err)
 		}
 		if s.d.Clock == nil {
@@ -119,7 +123,10 @@ func watch[R any](w watching[R]) adapter {
 				case <-ctx.Done():
 					return answer{}, ctx.Err()
 				}
-				if last, err = w.read(ctx, s.d, rq); err != nil || done(first, last) {
+				if last, err = w.read(ctx, s.d, rq); err != nil {
+					return w.answer(last, err)
+				}
+				if ok, err := done(first, last); ok || err != nil {
 					return w.answer(last, err)
 				}
 			}

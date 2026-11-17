@@ -6,11 +6,13 @@ type ExportPolicy = Resource[ExportPolicySpec, struct{}]
 
 // ExportPolicySpec is a share's admission and identity-mapping rule: the
 // flavours SECINFO answers, in preference order, which admit nobody; the
-// proof every caller must give, none, claimed, secret or ticket; the
-// protection its messages need, none, integrity or privacy; whether every
-// caller is held to read-only; the client rules, the first match deciding
-// and none matching refusing, an empty list admitting every client; whose
-// identity is squashed, none, root or all; and the share's SMB flags.
+// proof every caller must give, none, claimed, secret or ticket, none when
+// empty; the protection its messages need, none, integrity or privacy, none
+// when empty; whether every caller is held to read-only; the client rules,
+// the first match deciding and none matching refusing, which a write must
+// state, an empty list admitting every client and an absent or null one
+// refused; whose identity is squashed, none, root or all, root when empty;
+// and the share's SMB flags.
 type ExportPolicySpec struct {
 	Flavors       []string     `json:"flavors"`
 	MinProof      string       `json:"min_proof"`

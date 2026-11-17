@@ -279,6 +279,8 @@ func TestRoles(t *testing.T) {
 		{entity.RoleOperator, http.MethodPost, thing + ":poke", http.StatusOK},
 		{entity.RoleViewer, http.MethodPut, "/api/v1/knobs/" + api.TestID, http.StatusForbidden},
 		{entity.RoleViewer, http.MethodPut, "/api/v1/vaults/" + api.TestID, http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPost, "/api/v1/shares", http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/shares/" + api.TestID + "/export-policy", http.StatusForbidden},
 	} {
 		role.Store(uint32(tc.role))
 		r := s.do(t, tc.method, tc.path, "")

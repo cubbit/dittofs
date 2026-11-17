@@ -61,9 +61,9 @@ type ControlPlaneTx interface {
 	Setting(scope SettingScope, key string) (Setting, bool, error)
 	User(p Principal) (User, bool, error) // false for a user marked deleted
 	Share(id ShareID) (Share, bool, error)
-	// ExportPolicy is the share's stored export policy; false when none is
-	// stored.
-	ExportPolicy(share ShareID) (ExportPolicy, bool, error)
+	// ExportPolicy is the share's export policy; the default one, version
+	// zero, when none is stored.
+	ExportPolicy(share ShareID) (ExportPolicy, error)
 	// EnabledAdmins counts the enabled users whose role is admin, tracked
 	// over the whole set, so two writes that each remove one of the last
 	// ones conflict.
