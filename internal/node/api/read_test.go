@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -333,19 +334,18 @@ func TestWaitBounds(t *testing.T) {
 	}
 }
 
-// A node parks at most 256 polls and refuses the next 503 unavailable.
+// A node parks at most 256 polls and refuses the next 503 unavailable. A
+// parked poll holds no call slot, so the 256 park past the bound of 64
+// calls. They are parked one at a time, since 256 first reads at once would
+// meet that bound, and no dial then outruns the listener's accept backlog.
 func TestParkedPollsAreBounded(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	id := uuid.NewString()
 	base := s.clock.Pending()
 	var parked []<-chan polled
-	// Dialled in batches that each park before the next, so no dial
-	// outruns the listener's accept backlog.
 	for i := range 256 {
 		parked = append(parked, s.poll(t.Context(), knobAt(id)+"?wait=30s"))
-		if (i+1)%64 == 0 {
-			eventually(t, "a batch of polls parks", func() bool { return s.clock.Pending() == base+i+1 })
-		}
+		eventually(t, "poll "+strconv.Itoa(i+1)+" parks", func() bool { return s.clock.Pending() == base+i+1 })
 	}
 	next := s.poll(t.Context(), knobAt(id)+"?wait=30s")
 	refused := s.settle(t, "the 257th poll", next, base+256)
@@ -368,23 +368,27 @@ func TestParkedPollsAreBounded(t *testing.T) {
 	}
 }
 
-// A parked poll outlives the write timeout that bounds every other call.
-func TestParkedPollOutlivesWriteTimeout(t *testing.T) {
+// A parked poll outlives the read and write timeouts that bound every other
+// call.
+func TestParkedPollOutlivesTimeouts(t *testing.T) {
 	const timeout = 200 * time.Millisecond
-	s := serveWith(t, as(entity.RoleViewer, false), func(srv *api.Server) { srv.SetWriteTimeout(timeout) })
+	s := serveWith(t, as(entity.RoleViewer, false), func(srv *api.Server) {
+		srv.SetWriteTimeout(timeout)
+		srv.ShortenReadTimeout(timeout)
+	})
 	id := uuid.NewString()
 	s.putKnob(t, id, "a", 0)
 	base := s.clock.Pending()
 	ch := s.poll(t.Context(), knobAt(id)+"?wait=30s")
 	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
-	// The write timeout is the HTTP server's, on the wall clock, which no
-	// test clock moves: this bounded wait is the assertion that the parked
-	// poll is still held past it.
+	// The timeouts are the HTTP server's, on the wall clock, which no test
+	// clock moves: this bounded wait is the assertion that the parked poll
+	// is still held past them.
 	<-time.After(3 * timeout)
 	s.putKnob(t, id, "b", 1)
 	s.clock.Advance(time.Second)
-	if p := answered(t, "poll past the write timeout", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":2,"spec":{"value":"b"}}` {
-		t.Errorf("poll parked past the write timeout: answered %d %s err %v, want 200 at generation 2", p.status, p.body, p.err)
+	if p := answered(t, "poll past the timeouts", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":2,"spec":{"value":"b"}}` {
+		t.Errorf("poll parked past the timeouts: answered %d %s err %v, want 200 at generation 2", p.status, p.body, p.err)
 	}
 }
 
@@ -400,7 +404,7 @@ func TestReadOnAnotherNode(t *testing.T) {
 	first := serve(t, caller, disk.use)
 	// The second node is the API alone, since a test watches one harness.
 	srv := api.NewWithTestRows(api.Deps{Addr: "127.0.0.1:0", MetricsAddr: "127.0.0.1:0", Metrics: metrics.New("test", "test"),
-		Logger: slog.New(slog.NewTextHandler(t.Output(), nil)), Authenticate: caller, Live: func() bool { return true },
+		Logger: slog.New(slog.NewTextHandler(t.Output(), nil)), Authenticate: caller, Live: func() bool { return true }, Ready: func() string { return "ready" },
 		Store: second.ControlPlane(), Clock: first.clock, Node: testNode})
 	addr, _, err := srv.Start()
 	if err != nil {

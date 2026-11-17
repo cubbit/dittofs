@@ -199,7 +199,7 @@ func testAuditReads(t *testing.T, kvo Opener) {
 			t.Errorf("audit by %s: got records %q, want %q", c.name, got, c.want)
 		}
 	}
-	after := kvstore.AuditPosition(written[2])
+	after := cp.AuditPosition(written[2])
 	if got := sources(all(t, cp.AuditRecords(ctx, entity.AuditFilter{}, after))); got != "de" {
 		t.Errorf("audit after the third record's position: got %q, want %q", got, "de")
 	}

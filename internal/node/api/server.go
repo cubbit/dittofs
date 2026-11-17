@@ -4,18 +4,25 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
+	"github.com/cubbit/dittofs/internal/tlsconfig"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -29,8 +36,17 @@ type Deps struct {
 	// Live reports whether the node's watchdog holds.
 	Live func() bool
 	// Addr is the API listener's address, MetricsAddr the metrics
-	// listener's: each host:port, a port of 0 picking a free one.
+	// listener's: each host:port, a port of 0 picking a free one. Each is
+	// served over TLS unless it binds a loopback address.
 	Addr, MetricsAddr string
+	// TLS is the certificate and key, bootstrap facts of the host, that
+	// both listeners serve under on an address but loopback; with neither,
+	// a start on such an address is refused, and with a ClientCA, any start.
+	TLS tlsconfig.Config
+	// Socket is the local socket's path, a bootstrap fact of the host, where
+	// the API is also served without TLS, to the server's user only; empty,
+	// there is none.
+	Socket string
 	// Metrics is the registry the metrics listener serves.
 	Metrics *metrics.Registry
 	// Logger is where a listener that fails while serving is logged, and
@@ -46,10 +62,19 @@ type Deps struct {
 	// version that signs now, which keys each idempotency key's digest; nil,
 	// a write carrying an Idempotency-Key answers 503.
 	SigningKey func(context.Context) ([]byte, error)
-	// Nodes is the store's read of every registered node's status, which a
-	// listing computes each item's applied from; nil, each listing answers
-	// 503.
-	Nodes nodeStatuses
+	// Nodes is the store's reads of the nodes: their records, and every
+	// registered node's status, which a listing computes each item's applied
+	// from; nil, each listing answers 503.
+	Nodes nodeReads
+	// Progress is an operation's progress, read from what its owner
+	// records, by the operation's kind; nil, every operation's progress is
+	// unknown. It runs on every read of an operation, each re-read of a
+	// parked poll included, and never inside a write's transaction; it
+	// must not write.
+	Progress func(context.Context, entity.Operation) apiv1.Progress
+	// Health is the node's health conditions, its own and the
+	// installation's; nil, it holds none.
+	Health conditions
 	// Clock is the API's time, which a parked poll waits on; nil, a read
 	// that would park answers 503.
 	Clock clock
@@ -80,6 +105,11 @@ type Server struct {
 	serving  sync.WaitGroup
 	stopped  atomic.Bool
 	parked   chan struct{}
+	// calls holds one token per API call running.
+	calls chan struct{}
+	// startRights is the right that may start each kind of operation, which
+	// a cancel of one asks.
+	startRights map[apiv1.OpKind]auth.Right
 	// quit closes once the API listener shuts down, so a parked poll
 	// answers rather than holding Stop until its wait has passed.
 	quit chan struct{}
@@ -103,10 +133,12 @@ var requestBuckets = []float64{100e-6, 250e-6, 500e-6, 1e-3, 2.5e-3, 5e-3, 10e-3
 // newServer is New over the route table rows.
 func newServer(d Deps, rows []route) *Server {
 	s := &Server{
-		d:      d,
-		parked: make(chan struct{}, maxParked),
-		quit:   make(chan struct{}),
-		tracer: d.Tracer,
+		d:           d,
+		parked:      make(chan struct{}, maxParked),
+		calls:       make(chan struct{}, maxCalls),
+		startRights: startRights(rows),
+		quit:        make(chan struct{}),
+		tracer:      d.Tracer,
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dittofs_api_requests_total",
 			Help: "API calls, by op and outcome: ok or the problem's code."}, []string{"op", "outcome"}),
 		seconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "dittofs_api_request_seconds",
@@ -125,7 +157,11 @@ func newServer(d Deps, rows []route) *Server {
 	if s.tracer == nil {
 		s.tracer = noop.NewTracerProvider().Tracer("")
 	}
-	d.Metrics.Registry().MustRegister(s.requests, s.seconds, s.unmapped, s.preconditions, s.replays, s.idempotencyWritten, s.audits)
+	inFlight := prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "dittofs_api_calls_in_flight",
+		Help: "API calls running now, parked polls apart."}, func() float64 { return float64(len(s.calls)) })
+	limit := prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "dittofs_api_calls_in_flight_limit",
+		Help: "How many API calls the node runs at once."}, func() float64 { return maxCalls })
+	d.Metrics.Registry().MustRegister(s.requests, s.seconds, s.unmapped, s.preconditions, s.replays, s.idempotencyWritten, s.audits, newOpsCollector(s), inFlight, limit)
 
 	api := http.NewServeMux()
 	api.HandleFunc("/", d.health)
@@ -149,30 +185,96 @@ func newServer(d Deps, rows []route) *Server {
 	// Overturned if those names are themselves sensitive in a deployment,
 	// and then by binding the address to a management network or by
 	// requiring a token.
-	s.api = &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
+	// The read timeout covers the body, so a client that sends its headers
+	// and then stalls gives its call slot back.
+	s.api = &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			if _, ok := c.(*net.UnixConn); ok {
+				return auth.WithLocal(ctx)
+			}
+			return ctx
+		}}
 	s.met = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	s.api.RegisterOnShutdown(sync.OnceFunc(func() { close(s.quit) }))
 	return s
 }
 
-// Start opens the API and the metrics listeners and serves both, returning
-// the addresses they bound. When either fails to open, neither is left open.
-// A server once stopped does not start again.
+// Start opens the API and the metrics listeners, and the local socket when
+// Deps names one, and serves them, returning the addresses the two
+// listeners bound. When any fails to open, none is left open. A server once
+// stopped does not start again.
 func (s *Server) Start() (addr, metricsAddr net.Addr, err error) {
 	if s.stopped.Load() {
 		return nil, nil, errors.New("api: server stopped")
 	}
-	al, err := net.Listen("tcp", s.d.Addr)
+	// decision: the API's listeners take no client CA, which would make
+	// every caller, the health probes and the metrics scraper among them,
+	// present a client certificate. Overturned if the API is ever to be
+	// reached by client certificate.
+	if s.d.TLS.ClientCA != "" {
+		return nil, nil, errors.New("api: the API's TLS takes no client CA")
+	}
+	tc, err := tlsconfig.ServerConfig(s.d.TLS)
+	if err != nil {
+		return nil, nil, fmt.Errorf("api: the bootstrap's TLS: %w", err)
+	}
+	al, err := listen(s.d.Addr, tc)
 	if err != nil {
 		return nil, nil, err
 	}
-	ml, err := net.Listen("tcp", s.d.MetricsAddr)
+	ml, err := listen(s.d.MetricsAddr, tc)
 	if err != nil {
 		return nil, nil, errors.Join(err, al.Close())
+	}
+	var sl net.Listener
+	if s.d.Socket != "" {
+		if sl, err = listenSocket(s.d.Socket); err != nil {
+			return nil, nil, errors.Join(err, al.Close(), ml.Close())
+		}
+		s.serving.Go(func() { s.serve(s.api, sl) })
 	}
 	s.serving.Go(func() { s.serve(s.api, al) })
 	s.serving.Go(func() { s.serve(s.met, ml) })
 	return al.Addr(), ml.Addr(), nil
+}
+
+// listen opens the TCP address addr, served over tc unless it bound a
+// loopback address, 127.0.0.0/8 or ::1, an IPv4-mapped one read as its IPv4
+// address. With tc nil, an address but loopback is refused.
+func listen(addr string, tc *tls.Config) (net.Listener, error) {
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if l.Addr().(*net.TCPAddr).IP.IsLoopback() {
+		return l, nil
+	}
+	if tc == nil {
+		return nil, errors.Join(fmt.Errorf("api: %s is not a loopback address, so it is served over TLS, which needs the API's TLS certificate and key (cert_file, key_file)", addr), l.Close())
+	}
+	return tls.NewListener(l, tc), nil
+}
+
+// listenSocket opens the local socket at path, readable and writable by the
+// server's user only, replacing a socket a node that did not stop left
+// there. Only a dial the path refuses marks the socket stale: a socket a node
+// serves, one whose dial fails any other way (a full accept backlog, a mode
+// the server's user may not connect through), or any other file at path
+// refuses the start.
+func listenSocket(path string) (net.Listener, error) {
+	if fi, err := os.Lstat(path); err == nil && fi.Mode().Type() == fs.ModeSocket {
+		c, err := net.Dial("unix", path)
+		switch {
+		case err == nil:
+			return nil, errors.Join(fmt.Errorf("api: a node is serving the local socket %s", path), c.Close())
+		case !errors.Is(err, syscall.ECONNREFUSED):
+			return nil, fmt.Errorf("api: the local socket %s is not stale: %w", path, err)
+		}
+		if err := os.Remove(path); err != nil {
+			return nil, err
+		}
+	}
+	return listenPrivate(path)
 }
 
 func (s *Server) serve(srv *http.Server, l net.Listener) {
@@ -181,7 +283,7 @@ func (s *Server) serve(srv *http.Server, l net.Listener) {
 	}
 }
 
-// Stop closes both listeners, waiting for the requests in flight until ctx
+// Stop closes the listeners, waiting for the requests in flight until ctx
 // ends, a parked poll answering its last read at once, and then for both
 // servers to return.
 func (s *Server) Stop(ctx context.Context) error {

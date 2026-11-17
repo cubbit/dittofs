@@ -23,6 +23,15 @@ import (
 // Start.
 func (s *Server) SetWriteTimeout(d time.Duration) { s.api.WriteTimeout = d }
 
+// ShortenReadTimeout sets the API listener's read timeout to d unless it has
+// none, so a test of the timeout fails when the server sets none; call it
+// before Start.
+func (s *Server) ShortenReadTimeout(d time.Duration) {
+	if s.api.ReadTimeout > 0 {
+		s.api.ReadTimeout = d
+	}
+}
+
 // NewWithTestRows is New serving testRows beside the production table, so
 // the adapters run, through the production mux and authentication, on rows
 // of each kind before production rows of that kind exist.
@@ -53,11 +62,13 @@ func Rows() []Row {
 }
 
 // testRows are a read for viewer, two verbs on one path for operator, the
-// writes of a knob, its collection and of a vault for operator, a read of
+// writes of a knob, its collection and of a vault for operator, an action
+// starting an operation on a knob, a read of
 // accounts for admin, a call a caller that must change its password may
-// make, and a read failing with an error no row of the problem table names.
+// make, a read failing with an error no row of the problem table names, and
+// one failing unavailable with a wait of its own.
 var testRows = []route{
-	{method: http.MethodGet, pattern: "/api/v1/things/{id}", kind: entity.ResourceShare, right: auth.View, serve: read(func(ctx context.Context, rq request[none]) (map[string]string, error) {
+	{method: http.MethodGet, pattern: "/api/v1/things/{id}", kind: entity.ResourceShare, right: auth.View, serve: read(func(ctx context.Context, _ Deps, rq request[none]) (map[string]string, error) {
 		c, _ := auth.CallerFrom(ctx)
 		return map[string]string{"id": entity.ShareID(rq.ID).String(), "role": c.Role.String()}, nil
 	})},
@@ -81,11 +92,14 @@ var testRows = []route{
 		k.Spec.Turns++
 		return putKnob(ctx, request[knob]{ID: rq.ID, Body: k, Expect: rq.Expect}, struct{}{}, tx)
 	})},
+	{method: http.MethodPost, pattern: "/api/v1/knobs/{id}", verb: "sweep", kind: entity.ResourceSetting, right: auth.Stores, starts: apiv1.OpShareDelete, serve: write(knobs, nil, func(_ context.Context, rq request[knob], _ struct{}, _ entity.ControlPlaneTx) (knob, [16]byte, error) {
+		return knob{}, rq.ID, nil
+	})},
 	{method: http.MethodPut, pattern: "/api/v1/vaults/{id}", kind: entity.ResourceSecret, right: auth.Stores, serve: write(vaults, seal, func(_ context.Context, rq request[vault], sealed string, tx entity.ControlPlaneTx) (vault, [16]byte, error) {
 		_, err := tx.PutSetting(entity.Setting{Scope: nodeScope(rq.ID), Key: "vault", Value: []byte(sealed)}, rq.Expect)
 		return vault{Spec: vaultSpec{Password: sealed}}, rq.ID, err
 	})},
-	{method: http.MethodGet, pattern: "/api/v1/accounts/{id}", kind: entity.ResourceUser, right: auth.Accounts, serve: read(func(context.Context, request[none]) (none, error) {
+	{method: http.MethodGet, pattern: "/api/v1/accounts/{id}", kind: entity.ResourceUser, right: auth.Accounts, serve: read(func(context.Context, Deps, request[none]) (none, error) {
 		return none{}, nil
 	})},
 	{method: http.MethodPost, pattern: "/api/v1/password", kind: entity.ResourceUser, right: auth.Self, mustChange: true, serve: call(verb("password"))},
@@ -93,13 +107,23 @@ var testRows = []route{
 	{method: http.MethodGet, pattern: "/api/v1/vaults/{id}", kind: entity.ResourceSecret, right: auth.View, serve: watch(watching[vaultRead]{read: readVault, tag: func(v vaultRead) uint64 { return v.Generation }, until: changes(func(vaultRead, vaultRead) bool { return false })})},
 	{method: http.MethodGet, pattern: "/api/v1/readers/{id}", kind: entity.ResourceSetting, right: auth.View, serve: watch(watching[reader]{read: readReader, tag: func(r reader) uint64 { return r.Generation }, until: changes(func(first, now reader) bool { return first.Generation != now.Generation })})},
 	{method: http.MethodGet, pattern: "/api/v1/tags", kind: entity.ResourceNetgroup, right: auth.View, serve: list(tags)},
-	{method: http.MethodGet, pattern: "/api/v1/fail", kind: entity.ResourceInstallation, right: auth.View, serve: read(func(context.Context, request[none]) (none, error) {
+	{method: http.MethodGet, pattern: "/api/v1/fail", kind: entity.ResourceInstallation, right: auth.View, serve: read(func(context.Context, Deps, request[none]) (none, error) {
 		return none{}, errors.New(UnnamedError)
+	})},
+	{method: http.MethodGet, pattern: "/api/v1/wait", kind: entity.ResourceInstallation, right: auth.View, serve: read(func(context.Context, Deps, request[none]) (none, error) {
+		return none{}, waiting{}
 	})},
 }
 
 // UnnamedError is the text of the error GET /api/v1/fail fails with.
 const UnnamedError = "no row names this, s3cr3t-7a1f"
+
+// waiting is an unavailable error asking for a wait of 6.5 seconds.
+type waiting struct{}
+
+func (waiting) Error() string             { return "unavailable for a while" }
+func (waiting) Unwrap() error             { return vfserr.ErrUnavailable }
+func (waiting) RetryAfter() time.Duration { return 6500 * time.Millisecond }
 
 // verb answers 200 with the verb's name.
 func verb(name string) func(context.Context, request[none]) (answer, error) {
@@ -237,8 +261,8 @@ type knobRead struct {
 	Spec       knobSpec `json:"spec"`
 }
 
-func readKnob(ctx context.Context, st reads, rq request[none]) (knobRead, error) {
-	s, err := settingIn(ctx, st, rq.ID, "knob")
+func readKnob(ctx context.Context, d Deps, rq request[none]) (knobRead, error) {
+	s, err := settingIn(ctx, d.Store, rq.ID, "knob")
 	if err != nil || s.Generation == 0 {
 		return knobRead{}, err
 	}
@@ -265,8 +289,8 @@ type reader struct {
 	Role string `json:"role"`
 }
 
-func readReader(ctx context.Context, st reads, rq request[none]) (reader, error) {
-	k, err := readKnob(ctx, st, rq)
+func readReader(ctx context.Context, d Deps, rq request[none]) (reader, error) {
+	k, err := readKnob(ctx, d, rq)
 	c, _ := auth.CallerFrom(ctx)
 	return reader{k, c.Role.String()}, err
 }
@@ -278,8 +302,8 @@ type vaultRead struct {
 	Spec       vaultSpec `json:"spec"`
 }
 
-func readVault(ctx context.Context, st reads, rq request[none]) (vaultRead, error) {
-	s, err := settingIn(ctx, st, rq.ID, "vault")
+func readVault(ctx context.Context, d Deps, rq request[none]) (vaultRead, error) {
+	s, err := settingIn(ctx, d.Store, rq.ID, "vault")
 	return vaultRead{Generation: s.Generation, Spec: vaultSpec{Password: string(s.Value)}}, err
 }
 
@@ -311,8 +335,8 @@ var tags = listing[entity.Netgroup, tag]{
 	lo:      []byte(TagsFrom),
 	hi:      []byte(TagsTo),
 	filters: []string{"name"},
-	records: func(ctx context.Context, st reads, after []byte, f map[string]string) iter.Seq2[entity.Netgroup, error] {
-		all := st.Netgroups(ctx, string(after))
+	records: func(ctx context.Context, d Deps, after []byte, f map[string]string) iter.Seq2[entity.Netgroup, error] {
+		all := d.Store.Netgroups(ctx, string(after))
 		name, ok := f["name"]
 		if !ok {
 			return all

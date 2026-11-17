@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,15 +54,15 @@ type answer struct {
 // returns what to send. No handler is handed the http.ResponseWriter, so none
 // answers before its adapter has the whole answer: a write's is made inside
 // its transaction and sent only once that has committed.
-type adapter func(ctx context.Context, s *Server, r *http.Request, id [16]byte) (answer, error)
+type adapter func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (answer, error)
 
-// read adapts a read of what is no record, /api/version: its answer is 200
-// with what h returns, and no ETag, since it has no tag. A record's read is
-// adapted by watch, which takes the record's tag, so none answers without
-// its ETag.
-func read[R any](h func(context.Context, request[none]) (R, error)) adapter {
-	return func(ctx context.Context, _ *Server, _ *http.Request, id [16]byte) (answer, error) {
-		return jsonOr(h(ctx, request[none]{ID: id}))
+// read adapts a read whose answer carries no ETag: its answer is 200 with
+// what h returns from the server's Deps. A record with a tag is read through
+// watch, which takes the record's tag, so none of those answers without its
+// ETag.
+func read[R any](h func(context.Context, Deps, request[none]) (R, error)) adapter {
+	return func(ctx context.Context, s *Server, _ *http.Request, _ *route, id [16]byte) (answer, error) {
+		return jsonOr(h(ctx, s.d, request[none]{ID: id}))
 	}
 }
 
@@ -68,7 +70,7 @@ func read[R any](h func(context.Context, request[none]) (R, error)) adapter {
 // answer. If it writes, it does so through a function of package auth, the
 // one place besides the write adapter that calls the store's Write.
 func call[B any](h func(context.Context, request[B]) (answer, error)) adapter {
-	return func(ctx context.Context, _ *Server, r *http.Request, id [16]byte) (answer, error) {
+	return func(ctx context.Context, _ *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
 		rq, err := decodeRequest[B](r, id)
 		if err != nil {
 			return answer{}, err
@@ -110,10 +112,10 @@ func requestID(ctx context.Context) string {
 }
 
 // handle answers r by the row of rows it names, none naming it when rows is
-// nil, and records the call: its series and its span, named by the row's op,
-// and, for an error the problem table does not name, a log line carrying
-// the request's ID. The span carries the resource's pattern, the path's ID
-// once it parses and the outcome, never a body field.
+// nil, once enter admits it, and records the call: its series and its span,
+// named by the row's op, and, for an error the problem table does not name,
+// a log line carrying the request's ID. The span carries the resource's
+// pattern, the path's ID once it parses and the outcome, never a body field.
 func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 	start := time.Now()
 	ctx := context.WithValue(r.Context(), requestIDKey{}, rand.Text())
@@ -123,13 +125,20 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 		op = rt.op()
 	}
 	ctx, span := s.tracer.Start(ctx, op)
-	a, err := s.run(ctx, r, rt, id)
+	var a answer
+	release, err := s.enter(rt)
+	if err == nil {
+		defer release()
+		a, err = s.run(ctx, r, rt, id)
+	}
 	if err == nil && a.park != nil {
-		// A parked poll holds no call slot: once calls are bounded, the
-		// slot this call holds is released here, before it parks. Its
-		// write deadline, the wall clock's whatever clock the wait is on,
-		// moves past its wait, so the write timeout that bounds every
-		// other call does not cut it off.
+		// A parked poll holds no call slot: it gives its slot back here,
+		// before it parks. Its write deadline, the wall clock's whatever
+		// clock the wait is on, moves past its wait, so the write timeout
+		// that bounds every other call does not cut it off. The read timeout
+		// needs no such move: the server clears the read deadline once the
+		// body is read.
+		release()
 		if err = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(a.wait + s.api.WriteTimeout)); err == nil {
 			a, err = a.park()
 		}
@@ -146,6 +155,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 		}
 		a, _ = jsonAnswer(p.Status, p) // a Problem always encodes
 		a.header.Set("Content-Type", apiv1.MediaTypeProblem)
+		if wait := retryAfter(err, p.Status); wait > 0 {
+			a.header.Set("Retry-After", strconv.FormatInt(int64((wait+time.Second-1)/time.Second), 10))
+		}
 	}
 	span.SetAttributes(attribute.String("api.pattern", r.Pattern), attribute.String("api.outcome", outcome))
 	span.End()
@@ -156,6 +168,20 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 	}
 	w.WriteHeader(a.status)
 	_, _ = w.Write(a.body)
+}
+
+// retryAfter is how long a caller refused with err, answered status, should
+// wait before trying again: the wait err carries, or else one second for a
+// 503 and none for any other status.
+func retryAfter(err error, status int) time.Duration {
+	var w interface{ RetryAfter() time.Duration }
+	if errors.As(err, &w) && w.RetryAfter() > 0 {
+		return w.RetryAfter()
+	}
+	if status == http.StatusServiceUnavailable {
+		return time.Second
+	}
+	return 0
 }
 
 // pick returns the row of rows r names, its verb cut from the path's {id} at
@@ -204,7 +230,7 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 		}
 		return answer{}, err
 	}
-	return rt.serve(ctx, s, r, id)
+	return rt.serve(ctx, s, r, rt, id)
 }
 
 // admit refuses a row the caller ctx carries may not call and an ID that

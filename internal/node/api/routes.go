@@ -12,15 +12,18 @@ import (
 // route is one row of the route table: a method and a pattern of
 // net/http.ServeMux, the action a POST on {id}:verb names, the kind of
 // resource it reaches, which a refusal before its adapter is audited
-// against and only a public row leaves zero, the right its caller
-// must hold, whether it answers a caller that must change its password, and
-// its adapter.
+// against and only a public row leaves zero, the right its caller must hold,
+// whether it answers a caller that must change its password, the kind of
+// operation a write row starts on the record it wrote, empty for one that
+// starts none, whether it answers before the node is ready, and its adapter.
 type route struct {
 	method, pattern string
 	verb            string
 	kind            entity.ResourceKind
 	right           auth.Right
 	mustChange      bool
+	starts          apiv1.OpKind
+	beforeReady     bool
 	serve           adapter
 }
 
@@ -45,10 +48,17 @@ func (rt *route) op() string {
 // listing's filter. Overturned only if a resource ever lacks a stable ID,
 // which no record of the metadata store does.
 var routes = []route{
-	{method: http.MethodGet, pattern: "/api/version", right: auth.Public, serve: read(version)},
+	{method: http.MethodGet, pattern: "/api/version", right: auth.Public, beforeReady: true, serve: read(version)},
+	{method: http.MethodGet, pattern: "/api/v1/health", kind: entity.ResourceNode, right: auth.View, beforeReady: true, serve: read(healthOf)},
+	{method: http.MethodGet, pattern: "/api/v1/operations", kind: entity.ResourceOperation, right: auth.View, serve: list(operations)},
+	{method: http.MethodGet, pattern: "/api/v1/operations/{id}", kind: entity.ResourceOperation, right: auth.View, serve: watch(operation)},
+	{method: http.MethodPost, pattern: "/api/v1/operations/{id}", verb: "cancel", kind: entity.ResourceOperation, right: auth.View, serve: cancel},
+	{method: http.MethodGet, pattern: "/api/v1/nodes", kind: entity.ResourceNode, right: auth.View, serve: list(nodes)},
+	{method: http.MethodGet, pattern: "/api/v1/nodes/{id}", kind: entity.ResourceNode, right: auth.View, serve: read(node)},
+	{method: http.MethodGet, pattern: "/api/v1/audit", kind: entity.ResourceInstallation, right: auth.Audit, serve: list(audit)},
 }
 
 // version answers the API's major versions and nothing else.
-func version(context.Context, request[none]) (apiv1.Version, error) {
+func version(context.Context, Deps, request[none]) (apiv1.Version, error) {
 	return apiv1.Version{Majors: []string{"v1"}}, nil
 }

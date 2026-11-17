@@ -49,6 +49,7 @@ func TestWireBodies(t *testing.T) {
 		{"progress", op.Progress, new(Progress), []string{"done", "phase", "total", "unit"}},
 		{"target", op.Target, new(Ref), []string{"id", "kind"}},
 		{"account", op.Account, new(Principal), []string{"id", "kind"}},
+		{"the schedule", Principal{Kind: ScheduleKind}, new(Principal), []string{"kind"}},
 		{"version", Version{Majors: []string{"v1"}}, new(Version), []string{"majors"}},
 		{"sign-in", SignIn{Name: "alice", Password: "pw"}, new(SignIn), []string{"name", "password"}},
 		{"tokens", Tokens{Access: "a.b.c", Refresh: "r1"}, new(Tokens), []string{"access_token", "refresh_token"}},
@@ -60,6 +61,22 @@ func TestWireBodies(t *testing.T) {
 		{"created API token", APITokenStatus{Created: at, Token: "t1"}, new(APITokenStatus),
 			[]string{"created", "token"}},
 		{"listed API token", APITokenStatus{Created: at}, new(APITokenStatus), []string{"created"}},
+		{"applied", Applied{Nodes: 2, Of: 3}, new(Applied), []string{"nodes", "of"}},
+		{"node status", NodeStatus{Address: "10.0.0.1:12049", Binary: "v0.20.0", Domain: "rack-1", Lapsed: true,
+			Reconciled: &Reconciled{Settings: 7, ShareList: 3, Principals: 2}}, new(NodeStatus),
+			[]string{"address", "binary", "domain", "lapsed", "reconciled"}},
+		{"reconciled", Reconciled{Settings: 7, ShareList: 3, Principals: 2}, new(Reconciled),
+			[]string{"principals", "settings", "share_list"}},
+		{"audit record", AuditRecord{
+			ID: "au_1", Time: at, Actor: Principal{Kind: "user", ID: "us_1"}, ActorName: "eli", Credential: "session-1",
+			Node: "n_1", Source: "10.0.0.9:51234", Request: json.RawMessage(`{"method":"PUT"}`),
+			Target: Ref{Kind: "share", ID: "sh_1"}, Before: 1, After: 2, Change: json.RawMessage(`{"spec.name":["a","b"]}`),
+			Outcome: "applied",
+		}, new(AuditRecord), []string{"actor", "actor_name", "after", "before", "change", "credential", "id", "node", "outcome", "request", "source", "target", "time"}},
+		{"health", Health{Ready: "ready", Conditions: []Condition{{Name: "store_unreachable", Scope: "store", ID: "rs_1", Subject: "s3", Cause: "dial tcp: refused", Detail: "3 failures"}}}, new(Health),
+			[]string{"conditions", "ready"}},
+		{"condition", Condition{Name: "store_unreachable", Scope: "store", ID: "rs_1", Subject: "s3", Cause: "dial tcp: refused", Detail: "3 failures"}, new(Condition),
+			[]string{"cause", "detail", "id", "name", "scope", "subject"}},
 	} {
 		b, err := json.Marshal(tc.in)
 		if err != nil {

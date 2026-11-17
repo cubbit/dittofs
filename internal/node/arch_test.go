@@ -2,6 +2,7 @@ package node
 
 import (
 	"go/ast"
+	gobuild "go/build"
 	"go/importer"
 	"go/parser"
 	"go/token"
@@ -412,14 +413,15 @@ func TestImportRules(t *testing.T) {
 // and nodetest may import the module's package rel: none it allows is a
 // component's implementation, the entity and wire packages holding data
 // types only, the metadata store's and filesystem's packages of error values,
-// which the API answers by name, and KV, of which errorsOnly admits only the
-// error values; nodetest, which imports Badger, is not allowed. Everything
+// which the API answers by name, KV, of which errorsOnly admits only the
+// error values, and the TLS library the API's listeners load their
+// certificate with; nodetest, which imports Badger, is not allowed. Everything
 // else it reaches through an interface it declares or a value the node hands
 // it.
 func componentAllowed(rel string) bool {
 	switch rel {
 	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1",
-		"pkg/metadata/errors", "pkg/metadata/kv", "pkg/vfs/vfserr":
+		"pkg/metadata/errors", "pkg/metadata/kv", "pkg/vfs/vfserr", "internal/tlsconfig":
 		return true
 	}
 	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
@@ -531,8 +533,9 @@ func TestNoComponentImports(t *testing.T) {
 	}
 }
 
-// typeCheck type-checks the package whose non-test sources are in dir as
-// import path path, with every import read from source.
+// typeCheck type-checks the package whose non-test sources for this host's
+// platform are in dir as import path path, with every import read from
+// source.
 func typeCheck(dir, path string) (*types.Package, []*ast.File, *types.Info, error) {
 	fset, imp := sourceImporter()
 	entries, err := os.ReadDir(dir)
@@ -542,6 +545,12 @@ func typeCheck(dir, path string) (*types.Package, []*ast.File, *types.Info, erro
 	var files []*ast.File
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		if ok, err := gobuild.Default.MatchFile(dir, e.Name()); err != nil || !ok {
+			if err != nil {
+				return nil, nil, nil, err
+			}
 			continue
 		}
 		f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, 0)
@@ -1023,9 +1032,9 @@ func apiExports(dir, path string) ([]string, error) {
 
 // The api package exports New, Deps and Server, and Server's Start and Stop,
 // and its auth package Caller, CallerFrom, the With its authentication step
-// calls, the role table's Right, its rights and Allowed, and the
-// ResetAccount the break-glass reset calls, and nothing else; a planted
-// extra method is caught.
+// calls, the local socket's mark, WithLocal and Local, the role table's
+// Right, its rights and Allowed, and the ResetAccount the break-glass reset
+// calls, and nothing else; a planted extra method is caught.
 func TestAPIExports(t *testing.T) {
 	want := []string{"Deps", "New", "Server", "Server.Start", "Server.Stop"}
 	for _, tc := range []struct {
@@ -1034,8 +1043,8 @@ func TestAPIExports(t *testing.T) {
 	}{
 		{"api", "internal/node/api", want},
 		{"api/auth", "internal/node/api/auth", []string{
-			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Drain", "Installation", "Principals",
-			"Public", "QuotaEvents", "ResetAccount", "Right", "Self", "Shares", "Stores", "View", "With",
+			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Drain", "Installation", "Local", "Principals",
+			"Public", "QuotaEvents", "ResetAccount", "Right", "Self", "Shares", "Stores", "View", "With", "WithLocal",
 		}},
 		{"testdata/arch/api-exports", "internal/node/api", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},
 	} {
