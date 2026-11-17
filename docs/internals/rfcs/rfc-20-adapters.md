@@ -1026,6 +1026,10 @@ type Deps struct {
 	// trace ID it draws and opens spans only for one it sampled (§10.2). 0
 	// samples none.
 	SampleRatio float64
+	// TraceIDs draws each request's trace ID (§10.2). nil draws from
+	// math/rand/v2's own source; a test passes a seeded one (RFC 29 §4.11).
+	// No caller passes a source fed by a request's bytes.
+	TraceIDs func() trace.TraceID
 	// Watch registers a loop with the node's liveness watchdog (RFC 25 §3.5)
 	// and returns it: Turn reports a pass, Idle a wait with nothing to do (an
 	// accept loop at its accept deadline), Close unregisters it at unbind.
@@ -1056,10 +1060,13 @@ type Loop interface {
 
 // StartRequestSpan opens the span of a request the adapter sampled, with t,
 // under ctx carrying id, the trace ID the adapter drew, which the root's ID
-// generator gives that span (§10.2, RFC 25 §8.1). It returns the span's
-// context built on ctx, which does not carry id, so a root opened under it
-// later draws an ID of its own. The setter of id is unexported: no other call
-// can hand a context the ID.
+// generator gives that span (§10.2, RFC 25 §8.1). It passes
+// trace.WithNewRoot(), since the tracing SDK asks the generator only for a
+// span with no parent: a span already in ctx would give its own trace ID and
+// drop id and the adapter's decision. It returns the span's context built on
+// ctx, which does not carry id, so a root opened under it later draws an ID
+// of its own. The setter of id is unexported: no other call can hand a
+// context the ID.
 func StartRequestSpan(ctx context.Context, t trace.Tracer, id trace.TraceID, name string) (context.Context, trace.Span)
 func TraceIDFromContext(ctx context.Context) (trace.TraceID, bool) // the ID StartRequestSpan opens its span under; false in any other context, the one it returns included
 ```
@@ -2404,8 +2411,10 @@ func Bind[Req, Rep any](
 	enc func(rep *Rep, v Version, out *Buf) error,
 ) func([]byte, Version) (Invocation, int, error)
 
-// NewOpTable builds a table and checks it: codes unique, ranges well formed,
-// no ErrorRow.Hold unless holds, and, where it holds, a row answering
+// NewOpTable builds a table and checks it: codes unique, names unique and,
+// lower-cased, of lower-case letters, digits and underscores only, refused
+// naming the row (§10.1's op), ranges well formed, no ErrorRow.Hold unless
+// holds, and, where it holds, a row answering
 // ErrCancelled for every operation and version (one naming neither Ops nor
 // Versions that replies at once with a status other than the fault or
 // success) and no row for it, whatever its Ops or Versions, that holds, sends
@@ -2564,8 +2573,8 @@ malformed, or a code its table has no row for, which RFC 21 answers from its
 run; nothing past it runs, and the reply ends there. An SMB chain
 reaches the same runner from one record, each member with its own header at
 its own offset (`Decode(rec, off)`, `Header.Next`). For a single-reply
-compound, its members' `Decode` and `reserveReply` run once, for every member,
-before the first runs (above, §4.3); the runner then repeats the steps from
+compound, its members' `Decode` and `reserveReply` run once, covering every
+member, before the first runs (above, §4.3); the runner then repeats the steps from
 `check` to `encode` per operation but those two, carrying the compound state
 in the `Request`. An SMB chain repeats every step from the header's `Decode`
 to `encode` per member, `Unwrap`, `Admit` and `Lookup` among them, since each
@@ -3827,7 +3836,7 @@ Three, each per protocol:
 | Benchmark | Measures | Runs | Gate |
 | --- | --- | --- | --- |
 | **codec micro**: `BenchmarkDecode*`, `BenchmarkEncode*` per message | ns and allocations per message | per change, in a non-race cell of its own: allocation gates skip under `-race` ([RFC 29 §4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs)) | `READ`, `WRITE`, `GETATTR`, SMB `READ`/`WRITE`/`QUERY_INFO` decode and encode at **0 allocations**, asserted with `testing.AllocsPerRun` |
-| **pipeline micro**: the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, ns and allocations, with no storage underneath | nightly, as above | allocations per request asserted ≤ a checked-in number that may only fall, with tracing off; at ratio 0.01, an unsampled request's asserted equal to tracing off's (§10.2), measured one request at a time with `testing.AllocsPerRun(1, …)` and keeping the runs whose request opened no span. ns per request reported, with no gate until a baseline is checked in |
+| **pipeline micro**: the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, ns and allocations, with no storage underneath | nightly, as above | allocations per request asserted ≤ a checked-in number that may only fall, with tracing off; at ratio 0.01, with `Deps.TraceIDs` seeded so the ratio rule rejects every ID the run draws, warm-up included, `testing.AllocsPerRun(N, …)` asserted equal to tracing off's (§10.2). ns per request reported, with no gate until a baseline is checked in |
 | **end to end**: the composed node with its real stores | small operations (`GETATTR`, `LOOKUP`, SMB `QUERY_INFO`) per second on one connection and on the node; 1 MiB sequential read and write on one and four connections; p99 of a 4 KiB write at half the request budget | nightly, dedicated host | tracked; three nights below the 7-day median adds a note to the develop-status issue (RFC 29 §4.10) |
 
 The gates cover the served path only: a request refused at decode allocates
@@ -3867,7 +3876,9 @@ there is a `core` bug, and both adapters share its fix. The test protocol —
 length-prefixed frames, an echo, a delay, an operation that panics,
 one that holds — lives in `adaptertest/testproto`; `core` and its tests import
 no protocol, so `core` is built and proven before either adapter exists. It
-also proves `NewServer`'s table checks (§4.7): a listed table with no
+also proves `NewOpTable`'s name check, a row whose name, lower-cased, has a
+character past lower-case letters, digits and underscores, or two rows of one
+name, each refused naming the row; and `NewServer`'s table checks (§4.7): a listed table with no
 `Protocol`, and two listed tables taking one `protocol` and `op` pair, a
 compound row's `Members` among them, each refused at configured; one table
 listed by two listeners accepted and checked once; and a table `Route` returns
@@ -4226,13 +4237,23 @@ measures only what happens before and after the service call.
 | --- | --- |
 | `stage` | the pipeline's stages in their order, each §4.1 name with its spaces as underscores, and three this table defines, `route`, `reply_wait` and `reply_too_big`: `frame`, `decode_header`, `unwrap`, `admit`, `replay_check`, `route` (where `Route` chooses the table and the pipeline checks the operation's row, §4.2), `decode_args`, `reply_wait` (the request's own reply reservation, between decoding and resolving), `resolve_ids`, `call_service`, `map_error`, `encode`, `wrap`, `send`; and `reply_too_big`, which only a refusal takes. `frame` and `call_service` name §4.1's steps but are no series' value (the two rows below) |
 | `stage`, of a refusal | the stage that refused it: §4.1's table names most, and this row the rest. `route`: an operation the table lacks or an operator switched off, a version outside the row's, a need not met, and a `Route` that finds no table. `decode_args`: a compound past its cap, refused before any member decodes, and a single-reply compound the drain refuses, judged whole once every member decodes and before any resolves its IDs (§4.7). `resolve_ids`: an expired credential and every other request the drain refuses before its call, both checked once its IDs are resolved. `replay_check`: the replay cache's copy, whose reply reservation answered `ErrDelay` with `DelayResources`. `reply_wait`: a request's own reply reservation that answered `ErrDelay` with `DelayResources` at its deadline. `adapter_connection_closes_total`'s `reply_wait` is another event of the same name: a connection closed because a reply carrying a status alone found no reply buffer within 30 s. `reply_too_big`: a request refused before it runs, its reply past a bound: the reply pool's ceiling, a quarter of it for §4.3's compound, or, for an NFSv4.1 operation, what is left of its session's reply size or cached reply size (§4.3). `map_error`: a refusal `core` makes once the call has returned, as the answer is mapped: `Park`'s `ErrNotLast`, `ErrTooManyPending`, drain error and small-class `ErrDelay` with `DelayResources` (§4.7), a parked request the drain ends, a hold refused at `Stages.MaxPending` (§4.6), and the `ErrNotLast` that answers a held error before a chain's last member; the hold pool's refusal is `adapter_hold_refusals_total`'s alone, its one owner ([RFC 25 §2.7](rfc-25-observability.md#2.7%20One%20event%2C%20one%20owner)). `ErrCancelled` (§6.5) counts under no stage: the client ended its own request, and `core` refused nothing. `frame` and `send` refuse by closing the connection, which `adapter_connection_closes_total` counts, so neither is a refusal's stage; so does `decode_header` for a header that did not decode far enough to address a reply, which counts no refusal |
-| `stage`, of `adapter_wire_seconds` | each stage from `decode_header` to `send` but `call_service`, `route` and `reply_wait` included: `frame` mostly waits on the client, and the call's latency is the service's ([RFC 17 §7](rfc-17-vfs.md#7.%20Observability)). One observation is one run of a stage, timed from the end of the step before it, so a stage's count is how often it ran, not how many requests ran it. A request runs each stage it reaches once, and each member of an SMB chain is a request (§10.2); two runners differ. An NFSv4 compound runs the stages before its first member once, `decode_args` decoding every member before any runs (§4.7) and `reply_wait` taking its one reservation (§4.3); then, per member, as its runner repeats them, `route` (the member's row checks), `resolve_ids`, `map_error` and `encode`; then `wrap` and `send` once. A chain's members share `wrap` and `send`, which run once per record it sends, joined or split (§4.7). The metrics middleware (§4.7) is the clock's hinge: as the call starts it observes `resolve_ids`, timed from that stage's start, which the pipeline keeps with the request; as the call returns or panics it marks the call's end, from which the pipeline times `map_error`. A request refused before its call has the stage that refused it observed by the pipeline as it refuses, where that stage is timed, and `map_error` timed from there. Each attempt of a held request (§4.6) times its own stages from the attempt's start; the wait between attempts is the hold's, which `adapter_held_requests` shows, never a stage's |
-| `error` | one value per sentinel of the service's closed error set ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), spelled as [RFC 25 §2.4](rfc-25-observability.md#2.4%20Labels) spells an error label, such as `not_found`, `exist`, `name_too_long` or `io`: a list kept by hand, which §7.3's test keeps whole. A typed error counts under the first sentinel of `vfs.Errors()`, in its order, that it matches. Core's own refusals are not among them: `adapter_refusals_total` counts each by its stage. An `ErrDelay` with `DelayResources` that `core` builds itself, at a reply reservation's deadline, in `Park` or at a full hold pool, is the service's sentinel and counts under `delay`, beside its stage where it has one; the hold pool's refusal comes after the call, so `adapter_hold_refusals_total` counts it and no refusal stage does. An error no row maps (§4.5) takes no value: `adapter_unmapped_errors_total` counts it. A `NoReply` row counts nothing here, since nothing reaches the wire; a refusal it answers still counts under its stage |
+| `stage`, of `adapter_wire_seconds` | each stage from `decode_header` to `send` but `call_service`, `route` and `reply_wait` included: `frame` mostly waits on the client, and the call's latency is the service's ([RFC 17 §7](rfc-17-vfs.md#7.%20Observability)). One observation is one request's time in a stage, so a stage's count is the requests that ran it, each member of an SMB chain being a request (§10.2). A stage a request runs more than once is observed once, its runs summed (the decision below). An NFSv4 compound runs the stages before its first member once, `decode_args` decoding every member before any runs (§4.7) and `reply_wait` taking its one reservation (§4.3); then `route` (each member's row checks), `resolve_ids`, `map_error` and `encode` once per member, as its runner repeats them, each run adding to its sum; then `wrap` and `send` once. A chain's members share `wrap` and `send`, observed once per record it sends, joined or split (§4.7), so their counts are records. Each run is timed from the end of the step before it. The pipeline times and observes every stage; the metrics middleware (§4.7) only marks the call's start, which ends `resolve_ids`, and the call's end, from which `map_error` is timed. A parked request's `map_error` is timed from `done` (§4.7's `Park`): the wait between `Park` and `done` is the park's, never a stage's. A request refused before its call times the stage that refused it, where that stage is timed, and `map_error` from there. Each attempt of a held request (§4.6) times its own stages from the attempt's start, adding to its sums; the wait between attempts is the hold's, which `adapter_held_requests` shows, never a stage's |
+| `error` | one value per sentinel of the service's closed error set ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), spelled as [RFC 25 §2.4](rfc-25-observability.md#2.4%20Labels) spells an error label, such as `not_found`, `exist`, `name_too_long` or `io`: a list kept by hand, which §7.3's test keeps whole. A typed error counts under the first sentinel of `vfs.Errors()`, in its order, that it matches. Core's own refusals are not among them: `adapter_refusals_total` counts each by its stage. An `ErrDelay` with `DelayResources` that `core` builds itself, at a reply reservation's deadline, in `Park` or at a full hold pool, is the service's sentinel and counts under `delay`. That is a second event, not the refusal counted twice ([RFC 25 §2.7](rfc-25-observability.md#2.7%20One%20event%2C%20one%20owner)): this label counts the status that reaches the wire, and the refusal is counted where `core` decided it, under its stage, or, for the hold pool's, which comes after the call, by `adapter_hold_refusals_total`. An error no row maps (§4.5) takes no value: `adapter_unmapped_errors_total` counts it. A `NoReply` row counts nothing here, since nothing reaches the wire; a refusal it answers still counts under its stage |
 | `op` | the operation's name in its table, lower-cased, such as `read` or `create_session`. Lower-cased, it is lower-case letters, digits and underscores only; `NewOpTable` refuses a row whose name is not, naming it. A name is unique within its `protocol` label: tables that share a label name their rows apart, NFS's auxiliary programs with their program's name first, as `mount_null` and `nlm_lock`, and `NewServer` refuses two tables its protocols list, a compound row's `Members` included, that take one `protocol` and `op` pair, so `New` fails at configured, not on a request (§4.7's `Protocol.Tables`). A table two listeners list is one table, known by its pointer, so NFS's NLM and NSM tables, listed over TCP and UDP (§4.8), take their pairs once |
 
 `adapter_wire_seconds` takes the `request` bucket set
-([RFC 25 §2.6](rfc-25-observability.md#2.6%20Histogram%20buckets)). The
-`reason` of `adapter_connection_closes_total` is a closed set, one value per
+([RFC 25 §2.6](rfc-25-observability.md#2.6%20Histogram%20buckets)).
+
+> decision: a stage a request runs more than once is observed once, its runs
+> summed, not once per run. A compound member's row checks, ID resolution,
+> mapping and encoding take a few µs each, below the `request` set's first
+> boundary of 100 µs, so observations per run would land in the first bucket
+> and add only count and sum, at four observes a member: 32 for an eight-member
+> compound, against four summed. A finer bucket set would change RFC 25 §2.6's
+> four sets and still pay the 32. Observe per run if a member's own spread is
+> needed, with a bucket set that resolves it.
+
+The `reason` of `adapter_connection_closes_total` is a closed set, one value per
 close:
 
 - at accept, before any byte is read:
@@ -4311,9 +4332,10 @@ adapter.nfs4.COMPOUND              request span: frame → send, opened by the p
 
 - **The request span** opens as `adapter.<protocol>`, under its connection's
   label (`Stages.Protocol`, §10.1), and is renamed at `Route` to
-  `adapter.<protocol>.<operation>`, the operation its header names as its
-  table gives it, such as `adapter.nfs4.COMPOUND`, `adapter.nfs3.WRITE` or
-  `adapter.smb.CREATE`; one refused before `Route` keeps its first name. It is
+  `adapter.<protocol>.<operation>`, the name its table gives the code its
+  header names, such as `adapter.nfs4.COMPOUND`, `adapter.nfs3.WRITE` or
+  `adapter.smb.CREATE`. One refused before `Route`, or whose code its table
+  lacks, keeps its first name, so no wire value names a span. It is
   opened when a record is framed, or, for each member
   of a chain (§4.7), when its header is read: a chain's members are requests of
   their own, each with its own request span and its own message's bytes, not
@@ -4331,12 +4353,12 @@ adapter.nfs4.COMPOUND              request span: frame → send, opened by the p
 - **A held request** (§4.6) keeps its request span across its re-drives, with
   one child per attempt, so the wait shows as the gaps between them.
 - **Attributes** are the closed-set fields, under these keys:
-  `protocol`; `version`, the version or dialect; `op`; `status`; `result`,
-  what the service's call returned: `ok`, the closed error's name as the
-  `error` label writes it, or `unmapped` for an error no row maps (§4.5); a
-  request refused before its call has none, and one `core` refuses after it
-  (§10.1's `map_error`) keeps its call's; `request_bytes` and `reply_bytes`;
-  `stage`, the stage that refused. `result` never takes an error's text, which
+  `protocol`; `version`, the version or dialect `Route` accepted, set only
+  then; `op`; `status`; `result`, what the service's call returned: `ok`, the
+  closed error's name as the `error` label writes it, or `unmapped` for an
+  error no row maps (§4.5); a request `core` refused, before its call or after
+  it (§10.1's `map_error`, `Park`'s refusals among them), has none;
+  `request_bytes` and `reply_bytes`; `stage`, the stage that refused. `result` never takes an error's text, which
   can carry a path. Never a
   path, a name, a principal or a client address
   ([RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)).
@@ -4344,6 +4366,10 @@ adapter.nfs4.COMPOUND              request span: frame → send, opened by the p
   tracing allocates nothing and reads no clock: drawing the trace ID, which
   reads none, is its whole cost, and §6.10's pipeline benchmark asserts it. So
   the pipeline decides sampling from the trace ID it draws for every request,
+  which **MUST** come from a uniformly random source (`Deps.TraceIDs`,
+  `math/rand/v2`'s by default, as the tracing SDK's own generator draws), never
+  from wire data or a counter: an ID a client could steer, from an XID or a
+  message ID, would let it force sampling or evade it. It decides
   before it opens a span, by the tracing API's ratio rule (the ID's low eight
   bytes, read big-endian and shifted right by one, below `Deps.SampleRatio`
   × 2⁶³), and calls the tracer only for a sampled request: a tracer that
@@ -4362,6 +4388,8 @@ so a line joins its trace when one was kept: the pipeline keeps the ID it drew
 with the request and writes it on the request's lines, and no context the
 request hands on carries it (§10.2;
 [RFC 25 §5.3](rfc-25-observability.md#5.3%20Structure%20and%20correlation)).
+So a line below the adapter carries it only for a sampled request, from the
+span in its context, as RFC 25 §5.3's decision has it.
 The ID is added to a line as the line is written, never through a
 per-request `Logger.With`, which allocates on every request whether a line
 is written or not. Expected refusals log at debug,

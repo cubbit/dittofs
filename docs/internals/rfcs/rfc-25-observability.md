@@ -346,7 +346,8 @@ are three kinds of allowed label, and a list of forbidden ones.
    the port mapper count under `nfs3`.
 
    **One name per concept across the set.** `outcome` is the class of an answer
-   (`ok`, `error`, `delay`); `result` is `ok` or the name from a closed error set;
+   (`ok`, `error`, `delay`); `result` is `ok`, the name from a closed error set, or
+   `unmapped` for an error no row maps ([RFC 20 §10.2](rfc-20-adapters.md#10.2%20Spans));
    `reason` is why something was refused or dropped; `cause` is the cause an error
    value carries.
 2. **Entity labels**, whose values are configured objects: `store`, `namespace`,
@@ -1034,15 +1035,26 @@ at the node:
 | `msg` | yes | a constant string — no value interpolated, so lines group by message |
 | `component` | yes | the owning prefix of §2.1 |
 | `node` | yes | the node's ID |
-| `trace_id`, `span_id` | on request-scoped and pass-scoped lines | §6 |
+| `trace_id`, `span_id` | on the adapter's request-scoped lines, on pass-scoped lines, and below the adapter where the context carries a span | §6; below |
 | `request_id` | on request-scoped lines | the route envelope's request ID ([RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope)) or the adapter's own |
 | `share`, `op`, `protocol`, `client` | where they apply | as in §4.2 |
 | `error`, `cause` | on failures | the closed error and its cause |
 
-- A **trace ID exists on every request**, sampled or not (§6.3), so a log line can
-  always be joined to its request even when no span was exported. With tracing off
-  the adapter still draws the trace ID and carries it in the request's own state,
-  not as a context value.
+- A **trace ID exists on every request**, sampled or not (§6.3), so the adapter's
+  lines can always be joined to their request even when no span was exported.
+  With tracing off, or the request unsampled, the adapter still draws the trace ID
+  and carries it in the request's own state, not as a context value. A line below
+  the adapter takes `trace_id` and `span_id` from the span in its context, so it
+  carries them only for a sampled request.
+
+> decision: an unsampled request's lines below the adapter carry no trace ID.
+> Carrying it would take a value in every request's context, an allocation per
+> request that §6.3 forbids, and one more thing the root's ID generator must
+> tell from its own ID (§8.1). The adapter's lines carry it and record the
+> request's refusal, error and answer; a component's line below joins its
+> request through a sampled trace. Withdraw it if an incident needs an unsampled
+> request's service lines joined, by carrying the ID in a per-request value the
+> pipeline already allocates, under a key the ID generator ignores.
 - An error wrapped across components keeps its cause, and the line that reports it
   names the component that decided it, not the one that logged it.
 
@@ -1103,8 +1115,11 @@ them.
   opens a root span of its own. A pass that serves a request it was waiting on, a
   fetch joined by a read, *links* to that request's span rather than becoming its
   child, so a request's trace shows the wait without absorbing the pass.
-- Span names are constant: `<prefix>.<Name>`, the prefix from §2.1's table —
-  `vfs.Write`, `metadata.kv.Get`, `adapter.nfs4.COMPOUND`. Attributes are the
+- Span names are constant, `<prefix>.<Name>` with the prefix from §2.1's table:
+  `vfs.Write`, `metadata.kv.Get`, `adapter.nfs4.COMPOUND`. The one exception is
+  the adapter's request span, which opens as `adapter.<protocol>` and takes its
+  operation's name at `Route`
+  ([RFC 20 §10.2](rfc-20-adapters.md#10.2%20Spans)). Attributes are the
   operation's closed-set fields, sizes, the share and file by ID, the outcome and
   the error. §5.4 applies to every attribute.
 
@@ -1140,7 +1155,7 @@ them.
   drawing its trace ID, which reads no clock, is the whole cost, so tracing off
   costs the request path nothing measurable. The conformance run counts
   allocations per operation with tracing off, and on at ratio 0 and at 0.01,
-  where it measures one request at a time and keeps the unsampled ones (§12).
+  where a seeded ID source makes every request of the run unsampled (§12).
 - Spans are exported in batches by a writer of their own, from a bounded queue
   that drops and counts (`health_spans_dropped_total`, §10) rather than block.
 
@@ -1445,7 +1460,7 @@ names, on the composed single-node harness of the [index](rfc-index.md#Test%20ha
 | §5.2 per-request lines | Run 10⁵ operations of every kind with clients provoking every expected error. Assert the count of lines at `Info` and above does not grow with the operation count. | a log line per request |
 | §5.2 debug expiry | Turn debug on for one component; advance the clock 15 minutes: assert it is off. Set `Debug` in configuration: assert it stays and `debug_logging_on` is raised. | debug left on; a developer's debug silently dropped |
 | §6.2 propagation **(cluster)** | Forward a write from P1 to S2 with sampling at 1: assert one trace with P1's span parenting S2's service span. Retry the write: assert the same request ID, a new span, and one application. | trace context in the dedup key |
-| §6.3 cost | `testing.AllocsPerRun` over an unsampled request's path through the adapter, the service, the metadata store and the engine, under a real provider at ratio 0 and at 0.01, equals the same path's with tracing off: tracing adds 0. At 0.01 it measures one request at a time, `AllocsPerRun(1, …)`, and keeps the runs whose request opened no span. Through a log handler that counts its `WithAttrs` calls, at a level that drops every line, run 10⁴ requests: assert the count does not grow with the requests. Of each `Sink` method it is 0. | a span opened, or a `Start` called, for an unsampled request; a component that opens a span with no sampled parent; a per-request `Logger.With`; a sink that boxes its event |
+| §6.3 cost | `testing.AllocsPerRun` over an unsampled request's path through the adapter, the service, the metadata store and the engine, under a real provider at ratio 0 and at 0.01, equals the same path's with tracing off: tracing adds 0. At 0.01 the adapter's IDs come from a seeded `Deps.TraceIDs` ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) whose IDs for the run, warm-up included, the ratio rule all rejects, and `AllocsPerRun(N, …)` runs N requests. Through a log handler that counts its `WithAttrs` calls, at a level that drops every line, run 10⁴ requests: assert the count does not grow with the requests. Of each `Sink` method it is 0. | a span opened, or a `Start` called, for an unsampled request; a component that opens a span with no sampled parent; a per-request `Logger.With`; a sink that boxes its event |
 | §8.1 one trace ID per request span | Under a real provider at ratio 1, run a request: assert its span carries the trace ID its log lines do. Under the context the adapter hands its handler, open a root (`WithNewRoot`), as a recall or a lock waiter's grant does: assert it has a trace ID of its own. Hand the root sampler a context carrying an ID the ratio rule rejects: assert `RecordAndSample`. At ratio 0.5, assert the requests with a span are exactly those whose trace ID, as their log lines carry it, the ratio rule samples, and that of 10⁴ background roots between 4,800 and 5,200 are sampled, four standard deviations either side of 5,000. | a background root in a request's trace; the provider deciding against the adapter |
 
 **Suites.** §12's checks run on the composed single-node harness in `unit`, the

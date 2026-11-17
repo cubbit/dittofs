@@ -2706,7 +2706,7 @@ API. Principal labels are never used.
 
 Expected errors (`ErrNoEntity`, `ErrExist`, `ErrAccess`, stale handle) are
 `Debug`; a codec refusal, a refused format or fold rule, and an invariant
-violation found by audit are `Error` with the entity ID. Each such event carries the operation's trace ID.
+violation found by audit are `Error` with the entity ID. Each such event carries the operation's trace ID when its request is sampled ([RFC 25 §5.3](rfc-25-observability.md#5.3%20Structure%20and%20correlation)).
 
 ### 8.3 Health and debugging
 

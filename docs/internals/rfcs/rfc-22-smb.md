@@ -2822,7 +2822,8 @@ session, file or principal label.
 | `Adapter` bytes that failed to decode, by `reason` (`truncated`, `corrupt`, `unknown_version`); any nonzero is an alert | `adapter_record_decode_failures_total{protocol, reason}` | counter |
 | `CREATE` and `LOCK` replays answered from the record (§6.5) | `adapter_record_replays_total{protocol}` | counter |
 
-**The request span.** One per SMB2 message, named `adapter.smb.<COMMAND>`, with
+**The request span.** One per SMB2 message, named `adapter.smb.<COMMAND>`, or
+`adapter.smb` for one refused before `Route` (RFC 20 §10.2), with
 the service's span below it
 ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)). Each member of a
 compound chain is a request of its own, with its own request span and no
