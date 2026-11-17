@@ -14,6 +14,16 @@ type OpTable struct {
 	Ops    map[uint32]*Op
 	Errors *ErrorTable // per operation table, so NFSv3 and NFSv4 map differently
 	Holds  bool        // the table holds and re-drives what its protocol holds, by error and cause; else every error is answered at once
+	// Protocol is the label of every series this table's requests record from
+	// Route on (§10.1), set after NewOpTable as ReadOp is; a server refuses a
+	// table without one at the first Route that returns it. A compound row's
+	// Members take their parent's.
+	//
+	// decision: the label is a field the protocol sets, not a name NewOpTable
+	// is given or a registry it resolves into: core first sees a table when
+	// Route returns it, and two servers may share one table. Overturned if a
+	// table is built per server.
+	Protocol string
 	// ReadOp reads the operation code at the head of a compound member's bytes,
 	// and how many bytes it took: NFSv4's argop. Set on a table that is a
 	// compound row's Members; nil elsewhere.

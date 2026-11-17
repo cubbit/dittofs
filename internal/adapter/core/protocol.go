@@ -40,6 +40,7 @@ type Stages struct {
 	Hold       HoldCodec                 // required where a table Holds, nil elsewhere
 	MaxPending int                       // requests pending per connection, held and parked together; 0: none pend
 	OnClose    func(ctx context.Context) // drop the connection's state; nil: nothing
+	Protocol   string                    // required: the label of what a request records before Route returns its table
 }
 
 // HeaderCodec decodes a request's header and encodes a reply's.
