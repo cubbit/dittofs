@@ -280,20 +280,24 @@ func (n *Node) register(ctx context.Context) error {
 }
 
 // readRecords reads the counters and the shares, keeping those reconcile
-// binds for the engine's start and refusing the others, then calls apply.
+// binds for the engine's start, then calls apply. The counters it read are
+// those reconcile has acted on, so only Start's full first pass, not a
+// counter, makes reconcile record the refusals.
 func (n *Node) readRecords(ctx context.Context) error {
-	r := &n.rec
-	var err error
-	if r.seen, err = n.counters(ctx); err != nil {
+	c, err := n.counters(ctx)
+	if err != nil {
 		return err
 	}
 	listed, remote, err := n.readShares(ctx)
 	if err != nil {
 		return err
 	}
-	n.life.shares, r.shares = planShares(r.bound, listed, remote)
-	r.applied, err = n.apply(ctx, r.seen)
-	return err
+	n.life.shares, _ = planShares(n.rec.bound, listed, remote)
+	if _, err := n.apply(ctx, c); err != nil {
+		return err
+	}
+	n.rec.seen = c
+	return nil
 }
 
 // startEngine starts open state, with the filesystem as its Sink and its
@@ -311,8 +315,13 @@ func (n *Node) startEngine(ctx context.Context) error {
 	if err := enginewire.Start(ctx, n.open, n.engine, n.fs, n.fs.Admission, bound); err != nil {
 		return err
 	}
+	// A share the engine refused at its start is left out of the running
+	// set, so the first full pass binds it again and records the refusal.
+	refused := n.engine.Stats().Shares
 	for _, s := range n.life.shares {
-		n.rec.bound[s.ID] = s
+		if refused[s.ID].Refused == nil {
+			n.rec.bound[s.ID] = s
+		}
 	}
 	n.started(stepEngine, func(ctx context.Context) error { return enginewire.Stop(ctx, n.open, n.engine) })
 	return nil

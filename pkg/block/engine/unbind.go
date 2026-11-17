@@ -22,8 +22,9 @@ import (
 // ErrUnavailable, as a rebuilt clone waiting for its source's shard ends only
 // when Close stops it, after Close has waited for this call. keepHolds is
 // refused with ErrInvalid, as no offload exists to keep a removal's holds. A
-// share with no binding, or one already removed, answers nil. While Start
-// runs it answers ErrDelay, and after Close began ErrUnavailable.
+// share with no binding is recorded as removed, as beginLifecycle says, and
+// answers nil, as one already removed does. While Start runs it answers
+// ErrDelay, and after Close began ErrUnavailable.
 func (e *Engine) Unbind(ctx context.Context, id entity.ShareID, keepHolds bool) error {
 	if keepHolds {
 		return fmt.Errorf("engine: unbind share %v: keeping the holds is not built: %w",
@@ -54,7 +55,14 @@ func (e *Engine) Unbind(ctx context.Context, id entity.ShareID, keepHolds bool) 
 
 // beginLifecycle takes the lifecycle entry of share id and answers its
 // binding, nil when the share has none or wants rejects its binding, in which
-// case no entry is taken.
+// case no entry is taken. A share with no binding is given a removed one
+// holding its ID alone, so a later Bind of it answers ErrStale.
+//
+// decision: only a removal unbinds or drops a share, so one with no binding
+// is recorded as removed: a Bind that read the share before its removal was
+// marked, and reaches the table after Unbind or Drop answered, is refused
+// rather than attaching a binding nothing would release. Overturned if
+// Unbind gains a caller that binds the share again, such as a move.
 func (e *Engine) beginLifecycle(id entity.ShareID, wants func(*binding) bool) (*binding, error) {
 	e.mu.Lock()
 
@@ -74,7 +82,16 @@ func (e *Engine) beginLifecycle(id entity.ShareID, wants func(*binding) bool) (*
 	}
 
 	b := e.table()[id]
-	if b == nil || !wants(b) {
+	if b == nil {
+		t := make(bindings, len(e.table())+1)
+		maps.Copy(t, e.table())
+		t[id] = &binding{share: Share{ID: id}, removed: true}
+		e.shares.Store(&t)
+
+		return nil, nil
+	}
+
+	if !wants(b) {
 		return nil, nil
 	}
 
@@ -90,7 +107,8 @@ func (e *Engine) beginLifecycle(id entity.ShareID, wants func(*binding) bool) (*
 // ended, or Drop answers ErrInvalid. The binding stays, as a removed one that
 // holds the tag and no handle, so the share answers ErrStale and a repeated
 // Drop only forgets again. A step that fails leaves the rest to the retry. A
-// share with no binding answers nil.
+// share with no binding is recorded as removed, as beginLifecycle says, and
+// answers nil, as does a Drop of it again, which has no tag to forget.
 //
 // ponytail: every dropped share keeps a removed binding in the share table,
 // one entry per share removed since the engine started. Keep a set of the
@@ -123,6 +141,10 @@ func (e *Engine) Drop(ctx context.Context, id entity.ShareID) error {
 		}
 
 		b = e.swapRemoved(b)
+	}
+
+	if b.share.Tag == 0 { // recorded removed while it had no binding
+		return nil
 	}
 
 	if err := e.forget(ctx, b); err != nil {

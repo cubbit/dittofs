@@ -45,19 +45,22 @@ func (n *Node) Engine() *engine.Engine { return n.engine }
 
 // NewPausing is New with paused called by each reconcile pass with the
 // counters it read, before it acts on them; the pass waits for it.
-func NewPausing(paused func(n *Node, read kvstore.Counters)) func(Config) (*Node, error) {
+func NewPausing(paused func(read kvstore.Counters)) func(Config) (*Node, error) {
 	return func(cfg Config) (*Node, error) {
 		n, err := New(cfg)
 		if err == nil {
-			n.rec.paused = func(c kvstore.Counters) { paused(n, c) }
+			n.rec.paused = paused
 		}
 		return n, err
 	}
 }
 
-// Applied is the wait a write on this node makes, answering with the
-// positions it returned on.
-func (n *Node) Applied(ctx context.Context) (kvstore.Counters, error) { return n.applied(ctx) }
+// OnBind has reconcile call binding with each share before it binds it. Call
+// it before Start.
+func (n *Node) OnBind(binding func(entity.Share)) { n.rec.binding = binding }
+
+// Applied is the wait a write on this node makes.
+func (n *Node) Applied(ctx context.Context) error { return n.applied(ctx) }
 
 // Positions is the counters the node has reconciled through.
 func (n *Node) Positions() kvstore.Counters {

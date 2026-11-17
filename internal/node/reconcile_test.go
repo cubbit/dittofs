@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,24 +36,37 @@ var cfgGen = keys.Describe([]byte{keys.KindCFGGEN})
 // store, both in one write, and returns it as read back.
 func createShare(t *testing.T, h *nodetest.Harness, name string, store [16]byte) entity.Share {
 	t.Helper()
-	sh := entity.Share{ID: entity.NewShareID(), Name: name, Path: "/" + name, Root: entity.NewFileID()}
+	return createShares(t, h, store, name)[0]
+}
+
+// createShares creates a share of each name, each in a namespace of its own
+// on store, all in one write, and returns them as read back.
+func createShares(t *testing.T, h *nodetest.Harness, store [16]byte, names ...string) []entity.Share {
+	t.Helper()
+	shares := make([]entity.Share, len(names))
 	err := h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-		ns := entity.Namespace{ID: entity.NewNamespaceID(), Store: store}
-		if _, err := tx.PutNamespace(ns, 0); err != nil {
-			return err
+		for i, name := range names {
+			ns := entity.Namespace{ID: entity.NewNamespaceID(), Store: store}
+			if _, err := tx.PutNamespace(ns, 0); err != nil {
+				return err
+			}
+			shares[i] = entity.Share{ID: entity.NewShareID(), Name: name, Path: "/" + name, Root: entity.NewFileID(),
+				Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: ns.ID}}}
+			if _, err := tx.PutShare(shares[i], 0); err != nil {
+				return err
+			}
 		}
-		sh.Namespaces = []entity.NamespaceGen{{Generation: 1, Namespace: ns.ID}}
-		_, err := tx.PutShare(sh, 0)
-		return err
+		return nil
 	})
 	if err != nil {
-		t.Fatalf("create share %s: %v", name, err)
+		t.Fatalf("create shares %v: %v", names, err)
 	}
-	got, _, err := h.Store().ShareIndex().Share(t.Context(), sh.ID)
-	if err != nil {
-		t.Fatalf("read share %s back: %v", name, err)
+	for i, sh := range shares {
+		if shares[i], _, err = h.Store().ShareIndex().Share(t.Context(), sh.ID); err != nil {
+			t.Fatalf("read share %s back: %v", sh.Name, err)
+		}
 	}
-	return got
+	return shares
 }
 
 // configure gives store a setting, which makes it a configured remote store.
@@ -127,10 +143,19 @@ func started(t *testing.T, h *nodetest.Harness) {
 }
 
 // A share written through the store is bound within a turn of reconcile;
-// quiesced, its binding is quiesced, and resumed, serving again. A grant
-// raises no counter, so it leaves the positions where they were.
+// quiesced, its binding is quiesced, and resumed, serving again: one bind
+// each, as a pass over records that did not change binds nothing again, a
+// settings change included. A grant raises no counter, so it leaves the
+// positions where they were.
 func TestReconcileBindsQuiescesAndResumes(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
+	var mu sync.Mutex
+	var binds []entity.ShareState
+	h.Node().OnBind(func(s entity.Share) {
+		mu.Lock()
+		defer mu.Unlock()
+		binds = append(binds, s.State)
+	})
 	started(t, h)
 	configure(t, h, storeA)
 	sh := createShare(t, h, "a", storeA)
@@ -148,6 +173,14 @@ func TestReconcileBindsQuiescesAndResumes(t *testing.T) {
 			t.Errorf("binding after the share went %v: got %v (bound %v), want %v", s.to, got, ok, s.to)
 		}
 	}
+	configure(t, h, storeB)
+	caughtUp(t, h)
+	mu.Lock()
+	got := slices.Clone(binds)
+	mu.Unlock()
+	if want := []entity.ShareState{entity.ShareEnabled, entity.ShareQuiesced, entity.ShareEnabled}; !slices.Equal(got, want) {
+		t.Errorf("binds after a settings change over the same shares: got states %v, want %v, one per change", got, want)
+	}
 
 	before := h.Node().Positions()
 	if _, err := cp.SetGrant(t.Context(), entity.ShareGrant{Share: sh.ID, Principal: entity.Everyone, Access: entity.AccessRead}, 0); err != nil {
@@ -164,8 +197,12 @@ func TestReconcileBindsEveryPage(t *testing.T) {
 	started(t, h)
 	configure(t, h, storeA)
 	var shares []entity.Share
-	for i := range 300 {
-		shares = append(shares, createShare(t, h, fmt.Sprintf("s%d", i), storeA))
+	for b := range 3 {
+		names := make([]string, 100)
+		for i := range names {
+			names[i] = fmt.Sprintf("s%d", 100*b+i)
+		}
+		shares = append(shares, createShares(t, h, storeA, names...)...)
 	}
 	caughtUp(t, h)
 	for _, sh := range shares {
@@ -179,7 +216,7 @@ func TestReconcileBindsEveryPage(t *testing.T) {
 // Start nor by reconcile, and is refused, naming it, beside a share that is
 // bound; once its store is configured it is bound and no longer refused.
 func TestReconcileRefusesAShareWithNoRemoteStore(t *testing.T) {
-	h := nodetest.New(t, nodetest.Watch())
+	h, f := faulted(t)
 	configure(t, h, storeA)
 	a := createShare(t, h, "a", storeA)
 	b := createShare(t, h, "nowhere", storeB)
@@ -194,45 +231,103 @@ func TestReconcileRefusesAShareWithNoRemoteStore(t *testing.T) {
 	refused := h.Node().Refused()
 	if len(refused) != 1 || refused[0].Record.Kind != entity.ResourceShare || entity.ShareID(refused[0].Record.ID) != b.ID ||
 		refused[0].Generation != b.Position || !strings.Contains(string(refused[0].Error), "share nowhere") {
-		t.Errorf("refused records: got %+v, want share nowhere at generation %d, its error naming it", refused, b.Position)
+		t.Errorf("refused records: got %s, want share nowhere at generation %d, its error naming it", describe(refused), b.Position)
 	}
 
+	// The refusal is not retried: with the namespaces' scan held, turns
+	// that move no counter run no share pass, and the settings change that
+	// configures the store does.
+	held := sim.NewTestClock(time.Unix(0, 0))
+	setFault(t, f, held, sim.Rule{Op: kvtest.OpScan, Key: nsScan, Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	for range 5 {
+		turn(h)
+	}
+	if n := held.Pending(); n != 0 {
+		t.Fatalf("a share pass ran with no counter moved since the refusal (%d scans held), want the refusal to wait for its record", n)
+	}
 	configure(t, h, storeB)
+	heldUntil(t, h, held, "share pass once the store is configured")
+	held.Advance(time.Hour)
 	caughtUp(t, h)
 	if !inEngine(h, b.ID) {
 		t.Errorf("share once its store is configured: not bound, want bound")
 	}
 	if got := h.Node().Refused(); len(got) != 0 {
-		t.Errorf("refused records once the store is configured: got %+v, want none", got)
+		t.Errorf("refused records once the store is configured: got %s, want none", describe(got))
 	}
 }
 
-// faulted builds a harness whose node runs over a FaultKV.
-func faulted(t *testing.T, opts ...func(node.Config) (*node.Node, error)) (*nodetest.Harness, *kvtest.FaultKV) {
-	var f *kvtest.FaultKV
-	newNode := node.New
-	if len(opts) > 0 {
-		newNode = opts[0]
+// describe renders refused records with each error as the text it is.
+func describe(refused []entity.RefusedRecord) string {
+	var b strings.Builder
+	for _, r := range refused {
+		fmt.Fprintf(&b, "{%s %x generation %d error %s} ", r.Record.Kind, r.Record.ID, r.Generation, r.Error)
 	}
+	return b.String()
+}
+
+// faulted builds a harness whose node runs over a FaultKV, each prep
+// changing the node's Config first.
+func faulted(t *testing.T, prep ...func(*node.Config)) (*nodetest.Harness, *kvtest.FaultKV) {
+	var f *kvtest.FaultKV
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		f = kvtest.NewFaultKV(cfg.KV)
 		cfg.KV = f
-		return newNode(cfg)
+		for _, p := range prep {
+			p(&cfg)
+		}
+		return node.New(cfg)
 	}))
 	return h, f
 }
 
+// setFault has f answer each call by rules, delays waiting on held.
+func setFault(t *testing.T, f *kvtest.FaultKV, held *sim.TestClock, rules ...sim.Rule) {
+	t.Helper()
+	sched, err := sim.NewSchedule(1, held, rules...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.SetFault(sched)
+}
+
+// nsScan is the namespaces' scan, as a FaultKV rule names it: a share
+// pass's read of which remote store each namespace names.
+var nsScan = keys.Describe([]byte{keys.KindNSR})
+
+// floorRead matches the version floor reads of share id, the first store
+// call of the engine's Bind of it.
+func floorRead(id entity.ShareID) string {
+	return keys.Describe(append(keys.ID([]byte{keys.KindS}, id[:]), keys.SVf)) + "*"
+}
+
+// logLines is a log's sink, each write a line sent to it, dropped when the
+// channel is full.
+type logLines chan string
+
+func (l logLines) Write(p []byte) (int, error) {
+	select {
+	case l <- string(p):
+	default:
+	}
+	return len(p), nil
+}
+
 // heldUntil advances the node's clock a second at a time until a store
-// call waits on held.
+// call waits on held. After each second it polls held for 100 ms of real
+// time, so the clock does not run past the bound of a pass's store call
+// before the pass reaches the call held.
 func heldUntil(t *testing.T, h *nodetest.Harness, held *sim.TestClock, what string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for held.Pending() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("no %s within 10 s of turns", what)
+			t.Fatalf("no %s within 20 s of turns", what)
 		}
 		h.Clock().Advance(time.Second)
-		runtime.Gosched()
+		for step := time.Now().Add(100 * time.Millisecond); held.Pending() == 0 && time.Now().Before(step); {
+			runtime.Gosched()
+		}
 	}
 }
 
@@ -267,49 +362,166 @@ func TestReconcileAfterFailedReads(t *testing.T) {
 	}
 }
 
-// A store call held past its bound ends at the bound on the node's clock,
-// and reconcile turns again, so the node stays live past the watchdog's
-// stall; the held call is released only by its own clock.
+// A store call held past its bound ends exactly at the bound on the node's
+// clock, 20 s, failing the pass, and reconcile turns again; the held call is
+// released only by its own clock. A write's wake starts the pass, so the
+// node's clock stands still from the call's start.
 func TestReconcileBoundsAStoreCall(t *testing.T) {
-	reads := make(chan kvstore.Counters, 256)
-	h, f := faulted(t, node.NewPausing(func(_ *node.Node, c kvstore.Counters) {
-		select {
-		case reads <- c:
-		default:
-		}
-	}))
+	logs := make(logLines, 256)
+	h, f := faulted(t, func(cfg *node.Config) { cfg.Logger = slog.New(slog.NewTextHandler(logs, nil)) })
 	started(t, h)
 	held := sim.NewTestClock(time.Unix(0, 0))
-	sched, err := sim.NewSchedule(1, held, sim.Rule{Op: kvtest.OpGet, Key: cfgGen, Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.SetFault(sched)
+	// The first read is Applied's own, the second the pass its wake starts.
+	setFault(t, f, held, sim.Rule{Op: kvtest.OpGet, Key: cfgGen, From: 2, Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
 	defer held.Advance(time.Hour)
-	heldUntil(t, h, held, "counters read held")
-	for len(reads) > 0 {
-		<-reads
-	}
-	heldAt := h.Clock().Elapsed()
-	h.Clock().Advance(21 * time.Second)
-	again := time.Now().Add(10 * time.Second)
-	for passed := false; !passed; {
-		if time.Now().After(again) {
-			t.Fatalf("no reconcile pass once the held store call passed its 20 s bound on the node's clock")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = h.Node().Applied(ctx) }()
+	wait(t, "the woken pass's counters read held", func() bool { return held.Pending() > 0 })
+	timedOut := func(within time.Duration) bool {
+		deadline := time.After(within)
+		for {
+			select {
+			case l := <-logs:
+				if strings.Contains(l, "did not answer within 20s") {
+					return true
+				}
+			case <-deadline:
+				return false
+			}
 		}
-		h.Clock().Advance(time.Second)
+	}
+	h.Clock().Advance(19 * time.Second)
+	// No clock reaches a pass that has not failed, so a bounded wait is the
+	// assertion: a pass failed by then would have logged at once.
+	if timedOut(200 * time.Millisecond) {
+		t.Fatalf("the held store call failed its pass 19 s after it started, want it held until 20 s")
+	}
+	h.Clock().Advance(time.Second)
+	if !timedOut(10 * time.Second) {
+		t.Fatalf("the held store call did not fail its pass 20 s after it started on the node's clock")
+	}
+	moved := h.Node().Moved()
+	for range 10 {
 		select {
-		case <-reads:
-			passed = true
-		case <-time.After(100 * time.Millisecond):
+		case <-moved:
+			return
+		default:
 		}
-	}
-	for h.Clock().Elapsed() < heldAt+66*time.Second {
 		turn(h)
 	}
+	t.Errorf("no reconcile pass ended within 10 s of turns after the bound")
+}
+
+// A pass's own store calls do not count toward the watchdog's stall with the
+// backoff before them: after a 30 s backoff, a pass whose two store calls
+// take 15 s and 16 s leaves the node live, over 60 s since its last pass
+// ended.
+func TestReconcileStaysLiveThroughTheBackoffAndAPass(t *testing.T) {
+	h, f := faulted(t)
+	started(t, h)
+	held := sim.NewTestClock(time.Unix(0, 0))
+	setFault(t, f, held,
+		sim.Rule{Op: kvtest.OpGet, Key: cfgGen, Count: 6, Action: sim.FaultAction{Delay: time.Hour, Err: errInjected}},
+		sim.Rule{Op: kvtest.OpGet, Key: cfgGen, From: 7, Count: 1, Action: sim.FaultAction{Delay: time.Hour}},
+		sim.Rule{Op: kvtest.OpScan, Key: nsScan, Count: 1, Action: sim.FaultAction{Delay: time.Hour}},
+	)
+	defer held.Advance(time.Hour)
+	var failedAt time.Duration
+	for i := range 6 { // waits of 1, 2, 4, 8 and 16 s, then 30 s
+		heldUntil(t, h, held, fmt.Sprintf("failed counters read %d", i+1))
+		failedAt = h.Clock().Elapsed()
+		held.Advance(time.Hour)
+	}
+	heldUntil(t, h, held, "counters read after the 30 s backoff")
+	// heldUntil may pass the read's start by a second, never fall short of it.
+	if got := h.Clock().Elapsed() - failedAt; got < 30*time.Second {
+		t.Fatalf("wait after six failed reads: got %v, want the backoff's cap, 30 s", got)
+	}
+	h.Clock().Advance(15 * time.Second)
+	held.Advance(time.Hour)
+	wait(t, "the namespaces' scan held", func() bool { return held.Pending() > 0 })
+	h.Clock().Advance(16 * time.Second)
 	api, _ := h.Node().Addrs()
-	if got := get(t, api, "/health/live"); got != (answer{http.StatusOK, "live"}) {
-		t.Errorf("liveness 66 s after a store call was held: got %+v, want 200 live", got)
+	wait(t, "liveness over 60 s after the last pass ended, 31 s into a pass", func() bool {
+		return get(t, api, "/health/live") == answer{http.StatusOK, "live"}
+	})
+}
+
+// A refusal of the engine's Bind is retried on the backoff, with no counter
+// moving: the share is bound once the engine takes it.
+func TestReconcileRetriesABindTheEngineRefused(t *testing.T) {
+	h, f := faulted(t)
+	started(t, h)
+	configure(t, h, storeA)
+	sh := createShare(t, h, "a", storeA)
+	setFault(t, f, nil, sim.Rule{Op: kvtest.OpBefore, Key: floorRead(sh.ID), Count: 1, Action: sim.FaultAction{Err: errInjected}})
+	caughtUp(t, h)
+	if inEngine(h, sh.ID) {
+		t.Fatalf("share whose bind the engine refused: bound, want refused")
+	}
+	if got := h.Node().Refused(); len(got) != 1 || entity.ShareID(got[0].Record.ID) != sh.ID {
+		t.Fatalf("refused records after the engine refused the bind: got %s, want share a", describe(got))
+	}
+	pos := h.Node().Positions()
+	for range 5 {
+		turn(h)
+		if inEngine(h, sh.ID) {
+			break
+		}
+	}
+	if !inEngine(h, sh.ID) {
+		t.Errorf("share whose bind the engine refused once: not bound 5 s later, want it retried on the backoff")
+	}
+	if got := h.Node().Positions(); got != pos {
+		t.Errorf("positions while the bind was retried: got %+v, want %+v, no counter moved", got, pos)
+	}
+}
+
+// A pass whose read failed has the next pass act on every kind, a share
+// pass included, though no counter moved.
+func TestReconcileActsOnEveryKindAfterAFailedRead(t *testing.T) {
+	h, f := faulted(t)
+	started(t, h)
+	caughtUp(t, h)
+	held := sim.NewTestClock(time.Unix(0, 0))
+	setFault(t, f, held,
+		sim.Rule{Op: kvtest.OpGet, Key: cfgGen, Count: 1, Action: sim.FaultAction{Err: errInjected}},
+		sim.Rule{Op: kvtest.OpScan, Key: nsScan, Count: 1, Action: sim.FaultAction{Delay: time.Hour}},
+	)
+	defer held.Advance(time.Hour)
+	heldUntil(t, h, held, "share pass after the failed read")
+}
+
+// A share whose removal is marked while a share pass that listed it runs,
+// and which the removal drops before the pass binds it, is not bound: the
+// late bind is refused.
+func TestReconcileDoesNotBindAShareDroppedMidPass(t *testing.T) {
+	h, f := faulted(t)
+	started(t, h)
+	configure(t, h, storeA)
+	sh := createShare(t, h, "a", storeA)
+	held := sim.NewTestClock(time.Unix(0, 0))
+	setFault(t, f, held, sim.Rule{Op: kvtest.OpScan, Key: nsScan, Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	heldUntil(t, h, held, "the namespaces' scan of the pass that listed the share")
+	if err := h.Store().ControlPlane().DeleteShare(t.Context(), sh.ID, entity.SnapshotsRefuse, 1); err != nil {
+		t.Fatalf("mark the share removed: %v", err)
+	}
+	if err := h.Node().Engine().Drop(t.Context(), sh.ID); err != nil {
+		t.Fatalf("drop the share: %v", err)
+	}
+	moved := h.Node().Moved()
+	held.Advance(time.Hour)
+	select {
+	case <-moved:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the held pass did not end once its scan was released")
+	}
+	if inEngine(h, sh.ID) {
+		t.Errorf("share dropped while the pass that listed it ran: bound in the engine, want refused")
+	}
+	if _, ok := h.Node().Bound(sh.ID); ok {
+		t.Errorf("share dropped while the pass that listed it ran: in the running set, want not")
 	}
 }
 
@@ -322,7 +534,7 @@ func TestAppliedWaitsForAPassAfterTheWrite(t *testing.T) {
 	reads := make(chan kvstore.Counters)
 	release := make(chan struct{})
 	done := make(chan struct{}) // closed as the test ends, so a failed test's Stop finds no pass held
-	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewPausing(func(_ *node.Node, c kvstore.Counters) {
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewPausing(func(c kvstore.Counters) {
 		select {
 		case reads <- c:
 		case <-done:
@@ -343,26 +555,19 @@ func TestAppliedWaitsForAPassAfterTheWrite(t *testing.T) {
 			return kvstore.Counters{}
 		}
 	}
-	type result struct {
-		pos kvstore.Counters
-		err error
-	}
-	applied := func(ctx context.Context) <-chan result {
-		ch := make(chan result, 1)
-		go func() {
-			pos, err := h.Node().Applied(ctx)
-			ch <- result{pos, err}
-		}()
+	applied := func(ctx context.Context) <-chan error {
+		ch := make(chan error, 1)
+		go func() { ch <- h.Node().Applied(ctx) }()
 		return ch
 	}
-	recv := func(ch <-chan result, what string) result {
+	recv := func(ch <-chan error, what string) error {
 		t.Helper()
 		select {
-		case a := <-ch:
-			return a
+		case err := <-ch:
+			return err
 		case <-time.After(10 * time.Second):
 			t.Fatalf("%s: no answer within 10 s", what)
-			return result{}
+			return nil
 		}
 	}
 
@@ -389,18 +594,21 @@ func TestAppliedWaitsForAPassAfterTheWrite(t *testing.T) {
 	second := applied(t.Context())
 	wait(t, "the second Applied's wake", h.Node().Woken)
 	release <- struct{}{}
-	if a := recv(first, "the first Applied"); a.err != nil {
-		t.Errorf("first Applied: %v", a.err)
+	if err := recv(first, "the first Applied"); err != nil {
+		t.Errorf("first Applied: %v", err)
 	}
 	pass("a pass after the one running when the second Applied woke reconcile")
 	select {
-	case a := <-second:
-		t.Errorf("second Applied returned %+v on the pass running when it woke, want it to wait for the next", a)
+	case err := <-second:
+		t.Errorf("second Applied returned (%v) on the pass running when it woke, want it to wait for the next", err)
 	default:
 	}
 	release <- struct{}{}
-	if a := recv(second, "the second Applied"); a.err != nil || a.pos.Settings < want.Settings || a.pos.Principals < want.Principals {
-		t.Errorf("second Applied: got positions %+v (%v), want them to cover the counters read after the write, %+v", a.pos, a.err, want)
+	if err := recv(second, "the second Applied"); err != nil {
+		t.Errorf("second Applied: %v", err)
+	}
+	if pos := h.Node().Positions(); pos.Settings < want.Settings || pos.Principals < want.Principals {
+		t.Errorf("positions once the second Applied returned: got %+v, want them to cover the counters read after the write, %+v", pos, want)
 	}
 
 	if _, err := h.Store().ControlPlane().PutUser(t.Context(), entity.User{Principal: entity.NewUser(), Name: "bob"}, 0, entity.Alloc{}); err != nil {
@@ -410,8 +618,8 @@ func TestAppliedWaitsForAPassAfterTheWrite(t *testing.T) {
 	third := applied(ctx)
 	pass("the pass the third Applied woke")
 	cancel()
-	if a := recv(third, "Applied under a cancelled context"); !errors.Is(a.err, context.Canceled) {
-		t.Errorf("Applied with its pass held and its context cancelled: got %v, want context.Canceled", a.err)
+	if err := recv(third, "Applied under a cancelled context"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Applied with its pass held and its context cancelled: got %v, want context.Canceled", err)
 	}
 	release <- struct{}{}
 }

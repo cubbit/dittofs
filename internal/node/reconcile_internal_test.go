@@ -3,6 +3,7 @@ package node
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -34,8 +35,9 @@ func TestDue(t *testing.T) {
 
 // planShares binds a share not bound or bound in another state, in the
 // order of the positions its changes raised, and refuses one with no remote
-// store, a bound one included, which keeps its binding; run again over the
-// running set its binds leave, it binds nothing.
+// store, a bound one included, which keeps its binding and still has its
+// state change bound; run again over the running set its binds leave, it
+// binds nothing.
 func TestPlanShares(t *testing.T) {
 	share := func(name string, state entity.ShareState, pos uint64) entity.Share {
 		return entity.Share{ID: entity.NewShareID(), Name: name, State: state, Position: pos}
@@ -44,17 +46,19 @@ func TestPlanShares(t *testing.T) {
 	quiesced := share("quiesced", entity.ShareQuiesced, 4)
 	same := share("same", entity.ShareEnabled, 2)
 	lost := share("lost", entity.ShareEnabled, 3)
+	lostQuiesced := share("lost quiesced", entity.ShareQuiesced, 5)
 	nowhere := share("nowhere", entity.ShareEnabled, 7)
 	bound := map[entity.ShareID]entity.Share{
-		quiesced.ID: {ID: quiesced.ID, State: entity.ShareEnabled},
-		same.ID:     same,
-		lost.ID:     lost,
+		quiesced.ID:     {ID: quiesced.ID, State: entity.ShareEnabled},
+		same.ID:         same,
+		lost.ID:         lost,
+		lostQuiesced.ID: {ID: lostQuiesced.ID, State: entity.ShareEnabled},
 	}
-	listed := []entity.Share{fresh, quiesced, same, lost, nowhere}
-	remote := func(s entity.Share) bool { return s.ID != lost.ID && s.ID != nowhere.ID }
+	listed := []entity.Share{fresh, quiesced, same, lost, lostQuiesced, nowhere}
+	remote := func(s entity.Share) bool { return s.ID != lost.ID && s.ID != lostQuiesced.ID && s.ID != nowhere.ID }
 
 	bind, refusals := planShares(bound, listed, remote)
-	if got, want := names(bind), []string{"quiesced", "fresh"}; !slices.Equal(got, want) {
+	if got, want := names(bind), []string{"quiesced", "lost quiesced", "fresh"}; !slices.Equal(got, want) {
 		t.Errorf("binds: got %v, want %v, in position order", got, want)
 	}
 	var refusedIDs []entity.ShareID
@@ -64,8 +68,8 @@ func TestPlanShares(t *testing.T) {
 			t.Errorf("refusal of share %x for no remote store: retried, want it to wait for its record to change", f.rec.Record.ID)
 		}
 	}
-	if !slices.Equal(refusedIDs, []entity.ShareID{lost.ID, nowhere.ID}) {
-		t.Errorf("refused: got %v, want the bound share that lost its store and the one never bound", refusedIDs)
+	if !slices.Equal(refusedIDs, []entity.ShareID{lost.ID, lostQuiesced.ID, nowhere.ID}) {
+		t.Errorf("refused: got %v, want the two bound shares that lost their store and the one never bound", refusedIDs)
 	}
 	if _, ok := bound[lost.ID]; !ok {
 		t.Errorf("running set: the share that lost its store was dropped, want it kept")
@@ -76,6 +80,27 @@ func TestPlanShares(t *testing.T) {
 	}
 	if again, _ := planShares(bound, listed, remote); len(again) != 0 {
 		t.Errorf("binds over the same records again: got %v, want none", names(again))
+	}
+}
+
+// The backoff starts at firstRetry, doubles to lastRetry and stays there,
+// and ends once a pass needs no retry.
+func TestBackoff(t *testing.T) {
+	for _, tc := range []struct {
+		last  time.Duration
+		again bool
+		want  time.Duration
+	}{
+		{0, true, time.Second},
+		{time.Second, true, 2 * time.Second},
+		{2 * time.Second, true, 4 * time.Second},
+		{16 * time.Second, true, 30 * time.Second},
+		{30 * time.Second, true, 30 * time.Second},
+		{8 * time.Second, false, 0},
+	} {
+		if got := backoff(tc.last, tc.again); got != tc.want {
+			t.Errorf("backoff after %v, again %v: got %v, want %v", tc.last, tc.again, got, tc.want)
+		}
 	}
 }
 

@@ -128,12 +128,8 @@ func build(cfg Config) (*Node, error) {
 	n.watchdog = health.NewWatchdog(cfg.Clock)
 	n.life.ready.Store(readyStarting)
 	n.api = api.New(api.Deps{
-		Ready: n.life.readiness,
-		Live:  n.watchdog.Live,
-		Applied: func(ctx context.Context) error {
-			_, err := n.applied(ctx)
-			return err
-		},
+		Ready:       n.life.readiness,
+		Live:        n.watchdog.Live,
 		Addr:        cfg.Bootstrap.APIAddr,
 		MetricsAddr: cfg.Bootstrap.MetricsAddr,
 		Metrics:     cfg.Metrics,

@@ -34,14 +34,14 @@ type reconciler struct {
 	// one more pass after it.
 	wake chan struct{}
 	// paused, when set, is called with the counters each pass read, before
-	// the pass acts on them.
-	paused func(kvstore.Counters)
+	// the pass acts on them; binding, when set, with each share before
+	// reconcile binds it.
+	paused  func(kvstore.Counters)
+	binding func(entity.Share)
 
 	// Read and written by Start's steps and then by the loop alone.
 	seen  kvstore.Counters // the counters the last pass acted on
-	full  bool             // a read failed: the next pass acts on every kind
-	retry bool             // a refusal asked to be retried: the next pass acts on every kind
-	wait  time.Duration    // the backoff's last wait, zero once a pass needs none
+	again bool             // a read failed, or a refusal asked to be retried: the next pass acts on every kind
 
 	mu sync.Mutex
 	// pos is the counters the node has reconciled through: acted on every
@@ -89,6 +89,16 @@ func (n *Node) apply(_ context.Context, _ kvstore.Counters) ([]refusal, error) {
 	return nil, n.engine.Apply(engineDefaults)
 }
 
+// backoff is the wait before the next pass on the backoff, given its last
+// wait: firstRetry, doubling to lastRetry; and zero, the backoff ended, when
+// the next pass needs none.
+func backoff(last time.Duration, again bool) time.Duration {
+	if !again {
+		return 0
+	}
+	return min(max(2*last, firstRetry), lastRetry)
+}
+
 // due is what a pass acts on, given the counters it read and those the
 // last pass acted on: the shares when the share list or the settings moved,
 // as a share's remote store is configured by settings, and apply when the
@@ -107,15 +117,19 @@ func due(c, seen kvstore.Counters, again bool) (shares, apply bool) {
 // set bound: the shares to bind, each not bound or bound in another state,
 // in the order of the share list versions their changes raised, and the
 // shares refused, each whose namespace names no configured remote store. A
-// refused share keeps the binding it had, so one serving goes on serving.
-// A share no longer listed keeps its binding: its removal unbinds it.
+// refused share is bound only if it was already, so one serving goes on
+// serving, and its state changes still reach its binding. A share no longer
+// listed keeps its binding: its removal unbinds it.
 func planShares(bound map[entity.ShareID]entity.Share, listed []entity.Share, remote func(entity.Share) bool) (bind []entity.Share, refusals []refusal) {
 	for _, s := range listed {
+		b, ok := bound[s.ID]
 		if !remote(s) {
 			refusals = append(refusals, refused(s, false, fmt.Errorf("share %s: its namespace names no remote store", s.Name)))
-			continue
+			if !ok {
+				continue
+			}
 		}
-		if b, ok := bound[s.ID]; !ok || b.State != s.State {
+		if !ok || b.State != s.State {
 			bind = append(bind, s)
 		}
 	}
@@ -126,11 +140,14 @@ func planShares(bound map[entity.ShareID]entity.Share, listed []entity.Share, re
 // readShares lists every share, as the node binds them, and reports which
 // name a configured remote store.
 //
-// ponytail: a remote store counts as configured once a setting exists at
+// ponytail: a remote store counts as configured once any setting exists at
 // its scope, as no record of a remote store exists; the namespaces and each
-// store's settings are read again at every share pass. Read the remote
-// store's record once one is written, and keep the namespaces' stores, which
-// never change, once a profile shows the reads.
+// store's settings are read again at every share pass. The store's record is
+// RFC 13 Appendix B's required remote-store settings, `endpoint`, `bucket`
+// and the credential reference; read those once they are written, keeping
+// the share create's check in agreement, which today asks only that the
+// namespace names a store. Keep the namespaces' stores, which never change,
+// once a profile shows the reads.
 func (n *Node) readShares(ctx context.Context) ([]entity.Share, func(entity.Share) bool, error) {
 	type read struct {
 		listed     []entity.Share
@@ -215,9 +232,11 @@ func (n *Node) counters(ctx context.Context) (kvstore.Counters, error) {
 // leaves the running set and the positions as they were, and has the next
 // pass act on every kind.
 //
-// decision: reconcile never binds a share whose removal is marked, as the
-// listing leaves it out, and never unbinds one: the removal's own driver
-// does, at the step its record names.
+// decision: reconcile never unbinds a share: the removal's own driver does,
+// at the step its record names. A share whose removal is marked after the
+// share pass listed it still reaches Bind; the engine records a share that
+// Unbind or Drop found unbound as removed, so that Bind answers ErrStale and
+// attaches no binding the removal would never release.
 //
 // ponytail: a share pass lists every share, the full pass RFC 23 §2.3 asks
 // for after a failed read, even when only one share changed. List the shares
@@ -227,33 +246,33 @@ func (n *Node) pass(ctx context.Context) error {
 	r := &n.rec
 	c, err := n.counters(ctx)
 	if err != nil {
-		r.full = true
+		r.again = true
 		return err
 	}
 	if r.paused != nil {
 		r.paused(c)
 	}
-	shares, apply := due(c, r.seen, r.full || r.retry)
+	shares, apply := due(c, r.seen, r.again)
 	if shares {
 		if err := n.reconcileShares(ctx); err != nil {
-			r.full = true
+			r.again = true
 			return err
 		}
 	}
 	if apply {
 		refusals, err := n.apply(ctx, c)
 		if err != nil {
-			r.full = true
+			r.again = true
 			return err
 		}
 		r.mu.Lock()
 		r.applied = refusals
 		r.mu.Unlock()
 	}
-	r.full, r.seen = false, c
+	r.seen = c
 	r.mu.Lock()
-	again := func(f refusal) bool { return f.retry }
-	r.retry = slices.ContainsFunc(r.shares, again) || slices.ContainsFunc(r.applied, again)
+	retry := func(f refusal) bool { return f.retry }
+	r.again = slices.ContainsFunc(r.shares, retry) || slices.ContainsFunc(r.applied, retry)
 	r.pos = c
 	close(r.moved)
 	r.moved = make(chan struct{})
@@ -265,9 +284,11 @@ func (n *Node) pass(ctx context.Context) error {
 // state changed, and records the refusals: a share with no remote store,
 // and one the engine refused, which is retried.
 //
-// ponytail: a share bound here is bound in the engine only; the filesystem
-// serves the shards it served at its start. Serve the new share's shard
-// here once the filesystem has a call that serves one while serving.
+// ponytail: a share is bound here in the engine only; the filesystem serves
+// every share the share list holds by itself, refused here or not, as its
+// admission serves a listed share's shard on the first call that sees the
+// list move. Have admission take reconcile's running set instead, so a share
+// reconcile refused is not served.
 //
 // ponytail: every share's namespace is taken as held, so no namespace is
 // claimed and no binding is fenced. Claim the namespace here, before the
@@ -282,6 +303,9 @@ func (n *Node) reconcileShares(ctx context.Context) error {
 	bind, refusals := planShares(r.bound, listed, remote)
 	r.mu.Unlock()
 	for _, s := range bind {
+		if r.binding != nil {
+			r.binding(s)
+		}
 		if err := n.engine.Bind(ctx, enginewire.Binding(s, 0)); err != nil {
 			refusals = append(refusals, refused(s, true, err))
 			continue
@@ -300,22 +324,22 @@ func (n *Node) reconcileShares(ctx context.Context) error {
 // when a write wakes it, until ctx ends, reporting each to loop. After a
 // failed read or a refusal to retry it waits on one backoff instead, from
 // firstRetry doubling to lastRetry.
+//
+// The loop reports idle as its wait ends, so its stall is counted from the
+// pass's start: a pass's store calls, each bounded, start the count afresh
+// rather than adding to the backoff before them.
 func (n *Node) reconcileLoop(ctx context.Context, loop *health.Loop) {
 	r := &n.rec
+	var wait time.Duration // the backoff's last wait, zero while no pass needs one
 	for {
-		wait := reconcileInterval
-		if r.full || r.retry {
-			r.wait = min(max(2*r.wait, firstRetry), lastRetry)
-			wait = r.wait
-		} else {
-			r.wait = 0
-		}
+		wait = backoff(wait, r.again)
 		select {
 		case <-ctx.Done():
 			return
-		case <-n.cfg.Clock.After(wait):
+		case <-n.cfg.Clock.After(cmp.Or(wait, reconcileInterval)):
 		case <-r.wake:
 		}
+		loop.Idle()
 		if err := n.pass(ctx); err != nil && ctx.Err() == nil {
 			n.cfg.Logger.Warn("reconcile: read the records", "error", err)
 		}
@@ -324,16 +348,15 @@ func (n *Node) reconcileLoop(ctx context.Context, loop *health.Loop) {
 }
 
 // applied reads the counters, wakes reconcile, and waits until the
-// settings and principals positions cover the two it read, then returns the
-// positions it returned on. A pass that read the counters before this read
+// settings and principals positions cover the two it read. A pass that read the counters before this read
 // cannot raise the positions that far, so a pass running when the wake is
 // sent is not waited on, only the one after it. It returns ctx's error once
 // ctx ends.
-func (n *Node) applied(ctx context.Context) (kvstore.Counters, error) {
+func (n *Node) applied(ctx context.Context) error {
 	r := &n.rec
 	c, err := n.meta.Nodes().Counters(ctx)
 	if err != nil {
-		return kvstore.Counters{}, err
+		return err
 	}
 	select {
 	case r.wake <- struct{}{}:
@@ -344,12 +367,12 @@ func (n *Node) applied(ctx context.Context) (kvstore.Counters, error) {
 		pos, moved := r.pos, r.moved
 		r.mu.Unlock()
 		if pos.Settings >= c.Settings && pos.Principals >= c.Principals {
-			return pos, nil
+			return nil
 		}
 		select {
 		case <-moved:
 		case <-ctx.Done():
-			return pos, ctx.Err()
+			return ctx.Err()
 		}
 	}
 }
@@ -357,7 +380,7 @@ func (n *Node) applied(ctx context.Context) (kvstore.Counters, error) {
 // startReconcile runs the first full reconcile, then the loop, watched by
 // the watchdog, until Stop.
 func (n *Node) startReconcile(ctx context.Context) error {
-	n.rec.full = true
+	n.rec.again = true
 	if err := n.pass(ctx); err != nil {
 		return err
 	}
