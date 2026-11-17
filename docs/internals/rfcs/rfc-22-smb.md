@@ -2643,7 +2643,8 @@ error response, which the header codec writes after the header, and a command's
 encoder handed no reply writes nothing
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
 `HeaderCodec.Encode`). The exceptions are the command's encoder's, and the
-header codec leaves them to it. They are the statuses MS-SMB2 3.3.4.4 does not
+header codec leaves them to it. They are the statuses
+[MS-SMB2 3.3.4.4](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/41295064-be3f-41dc-9aa5-f68545f945f0) does not
 count as failures: `STATUS_MORE_PROCESSING_REQUIRED` in a `SESSION_SETUP`
 response; `STATUS_BUFFER_OVERFLOW` in a `QUERY_INFO` response, in an
 `FSCTL_PIPE_TRANSCEIVE`, `FSCTL_PIPE_PEEK` or `FSCTL_DFS_GET_REFERRALS`
@@ -2662,12 +2663,26 @@ one runs, as MS-SMB2 3.3.5.2.7.2 fails a related member only after a failure; an
 error response that carries error data, as `STATUS_STOPPED_ON_SYMLINK`'s, stays a
 failure
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
-Each such row's error is its pair's own, since an `IOCTL` row names the command
-and not the FSCTL
+Each pair reaches the runner as an error its handler returns beside the reply
+its encoder writes the body from
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
-`ErrorRow`): `STATUS_BUFFER_OVERFLOW` in an `FSCTL_QUERY_ALLOCATED_RANGES`
-response, whose output buffer holds fewer ranges than the file has (MS-FSA's
-`FSCTL_QUERY_ALLOCATED_RANGES`), is not in 3.3.4.4's list and stays a failure.
+`Invocation.Encode`): a `QUERY_INFO` whose output buffer is too small returns
+the information cut to the buffer with an error of its own, never a success its
+encoder truncates, so the runner reads the verdict from the row alone. Each
+pair's error is its own, a typed value only that pair's handler returns, never
+`ErrInvalid` or another class sentinel, since an `IOCTL` row names the command
+and not the FSCTL (RFC 20 §4.7's `ErrorRow`): copychunk's
+`STATUS_INVALID_PARAMETER` with an `SRV_COPYCHUNK_RESPONSE` maps from a value
+of its own, while an overlapping copy's `ErrInvalid` ([§10](#10.%20Control%20codes))
+stays a failure, and `STATUS_BUFFER_OVERFLOW` in an
+`FSCTL_QUERY_ALLOCATED_RANGES` response whose buffer holds at least one range
+but not every one the queried range has ([MS-FSA's `FSCTL_QUERY_ALLOCATED_RANGES`](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/385dec98-90fe-477f-9789-20a47a7b8467); below one range it is
+`STATUS_BUFFER_TOO_SMALL`) is not in 3.3.4.4's list and stays a failure. The
+totality test pins the table's `NotFailure` rows to exactly this list
+([RFC 20 §7.3](rfc-20-adapters.md#7.3%20The%20error%20tables%20are%20total)).
+A `SESSION_SETUP` answered `STATUS_MORE_PROCESSING_REQUIRED` is no failure, but
+a related member after it still needs an authenticated session (RFC 20 §4.2's
+needs), which a session in setup is not, so it is refused as on no session.
 
 **Malformed headers.** A message shorter than the 64-byte SMB2 header, a header
 whose command code no request carries (MS-SMB2 2.2.1.2), and a
@@ -2753,6 +2768,8 @@ service, before any wire suite runs:
 | §16.4 persistent state | Fail the primary over under a persistent open with a lease and locks, reconnect: open, lease and locks as left. Open delete-on-close, revoke the client: the open is released and the pending delete runs as its marker. | a reconnect that loses the lease |
 | §3.3 parked pipe `READ` | Bind to `\pipe\srvsvc`, send a 64 KiB `READ` on the empty pipe so it parks, then write a `NetShareEnumAll` request whose reply is larger than 4 KiB, with a client that reports each `READ`'s status: the parked `READ` returns a short read with `STATUS_SUCCESS`, and the `READ`s after it return the rest. | a parked pipe `READ` that answers `STATUS_BUFFER_OVERFLOW` where an unparked one answers a short read |
 | §16.5 a non-failure in a chain | Send `CREATE`, then a related `QUERY_INFO` whose output buffer is too small for the information asked, then a related `CLOSE`: the `QUERY_INFO` answers `STATUS_BUFFER_OVERFLOW`, the `CLOSE` answers `STATUS_SUCCESS`, and the open is gone (a `READ` on its `FileId` answers `STATUS_FILE_CLOSED`). | a related member after a status MS-SMB2 3.3.4.4 counts as no failure refused as after a failure, which leaves the open behind |
+| §16.5 a failure an `IOCTL` shares | Write a file with two data ranges and a hole between. Send `CREATE`, then a related `IOCTL` `FSCTL_QUERY_ALLOCATED_RANGES` over the file with a 16-byte output buffer, then a related `CLOSE`: the `IOCTL` answers `STATUS_BUFFER_OVERFLOW` with one range, the `CLOSE` answers the same status with no call, and the open stays (a `READ` on its `FileId` succeeds). | a `NotFailure` row keyed by a sentinel other FSCTLs share, which runs the related members after a failure |
+| §16.5 a session in setup | Send a `SESSION_SETUP` that the server answers `STATUS_MORE_PROCESSING_REQUIRED`, then a related `TREE_CONNECT`: it is refused, and no tree is connected. | a related member run on a session that has not finished its setup |
 | §16.4 end to end | smbtorture and the Windows Protocol Test Suites run through `dt` ([RFC 29](rfc-29-test-harness.md)) as the end-to-end layer above the vectors and fuzz targets. | a translation correct in vectors but wrong against a real client |
 
 ### 16.7 Monitoring

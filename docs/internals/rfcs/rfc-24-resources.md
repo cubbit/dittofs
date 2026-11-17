@@ -517,7 +517,9 @@ the reverse:
    transfers, in the engine's own order.
 
 Waits are entered only at the connection's flow control (step 2), the receive
-pool, the reply pool and the engine's waits (step 7). Every other pool refuses
+pool, the reply pool, the engine's waits (step 7), and a connection's one
+status wait (§3.3), which a status holding no reply reservation takes before it
+waits on the reply pool. Every other pool refuses
 at once, so it adds no edge to a wait graph, and **MAY** be charged at any
 point: connection state at a session, the hold pool, the share cap and open
 state. A wait **MUST NOT** be entered while holding a reservation later in this
@@ -535,6 +537,11 @@ ends:
   call's deadline passes, and a reply that carries a status alone after at most
   30 s, closing its connection, since parked requests' reservations can leave
   no send to wait for (§3.3);
+- a connection's status wait when its holder's status goes out, or at the
+  holder's 30 s, which closes the connection; the holder waits only on the
+  reply pool, holding no reply reservation, those behind it hold no reply
+  reservation either, and the reply pool frees by sends and ended calls, which
+  wait on no place held behind it, so no cycle runs through it;
 - the engine's waits at the call's deadline.
 
 So no wait is unbounded and none forms a cycle.
@@ -751,16 +758,19 @@ by then closes its connection, since it can go out no other way
 ([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)'s `reply_wait`). Such a wait
 keeps its request's record, and so its receive charge, until the status goes
 out, so the receive pool bounds how many wait at once (§6.1), however the
-wait is run. A connection bounds them too. A status that waits holding no place
-under the connection's flow control, a refusal before or at admission, takes
-the connection's one status wait, so a connection runs one such wait at a time:
-a second waits for it on the reader, which reads nothing more of that
-connection meanwhile. A status whose request was admitted waits in its place.
-A chain's member status takes the one status wait as well, and waits for it in
-the chain's place
+wait is run. A connection bounds most of them too. A status that waits
+holding no place under the connection's flow control, a refusal before or at
+admission, takes the connection's one status wait, so a connection runs one
+such wait at a time: a second refusal the reader answers waits for it on the
+reader, which reads nothing more of that connection meanwhile. A status whose
+request was admitted waits in its place. A chain's member status takes the one
+status wait as well, waiting for it in the place the chain holds
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
-so the statuses waiting on one connection stay within its flow-control bound,
-plus the one status wait. Its buffer is `HeaderCodec.ReplyLen(h)` bytes once a header has
+so those statuses stay within the connection's flow-control bound, plus the
+one status wait. A chain member refused after its chain gave its place back,
+to wait in `Admit`, holds none, and waits for the status wait on its chain's
+goroutine; only the receive pool bounds those, as above. The status's buffer
+is `HeaderCodec.ReplyLen(h)` bytes once a header has
 decoded, which counts what the status alone carries, an NFSv4 `COMPOUND`'s tag
 among it ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
 and the small class for a refusal with no header. Either way the request holds

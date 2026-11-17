@@ -2547,7 +2547,8 @@ which RFC 20 §4.7's `NewErrorTable` demands of every table; `ErrTooLong` to
 `NFS4ERR_TOO_MANY_OPS` in a row naming no version, which RFC 20 §4.7's
 `NewOpTable` demands of a table with a compound row, and to `NFS4ERR_RESOURCE`
 for NFSv4.0, which has no such status, in a row naming it that wins there; `ErrReplyTooBig`, a
-`COMPOUND` whose reply would hold more than a quarter of the reply pool
+`COMPOUND` whose reply would hold more than a quarter of the reply pool, or
+pass the RPC record cap of §2.3
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)),
 to `NFS4ERR_REP_TOO_BIG` (RFC 8881 §15.1.3.6) in a row naming no version, which
 RFC 20 §4.7's `NewOpTable` demands of a table with a compound row, and to
