@@ -181,7 +181,9 @@ func TestWriteCommitsWholeOrNothing(t *testing.T) {
 // one; a key over 255 bytes, If-Match beside If-None-Match, and an If-Match
 // of * or of a list, on one line or two, 400. None of them writes, and each 412 and 428 is
 // counted by kind. With them right, a PUT, a PATCH (a null resetting its
-// field), an action and a DELETE commit, each answering the record's new tag.
+// field), an action and a DELETE commit, each answering the record's new tag
+// but the DELETE, whose record is gone, and each audited with the tags it
+// found and left.
 func TestPreconditions(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	id := uuid.NewString()
@@ -246,15 +248,24 @@ func TestPreconditions(t *testing.T) {
 		{"PATCH a field", http.MethodPatch, k, `{"spec":{"value":"d"}}`, []string{"If-Match", `"2"`}, `"3"`, `{"value":"d","turns":2}`},
 		{"PATCH a null", http.MethodPatch, k, `{"spec":{"turns":null}}`, []string{"If-Match", `"3"`}, `"4"`, `{"value":"d"}`},
 		{"action", http.MethodPost, k + ":turn", "", []string{"If-Match", `"4"`, "Idempotency-Key", strings.Repeat("k", 255)}, `"5"`, `{"value":"d","turns":1}`},
-		{"DELETE", http.MethodDelete, k, "", []string{"If-Match", `"5"`, "Idempotency-Key", "d2"}, `"6"`, `{"value":""}`},
+		{"DELETE", http.MethodDelete, k, "", []string{"If-Match", `"5"`, "Idempotency-Key", "d2"}, "", ""},
 	} {
 		r := s.do(t, step.method, step.path, step.body, step.hdr...)
 		if r.status != http.StatusOK || r.header.Get("ETag") != step.tag {
-			t.Errorf("%s: answered %d %s ETag %q, want 200 ETag %s", step.name, r.status, r.body, r.header.Get("ETag"), step.tag)
+			t.Errorf("%s: answered %d %s ETag %q, want 200 ETag %q", step.name, r.status, r.body, r.header.Get("ETag"), step.tag)
 		}
 		if got := s.knob(t, id); string(got.Value) != step.spec {
 			t.Errorf("%s: knob holds %s, want %s", step.name, got.Value, step.spec)
 		}
+	}
+	var tags [][2]uint64
+	for _, a := range s.audits(t) {
+		if string(a.Outcome) == "applied" {
+			tags = append(tags, [2]uint64{a.Before, a.After})
+		}
+	}
+	if want := [][2]uint64{{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 0}}; !slices.Equal(tags, want) {
+		t.Errorf("applied audit records' tags before and after: got %v, want %v", tags, want)
 	}
 }
 
@@ -650,7 +661,7 @@ func TestWriterWaits(t *testing.T) {
 // path's ID when it parses, and naming the caller by principal, name and
 // credential: a role that may not call the row, an ID that does not parse, a
 // caller that must change its password; a write's own refusal is audited
-// once, by the adapter. A refused GET and a path no row names are not
+// once, by the adapter. A refused GET or HEAD and a path no row names are not
 // audited, nor tried and failed.
 func TestRefusalsAudited(t *testing.T) {
 	var role atomic.Uint32
@@ -674,6 +685,7 @@ func TestRefusalsAudited(t *testing.T) {
 		{"password", entity.RoleAdmin, true, http.MethodPut, knobPath, 403, "refused: password_change_required", entity.ResourceSetting, true},
 		{"write", entity.RoleOperator, false, http.MethodPut, knobPath, 428, "refused: precondition_required", entity.ResourceSetting, true},
 		{"GET", entity.RoleViewer, false, http.MethodGet, "/api/v1/accounts/" + api.TestID, 404, "", 0, false},
+		{"HEAD", entity.RoleViewer, false, http.MethodHead, "/api/v1/accounts/" + api.TestID, 404, "", 0, false},
 		{"no row", entity.RoleOperator, false, http.MethodPost, "/api/v1/no-such", 404, "", 0, false},
 	} {
 		role.Store(uint32(tc.role))

@@ -63,7 +63,8 @@ var testRows = []route{
 	{method: http.MethodPut, pattern: "/api/v1/knobs/{id}", kind: entity.ResourceSetting, right: auth.Stores, serve: write(knobs, nil, putKnob)},
 	{method: http.MethodPatch, pattern: "/api/v1/knobs/{id}", kind: entity.ResourceSetting, right: auth.Stores, serve: write(knobs, nil, putKnob)},
 	{method: http.MethodDelete, pattern: "/api/v1/knobs/{id}", kind: entity.ResourceSetting, right: auth.Stores, serve: write(knobs, nil, func(ctx context.Context, rq request[knob], _ struct{}, tx entity.ControlPlaneTx) (knob, [16]byte, error) {
-		return putKnob(ctx, request[knob]{ID: rq.ID, Expect: rq.Expect}, struct{}{}, tx)
+		_, err := tx.PutSetting(entity.Setting{Scope: nodeScope(rq.ID), Key: "knob"}, rq.Expect)
+		return knob{}, rq.ID, err
 	})},
 	{method: http.MethodPost, pattern: "/api/v1/knobs/{id}", verb: "turn", kind: entity.ResourceSetting, right: auth.Stores, serve: write(turns, nil, func(ctx context.Context, rq request[knob], _ struct{}, tx entity.ControlPlaneTx) (knob, [16]byte, error) {
 		k, _, _, err := knobs.read(tx, rq.ID)
@@ -98,8 +99,8 @@ func verb(name string) func(context.Context, request[none]) (answer, error) {
 
 // knob is a test resource: a setting at the node scope its path's ID names,
 // its spec JSON in the setting's value, its tag the setting's generation. A
-// PUT writes it whole, a PATCH merges into it, a DELETE writes its empty
-// spec, :turn counts one more turn and a POST on the collection creates one
+// PUT writes it whole, a PATCH merges into it, a DELETE empties its value,
+// which reads as no record, :turn counts one more turn and a POST on the collection creates one
 // under a new ID. Its writes raise the settings generation, as every
 // setting's does.
 type knob struct {
@@ -121,7 +122,7 @@ func nodeScope(id [16]byte) entity.SettingScope {
 
 var knobs = writing[knob]{kind: entity.ResourceSetting, raises: true, read: func(tx entity.ControlPlaneTx, id [16]byte) (knob, uint64, bool, error) {
 	s, ok, err := tx.Setting(nodeScope(id), "knob")
-	if err != nil || !ok {
+	if err != nil || !ok || len(s.Value) == 0 {
 		return knob{}, 0, false, err
 	}
 	var k knob
