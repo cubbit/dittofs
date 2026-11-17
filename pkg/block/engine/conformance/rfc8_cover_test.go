@@ -41,9 +41,10 @@ func condition(f *enginetest.Fixture, name string) bool {
 }
 
 // pauseView is a store fault that holds the first view after it is armed,
-// before the view reads anything, until release. Armed with nothing else
-// running, it holds a read's metadata step: the read then waits on it, which
-// the test checks. Every other call passes.
+// before the view reads anything, until release. A view reaches the fault
+// with no key (kvtest.FaultKV's view, fault.go:196), so it cannot be scoped to
+// a file: armed with nothing else running, it holds a read's metadata step,
+// which the test checks. Every other call passes.
 type pauseView struct {
 	once    sync.Once
 	mu      sync.Mutex
@@ -172,6 +173,8 @@ func TestRFC8A_CloneResumedAtAFullLimit(t *testing.T) {
 	}
 
 	eventually(t, "the resumed clone finishes", func() bool {
+		f.Clock.Advance(time.Second)
+
 		p := make([]byte, n)
 		_, err := f.E.Read(ctx, f.Second.ID, dst, 0, p)
 
@@ -185,7 +188,7 @@ func TestRFC8A_CloneResumedAtAFullLimit(t *testing.T) {
 // superseded. The rows with remote refs, carved and stale, are RFC 8's second
 // part's.
 func TestRFC8A_TheJoin(t *testing.T) {
-	f := enginetest.New(t)
+	f := enginetest.New(t, enginetest.WithSegmentCap(mib))
 	ctx := t.Context()
 	h, id := f.File("a")
 	old := bytes.Repeat([]byte{'o'}, 4096)
@@ -291,10 +294,16 @@ func TestRFC8A_ExistenceAboveAsOf(t *testing.T) {
 				t.Fatalf("the read paused across the commit: %v, want old or new bytes", r.err)
 			}
 
+			// Growth: the read saw the end at c.at, so nothing is the old answer;
+			// zeros there mean its size came from the store without asking the
+			// journal again.
 			got := r.p[:r.n]
-			if r.err != nil || (!bytes.Equal(got, p) && !bytes.Equal(got, make([]byte, r.n))) {
+			hole := c.size > c.at && r.n == len(p) && bytes.Equal(got, make([]byte, r.n))
+			eof := c.size <= c.at && r.n == 0
+
+			if r.err != nil || (!bytes.Equal(got, p) && !hole && !eof) {
 				t.Errorf(
-					"the read paused across the commit: %d bytes %q, %v; want zeros or new bytes",
+					"the read paused across the commit: %d bytes %q, %v; want the new bytes, or zeros in the hole, or nothing at the old end",
 					r.n,
 					got[:min(8, r.n)],
 					r.err,
@@ -461,7 +470,19 @@ func TestRFC8B_RemovalWedge(t *testing.T) {
 	eventually(t, "the stalled removal finishes once its refs read", func() bool {
 		f.Clock.Advance(time.Second)
 
-		return !condition(f, "removal_stalled")
+		if condition(f, "removal_stalled") {
+			return false
+		}
+
+		// The condition also clears when the removal only advances, so the
+		// removal's own end is checked, as the other file's is above.
+		for _, u := range unfinishedOf(t, f) {
+			if u.File == bad {
+				return false
+			}
+		}
+
+		return true
 	})
 
 	// A real-time backstop only: the truncate answered at its phase 1, long
@@ -476,8 +497,8 @@ func TestRFC8B_RemovalWedge(t *testing.T) {
 	}
 }
 
-// deviceFull is a storage fault that fails every new segment file's create
-// and allocation with ENOSPC while on is set, as a device with no room does.
+// deviceFull is a storage fault that fails every create and allocation, of a
+// segment file or not, with ENOSPC while on is set, as a device with no room does.
 type deviceFull struct {
 	mu sync.Mutex
 	on bool
@@ -519,19 +540,27 @@ func TestRFC8B_JournalFullOnAFullDevice(t *testing.T) {
 
 	var refused error
 
+	buf := bytes.Repeat([]byte{'a'}, chunk)
+
 	for off := int64(0); off < 64*mib && refused == nil; off += chunk {
 		_, refused = f.E.Write(
 			t.Context(),
 			f.Share.ID,
 			id,
 			off,
-			bytes.Repeat([]byte{'a'}, chunk),
+			buf,
 			engine.WriteOpts{Done: func() {}},
 		)
 	}
 
 	if refused == nil {
 		t.Fatal("no write was refused on a device with no room")
+	}
+
+	// The device's own refusal is answered ErrNoSpace; a roll with no spare
+	// ready answers ErrDelay and raises nothing (RFC 8 §10.2, §11.1).
+	if !errors.Is(refused, vfserr.ErrNoSpace) {
+		t.Fatalf("the refused roll answered %v, want the device's ErrNoSpace", refused)
 	}
 
 	if !condition(f, "journal_full") {
@@ -554,7 +583,7 @@ func TestRFC8B_JournalFullOnAFullDevice(t *testing.T) {
 }
 
 // §2.4 settings, the engine's half: each setting Apply checks, at 0, is
-// refused and leaves the earlier settings in force, so a clone one byte over
+// refused and leaves the earlier settings in force, so a clone longer than
 // the clone_max_len in force is refused and one of exactly it accepted. Its
 // pool settings, Min and Target, and a share's profile
 // change reported as a migration are RFC 8's second part's, which has the
@@ -569,7 +598,9 @@ func TestRFC8C_Settings(t *testing.T) {
 		{"clone_max_len 0", func(s *engine.Settings) { s.CloneMaxLen = 0 }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			f := enginetest.New(t)
+			// One spare per stream's first roll and one for the single writer, so
+			// the clone's roll never waits on the pool's refill in real time.
+			f := enginetest.New(t, enginetest.WithSpares(3))
 			ctx := t.Context()
 			s := enginetest.Settings
 			s.CloneMaxLen = 4096
@@ -596,10 +627,10 @@ func TestRFC8C_Settings(t *testing.T) {
 			bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 
-			err := f.E.Clone(bctx, f.Share.ID, src, f.Share.ID, dst, vfserr.Extent{Len: 4097})
+			err := f.E.Clone(bctx, f.Share.ID, src, f.Share.ID, dst, vfserr.Extent{Len: 8192})
 			if !errors.Is(err, vfserr.ErrInvalid) {
 				t.Errorf(
-					"a clone one byte over the clone_max_len in force: %v, want ErrInvalid",
+					"a clone longer than the clone_max_len in force: %v, want ErrInvalid",
 					err,
 				)
 			}
@@ -650,9 +681,13 @@ func TestRFC8A_CarvedRunFailsUnavailable(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if sh.ID == f.Share.ID {
+		if sh.ID == f.Share.ID && len(sh.Namespaces) > 0 {
 			ns = sh.Namespaces[0].Namespace
 		}
+	}
+
+	if ns == (entity.NamespaceID{}) {
+		t.Fatal("the fixture's share has no namespace in the control plane")
 	}
 
 	var name entity.BlockName

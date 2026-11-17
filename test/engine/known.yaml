@@ -52,18 +52,18 @@
   reason: 'the journal''s Open recovering segments: a restart raises the incarnation of every served shard and opens a new grace instance on it. Init and Open work; the fixture now attaches the share; the row stops at its reopen of a journal that holds segments, which the journal refuses (recovering them is not built).'
   issue: '#4206'
 - test: TestRFC8C_DeclaredInterfaces
-  message: 'the engine never calls'
+  message: 'the engine never calls 1 declared methods: [Journal.Draw]'
   status: fail
   fix: planned
   category: feature
-  reason: 'the engine passing Journal.Draw as a method value (engine/write.go:196), which the architecture test counts as no call (engine/conformance/arch_test.go:82): every other declared method is called, and the row reports Journal.Draw alone until the engine calls it directly.'
+  reason: 'the engine passing Journal.Draw as a method value (the method value in engine/write.go), which the architecture test counts as no call (uncalled in engine/conformance/arch_test.go): every other declared method is called, and the row reports Journal.Draw alone until the engine calls it directly.'
   issue: '#4206'
 - test: TestRFC8A_AttachAfterDeviceLoss
   message: 'fixture: journal init: rename'
   status: fail
   fix: planned
   category: feature
-  reason: 'the fixture''s Reinit under the crash seam (engine/enginetest/fixture.go:700): a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the fixture''s journal re-initialisation, where the seam''s rename of the format file fails. Whether the seam or the fixture''s removal of the directory under it causes this is not settled.'
+  reason: 'the fixture''s Reinit under the crash seam (Fixture.Reinit in engine/enginetest/fixture.go): a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the fixture''s journal re-initialisation, where the seam''s rename of the format file fails. Whether the seam or the fixture''s removal of the directory under it causes this is not settled.'
   issue: '#4206'
 - test: TestRFC8A_RecoveryThroughSince
   message: 'holds segments; recovering them is not built'
@@ -311,9 +311,9 @@
   reason: 'the journal''s Open recovering segments: a process stopped once a clone''s phase 1 committed restarts with the source''s registration rebuilt, a write into the frozen extent answering ErrDelay until the clone is done. Init and Open work; the row gets past the clone''s phase 1 and the frozen write before the stop, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#4206'
 - test: TestRFC8B_JournalFullOnAFullDevice
-  message: 'raised no journal_full'
+  message: 'want the device''s ErrNoSpace'
   status: fail
   fix: planned
   category: feature
-  reason: 'the row''s write refused by the spare limit, for which the engine raises nothing (engine/repack.go:273): a write refused once the device has no room for a new segment raises journal_full and keeps it while writes into allocated segments are accepted. Init and Open work; with 1 MiB segments and every new create and allocation failing ENOSPC at the seam, the row gets past its writes to the refused roll and stops at its own check: the journal answers no space by its spare limit, not ENOSPC. Whether the journal or the fixture''s setup keeps the full-device answer from coming is not settled.'
+  reason: 'the row''s write refused by the spare limit, for which the engine raises nothing (Engine.raiseFull in engine/repack.go): a write refused once the device has no room for a new segment raises journal_full and keeps it while writes into allocated segments are accepted. Init and Open work; with 1 MiB segments and every new create and allocation failing ENOSPC at the seam, the row gets past its writes to the refused roll and stops at its own check: the refused roll answers retry-later capacity by its spare limit, not the device''s ErrNoSpace. Whether the journal or the fixture''s setup keeps the full-device answer from coming is not settled.'
   issue: '#4206'
