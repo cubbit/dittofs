@@ -53,7 +53,8 @@ type bound struct {
 	ln           net.Listener   // the socket itself; its close ends the accept loop
 	stopped      chan struct{}  // closed with the socket, so a backoff's sleep ends too
 	loopDone     chan struct{}  // closed once the accept loop ended
-	firstFailure atomic.Int64   // the first Accept failure of the streak, on the server's clock, Unix nanoseconds; 0 while the listener is alive
+	firstFailure atomic.Int64   // the streak's first Accept failure, 0 while the listener is accepting
+	lastFailure  atomic.Int64   // the streak's last one, from which Health derives the lost listener
 }
 
 var _ adapter.Adapter = (*Server)(nil)
@@ -323,17 +324,23 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 // stopped, from any state; a second call returns nil.
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	conns := make([]*Conn, 0, len(s.conns))
-	for c := range s.conns {
-		conns = append(conns, c)
-	}
 	looped := slices.Clone(s.bound)
 	s.closeBound()
-	s.state = adapter.StateStopped
 	s.mu.Unlock()
 	if err := s.stopOnLoops(looped, ctx); err != nil {
 		return err
 	}
+	// The loops have ended, so not one more socket can be accepted: every
+	// connection the registry will ever hold while this server stops is in
+	// this snapshot, and a socket its loop was handing to serveConn as it
+	// ended registers before that loop does, so it is in the snapshot too.
+	s.mu.Lock()
+	s.state = adapter.StateStopped
+	conns := make([]*Conn, 0, len(s.conns))
+	for c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
 	for _, c := range conns {
 		c.Close(errStop)
 	}
@@ -394,9 +401,8 @@ func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort {
 }
 
 // Health is the server's state with the conditions its sockets' own evidence
-// derives: a listener failing for listenerLostAfter with no connection
-// accepted since the first failure raises adapter_listener_lost, until its
-// next accepted connection (R1, R10). The server reports no other condition.
+// derives: a lost listener raises adapter_listener_lost until its next
+// accepted connection. The server reports no other condition.
 func (s *Server) Health() adapter.Health {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -2,6 +2,6 @@
 # the epic expected to turn it green. A test that starts to pass fails the run: remove its entry
 # in the change that turned it green. Each entry's message is the failure it is known by: a test
 # failing for any other reason is unexpected.
-# None: the accept loop answers the one specification this list carried
-# (epic 4's T4.2a). A failing test returns as an entry, one per test, naming
-# the epic expected to turn it green.
+# None: the accept loop answers the one specification this list carried. A
+# failing test returns as an entry, one per test, naming the epic expected to
+# turn it green.

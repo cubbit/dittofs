@@ -8,22 +8,25 @@ import (
 )
 
 // connCharge is each connection's fixed cost to the connection-state budget,
-// its read buffer included, as RFC 24 section 4.4 proposes it (R7).
+// its read buffer included, as RFC 24 section 4.4 proposes it.
 const connCharge = 64 << 10
 
-// The accept backoff's bounds, lifted from the accept loop develop runs. An
-// unexpected Accept error, the process at its file-descriptor limit say,
-// otherwise spins the loop hot. The sleep starts small so a transient failure
-// costs nothing, doubles per consecutive failure, and caps at a ceiling that
-// keeps the loop responsive to Stop (RFC 20 section 6.4).
+// The accept backoff's bounds, lifted from the accept loop the node runs
+// today. An unexpected Accept error, the process at its file-descriptor limit
+// say, otherwise spins the loop hot. The sleep starts small so a transient
+// failure costs nothing, doubles per consecutive failure, and caps at a
+// ceiling that keeps the loop responsive to Stop (RFC 20 section 6.4).
 const (
 	acceptRetryBase = 10 * time.Millisecond
 	acceptRetryMax  = 1 * time.Second
 )
 
-// listenerLostAfter is how long a bound socket's Accept may keep failing with
-// no connection accepted since the first failure before the server raises
-// conditionListenerLost (R10, RFC 20 section 6.4).
+// listenerLostAfter is how long a bound socket's Accept may keep failing from
+// its first failure with no connection accepted since before the server
+// reports the listener lost (RFC 20 section 6.4, as the gap review settles
+// it). The evidence runs both ways: the first failure 60 s back, and the last
+// one within twice the backoff's cap, since a listener that stopped failing
+// is not lost however long it has not accepted.
 const listenerLostAfter = 60 * time.Second
 
 // conditionListenerLost is the condition Health reports for a lost listener,
@@ -33,10 +36,10 @@ const conditionListenerLost = "adapter_listener_lost"
 // acceptLoop serves one bound socket until its listener closes, which Stop
 // does: every accepted socket is charged to the connection-state budget,
 // closed at once when the budget refuses it, before any byte is read, and
-// handed to serveConn with the charge when it does not (R7, D6). An Accept
-// error but the listener's own close is retried after the backoff; the first
-// failure of each streak is recorded on the server's clock, so Health derives
-// the lost condition from the evidence (R10, D3).
+// handed to serveConn with the charge when it does not. An Accept error but
+// the listener's own close is retried after the backoff; the first and the
+// last failure of each streak are recorded on the server's clock, so Health
+// derives the lost condition from the evidence.
 func (s *Server) acceptLoop(b *bound) {
 	defer close(b.loopDone)
 	backoff := time.Duration(0)
@@ -52,19 +55,25 @@ func (s *Server) acceptLoop(b *bound) {
 			} else if backoff < acceptRetryMax {
 				backoff = min(2*backoff, acceptRetryMax)
 			}
-			b.firstFailure.CompareAndSwap(0, s.sh.clock.Now().UnixNano())
+			f := s.sh.clock.Now().UnixNano()
+			b.firstFailure.CompareAndSwap(0, f)
+			b.lastFailure.Store(f)
 			s.sh.log.Debug("core: accept failed", "err", err, "services", b.l.Services, "retry_in", backoff)
-			s.sleep(b, backoff)
+			if s.sleep(b, backoff) {
+				// Stop closed the socket mid-backoff: not one more Accept.
+				return
+			}
 			continue
 		}
 		// The listener is alive again: the streak ends, and with it the lost
 		// condition's evidence.
 		backoff = 0
 		b.firstFailure.Store(0)
+		b.lastFailure.Store(0)
 		charge, cerr := s.d.Budgets.Connection.Reserve(connCharge)
 		if cerr != nil {
 			// The budget is full: the socket closes at once, before any byte
-			// is read, and the server holds nothing of it (R7).
+			// is read, and the server holds nothing of it.
 			_ = nc.Close()
 			continue
 		}
@@ -72,27 +81,33 @@ func (s *Server) acceptLoop(b *bound) {
 	}
 }
 
-// lost reports whether b's listener has failed for listenerLostAfter with no
-// connection accepted since: the evidence Health derives the condition from
-// (R10).
+// lost reports whether b's listener is lost: its Accept has failed from 60 s
+// back and within twice the backoff's cap, with no connection accepted since.
+// Health derives the condition from this evidence, and clears it at the next
+// accepted connection.
 func (b *bound) lost(now time.Time) bool {
-	since := b.firstFailure.Load()
-	if since == 0 {
+	first := b.firstFailure.Load()
+	if first == 0 {
 		return false
 	}
-	return now.Sub(time.Unix(0, since)) >= listenerLostAfter
+	last := b.lastFailure.Load()
+	return now.Sub(time.Unix(0, first)) >= listenerLostAfter &&
+		now.Sub(time.Unix(0, last)) <= 2*acceptRetryMax
 }
 
-// sleep waits for d on the server's clock, or ends at once once the socket's
-// listener has closed, so Stop does not wait out a backoff (D3).
-func (s *Server) sleep(b *bound, d time.Duration) {
+// sleep waits for d on the server's clock, and reports whether the socket's
+// listener closed instead, as Stop does: the caller ends at once, and does
+// not spin one more Accept against a closed socket.
+func (s *Server) sleep(b *bound, d time.Duration) (stopped bool) {
 	wake := make(chan struct{})
 	t := s.sh.clock.AfterFunc(d, func() { close(wake) })
 	defer t.Stop()
 	select {
 	case <-wake:
 	case <-b.stopped:
+		return true
 	}
+	return false
 }
 
 // stopOnLoops waits for each of bs's accept loops to end. The sockets are

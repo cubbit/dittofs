@@ -334,12 +334,14 @@ func ConnCharge() int64 { return connCharge }
 
 // AddBound appends a bound socket over ln to a serving server and starts its
 // accept loop: the seam a test's listener, a failing one say, runs on. The
-// socket closes and its loop ends with Stop, as Start's own do.
-func AddBound(s *Server, l *Listener, ln net.Listener) {
+// socket closes and its loop ends with Stop, as Start's own do, and loopDone
+// reports the loop's end.
+func AddBound(s *Server, l *Listener, ln net.Listener) (loopDone <-chan struct{}) {
 	b := &bound{l: l, addr: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), 0), ln: ln, stopped: make(chan struct{})}
 	b.loopDone = make(chan struct{})
 	s.mu.Lock()
 	s.bound = append(s.bound, b)
 	s.mu.Unlock()
 	go s.acceptLoop(b)
+	return b.loopDone
 }

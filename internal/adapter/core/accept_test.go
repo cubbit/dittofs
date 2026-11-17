@@ -1,7 +1,11 @@
 package core_test
 
 import (
+	"context"
+	"errors"
+	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -51,9 +55,20 @@ func waitsFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// stopNow stops the server on a live context and fails the test if Stop
+// reports an error: a stop that waits its loops out, mid-backoff included,
+// must return nil.
+func stopNow(t *testing.T, s *core.Server) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := s.Stop(context.Background()); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+}
+
 // A socket the connection-state budget cannot charge is closed at once, before
-// any byte of it is read: nothing is written back to it and no budget moves
-// (R7).
+// any byte of it is read: nothing is written to it and no budget moves.
 func TestAChargedRefusalClosesBeforeItReads(t *testing.T) {
 	b := budgets()
 	b.Connection = resources.NewBudget("connection", core.ConnCharge()-1)
@@ -64,13 +79,13 @@ func TestAChargedRefusalClosesBeforeItReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	core.Serving(srv)
+	stopNow(t, srv)
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = inner.Close() })
 	core.AddBound(srv, &l, inner)
-	t.Cleanup(func() { _ = srv.Stop(t.Context()) })
 
 	client, err := net.Dial("tcp", inner.Addr().String())
 	if err != nil {
@@ -84,8 +99,13 @@ func TestAChargedRefusalClosesBeforeItReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf [1]byte
-	if _, err := client.Read(buf[:]); err == nil {
+	// A refused socket ends at once, before its read deadline: an end, the
+	// unread bytes of what it wrote reset away, not a silence left open.
+	_, rerr := client.Read(buf[:])
+	if rerr == nil {
 		t.Error("a socket the budget refused was written to")
+	} else if !errors.Is(rerr, io.EOF) && !errors.Is(rerr, syscall.ECONNRESET) {
+		t.Errorf("a socket the budget refused reads %v, want its end at once", rerr)
 	}
 	for _, c := range []struct {
 		name string
@@ -101,7 +121,7 @@ func TestAChargedRefusalClosesBeforeItReads(t *testing.T) {
 }
 
 // Two connections hold their charges, 128 KiB together, and give them back
-// when they close (R7).
+// when they close.
 func TestTwoConnectionsHoldTheirCharges(t *testing.T) {
 	b := budgets()
 	b.Connection = resources.NewBudget("connection", 2*core.ConnCharge())
@@ -112,13 +132,13 @@ func TestTwoConnectionsHoldTheirCharges(t *testing.T) {
 		t.Fatal(err)
 	}
 	core.Serving(srv)
+	stopNow(t, srv)
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = inner.Close() })
 	core.AddBound(srv, &l, inner)
-	t.Cleanup(func() { _ = srv.Stop(t.Context()) })
 
 	clients := make([]net.Conn, 2)
 	for i := range clients {
@@ -140,16 +160,17 @@ func TestTwoConnectionsHoldTheirCharges(t *testing.T) {
 }
 
 // After one Accept failure the next connection is accepted at the backoff's
-// base, 10 ms, counted on the server's clock (R10, D3).
+// base, 10 ms, counted on the server's clock.
 func TestAReleasedFaultAcceptsAtTenMilliseconds(t *testing.T) {
-	srv, fl, clk := faultedServer(t)
-	t.Cleanup(func() { _ = srv.Stop(t.Context()) })
-	fl.cue.Store(true)
+	_, fl, clk := faultedServer(t)
 	queued := dial(t, fl)
 	defer func() { _ = queued.Close() }()
-	waitsFor(t, "the first failure", func() bool { return fl.failures.Load() > 0 })
 
+	waitsFor(t, "the first backoff to arm", func() bool { return clk.pending() > 0 })
 	fl.cue.Store(false)
+
+	// The loop's first failure has armed its 10 ms sleep: the release below is
+	// accepted at it, and not before.
 	clk.Advance(9 * time.Millisecond)
 	if fl.accepted.Load() != 0 {
 		t.Fatal("a connection was accepted before the backoff's 10 ms passed")
@@ -158,25 +179,57 @@ func TestAReleasedFaultAcceptsAtTenMilliseconds(t *testing.T) {
 	waitsFor(t, "the connection to be accepted", func() bool { return fl.accepted.Load() > 0 })
 }
 
-// A backoff that has grown through failures past five seconds of them is
-// capped at 1 s: a connection is accepted within 1 s of the fault lifting
-// (R10).
-func TestTheBackoffCapsAtOneSecond(t *testing.T) {
-	srv, fl, clk := faultedServer(t)
-	t.Cleanup(func() { _ = srv.Stop(t.Context()) })
-	fl.cue.Store(true)
+// A second failure doubles the backoff to 20 ms: the connection waits one step
+// out.
+func TestTheBackoffDoublesToTwentyMilliseconds(t *testing.T) {
+	_, fl, clk := faultedServer(t)
 	queued := dial(t, fl)
 	defer func() { _ = queued.Close() }()
 
-	// The backoff doubles per failure until it caps: eight of them, twice
-	// over, leaves it at the cap well past 5 s of failures.
-	for fl.failures.Load() < 10 {
-		before := fl.failures.Load()
-		clk.Advance(time.Second)
-		waitsFor(t, "the next failure", func() bool { return fl.failures.Load() > before })
-		time.Sleep(2 * time.Millisecond) // the loop's next timer arms
+	// The first backoff is the 10 ms base; firing it doubles the second to
+	// 20 ms, which the release times.
+	waitsFor(t, "the first backoff to arm", func() bool { return clk.pending() > 0 })
+	if d := clk.nextIn(); d != 10*time.Millisecond {
+		t.Errorf("the first backoff is %v, want the 10 ms base", d)
+	}
+	clk.Advance(10 * time.Millisecond)
+	waitsFor(t, "the doubled backoff to arm", func() bool { return clk.pending() > 0 })
+	if d := clk.nextIn(); d != 20*time.Millisecond {
+		t.Errorf("the second backoff is %v, want the doubled 20 ms", d)
 	}
 	fl.cue.Store(false)
+
+	// The released fault accepts at the doubled 20 ms, and not before.
+	clk.Advance(19 * time.Millisecond)
+	if fl.accepted.Load() != 0 {
+		t.Fatal("a connection was accepted before the doubled 20 ms backoff passed")
+	}
+	clk.Advance(2 * time.Millisecond)
+	waitsFor(t, "the connection to be accepted", func() bool { return fl.accepted.Load() > 0 })
+}
+
+// A backoff that has grown through 5 s of failures is capped at 1 s: a
+// connection queued after the fault lifts is accepted within 1 s of it.
+func TestTheBackoffCapsAtOneSecond(t *testing.T) {
+	_, fl, clk := faultedServer(t)
+	queued := dial(t, fl)
+	defer func() { _ = queued.Close() }()
+
+	// The loop fails through 8 s of steps, past 5 s of them: after them a
+	// fresh failure arms one more backoff, the cap's width exactly.
+	for range 8 {
+		waitsFor(t, "the backoff to arm", func() bool { return clk.pending() > 0 })
+		clk.Advance(time.Second)
+	}
+	waitsFor(t, "the backoff to arm", func() bool { return clk.pending() > 0 })
+	clk.Advance(3 * time.Second) // past whatever the streak has grown to
+	waitsFor(t, "the fresh backoff to arm", func() bool { return clk.pending() > 0 })
+	if d := clk.nextIn(); d != time.Second {
+		t.Errorf("the backoff of a long streak is %v, want the 1 s cap", d)
+	}
+	fl.cue.Store(false)
+
+	// A connection is accepted within 1 s of the fault lifting.
 	clk.Advance(999 * time.Millisecond)
 	if fl.accepted.Load() != 0 {
 		t.Fatal("a connection was accepted before the backoff's 1 s cap passed")
@@ -185,22 +238,25 @@ func TestTheBackoffCapsAtOneSecond(t *testing.T) {
 	waitsFor(t, "the connection to be accepted", func() bool { return fl.accepted.Load() > 0 })
 }
 
-// A listener that fails for 60 s with no connection accepted since is
-// reported lost, and not at 59 s; the next accepted connection clears it
-// (R1, R10).
+// A listener that keeps failing for 60 s of them is reported lost, and not at
+// 59 s; the next accepted connection clears it. A listener that stopped
+// failing is never reported, however long it has not accepted.
 func TestALostListenerIsReportedAtSixtySeconds(t *testing.T) {
 	srv, fl, clk := faultedServer(t)
-	t.Cleanup(func() { _ = srv.Stop(t.Context()) })
-	fl.cue.Store(true)
-	waitsFor(t, "the first failure", func() bool { return fl.failures.Load() > 0 })
-
-	clk.Advance(59 * time.Second)
+	// The loop fails every second, each backoff firing the next failure, so
+	// its last failure is always a second old.
+	for range 59 {
+		waitsFor(t, "the next backoff to arm", func() bool { return clk.pending() > 0 })
+		clk.Advance(time.Second)
+	}
+	waitsFor(t, "the 59th backoff to arm", func() bool { return clk.pending() > 0 })
 	if h := srv.Health(); len(h.Conditions) != 0 {
 		t.Errorf("a listener 59 s into its fault is reported %+v", h)
 	}
 	clk.Advance(time.Second)
+	waitsFor(t, "the 60th backoff to arm", func() bool { return clk.pending() > 0 })
 	if h := srv.Health(); len(h.Conditions) != 1 || h.Conditions[0] != "adapter_listener_lost" {
-		t.Fatalf("a listener 60 s into its fault is reported %+v", h)
+		t.Errorf("a listener 60 s into its fault is reported %+v", h)
 	}
 
 	fl.cue.Store(false)
@@ -213,9 +269,160 @@ func TestALostListenerIsReportedAtSixtySeconds(t *testing.T) {
 	}
 }
 
-// faultedServer is a serving server with one bound socket whose listener fails
-// Accept on cue, on a clock the test advances (D3).
+// A listener that failed once and then went quiet is not lost: its last
+// failure is evidence too, and evidence 60 s old says the fault ended.
+func TestAListenerThatStoppedFailingIsNotLost(t *testing.T) {
+	srv, fl, clk := faultedServer(t)
+
+	waitsFor(t, "the first backoff to arm", func() bool { return clk.pending() > 0 })
+	fl.cue.Store(false)
+	clk.Advance(20 * time.Millisecond) // the backoff runs out; the loop waits in Accept
+
+	clk.Advance(60 * time.Second)
+	if h := srv.Health(); len(h.Conditions) != 0 {
+		t.Errorf("a listener that stopped failing is reported %+v", h)
+	}
+}
+
+// stopMidAccept runs Stop as its Accept returns a socket, and hands the
+// socket over beside it: a connection accepted in flight, as Stop runs.
+type stopMidAccept struct {
+	net.Listener
+	srv     *core.Server
+	once    sync.Once
+	stopped chan error
+}
+
+func (l *stopMidAccept) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return c, err
+	}
+	l.once.Do(func() { go func() { l.stopped <- l.srv.Stop(context.Background()) }() })
+	return c, nil
+}
+
+// Stop waits a connection its accept loop accepts as Stop runs: the loop ends
+// only once it has handed the socket over, so the connection is in the
+// registry's snapshot and its charge is back at zero when Stop returns, not
+// on a teardown of its own Stop never waited for. A round races one Stop
+// against one accept in flight; the rounds give the race every ordering.
+func TestStopWaitsAConnectionAcceptedAsItEnds(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	for round := range 8 {
+		l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{}).Bare()}
+		srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		core.Serving(srv)
+
+		inner, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sl := &stopMidAccept{Listener: inner, srv: srv, stopped: make(chan error, 1)}
+		core.AddBound(srv, &l, sl)
+		queued, err := net.Dial("tcp", inner.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err, ok := <-sl.stopped; !ok || err != nil {
+			t.Fatalf("round %d: Stop: %v", round, err)
+		}
+		if held := b.Connection.Reserved(); held != 0 {
+			_ = queued.Close()
+			t.Fatalf("round %d: Stop returned with %d bytes still charged to a connection it never waited for", round, held)
+		}
+		_ = queued.Close()
+		_ = inner.Close()
+	}
+}
+
+// Stop, entered while a loop sleeps out a backoff it cannot age on the test's
+// clock, returns nil once every socket's loop has ended: the sleep ends with
+// the socket and the loop follows it.
+func TestStopEndsALoopInItsBackoff(t *testing.T) {
+	srv, _, clk, loop := faultedLoop(t)
+
+	waitsFor(t, "the first backoff to arm", func() bool { return clk.pending() > 0 })
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Stop(ctx); err != nil {
+		t.Fatalf("Stop, mid backoff: %v", err)
+	}
+	select {
+	case <-loop:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop returned with its accept loop still running")
+	}
+}
+
+// blockedAccept is a listener whose Accept answers only on its release
+// channel, and as a closed listener then: a loop parked in Accept, where no
+// close it can see moves it.
+type blockedAccept struct {
+	net.Listener
+	release chan struct{}
+}
+
+func (l *blockedAccept) Accept() (net.Conn, error) {
+	<-l.release
+	return nil, net.ErrClosed
+}
+
+func (l *blockedAccept) Close() error { return nil }
+
+// Stop waits its accept loops out: with one parked in an Accept no close would
+// move, Stop returns only once the test moves it, and then at once.
+func TestStopWaitsALoopParkedInAccept(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{}).Bare()}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	stopNow(t, srv)
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = inner.Close() })
+	bl := &blockedAccept{Listener: inner, release: make(chan struct{})}
+	loop := core.AddBound(srv, &l, bl)
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- srv.Stop(context.Background()) }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop returned with its accept loop still parked: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(bl.release)
+	if err := <-stopped; err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case <-loop:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the released accept loop did not end")
+	}
+}
+
+// faultedServer is a serving server with one bound socket whose listener is
+// already failing Accept on cue, on a clock the test advances: the loop starts
+// against the fault, never a step ahead of the cue.
 func faultedServer(t *testing.T) (*core.Server, *failingListener, *manualClock) {
+	srv, fl, clk, _ := faultedLoop(t)
+	return srv, fl, clk
+}
+
+// faultedLoop is faultedServer, with the bound socket's loop-end channel.
+func faultedLoop(t *testing.T) (*core.Server, *failingListener, *manualClock, <-chan struct{}) {
 	t.Helper()
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
@@ -225,16 +432,19 @@ func faultedServer(t *testing.T) (*core.Server, *failingListener, *manualClock) 
 		t.Fatal(err)
 	}
 	core.Serving(srv)
+	stopNow(t, srv)
+
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = inner.Close() })
 	fl := &failingListener{Listener: inner}
-	core.AddBound(srv, &l, fl)
+	fl.cue.Store(true)
 	clk := newManualClock()
 	core.SetServerClock(srv, clk)
-	return srv, fl, clk
+	loop := core.AddBound(srv, &l, fl)
+	return srv, fl, clk, loop
 }
 
 // dial connects a client to the faulted listener's real socket, which waits in
