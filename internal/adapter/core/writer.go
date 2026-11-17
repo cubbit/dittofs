@@ -2,6 +2,7 @@ package core
 
 import (
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -34,10 +35,12 @@ type writer struct {
 	nc      net.Conn
 	framer  Framer
 	timeout time.Duration
-	close   func(error)
+	close   func(error) // Conn.Close: it runs on the writer's goroutine too, in fail, so it must never wait for the writer's own stop or the stop deadlocks on it
 	onBatch func(n int) // a test's view of what one write gathered; nil otherwise
 
 	mu       sync.Mutex
+	bufs     net.Buffers // each batch's gathered write, reused across batches; run only
+	hdrs     []byte      // their framed headers, appended into one; run only
 	queue    []queued
 	held     int // messages out took and has not yet written or released
 	wake     chan struct{}
@@ -201,11 +204,20 @@ func (w *writer) flush() error {
 	if w.onBatch != nil {
 		w.onBatch(len(q))
 	}
-	bufs := make(net.Buffers, 0, 2*len(q))
-	for _, m := range q {
-		bufs = append(bufs, w.framer.Frame(nil, len(m.msg.B)), m.msg.B)
+	if n := w.framer.HeaderLen() * len(q); n > 0 {
+		w.hdrs = slices.Grow(w.hdrs[:0], n)
+	} else {
+		w.hdrs = w.hdrs[:0]
 	}
-	_, err := bufs.WriteTo(w.nc)
+	w.bufs = w.bufs[:0]
+	for _, m := range q {
+		at := len(w.hdrs)
+		w.hdrs = w.framer.Frame(w.hdrs, len(m.msg.B))
+		w.bufs = append(w.bufs, w.hdrs[at:], m.msg.B)
+	}
+	b := w.bufs // WriteTo consumes the slice it is called on
+	_, err := b.WriteTo(w.nc)
+	clear(w.bufs)
 	w.written(len(q))
 	for _, m := range q {
 		m.msg.Release()

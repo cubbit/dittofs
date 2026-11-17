@@ -142,6 +142,7 @@ func TestTheSilentPeerCloses(t *testing.T) {
 		var closeErr error
 		closed := make(chan time.Time, 1)
 		budget := resources.NewWaitBudget("reply", 1<<30)
+		adaptertest.CheckLeaks(t, &resources.Budgets{Reply: budget})
 		pool := resources.NewBufPool(budget)
 		w := core.NewTestWriter(conn, f, time.Second, func(err error) {
 			mu.Lock()
@@ -251,6 +252,7 @@ func TestTheDeadlineIsArmedForEachBatch(t *testing.T) {
 		defer func() { _ = peer.Close() }()
 		closed := make(chan time.Time, 1)
 		budget := resources.NewWaitBudget("reply", 1<<30)
+		adaptertest.CheckLeaks(t, &resources.Budgets{Reply: budget})
 		pool := resources.NewBufPool(budget)
 		w := core.NewTestWriter(conn, f, time.Second, func(error) { closed <- time.Now() })
 		defer w.Stop()
