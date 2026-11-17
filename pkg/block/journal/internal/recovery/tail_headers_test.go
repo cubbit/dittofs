@@ -88,7 +88,7 @@ func TestAZeroHeaderSegmentsTailIsProvenLikeAnyOthers(t *testing.T) {
 		r.writeLiveOnly(name, endA, goodB) // B, whole in the cache alone
 		r.dropSyncs(name)
 
-		st := runTails(t, r)
+		st := runTailsReserve(t, r)
 
 		wantReappends(t, st, reappendOf(t, 2, endA, goodB))
 		if got := planted(st); got != 2 {

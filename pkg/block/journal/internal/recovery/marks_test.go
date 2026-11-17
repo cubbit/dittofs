@@ -423,7 +423,7 @@ func TestLostTailWithCachedCopyReappends(t *testing.T) {
 	r.writeLiveOnly(name, endA, full[endA:]) // the good C, whole in the cache alone
 	r.dropSyncs(name)                        // the open's sync makes nothing durable
 
-	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID,
+	st, err := Run(context.Background(), r.reserveDeps(copySpare), core.Version{}, journalID,
 		lostTailMark(id, 200, int64(len(full))))
 
 	if err != nil {

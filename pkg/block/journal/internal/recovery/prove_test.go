@@ -237,7 +237,7 @@ func TestAMarkerWhoseSyncFailsIsTreatedAsAbsent(t *testing.T) {
 	synced := r.seam.CallsFor(kit.OpSync, name)
 	r.failSyncs(name, 0) // every sync fails
 
-	st := runTails(t, r) // the failed sync is the marker's absence, never the open's failure
+	st := runTailsReserve(t, r) // the failed sync is the marker's absence, never the open's failure
 
 	if calls := r.seam.CallsFor(kit.OpSync, name) - synced; calls != 1 {
 		t.Errorf("the open's syncs of the segment got %d, want 1: the marker flow's sync is the segment's one sync, its failure leaving none for the tail flow to make", calls)
@@ -278,7 +278,7 @@ func TestAMarkerWhoseSyncFailsOnceNeverSyncsAgain(t *testing.T) {
 	synced := r.seam.CallsFor(kit.OpSync, name)
 	r.failSyncs(name, 1) // the first sync fails, every one after it passes
 
-	st := runTails(t, r)
+	st := runTailsReserve(t, r)
 
 	if calls := r.seam.CallsFor(kit.OpSync, name) - synced; calls != 1 {
 		t.Errorf("the open's syncs of the segment got %d, want 1: a sync that succeeded after the failed one would stand in for nothing, and the flow makes none", calls)
@@ -573,7 +573,7 @@ func TestARecordWholeOnlyInTheCacheIsLostByTheDevice(t *testing.T) {
 		r.writeLiveOnly(name, bAt, good) // the good B, whole in the cache alone
 		r.dropSyncs(name)                // the open's sync makes nothing durable
 
-		st := runTails(t, r)
+		st := runTailsReserve(t, r)
 
 		wantReappends(t, st, reappendOf(t, 2, bAt, good))
 		if len(st.Proof.FailedWindows) != 0 {
@@ -588,7 +588,7 @@ func TestARecordWholeOnlyInTheCacheIsLostByTheDevice(t *testing.T) {
 		r.writeLiveOnly(name, bAt, good)
 		r.dropSyncs(name)
 
-		st := runTails(t, r) // bytes that read are lost, never refused
+		st := runTailsReserve(t, r) // bytes that read are lost, never refused
 
 		wantReappends(t, st, reappendOf(t, 2, bAt, good))
 		if len(st.Proof.FailedWindows) != 0 {
@@ -651,7 +651,7 @@ func TestALostRecordUnderATornTailEndsItsSegment(t *testing.T) {
 	r.writeLiveOnly(name, endA, goodB)
 	r.dropSyncs(name)
 
-	st := runTails(t, r)
+	st := runTailsReserve(t, r)
 
 	// B alone is handed to the re-append, from the copy its first read
 	// verified; the torn C never is, and the segment ends at B's own end
@@ -695,7 +695,7 @@ func TestASealMarkerThatFailsProofWithUnprovenRecords(t *testing.T) {
 	synced := r.seam.CallsFor(kit.OpSync, name)
 	r.dropSyncs(name)
 
-	st := runTails(t, r)
+	st := runTailsReserve(t, r)
 
 	f := fateOf(t, st, 2)
 	if f.Kind == fateSealToProve || f.Kind == fateSealed {
@@ -730,7 +730,7 @@ func TestATailWhoseSyncFailsIsAFailedWindow(t *testing.T) {
 	r.writeLiveOnly(name, bAt, full[bAt:])
 	r.failSyncs(name, 1)
 
-	st := runTails(t, r) // a failed window is resolved by the re-append, never by refusing
+	st := runTailsReserve(t, r) // a failed window is resolved by the re-append, never by refusing
 
 	if !slices.Equal(st.Proof.FailedWindows, []core.SegmentID{2}) {
 		t.Errorf("FailedWindows got %v, want [2]: the segment whose proof sync failed is named for the phases that re-prove it", st.Proof.FailedWindows)
@@ -798,7 +798,7 @@ func TestEveryDirectReadRefusedHandsTheTailOverAndRefusesAnUnnamedMarker(t *test
 		r.writeLiveOnly(recName, bAt, good)
 		r.failDirect(recName, 0)
 
-		st := runTails(t, r) // the refused re-read is no proof and no refusal
+		st := runTailsReserve(t, r) // the refused re-read is no proof and no refusal
 
 		wantReappends(t, st, reappendOf(t, 3, bAt, good))
 		if len(st.Proof.FailedWindows) != 0 {
@@ -838,7 +838,7 @@ func TestALostRecordSteppedBackwardFromDoesNotCutTheHoldingRecords(t *testing.T)
 	r.writeLiveOnly(name, bAt, full[bAt:bAt+tailLen]) // the good B, whole in the cache alone
 	r.dropSyncs(name)                                 // the open's sync makes nothing durable
 
-	st := runTails(t, r)
+	st := runTailsReserve(t, r)
 
 	// B is lost by the device and handed to the re-append; C proves whole on
 	// the device, and A its sync proved: three held records, one of them
@@ -915,7 +915,7 @@ func TestAnUnprovenAsideRecordIsProvenLikeAContentRecord(t *testing.T) {
 	r.writeLiveOnly(name, lAt, full[lAt:]) // the good loss record, whole in the cache alone
 	r.dropSyncs(name)
 
-	st := runTails(t, r)
+	st := runTailsReserve(t, r)
 
 	// The aside is lost by the device and handed over whole: its first copy
 	// is the record's own bytes, header and body both, and its fate's cut

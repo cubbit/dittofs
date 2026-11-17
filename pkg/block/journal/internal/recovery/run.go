@@ -152,7 +152,7 @@ var phases = [...]phase{
 	{span: core.SpanOpenTailProof, run: runTailProof},
 	{span: core.SpanOpenMarksLostTail, run: runMarksLostTail},
 	{span: core.SpanOpenSpares, run: runSpares},
-	{span: core.SpanOpenReappend},
+	{span: core.SpanOpenReappend, run: runReappend},
 	{span: core.SpanOpenAssembly, run: runAssemble},
 	{span: core.SpanOpenSeal},
 	{span: core.SpanOpenEmptying},
@@ -229,19 +229,23 @@ func rebuildReaders(deps Deps) int {
 // recovery phases in order under one open span, checking ctx before each,
 // and running each phase under the context its parent span returned, so
 // every phase span is the open span's child. The attach pass, the rebuild,
-// the marks raise, the tail's proof, the lost-tail check and the spares
+// the marks raise, the tail's proof, the lost-tail check, the spares
 // phase — the open's first writing one, which re-adopts the spare
 // candidates and zeroes their dirty slots after refusing on every range no
-// bounded read completed — and the assembly are built; the phases around
+// bounded read completed — and the re-append — which writes the tail the
+// device lost into a sealed spare of the repack reserve — and the assembly
+// are built; the phases around
 // them are named, span-covered steps that change nothing, each checked for
 // the context. A cancelled open answers the context's
 // error at the boundary it reached, the directory left as it began for a
-// later open — except for the spares phase, the open's writing one:
-// cancelling under its span stops it at its own context check or at the
-// doorstep of its next write — a write already under way finishes and the
-// next open settles what it left idempotently, but no write begins past
-// the cancellation — and a cancellation after it keeps that phase's
-// unlinks and zeroed slots, which a later open re-reads and re-decides.
+// later open — except for the spares phase and the re-append, the open's
+// writing ones:
+// cancelling under the span of either stops it at its own context check or
+// at the doorstep of its next write — a write already under way finishes
+// and the next open settles what it left idempotently, but no write begins
+// past the cancellation — and a cancellation after it keeps that phase's
+// unlinks, zeroed slots and sealed re-appended copies, which a later open
+// re-reads and re-decides.
 // floor and marks are carried for the phases that consume them — floor
 // for the rebuild, and marks for the marks raise phase, which reads them
 // into the state the spares phase holds its takes by, for the spares
