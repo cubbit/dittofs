@@ -57,7 +57,7 @@ func Rows() []Row {
 // accounts for admin, a call a caller that must change its password may
 // make, and a read failing with an error no row of the problem table names.
 var testRows = []route{
-	{method: http.MethodGet, pattern: "/api/v1/things/{id}", right: auth.View, serve: read(func(ctx context.Context, rq request[none]) (map[string]string, error) {
+	{method: http.MethodGet, pattern: "/api/v1/things/{id}", right: auth.View, serve: read(func(ctx context.Context, _ Deps, rq request[none]) (map[string]string, error) {
 		c, _ := auth.CallerFrom(ctx)
 		return map[string]string{"id": entity.ShareID(rq.ID).String(), "role": c.Role.String()}, nil
 	})},
@@ -84,14 +84,14 @@ var testRows = []route{
 		_, err := tx.PutSetting(entity.Setting{Scope: nodeScope(rq.ID), Key: "vault", Value: []byte(sealed)}, rq.Expect)
 		return vault{Spec: vaultSpec{Password: sealed}}, rq.ID, err
 	})},
-	{method: http.MethodGet, pattern: "/api/v1/accounts/{id}", right: auth.Accounts, serve: read(func(context.Context, request[none]) (none, error) {
+	{method: http.MethodGet, pattern: "/api/v1/accounts/{id}", right: auth.Accounts, serve: read(func(context.Context, Deps, request[none]) (none, error) {
 		return none{}, nil
 	})},
 	{method: http.MethodPost, pattern: "/api/v1/password", kind: entity.ResourceUser, right: auth.Self, mustChange: true, serve: call(verb("password"))},
 	{method: http.MethodGet, pattern: "/api/v1/knobs/{id}", right: auth.View, serve: watch(watching[knobRead]{read: readKnob, tag: func(k knobRead) uint64 { return k.Generation }, until: knobWait})},
 	{method: http.MethodGet, pattern: "/api/v1/vaults/{id}", right: auth.View, serve: watch(watching[vaultRead]{read: readVault, tag: func(v vaultRead) uint64 { return v.Generation }, until: changes(func(vaultRead, vaultRead) bool { return false })})},
 	{method: http.MethodGet, pattern: "/api/v1/tags", right: auth.View, serve: list(tags)},
-	{method: http.MethodGet, pattern: "/api/v1/fail", right: auth.View, serve: read(func(context.Context, request[none]) (none, error) {
+	{method: http.MethodGet, pattern: "/api/v1/fail", right: auth.View, serve: read(func(context.Context, Deps, request[none]) (none, error) {
 		return none{}, errors.New(UnnamedError)
 	})},
 }
@@ -230,8 +230,8 @@ type knobRead struct {
 	Spec       knobSpec `json:"spec"`
 }
 
-func readKnob(ctx context.Context, st reads, rq request[none]) (knobRead, error) {
-	s, err := settingIn(ctx, st, rq.ID, "knob")
+func readKnob(ctx context.Context, d Deps, rq request[none]) (knobRead, error) {
+	s, err := settingIn(ctx, d.Store, rq.ID, "knob")
 	if err != nil || s.Generation == 0 {
 		return knobRead{}, err
 	}
@@ -258,8 +258,8 @@ type vaultRead struct {
 	Spec       vaultSpec `json:"spec"`
 }
 
-func readVault(ctx context.Context, st reads, rq request[none]) (vaultRead, error) {
-	s, err := settingIn(ctx, st, rq.ID, "vault")
+func readVault(ctx context.Context, d Deps, rq request[none]) (vaultRead, error) {
+	s, err := settingIn(ctx, d.Store, rq.ID, "vault")
 	return vaultRead{Generation: s.Generation, Spec: vaultSpec{Password: string(s.Value)}}, err
 }
 
@@ -291,8 +291,8 @@ var tags = listing[entity.Netgroup, tag]{
 	lo:      []byte(TagsFrom),
 	hi:      []byte(TagsTo),
 	filters: []string{"name"},
-	records: func(ctx context.Context, st reads, after []byte, f map[string]string) iter.Seq2[entity.Netgroup, error] {
-		all := st.Netgroups(ctx, string(after))
+	records: func(ctx context.Context, d Deps, after []byte, f map[string]string) iter.Seq2[entity.Netgroup, error] {
+		all := d.Store.Netgroups(ctx, string(after))
 		name, ok := f["name"]
 		if !ok {
 			return all

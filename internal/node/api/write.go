@@ -26,10 +26,13 @@ const maxKey = 255
 // transaction, as the body a PUT of it sends, with its tag, ok false when
 // there is none; whether its commit raises the principals or settings
 // generation; whether the row is a POST action that changes the spec, and so
-// carries If-Match as a PUT does; and secret, which names the fields of the
-// body whose values its audit record holds only as "set", nil for none.
+// carries If-Match as a PUT does; secret, which names the fields of the
+// body whose values its audit record holds only as "set", nil for none; and
+// op, the kind of operation the write starts on the record it wrote, empty
+// for a write that starts none.
 type writing[B any] struct {
 	kind        entity.ResourceKind
+	op          apiv1.OpKind
 	read        func(tx entity.ControlPlaneTx, id [16]byte) (doc B, tag uint64, ok bool, err error)
 	raises      bool
 	changesSpec bool
@@ -61,7 +64,9 @@ type writing[B any] struct {
 // write matters.
 //
 // The answer, 200 with what h returns and the record's tag as its ETag, or
-// 201 with a Location naming the record for a POST on a collection, is made
+// 201 with a Location naming the record for a POST on a collection, or, for
+// a row that starts an operation, 202 with the operation's body and a
+// Location naming it, is made
 // inside the transaction and recorded under the key, so a replay answers
 // exactly what was first sent and changes nothing. The audit record commits
 // with the change; a refused request records no key and is audited in a
@@ -150,18 +155,26 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			}
 			rec.Target.ID = wrote[:]
 			rec.Before, rec.After, rec.Outcome = tag, afterTag, []byte("applied")
-			status := http.StatusOK
+			status, body, location := http.StatusOK, any(resp), ""
 			if created {
-				status = http.StatusCreated
+				status, location = http.StatusCreated, r.URL.Path+"/"+idString(wrote)
 			}
-			if a, err = jsonAnswer(status, resp); err != nil {
+			if w.op != "" {
+				op, err := s.start(ctx, tx, w.op, entity.ResourceRef{Kind: w.kind, ID: wrote[:]})
+				if err != nil {
+					return err
+				}
+				status, body, location = http.StatusAccepted, op, "/api/v1/operations/"+op.ID
+				rec.Outcome = []byte(op.ID)
+			}
+			if a, err = jsonAnswer(status, body); err != nil {
 				return err
 			}
 			if exists {
 				a.header.Set("ETag", etag(afterTag))
 			}
-			if created {
-				a.header.Set("Location", r.URL.Path+"/"+entity.ShareID(wrote).String())
+			if location != "" {
+				a.header.Set("Location", location)
 			}
 			if idem != nil {
 				idem.Answer, err = json.Marshal(recorded{a.status, a.header, a.body})
@@ -196,6 +209,22 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		}
 		return a, nil
 	}
+}
+
+// start writes, in tx, an operation of kind on target, started by the
+// caller ctx carries and driven by no one yet, and returns it as its read
+// answers it. A second one of kind on target while one runs is refused 409
+// operation_running naming it.
+func (s *Server) start(ctx context.Context, tx entity.ControlPlaneTx, kind apiv1.OpKind, target entity.ResourceRef) (apiv1.Operation, error) {
+	c, _ := auth.CallerFrom(ctx)
+	op := entity.Operation{ID: entity.OperationID(entity.NewShareID()), Kind: string(kind), Target: target, Account: c.Principal, State: entity.OpPending}
+	gen, err := tx.PutOperation(op, 0)
+	if err != nil {
+		return apiv1.Operation{}, err
+	}
+	op.Generation, op.Started, op.Updated = gen, tx.Now(), tx.Now()
+	v, err := viewOp(ctx, s.d, op)
+	return v.Operation, err
 }
 
 // replayed is the answer err recorded when it is a replay of a request

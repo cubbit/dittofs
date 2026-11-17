@@ -23,12 +23,12 @@ type clock interface {
 }
 
 // watching is what a read a client may wait on knows of its record: read,
-// which reads it; tag, its tag, which the answer carries as its ETag; and
+// which reads it from the server's Deps; tag, its tag, which the answer carries as its ETag; and
 // until, which parses ?wait=, answering how long the call may park, above
 // zero, and done, whether a read now answers the wait, first being the read
 // the call began with.
 type watching[R any] struct {
-	read  func(context.Context, reads, request[none]) (R, error)
+	read  func(context.Context, Deps, request[none]) (R, error)
 	tag   func(R) uint64
 	until func(wait string) (time.Duration, func(first, now R) bool, error)
 }
@@ -76,10 +76,10 @@ func watch[R any](w watching[R]) adapter {
 			}
 		}
 		if s.d.Store == nil {
-			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
+			return answer{}, errNoStore
 		}
 		rq := request[none]{ID: id}
-		first, err := w.read(ctx, s.d.Store, rq)
+		first, err := w.read(ctx, s.d, rq)
 		if err != nil || wait == 0 || done(first, first) {
 			return w.answer(first, err)
 		}
@@ -106,7 +106,7 @@ func watch[R any](w watching[R]) adapter {
 				case <-ctx.Done():
 					return answer{}, ctx.Err()
 				}
-				if last, err = w.read(ctx, s.d.Store, rq); err != nil || done(first, last) {
+				if last, err = w.read(ctx, s.d, rq); err != nil || done(first, last) {
 					return w.answer(last, err)
 				}
 			}

@@ -18,7 +18,16 @@ import (
 type reads interface {
 	Netgroups(ctx context.Context, after string) iter.Seq2[entity.Netgroup, error]
 	Settings(ctx context.Context, scope entity.SettingScope) iter.Seq2[entity.Setting, error]
+	Operation(ctx context.Context, id entity.OperationID) (entity.Operation, bool, error)
+	Operations(ctx context.Context, after entity.OperationID) iter.Seq2[entity.Operation, error]
+	RunningOperations(ctx context.Context, after entity.Operation) iter.Seq2[entity.Operation, error]
+	AuditRecords(ctx context.Context, f entity.AuditFilter, after []byte) iter.Seq2[entity.AuditRecord, error]
+	// AuditPosition is a record's position, which AuditRecords resumes after.
+	AuditPosition(a entity.AuditRecord) []byte
 }
+
+// errNoStore refuses a call on a node that holds no control-plane store.
+var errNoStore = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
 
 // Listing bounds: the page size a listing answers without ?limit=, and the
 // most it answers with one.
@@ -36,15 +45,18 @@ const (
 type listing[E, T any] struct {
 	lo, hi  []byte
 	filters []string
-	records func(ctx context.Context, st reads, after []byte, filter map[string]string) iter.Seq2[E, error]
+	records func(ctx context.Context, d Deps, after []byte, filter map[string]string) iter.Seq2[E, error]
 	key     func(E) []byte
 	item    func(E, perPage) T
 }
 
-// nodeStatuses is the store's read of every node's status, in node ID
-// order, resuming after a node; the zero ID starts from the first.
-type nodeStatuses interface {
+// nodeReads is the store's reads of the nodes: every node's status and
+// every node's record, each in node ID order, resuming after a node, the
+// zero ID starting from the first; and one node's record.
+type nodeReads interface {
 	NodeStatuses(ctx context.Context, after entity.NodeID) iter.Seq2[entity.NodeStatus, error]
+	NodeRecords(ctx context.Context, after entity.NodeID) iter.Seq2[entity.Node, error]
+	Node(ctx context.Context, id entity.NodeID) (entity.Node, bool, error)
 }
 
 // perPage is what a listing reads once per page and hands every item: every
@@ -108,7 +120,7 @@ func list[E, T any](l listing[E, T]) adapter {
 			}
 		}
 		if s.d.Store == nil || s.d.Nodes == nil {
-			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
+			return answer{}, errNoStore
 		}
 		var pp perPage
 		for st, err := range s.d.Nodes.NodeStatuses(ctx, entity.NodeID{}) {
@@ -119,7 +131,7 @@ func list[E, T any](l listing[E, T]) adapter {
 		}
 		page := apiv1.Page[T]{Items: []T{}}
 		var last []byte
-		for e, err := range l.records(ctx, s.d.Store, after, filter) {
+		for e, err := range l.records(ctx, s.d, after, filter) {
 			if err != nil {
 				return answer{}, err
 			}

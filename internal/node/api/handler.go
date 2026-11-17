@@ -54,10 +54,11 @@ type answer struct {
 // its transaction and sent only once that has committed.
 type adapter func(ctx context.Context, s *Server, r *http.Request, id [16]byte) (answer, error)
 
-// read adapts a read: its answer is 200 with what h returns.
-func read[R any](h func(context.Context, request[none]) (R, error)) adapter {
-	return func(ctx context.Context, _ *Server, _ *http.Request, id [16]byte) (answer, error) {
-		return jsonOr(h(ctx, request[none]{ID: id}))
+// read adapts a read: its answer is 200 with what h returns from the
+// server's Deps.
+func read[R any](h func(context.Context, Deps, request[none]) (R, error)) adapter {
+	return func(ctx context.Context, s *Server, _ *http.Request, id [16]byte) (answer, error) {
+		return jsonOr(h(ctx, s.d, request[none]{ID: id}))
 	}
 }
 

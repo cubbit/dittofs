@@ -41,7 +41,7 @@ func auditPos(t time.Time, id [16]byte) []byte {
 // AuditPosition is a's position in the audit, what AuditRecords takes to
 // resume after a. Its bytes are opaque: a caller keeps and passes them back,
 // and never builds or reads them.
-func AuditPosition(a entity.AuditRecord) []byte { return auditPos(a.Time, a.ID) }
+func (ControlPlane) AuditPosition(a entity.AuditRecord) []byte { return auditPos(a.Time, a.ID) }
 
 func auditKey(t time.Time, id [16]byte) []byte {
 	return append([]byte{keys.KindAU}, auditPos(t, id)...)
