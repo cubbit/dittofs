@@ -19,8 +19,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
-// key is the address every test's records are charged to.
-var key = netip.MustParseAddr("127.0.0.1")
+// readerKey is the address every test's records are charged to.
+var readerKey = netip.MustParseAddr("127.0.0.1") // another name: the server test holds func key
 
 // pair returns two ends of a loopback connection: the server's and the
 // client's. The deadline tests use net.Pipe in a synctest bubble instead: its
@@ -53,9 +53,9 @@ func pair(t *testing.T) (srv, cli net.Conn) {
 	return srv, cli
 }
 
-// record frames body as testproto does: its length, and the flag saying more
-// fragments follow when last is false.
-func record(body []byte, last bool) []byte {
+// framedRecord frames body as testproto does: its length, and the flag saying
+// more fragments follow when last is false.
+func framedRecord(body []byte, last bool) []byte {
 	b := binary.BigEndian.AppendUint32(nil, uint32(len(body)))
 	if !last {
 		b[0] |= 0x80
@@ -77,7 +77,7 @@ func payload(n int) []byte {
 func chargeOf(t *testing.T, n int) int64 {
 	t.Helper()
 	b := resources.NewWaitBudget("probe", 1<<30)
-	buf, err := resources.NewBufPool(b).Get(context.Background(), key, n)
+	buf, err := resources.NewBufPool(b).Get(context.Background(), readerKey, n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func readerOf(t *testing.T, srv net.Conn, ceiling int64, timeout time.Duration) 
 	budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", ceiling)}
 	adaptertest.CheckLeaks(t, budgets)
 	pool := resources.NewBufPool(budgets.Receive)
-	return core.NewTestReader(srv, framer(), pool, key, timeout), budgets, pool
+	return core.NewTestReader(srv, framer(), pool, readerKey, timeout), budgets, pool
 }
 
 // Records of every class, written one by one, come out whole and in order,
@@ -106,7 +106,7 @@ func TestRecordsComeOutWhole(t *testing.T) {
 	r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), time.Second)
 	for _, n := range []int{0, 40, 4000, 5000, 1 << 20} {
 		body := payload(n)
-		go func() { _, _ = cli.Write(record(body, true)) }()
+		go func() { _, _ = cli.Write(framedRecord(body, true)) }()
 		rec, err := r.Read(context.Background())
 		if err != nil {
 			t.Fatalf("a record of %d bytes: %v", n, err)
@@ -132,7 +132,7 @@ func TestABurstIsEveryRecord(t *testing.T) {
 	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), time.Second)
 	var all []byte
 	for i := range 100 {
-		all = append(all, record(payload(10+i%40), true)...)
+		all = append(all, framedRecord(payload(10+i%40), true)...)
 	}
 	if _, err := cli.Write(all); err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestABurstIsEveryRecord(t *testing.T) {
 func TestAHeaderPastTheCapReservesNothing(t *testing.T) {
 	srv, cli := pair(t)
 	r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 0)
-	hdr := record(nil, true)
+	hdr := framedRecord(nil, true)
 	binary.BigEndian.PutUint32(hdr, 1<<20+1)
 	if _, err := cli.Write(hdr); err != nil {
 		t.Fatal(err)
@@ -175,13 +175,13 @@ func TestAFullBudgetWaits(t *testing.T) {
 	budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", chargeOf(t, 1<<20))}
 	adaptertest.CheckLeaks(t, budgets)
 	pool := resources.NewBufPool(budgets.Receive)
-	held, err := pool.Get(context.Background(), key, 1<<20)
+	held, err := pool.Get(context.Background(), readerKey, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := core.NewTestReader(srv, framer(), pool, key, 0)
+	r := core.NewTestReader(srv, framer(), pool, readerKey, 0)
 	body := payload(40)
-	if _, err := cli.Write(record(body, true)); err != nil {
+	if _, err := cli.Write(framedRecord(body, true)); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -219,7 +219,7 @@ func TestFragments(t *testing.T) {
 	for i, n := range []int{1024, 512, 100} {
 		part := payload(n)
 		want = append(want, part...)
-		all = append(all, record(part, i == 2)...)
+		all = append(all, framedRecord(part, i == 2)...)
 	}
 	go func() { _, _ = cli.Write(all) }()
 	rec, err := r.Read(context.Background())
@@ -244,8 +244,8 @@ func TestAFragmentPastTheCap(t *testing.T) {
 	srv, cli := pair(t)
 	r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 0)
 	go func() {
-		_, _ = cli.Write(record(payload(1<<20), false))
-		_, _ = cli.Write(record(payload(1), true))
+		_, _ = cli.Write(framedRecord(payload(1<<20), false))
+		_, _ = cli.Write(framedRecord(payload(1), true))
 	}()
 	if _, err := r.Read(context.Background()); !errors.Is(err, core.ErrFrame) {
 		t.Errorf("a fragment past the cap returns %v, want a framing refusal", err)
@@ -262,7 +262,7 @@ func TestAFifthFragment(t *testing.T) {
 	r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 0)
 	go func() {
 		for i := range 5 {
-			_, _ = cli.Write(record(payload(1), i == 4))
+			_, _ = cli.Write(framedRecord(payload(1), i == 4))
 		}
 	}()
 	if _, err := r.Read(context.Background()); !errors.Is(err, core.ErrFrame) {
@@ -297,7 +297,7 @@ func TestFrameDeadline(t *testing.T) {
 		srv, cli := net.Pipe()
 		defer func() { _, _ = srv.Close(), cli.Close() }()
 		r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 100*time.Millisecond)
-		go func() { _, _ = cli.Write(record(payload(100), true)[:4+50]) }()
+		go func() { _, _ = cli.Write(framedRecord(payload(100), true)[:4+50]) }()
 		start := time.Now()
 		done := make(chan error, 1)
 		go func() {
@@ -345,7 +345,7 @@ func TestASilentConnectionIsNotTimedOut(t *testing.T) {
 			t.Fatalf("a silent connection returns %v", err)
 		default:
 		}
-		go func() { _, _ = cli.Write(record(payload(10), true)) }()
+		go func() { _, _ = cli.Write(framedRecord(payload(10), true)) }()
 		select {
 		case err := <-done:
 			if err != nil {
@@ -364,7 +364,7 @@ func TestTheDeadlineStopsAfterARecord(t *testing.T) {
 		srv, cli := net.Pipe()
 		defer func() { _, _ = srv.Close(), cli.Close() }()
 		r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
-		first, second := record(payload(20), true), record(payload(20), true)
+		first, second := framedRecord(payload(20), true), framedRecord(payload(20), true)
 		sent := make(chan error, 1)
 		go func() {
 			_, err := cli.Write(append(append([]byte{}, first...), second[:2]...))
@@ -394,7 +394,7 @@ func TestTheDeadlineStopsAfterARecord(t *testing.T) {
 		// And with nothing buffered: the deadline does not carry over to a record
 		// that comes after a pause either.
 		time.Sleep(150 * time.Millisecond)
-		go func() { _, _ = cli.Write(record(payload(30), true)) }()
+		go func() { _, _ = cli.Write(framedRecord(payload(30), true)) }()
 		rec, err = r.Read(context.Background())
 		if err != nil {
 			t.Fatalf("a record after a pause: %v", err)
@@ -413,7 +413,7 @@ func TestATrickledHeaderTimesOut(t *testing.T) {
 		srv, cli := net.Pipe()
 		defer func() { _, _ = srv.Close(), cli.Close() }()
 		r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
-		go func() { _, _ = cli.Write(record(payload(20), true)[:2]) }()
+		go func() { _, _ = cli.Write(framedRecord(payload(20), true)[:2]) }()
 		// A backstop, so a reader that arms no deadline fails here rather than
 		// deadlocking the bubble.
 		if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -439,16 +439,16 @@ func TestTheDeadlineStopsAtTheReceiveWait(t *testing.T) {
 		budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", chargeOf(t, 1<<20))}
 		adaptertest.CheckLeaks(t, budgets)
 		pool := resources.NewBufPool(budgets.Receive)
-		held, err := pool.Get(context.Background(), key, 1<<20)
+		held, err := pool.Get(context.Background(), readerKey, 1<<20)
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := core.NewTestReader(srv, framer(), pool, key, 100*time.Millisecond)
+		r := core.NewTestReader(srv, framer(), pool, readerKey, 100*time.Millisecond)
 		// Past the read buffer, so the rest of the record is read from the
 		// connection after the grant and the deadline restarted there is what
 		// it runs under.
 		body := payload(64 << 10)
-		go func() { _, _ = cli.Write(record(body, true)) }()
+		go func() { _, _ = cli.Write(framedRecord(body, true)) }()
 		done := make(chan error, 1)
 		go func() {
 			rec, err := r.Read(context.Background())
@@ -477,7 +477,7 @@ func TestABufferedPartialHeaderTimesOut(t *testing.T) {
 		srv, cli := net.Pipe()
 		defer func() { _, _ = srv.Close(), cli.Close() }()
 		r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
-		first, second := record(payload(20), true), record(payload(20), true)
+		first, second := framedRecord(payload(20), true), framedRecord(payload(20), true)
 		sent := make(chan error, 1)
 		go func() {
 			_, err := cli.Write(append(append([]byte{}, first...), second[:3]...))
@@ -531,11 +531,11 @@ func TestACancelDuringTheWaitStopsTheRead(t *testing.T) {
 		budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", chargeOf(t, 1<<20))}
 		adaptertest.CheckLeaks(t, budgets)
 		pool := resources.NewBufPool(budgets.Receive)
-		held, err := pool.Get(context.Background(), key, 1<<20)
+		held, err := pool.Get(context.Background(), readerKey, 1<<20)
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := core.NewTestReader(srv, framer(), pool, key, 5*time.Second)
+		r := core.NewTestReader(srv, framer(), pool, readerKey, 5*time.Second)
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
@@ -545,7 +545,7 @@ func TestACancelDuringTheWaitStopsTheRead(t *testing.T) {
 			}
 			done <- err
 		}()
-		go func() { _, _ = cli.Write(record(payload(20), true)) }()
+		go func() { _, _ = cli.Write(framedRecord(payload(20), true)) }()
 		synctest.Wait() // the reader waits for its receive charge
 		cancel()
 		held.Release()
@@ -578,7 +578,7 @@ func TestACancelWhileTheHeaderWaitsStopsTheRead(t *testing.T) {
 		}()
 		synctest.Wait() // the reader waits for the first byte
 		cancel()
-		go func() { _, _ = cli.Write(record(payload(20), true)) }()
+		go func() { _, _ = cli.Write(framedRecord(payload(20), true)) }()
 		select {
 		case err := <-done:
 			if !errors.Is(err, context.Canceled) {
