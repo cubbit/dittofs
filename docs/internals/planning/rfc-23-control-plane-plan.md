@@ -1071,13 +1071,13 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 	}
 	// the principal counted is the principal checked; the zero one does the dummy work and fails
 	err = h.signin.VerifyPassword(r.Context(), acct, req.Password) // APISignIn (X2)
-	if errors.Is(err, identity.ErrUnavailable) {
+	if errors.Is(err, vfserr.ErrUnavailable) {
 		// the store could not answer: 503, nothing settled or audited, the source's raise taken back
 		h.unraise(r.Context(), src, nonce)
 		h.problem(w, err)
 		return
 	}
-	if errors.Is(err, identity.ErrLogonFailure) {
+	if errors.Is(err, vfserr.ErrLogonFailure) {
 		// the refusal's audit, and no idempotency record (RFC 16 §3, RFC 23 §4.5); it settles the
 		// failure, moving the source's Failed and its XP row, the only write after creation that
 		// moves them, and doing nothing on a source count missing or holding another Nonce (§5.3)
@@ -1105,7 +1105,7 @@ func (h *handlers) authenticate(r *http.Request) (metadata.User, error) {
 		return metadata.User{}, err
 	}
 	u, err := h.signin.Account(r.Context(), claims.Principal) // per call (RFC 23 §5.3)
-	if errors.Is(err, identity.ErrUnavailable) {
+	if errors.Is(err, vfserr.ErrUnavailable) {
 		return metadata.User{}, err // 503, never 401: the store could not answer
 	}
 	if err != nil || claims.IssuedAt.Before(u.NotBefore) || h.revoked(r.Context(), claims.Session) {
