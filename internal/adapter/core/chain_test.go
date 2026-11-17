@@ -1238,6 +1238,87 @@ func TestAChainJoinsUpToAQuarterOfThePool(t *testing.T) {
 	})
 }
 
+// growsWrap is the stages' Security whose Wrap adds the bytes its header's
+// ReplyLen bounds before sealing: an input standing for a protocol whose
+// Wrap adds a header of its own, as SMB's transform header is.
+type growsWrap struct {
+	core.Security
+	codec core.HeaderCodec
+}
+
+func (g growsWrap) Wrap(h core.Header, reply *resources.Buf) error {
+	reply.B = append(reply.B, make([]byte, g.codec.ReplyLen(h))...)
+	return g.Security.Wrap(h, reply)
+}
+
+// A chain's record, as join frames it, stays within the protocol's record
+// cap (§4.7): its replies as encoded, Chain's padding between them, and
+// what Wrap adds, which the first member's ReplyLen bounds. Two Echo, their
+// replies grown to some half of testproto's 1 MiB cap, join in one record
+// framed at the cap, and go out in two, counted record, framed one byte
+// past it, or with the replies alone at the cap, which Wrap would take past
+// the cap the client reads.
+func TestAChainSplitsAtTheRecordCap(t *testing.T) {
+	const grown = 500 << 10
+	limit, _ := testproto.New(adapter.Deps{}).Framer().MaxRecord()
+	framed := limit - core.ChainPadding - headerLen // two replies' bytes whose record join frames at the cap
+	for _, c := range []struct {
+		name    string
+		encoded int // the two replies' bytes, as encoded
+		records int
+	}{
+		{"framed at the cap", framed, 1},
+		{"framed one byte past the cap", framed + 1, 2},
+		{"encoded at the cap", limit, 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				grow := func(inv core.Invocation) core.Invocation {
+					enc, bound := inv.Encode, inv.Bound
+					inv.Encode = func(out *resources.Buf, v core.Version) error {
+						if err := enc(out, v); err != nil {
+							return err
+						}
+						out.B = append(out.B, make([]byte, grown)...)
+						return nil
+					}
+					inv.Bound = func() int { return bound() + grown }
+					return inv
+				}
+				m := metrics.New("v", "c")
+				d := adapter.Deps{Metrics: m}
+				proto := edited{wrapRows(testproto.New(d), grow, nil), func(st *core.Stages) {
+					st.Security = growsWrap{Security: st.Security, codec: st.Header}
+				}}
+				s := newSeamWith(t, proto, 64<<20, d)
+				payload := make([]byte, c.encoded-2*(headerLen+grown)) // the second Echo's: an Echo's reply is its header and its payload
+				s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Payload: payload})
+				var ids []uint64
+				records := 0
+				for len(ids) < 2 {
+					rs, err := s.client.Recv()
+					if err != nil {
+						t.Fatalf("record %d after replies %v: %v", records+1, ids, err)
+					}
+					records++
+					for _, r := range rs {
+						ids = append(ids, r.ID)
+					}
+				}
+				if records != c.records || !slices.Equal(ids, []uint64{1, 2}) {
+					t.Errorf("the chain is answered in %d records, replies %v: want %d, replies [1 2]", records, ids, c.records)
+				}
+				got, _ := scrape(t, m)
+				for reason, want := range map[string]float64{"record": float64(c.records - 1), "quarter": 0} {
+					if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=" + reason + "}"; got[k] != want {
+						t.Errorf("%s = %v, want %v", k, got[k], want)
+					}
+				}
+			})
+		})
+	}
+}
+
 // wrapsUnder is the stages' Security, recording the operation of the header
 // each Wrap is handed: a pass-through, where which header Wrap gets is what
 // is checked.

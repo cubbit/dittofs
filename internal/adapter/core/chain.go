@@ -368,15 +368,12 @@ func (c *chain) status1(e *entry, h Header, s Status, cause error) {
 
 // reserve takes a member's reply buffer for the chain: when its charge would
 // take the chain's held reservations past a quarter of the reply pool's
-// ceiling, or it does not fit at once while the chain holds replies, those
-// go out first, so a chain never waits on the reply pool holding it (§4.7).
+// ceiling, its bytes the record join frames past the protocol's cap, or it
+// does not fit at once while the chain holds replies, those go out first, so
+// a chain never waits on the reply pool holding it (§4.7).
 func (c *chain) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	p := c.p
-	c.quarter(n)
-	// ponytail: §4.7's record cap is not split on yet: a member whose
-	// joined record, as encoded, would pass Framer.MaxRecord sends the
-	// replies before it first, counted record, here beside the quarter's
-	// check. Add it once the framer states its cap.
+	c.room(n)
 	// decision: a member that does not fit at once is not refused: the
 	// replies before it go out, and it waits under its deadline, since a
 	// refusal's status would itself need a buffer from the pool its chain
@@ -394,13 +391,27 @@ func (c *chain) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	return p.sh.reserveReply(ctx, p.l.remote, n)
 }
 
-// quarter sends what the chain holds first when a reservation of n bytes
-// would take its held reservations past a quarter of the reply pool's
-// ceiling (§4.7).
-func (c *chain) quarter(n int) {
+// room sends what the chain holds first when a reservation of n bytes would
+// take its held reservations past a quarter of the reply pool's ceiling, or
+// the record join frames past the protocol's record cap, so one Frame header
+// can state it (§4.7). The record is counted as join frames it: the replies
+// held, as encoded, n, Chain's padding between them, and what Wrap adds,
+// which the first member's ReplyLen bounds.
+func (c *chain) room(n int) {
 	p := c.p
-	if len(c.held) > 0 && c.charge+p.sh.reply.Charge(n) > p.sh.reply.Ceiling()/4 {
+	if len(c.held) == 0 {
+		return
+	}
+	if c.charge+p.sh.reply.Charge(n) > p.sh.reply.Ceiling()/4 {
 		c.flush(splitQuarter, c.cur.tr)
+		return
+	}
+	size := n + chainPadding*len(c.held) + p.st.Header.ReplyLen(c.held[0].h)
+	for _, m := range c.held {
+		size += m.n
+	}
+	if size > p.l.record {
+		c.flush(splitRecord, c.cur.tr)
 	}
 }
 
@@ -414,7 +425,7 @@ func (c *chain) quarter(n int) {
 // cap.
 func (c *chain) status(ctx context.Context, n int) *resources.Buf {
 	p := c.p
-	c.quarter(n)
+	c.room(n)
 	if buf, ok := p.sh.reply.TryGet(p.l.remote, n); ok {
 		c.free()
 		return buf
@@ -500,7 +511,7 @@ func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, 
 		// ponytail: only a test protocol both chains and returns copies.
 		// Drop the copy once Lookup is handed the client's key, when a
 		// protocol that chains returns copies.
-		c.quarter(len(reply.B))
+		c.room(len(reply.B))
 		own, ok := c.p.sh.reply.TryGet(c.p.l.remote, len(reply.B))
 		if !ok {
 			c.flush(splitReplyPool, tr)
@@ -631,9 +642,9 @@ func (c *chain) flush(why split, tr *track) {
 }
 
 // chainPadding is the room a joined record keeps for what HeaderCodec.Chain
-// adds before each reply, a capacity hint only: each member's ReplyLen
-// already counts its padding, and a record that grows past its room
-// reallocates.
+// adds before each reply, which the record cap's check counts too: each
+// member's ReplyLen already counts its padding, and a record that grows past
+// its room reallocates.
 const chainPadding = 7
 
 // join makes one record of the held replies: one alone as it is, more

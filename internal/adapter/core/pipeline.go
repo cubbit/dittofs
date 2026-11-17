@@ -194,6 +194,7 @@ type link struct {
 	ctx    context.Context
 	remote netip.Addr
 	set    settings.Settings // nil: none, so no operation is switched off
+	record int               // the protocol's record cap, Framer.MaxRecord's bytes: a chain's record stays within it
 	out    func(msg *resources.Buf, key, before uint64) error
 	close  func(err error)
 }
