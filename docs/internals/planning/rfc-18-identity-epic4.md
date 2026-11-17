@@ -236,10 +236,12 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
     answers `smb2.session.ntlmssp_bug14932` with `STATUS_INVALID_PARAMETER`. It is decided
     before the proof is computed, so `ErrInvalid` never depends on the password. Unlike the
     unclassified step it is an NTLM attempt by a named user, so it is recorded: one logon event
-    and one `identity_authentications_total` count, outcome `invalid` (RFC 18 §9.2). It is the one
-    refusal after the throttle that does not count toward it (D5): it is decided before the proof, so it tells
-    nothing of the password. From a pair the throttle already refuses, it is answered `throttled`
-    like any other attempt.
+    and one `identity_authentications_total` count, outcome `invalid` (RFC 18 §9.2). Of the
+    refusals after the throttle, it is the one D3 decides that does not count toward it (D5): it
+    is decided before the proof, so it tells nothing of the password. A store or secret fault,
+    `ErrUnavailable` (T4.2), does not count either (D5), so an outage never locks a right
+    password out. From a pair the throttle already refuses, it is answered `throttled` like any
+    other attempt.
   - Every failure once the proof has been computed (the proof, the key exchange, the MIC, a
     disabled user) is `ErrLogonFailure`, counted by the throttle, so no answer tells a right
     password from a wrong one.
@@ -271,7 +273,10 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   suffix and folds with `entity.FoldPrincipalName`, the fold that keys `NX‖user`; E2's `Lookup`
   calls the same function, so a spelling the store finds as one user is one pair and no second
   copy of the stripping or the fold can drift from it. E6's T6.7 folds its cache keys with
-  `entity.FoldPrincipalName`. Prior art: none found.
+  `entity.FoldPrincipalName`. T4.2's local check finds the user through E2's `Lookup`, so the
+  sign-in, `Lookup` and the throttle key resolve one presented string to one principal, and E2's
+  R8 refuses `\` in a local name as it refuses `@`, so no stored name is split by the strip.
+  Prior art: none found.
 - **D7, logon events go to `Deps.Logons`, written as log lines without the presented name,
   pending the user's answer (§9).** `LogonSink` has RFC 25's method shape, `Logon(ctx,
   *LogonEvent)`, and `LogonEvent` holds RFC 25 §4.2's logon fields this epic has: the outcome,
@@ -390,8 +395,9 @@ internal/vfs/
     `NTLM` key off, `ErrLogonFailure` (R15); the NTLMv1
     refusal (R7); the malformed-response refusal (D3); the domain table (D8), ASCII letters
     folded, with RFC 18 §3.5's alternate-suffix `decision:` at it (R5, R6);
-  - the local check: E2's `Find` with the `UserName` scheme; the user's record; a disabled,
-    directory or NT-hash-less user, and a miss (a user marked deleted among them, since `Find`
+  - the local check: E2's `Lookup` (its T2.6), which finds the user by
+    `entity.PrincipalUserPart` as D6's throttle key does; the user's record; a disabled,
+    directory or NT-hash-less user, and a miss (a user marked deleted among them, since `Lookup`
     no longer finds it), verified against D4's dummy hash and
     refused; the NT hash resolved through `Deps.Secrets` as a `Secret` of kind nt-hash, and a
     `nil` `Secrets` answering `ErrUnavailable`; T4.1's `ntowfv2` with the user and domain as the
@@ -503,6 +509,13 @@ internal/vfs/
   - 10 failures spread over `alice`, `ALICE`, `CORP\alice` (refused `unknown_domain` here) and
     `alice@CORP.EXAMPLE`, then the right password as `alice`: refused (catches a spelling that
     resets the count, R21);
+  - `alice`, `ALICE` and `NAS01\alice`, each sent as the user name with an empty domain and the
+    right password: `Lookup` and `SignIn` give alice's principal for each, and the throttle's key,
+    read through an `export_test.go` accessor, is one for all three (catches the sign-in finding
+    the literal name, which makes one string two principals, D6);
+  - 10 sign-ins for alice from A while `kvtest`'s fault wrapper fails the user's read, each
+    `ErrUnavailable`, then the right password with the wrapper off: accepted (catches a store
+    fault counted, D3, D5);
   - with alice throttled from A, alice from B signs in, and from A's IPv4-mapped IPv6 form is
     still refused (catches a per-account lockout, R19, and an unmapped key, D5);
   - the clock advanced so the oldest of 10 is 10 minutes old: the right password accepted;

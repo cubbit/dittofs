@@ -57,7 +57,7 @@ a password is derived and checked, and while NTLM is off it is never kept as an 
 
 - root is the well-known principal `0x0D`, uid and gid 0 and 65534 are held by rule, and a
   `Machine` record exists as RFC 16 §2.3 shapes it;
-- user and group names are unique under simple Unicode case folding, and a local name with `@` is
+- user and group names are unique under simple Unicode case folding, and a local name with `@` or `\` is
   refused;
 - uids, gids and RIDs come from three counters that only rise, inside the transaction that writes
   the record, through `Alloc` on `Minter.Create` and behind RFC 23's plan's `entity.Alloc` on
@@ -75,7 +75,7 @@ a password is derived and checked, and while NTLM is off it is never kept as an 
 
 `entity`'s root ID, `PrincipalMachine`, `SchemeDir`, `User.Password` and `User.NTHash`; kvstore's
 refusals of a well-known principal, of uid and gid 0 and 65534, of a malformed machine record, of a
-SID change and of a file principal without its uid or gid and SID; the name fold and the `@` rule;
+SID change and of a file principal without its uid or gid and SID; the name fold and the `@` and `\` rule;
 the `IDS‖0x04` (uid), `IDS‖0x05` (gid) and `IDS‖0x06` (RID) counters and the installation's domain SID; the allocation
 behind `Alloc` on `PutUser` and `PutGroup`; `Minter.Create`; identity's settings section,
 `State.Settings`, `Apply`'s refusal and `Deps.Secrets`; `Scheme.Stored()`, `Spell` and `Find`;
@@ -178,7 +178,7 @@ spells it `merrs.NewInvalidArgumentError`, as RFC 23's plan's epic 2 does (its D
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R7 | User and group names are compared under simple Unicode case folding and are unique under it within their kind; a user and a group may share a name | MUST | §4.6, §12 item 1; RFC 16 §4.2 `NX‖kind‖name` | T2.1 |
-| R8 | A local user or group name never holds `@`: a creation or rename naming one is refused `ErrInvalid` | MUST NOT | §4.6 | T2.1 |
+| R8 | A local user or group name never holds `@` or `\`: a creation or rename naming one is refused `ErrInvalid`; `\` because `qualified` spells a local principal `<NetBIOS name>\<name>` and `Lookup` strips a `DOMAIN\` prefix (D2), so a local `CORP\alice` would be one spelling of two principals | MUST NOT | §4.6 | T2.1 |
 | R9 | §10's "name case" row: two users whose names differ only in case, the second refused as a duplicate; a local user named `bob@example.com`, refused | test row | §10 | T2.1 |
 
 **IDs**
@@ -186,7 +186,7 @@ spells it `merrs.NewInvalidArgumentError`, as RFC 23's plan's epic 2 does (its D
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R10 | A uid, gid or RID the installation allocates is drawn from a counter per scheme that only rises, inside the transaction that writes the record, and is never allocated again, even after its principal is deleted | MUST NOT | §2.3 item 2, §9.1 ID2; RFC 16 §4.2 `IDS‖kind` | T2.2, T2.3 |
-| R11 | A uid or gid is allocated from `identity.id_range` (default 1 000 000 to 1 999 999 999), skipping one any principal holds; a change of the range applies to the next allocation and moves no existing ID: the next value is `max(counter+1, Range.Lo)`, `ErrNoSpace` when it passes `Range.Hi`, and the settings write refuses `ErrInvalid`, before it commits, a range whose `Hi` is at or below the uid or gid counter's high-water mark (`Range.Hi <= counter`, D1) | MUST | §2.3 item 4, §2.6; RFC 16 §4.2 `IDS‖kind`; RFC 13 Appendix B | T2.2, T2.4, T2.9 |
+| R11 | A uid or gid is allocated from `identity.id_range` (default 1 000 000 to 1 999 999 999), skipping one any principal holds; a change of the range applies to the next allocation and moves no existing ID: the next value is `max(counter+1, Range.Lo)`, `ErrNoSpace` when it passes `Range.Hi`, and a settings write of `identity.id_range` refuses `ErrInvalid`, before it commits, a range whose `Hi` is at or below the uid or gid counter's high-water mark (`Range.Hi <= counter`, D1), while a write of any other key is not checked against the marks | MUST | §2.3 item 4, §2.6; RFC 16 §4.2 `IDS‖kind`; RFC 13 Appendix B | T2.2, T2.4, T2.9 |
 | R12 | A missing uid or gid is never filled with a default: the write names the IDs the store allocates (`Alloc`), on `Minter.Create` and on `PutUser` and `PutGroup` alike; a zero ID it does not name is refused `ErrInvalid`, never read as "allocate one"; `Alloc` applies only to a create, and a later put allocates nothing | MUST NOT | §2.3 item 4; RFC 16 §3; RFC 23's plan's epic 2, D2 | T2.2, T2.3 |
 | R13 | A SID never changes once the principal has one | MUST NOT | §2.3, §9.1 ID4 | T2.2 |
 | R14 | A local principal's SID is the installation's domain SID followed by a RID from the RID counter; the domain SID is `S-1-5-21-a-b-c`, `a`, `b` and `c` the installation ID's first twelve bytes as three little-endian 32-bit numbers, derived, never stored; a RID is never derived from a uid | invariant | §4.4 | T2.2 |
@@ -253,10 +253,13 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   uid or gid is `max(counter+1, Range.Lo)`, skipping held IDs, and `Alloc` answers `ErrNoSpace`
   when it passes `Range.Hi`. Since the counters never rewind (R10), a range with
   `Range.Hi <= mark`, a counter's high-water mark, could never allocate again: its next value,
-  `mark+1` at least, is past `Hi`. The settings write refuses such a range `ErrInvalid` before
-  it commits, so the operator sees the refusal: the identity section's check, which
-  `pkg/settings`' `Check` runs inside the write's transaction, reads both marks through
-  `ControlPlaneTx.IDHighWater`, a tracked read (T2.9). A create that commits between that read
+  `mark+1` at least, is past `Hi`. A settings write of `identity.id_range`, a put or a delete
+  that leaves the default, refuses such a range `ErrInvalid` before it commits, so the operator
+  sees the refusal: the identity section's check, which `pkg/settings`' `Check` runs inside the
+  write's transaction and hands the `Write`, reads both marks through
+  `ControlPlaneTx.IDHighWater`, a tracked read (T2.9). It returns at once for any other key, so
+  a range already used up never refuses an unrelated write such as `identity.ntlm` or
+  `identity.netbios_name`. A create that commits between that read
   and the write's commit raises a counter the write read, so the write conflicts and retries
   against the raised mark. The check is advisory against a create that read the previous range
   before the commit: that create still allocates from the previous range, and can raise a counter
@@ -410,7 +413,7 @@ pkg/settings/
     `User.Password` and `User.NTHash` added, with kvstore's codec; `NTHash`'s deletion with its
     user is T2.8's (R34), which lands before the first code that stores an NT hash;
   - in `PutUser` and `PutGroup`: D3's shape checks but the file-principal one (T2.2's), uid or gid
-    0 or 65534 refused, a name holding `@` refused, and the fold `entity.FoldPrincipalName` (D2) keying `NX‖user`
+    0 or 65534 refused, a name holding `@` or `\` refused, and the fold `entity.FoldPrincipalName` (D2) keying `NX‖user`
     and `NX‖group`, the value keeping the name as written;
   - `entity.PrincipalUserPart` beside the fold (D2), for T2.6's `Lookup` and E4's throttle key.
   - `PrincipalMachine` named `machine` in `principalKinds`, so `PrincipalKind.MarshalText` and
@@ -426,7 +429,8 @@ pkg/settings/
   user's `Password` and `NTHash` round-tripping through the codec, a record without `NTHash`
   decoding it zero (R4); a group holding a user's SID, and a second user holding another's `krb`
   name, each refused, and uid 1500 beside gid 1500 accepted (R6); §10's "name case" row, `Alice`
-  then `aLICE` refused, `bob@example.com` refused on create and on rename (R7, R8, R9); `Kelvin`
+  then `aLICE` refused, `bob@example.com` and `CORP\bob` each refused on create and on rename (catches `\` allowed, which makes
+  `CORP\bob` a spelling of `bob` too, R7, R8, R9); `Kelvin`
   with U+212A in place of `K` colliding with `kelvin` (catches an ASCII-only or `ToLower` fold, R7);
   a group `finance` beside a user `finance`, both accepted (catches a fold across kinds, R7); in
   `entity`, a machine principal round-tripping through `MarshalText` and `ParsePrincipal`
@@ -632,7 +636,8 @@ pkg/settings/
   the count dropped so far, to which each turn adds `DropNTHashes`' `dropped` (D4), its `End`, set with `Done`, calling `tx.SetNTHashDeleted(op.ID)`; a
   record `DropNTHashes` cannot decode returned wrapping RFC 23's `ErrStepFailed`, which fails the
   operation and leaves `Deleted` zero, and every other error plain, so the runner retries it;
-  `NTHashDeleteProgress(ctx, op entity.Operation) apiv1.Progress`, typed by `step.Progress`, the
+  `NTHashDeleteProgress(ctx, op entity.Operation) apiv1.Progress`, typed by `step.Progress`,
+  `func(ctx context.Context, op entity.Operation) apiv1.Progress` (RFC 23's plan's epic 3 D7), the
   count read from the cursor `op.Step`, decoded as the step encodes it with the same
   `entity.SecretRef`, with `Total` -1. Consumed by E8's T8.10, which puts both in the runner's
   table in `node.New`, by
@@ -700,18 +705,23 @@ pkg/settings/
 - **Covers:** R11.
 - **Deliverables:** `ControlPlaneTx.IDHighWater() (uid, gid uint32, err error)`, a tracked read of
   T2.2's `IDS‖0x04` and `IDS‖0x05` counters; `pkg/settings`' `CheckTx[T](func(entity.ControlPlaneTx,
-  T) error)` option on `Of`, which `Check` runs after `Validate` inside the write's transaction; and
-  the identity section's `CheckTx`, refusing `ErrInvalid` an `identity.id_range` with `Hi` at or
+  settings.Write, T) error)` option on `Of`, which `Check` runs after `Validate` inside the write's
+  transaction, handing it the `Write`; and the identity section's `CheckTx`, returning nil when
+  `w.Key` is not `identity.id_range` and otherwise refusing `ErrInvalid` a range with `Hi` at or
   below either mark, with D1's `decision:` marker (D1). Nothing else in this plan waits for it.
 - **Acceptance criteria:**
   - A settings write of an `identity.id_range` whose `Hi` is at or below the uid or gid counter's
     high-water mark is refused `ErrInvalid` and commits nothing (D1).
+  - A write of another `identity.*` key commits while the range is used up (D1).
 - **Tests:** over the memory KV store, under the leak check: uids allocated through T2.2 until the
   uid counter reaches 1 000 006, then each of these written through `pkg/settings`' `Check` and
   `PutSetting` in one `Write`: `[1000, 2000]` refused `ErrInvalid`, `CFGGEN` unchanged and the next create drawing 1 000 007 (catches a
   lowered range committed, which leaves every later `Alloc` `ErrNoSpace`, R11, D1);
   `[1 000 000, 1 000 006]` refused (catches `Hi < mark` written for `Hi <= mark`, D1);
-  `[1 000 000, 1 000 007]` committed; the gid counter alone at or past `Hi`: refused (catches a
+  `[1 000 000, 1 000 007]` committed, then one more uid allocated, using it up: `identity.ntlm`
+  written `false` commits (catches the check run for every key of the section, which refuses every
+  `identity.*` write once a range is used up, D1), and `[1 000 000, 1 000 007]` written again is
+  refused; the gid counter alone at or past `Hi`: refused (catches a
   check of the uid counter only); a `State` with a range below the marks, applied by `Apply`
   (catches a second check at `Apply`, which would split the two range sources, D1). No test double.
 
@@ -805,6 +815,10 @@ readers do not wait for the RFC 13 plan's epic 3 (T2.9, D1).
 - **`Alloc` on an update (R12).** R12 refuses `Alloc` on an update where RFC 16 §3 says it
   allocates nothing. The refusal is the stricter reading, and the amendment D1 asks for should
   state it.
+- **A `\` in a local name (R8).** RFC 18 §4.6 refuses only `@`. R8 refuses `\` too, since §4.6's
+  `qualified` scheme spells a local principal `<NetBIOS name>\<name>` and `Lookup` strips a
+  `DOMAIN\` prefix, so a local `CORP\alice` would name one principal through `Find` and `alice`
+  through `Lookup`; §4.6 needs the same amendment.
 - **`CheckTx` and the RFC 13 plan.** That plan's S1 freezes `Of` and its options, its sketch lists
   four, and its `Check` has no `CheckTx` step. T2.9 adds the option after the plan's epic 3, which
   breaks no caller since the options are variadic, but the plan's sketch and `Check` order should
