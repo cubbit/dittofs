@@ -213,9 +213,10 @@ var (
 	ErrExpired        = errors.New("core: credential expired")                     // an expired credential, Op.Expired false
 	ErrNotLast        = errors.New("core: not the last member of a chain")         // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")              // Stages.MaxPending
-	// ErrDecode refuses a header, an operation's arguments, or a step of the
-	// record's walk that does not decode (§4.1). The pipeline wraps every
-	// error a header's or a row's Decode returns, once, as
+	// ErrDecode refuses a header, an operation's or a member's arguments, or a
+	// step of the record's walk that does not decode (§4.1). The pipeline
+	// wraps every error a header's or a row's Decode, or a members' table's
+	// ReadOp, returns, once, as
 	// fmt.Errorf("%w: %v", ErrDecode, err): the cause's text survives, the
 	// cause itself is not matched, so no row for it answers in ErrDecode's
 	// place. A codec returns its own error and never ErrDecode. Unwrap's

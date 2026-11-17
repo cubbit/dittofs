@@ -30,8 +30,9 @@ type OpTable struct {
 	// table is built per server.
 	Protocol string
 	// ReadOp reads the operation code at the head of a compound member's bytes,
-	// and how many bytes it took: NFSv4's argop. Set on a table that is a
-	// compound row's Members; nil elsewhere.
+	// and how many bytes it took: NFSv4's argop. Its error is its own, which
+	// the runner wraps (ErrDecode). Set on a table that is a compound row's
+	// Members; nil elsewhere.
 	ReadOp func(b []byte) (op uint32, n int, err error)
 	// EncodeResult writes a member's operation code and status before the
 	// member's own Encode appends its reply: NFSv4's nfs_resop4 head. Set on

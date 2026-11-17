@@ -668,3 +668,33 @@ func TestAStatusAloneReplyIsReservedForItsHead(t *testing.T) {
 		})
 	}
 }
+
+// A member whose code or arguments do not decode is ErrDecode wrapping its
+// codec's own error once: the cause's text kept, and the cause not matched.
+func TestAMembersDecodeErrorWrapsItsCauseOnce(t *testing.T) {
+	row, args := compoundArgs(t, echo)
+	inv, used, err := row.Decode(args, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest := args[used:]
+	_, _, short := row.Members.ReadOp(rest[:3])
+	code, n, _ := row.Members.ReadOp(rest)
+	_, _, cut := row.Members.Ops[code].Decode(rest[n:len(rest)-1], 1)
+	for _, c := range []struct {
+		name  string
+		rest  []byte
+		cause error
+	}{
+		{"its code", rest[:3], short},
+		{"its arguments", rest[:len(rest)-1], cut},
+	} {
+		if c.cause == nil || errors.Is(c.cause, core.ErrDecode) {
+			t.Fatalf("%s: the codec answered %v, want its own error", c.name, c.cause)
+		}
+		_, _, err := core.Members(row, inv, c.rest, 1)
+		if errors.Unwrap(err) != core.ErrDecode || errors.Is(err, c.cause) || !strings.Contains(err.Error(), c.cause.Error()) || strings.Count(err.Error(), core.ErrDecode.Error()) != 1 {
+			t.Errorf("%s: the walk refused with %v, want ErrDecode wrapping %q once", c.name, err, c.cause)
+		}
+	}
+}
