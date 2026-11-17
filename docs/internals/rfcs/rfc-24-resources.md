@@ -381,7 +381,8 @@ It may then exceed *L*.
 
 A pool is a counter, not an allocator. Each consumer of a counted pool **MUST**
 reserve the bytes it is about to hold from its pool **before** it holds them,
-and release them when it frees them. A counted pool is a `Budget` or a
+and release them when it frees them; a chain's members in `Join` are the one
+exception (below). A counted pool is a `Budget` or a
 `WaitBudget` in code, as its row says it refuses or waits:
 
 ```go
@@ -429,6 +430,8 @@ func NewBufPool(b *WaitBudget) *BufPool // RFC 20 §6.8's buffers in §3.1's cla
 // Reservation cannot become.
 func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)
 func (p *BufPool) Ceiling() int64 // its budget's ceiling, what one charge is bounded by (RFC 20 §4.3)
+func (p *BufPool) Charge(n int) int64 // the charge Get would take for n bytes: n's class plus the per-request overhead, what a compound's quarter compares (RFC 20 §4.3)
+func Join(n int, bufs ...*Buf) *Buf // a chain's record (RFC 20 §4.7): an empty buffer with room for n bytes that takes over bufs' reservations, with no new charge and no wait
 ```
 
 - Whether a pool waits or refuses is fixed by its row (§2.3), so it is a type:
@@ -441,6 +444,30 @@ func (p *BufPool) Ceiling() int64 // its budget's ceiling, what one charge is bo
   at the ceiling and so also while restored state holds the pool above it.
 - A reservation is in bytes of memory held, rounded up to the buffer class
   (§3.1) where a pooled buffer backs it.
+- **A chain's replies become one record without a new charge.** `Join` moves
+  every reservation of `bufs` onto an empty buffer with room for `n` bytes,
+  which carries them to its last `Release`; it neither reserves nor waits, so
+  a chain holding reply reservations takes no wait for its record (§2.6). The
+  caller appends each member's bytes, with what goes between them (RFC 20
+  §4.7's `HeaderCodec.Chain`), and releases the member, which then returns
+  bytes only. `n` is at most the members' charges summed, and the members share
+  one budget and one key; `Join` panics otherwise. The record's bytes are in no
+  class (§3.1): allocated at `n`, charged its members' charges, and dropped at
+  its last `Release`. A `Join` of one buffer returns it unchanged. It is a
+  function, not a `BufPool` method: its bytes come from no pool, and the
+  reservations name their own budget.
+- **`Join`'s members are held past their charge for one copy.** From `Join`
+  until the caller releases them, they hold their bytes with no reservation,
+  their record having taken it: resident memory passes what the reply pool
+  counts by at most the record's length. This is the one exception to
+  reserving before holding.
+
+  > decision: the record takes over its members' reservations rather than
+  > reserving its own, which would wait on the reply pool while the chain holds
+  > reply reservations (§2.6), or, tried once, could be refused with the
+  > replies already encoded. Reserve the record with `TryGet`, keeping each
+  > member's reservation until its release, if chains are seen taking resident
+  > memory past *L*.
 - **Charged, not measured.** No pool reads the heap to decide. A charge is
   exact for buffers, and a fixed per-kind cost for state (§4.4, §4.6), which
   §8 measures.
@@ -697,7 +724,11 @@ by then closes its connection, since it can go out no other way
 ([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)'s `reply_wait`). Such a wait
 keeps its request's record, and so its receive charge, until the status goes
 out, so the receive pool bounds how many wait at once (§6.1), however the
-wait is run.
+wait is run. Its buffer is `HeaderCodec.ReplyLen(h)` bytes once a header has
+decoded, which counts what the status alone carries, an NFSv4 `COMPOUND`'s tag
+among it ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
+and the small class for a refusal with no header. Either way the request holds
+no reply reservation while it waits, so the wait keeps §2.6's order.
 
 The reservation is released when the writer has sent the reply, or discarded it
 with its connection

@@ -527,7 +527,7 @@ internal/adapter/
   adaptertest/              import test; testproto/, the test-only protocol `core` is proven on (§7); golden/, golden-vector and capture helpers
   nfs/  smb/                one shape for both protocols:
     nfs.go | smb.go         New: builds the stages, handler sets and operation tables; returns *core.Server
-    wire/                   pure codecs (§5): NFS's generated from the XDR, one file per program; SMB's hand-written, one file per command
+    wire/                   pure codecs (§5): NFS's operation codecs generated from the XDR, one file per program, and its RPC header (call and reply envelope, credentials, verifier) hand-written; SMB's hand-written, one file per command
     protocol/               the Protocol and its stages (§4.7): framer, header, router, security, flow, replay, session registry
     ops/                    the operation tables, one subpackage per table (§4.8): Handlers, table, errors; one file per operation
                               nfs: v3/ v4/ mount/ nlm/ nsm/   smb: one table for every dialect, ioctl/ one file per control code
@@ -1338,7 +1338,13 @@ in three groups:
      reserved from the receive pool before the body is read
      ([RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)).
    - **decode header** — the RPC header and credential, or the SMB2 header
-     (the transform header, for an encrypted SMB message).
+     (the transform header, for an encrypted SMB message). An RPC credential
+     and verifier are bounded here and judged at route
+     ([RFC 21 §11.1](rfc-21-nfs.md#11.1%20Identity)), in a call of RPC
+     version 2 only: a call of another version is read no further, so no
+     stage judges its credential, and route answers it `RPC_MISMATCH`
+     ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors)). An NFSv4 `COMPOUND`'s tag
+     and minor version are read with its header (§4.8).
    - **unwrap** — decrypt, verify a signature or checksum (§5.5).
    - **admit** — charge the connection's flow control (§6.3).
    - **replay check** — NFSv4.1 slot and sequence; the SMB message-ID window.
@@ -1362,10 +1368,11 @@ How each stage refuses:
 | Stage | Refused as |
 | --- | --- |
 | frame | length past the cap: connection closed. No room in the receive pool: not refused — the record is not read until room frees |
-| decode header, decode args | the protocol's garbage-args or invalid-parameter answer, from the table's row for `ErrDecode` (§4.7). A header that did not decode far enough to address a reply: connection closed |
-| unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, or, for a malformed inner header of an encrypted message, `STATUS_INVALID_PARAMETER` from the row for `ErrDecode`, each wrapped as §5.5 says, connection kept; a message that fails decryption, or an inner header too short to be one, misaligned, or, for an unrelated member, naming another session than the transform header, closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered and counted under `unwrap` (§10.1); one above it advances the window only once its verifier checks, so a call with a forged verifier leaves the window as it was ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
+| decode header, decode args | the protocol's garbage-args or invalid-parameter answer, from the table's row for `ErrDecode` (§4.7). A header that did not decode far enough to address a reply: connection closed. Which malformed headers each protocol closes on: [RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors), [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors) |
+| unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, or, for a malformed inner header of an encrypted message, `STATUS_INVALID_PARAMETER` from the row for `ErrDecode`, each wrapped as §5.5 says, connection kept; a message that fails decryption, or an inner header too short to be one, misaligned, naming a command code no request carries (MS-SMB2 2.2.1.2), or, for an unrelated member, naming another session than the transform header, closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered and counted under `unwrap` (§10.1); one above it advances the window only once its verifier checks, so a call with a forged verifier leaves the window as it was ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
 | admit | the default cap never refuses, since the connection is not read until a request completes; a protocol's `Flow` may refuse, and a `Stages.Errors` row maps that refusal |
 | replay check | the cached reply, or the protocol's sequence error; past the deadline, the reply reservation's `ErrDelay` with `DelayResources` (§4.7's `ReplayCache`) |
+| route | NFS: an RPC version other than 2 `RPC_MISMATCH`; a credential [RFC 21 §11.1](rfc-21-nfs.md#11.1%20Identity) refuses `AUTH_BADCRED`, and a verifier it does not allow `AUTH_BADVERF`; a program, version or minor version not served, as §4.8 says; a message that is not a call, and answers no callback sent on the connection (§3.3), dropped unanswered through a `NoReply` row. SMB: §4.8 |
 | resolve IDs | a table ID not in its table: the protocol's bad-ID answer. A client-held name is never refused here |
 | send | connection closed |
 
@@ -1510,12 +1517,15 @@ service calls, admitted separately
   mutation the client will send again.
 - **No compound holds more than a quarter of the reply pool across its
   members.** The runner reserves a single-reply compound's reply as one charge
-  of its members' summed bounds before the first runs, and refuses one whose
-  reservation would pass a quarter of the reply pool's ceiling with
-  `ErrReplyTooBig` before any member runs, as a count past the cap is (§4.7). A
-  chain sends the replies it holds before a member whose reservation would take
-  them past that quarter (§4.7). One operation's own bound is its protocol's to
-  cap, as RFC 22's read size is. The pool grants in arrival order with nothing
+  of its members' summed bounds and `HeaderCodec.ReplyLen` of its header
+  before the first runs, and refuses one whose reservation would pass a quarter of the reply
+  pool's ceiling with `ErrReplyTooBig` before any member runs, as a count past
+  the cap is (§4.7). A chain sends the replies it holds before a member whose
+  reservation would take them past that quarter (§4.7). Both measure a
+  reservation as the pool charges it, `BufPool.Charge` of its bytes, and a
+  chain's held replies by their `Buf.Charge`, against `Ceiling()/4` (§6.8).
+  One operation's own bound is its protocol's to cap, as RFC 22's read size
+  is. The pool grants in arrival order with nothing
   passing its head
   ([RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)), so one
   reservation the whole ceiling could hold would stall every reply on the node
@@ -1909,7 +1919,25 @@ type Protocol interface {
 
 type Framer interface {
 	HeaderLen() int
-	BodyLen(hdr []byte) (int, error) // past the protocol's cap: an error, and the connection closes
+	// BodyLen reads a record's header: the length of the body that follows
+	// it, and whether that body ends the record. An RPC record mark may say it
+	// does not, and the reader then reads the next fragment's header and body
+	// into the same record, as RFC 24 §3.2 bounds it; SMB's Direct TCP header
+	// always ends it. Past the protocol's cap: an error, and the connection
+	// closes.
+	BodyLen(hdr []byte) (n int, last bool, err error)
+	// MaxRecord is the protocol's record cap and the most fragments a record
+	// may come in, 1 where every header ends its record: the reader reserves
+	// the class that holds the cap before a fragment that does not end its
+	// record, counts the fragments it reads, and closes the connection past
+	// either (RFC 24 §3.2). A chain's joined reply is held under the same
+	// bytes: the chain sends what it holds before passing them (below).
+	MaxRecord() (bytes, fragments int)
+	// Frame appends to dst the header of a record whose body is body bytes, in
+	// one piece, and returns it. The writer calls it for every record it sends,
+	// a reply, an interim or a Conn.Send message, after Wrap, and writes the
+	// header and the body together; a reply buffer holds the body alone.
+	Frame(dst []byte, body int) []byte
 }
 
 // Stages are a protocol's implementations of §4.1's stages for one
@@ -1933,15 +1961,36 @@ type HeaderCodec interface {
 	// Decode reads the header at off in the record: 0, then each member's Next.
 	// A header that does not decode comes back with its error when enough
 	// decoded to address a reply, which Stages.Errors maps; with a nil Header
-	// nothing can be answered, and the connection closes. Either error is
-	// wrapped in ErrDecode. In a record Unwrap has already proved whole (an
+	// nothing can be answered, and the connection closes. Either error is the
+	// codec's own, never ErrDecode: the pipeline wraps it (ErrDecode). In a
+	// record Unwrap has already proved whole (an
 	// encrypted SMB message, §5.5; not a signed chain, whose members are
 	// proved one by one), a header that does not decode but can address a
 	// reply comes back with no error: the codec leaves its refusal to Unwrap,
-	// so the answer is wrapped.
+	// so the answer is wrapped. A header refused for its own next step
+	// reports, as Next, a step the walk refuses, so the chain ends there.
 	Decode(rec *Buf, off int) (Header, error)
+	// Encode writes the reply's header for s and, where s is a failure
+	// answered with a status alone (RFC 22 §16.5 names SMB's exceptions),
+	// what a reply carrying s alone needs, which is the whole reply of every
+	// request answered with a status alone, a compound refused whole after its
+	// own Decode included, since its EncodeHead serves only a compound whose
+	// members run: SMB's error response (RFC 22 §16.5), an NFSv4 COMPOUND's
+	// status, tag and empty results, RPC_MISMATCH's and PROG_MISMATCH's lowest
+	// and highest versions (RFC 21 §11.5).
 	Encode(h Header, s Status, out *Buf) error
 	Chain(out *Buf, prev int) error            // points the reply at prev to the one appended after it (SMB2's NextCommand, padded to 8); nil-op where nothing chains
+	// Args is the argument bytes of message h in rec, located as Decode and
+	// Unwrap left them: past an RPC call's credential and verifier, or in an
+	// encrypted SMB message's decrypted payload.
+	Args(rec *Buf, h Header) []byte
+	// ReplyLen is the most Encode writes for h, a status-alone body included,
+	// with Chain's padding to 8 and the transform Wrap adds in place: the
+	// pipeline reserves Bound() + ReplyLen(h), and ReplyLen(h) alone for a
+	// reply carrying a status alone (RFC 24 §3.3). For a compound row's message it
+	// also covers the compound's head and one result's head, which a reply that
+	// fails before or at a member writes beside the members' bounds.
+	ReplyLen(h Header) int
 }
 type Router interface {
 	// Route returns the version's table and the Request; prev is the member
@@ -1962,11 +2011,17 @@ type Security interface {
 	// inner header of an encrypted SMB message), which carries §5.5's verdict:
 	// the key its answer is signed under, or none, and whether it may be
 	// sealed. It is answered, wrapped under that header, and the connection
-	// kept. A nil Header with its error says close: nothing is answered, and
+	// kept. Unwrap names its own refusals, ErrDecode included, and core passes
+	// them unchanged (ErrDecode). A nil Header with its error says close:
+	// nothing is answered, and
 	// the pipeline closes the connection through Conn.Close with that error (a
 	// message that fails decryption, or an inner header too short to be one,
-	// misaligned, or, for an unrelated member, naming another session than the
-	// transform header).
+	// misaligned, naming a command code no request carries (MS-SMB2 2.2.1.2),
+	// or, for an unrelated member, naming another session than the transform
+	// header). Unwrap returns a header or an error, never neither: core
+	// closes a connection whose Unwrap returns neither as it closes one with a
+	// nil Header, under the close reason unwrap, with an unexported error of
+	// its own, so the close is counted and logged with a cause.
 	Unwrap(h Header, rec *Buf, prev Header) (Header, error)
 	// Wrap signs or encrypts in place, a chain once per record (§4.7). The
 	// refusal of a header that failed Decode is not passed to it, alone or
@@ -1986,7 +2041,14 @@ type ReplayCache interface {
 	// pipeline's own reservation does; the pipeline wraps the copy in place
 	// and sends it. Or a sequence error, or the reservation's ErrDelay of
 	// DelayResources past ctx's deadline, either mapped by Stages.Errors; or
-	// nil, nil to run.
+	// nil, nil to run. A chain asks it first under an ended ctx (§4.7).
+	//
+	// ponytail: the copy is reserved under no client's key, since a stage is
+	// handed none, so a chain copies a hit into a buffer of its own (§4.7).
+	// Only the test protocol both chains and returns copies: SMB's replay is
+	// the open's (RFC 22 §6.5) and returns none, and NFS's reply caches serve
+	// no chain. Hand Lookup the client's key, and drop the copy, when a
+	// protocol that chains returns copies.
 	Lookup(ctx context.Context, h Header) (*Buf, error)
 	// Store keeps its own clear copy of a cacheable row's encoded reply, taken
 	// before Wrap; the caller's reply is then wrapped in place.
@@ -2041,8 +2103,13 @@ type OpTable struct {
 	Protocol string
 	// ReadOp reads the operation code at the head of a compound member's bytes,
 	// and how many bytes it took: NFSv4's argop. Set on a table that is a
-	// compound row's Members; nil elsewhere.
+	// compound row's Members; nil elsewhere. Its error is the codec's own,
+	// which the pipeline wraps (ErrDecode).
 	ReadOp func(b []byte) (op uint32, n int, err error)
+	// EncodeResult writes, before a member's own Encode appends its body, what
+	// the protocol puts ahead of each result: NFSv4's resop and status. Set
+	// with ReadOp; nil elsewhere.
+	EncodeResult func(out *Buf, op uint32, s Status, v Version) error
 }
 
 type Op struct {
@@ -2053,7 +2120,7 @@ type Op struct {
 	Cacheable bool
 	Role      Role  // what the operation always does to state (§3.1, §4.4); per request: Invocation.Role
 	Expired   bool  // runs on an expired credential: re-authentication, logoff (§4.4; RFC 18 §3.8)
-	Decode    func(body []byte, v Version) (inv Invocation, n int, err error) // n: the bytes of body it consumed
+	Decode    func(body []byte, v Version) (inv Invocation, n int, err error) // n: the bytes of body it consumed; err is the codec's own, which the pipeline wraps (ErrDecode)
 	Members   *OpTable // non-nil on a compound row (NFSv4's COMPOUND): its members' table, which the runner decodes from after n (below)
 	// MaxMembers is a compound row's cap (§4.3): the runner refuses an
 	// Invocation.Count past it with ErrTooLong before it decodes any member.
@@ -2066,12 +2133,15 @@ type Op struct {
 // compound row, whose Decode the protocol writes and which builds its
 // Invocation directly, setting Count from the arguments it decoded.
 type Invocation struct {
-	Bound   func() int                                 // the reply bound (§4.2)
+	Bound   func() int                                 // the reply bound (§4.2): the operation's own reply, without ReplyLen(h)
 	Resolve func(r *Request) error                     // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
 	// Encode runs on every request that gets a final reply, so its reply may
 	// be nil: the request refused before Call, or a handler that returned
-	// (nil, err). An encoder accepts a nil reply and encodes the status alone.
+	// (nil, err). An encoder accepts a nil reply, for which HeaderCodec.Encode
+	// has written the status and what it needs alone: the encoder writes only
+	// what its operation's reply carries beside them (RFC 21 §11.5, RFC 22
+	// §16.5).
 	// A handler may return a reply with its error, as an NFSv3 failure carries
 	// its WCC data: Call keeps whatever reply the handler returned.
 	Encode  func(out *Buf, v Version) error
@@ -2083,6 +2153,16 @@ type Invocation struct {
 	// Count is a compound row's: the members its arguments say follow, set by
 	// that row's own Decode. 0 on every other row.
 	Count int
+	// EncodeHead is a compound row's, set by that row's own Decode over what it
+	// decoded: it writes the compound reply's head, ahead of its results,
+	// NFSv4's status, the request's tag and the count of results. Its size
+	// MUST NOT depend on s or n, so the runner writes it once before the
+	// members run and again, over its own bytes, once their status and count
+	// are known. nil on every other row. A compound row whose Decode returns
+	// no EncodeHead is the protocol's wiring at fault: core closes the
+	// connection with an error naming the row, as nothing could write the
+	// reply's head.
+	EncodeHead func(out *Buf, s Status, n int, v Version) error
 	// Role says what this request does to state: an SMB LOCK whose elements
 	// unlock releases it, a WRITE to an open under a break flushes it, an
 	// NFSv4 OPEN that claims a delegated open flushes it. It is called in
@@ -2137,7 +2217,9 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 
 // Version is a protocol's version, minor version or dialect; Range a closed
 // span of them. For NFSv4 a Version is the minor version, so Range{0, 0} is
-// NFSv4.0 alone.
+// NFSv4.0 alone: NFS's header codec reads a COMPOUND's tag and minor version
+// with the RPC header, and a procedure of version 4 other than COMPOUND (NULL)
+// carries none and has Version 0.
 type Version uint32
 type Range struct{ First, Last Version }
 
@@ -2202,7 +2284,7 @@ func (h *Handlers) OpTable() *core.OpTable {
 elided — each `err` is answered as §4.1's table says:
 
 ```go
-h, err := stages.Header.Decode(rec, off)  // off: 0, then each chain member's h.Next(); err wraps ErrDecode
+h, err := stages.Header.Decode(rec, off)  // off: 0, then each chain member's h.Next(); err is the codec's own, which the pipeline wraps in ErrDecode
 h, err = stages.Security.Unwrap(h, rec, prevH) // prevH: the member before a related one
 if key, ok := stages.Hold.Cancels(h); ok { endHold(key); return } // only once verified; no reply
 release, err := stages.Flow.Admit(ctx, h); defer release()
@@ -2210,8 +2292,8 @@ if cached, err := stages.Replay.Lookup(ctx, h); cached != nil { conn.write(wrap(
 tbl, r, err := stages.Router.Route(h, prev) // prev: the member before a related one; tbl comes with err once chosen
 op := tbl.Ops[h.Op()]               // absent: not supported
 err = check(op, h, r)               // Versions, Needs (§4.2)
-inv, _, err := op.Decode(body(rec), h.Version()) // err wraps ErrDecode; the bytes consumed matter to the compound runner only (below)
-err = reserveReply(ctx, inv.Bound()) // RFC 24 §3.3
+inv, _, err := op.Decode(stages.Header.Args(rec, h), h.Version()) // err is the codec's own, which the pipeline wraps in ErrDecode; the bytes consumed matter to the compound runner only (below)
+err = reserveReply(ctx, inv.Bound()+stages.Header.ReplyLen(h)) // RFC 24 §3.3
 err = inv.Resolve(r)
 role := op.Role
 if draining || expired(r) { role = roleOf(op, inv, r) } // inv.Role(r), or op.Role where nil; not asked otherwise
@@ -2229,7 +2311,8 @@ conn.write(reply) // the writer's queue (§6.2)
 Until `Route` returns a table, an `err` is mapped by `Stages.Errors`, and by
 the table after. The refusal of a header that failed `Decode` is not passed to
 `Wrap`, one at `Unwrap` is wrapped under the header it returned (§5.5), and a
-nil header closes the connection.
+nil header closes the connection, with `Unwrap`'s error, or with `core`'s own
+where `Unwrap` returned none.
 
 For NFSv4 the RPC procedure is `COMPOUND`, a compound row: its `Members` is
 the minor version's operation table. Its `Decode` decodes the compound's own
@@ -2251,10 +2334,20 @@ the `Request`; for an SMB chain it also repeats `Decode`, `Unwrap`, `Admit` and
 `Lookup` per member, since each is signed over its own bytes and charged
 credits on its own. It hands `Unwrap` and `Route` the member before a related
 one, so the IDs it inherits are resolved before its signature is checked and
-its handles carry over. It encodes each member's reply, joins them with
+its handles carry over. A compound row's reply is one buffer: the runner
+writes the compound's `Invocation.EncodeHead` first, then each member's result as
+`Members.EncodeResult` followed by that member's `Encode`, and last writes the
+head again over its own bytes with the compound's status and the count of
+results, so no result is copied. A chain encodes each member's reply, joins them with
 `HeaderCodec.Chain`, and calls `Wrap` once on the joined record: SMB's `Wrap`
 signs each member over its own bytes, `NextCommand` and padding included, and
-encrypts the record once.
+encrypts the record once. The joined record is one buffer, RFC 24 §2.5's
+`Join` of the members' reply buffers, which takes over their reservations: the
+runner appends each reply to it, `Chain` pointing the one before at it, and the
+members' bounds summed hold it, since `ReplyLen` counts `Chain`'s padding. A
+chain member whose row is a compound row is refused with `ErrNotSupported`:
+its one reply cannot join the chain's record, and no protocol nests one, since
+NFS does not chain and SMB's compound is the chain itself.
 
 A chain member is admitted only once the reply of the one before it is
 encoded, and that one's admission is released first, so a chain holds one place
@@ -2268,12 +2361,31 @@ reservation is held until the joined record goes out
 ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)). It is first
 tried without waiting (`BufPool.TryGet`,
 [RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)). When it does not
-fit at once while the chain holds reply reservations, or when its reservation
+fit at once while the chain holds reply reservations, when its reservation
 would take the chain's held reservations past a quarter of the reply pool's
-ceiling (§4.3), the replies before it go out as a record of their own, wrapped
+ceiling (§4.3), or when the replies it holds, as encoded, and its reservation's
+bytes would pass the protocol's record cap, `Framer.MaxRecord`'s bytes, the
+replies before it go out as a record of their own, wrapped
 once, and only then does the member reserve under its deadline: a chain never
 waits on the reply pool while holding it
-([RFC 24 §2.6](rfc-24-resources.md#2.6%20Reservations%20are%20taken%20in%20one%20order)). A member `Unwrap`
+([RFC 24 §2.6](rfc-24-resources.md#2.6%20Reservations%20are%20taken%20in%20one%20order)).
+A member answered with a status alone takes its status's buffer the same way:
+`TryGet` first, and when it is refused the replies before it go out first,
+counted as `reply_pool`; the status then waits for its buffer
+([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)),
+holding no reply reservation.
+A member's replay hit keeps the same rule. `Lookup` is first asked under an
+ended context, which tries its copy's reservation once; on its `ErrDelay` of
+`DelayResources` the replies before it go out first, and it is asked again
+under the member's deadline. Its copy is reserved under no client's key, which
+`Join` refuses beside the chain's buffers, so the runner copies the hit into a
+buffer of the chain's own, taken with `BufPool.TryGet`, and releases the
+cache's copy. When that try fails, the replies before it go out first and the
+hit goes out in a record of its own, so nothing waits while holding the
+cache's copy. These splits count as `reply_pool`.
+The record cap keeps a joined record within what one `Frame` header can state:
+SMB's Direct TCP length is 3 bytes, and a quarter of a large node's reply pool
+can pass it ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)). A member `Unwrap`
 refuses splits the chain: the replies before it go out first, joined and
 wrapped once; its refusal goes out next in a record of its own, wrapped once
 under its own header as §5.5 says, with the replies of the related members
@@ -2386,7 +2498,7 @@ replies and chains are `core` mechanisms that a protocol drives; nothing in
 // methods; the protocol's codec owns every field.
 type Header interface {
 	Op() uint32       // the code the operation table is keyed by
-	Version() Version // the version or dialect the router chose
+	Version() Version // the version or dialect: the header's own, or for SMB its connection's negotiated dialect
 	Next() int        // offset of the next message chained in the record; 0 for the last
 	Related() bool    // takes its handles from the member before it (SMB's related flag)
 }
@@ -2531,7 +2643,16 @@ var (
 	ErrExpired        = errors.New("core: credential expired")            // §4.4
 	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
-	ErrDecode         = errors.New("core: cannot decode")                 // a header, an operation's or a member's arguments, a step of the record's walk (§4.1)
+	// ErrDecode refuses a header, an operation's or a member's arguments, or a
+	// step of the record's walk that does not decode (§4.1). The pipeline
+	// wraps every error a header's or a row's Decode, or a members' table's
+	// ReadOp, returns, once, as
+	// fmt.Errorf("%w: %v", ErrDecode, err): the cause's text survives, the
+	// cause itself is not matched. A codec returns its own error and never
+	// ErrDecode. Unwrap's refusals are the stage's to name, since they answer
+	// differently (access denied, ErrDecode for a malformed inner header, or
+	// close); core passes them unchanged.
+	ErrDecode         = errors.New("core: cannot decode")
 	ErrCancelled      = errors.New("core: cancelled by its client")       // a held or parked request its client cancelled (§6.5); wraps nothing
 	// ErrMoved and ErrDraining are what a request §3.1 does not serve gets
 	// while the adapter drains: ErrMoved where the service names a gateway
@@ -2586,7 +2707,7 @@ it.
 > cap, decodes every member and refuses trailing bytes before any runs, as
 > judging a compound whole while draining needs. Reading a member's operation
 > code is the members' table's `ReadOp`, because its encoding is the
-> protocol's (an XDR `argop` for NFSv4) and no stage reads inside a body.
+> protocol's (an XDR `argop` for NFSv4) and no `core` stage reads inside a body.
 > Revisit if a protocol's compound cannot state its count before its members.
 
 > decision: three additions proposed from prior servers add no surface, since
@@ -2636,8 +2757,8 @@ decoded:
 
 | Protocol | Table chosen by | Not served is answered |
 | --- | --- | --- |
-| NFS and its auxiliary services (MOUNT, NLM, NSM) | the RPC header's (program, version): one table per pair | unknown program `PROG_UNAVAIL`; known program, version not served `PROG_MISMATCH` naming the lowest and highest served; unknown procedure `PROC_UNAVAIL` |
-| NFSv4 minor versions | one table for program 100003 version 4; `COMPOUND`'s minor version selects each row's `Versions` column | minor version not served: `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run ([RFC 21 §2.1](rfc-21-nfs.md#2.1%20Versions%20served)); an operation outside its minor versions: the status RFC 21 names |
+| NFS and its auxiliary services (MOUNT, NLM, NSM) | the RPC header's (program, version): one table per pair | unknown program, or one with no version served (MOUNT under a range of only 4.x), `PROG_UNAVAIL`; known program, version not served `PROG_MISMATCH` naming the lowest and highest served; unknown procedure `PROC_UNAVAIL` |
+| NFSv4 minor versions | one table for program 100003 version 4; `COMPOUND`'s minor version, read with its RPC header, selects each row's `Versions` column | minor version not served: `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run ([RFC 21 §2.1](rfc-21-nfs.md#2.1%20Versions%20served)); an operation outside its minor versions: the status RFC 21 names |
 | SMB dialects | one table; the dialect `NEGOTIATE` fixed for the connection selects each row's `Versions` column | a command outside the dialect: `STATUS_NOT_SUPPORTED`; dialects not served are never negotiated ([RFC 22 §3.1](rfc-22-smb.md#3.1%20Dialects)) |
 
 **`New` builds every table; only the Router filters.** `New` builds every
@@ -2650,10 +2771,11 @@ negotiated.
 
 - **NFS.** The Router maps (program, version) to a table, and answers a
   version outside the connection's range `PROG_MISMATCH`, naming the range's
-  lowest and highest served; an NFSv4 minor version outside it gets
-  `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run. NFSv3's table is served only
-  when `"3"` is in range, MOUNT, NLM and NSM with it, so a range of only 4.x
-  serves none of the three.
+  lowest and highest served; an NFSv4 `COMPOUND` whose minor version is outside
+  it gets `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run: the Router refuses it with
+  `ErrVersion` and the version 4 table, and the reply carries its tag. NFSv3's
+  table is served only when `"3"` is in range, MOUNT, NLM and NSM with it, so a
+  range of only 4.x serves none of the three.
 - **SMB.** One table; `NEGOTIATE` picks the highest dialect the client offers
   inside `Conn.Settings()`'s `Dialects`, and a dialect outside it is never
   negotiated.
@@ -2716,7 +2838,7 @@ is tested once, on its own.
 | neutral ↔ wire values | all protocols | `translate` | ACLs and security descriptors ([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)), access masks, times, file types and modes, `vfs.File` to the attributes each protocol reports |
 | fitting a listing to the client's buffer | `READDIR`, `READDIRPLUS`, NFSv4 `READDIR`, SMB `QUERY_DIRECTORY` | `translate` | `Fit(entries []vfs.DirEntry, budget int, size func(vfs.DirEntry) int) int`: how many entries of the service's page fit; each protocol supplies its encoded size and resumes from the cursor of the last entry sent |
 | the RPC layer | NFSv3, NFSv4, the auxiliary services | `nfs/protocol`, `nfs/wire` | record marking, RPC header, AUTH_SYS, `RPCSEC_GSS`, routing by program and version |
-| XDR primitives | every NFS program | `nfs/wire` | integers, opaques, strings, bitmaps, file handles — generated |
+| XDR primitives | every NFS program | `nfs/wire` | integers, opaques, strings, bitmaps, file handles, generated; the RPC header's, hand-written (§2.5) |
 | file handles, cookies, verifiers | NFSv3, NFSv4 | `nfs/wire` | opaque bytes from the service ([RFC 17 §4.4](rfc-17-vfs.md#4.4%20Handles%20are%20opaque)); one encoding |
 | handlers | SMB 2.1 to 3.1.1 | `smb/ops` | one handler per command for every dialect (§4.8) |
 | handlers | NFSv4.0 to 4.2 | `nfs/ops/v4` | one handler per operation for every minor version it spans (§4.8) |
@@ -2831,7 +2953,9 @@ Codecs **MAY** be generated from the protocol's machine-readable definitions —
 XDR specifications for the NFS family — or written by hand where none exists,
 as for SMB2. Either way the constants — operation codes, status codes, flag
 bits, structure sizes — are taken from the specification once, in one place per
-protocol, and every use names them.
+protocol, and every use names them. NFS's RPC header, the call and reply
+envelope with its credentials and verifier, is written by hand, and its
+operation codecs generated (§2.5).
 
 ### 5.2 Decoding is bounded
 
@@ -2936,8 +3060,10 @@ encrypted SMB message, the inner one. A connection with no transform has no
   malformed one is an unwrap refusal with `ErrDecode`, answered
   `STATUS_INVALID_PARAMETER` (§4.1; MS-SMB2 3.3.5.2.6) and encrypted under the
   transform's session, as 3.3.4.1.4 encrypts every response to an encrypted
-  request; one MS-SMB2 disconnects for (too short to be a header, misaligned,
-  or naming another session) closes the connection (3.3.5.2.1.1, 3.3.5.2.6). A
+  request; one MS-SMB2 disconnects for, or lets the server disconnect for (too
+  short to be a header, misaligned, naming a command code no request carries,
+  or naming another session), closes the connection (3.3.5.2.1.1, 3.3.5.2.6;
+  RFC 22 §16.5). A
   message `Unwrap` refused is answered under the header `Unwrap` returns with
   its refusal, which carries two facts for `Wrap`: the key to sign the answer
   under, or none, and whether the answer may be sealed. Both are the
@@ -2980,6 +3106,9 @@ encrypted SMB message, the inner one. A connection with no transform has no
   nothing can be answered: the pipeline closes the connection through
   `Conn.Close` with that error, as for an SMB message that fails decryption
   (MS-SMB2 3.3.5.2.1.1), whose inner header has no message ID to answer on.
+  `Unwrap` always returns a header or an error; one that returns neither breaks
+  its contract, and `core` closes the connection with an unexported error of
+  its own, under the close reason `unwrap` (§4.7).
 - **Unwrap runs on the reader**, because SMB's credit charge (admit) is in the
   inner header. **Wrap runs on the worker**, before the reply is queued: both
   protocols need only a unique nonce or sequence number per message, not an
@@ -3079,7 +3208,9 @@ A slow client therefore costs its own connection and nothing else.
 
 The writer owns the socket's write side. It sends whole messages, never
 interleaves two, and transforms none: a reply reaches it already signed or
-encrypted (§5.5). It has a bounded queue and a write
+encrypted (§5.5). It frames each message as it sends it: the protocol's
+`Framer.Frame` writes the record's header, and the header and the message go
+out in one write (§4.7). It has a bounded queue and a write
 deadline (§6.4). A failed write closes the connection.
 
 **Order where the protocol needs it.** When answering a request makes the
@@ -3094,9 +3225,9 @@ as it completes.
 The bound on requests in flight per connection is the protocol's own mechanism
 wherever it has one — NFSv4.1 slots ([RFC 21 §3.1](rfc-21-nfs.md#3.1%20Slot%20tables)),
 SMB credits ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)). Where it has
-none — and on every NFS connection, since the minor version and slot are
-known only after **decode args** — the adapter imposes a fixed per-connection
-cap of **64** requests in flight at **admit**; NFSv4.1 slots bound a session in
+none, and on every NFS connection, since an NFSv4.1 slot, in `SEQUENCE`'s
+arguments, is known only after **decode args**, the adapter imposes a fixed
+per-connection cap of **64** requests in flight at **admit**; NFSv4.1 slots bound a session in
 addition
 ([RFC 24 §3.4](rfc-24-resources.md#3.4%20The%20per-connection%20cap%20for%20protocols%20without%20flow%20control)),
 and a connection at its cap is simply not read until a request completes, so
@@ -3286,10 +3417,11 @@ allocator only avoids allocating it again.
 package resources // pkg/resources (RFC 24 §2.8): shared by every component
 
 // Buf is one pooled buffer, shared by reference count. Its reservation is
-// released with its bytes, so no byte a holder has is uncharged.
+// released with its bytes, so no byte a holder has is uncharged but a chain
+// member's between Join and its release (RFC 24 §2.5).
 type Buf struct {
-	B []byte // len is the record's or reply's; cap is the class's capacity (RFC 24 §3.1)
-	// unexported: its class, its reference count and its Reservation
+	B []byte // len is the record's or reply's; cap is the class's capacity (RFC 24 §3.1), or a joined record's n
+	// unexported: its class, its reference count and its Reservation, or the several a joined record took over
 }
 
 var ErrTooLarge error // RFC 24 §2.5: what a WaitBudget's Reserve, and so Get, wraps when it refuses a charge past the ceiling at once
@@ -3298,6 +3430,8 @@ func NewBufPool(b *WaitBudget) *BufPool                         // RFC 24 §2.5:
 func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // one reservation for key of n's class's capacity plus RFC 24 §3.1's per-request overhead (8 KiB), released with the buffer; then a buffer: refs = 1
 func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)    // RFC 24 §2.5: Get's charge taken only when it fits with no waiter ahead; otherwise false at once
 func (p *BufPool) Ceiling() int64                               // its budget's ceiling, what one charge is bounded by (§4.3)
+func (p *BufPool) Charge(n int) int64                           // RFC 24 §2.5: the charge Get would take for n bytes, n's class plus the per-request overhead; §4.3's quarter compares it with Ceiling()/4
+func Join(n int, bufs ...*Buf) *Buf                             // RFC 24 §2.5: a chain's record (§4.7), an empty buffer with room for n that takes over bufs' reservations: no new charge, no wait
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
 func (b *Buf) Recharge(to *Budget) error                     // RFC 24 §4.3: the whole charge moved to a reservation from to; refused, nothing changes
@@ -3372,6 +3506,9 @@ Three, each per protocol:
 | **codec micro** — `BenchmarkDecode*`, `BenchmarkEncode*` per message | ns and allocations per message | per change, in a non-race cell of its own: allocation gates skip under `-race` ([RFC 29 §4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs)) | `READ`, `WRITE`, `GETATTR`, SMB `READ`/`WRITE`/`QUERY_INFO` decode and encode at **0 allocations**, asserted with `testing.AllocsPerRun` |
 | **pipeline micro** — the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, with no storage underneath | nightly, as above | allocations per request asserted ≤ a checked-in number that may only fall |
 | **end to end** — the composed node with its real stores | small operations (`GETATTR`, `LOOKUP`, SMB `QUERY_INFO`) per second on one connection and on the node; 1 MiB sequential read and write on one and four connections; p99 of a 4 KiB write at half the request budget | nightly, dedicated host | tracked; three nights below the 7-day median adds a note to the develop-status issue (RFC 29 §4.10) |
+
+The gates cover the served path only: a request refused at decode allocates
+one error, the pipeline's wrap of its codec's error in `ErrDecode` (§4.7).
 
 How the load is made:
 
@@ -3733,7 +3870,7 @@ measures only what happens before and after the service call.
 | How much is in flight per protocol? | `adapter_requests_in_flight{protocol}` | gauge |
 | How often is a request refused before the service? | `adapter_refusals_total{protocol, stage}`, `stage` where it was refused, `reply_too_big` for §4.3's compound | counter |
 | How often are replays answered from the cache? | `adapter_replay_hits_total{protocol}` | counter |
-| How often does a chain's reply go out in more than one record, and why (§4.7)? | `adapter_chain_splits_total{protocol, reason}`, `reason` = `unwrap`, `decode`, `flow`, `reply_pool`, `quarter` | counter |
+| How often does a chain's reply go out in more than one record, and why (§4.7)? | `adapter_chain_splits_total{protocol, reason}`, `reason` = `unwrap`, `decode`, `flow`, `reply_pool`, `quarter`, `record` | counter |
 | How long are requests on the wire around the service call? | `adapter_wire_seconds{protocol, stage}` | histogram |
 | How often does a handler fault? | `adapter_handler_panics_total{protocol, op}` | counter |
 | How often does an error have no row? | `adapter_unmapped_errors_total{protocol}` | counter |

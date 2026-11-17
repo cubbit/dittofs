@@ -1187,6 +1187,8 @@ supplies one before the setting is built.
 | process memory limit *L*: the language runtime's soft limit, else the container's, else the host's memory | RFC 24 §2.1 | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)), read once at start | the first source set |
 | node memory pools: share of *L*, and floor | RFC 24 §2.3, §2.4 | — | fixed | receive, reply, hold, connection state, open state 1/16 each; metadata store 3/16; journal index 1/8; transfers 1/8; a quarter unpooled. Floors: receive and reply 16 MiB, connection and open state 4 MiB, metadata store 64 MiB, transfers eight workers per half and the staging they imply. The metadata store's share is proposed, settled by: RFC 24 §8's M3; the unpooled quarter by M4 |
 | buffer classes | RFC 24 §3.1 | — | fixed | 4 KiB, 64 KiB, 1 MiB, 8 MiB |
+| record caps: an RPC record, an SMB message | [RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes), [RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits) | none | derived | the capacity of the class holding each protocol's largest payload: 1 MiB and 4 KiB for an RPC record, 8 MiB and 4 KiB for an SMB message |
+| fragments per RPC record | [RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes) | none | fixed | 64; settled, since common clients send one fragment, and its `ponytail:` says when to raise it |
 | per-request overhead charged beside a request's buffer | RFC 24 §3.1 | — | fixed | proposed: 8 KiB; settled by: RFC 24 §8's M1 |
 | connection cost charged at accept | RFC 24 §4.4 | — | fixed | proposed: 64 KiB; settled by: RFC 24 §8's M2 |
 | NFSv4.1 session cost; slot cost, per slot of each channel | RFC 24 §4.5 | — | fixed | proposed: 4 KiB; 256 bytes; settled by: RFC 24 §8's M2 |

@@ -444,6 +444,18 @@ flight.
 
 - The largest read, write and control request (`MaxReadSize`, `MaxWriteSize`,
   `MaxTransactSize`) is **8 MiB**, a request costing one credit per 64 KiB.
+- A message, as its Direct TCP header counts it, is at most the large class's
+  capacity, 8 MiB and 4 KiB
+  ([RFC 24 §3.1](rfc-24-resources.md#3.1%20Buffer%20classes)): a longer one
+  closes the connection ([RFC 20 §5.2](rfc-20-adapters.md#5.2%20Decoding%20is%20bounded)).
+- A response record is held to the same cap, and so stays within Direct TCP's
+  3-byte `StreamProtocolLength` (MS-SMB2 2.1), which no record of 2^24 bytes or
+  more fits. A single response is bounded by its class; a chain sends the
+  responses it holds as a record of their own before its joined record would
+  pass the cap
+  ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
+  as it does before passing a quarter of the reply pool, which is past 16 MiB
+  on a node whose memory limit is past 1 GiB.
 - Each connection targets **512** credits outstanding, counting those the client holds and
   those a withheld interim's final response still owes. A synchronous response,
   and the interim response of a request held pending, grants what the client
@@ -527,6 +539,15 @@ flight.
 > guests see as failed I/O. Adapt the credit target to node memory when idle
 > connections exhaust a node; the pool's own ceiling and trigger are RFC 24
 > §4.3's, read from `adapter_hold_refusals_total{protocol="smb"}` (§19).
+
+> decision: a compounded response is held to the message cap, 8 MiB and 4
+> KiB, not to MS-SMB2 3.3.4.1.3's `Connection.MaxTransactSize` + 256, here 8
+> MiB and 256 bytes, which is tighter by 3,840 bytes. That line is a SHOULD NOT
+> that Windows servers do not compute ("Windows-based servers do not calculate
+> the size of the response message", Appendix A, note 239), and `core` holds a
+> chain to the one cap its framer states for every record. Hold a chain to
+> `MaxTransactSize` + 256 if a client is seen refusing a compounded response
+> between the two.
 
 ## 4. Sessions
 
@@ -2616,6 +2637,53 @@ replays the lock or the notification once it reconnects, so the application
 sees no `ERROR_OPERATION_ABORTED`. `ErrNotNegotiated`,
 `ErrNoFH` and `ErrTooLong` are settled against MS-SMB2 when the table is
 built; the totality test fails until they have rows.
+
+**A status's body.** A reply whose status is not success is MS-SMB2 2.2.2's
+error response, which the header codec writes after the header, and a command's
+encoder handed no reply writes nothing
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`HeaderCodec.Encode`). The exceptions are the command's encoder's, and the
+header codec leaves them to it. They are the statuses MS-SMB2 3.3.4.4 does not
+count as failures: `STATUS_MORE_PROCESSING_REQUIRED` in a `SESSION_SETUP`
+response; `STATUS_BUFFER_OVERFLOW` in a `QUERY_INFO` response, in an
+`FSCTL_PIPE_TRANSCEIVE`, `FSCTL_PIPE_PEEK` or `FSCTL_DFS_GET_REFERRALS`
+response, and in a `READ` response on a named pipe; `STATUS_INVALID_PARAMETER`
+in an `FSCTL_SRV_COPYCHUNK` or `FSCTL_SRV_COPYCHUNK_WRITE` response returning an
+`SRV_COPYCHUNK_RESPONSE`; `STATUS_NOTIFY_ENUM_DIR` in a `CHANGE_NOTIFY` response.
+They are also `STATUS_BUFFER_OVERFLOW` in an `FSCTL_GET_REPARSE_POINT` response,
+which this server serves (Appendix F) and Windows answers so (MS-SMB2
+Appendix A, note 244), and an error response carrying the command's error data,
+as `STATUS_STOPPED_ON_SYMLINK`'s does ([§12.4](#12.4%20Reparse%20points)). The
+named-pipe `READ` case never arises here: a pipe `READ` that does not fit is
+answered a short read with `STATUS_SUCCESS` ([§3.3](#3.3%20Sizes%20and%20credits)).
+
+**Malformed headers.** A message shorter than the 64-byte SMB2 header, a header
+whose command code no request carries (MS-SMB2 2.2.1.2), and a
+protocol ID the server does not read (it reads SMB2's, the transform header's,
+[§4.1](#4.1%20Signing%20in), and an SMB1 `NEGOTIATE`'s,
+[§3.1](#3.1%20Dialects)) close the connection with no error response; an
+encrypted message's inner headers close it as RFC 20 §4.1's unwrap row says.
+A request carries one of the codes of 2.2.1.2's table, `NEGOTIATE` to
+`OPLOCK_BREAK`: MS-SMB2 3.3.5.2.6 disconnects for a code outside 2.2.1, and
+the asynchronous header's table (2.2.1.1) adds only
+`SERVER_TO_CLIENT_NOTIFICATION` (0x0013), which "is sent by the server"
+(2.2.44.1). A request carrying it matches no request structure of MS-SMB2
+section 2, which 3.3.5.2.6 fails with `STATUS_INVALID_PARAMETER` and lets the
+server disconnect for, so the server closes on it as on any other code no
+request carries.
+Any other, a `StructureSize`
+other than 64, or a `NextCommand` that is not a multiple of 8, is non-zero and
+below 64, the header's size, or leaves no room for a header before the
+message's end, is answered `STATUS_INVALID_PARAMETER` from the
+row for `ErrDecode` (MS-SMB2 3.3.5.2.6): `NextCommand` is the offset "to the
+start of the subsequent 8-byte aligned SMB2 header" (2.2.1.2), and one below
+64 points inside the header it ends. A `NextCommand` so refused ends the chain
+there, and the connection closes once the replies before it are sent
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
+
+**The fault status**
+([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)) is
+`STATUS_INTERNAL_ERROR`.
 
 **What runs while draining** is each command's `Role`
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)):
