@@ -102,7 +102,7 @@ func Open(opts Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.time = backend.NewClock(opts.Clock, stored)
+	s.time = backend.NewClock(opts.Clock, stored, 0)
 	if err := s.time.Raise(s.writeCeiling); err != nil {
 		return nil, err
 	}

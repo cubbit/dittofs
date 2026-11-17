@@ -118,3 +118,37 @@ func TestSessionAndTokenRows(t *testing.T) {
 		checkRows(t, "deleted token's "+keys.Describe([]byte{kind}), keysUnder(t, s, []byte{kind}))
 	}
 }
+
+// ClearSourceSignIns deletes at most half its key budget of source counts
+// per call, each with its expiry row: three counts under a budget of four
+// keys take two calls, the first reporting more left and the second none.
+func TestClearSourceSignInsBatches(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	s.SetKeyBudget(4)
+	cp := s.ControlPlane()
+	t0 := time.Unix(1_800_000_000, 0).UTC()
+	for i := range 3 {
+		k := entity.SignInKey{Source: netip.PrefixFrom(netip.AddrFrom4([4]byte{192, 0, 2, byte(i)}), 32)}
+		if err := cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+			return tx.PutSignInFailures(k, entity.SignInFailures{Count: 1, Last: t0, Failed: t0})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, want := range []struct {
+		more bool
+		left int
+	}{{true, 1}, {false, 0}} {
+		more, err := cp.ClearSourceSignIns(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		left := len(keysUnder(t, s, []byte{keys.KindSF, keys.SFSource}))
+		rows := len(keysUnder(t, s, []byte{keys.KindXP}))
+		if more != want.more || left != want.left || rows != want.left {
+			t.Errorf("call %d: more %v, %d counts and %d expiry rows left; want more %v, %d and %d",
+				i+1, more, left, rows, want.more, want.left, want.left)
+		}
+	}
+}

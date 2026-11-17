@@ -27,6 +27,11 @@ type Options struct {
 	NodeID [keys.IDLen]byte
 	// Clock is the node's clock; nil is time.Now.
 	Clock func() time.Time
+	// CeilingAhead is how far past the clock each raise of the clock's
+	// ceiling reaches, so how far store time can follow a clock moved on
+	// between raises; 0 is backend.CeilingAhead. A test that moves the clock
+	// by hours sets it longer.
+	CeilingAhead time.Duration
 }
 
 // Store is a kv.KV on Badger. Every commit is synced to the device before
@@ -103,7 +108,7 @@ func Open(opts Options) (*Store, error) {
 	// a restart cannot carry Now backward.
 	if err := db.View(func(t *badger.Txn) error {
 		c, err := readCeiling(t, s.clk)
-		s.time = backend.NewClock(opts.Clock, c)
+		s.time = backend.NewClock(opts.Clock, c, opts.CeilingAhead)
 		return err
 	}); err != nil {
 		s.closeSync()
