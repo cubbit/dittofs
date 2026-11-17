@@ -7,11 +7,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go.opentelemetry.io/otel/trace"
-
+	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // What the package's external tests reach of core's unexported parts. It is
@@ -281,7 +282,15 @@ func SetListen(s *Server, f func(ctx context.Context, network, addr string) (net
 
 // ServeConn hands the server a socket, which its accept loop does in
 // production, and returns the connection it serves on it.
-func ServeConn(s *Server, nc net.Conn, l *Listener) *Conn { return s.serveConn(nc, l) }
+func ServeConn(s *Server, nc net.Conn, l *Listener) *Conn { return s.serveConn(nc, l, nil) }
+
+// SetServerSettings replaces the server's current snapshot, as Reconfigure
+// does once it lands, so a test can tell a connection's own from it.
+func SetServerSettings(s *Server, snap settings.Settings) { s.settings.Store(&snap) }
+
+// ConnContext is a connection's context, for a test that proves a close ends
+// it.
+func ConnContext(c *Conn) context.Context { return c.ctx }
 
 // ConnDone is a connection's teardown end, for a test that waits for it.
 func ConnDone(c *Conn) <-chan struct{} { return c.done }
@@ -298,3 +307,23 @@ func Runs(p *Pipeline) int {
 	defer p.mu.Unlock()
 	return p.runs
 }
+
+// ServeConnCharged hands the server a socket with the connection-state charge
+// its accept loop would take, and returns the connection.
+func ServeConnCharged(s *Server, nc net.Conn, l *Listener, charge *resources.Reservation) *Conn {
+	return s.serveConn(nc, l, charge)
+}
+
+// Kept is how many Keeps a connection holds unreleased.
+func Kept(c *Conn) int32 { return c.kept.Load() }
+
+// Serving moves a server to serving, as Start does once its listeners are
+// bound: a test hands the server sockets itself and needs no listener.
+func Serving(s *Server) {
+	s.mu.Lock()
+	s.state = adapter.StateServing
+	s.mu.Unlock()
+}
+
+// ConnSettings is a connection's snapshot, as Settings reports it.
+func ConnSettings(c *Conn) settings.Settings { return c.Settings() }

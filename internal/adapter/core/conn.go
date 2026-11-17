@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,15 +21,17 @@ const onCloseGrace = 30 * time.Second
 // Conn is one accepted connection. Its reader, writer and pipeline are core's;
 // a protocol reaches it through these methods only.
 type Conn struct {
-	nc     net.Conn
-	srv    *Server
-	snap   settings.Settings // the snapshot loaded at accept
-	sh     *shared
-	p      *pipeline
-	w      *writer
-	rd     *reader
-	remote netip.Addr
-	charge *resources.Reservation // the connection-state charge the accept loop took; nil for none
+	nc         net.Conn
+	srv        *Server
+	snap       settings.Settings // the snapshot loaded at accept
+	sh         *shared
+	p          *pipeline
+	w          *writer
+	rd         *reader
+	remote     netip.Addr
+	remoteAddr netip.AddrPort         // the client's address as it reached this node
+	since      time.Time              // accepted at
+	charge     *resources.Reservation // the connection-state charge the accept loop took; nil for none
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -37,7 +40,7 @@ type Conn struct {
 	closed      atomic.Bool
 	established atomic.Bool
 	done        chan struct{} // closed once the teardown ended
-	kept        atomic.Bool   // T4.7a's idle pass-over
+	kept        atomic.Int32  // T4.7a's idle pass-over: one per Keep, released one apiece
 }
 
 // Send queues a message on the writer: a callback, or an interim reply. core
@@ -57,8 +60,9 @@ func (c *Conn) Established() { c.established.Store(true) }
 // NFSv4.1 back channel) so the idle timeout passes the connection over until
 // every release is called.
 func (c *Conn) Keep() (release func()) {
-	c.kept.Store(true)
-	return func() { c.kept.Store(false) }
+	c.kept.Add(1)
+	var once sync.Once
+	return func() { once.Do(func() { c.kept.Add(-1) }) }
 }
 
 // Settings is the settings snapshot this connection loaded at accept, the
@@ -98,10 +102,13 @@ var errConnClosed = errors.New("core: the connection closed")
 
 // serveConn serves one accepted socket until it closes: the snapshot, the
 // protocol's stages, the writer, the pipeline and the reader, with the teardown
-// on the reader once its loop ends (RFC 20 section 3.2).
-func (s *Server) serveConn(nc net.Conn, l *Listener) *Conn {
+// on the reader once its loop ends (RFC 20 section 3.2). charge is the
+// connection-state reservation the accept loop took, which the teardown
+// releases; nil for none.
+func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservation) *Conn {
 	snap := *s.settings.Load()
-	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, remote: remoteOf(nc), done: make(chan struct{})}
+	remote, port := remoteOf(nc)
+	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, remote: remote, remoteAddr: port, since: time.Now(), charge: charge, done: make(chan struct{})}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	st, err := withDefaults(l.Protocol.NewConn(c))
 	if err != nil {
@@ -116,8 +123,12 @@ func (s *Server) serveConn(nc net.Conn, l *Listener) *Conn {
 	c.w = newWriter(nc, f, common.WriteTimeout, c.Close)
 	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, out: c.w.out, close: c.Close})
 	c.rd = newReader(nc, f, s.recv, c.remote, common.ReadTimeout)
-	s.register(c)
+	registered := s.register(c)
 	go c.readLoop()
+	if !registered {
+		// The server is not serving: the connection closes before it reads.
+		c.Close(errStop)
+	}
 	return c
 }
 
@@ -128,10 +139,17 @@ func (c *Conn) teardown() {
 	defer close(c.done)
 	// OnClose's context is the server's clock's, not the connection's: the
 	// close has cancelled that one (RFC 20 section 4.7).
-	ctx, cancel := withClockDeadline(context.Background(), c.sh.clock, c.sh.clock.Now().Add(onCloseGrace))
-	defer cancel()
-	_ = c.p.wait(ctx)
+	// The wait has the connecton's own grace; OnClose then gets a fresh one
+	// that the close does not end, so it runs once nothing runs and with a live
+	// context (RFC 20 section 4.7).
+	wait, cancelWait := withClockDeadline(context.Background(), c.sh.clock, c.sh.clock.Now().Add(onCloseGrace))
+	defer cancelWait()
+	if err := c.p.wait(wait); err != nil {
+		c.sh.log.ErrorContext(wait, "connection teardown: requests still running", "err", err)
+	}
 	if c.p.st.OnClose != nil {
+		ctx, cancel := withClockDeadline(context.Background(), c.sh.clock, c.sh.clock.Now().Add(onCloseGrace))
+		defer cancel()
 		c.p.st.OnClose(ctx)
 	}
 	c.w.stop()
@@ -156,11 +174,13 @@ func (c *Conn) release() {
 	}
 }
 
-// remoteOf is nc's remote IP address, the key its records are charged to; the
-// zero address for a socket that has none, as a test's pipe.
-func remoteOf(nc net.Conn) netip.Addr {
+// remoteOf is nc's remote address, which its records are charged to, and the
+// address as the client's list reports it; the zero ones for a socket that has
+// none, as a test's pipe.
+func remoteOf(nc net.Conn) (netip.Addr, netip.AddrPort) {
 	if a, ok := nc.RemoteAddr().(*net.TCPAddr); ok {
-		return a.AddrPort().Addr().Unmap()
+		ap := a.AddrPort()
+		return ap.Addr().Unmap(), ap
 	}
-	return netip.Addr{}
+	return netip.Addr{}, netip.AddrPort{}
 }

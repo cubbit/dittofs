@@ -39,10 +39,10 @@ type Server struct {
 	reply    *resources.BufPool // the reply pool every reply is taken from
 	sh       *shared            // the pools, metrics, clock and logger every connection shares
 
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	state adapter.State
-	bound []bound // every socket open now, by listener, then by address in the settings' order
-	conns []*Conn // every connection open now
+	bound []bound            // every socket open now, by listener, then by address in the settings' order
+	conns map[*Conn]struct{} // every connection open now
 }
 
 // bound is one listener's socket on one address.
@@ -102,12 +102,13 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 			return nil, fmt.Errorf("core: new server: listener %d %q: %w", i, ls[i].Services, err)
 		}
 	}
-	srv := &Server{ls: ls, d: d, listen: (&net.ListenConfig{}).Listen}
-	if d.Budgets != nil {
-		srv.recv = resources.NewBufPool(d.Budgets.Receive)
-		srv.reply = resources.NewBufPool(d.Budgets.Reply)
-		srv.sh = newShared(d, srv.reply)
+	if d.Budgets == nil {
+		return nil, fmt.Errorf("core: new server: %w", errNoBudgets)
 	}
+	srv := &Server{ls: ls, d: d, conns: map[*Conn]struct{}{}, listen: (&net.ListenConfig{}).Listen}
+	srv.recv = resources.NewBufPool(d.Budgets.Receive)
+	srv.reply = resources.NewBufPool(d.Budgets.Reply)
+	srv.sh = newShared(d, srv.reply)
 	// The server owns the Addrs alone: srv.addrs is its own copy, and Start
 	// binds that. The rest of the settings is the snapshot as New handed it,
 	// shared with the caller where the settings sit behind a pointer - the
@@ -307,7 +308,10 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 // stopped, from any state; a second call returns nil.
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	conns := slices.Clone(s.conns)
+	conns := make([]*Conn, 0, len(s.conns))
+	for c := range s.conns {
+		conns = append(conns, c)
+	}
 	s.closeBound()
 	s.state = adapter.StateStopped
 	s.mu.Unlock()
@@ -327,20 +331,27 @@ func (s *Server) Stop(ctx context.Context) error {
 // errStop is a connection's close, the server stopping.
 var errStop = errors.New("core: the server stopped")
 
-// register adds a connection to the registry. A connection served on a server
-// that is not serving closes at once: its reader's first arm sees the ended
-// context.
-func (s *Server) register(c *Conn) {
+// errNoBudgets is a server built without the budgets its pools need.
+var errNoBudgets = errors.New("no budgets")
+
+// register adds a connection to the registry, and reports false when the
+// server is not serving: such a connection is closed at once, before it reads,
+// so Stop's snapshot is never missed.
+func (s *Server) register(c *Conn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.conns = append(s.conns, c)
+	if s.state != adapter.StateServing {
+		return false
+	}
+	s.conns[c] = struct{}{}
+	return true
 }
 
 // unregister drops a connection from the registry once its teardown ended.
 func (s *Server) unregister(c *Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.conns = slices.DeleteFunc(s.conns, func(o *Conn) bool { return o == c })
+	delete(s.conns, c)
 }
 
 // Addrs is every address each listener is bound on now, by service and
@@ -374,12 +385,14 @@ func (s *Server) Health() adapter.Health {
 // Connections lists the connections open now, as the API's client list reads
 // them; a connection whose protocol names no session reports none.
 func (s *Server) Connections() iter.Seq[adapter.ConnInfo] {
-	s.mu.Lock()
-	conns := slices.Clone(s.conns)
-	s.mu.Unlock()
+	s.mu.RLock()
+	infos := make([]adapter.ConnInfo, 0, len(s.conns))
+	for c := range s.conns {
+		infos = append(infos, adapter.ConnInfo{Protocol: c.protocol(), Remote: c.remoteAddr, Since: c.since})
+	}
+	s.mu.RUnlock()
 	return func(yield func(adapter.ConnInfo) bool) {
-		for _, c := range conns {
-			info := adapter.ConnInfo{Protocol: c.protocol(), Remote: netip.AddrPortFrom(c.remote, 0)}
+		for _, info := range infos {
 			if !yield(info) {
 				return
 			}
