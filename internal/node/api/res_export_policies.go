@@ -46,11 +46,9 @@ func policyOf(p entity.ExportPolicy) apiv1.ExportPolicySpec {
 // squash root. The client rules must be stated, an empty list admitting every
 // client. A rule naming other than exactly one match, and minimums that
 // cannot be met together, are refused naming their field here, ahead of the
-// store's own check.
-//
-// ponytail: a client rule names a netgroup by its name, the only key the
-// store holds a netgroup under, and a rule naming one that does not exist
-// fails closed. Name it by an ID once netgroups carry one.
+// store's own check. A client rule names a netgroup by its name, the key the
+// store holds it under, and a rule naming one that does not exist fails
+// closed.
 func policyFrom(share entity.ShareID, spec apiv1.ExportPolicySpec, at string) (entity.ExportPolicy, error) {
 	p := entity.ExportPolicy{Share: share, ReadOnly: spec.ReadOnly, Squash: entity.SquashRoot}
 	if len(spec.Flavors) == 0 {
