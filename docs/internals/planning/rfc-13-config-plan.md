@@ -243,7 +243,7 @@ Out of scope, each named in O1:
      time this node applied it, which RFC 23's node feeds from the positions it reconciles and
      reads for its `config_generation_behind` condition;
    - secrets: `config_secrets_behind`;
-   - versions: `format_active_version`, `format_supported_range`.
+   - versions: `format_active_version`, `format_supported_min`, `format_supported_max`.
 
    The provisioning series are out with the file. No label carries a record or a secret (RFC 13
    §8). No exception applies.
@@ -1116,7 +1116,7 @@ value; D7's drift test passes.
   device left empty; and the `node-id` parser's fuzz target, seeded with those.
 - The version gate (§4.3 above), over the installation's active versions, the store format's
   active version in `\x00format` (RFC 13 §5.5) and each namespace's block format version, with
-  `format_active_version` and `format_supported_range`.
+  `format_active_version`, `format_supported_min` and `format_supported_max`.
 - Last, once RFC 23's plan has `dfs init` (S4): `dfsbench`'s backend initialises the installation,
   with its first password, through `dfs init`, and starts it with `dfs start` (D7), so v2 is
   measured against v1 from here on (RFC 23's plan's D6).
