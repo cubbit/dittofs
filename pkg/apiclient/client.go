@@ -36,7 +36,7 @@ type Client struct {
 }
 
 // TokenSource hands the client the access token each call carries, and a
-// fresh one when the server refuses the token failed 401.
+// fresh one in place of a token the server refused 401.
 type TokenSource interface {
 	Token(ctx context.Context) (string, error)
 	Refresh(ctx context.Context, failed string) (string, error)

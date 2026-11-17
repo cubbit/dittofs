@@ -422,8 +422,11 @@ func TestWithoutIdempotencyKey(t *testing.T) {
 	}
 
 	s.front.add(fault{match: on(http.MethodPost, "/api/v1/shares/"+sh.ID+":resume"), drop: true})
-	if _, err := c.Shares().Action(t.Context(), sh.ID, "resume", nil, "", apiclient.WithoutIdempotencyKey()); err == nil || errors.As(err, new(*apiv1.Problem)) {
-		t.Errorf("Action without a key, its answer lost: error %v, want the lost answer", err)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second) // a backstop: a retry would wait on a clock that never moves
+	defer cancel()
+	_, err = c.Shares().Action(ctx, sh.ID, "resume", nil, "", apiclient.WithoutIdempotencyKey())
+	if err == nil || errors.As(err, new(*apiv1.Problem)) || errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Action without a key, its answer lost: error %v, want the lost answer, returned at once", err)
 	}
 	if n := len(slices.DeleteFunc(s.front.requests(http.MethodPost), func(r seen) bool { return !strings.HasSuffix(r.uri, ":resume") })); n != 1 {
 		t.Errorf(":resume sent %d times, want once", n)
