@@ -2662,6 +2662,12 @@ one runs, as MS-SMB2 3.3.5.2.7.2 fails a related member only after a failure; an
 error response that carries error data, as `STATUS_STOPPED_ON_SYMLINK`'s, stays a
 failure
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
+Each such row's error is its pair's own, since an `IOCTL` row names the command
+and not the FSCTL
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`ErrorRow`): `STATUS_BUFFER_OVERFLOW` in an `FSCTL_QUERY_ALLOCATED_RANGES`
+response, whose output buffer holds fewer ranges than the file has (MS-FSA's
+`FSCTL_QUERY_ALLOCATED_RANGES`), is not in 3.3.4.4's list and stays a failure.
 
 **Malformed headers.** A message shorter than the 64-byte SMB2 header, a header
 whose command code no request carries (MS-SMB2 2.2.1.2), and a
@@ -2746,6 +2752,7 @@ service, before any wire suite runs:
 | §16.4 SMB deny-write against an NFS write open | Hold an SMB open with `FILE_SHARE_READ` only and no lease; open the file for write over NFSv4 and write it over NFSv3: refused, `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES`; close the SMB open and both succeed. | a deny mode enforced within one protocol only |
 | §16.4 persistent state | Fail the primary over under a persistent open with a lease and locks, reconnect: open, lease and locks as left. Open delete-on-close, revoke the client: the open is released and the pending delete runs as its marker. | a reconnect that loses the lease |
 | §3.3 parked pipe `READ` | Bind to `\pipe\srvsvc`, send a 64 KiB `READ` on the empty pipe so it parks, then write a `NetShareEnumAll` request whose reply is larger than 4 KiB, with a client that reports each `READ`'s status: the parked `READ` returns a short read with `STATUS_SUCCESS`, and the `READ`s after it return the rest. | a parked pipe `READ` that answers `STATUS_BUFFER_OVERFLOW` where an unparked one answers a short read |
+| §16.5 a non-failure in a chain | Send `CREATE`, then a related `QUERY_INFO` whose output buffer is too small for the information asked, then a related `CLOSE`: the `QUERY_INFO` answers `STATUS_BUFFER_OVERFLOW`, the `CLOSE` answers `STATUS_SUCCESS`, and the open is gone (a `READ` on its `FileId` answers `STATUS_FILE_CLOSED`). | a related member after a status MS-SMB2 3.3.4.4 counts as no failure refused as after a failure, which leaves the open behind |
 | §16.4 end to end | smbtorture and the Windows Protocol Test Suites run through `dt` ([RFC 29](rfc-29-test-harness.md)) as the end-to-end layer above the vectors and fuzz targets. | a translation correct in vectors but wrong against a real client |
 
 ### 16.7 Monitoring

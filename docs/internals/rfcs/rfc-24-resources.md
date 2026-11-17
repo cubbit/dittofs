@@ -751,7 +751,16 @@ by then closes its connection, since it can go out no other way
 ([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)'s `reply_wait`). Such a wait
 keeps its request's record, and so its receive charge, until the status goes
 out, so the receive pool bounds how many wait at once (§6.1), however the
-wait is run. Its buffer is `HeaderCodec.ReplyLen(h)` bytes once a header has
+wait is run. A connection bounds them too. A status that waits holding no place
+under the connection's flow control, a refusal before or at admission, takes
+the connection's one status wait, so a connection runs one such wait at a time:
+a second waits for it on the reader, which reads nothing more of that
+connection meanwhile. A status whose request was admitted waits in its place.
+A chain's member status takes the one status wait as well, and waits for it in
+the chain's place
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
+so the statuses waiting on one connection stay within its flow-control bound,
+plus the one status wait. Its buffer is `HeaderCodec.ReplyLen(h)` bytes once a header has
 decoded, which counts what the status alone carries, an NFSv4 `COMPOUND`'s tag
 among it ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
 and the small class for a refusal with no header. Either way the request holds

@@ -2371,7 +2371,11 @@ type ErrorRow struct {
 	NoReply  bool     // no final reply (ErrDraining, and ErrMoved where no move signal fits, §3.1); a table that Holds sends an interim granting the request's credits; Status unused
 	// NotFailure marks Status, for the operations the row names, as one its
 	// protocol counts as no failure: MS-SMB2 3.3.4.4's pairs for SMB, none for
-	// NFS. The related members after it run (§4.3, MS-SMB2 3.3.5.2.7.2).
+	// NFS. The related members after it run (§4.3, MS-SMB2 3.3.5.2.7.2). Its
+	// Err is specific to its pair: a row naming IOCTL, whose 3.3.4.4 pairs are
+	// per FSCTL, carries an error that FSCTL's handler alone returns, never a
+	// sentinel another FSCTL or command shares, which would make that status
+	// no failure for every one of them.
 	NotFailure bool
 	// Hold, only in a table that Holds (NewOpTable refuses it elsewhere): a
 	// request whose latest attempt maps here is held and re-driven until the
@@ -2469,8 +2473,11 @@ its one reply cannot join the chain's record, and no protocol nests one, since
 NFS does not chain and SMB's compound is the chain itself.
 
 A chain member is admitted only once the reply of the one before it is
-encoded, and that one's admission is released first, so a chain holds one place
-under flow control at a time, however long it is. It is first admitted under an
+encoded. The chain keeps the place the one before it was admitted to until the
+member is admitted, and gives it back before the member waits in `Admit`, so a
+chain never waits at flow control holding a place, and waits elsewhere holding
+one at most, however long it is; a member `Admit` refuses holds no admission of
+its own and waits for its status in that kept place. It is first admitted under an
 ended context, which tries once; when it would wait while the chain holds reply
 reservations, the replies before it go out as a record of their own, wrapped
 once, and only then does it wait in `Admit`: a chain never waits on flow control
@@ -2492,7 +2499,11 @@ A member answered with a status alone takes its status's buffer the same way:
 `TryGet` first, and when it is refused the replies before it go out first,
 counted as `reply_pool`; the status then waits for its buffer
 ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)),
-holding no reply reservation.
+holding no reply reservation and holding the connection's one status wait, as a
+refusal alone does: the reader takes it for a first member it refuses, so the
+next such record waits on the reader, and the chain's goroutine takes it for a
+later member, waiting for it in the chain's place under flow control, so the
+chains waiting for it stay within the connection's flow-control bound.
 A member's replay hit keeps the same rule. `Lookup` is first asked under an
 ended context, which tries its copy's reservation once; on its `ErrDelay` of
 `DelayResources` the replies before it go out first, and it is asked again
@@ -3419,7 +3430,7 @@ the statuses are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors
 | write timeout, `write_timeout` | each gathered write of the writer (§6.6), from its start | connection closed |
 | handshake timeout, `handshake_timeout` | negotiate and authenticate | connection closed |
 | connection limit | per node, `connection_limit`, and a quarter of it per address ([RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)) | new connections closed at accept, never left in the listen backlog |
-| accept failure | every `Accept` error but the listener's own close (`net.ErrClosed`), which ends its accept loop | retried after a backoff from 10 ms doubling to 1 s; `adapter_listener_lost` (§3.7) holds while `Accept` keeps failing, its last failure within 2 s, twice the backoff's cap, and the run's first failure 60 s back, and clears at the next accepted connection or once the failures stop |
+| accept failure | every `Accept` error but the listener's own close (`net.ErrClosed`), which ends its accept loop, and the accept deadline's own wake (`os.ErrDeadlineExceeded`, §3.4's `Deps.Watch`), which reports idle, re-arms the deadline and is no failure, so it neither backs off nor counts toward `adapter_listener_lost` | retried after a backoff from 10 ms doubling to 1 s; `adapter_listener_lost` (§3.7) holds while `Accept` keeps failing, its last failure within 2 s, twice the backoff's cap, and the run's first failure 60 s back, and clears at the next accepted connection or once the failures stop |
 | drain timeout, `drain_timeout` | draining (§3.1) | remaining requests abandoned |
 | status buffer wait | a reply carrying a status alone that holds no reply reservation, keeping its record's receive charge meanwhile ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)): 30 s from when it starts waiting ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)) | connection closed, counted under `reply_wait` (§10.1) |
 
