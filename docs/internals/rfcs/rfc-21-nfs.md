@@ -2703,7 +2703,8 @@ owner, file or principal label.
 | reply-cache hits: genuine retransmissions answered from a session's slot | `adapter_replay_hits_total{protocol="nfs4"}` | counter |
 
 **The request span.** One per RPC, named `adapter.nfs3.<PROCEDURE>` or
-`adapter.nfs4.COMPOUND`, with one child per operation of a compound
+`adapter.nfs4.COMPOUND`, or `adapter.nfs3` for one refused before `Route`, an
+NFSv4 RPC among them ([RFC 20 §10.2](rfc-20-adapters.md#10.2%20Spans)), with one child per operation of a compound
 (`adapter.nfs4.<OP>`) and the service's span below it
 ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)). Its attributes are
 closed sets: protocol, minor version, operation, NFS status, the neutral error

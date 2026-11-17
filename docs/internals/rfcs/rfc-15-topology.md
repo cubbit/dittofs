@@ -662,7 +662,7 @@ Every call a node forwards to a primary carries one envelope:
 | node and node epoch | the forwarding node and the node epoch of its lease; a primary refuses a call from a node epoch that has been fenced ([§5.3](#5.3%20Client%20addressing)) |
 | hop count | zero from the gateway node; a node that is not the primary refuses a call whose hop count is not zero rather than forward it ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)) |
 | identity | the adapter's neutral `Identity` ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), carried as a value: the gateway never reads it, and the primary resolves it per share; trusted only over the mutually authenticated node channels of [§4.4](#4.4%20Node%20channels) |
-| trace context | the sender's trace ID, parent span ID and sampled flag (RFC 25 §6.2); never part of the request ID |
+| trace context | the sender's trace ID, parent span ID and sampled flag (RFC 25 §6.2), for a sampled request; an unsampled one's context carries no span, and its envelope no trace context. Never part of the request ID |
 | adapter bytes (payload) | the opaque `Adapter` bytes of the RFC 14 records a call writes or reads, at most 4 KiB each, starting with the adapter's own version byte ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); they travel in the call and back in its result, and the gateway, the transport and `vfs.Serve` never read them. They are part of the call, not of the envelope's routing fields, so they are fenced, deduplicated and replayed with it |
 
 - The primary **MUST** refuse a call whose epoch is not its current one for the
@@ -1068,9 +1068,10 @@ table. `topology_epoch_refusals_total` is the sum of the fence refusals'
 adapters' (`adapter_record_decode_failures_total{protocol, reason}`,
 [RFC 20](rfc-20-adapters.md)), since only an adapter reads them.
 
-**Spans.** A forwarded call is a child span of the adapter's request span on
-the gateway node, carrying the envelope's trace context (§4.3) to the primary,
-where `vfs.Serve` and the filesystem's step continue it (RFC 25 §6.2). Its
+**Spans.** A forwarded call of a sampled request is a child span of the
+adapter's request span on the gateway node, carrying the envelope's trace
+context (§4.3) to the primary, where `vfs.Serve` and the filesystem's step
+continue it (RFC 25 §6.2); an unsampled request's call opens none. Its
 attributes are the view, the shard and the neutral result; no client, owner,
 file or principal identifier is one.
 
