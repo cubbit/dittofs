@@ -2344,7 +2344,10 @@ signs each member over its own bytes, `NextCommand` and padding included, and
 encrypts the record once. The joined record is one buffer, RFC 24 §2.5's
 `Join` of the members' reply buffers, which takes over their reservations: the
 runner appends each reply to it, `Chain` pointing the one before at it, and the
-members' bounds summed hold it, since `ReplyLen` counts `Chain`'s padding.
+members' bounds summed hold it, since `ReplyLen` counts `Chain`'s padding. A
+chain member whose row is a compound row is refused with `ErrNotSupported`:
+its one reply cannot join the chain's record, and no protocol nests one, since
+NFS does not chain and SMB's compound is the chain itself.
 
 A chain member is admitted only once the reply of the one before it is
 encoded, and that one's admission is released first, so a chain holds one place
@@ -2366,6 +2369,11 @@ replies before it go out as a record of their own, wrapped
 once, and only then does the member reserve under its deadline: a chain never
 waits on the reply pool while holding it
 ([RFC 24 §2.6](rfc-24-resources.md#2.6%20Reservations%20are%20taken%20in%20one%20order)).
+A member answered with a status alone takes its status's buffer the same way:
+`TryGet` first, and when it is refused the replies before it go out first,
+counted as `reply_pool`; the status then waits for its buffer
+([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)),
+holding no reply reservation.
 A member's replay hit keeps the same rule. `Lookup` is first asked under an
 ended context, which tries its copy's reservation once; on its `ErrDelay` of
 `DelayResources` the replies before it go out first, and it is asked again
