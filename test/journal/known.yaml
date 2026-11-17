@@ -640,6 +640,14 @@
   issue: '#3814'
   message: 'segment 3 is not among the journal'
 
+- test: TestRFC28C_ASealMarkerOnlyTheCacheHolds
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The row now runs past the read-only turn and the reopen''s marker proof, and its tail finds the ended source segment unemptied: the open serves with the source''s file still on disk, so the emptying the open runs never reached it — whether its fate is not the assembly''s Ended row or a gate the step holds it by is the question the reviewer owes.'
+  issue: '#4033'
+  message: 'segment 3 is still on disk, want the unsealed ended source emptied and unlinked'
+
 - test: TestRFC28C_UnknownVersion
   status: fail
   fix: planned

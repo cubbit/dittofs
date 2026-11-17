@@ -109,13 +109,6 @@ func (d *Durability) ReclaimBlocked(seg core.SegmentID) bool {
 // damagedReport returns the count and the rows in segment order. It reads the
 // rows and the counts they block on under dmu; it takes no stream lock, makes
 // no index call and walks nothing.
-// DamagedReport answers the segments the layer counts damaged with their
-// rows, ascending, and the count: the public shape the reader of an open
-// journal's per-segment accounting maps its damaged flag from.
-func (d *Durability) DamagedReport() (uint64, []DamagedRow) {
-	return d.damagedReport()
-}
-
 func (d *Durability) damagedReport() (uint64, []DamagedRow) {
 	d.dmu.Lock()
 	rows := make([]DamagedRow, 0, len(d.damaged))

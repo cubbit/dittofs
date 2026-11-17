@@ -804,3 +804,19 @@ func wantIdentityError(t *testing.T, err error, found journal.JournalID, install
 		t.Fatalf("the open named identity %x, installation %x, segments %t, want %x, %x, %t", ie.Found, ie.Installation, ie.Segments, found, install, segments)
 	}
 }
+
+// segmentGone holds the emptying's own word at the directory the seam
+// serves: the segment id's file must have left it — the inspector's
+// per-segment accounting is not built yet (its stub answers nil), so the
+// source's absence is judged where its bytes lived, on the disk itself.
+func segmentGone(t *testing.T, f *journaltest.Fixture, id journal.SegmentID, what string) {
+	t.Helper()
+
+	names, err := f.Seam.List()
+	if err != nil {
+		t.Fatalf("list the journal's directory: %v", err)
+	}
+	if slices.Contains(names, segmentName(id)) {
+		t.Fatalf("segment %d is still on disk, want %s", id, what)
+	}
+}
