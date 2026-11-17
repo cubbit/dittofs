@@ -32,8 +32,10 @@ import (
 //
 // The phase writes at the crash seam, each write on a doorstep context check:
 // a cancellation stops no truncate or seal already under way — the next open
-// re-reads what it left, re-cuts the same tail and re-seals the same segment
-// idempotently — but no write begins past it.
+// re-reads what it left and settles it: a tail whose cut never landed is cut
+// the same way, one whose cut landed without the seal answers a segment with
+// no tail to name, and one settled whole stays settled — but no write begins
+// past the cancellation.
 //
 // decision: a segment whose sync failed in this open — the tail proof's
 // failed window — is never truncated, sealed or otherwise touched here: it is
@@ -41,7 +43,8 @@ import (
 // left it (R52). A truncation is a write its own sync must prove, and over a
 // window the device already refused a durable cut would claim bytes the fail
 // never reached; the next open re-proves the segment and re-decides. The
-// ceiling is the emptying's unlink of such a segment, which PR C owns.
+// ceiling is the emptying phase's hands-off-the-link rule, which owns such a
+// segment's unlink.
 func runSeal(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, _ core.Version, _ []core.SyncMark) (err error) {
 	if cerr := ctx.Err(); cerr != nil {
 		return cerr
@@ -90,6 +93,9 @@ func runSeal(ctx context.Context, deps Deps, rd *reader, st *State, expect core.
 		}
 		sc, ok := markScan(st, fate.ID)
 		if !ok {
+			// Cannot happen: every fate names a scanned segment, and nothing
+			// between the classing and here removes a scan — kept as a guard
+			// for the same reason the loop's own skips are.
 			continue
 		}
 		cut := fate.Offset
@@ -129,8 +135,9 @@ func runSeal(ctx context.Context, deps Deps, rd *reader, st *State, expect core.
 				func(core.SegmentID, int64) {})
 			if serr != nil {
 				if errors.Is(serr, segment.ErrSegmentEnded) {
-					// The writer already ended the row in the set: the
-					// device's own arm of the swallow below.
+					// The writer already ended the row after the failure of
+					// its own write or sync: the device's arm of the swallow
+					// below, which skips the row's end for the same reason.
 					cutErr = serr
 				} else {
 					// A catalog the seal's own facts refuse, or the ledger
@@ -169,17 +176,17 @@ func runSeal(ctx context.Context, deps Deps, rd *reader, st *State, expect core.
 		// continuation, and the open goes on: the tail they would have cut
 		// was never acknowledged — it is the tear the classing answered for
 		// — and the records below it serve from wherever they verifiably
-		// sit, so no served byte depends on the cut. The writer already
-		// ended its own failures' row in the set; the truncation's failure
-		// ends the torn tail's here, for the continuation that reads rows
-		// must see a segment that takes no append and no seal. The
-		// truncated bytes a failed sync never made durable show nowhere:
-		// the next open re-reads the segment whole, re-proves it and
-		// re-cuts it the same way. The ceiling is a device that refuses the
-		// cut at every open, which keeps counting the segment torn without
-		// ever sealing it — an honest word for a device that will not close
-		// it.
-		if fate.Kind == fateTornTail {
+		// sit, so no served byte depends on the cut. The writer ends its
+		// own failures' row in the set already, so the row's end below runs
+		// only for a truncation that failed before the writer was reached —
+		// for the continuation that reads rows must see a segment that
+		// takes no append and no seal. The truncated bytes a failed sync
+		// never made durable show nowhere: the next open re-reads the
+		// segment whole, re-proves it and re-cuts it the same way. The
+		// ceiling is a device that refuses the cut at every open, which
+		// keeps counting the segment torn without ever sealing it — an
+		// honest word for a device that will not close it.
+		if fate.Kind == fateTornTail && !errors.Is(cutErr, segment.ErrSegmentEnded) {
 			if uerr := set.End(fate.ID); uerr != nil {
 				return errors.Join(cutErr, uerr)
 			}
@@ -225,6 +232,18 @@ func sealAnswers(rd *reader, identity core.JournalID, id core.SegmentID, sc segm
 			Tag:          h.Tag,
 		})
 		if end := h.Offset + h.Size(); end > marker {
+			// decision: the raise can carry the seal's own footprint — the
+			// marker, the footer and the trailer the capped segment must
+			// hold after the raised end — past the segment cap, on the fold
+			// shapes that floor the cut within that footprint of the cap, and
+			// the seal writer then refuses its own catalog. That refusal is
+			// the open's: every later open recomputes the same fold, the
+			// same floors and the same raise over the same bytes, so a
+			// spill into a second target or a sealed end below the floors
+			// would each settle a question no asked rule answers, and the
+			// journal that stays closed over a segment no seal fits is the
+			// honest word until one does. Withdrawn by a packing rule that
+			// says where such a tail's records go.
 			marker = end
 		}
 	}

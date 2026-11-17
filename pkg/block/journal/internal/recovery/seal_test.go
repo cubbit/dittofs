@@ -75,9 +75,9 @@ func wantRow(t *testing.T, st State, id core.SegmentID, want segment.State, full
 // verifying catalog over the surviving record, so no write can land after the
 // torn bytes again. The reopened directory then reads a sealed segment that
 // takes no append and changes nothing: the stream, wherever it continues,
-// never returns to it. The journal-level row of RFC 28 §4.2 C — a write after
-// the reopen synced and crashed again reads back — rides the conformance
-// suite; this is its recovery-side half.
+// never returns to it. The journal-level row of the torn-tail cut — a write
+// after the reopen synced and crashed again reads back — rides the
+// conformance tier; this is its recovery-side half.
 func TestTornTailCutAndSealed(t *testing.T) {
 	endA := endAfter(tailRec(200, 0x4100))
 	full := buildSeg(2, tailRec(200, 0x4100), tailRec(201, 0x8100))
@@ -290,6 +290,38 @@ func TestSealSyncFailureLeavesFailedSegment(t *testing.T) {
 		wantRow(t, st, 3, segment.Ended, false)
 		if got := r.fileBytes(format.SegmentName(3)); !bytes.Equal(got, seg) {
 			t.Errorf("the failed window's segment was truncated on disk, got %d bytes, want the file whole as it began", len(got))
+		}
+	})
+	t.Run("the seal writer's own sync", func(t *testing.T) {
+		// The durable truncation is the phase's own second sync; the seal
+		// writer's records-durable sync is the third, and the fault lands
+		// inside the writer: the writer ends the row itself in the set, and
+		// the open must go on — the row ended once, never a second end the
+		// set refuses, and the segment left failed and unsealed for the
+		// continuation.
+		endA := endAfter(tailRec(200, 0x4100))
+		full := buildSeg(2, tailRec(200, 0x4100), tailRec(201, 0x8100))
+		planted := full[:len(full)-5]
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(2, planted)
+		if err := r.seam.Schedule(kit.FailingFrom(kit.OpSync, format.SegmentName(2), 3, 1, syscall.EIO)); err != nil {
+			t.Fatalf("schedule: %v", err)
+		}
+
+		st := runTails(t, r)
+
+		wantFate(t, st, 2, fateTornTail, endA)
+		if st.Tails.TornTails != 0 {
+			t.Errorf("TornTails = %d, want 0: the tail was cut but never sealed whole", st.Tails.TornTails)
+		}
+		wantRow(t, st, 2, segment.Ended, false)
+		f := r.fileBytes(format.SegmentName(2))
+		if int64(len(f)) != endA {
+			t.Fatalf("segment 2's file is %d bytes, want the durable cut at %d alone: the writer wrote no marker", len(f), endA)
+		}
+		if _, err := format.ReadFooter(bytes.NewReader(f), endA, journalID, 2); err == nil {
+			t.Errorf("the failed writer left a readable footer, want none: the segment stays unsealed")
 		}
 	})
 }
