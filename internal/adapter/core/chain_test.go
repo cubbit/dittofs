@@ -1237,3 +1237,102 @@ func TestAChainThatUnwrapClosesSendsNothing(t *testing.T) {
 		}
 	})
 }
+
+// failsEncode is the stages' HeaderCodec whose Encode fails once armed, at
+// its call numbered at: an input standing for a status that does not encode.
+type failsEncode struct {
+	core.HeaderCodec
+	armed atomic.Bool
+	n     atomic.Int32
+	at    int32
+}
+
+var errEncode = errors.New("a status that does not encode")
+
+func (f *failsEncode) Encode(h core.Header, s core.Status, out *resources.Buf) error {
+	if f.armed.Load() && f.n.Add(1) == f.at {
+		return errEncode
+	}
+	return f.HeaderCodec.Encode(h, s, out)
+}
+
+// A chain whose status does not encode, a reply held before it, closes the
+// connection with the encoder's error, sends nothing, releases the held
+// reply's reservation and ends its request.
+func TestAChainWhoseStatusDoesNotEncodeReleasesWhatItHolds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		fe := &failsEncode{at: 2}
+		s := newChained(t, 1<<20, adapter.Deps{Metrics: m}, func(st *core.Stages) {
+			fe.HeaderCodec = st.Header
+			st.Header = fe
+		})
+		fe.armed.Store(true)
+		s.serve(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 20, Session: 7, Handle: s.root},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 21, Session: inherited, Tree: 1, Name: "b", Related: true},
+		)
+		if err := <-s.closed; !errors.Is(err, errEncode) {
+			t.Errorf("the connection closed with %v, want the encoder's error", err)
+		}
+		synctest.Wait()
+		if r := s.budgets.Reply.Reserved(); r != 0 {
+			t.Errorf("the reply budget holds %d bytes after the chain ended", r)
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_requests_in_flight{protocol=" + testproto.Name + "}"; got[k] != 0 {
+			t.Errorf("%s = %v, want 0", k, got[k])
+		}
+		if !s.sentNothing() {
+			t.Error("a chain that closed on its status sent a reply")
+		}
+	})
+}
+
+// closesAtUnwrap is the stages' Security that closes the pipeline at its
+// Unwrap numbered at: an input standing for a close that lands as a chain's
+// member is admitted.
+type closesAtUnwrap struct {
+	core.Security
+	n     atomic.Int32
+	at    int32
+	close func()
+}
+
+func (c *closesAtUnwrap) Unwrap(h core.Header, rec *resources.Buf, prev core.Header) (core.Header, error) {
+	if c.n.Add(1) == c.at {
+		c.close()
+	}
+	return c.Security.Unwrap(h, rec, prev)
+}
+
+// A chain member admitted after close does not run, and neither does any
+// member after it: no file is made, nothing is sent, and the reply held
+// before it is released.
+func TestAChainMemberAdmittedAfterCloseDoesNotRun(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ca := &closesAtUnwrap{}
+		s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
+			ca.Security = st.Security
+			st.Security = ca
+		})
+		ca.close = func() { s.p.Close() }
+		ca.n.Store(0)
+		ca.at = 2
+		s.serve(
+			echoIn(1, 7),
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 2, Session: 7, Tree: 1, Handle: s.root},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 3, Session: inherited, Tree: 1, Name: "late", Related: true},
+		)
+		synctest.Wait()
+		if n := s.creates(); n != 0 {
+			t.Errorf("a member admitted after close made %d files", n)
+		}
+		if r := s.budgets.Reply.Reserved(); r != 0 {
+			t.Errorf("the reply budget holds %d bytes after the chain ended", r)
+		}
+		if !s.sentNothing() {
+			t.Error("a chain closed under it sent a reply")
+		}
+	})
+}

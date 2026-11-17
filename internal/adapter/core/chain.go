@@ -209,6 +209,13 @@ func (c *chain) one(e *entry) {
 				break
 			}
 			c.admit(e)
+			if e.err == nil && p.ctx.Err() != nil {
+				// A member admitted after close is not run, as a first
+				// message is not: nothing more is sent.
+				e.release()
+				c.drop(e.tr, nil)
+				return
+			}
 		}
 	}
 	c.prevH = e.u
@@ -296,8 +303,7 @@ func (c *chain) status1(e *entry, h Header, s Status, cause error) {
 	buf.B = buf.B[:0]
 	if err := p.st.Header.Encode(h, s, buf); err != nil {
 		buf.Release()
-		p.end(e.tr, false, 0, 0, err)
-		c.close(err)
+		c.abort(e.tr, err)
 		return
 	}
 	c.hold(held{tr: e.tr, h: h, reply: buf, s: s, final: true, err: cause})
@@ -509,9 +515,16 @@ func (c *chain) join() (*resources.Buf, error) {
 	return rec, err
 }
 
-// abort ends the chain on a nil header: the connection closes with err, and
-// nothing more is sent, the held replies included.
+// abort ends the chain on a nil header or a reply that does not encode: the
+// connection closes with err, and nothing more is sent.
 func (c *chain) abort(tr *track, err error) {
+	c.drop(tr, err)
+	c.close(err)
+}
+
+// drop ends the chain with nothing more sent: each held reply is released
+// and its request ended with err, and so is tr's.
+func (c *chain) drop(tr *track, err error) {
 	p := c.p
 	for _, m := range c.held {
 		m.reply.Release()
@@ -519,7 +532,7 @@ func (c *chain) abort(tr *track, err error) {
 	}
 	c.held, c.charge = c.held[:0], 0
 	p.end(tr, false, 0, 0, err)
-	c.close(err)
+	c.stopped = true
 }
 
 // close closes the connection with err and stops the chain.
