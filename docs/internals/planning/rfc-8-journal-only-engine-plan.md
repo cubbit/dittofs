@@ -707,10 +707,11 @@ owned: RFC 8 §4.1 (the verifier), §5.1, §5.2, §11.3. Counters: `engine_stabi
   kept per file and checked by the insert, so the run it names is committed lost, or the
   write is dropped, as a failed window (T4.6) or an unsynced corrupt record covering it
   whole drops it, never committed as written.
-- T4.6 A failed window reported once per file, the next `Commit` succeeding. The report is
-  per file and fed by every `Sync` the engine makes, the capacity sync's included (T7.1),
-  so a `SyncError` that a sync other than `Commit`'s takes still fails that file's next
-  `Commit` once.
+- T4.6 A failed window reported once per file, to that file's next `Commit`, which
+  succeeds with a new verifier. The report is per file and fed by every `Sync` the
+  engine makes, the capacity sync's included (T7.1), so a failure that a sync
+  other than `Commit`'s takes still reaches that file's next `Commit`, as the raised
+  verifier and loss sequence it answers with success (epic 4 R34), not as an error.
 - T4.7 `Done` exactly once for every accepted write, on the four paths this epic builds:
   the group commit that records its usage (T4.3); the engine, with nothing charged, for a
   write a failed window drops and for every uncommitted write of a journal whose device is
@@ -943,7 +944,7 @@ commit's failing file reported through `Stats`. Counters: `engine_write_refusals
   else `ErrNoSpace`. The sync is `Sync` over the scope's
   `Files`, the seal is inside the scoped `Repack`, and the per-segment unreclaimed figure
   is the journal's to give (§6 point 8). A `SyncError` from
-  that sync goes to T4.6's per-file report, so the file's next `Commit` still fails once;
+  that sync goes to T4.6's per-file report, so the file's next `Commit` still answers a changed verifier, not an error;
   the deadline rule; the `decision:` and `ponytail:` markers.
   Turns green §1.4's two cases that `ErrNoSpace` on a repack freeing nothing fails: two
   concurrent refusals with the first pass held, and an unsynced overwrite at the share's
@@ -951,7 +952,7 @@ commit's failing file reported through `Stats`. Counters: `engine_write_refusals
   giving `ErrDelay`, then the write once it resolves. The seal in an idle active segment is
   the journal's `Repack` and tested in its conformance (§6 point 8). Also tested: a timer's failed window
   followed by a refusal whose sync takes the window's report, then the file's `Commit`
-  fails once.
+  succeeds with a changed verifier.
 - T7.2 The self-fence, as epic 7's D6 and D7 take it until RFC 8 takes #3654: the
   `Clock.Elapsed` at which any part of the engine last committed a write transaction, and
   the one at which the node last went from none outstanding or failing to one; 30 s after

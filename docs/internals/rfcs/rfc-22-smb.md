@@ -1650,11 +1650,11 @@ and nothing else: every file may have holes, sparse or not, and holes are
   verifier to tell the client. A `FLUSH` through an open whose `LossSeen` is
   below the file's loss sequence is `ErrLost`, answered
   `STATUS_UNEXPECTED_IO_ERROR`, and brings `LossSeen` up to date, so each open
-  that was open across the loss learns of it once, at its next flush, and later
+  that was open across the loss learns of it once, at its next flush that commits, and later
   flushes succeed
   ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
   A durable open that reconnects after such a loss carries the same mark, so
-  its next flush fails too. The loss sequence lives for one process, so a
+  its next flush that commits fails too. The loss sequence lives for one process, so a
   persistent open reinstated after its primary's restart or failover, or
   imported at another installation by a namespace move, has `LossSeen` reset
   to 0
