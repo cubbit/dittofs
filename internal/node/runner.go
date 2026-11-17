@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
-	"net/http"
 	"slices"
 	"sync"
 	"time"
@@ -17,7 +15,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
-	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
 const (
@@ -134,12 +131,12 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 		return
 	}
 	before := row.progress(ctx, op).Phase
-	res, err := runStep(ctx, row.run, op)
+	res, err := step.Run(ctx, row.run, op)
 	if ctx.Err() != nil {
 		return
 	}
 	next := op
-	problem, fails := failed(err)
+	problem, fails := step.Failure(err)
 	switch {
 	case fails:
 		next.State, next.Error = entity.OpFailed, problem
@@ -152,7 +149,7 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 		next.State, next.Step = entity.OpRunning, res.Next
 	}
 	err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, res.End)
-	if problem, fails := failed(err); fails {
+	if problem, fails := step.Failure(err); fails {
 		next = op
 		next.State, next.Error = entity.OpFailed, problem
 		err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, nil)
@@ -201,36 +198,6 @@ func (r *runner) refusedKinds() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Sorted(maps.Keys(r.refused))
-}
-
-// runStep runs run on op, answering a panic as a failure of the operation.
-func runStep(ctx context.Context, run step.Step, op entity.Operation) (res step.StepResult, err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			err = fmt.Errorf("%w: panic: %v", step.ErrStepFailed, p)
-		}
-	}()
-	return run(ctx, op)
-}
-
-// failed reports whether err fails the operation a step returned it for,
-// and the problem body recorded as its Error: a *apiv1.Problem as it is, any
-// other error wrapping step.ErrStepFailed as an internal problem carrying
-// its text. An error neither is retried, and failed answers false.
-//
-// ponytail: an error wrapping step.ErrStepFailed is recorded with no code.
-// Map the owner's error values to codes once the management API's problem
-// table exists, and use it here.
-func failed(err error) ([]byte, bool) {
-	p, ok := errors.AsType[*apiv1.Problem](err)
-	if !ok {
-		if !errors.Is(err, step.ErrStepFailed) {
-			return nil, false
-		}
-		p = &apiv1.Problem{Status: http.StatusInternalServerError, Title: "the operation failed", Detail: err.Error()}
-	}
-	b, _ := json.Marshal(p) // a Problem holds strings, ints and bools, which always marshal
-	return b, true
 }
 
 // retry has op's step run again after a wait, doubled from the last one.
