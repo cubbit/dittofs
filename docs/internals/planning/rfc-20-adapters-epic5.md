@@ -11,7 +11,7 @@ expired-credential check, §5.3, §5.5's note on the reader and §6.8 (who holds
 RFC 17 §4.3 (errors and their kinds); [RFC 25](../rfcs/rfc-25-observability.md) §8.2 (the
 registry's calls); [RFC 22](../rfcs/rfc-22-smb.md) §6.3 (the re-run backoff).
 **Track:** A.
-**Epic 5 estimate: 17 subtasks, 29.5 man-days.**
+**Epic 5 estimate: 17 subtasks, 27.25 man-days.**
 **Depends on:** **S2, `testproto` and the import test in CI**: E1's frozen surface of `core`,
 E2's `testproto` with its stateful half, `adaptertest.CheckLeaks`, the `adapter-conformance`
 suite and its end-to-end specification, the `unit/adapter-allocs` cell. **E3**: the bodies of
@@ -1074,15 +1074,26 @@ registry. Nothing else is exported.
 
 ### T5.9 Series and the registry's calls
 
-**Subtask T5.9 estimate: 2.5 man-days.**
+**Subtask T5.9 estimate: 0.25 man-days.**
 
 - **Track:** A; one of the three the program's split lets track C take.
   **Depends on:** T5.2a.
 - **Needs E4:** nothing.
 - **Covers:** R84, R85 (resolution), R86, R87.
-- **Deliverables:** in `pkg/metrics/registry.go`, D19's types and three calls. In `metrics.go`,
-  the series of R85 as one struct per table, its per-operation and per-error parts indexed,
-  each child held through `core`'s own one-method interface, a nil registry giving children
+- **Landed:** all but the case of two registries, with #4444: D19's `Spec`, `Buckets` and the
+  registry's three calls in `pkg/metrics`; R85's series in `metrics.go`, one struct per table
+  and one per stages label, `adapter_chain_splits_total` among them, each child held through
+  `core`'s one-method interfaces and a nil registry recording nothing; `shared`'s
+  copy-on-write maps, filled under its mutex; the empty `Protocol`'s refusal; `OpTable.Protocol`
+  and `Stages.Protocol` with `core.golden`, set to `testproto` by its tables and stages; and
+  every test below but that case (`TestSeriesResolvedOncePerServer`,
+  `TestSeriesTwoFirstResolutionsAtOnce`, `TestSeriesTwoServersOnOneRegistry`,
+  `TestSeriesRecordAllocatesNothing` and `TestSeriesRecordLooksNothingUp` among them). The
+  criteria and tests below are the record later subtasks keep passing.
+- **Deliverables:** none left but the case of two servers sharing one table on two registries
+  and on none, in `metrics_test.go`. In `pkg/metrics/registry.go`, D19's types and three calls. In
+  `metrics.go`, the series of R85 as one struct per table, its per-operation and per-error parts
+  indexed, each child held through `core`'s own one-method interface, a nil registry giving children
   that record nothing, and one struct per stages label for what a request records before
   `Route` (D18), `adapter_chain_splits_total` among the label's, since a chain splits before
   `Route` too; `shared`'s copy-on-write map
@@ -2145,7 +2156,7 @@ registry. Nothing else is exported.
 flowchart TD
   S2(["S2 testproto and the import test in CI"]):::sync --> T5_7["T5.7 error tables, landed"]
   S2 --> T5_2a["T5.2a NewOpTable, landed"]
-  T5_2a --> T5_9["T5.9 series"]
+  T5_2a --> T5_9["T5.9 series, landed but one test"]
   T5_9 --> T5_6["T5.6 middleware chain"]
   S2 --> T5_5d["T5.5d WithHold"]
   S2 --> T5_3["T5.3 cap and reply reservation, landed"]
@@ -2175,17 +2186,17 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-Fifteen subtasks need no socket; four have landed (T5.7, T5.2a, T5.3, T5.5a), and the eleven
-left take 27 man-days:
+Fifteen subtasks need no socket; four have landed (T5.7, T5.2a, T5.3, T5.5a) and T5.9 all but
+one test (#4444), and the eleven left take 24.75 man-days:
 
 | When | Subtasks | Man-days |
 | --- | --- | --- |
-| at S2, now | T5.9, then T5.6; T5.5d at any time (T5.7 and T5.2a have landed) | 4.75 |
+| at S2, now | T5.9's case of two registries, then T5.6; T5.5d at any time (T5.7 and T5.2a have landed, and T5.9 but that case, #4444) | 2.5 |
 | now, E3's two pull requests having merged (#4177, #4178) | T5.1a, T5.1b and T5.2b, T5.4, T5.8, T5.5b, T5.5c, T5.11 (T5.3 and T5.5a have landed, #4443) | 22.25 |
 | once E4's `Server`, accept, reader and writer have landed, its writer passing the suite of `out`, with `Conn.Settings`, `Conn.Established` and `Conn.Close` | T5.1c, T5.10 | 2.5 |
 
 **The critical path** is T5.9, T5.6, T5.1a, T5.1b, T5.4, T5.8, T5.5b, T5.5c, T5.11, T5.1c
-and T5.10: 28 of the 29.5 man-days, all serial, with S3 reached at T5.1c after 26.75. Only
+and T5.10: 25.75 of the 27.25 man-days, all serial, with S3 reached at T5.1c after 24.5. Only
 T5.5d and T5.2b are off it; T5.2a, T5.3 and T5.5a have landed. Only T5.1c and T5.10 wait for E4, 2.5
 man-days after it lands. The least certain subtasks, T5.4, T5.5b and T5.1a, are on the path.
 Track C taking T5.9 and T5.6 shortens it only while track A has something else to build;
@@ -2196,7 +2207,7 @@ T5.2a went first because `testproto`'s holding table builds on it.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T5.2a | 0 | none | D17's `DelayResources` check and `testproto`'s typed row; delivered by #4194, #4229, #4266 and #4426, with the whole of T5.7 |
-| 2 | T5.9 | 2.5 | PR 1 | the registry's calls and `core`'s series under D18's two labels |
+| 2 | T5.9 | 0.25 | PR 1 | the case of two registries; the registry's calls and `core`'s series under D18's two labels delivered by #4444 |
 | 3 | T5.6 | 1.75 | PR 2 | the chain |
 | 4 | T5.3, T5.5a | 0 | E3 | what reserves: the cap, the reply reservation, the status's bounded wait, `TryGet` and the ceiling, `Recharge`; delivered by #4443, but for `BufPool.Charge`, now T5.4's |
 | 5 | T5.5d | 0.5 | none | `WithHold` and its reader, which RFC 17's clone wait builds on; open at once |
@@ -2348,8 +2359,9 @@ A suggestion only: one pull request per subtask works as well.
   result, read by the runner (T5.4), and the panic line once a minute per protocol and
   operation (T5.6), 0.25 each. Simone's third review adds 0.5, to 29.5: `core.Row` beside
   `Bind`, which epic 6 builds its rows on (T5.1a), and every row's reply checked within its
-  reservation (T5.4), 0.25 each; R95's second `Lookup` was #4478's rule, already counted, and
-  T5.9's case of two registries is under the quarter day this document counts in.
+  reservation (T5.4), 0.25 each; R95's second `Lookup` was #4478's rule, already counted.
+  #4444 had landed T5.9 but the case of two registries her review asks for, so T5.9 is 0.25
+  and the total 27.25.
 - **Edits to the program's implementation plan and to the epic 1 and epic 2 documents**,
   made in this document's pull request:
   - the ledger's row for each protocol's error-table rows and totality test now names the
@@ -2381,13 +2393,11 @@ A suggestion only: one pull request per subtask works as well.
     split subtasks; epic 4's gains the connection, close and byte series, `Conn.Close`'s
     body, D1's calls with the `link`, and a writer that passes the suite of `out`;
   - epic 5's estimate line and its row in the program's §2 carry this document's figure,
-    17 subtasks and 29.5 man-days, and the program's total follows; the architect accepted the
+    17 subtasks and 27.25 man-days, and the program's total follows; the architect accepted the
     earlier figure against 26.5 (he quoted 29), 30.5 was the fourth revision's, 31.25 the fifth
     review's, 31 the ninth review's, 29 the tenth's, 26.75 the next, with three subtasks
-    landed, 28 the next, with the stage clock, 29 the next, and 29.5 is this one's; epic 4's
-    breakdown
-    prices what it
-    gained, and the program's
+    landed, 28 the next, with the stage clock, 29 and 29.5 the next, and 27.25 is this one's,
+    with T5.9 landed but one test; epic 4's breakdown prices what it gained, and the program's
     estimate line says it leaves that out;
   - `Conn.Settings`'s body is E4's and `Conn.Send`'s is T5.1c's, in the program's epic 4
     section and its coverage row for RFC 20 §4.7; its risk 9 follows D2; RFC 24 §10's two
