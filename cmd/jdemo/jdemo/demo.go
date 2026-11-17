@@ -315,11 +315,7 @@ func (d *Demo) promptLoop() {
 			return
 		}
 		switch line {
-		case "", "s":
-			if line == "s" {
-				// The fumble exit: announce, move on, touch nothing.
-				d.Printf("→ skipped to the next beat\n")
-			}
+		case "":
 			return
 		case "q":
 			d.quit = true
@@ -335,7 +331,9 @@ func (d *Demo) promptLoop() {
 }
 
 // waitEnter blocks until the presenter's Enter. An ended stdin runs the
-// beat anyway and ends the story after; `q` skips the beat and ends it.
+// beat anyway and ends the story after; `q` ends the story at once. The
+// beats are a linear script — each one runs on the state the last left,
+// so there is no skip: a fumble means running the story again.
 func (d *Demo) waitEnter() bool {
 	d.Printf("⏎  run ")
 	line, ok := d.readLine()
@@ -349,12 +347,6 @@ func (d *Demo) waitEnter() bool {
 	if line == "q" {
 		d.Printf("quit\n")
 		d.quit = true
-		return false
-	}
-	if line == "s" {
-		// A skipped beat leaves the journal untouched — the screen says
-		// so, and the story continues with the next beat.
-		d.Printf("skip — the beat's work left undone\n")
 		return false
 	}
 	return true
