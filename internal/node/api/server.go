@@ -46,6 +46,9 @@ type Deps struct {
 	// version that signs now, which keys each idempotency key's digest; nil,
 	// a write carrying an Idempotency-Key answers 503.
 	SigningKey func(context.Context) ([]byte, error)
+	// Nodes is the store's read of every node's status, which a listing
+	// computes each item's applied from; nil, each listing answers 503.
+	Nodes nodeStatuses
 	// Clock is the API's time, which a parked poll waits on; nil, a read
 	// that would park answers 503.
 	Clock clock

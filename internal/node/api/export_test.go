@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -279,10 +280,12 @@ func settingIn(ctx context.Context, st reads, id [16]byte, key string) (entity.S
 const TagsFrom, TagsTo = "a", "{"
 
 // tag is a netgroup as the test listing GET /api/v1/tags answers it, in
-// name order, filtered by name.
+// name order, filtered by name, with where it is applied: a netgroup carries
+// no position, and its reference is its name.
 type tag struct {
-	Name    string   `json:"name"`
-	Members []string `json:"members"`
+	Name    string        `json:"name"`
+	Members []string      `json:"members"`
+	Applied apiv1.Applied `json:"applied"`
 }
 
 var tags = listing[entity.Netgroup, tag]{
@@ -309,6 +312,8 @@ var tags = listing[entity.Netgroup, tag]{
 			}
 		}
 	},
-	key:  func(g entity.Netgroup) []byte { return []byte(g.Name) },
-	item: func(g entity.Netgroup, _ perPage) tag { return tag{g.Name, g.Members} },
+	key: func(g entity.Netgroup) []byte { return []byte(g.Name) },
+	item: func(g entity.Netgroup, p perPage) tag {
+		return tag{g.Name, g.Members, p.applied(entity.ResourceRef{Kind: entity.ResourceNetgroup, ID: []byte(g.Name)}, 0, nil)}
+	},
 }

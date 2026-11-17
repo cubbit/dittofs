@@ -82,6 +82,7 @@ func serveWith(t *testing.T, authenticate func(*http.Request) (auth.Caller, erro
 		Authenticate: authenticate,
 		Store:        s.store,
 		SigningKey:   signingKey("installation-a"),
+		Nodes:        h.Store().Nodes(),
 		Clock:        s.clock,
 		Node:         testNode,
 		Tracer:       sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.spans)).Tracer("api"),
