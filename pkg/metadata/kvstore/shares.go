@@ -530,6 +530,23 @@ func (c ControlPlane) ExportPolicy(ctx context.Context, share entity.ShareID) (e
 	return p, err
 }
 
+// ExportPolicy reads a share's stored export policy, tracked; false when
+// none is stored, where ControlPlane's read answers defaultPolicy's.
+func (c controlTx) ExportPolicy(share entity.ShareID) (entity.ExportPolicy, bool, error) {
+	b, ok, err := get(c.tx, shareKey(share, keys.SXp))
+	if err != nil || !ok {
+		return entity.ExportPolicy{}, false, err
+	}
+	p, err := decodePolicy(share, b)
+	return p, err == nil, err
+}
+
+// Share is one share with its state and its export policy, read in one
+// snapshot, as ShareIndex reads them.
+func (c ControlPlane) Share(ctx context.Context, id entity.ShareID) (entity.Share, entity.ExportPolicy, error) {
+	return c.s.ShareIndex().Share(ctx, id)
+}
+
 // defaultPolicy is the export policy of a share none is stored for: root
 // squashed to the anonymous principal, every client admitted, no flavour
 // named.
