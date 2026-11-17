@@ -2,7 +2,9 @@ package node
 
 import (
 	"context"
+	"net/http"
 
+	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/health"
@@ -117,3 +119,9 @@ func (n *Node) Bound(id entity.ShareID) (entity.ShareState, bool) {
 // OnSweep has the sweep call turned at the end of each turn with what each
 // of its Sweep calls that answered deleted. Call it before Start.
 func (n *Node) OnSweep(turned func([]kvstore.Swept)) { n.sweep.turned = turned }
+
+// NewAuthenticating is New with authenticate as the API's Authenticate,
+// which New leaves unset.
+func NewAuthenticating(authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
+	return func(cfg Config) (*Node, error) { return newNode(cfg, authenticate) }
+}

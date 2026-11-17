@@ -132,11 +132,16 @@ func (n *Node) Start(ctx context.Context) error {
 		// after the filesystem and before the engine.
 		{stepFilesystem, n.startFilesystem},
 		{stepRunner, n.startRunner},
-		// ponytail: the management API starts accepting calls here, and
-		// stops accepting them, its calls in flight answered, before the
-		// runner stops, while health goes on answering. The API serves no
-		// call but health yet, so there is nothing to start or drain: add
-		// the part with the API's first call.
+		// ponytail: the management API's calls are served from the
+		// listeners' step, refused 503 starting until readiness turns
+		// ready after the first full reconcile rather than from here, and
+		// they stop with the listeners, after the engine, rather than
+		// before the runner. The API reaches the store alone, which
+		// outlives every part, so a call taken while the node stops
+		// commits a record this node applies at its next start, and a
+		// write's wait for this node to apply it runs out its bound. Make
+		// the calls' acceptance a part started here, apart from the health
+		// listener, once a call reaches a part the stop closes first.
 		{stepReconcile, n.startReconcile},
 	} {
 		if err := s.run(ctx); err != nil {

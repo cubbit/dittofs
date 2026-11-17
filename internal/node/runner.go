@@ -16,6 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
 const (
@@ -64,6 +65,15 @@ type retry struct{ at, wait time.Duration }
 func newRunner(cp kvstore.ControlPlane, clock engine.Clock, node entity.NodeID, log *slog.Logger, steps map[string]stepRow) *runner {
 	return &runner{cp: cp, clock: clock, node: node, log: log, steps: steps,
 		retries: map[entity.OperationID]retry{}, refused: map[string]bool{}}
+}
+
+// progressOf reads op's progress by its kind's row: unknown for a kind this
+// node has no step for.
+func (r *runner) progressOf(ctx context.Context, op entity.Operation) apiv1.Progress {
+	if row, ok := r.steps[op.Kind]; ok {
+		return row.progress(ctx, op)
+	}
+	return apiv1.Progress{Total: -1}
 }
 
 // run takes a turn every runInterval on the runner's clock until ctx ends,

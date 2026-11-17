@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/cubbit/dittofs/internal/node/api"
+	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
@@ -63,7 +65,9 @@ type Node struct {
 // installation or one this binary does not read, then builds open state,
 // the engine and the filesystem, each empty from its own Deps, the
 // operation runner with the steps of the kinds this node drives, the
-// watchdog and the API's listeners. It starts nothing: no journal, goroutine
+// watchdog, and the API over the store's control plane and node view, the
+// runner's progress, the health evaluator and the writer's wait. It starts
+// nothing: no journal, goroutine
 // or listener exists until Start.
 //
 // ponytail: the node both builds and drives its components. Split the
@@ -81,18 +85,21 @@ type Node struct {
 // registry is refused as a duplicate registration; the test harness gives
 // each build a fresh registry. Unregister in Stop when an in-process
 // rebuild on one registry is needed.
-func New(cfg Config) (*Node, error) {
+func New(cfg Config) (*Node, error) { return newNode(cfg, nil) }
+
+// newNode is New with authenticate as the API's Authenticate.
+func newNode(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*Node, error) {
 	if cfg.KV == nil {
 		return nil, errors.New("node: Config.KV is missing")
 	}
-	n, err := build(cfg)
+	n, err := build(cfg, authenticate)
 	if err != nil {
 		return nil, errors.Join(err, cfg.KV.Close())
 	}
 	return n, nil
 }
 
-func build(cfg Config) (*Node, error) {
+func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*Node, error) {
 	if cfg.Metrics == nil {
 		return nil, errors.New("node: Config.Metrics is missing")
 	}
@@ -139,13 +146,31 @@ func build(cfg Config) (*Node, error) {
 	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node, cfg.Logger, operationSteps(n.meta.Nodes()))
 	n.watchdog = health.NewWatchdog(cfg.Clock)
 	n.life.ready.Store(readyStarting)
+	// decision: the API gets no TLS, local socket, signing key or tracer,
+	// and in production no Authenticate, because nothing the node is handed
+	// holds them yet: the bootstrap carries no certificate, key or socket
+	// path, the installation's signing key is a secret no secret store
+	// reads, and Config names no tracer. So a start on an address but
+	// loopback is refused for want of a certificate, no local socket is
+	// served, every call but a public row's answers 401, a write carrying an
+	// Idempotency-Key answers 503, and spans go to the no-op tracer. Fill
+	// each from the bootstrap, the secret store, sign-in and the host's
+	// tracer as they land.
 	n.api = api.New(api.Deps{
-		Ready:       n.life.readiness,
-		Live:        n.watchdog.Live,
-		Addr:        cfg.Bootstrap.APIAddr,
-		MetricsAddr: cfg.Bootstrap.MetricsAddr,
-		Metrics:     cfg.Metrics,
-		Logger:      cfg.Logger,
+		Ready:        n.life.readiness,
+		Live:         n.watchdog.Live,
+		Addr:         cfg.Bootstrap.APIAddr,
+		MetricsAddr:  cfg.Bootstrap.MetricsAddr,
+		Metrics:      cfg.Metrics,
+		Logger:       cfg.Logger,
+		Authenticate: authenticate,
+		Store:        n.meta.ControlPlane(),
+		Nodes:        n.meta.Nodes(),
+		Progress:     n.runner.progressOf,
+		Health:       n.health,
+		Clock:        cfg.Clock,
+		Node:         cfg.Bootstrap.Node,
+		Applied:      n.applied,
 	})
 	return n, nil
 }
