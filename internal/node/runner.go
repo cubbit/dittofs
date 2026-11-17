@@ -108,7 +108,8 @@ func (r *runner) turn(ctx context.Context) {
 // when the state or the phase did: a step's error that failed names, or its
 // panic, fails the operation, any other is retried with the same cursor
 // after a wait, and a done step ends it with its Result and its End's
-// writes. A step ctx interrupted commits nothing, whatever it answered.
+// writes, an End's error or panic answered as a step's is. A step ctx
+// interrupted commits nothing, whatever it answered.
 //
 // decision: an operation whose kind has no step stays pending, so a binary
 // that gains the step later runs it. Its kind is logged once and kept for
@@ -150,29 +151,49 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 	default:
 		next.State, next.Step = entity.OpRunning, res.Next
 	}
-	after := row.progress(ctx, next).Phase
-	if next.State == op.State && bytes.Equal(next.Step, op.Step) && after == before {
-		delete(r.retries, op.ID)
-		return
+	err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, res.End)
+	if problem, fails := failed(err); fails {
+		next = op
+		next.State, next.Error = entity.OpFailed, problem
+		err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, nil)
 	}
-	var meta entity.WriteMeta
-	if next.State != op.State || after != before {
-		meta.Audit = r.audit(op, next.State, before, after)
-	}
-	err = r.cp.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
-		if next.State == entity.OpSucceeded && res.End != nil {
-			if err := res.End(tx); err != nil {
-				return err
-			}
-		}
-		_, err := tx.PutOperation(next, op.Generation)
-		return err
-	})
 	if err != nil {
 		r.retry(ctx, op, now, err)
 		return
 	}
 	delete(r.retries, op.ID)
+}
+
+// commit writes next over op, audited when its state or phase moved, with
+// end's writes in the same transaction when next succeeded; a next that
+// changes none of the cursor, the state and the phase commits nothing.
+//
+// decision: end runs code from outside the node, so its panic is recovered
+// and, like a step's, fails the operation: end's writes roll back with the
+// transaction, and drive records the failure in a second one. A panic
+// retried would panic again at every turn and every start.
+func (r *runner) commit(ctx context.Context, op, next entity.Operation, before, after string, end func(entity.ControlPlaneTx) error) error {
+	if next.State == op.State && bytes.Equal(next.Step, op.Step) && after == before {
+		return nil
+	}
+	var meta entity.WriteMeta
+	if next.State != op.State || after != before {
+		meta.Audit = r.audit(op, next.State, before, after)
+	}
+	return r.cp.Write(ctx, meta, func(tx entity.ControlPlaneTx) (err error) {
+		if next.State == entity.OpSucceeded && end != nil {
+			defer func() {
+				if p := recover(); p != nil {
+					err = fmt.Errorf("%w: operation end: panic: %v", step.ErrStepFailed, p)
+				}
+			}()
+			if err := end(tx); err != nil {
+				return err
+			}
+		}
+		_, err = tx.PutOperation(next, op.Generation)
+		return err
+	})
 }
 
 // refusedKinds is the operation kinds the runner found with no step.
