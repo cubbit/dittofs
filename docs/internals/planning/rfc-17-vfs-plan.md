@@ -310,13 +310,14 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
      them before stage 5 and nothing is under them yet: `Snapshots` answers an empty list
      until RFC 12's store view exists, and the three `Principals` calls answer `ErrAccess` until
      RFC 18 lands, with `Deps.Auth` and `Deps.Names` (RFC 18's plan, #4058, S2).
-   - §4.9 allows admission's steps 1–4 to be cached; stage 2 does not, so it has no cache key to
-     get wrong:
+   - Only step 4's caller may be cached, keyed as RFC 18 §7.1 lists: steps 1 to 3 run on every
+     call (RFC 17 §4.9 still reads steps 1–4 until #4567 lands). Stage 2 caches nothing, so it has
+     no cache key to get wrong:
 
      ```go
-     // ponytail: admission's steps 1-4 run on every call, uncached; cache them
-     // per (share, identity) with every version §4.9 lists in the key once a
-     // profile shows them.
+     // ponytail: step 4's caller is resolved on every call, uncached; cache it
+     // with the key RFC 18 §7.1 lists once a profile shows resolution in
+     // admission's cost.
      ```
 
      §8's cache-key unit case, its cached-against-uncached benchmark, and V9's and V12's cached
@@ -490,7 +491,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | pNFS layouts (§10.2) and compound batching (§10.1) (D2) | left out with the cluster | unowned | layouts: a pNFS RFC lands; batching: §8's benchmark through the gateway shows compound round trips limiting a cluster (RFC 17 §10) |
 | RFC 18's resolver behind `Deps.Identity`, with its cache and directories; `Deps.Auth`, `Deps.Names`; `SignIn`, `Spell` and `Find`, stubs answering `ErrAccess` (D4's `ponytail:`, piece 3) | one resolver until RFC 18 lands | RFC 18 plan (#4058) | RFC 18 lands |
 | `Deps.Metrics` as RFC 25's `metrics.Registry`, not a `prometheus.Registerer` (D7's `ponytail:`) | the registry does not exist | RFC 25 | the registry is built |
-| Caching admission's steps 1–4; §8's cache-key case and cached-against-uncached comparison; V9's and V12's cached cases (piece 3's `ponytail:`) | uncached, so no cache key to get wrong | unowned | §8's uncached admission benchmark (next row) shows steps 1–4 costing more than a cache lookup would |
+| Caching step 4's caller, keyed as RFC 18 §7.1 lists; §8's cache-key case and cached-against-uncached comparison; V9's and V12's cached cases (piece 3's `ponytail:`) | uncached, so no cache key to get wrong | unowned | §8's uncached admission benchmark (next row) shows step 4 costing more than a cache lookup would |
 | §8's benchmarks: per operation, service overhead, contention, uncached admission, recall latency (D6) | the plan builds none, and no registered suite runs `go test -bench` | RFC 29 harness | a registered suite runs `go test -bench` |
 | RFC 16 §2.3.2's full removal driver, replacing piece 3's stand-in (piece 3's `ponytail:`) | no node exists | RFC 23's plan (#4050), its epic 3 | that epic drives a removal |
 | `Snapshots` beyond an empty list; §6's §5.9 row for an `Incomplete` source (piece 3, plan §3) | RFC 12's store view does not exist | RFC 12 | its snapshot view exists |
