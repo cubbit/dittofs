@@ -1021,7 +1021,10 @@ func (r *runner) drive(ctx context.Context, op entity.Operation, version uint64)
 	for {
 		res, err := run(ctx, op) // its Params and last durable Step: resumes from there
 		was, wasStep := op.State, op.Step
-		op.Step, op.State = res.Next, stateOf(res, err) // ErrStepFailed or a problem fails; other errors retry
+		op.State = stateOf(res, err) // ErrStepFailed or a problem fails; other errors retry
+		if err == nil {
+			op.Step = res.Next // a retryable error moves nothing, so its turn commits nothing
+		}
 		if op.State == was && bytes.Equal(op.Step, wasStep) {
 			r.backoff(ctx) // an unchanged turn commits nothing
 			continue
