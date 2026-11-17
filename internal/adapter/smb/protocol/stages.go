@@ -126,10 +126,10 @@ func (headerStage) Encode(h core.Header, s core.Status, out *resources.Buf) erro
 		return errForeign
 	}
 	// ponytail: every reply but an async one's grants one credit, which never
-	// takes a client past any credit target and keeps its balance above zero; an
-	// async-form reply grants none (MS-SMB2 3.3.4.4). Grant what RFC 22 §3.3
-	// states, what the client asks, at least 1, up to the connection's target,
-	// once a stage keeps the connection's credit count.
+	// takes a client past any credit target and keeps its balance above zero;
+	// the reply to an async-form request grants none (MS-SMB2 3.3.4.4). Grant
+	// what RFC 22 §3.3 states, what the client asks, at least 1, up to the
+	// connection's target, once a stage keeps the connection's credit count.
 	credits := uint16(1)
 	if v.raw().Flags()&wire.FlagAsyncCommand != 0 {
 		credits = 0
@@ -148,10 +148,13 @@ func (headerStage) Encode(h core.Header, s core.Status, out *resources.Buf) erro
 // warning-severity status with a body of its own withdraws it.
 
 // Chain pads out to the reply at prev plus a multiple of 8 and points that
-// reply's NextCommand at the one appended after it (MS-SMB2 3.3.4.1.3).
+// reply's NextCommand at the one appended after it. core calls it between
+// the members of a chain only, so a member always follows; the last
+// member's pad, which nothing between members asks for, comes with core's
+// runner (MS-SMB2 3.3.4.1.3, RFC 20 section 4.7).
 func (headerStage) Chain(out *resources.Buf, prev int) error {
 	var err error
-	out.B, err = wire.Chain(out.B, prev)
+	out.B, err = wire.Chain(out.B, prev, true)
 	return err
 }
 
@@ -170,8 +173,9 @@ func (headerStage) Args(rec *resources.Buf, h core.Header) []byte {
 }
 
 // replyLen is the most Encode writes, with Chain's padding: the reply's
-// header, the ERROR response's body, and at most 7 bytes of padding to 8.
-const replyLen = wire.HeaderLen + wire.ErrorLen + 7
+// 64-byte header, the ERROR response's 9-byte body (MS-SMB2 2.2.2), and at
+// most 7 bytes of padding to 8.
+const replyLen = wire.HeaderLen + 9 + 7
 
 // ReplyLen is the most Encode writes for any header, with Chain's padding
 // (RFC 20 §4.7). No transform is added in place: none is served yet.

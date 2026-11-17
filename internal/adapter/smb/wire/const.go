@@ -25,7 +25,7 @@ const (
 const ProtocolSMB2 = 0x424D53FE
 
 // CommandCancel is CANCEL, which is answered nothing (MS-SMB2 2.2.1.2,
-// 3.3.5.16).
+// 3.3.5.16): the protocol's router refuses it, ErrCancel in hand.
 const CommandCancel = 0x000C
 
 // lastCommand is OPLOCK_BREAK, the highest of the command codes MS-SMB2

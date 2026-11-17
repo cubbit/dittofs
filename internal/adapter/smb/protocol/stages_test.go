@@ -20,12 +20,17 @@ const (
 	cmdCreate    = 0x0005
 	cmdClose     = 0x0006
 	cmdRead      = 0x0008
+	cmdCancel    = 0x000C
 	related      = 0x00000004 // SMB2_FLAGS_RELATED_OPERATIONS
 )
 
 // statusInternalError is STATUS_INTERNAL_ERROR (MS-ERREF 2.3.1), the fault
-// status of the test's error table (RFC 22 §16.5).
-const statusInternalError = 0xC00000E5
+// status of the test's error table (RFC 22 §16.5); statusInvalidParameter is
+// STATUS_INVALID_PARAMETER (MS-ERREF 2.3.1), its ErrDecode row's answer.
+const (
+	statusInternalError    = 0xC00000E5
+	statusInvalidParameter = 0xC000000D
+)
 
 // request is an SMB2 request in the sync form, its header written field by
 // field from MS-SMB2 2.2.1.2 and independent of wire, then args bytes of fill.
@@ -197,7 +202,7 @@ func TestEncodeAnswersAFailureWithTheErrorBody(t *testing.T) {
 // message ID.
 func TestChainedRepliesLieAtMultiplesOfEight(t *testing.T) {
 	hs := decodeAll(t, &resources.Buf{B: chainOfThree()})
-	statuses := []core.Status{wire.StatusNotSupported, 0, wire.StatusInvalidParameter}
+	statuses := []core.Status{wire.StatusNotSupported, 0, statusInvalidParameter}
 	out := &resources.Buf{}
 	var starts []int
 	for i, h := range hs {
@@ -246,7 +251,7 @@ func TestArgsAreEachMembersOwn(t *testing.T) {
 // What Encode writes for any status, padded by Chain, fits in ReplyLen.
 func TestReplyLenBoundsEncode(t *testing.T) {
 	for i, h := range decodeAll(t, &resources.Buf{B: chainOfThree()}) {
-		for _, s := range []core.Status{0, wire.StatusNotSupported, wire.StatusInvalidParameter, statusInternalError} {
+		for _, s := range []core.Status{0, wire.StatusNotSupported, statusInvalidParameter, statusInternalError} {
 			out := &resources.Buf{}
 			if err := (headerStage{}).Encode(h, s, out); err != nil {
 				t.Fatal(err)
@@ -261,9 +266,14 @@ func TestReplyLenBoundsEncode(t *testing.T) {
 	}
 }
 
-// newRouter is a connection's router over an empty table.
+// newRouter is a connection's router over an empty table, with the error
+// rows the stages' table carries: ErrDecode's answer and CANCEL's row with
+// no reply (MS-SMB2 3.3.5.16).
 func newRouter() *router {
-	errs := core.NewErrorTable(statusInternalError, core.ErrorRow{Err: core.ErrDecode, Status: wire.StatusInvalidParameter})
+	errs := core.NewErrorTable(statusInternalError,
+		core.ErrorRow{Err: core.ErrDecode, Status: statusInvalidParameter},
+		core.ErrorRow{Err: ErrCancel, NoReply: true},
+	)
 	return &router{table: core.NewOpTable(errs, false), conn: &core.Conn{}}
 }
 
@@ -272,7 +282,7 @@ func newRouter() *router {
 func TestRouteGivesTheOneTableAtNoLevel(t *testing.T) {
 	r := newRouter()
 	for cmd := uint16(0); cmd <= 0x0012; cmd++ {
-		if cmd == wire.CommandCancel {
+		if cmd == cmdCancel {
 			continue // answered nothing, in its own test
 		}
 		for _, flags := range []uint32{0, related} {
@@ -373,18 +383,24 @@ func TestHeaderStageAllocs(t *testing.T) {
 	}
 }
 
-// A CANCEL is refused with the table and its sentinel, and no request: the
-// stages' table answers it nothing (MS-SMB2 3.3.5.16).
+// A CANCEL, in either form, is refused with the table and its sentinel, and
+// no request: the stages' table maps the sentinel to its row with no reply,
+// so nothing is answered (MS-SMB2 3.3.5.16).
 func TestACancelIsAnsweredNothing(t *testing.T) {
-	req := request(wire.CommandCancel, 0, 0, 42, 36, 0)
-	h, err := headerStage{}.Decode(&resources.Buf{B: req}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
 	r := newRouter()
-	got, rq, err := r.Route(h, nil)
-	if !errors.Is(err, ErrCancel) || rq != nil || got != r.table {
-		t.Errorf("CANCEL routes %p, %v, %v; want the table, no request and ErrCancel", got, rq, err)
+	for _, flags := range []uint32{0, wire.FlagAsyncCommand} {
+		req := request(cmdCancel, flags, 0, 42, 36, 0)
+		h, err := headerStage{}.Decode(&resources.Buf{B: req}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, rq, err := r.Route(h, nil)
+		if !errors.Is(err, ErrCancel) || rq != nil || got != r.table {
+			t.Errorf("a CANCEL of flags %#x routes %p, %v, %v; want the table, no request and ErrCancel", flags, got, rq, err)
+		}
+	}
+	if _, send := r.table.Errors.Map(ErrCancel, nil, 0); send {
+		t.Error("the table sends a CANCEL a reply, which MS-SMB2 3.3.5.16 answers nothing")
 	}
 }
 
@@ -408,10 +424,13 @@ func TestAForeignHeader(t *testing.T) {
 	}
 }
 
-// An async-form request's reply grants no credit and keeps its async ID
-// (MS-SMB2 3.3.4.4), where every other reply grants one.
-func TestAnAsyncReplyGrantsNoCredit(t *testing.T) {
-	req := request(wire.CommandCancel, wire.FlagAsyncCommand, 0, 42, 0, 0)
+// The reply to an async-form request grants no credit (MS-SMB2 3.3.4.4),
+// where every other reply grants one, and takes no async form: ASYNC_COMMAND
+// is not a bit a reply echoes, the async reply being the hold stage's with
+// the AsyncId it chose, and no request is put off here (MS-SMB2 2.2.1.1's
+// flags table, 3.3.4.4).
+func TestAnAsyncRequestsReplyGrantsNoCredit(t *testing.T) {
+	req := request(cmdRead, wire.FlagAsyncCommand, 0, 42, 0, 0)
 	h, err := headerStage{}.Decode(&resources.Buf{B: req}, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -421,9 +440,9 @@ func TestAnAsyncReplyGrantsNoCredit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := binary.LittleEndian.Uint16(out.B[14:]); got != 0 {
-		t.Errorf("an async reply grants %d credits, want none", got)
+		t.Errorf("the reply to an async request grants %d credits, want none", got)
 	}
-	if got := binary.LittleEndian.Uint32(out.B[16:]); got&wire.FlagAsyncCommand == 0 {
-		t.Errorf("an async reply's flags are %#x, want ASYNC_COMMAND", got)
+	if got := binary.LittleEndian.Uint32(out.B[16:]); got != wire.FlagServerToRedir {
+		t.Errorf("the reply to an async request carries flags %#x, want SERVER_TO_REDIR alone", got)
 	}
 }
