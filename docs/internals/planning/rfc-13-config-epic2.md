@@ -16,7 +16,8 @@ under Appendix C's keys, each role's wrapping key a `keyprovider.Config`, and th
 three entry points, and `pkg/keyprovider` moved there by E1 (its D3), since `Bootstrap` names the
 type. RFC 23's epic 2 (T2.8, the `Node` record with `Formats` and its
 `Format` and `VersionRange` types) for T2.8 here; S4, RFC 23's `dfs init`, for T2.9.
-**Blocks:** E5, which builds the node's table on a loaded bootstrap; RFC 23's epic 3 (`dfs start`
+**Blocks:** E5, which builds the node's table on a loaded bootstrap; partly E3, whose T3.1 and
+T3.6 read the binary's registered ranges T2.8 adds; RFC 23's epic 3 (`dfs start`
 reads `Load` and `NodeID`, its T3.10 calls `WriteMissingNodeIDs`) and epic 5 (`dfs init` calls
 `InitNodeID`): its X1.
 
