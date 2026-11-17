@@ -9,15 +9,16 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
+	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
-// The sweep's interval and the audit retention it keeps, as the node sets
-// them.
+// The sweep's interval, as the node sets it, and RFC 23's floor for the
+// audit retention, which the node keeps.
 const (
-	sweepInterval  = 30 * time.Second
+	sweepInterval  = health.IdleEvery
 	auditRetention = 90 * 24 * time.Hour
 )
 

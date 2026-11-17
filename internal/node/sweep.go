@@ -14,14 +14,14 @@ const (
 	// §6's floor for audit.retention, until the node reads that setting.
 	auditRetention = 90 * 24 * time.Hour
 	// sweepInterval is the sweep's wait between turns, counted from the start
-	// of the turn before. It is no longer than health.IdleEvery, so the wait
-	// itself keeps the loop live.
-	sweepInterval = 30 * time.Second
+	// of the turn before: the watchdog's idle period, so the wait itself keeps
+	// the loop live.
+	sweepInterval = health.IdleEvery
 	// stepSweep names the sweep's loop.
 	stepSweep = "sweep"
 )
 
-// sweeper is the sweep's state, which only its loop touches but the series.
+// sweeper is the sweep's series, and the hook its loop calls.
 type sweeper struct {
 	// idempotency counts the idempotency records the sweep deleted.
 	idempotency prometheus.Counter
