@@ -50,6 +50,7 @@ type Node struct {
 	engine   *engine.Engine
 	fs       *vfs.Filesystem
 	runner   *runner
+	rec      reconciler
 	watchdog *health.Watchdog
 	api      *api.Server
 	life     lifecycle
@@ -96,7 +97,7 @@ func build(cfg Config) (*Node, error) {
 	if cfg.Bootstrap.APIAddr == "" || cfg.Bootstrap.MetricsAddr == "" {
 		return nil, errors.New("node: Config.Bootstrap.APIAddr and MetricsAddr must both be set")
 	}
-	n := &Node{cfg: cfg}
+	n := &Node{cfg: cfg, rec: newReconciler()}
 	var err error
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		return nil, fmt.Errorf("node: metadata store: %w", err)
@@ -127,8 +128,12 @@ func build(cfg Config) (*Node, error) {
 	n.watchdog = health.NewWatchdog(cfg.Clock)
 	n.life.ready.Store(readyStarting)
 	n.api = api.New(api.Deps{
-		Ready:       n.life.readiness,
-		Live:        n.watchdog.Live,
+		Ready: n.life.readiness,
+		Live:  n.watchdog.Live,
+		Applied: func(ctx context.Context) error {
+			_, err := n.applied(ctx)
+			return err
+		},
 		Addr:        cfg.Bootstrap.APIAddr,
 		MetricsAddr: cfg.Bootstrap.MetricsAddr,
 		Metrics:     cfg.Metrics,

@@ -126,7 +126,7 @@ func (n *Node) Start(ctx context.Context) error {
 		{"refuse", n.refuse},
 		{stepListeners, n.openListeners},
 		{"register", n.register},
-		{"apply", n.apply},
+		{"apply", n.readRecords},
 		{stepEngine, n.startEngine},
 		// A slot for identity, started after its first Apply, and stopped
 		// after the filesystem and before the engine.
@@ -137,8 +137,7 @@ func (n *Node) Start(ctx context.Context) error {
 		// runner stops, while health goes on answering. The API serves no
 		// call but health yet, so there is nothing to start or drain: add
 		// the part with the API's first call.
-		//
-		// A slot for the first full reconcile.
+		{stepReconcile, n.startReconcile},
 	} {
 		if err := s.run(ctx); err != nil {
 			err = fmt.Errorf("node: start step %s: %w", s.name, err)
@@ -280,29 +279,27 @@ func (n *Node) register(ctx context.Context) error {
 	return err
 }
 
-// apply reads the counters and the shares, then hands the engine its first
-// settings.
-//
-// ponytail: apply reads the counters and applies RFC 13 Appendix B's engine
-// defaults, as no settings record carries the engine's values yet. Read them
-// from the settings records once those carry them.
-func (n *Node) apply(ctx context.Context) error {
-	if _, err := n.meta.Nodes().Counters(ctx); err != nil {
+// readRecords reads the counters and the shares, keeping those reconcile
+// binds for the engine's start and refusing the others, then calls apply.
+func (n *Node) readRecords(ctx context.Context) error {
+	r := &n.rec
+	var err error
+	if r.seen, err = n.counters(ctx); err != nil {
 		return err
 	}
-	for r, err := range n.meta.Nodes().List(ctx, entity.ResourceShare, nil) {
-		if err != nil {
-			return err
-		}
-		n.life.shares = append(n.life.shares, r.Share)
+	listed, remote, err := n.readShares(ctx)
+	if err != nil {
+		return err
 	}
-	return n.engine.Apply(engineDefaults)
+	n.life.shares, r.shares = planShares(r.bound, listed, remote)
+	r.applied, err = n.apply(ctx, r.seen)
+	return err
 }
 
 // startEngine starts open state, with the filesystem as its Sink and its
-// admission as its Order, then the engine over every share read at apply.
+// admission as its Order, then the engine over every share readRecords kept.
 //
-// ponytail: every share's namespace is taken as held, so every share is
+// ponytail: every share's namespace is taken as held, so every share kept is
 // bound, serving or quiesced as its record says, with no journal limit. Add
 // the namespace's claim, and the limit, once namespaces are claimed and the
 // limit is a setting.
@@ -313,6 +310,9 @@ func (n *Node) startEngine(ctx context.Context) error {
 	}
 	if err := enginewire.Start(ctx, n.open, n.engine, n.fs, n.fs.Admission, bound); err != nil {
 		return err
+	}
+	for _, s := range n.life.shares {
+		n.rec.bound[s.ID] = s
 	}
 	n.started(stepEngine, func(ctx context.Context) error { return enginewire.Stop(ctx, n.open, n.engine) })
 	return nil

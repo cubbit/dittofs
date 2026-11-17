@@ -28,6 +28,11 @@ type Deps struct {
 	Ready func() string
 	// Live reports whether the node's watchdog holds.
 	Live func() bool
+	// Applied returns once this node has applied every settings and
+	// principals change committed before the call, or once ctx ends, with
+	// ctx's error: a write calls it after its commit, so the caller's next
+	// call sees the change.
+	Applied func(ctx context.Context) error
 	// Addr is the API listener's address, MetricsAddr the metrics
 	// listener's: each host:port, a port of 0 picking a free one.
 	Addr, MetricsAddr string
