@@ -10,7 +10,7 @@ Appendix B's "How a key and a value are written" and Appendix C, with its "The f
 exist on develop only once #4486 merges. R1 to R7, R13, R14, R27 and R31 to R33 cite them as "(#4486)",
 and D3 reads its matching rule. This document is not merged before that pull request is.
 **Track:** A.
-**Epic 2 estimate: 9 subtasks, 17 man-days.**
+**Epic 2 estimate: 9 subtasks, 17.5 man-days.**
 **Depends on:** S1, the configuration surface frozen by E1: `pkg/bootstrap` with `Bootstrap`'s fields
 under Appendix C's keys, each role's wrapping key a `keyprovider.Config`, and the node identity's
 three entry points, and `pkg/keyprovider` moved there by E1 (its D3), since `Bootstrap` names the
@@ -63,10 +63,10 @@ The loader and its refusals; the environment scan and its allowed names; the nod
 - The store format's refusal itself: `kvstore.Open` already refuses a store whose format lies
   outside its range, naming both versions, and never rewrites the record. This epic adds no second
   check of it.
-- Reading a namespace's block format version from its setting: RFC 13 §5.4 makes it a namespace
-  setting, and no epic declares its key yet. Epic 3 leaves it to RFC 4's plan, and a deferral
-  ledger row carries it. T2.8's gate takes the versions as an argument, and whoever declares the
-  key passes them (R24, D12).
+- A node's refusal to start while a namespace it would serve writes a block format version it
+  cannot read: RFC 13 §5.4 makes that version a namespace setting, and no epic declares its key
+  yet. Epic 3 leaves it to RFC 4's plan, and a deferral ledger row carries it. T2.8's gate checks
+  the installation's active versions only, and gains this comparison when the key exists (D12).
 - `dfs config edit`: it keeps opening `$EDITOR` on the bootstrap file and validates nothing, since
   RFC 13's commands name only `show`, `validate` and `schema` (#4486).
 - The control plane's refusal to advance a namespace's block format version (RFC 13 §5.4): E3.
@@ -106,7 +106,9 @@ title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T2.2, T2.8 | the `node-id` copies are real files in real journal directories, and their writes' crashes are simulated beneath the code by `journaltest/kit`'s seam; the store format is refused from a real Badger store |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T2.3, T2.5, T2.8 | a `decision:` note at the allowed names (why each launcher name passes), at the service-link exemption (a value's shape, not its name), and the `ponytail:` marker of the version gate (D5) |
 | rule 10, a test must be able to fail | all | each refusal has a test that feeds the refused input and asserts its line; each allowed name a test that it passes; the drift test runs over a planted file |
-| rule 11, a symbol is exported only if RFC 13's interfaces use it | all | nothing beyond E1's frozen surface is exported, but three things it does not cover, each declared by the subtask that needs it: `Format`'s values and `Installation.Active`, and `kvstore`'s format bounds, which the node record's range reads (T2.8); and a format read in the journal package, which the node identity reads (T2.2, D4) |
+| rule 11, a symbol is exported only if RFC 13's interfaces use it | all | nothing beyond E1's frozen surface is exported, but things it does not cover, each declared by the subtask that needs it: `Format`'s values and `Installation.Active`, and `kvstore`'s format bounds, which the node record's range reads (T2.8); a format read in the journal package, which the node identity reads (T2.2, D4); a
+  constructor of `keyprovider`'s local provider that takes the passphrase (T2.4, D9); and
+  the loader's result with each value's source (T2.1, D13) |
 | rule 12, each subtask creates only what it declares | all | the `node-id` codec lands with `NodeID`, the series with the gate, the allowed list with the scan |
 
 ## 3. Requirements and invariants
@@ -165,7 +167,6 @@ set for it.
 | --- | --- | --- | --- | --- |
 | R22 | Each start registers, in its node record, the range it reads and writes for every shared format, the store format's being `kvstore`'s own bounds | MUST | RFC 13 §5.5; RFC 16 §2.3 (`Node.Formats`) | T2.8 |
 | R23 | A start refuses when an active version lies outside its range, naming the format and both versions. The store format's, in `\x00format`, is `kvstore.Open`'s refusal, which exists; any other's, in `Installation.Active`, is the gate's | MUST | RFC 13 §5.5; RFC 16 §4.6 | T2.8 |
-| R24 | A start refuses while a namespace it would serve writes a block format version it cannot read: the gate takes the namespaces' versions as an argument (D12) | MUST | RFC 13 §5.4 | T2.8 |
 | R25 | A start never raises a version; a newer binary keeps writing the active ones, so the old binary still starts | MUST NOT | RFC 13 §5.5; RFC 16 §4.6 ("A store is never upgraded by being opened") | T2.8 |
 | R26 | After a start, `format_active_version{format}` holds each format's active version, and `format_supported_min{format}` and `format_supported_max{format}` the lowest and highest version this binary registers for it | MUST | RFC 13 §8 (`format_supported_min` and `format_supported_max`, #4576: one gauge cannot hold a range, which RFC 25 §11 asked first) | T2.8 |
 
@@ -178,7 +179,8 @@ set for it.
 | R29 | `dfsbench`'s backend initialises through `dfs init`, with its first password, and starts with `dfs start` | invariant | D7 | T2.9 |
 
 Key words in the owned sections this epic does not carry: §2.2's "initialise if empty **MUST
-NOT** be on by default" is E6's; §5.4's refusal to advance a namespace's version is E3's; §5.5's
+NOT** be on by default" is E6's; §5.4's refusal to advance a namespace's version is E3's, and its refusal to start while a namespace
+writes a version the node cannot read waits with the key that holds it (D12); §5.5's
 refusal of the raise while a node lags waits with the raise call; RFC 28 §2.1's two other key words
 bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key words bind the store.
 
@@ -206,8 +208,11 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
   `journal.ReadFormat(ctx, dir)`, returning the journal's ID and its installation's ID, over
   `recovery.ReadFormat`, so the read has the same retry bound as an open's, and the node identity
   never parses the file itself. Rejected: calling `Open` with a zero identity, which returns the
-  IDs inside an `IdentityError`, since a caller would need a clock and an error as its result. No
-  marker.
+  IDs inside an `IdentityError`, since a caller would need a clock and an error as its result.
+  The `node-id` write itself stays in `pkg/bootstrap`, not in the journal package: RFC 28 §2.1
+  has the node write the file "after `Init`, never by the journal, which leaves it alone". The
+  write follows `format`'s sequence, and T2.2's crash test runs it through the kit's seam, so
+  the copy cannot drift unseen. No marker.
 - **D5, a test raises a version by writing the record.** No call raises an active version (the
   deferral ledger), so the gate's test writes `Installation.Active` and `\x00format` through
   kvstore and starts again. The gate carries a `ponytail:` marker: one comparison per format, on a
@@ -269,7 +274,12 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
   but says no more about what different means. A copied key file, or a link to one, holds the same
   key, so two roles on it pass a check by file or path and collapse the split without a refusal.
   `Load` loads both keys and compares their current key IDs, as `keyprovider` reports them, so a
-  copy and a link to one are the same key and refuse. No marker.
+  copy and a link to one are the same key and refuse. The local provider reads
+  `DITTOFS_ENCRYPTION_PASSPHRASE` with `os.Getenv` (`newLocalProvider`), which would make `Load`
+  read the process's environment against D2, so T2.4 adds `keyprovider.NewProviderWithPassphrase(ctx,
+  cfg, passphrase)`, which `NewProvider` calls with `os.Getenv`'s value, and `Load` calls it with
+  the value in its `environ`. `Config` gains no field, so no passphrase is ever serialised. No
+  marker.
 - **D10, the decode is strict.** RFC 13 §6 refuses a value of the wrong type and never replaces
   it, but viper's decoder runs with `WeaklyTypedInput` on (viper v1.21.0, `viper.go:988`), which
   turns a scalar into a one-element list, `"1"` or `"t"` into `true` and a number into a string,
@@ -281,18 +291,29 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
   here for the bootstrap, once, and each later epic that adds a section to it adds its own
   without rewriting. `docs/guide/cli.md` is regenerated from the commands' help, which T2.7
   changes. No marker.
-- **D12, the version gate takes the namespaces' block format versions as an argument.** RFC 13
-  §5.4 makes the version a namespace setting, and no epic declares its key: epic 3 leaves it to
-  RFC 4's plan, and a deferral ledger row carries it until that plan runs. T2.8 therefore does not
-  read the setting, so it depends on neither the
-  settings library nor its key: the gate takes the versions the node would serve, and the start
-  step passes them once a key exists. In production the argument is empty until then, which no
-  namespace contradicts, since each format has one version so far. No marker.
+- **D12, the version gate checks the installation's active versions, not a namespace's, and lives
+  with the node's start.** RFC 13 §5.4 makes a namespace's block format version a setting, and no
+  epic declares its key: epic 3 leaves it to RFC 4's plan, and a deferral ledger row carries it
+  until that plan runs. Until a key exists nothing could feed the gate a namespace's version, so
+  the gate has no such parameter, and RFC 13 §5.4's refusal to join is not carried here, which
+  no namespace contradicts since each format has one version so far. The gate opens the store
+  through `kvstore.Open` and writes the node's `Node` record, so it sits in `pkg/bootstrap`
+  (`versions.go`), next to the node's start, and not in `pkg/settings`, which would then depend
+  on `kvstore` and the node entity. `pkg/settings/versions.go` keeps only the binary's ranges, a
+  table with no dependency, which epic 3's newer-schema refusal reads. No marker.
+
+- **D13, `Load` returns the value of each key's source beside the bootstrap.** `show` prints each
+  value with where it came from (R27), and E1 froze `Load(path, environ) (*Bootstrap, error)`,
+  which carries no source. T2.1 adds `LoadWithSources(path, environ) (*Loaded, error)`, with
+  `type Loaded struct { Bootstrap; Source map[string]Source }`, a `Source` being the file, a
+  variable (by its name) or the default, recorded by the same decode that reads the value. `Load`
+  returns its `Bootstrap`, so E1's signature and its callers stay, and `show` renders `Loaded`
+  without copying the loader's precedence. No marker.
 
 ## 5. Target tree
 
 ```text
-pkg/bootstrap/load.go                  T2.1  Load, the report, unknown and setting keys, paths
+pkg/bootstrap/load.go                  T2.1  Load, LoadWithSources, the report, unknown and setting keys, paths
 pkg/bootstrap/load_fuzz_test.go        T2.1  FuzzLoad
 pkg/bootstrap/nodeid.go                T2.2  the node-id codec, NodeID, InitNodeID, WriteMissingNodeIDs
 pkg/bootstrap/nodeid_fuzz_test.go      T2.2  FuzzNodeID
@@ -306,7 +327,8 @@ cmd/dfs/commands/config/               T2.7  show, validate, schema on the boots
 docs/guide/configuration.md            T2.7  rewritten for the bootstrap
 pkg/metadata/entity/                   T2.8  Format's values, Installation.Active
 pkg/metadata/kvstore/store.go          T2.8  MinFormat, MaxFormat exported
-pkg/settings/versions.go               T2.8  the version gate, its two series
+pkg/bootstrap/versions.go              T2.8  the version gate, its three series
+pkg/settings/versions.go               T2.8  the binary's registered ranges, a table (D12)
 bench/                                 T2.9  dfsbench's backend on dfs init and dfs start
 ```
 
@@ -314,7 +336,7 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
 
 ### T2.1 `Load` and the one report
 
-**Subtask T2.1 estimate: 3 man-days.**
+**Subtask T2.1 estimate: 3.25 man-days.**
 
 - **Track:** A. **Depends on:** S1.
 - **Covers:** R1, R2, R3, R4, R5, R6, R30, R31, R32.
@@ -325,13 +347,15 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
   (D3); the decode strict (D10): `WeaklyTypedInput` off, and the environment's strings parsed by each
   key's declared type before it; every path checked absolute and clean, the `journals` list checked
   for a path listed twice or two naming one directory, and a metadata key checked against the block
-  `metadata.backend` names; the report of D1. `MustLoad`'s fallback to defaults
+  `metadata.backend` names; the report of D1; `LoadWithSources` and `Loaded` (D13), which `Load` wraps. `MustLoad`'s fallback to defaults
   with a warning goes: a missing named file refuses, a missing default file loads the defaults
   silently, since a start then refuses for its required keys anyway. `FuzzLoad`.
 - **Acceptance criteria:**
   - A file with two unknown keys, one setting key and a relative journal path yields one error with
     four lines, each in §6's shape.
   - An environment value never appears in an error, whatever the name.
+  - `LoadWithSources` reports a key set in the file as file-sourced, one set by a variable as that
+    variable's name, and one left alone as default.
   - A quoted boolean and a scalar where a list is declared are refused, naming the key and the
     type, and no key takes a default in place of a refused value.
 - **Tests:** table tests over files under `t.TempDir()`, one row per refusal, asserting the exact
@@ -345,7 +369,9 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
   which is a string); `journals` holding one path twice, and one holding two entries that name one
   directory, each refuse (catches a dedup by string, which two paths to one directory slip past);
   `metadata.badger.path` beside `metadata.backend: foundationdb` refuses (catches a decode that
-  reads both metadata blocks); `FuzzLoad` seeded with each row.
+  reads both metadata blocks); one key from the file, one from a variable and one defaulted each carry their source in
+  `Loaded` (catches a source copied from a second precedence walk, which drifts from the decode);
+  `FuzzLoad` seeded with each row.
 
 ### T2.2 The node identity
 
@@ -415,12 +441,13 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
 
 ### T2.4 The facts' own checks
 
-**Subtask T2.4 estimate: 1.25 man-days.**
+**Subtask T2.4 estimate: 1.5 man-days.**
 
 - **Track:** A. **Depends on:** T2.1.
 - **Covers:** R12, R13, R14, R33.
 - **Deliverables:** `Bootstrap.Validate`: both roles, a repeated one refused; both wrapping keys
-  named, loaded through `keyprovider` and their current key IDs compared; certificate and key when
+  named, loaded through `keyprovider.NewProviderWithPassphrase`, which takes the passphrase from
+  `Load`'s `environ` and not from the process (D9), and their current key IDs compared; certificate and key when
   an `api.listen` or `metrics.listen` address is not loopback.
 - **Acceptance criteria:** each refusal is a line of T2.1's report, not a separate error.
 - **Tests:** `roles: [storage]` and `roles: [protocol, protocol]` each refuse (the second catches a
@@ -430,7 +457,10 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
   certificate refuse and `127.0.0.1:8080` passes; `api.listen: localhost:8080` is refused, a listen
   host being an IP literal, which catches a check that resolves names, since one that did would see
   loopback here and let the start pass. Key files are real `keyprovider` local files under
-  `t.TempDir()`.
+  `t.TempDir()`. A test calls `Load` with the passphrase in `environ` on a host where
+  `DITTOFS_ENCRYPTION_PASSPHRASE` is unset, and the keys load, with `t.Parallel()`; the same call
+  with no passphrase in `environ` refuses whatever the host's variable holds (catches a provider
+  that reads the process's environment).
 
 ### T2.5 Kubernetes' service links
 
@@ -473,15 +503,19 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
 
 - **Track:** A. **Depends on:** T2.1, T2.3, T2.4.
 - **Covers:** R27, R28.
-- **Deliverables:** `show` with each value's source and a credential by its path; `validate`
+- **Deliverables:** `show` as a rendering of `LoadWithSources`' `Loaded` (D13), each value with its
+  source and a credential by its path; `validate`
   running `Load` and starting nothing; `schema` generated from `Bootstrap`'s fields. `edit` is left
   as it is (§1.2). `docs/guide/configuration.md` rewritten for the bootstrap, Appendix C's keys and
   the refusal shape, with a section for each later epic to add (D11); `docs/guide/cli.md`
   regenerated.
-- **Acceptance criteria:** `validate`'s output on a bad file is exactly the start's refusal.
+- **Acceptance criteria:** `validate`'s output on a bad file is exactly the start's refusal; `show`
+  prints a file-set key as file-sourced and a defaulted key as default-sourced.
 - **Tests:** `validate` on T2.1's four-refusal file prints its four lines and exits non-zero;
   `show` on a file setting `metadata.foundationdb.tls.cert_file` prints the path and never the
-  file's content;
+  file's content; `show` on a file with one key set and the rest defaulted prints `file` for the
+  first and `default` for the others, and a key set by a variable prints the variable's name, all
+  through the `Load` path the start uses (catches a `show` with its own precedence logic);
   `schema`'s property set equals Appendix C's keys (catches a field added without its schema).
 
 ### T2.8 The version gate
@@ -489,15 +523,15 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
 **Subtask T2.8 estimate: 2 man-days.**
 
 - **Track:** A. **Depends on:** S1. Uses RFC 23's T2.8 (`Node.Formats`, `Format`, `VersionRange`), on `feat/storage-v2` since #4527.
-- **Covers:** R22, R23, R24, R25, R26.
+- **Covers:** R22, R23, R25, R26.
 - **Deliverables:** `Format`'s values and `Installation.Active` with its codec (D6); `kvstore`'s
   format bounds exported (`minFormat` and `maxFormat`, `pkg/metadata/kvstore/store.go:32-33`, as
   `MinFormat` and `MaxFormat`), so the store format's range can be registered; at start, the gate
   opens the store through `kvstore.Open`, which refuses a store format outside its range, naming
   both versions, and never rewrites the record; then writes the node's ranges to its `Node`
-  record, store format included, and compares every `Installation.Active` version and each
-  namespace's block format version, given as an argument (D12), with them, refusing with the
-  format and both versions; the series, `format_active_version`, `format_supported_min` and
+  record, store format included, and compares every `Installation.Active` version
+  with them, refusing with the format and both versions (a namespace's block format version waits
+  with its key, D12); the series, `format_active_version`, `format_supported_min` and
   `format_supported_max`; the `ponytail:` marker (D5). The gate adds no store-format branch of its
   own.
 - **Acceptance criteria:** a refusal names the format, the active version and the binary's range;
@@ -507,8 +541,7 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
   range through kvstore and the start refused, naming it (catches a gate that compares nothing);
   the store format in `\x00format` raised past `MaxFormat` the same way and the start refused
   naming the format and both versions, and the record unchanged (catches a gate that swallows
-  `kvstore.Open`'s refusal, or a start that rewrites the record); a namespace's block format version,
-  passed in, past the range refused (R24); a start under an older active version keeps it and the
+  `kvstore.Open`'s refusal, or a start that rewrites the record); a start under an older active version keeps it and the
   record is unchanged after (catches a start that upgrades, R25); after a start, the node record's
   `Formats` holds each format's range, the store format's equal to `MinFormat` and `MaxFormat`
   (catches a registration dropped or a range off by one, R22); the three series read from the
@@ -557,8 +590,8 @@ record and T2.9 on its `dfs init`.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T2.1, T2.2 | 6.25 | S1 | `Load` and the node identity, RFC 23's X1 |
-| 2 | T2.3, T2.4, T2.5, T2.6 | 6.75 | PR 1 | every refusal of the host's names, and the repository brought in line with them |
+| 1 | T2.1, T2.2 | 6.5 | S1 | `Load` and the node identity, RFC 23's X1 |
+| 2 | T2.3, T2.4, T2.5, T2.6 | 7 | PR 1 | every refusal of the host's names, and the repository brought in line with them |
 | 3 | T2.7, T2.8 | 3.25 | PR 2, RFC 23's T2.8 | the commands and guide on the finished loader, and the version gate |
 | 4 | T2.9 | 0.75 | PR 2, S4 | `dfsbench` on `dfs init`, once it exists |
 
@@ -573,5 +606,5 @@ A suggestion only: one pull request per subtask works as well.
   leaves "different" unsaid, so this epic reads it as different key IDs, a copy or a link to a key
   file being the same key. RFC 13 gains the sentence, or the rule stays this epic's.
 - **No epic declares the namespace setting for the block format version (D12).** RFC 4's plan
-  declares the key when it runs, and a deferral ledger row carries it. R24's test passes the
-  versions in until then.
+  declares the key when it runs, and a deferral ledger row carries it. The gate gains the
+  comparison then, and a start over a namespace record refuses a version outside the range.

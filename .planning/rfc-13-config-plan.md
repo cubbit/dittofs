@@ -652,8 +652,8 @@ Each carries a `ponytail:` marker at the code site:
     (RFC 23 §13 item 5).
   - *Epic:* 3.
 - **The version gate is one comparison per format.** On one node, a start refuses when an active
-  version, or a namespace's block format version, lies outside the binary's range, and nothing
-  else. No call raises a version, since each format has one so far: a test raises one by writing
+  version lies outside the binary's range, and nothing else; a namespace's block format version
+  waits with its key (§6.1). No call raises a version, since each format has one so far: a test raises one by writing
   the `Installation` record through kvstore.
   - *Ceiling:* a second node, or a format's second version.
   - *Upgrade path:* the raise call (RFC 13 §5.5), when a format gains a version; its refusal while
@@ -1103,7 +1103,7 @@ A host's file loads, refuses what is not bootstrap, and gives the node its ident
 only where its versions overlap the installation's.
 
 **Owns:** RFC 13 §2.2 (but its scratch paths), the roles flag included; the node identity of RFC
-23's plan's A2; RFC 13 §5.4's join refusal and §5.5, on one node.
+23's plan's A2; RFC 13 §5.5, on one node (§5.4's join refusal waits with the namespace key, §6.1).
 
 **Done when:** RFC 13 §9's rows "§2.2 no host override" and "§5.5 version gate" (its single-node
 part: the old binary refuses after a raise, which the test writes through kvstore, §4.3) pass;
@@ -1149,7 +1149,7 @@ value; D7's drift test passes.
   that differ, no copy and no key, a torn and a flipped copy, the golden vector, and a replaced
   device left empty; and the `node-id` parser's fuzz target, seeded with those.
 - The version gate (§4.3 above), over the installation's active versions, the store format's
-  active version in `\x00format` (RFC 13 §5.5) and each namespace's block format version, with
+  active version in `\x00format` (RFC 13 §5.5), with
   `format_active_version`, `format_supported_min` and `format_supported_max`.
 - Last, once RFC 23's plan has `dfs init` (S4): `dfsbench`'s backend initialises the installation,
   with its first password, through `dfs init`, and starts it with `dfs start` (D7), so v2 is
@@ -1497,7 +1497,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | `Delete`'s body: RFC 16 §3's whole-secret delete, asked for on `ControlPlaneTx` only, run inside the caller's audited `Write` with D9's tracked read that no store record names the credential, and its kind and owner check, `Delete` then taking the caller's `ControlPlaneTx` in place of RFC 13 §7's frozen signature (epic 4, D9) | RFC 16 §3, as #4050 amends it, carries `Secret`, `PutSecret` and `PruneSecret` only; no caller deletes a secret but a user's, which kvstore's `DeleteUser` deletes itself | RFC 16 | a caller must delete a secret other than a user's, such as a remote store's or a directory's removal |
 | `DITTOFS_ENCRYPTION_PASSPHRASE` in the process environment, readable in `/proc/<pid>/environ`, and no check of the bootstrap's and key files' mode or owner (§4.3's `ponytail:`) | `keyprovider`'s local provider reads it today; neither is new here | unowned | a deployment needs the passphrase out of the environment, or a key file is found readable by another user |
 | The image's `HEALTHCHECK` on its first start after `init`, in a `dt` suite (epic 6's **Done when:**), `http` until RFC 23's plan's epic 4 adds TLS, unverified `https` after | no suite builds the image | unowned | a suite builds the image |
-| The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate takes the versions as an argument and epic 3's unit test declares one of its own until then | RFC 4 plan | that plan declares the key |
+| The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate checks the active versions only and gains the namespace comparison when the key exists, and epic 3's unit test declares one of its own until then | RFC 4 plan | that plan declares the key |
 
 ## 7. RFC coverage
 
