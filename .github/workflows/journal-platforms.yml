@@ -59,14 +59,15 @@ jobs:
               - 'pkg/sim/**'
               - 'go.mod'
               - 'go.sum'
+              - '.github/actions/go-cache/**'
               - '.github/workflows/journal-platforms.yml'
 
       - name: Set up Go
         if: github.event_name != 'pull_request' || steps.filter.outputs.journal == 'true'
-        uses: actions/setup-go@v7
+        id: go
+        uses: ./.github/actions/go-cache
         with:
           go-version: "1.26.x"
-          cache: true  # Built-in caching (replaces actions/cache)
 
       # -p 2: each -race test binary reserves a large
       # shadow arena, and several at once can exhaust a Windows runner's
@@ -75,3 +76,13 @@ jobs:
         if: github.event_name != 'pull_request' || steps.filter.outputs.journal == 'true'
         shell: bash
         run: go test -race -count=1 -p 2 -timeout=25m ./pkg/block/journal/... ./internal/prof/...
+
+      # Only a push run saves: a pull request run reads its base branch's
+      # entries and every run reads the default branch's, while what a pull
+      # request run saves only that pull request's runs can read.
+      - name: Save the Go caches
+        if: github.event_name == 'push' && steps.go.outputs.cache-hit != 'true' && steps.go.outputs.key != ''
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.go.outputs.path }}
+          key: ${{ steps.go.outputs.key }}

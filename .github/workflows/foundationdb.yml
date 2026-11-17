@@ -43,14 +43,15 @@ jobs:
               - 'go.sum'
               - '.github/actions/fdb-client/**'
               - '.github/actions/release-asset/**'
+              - '.github/actions/go-cache/**'
               - '.github/workflows/foundationdb.yml'
 
       - name: Set up Go
         if: github.event_name != 'pull_request' || steps.filter.outputs.kv == 'true'
-        uses: actions/setup-go@v7
+        id: go
+        uses: ./.github/actions/go-cache
         with:
           go-version: "1.26.x"
-          cache: true
 
       - name: Install the FoundationDB client
         if: github.event_name != 'pull_request' || steps.filter.outputs.kv == 'true'
@@ -69,3 +70,13 @@ jobs:
           go test -race -count=1 -timeout=20m
           -run '^(TestConformance|TestNowAcrossNodes|TestUnknownCommitOutcomeNotReapplied|TestSweepClearsOnlyOldMarks|TestOpenIsolatesAndClears|TestStoreConformanceFDB|TestStoreConformanceFDBFrozenClock|FuzzNamespaceFDB)$'
           ./pkg/metadata/kv/fdbkv/... ./pkg/metadata/kvstore/
+
+      # Only a push run saves: a pull request run reads its base branch's
+      # entries and every run reads the default branch's, while what a pull
+      # request run saves only that pull request's runs can read.
+      - name: Save the Go caches
+        if: github.event_name == 'push' && steps.go.outputs.cache-hit != 'true' && steps.go.outputs.key != ''
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.go.outputs.path }}
+          key: ${{ steps.go.outputs.key }}
