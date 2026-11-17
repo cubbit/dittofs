@@ -105,7 +105,11 @@ func (d *Demo) Run() error {
 	if err := d.open(ctx); err != nil {
 		return err
 	}
-	defer func() { _ = d.J.Close() }()
+	defer func() {
+		if d.J != nil {
+			_ = d.J.Close()
+		}
+	}()
 	st := d.story()
 	for n, b := range st.Beats {
 		d.beat(n+1, len(st.Beats), b)
@@ -119,9 +123,19 @@ func (d *Demo) Run() error {
 // open initialises or opens the journal exactly the way the CLI's daemon
 // did, minus the socket: state file → open; fresh empty directory → init,
 // record the identity at once, open; anything else refused.
+// OpenOptions are the options the demo opened its journal with: a beat that
+// calls journal.Open again passes the same clock and settings, so the
+// answer it gets is the journal's own, not an artifact of a bare call.
+func (d *Demo) OpenOptions() []journal.Option {
+	return append([]journal.Option{
+		journal.WithClock(realClock{}),
+		journal.WithSettings(d.story().Settings),
+	}, d.Options...)
+}
+
 func (d *Demo) open(ctx context.Context) error {
 	dir := filepath.Clean(d.Dir)
-	passed, err := loadState(StatePath(dir))
+	passed, err := LoadState(StatePath(dir))
 	opts := append([]journal.Option{
 		journal.WithClock(realClock{}),
 		journal.WithSettings(d.story().Settings),
