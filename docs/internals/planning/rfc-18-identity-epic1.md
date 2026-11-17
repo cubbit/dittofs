@@ -281,10 +281,11 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
   - `Identities{ Spell(ctx, entity.Principal, Scheme) (Spelling, error); Find(ctx, Spelling,
     FindOpts) (entity.Principal, error) }` and `FindOpts{ Mint bool }` (§4.1), which the
     filesystem sets from the call's proof (E3 routes it), consumed by `vfs.Deps.Names`;
-  - `Resolver{ Resolve(ctx, Identity, entity.SharePolicy, readOnly bool) (*Caller, error) }`,
-    `Caller` with every field §6.1 lists, and `ReadOnlyCause` with `ReadOnlyNotNarrowed`,
-    `ReadOnlyGrant`, `ReadOnlyShare` (§6.1's `NotNarrowed`, `Grant`, `Share`, prefixed as Go
-    names an enum's values, like `ProofNone`), consumed by `vfs.Deps.Identity` and by E3;
+  - `Resolver{ Resolve(ctx, Identity, entity.SharePolicy, narrowed ReadOnlyCause) (*Caller,
+    error) }`, `Caller` with every field §6.1 lists, and `ReadOnlyCause` with
+    `ReadOnlyNotNarrowed`, `ReadOnlyGrant`, `ReadOnlyShare`, `ReadOnlyClient` (§6.1 since #4455,
+    prefixed as Go names an enum's values, like `ProofNone`), consumed by `vfs.Deps.Identity` and
+    by E3;
   - `entity.SharePolicy` as RFC 16 §3 declares it (D6), consumed by `Resolver`;
   - `APISignIn{ Lookup(ctx, name string) (entity.Principal, error); VerifyPassword(ctx,
     entity.Principal, password []byte) error; Account(ctx, entity.Principal) (entity.User,
@@ -349,7 +350,9 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
     importer E3's T3.6 restricts to `pkg/vfs/vfstest/memory`; `internal/node` is the package
     alone, so `internal/node/nodetest` imports nothing under `internal/identity`: once E8's T8.1
     composes identity in `node.New`, `nodetest` reaches it through `node.New`, and E8's D4 hands
-    identity's seams to `nodetest.WithNew` from `internal/node`'s `export_test.go`; `_test.go`
+    identity's seams to `nodetest.WithNew` from `internal/node`'s `export_test.go`, and E7's
+    T7.6 drops `internal/node/nodetest` from the importers it allows for
+    `internal/identity/netlogon` in the same change; `_test.go`
     files are not checked, since `*vfs.Filesystem`'s tests use
     the real server (RFC 18 §10). `pkg/vfs/vfstest/memory`, the verified in-memory
     `vfs.Service`, needs the real server too once E3's T3.6 makes `vfs.New` require it; it
@@ -449,15 +452,15 @@ document, with its recommendation:
   names only §9.2's `identity.authenticate` span; it should name `identity.resolve` too.
 - **Two `ReadOnlyCause` types.** `entity` already declares one, with `NotNarrowed`,
   `NarrowedByShare` and `NarrowedByClient` (`pkg/metadata/entity/names.go`), meaning a cause
-  other than the grant; T1.3's `identity.ReadOnlyCause` also counts the grant and folds share and
-  client rule into `ReadOnlyShare`. Unlike `ProofKind`, it cannot be aliased; the chokepoint
-  reads `entity`'s, so E3's T3.6, which rebuilds `authz.Caller`, maps one onto the other, and
-  E3's §9 holds the question. RFC 18 §6.1's field comment still lists
-  `NotNarrowed`, `Grant` and `Share`; the RFC's next fold renames them to T1.3's prefixed names.
-- **`NTLMSetting.Revision` is `Generation` here.** RFC 18 §8.1 names the field `Revision`; the
+  other than the grant; T1.3's `identity.ReadOnlyCause` also counts the grant, so it has four
+  values to `entity`'s three. Unlike `ProofKind`, it cannot be aliased; the chokepoint reads
+  `entity`'s, so E3's T3.6, which rebuilds `authz.Caller`, folds one onto the other
+  (`ReadOnlyGrant` to `NotNarrowed`, the share and client causes one to one), as E3's §9 records.
+- **`NTLMSetting.Revision` is `Generation` here.** RFC 18 §8.1 named the field `Revision`; the
   setting record it is read from (`entity.Setting`, `pkg/metadata/entity/control.go`) calls it
   `Generation`, and RFC 23 §4.4's entity tag and `Installation.NTLMOff.Off` hold that
-  generation. T1.3 uses `Generation`, so RFC 23's tracked read compares the same field; the
-  RFC's next fold renames §8.1's field.
+  generation. T1.3 uses `Generation`, so RFC 23's tracked read compares the same field. #4455
+  renamed it on `develop` in RFC 18 §8.1 and in the plan's password-set flow
+  (`NTLMSetting{On, Generation}`, `s.Generation != ntlm.Generation`).
 - **The estimate.** The plan's figure for epic 1 is 6 subtasks, 6 man-days; this document's is
   6 subtasks, 5.25 man-days.
