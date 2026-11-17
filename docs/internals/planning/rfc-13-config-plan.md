@@ -290,14 +290,14 @@ Out of scope, each named in O1:
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 4 | 6 | team | every epic |
-| E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 8 | 14.5 | A | E5; RFC 23's epics 3 and 5 (its X1) |
-| E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 8 | 18.5 | B | E5; partly RFC 18's plan's epic 6 |
+| E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 8 | 14.5 | A | E5; partly E3; RFC 23's epics 3 and 5 (its X1) |
+| E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19.5 | B | E5; partly RFC 18's plan's epic 6 |
 | E4 | Secrets | `keyprovider` moved, `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
-| E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule | 4 | 12 | team | E6; RFC 23's integration epic (its X3) |
+| E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty, off by default; the launchers on `dfs init` and the images' `init` as an explicit step, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
-| | **Total** | | **37** | **73** | | |
+| | **Total** | | **38** | **74.5** | | |
 
-**Plan estimate: 37 subtasks, 73 man-days.**
+**Plan estimate: 38 subtasks, 74.5 man-days.**
 
 The skill's estimate for RFC 13's 1,221 lines is 3 middle epics (`round(1221 / 400)`), and this plan
 has 3.
@@ -323,6 +323,7 @@ flowchart TD
     E4["E4 Secrets"]
   end
   S1 --> E2 & E3 & E4
+  E2 -. "the binary's registered ranges" .-> E3
   R2(["RFC 23 epic 2's Node and NodeStatus records"]):::sync
   R2 -. "Node record, for its ranges" .-> E2
   R2 -. "versions nodes hold" .-> E4
@@ -380,6 +381,7 @@ flowchart TD
 | E4 | RFC 18's plan's epic 2 (S2) | Identity seals and resolves its secrets here. |
 | E3 | RFC 18's plan's epic 6, partly | The NetBIOS cross-check is a tracked read through `Check`; the rest does not wait. Turning `identity.ntlm` back on is refused by #4050's settings route, not by a validator (RFC 18 plan's A13). |
 | E4 | E3, partly | Two of `Check`'s tests, D9's credential reference repointed at a freshly sealed `remote credential` and D10's reference to a secret of another kind or owner, need sealed secrets; the rest of E3 does not wait. |
+| E2 | E3, partly | The newer-schema refusal and the block format gate read the binary's registered ranges in `pkg/settings/versions.go`, which epic 2's version gate subtask adds; the rest of E3 does not wait. |
 | E5 | E6 | E2E green runs the wired server. |
 | RFC 23's epic 2 (outside) | E2 and E4, partly | The version gate adds a node's ranges to RFC 23's `Node` record, `WriteMissingNodeIDs` reads RFC 16's `JournalID`, and `Prune` reads the versions a node holds from its `NodeStatus`. Everything else in both epics starts at S1. |
 | RFC 23's epics 2, 3 and 4 (outside, S3) | E5, partly | Integration wires this library into RFC 23's reconcile and write path, in the slots those epics leave; the table and D3's check start before (§3.4). |
@@ -628,7 +630,8 @@ Each carries a `ponytail:` marker at the code site:
   scope per move, through epic 3's cross-scope read.
   - *Ceiling:* the scan and the diff at the settings count of 10⁴ shares, once per one-second poll
     while writes keep the generation moving; the trigger is their time passing a tenth of that
-    poll period, 100 ms, measured in epic 3's benchmark. Every `Secret`
+    poll period, 100 ms, measured in epic 3's benchmark; epic 5 adds the secrets pass and the
+    `NodeStatus` write to it and judges the full figure. Every `Secret`
     write raises the generation too, so a password change costs every node one such scan.
   - *Upgrade path:* read only the records above the reconciled position, with an index by position
     (RFC 23 §13 item 5).
@@ -1113,7 +1116,7 @@ value; D7's drift test passes.
 
 ### Epic 3 — Settings
 
-**Epic 3 estimate: 8 subtasks, 18.5 man-days.**
+**Epic 3 estimate: 9 subtasks, 19.5 man-days.**
 
 Settings are rows at their scope. A component's effective value is read through one call. A write is
 checked by the component's own rules, and a change is classified for reconcile.
@@ -1139,8 +1142,7 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
 - The kvstore settings view: a delete, raising `CFGGEN` in its transaction as `PutSetting` does; a
   read of every scope's rows in one prefix scan of `CFG`, for reconcile, where `Settings` scans one
   scope instance today; a newer `Setting.Schema` refused (the field exists); and the benchmark
-  §4.3's reconcile marker names: the scan, `Diff`, the secrets pass and the `NodeStatus` write at
-  10⁴ shares' settings, on Badger under `t.TempDir()`, in the `manual` tier with `ReportAllocs`.
+  §4.3's reconcile marker names: `Read` and `Diff` at 10⁴ shares' settings, on Badger under `t.TempDir()`, in the `manual` tier with `ReportAllocs`.
 - `settings.Of` and the table: a section from a component's typed settings, defaults and
   `Validate` (D2); its required keys, the ones with no default (RFC 13 §4.2), since a strict decode
   over a full `def T` cannot tell an omitted field from its zero value; its write role, `admin`
@@ -1231,7 +1233,7 @@ reference, version, role, kind or owner, or with its `HandedOver` flipped, faili
 
 ### Epic 5 — Integration
 
-**Epic 5 estimate: 4 subtasks, 12 man-days.**
+**Epic 5 estimate: 4 subtasks, 12.5 man-days.**
 
 RFC 23's node reads its settings through this library, its API writes through it, and the first
 sections are declared.
@@ -1276,6 +1278,10 @@ adapter port" (§6.1).
   as its owner is" requires.
 - RFC 23's own section (its plan's epic 3) named in the table.
 - D3's Appendix B test.
+- Epic 3's reconcile benchmark grown to the full pass: the secrets pass and the `NodeStatus`
+  write added to `Read` and `Diff`, at the same 10⁴ shares' settings, its figure judged against
+  §4.3's 100 ms trigger. Neither exists before epic 4's `Resolve` and RFC 23's `NodeStatus`. Half
+  a man-day, on the reconcile subtask.
 - RFC 13 §6's port rule, as #4050 amends it, the first cross-component rule built: code naming
   its three keys in epic 3's write check, run in the write's own transaction with the other
   ports, at both scopes and on every node the write reaches, read as tracked reads, the route the
