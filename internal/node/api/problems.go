@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
@@ -155,14 +156,19 @@ var components = []struct {
 }
 
 // refusal is a refusal in the API's own terms: one of its codes, with text
-// for a person, and what it names.
+// for a person, what it names, and how long the caller should wait before
+// trying again, zero for no wait of its own.
 type refusal struct {
 	code   apiv1.Code
 	detail string
 	names  []string
+	wait   time.Duration
 }
 
 func (r *refusal) Error() string { return string(r.code) + ": " + r.detail }
+
+// RetryAfter is how long the caller should wait before trying again.
+func (r *refusal) RetryAfter() time.Duration { return r.wait }
 
 // problemOf is err's problem body, without its request ID, and whether the
 // table names err: an error it does not name is a 500 with no code, since no
