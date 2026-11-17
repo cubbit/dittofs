@@ -1,4 +1,4 @@
-.PHONY: vulncheck vulncheck-main vulncheck-operator setup-hooks check-hooks fmt lint vet build bench-phase12 build-bench bench-blockstore bench-all
+.PHONY: vulncheck vulncheck-main vulncheck-operator setup-hooks check-hooks fmt lint vet build bench-phase12 bench-blockstore
 
 # Configure git to use the project's hooks directory and make hooks
 # executable. Safe to re-run.
@@ -71,17 +71,7 @@ build:
 bench-phase12:
 	go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$$ ./pkg/block/engine/...
 
-# Build the unified bench CLI (cmd/bench). See bench/README.md.
-# Output is dfsbench (not "bench") to avoid colliding with the
-# bench/ source directory at the repo root.
-build-bench:
-	go build -o dfsbench ./cmd/bench
-
 # Run the blockstore engine write-path Go benchmarks (10 samples of 10 iterations).
 bench-blockstore:
 	go test -bench 'SequentialWrite8MB|RandomWrite4KB|DedupHeavy|MixedRW|FlushChurn' \
 		-benchtime=10x -count=10 -run=^$$ ./pkg/block/engine/
-
-# Umbrella target for the relocated component benches. Append more bench-<area>
-# targets (e.g. ./pkg/snapshot/) as they grow.
-bench-all: bench-blockstore
