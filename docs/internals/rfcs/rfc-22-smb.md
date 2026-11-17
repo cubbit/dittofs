@@ -2678,7 +2678,8 @@ stays a failure, and `STATUS_BUFFER_OVERFLOW` in an
 `FSCTL_QUERY_ALLOCATED_RANGES` response whose buffer holds at least one range
 but not every one the queried range has ([MS-FSA's `FSCTL_QUERY_ALLOCATED_RANGES`](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/385dec98-90fe-477f-9789-20a47a7b8467); below one range it is
 `STATUS_BUFFER_TOO_SMALL`) is not in 3.3.4.4's list and stays a failure. The
-totality test pins the table's `NotFailure` rows to exactly this list
+totality test pins the table's `NotFailure` rows to exactly the pairs marked
+above, but the named-pipe `READ`, which never arises
 ([RFC 20 §7.3](rfc-20-adapters.md#7.3%20The%20error%20tables%20are%20total)).
 A `SESSION_SETUP` answered `STATUS_MORE_PROCESSING_REQUIRED` is no failure, but
 a related member after it still needs an authenticated session (RFC 20 §4.2's
@@ -2768,7 +2769,7 @@ service, before any wire suite runs:
 | §16.4 persistent state | Fail the primary over under a persistent open with a lease and locks, reconnect: open, lease and locks as left. Open delete-on-close, revoke the client: the open is released and the pending delete runs as its marker. | a reconnect that loses the lease |
 | §3.3 parked pipe `READ` | Bind to `\pipe\srvsvc`, send a 64 KiB `READ` on the empty pipe so it parks, then write a `NetShareEnumAll` request whose reply is larger than 4 KiB, with a client that reports each `READ`'s status: the parked `READ` returns a short read with `STATUS_SUCCESS`, and the `READ`s after it return the rest. | a parked pipe `READ` that answers `STATUS_BUFFER_OVERFLOW` where an unparked one answers a short read |
 | §16.5 a non-failure in a chain | Send `CREATE`, then a related `QUERY_INFO` whose output buffer is too small for the information asked, then a related `CLOSE`: the `QUERY_INFO` answers `STATUS_BUFFER_OVERFLOW`, the `CLOSE` answers `STATUS_SUCCESS`, and the open is gone (a `READ` on its `FileId` answers `STATUS_FILE_CLOSED`). | a related member after a status MS-SMB2 3.3.4.4 counts as no failure refused as after a failure, which leaves the open behind |
-| §16.5 a failure an `IOCTL` shares | Write a file with two data ranges and a hole between. Send `CREATE`, then a related `IOCTL` `FSCTL_QUERY_ALLOCATED_RANGES` over the file with a 16-byte output buffer, then a related `CLOSE`: the `IOCTL` answers `STATUS_BUFFER_OVERFLOW` with one range, the `CLOSE` answers the same status with no call, and the open stays (a `READ` on its `FileId` succeeds). | a `NotFailure` row keyed by a sentinel other FSCTLs share, which runs the related members after a failure |
+| §16.5 a failure an `IOCTL` shares | Write a file with two data ranges and a hole between. Send `CREATE`, then a related `IOCTL` `FSCTL_QUERY_ALLOCATED_RANGES` over the file with a 16-byte output buffer, then a related `CLOSE`: the `CLOSE` answers the `IOCTL`'s status with no call, and the open stays (a `READ` on its `FileId` succeeds). | a `NotFailure` row keyed by a sentinel other FSCTLs share, which runs the related members after a failure |
 | §16.5 a session in setup | Send a `SESSION_SETUP` that the server answers `STATUS_MORE_PROCESSING_REQUIRED`, then a related `TREE_CONNECT`: it is refused, and no tree is connected. | a related member run on a session that has not finished its setup |
 | §16.4 end to end | smbtorture and the Windows Protocol Test Suites run through `dt` ([RFC 29](rfc-29-test-harness.md)) as the end-to-end layer above the vectors and fuzz targets. | a translation correct in vectors but wrong against a real client |
 

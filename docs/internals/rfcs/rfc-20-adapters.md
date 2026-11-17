@@ -1622,12 +1622,13 @@ service calls, admitted separately
   before the first runs, and refuses one whose reservation would pass a quarter of the reply
   pool's ceiling with `ErrReplyTooBig` before any member runs, as a count past
   the cap is (§4.7). It refuses the same way, in every minor version, one whose
-  reservation passes the protocol's record cap, `Framer.MaxRecord`'s bytes: on
+  reply bytes, its members' summed bounds and `ReplyLen` of its header, not the
+  pool's charge, pass the protocol's record cap, `Framer.MaxRecord`'s bytes: on
   a large node a compound past the transfer class draws the 8 MiB class, and
   two 1 MiB NFSv4.0 `READ`s, which no `ca_maxresponsesize` bounds, would make a
   reply of about 2 MiB, past an RPC record's 1 MiB and 4 KiB
   ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)). A chain sends the replies it holds before a member whose
-  reservation would take them past that quarter (§4.7). Both measure a
+  reservation would take them past that quarter (§4.7). The two quarter checks measure a
   reservation as the pool charges it, `BufPool.Charge` of its bytes, and a
   chain's held replies by their `Buf.Charge`, against `Ceiling()/4` (§6.8).
   One operation's own bound is its protocol's to cap, as RFC 22's read size
@@ -2501,8 +2502,9 @@ reservation, where the place its predecessor freed may have gone to a request
 queued on the reply pool behind the chain's bytes. It holds one place at a
 time, however long it is, two only between a try's grant and the kept place's
 return. A member `Admit` refuses on its first try holds no
-admission of its own and waits for its status in the kept place; one refused
-after the chain gave that place back holds none (below). Each member's reply
+admission of its own and waits for its status in the kept place; a member
+refused while its chain holds no place, because it gave the place back or
+admitted no member before it, holds none (below). Each member's reply
 reservation is held until the joined record goes out
 ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)). It is first
 tried without waiting (`BufPool.TryGet`,
@@ -2523,8 +2525,9 @@ holding no reply reservation and holding the connection's one status wait, as a
 refusal alone does: the reader takes it for a first member it refuses, so the
 next such record waits on the reader, and the chain's goroutine takes it for a
 later member, waiting for it in the place the chain holds, its member's own or
-the kept one. A member refused after the chain gave its place back holds none,
-and waits for the one status wait on the chain's goroutine, its record's
+the kept one. A member refused while its chain holds no place, because it gave
+the place back or admitted no member before it, holds none, and waits for the
+one status wait on the chain's goroutine, its record's
 receive charge bounding it as it bounds a refusal alone
 ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits));
 every other chain waiting for it holds one place, so those stay within the
@@ -2547,7 +2550,7 @@ already counts what `Wrap` adds. A single reply never passes the cap on its own:
 its class, and the cap is that class's capacity, 8 MiB and 4 KiB for SMB and
 1 MiB and 4 KiB for an RPC record
 ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)). A single-reply
-compound can draw a larger class, and one whose reservation passes the cap is
+compound can draw a larger class, and one whose reply bytes pass the cap is
 refused before any member runs (§4.3), so only a joined record can pass it. A member `Unwrap`
 refuses splits the chain: the replies before it go out first, joined and
 wrapped once; its refusal goes out next in a record of its own, wrapped once

@@ -537,8 +537,8 @@ ends:
   call's deadline passes, and a reply that carries a status alone after at most
   30 s, closing its connection, since parked requests' reservations can leave
   no send to wait for (§3.3);
-- a connection's status wait when its holder's status goes out, or at the
-  holder's 30 s, which closes the connection; the holder waits only on the
+- a connection's status wait once its holder's status has its buffer, or at
+  the holder's 30 s, which closes the connection; the holder waits only on the
   reply pool, holding no reply reservation, those behind it hold no reply
   reservation either, and the reply pool frees by sends and ended calls, which
   wait on no place held behind it, so no cycle runs through it;
@@ -767,9 +767,10 @@ request was admitted waits in its place. A chain's member status takes the one
 status wait as well, waiting for it in the place the chain holds
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
 so those statuses stay within the connection's flow-control bound, plus the
-one status wait. A chain member refused after its chain gave its place back,
-to wait in `Admit`, holds none, and waits for the status wait on its chain's
-goroutine; only the receive pool bounds those, as above. The status's buffer
+one status wait. A chain member refused while its chain holds no place,
+because it gave the place back or admitted no member before it, holds none,
+and waits for the status wait on its chain's goroutine; only the receive pool
+bounds those, as above. The status's buffer
 is `HeaderCodec.ReplyLen(h)` bytes once a header has
 decoded, which counts what the status alone carries, an NFSv4 `COMPOUND`'s tag
 among it ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
