@@ -111,7 +111,8 @@ offer picks it up, and a release of it is refused until then.
 - **content version** — the number ordering a file's writes and removals; where
   two cover one byte, the higher wins ([§4.3](#4.3%20Versions)).
 - **offloaded bit** — set only when the engine reports the bytes offloaded in the
-  remote tier; eviction needs it ([§2](#2.%20The%20model%20it%20presents)).
+  remote tier, after an offload or through the reseed's `MarkOffloaded`, or when a fill
+  writes bytes fetched from it ([§3.4](#3.4%20Fill)); eviction needs it ([§2](#2.%20The%20model%20it%20presents)).
 - **offer**, **report** — the frozen view of dirty bytes the engine uploads, and
   its statement of which of them are now offloaded ([§3.3](#3.3%20Offload)).
 - **release**, **fill** — no longer holding offloaded bytes (eviction), whose
@@ -125,7 +126,7 @@ offer picks it up, and a release of it is refused until then.
   fixed time bound after the write (1 s proposed).
 - A read never returns zeros for an extent the journal does not hold. It names
   that extent as missing, exactly, and leaves the bytes untouched.
-- Bytes not reported offloaded are never released: such a release is
+- Bytes whose offloaded bit is unset are never released: such a release is
   refused, whole.
 - A fill never overwrites held bytes, and is refused if the file changed since
   the read that found the gap.
@@ -311,7 +312,7 @@ For each `FileID`, the journal maintains a set of **held extents**: disjoint
 location in local storage.
 
 For each held extent it also records one bit of **offload state**: whether the
-extent has been reported offloaded ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). This bit exists for two
+extent has been reported offloaded or filled ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). This bit exists for two
 purposes and no others — selecting what to offer at offload, and refusing an
 unsafe release ([§5.1](#5.1%20Ordering%20rules)). It **MUST NOT** be consulted to answer a read, and the
 journal **MUST NOT** expose it as an answer about whether content is offloaded; the journal
@@ -2122,7 +2123,7 @@ Record 104 stays as long as the version-7 bytes it marks offloaded are held.
 | `Release` **MUST NOT** precede the committed offload transaction the offloaded bit reflects. | Otherwise a crash can leave content whose only copy is gone ([RFC 0 §8.1](rfc-0-data-lifecycle.md#8.1%20Evict)). |
 | A release record **MUST** be durable before the segment holding the record it released is unlinked or recycled ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). | Otherwise a crash can lose the record and keep the unlink, and an older record the release covered is held again ([§3.5](#3.5%20Release)). |
 | A segment's records **MUST** be durable before the segment is unlinked or recycled by reclamation. | A reclaim pass **MUST** be content-preserving ([RFC 0 §8.2](rfc-0-data-lifecycle.md#8.2%20Reclaim)). |
-| Marking an offloaded bit **MUST NOT** precede the report that justifies it. | [RFC 0](rfc-0-data-lifecycle.md) invariant I5. |
+| Marking an offloaded bit **MUST NOT** precede the report or the fill that justifies it. | [RFC 0](rfc-0-data-lifecycle.md) invariant I5. |
 | A segment's directory entry **MUST** be durable before a record is written to it. | Otherwise power loss can drop a synced segment's directory entry, and the segment with it ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). |
 | A segment's unlink or recycle **MUST** be durable before a removal record whose retention counted that segment is dropped. | Otherwise a crash can bring the segment back without the removal that covered its records ([§7.2](#7.2%20Repack)). |
 | A sync that failed **MUST NOT** satisfy, by a later success, a `Sync` for writes made before the failure. | Those writes may be lost already ([§5.3](#5.3%20A%20failed%20sync)). |

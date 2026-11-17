@@ -1412,7 +1412,9 @@ verified in-memory implementation of that component's whole interface ([RFC 29 �
 
 Every mechanism the engine calls is safe by its own definition: `Release` refuses
 an extent whose offloaded bit is unset ([RFC 1 §3.5](rfc-1-journal.md#3.5%20Release)), `Fill` refuses to overwrite held
-bytes ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)), an offloaded bit is set only on an offload report. A
+bytes ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)), an offloaded bit is set only by an offload report, from an
+offload or the reseed's `MarkOffloaded` (§2.5), or by a fill, whose bytes came from the remote tier
+([RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill)). A
 policy gate **MUST NOT** be the only thing standing between the system and data
 loss. The test: disable every gate — evict as eagerly as possible, fill
 everything, offload constantly — and the Group A checks still pass ([§15](#15.%20Conformance)).
