@@ -270,13 +270,14 @@ func (c *chain) one(e *entry) {
 	if related {
 		prev = c.prevR
 	}
-	// decision: a replay hit builds no request, so a related member after it
-	// is handed the request from before the hit, whose state the cached
-	// reply's call had started from. Overturned if a protocol that chains
+	// decision: a replay hit builds no request, so a related member after a
+	// related hit is handed the request from before the hit, whose state the
+	// cached reply's call had started from; after an unrelated hit it starts
+	// from no request, as that call did. Overturned if a protocol that chains
 	// returns cached copies and a hit's own state must carry over.
 	release := e.release
 	keep := func() { c.keep(release) }
-	if r := p.message(e.tr, c.rec, e.u, prev, keep, c); r != nil || !e.tr.cached {
+	if r := p.message(e.tr, c.rec, e.u, prev, keep, c); r != nil || !e.tr.cached || !related {
 		c.prevR = r
 	}
 }

@@ -2093,6 +2093,74 @@ func TestARelatedMemberAfterAHitKeepsTheHandle(t *testing.T) {
 	})
 }
 
+// cacheableEcho is the stages' Router with Echo's row marked Cacheable, each
+// table it routes to copied once: an input standing for a protocol whose
+// cacheable row needs no handle, so a hit of one is answered OK.
+type cacheableEcho struct {
+	core.Router
+	mu     sync.Mutex
+	tables map[*core.OpTable]*core.OpTable
+}
+
+func (c *cacheableEcho) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	tb, r, err := c.Router.Route(h, prev)
+	if tb == nil || tb.Ops[testproto.OpEcho] == nil {
+		return tb, r, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cp, ok := c.tables[tb]
+	if !ok {
+		t := *tb
+		t.Ops = make(map[uint32]*core.Op, len(tb.Ops))
+		for code, op := range tb.Ops {
+			t.Ops[code] = op
+		}
+		echo := *tb.Ops[testproto.OpEcho]
+		echo.Cacheable = true
+		t.Ops[testproto.OpEcho] = &echo
+		cp = &t
+		c.tables[tb] = cp
+	}
+	return cp, r, err
+}
+
+// A related member after an unrelated replay hit starts from no request, as
+// the cached call did: sent again, the chain [PutFH, an unrelated sequenced
+// Echo, cacheable here, a related Create] answers the Create as the first
+// send did, with no handle, rather than running it under the PutFH's. The
+// Echo's hit is answered OK, so the Create's answer rests on the request it
+// is routed under alone.
+func TestARelatedMemberAfterAnUnrelatedHitStartsFromNoRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{Budgets: serverBudgets(1 << 20)}, func(st *core.Stages) {
+			st.Router = &cacheableEcho{Router: st.Router, tables: map[*core.OpTable]*core.OpTable{}}
+		})
+		chain := []testproto.Msg{
+			{Op: testproto.OpPutFH, Version: 2, ID: 160, Session: 7, Tree: 1, Handle: s.root},
+			{Op: testproto.OpEcho, Version: 2, ID: 161, Session: 7, Tree: 1, Seq: 9},
+			{Op: testproto.OpCreate, Version: 2, ID: 162, Session: inherited, Tree: 1, Name: "after", Related: true},
+		}
+		var sends [2][]core.Status
+		for i := range sends {
+			s.serve(chain...)
+			rs, err := s.client.Recv()
+			if err != nil || len(rs) != 3 {
+				t.Fatalf("send %d is answered %+v, %v: want three replies", i+1, rs, err)
+			}
+			for _, r := range rs {
+				sends[i] = append(sends[i], r.Status)
+			}
+		}
+		want := []core.Status{testproto.StatusOK, testproto.StatusOK, testproto.StatusNoFH}
+		for i, got := range sends {
+			if !slices.Equal(got, want) {
+				t.Errorf("send %d is answered %v, want %v: the related Create after the unrelated Echo has no handle", i+1, got, want)
+			}
+		}
+	})
+}
+
 // A compound row reached as a chain's member is refused not supported, and
 // none of its members runs.
 func TestACompoundAsAChainMemberIsRefused(t *testing.T) {
