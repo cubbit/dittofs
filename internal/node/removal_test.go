@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"runtime"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -512,5 +513,41 @@ func TestAdmissionServesOnlyTheRunningSet(t *testing.T) {
 	}
 	if _, err := h.Node().Filesystem().StatFS(ctx, call, entity.NewHandle(refused.ID, refused.Root)); !errors.Is(err, vfs.ErrDelay) {
 		t.Errorf("the first call into the refused share: got %v, want %v", err, vfs.ErrDelay)
+	}
+}
+
+// A removal joined at start whose store stops answering fails Start at the
+// filesystem step, its step named, within the store's bound on the node's
+// clock, rather than hang it.
+func TestARemovalsHungStoreFailsStartAtItsStep(t *testing.T) {
+	h, f := faulted(t)
+	configure(t, h, storeA)
+	sh := createShare(t, h, "a", storeA)
+	deleteShare(t, h, sh)
+	held := sim.NewTestClock(time.Unix(0, 0))
+	state := keys.Describe(append(keys.ID([]byte{keys.KindS}, sh.ID[:]), keys.SSt))
+	setFault(t, f, held, sim.Rule{Op: kvtest.OpSet, Key: state, Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	defer held.Advance(time.Hour)
+	failed := make(chan error, 1)
+	go func() { failed <- h.Node().Start(context.Background()) }()
+	for deadline := time.Now().Add(10 * time.Second); held.Pending() == 0; runtime.Gosched() {
+		if time.Now().After(deadline) {
+			t.Fatal("the removal's write at start did not reach the store within 10 s")
+		}
+	}
+	h.Clock().Advance(time.Minute)
+	select {
+	case err := <-failed:
+		if err == nil || !strings.Contains(err.Error(), "filesystem") {
+			t.Fatalf("Start with the removal's write hung: %v, want it failed at the filesystem step", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start with the removal's write hung: not returned within 10 s of the clock passing the store's bound")
+	}
+	// A failed start leaves the listeners open for health; the late write
+	// is released before the node stops.
+	held.Advance(time.Hour)
+	if err := h.Node().Stop(context.Background()); err != nil {
+		t.Errorf("Stop after the failed start: %v", err)
 	}
 }

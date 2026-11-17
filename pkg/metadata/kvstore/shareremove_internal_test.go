@@ -109,6 +109,25 @@ func TestRemovalStepReadsTheRemovalsRecord(t *testing.T) {
 	}
 }
 
+// A removal's state record naming a pass no removal reaches is refused as
+// malformed, as ContinueRemoval refuses it, rather than read past the table.
+func TestRemovalStepRefusesAPassPastTheLast(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	share := newShare(t, s)
+	for _, pass := range []uint8{0, stepLast + 1, 255} {
+		err := s.kv.Update(ctx, func(tx kv.Txn) error {
+			return tx.Set(shareKey(share, keys.SSt), encodeState(shareState{State: entity.ShareRemoving, Step: pass}))
+		})
+		if err != nil {
+			t.Fatalf("write a removal at pass %d: %v", pass, err)
+		}
+		if _, _, err := s.Nodes().RemovalStep(ctx, share); !errors.Is(err, errMalformed) {
+			t.Errorf("RemovalStep at pass %d: %v, want %v", pass, err, errMalformed)
+		}
+	}
+}
+
 func isInvalidArgument(err error) bool {
 	se, ok := errors.AsType[*merrs.StoreError](err)
 	return ok && se.Code == merrs.ErrInvalidArgument

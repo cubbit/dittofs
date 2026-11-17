@@ -258,22 +258,15 @@ func (n Nodes) ContinueRemoval(ctx context.Context, share entity.ShareID) (step 
 // a share that never existed. A share not being removed is refused.
 func (n Nodes) RemovalStep(ctx context.Context, share entity.ShareID) (step uint8, done bool, err error) {
 	err = n.s.kv.View(ctx, func(r kv.Reader) error {
-		b, ok, err := get(r, shareKey(share, keys.SSt))
+		st, ok, err := removingState(r, share)
 		if err != nil || !ok {
 			done = err == nil
 			return err
 		}
-		st, err := decodeState(b)
-		switch {
-		case err != nil:
-			return err
-		case st.State == entity.ShareRetired:
-			done = true
-		case st.State != entity.ShareRemoving:
-			return merrs.NewInvalidArgumentError("the share is not being removed")
-		default:
-			step = removalSteps[st.Step]
+		if int(st.Step) >= len(removalSteps) || removalSteps[st.Step] == 0 {
+			return fmt.Errorf("%w: share removal at pass %d", errMalformed, st.Step)
 		}
+		step = removalSteps[st.Step]
 		return nil
 	})
 	return step, done, err
@@ -353,8 +346,8 @@ func (s *Store) removalBatch(tx kv.Txn, share entity.ShareID) (step uint8, done 
 // removingState reads a share's state record with tracking, so two batches
 // of one removal serialise on it: ok is false once the removal has ended,
 // and a share not being removed is refused.
-func removingState(tx kv.Txn, share entity.ShareID) (shareState, bool, error) {
-	b, ok, err := get(tx, shareKey(share, keys.SSt))
+func removingState(r kv.Reader, share entity.ShareID) (shareState, bool, error) {
+	b, ok, err := get(r, shareKey(share, keys.SSt))
 	if err != nil || !ok {
 		return shareState{}, false, err
 	}
