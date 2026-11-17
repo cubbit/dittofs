@@ -4273,9 +4273,12 @@ nfs4 COMPOUND                      request span: frame → send, opened by the p
    └─ vfs.GetAttr
 ```
 
-- **The request span** is opened when a record is framed and ended when its
-  reply is handed to the writer, or when it is dropped. The sampling decision
-  is made there, once, and travels with the context
+- **The request span** is opened when a record is framed, or, for each member
+  of a chain (§4.7), when its header is read: a chain's members are requests of
+  their own, each with its own request span and its own message's bytes, not
+  children of one span as a compound's operations are. It ends when its reply
+  is handed to the writer, or when it is dropped. The sampling decision is made
+  as it opens, once, and travels with the context
   ([RFC 25 §6.3](rfc-25-observability.md#6.3%20Sampling%20and%20cost)): a
   sampled request's context carries its span and an unsampled one's none, and
   no component below opens a span without a sampled parent
