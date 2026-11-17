@@ -115,6 +115,14 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		if err != nil {
 			return answer{}, err
 		}
+		// decision: the pre-write step's answer is an input to the
+		// transaction, not a call from inside it. Inside, a conflict retry
+		// would repeat a directory query or a credential probe for every
+		// attempt, and the transaction would hold its reads open across a
+		// network round trip. The cost is that the answer can be stale by
+		// the commit, so h re-reads in the transaction the record the step
+		// depended on. Overturned if a step's answer must be fresher than
+		// one request.
 		var in I
 		if prepare != nil {
 			if in, err = prepare(ctx, rq); err != nil {
