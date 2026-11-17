@@ -12,7 +12,7 @@ import (
 // route is one row of the route table: a method and a pattern of
 // net/http.ServeMux, the action a POST on {id}:verb names, the kind of
 // resource it changes, which a refusal before its adapter is audited
-// against and a row that changes nothing leaves zero, the right its caller
+// against and only a GET or a public row leaves zero, the right its caller
 // must hold, whether it answers a caller that must change its password, and
 // its adapter.
 type route struct {
