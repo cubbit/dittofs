@@ -165,6 +165,38 @@ func (n Nodes) NodeStatuses(ctx context.Context, after entity.NodeID) iter.Seq2[
 	}
 }
 
+// NodeRecords lists every node's record in node ID order, resuming after
+// the node after; the zero ID starts from the first.
+func (n Nodes) NodeRecords(ctx context.Context, after entity.NodeID) iter.Seq2[entity.Node, error] {
+	var cursor []byte
+	if after != (entity.NodeID{}) {
+		cursor = nodeKey(after)
+	}
+	type row struct {
+		n  entity.Node
+		ok bool
+	}
+	// A node's status, lease and clock rows share its record's prefix.
+	rows := pages(ctx, n.s.kv, []byte{keys.KindN}, cursor, func(_ kv.Reader, kvp kv.KeyValue) (row, error) {
+		if len(kvp.Key) != 1+keys.IDLen {
+			return row{}, nil
+		}
+		rec, err := decodeNode(entity.NodeID(kvp.Key[1:]), kvp.Value)
+		return row{rec, err == nil}, err
+	})
+	return func(yield func(entity.Node, error) bool) {
+		for r, err := range rows {
+			if err != nil {
+				yield(entity.Node{}, err)
+				return
+			}
+			if r.ok && !yield(r.n, nil) {
+				return
+			}
+		}
+	}
+}
+
 // Record is one record List yields: its Setting or its Share, as the kind
 // listed says, and After, what List takes to resume after it.
 type Record struct {

@@ -148,6 +148,40 @@ func testNodeStatuses(t *testing.T, kvo Opener) {
 	}
 }
 
+// Node records list in node ID order, each once, beside the statuses and
+// epochs that share their prefix, resumable after any node.
+func testNodeRecords(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	nodes := s.Nodes()
+	ids := []entity.NodeID{entity.NodeID(uuid.New()), entity.NodeID(uuid.New())}
+	slices.SortFunc(ids, func(a, b entity.NodeID) int { return slices.Compare(a[:], b[:]) })
+	var want []entity.Node
+	for i, id := range ids {
+		_, err := s.RaiseNodeEpoch(ctx, id)
+		must(t, err)
+		rec, err := nodes.RegisterNode(ctx, entity.Node{ID: id, Address: fmt.Sprintf("10.0.0.%d:12049", i), Roles: bothRoles, Binary: fmt.Sprintf("v0.%d.0", i)})
+		must(t, err)
+		must(t, nodes.PutNodeStatus(ctx, entity.NodeStatus{Node: id, Settings: 1}))
+		want = append(want, rec)
+	}
+	must(t, nodes.PutNodeStatus(ctx, entity.NodeStatus{Node: entity.NodeID(uuid.New())})) // a status with no record
+	list := func(after entity.NodeID) (got []entity.Node) {
+		for n, err := range nodes.NodeRecords(ctx, after) {
+			if err != nil {
+				t.Fatalf("node records after %v: %v", after, err)
+			}
+			got = append(got, n)
+		}
+		return got
+	}
+	if got := list(entity.NodeID{}); !reflect.DeepEqual(got, want) {
+		t.Errorf("node records:\n got %+v\nwant %+v", got, want)
+	}
+	if got := list(ids[0]); !reflect.DeepEqual(got, want[1:]) {
+		t.Errorf("node records after the first node:\n got %+v\nwant %+v", got, want[1:])
+	}
+}
+
 // A node lists every setting, at every scope, and every share, each
 // resumable after any record it read; no other kind is listed.
 func testListReconciledRecords(t *testing.T, kvo Opener) {
