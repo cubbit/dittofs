@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
@@ -34,6 +35,11 @@ type Config struct {
 	Metrics *metrics.Registry
 	// Logger is where the node logs.
 	Logger *slog.Logger
+	// Journal are options for every journal the node opens, after one
+	// reading Clock: the engine's and the one Start reads each device's
+	// identity with. A test passes journaltest.SuitableMount here, so the
+	// host's own mount cannot refuse its temporary directories.
+	Journal []journal.Option
 }
 
 // Node is one running DittoFS node.
@@ -101,6 +107,7 @@ func build(cfg Config) (*Node, error) {
 		Store:   n.meta,
 		Clock:   cfg.Clock,
 		Logger:  cfg.Logger,
+		Journal: cfg.Journal,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("node: %w", err)

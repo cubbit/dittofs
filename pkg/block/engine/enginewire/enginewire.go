@@ -35,8 +35,8 @@ type Params struct {
 	//
 	// decision: the journal's settings arrive here, as journal.WithSettings,
 	// because Engine.Apply takes only the engine's own settings and forwards
-	// none to the journal; the node passes none, so its journals open on the
-	// defaults. Move the journal's settings to Apply, and narrow this to
+	// none to the journal; the node passes no settings, so its journals
+	// open on the defaults. Move the journal's settings to Apply, and narrow this to
 	// storage and mount options, when the node first applies configured
 	// journal settings.
 	Journal []journal.Option

@@ -233,10 +233,11 @@ func (n *Node) refuse(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	opts := append([]journal.Option{journal.WithClock(n.cfg.Clock)}, n.cfg.Journal...)
 	for _, dir := range n.cfg.Bootstrap.Devices {
 		// With no identity expected, Open opens nothing: it names the
 		// journal it found and that journal's installation.
-		_, err := journal.Open(ctx, dir, journal.Version{}, journal.JournalID{}, nil, journal.WithClock(n.cfg.Clock))
+		_, err := journal.Open(ctx, dir, journal.Version{}, journal.JournalID{}, nil, opts...)
 		var id *journal.IdentityError
 		switch {
 		case errors.As(err, &id):

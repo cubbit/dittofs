@@ -274,6 +274,11 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 			}
 			cfg.Bootstrap.Devices = []string{dir}
 		}},
+		// The step reads each device with the node's journal options: one the
+		// journal refuses fails it here, before the engine would.
+		{step: "refuse", cfg: func(_ *testing.T, cfg *node.Config) {
+			cfg.Journal = append(cfg.Journal, journal.WithDescriptorBudget(journal.NewDescriptorBudget(-1)))
+		}},
 		{step: "listeners", cfg: func(t *testing.T, cfg *node.Config) {
 			l, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
