@@ -1037,7 +1037,10 @@ keeps none.
 
 ```go
 // internal/vfs admission, step 4 (RFC 17 §4.9).
-key := callerKey{id.Key(), pol, narrowed, clientIfRuled, s.deps.Identity.Current()} // the serial (A21)
+key := callerKey{id.Key(), pol, narrowed, clientIfRuled, 0} // single flight without the serial (A21)
+if c, ok := s.cache.Get(key.at(s.deps.Identity.Current())); ok && s.clock.Now().Before(c.Fresh) {
+	return c, nil // served only under the State it was resolved under
+}
 ch := s.callers.DoChan(key, func() (any, error) { // single flight per key (§7.1)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resolveBound) // not the first caller's ctx
 	defer cancel()
@@ -1048,6 +1051,9 @@ case r := <-ch:
 	c, err = r.Val.(*Caller), r.Err
 case <-ctx.Done():
 	return nil, ctx.Err()
+}
+if err == nil && !c.Fresh.IsZero() && c.Built == s.deps.Identity.Current() {
+	s.cache.Add(key.at(c.Built), c) // under its own Built, never the serial read before resolving
 }
 
 func (s *Server) Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, ro ReadOnlyCause) (*Caller, error) {

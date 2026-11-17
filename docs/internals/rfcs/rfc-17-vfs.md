@@ -1625,7 +1625,8 @@ result, the caller, may be cached, per share, with the key
 lists: the proof key; the share with its `ExportPolicy.Version` and its
 grant-list version
 ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)'s
-`S‖id‖gv`); the serial of the identity `State` it was resolved under; the
+`S‖id‖gv`); the serial of the identity `State` it was resolved under, its
+`Caller.Built`, never a serial read before resolution began; the
 read-only cause step 3 handed resolution; and, where a client rule or a
 netgroup decided, the `Identity`'s `Client` address, since `Identity.Key()`
 leaves it out ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller))
