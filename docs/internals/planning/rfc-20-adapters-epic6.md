@@ -14,7 +14,7 @@ build), §6.10's codec micro row (the operation codecs' gates), RFC 22 §3.1 and
 RFC 5531 §9, §11 and Appendix A, for the bytes. For T6.5 and T6.6, the generated codecs: Marco's
 amendment of RFC 20, 21 and 22 (§1.3), whose tag rules they follow, MS-SMB2 2.2 and RFC 4506.
 **Track:** C.
-**Epic 6 estimate: 8 subtasks, 22.75 man-days.**
+**Epic 6 estimate: 8 subtasks, 23.25 man-days.**
 **Depends on:** **S2, `testproto` and the import test in CI**: E1's frozen surface of `core`,
 `pkg/adapter/settings` and the two public `New` stubs; E2's import test with its `wire` rule,
 `adaptertest.CheckLeaks` and the `unit/adapter-allocs` cell; E5's T5.7 and T5.2a, which gave
@@ -164,9 +164,10 @@ plan and to the RFC 22 plan are made by other pull requests, not this epic.
 - **Needs E4, Needs E5**: fields each subtask of §6 carries beside **Depends on**, since E4 has
   no subtask ids: what of either must have landed before the subtask can.
 - **G1 to G10**: the RFC gaps of §9, each settled in the RFC section §9 names.
-- **Marco's amendment**: the architect's amendment of RFC 20, 21 and 22, in a pull request
-  against develop (to be linked), which states that a command is its structs, its handler and
-  one row, that each protocol has one codec generated from struct tags, and `core.Row`.
+- **Marco's amendment**: #4562, the architect's amendment of RFC 20, 21 and 22, merged on
+  develop, which states that a command is its structs, its handler and one row, that each
+  protocol has one codec generated from struct tags, and `core.Row`. It reaches
+  `feat/storage-v2` with develop's next merge; until then this epic cites it by number.
 
 ## 2. How the general rules apply
 
@@ -236,6 +237,10 @@ cited by number and title, and how it applies here or why it does not.
 | R44 | SMB2's tags state fixed sizes, offset and length pairs, padding and chained contexts, under the rules Marco's amendment sets | MUST | RFC 22 as Marco's amendment states it; MS-SMB2 2.2 | T6.5 |
 | R45 | XDR's tags state discriminated unions, optional data, and strings and arrays with their bounds, under the rules Marco's amendment sets | MUST | RFC 21 as Marco's amendment states it; RFC 4506 §4.11, §4.13, §4.15, §4.19 | T6.6 |
 | R46 | Each generated codec has one golden-vector suite, and one fuzz target that checks its decoder against a second decoder written independently of the generator, not only a round trip | test row | §5.4 | T6.5, T6.6 |
+| R48 | The generator refuses a variable-length field that carries no maximum, and a tag it cannot honour fails the build, never a request | MUST | §5.1, §5.2 as #4562 states them | T6.5, T6.6 |
+| R49 | The codec is not reflective: the request path pays for no type lookup | MUST NOT | §5.1 as #4562 states it | T6.5, T6.6 |
+| R50 | Generated code is checked in, and a check fails a change whose generated code differs from a fresh run of the generator | MUST | §5.1 as #4562 states it | T6.5, T6.6 |
+| R51 | The import test holds a generated `codec_gen.go` to `wire`'s imports and its protocol's `wire`, and refuses an `ops` file other than `codec_gen.go` that imports `wire`'s runtime or `encoding/binary` | MUST | §7.1 as #4562 states it | T6.5 |
 | R47 | A row is one `core.Row` line, which wraps `core.Bind` and takes the decoder and encoder from its structs' generated codec | MUST | §4.7 (`Bind`), as Marco's amendment states it | T6.3b, T6.4b |
 
 **Routing and versions**
@@ -597,13 +602,13 @@ framer's.
 
 ### T6.5 `smb/wire`: SMB2's generated codec
 
-**Subtask T6.5 estimate: 5 man-days.**
+**Subtask T6.5 estimate: 5.5 man-days.**
 
 - **Track:** C. **Owner:** Lucian, epic 6's. **Depends on:** T6.1, and Marco's amendment,
   whose tag rules it follows.
 - **Needs E5:** nothing: `core.Row`, which takes this codec, is E5's, beside its T5.1a (§9).
   **Needs E4:** nothing.
-- **Covers:** R5, R6, R8, R9 and R16 (the codec's half), R43, R44, R46.
+- **Covers:** R5, R6, R8, R9 and R16 (the codec's half), R43, R44, R46, R48, R49, R50, R51.
 - **Deliverables:** in `internal/adapter/smb/wire`, the codec's runtime, pure (R5, R6): the
   reads and writes the generated code calls for SMB2's fixed sizes, offset and length pairs,
   padding and chained contexts, each offset, length and count checked against the bytes left
@@ -611,8 +616,14 @@ framer's.
   `go generate` runs over a package's tagged structs, which writes each struct's decoder and
   encoder as Go source, so what runs is ordinary pure code; if E2's import test's `wire` rule
   reaches the generator, which does file I/O, the generator sits where the rule allows and the
-  subtask says so. The tag rules, what the generator emits for `core.Row` and where the
-  generated code is written follow Marco's amendment, none settled here. One golden-vector
+  subtask says so. The tag rules and what the generator emits for `core.Row` follow Marco's
+  amendment, #4562, none settled here; its methods go in one `codec_gen.go` per package, beside
+  their types (#4562's §5.1), so for T6.3b's and T6.4b's rows, declared in test files, the
+  generator writes a `_test.go`. The generator refuses a variable-length field with no maximum
+  and fails the build on a tag it cannot honour, and the codec is not reflective (R48, R49);
+  generated code is checked in, with a check that fails a change whose code differs from a
+  fresh run (R50); E2's import test gains #4562's rules for `codec_gen.go` and `ops` files, for
+  both protocols (R51). One golden-vector
   suite over structs declared in the test files that use every tag rule, each vector written
   from MS-SMB2 2.2's layouts or cut from the Samba capture (D3); one fuzz target, `FuzzCodec`,
   that decodes each input with the generated decoder and with a second decoder written by hand
@@ -632,6 +643,11 @@ framer's.
   - `FuzzCodec`, seeded with the golden vectors and the capture's frames, finds the two
     decoders agreeing on every input it is given.
   - The runtime and the generated code pass E2's import test's `wire` rule.
+  - A struct with a variable-length field that has no maximum, and one with a tag the
+    generator cannot honour, each fail generation with the field named; a checked-in
+    `codec_gen.go` edited by hand fails the freshness check; an `ops` file declared in the
+    import test's fixtures that imports `encoding/binary` is refused, and so is a `codec_gen.go`
+    importing past `wire`'s imports.
 - **Tests:** in `codec_test.go` and `codec_fuzz_test.go`, at the generated code's API. No
   test double: the second decoder is an independent reading of the specification's layout,
   not a stand-in. The vectors (catch an offset counted from the wrong origin, padding left out
@@ -641,10 +657,12 @@ framer's.
   share, which a round trip alone cannot fail). The claimed lengths (catch a buffer allocated
   before its length is checked).
 - **Rules:** rule 2: `FuzzCodec`; rule 8: no vector produced by the codec under test; rule 10:
-  the runtime and the generator land with their suite and fuzz target. The 5 man-days: about
+  the runtime and the generator land with their suite and fuzz target. The 5.5 man-days: about
   1.5 for the generator and its tags, 1 for the runtime's offsets, padding and contexts, 1 for
-  the suite, and 1.5 for the second decoder and the fuzz target. The least certain subtask of
-  the epic, with T6.6: its tag rules wait on Marco's amendment.
+  the suite, 1.5 for the second decoder and the fuzz target, and 0.5 for the freshness check
+  and the import test's rules, which T6.6 then reuses; past the plan's ideal 5, so the import
+  test's rules split out if it grows. The least certain subtask of the epic, with T6.6: its
+  tag rules wait on Marco's amendment.
 
 ### T6.3b `smb.New`: the framer, the protocol, the table and the server
 
@@ -866,14 +884,15 @@ framer's.
 - **Track:** C. **Owner:** Lucian, epic 6's. **Depends on:** T6.2, and Marco's amendment,
   whose tag rules it follows.
 - **Needs E5:** nothing, as T6.5. **Needs E4:** nothing.
-- **Covers:** R5, R6, R8, R9 and R16 (the codec's half), R43, R45, R46.
+- **Covers:** R5, R6, R8, R9 and R16 (the codec's half), R43, R45, R46, R48, R49, R50.
 - **Deliverables:** in `internal/adapter/nfs/wire`, the codec's runtime, pure (R5, R6): XDR's
   discriminated unions, optional data, and strings and variable-length arrays with their
   bounds (RFC 4506 §4.15, §4.19, §4.11, §4.13), each padded to 4 (RFC 4506 §4.10, §4.11), each
   count and length checked against its bound and the bytes left before anything is read or
   allocated (R8). The generator, as T6.5's, for XDR's tags, with the same rule for where it
-  sits. The tag rules, what the generator emits for `core.Row` and where the generated code is
-  written follow Marco's amendment, none settled here. One golden-vector suite over structs
+  sits. The tag rules and what the generator emits for `core.Row` follow Marco's amendment,
+  #4562, none settled here; the generated code goes where T6.5's does, R48 to R50 holding as
+  there. One golden-vector suite over structs
   declared in the test files that use every tag rule, each vector written from RFC 4506's
   encodings or cut from the knfsd capture (D3); `FuzzCodec`, against a second decoder written
   by hand in the test file from RFC 4506, as T6.5's. The RPC header codec stays hand-written
@@ -890,6 +909,8 @@ framer's.
   - `FuzzCodec`, seeded with the golden vectors and the capture's calls, finds the two
     decoders agreeing on every input it is given.
   - The runtime and the generated code pass E2's import test's `wire` rule.
+  - A string or array with no maximum fails generation with the field named, and a checked-in
+    `codec_gen.go` edited by hand fails the freshness check.
 - **Tests:** in `codec_test.go` and `codec_fuzz_test.go`, as T6.5's. The vectors (catch an arm
   chosen by the wrong discriminant, an absent optional read as present, and padding skipped).
   The refusals (catch a bound checked after the allocation, R8, and a count trusted past the
@@ -950,7 +971,10 @@ framer's.
     the capture's reply (frame 6), byte for byte.
   - Of two connections accepted together, one that sends a `NULL` and one that sends nothing,
     the second is closed at the handshake deadline, and the first then still answers a second
-    `NULL`.
+    `NULL`. `handshake_timeout` is set short and the test waits for it in real time: `core`'s
+    clock is set only from `core`'s own test files (the epic 5 document's D24), out of this
+    package's reach, so a bounded wait is the assertion and a comment says so (`CLAUDE.md`,
+    Writing tests).
   - After `Reconfigure` to 4.0 to 4.2, a connection accepted after it is refused MOUNT
     `PROG_UNAVAIL` and NFS v3 `PROG_MISMATCH` 4 and 4, while one accepted before keeps 3 and 4;
     an adapter built at 4.0 to 4.2 and reconfigured to 3 to 4.2 answers a new connection's
@@ -1022,13 +1046,13 @@ which lands first.
 | When | Subtasks | Man-days |
 | --- | --- | --- |
 | from S2, needing neither E4 nor E5 | T6.1, T6.2 | 5.5 |
-| once Marco's amendment lands, after T6.1 and T6.2 in turn, needing neither E4 nor E5 | T6.5, T6.6 | 9 |
+| once Marco's amendment lands, after T6.1 and T6.2 in turn, needing neither E4 nor E5 | T6.5, T6.6 | 9.5 |
 | once E5's T5.1a has landed `HeaderCodec.Args` and `ReplyLen`, needing nothing of E4 | T6.3a, T6.4a | 4 |
 | from S3, which needs E4's `Server`, `Start`, `Stop`, accept, reader (with `Framer.BodyLen`'s `last` and `MaxRecord`), writer and `Addrs`, and E5's T5.1c after its T5.1a and T5.9; T6.4b also needs E4's `Conn.Settings`, `Conn.Established` and `Reconfigure` | T6.3b, T6.4b | 4.25 |
 
 T6.3a and T6.4a need only E5, its T5.1a; T6.3b and T6.4b need E4 and E5 through S3, E5's
 `core.Row`, and T6.5 or T6.6. **The critical path** to the RFC 22 plan's SMB scaffold point is
-now T6.1, T6.5 and T6.3b, 9.5 man-days, T6.3a's 1.25 running beside T6.5; T6.5 also gates the
+now T6.1, T6.5 and T6.3b, 10 man-days, T6.3a's 1.25 running beside T6.5; T6.5 also gates the
 RFC 22 plan's first command. T6.2, T6.6 and T6.4a fill the waits. The least certain subtasks
 are T6.5 and T6.6, whose tag rules wait on Marco's amendment, then T6.2, T6.4a and T6.4b
 (§9).
@@ -1039,7 +1063,7 @@ are T6.5 and T6.6, whose tag rules wait on Marco's amendment, then T6.2, T6.4a a
 | --- | --- | --- | --- | --- |
 | 1 | T6.1, T6.3a | 3.75 | the RFC 20 amendment (#4478); E5's T5.1a for T6.3a | SMB's bytes and header stage: what the RFC 22 plan's harness and stages build on |
 | 2 | T6.2, T6.4a | 5.75 | the RFC 20 amendment (#4478); E5's T5.1a for T6.4a | the RPC layer: the call header, the credential, the router; open beside PR 1 |
-| 3 | T6.5 | 5 | PR 1's T6.1, Marco's amendment | SMB2's generated codec, before the RFC 22 plan's first command |
+| 3 | T6.5 | 5.5 | PR 1's T6.1, Marco's amendment | SMB2's generated codec, before the RFC 22 plan's first command |
 | 4 | T6.6 | 4 | PR 2's T6.2, Marco's amendment | XDR's generated codec, before the RFC 21 plan's first procedure; open beside PR 3 |
 | 5 | T6.3b | 2 | PR 1, PR 3, S3, E5's `core.Row` | SMB's framer and server end to end, the RFC 22 plan's SMB scaffold point |
 | 6 | T6.4b | 2.25 | PR 2, PR 4, S3, E5's `core.Row` | NFS's framer and server end to end; open beside PR 5 |
@@ -1077,8 +1101,23 @@ and #4540 and stay as they are.
   bytes. Each protocol has one shared codec, generated from struct tags, so there is no
   `wire/<cmd>.go`; `core.Row` wraps `core.Bind` and takes `dec` and `enc` from the generated
   codec. The generators land in this epic, T6.5 and T6.6, before the RFC 21 and RFC 22 plans
-  write their first command. RFC 20, 21 and 22 follow in Marco's RFC 20/21/22 amendment PR
-  against develop (to be linked).
+  write their first command. RFC 20, 21 and 22 follow in Marco's amendment, #4562, merged on
+  develop.
+- **Open for the architect: where #4562 and this epic differ.** Until he answers, this epic
+  follows #4478 and his review of it ("the header codecs can stay hand-written"):
+  - #4562's RFC 20 §5.1 puts the generator's "output for shared types, the RPC and SMB2
+    headers, credentials, XDR's primitives" in `wire/`, and its note decides T6.2's XDR
+    "generated". If that holds, T6.1's and T6.2's header and `AUTH_SYS` codecs are generated,
+    and T6.5 and T6.6 come before T6.1 and T6.2, not after.
+  - Its RFC 20 §4.7 decodes a `COMPOUND`'s tag, minor version and count through the generated
+    codec, while #4478 has NFS's header codec read the tag and minor version with the RPC
+    header (R14), which `Encode` answers `NFS4ERR_MINOR_VERS_MISMATCH` with. One of the two
+    reads it.
+  - Its RFC 21 §11 has the pipeline build `Identity` and `r.Call` once per member and widens
+    `Needs` to a resolved credential over RPC, where §9's proposed ledger row leaves `Identity`
+    to the RFC 21 and RFC 22 plans and T6.4a routes at `NeedsNothing`.
+  Its §5.4 now gives the framers and headers fuzz targets of their own beside the codec's, so
+  `FuzzRecord` and `FuzzCodec` stand together.
 - **Findings for other documents, not edited here.**
   - The epic 5 document's T5.1a: `core.Row` lands with E5's `Bind`, beside T5.1a. It wraps
     `core.Bind` and takes `dec` and `enc` from a struct's generated codec; T6.3b's and T6.4b's
@@ -1102,11 +1141,15 @@ and #4540 and stay as they are.
     amendment, #4478, brings both to RFC 20 §4.7.
 - **Edits this document proposes to the program's implementation plan**, for the coordinator's
   pull request, not made here:
-  - epic 6's description, its row in §2 and its estimate line: 8 subtasks, 22.75 man-days,
+  - epic 6's description, its row in §2 and its estimate line: 8 subtasks, 23.25 man-days,
     T6.5 and T6.6 the generated codecs, T6.3 and T6.4 split by letter, the `NEGOTIATE` item of T6.3 moved to the RFC 22 plan's
     subtask T3.2, and "MS-SMB2's examples" and "RFC 5531's encodings" replaced by the field
     tables and the reference captures (D3);
   - rule 4's header codecs at 0 allocations: a chained SMB member past the first at one (D1);
+  - a new ledger row: #4562's "a command added to a table without a vector in its protocol's
+    suite fails the suite", a check that needs the tables, which `wire` cannot import, so it
+    lives in `internal/adapter/smb` and `internal/adapter/nfs`; owners the RFC 22 and RFC 21
+    plans, trigger their first command, since over this epic's empty tables it could not fail;
   - the ledger's row "operation codecs, their golden vectors": the codec every operation is
     written against, its golden-vector suite and its fuzz target are this epic's T6.5 and T6.6;
     each operation's tagged structs, handler and row, and the `READ`, `WRITE`, `GETATTR` and
@@ -1133,8 +1176,8 @@ and #4540 and stay as they are.
 `Validate`, and about 1
   saved, by gating each protocol once at its header stage, cutting vectors from the reference
   captures already in `test/pcap-corpus`, and fuzzing each `wire` package with one target. The
-  architect's decision on how a command is written adds T6.5 and T6.6, 9 man-days, for a total
-  of 22.75.
+  architect's decision on how a command is written adds T6.5 and T6.6, 9.5 man-days, for a
+  total of 23.25.
 - **Least certain.** T6.5 and T6.6, whose tag rules follow an amendment not yet written and
   whose second decoders are new work; then T6.2, T6.4a and T6.4b, for the edge cases of the RPC header, a record in
   several fragments and the order of the router's refusals; T6.3b and T6.4b, whose loopback
