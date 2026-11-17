@@ -30,3 +30,8 @@ func drop(ctx context.Context, s store) error {
 	var rec *entity.AuditRecord
 	return s.Write(ctx, entity.WriteMeta{Audit: rec}, func(entity.ControlPlaneTx) error { return nil })
 }
+
+// reserve is the sign-in count, which writes no audit record.
+func reserve(ctx context.Context, s store) error {
+	return s.Write(ctx, entity.WriteMeta{}, func(entity.ControlPlaneTx) error { return nil })
+}

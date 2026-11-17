@@ -763,12 +763,19 @@ func TestAPIWritesOnlyThroughWrite(t *testing.T) {
 // refusal's audit.
 var writeAdapters = []string{"write", "(*Server).refuse"}
 
+// signInCount is auth's sign-in count, the one function of auth's whose
+// Write sets no audit record: the attempt is audited when it settles, in the
+// settle's own Write, and an attempt that never settles was never checked,
+// so it is counted and not recorded.
+const signInCount = "reserve"
+
 // writeCalls type-checks the package in dir, as import path path, and
 // returns each way it breaks the write rule: a use of the store's Write
 // other than as the function of a call, a method value that could be handed
 // anywhere; a call of it from a function writeAdapters does not name, unless
 // the package is auth, whose every function may call it; and a call whose
-// WriteMeta is not a literal setting Audit to &x or to a call's result. A
+// WriteMeta is not a literal setting Audit to &x or to a call's result, but
+// auth's signInCount. A
 // Write is any method so named whose second parameter is entity.WriteMeta.
 func writeCalls(dir, path string) ([]string, error) {
 	_, files, info, err := typeCheck(dir, path)
@@ -820,7 +827,7 @@ func writeCalls(dir, path string) ([]string, error) {
 		case !isAuth && !slices.Contains(writeAdapters, name):
 			bad = append(bad, name+" calls Write outside the write adapter")
 		}
-		if len(c.Args) < 2 || !setsAudit(c.Args[1]) {
+		if exempt := isAuth && name == signInCount; !exempt && (len(c.Args) < 2 || !setsAudit(c.Args[1])) {
 			bad = append(bad, name+" calls Write with no audit record")
 		}
 	}
@@ -859,7 +866,7 @@ func setsAudit(e ast.Expr) bool {
 // value; planted packages calling Write from a resource handler or from a
 // method named like the adapter, taking it as a method value, and calling it
 // from auth with no audit record, a nil one or a variable that may be nil
-// are caught.
+// are caught; auth's sign-in count, writing none, is not.
 func TestWritesThroughTheAdapter(t *testing.T) {
 	var dirs []string
 	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
