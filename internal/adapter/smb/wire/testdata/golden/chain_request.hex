@@ -31,8 +31,8 @@ fe 53 4d 42                 # [80,84)  ProtocolId 0xFE 'S' 'M' 'B'
 00 00 00 00                 # [100,104) NextCommand 0: the last member
 0b 00 00 00 00 00 00 00     # [104,112) MessageId 11
 00 00 00 00                 # [112,116) Reserved
-ff ff ff ff                 # [116,120) TreeId: the CREATE's
-ff ff ff ff ff ff ff ff     # [120,128) SessionId: the CREATE's
+ff ff ff ff                 # [116,120) TreeId 0xFFFFFFFF: a related member's placeholder (MS-SMB2 3.2.4.1.4)
+ff ff ff ff ff ff ff ff     # [120,128) SessionId 0xFFFFFFFFFFFFFFFF: a related member's placeholder (MS-SMB2 3.2.4.1.4)
 00 00 00 00 00 00 00 00     # [128,144) Signature: not signed
 00 00 00 00 00 00 00 00
 18 00 00 00                 # [144,148) the CLOSE's arguments

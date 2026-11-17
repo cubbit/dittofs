@@ -9,7 +9,7 @@ fe 53 4d 42                 # [0,4)   ProtocolId 0xFE 'S' 'M' 'B'
 01 00                       # [6,8)   CreditCharge 1
 00 00 00 00                 # [8,12)  ChannelSequence 0, Reserved 0
 0c 00                       # [12,14) Command 0x000C, CANCEL
-00 00                       # [14,16) CreditRequest 0
+01 00                       # [14,16) CreditRequest 1
 0a 00 00 00                 # [16,20) Flags 0x0000000A, ASYNC_COMMAND and SIGNED
 00 00 00 00                 # [20,24) NextCommand 0: no member follows
 31 32 33 34 35 36 37 38     # [24,32) MessageId 0x3837363534333231
