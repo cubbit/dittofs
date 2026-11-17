@@ -140,7 +140,8 @@ func tagged[S, T any](rp reply, err error) (Tagged[S, T], error) {
 		return Tagged[S, T]{}, err
 	}
 	t := Tagged[S, T]{ETag: rp.header.Get("ETag")}
-	return t, json.Unmarshal(rp.body, &t.Resource)
+	err = json.Unmarshal(rp.body, &t.Resource)
+	return t, err
 }
 
 // get reads the body at path as a T.
@@ -150,7 +151,8 @@ func get[T any](ctx context.Context, c *Client, path string) (T, error) {
 	if err != nil {
 		return v, err
 	}
-	return v, json.Unmarshal(rp.body, &v)
+	err = json.Unmarshal(rp.body, &v)
+	return v, err
 }
 
 // list yields every item of the listing at path the filter admits,
@@ -160,11 +162,11 @@ func get[T any](ctx context.Context, c *Client, path string) (T, error) {
 func list[T any](ctx context.Context, c *Client, path string, filter url.Values) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var zero T
-		seen := map[string]bool{q.Get("after"): true}
 		q := url.Values{}
 		for k, v := range filter {
 			q[k] = v
 		}
+		seen := map[string]bool{q.Get("after"): true}
 		for {
 			page, err := get[apiv1.Page[T]](ctx, c, path+"?"+q.Encode())
 			if err != nil {
@@ -179,11 +181,11 @@ func list[T any](ctx context.Context, c *Client, path string, filter url.Values)
 			if page.Next == "" {
 				return
 			}
-			seen[page.Next] = true
 			if seen[page.Next] {
 				yield(zero, fmt.Errorf("apiclient: the listing at %s repeated its cursor %q", path, page.Next))
 				return
 			}
+			seen[page.Next] = true
 			q.Set("after", page.Next)
 		}
 	}
