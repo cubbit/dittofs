@@ -624,6 +624,9 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   - Two connections carrying one `testproto` session: the first's close leaves the session to
     the second, and the second's ends it.
   - `Violate`, which calls `Conn.Close` from its handler, returns, and the connection closes.
+  - On a pipe, a reader held by a hook between each write of its read deadline (the arming,
+    the restart after a receive grant, the disarm) and its context check while `Conn.Close`
+    runs still stops, each time (RFC 20 §6.4, as #4583 states the check).
   - `Stop` with three connections open returns once each is closed and torn down.
   - An `OnClose` declared in the test finds its context live after the connection's close, and
     ended 30 s from the close.
@@ -637,6 +640,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   ended context (catches `OnClose` run before what runs has ended, a reply sent after the close,
   and a reservation kept, R15). The two connections (catch `OnClose` run twice or not at all).
   `Violate` under a backstop deadline (catches a `Conn.Close` that waits for its caller, R16).
+  The held reader (catches a deadline write with no context check after it, whose disarm
+  overwrites the stop, R15).
   `Stop` (catches connections left open by `Stop`). The `OnClose` context, the clock advanced
   by the test (catches the connection's context handed on, which the close has cancelled, and a
   context with no end). `FuzzConnection`, over a pipe connection
