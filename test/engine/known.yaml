@@ -206,14 +206,14 @@
   reason: 'the journal''s timers on the fixture clock (engine/conformance/rfc8_a_test.go:554, engine/enginetest/fixture.go:838): a journal refused as unsuitable at start leaves its share unattached and named, and the retried open attaches it once the check clears. Init and Open work and the journal reports its version counter, so the row gets past its first write; it stops at the retry''s timer check (not within 10s) because the real journal''s own timers sit on the fixture clock, so the pending-timer count reads 6, not 1; the unit tests prove the engine side over the fake journal.'
   issue: '#4206'
 - test: TestTheFilesystemStartsAfterTheEngine/journal/restart
-  message: 'fixture: engine start: engine: start: open the journal'
+  message: 'fixture: start: engine: engine: start: open the journal'
   status: fail
   fix: planned
   category: feature
   reason: 'the journal''s Open recovering segments: a restart starts the filesystem only after the engine''s start has finished. Init and Open work; the composition starts; the row stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built). The same order is checked green over the fake journal, in the test''s other half.'
   issue: '#4206'
 - test: TestTheFilesystemStartsAfterTheEngine/journal/crash
-  message: 'fixture: engine start: engine: start: open the journal'
+  message: 'fixture: start: engine: engine: start: open the journal'
   status: fail
   fix: planned
   category: feature
