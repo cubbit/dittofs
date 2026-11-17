@@ -2096,7 +2096,8 @@ type OpTable struct {
 	Protocol string
 	// ReadOp reads the operation code at the head of a compound member's bytes,
 	// and how many bytes it took: NFSv4's argop. Set on a table that is a
-	// compound row's Members; nil elsewhere.
+	// compound row's Members; nil elsewhere. Its error is the codec's own,
+	// which the pipeline wraps (ErrDecode).
 	ReadOp func(b []byte) (op uint32, n int, err error)
 	// EncodeResult writes, before a member's own Encode appends its body, what
 	// the protocol puts ahead of each result: NFSv4's resop and status. Set
@@ -2620,7 +2621,8 @@ var (
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
 	// ErrDecode refuses a header, an operation's or a member's arguments, or a
 	// step of the record's walk that does not decode (§4.1). The pipeline
-	// wraps every error a header's or a row's Decode returns, once, as
+	// wraps every error a header's or a row's Decode, or a members' table's
+	// ReadOp, returns, once, as
 	// fmt.Errorf("%w: %v", ErrDecode, err): the cause's text survives, the
 	// cause itself is not matched. A codec returns its own error and never
 	// ErrDecode. Unwrap's refusals are the stage's to name, since they answer
