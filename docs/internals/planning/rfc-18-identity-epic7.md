@@ -362,7 +362,7 @@ epic's test holds it.
   schedule" and reports a rotation that cannot start by it failed, and no RFC says who starts the
   scheduled operation. Settled in review: identity, from a loop started by `Start` on the injected
   clock, creates a `rotate-machine-password` operation when the installation is joined, no join or
-  rotation runs (a tracked read of the running index) and the last rotation is 7 days old. The loop
+  rotation runs (a tracked read of the running index) and `LastRotation.Confirmed` is 7 days old, or, after a failed rotation, one hour has passed since that failure. The schedule reads `Confirmed`, not `At`, which a failure moves: read from `At`, a few failures in a row could outlast the domain's maximum machine-password age (RFC 18 §3.5). The loop
   writes the operation, through `ControlPlaneTx.PutOperation` (RFC 23's plan's epic 2's T2.7), and
   its `AuditRecord` in one control-plane `Write`, both with the zero `Principal` as the schedule's:
   the operation's `Account` and the record's `Actor`, `ActorName` and `Credential` empty (RFC 23
@@ -891,8 +891,8 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   and T2.7 (`PutOperation` on `ControlPlaneTx`).
 - **Covers:** R48.
 - **Deliverables:** D11's loop: started by `Start`, stopped by `Stop`, on
-  the injected clock, creating a `rotate-machine-password` operation once the last rotation is 7
-  days old, the installation joined and no join or rotation running: the loop writes the operation
+  the injected clock, creating a `rotate-machine-password` operation once `LastRotation.Confirmed`
+  is 7 days old, or one hour after a failed rotation, the installation joined and no join or rotation running: the loop writes the operation
   and its `AuditRecord`, the zero `Principal` as the operation's `Account` and the record's `Actor`,
   in one control-plane `Write`, with the read of the running index tracked, and nothing else;
   D11's `ponytail:`. Consumed by E8's T8.6.
@@ -903,7 +903,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   read with `AuditFilter{Actor: &entity.Principal{}}` as #4494's `testAuditReads` reads the
   schedule's (catches an unasked rotation missing from the audit); a rotation already running,
   none (catches a second rotation, R48); not
-  joined, none. Doubles: the clock (kind 1).
+  joined, none; rotations failing in a row on the clock, each due again one hour after the last,
+  with the time since `Confirmed` kept under the domain's maximum machine-password age (catches a
+  schedule read from `At`, R48). Doubles: the clock (kind 1).
 - **Rules:** rule 9 (D11's `ponytail:`).
 
 ### T7.14 The online join
@@ -1103,17 +1105,6 @@ and the open epic documents of RFC 18's epics 1 to 6 and 8 (#4315, #4316, #4318,
 D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRotation.Version` and
 `LastRotation.Confirmed`, and identity's own loop starts the scheduled rotation, with the zero
 `Account` and an audit record naming the schedule.
-
-**Pending a decision** (the recommendation is not yet written in place):
-
-- **When a scheduled rotation is due after a failed one (D11, T7.13).** "7 days old" names no field,
-  and a failure moves `LastRotation.At` and leaves `LastRotation.Confirmed`. Read from `At`, a
-  failed rotation runs again only 7 days later, so a few failures in a row can outlast the domain's
-  maximum machine-password age that RFC 18 §3.5 keeps the schedule under; read from `Confirmed`,
-  the loop starts a rotation at every tick after a failure. Recommended: the schedule reads
-  `LastRotation.Confirmed`; a failed rotation is due again one hour after its failure; and a T7.13
-  row fails rotations in a row on the clock and checks that the time since `Confirmed` stays under
-  the domain's maximum machine-password age (RFC 18 §3.5).
 
 **Where the RFC 18 plan and this document differ:**
 
