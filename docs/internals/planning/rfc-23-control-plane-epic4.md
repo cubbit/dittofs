@@ -491,8 +491,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   (RFC 23 §5.2's rows, `public` among them) and the `404`/`403` choice; `routes.go`, the route table
   (D2) with `/api/version`; `handler.go`, the read, list, write and call adapters (D1), the
   must-change flag; `api_requests_total`, `api_request_seconds`, `api_unmapped_errors_total` and one
-  span per call; E3's import rule extended with `pkg/node/apiv1`, `pkg/metadata/entity` and
-  `internal/node/api/auth`. Consumed by every later subtask and by E5.
+  span per call; E3's import rule extended with `pkg/node/apiv1`, `pkg/metadata/entity`,
+  `pkg/vfs/vfserr` (the sign-in errors epic 5 maps) and `internal/node/api/auth`. Consumed by every later subtask and by E5.
 - **Acceptance criteria:**
   - With `Authenticate` nil, every `/api/v1` route answers `401`; `/api/version` and the health
     rows answer.
