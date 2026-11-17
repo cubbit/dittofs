@@ -41,6 +41,7 @@ type Conn struct {
 	established atomic.Bool
 	done        chan struct{} // closed once the teardown ended
 	kept        atomic.Int32  // T4.7a's idle pass-over: one per Keep, released one apiece
+	closedAt    atomic.Int64  // the close's time, in Unix nanoseconds; 0 before one
 }
 
 // Send queues a message on the writer: a callback, or an interim reply. core
@@ -90,6 +91,7 @@ func (c *Conn) Close(err error) {
 		return
 	}
 	c.err.Store(&err)
+	c.closedAt.CompareAndSwap(0, c.sh.clock.Now().UnixNano())
 	c.cancel()
 	_ = c.nc.SetReadDeadline(time.Now().Add(-time.Second))
 	if c.p != nil {
@@ -124,11 +126,12 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservati
 	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, out: c.w.out, close: c.Close})
 	c.rd = newReader(nc, f, s.recv, c.remote, common.ReadTimeout)
 	registered := s.register(c)
-	go c.readLoop()
 	if !registered {
-		// The server is not serving: the connection closes before it reads.
+		// The server is not serving: the connection closes before its reader
+		// is started, so not one record is cut.
 		c.Close(errStop)
 	}
+	go c.readLoop()
 	return c
 }
 
@@ -139,16 +142,20 @@ func (c *Conn) teardown() {
 	defer close(c.done)
 	// OnClose's context is the server's clock's, not the connection's: the
 	// close has cancelled that one (RFC 20 section 4.7).
-	// The wait has the connecton's own grace; OnClose then gets a fresh one
-	// that the close does not end, so it runs once nothing runs and with a live
-	// context (RFC 20 section 4.7).
-	wait, cancelWait := withClockDeadline(context.Background(), c.sh.clock, c.sh.clock.Now().Add(onCloseGrace))
+	// The wait and OnClose share one grace, counted from the close: the teardown
+	// ends at most that long after it, so OnClose runs once nothing runs, and its
+	// context ends at the grace's end (RFC 20 section 4.7).
+	at := c.sh.clock.Now().Add(onCloseGrace)
+	if closedAt := c.closedAt.Load(); closedAt != 0 {
+		at = time.Unix(0, closedAt).Add(onCloseGrace)
+	}
+	wait, cancelWait := withClockDeadline(context.Background(), c.sh.clock, at)
 	defer cancelWait()
 	if err := c.p.wait(wait); err != nil {
 		c.sh.log.ErrorContext(wait, "connection teardown: requests still running", "err", err)
 	}
 	if c.p.st.OnClose != nil {
-		ctx, cancel := withClockDeadline(context.Background(), c.sh.clock, c.sh.clock.Now().Add(onCloseGrace))
+		ctx, cancel := withClockDeadline(context.Background(), c.sh.clock, at)
 		defer cancel()
 		c.p.st.OnClose(ctx)
 	}

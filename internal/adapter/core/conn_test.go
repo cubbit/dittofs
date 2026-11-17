@@ -3,6 +3,7 @@ package core_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"testing"
@@ -85,15 +86,29 @@ func TestStagesWithoutErrorsClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	core.Serving(srv) // the refusal is the stages', not the server's state
 	conn, peer := net.Pipe()
 	defer func() { _ = peer.Close() }()
-	core.ServeConn(srv, conn, &l)
-	// A read of the pipe's far end returns at once: the connection closed
-	// before reading anything.
-	_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	served := core.ServeConn(srv, conn, &l)
+	// The connection closes before it reads: the teardown ends, and the peer's
+	// read sees the end of the pipe, not its own deadline.
+	select {
+	case <-core.ConnDone(served):
+	case <-time.After(2 * time.Second):
+		t.Fatal("a connection without an error table was not closed")
+	}
 	buf := make([]byte, 1)
-	if _, err := peer.Read(buf); err == nil {
-		t.Fatal("a connection without an error table read a record")
+	if _, err := peer.Read(buf); !errors.Is(err, io.EOF) {
+		t.Fatalf("the peer's read returns %v, want the connection's end", err)
+	}
+}
+
+// A server built without budgets is refused where it is built, not at the
+// first teardown.
+func TestNewServerRefusesNoBudgets(t *testing.T) {
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{}).Bare()}
+	if _, err := core.NewServer(adapter.Deps{}, settings.DefaultNFS(), l); err == nil {
+		t.Error("a server without budgets is built")
 	}
 }
 
