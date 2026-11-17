@@ -91,13 +91,23 @@ func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
 			t.Errorf("%s of a marked user's: %v, want absent", name, err)
 		}
 	}
-	var inTx bool
-	must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) (err error) {
-		_, inTx, err = tx.User(u.Principal)
-		return err
+	must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		for name, err := range map[string]error{
+			"User":     absent(tx.User(u.Principal)),
+			"Session":  absent(tx.Session(sess.ID)),
+			"APIToken": absent(tx.APIToken(tok.ID)),
+		} {
+			if err != nil {
+				t.Errorf("%s of a marked user's, read in a write: %v, want absent", name, err)
+			}
+		}
+		return nil
 	}))
-	if inTx {
-		t.Errorf("a marked user read in a write: found, want not")
+	if got := all(t, cp.Sessions(ctx, u.Principal)); len(got) != 0 {
+		t.Errorf("a marked user's sessions: got %v, want none", got)
+	}
+	if got := all(t, cp.APITokens(ctx, u.Principal)); len(got) != 0 {
+		t.Errorf("a marked user's tokens: got %v, want none", got)
 	}
 	for name, err := range map[string]error{
 		"User":          errOf(p.User(ctx, u.Principal)),
