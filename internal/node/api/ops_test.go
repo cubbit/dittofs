@@ -220,21 +220,34 @@ func TestScheduledOperationReadsAsTheSchedule(t *testing.T) {
 }
 
 // An operation whose recorded error does not read as a problem reads, alone
-// and in a listing, with a 500 problem saying so, and fails neither read.
-func TestUnreadableOperationError(t *testing.T) {
-	s := serve(t, as(entity.RoleViewer, false))
-	op := newOp(apiv1.OpShareDelete, entity.Principal{})
-	op.State, op.Error = entity.OpFailed, []byte("not json")
-	op = s.putOp(t, op, 0)
-	want := apiv1.Problem{Status: http.StatusInternalServerError, Title: "Internal Server Error", Detail: "the operation's error is unreadable"}
-	r := s.do(t, http.MethodGet, opPath(op.ID), "")
-	if got := decodeOp(t, "GET operation", r.body).Error; r.status != http.StatusOK || !jsonEqual(got, &want) {
-		t.Errorf("GET %s: answered %d %s, want 200 with error %+v", opPath(op.ID), r.status, r.body, want)
-	}
-	r = s.do(t, http.MethodGet, "/api/v1/operations", "")
-	var page apiv1.Page[apiv1.Operation]
-	if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK || len(page.Items) != 1 || !jsonEqual(page.Items[0].Error, &want) {
-		t.Errorf("GET /api/v1/operations: answered %d %s, want 200 one operation with error %+v", r.status, r.body, want)
+// and in a listing, with a 500 problem saying so; one whose result is not
+// JSON reads with no result; and neither fails a read.
+func TestUnreadableOperation(t *testing.T) {
+	unreadable := &apiv1.Problem{Status: http.StatusInternalServerError, Title: "Internal Server Error", Detail: "the operation's error is unreadable"}
+	for _, tc := range []struct {
+		name          string
+		result, error []byte
+		want          *apiv1.Problem
+	}{
+		{"error not json", nil, []byte("not json"), unreadable},
+		{"error null", nil, []byte("null"), unreadable},
+		{"result not json", []byte("not json"), nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := serve(t, as(entity.RoleViewer, false))
+			op := newOp(apiv1.OpShareDelete, entity.Principal{})
+			op.State, op.Result, op.Error = entity.OpFailed, tc.result, tc.error
+			op = s.putOp(t, op, 0)
+			r := s.do(t, http.MethodGet, opPath(op.ID), "")
+			if got := decodeOp(t, "GET operation", r.body); r.status != http.StatusOK || !jsonEqual(got.Error, tc.want) || got.Result != nil {
+				t.Errorf("GET %s: answered %d %s, want 200 with error %+v and no result", opPath(op.ID), r.status, r.body, tc.want)
+			}
+			r = s.do(t, http.MethodGet, "/api/v1/operations", "")
+			var page apiv1.Page[apiv1.Operation]
+			if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK || len(page.Items) != 1 || !jsonEqual(page.Items[0].Error, tc.want) {
+				t.Errorf("GET /api/v1/operations: answered %d %s, want 200 one operation with error %+v", r.status, r.body, tc.want)
+			}
+		})
 	}
 }
 
