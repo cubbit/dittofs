@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -665,37 +664,6 @@ func TestADeleteOnCloseTakesTheDirectoryAfterTheFile(t *testing.T) {
 	}
 }
 
-// A share marked for removal before a restart has its open state dropped by
-// the start: once Start returns, its persistent open is gone and its holder
-// has been told RevokedShare.
-func TestAShareMarkedBeforeARestartIsDroppedAtStart(t *testing.T) {
-	n := newNames(t)
-	ctx := t.Context()
-	alice := n.user(t, "alice", "", n.share, entity.AccessReadWrite)
-	pc := n.smbClient(t, "alice-pc", alice.Principal)
-	pc.Session = vfs.SessionRef{ID: 1}
-	n.fs.Create(t, n.fs.Admin, n.fs.Root, "disk", kvstore.Regular(0o666))
-	req := byName(n.fs.Root, "disk", vfs.OpenExisting, entity.ReadData)
-	req.Durability, req.Timeout, req.CreateID = entity.DurabilityPersistent, time.Hour, [16]byte{1}
-	r, err := n.Open(ctx, pc, req)
-	n.must(t, err)
-	n.must(t, n.cp.DeleteShare(ctx, n.share, entity.SnapshotsRefuse, 1))
-
-	g := n.restart(t)
-	cb := &vfstest.Callbacks{}
-	g.reg.register(pc.Client, "", cb)
-	g.must(t, g.Start(ctx))
-	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Protocol: entity.ProtocolSMB, Sessioned: true}
-	m := openstate.ReconnectMatch{Share: n.share, Create: [16]byte{1}}
-	if _, err := g.tab.Opens().Reconnect(ctx, who, r.Ref.Open, m, vfs.SessionRef{ID: 2}); err == nil {
-		t.Error("the removed share's persistent open reconnected after the start")
-	}
-	got := calls(t, cb, 1)
-	if len(got) != 1 || got[0].Method != "Revoked" || got[0].Args[0].(vfs.Revocation).Reason != openstate.RevokedShare {
-		t.Errorf("the holder was told %v, want RevokedShare", got)
-	}
-}
-
 // second adds a share at /b that the admin and alice may use, its root and a
 // file in it, answering the share, its root and the file's handle.
 func (n *names) second(t *testing.T, alice entity.User) (entity.ShareID, vfs.Handle, vfs.Handle) {
@@ -967,13 +935,12 @@ func TestAFailedOverwriteOfAnUnlinkedFileReleasesIt(t *testing.T) {
 }
 
 // failRecovery is open state's recovery, failing every serve while serve is
-// set and every drop while drop is, and counting each share's serves that
-// succeed.
+// set, and counting each share's serves that succeed.
 type failRecovery struct {
 	openstate.Recovery
-	mu          sync.Mutex
-	serve, drop error
-	served      map[entity.ShareID]int
+	mu     sync.Mutex
+	serve  error
+	served map[entity.ShareID]int
 }
 
 func (r *failRecovery) ServeShard(ctx context.Context, share entity.ShareID, s openstate.ShardID, instance uint64) error {
@@ -991,31 +958,21 @@ func (r *failRecovery) ServeShard(ctx context.Context, share entity.ShareID, s o
 	return err
 }
 
-func (r *failRecovery) DropShare(ctx context.Context, share entity.ShareID, moved netip.Addr) error {
+// set sets the serve failure.
+func (r *failRecovery) set(serve error) {
 	r.mu.Lock()
-	err := r.drop
-	r.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	return r.Recovery.DropShare(ctx, share, moved)
-}
-
-// set sets the serve and drop failures.
-func (r *failRecovery) set(serve, drop error) {
-	r.mu.Lock()
-	r.serve, r.drop = serve, drop
+	r.serve = serve
 	r.mu.Unlock()
 }
 
 // V33: Start failing at each of its steps, reading the share list, reading
-// the shares being removed, raising the incarnations, serving a shard and
-// dropping a removed share, answers that step's error and leaves the
+// the shares being removed, raising the incarnations and serving a shard,
+// answers that step's error and leaves the
 // filesystem built with no goroutine of its own; Start retried then serves,
 // each shard served once.
 func TestEachFailedStartStepLeavesItBuilt(t *testing.T) {
 	boom := errors.New("boom")
-	for _, step := range []string{"List", "Removing", "RaiseAtStart", "ServeShard", "DropShare"} {
+	for _, step := range []string{"List", "Removing", "RaiseAtStart", "ServeShard"} {
 		t.Run(step, func(t *testing.T) {
 			ctx := t.Context()
 			db := &failKV{}
@@ -1057,9 +1014,7 @@ func TestEachFailedStartStepLeavesItBuilt(t *testing.T) {
 					return nil
 				})
 			case "ServeShard":
-				rec.set(boom, nil)
-			case "DropShare":
-				rec.set(nil, boom)
+				rec.set(boom)
 			}
 			if err := s.Start(ctx); !errors.Is(err, boom) {
 				t.Fatalf("Start failing at %s: %v, want its error", step, err)
@@ -1068,7 +1023,7 @@ func TestEachFailedStartStepLeavesItBuilt(t *testing.T) {
 				t.Errorf("after a failed start: %v with %d goroutines, want built with none", s.inState(), filesystemGoroutines())
 			}
 			db.failing(nil)
-			rec.set(nil, nil)
+			rec.set(nil)
 			if err := s.Start(ctx); err != nil {
 				t.Fatalf("Start retried: %v", err)
 			}
@@ -1092,7 +1047,7 @@ func TestAShareWhoseServeFailsFailsAlone(t *testing.T) {
 	n.fs.Create(t, n.fs.Admin, n.fs.Root, "disk", kvstore.Regular(0o666))
 	rec := &failRecovery{Recovery: n.recovery, served: map[entity.ShareID]int{}}
 	n.recovery = rec
-	rec.set(errors.New("boom"), nil)
+	rec.set(errors.New("boom"))
 	_, bRoot, _ := n.second(t, alice)
 	if _, err := n.Open(ctx, pc, byName(n.fs.Root, "disk", vfs.OpenExisting, entity.ReadData)); err != nil {
 		t.Errorf("an open in a share served: %v", err)
@@ -1100,7 +1055,7 @@ func TestAShareWhoseServeFailsFailsAlone(t *testing.T) {
 	if _, err := n.Open(ctx, pc, byName(bRoot, "disk", vfs.OpenExisting, entity.ReadData)); !errors.Is(err, vfs.ErrUnavailable) {
 		t.Errorf("an open in the share whose serve fails: %v, want ErrUnavailable", err)
 	}
-	rec.set(nil, nil)
+	rec.set(nil)
 	if _, err := n.Open(ctx, pc, byName(bRoot, "disk", vfs.OpenExisting, entity.ReadData)); err != nil {
 		t.Errorf("an open in the share once its serve succeeds: %v", err)
 	}

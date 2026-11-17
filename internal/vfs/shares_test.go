@@ -1078,45 +1078,6 @@ func TestAListingFailsWithTheStore(t *testing.T) {
 	}
 }
 
-// A share marked for removal while the filesystem serves is joined and its
-// open state dropped, once a call sees the share list move, without anyone
-// calling JoinShare.
-func TestARemovedSharesOpenStateIsDropped(t *testing.T) {
-	s := newShares(t, nil, nil)
-	ctx := t.Context()
-	admin := proven(s.fs.Admin.Principal, inLab)
-	other := s.addShare(t, "other", "/other")
-	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: other, Principal: s.fs.Admin.Principal, Access: entity.AccessAdmin}, 0)))
-	_, file := s.fs.Create(t, s.fs.Admin, s.fs.Root, "f", kvstore.Regular(0o644))
-	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolNFSv4, Name: []byte("c"), Boot: [8]byte{1}}}
-	p, err := s.tab.Clients().Propose(ctx, c, inLab)
-	s.must(t, err)
-	id, _, err := s.tab.Clients().Connect(ctx, c, &p)
-	s.must(t, err)
-	who := openstate.Caller{Client: id, Principal: s.fs.Admin.Principal, Protocol: entity.ProtocolNFSv4}
-	_, dir, _ := s.fs.Root.Parse()
-	res, err := s.tab.Opens().Open(ctx, who, openstate.FileKey{Share: s.share, Shard: openstate.ShardID(file.Shard), ID: file.ID},
-		openstate.OpenRequest{Via: dir, Name: []byte("f"), Access: entity.ReadData})
-	s.must(t, err)
-	ref := []openstate.StateRef{res.Open.Ref}
-	_, err = s.StatFS(ctx, admin, s.fs.Root)
-	s.must(t, err)
-	if errs := s.tab.Recovery().TestState(ctx, who, ref); errs[0] != nil {
-		t.Fatalf("the open before the removal: %v", errs[0])
-	}
-	s.must(t, s.cp.DeleteShare(ctx, s.share, entity.SnapshotsRefuse, 1))
-	otherRoot := entity.NewHandle(other, mustShare(t, s, other).Root)
-	_, err = s.StatFS(ctx, admin, otherRoot)
-	s.must(t, err)
-	deadline := time.Now().Add(5 * time.Second)
-	for errs := s.tab.Recovery().TestState(ctx, who, ref); !errors.Is(errs[0], openstate.ErrBadState); errs = s.tab.Recovery().TestState(ctx, who, ref) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the removed share's open after a call saw the share list move: %v", errs[0])
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 func mustShare(t *testing.T, s *shares, id entity.ShareID) entity.Share {
 	t.Helper()
 	sh, _, err := s.fs.Store.ShareIndex().Share(t.Context(), id)

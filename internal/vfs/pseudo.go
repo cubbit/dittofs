@@ -16,18 +16,16 @@ import (
 // one decides nothing a rebuild would decide otherwise. One call rebuilds
 // at a time, and a call that waited for it answers its tree when the list
 // has not moved again; a call whose context ends while it waits answers the
-// context's error. A rebuild first serves the shard of each share the
-// list holds and open state does not serve yet, so a share added while
-// serving holds open state without a restart, and starts the removal of each
-// share the last tree held and the list no longer does, since only a
-// removal's mark takes a share off the list.
+// context's error. A rebuild first serves the shard of each share the list
+// holds, the node has bound, and open state does not serve yet, so a share
+// added while serving holds open state without a restart.
 //
 // ponytail: a share added while serving is served by the first call to see
-// the share list move, standing in for the node's own share arrival, as
-// removeShare stands in for its removal driver; a serve that fails is
-// logged, and the tree published all the same, so only that share's calls
-// fail: admission serves it again for each (servedShard). Replace it with
-// the node serving the shards it is primary of, once shards have primaries.
+// the share list move, standing in for the node's own share arrival; a serve
+// that fails is logged, and the tree published all the same, so only that
+// share's calls fail: admission serves it again for each (servedShard).
+// Replace it with the node serving the shards it is primary of, once shards
+// have primaries.
 //
 // decision: the first call that needs the pseudo-filesystem builds it, not
 // Start, as RFC 17 §2.5 has it: a share list moved since Start is rebuilt
@@ -65,13 +63,11 @@ func (fs *Filesystem) tree(ctx context.Context) (*pseudofs.Tree, error) {
 		return nil, storeErr(err)
 	}
 	placed := make([]pseudofs.Share, len(shares))
-	listed := make(map[[16]byte]bool, len(shares))
 	var added []entity.Share
 	fs.mu.Lock()
 	for i, sh := range shares {
 		placed[i] = pseudofs.Share{ID: sh.ID, Path: sh.Path}
-		listed[sh.ID] = true
-		if !fs.served[sh.ID] {
+		if !fs.served[sh.ID] && (fs.running == nil || fs.running(sh.ID)) {
 			added = append(added, sh)
 		}
 	}
@@ -83,13 +79,6 @@ func (fs *Filesystem) tree(ctx context.Context) (*pseudofs.Tree, error) {
 	}
 	t := pseudofs.Build(in.ID, list.Version, placed)
 	fs.pseudo.Store(t)
-	if old != nil {
-		for _, id := range old.Root().Shares {
-			if !listed[id] {
-				fs.removeShare(id)
-			}
-		}
-	}
 	return t, nil
 }
 
