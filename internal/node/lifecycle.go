@@ -53,6 +53,7 @@ type lifecycle struct {
 	api, met net.Addr
 	failed   atomic.Pointer[error] // the error a failed Start stopped at, kept for start_failed
 	ready    atomic.Value          // the readiness word
+	served   atomic.Bool           // readiness has turned ready once: it never clears
 	stepped  func(step string)
 }
 
@@ -140,12 +141,9 @@ func (n *Node) Start(ctx context.Context) error {
 		// outlives every part, and reads stopped parts only through their
 		// statistics, so a call taken while the node stops commits a
 		// record this node applies at its next start, and a write's wait
-		// for this node to apply it runs out its bound. That argument does
-		// not cover a failed start: the listeners stay open for health,
-		// readiness reads not ready, which the call gate lets through, and a
-		// write commits a record nothing applies until a restart. No caller
-		// authenticates yet, so none can; refuse every call until the node
-		// first reaches ready before sign-in lands. Make the calls'
+		// for this node to apply it runs out its bound. A failed start
+		// leaves the listeners open for health, so the API refuses every call
+		// but health's on a node never ready since it started (Served). Make the calls'
 		// acceptance a part started here, apart from the health listener,
 		// once a call reaches a part the stop closes first.
 		{stepReconcile, n.startReconcile},
@@ -160,6 +158,7 @@ func (n *Node) Start(ctx context.Context) error {
 			l.stepped(s.name)
 		}
 	}
+	l.served.Store(true)
 	l.ready.Store(readyReady)
 	return nil
 }

@@ -33,6 +33,9 @@ type Deps struct {
 	// Ready is the node's readiness word: ready, starting, draining or
 	// not_ready.
 	Ready func() string
+	// Served reports whether the node has been ready since it started; nil
+	// answers that it has.
+	Served func() bool
 	// Live reports whether the node's watchdog holds.
 	Live func() bool
 	// Addr is the API listener's address, MetricsAddr the metrics

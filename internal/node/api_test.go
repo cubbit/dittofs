@@ -179,4 +179,19 @@ func TestTheAPIHealthNamesAFailedStart(t *testing.T) {
 	if got.Ready != "not_ready" || !named {
 		t.Errorf("GET /api/v1/health after the failed Start: %+v, want not_ready and start_failed naming step apply", got)
 	}
+	// A node never ready serves no call but the rows that answer before
+	// ready, though its store is open: a write would commit a record nothing
+	// applies.
+	resp, err := http.Get("http://" + addr + "/api/v1/nodes")
+	if err != nil {
+		t.Fatalf("GET /api/v1/nodes after the failed Start: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var p apiv1.Problem
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		t.Fatalf("GET /api/v1/nodes after the failed Start: decode the answer: %v", err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable || p.Code != apiv1.CodeStarting {
+		t.Errorf("GET /api/v1/nodes after the failed Start: %d %q, want %d %q", resp.StatusCode, p.Code, http.StatusServiceUnavailable, apiv1.CodeStarting)
+	}
 }

@@ -160,6 +160,7 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 	// tracer as they land.
 	n.api = api.New(api.Deps{
 		Ready:        n.life.readiness,
+		Served:       n.life.served.Load,
 		Live:         n.watchdog.Live,
 		Addr:         cfg.Bootstrap.APIAddr,
 		MetricsAddr:  cfg.Bootstrap.MetricsAddr,
