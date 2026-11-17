@@ -59,6 +59,7 @@ var components = []struct {
 }{
 	{entity.ErrGenerationMismatch, answerOf{http.StatusPreconditionFailed, "generation_mismatch", false}},
 	{entity.ErrIdempotencyMismatch, answerOf{http.StatusUnprocessableEntity, "idempotency_mismatch", false}},
+	{entity.ErrOperationRunning, answerOf{http.StatusConflict, apiv1.CodeOperationRunning, true}},
 	{entity.ErrInvalidName, answerOf{http.StatusBadRequest, "invalid_name", false}},
 	{entity.ErrNameTooLong, answerOf{http.StatusBadRequest, "name_too_long", false}},
 	{entity.ErrSyntax, answerOf{http.StatusBadRequest, "syntax", false}},
@@ -69,7 +70,7 @@ var components = []struct {
 	{entity.ErrCrossProject, answerOf{http.StatusConflict, "cross_project", false}},
 	{entity.ErrInconsistent, answerOf{http.StatusInternalServerError, "inconsistent", false}},
 	{entity.ErrMoving, answerOf{http.StatusConflict, "moving", true}},
-	{entity.ErrRehoming, answerOf{http.StatusConflict, "rehoming", false}},
+	{entity.ErrRehoming, answerOf{http.StatusConflict, "rehoming", true}},
 	// The installation's state refuses a new share, for good.
 	{entity.ErrTagsExhausted, answerOf{http.StatusConflict, "tags_exhausted", false}},
 
@@ -138,12 +139,14 @@ var components = []struct {
 	{storeCode(merrs.ErrCrossShare), answerOf{http.StatusBadRequest, "cross_share", false}},
 
 	{kv.ErrNotFound, answerOf{http.StatusNotFound, "not_found", false}},
-	// A transaction that kept conflicting, or a store that closed, is the
-	// store unable to answer now.
-	{kv.ErrConflict, answerOf{http.StatusServiceUnavailable, apiv1.CodeUnavailable, true}},
+	// A transaction that kept conflicting until its request's context ended
+	// is the store's conflict, answered as its code is above: the same
+	// request, once the contention passes, may succeed.
+	{kv.ErrConflict, answerOf{http.StatusConflict, "conflict", true}},
 	{kv.ErrTooLarge, answerOf{http.StatusBadRequest, "too_large", false}},
 	{kv.ErrUncommittedVersion, answerOf{http.StatusInternalServerError, "uncommitted_version", false}},
-	{kv.ErrClosed, answerOf{http.StatusServiceUnavailable, apiv1.CodeUnavailable, true}},
+	// A closed store is a node stopping, which a restarted one answers.
+	{kv.ErrClosed, answerOf{http.StatusServiceUnavailable, "closed", true}},
 
 	// A request whose client went away, or whose deadline passed, is
 	// refused as the node being unable to answer it now.
@@ -161,8 +164,8 @@ type refusal struct {
 func (r *refusal) Error() string { return string(r.code) + ": " + r.detail }
 
 // problemOf is err's problem body, without its request ID, and whether the
-// table names err: an error it does not name is a 500, which the caller
-// counts and logs. Only a refusal's or a refused field's text reaches the
+// table names err: an error it does not name is a 500 with no code, since no
+// code of the closed set names it, which the caller counts and logs. Only a refusal's or a refused field's text reaches the
 // detail; any other error's text stays in the log, since it may carry what
 // no caller should read.
 func problemOf(err error) (apiv1.Problem, bool) {

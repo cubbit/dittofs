@@ -224,6 +224,8 @@ func TestRoles(t *testing.T) {
 		{entity.RoleViewer, http.MethodPost, thing + ":poke", http.StatusForbidden},
 		{entity.RoleViewer, http.MethodGet, "/api/v1/accounts/" + api.TestID, http.StatusNotFound},
 		{entity.RoleOperator, http.MethodPost, thing + ":poke", http.StatusOK},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/netgroups/" + api.TestID, http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/pairs/" + api.TestID, http.StatusForbidden},
 	} {
 		role.Store(uint32(tc.role))
 		r := s.do(t, tc.method, tc.path, "")
@@ -374,6 +376,9 @@ func TestUnnamedErrorIsLoggedNotAnswered(t *testing.T) {
 	p := r.problem(t)
 	if r.status != http.StatusInternalServerError || p.Detail != "internal error" || bytes.Contains(r.body, []byte(api.UnnamedError)) {
 		t.Errorf("GET /api/v1/fail: answered %d %s, want 500 internal error without the error's text", r.status, r.body)
+	}
+	if bytes.Contains(r.body, []byte(`"code"`)) {
+		t.Errorf("GET /api/v1/fail: answered %s, want no code, since none of the closed set names the error", r.body)
 	}
 	var line struct {
 		RequestID string `json:"request_id"`
