@@ -521,11 +521,13 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   	Setting(scope SettingScope, key string) (Setting, bool, error)
   	User(p Principal) (User, bool, error)
   	Share(id ShareID) (Share, bool, error)
+  	ExportPolicy(share ShareID) (ExportPolicy, error) // tracked: the default policy, version 0, when none is stored; E4's export-policy routes
   	EnabledAdmins() (int, error) // D18
 	Installation() (Installation, error) // tracked: NTLMOff for RFC 23 §4.1's rule
 	SetNTLMOff(gen uint64) error          // NTLMOff.Off, and clears Deleted on a turn-off, by E4's settings route alone
 	SetNTHashDeleted(op OperationID) error // sets NTLMOff.Deleted, by identity.nt-hash-delete's StepResult.End alone
 	SetMachineJoin(j MachineJoin) error // Join, by the RFC 18 plan's epic 7's join-domain and rotate-machine-password steps alone, in their Writes and StepResult.End
+	SetMachinePassword(ref SecretRef) error // MachinePassword, by the same steps, in the Write that seals the version
 	Now() time.Time // kv.Txn's Now: on feat/storage-v2 taken when the transaction starts, fixed for its life; a retry gets a new one
   	DeleteUser(p Principal, expect uint64) error // the mark
   	DeleteGroup(p Principal, expect uint64) error
@@ -585,6 +587,11 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
     `Write` began, and a conflict's retry returns a later one (R52);
   - golden vectors, refusal cases and `FuzzControlPlaneValues` entries for the audit codec and the
     `AU`, `AUX` keys (R12, R13);
+  - an `ExportPolicy` read for a share with none stored answering the default policy at version 0,
+    and a `Write` reading it while a concurrent `PutExportPolicy`, held open by a `FaultKV` delay,
+    commits first: the `Write` retries and reads the new policy (catches an untracked read, R18);
+  - `SetMachinePassword`'s reference and `SetMachineJoin`'s join, each written after the other,
+    both read back through `Installation()` (catches one set clobbering the other);
   - beside `SetMachineJoin`'s case, a `Join` with two `Names`, a `LastRotation.Version` and a
     `LastRotation.Confirmed` written through it and read back through `Installation()` equal field
     for field, and the installation codec's golden vector updated (catches a field the codec drops,

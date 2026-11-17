@@ -413,7 +413,7 @@ cmd/dfs/commands/
   clock.go, start.go                       T3.9  systemClock, RFC 23 §2's run, the v1 refusal
 pkg/block/journal/internal/format/
   names.go                                 T3.10 node-id and node-id.tmp known
-Dockerfile                                 T3.9  HEALTHCHECK on http://localhost:8080/health/ready
+Dockerfile                                 T3.9  HEALTHCHECK on http://localhost:8080/health/live
 ```
 
 ## 6. Subtasks
@@ -563,7 +563,12 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   the way D18 shares their construction, so the fixture runs the order the node ships. A second
   `Start` refused. RFC 23 §2.1's `decision:` at `Start`. T3.2's engine
   adapter registered in `Config.Metrics` and the evaluator if this subtask's readiness reads the
-  evaluator; otherwise T3.7 registers it (R38).
+  evaluator; otherwise T3.7 registers it (R38). A follow-up pull request of this subtask, once
+  E4's `Deps` fields exist (its T4.2–T4.8), fills the rest of `api.Deps` in `node.New`: `Store`
+  and `Nodes` from the store's views, `Clock` from `cfg.Clock`, `Node` the node's ID, `Progress`
+  from the runner's table (D7), `Health` the node's evaluator (`n.health`), `Applied` the node's
+  (`n.applied`, D16), and `TLS` and `Socket` from the bootstrap, whose key names are the RFC 13
+  plan's (RFC 23's plan's §6.1). Until it lands, the node's API answers as with those fields nil.
 - **Acceptance criteria:**
   - The order of starts and stops is RFC 23 §2.2's for every component built.
   - A failure injected at each step a fault can reach leaves nothing open but the health listener
@@ -580,7 +585,11 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   an operation written through the store before start, driven after step 7 (R17); a stop step held past its bound by a `FaultKV` delay on a commit the runner's
   step makes, the clock advanced 30 s, the store still open and the error naming the step (R23);
   a second `Start` refused (R9); no adapter enabled, ready after step 8 (R19); every test watched
-  (R6). R9's exports are E1's pin.
+  (R6). R9's exports are E1's pin. The follow-up's test, in `node_test` over `nodetest` with a
+  constructor from `export_test.go` that sets an `Authenticate` returning a fixed caller (an input,
+  not a double): `GET /api/v1/health` through the node's own API answering the conditions the
+  node's evaluator holds, and a share's `GET` answering from the store (catches a field left nil,
+  which answers `503`).
 
 ### T3.5 Reconcile
 
@@ -596,8 +605,8 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   change through the binding; `apply`, the slot X3 fills, called only when the settings or
   principals generation moved, returning refusals with a retry flag, and D10's one backoff; the
   refused set with each record's generation and error; its watchdog `Loop`, each store call under
-  a 20 s deadline on `cfg.Clock`; the wake channel, the positions' signal and `Applied`, handed to
-  `api.Deps` in `New`, with D16's `export_test.go` pause and positions. Consumed by T3.6, T3.7,
+  a 20 s deadline on `cfg.Clock`; the wake channel, the positions' signal and `Applied`, which T3.3's follow-up hands to
+  `api.Deps`, with D16's `export_test.go` pause and positions. Consumed by T3.6, T3.7,
   E4's write adapter, the RFC 18 plan's epic 8's T8.3 and, at S2, RFC 20's plan's epic 7.
 - **Acceptance criteria:**
   - A share written through the store is bound within one turn; quiesced, its binding refuses new
@@ -639,7 +648,12 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   record has not reached (D8); E2's `ErrRemovalOrder`, exported, retried; its `Progress` read from
   the removal's own records (D7); start
   step 6 calling it for every removal a crash left at step 3; `internal/vfs`'s own join and its
-  `ponytail:` deleted in the same pull request (D15). Consumed by E4's share delete route.
+  `ponytail:` deleted in the same pull request (D15). An unbind clears the share from reconcile's
+  bound set and from its refusals, so neither the running set nor the node status keeps a share
+  that is gone. The filesystem's admission takes reconcile's running set, so a share reconcile
+  refused is not served, where the filesystem would otherwise serve every listed share itself,
+  refused or not; the `ponytail:` at `reconcileShares` saying so is removed here. Consumed by E4's share
+  delete route.
 - **Acceptance criteria:**
   - A share with files and an open file, deleted while serving, ends with no binding, no open
     state and no row but what RFC 16 §2.3.2's step 6 keeps; its operation `succeeded`.
@@ -650,7 +664,11 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   mark and step 3, the shard's `rm` row recorded before `/health/ready` answers `ready` (R16); a
   restart during step 4's batches, the operation resumed and its progress read from the removal's
   record (R40); a shard's removal recorded before `ContinueRemoval` answers 3 refused with
-  `ErrRemovalOrder`, the operation still `running` (D8).
+  `ErrRemovalOrder`, the operation still `running` (D8); a refused share deleted, its refusal gone
+  from the node status after the unbind, and a bound one deleted, gone from the running set (catches
+  a set the unbind leaves stale); a share whose namespace names no remote store, refused by
+  reconcile, its first call refused by admission (catches admission serving the share list in
+  place of the running set).
 
 ### T3.7 Node status and its series
 
@@ -661,7 +679,10 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Deliverables:** the status built from the reconciled positions, the refused and
   restart-pending sets, the operation kinds the runner has no step for (T3.4's `refusedKinds()`,
   each among the refused records naming its kind, the `ponytail:` at it removed) and the
-  evaluator's conditions, compared by its canonical bytes and written
+  evaluator's conditions, each stored by name, scope, ID and subject without its cause or detail,
+  whose text changes while the condition stands (`journal_full`'s figures) and would rewrite the
+  status every turn; `GET /api/v1/health` serves them whole, live from the evaluator (E4's T4.6);
+  the status compared by its canonical bytes and written
   through `Nodes.PutNodeStatus` at most once a second and only on a change, the last written moved
   only after a commit; RFC 23 §2.4's `ponytail:`; the `node_` series,
   `config_generation_lag_seconds{kind}` from the time a counter was first read above the reconciled
@@ -709,7 +730,8 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   at the immediate `Stop` deleted; the bound addresses logged; an architecture rule that
   `cmd/dfs/commands/start.go` imports, of this module, only `internal/node`, `pkg/bootstrap`,
   `badgerkv` and `pkg/metrics` (R2); the `Dockerfile`'s `HEALTHCHECK` on
-  `http://localhost:8080/health/ready` (RFC 23's plan's D13). Consumed by E5's `dfs init` beside it
+  `http://localhost:8080/health/live`, and `docker-compose.yml`'s on
+  `http://localhost:8080/health/ready`; E4's T4.3 moves both to `https`. Consumed by E5's `dfs init` beside it
   and E7's server fixture.
 - **Acceptance criteria:**
   - Over an initialised installation, `dfs start` answers `ready` and exits zero on `SIGTERM`.
@@ -794,6 +816,10 @@ writes the adapter rows.
 A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
+
+- The container's probe is `/health/live` and docker-compose's `/health/ready` (T3.9, E4's T4.3).
+  RFC 23's plan's D13 and the RFC 13 plan's epic 6 name `/health/ready` for the image's
+  `HEALTHCHECK`; both should be brought in line through a pull request against each plan.
 
 - What E3 reads from E2 is named by E2's final document (#4326): `Nodes.Counters`,
   `RegisterNode` and `PutNodeStatus`, `Operations`, `Sweep` with `More`, and the continuations

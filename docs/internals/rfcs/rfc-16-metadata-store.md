@@ -1438,6 +1438,7 @@ type ControlPlaneTx interface {
 	Setting(scope SettingScope, key string) (Setting, bool, error) // tracked read
 	User(p Principal) (User, bool, error)                           // tracked read
 	Share(id ShareID) (Share, bool, error)                          // tracked read
+	ExportPolicy(share ShareID) (ExportPolicy, error)               // tracked read: the default policy, at version 0, when none is stored
 	SignInFailures(key SignInKey) (SignInFailures, bool, error)     // tracked read: a sign-in's count reads its counts and raises them in one transaction, the source's and, for a name that resolves to an account, the pair's and the account's; one answered 429 raises none and commits nothing; a caller on the local socket has neither a source's nor a pair's (RFC 23 §5.3)
 	EnabledAdmins() (int, error)                                    // tracked: counts UA‖ under GuardRange, so two writes that each remove one of the last enabled admins conflict (RFC 23 §5.2)
 	Namespace(id NamespaceID) (Namespace, bool, error)              // tracked read: a share's create or rebind refuses a namespace that names no remote store (RFC 8 §2.1)
@@ -1463,6 +1464,7 @@ type ControlPlaneTx interface {
 	PutSetting(s Setting, expect uint64) error
 	PutOperation(op Operation, expect uint64) error
 	PutSignInFailures(key SignInKey, f SignInFailures) error // its count's row, and its XP row where the count expires
+	SetMachinePassword(ref SecretRef) error                  // Installation.MachinePassword (§2.3), in the Write that seals its version
 	// and the view's other writes, the same way
 }
 ```

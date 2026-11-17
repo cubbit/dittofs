@@ -423,7 +423,9 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   refresh through `Session(id)`, reading the account through `APISignIn.Account` as `Authenticate`
   does, an invalidated token revoking the session with `DeleteSession`; `Account`'s `ErrUnavailable`
   answered `503`, not `401`, in refresh and in `Authenticate` alike (R47);
-  sign-out; the two series; RFC 23 §4.5's `decision:` at the credential routes; `pkg/identity`
+  sign-out; the two series; RFC 23 §4.5's `decision:` at the credential routes; the client's
+  `SignIn`, `Refresh` and `ChangePassword` sent through E4's client core with refresh off (E4's
+  T4.8), so a `401` from any of them is returned as it is, never refreshed and replayed; `pkg/identity`
   added to E4's import allow-list for `auth` (T5.1); `bench_test.go`,
   checked sign-ins from many sources beside metadata commits, in the manual tier. Consumed by T5.6
   and E6's `login`.
@@ -598,6 +600,13 @@ a caller of each role.
 A suggestion only: one pull request per subtask works as well. PR 4 and PR 5 can be open at once.
 
 ## 9. Open points
+
+- **For the user: should T5.2 count a name that resolves to no account on a pseudo-account?** R25
+  counts such a name against its source only, so an unknown name never reaches the account's bound
+  of 100 checked attempts that a known one does, and the difference in waits can tell a caller
+  which names exist. The alternative keys a count on an HMAC of the name under an installation
+  secret, one pseudo-account per unknown name, so both kinds meet the same waits, at the cost of a
+  count row per name tried. R25 and R27 stay as they are until the user answers.
 
 - **E3's runner (D9):** the rotation step returns its `next` unchanged while it waits; it needs E3's
   runner to commit nothing for such a turn and to call the step again at its next turn. E3's T3.4
