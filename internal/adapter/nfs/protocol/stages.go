@@ -151,8 +151,9 @@ func (s *stage) Args(rec *resources.Buf, h core.Header) []byte {
 
 // ReplyLen is the most Encode writes for h: the reply header with an empty
 // AUTH_NONE verifier and a mismatch's two versions, and for a COMPOUND its
-// status, its tag as it came and its results count besides (RFC 20 section
-// 4.7).
+// status, its tag as it came and its results count besides, with the one
+// result's head a reply that fails before or at a member writes beside the
+// members' bounds (RFC 20 section 4.7).
 func (s *stage) ReplyLen(h core.Header) int {
 	n := 32
 	hd, ok := h.(header)
@@ -160,8 +161,13 @@ func (s *stage) ReplyLen(h core.Header) int {
 		return n
 	}
 	tag := len(hd.call().Tag())
-	return 24 + 4 + 4 + tag + pad(tag) + 4
+	return 24 + 4 + 4 + tag + pad(tag) + 4 + resultHead
 }
+
+// resultHead is a member's result head, an operation code and a status: the
+// bytes a member whose reply fails before or at it writes beside the
+// members' bounds (RFC 20 section 4.7).
+const resultHead = 8
 
 // pad is XDR's padding of n bytes to four.
 func pad(n int) int { return (4 - n%4) % 4 }

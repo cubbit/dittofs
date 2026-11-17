@@ -552,12 +552,15 @@ func TestReplyLenBoundsEncode(t *testing.T) {
 		name string
 		body []byte
 		st   []core.Status
+		// exact pins ReplyLen to the status-alone write plus a failed
+		// member's head (a compound's reservation).
+		exact bool
 	}{
 		{"a NULL", nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), []core.Status{
 			core.Status(wire.StatusProgram), statusProgUnavail, statusProgMismatch, statusRPCMismatch, statusAuthCred, statusAuthVerf,
 			core.Status(wire.StatusAccept | wire.AcceptGarbageArgs), core.Status(wire.StatusAccept | wire.AcceptSystemErr),
-		}},
-		{"a five-byte-tag COMPOUND", compoundCall(0, "abcde"), []core.Status{0, core.Status(10021)}},
+		}, false},
+		{"a five-byte-tag COMPOUND", compoundCall(0, "abcde"), []core.Status{0, core.Status(10021)}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h, err := decode(t, s, c.body)
@@ -565,6 +568,7 @@ func TestReplyLenBoundsEncode(t *testing.T) {
 				t.Fatal(err)
 			}
 			bound := s.ReplyLen(h)
+			var most int
 			for _, st := range c.st {
 				out := &resources.Buf{}
 				if err := s.Encode(h, st, out); err != nil {
@@ -573,6 +577,16 @@ func TestReplyLenBoundsEncode(t *testing.T) {
 				if len(out.B) > bound {
 					t.Errorf("status %#x writes %d bytes, past ReplyLen %d", uint32(st), len(out.B), bound)
 				}
+				most = max(most, len(out.B))
+			}
+			// The reservation is exact, not loose: the runner writes a
+			// failed member's own head, an operation code and a status,
+			// beside the members' bounds, so a compound's ReplyLen is the
+			// status-alone reply's bytes with that head besides (RFC 20
+			// section 4.7). The 8 is written here, not read back from the
+			// package, so the pin holds the two apart.
+			if c.exact && bound != most+8 {
+				t.Errorf("ReplyLen is %d, want the status-alone write's %d with a failed member's 8-byte head besides", bound, most)
 			}
 		})
 	}
