@@ -365,6 +365,12 @@ A record, its fragments together, is at most the transfer class's capacity, 1
 MiB and 4 KiB, in at most 64 fragments: a record mark that would take it past
 either closes the connection ([RFC 20 §5.2](rfc-20-adapters.md#5.2%20Decoding%20is%20bounded),
 [RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)).
+A reply record is held to the same cap, `Framer.MaxRecord`'s bytes. A single
+operation's reply is bounded by its class; a `COMPOUND` whose reply would pass
+the cap has its `READ`s shortened before its first operation runs, the last
+first, each answered as a short read (RFC 8881 §18.22), and is refused only
+where it would pass the cap with every `READ` shortened to no data
+([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
 
 > ponytail: 64 fragments let a record of the cap arrive in fragments of just
 > over 16 KiB (1028 KiB over 64) and more; common clients send one. Raise it
@@ -2548,7 +2554,8 @@ which RFC 20 §4.7's `NewErrorTable` demands of every table; `ErrTooLong` to
 `NewOpTable` demands of a table with a compound row, and to `NFS4ERR_RESOURCE`
 for NFSv4.0, which has no such status, in a row naming it that wins there; `ErrReplyTooBig`, a
 `COMPOUND` whose reply would hold more than a quarter of the reply pool, or
-pass the RPC record cap of §2.3
+that would pass the reply record cap of §2.3 with every `READ` shortened to no
+data
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)),
 to `NFS4ERR_REP_TOO_BIG` (RFC 8881 §15.1.3.6) in a row naming no version, which
 RFC 20 §4.7's `NewOpTable` demands of a table with a compound row, and to

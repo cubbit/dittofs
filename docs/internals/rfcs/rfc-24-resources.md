@@ -509,17 +509,18 @@ the reverse:
    checked before the next request is read
    ([RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own));
 3. **receive**, at frame, before the request's body is read (§3.2);
-4. **reply**, once the arguments are decoded and the reply's bound is known,
+4. the connection's one **status wait**, taken by a reply that carries a status
+   alone and holds no reply reservation, before it waits for its buffer (§3.3);
+5. **reply**, once the arguments are decoded and the reply's bound is known,
    before the service is called (§3.3);
-5. the **share cap**, at the service's admission (§4.2);
-6. **open state**, when the call creates state (§4.6);
-7. below the service: the journal's capacity and its index, then the syncer's
+6. the **share cap**, at the service's admission (§4.2);
+7. **open state**, when the call creates state (§4.6);
+8. below the service: the journal's capacity and its index, then the syncer's
    transfers, in the engine's own order.
 
 Waits are entered only at the connection's flow control (step 2), the receive
-pool, the reply pool, the engine's waits (step 7), and a connection's one
-status wait (§3.3), which a status holding no reply reservation takes before it
-waits on the reply pool. Every other pool refuses
+pool, the connection's status wait (step 4), the reply pool and the engine's
+waits (step 8). Every other pool refuses
 at once, so it adds no edge to a wait graph, and **MAY** be charged at any
 point: connection state at a session, the hold pool, the share cap and open
 state. A wait **MUST NOT** be entered while holding a reservation later in this
@@ -537,14 +538,17 @@ ends:
   call's deadline passes, and a reply that carries a status alone after at most
   30 s, closing its connection, since parked requests' reservations can leave
   no send to wait for (§3.3);
-- a connection's status wait once its holder's status has its buffer, or at
-  the holder's 30 s, which closes the connection; the holder waits only on the
-  reply pool, holding no reply reservation, those behind it hold no reply
-  reservation either, and the reply pool frees by sends and ended calls, which
-  wait on no place held behind it, so no cycle runs through it;
+- a connection's status wait once its holder's status has its buffer, and a
+  status waiting for it, as its holder, within one 30 s counted from when that
+  status started waiting, past which the connection closes (§3.3). A cycle can
+  run through it: a parked or held call that ends only on a record this
+  connection's reader has not read, a `CANCEL` or a lease-break
+  acknowledgement, while the reader waits for the status wait. The 30 s close
+  breaks it, so no such cycle holds;
 - the engine's waits at the call's deadline.
 
-So no wait is unbounded and none forms a cycle.
+So no wait is unbounded, and the one cycle a wait can close, through a
+connection's status wait, ends at its 30 s.
 
 ### 2.7 Wiring and lifecycle
 
@@ -752,9 +756,9 @@ A reply waits for its reservation in the same turns as receive (§4.1), and the
 wait ends at the call's deadline with `ErrDelay` naming `DelayResources`. A reply
 that carries a status alone and holds no reservation yet (a refusal before the
 reply was reserved, or that `ErrDelay`) may have passed its call's deadline: it
-waits for
-its buffer at most 30 s from when it starts waiting, and a status that gets none
-by then closes its connection, since it can go out no other way
+waits at most 30 s from when it starts waiting, for the connection's one status
+wait (below) and then for its buffer, and a status that has no buffer by then
+closes its connection, since it can go out no other way
 ([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)'s `reply_wait`). Such a wait
 keeps its request's record, and so its receive charge, until the status goes
 out, so the receive pool bounds how many wait at once (§6.1), however the
@@ -770,7 +774,18 @@ so those statuses stay within the connection's flow-control bound, plus the
 one status wait. A chain member refused while its chain holds no place,
 because it gave the place back or admitted no member before it, holds none,
 and waits for the status wait on its chain's goroutine; only the receive pool
-bounds those, as above. The status's buffer
+bounds those, as above, each for its 30 s.
+
+> decision: chains that hold no place are not capped per connection. Each
+> holds its record's receive charge for at most its 30 s, and one address
+> holds at most three quarters of the receive pool while another waits (§4.1).
+> The ceiling: one connection whose chains keep refusing members after giving
+> their place back can hold its address's three quarters for 30 s at a time.
+> Cap them at a quarter of the connection's flow-control bound, as §4.4 caps an
+> address's connections, once a connection is seen holding more than that in
+> such waits.
+
+The status's buffer
 is `HeaderCodec.ReplyLen(h)` bytes once a header has
 decoded, which counts what the status alone carries, an NFSv4 `COMPOUND`'s tag
 among it ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
