@@ -40,8 +40,12 @@ type Conn struct {
 	closed      atomic.Bool
 	established atomic.Bool
 	done        chan struct{} // closed once the teardown ended
-	kept        atomic.Int32  // T4.7a's idle pass-over: one per Keep, released one apiece
+	kept        atomic.Int32  // the idle pass-over's count, one per Keep, released one apiece
 	closedAt    atomic.Int64  // the close's time, in Unix nanoseconds; 0 before one
+
+	timersMu   sync.Mutex // guards the two deadlines below
+	handshakeT timer      // armed at accept for handshake_timeout, ended by Established
+	idleT      timer      // armed whenever nothing runs, resting under a Keep or a record
 }
 
 // Send queues a message on the writer: a callback, or an interim reply. core
@@ -54,16 +58,82 @@ func (c *Conn) Send(h Header, msg *resources.Buf, before uint64) error {
 }
 
 // Established ends the handshake deadline: SMB at its first authenticated
-// session, NFS at its first routed call. It is idempotent.
-func (c *Conn) Established() { c.established.Store(true) }
+// session, NFS at its first routed call. It is idempotent, and the first call
+// starts the idle deadline's watch (RFC 20 section 6.4).
+func (c *Conn) Established() {
+	if !c.established.CompareAndSwap(false, true) {
+		return
+	}
+	c.timersMu.Lock()
+	if c.handshakeT != nil {
+		c.handshakeT.Stop()
+		c.handshakeT = nil
+	}
+	c.timersMu.Unlock()
+	c.idle()
+}
 
 // Keep marks state the client relies on (an SMB session's durable open, an
 // NFSv4.1 back channel) so the idle timeout passes the connection over until
-// every release is called.
+// every release is called. A release is its own: calling it twice releases
+// nothing a second time, and the last one may start the idle deadline's
+// watch again.
 func (c *Conn) Keep() (release func()) {
 	c.kept.Add(1)
 	var once sync.Once
-	return func() { once.Do(func() { c.kept.Add(-1) }) }
+	return func() {
+		once.Do(func() {
+			if c.kept.Add(-1) == 0 {
+				c.idle()
+			}
+		})
+	}
+}
+
+// idle arms the idle deadline: the pipeline calls it at each moment nothing
+// runs any more, and so do Established and a Keep's last release. The
+// deadline runs on the server's clock from this call, so a connection whose
+// last reply went out is closed idle_timeout after it.
+func (c *Conn) idle() {
+	if c.closed.Load() {
+		return
+	}
+	c.timersMu.Lock()
+	defer c.timersMu.Unlock()
+	if c.idleT != nil {
+		c.idleT.Stop()
+		c.idleT = nil
+	}
+	// A zero idle_timeout disarms it, as it disarms read_timeout and
+	// write_timeout (RFC 13 Appendix B's zero value).
+	if d := c.snap.Common().IdleTimeout; d > 0 {
+		c.idleT = c.sh.clock.AfterFunc(d, c.idleExpired)
+	}
+}
+
+// idleExpired closes the connection at its idle deadline, once everything the
+// deadline waits on still rests: the connection is established, nothing runs,
+// no record is partly read and no Keep is held. A deadline that expired
+// while that no longer holds leaves the connection alone: the next moment
+// nothing runs arms it afresh.
+func (c *Conn) idleExpired() {
+	if !c.established.Load() || c.closed.Load() || c.kept.Load() != 0 || c.rd.holding() || !c.p.quiet() {
+		return
+	}
+	c.Close(errIdle)
+}
+
+// armHandshake arms the handshake deadline at accept, for the snapshot's
+// handshake_timeout (RFC 20 section 6.4).
+func (c *Conn) armHandshake() {
+	// A zero handshake_timeout disarms it, as it disarms read_timeout and
+	// write_timeout (RFC 13 Appendix B's zero value).
+	if d := c.snap.Common().HandshakeTimeout; d <= 0 {
+		return
+	}
+	c.timersMu.Lock()
+	defer c.timersMu.Unlock()
+	c.handshakeT = c.sh.clock.AfterFunc(c.snap.Common().HandshakeTimeout, func() { c.Close(errHandshake) })
 }
 
 // Settings is the settings snapshot this connection loaded at accept, the
@@ -102,6 +172,12 @@ func (c *Conn) Close(err error) {
 // errConnClosed is a close a protocol asked for and named no cause of.
 var errConnClosed = errors.New("core: the connection closed")
 
+// errHandshake is a connection closed at its handshake deadline.
+var errHandshake = errors.New("core: the handshake deadline passed")
+
+// errIdle is a connection closed at its idle deadline.
+var errIdle = errors.New("core: the idle deadline passed")
+
 // serveConn serves one accepted socket until it closes: the snapshot, the
 // protocol's stages, the writer, the pipeline and the reader, with the teardown
 // on the reader once its loop ends (RFC 20 section 3.2). charge is the
@@ -120,10 +196,11 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservati
 		close(c.done)
 		return c
 	}
+	c.armHandshake()
 	f := l.Protocol.Framer()
 	common := snap.Common()
 	c.w = newWriter(nc, f, common.WriteTimeout, c.Close)
-	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, out: c.w.out, close: c.Close})
+	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, out: c.w.out, close: c.Close, idle: c.idle})
 	c.rd = newReader(nc, f, s.recv, c.remote, common.ReadTimeout)
 	registered := s.register(c)
 	if !registered {
@@ -140,6 +217,16 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservati
 // (RFC 20 section 3.2's order).
 func (c *Conn) teardown() {
 	defer close(c.done)
+	c.timersMu.Lock()
+	if c.handshakeT != nil {
+		c.handshakeT.Stop()
+		c.handshakeT = nil
+	}
+	if c.idleT != nil {
+		c.idleT.Stop()
+		c.idleT = nil
+	}
+	c.timersMu.Unlock()
 	// OnClose's context is the server's clock's, not the connection's: the
 	// close has cancelled that one (RFC 20 section 4.7).
 	// The wait and OnClose share one grace, counted from the close: the teardown

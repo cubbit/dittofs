@@ -435,6 +435,363 @@ func TestOnClosesDeadlineIsTheWaits(t *testing.T) {
 	})
 }
 
+// deadlines is the snapshot's two deadline settings, read off a test's own
+// connection (RFC 13 Appendix B's values, 30 s and 15 min).
+func deadlines(c *core.Conn) (handshake, idle time.Duration) {
+	common := core.ConnSettings(c).Common()
+	return common.HandshakeTimeout, common.IdleTimeout
+}
+
+// A Bare connection that never establishes is closed at the handshake
+// deadline, counted on the server's clock from accept.
+func TestABareConnectionIsClosedAtTheHandshakeTimeout(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{}).Bare()}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	conn, client := servedConn(t, srv, &l)
+	defer func() { _ = client.Close() }()
+	handshake, _ := deadlines(conn)
+
+	clk.Advance(handshake - time.Second)
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("a connection 1 s short of the handshake deadline closed")
+	default:
+	}
+	clk.Advance(2 * time.Second)
+	select {
+	case <-core.ConnDone(conn):
+	case <-time.After(2 * time.Second):
+		t.Fatal("a connection past the handshake deadline stayed open")
+	}
+}
+
+// A full-protocol connection that establishes disarms the handshake deadline:
+// past it, the connection answers an Echo.
+func TestASessionDisarmsTheHandshakeDeadline(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	conn, client := servedConn(t, srv, &l)
+	defer func() { _ = client.Close() }()
+	handshake, _ := deadlines(conn)
+	c := testproto.NewClient(client)
+	for _, m := range []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
+	} {
+		if err := c.Send(m); err != nil {
+			t.Fatal(err)
+		}
+		if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+			t.Fatalf("over the full protocol: %+v (%v)", rs, err)
+		}
+	}
+
+	clk.Advance(handshake + 5*time.Second) // past the handshake deadline, short of idle
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("a session's connection closed past the handshake deadline")
+	default:
+	}
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Session: 7, Payload: []byte("hi")}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].ID != 3 {
+		t.Fatalf("past the handshake deadline, an Echo is answered %+v (%v)", rs, err)
+	}
+}
+
+// A connection whose last reply went out is closed at the idle deadline, which
+// runs from that reply.
+func TestAConnectionsIdleDeadlineRunsFromItsLastReply(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	conn, client := servedConn(t, srv, &l)
+	defer func() { _ = client.Close() }()
+	_, idle := deadlines(conn)
+	c := testproto.NewClient(client)
+	for _, m := range []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
+		{Op: testproto.OpEcho, Version: 1, ID: 3, Session: 7, Payload: []byte("hi")},
+	} {
+		if err := c.Send(m); err != nil {
+			t.Fatal(err)
+		}
+		if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+			t.Fatalf("over the full protocol: %+v (%v)", rs, err)
+		}
+	}
+
+	clk.Advance(idle - time.Millisecond)
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("a connection 1 ms short of its idle deadline closed")
+	default:
+	}
+	clk.Advance(2 * time.Millisecond)
+	select {
+	case <-core.ConnDone(conn):
+	case <-time.After(2 * time.Second):
+		t.Fatal("a connection past its idle deadline stayed open")
+	}
+}
+
+// A request that waits for its reply reservation past the idle deadline keeps
+// the connection open, and once it is answered the deadline runs from the
+// reply: the fire while it waited closed nothing.
+func TestAnIdleDeadlineWaitsOutAReplyReservation(t *testing.T) {
+	b := budgets()
+	b.Reply = resources.NewWaitBudget("reply", chargeOfReply(t, 8))
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	conn, client := servedConn(t, srv, &l)
+	defer func() { _ = client.Close() }()
+	_, idle := deadlines(conn)
+	c := testproto.NewClient(client)
+	for _, m := range []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
+	} {
+		if err := c.Send(m); err != nil {
+			t.Fatal(err)
+		}
+		if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+			t.Fatalf("over the full protocol: %+v (%v)", rs, err)
+		}
+	}
+	held, err := resources.NewBufPool(b.Reply).Get(context.Background(), netip.Addr{}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Session: 7, Payload: []byte("hi")}); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "the Echo to wait for its reply room", func() bool {
+		return core.Runs(core.ConnPipeline(conn)) == 1
+	})
+
+	clk.Advance(2 * idle) // the armed deadline fires while the Echo still runs
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("an idle deadline closed a connection with a request running")
+	default:
+	}
+	held.Release()
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].ID != 3 {
+		t.Fatalf("the waiting Echo is answered %+v (%v)", rs, err)
+	}
+	clk.Advance(idle - time.Millisecond)
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("a connection 1 ms short of its idle deadline closed")
+	default:
+	}
+	clk.Advance(2 * time.Millisecond)
+	select {
+	case <-core.ConnDone(conn):
+	case <-time.After(2 * time.Second):
+		t.Fatal("a connection past its idle deadline stayed open")
+	}
+}
+
+// A connection whose reader holds half a record is not idle: the deadline
+// rests while the record is partly read, and runs again from its reply.
+func TestAPartlyReadRecordIsNotIdle(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	conn, client := servedConn(t, srv, &l)
+	defer func() { _ = client.Close() }()
+	_, idle := deadlines(conn)
+	c := testproto.NewClient(client)
+	for _, m := range []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
+	} {
+		if err := c.Send(m); err != nil {
+			t.Fatal(err)
+		}
+		if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+			t.Fatalf("over the full protocol: %+v (%v)", rs, err)
+		}
+	}
+	// Half an Echo: the record's length and the first bytes of its body, the
+	// rest withheld.
+	echo := testproto.Append(nil, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Session: 7, Payload: []byte("hi")})
+	if _, err := client.Write(echo[:8]); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "the half record to be held", func() bool {
+		return b.Receive.Reserved() > 0
+	})
+
+	clk.Advance(2 * idle)
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("a connection mid-record closed past its idle deadline")
+	default:
+	}
+	if _, err := client.Write(echo[8:]); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].ID != 3 {
+		t.Fatalf("the finished Echo is answered %+v (%v)", rs, err)
+	}
+	clk.Advance(idle - time.Millisecond)
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("a connection 1 ms short of its idle deadline closed")
+	default:
+	}
+	clk.Advance(2 * time.Millisecond)
+	select {
+	case <-core.ConnDone(conn):
+	case <-time.After(2 * time.Second):
+		t.Fatal("a connection past its idle deadline stayed open")
+	}
+}
+
+// A session with keep set holds the connection past the idle deadline, and the
+// logoff that ends it starts the deadline again: the connection closes
+// idle_timeout later.
+func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	conn, client := servedConn(t, srv, &l)
+	defer func() { _ = client.Close() }()
+	_, idle := deadlines(conn)
+	c := testproto.NewClient(client)
+	for _, m := range []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7, Keep: true},
+	} {
+		if err := c.Send(m); err != nil {
+			t.Fatal(err)
+		}
+		if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+			t.Fatalf("over the full protocol: %+v (%v)", rs, err)
+		}
+	}
+	if kept := core.Kept(conn); kept != 1 {
+		t.Fatalf("a session with keep set holds %d keeps, want one", kept)
+	}
+
+	clk.Advance(2 * idle)
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("a kept connection closed past its idle deadline")
+	default:
+	}
+	if err := c.Send(testproto.Msg{Op: testproto.OpLogoff, Version: 1, ID: 3, Session: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+		t.Fatalf("the logoff is answered %+v (%v)", rs, err)
+	}
+	waitsFor(t, "the keep's release", func() bool { return core.Kept(conn) == 0 })
+	clk.Advance(idle - time.Millisecond)
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("a released connection closed 1 ms short of its idle deadline")
+	default:
+	}
+	clk.Advance(2 * time.Millisecond)
+	select {
+	case <-core.ConnDone(conn):
+	case <-time.After(2 * time.Second):
+		t.Fatal("a released connection stayed open past its idle deadline")
+	}
+}
+
+// A release called twice releases nothing a second time: a second Keep still
+// holds the connection.
+func TestADoubleReleaseHoldsASecondKeep(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	conn, client := servedConn(t, srv, &l)
+	defer func() { _ = client.Close() }()
+	_, idle := deadlines(conn)
+	c := testproto.NewClient(client)
+	for _, m := range []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7, Keep: true},
+	} {
+		if err := c.Send(m); err != nil {
+			t.Fatal(err)
+		}
+		if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+			t.Fatalf("over the full protocol: %+v (%v)", rs, err)
+		}
+	}
+	second := conn.Keep()
+	second()
+	second()
+	if kept := core.Kept(conn); kept != 1 {
+		t.Fatalf("a release called twice leaves %d keeps, want the session's one", kept)
+	}
+
+	clk.Advance(2 * idle)
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("a connection a Keep still holds closed past its idle deadline")
+	default:
+	}
+}
+
 // withRouter is a protocol whose connection's Router the test wraps.
 type withRouter struct {
 	core.Protocol

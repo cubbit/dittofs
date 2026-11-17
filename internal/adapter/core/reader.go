@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/resources"
@@ -40,6 +41,7 @@ type reader struct {
 	off     int
 	n       int
 	armed   bool
+	held    atomic.Bool // bytes of a record are in hand, or one is read and not yet served; the idle deadline rests on it (RFC 20 section 6.4)
 }
 
 // newReader wraps a connection's bytes: f frames them, recv reserves each
@@ -75,6 +77,7 @@ func (r *reader) Read(ctx context.Context) (*resources.Buf, error) {
 		return nil, fmt.Errorf("%w: %w", errFrame, err)
 	}
 	r.off += r.framer.HeaderLen()
+	r.held.Store(true) // a record is cut: its body may still be outstanding
 
 	reserve, frags := n, 1
 	if !last {
@@ -125,6 +128,8 @@ func (r *reader) Read(ctx context.Context) (*resources.Buf, error) {
 	}
 	rec.B = rec.B[:total]
 	r.disarm()
+	// Records still unread count as held too: the loop has yet to serve them.
+	r.held.Store(r.off < r.n)
 	return rec, nil
 }
 
@@ -177,6 +182,7 @@ func (r *reader) fill(ctx context.Context) error {
 	}
 	m, err := r.nc.Read(r.buf[r.n:])
 	r.n += m
+	r.held.Store(r.n > r.off)
 	if m > 0 && !r.armed {
 		if aerr := r.arm(ctx); aerr != nil {
 			return aerr
@@ -198,6 +204,11 @@ func (r *reader) fill(ctx context.Context) error {
 func (r *reader) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	return r.recv.Get(ctx, r.key, n)
 }
+
+// holding reports whether bytes of a record are in hand, partly read, or one
+// read whole and not yet served. The idle deadline rests on it: a connection
+// mid-record is never idle (RFC 20 section 6.4).
+func (r *reader) holding() bool { return r.held.Load() }
 
 // arm starts the frame deadline, and stops the reader at once if its context
 // has ended: a connection's close cancels the context before it sets a deadline

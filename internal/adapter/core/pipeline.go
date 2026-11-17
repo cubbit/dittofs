@@ -214,6 +214,7 @@ type link struct {
 	record int               // the protocol's record cap, Framer.MaxRecord's bytes: a chain's record and a compound's reply stay within it
 	out    func(msg *resources.Buf, key, before uint64) error
 	close  func(err error)
+	idle   func() // called at each moment nothing runs any more
 }
 
 // The stages a protocol leaves nil, filled once at accept so the pipeline
@@ -1282,9 +1283,24 @@ func (p *pipeline) add() {
 
 func (p *pipeline) done() {
 	p.mu.Lock()
-	if p.runs--; p.runs == 0 && p.idle != nil {
-		close(p.idle)
-		p.idle = nil
+	quiet := false
+	if p.runs--; p.runs == 0 {
+		if p.idle != nil {
+			close(p.idle)
+			p.idle = nil
+		}
+		quiet = true
 	}
 	p.mu.Unlock()
+	if quiet && p.l.idle != nil {
+		p.l.idle()
+	}
+}
+
+// quiet reports whether nothing runs: no request and no status wait, the
+// moment wait returns at once.
+func (p *pipeline) quiet() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.runs == 0
 }
