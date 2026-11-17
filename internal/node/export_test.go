@@ -8,6 +8,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/openstate"
 )
 
 // NewStepping is New with stepped called after each start step completes,
@@ -42,6 +44,14 @@ func (n *Node) Filesystem() *vfs.Filesystem { return n.fs }
 // Engine is the engine the node built.
 func (n *Node) Engine() *engine.Engine { return n.engine }
 
+// OpenState is the open state the node built.
+func (n *Node) OpenState() *openstate.Table { return n.open }
+
+// Progress is op's progress, as the node's operation runner reads it.
+func (n *Node) Progress(ctx context.Context, op entity.Operation) apiv1.Progress {
+	return n.runner.steps[op.Kind].progress(ctx, op)
+}
+
 // NewPausing is New with paused called by each reconcile pass with the
 // counters it read, before it acts on them; the pass waits for it.
 func NewPausing(paused func(read kvstore.Counters)) func(Config) (*Node, error) {
@@ -57,6 +67,10 @@ func NewPausing(paused func(read kvstore.Counters)) func(Config) (*Node, error) 
 // OnBind has reconcile call binding with each share before it binds it. Call
 // it before Start.
 func (n *Node) OnBind(binding func(entity.Share)) { n.rec.binding = binding }
+
+// OnBound has reconcile call bound with each share the engine bound, before
+// reconcile puts it in the running set. Call it before Start.
+func (n *Node) OnBound(bound func(entity.Share)) { n.rec.bound = bound }
 
 // OnApply has reconcile call applying with the counters each apply acts on.
 // Call it before Start.
@@ -110,6 +124,6 @@ func (n *Node) OnStatus(turned func(s entity.NodeStatus, wrote bool)) { n.status
 func (n *Node) Bound(id entity.ShareID) (entity.ShareState, bool) {
 	n.rec.mu.Lock()
 	defer n.rec.mu.Unlock()
-	s, ok := n.rec.bound[id]
+	s, ok := n.rec.running[id]
 	return s.State, ok
 }

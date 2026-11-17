@@ -17,8 +17,8 @@ import (
 // at a time, and a call that waited for it answers its tree when the list
 // has not moved again; a call whose context ends while it waits answers the
 // context's error. A rebuild first serves the shard of each share the list
-// holds, the node has bound, and open state does not serve yet, so a share
-// added while serving holds open state without a restart.
+// holds and open state does not serve yet, so a share added while serving
+// holds open state without a restart.
 //
 // ponytail: a share added while serving is served by the first call to see
 // the share list move, standing in for the node's own share arrival; a serve
@@ -67,7 +67,7 @@ func (fs *Filesystem) tree(ctx context.Context) (*pseudofs.Tree, error) {
 	fs.mu.Lock()
 	for i, sh := range shares {
 		placed[i] = pseudofs.Share{ID: sh.ID, Path: sh.Path}
-		if !fs.served[sh.ID] && (fs.running == nil || fs.running(sh.ID)) {
+		if !fs.served[sh.ID] {
 			added = append(added, sh)
 		}
 	}

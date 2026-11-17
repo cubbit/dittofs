@@ -130,7 +130,7 @@ func build(cfg Config) (*Node, error) {
 	n.health = &health.Evaluator{}
 	n.health.Add(&engineConditions{n.engine.Stats})
 	n.health.Add(&nodeConditions{n})
-	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.running}); err != nil {
+	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
 	steps := operationSteps(n.meta.Nodes())

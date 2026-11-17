@@ -1,0 +1,388 @@
+package node_test
+
+import (
+	"errors"
+	"fmt"
+	"net/netip"
+	"slices"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/internal/node"
+	"github.com/cubbit/dittofs/internal/node/nodetest"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/google/uuid"
+)
+
+var (
+	// anAdmin is the identity the tests create files as.
+	anAdmin = entity.Identity{Principal: entity.NewUser(), Authenticated: true, Admin: true, Privileged: true}
+	// aClient is the address the tests' clients call from.
+	aClient = netip.MustParseAddr("10.0.0.5")
+)
+
+// deleteShare marks sh removed and records its pending deletion in one
+// write, as the management API's delete does.
+func deleteShare(t *testing.T, h *nodetest.Harness, sh entity.Share) entity.Operation {
+	t.Helper()
+	op := entity.Operation{ID: entity.OperationID(uuid.New()), Kind: string(apiv1.OpShareDelete),
+		Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: sh.ID[:]}, Account: entity.NewUser(), State: entity.OpPending}
+	if err := h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		if err := tx.DeleteShare(sh.ID, entity.SnapshotsDelete, sh.Generation); err != nil {
+			return err
+		}
+		_, err := tx.PutOperation(op, 0)
+		return err
+	}); err != nil {
+		t.Fatalf("mark share %s removed: %v", sh.Name, err)
+	}
+	return op
+}
+
+// createFiles creates n files in sh's root, named f0 onwards.
+func createFiles(t *testing.T, h *nodetest.Harness, sh entity.Share, n int) []entity.File {
+	t.Helper()
+	if _, err := h.Store().ControlPlane().PutUser(t.Context(), entity.User{Principal: anAdmin.Principal, Name: "admin"}, 0, entity.Alloc{}); err != nil {
+		t.Fatalf("create the admin: %v", err)
+	}
+	if _, err := h.Store().ControlPlane().SetGrant(t.Context(), entity.ShareGrant{Share: sh.ID, Principal: anAdmin.Principal, Access: entity.AccessAdmin}, 0); err != nil {
+		t.Fatalf("grant share %s: %v", sh.Name, err)
+	}
+	files := make([]entity.File, n)
+	for i := range files {
+		var err error
+		if _, files[i], err = h.Store().Namespace().Create(t.Context(), anAdmin, entity.NewHandle(sh.ID, sh.Root), fmt.Appendf(nil, "f%d", i), kvstore.Regular(0o644)); err != nil {
+			t.Fatalf("create a file in share %s: %v", sh.Name, err)
+		}
+	}
+	return files
+}
+
+// left counts the files the store still holds.
+func left(t *testing.T, h *nodetest.Harness, files []entity.File) int {
+	t.Helper()
+	n := 0
+	for _, f := range files {
+		if _, err := h.Store().Files().Get(t.Context(), anAdmin, entity.NewHandle(f.Share, f.ID)); err == nil {
+			n++
+		} else if !merrs.IsNotFoundError(err) && !errors.Is(err, entity.ErrStale) {
+			t.Fatalf("read a file back: %v", err)
+		}
+	}
+	return n
+}
+
+// gatedRunner has the node's operation runner wait after each turn until
+// the test takes it with next, so no turn runs that the test did not let
+// run; release lets it run freely, and a test defers it so that it runs
+// before the node's Stop. Call it before Start.
+type gatedRunner struct {
+	h        *nodetest.Harness
+	turns    chan struct{}
+	released chan struct{}
+	once     atomic.Bool
+}
+
+func gateRunner(h *nodetest.Harness) *gatedRunner {
+	g := &gatedRunner{h: h, turns: make(chan struct{}), released: make(chan struct{})}
+	h.Node().OnRunnerTurn(func() {
+		select {
+		case g.turns <- struct{}{}:
+		case <-g.released:
+		}
+	})
+	return g
+}
+
+// took waits for the turn the runner has ended.
+func (g *gatedRunner) took(t *testing.T) {
+	t.Helper()
+	select {
+	case <-g.turns:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no operation runner turn within 10 s")
+	}
+}
+
+// next advances the node's clock a second and waits for the turn it runs.
+func (g *gatedRunner) next(t *testing.T) {
+	t.Helper()
+	g.h.Clock().Advance(time.Second)
+	g.took(t)
+}
+
+func (g *gatedRunner) release() {
+	if g.once.CompareAndSwap(false, true) {
+		close(g.released)
+	}
+}
+
+// tagState is the removal state the store records for share id's tag.
+func tagState(t *testing.T, h *nodetest.Harness, id entity.ShareID) entity.TagState {
+	t.Helper()
+	tags, err := h.Store().Lifecycle().Tags(t.Context())
+	if err != nil {
+		t.Fatalf("read the tags: %v", err)
+	}
+	return tags[id].State
+}
+
+// offloaded runs runner turns until share id's shard is recorded offloaded.
+func (g *gatedRunner) offloaded(t *testing.T, id entity.ShareID) {
+	t.Helper()
+	for range 100 {
+		if tagState(t, g.h, id) == entity.TagOffloaded {
+			return
+		}
+		g.next(t)
+	}
+	t.Fatal("the shard not offloaded after 100 runner turns")
+}
+
+// A share with files and an open file, deleted while serving, has its live
+// state ended by the deletion's step 3: its binding refuses its calls, its
+// open state is gone, it leaves the running set, and its shard is recorded
+// offloaded, while the operation goes on running.
+func TestAShareDeletedWhileServingEndsItsLiveState(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	ctx := t.Context()
+	configure(t, h, storeA)
+	sh := createShare(t, h, "a", storeA)
+	file := createFiles(t, h, sh, 3)[2]
+	g := gateRunner(h)
+	defer g.release()
+	started(t, h)
+	g.took(t)
+	if _, err := h.Node().Engine().Read(ctx, sh.ID, file.ID, 0, make([]byte, 1)); err != nil {
+		t.Fatalf("a read of the share before its deletion: %v", err)
+	}
+	tab := h.Node().OpenState()
+	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolNFSv4, Name: []byte("c"), Boot: [8]byte{1}}}
+	p, err := tab.Clients().Propose(ctx, c, aClient)
+	if err != nil {
+		t.Fatalf("propose a client: %v", err)
+	}
+	client, _, err := tab.Clients().Connect(ctx, c, &p)
+	if err != nil {
+		t.Fatalf("connect a client: %v", err)
+	}
+	who := openstate.Caller{Client: client, Principal: anAdmin.Principal, Protocol: entity.ProtocolNFSv4}
+	res, err := tab.Opens().Open(ctx, who, openstate.FileKey{Share: sh.ID, Shard: openstate.ShardID(file.Shard), ID: file.ID},
+		openstate.OpenRequest{Via: sh.Root, Name: []byte("f2"), Access: entity.ReadData})
+	if err != nil {
+		t.Fatalf("open a file: %v", err)
+	}
+	ref := []openstate.StateRef{res.Open.Ref}
+
+	op := deleteShare(t, h, sh)
+	g.offloaded(t, sh.ID)
+	if _, err := h.Node().Engine().Read(ctx, sh.ID, file.ID, 0, make([]byte, 1)); !errors.Is(err, vfs.ErrStale) {
+		t.Errorf("a read of the deleted share once offloaded: got %v, want %v, its binding unbound", err, vfs.ErrStale)
+	}
+	if errs := tab.Recovery().TestState(ctx, who, ref); !errors.Is(errs[0], openstate.ErrBadState) {
+		t.Errorf("the deleted share's open once offloaded: got %v, want %v", errs[0], openstate.ErrBadState)
+	}
+	if _, ok := h.Node().Bound(sh.ID); ok {
+		t.Error("the deleted share once offloaded: in the running set, want out")
+	}
+	if s := opState(t, h, op.ID); s != entity.OpRunning {
+		t.Errorf("the deletion once offloaded: got %v, want running", s)
+	}
+	if p := h.Node().Progress(ctx, op); p.Phase != "live state" || p.Done != 2 {
+		t.Errorf("the deletion's progress once offloaded: got %+v, want phase live state, 2 steps done, read from the removal's record", p)
+	}
+}
+
+// A node starting over a share whose removal is marked and not past its
+// step 1, as a node stopped between the mark and step 3 finds it, joins the
+// share in its filesystem step: the shard's removal is recorded offloaded
+// before the runner starts and the node is ready, and the share joins no
+// running set.
+func TestARemovalLeftAtItsMarkIsJoinedAtStart(t *testing.T) {
+	// Start calls the stepping hook on the test's goroutine, so it reads
+	// what the test wrote before it.
+	var (
+		h            *nodetest.Harness
+		sh           entity.Share
+		atFilesystem *entity.TagState
+	)
+	h = nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewStepping(func(_ *node.Node, step string) {
+		if step == "filesystem" {
+			s := tagState(t, h, sh.ID)
+			atFilesystem = &s
+		}
+	})))
+	configure(t, h, storeA)
+	sh = createShare(t, h, "a", storeA)
+	deleteShare(t, h, sh)
+	if s := tagState(t, h, sh.ID); s != entity.TagServing {
+		t.Fatalf("the shard before the start: %v, want serving", s)
+	}
+	g := gateRunner(h)
+	defer g.release()
+	started(t, h)
+	if got := atFilesystem; got == nil || *got != entity.TagOffloaded {
+		t.Fatalf("the shard's removal once the filesystem started: got %v, want %v", got, entity.TagOffloaded)
+	}
+	if _, ok := h.Node().Bound(sh.ID); ok {
+		t.Error("the share being removed after the start: in the running set, want out")
+	}
+}
+
+// A shard's removal recorded before the removal reaches step 3 is refused
+// with ErrRemovalOrder and changes nothing: the deletion then runs to step 3,
+// which records it.
+func TestAShardRecordedBeforeStep3IsRefused(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	configure(t, h, storeA)
+	sh := createShare(t, h, "a", storeA)
+	op := deleteShare(t, h, sh)
+	err := h.Store().Nodes().RecordShardRemoval(t.Context(), sh.ID, sh.Shard, entity.TagOffloaded)
+	if !errors.Is(err, kvstore.ErrRemovalOrder) {
+		t.Fatalf("the shard recorded offloaded at the mark: got %v, want %v", err, kvstore.ErrRemovalOrder)
+	}
+	if s := opState(t, h, op.ID); s != entity.OpPending {
+		t.Fatalf("the deletion after the refused record: got %v, want pending", s)
+	}
+	if s := tagState(t, h, sh.ID); s != entity.TagServing {
+		t.Fatalf("the shard after the refused record: got %v, want serving", s)
+	}
+	g := gateRunner(h)
+	defer g.release()
+	started(t, h)
+	g.took(t)
+	g.offloaded(t, sh.ID)
+}
+
+// A share's unbind takes it out of the running set and out of the refusals
+// at once, with no reconcile pass between: a bound share deleted leaves the
+// running set, and a refused one leaves the refusals and the node status.
+func TestAnUnbindClearsTheRunningSetAndTheRefusals(t *testing.T) {
+	var hold atomic.Bool
+	release := make(chan struct{})
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewPausing(func(kvstore.Counters) {
+		if hold.Load() {
+			<-release
+		}
+	})))
+	defer close(release)
+	configure(t, h, storeA)
+	bound := createShare(t, h, "bound", storeA)
+	refused := createShare(t, h, "refused", storeB)
+	statuses := watchStatus(h)
+	g := gateRunner(h)
+	defer g.release()
+	started(t, h)
+	g.took(t)
+	if _, ok := h.Node().Bound(bound.ID); !ok {
+		t.Fatal("the share on a configured store: not in the running set")
+	}
+	if !refusedShare(h.Node().Refused(), refused.ID) {
+		t.Fatal("the share on a store with no settings: not refused")
+	}
+	turnAt(t, h, statuses, "listing the refused share", func(tr statusTurn) bool { return refusedShare(tr.s.Refused, refused.ID) })
+	hold.Store(true)
+	deleteShare(t, h, bound)
+	deleteShare(t, h, refused)
+	for _, sh := range []entity.Share{bound, refused} {
+		for tagState(t, h, sh.ID) != entity.TagOffloaded {
+			g.next(t)
+		}
+	}
+	if _, ok := h.Node().Bound(bound.ID); ok {
+		t.Error("the bound share once unbound: in the running set, want out")
+	}
+	if refusedShare(h.Node().Refused(), refused.ID) {
+		t.Error("the refused share once unbound: among the refusals, want out")
+	}
+	drain(statuses)
+	tr := turnAt(t, h, statuses, "written", func(tr statusTurn) bool { return tr.wrote })
+	if refusedShare(tr.s.Refused, refused.ID) || refusedShare(readStatus(t, h).Refused, refused.ID) {
+		t.Error("the node status once the refused share is unbound: lists it refused, want not")
+	}
+}
+
+// A share a pass binds just before its removal unbinds it, the unbind
+// landing between the engine's bind and the pass's write of the running set,
+// is not put back in the running set by that pass.
+func TestAPassDoesNotRunAShareUnboundAfterItsBind(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	configure(t, h, storeA)
+	atBound := make(chan entity.ShareID)
+	resume := make(chan struct{})
+	h.Node().OnBound(func(s entity.Share) {
+		atBound <- s.ID
+		<-resume
+	})
+	g := gateRunner(h)
+	defer g.release()
+	started(t, h)
+	g.took(t)
+	sh := createShare(t, h, "a", storeA)
+	moved := h.Node().Moved()
+	h.Clock().Advance(time.Second)
+	select {
+	case id := <-atBound:
+		if id != sh.ID {
+			t.Fatalf("the pass bound share %v, want %v", id, sh.ID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no pass bound the share within 10 s")
+	}
+	deleteShare(t, h, sh)
+	for tagState(t, h, sh.ID) != entity.TagOffloaded {
+		g.next(t)
+	}
+	close(resume)
+	select {
+	case <-moved:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the held pass did not end once resumed")
+	}
+	if _, ok := h.Node().Bound(sh.ID); ok {
+		t.Error("the share unbound while the pass that bound it ran: in the running set, want out")
+	}
+}
+
+func refusedShare(refused []entity.RefusedRecord, id entity.ShareID) bool {
+	return slices.ContainsFunc(refused, func(r entity.RefusedRecord) bool {
+		return r.Record.Kind == entity.ResourceShare && string(r.Record.ID) == string(id[:])
+	})
+}
+
+// A share reconcile refused is not served: admission answers its first call
+// with a Delay, while a share it bound answers the same call.
+func TestAdmissionServesOnlyTheRunningSet(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch(), nodetest.InMemory())
+	ctx := t.Context()
+	configure(t, h, storeA)
+	bound := createShare(t, h, "bound", storeA)
+	refused := createShare(t, h, "refused", storeB)
+	// A proven caller acts as itself only with a UID, else as the anonymous one.
+	u := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "60001"}}}
+	cp := h.Store().ControlPlane()
+	if _, err := cp.PutUser(ctx, u, 0, entity.Alloc{}); err != nil {
+		t.Fatalf("create a user: %v", err)
+	}
+	for _, sh := range []entity.Share{bound, refused} {
+		if _, err := cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessAdmin}, 0); err != nil {
+			t.Fatalf("grant share %s: %v", sh.Name, err)
+		}
+	}
+	started(t, h)
+	call := vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofTicket, Protection: vfs.ProtectionPrivacy, Evidence: vfs.Evidence{Principal: u.Principal}, Client: aClient}}
+	if _, err := h.Node().Filesystem().StatFS(ctx, call, entity.NewHandle(bound.ID, bound.Root)); err != nil {
+		t.Fatalf("a call into the bound share: %v", err)
+	}
+	if _, err := h.Node().Filesystem().StatFS(ctx, call, entity.NewHandle(refused.ID, refused.Root)); !errors.Is(err, vfs.ErrDelay) {
+		t.Errorf("the first call into the refused share: got %v, want %v", err, vfs.ErrDelay)
+	}
+}
+
+func errOf[T any](_ T, err error) error { return err }
