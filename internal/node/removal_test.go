@@ -1,9 +1,11 @@
 package node_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/netip"
+	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -395,6 +398,79 @@ func TestAPassDoesNotRefuseAShareUnboundWhileItRan(t *testing.T) {
 	if refusedShare(h.Node().Refused(), refused.ID) {
 		t.Error("the refused share after the pass that listed it before its mark: among the refusals, want out")
 	}
+}
+
+// grantedCaller creates a user with a UID, so a proven call acts as it,
+// grants it admin on sh, and returns a call made as it.
+func grantedCaller(t *testing.T, h *nodetest.Harness, sh entity.Share) vfs.Call {
+	t.Helper()
+	cp := h.Store().ControlPlane()
+	u := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "60001"}}}
+	if _, err := cp.PutUser(t.Context(), u, 0, entity.Alloc{}); err != nil {
+		t.Fatalf("create a user: %v", err)
+	}
+	if _, err := cp.SetGrant(t.Context(), entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessAdmin}, 0); err != nil {
+		t.Fatalf("grant share %s: %v", sh.Name, err)
+	}
+	return vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofTicket, Protection: vfs.ProtectionPrivacy, Evidence: vfs.Evidence{Principal: u.Principal}, Client: aClient}}
+}
+
+// A call admitted into a share before its mark holds step 3 until it
+// answers: the shard is not recorded offloaded while it runs, the step gives
+// up at its bound on the node's clock and the runner goes on turning, and
+// once the call answers a retry ends the share's live state.
+func TestStep3WaitsForTheSharesCallsWithinItsBound(t *testing.T) {
+	h, f := faulted(t)
+	configure(t, h, storeA)
+	sh := createShare(t, h, "a", storeA)
+	file := createFiles(t, h, sh, 1)[0]
+	call := grantedCaller(t, h, sh)
+	ending := make(chan struct{}, 1)
+	h.Node().OnEndLiveState(func(entity.ShareID) {
+		select {
+		case ending <- struct{}{}:
+		default:
+		}
+	})
+	g := gateRunner(h)
+	defer g.release()
+	started(t, h)
+	g.took(t)
+
+	held := sim.NewTestClock(time.Unix(0, 0))
+	files := keys.Describe(keys.ID([]byte{keys.KindF}, sh.ID[:])) + "*"
+	setFault(t, f, held, sim.Rule{Op: kvtest.OpGet, Key: files, Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	defer held.Advance(time.Hour)
+	answered := make(chan error, 1)
+	go func() {
+		_, err := h.Node().Filesystem().GetAttr(context.Background(), call, entity.NewHandle(sh.ID, file.ID))
+		answered <- err
+	}()
+	for deadline := time.Now().Add(10 * time.Second); held.Pending() == 0; runtime.Gosched() {
+		if time.Now().After(deadline) {
+			t.Fatal("the call into the share did not reach its file's read within 10 s")
+		}
+	}
+
+	deleteShare(t, h, sh)
+	h.Clock().Advance(time.Second)
+	select {
+	case <-ending:
+	case <-time.After(10 * time.Second):
+		t.Fatal("step 3 did not begin within 10 s")
+	}
+	h.Clock().Advance(node.LiveStateBound)
+	g.took(t)
+	if s := tagState(t, h, sh.ID); s != entity.TagServing {
+		t.Fatalf("the shard while a call into the share runs: got %v, want %v", s, entity.TagServing)
+	}
+	held.Advance(time.Hour)
+	select {
+	case <-answered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the held call did not answer once released")
+	}
+	g.offloaded(t, sh.ID)
 }
 
 func refusedShare(refused []entity.RefusedRecord, id entity.ShareID) bool {

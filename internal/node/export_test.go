@@ -12,6 +12,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/openstate"
 )
 
+// LiveStateBound is how long step 3 of a share's removal waits.
+const LiveStateBound = liveStateBound
+
 // NewStepping is New with stepped called after each start step completes,
 // named as Start's error names it; before each part's stop is waited on,
 // its bound already running, as "wait " and the part's name; and after each
