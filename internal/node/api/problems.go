@@ -177,6 +177,7 @@ func problemOf(err error) (apiv1.Problem, bool) {
 	p := apiv1.Problem{Status: a.status, Code: a.code, Title: http.StatusText(a.status), Retryable: a.retryable}
 	var r *refusal
 	var f *fieldError
+	var running *entity.OperationRunningError
 	switch {
 	case !ok:
 		p.Detail = "internal error"
@@ -184,6 +185,8 @@ func problemOf(err error) (apiv1.Problem, bool) {
 		p.Detail, p.Names = r.detail, r.names
 	case errors.As(err, &f):
 		p.Field, p.Detail = f.field, f.detail
+	case errors.As(err, &running):
+		p.Detail, p.Names = "an operation of this kind runs on this target", []string{idString(running.ID)}
 	}
 	return p, ok
 }

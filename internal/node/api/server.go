@@ -16,6 +16,7 @@ import (
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -46,10 +47,17 @@ type Deps struct {
 	// version that signs now, which keys each idempotency key's digest; nil,
 	// a write carrying an Idempotency-Key answers 503.
 	SigningKey func(context.Context) ([]byte, error)
-	// Nodes is the store's read of every registered node's status, which a
-	// listing computes each item's applied from; nil, each listing answers
-	// 503.
-	Nodes nodeStatuses
+	// Nodes is the store's reads of the nodes: their records, and every
+	// registered node's status, which a listing computes each item's applied
+	// from; nil, each listing answers 503.
+	Nodes nodeReads
+	// Progress is an operation's progress, read from what its owner
+	// records, by the operation's kind; nil, every operation's progress is
+	// unknown.
+	Progress func(context.Context, entity.Operation) apiv1.Progress
+	// Health is the node's health conditions, its own and the
+	// installation's; nil, it holds none.
+	Health conditions
 	// Clock is the API's time, which a parked poll waits on; nil, a read
 	// that would park answers 503.
 	Clock clock
@@ -125,7 +133,7 @@ func newServer(d Deps, rows []route) *Server {
 	if s.tracer == nil {
 		s.tracer = noop.NewTracerProvider().Tracer("")
 	}
-	d.Metrics.Registry().MustRegister(s.requests, s.seconds, s.unmapped, s.preconditions, s.replays, s.idempotencyWritten, s.audits)
+	d.Metrics.Registry().MustRegister(s.requests, s.seconds, s.unmapped, s.preconditions, s.replays, s.idempotencyWritten, s.audits, newOpsCollector(s))
 
 	api := http.NewServeMux()
 	api.HandleFunc("/", d.health)
