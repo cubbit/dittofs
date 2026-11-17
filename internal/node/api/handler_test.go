@@ -27,7 +27,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-// served is the API over a harness's store, serving the test rows beside the
+// served is the API over a harness's store, db, serving the test rows beside the
 // production table, its series in reg, its spans in spans, its log lines in
 // log and its time on clock.
 type served struct {
@@ -35,6 +35,7 @@ type served struct {
 	client *http.Client
 	reg    *metrics.Registry
 	spans  *tracetest.SpanRecorder
+	db     *kvstore.Store
 	store  kvstore.ControlPlane
 	nodes  kvstore.Nodes
 	log    *lockedBuffer
@@ -72,7 +73,7 @@ func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), 
 func serveWith(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), before func(*api.Server), edit ...func(*api.Deps)) *served {
 	t.Helper()
 	h := nodetest.New(t, nodetest.InMemory(), nodetest.Watch())
-	s := &served{reg: metrics.New("test", "test"), spans: tracetest.NewSpanRecorder(), store: h.Store().ControlPlane(), nodes: h.Store().Nodes(), log: &lockedBuffer{}, clock: h.Clock()}
+	s := &served{reg: metrics.New("test", "test"), spans: tracetest.NewSpanRecorder(), db: h.Store(), store: h.Store().ControlPlane(), nodes: h.Store().Nodes(), log: &lockedBuffer{}, clock: h.Clock()}
 	d := api.Deps{
 		Ready:        func() string { return "ready" },
 		Live:         func() bool { return true },

@@ -61,8 +61,11 @@ func TestWireBodies(t *testing.T) {
 			[]string{"created", "token"}},
 		{"listed API token", APITokenStatus{Created: at}, new(APITokenStatus), []string{"created"}},
 		{"applied", Applied{Nodes: 2, Of: 3}, new(Applied), []string{"nodes", "of"}},
-		{"node", Node{ID: "n_1", Address: "10.0.0.1:12049", Binary: "v0.20.0", Domain: "rack-1", Lapsed: true}, new(Node),
-			[]string{"address", "binary", "domain", "id", "lapsed"}},
+		{"node status", NodeStatus{Address: "10.0.0.1:12049", Binary: "v0.20.0", Domain: "rack-1", Lapsed: true,
+			Reconciled: &Reconciled{Settings: 7, ShareList: 3, Principals: 2}}, new(NodeStatus),
+			[]string{"address", "binary", "domain", "lapsed", "reconciled"}},
+		{"reconciled", Reconciled{Settings: 7, ShareList: 3, Principals: 2}, new(Reconciled),
+			[]string{"principals", "settings", "share_list"}},
 		{"audit record", AuditRecord{
 			ID: "au_1", Time: at, Actor: Principal{Kind: "user", ID: "us_1"}, ActorName: "eli", Credential: "session-1",
 			Node: "n_1", Source: "10.0.0.9:51234", Request: json.RawMessage(`{"method":"PUT"}`),

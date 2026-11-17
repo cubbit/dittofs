@@ -98,7 +98,7 @@ func (p perPage) applied(ref entity.ResourceRef, at uint64, through func(entity.
 // order. Every registered node's status is read once for the page, whatever
 // its size, and handed to each item.
 func list[E, T any](l listing[E, T]) adapter {
-	return func(ctx context.Context, s *Server, r *http.Request, _ [16]byte) (answer, error) {
+	return func(ctx context.Context, s *Server, r *http.Request, _ *route, _ [16]byte) (answer, error) {
 		limit, after, filter := defaultLimit, []byte(nil), map[string]string{}
 		q := r.URL.Query()
 		for _, k := range slices.Sorted(maps.Keys(q)) {

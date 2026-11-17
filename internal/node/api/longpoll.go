@@ -71,7 +71,7 @@ func changes[R any](differ func(first, now R) bool) func(string) (time.Duration,
 // first served, so one account can hold every parked slot; upgrade to a
 // per-account share of the set when accounts contend for it.
 func watch[R any](w watching[R]) adapter {
-	return func(ctx context.Context, s *Server, r *http.Request, id [16]byte) (answer, error) {
+	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
 		var wait time.Duration
 		var done func(first, now R) bool
 		q := r.URL.Query()
