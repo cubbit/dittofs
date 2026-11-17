@@ -121,7 +121,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	ms, at, code, err := members(row, inv, rest, v)
 	if at < 0 {
 		p.refused(tr, stageDecodeArgs)
-		p.finish(tr, h, tb, errs, row, Invocation{}, nil, err, release, alone{p})
+		p.finish(tr, h, tb, errs, row, Invocation{}, nil, err, release, alone{p}, nil)
 		return
 	}
 	if p.draining.Load() {
@@ -131,7 +131,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		// the moved member and is answered there (§4.7).
 		if whole, handles := judge(ms, err == nil, r); !whole {
 			p.refused(tr, stageResolveIDs)
-			p.finish(tr, h, tb, errs, row, Invocation{}, nil, drainErr(ctx, handles), release, alone{p})
+			p.finish(tr, h, tb, errs, row, Invocation{}, nil, drainErr(ctx, handles), release, alone{p}, nil)
 			return
 		}
 	}
@@ -189,7 +189,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	}
 	if big != nil {
 		p.refused(tr, stageReplyTooBig)
-		p.finish(tr, h, tb, errs, row, Invocation{}, nil, big, release, alone{p})
+		p.finish(tr, h, tb, errs, row, Invocation{}, nil, big, release, alone{p}, nil)
 		return
 	}
 	mts, serr := p.sh.table(row.Members)
@@ -204,7 +204,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		if st, ok := reservationStage(rerr); ok {
 			p.refused(tr, st)
 		}
-		p.finish(tr, h, tb, errs, row, Invocation{}, nil, rerr, release, alone{p})
+		p.finish(tr, h, tb, errs, row, Invocation{}, nil, rerr, release, alone{p}, nil)
 		return
 	}
 	mts.observe(stageReplyWait, p.sh.clock.Now().Sub(start))

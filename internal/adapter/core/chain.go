@@ -571,6 +571,13 @@ func (c *chain) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Bu
 	c.flush(splits, nil)
 }
 
+// pended holds a pending member's interim, which carries no track since its
+// request goes on, and sends it at once with the replies before it (§4.7).
+func (c *chain) pended(h Header, interim *resources.Buf, key uint64) {
+	c.hold(held{h: h, reply: interim, key: key})
+	c.flush(splits, nil)
+}
+
 // laterHeaders is the slices of later members' headers an interim is handed,
 // taken only on a drain's refusal: a connection runs up to its cap of
 // requests at once, so no per-connection slice is safe (§4.7).

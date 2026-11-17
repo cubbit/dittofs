@@ -44,11 +44,12 @@ func newChained(t *testing.T, reply int64, d adapter.Deps, edit ...func(*core.St
 	}
 	faults := vfstest.Faults(svc)
 	d.VFS = faults
-	var proto core.Protocol = testproto.New(d).WithCall(svc.Admin())
+	tp := testproto.New(d).WithCall(svc.Admin())
+	var proto core.Protocol = tp
 	for _, e := range edit {
 		proto = edited{proto, e}
 	}
-	s := &served{seam: newSeamWith(t, proto, reply, d), svc: svc, faults: faults, root: root, proto: proto}
+	s := &served{seam: newSeamWith(t, proto, reply, d), svc: svc, faults: faults, root: root, proto: proto, tp: tp}
 	s.setUp(7)
 	return s
 }

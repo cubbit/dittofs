@@ -175,7 +175,8 @@ type served struct {
 	svc    *memory.Service
 	faults *vfstest.FaultService
 	root   vfs.Handle
-	proto  core.Protocol // the server's protocol, for another connection
+	proto  core.Protocol       // the server's protocol, for another connection
+	tp     *testproto.Protocol // the testproto under proto, for SetHold; set by newChained
 }
 
 // newServed is a served seam in version 1, whose table answers every error

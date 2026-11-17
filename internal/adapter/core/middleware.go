@@ -12,6 +12,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // Call is one step of the middleware chain: the handler, or what wraps it.
@@ -120,39 +122,63 @@ type runtimeClock struct{}
 func (runtimeClock) Now() time.Time                            { return time.Now() }
 func (runtimeClock) AfterFunc(d time.Duration, f func()) timer { return time.AfterFunc(d, f) }
 
-// The pipeline keeps an attempt's start and the hold's deadline in the
-// context under these keys, before the attempt's reply reservation (§6.4).
-// A request's own context answers the start, as a *time.Time.
-type (
-	attemptStartKey struct{}
-	holdDeadlineKey struct{}
-)
+// attemptKey is what a request's own context answers with itself, the
+// *requestCtx that keeps its attempt's start and its hold (§6.4).
+type attemptKey struct{}
 
-// deadline gives the call its attempt's deadline.
+// deadline gives the call its attempt's deadline and its hold. The handler's
+// context is the deadline's own, so a context the handler derives starts no
+// goroutine to watch it.
 func (sh *shared) deadline(next Call) Call {
 	return func(ctx context.Context, r *Request) error {
-		ctx, cancel := sh.attempt(ctx)
+		at, rc := sh.attemptAt(ctx)
+		ctx, cancel := withClockDeadline(sh.withHold(ctx, rc, at), sh.clock, at)
 		defer cancel()
 		return next(ctx, r)
 	}
 }
 
-// attempt is ctx with its attempt's deadline on the server's clock: 30 s
-// from the attempt's start ctx carries, or the hold's deadline it carries
-// where that is sooner; with no start, from the clock's now (§6.4). The
-// call and the attempt's reply reservation each wait under it.
+// attempt is ctx with its attempt's deadline on the server's clock (§6.4).
+// The call and the attempt's reply reservation each wait under it.
 func (sh *shared) attempt(ctx context.Context) (context.Context, func()) {
-	var start time.Time
-	if s, ok := ctx.Value(attemptStartKey{}).(*time.Time); ok {
-		start = *s
-	} else {
-		start = sh.clock.Now()
-	}
-	at := start.Add(attemptDeadline)
-	if hold, ok := ctx.Value(holdDeadlineKey{}).(time.Time); ok && hold.Before(at) {
-		at = hold
-	}
+	at, _ := sh.attemptAt(ctx)
 	return withClockDeadline(ctx, sh.clock, at)
+}
+
+// attemptAt is the deadline of ctx's attempt, and the request that keeps
+// it: 30 s from the attempt's start its request keeps, or the hold's
+// deadline where that is sooner; with no request, 30 s from the clock's now
+// (§6.4).
+func (sh *shared) attemptAt(ctx context.Context) (time.Time, *requestCtx) {
+	rc, ok := ctx.Value(attemptKey{}).(*requestCtx)
+	if !ok {
+		return sh.clock.Now().Add(attemptDeadline), nil
+	}
+	at := rc.start.Add(attemptDeadline)
+	if !rc.hold.IsZero() && rc.hold.Before(at) {
+		at = rc.hold
+	}
+	return at, rc
+}
+
+// withHold is ctx carrying vfs.WithHold, the most the call may wait in the
+// service behind a clone (§4.6; RFC 17 §5.9), at being its attempt's
+// deadline and rc its request.
+//
+// decision: in a table that holds, the time from the attempt's start to the
+// deadline the clone wait's row returned at the request's arrival, and none
+// where no row holds the clone wait; elsewhere the time left to the
+// attempt's deadline. NFSv4.1's bound by a quarter of its slots comes with
+// the slots, so until then an NFSv4.1 call waits its whole deadline.
+// Overturned if a table must bound the clone wait apart from its hold.
+func (sh *shared) withHold(ctx context.Context, rc *requestCtx, at time.Time) context.Context {
+	if rc != nil && rc.holds {
+		if rc.clone.IsZero() {
+			return ctx
+		}
+		return vfs.WithHold(ctx, max(rc.clone.Sub(rc.start), 0))
+	}
+	return vfs.WithHold(ctx, max(at.Sub(sh.clock.Now()), 0))
 }
 
 // errPanicked is recovery's answer for a handler that panicked: the pipeline

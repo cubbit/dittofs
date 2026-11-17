@@ -168,6 +168,17 @@ func (t *ErrorTable) row(err error, op *Op, v Version) (ErrorRow, bool) {
 	return ErrorRow{Status: t.fault}, false
 }
 
+// hold is the Hold of the row that maps err for op at v: nil where that row
+// has none, or no row maps err.
+func (t *ErrorTable) hold(err error, op *Op, v Version) func(error, time.Time) time.Time {
+	for _, r := range t.rows {
+		if r.matches(err, op, v) {
+			return r.Hold
+		}
+	}
+	return nil
+}
+
 // matches reports whether r maps err for op at v. A nil op matches only a
 // row naming no operation.
 func (r ErrorRow) matches(err error, op *Op, v Version) bool {

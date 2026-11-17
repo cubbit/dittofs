@@ -105,6 +105,12 @@ var ErrPanicked = errPanicked
 
 func SetClock(sh *Shared, c Clock) { sh.clock = c }
 
+// SetFloor lowers the floor each connection's held requests count against
+// before the hold pool.
+func SetFloor(sh *Shared, requests int, bytes int64) {
+	sh.floorRequests, sh.floorBytes = requests, bytes
+}
+
 func (sh *shared) Deadline(next Call) Call                     { return sh.deadline(next) }
 func (sh *shared) Recovery(op *Op, ts *TableSeries) Middleware { return sh.recovery(op, ts) }
 
@@ -115,7 +121,9 @@ func WithAttemptStart(ctx context.Context, t time.Time) context.Context {
 }
 
 func WithHoldDeadline(ctx context.Context, t time.Time) context.Context {
-	return context.WithValue(ctx, holdDeadlineKey{}, t)
+	rc := *ctx.(*requestCtx)
+	rc.hold = t
+	return &rc
 }
 
 // Chain is op's chain, built with the series of its table.
