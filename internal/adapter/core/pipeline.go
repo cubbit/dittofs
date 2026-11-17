@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	crand "crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -46,7 +45,6 @@ type shared struct {
 	log      *slog.Logger
 	tracer   trace.Tracer // nil: no spans
 	sample   uint64       // Deps.SampleRatio as sampled compares it
-	ids      *traceIDs    // every request's trace ID
 	reply    *resources.BufPool
 }
 
@@ -55,9 +53,7 @@ type shared struct {
 // nothing without one, on the runtime's clock, d.Logger, or a logger that
 // discards, and d.Tracer.
 func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
-	var seed [32]byte
-	_, _ = crand.Read(seed[:])
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, sample: sampleBound(d.SampleRatio), reply: reply, ids: &traceIDs{src: rand.NewChaCha8(seed)}, panics: map[[2]string]*lineLimiter{}}
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, sample: sampleBound(d.SampleRatio), reply: reply, panics: map[[2]string]*lineLimiter{}}
 	if sh.log == nil {
 		sh.log = slog.New(slog.DiscardHandler)
 	}
@@ -293,17 +289,17 @@ func newPipeline(sh *shared, st Stages, l link) *pipeline {
 	p := &pipeline{sh: sh, st: st, l: l, status: make(chan struct{}, 1)}
 	_, p.noHold = st.Hold.(noHold)
 	p.label, p.name = sh.label(st.Protocol), "adapter."+st.Protocol
-	// decision: a switched-off operation is matched by Op.Name, read once
-	// per connection from the snapshot it loaded at accept, so a change
-	// reaches connections set up after it, as every setting does. Overturned
-	// if an operator must switch an operation off on connections already
-	// open.
+	// decision: a switched-off operation is matched by Op.Name, case aside,
+	// so the spelling the op label shows works too, read once per connection
+	// from the snapshot it loaded at accept, so a change reaches connections
+	// set up after it, as every setting does. Overturned if an operator must
+	// switch an operation off on connections already open.
 	if l.set != nil {
 		for _, name := range l.set.Common().DisabledOperations {
 			if p.off == nil {
 				p.off = map[string]bool{}
 			}
-			p.off[name] = true
+			p.off[strings.ToLower(name)] = true
 		}
 	}
 	p.ctx, p.cancel = context.WithCancel(l.ctx)
@@ -695,7 +691,7 @@ type track struct {
 // root's ID generator; with a provider that draws its own, the request's
 // lines carry the span's.
 func (p *pipeline) begin(rec *resources.Buf) *track {
-	tr := &track{ctx: p.ctx, label: p.label, protocol: p.st.Protocol, bytes: len(rec.B), id: p.sh.ids.next()}
+	tr := &track{ctx: p.ctx, label: p.label, protocol: p.st.Protocol, bytes: len(rec.B), id: newTraceID()}
 	if p.sh.tracer != nil && sampled(tr.id, p.sh.sample) {
 		tr.ctx, tr.span = p.sh.tracer.Start(adapter.ContextWithTraceID(p.ctx, tr.id), p.name)
 		if id := tr.span.SpanContext().TraceID(); id.IsValid() {
@@ -852,16 +848,12 @@ func sampled(id trace.TraceID, bound uint64) bool {
 	return binary.BigEndian.Uint64(id[8:])>>1 < bound
 }
 
-// traceIDs draws every request's trace ID.
-type traceIDs struct {
-	mu  sync.Mutex
-	src *rand.ChaCha8
-}
-
-func (t *traceIDs) next() (id trace.TraceID) {
-	t.mu.Lock()
-	_, _ = t.src.Read(id[:])
-	t.mu.Unlock()
+// newTraceID draws a request's trace ID from math/rand/v2's own source, a
+// per-thread generator seeded by the runtime, which every connection shares
+// without a lock.
+func newTraceID() (id trace.TraceID) {
+	binary.BigEndian.PutUint64(id[:8], rand.Uint64())
+	binary.BigEndian.PutUint64(id[8:], rand.Uint64())
 	return id
 }
 
@@ -870,7 +862,7 @@ func (t *traceIDs) next() (id trace.TraceID) {
 // needs from the lowest precondition up, then the current filehandle
 // (§4.2). A request it refuses never has its arguments decoded.
 func (p *pipeline) check(op *Op, r *Request) error {
-	if op == nil || p.off[op.Name] {
+	if op == nil || len(p.off) > 0 && p.off[strings.ToLower(op.Name)] {
 		return ErrNotSupported
 	}
 	if r.Version < op.Versions.First || r.Version > op.Versions.Last {

@@ -1307,7 +1307,9 @@ func TestLogLinesCarryTheTraceID(t *testing.T) {
 // and Create with no filehandle their own statuses, and Create before a
 // session the session status, not the filehandle's.
 func TestTheRowChecks(t *testing.T) {
-	off := testproto.Settings{Adapter: settings.Adapter{DisabledOperations: []string{"Echo"}}}
+	// Switched off in capitals, which matches Echo's row as the op label's
+	// echo does: names match case aside, on both sides.
+	off := testproto.Settings{Adapter: settings.Adapter{DisabledOperations: []string{"ECHO"}}}
 	s := newSeamSet(t, testproto.New(adapter.Deps{}), 1<<20, adapter.Deps{}, off)
 	noRole := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2})
 	garbage := body(s.f, testproto.Msg{Op: 99, Version: 1, ID: 1})
@@ -1678,4 +1680,52 @@ func TestARefusalAfterCloseIsNotRun(t *testing.T) {
 			}
 		}
 	})
+}
+
+// lastVersion is a Router declared in the test whose tables' Echo row ends
+// at version 1: an input standing for a row a newer version withdraws.
+type lastVersion struct {
+	core.Router
+	mu     sync.Mutex
+	tables map[*core.OpTable]*core.OpTable
+}
+
+func (l *lastVersion) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	tb, r, err := l.Router.Route(h, prev)
+	if tb == nil {
+		return tb, r, err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.tables == nil {
+		l.tables = map[*core.OpTable]*core.OpTable{}
+	}
+	cp, ok := l.tables[tb]
+	if !ok {
+		c := *tb
+		c.Ops = make(map[uint32]*core.Op, len(tb.Ops))
+		for code, op := range tb.Ops {
+			o := *op
+			if code == testproto.OpEcho {
+				o.Versions.Last = 1
+			}
+			c.Ops[code] = &o
+		}
+		cp = &c
+		l.tables[tb] = cp
+	}
+	return cp, r, err
+}
+
+// A row whose versions end below the request's is refused the version status.
+func TestARowPastItsLastVersionIsRefused(t *testing.T) {
+	s := newSeam(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Router = &lastVersion{Router: st.Router} }}, 1<<20)
+	s.serve(testproto.Msg{Op: testproto.OpNegotiate, Version: 2, ID: 1})
+	if r := s.read(); r.Status != testproto.StatusOK {
+		t.Fatalf("negotiating version 2: %+v", r)
+	}
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 2, ID: 2})
+	if r := s.read(); r.Status != testproto.StatusVersion {
+		t.Errorf("an Echo in version 2, its row ending at 1, is answered %d, want the version status", r.Status)
+	}
 }
