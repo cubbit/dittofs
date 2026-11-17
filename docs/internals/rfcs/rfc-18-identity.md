@@ -511,7 +511,7 @@ type State struct {
 	Keytab     []secrets.Version // the keytab's versions in force, opened, current first (§3.3)
 	Machine    []secrets.Version // the machine password's versions in force, opened, current first, each with its KeyVersion and HandedOver mark (RFC 16 §2.3); empty when not joined (§3.3, §3.5)
 	NTLM       uint64          // the identity.ntlm setting's generation (§3.5)
-	Serial     uint64          // set by Apply, not the node: raised only when the State differs from the current one (§7.2)
+	Serial     uint64          // set by Apply, not the node, under Apply's one lock: raised only when the State differs from the current one (§7.2)
 }
 ```
 
@@ -2078,7 +2078,11 @@ that wrote the change applies it at once.
   than what the resolution read. `Apply` raises
   the serial when the `State` it applies differs from the current one, and
   keeps it for an equal one, so a once-a-second read that changed nothing
-  empties no cache; `Resolver.Current()` answers it (§6.1). A caller whose stamp is
+  empties no cache; `Resolver.Current()` answers it (§6.1). `Apply` holds one
+  lock across its load of the current `State`, the compare, the serial and the
+  store, so two `Apply`s, the reconcile's and a writer's, never read one serial
+  and store two different `State`s under it: serials strictly increase, and
+  each differing `State` carries its own. A caller whose stamp is
   older than the current `State` is neither stored nor served. So a resolution
   that read bob's record before a disable, and finished after the `Apply` that
   delivered it, is not cached under the new `State`, and bob's next call misses
@@ -2317,7 +2321,7 @@ alice's still signs in as alice.
 | ID7 | A squashed caller carries nothing of the principal it replaced. | §10 squash drops SIDs |
 | ID8 | A group closure is used whole or not at all, deny-only principals included. | §10 group cap; deny-only lookup error |
 | ID9 | A directory answer is used no longer than the TTL plus the grace after it was given, read directly or through a cached caller. | §10 stale grace; directory deadline |
-| ID10 | A disabled or deleted local principal is refused on every call admitted after the first `State` that follows the change, at most 1 s after it (§7.2), and no caller resolved under an older `State` is cached. | §10 disable takes effect; in-flight disable |
+| ID10 | A disabled or deleted local principal is refused on every call admitted after the first `State` that follows the change, at most 1 s after it (§7.2), and no caller resolved under an older `State` is cached. | §10 disable takes effect; in-flight disable; one serial per `State` |
 | ID11 | Adapters map, squash and grant nothing; every spelling goes through `vfs.Service`'s `Spell` and `Find`. | [RFC 20 §7.1](rfc-20-adapters.md#7.1%20Imports%20and%20call%20sites)'s import test |
 | ID12 | A security context acts as the principal its last successful sign-in bound it to; its name is never mapped again. | §10 binding; re-authentication |
 | ID13 | A deny-only SID matches deny entries only; it never grants, through an ACL or a share grant. | §10 deny-only SIDs |
@@ -2393,6 +2397,7 @@ RFC 16's conformance suite's, not repeated here.
 | roles grant nothing | 2 | [RFC 23 §12](rfc-23-control-plane.md#12.%20Conformance)'s §5.1 check, which also asserts that the account holds no spelling. | — |
 | disable takes effect | 2 | bob holds an SMB open and an NFS GSS context, both over Kerberos; make one call on each, a cache hit. Disable bob; before the `State` is applied, the next call is still served; apply it (fake clock): every call from both is refused. Over a local NTLM session, never cached (§7.1), bob's first call after the disable is refused with no `State` applied. | a cached caller outliving a disable |
 | in-flight disable | 1 | Block bob's record read with a fault wrapper around the store. Disable bob and apply the new `State`. Release the read: nothing cached under the new `State`, and bob's next call misses and is refused. Again with `Resolve` paused by a hook just after its `State` load, before its first store read: the same outcome. | a stale resolution stamped with the new generation |
+| one serial per `State` | 1 | Apply two differing `State`s concurrently, many times over: the two stored `State`s carry distinct serials, the later the greater; apply an equal `State`: the serial is kept. With `identity.ntlm` off in the second, a pass-through NTLM caller resolved under the first, with `Resolve` paused by a hook after its `State` load while the second is applied: neither stored nor served once the second is current. | two differing `State`s sharing one serial, so a caller resolved under the superseded one is served |
 | group cap | 1 | A principal in 1 025 groups: refused, never resolved with fewer. A nested group whose read fails mid-closure: the call fails. A membership cycle: resolved. | truncated group lists; a cycle read as a failure |
 | owner strings | 2 | Over `sec=krb5`, `chown` to `alice@corp.example` and to `alice@other.example`: success, then `NFS4ERR_BADOWNER`. Over `AUTH_SYS`, `GETATTR`: numeric owners. A file owned by a deleted user: `nobody@…`, and over SMB `S-1-0-0`. | names mapped by guesswork |
 | PAC | 1 | A ticket whose PAC server signature is corrupted: refused. A PAC changed only in padding between buffers, which the decoder skips: refused. A server signature of an unkeyed type over the same bytes, and one of the AES128 type under an AES256 key: refused. In a keytab realm other than the directory's, a ticket with no PAC, and one with a PAC holding no logon-information buffer, for a user in a store group: accepted, the group applies. In the directory's realm, the same two tickets for a directory user, and for `backup`, a name only a local user holds: each `ErrLogonFailure`, counted `no_pac`, with the record's schema `ad` and again with it `rfc2307`; with `require_pac` false: accepted. There `backup` is reached only through a `krb` row linked to the local `backup`, which stores the directory `backup`'s SID: its ticket with a PAC binds the local `backup`; delete the directory `backup` and create another under the name: its ticket is refused, never bound to the local one. Linking a name the directory does not hold: refused, naming it. A machine minted from a ticket with a PAC signs in again: bound. A PAC carrying a SID of the installation's own domain for a local group with a share grant: that SID dropped, the grant not given. A PAC carrying a universal group's SID from a second domain of the forest: that SID dropped and counted with reason `other_domain`, and the sign-in succeeds. | an unverified or unfiltered PAC trusted; every modern KDC refused; a PAC-less ticket landing on a same-named local user; an operator's link no ticket can reach, or one a reused name inherits |

@@ -338,9 +338,11 @@ that needs it.
   - §6.1's `Resolver` gains `Current() uint64`, the serial of the `State` a resolution starting now
     reads, so S1's surface gains it; epic 3's T3.3 adds it on `*Server`. The serial is a field of
     `State` (§2.6), so `Resolve` stamps the serial of the `State` it loaded and `Current()` is one
-    load of the current `State`. `Apply` raises the serial
-    only when the applied `State` differs, and `Caller.Built` holds it, not the principals
-    generation, so `identity.ntlm` turned off with no principal change still drops cached callers;
+    load of the current `State`. `Apply` raises the serial only when the applied `State` differs,
+    under one lock across its load, compare and store, so two concurrent `Apply`s never give two
+    differing `State`s one serial (§10's "one serial per `State`" row), and `Caller.Built` holds
+    it, not the principals generation, so `identity.ntlm` turned off with no principal change still
+    drops cached callers;
   - the caller cache is admission's, not identity's (§2.6), and holds the whole `Caller`, grants
     and flags included (§7.1), keyed also on the read-only cause admission handed `Resolve`, so it
     needs neither the netgroups' nor the share list's version;
@@ -1287,8 +1289,8 @@ proof.
 - RFC 18 ID1 (two identities sharing a uid get different proof keys and never share an entry), ID5
   (a store error injected during resolution refuses, never anonymous), ID8, ID10 and ID14 (a `none`
   grant refuses where a group grant would admit) hold at the resolver's layer;
-- RFC 18 §10's rows "in-flight disable", "steady raises" and "group cap" pass, and "forwarded
-  identity"'s unit row;
+- RFC 18 §10's rows "in-flight disable", "one serial per `State`", "steady raises" and "group cap"
+  pass, and "forwarded identity"'s unit row;
 - RFC 18 §7.1's "whole value" rule holds by a reflection test: changing each field of `Identity` and
   `Evidence` in turn, a deny-only SID moved into `SIDs` among them, changes `Key()`, and changing
   each input of `callerKey` changes it, so a field added later fails the test until the key covers
