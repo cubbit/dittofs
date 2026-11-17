@@ -26,12 +26,17 @@ type tailRecord struct {
 	First   []byte
 }
 
-// proof is the tail proof's answer: the records the re-append phase takes
-// and the segments whose proof sync failed. The marks phase reads Reappends
-// for its lost-tail check.
+// proof is the tail proof's answer: the records the re-append phase takes,
+// the segments whose proof sync failed, and — one entry per segment whose
+// tail it actually read — the end of the last record that still held after
+// its verdicts. The marks phase reads Reappends and HeldEnd for its
+// lost-tail check: a record it tore or judged corrupt holds nothing, so the
+// walk's own RecordsEnd — which counts a record by its header alone — would
+// answer the check over a record that verifies nowhere.
 type proof struct {
 	Reappends     []tailRecord
 	FailedWindows []core.SegmentID
+	HeldEnd       map[core.SegmentID]int64
 }
 
 // markerSync is the marker flow's answer for the one sync it made for a
@@ -50,9 +55,19 @@ const (
 	markerSyncFailed
 )
 
-// runTailProof proves on the device the two things a crash could leave
+// runTailProof proves on the device the things a crash could leave
 // unproven: every seal marker no successor names, and the tail of every
 // segment no header, seal or sync proves.
+//
+// The marks' half: a candidate whose first read fails BELOW the Through of
+// the mark naming its segment is never classed by the tail rules below, for
+// the mark is the caller's durable record that a sync covered its bytes — a
+// sync the classing never read. It is corruption the mark names, a synced
+// corrupt drop with its segment damaged and ended, a placement that raises
+// the marks' presence map no more and a copy the re-append never keeps; the
+// ended cut keeps the classing's floors and never crosses below the Through.
+// A first-read failure at or above the Through, and every record of a
+// segment no mark names, meet the tail rules as they always did.
 //
 // The marker half: the classing answered fateSealToProve for each unnamed
 // sealed segment, its walk having seen the marker through the reader, in the
@@ -78,7 +93,8 @@ const (
 // verifies there stays where it is; one the device does not hold — its
 // re-read short, rotted, or refused — is lost by the device, handed to the
 // re-append with its first copy, and the segment ended; one whose first
-// read does not verify is torn — never written, so it is re-appended
+// read does not verify — no mark proving it synced, the marks' half above
+// having judged its own — is torn — never written, so it is re-appended
 // nowhere and reported nowhere. Every torn placement is collected across
 // the whole phase, and once every fate is settled the phase re-runs the
 // rebuild over the attached segments with each collected placement excluded
@@ -114,7 +130,7 @@ const (
 // keeps the fate the classing wrote. Nothing is appended here: the phase's
 // only writes reach storage through the rebuild's reads alone, and the cut
 // its fates name is a later phase's.
-func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, _ []core.SyncMark) error {
+func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, marks []core.SyncMark) error {
 	// One scan per own segment, by id: every fate the loop proves owns one,
 	// the classing having answered a fate per scan it was handed. Where the
 	// proof judges a record torn, the second pass below replaces these scans
@@ -265,6 +281,14 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 	// verdict reached goes.
 	tornSoFar := make(map[index.RecordAt]bool)
 
+	// The marks' per-segment sync points, the same last-wins value the
+	// raise's own set keeps: a first-read failure below one is never a
+	// crash's tear, and no cut the proof answers crosses below it.
+	throughOf := make(map[core.SegmentID]int64, len(marks))
+	for _, m := range marks {
+		throughOf[core.SegmentID(m.Segment)] = m.Through
+	}
+
 	for _, id := range pending {
 		sc, ok := scans[id]
 		if !ok {
@@ -274,7 +298,7 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 			// corruption verdict on the directory's bytes.
 			return fmt.Errorf("recovery: segment %d holds a fate no scan answers", id)
 		}
-		if err := proveTail(ctx, rd, st, expect, sc, fateByID[id], markerSyncOf[id], tornSoFar); err != nil {
+		if err := proveTail(ctx, rd, st, expect, sc, fateByID[id], markerSyncOf[id], throughOf[id], tornSoFar); err != nil {
 			return err
 		}
 	}
@@ -291,11 +315,14 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 
 	// The re-append takes the records in order, and the phases that re-prove
 	// a failed window its segments in order, whatever order the fates were
-	// visited in.
+	// visited in. The corrupt drops and damaged ids the proof added join the
+	// sorted answers the raise left, so the state keeps the ordering its
+	// contract names.
 	slices.SortStableFunc(st.Proof.Reappends, func(a, b tailRecord) int {
 		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.At, b.At))
 	})
 	slices.Sort(st.Proof.FailedWindows)
+	sortTails(&st.Tails)
 	return nil
 }
 
@@ -333,12 +360,27 @@ func rebuildExcludingTorn(ctx context.Context, deps Deps, rd *reader, st *State,
 	return nil
 }
 
+// sortTails orders the tails' mutable lists the way their contracts name
+// them: the damaged ids ascending, the corrupt drops by segment then by the
+// offset of the record each names. The classing and the raise sort their own
+// answers; this sorts the state wherever a later phase added to them.
+func sortTails(tl *tails) {
+	slices.Sort(tl.Damaged)
+	slices.SortStableFunc(tl.Corrupt, func(a, b corruptRecord) int {
+		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.at(), b.at()))
+	})
+}
+
 // proveTail proves on the device every record of one segment the classing
 // left unproven, and settles the segment's fate where a record did not
-// prove. Nothing is appended: the flow's only reaches into storage are its
-// reads and, where the marker flow made none, the one sync between the two
-// of them.
-func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID, sc *segmentScan, fate *segmentFate, marker markerSync, tornSoFar map[index.RecordAt]bool) error {
+// prove. through is the point a sync mark names as reached in this segment,
+// zero where no mark names it: a first-read failure below it is never a
+// crash's tear — the mark is the caller's durable record that the sync
+// covered the record's bytes, so the failure is corruption the mark names,
+// and no cut the proof answers crosses below it. Nothing is appended: the
+// flow's only reaches into storage are its reads and, where the marker flow
+// made none, the one sync between the two of them.
+func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID, sc *segmentScan, fate *segmentFate, marker markerSync, through int64, tornSoFar map[index.RecordAt]bool) error {
 	if marker != markerSyncFailed && (sc.SyncedThrough >= sc.RecordsEnd || sc.RecordsEnd <= format.SegmentHeaderSize) {
 		// No record can end past the synced-through the segment's own records
 		// name when the point reaches the last record's end, and a segment
@@ -367,12 +409,41 @@ func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID
 	verifiedAt := make(map[int64]bool, len(cands))
 	heldEnd := heldBelow
 	torn, tornAt := false, int64(0)
+	syncedCorrupt := false // a first-read failure a mark proved synced
 	for _, h := range cands {
 		rec, ok, err := tailFirst(rd, expect, sc.ID, name, h.Offset)
 		if err != nil {
 			return err
 		}
 		if !ok {
+			// The feed raised the marks' map for this placement judged by
+			// the header the walk verified and never the body; this read
+			// judged the body, so the copy raises the map no more. Only
+			// the content kinds feed, so only they ever raised it.
+			if h.Kind <= format.KindUnmark {
+				if m := st.Kinds.MarkedOnDisk[h.Seq]; m > 0 {
+					st.Kinds.MarkedOnDisk[h.Seq] = m - 1
+				}
+			}
+			if h.Offset < through {
+				// A record the mark proves synced is never a crash's tear:
+				// the sync covered its bytes, so a failure there is
+				// corruption the mark names — a synced corrupt drop, its
+				// segment damaged and ended below, never a torn tail whose
+				// cut would seal a record the sync answered for. Its index
+				// entry stands as the classing leaves a rotted payload's:
+				// the read that serves its extent catches the rot through
+				// the corrupt path. No copy verifies, so nothing re-appends.
+				st.Tails.Corrupt = append(st.Tails.Corrupt, corruptRecord{
+					Segment: sc.ID,
+					Drop: droppedRecord{Header: h, Synced: true,
+						Err: fmt.Errorf("%w: segment %d: the %s at %d fails its read below a mark's sync through %d",
+							core.ErrCorrupt, sc.ID, h.Kind, h.Offset, through)},
+				})
+				markDamaged(st, sc.ID)
+				syncedCorrupt = true
+				continue
+			}
 			// A record whose bytes read and do not verify is torn: never
 			// re-appended, never reported, never damage, and held nowhere
 			// once the second pass below excludes its placement — content
@@ -489,7 +560,16 @@ func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID
 		}
 	}
 
-	if !torn && !lost && !windowFailed {
+	// The proof's held end, judged over its own verdicts: the end of the
+	// last record that still held. The lost-tail check reads it in place of
+	// the walk's RecordsEnd, which counts a record the first read here
+	// failed as if it held.
+	if st.Proof.HeldEnd == nil {
+		st.Proof.HeldEnd = make(map[core.SegmentID]int64)
+	}
+	st.Proof.HeldEnd[sc.ID] = heldEnd
+
+	if !torn && !lost && !windowFailed && !syncedCorrupt {
 		// Everything proved whole, the sync carried: zero changes — the
 		// fate the classing wrote stands.
 		return nil
@@ -497,15 +577,18 @@ func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID
 
 	// The fate, once per segment after the flow. A segment with nothing
 	// holding past its first torn record — no record lost, no window failed,
-	// every bad verdict torn and no record held below a torn one — keeps
-	// the torn tail's own rule: the cut is the FIRST torn record's start and
-	// the segment is cut there and sealed, never emptied, for a crash that
-	// tore a stream's last write costs a seal, not a segment's whole content.
-	// Any lost record, any failed sync, and a torn record below one that
-	// held — torn-slot rule, what held past it would be discarded by a cut
-	// at the torn one's start — end the segment instead: a lost record is
-	// re-appended and its extent claimed, and a failed sync leaves bytes the
-	// device may never have taken, so a seal would prove nothing on it.
+	// no corruption a mark proved, every bad verdict torn and no record held
+	// below a torn one — keeps the torn tail's own rule: the cut is the FIRST
+	// torn record's start and the segment is cut there and sealed, never
+	// emptied, for a crash that tore a stream's last write costs a seal, not
+	// a segment's whole content. Any lost record, any failed sync, any
+	// corruption a mark proved — its bytes were synced, and a seal over a cut
+	// below them would never answer for the record the sync acknowledged —
+	// and a torn record below one that held — torn-slot rule, what held past
+	// it would be discarded by a cut at the torn one's start — end the
+	// segment instead: a lost record is re-appended and its extent claimed,
+	// and a failed sync leaves bytes the device may never have taken, so a
+	// seal would prove nothing on it.
 	//
 	// The ended cut is the END of the last record that held, floored at the
 	// segment's first record slot when none did, and the torn-tail cut keeps
@@ -514,10 +597,13 @@ func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID
 	// record containing the point is one of the candidates, so a point inside
 	// a record the flow did not hold would leave half a record below the cut,
 	// and the cut stays at the record the straddler's rule names instead.
-	// The cut never passes the file's size, and the classing's own non-zero
-	// offset is never crossed, so neither of its floor rules is broken.
+	// The point a mark names reached raises the cut the same way, for it is
+	// one more sync the segment's bytes were proven whole by, this one the
+	// caller's own answer. The cut never passes the file's size, and the
+	// classing's own non-zero offset is never crossed, so neither of its floor
+	// rules is broken.
 	kind, off := fateEnded, heldEnd
-	if !lost && !windowFailed && torn && heldEnd <= tornAt && fate.Kind != fateEnded {
+	if !lost && !windowFailed && !syncedCorrupt && torn && heldEnd <= tornAt && fate.Kind != fateEnded {
 		// The last term keeps the classing's own verdict: a segment it
 		// ended — over a torn slot, a torn header — is ended whatever this
 		// flow found in its tail, for a torn tail's cut and seal would
@@ -530,6 +616,9 @@ func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID
 	}
 	if sc.SyncedThrough > off && !unheldStraddles(cands, verifiedAt, sc.SyncedThrough) {
 		off = sc.SyncedThrough
+	}
+	if through > off && !unheldStraddles(cands, verifiedAt, through) {
+		off = through
 	}
 	off = min(off, sc.Size)
 	// decision: the classing's own non-zero offset is minned in although no

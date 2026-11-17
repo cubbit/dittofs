@@ -234,6 +234,39 @@ func TestReappendTargetSyncFailureRetriesOnce(t *testing.T) {
 	})
 }
 
+// TestAFailedReappendTargetTakesAnEndedFate holds the failed target's second
+// half: the first target, whose sync failed, is a segment now — never a pool
+// spare, for the phase removed its adoption — and a segment the open keeps
+// only when a fate names it: the copier ended it in the seal writer's own
+// throwaway ledger, which no later phase reads, so the phase ends it in the
+// rebuilt fates too, or nothing seeds it, nothing ends it and no phase unlinks
+// it. The ended fate is what the assembly seeds — Ended, a segment the
+// emptying takes — and the copy itself lands in the second spare as the
+// retry's own test reads.
+func TestAFailedReappendTargetTakesAnEndedFate(t *testing.T) {
+	r, good, bAt := deviceLostB(t)
+	want := reappendOf(t, 2, bAt, good)
+	first, second := core.SegmentID(8), core.SegmentID(9)
+	d := r.reserveDeps(first, second)
+	r.failSyncs(format.SegmentName(first), 0) // every sync of the first target fails
+
+	st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
+	if err != nil {
+		t.Fatalf("Run over a target whose first sync fails: %v", err)
+	}
+
+	wantTheCopy(t, r, st, 0x8100, want, format.SegmentHeaderSize, second)
+	wantFate(t, st, first, fateEnded, 0)
+	if state, serr := st.Assembled.Set.State(first); serr != nil || state != segment.Ended {
+		t.Errorf("the assembly seeded the failed target %v (err %v), want %v: its ended fate is what the emptying reads", state, serr, segment.Ended)
+	}
+	for _, a := range st.Spares.Adopted {
+		if a.ID == first {
+			t.Errorf("spares: the failed target %d is among the adoptions %+v, want it a data segment every phase reads by its fate", first, st.Spares.Adopted)
+		}
+	}
+}
+
 // TestOpenAtMaximumStillReappends holds R54: the open's re-appends draw on the
 // repack reserve — never on a share's limit, and charging no share a byte —
 // so a journal whose every other spare class is spent before the crash still

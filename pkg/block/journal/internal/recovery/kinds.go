@@ -130,18 +130,21 @@ type kindResults struct {
 	Charging map[core.SegmentID]map[core.ShareTag]Charge
 
 	// MarkedOnDisk holds one entry per sequence number a caller's sync mark
-	// names, false until the feed met a record the walks attached that
-	// carries the number and true then — save one the remainder pass
-	// confined, which raises nothing: its kept run failed the very read
-	// that would prove it, so it verifies nowhere. Rule-withheld copies
-	// raise, for a record the failed list, a loss or a forget withheld is
-	// as sound as any fed one, judged by the header the walk verified. The
+	// names, a count of the walk-attached copies carrying the number that
+	// the feed met — save one the remainder pass confined, which raises
+	// nothing: its kept run failed the very read that would prove it, so it
+	// verifies nowhere. Rule-withheld copies raise, for a record the failed
+	// list, a loss or a forget withheld is as sound as any fed one, judged
+	// by the header the walk verified. The tail's proof lowers the count by
+	// one for each copy its first read judged bad, for a copy judged rotten
+	// or torn holds nothing and its placement verifies the record nowhere,
+	// the record's only honest copies being what raises the number. The
 	// lost-tail check reads the map, with the aside headers and the
 	// re-append set, as the answer to whether the number names a copy that
 	// verifies anywhere; the aside kinds never feed, so their headers the
 	// check answers from the scans themselves. Nil until the rebuild is
 	// run under marks.
-	MarkedOnDisk map[core.Seq]bool
+	MarkedOnDisk map[core.Seq]int
 }
 
 // Charge is one share tag's record bytes on one segment: the whole sizes of
@@ -887,11 +890,12 @@ type feedFilter struct {
 	// losses indexes, per named seq, the collected losses naming it;
 	// forgets, per tag, the collected forgets of the tag; drops, per failed
 	// seq, the collected read-only note of the seq; marked is the marked-seq
-	// map the feed raises — nil until the marks' sequence numbers reach it.
+	// count map the feed raises — nil until the marks' sequence numbers
+	// reach it.
 	losses  map[core.Seq][]int
 	forgets map[core.ShareTag][]int
 	drops   map[core.Seq]int
-	marked  map[core.Seq]bool
+	marked  map[core.Seq]int
 }
 
 // newFeedFilter makes the filter's lookups over the collected losses,
@@ -963,7 +967,7 @@ func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 	f.note(rec)
 	if _, named := f.marked[rec.Numbers.Seq]; named &&
 		!f.ks.confined[index.RecordAt{Segment: rec.Segment, Offset: rec.At}] {
-		f.marked[rec.Numbers.Seq] = true
+		f.marked[rec.Numbers.Seq]++
 	}
 	ks := f.ks
 	seq := rec.Numbers.Seq

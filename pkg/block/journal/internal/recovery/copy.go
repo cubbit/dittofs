@@ -106,8 +106,15 @@ func (c *copier) copy(ctx context.Context, recs []copyInput) (target core.Segmen
 	// refusal the retry answers is per batch and a spill would leave some
 	// records copied and others held over a failed spare. The tail's records
 	// are at most one sync bound's worth per stream, which a crash's lost
-	// tails across every stream together can exceed. Overturned by an open
-	// whose re-append set measures past one cap, which then needs the packing
+	// tails across every stream together can exceed. The refusal recurs on
+	// every retry with the sources intact — nothing an open changes moves
+	// the re-append set the directory and the caller's marks settle — so a
+	// crash whose tails measure past one cap wedges the open until the
+	// operator's marks move, and the wedged open is the honest answer until
+	// one changes it. The cap is also not the only ceiling: the count of
+	// reserve spares is the second, refusing the same way below when no
+	// spare is ready and none can be made. Overturned by an open whose
+	// re-append set measures past one cap, which then needs the packing
 	// loop that seals a full target and draws another.
 	need := end + format.SealMarkerSize + int64(len(recs))*format.CatalogEntrySize + format.TrailerSize
 	if need > c.deps.SegmentCap {
@@ -164,9 +171,11 @@ func (c *copier) draw() (core.SegmentID, bool) {
 // the marker, the footer and the trailer. The seal's marker ends the file
 // where its records end, and the full seal puts the trailer in the cap's last
 // bytes, so the cap-sized spare needs no truncation. A write or sync that
-// fails ends the target in the ledger before the error answers — a failed
-// segment, never sealed — for a segment whose bytes the device never took
-// whole is one no marker may speak for.
+// fails ends the target in the seal writer's own ledger — the throwaway set
+// this write builds, whose end never reaches the rebuilt state — and the
+// phase ends it in the rebuilt fates once its retry lands, before the error
+// answers — a failed segment, never sealed — for a segment whose bytes the
+// device never took whole is one no marker may speak for.
 func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodies []format.RecordBody) error {
 	// The ledger the seal writer hands its steps: a spare accounted at its
 	// cap, taken as the segment it becomes for this one write, and ended by
@@ -267,6 +276,18 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	st.Spares.Adopted = slices.DeleteFunc(st.Spares.Adopted, func(a AdoptedSpare) bool {
 		return slices.Contains(c.taken, a.ID)
 	})
+	// The targets the open failed to seal end here as well, in the rebuilt
+	// fates the later phases read: the seal writer already ended them in its
+	// own throwaway ledger, an answer nothing else holds, and a failed target
+	// the fates do not name would seed Active with unsynced record copies
+	// and no fate to end or unlink it. Offset zero is the ending whole —
+	// nothing durable of a failed target was ever proven, so no record
+	// exists to cut behind.
+	for _, id := range c.taken {
+		if id != target {
+			endSegment(st, id)
+		}
+	}
 
 	// The repoint, record by record at the placement the copier packed it
 	// into: only the payload kinds hold pieces the index serves, so only they

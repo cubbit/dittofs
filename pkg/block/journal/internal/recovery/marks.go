@@ -164,6 +164,13 @@ func runMarksRaise(ctx context.Context, _ Deps, _ *reader, st *State, _ core.Jou
 			d.Synced = true
 			st.Tails.Corrupt = append(st.Tails.Corrupt, corruptRecord{Segment: s, Drop: d})
 			markDamaged(st, s)
+			// The classing floors every cut a segment's own facts prove —
+			// never below a synced-through its records name — and a mark's
+			// Through is one more such sync, this one the caller's: the torn
+			// verdict this fold reclassifies as corruption was cut below it,
+			// and a cut below a mark's Through would seal a synced record
+			// away.
+			floorFate(st, s, min(m.Through, sc.Size))
 		}
 		// The header slot of a segment whose header did not verify: the
 		// classing calls it torn where no proof covers it, damaged where one
@@ -211,10 +218,7 @@ func runMarksRaise(ctx context.Context, _ Deps, _ *reader, st *State, _ core.Jou
 		res.fates[p] = onDiskVerdict(st, p)
 	}
 
-	slices.Sort(st.Tails.Damaged)
-	slices.SortStableFunc(st.Tails.Corrupt, func(a, b corruptRecord) int {
-		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.at(), b.at()))
-	})
+	sortTails(&st.Tails)
 	st.Marks = res
 	return nil
 }
@@ -229,8 +233,10 @@ func runMarksRaise(ctx context.Context, _ Deps, _ *reader, st *State, _ core.Jou
 // written, zeroed and taken nothing, and every retry meets the same loss
 // over the same directory.
 //
-// A mark's tail is lost when its segment is on disk with its last verifying
-// record, if any, ending below the mark's Offset, and no copy of the record
+// A mark's tail is lost when its segment is on disk with the last record
+// that still held after the proof — the walk's last verifying record where
+// the proof reached no tail, its own held end where it did — ending below
+// the mark's Offset, and no copy of the record
 // carrying the mark's Sequence verifies anywhere — seqVerifies answers that
 // one question over the feed's map, the aside headers the scans keep and
 // the records the tail's proof handed to the re-append from first reads
@@ -256,13 +262,19 @@ func runMarksLostTail(ctx context.Context, _ Deps, _ *reader, st *State, _ core.
 			// retired segment, when a lost directory entry is seen in the field.
 			continue
 		}
-		// The last verifying record's end, the walk's own answer. A
-		// catalogue-built scan leaves it zero with its End at the seal marker,
-		// where the records of the segment it proved ended; no scan End lies
-		// below the header's own size.
+		// The end of the last record that still held, judged over the
+		// post-proof state: the walk's own answer where the proof reached no
+		// tail of the segment, and the proof's where it did — a record it
+		// tore or judged corrupt holds nothing, whatever the walk attached.
+		// A catalogue-built scan leaves RecordsEnd zero with its End at the
+		// seal marker, where the records of the segment it proved ended; no
+		// scan End lies below the header's own size.
 		end := sc.RecordsEnd
 		if end == 0 {
 			end = sc.End
+		}
+		if held, proved := st.Proof.HeldEnd[core.SegmentID(m.Segment)]; proved {
+			end = held
 		}
 		if end >= m.Offset {
 			continue // the sync's last record is where the mark says it ended
@@ -276,15 +288,16 @@ func runMarksLostTail(ctx context.Context, _ Deps, _ *reader, st *State, _ core.
 }
 
 // seqVerifies answers whether a copy of the record carrying seq verifies
-// anywhere: the feed's map — raised for every walk-attached copy save one
-// the remainder pass confined, whose kept run failed the one read an open
-// makes of a payload, so the converted records of every segment answer by
-// it wherever they sit, rule-withheld copies among them — the aside headers
-// the scans keep, for an aside kind never feeds, and the records the
-// tail's proof verified at their first reads and handed to the re-append,
-// which the re-append phase will write back.
+// anywhere: the feed's map, one count per walk-attached copy save one the
+// remainder pass confined, whose kept run failed the one read an open makes
+// of a payload, and less one copy whose first read the tail's proof judged
+// bad, for a copy judged rotten or torn holds nothing and its placement
+// verifies the record nowhere — the aside headers the scans keep, for an
+// aside kind never feeds, and the records the tail's proof verified at
+// their first reads and handed to the re-append, which the re-append phase
+// will write back.
 func seqVerifies(st *State, seq core.Seq) bool {
-	if st.Kinds.MarkedOnDisk[seq] {
+	if st.Kinds.MarkedOnDisk[seq] > 0 {
 		return true
 	}
 	for i := range st.Rebuilt.Scans {
@@ -319,17 +332,17 @@ func refuseLostTail(m core.SyncMark) error {
 }
 
 // markedSeqs seeds the map the feed raises: one entry per sequence number a
-// caller's sync mark names, left false until a walk-attached copy carrying
-// the number raises it true. Seeded by the marks' own numbers so the feed's
+// caller's sync mark names, left zero until a walk-attached copy carrying the
+// number raises it one. Seeded by the marks' own numbers so the feed's
 // per-record lookup costs one miss over the marks alone, never a write per
 // record of the journal.
-func markedSeqs(marks []core.SyncMark) map[core.Seq]bool {
+func markedSeqs(marks []core.SyncMark) map[core.Seq]int {
 	if len(marks) == 0 {
 		return nil
 	}
-	m := make(map[core.Seq]bool, len(marks))
+	m := make(map[core.Seq]int, len(marks))
 	for _, mk := range marks {
-		m[core.Seq(mk.Sequence)] = false
+		m[core.Seq(mk.Sequence)] = 0
 	}
 	return m
 }
@@ -379,6 +392,20 @@ func endSegment(st *State, id core.SegmentID) {
 	}
 	st.Tails.Fates = append(st.Tails.Fates, segmentFate{ID: id, Kind: fateEnded})
 	slices.SortFunc(st.Tails.Fates, func(a, b segmentFate) int { return cmp.Compare(a.ID, b.ID) })
+}
+
+// floorFate raises segment id's cut to at least off, never lowering one and
+// never cutting into an ended fate that owns no cut at all — its zero
+// offset is the ending whole, not a cut to raise. The classing floors every
+// cut at the synced-through a segment's own records name; this answers the
+// same fold for a proof the classing never read, so a cut never crosses
+// below bytes a sync answered for.
+func floorFate(st *State, id core.SegmentID, off int64) {
+	for i := range st.Tails.Fates {
+		if f := &st.Tails.Fates[i]; f.ID == id && f.Offset != 0 && f.Offset < off {
+			f.Offset = off
+		}
+	}
 }
 
 // markDamaged folds segment id into the damaged set, once: a torn fact a

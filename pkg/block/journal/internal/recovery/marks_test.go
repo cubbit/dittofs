@@ -170,7 +170,17 @@ func TestMarkProvesARottedCloneTargetBelowThrough(t *testing.T) {
 			} else if len(st.Tails.Damaged) != 0 {
 				t.Errorf("Damaged got %v, want none: a drop above the mark's Through was never proven synced", st.Tails.Damaged)
 			}
-			wantFate(t, st, id, fateTornTail, format.SegmentHeaderSize)
+			if leg.want {
+				// The classing floors every cut at a sync its facts name; the
+				// mark's Through is one more such fact, so the fold floors the
+				// torn verdict it reclassifies: the truncating phase would seal
+				// the segment below the mark's Through otherwise, and a reopen
+				// that still presents the same mark would wedge on the
+				// lost-tail refusal.
+				wantFate(t, st, id, fateTornTail, droppedEnd)
+			} else {
+				wantFate(t, st, id, fateTornTail, format.SegmentHeaderSize)
+			}
 		})
 	}
 }
@@ -500,8 +510,8 @@ func TestLostTailWithACopyElsewhereIsNotLost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the copy in segment %d answered err %v, want the open to proceed over a record that verifies elsewhere", other, err)
 	}
-	if !st.Kinds.MarkedOnDisk[200] {
-		t.Errorf("the feed left the mark's sequence 200 unraised, so a record the walks attached carrying it went unseen")
+	if got := st.Kinds.MarkedOnDisk[200]; got == 0 {
+		t.Errorf("the feed left the mark's sequence 200 unraised (%d copies seen), so a record the walks attached carrying it went unseen", got)
 	}
 }
 
@@ -565,14 +575,116 @@ func TestLostTailOverAConfinedCopyRefuses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the retired mark answered err %v, want the open that pins the confined copy's facts to proceed", err)
 		}
-		if st.Kinds.MarkedOnDisk[200] {
-			t.Errorf("the feed raised the confined copy's sequence 200, want it quiet: its kept run failed the read that would prove it")
+		if got := st.Kinds.MarkedOnDisk[200]; got != 0 {
+			t.Errorf("the feed raised the confined copy's sequence 200 %d times, want it quiet: its kept run failed the read that would prove it", got)
 		}
 		if _, ok := st.Rebuilt.Index.Lookup(file, 64); ok {
 			t.Errorf("the index holds the confined copy's kept run [64,128), want a miss: a confined record feeds nothing")
 		}
 		if !slices.Contains(st.Tails.Damaged, 4) {
 			t.Errorf("Damaged got %v, want segment 4 among it: the open read the confined copy and judged it", st.Tails.Damaged)
+		}
+	})
+}
+
+// TestASyncedRecordTheDeviceRotBelowThrough holds R62's answer for the shape
+// where nothing but the mark proves the record's sync: A durable, C's header
+// intact with its payload rotted on the device — no cached copy anywhere, the
+// walk attaching C by its header alone — and the mark naming C's sync, its
+// Through and Offset at C's end, C's own sequence. The tail's proof reads C's
+// payload and it fails: below the mark's Through that is never a crash's
+// tear — it is corruption the mark names, a synced corrupt drop with its
+// segment ended, never a torn tail whose cut would seal a synced record away.
+// The legs split by the one fact that decides the open: no copy of C
+// anywhere refuses the open naming the mark's own facts, and C whole in
+// another segment — the copy that serves in the rotted one's place — lets
+// the open proceed over the corruption it reports.
+func TestASyncedRecordTheDeviceRotBelowThrough(t *testing.T) {
+	// rottedTail plants the probe over a fresh directory, plus — where twin —
+	// a second segment holding C's copy whole, and answers the rig, the
+	// marked segment's id and the offsets A and C end at.
+	rottedTail := func(t *testing.T, twin bool) (r *rig, id core.SegmentID, endA, endC int64) {
+		t.Helper()
+		r = newRig(t)
+		r.writeFormat()
+		id = core.SegmentID(2)
+		endA = endAfter(seqSyncedRec(199, 0x4100, 0))
+		c := seqSyncedRec(200, 0x8100, endA)
+		endC = endA + int64(len(c.Bytes()))
+		full := buildSeg(id, seqSyncedRec(199, 0x4100, endA), c)
+		durable := slices.Clone(full)
+		durable[endA+format.RecordHeaderSize+8+2] ^= 0xff // C's payload, rotted on the device
+		r.plantSeg(id, durable)
+		if twin {
+			endTwin := endAfter(seqSyncedRec(200, 0x8100, 0))
+			r.plantSeg(4, buildSeg(4, seqSyncedRec(200, 0x8100, endTwin)))
+		}
+		return r, id, endA, endC
+	}
+
+	t.Run("no copy anywhere refuses the open", func(t *testing.T) {
+		r, id, _, endC := rottedTail(t, false)
+		name := format.SegmentName(id)
+		segBytes := r.fileBytes(name)
+		removes := r.seam.Calls(kit.OpRemove)
+		writes := r.seam.Calls(kit.OpWrite)
+
+		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
+
+		if !errors.Is(err, core.ErrNotImplemented) {
+			t.Fatalf("the synced record the device rotted answered err %v, want ErrNotImplemented refusing the open: a synced record is never a torn tail", err)
+		}
+		for _, want := range [3]string{
+			fmt.Sprintf("segment %d", id),
+			fmt.Sprintf("sequence %d", 200),
+			fmt.Sprintf("ending at %d", endC),
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal %q does not name %s, the mark's own fact", err.Error(), want)
+			}
+		}
+		if !reflect.DeepEqual(st, State{}) {
+			t.Errorf("the refused open returned state %+v, want the zero State: a refusal serves nothing", st)
+		}
+		if got := r.fileBytes(name); !slices.Equal(got, segBytes) {
+			t.Errorf("the refused open changed the marked segment's bytes, got %x, want %x the bytes it held", got, segBytes)
+		}
+		if got, want := r.seam.Calls(kit.OpRemove), removes; got != want {
+			t.Errorf("the refused open removed something, got %d removes, want %d, the count before the run", got, want)
+		}
+		if got, want := r.seam.Calls(kit.OpWrite), writes; got != want {
+			t.Errorf("the refused open wrote something, got %d writes, want %d, the count before the run", got, want)
+		}
+	})
+
+	t.Run("a copy elsewhere proceeds and reports the corruption", func(t *testing.T) {
+		r, id, _, endC := rottedTail(t, true)
+
+		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
+
+		if err != nil {
+			t.Fatalf("the twin's copy answered err %v, want the open to proceed over the corruption it reports", err)
+		}
+		if got, want := st.Kinds.MarkedOnDisk[200], 1; got != want {
+			t.Errorf("the marks' map holds %d copies of sequence 200, want %d, the twin's alone: the copy the proof judged rotten raises the map no more", got, want)
+		}
+		if len(st.Proof.Reappends) != 0 {
+			t.Errorf("Reappends got %+v, want none: a record whose first read failed keeps no copy the re-append could write back", st.Proof.Reappends)
+		}
+		if got := st.Tails.Corrupt; len(got) != 1 ||
+			got[0].Segment != id || got[0].Drop.Header.Seq != 200 || !got[0].Drop.Synced {
+			t.Errorf("Corrupt got %+v, want the one synced corrupt drop of sequence 200 in segment %d: the mark names the corruption the device returned", got, id)
+		}
+		if got, want := st.Tails.Damaged, []core.SegmentID{id}; !slices.Equal(got, want) {
+			t.Errorf("Damaged got %v, want %v: a record the mark proves synced rotted on the device is reported damage", got, want)
+		}
+		wantFate(t, st, id, fateEnded, endC)
+		p, ok := st.Rebuilt.Index.Lookup(tailFile(), 0x8100)
+		if !ok {
+			t.Fatalf("Lookup over the rotted record's extent missed, want the twin's placement to serve it")
+		}
+		if p.Record.Segment != 4 {
+			t.Errorf("Lookup names the record at %+v, want the twin's copy in segment 4 to serve what the rotted one no longer can", p.Record)
 		}
 	})
 }

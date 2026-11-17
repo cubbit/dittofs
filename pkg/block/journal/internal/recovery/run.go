@@ -252,7 +252,8 @@ func rebuildReaders(deps Deps) int {
 // phase, which withholds every candidate a mark names, and for the
 // lost-tail check, which refuses the open over a mark whose tail the
 // device lost and no copy anywhere answers for.
-func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {	if err := ctx.Err(); err != nil {
+func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
+	if err := ctx.Err(); err != nil {
 		return State{}, err
 	}
 	ctx, endOpen := startSpan(ctx, deps, core.SpanOpen)

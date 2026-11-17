@@ -296,10 +296,7 @@ func classifyTails(rd *reader, identity core.JournalID, named, unverified map[co
 		out.Fates = append(out.Fates, f)
 	}
 
-	slices.Sort(out.Damaged)
-	slices.SortStableFunc(out.Corrupt, func(a, b corruptRecord) int {
-		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.at(), b.at()))
-	})
+	sortTails(&out)
 	return out, nil
 }
 
