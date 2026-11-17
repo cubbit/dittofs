@@ -23,6 +23,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
@@ -170,6 +171,7 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 	opens, err := openstate.New(
 		openstate.Deps{
 			Records: meta,
+			Node:    benchNode,
 			Clock:   clock,
 			Rand:    rand.Reader,
 			Logger:  logger,
@@ -186,7 +188,7 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 		Existence: meta.Existence(),
 		Content:   meta.Content(),
 		Lifecycle: meta.Lifecycle(),
-		Holds:     enginetest.Holds(opens, meta.Opens()),
+		Holds:     openstate.EngineHolds(opens, meta.Opens()),
 		Clock:     clock,
 		Logger:    logger,
 		Tracer:    noTrace,
@@ -266,16 +268,26 @@ func (c *bench) signIn(b *testing.B) {
 		Name:      "admin",
 		IDs:       entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}},
 	}
-	if err := cp.PutUser(b.Context(), u); err != nil {
+	// The administrator may already be a user with a grant: each write
+	// expects what it replaces.
+	old, err := c.store.Store.Principals().User(b.Context(), p)
+	if err != nil && !merrs.IsNotFoundError(err) {
+		b.Fatalf("bench: admin user: %v", err)
+	}
+	if _, err := cp.PutUser(b.Context(), u, old.Generation, entity.Alloc{}); err != nil {
 		b.Fatalf("bench: admin user: %v", err)
 	}
 
+	g, _, err := cp.ShareGrant(b.Context(), c.share.ID, p)
+	if err != nil {
+		b.Fatalf("bench: admin grant: %v", err)
+	}
 	grant := entity.ShareGrant{
 		Share:     c.share.ID,
 		Principal: p,
 		Access:    entity.AccessAdmin,
 	}
-	if err := cp.SetGrant(b.Context(), grant); err != nil {
+	if _, err := cp.SetGrant(b.Context(), grant, g.Version); err != nil {
 		b.Fatalf("bench: admin grant: %v", err)
 	}
 
