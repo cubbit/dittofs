@@ -327,3 +327,19 @@ func Serving(s *Server) {
 
 // ConnSettings is a connection's snapshot, as Settings reports it.
 func ConnSettings(c *Conn) settings.Settings { return c.Settings() }
+
+// ConnCharge is what the accept loop charges a connection, its fixed cost to
+// the connection-state budget (RFC 24 section 4.4).
+func ConnCharge() int64 { return connCharge }
+
+// AddBound appends a bound socket over ln to a serving server and starts its
+// accept loop: the seam a test's listener, a failing one say, runs on. The
+// socket closes and its loop ends with Stop, as Start's own do.
+func AddBound(s *Server, l *Listener, ln net.Listener) {
+	b := &bound{l: l, addr: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), 0), ln: ln, stopped: make(chan struct{})}
+	b.loopDone = make(chan struct{})
+	s.mu.Lock()
+	s.bound = append(s.bound, b)
+	s.mu.Unlock()
+	go s.acceptLoop(b)
+}

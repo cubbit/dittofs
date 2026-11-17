@@ -41,15 +41,19 @@ type Server struct {
 
 	mu    sync.RWMutex
 	state adapter.State
-	bound []bound            // every socket open now, by listener, then by address in the settings' order
+	bound []*bound           // every socket open now, by listener, then by address in the settings' order
 	conns map[*Conn]struct{} // every connection open now
 }
 
-// bound is one listener's socket on one address.
+// bound is one listener's socket on one address, with the state its accept
+// loop and the server's health share.
 type bound struct {
-	l    *Listener
-	addr netip.AddrPort // the address as the settings name it, at the port the socket bound
-	ln   net.Listener
+	l            *Listener
+	addr         netip.AddrPort // the address as the settings name it, at the port the socket bound
+	ln           net.Listener   // the socket itself; its close ends the accept loop
+	stopped      chan struct{}  // closed with the socket, so a backoff's sleep ends too
+	loopDone     chan struct{}  // closed once the accept loop ended
+	firstFailure atomic.Int64   // the first Accept failure of the streak, on the server's clock, Unix nanoseconds; 0 while the listener is alive
 }
 
 var _ adapter.Adapter = (*Server)(nil)
@@ -203,9 +207,18 @@ func (s *Server) Start(ctx context.Context) error {
 			s.closeBound()
 			return fmt.Errorf("core: start: %w", err)
 		}
+		for j := range opened {
+			opened[j].stopped = make(chan struct{})
+			opened[j].loopDone = make(chan struct{})
+		}
 		s.bound = append(s.bound, opened...)
 	}
+	// The loops run only over sockets Start opened, so the all-or-none bind
+	// above is not undone by a later failure.
 	s.state = adapter.StateServing
+	for _, b := range s.bound {
+		go s.acceptLoop(b)
+	}
 	return nil
 }
 
@@ -224,9 +237,9 @@ const portRepicks = 2
 // freedom this process does not own. A port the node configured that is
 // taken is a real refusal, never repicked. Withdraw the repicks when a Start
 // can ask for one port on every family at once.
-func (s *Server) bindEach(ctx context.Context, i int) ([]bound, error) {
+func (s *Server) bindEach(ctx context.Context, i int) ([]*bound, error) {
 	for repick := 0; ; repick++ {
-		opened := make([]bound, 0, len(s.addrs))
+		opened := make([]*bound, 0, len(s.addrs))
 		port := s.ls[i].Port
 		for j, a := range s.addrs {
 			// One listener is one port: a port the system picked is resolved
@@ -267,14 +280,14 @@ func (s *Server) bindEach(ctx context.Context, i int) ([]bound, error) {
 // reports [::] and collides with a second listener on :: at the same port; on
 // tcp6 it sets IPV6_V6ONLY. Withdraw it if a deployment needs one dual-stack
 // socket per wildcard.
-func bind(ctx context.Context, listen func(context.Context, string, string) (net.Listener, error), l *Listener, a netip.Addr, port uint16) (bound, error) {
+func bind(ctx context.Context, listen func(context.Context, string, string) (net.Listener, error), l *Listener, a netip.Addr, port uint16) (*bound, error) {
 	ip, network := a.Unmap(), "tcp6"
 	if ip.Is4() {
 		network = "tcp4"
 	}
 	ln, err := listen(ctx, network, netip.AddrPortFrom(ip, port).String())
 	if err != nil {
-		return bound{}, fmt.Errorf("listener %q on %s: %w", l.Services, netip.AddrPortFrom(a, port), err)
+		return nil, fmt.Errorf("listener %q on %s: %w", l.Services, netip.AddrPortFrom(a, port), err)
 	}
 	ta, ok := ln.Addr().(*net.TCPAddr)
 	if !ok {
@@ -282,16 +295,18 @@ func bind(ctx context.Context, listen func(context.Context, string, string) (net
 		// address the settings gave, so it is closed and refused, not read
 		// for a port that is not there.
 		_ = ln.Close()
-		return bound{}, fmt.Errorf("listener %q on %s: the opener answered a %T, not a TCP listener", l.Services, netip.AddrPortFrom(a, port), ln.Addr())
+		return nil, fmt.Errorf("listener %q on %s: the opener answered a %T, not a TCP listener", l.Services, netip.AddrPortFrom(a, port), ln.Addr())
 	}
-	bound := bound{l: l, ln: ln}
-	bound.addr = netip.AddrPortFrom(a, ta.AddrPort().Port())
-	return bound, nil
+	b := bound{l: l, ln: ln}
+	b.addr = netip.AddrPortFrom(a, ta.AddrPort().Port())
+	return &b, nil
 }
 
-// closeBound closes every socket open now. The caller holds s.mu.
+// closeBound closes every socket open now, ending its accept loop, in its
+// Accept or in its backoff's sleep. The caller holds s.mu.
 func (s *Server) closeBound() {
 	for _, b := range s.bound {
+		close(b.stopped)
 		_ = b.ln.Close()
 	}
 	s.bound = nil
@@ -312,9 +327,13 @@ func (s *Server) Stop(ctx context.Context) error {
 	for c := range s.conns {
 		conns = append(conns, c)
 	}
+	looped := slices.Clone(s.bound)
 	s.closeBound()
 	s.state = adapter.StateStopped
 	s.mu.Unlock()
+	if err := s.stopOnLoops(looped, ctx); err != nil {
+		return err
+	}
 	for _, c := range conns {
 		c.Close(errStop)
 	}
@@ -374,12 +393,22 @@ func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort {
 	return m
 }
 
-// Health is the server's state; it raises no condition, so it is ready while
-// serving.
+// Health is the server's state with the conditions its sockets' own evidence
+// derives: a listener failing for listenerLostAfter with no connection
+// accepted since the first failure raises adapter_listener_lost, until its
+// next accepted connection (R1, R10). The server reports no other condition.
 func (s *Server) Health() adapter.Health {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return adapter.Health{State: s.state}
+	h := adapter.Health{State: s.state}
+	now := s.sh.clock.Now()
+	for _, b := range s.bound {
+		if b.lost(now) {
+			h.Conditions = []string{conditionListenerLost}
+			break
+		}
+	}
+	return h
 }
 
 // Connections lists the connections open now, as the API's client list reads
