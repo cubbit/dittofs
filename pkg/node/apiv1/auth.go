@@ -1,41 +1,75 @@
 package apiv1
 
-import "time"
+import (
+	"fmt"
+	"io"
+	"log/slog"
+	"time"
+)
+
+// The types below hold passwords and tokens. Each has a LogValue, which slog
+// uses, and a Format, which fmt uses for every verb, and both leave the
+// secret fields out, so neither a structured log nor a %v or %+v prints a
+// secret. encoding/json still writes every field, since it writes the wire.
+
+// redacted is what a body logs as when every field is a secret: slog drops a
+// group with no attributes, and its key would vanish with it.
+var redacted = slog.StringValue("[redacted]")
+
+func show(f fmt.State, v slog.Value) { _, _ = io.WriteString(f, v.String()) }
 
 // SignIn is the body of POST /auth/sign-in: an account's name and password.
-// It holds a secret, so it is never logged.
 type SignIn struct {
 	Name     string `json:"name"`
 	Password string `json:"password"`
 }
 
+func (s SignIn) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("name", s.Name))
+}
+
+func (s SignIn) Format(f fmt.State, _ rune) { show(f, s.LogValue()) }
+
 // Tokens answers a sign-in, a refresh and a password change: an access token
 // to present on each call, and the refresh token that gets the next pair.
-// It holds secrets, so it is never logged.
 type Tokens struct {
 	Access  string `json:"access_token"`
 	Refresh string `json:"refresh_token"`
 }
 
+func (Tokens) LogValue() slog.Value { return redacted }
+
+func (t Tokens) Format(f fmt.State, _ rune) { show(f, t.LogValue()) }
+
 // Refresh is the body of POST /auth/refresh: the session's current refresh
-// token, which the answer replaces. It holds a secret, so it is never logged.
+// token, which the answer replaces.
 type Refresh struct {
 	Token string `json:"refresh_token"`
 }
 
+func (Refresh) LogValue() slog.Value { return redacted }
+
+func (r Refresh) Format(f fmt.State, _ rune) { show(f, r.LogValue()) }
+
 // PasswordChange is the body of POST /auth/password: the caller's current
 // password, required even when it must be changed, and the new one.
-// It holds secrets, so it is never logged.
 type PasswordChange struct {
 	Current string `json:"current_password"`
 	New     string `json:"new_password"`
 }
 
+func (PasswordChange) LogValue() slog.Value { return redacted }
+
+func (p PasswordChange) Format(f fmt.State, _ rune) { show(f, p.LogValue()) }
+
 // SetPassword is the body of a user's :set-password: the password to set.
-// It holds a secret, so it is never logged.
 type SetPassword struct {
 	Password string `json:"password"`
 }
+
+func (SetPassword) LogValue() slog.Value { return redacted }
+
+func (s SetPassword) Format(f fmt.State, _ rune) { show(f, s.LogValue()) }
 
 // APITokenSpec is what a service account's API token is created with: its
 // expiry, no later than api.token_max_lifetime from its creation.
@@ -44,9 +78,14 @@ type APITokenSpec struct {
 }
 
 // APITokenStatus is what the server records of an API token. Token is the
-// token itself, set only in the answer that created it; it is a secret, so
-// it is never logged.
+// token itself, set only in the answer that created it.
 type APITokenStatus struct {
 	Created time.Time `json:"created"`
 	Token   string    `json:"token,omitempty"`
 }
+
+func (s APITokenStatus) LogValue() slog.Value {
+	return slog.GroupValue(slog.Time("created", s.Created))
+}
+
+func (s APITokenStatus) Format(f fmt.State, _ rune) { show(f, s.LogValue()) }
