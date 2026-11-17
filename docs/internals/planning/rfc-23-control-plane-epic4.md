@@ -529,8 +529,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   - A non-loopback address with no certificate refuses the start, naming the bootstrap keys.
   - The socket's mode is `0600`, and a call on it reaches `Authenticate` marked local.
 - **Tests:** on real listeners (rule 8): TLS on `0.0.0.0` and `:8080`, plain on `127.0.0.1`,
-  `localhost`, `::1` and `::ffff:127.0.0.1`, and a non-loopback address with no certificate refused
-  (R55); the metrics listener on a non-loopback address held to the same rule, and a start with a
+  `::1` and `::ffff:127.0.0.1`, and a non-loopback address with no certificate refused, and
+  `localhost:8080` refused as a host name, not an IP (R55, RFC 13 Appendix C); the metrics listener on a non-loopback address held to the same rule, and a start with a
   client CA refused; the socket's mode read back and a call through it marked local (R56); 65 calls held by a
   handler blocked on a channel, the 65th `503` with `Retry-After`, and a health probe still answered
   (R23, D8); `Ready` returning `starting`, a call `503` `starting` with `Retry-After`, and

@@ -1326,8 +1326,11 @@ process memory limit, which is read from the runtime, the container and the host
 
 **The state and runtime directories** are not keys. The state directory is
 `$STATE_DIRECTORY` when the service manager sets it, else `$XDG_STATE_HOME/dittofs`,
-else `/var/lib/dittofs`; the runtime directory is `$RUNTIME_DIRECTORY`, else
-`$XDG_RUNTIME_DIR/dittofs`, else `/run/dittofs`. A systemd unit's `StateDirectory=`
+else `$HOME/.local/state/dittofs`; the runtime directory is `$RUNTIME_DIRECTORY`, else
+`$XDG_RUNTIME_DIR/dittofs`, else a directory under the state directory that only
+the process's user owns (mode `0700`). A start without root, `./dfs init` then
+`./dfs start`, writes its metadata, log and `dfs.sock` under the user's home. A
+systemd unit's `StateDirectory=`
 and `RuntimeDirectory=` set the first of each, so two nodes on one host each get
 their own from their own unit.
 
@@ -1342,7 +1345,7 @@ their own from their own unit.
 | `journals` | list of entries, each with a `path` | required | the journal devices, one directory each; a path listed twice, or two that name one directory, is refused. The environment, `DITTOFS_JOURNALS=/data/j1,/data/j2`, sets the paths only, and replaces the file's list; a fact of one journal needs the file |
 | `adapters.listen` | list of IP literals, each an address to bind | every interface | the addresses the protocol adapters bind; each adapter's port is its own setting (Appendix B) |
 | `api.listen` | list of `ip:port` | `127.0.0.1:8080` | the management API's addresses |
-| `api.tls.cert_file`, `api.tls.key_file` | path | required when an `api.listen` or `metrics.listen` address is not loopback: an IP in `127.0.0.0/8` or `::1`, as [RFC 23 §5.3](rfc-23-control-plane.md#5.3%20Sign-in%2C%20tokens%20and%20sessions) reads it, so a host name and an unspecified address (`0.0.0.0`, `::`) are not | the API's certificate and key (RFC 23 §5.3) |
+| `api.tls.cert_file`, `api.tls.key_file` | path | required when an `api.listen` or `metrics.listen` address is not loopback: an IP in `127.0.0.0/8` or `::1`, as [RFC 23 §5.3](rfc-23-control-plane.md#5.3%20Sign-in%2C%20tokens%20and%20sessions) reads it, so a host name, `localhost` included, and an unspecified address (`0.0.0.0`, `::`) are not; a listen value's host is an IP literal, so a name is refused as that before this rule applies | the API's certificate and key (RFC 23 §5.3) |
 | `metrics.listen` | `ip:port`, or empty for off | `127.0.0.1:9090` | the metrics listener, served over the API's TLS off loopback (RFC 25 §2.8) |
 | `logging.level` | `debug`, `info`, `warn`, `error` | `info` | the log level, in lower case |
 | `logging.format` | `text` or `json` | `text` | the log format |
@@ -1371,6 +1374,7 @@ unless it is one of these, which are not keys:
 | `DITTOFS_CONFIG` | the start, the path of the host's file when `--config` is not given |
 | `DITTOFS_ENCRYPTION_PASSPHRASE` | the local key provider, a key file's passphrase |
 | `DITTOFS_PASSWORD` | `dfsctl`, which a shell that runs both may export |
+| `DITTOFS_<service>_PORT*` and `DITTOFS_<service>_SERVICE_*`, for each Service of the pod's namespace | Kubernetes, which sets them for every Service with an address, none for a headless one: ignored while the value has the shape the kubelet gives to any of the forms the name parses as, a `tcp://`, `udp://` or `sctp://` link then an IP and a port, an IPv6 one in brackets, for a name ending at `_PORT` or at `_PORT_<n>_<proto>`, an IP for `_ADDR` and `_SERVICE_HOST`, a port number for `_SERVICE_PORT*` and `_PORT_<n>_<proto>_PORT`, `tcp`, `udp` or `sctp` for `_PROTO`, and refused otherwise, as unknown when the name is no v1 key's environment name and naming its replacement when it is (the table below), so `DITTOFS_METRICS_PORT=tcp://10.0.0.5:9090` is ignored and `DITTOFS_METRICS_PORT=9091` is refused naming `metrics.listen` |
 | the names and prefixes the repository's development tools export (`DITTOFS_TEST_*`, `DITTOFS_E2E_*`, `DITTOFS_PREPUSH_*`, and the launchers' and git hooks' own names) | the tools, which a server they start inherits |
 
 **From the files of today.** The key a start refuses names its replacement
@@ -1378,7 +1382,8 @@ unless it is one of these, which are not keys:
 
 | Today's key | Now |
 | --- | --- |
-| `database.*` | `metadata.*`: `database.type` is `metadata.backend`, its Badger path `metadata.badger.path`; the cache sizes are dropped |
+| `database.*` | dropped: the control plane's database is now the metadata store, `metadata.backend`, `badger` by default; today's `database` block names no Badger path, so `metadata.badger.path` is new |
+| `metadata.badger.block_cache_mb`, `.index_cache_mb` | dropped: no key sizes the Badger caches |
 | `controlplane.host`, `controlplane.port` | `api.listen`; `controlplane.tls` is `api.tls`; its timeouts, `jwt.*` and `pprof*` are dropped |
 | `metrics.enabled`, `.host`, `.port` | `metrics.listen`; a metrics listener was off by default and is now on, on loopback |
 | `blockstore.journal.path`, a root directory | `journals`, one entry per device |
@@ -1391,16 +1396,19 @@ unless it is one of these, which are not keys:
 
 A start refuses all of these where today's loader only warns, so a file of
 today fails until it is migrated, `docker/config.yaml` and the operator's
-rendered file included. Off loopback the operator and the compose file need a
-certificate and key, or a listener on loopback behind the proxy that terminates
-TLS: [RFC 23 §5.3](rfc-23-control-plane.md#5.3%20Sign-in%2C%20tokens%20and%20sessions)
+rendered file included. Off loopback the API needs a certificate and key: the
+image ships none and takes the pair the operator mounts, and the repository's
+launchers, the compose file among them, generate a self-signed one at run time
+(the RFC 13 plan's epic 6). A listener kept on loopback behind a proxy on the
+same host, which terminates TLS, needs none. [RFC 23 §5.3](rfc-23-control-plane.md#5.3%20Sign-in%2C%20tokens%20and%20sessions)
 already serves nothing off loopback without TLS, and this table only states it.
 
 **The file's commands.** `dfs config show` prints the effective bootstrap, each
 value with where it came from (the file, a variable, or the default), a
 credential's file by its path only, and a value that came from the environment
 as the variable's name. `dfs config validate` refuses what a start would
-refuse, in §6's shape, and starts nothing; it alone checks a rule that relates
-two keys, such as "two different keys". `dfs config schema` prints this table as
+refuse, in §6's shape, and starts nothing; it checks the rules that relate two
+keys, such as "two different keys" or one journal path named twice, as `dfs start`
+does, which refuses the same. `dfs config schema` prints this table as
 a JSON Schema, which covers the types, the enumerations and the requirements
 that do not depend on another key.
