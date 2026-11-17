@@ -685,7 +685,8 @@ A reconcile step is idempotent: run twice on the same records it does nothing
 the second time. So the node **MUST** also run a full reconcile at start and
 after any read of the store that failed, not only on a moved generation: a
 change missed during a store outage is then found at the next read that works.
-A full reconcile lists records by kind in pages
+A full reconcile lists records by kind in pages, and reads every scope's
+settings in one scan, `AllSettings`
 ([RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them)); what bounds its rate is open (§13).
 
 ### 2.4 What a node reports

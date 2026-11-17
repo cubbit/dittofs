@@ -763,11 +763,11 @@ type Secret struct {
 	HandedOver bool   // a machine password an offline join was handed: derives no Kerberos key and backs no previous-version fallback (RFC 18 §3.5); written with the version, bound into its sealed value's additional data, never changed
 }
 
-// ResourceRef names one record by its kind and its ID. The zero value names
+// ResourceRef names one record by its kind and its key. The zero value names
 // none.
 type ResourceRef struct {
-	Kind string   // the record's kind, as RFC 23 names its resource
-	ID   [16]byte // minted, as FileID, ShareID and PrincipalID are (§2.2)
+	Kind string // the record's kind, as RFC 23 names its resource
+	ID   []byte // the record's key: its minted 16-byte ID (FileID, ShareID, PrincipalID, §2.2), else its natural key: a netgroup's name, a setting's scope and key, a grant's share and principal, a snapshot's share and name, the same variable length as §4.2's OPR and AUX targets carry
 }
 
 // SecretOwner is the one holder a secret belongs to: a record's field (a
@@ -777,7 +777,7 @@ type ResourceRef struct {
 // ID, under the keys "signing_key" and "machine_password") or a setting's key
 // (a keytab, the directory's bind credential, an OpenID Connect client's
 // secret). Encoded with the version, as the Secret's other fields are, and
-// compared whole.
+// compared byte for byte, ID included.
 type SecretOwner struct {
 	Record ResourceRef  // the record's kind and ID; zero for a setting
 	Scope  SettingScope // the setting's scope; zero for a record

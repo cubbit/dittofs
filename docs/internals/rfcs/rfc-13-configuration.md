@@ -776,11 +776,12 @@ both keys in its bootstrap:
 
 | Wrapping key | Seals | Needed by |
 | --- | --- | --- |
-| `protocol` | NT hashes, keytabs, identity-provider bind credentials, the machine-account password NTLM pass-through signs in with | authentication |
+| `protocol` | NT hashes, keytabs, identity-provider bind credentials, the machine-account password NTLM pass-through signs in with, the node credential ([RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)) | authentication and the node channel |
 | `storage` | password hashes, which only the management API's sign-in verifies (RFC 23 §5.3); remote-tier credentials, references to master keys, the management API's token-signing key (RFC 23 §5.3), OpenID Connect client secrets (RFC 23 §5.5) | the remote tier, the material provider and the management API |
 
-The node credential's role is settled with RFC 15's cluster work
-([RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)). A deployment **MAY** split a
+The node credential is sealed under `protocol`: a node that only serves protocols
+still forwards calls on the node channel, so it needs the credential, and it is
+handed the `protocol` key alone. A deployment **MAY** split a
 key further by secret kind.
 
 > decision: the two keys stay separate although every node holds both, so a
