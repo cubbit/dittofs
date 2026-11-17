@@ -152,16 +152,14 @@ func WithQuery(q url.Values) CallOption { return func(c *call) { c.query = q } }
 
 // call is one logical API call: its method, its path with its query, the
 // query its options add, its JSON body, nil for none, the tag it sends in
-// If-Match, "*" sending If-None-Match: * instead, whether it goes without an
-// idempotency key, and whether a 401 is returned as it is rather than
-// refreshed.
+// If-Match, "*" sending If-None-Match: * instead, and whether it goes
+// without an idempotency key.
 type call struct {
 	method, path string
 	query        url.Values
 	body         []byte
 	etag         string
 	noKey        bool
-	noRefresh    bool
 }
 
 // reply is what one sending of a call was answered.
@@ -201,9 +199,8 @@ var errTooLong = errors.New("apiclient: the answer is longer than 16 MiB")
 //
 // decision: a keyless call (join-domain, :set-password, an API token's
 // creation) is still refreshed and sent again after a 401, since a 401 is an
-// answer that applied nothing. Sign-in, refresh and a password change are
-// not: their 401 is a wrong credential, so they are sent with refresh off.
-// Overturned if a server ever applies a call it then answers 401.
+// answer that applied nothing. Overturned if a server ever applies a call it
+// then answers 401.
 func (c *Client) do(ctx context.Context, cl call) (reply, error) {
 	if err := c.version(ctx); err != nil {
 		return reply{}, err
@@ -226,27 +223,49 @@ func (c *Client) do(ctx context.Context, cl call) (reply, error) {
 			return reply{}, err
 		}
 	}
+	sent := 0
 	refreshed := false
-	for n := 1; ; n++ {
-		r, err := c.send(ctx, cl, key, token)
-		wait := retryWait
+	for {
+		r, err := c.exchange(ctx, cl, key, token, &sent)
 		switch {
 		case err != nil:
-			if ctx.Err() != nil || errors.Is(err, errTooLong) || n == attempts || (key == "" && cl.method != http.MethodGet) {
-				return reply{}, err
-			}
-		case r.status == http.StatusUnauthorized && c.tokens != nil && !refreshed && !cl.noRefresh && n < attempts:
+			return reply{}, err
+		case r.status == http.StatusUnauthorized && c.tokens != nil && !refreshed && sent < attempts:
 			refreshed = true
 			fresh, err := c.tokens.Refresh(ctx, token)
 			if err != nil {
 				return reply{}, errors.Join(problemOf(r), err)
 			}
 			token = fresh
-			continue
 		case r.status >= 300:
-			p := problemOf(r)
-			if !p.Retryable || cl.noKey || n == attempts {
-				return reply{}, p
+			return reply{}, problemOf(r)
+		default:
+			return r, nil
+		}
+	}
+}
+
+// exchange sends cl with key and token until it is answered, and returns
+// the answer, a refusal included, or the error that left it unanswered. It
+// sends cl again, after its wait on the client's clock, when it was refused
+// with a retryable problem other than a 401, after the Retry-After the
+// problem names; and when its answer was lost, if it is a GET or carries a
+// key. A server's certificate refused is final, not a lost answer. *sent
+// counts the call's sendings, which stop at attempts.
+func (c *Client) exchange(ctx context.Context, cl call, key, token string, sent *int) (reply, error) {
+	for {
+		*sent++
+		r, err := c.send(ctx, cl, key, token)
+		wait := retryWait
+		switch {
+		case err != nil:
+			if ctx.Err() != nil || errors.Is(err, errTooLong) || errors.As(err, new(*tls.CertificateVerificationError)) ||
+				*sent >= attempts || (key == "" && cl.method != http.MethodGet) {
+				return reply{}, err
+			}
+		case r.status >= 300 && r.status != http.StatusUnauthorized:
+			if !problemOf(r).Retryable || cl.noKey || *sent >= attempts {
+				return r, nil
 			}
 			wait = retryAfter(r.header)
 		default:
@@ -302,9 +321,10 @@ func (c *Client) send(ctx context.Context, cl call, key, token string) (reply, e
 	return reply{resp.StatusCode, resp.Header, b}, err
 }
 
-// version checks, once per client, that the server serves v1. A check that
-// fails to complete runs again on the next call; a caller waiting on
-// another's check stops when its context ends.
+// version checks, once per client, that the server serves v1, sending the
+// check again as exchange sends any GET. A check that fails to complete runs
+// again on the next call; a caller waiting on another's check stops when its
+// context ends.
 func (c *Client) version(ctx context.Context) error {
 	select {
 	case c.checking <- struct{}{}:
@@ -315,7 +335,7 @@ func (c *Client) version(ctx context.Context) error {
 	if c.checked {
 		return nil
 	}
-	r, err := c.send(ctx, call{method: http.MethodGet, path: "/api/version"}, "", "")
+	r, err := c.exchange(ctx, call{method: http.MethodGet, path: "/api/version"}, "", "", new(int))
 	if err != nil {
 		return err
 	}

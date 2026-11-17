@@ -152,14 +152,19 @@ func TestNew(t *testing.T) {
 // Over http on loopback, over the socket and over https with the server's
 // CA, a share is created, found by its name through the list filter, read
 // with its ETag, and renamed under that ETag; https without the CA is
-// refused.
+// refused at once, not sent again.
 func TestResourceOverEachTransport(t *testing.T) {
 	s := serve(t, admin())
 	tlsFront := httptest.NewTLSServer(s.front)
 	t.Cleanup(tlsFront.Close)
 	pool := x509.NewCertPool()
 	pool.AddCert(tlsFront.Certificate())
-	if _, err := client(t, tlsFront.URL, newClock()).Shares().Get(t.Context(), uuid.NewString()); err == nil || errors.As(err, new(*apiv1.Problem)) {
+	clock := newClock()
+	err := settled(t, "https without the server's CA", clock, func(ctx context.Context) error {
+		_, err := client(t, tlsFront.URL, clock).Shares().Get(ctx, uuid.NewString())
+		return err
+	})
+	if err == nil || errors.As(err, new(*apiv1.Problem)) {
 		t.Errorf("https without the server's CA: error %v, want the certificate refused", err)
 	}
 	ns := s.namespace(t)
@@ -381,6 +386,50 @@ func TestVersionWaitEndsWithContext(t *testing.T) {
 	}
 }
 
+// A server serving no v1 is refused at first contact, with an error naming
+// both versions, and no call under /api/v1/ is sent to it.
+func TestVersionRefused(t *testing.T) {
+	s := serve(t, admin())
+	s.front.add(fault{match: on(http.MethodGet, "/api/version"), status: http.StatusOK,
+		header: http.Header{"Content-Type": {"application/json"}}, body: `{"majors":["v2"]}`})
+	_, err := client(t, s.url, newClock()).Health(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "v1") || !strings.Contains(err.Error(), "v2") {
+		t.Errorf("Health against a server serving only v2: error %v, want one naming v1 and v2", err)
+	}
+	if rs := to(s.front.requests(http.MethodGet), "/api/v1/"); len(rs) != 0 {
+		t.Errorf("GETs under /api/v1/ sent: %+v, want none", rs)
+	}
+}
+
+// A version check whose answer was lost is sent again once its wait has
+// passed on the client's clock, and the call then goes through.
+func TestVersionResentAfterLostAnswer(t *testing.T) {
+	s := serve(t, admin())
+	s.front.add(fault{match: on(http.MethodGet, "/api/version"), drop: true})
+	clock := newClock()
+	c := client(t, s.url, clock)
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Health(t.Context())
+		done <- err
+	}()
+	eventually(t, "the client waits after the lost version answer", func() bool {
+		select {
+		case err := <-done:
+			t.Fatalf("Health, its version answer lost: returned %v before waiting, want it to wait and send the check again", err)
+		default:
+		}
+		return clock.Pending() == 1
+	})
+	clock.Advance(time.Second)
+	if err := <-done; err != nil {
+		t.Errorf("Health after the lost version answer was sent again: %v", err)
+	}
+	if n := len(to(s.front.requests(http.MethodGet), "/api/version")); n != 2 {
+		t.Errorf("version checks sent: %d, want 2, the lost one and its resending", n)
+	}
+}
+
 // A write under a stale tag is refused 412 and not sent again.
 func TestStaleTagStops(t *testing.T) {
 	s := serve(t, admin())
@@ -590,7 +639,7 @@ func fresh(failed string) (string, error) {
 // A call refused 401 is refreshed once and sent again with its body and its
 // key; a second 401 is returned, not refreshed again; when the refresh
 // fails, the 401's problem is returned joined with the refresh's error and
-// nothing is sent again; and a call sent with refresh off is not refreshed.
+// nothing is sent again.
 func TestUnauthorizedRefreshesOnce(t *testing.T) {
 	t.Run("refreshed", func(t *testing.T) {
 		s := serve(t, admin())
@@ -636,17 +685,6 @@ func TestUnauthorizedRefreshesOnce(t *testing.T) {
 		}
 		if gets := s.front.requests(http.MethodGet); len(gets) != 2 {
 			t.Errorf("GETs sent: %d, want the version and the call once", len(gets))
-		}
-	})
-	t.Run("refresh off", func(t *testing.T) {
-		s := serve(t, nil)
-		c := client(t, s.url, newClock(), apiclient.WithTokenSource(tokens{"stale", fresh}))
-		_, err := c.Shares().Create(t.Context(), apiv1.ShareSpec{Name: "ci"}, apiclient.WithoutRefresh())
-		if p := problem(t, "Create with refresh off, refused 401", err); p.Status != http.StatusUnauthorized {
-			t.Errorf("Create with refresh off, refused 401: %d, want 401", p.Status)
-		}
-		if posts := s.front.requests(http.MethodPost); len(posts) != 1 {
-			t.Errorf("POSTs sent: %d, want 1, not refreshed", len(posts))
 		}
 	})
 }
