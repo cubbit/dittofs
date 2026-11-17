@@ -90,16 +90,17 @@ func auditFilter(q map[string]string) (f entity.AuditFilter, err error) {
 
 // parseID is the ID refOf prints as s: a UUID in its canonical form for 16
 // bytes, and base64url for any other length, so base64url decoding to 16
-// bytes is none.
+// bytes is none, and neither is a UUID in another spelling.
 //
-// decision: text spelling a canonical UUID reads as a 16-byte ID, though a
-// 27-byte ID's base64url could spell the same text, and the filter then
-// misses that ID's records: it takes 27 bytes whose encoding is hex digits
-// and four hyphens just where a UUID has them. Overturned once refOf prints
-// each kind's ID in its own form.
+// decision: text that parses as a UUID reads as a 16-byte ID when it is the
+// canonical spelling and as no ID otherwise, though another length's
+// base64url could spell the same text, and the filter then cannot name that
+// ID: it takes bytes whose encoding is all hex digits, with or without
+// hyphens just where a UUID has them. Overturned once refOf prints each
+// kind's ID in its own form.
 func parseID(s string) ([]byte, bool) {
-	if id, err := entity.ParseShareID(s); err == nil && id.String() == s {
-		return id[:], true
+	if id, err := entity.ParseShareID(s); err == nil {
+		return id[:], id.String() == s
 	}
 	b, err := base64.RawURLEncoding.DecodeString(s)
 	return b, err == nil && len(b) != 16 && len(b) > 0

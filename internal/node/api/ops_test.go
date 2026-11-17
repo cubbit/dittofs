@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -357,7 +358,9 @@ func TestAuditRead(t *testing.T) {
 			t.Errorf("GET /api/v1/audit%s: actors %q, want %q", tc.q, got, tc.want)
 		}
 	}
-	for _, q := range []string{"actor=alice", "target=bad"} {
+	knobID := uuid.MustParse(knobs[1])
+	for _, q := range []string{"actor=alice", "target=bad", "target=" + url.QueryEscape("setting:"+strings.ToUpper(knobs[1])),
+		"target=setting:" + base64.RawURLEncoding.EncodeToString(knobID[:])} {
 		field, _, _ := strings.Cut(q, "=")
 		if r := s.do(t, http.MethodGet, "/api/v1/audit?"+q, ""); r.status != http.StatusBadRequest || r.problem(t).Field != field {
 			t.Errorf("?%s: answered %d %s, want 400 naming %s", q, r.status, r.body, field)
