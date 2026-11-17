@@ -23,6 +23,15 @@ import (
 // Start.
 func (s *Server) SetWriteTimeout(d time.Duration) { s.api.WriteTimeout = d }
 
+// ShortenReadTimeout sets the API listener's read timeout to d unless it has
+// none, so a test of the timeout fails when the server sets none; call it
+// before Start.
+func (s *Server) ShortenReadTimeout(d time.Duration) {
+	if s.api.ReadTimeout > 0 {
+		s.api.ReadTimeout = d
+	}
+}
+
 // NewWithTestRows is New serving testRows beside the production table, so
 // the adapters run, through the production mux and authentication, on rows
 // of each kind before production rows of that kind exist.
@@ -56,7 +65,8 @@ func Rows() []Row {
 // writes of a knob, its collection and of a vault for operator, an action
 // starting an operation on a knob, a read of
 // accounts for admin, a call a caller that must change its password may
-// make, and a read failing with an error no row of the problem table names.
+// make, a read failing with an error no row of the problem table names, and
+// one failing unavailable with a wait of its own.
 var testRows = []route{
 	{method: http.MethodGet, pattern: "/api/v1/things/{id}", right: auth.View, serve: read(func(ctx context.Context, _ Deps, rq request[none]) (map[string]string, error) {
 		c, _ := auth.CallerFrom(ctx)
@@ -98,10 +108,20 @@ var testRows = []route{
 	{method: http.MethodGet, pattern: "/api/v1/fail", right: auth.View, serve: read(func(context.Context, Deps, request[none]) (none, error) {
 		return none{}, errors.New(UnnamedError)
 	})},
+	{method: http.MethodGet, pattern: "/api/v1/wait", right: auth.View, serve: read(func(context.Context, Deps, request[none]) (none, error) {
+		return none{}, waiting{}
+	})},
 }
 
 // UnnamedError is the text of the error GET /api/v1/fail fails with.
 const UnnamedError = "no row names this, s3cr3t-7a1f"
+
+// waiting is an unavailable error asking for a wait of 6.5 seconds.
+type waiting struct{}
+
+func (waiting) Error() string             { return "unavailable for a while" }
+func (waiting) Unwrap() error             { return vfserr.ErrUnavailable }
+func (waiting) RetryAfter() time.Duration { return 6500 * time.Millisecond }
 
 // verb answers 200 with the verb's name.
 func verb(name string) func(context.Context, request[none]) (answer, error) {

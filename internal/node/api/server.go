@@ -40,7 +40,7 @@ type Deps struct {
 	Addr, MetricsAddr string
 	// TLS is the certificate and key, bootstrap facts of the host, that
 	// both listeners serve under on an address but loopback; with neither,
-	// a start on such an address is refused.
+	// a start on such an address is refused, and with a ClientCA, any start.
 	TLS tlsconfig.Config
 	// Socket is the local socket's path, a bootstrap fact of the host, where
 	// the API is also served without TLS, to the server's user only; empty,
@@ -153,7 +153,7 @@ func newServer(d Deps, rows []route) *Server {
 		s.tracer = noop.NewTracerProvider().Tracer("")
 	}
 	inFlight := prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "dittofs_api_calls_in_flight",
-		Help: "API calls running now, parked polls and public calls apart."}, func() float64 { return float64(len(s.calls)) })
+		Help: "API calls running now, parked polls apart."}, func() float64 { return float64(len(s.calls)) })
 	limit := prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "dittofs_api_calls_in_flight_limit",
 		Help: "How many API calls the node runs at once."}, func() float64 { return maxCalls })
 	d.Metrics.Registry().MustRegister(s.requests, s.seconds, s.unmapped, s.preconditions, s.replays, s.idempotencyWritten, s.audits, newOpsCollector(s), inFlight, limit)
@@ -180,7 +180,9 @@ func newServer(d Deps, rows []route) *Server {
 	// Overturned if those names are themselves sensitive in a deployment,
 	// and then by binding the address to a management network or by
 	// requiring a token.
-	s.api = &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
+	// The read timeout covers the body, so a client that sends its headers
+	// and then stalls gives its call slot back.
+	s.api = &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			if _, ok := c.(*net.UnixConn); ok {
 				return auth.WithLocal(ctx)
@@ -199,6 +201,13 @@ func newServer(d Deps, rows []route) *Server {
 func (s *Server) Start() (addr, metricsAddr net.Addr, err error) {
 	if s.stopped.Load() {
 		return nil, nil, errors.New("api: server stopped")
+	}
+	// decision: the API's listeners take no client CA, which would make
+	// every caller, the health probes and the metrics scraper among them,
+	// present a client certificate. Overturned if the API is ever to be
+	// reached by client certificate.
+	if s.d.TLS.ClientCA != "" {
+		return nil, nil, errors.New("api: the API's TLS takes no client CA")
 	}
 	tc, err := tlsconfig.ServerConfig(s.d.TLS)
 	if err != nil {
@@ -236,24 +245,31 @@ func listen(addr string, tc *tls.Config) (net.Listener, error) {
 		return l, nil
 	}
 	if tc == nil {
-		return nil, errors.Join(fmt.Errorf("api: %s is not a loopback address, so it is served over TLS, and the bootstrap names no cert_file and key_file", addr), l.Close())
+		return nil, errors.Join(fmt.Errorf("api: %s is not a loopback address, so it is served over TLS, which needs the API's TLS certificate and key (cert_file, key_file)", addr), l.Close())
 	}
 	return tls.NewListener(l, tc), nil
 }
 
 // listenSocket opens the local socket at path, readable and writable by the
 // server's user only, replacing a socket a node that did not stop left
-// there; any other file at path refuses it.
+// there; a socket a node serves, or any other file at path, refuses it.
 //
 // decision: the socket is created and then made 0600, so a connection made
 // between the two, by another user able to reach the path's directory, is
 // accepted. Such a caller still authenticates as everyone does; what it
 // gains is the local mark, which spares it the sign-in throttle's per-source
-// count. Holding the socket in a directory only the server's user may enter
-// closes the window. Overturned if the local mark ever admits a call by
-// itself, and then by creating the socket under a umask of 0177.
+// count. And chmod follows a symlink, so another user who swaps the socket
+// for a link between the two has the server chmod the link's target.
+// Holding the socket in a directory only the server's user may enter closes
+// both. The mode is not set at creation under a umask, since the umask is
+// the process's and would change every file another goroutine creates
+// meanwhile. Overturned if the local mark ever admits a call by itself, or
+// the directory cannot be the server's user's alone.
 func listenSocket(path string) (net.Listener, error) {
 	if fi, err := os.Lstat(path); err == nil && fi.Mode().Type() == fs.ModeSocket {
+		if c, err := net.Dial("unix", path); err == nil {
+			return nil, errors.Join(fmt.Errorf("api: a node is serving the local socket %s", path), c.Close())
+		}
 		if err := os.Remove(path); err != nil {
 			return nil, err
 		}

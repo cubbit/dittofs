@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -110,8 +112,8 @@ func requestID(ctx context.Context) string {
 // handle answers r by the row of rows it names, none naming it when rows is
 // nil, once enter admits it, and records the call: its series and its span,
 // named by the row's op, and, for an error the problem table does not name,
-// a log line carrying the request's ID. The span carries the resource's pattern, the path's ID
-// once it parses and the outcome, never a body field.
+// a log line carrying the request's ID. The span carries the resource's
+// pattern, the path's ID once it parses and the outcome, never a body field.
 func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 	start := time.Now()
 	ctx := context.WithValue(r.Context(), requestIDKey{}, rand.Text())
@@ -131,7 +133,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 		// A parked poll holds no call slot: it gives its slot back here,
 		// before it parks. Its write deadline, the wall clock's whatever
 		// clock the wait is on, moves past its wait, so the write timeout
-		// that bounds every other call does not cut it off.
+		// that bounds every other call does not cut it off. The read timeout
+		// needs no such move: the server clears the read deadline once the
+		// body is read.
 		release()
 		if err = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(a.wait + s.api.WriteTimeout)); err == nil {
 			a, err = a.park(ctx)
@@ -149,13 +153,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 		}
 		a, _ = jsonAnswer(p.Status, p) // a Problem always encodes
 		a.header.Set("Content-Type", apiv1.MediaTypeProblem)
-		// ponytail: every 503 asks the client to wait one second, whatever
-		// refused it: the node starting, the call bound, a store
-		// unreachable. Upgrade to reading RetryAfter() time.Duration from
-		// the error once one carries a wait of its own, the sign-in
-		// throttle's 429 first.
-		if p.Status == http.StatusServiceUnavailable {
-			a.header.Set("Retry-After", "1")
+		if wait := retryAfter(err, p.Status); wait > 0 {
+			a.header.Set("Retry-After", strconv.FormatInt(int64((wait+time.Second-1)/time.Second), 10))
 		}
 	}
 	span.SetAttributes(attribute.String("api.pattern", r.Pattern), attribute.String("api.outcome", outcome))
@@ -167,6 +166,20 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 	}
 	w.WriteHeader(a.status)
 	_, _ = w.Write(a.body)
+}
+
+// retryAfter is how long a caller refused with err, answered status, should
+// wait before trying again: the wait err carries, or else one second for a
+// 503 and none for any other status.
+func retryAfter(err error, status int) time.Duration {
+	var w interface{ RetryAfter() time.Duration }
+	if errors.As(err, &w) && w.RetryAfter() > 0 {
+		return w.RetryAfter()
+	}
+	if status == http.StatusServiceUnavailable {
+		return time.Second
+	}
+	return 0
 }
 
 // pick returns the row of rows r names, its verb cut from the path's {id} at
