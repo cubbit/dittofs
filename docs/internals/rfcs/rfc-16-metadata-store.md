@@ -1656,6 +1656,9 @@ type TxnLimits struct {
 
 type Reader interface {
 	Get(key []byte) ([]byte, error) // ErrNotFound
+	// GetMany is Get for a batch of keys in one round trip: values in key
+	// order, nil for an absent key, each read tracked as Get's is.
+	GetMany(keys [][]byte) ([][]byte, error)
 	Scan(prefix, after []byte) iter.Seq2[KeyValue, error] // untracked
 	// Before returns the last record under prefix whose key sorts below key,
 	// untracked like Scan; ok is false when there is none.
@@ -1682,6 +1685,15 @@ type Txn interface {
 ```
 
 ![One Update: fn runs against one snapshot, where Get, Guard and GuardRange are tracked, Scan and Before are not, and Set and Delete write. At commit, a conflict on any tracked or written key aborts the attempt, which is retried on a fresh snapshot within the caller's deadline; otherwise the commit shares a sync with other ready commits and returns only once durable. An error may still have committed. Panels: alice-pc and build01 both guard d1 and both commit; Report.docx and REPORT.DOCX fold to one key, so the second aborts and its retry finds the name taken; a guard committing before a writer lets both commit, a writer committing first aborts the guard](img/rfc16-txn.svg)
+
+**A batch of known keys is read in one round trip.** `GetMany` **MUST** behave as one `Get`
+per key: the values in key order, `nil` for an absent key and an empty slice for an empty
+value, the transaction's own writes seen, and inside `Update` every key tracked and counted
+toward `TxnBytes`. A backend **SHOULD** issue the reads concurrently: on a replicated store
+each read is a network round trip, so a page of records read one `Get` at a time costs a round
+trip per record, where one batch costs one. The entity layer
+reads with `GetMany` wherever it reads several keys it already knows: a listing page's
+records, an offload commit's chunk records.
 
 **A commit is reported only once durable.** `Update` **MUST** return success only
 after the transaction's writes are durable: on the embedded store, synced to its
@@ -1749,9 +1761,8 @@ the transaction that claims the shard, so a paused primary's commit in flight
 conflicts and aborts before its successor has fenced any file. The guard holds
 whenever the store chooses a commit's timestamp, which a check of `Now` against
 an expiry would not. `Now` **MUST** be
-monotonic across transactions that commit in order (on a backend without an
-oracle, those of one node: below), and within a stated bound of
-real time, and reading it writes no key. A backend with a timestamp oracle
+strictly increasing across transactions that commit in order, on every node, and within a
+stated bound of real time. A backend with a timestamp oracle
 returns the timestamp the oracle issued for the transaction's snapshot; its
 commit timestamp, chosen later, is at or above it. A backend without one, or
 whose versions are not time — the embedded single-node store, or a replicated
@@ -1762,13 +1773,19 @@ clock record (`N‖node‖clk`, §4.2), which a background write raises one seco
 ahead before `Now` reaches it; a start resumes from that ceiling, so a clock stepped back across a restart
 cannot carry `Now` backward. That costs one write per second per node, never one
 per transaction: a clock kept in a key that every transaction read and rewrote
-would be the hot counter §4.4 forbids. Clamped this way, `Now` is monotonic
-across the transactions of one node; across nodes of a cluster on such a store,
-two transactions in commit order may read `Now` apart by up to the clock-offset
-bound σ ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). A time one node stored compared with
-another node's `Now` must allow σ; the cluster's lease waits avoid the comparison
-altogether by measuring a duration on the waiter's monotonic clock
-([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
+would be the hot counter §4.4 forbids. Clamped this way, `Now` increases across
+the transactions of one node, and a node's value never repeats: when its clock has not
+moved since the last value it returned, it returns that value plus one nanosecond. Across
+the nodes of a cluster, clocks differ by up to the clock-offset bound σ ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)),
+and a node restarted within its ceiling's lead resumes ahead of the others, so a
+replicated backend without an oracle **MUST** also keep the highest time it has handed out
+in a shared key (`\x00time`): `Now` reads it untracked and returns the larger of the
+node's value and that key plus one nanosecond, and a transaction that asked the time
+raises the key at commit with an atomic maximum. Neither the untracked read nor the atomic
+write conflicts with anything, so the key is not a hot counter in §4.4's sense, though
+every such commit writes it. A transaction that starts after another committed, on any
+node, then reads a later `Now`. Lease waits still measure a duration on the waiter's
+monotonic clock rather than compare stored times ([RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)).
 
 **Every committed write carries a change sequence.** Its source is the version
 the store assigns at commit — an oracle's commit timestamp, or the store's own
