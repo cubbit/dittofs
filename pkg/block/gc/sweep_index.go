@@ -161,6 +161,12 @@ func sweepFromSyncedIndex(
 		addError("enumerate-synced: " + enumErr.Error())
 	}
 
+	if errors.Is(enumErr, context.DeadlineExceeded) {
+		statsMu.Lock()
+		stats.EndedOnDeadline = true
+		statsMu.Unlock()
+	}
+
 	statsMu.Lock()
 	// ObjectsScanned here counts synced markers inspected (the LIST-free
 	// candidate set), not the full remote namespace — the index IS the scope.

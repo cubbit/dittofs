@@ -87,6 +87,43 @@ type CompactOptions struct {
 	LiveRatio float64
 	// DryRun reports candidates without moving or deleting anything.
 	DryRun bool
+
+	// callTimeout bounds each remote call; zero means compactCallTimeout.
+	callTimeout time.Duration
+}
+
+// compactCallTimeout bounds one GetBlock, PutBlock or DeleteBlock of a
+// compaction pass, the store client's retries included.
+//
+// decision: 2 min, not the 30 s the s3 store gives its own delete and listing
+// calls. A compaction GET or PUT moves a whole block, up to 8 MiB, and 2 min is
+// one HTTP attempt of the s3 client, so a slow link still compacts large
+// blocks. The longer bound costs little: the first call that times out ends
+// the pass, so a stalled store holds the GC lock for it once per run. Lower it
+// if that one wait shows up as GC lock contention.
+const compactCallTimeout = 2 * time.Minute
+
+// callDeadline returns the context for one remote call of compaction.
+func callDeadline(ctx context.Context, opts CompactOptions) (context.Context, context.CancelFunc) {
+	timeout := opts.callTimeout
+	if timeout <= 0 {
+		timeout = compactCallTimeout
+	}
+
+	return context.WithTimeout(ctx, timeout)
+}
+
+// boundedGet reads one block under its own call deadline.
+func boundedGet(
+	ctx context.Context,
+	rbs remote.RemoteBlockStore,
+	blockID string,
+	opts CompactOptions,
+) ([]byte, error) {
+	ctx, cancel := callDeadline(ctx, opts)
+	defer cancel()
+
+	return rbs.GetBlock(ctx, blockID)
 }
 
 // CompactReport is the output of a compaction pass.
@@ -118,8 +155,10 @@ func (r *CompactReport) Merge(other CompactReport) {
 // are the per-share metadata views sharing the remote block store rbs. A block
 // is per-share (block IDs are minted per share), so each view is compacted
 // against its own live locator set. Returns a non-nil error only on an
-// enumeration/walk failure; per-block failures are counted in Report.Errors and
-// leave that block intact for the next run.
+// enumeration/walk failure, or when a remote call reaches its deadline: the
+// store is not answering, so the pass stops there and leaves the rest for the
+// next run. Other per-block failures are counted in Report.Errors and leave
+// that block intact for the next run.
 //
 // The caller MUST hold the per-remote GC lock and run this AFTER the sweep.
 func CompactBlocks(
@@ -166,14 +205,18 @@ func CompactBlocks(
 			if err := ctx.Err(); err != nil {
 				return report, err
 			}
-			compactOneBlock(ctx, v, rbs, blockID, opts, &report)
+
+			if err := compactOneBlock(ctx, v, rbs, blockID, opts, &report); err != nil {
+				return report, err
+			}
 		}
 	}
 	return report, nil
 }
 
 // compactOneBlock compacts a single candidate block. Errors are logged and
-// counted in report.Errors, leaving the block intact for the next run.
+// counted in report.Errors, leaving the block intact for the next run. It
+// returns only a remote call's DeadlineExceeded, which ends the pass.
 func compactOneBlock(
 	ctx context.Context,
 	v CompactMetaView,
@@ -181,18 +224,19 @@ func compactOneBlock(
 	blockID string,
 	opts CompactOptions,
 	report *CompactReport,
-) {
+) error {
 	rec, ok, err := v.GetBlockRecord(ctx, blockID)
 	if err != nil {
 		slog.Warn("compaction: get block record failed — skipping", "block_id", blockID, "err", err)
 		report.Errors++
-		return
+
+		return nil
 	}
 	if !ok {
-		return // already gone (raced a concurrent reclaim in the same run)
+		return nil // already gone (raced a concurrent reclaim in the same run)
 	}
 
-	data, err := rbs.GetBlock(ctx, blockID)
+	data, err := boundedGet(ctx, rbs, blockID, opts)
 	if err != nil {
 		if errors.Is(err, block.ErrChunkNotFound) {
 			// Object gone but record survives (a prior compaction's DeleteBlock
@@ -200,17 +244,19 @@ func compactOneBlock(
 			// chunks already point at the new block; the husk record is safe to
 			// drop whatever its stale count says (block IDs are never reused).
 			if opts.DryRun {
-				return
+				return nil
 			}
 			if derr := v.DeleteBlockRecord(ctx, blockID); derr != nil {
 				slog.Warn("compaction: delete husk record failed — will retry next run", "block_id", blockID, "err", derr)
 				report.Errors++
 			}
-			return
+
+			return nil
 		}
 		slog.Warn("compaction: get block failed — skipping", "block_id", blockID, "err", err)
 		report.Errors++
-		return
+
+		return stalled(err)
 	}
 
 	// Whole-block BLAKE3 verify before trusting any byte (respects integrity;
@@ -218,14 +264,16 @@ func compactOneBlock(
 	if block.ContentHash(blake3.Sum256(data)) != rec.BlockHash {
 		slog.Error("compaction: block hash mismatch — leaving for the scrubber", "block_id", blockID)
 		report.Errors++
-		return
+
+		return nil
 	}
 
 	_, records, err := blockcodec.Parse(data, nil)
 	if err != nil {
 		slog.Warn("compaction: parse block failed — skipping", "block_id", blockID, "err", err)
 		report.Errors++
-		return
+
+		return nil
 	}
 
 	// Select the chunks still live in THIS block: a synced locator that still
@@ -237,7 +285,8 @@ func compactOneBlock(
 		if err != nil {
 			slog.Warn("compaction: get locator failed — skipping block", "block_id", blockID, "hash", r.Hash.String(), "err", err)
 			report.Errors++
-			return
+
+			return nil
 		}
 		if ok && loc.BlockID == blockID {
 			moveable = append(moveable, r)
@@ -245,21 +294,23 @@ func compactOneBlock(
 	}
 
 	if len(moveable) == len(records) {
-		return // nothing dead to reclaim (all chunks still live here) — leave it
+		return nil // nothing dead to reclaim (all chunks still live here): leave it
 	}
 
 	if opts.DryRun {
 		report.BlocksCompacted++
-		return
+		return nil
 	}
 
 	if len(moveable) == 0 {
 		// Husk: every chunk is dead or already moved. Reclaim the whole object.
-		if deleteOldBlock(ctx, v, rbs, blockID, report) {
+		err := deleteOldBlock(ctx, v, rbs, blockID, opts, report)
+		if err == nil {
 			report.BlocksCompacted++
 			report.BytesReclaimed += rec.Length
 		}
-		return
+
+		return stalled(err)
 	}
 
 	// Pack the live chunks into a fresh block (verbatim wire bodies; the codec
@@ -269,14 +320,16 @@ func compactOneBlock(
 	if err != nil {
 		slog.Warn("compaction: new block id failed — skipping", "block_id", blockID, "err", err)
 		report.Errors++
-		return
+
+		return nil
 	}
 	var buf bytes.Buffer
 	builder, err := blockcodec.NewBuilder(&buf, newID, nil)
 	if err != nil {
 		slog.Warn("compaction: new builder failed — skipping", "block_id", blockID, "err", err)
 		report.Errors++
-		return
+
+		return nil
 	}
 	commits := make([]block.BlockChunkCommit, 0, len(moveable))
 	for _, r := range moveable {
@@ -284,7 +337,8 @@ func compactOneBlock(
 		if err != nil {
 			slog.Warn("compaction: frame chunk failed — skipping block", "block_id", blockID, "hash", r.Hash.String(), "err", err)
 			report.Errors++
-			return
+
+			return nil
 		}
 		// Local left zero: the bytes are read from remote and the chunk's local
 		// index entry (if any) already points at its log blob and is unchanged.
@@ -293,15 +347,17 @@ func compactOneBlock(
 	if _, err := builder.Finish(); err != nil {
 		slog.Warn("compaction: finish block failed — skipping", "block_id", blockID, "err", err)
 		report.Errors++
-		return
+
+		return nil
 	}
 	newBytes := buf.Bytes()
 
 	// (1) PutBlock — orphan object on crash (reconcile class 3), never data loss.
-	if err := rbs.PutBlock(ctx, newID, bytes.NewReader(newBytes)); err != nil {
+	if err := boundedPut(ctx, rbs, newID, newBytes, opts); err != nil {
 		slog.Warn("compaction: put new block failed — skipping", "block_id", blockID, "new_block_id", newID, "err", err)
 		report.Errors++
-		return
+
+		return stalled(err)
 	}
 	// (2) Atomic record + last-wins locator rewrite onto the new block.
 	newRec := block.BlockRecord{
@@ -316,7 +372,8 @@ func compactOneBlock(
 		// block is untouched and still resolves. Safe to abandon this attempt.
 		slog.Warn("compaction: commit new block failed — old block kept, new object orphaned for reconcile", "block_id", blockID, "new_block_id", newID, "err", err)
 		report.Errors++
-		return
+
+		return nil
 	}
 	// (3) Delete the old block: object then record (matches reclaim order — a
 	// crash between leaves a class-2 leaked record, reclaimed by ReclaimRecords).
@@ -325,28 +382,79 @@ func compactOneBlock(
 	// count the reclaim (and this block) when the delete actually freed the old
 	// object — otherwise no space was reclaimed and the counters would over-report
 	// (mirrors the husk path above).
-	if deleteOldBlock(ctx, v, rbs, blockID, report) {
+	err = deleteOldBlock(ctx, v, rbs, blockID, opts, report)
+	if err == nil {
 		report.BlocksCompacted++
 		report.ChunksMoved += int64(len(commits))
 		report.BytesReclaimed += rec.Length - int64(len(newBytes))
 	}
+
+	return stalled(err)
 }
 
 // deleteOldBlock deletes a block's remote object then its record (that order —
 // a crash between leaves a class-2 leaked record, reclaimed by ReclaimRecords,
-// never a record pointing at freed bytes). Returns true on full success; a
+// never a record pointing at freed bytes). Returns nil on full success; a
 // failure is logged and counted in report.Errors, leaving the block for the
 // next run.
-func deleteOldBlock(ctx context.Context, v CompactMetaView, rbs remote.RemoteBlockStore, blockID string, report *CompactReport) bool {
-	if err := rbs.DeleteBlock(ctx, blockID); err != nil {
+func deleteOldBlock(
+	ctx context.Context,
+	v CompactMetaView,
+	rbs remote.RemoteBlockStore,
+	blockID string,
+	opts CompactOptions,
+	report *CompactReport,
+) error {
+	if err := boundedDelete(ctx, rbs, blockID, opts); err != nil {
 		slog.Warn("compaction: delete old block failed — record kept, reclaim next run", "block_id", blockID, "err", err)
 		report.Errors++
-		return false
+
+		return err
 	}
 	if err := v.DeleteBlockRecord(ctx, blockID); err != nil {
 		slog.Warn("compaction: delete old record failed — retry next run", "block_id", blockID, "err", err)
 		report.Errors++
-		return false
+
+		return err
 	}
-	return true
+
+	return nil
+}
+
+// boundedPut writes one block under its own call deadline.
+func boundedPut(
+	ctx context.Context,
+	rbs remote.RemoteBlockStore,
+	blockID string,
+	data []byte,
+	opts CompactOptions,
+) error {
+	ctx, cancel := callDeadline(ctx, opts)
+	defer cancel()
+
+	return rbs.PutBlock(ctx, blockID, bytes.NewReader(data))
+}
+
+// boundedDelete deletes one block object under its own call deadline.
+func boundedDelete(
+	ctx context.Context,
+	rbs remote.RemoteBlockStore,
+	blockID string,
+	opts CompactOptions,
+) error {
+	ctx, cancel := callDeadline(ctx, opts)
+	defer cancel()
+
+	return rbs.DeleteBlock(ctx, blockID)
+}
+
+// stalled keeps only the error that ends the pass: a call that reached its
+// deadline means the store is not answering. Any other failure is already
+// counted, and the pass goes on to the next block.
+func stalled(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
+	return nil
 }
