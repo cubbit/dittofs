@@ -95,9 +95,8 @@ func status(s *stage, err error) core.Status {
 	return st
 }
 
-// record reads one of the wire package's golden records, hex with # comments,
-// and returns its body, past the record mark.
-func record(t *testing.T, name string) []byte {
+// golden reads one of the wire package's golden vectors, hex with # comments.
+func golden(t *testing.T, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile("../wire/testdata/golden/" + name + ".hex")
 	if err != nil {
@@ -112,6 +111,14 @@ func record(t *testing.T, name string) []byte {
 	if err != nil {
 		t.Fatalf("golden %s: %v", name, err)
 	}
+	return b
+}
+
+// record reads one of the wire package's golden records and returns its body,
+// past the record mark.
+func record(t *testing.T, name string) []byte {
+	t.Helper()
+	b := golden(t, name)
 	n, last, err := wire.Fragment(b)
 	if err != nil || !last || n != len(b)-wire.RecordMarkLen {
 		t.Fatalf("golden %s: a mark of %d bytes, last %v, %v", name, n, last, err)
@@ -144,76 +151,168 @@ func TestASuccessIsTheHeaderAlone(t *testing.T) {
 	}
 }
 
-// A call to each served pair of a range routes to its table, and a version the
-// range does not serve is refused with the program's own lowest and highest.
+// call is a NULL call to prog's version vers under AUTH_NONE.
+func call(prog, vers uint32) []byte {
+	return nullCall(prog, vers, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil)
+}
+
+// reply encodes h's reply for st and checks it is the golden reply past its
+// xid, which is h's own.
+func reply(t *testing.T, s *stage, h core.Header, st core.Status, want []byte) {
+	t.Helper()
+	out := &resources.Buf{}
+	if err := s.Encode(h, st, out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.B) < 4 || binary.BigEndian.Uint32(out.B) != h.(header).call().XID() || !bytes.Equal(out.B[4:], want[4:]) {
+		t.Errorf("status %#x writes %x, want %x past the xid", uint32(st), out.B, want)
+	}
+}
+
+// A call to each served pair of a range routes to its table, at its version; a
+// version the range does not serve is refused with no table and answered
+// PROG_MISMATCH with its program's own lowest and highest served; a program with
+// none served is refused PROG_UNAVAIL.
 func TestTheServedRanges(t *testing.T) {
+	type routed struct {
+		name  string
+		body  []byte
+		table func(Tables) *core.OpTable
+		vers  core.Version
+	}
+	type mismatch struct {
+		name   string
+		body   []byte
+		lo, hi uint32
+	}
+	var (
+		nfs3     = routed{"NFS v3", call(progNFS, 3), func(t Tables) *core.OpTable { return t.V3 }, 3}
+		nfs4     = routed{"NFS v4's NULL", call(progNFS, 4), func(t Tables) *core.OpTable { return t.V4 }, 0}
+		compound = routed{"a COMPOUND of minor 1", compoundCall(1, "abcde"), func(t Tables) *core.OpTable { return t.V4 }, 1}
+		mount3   = routed{"MOUNT v3", call(progMount, 3), func(t Tables) *core.OpTable { return t.Mount }, 3}
+		nlm4     = routed{"NLM v4", call(progNLM, 4), func(t Tables) *core.OpTable { return t.NLM }, 4}
+		nsm1     = routed{"NSM v1", call(progNSM, 1), func(t Tables) *core.OpTable { return t.NSM }, 1}
+	)
+	const unknown = 100099
 	for _, c := range []struct {
-		name        string
 		min, max    string
-		served      []struct{ prog, vers uint32 }
-		mismatch    []struct{ prog, lo, hi uint32 }
+		served      []routed
+		mismatch    []mismatch
 		unavailable []uint32
 	}{
 		{
-			name: "3 to 4.2", min: "3", max: "4.2",
-			served:   []struct{ prog, vers uint32 }{{progNFS, 3}, {progNFS, 4}, {progMount, 3}, {progNLM, 4}, {progNSM, 1}},
-			mismatch: []struct{ prog, lo, hi uint32 }{{progNFS, 3, 4}, {progMount, 3, 3}, {progNLM, 4, 4}},
+			min: "3", max: "4.2",
+			served: []routed{nfs3, nfs4, compound, mount3, nlm4, nsm1},
+			mismatch: []mismatch{
+				{"NFS v2", call(progNFS, 2), 3, 4},
+				{"MOUNT v1", call(progMount, 1), 3, 3},
+				{"NLM v3", call(progNLM, 3), 4, 4},
+			},
+			unavailable: []uint32{unknown},
 		},
 		{
-			name: "4.0 to 4.2", min: "4.0", max: "4.2",
-			served:      []struct{ prog, vers uint32 }{{progNFS, 4}},
-			mismatch:    []struct{ prog, lo, hi uint32 }{{progNFS, 4, 4}},
-			unavailable: []uint32{progMount, progNLM, progNSM},
+			min: "4.0", max: "4.2",
+			served: []routed{nfs4, compound},
+			mismatch: []mismatch{
+				{"NFS v2", call(progNFS, 2), 4, 4},
+				{"NFS v3", call(progNFS, 3), 4, 4},
+			},
+			unavailable: []uint32{progMount, progNLM, progNSM, unknown},
 		},
 		{
-			name: "3 to 3", min: "3", max: "3",
-			served:   []struct{ prog, vers uint32 }{{progNFS, 3}, {progMount, 3}, {progNLM, 4}, {progNSM, 1}},
-			mismatch: []struct{ prog, lo, hi uint32 }{{progNFS, 3, 3}},
+			min: "3", max: "3",
+			served: []routed{nfs3, mount3, nlm4, nsm1},
+			mismatch: []mismatch{
+				{"NFS v2", call(progNFS, 2), 3, 3},
+				{"NFS v4's NULL", call(progNFS, 4), 3, 3},
+				{"a COMPOUND", compoundCall(0, "abcde"), 3, 3},
+			},
+			unavailable: []uint32{unknown},
+		},
+		{
+			min: "4.1", max: "4.1",
+			served: []routed{nfs4, compound},
+			mismatch: []mismatch{
+				{"NFS v2", call(progNFS, 2), 4, 4},
+				{"NFS v3", call(progNFS, 3), 4, 4},
+			},
+			unavailable: []uint32{progMount, progNLM, progNSM, unknown},
 		},
 	} {
-		t.Run(c.name, func(t *testing.T) {
+		t.Run(c.min+" to "+c.max, func(t *testing.T) {
 			s := stageOf(settings.VersionRange{Min: c.min, Max: c.max})
-			for _, p := range c.served {
-				h, err := decode(t, s, nullCall(p.prog, p.vers, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil))
+			for _, r := range c.served {
+				h, err := decode(t, s, r.body)
 				if err != nil {
-					t.Fatalf("%d/%d: %v", p.prog, p.vers, err)
+					t.Fatalf("%s: %v", r.name, err)
 				}
-				if _, _, err := s.Route(h, nil); err != nil {
-					t.Errorf("%d/%d is refused: %v", p.prog, p.vers, err)
+				table, req, err := s.Route(h, nil)
+				if err != nil || table != r.table(s.tables) {
+					t.Errorf("%s: %p, %v; want its table", r.name, table, err)
+					continue
+				}
+				if req.Version != r.vers {
+					t.Errorf("%s is routed at version %d, want %d", r.name, req.Version, r.vers)
 				}
 			}
 			for _, m := range c.mismatch {
-				// A version below the program's range, or NFS v2.
-				req := uint32(2)
-				switch m.prog {
-				case progMount:
-					req = 1
-				case progNLM:
-					req = 3
+				h, err := decode(t, s, m.body)
+				if err != nil {
+					t.Fatalf("%s: %v", m.name, err)
 				}
-				h, _ := decode(t, s, nullCall(m.prog, req, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil))
-				if _, _, err := s.Route(h, nil); !errors.Is(err, core.ErrVersion) {
-					t.Fatalf("%d v%d: %v, want ErrVersion", m.prog, req, err)
+				table, _, err := s.Route(h, nil)
+				if table != nil || !errors.Is(err, core.ErrVersion) {
+					t.Errorf("%s: %p, %v; want no table and ErrVersion", m.name, table, err)
+					continue
 				}
-				if got := status(s, core.ErrVersion); got != statusProgMismatch {
-					t.Errorf("%d v%d: status %#x", m.prog, req, uint32(got))
-				}
-				// The reply names this program's own lowest and highest.
-				hm, _ := decode(t, s, nullCall(m.prog, req, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil))
-				out := &resources.Buf{}
-				if err := s.Encode(hm, statusProgMismatch, out); err != nil {
-					t.Fatal(err)
-				}
-				lo, hi := binary.BigEndian.Uint32(out.B[len(out.B)-8:]), binary.BigEndian.Uint32(out.B[len(out.B)-4:])
-				if lo != m.lo || hi != m.hi {
-					t.Errorf("%d v%d: PROG_MISMATCH names %d and %d, want %d and %d", m.prog, req, lo, hi, m.lo, m.hi)
-				}
+				// PROG_MISMATCH's accepted reply, then this program's lowest and highest.
+				want := golden(t, "accept-prog-mismatch")[:24]
+				want = binary.BigEndian.AppendUint32(want, m.lo)
+				want = binary.BigEndian.AppendUint32(want, m.hi)
+				reply(t, s, h, status(s, err), want)
 			}
 			for _, prog := range c.unavailable {
-				h, _ := decode(t, s, nullCall(prog, 1, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil))
-				if _, _, err := s.Route(h, nil); !errors.Is(err, errProgUnavail) {
-					t.Errorf("program %d: %v, want PROG_UNAVAIL", prog, err)
+				h, err := decode(t, s, call(prog, 1))
+				if err != nil {
+					t.Fatalf("program %d: %v", prog, err)
 				}
+				table, _, err := s.Route(h, nil)
+				if table != nil || !errors.Is(err, errProgUnavail) {
+					t.Errorf("program %d: %p, %v; want no table and PROG_UNAVAIL", prog, table, err)
+					continue
+				}
+				reply(t, s, h, status(s, err), golden(t, "accept-prog-unavail"))
+			}
+		})
+	}
+}
+
+// The credential and verifier are judged before the program, its version and
+// its minor version (RFC 20 section 4.1's route row, RFC 21 section 11.1): a
+// bad one is AUTH_ERROR, whatever the call names.
+func TestTheCredentialBeforeTheProgram(t *testing.T) {
+	s := stageOf(settings.VersionRange{Min: "4.0", Max: "4.1"})
+	badCompound := nullCall(progNFS, versNFS4, 1, 99, nil, wire.AuthNone, nil, nil)
+	badCompound = opaque(badCompound, nil)
+	badCompound = binary.BigEndian.AppendUint32(badCompound, 2)
+	for _, c := range []struct {
+		name string
+		body []byte
+		want error
+	}{
+		{"an unknown program under flavour 99", nullCall(100099, 1, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred},
+		{"MOUNT, not served, under flavour 99", nullCall(progMount, 3, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred},
+		{"NFS v2 under flavour 99", nullCall(progNFS, 2, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred},
+		{"a COMPOUND of minor 2 under flavour 99", badCompound, errAuthCred},
+		{"an unknown program with an AUTH_SYS verifier", nullCall(100099, 1, 0, wire.AuthNone, nil, wire.AuthSys, authSys("h", 0, 0), nil), errAuthVerf},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, err := decode(t, s, c.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if table, _, err := s.Route(h, nil); table != nil || !errors.Is(err, c.want) {
+				t.Errorf("%p, %v; want no table and %v", table, err, c.want)
 			}
 		})
 	}

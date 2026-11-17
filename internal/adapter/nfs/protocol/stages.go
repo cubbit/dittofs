@@ -163,9 +163,11 @@ func (s *stage) ReplyLen(h core.Header) int {
 // pad is XDR's padding of n bytes to four.
 func pad(n int) int { return (4 - n%4) % 4 }
 
-// Route chooses the table and builds the request, one of the call's own, after
-// judging the RPC version, the credential and the verifier (RFC 21 sections
-// 2.1, 11.1 and 11.4). The connection's first routed call ends its handshake
+// Route chooses the table and builds the request, one of the call's own, in
+// the order of RFC 20 section 4.1's route row: the RPC version, then the
+// credential and the verifier (RFC 21 section 11.1), then the program, its
+// version and, for a COMPOUND alone, its minor version (RFC 20 section 4.8, RFC
+// 21 section 2.1). The connection's first routed call ends its handshake
 // deadline.
 func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
 	hd, ok := h.(header)
@@ -176,42 +178,31 @@ func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.R
 	if c.RPCVersion() != 2 {
 		return nil, nil, errRPCMismatch
 	}
+	if err := checkAuth(c); err != nil {
+		return nil, nil, err
+	}
 	prog, vers := c.Program(), c.Version()
 	if !s.served.has(prog) {
 		return nil, nil, errProgUnavail
 	}
-	if err := checkAuth(c); err != nil {
-		return nil, nil, err
-	}
 	var table *core.OpTable
-	switch prog {
-	case progNFS:
-		switch vers {
-		case versNFS3:
-			if !s.served.serves(progNFS, versNFS3) {
-				return nil, nil, core.ErrVersion
-			}
-			table = s.tables.V3
-		case versNFS4:
-			if !s.served.minor(hd.Version()) {
-				return s.tables.V4, nil, core.ErrVersion
-			}
-			table = s.tables.V4
-		default:
-			return nil, nil, core.ErrVersion
-		}
-	case progMount:
+	switch {
+	case prog == progNFS && vers == versNFS3:
+		table = s.tables.V3
+	case prog == progNFS && vers == versNFS4:
+		table = s.tables.V4
+	case prog == progMount:
 		table = s.tables.Mount
-	case progNLM:
+	case prog == progNLM:
 		table = s.tables.NLM
-	case progNSM:
+	case prog == progNSM:
 		table = s.tables.NSM
 	}
-	if table == nil {
+	if table == nil || !s.served.serves(prog, vers) {
 		return nil, nil, core.ErrVersion
 	}
-	if !s.served.serves(prog, vers) {
-		return nil, nil, core.ErrVersion
+	if minor, ok := c.MinorVersion(); ok && !s.served.minor(core.Version(minor)) {
+		return table, nil, core.ErrVersion
 	}
 	if s.conn != nil && s.established.CompareAndSwap(false, true) {
 		s.conn.Established()
@@ -221,8 +212,7 @@ func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.R
 
 // checkAuth judges the credential and the verifier: AUTH_NONE or a whole
 // AUTH_SYS credential, and a verifier of an empty AUTH_NONE, everything else
-// refused (RFC 21 section 11.1; an RPCSEC_GSS credential is the GSS stage's,
-// and none is here yet).
+// refused (RFC 21 section 11.1).
 func checkAuth(c wire.Call) error {
 	flavour, body := c.Credential()
 	switch flavour {
@@ -235,6 +225,12 @@ func checkAuth(c wire.Call) error {
 			return errAuthCred
 		}
 	default:
+		// decision: RPCSEC_GSS is refused AUTH_BADCRED with every flavour not
+		// served. RFC 21 section 10 has a GSS stage take it at unwrap, before
+		// Route; with no such stage, the router meets it as any flavour it does
+		// not serve and answers it as RFC 21 section 11.1 answers those.
+		// Withdrawn by that stage, which the deferral ledger's row "RPCSEC_GSS
+		// context table and window; NFSv4.1 slots and reply cache" brings.
 		return errAuthCred
 	}
 	vflavour, vbody := c.Verifier()
