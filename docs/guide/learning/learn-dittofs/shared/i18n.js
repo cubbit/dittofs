@@ -32,15 +32,26 @@ export function lookup(obj, path) {
 
 // A string table for one language with the source language behind it. get()
 // reports whether the value fell back, so check mode can show it.
+//
+// A deck's table also has shared defaults behind it: the headings every deck
+// repeats ("Glossary", "Open questions") live once, under `deck` in
+// learn-dittofs/i18n/<lang>.json, and a deck holds such a key only to say
+// something else. A key is looked up in the deck, then in the shared defaults,
+// in the chosen language first; only a miss in both falls back to English.
 export class Strings {
-  constructor(primary, fallback) {
+  constructor(primary, fallback, sharedPrimary, sharedFallback) {
     this.primary = primary || {};
     this.fallback = fallback || {};
+    this.sharedPrimary = sharedPrimary || {};
+    this.sharedFallback = sharedFallback || {};
   }
   get(key) {
-    const v = lookup(this.primary, key);
-    if (v !== undefined) return { value: v, missing: false };
-    return { value: lookup(this.fallback, key), missing: true };
+    for (const table of [this.primary, this.sharedPrimary]) {
+      const v = lookup(table, key);
+      if (v !== undefined) return { value: v, missing: false };
+    }
+    const v = lookup(this.fallback, key);
+    return { value: v !== undefined ? v : lookup(this.sharedFallback, key), missing: true };
   }
 }
 

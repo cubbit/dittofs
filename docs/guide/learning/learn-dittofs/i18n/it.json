@@ -66,5 +66,41 @@
       "name": "L'harness di test",
       "blurb": "Un solo comando che esegue ogni suite di test allo stesso modo, sul portatile o in CI, e non conta mai come superato un test che non è girato."
     }
+  },
+  "deck": {
+    "glossaryKicker": "Glossario",
+    "glossaryTitle": "Tutti i termini del deck",
+    "intro": {
+      "kicker": "Prima di iniziare",
+      "knownTitle": "Termini che conosci già",
+      "newTitle": "Termini nuovi",
+      "clashTitle": "Termini in conflitto"
+    },
+    "problem": {
+      "kicker": "Il problema"
+    },
+    "numbers": {
+      "kicker": "Numeri concreti",
+      "title": "I numeri"
+    },
+    "fail": {
+      "kicker": "Quando qualcosa si rompe"
+    },
+    "whom": {
+      "kicker": "Cosa cambia per chi",
+      "title": "Cosa cambia per chi",
+      "opsTitle": "Operatori"
+    },
+    "rules": {
+      "kicker": "Regole e non-obiettivi",
+      "title": "Le regole, in parole semplici"
+    },
+    "promises": {
+      "title": "Cosa promette l'RFC"
+    },
+    "open": {
+      "kicker": "Ancora aperto",
+      "title": "Domande aperte"
+    }
   }
 }

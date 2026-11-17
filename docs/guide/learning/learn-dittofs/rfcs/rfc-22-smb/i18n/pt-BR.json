@@ -1,7 +1,5 @@
 {
   "title": "RFC 22 — SMB",
-  "glossaryKicker": "Glossário",
-  "glossaryTitle": "Todos os termos deste deck",
   "cover": {
     "kicker": "Aprenda DittoFS · RFC 22",
     "title": "Os [[adapter|adapters]], parte 2: SMB",
@@ -10,21 +8,16 @@
     "notes": "Fonte: docs/internals/rfcs/rfc-22-smb.md, commit b0d540b. O RFC especifica um comportamento, não o código atual. A parte um desta seção é o deck do RFC 20, o modelo de adapters: este deck parte dele e não o repete. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique em qualquer termo sublinhado para ver a definição."
   },
   "intro": {
-    "kicker": "Antes de começar",
     "twoTitle": "O RFC 22 em duas frases",
     "two": "O [[adapter]] SMB fala o protocolo que o Windows usa para pastas compartilhadas e transforma cada requisição numa chamada ao [[filesystem-service]]. O RFC 22 faz todas as escolhas que as especificações do SMB deixam para o servidor — os [[dialect|dialects]], os [[credit|credits]], como um [[durable-handle]] é reconhecido na reconexão, como um nome criado via NFS aparece no Windows — e diz qual registro, em outro lugar, representa cada objeto SMB.",
     "partOne": "A primeira parte, o deck do RFC 20, cobre o que todo adapter tem em comum — a [[pipeline]], o ciclo de vida e o [[drain]], os [[handler|handlers]], a [[error-table]]. Este deck trata só do que é específico do SMB.",
     "twoNotes": "De 'Start here · In plain words' e §1 Purpose. O adapter não é dono de nenhum registro durável, só dos Adapter bytes opacos dentro dos registros do RFC 14 (§16.4). Nomes, file IDs e atributos são do RFC 7; opens, leases, locks e identidade durable do RFC 14; as shares e quem pode se conectar do RFC 17. 'In short': ele é construído como descreve o RFC 20.",
-    "knownTitle": "Termos que você já conhece",
     "knownLead": "Do glossário do RFC 0 e da primeira parte (RFC 20), mais os RFCs 1, 14 e 17. Clique em um para ver a definição.",
     "knownNotes": "Cada definição reformula de modo simples a linha do glossário do RFC 0 ou a entrada do deck do RFC 20. O grace period e o stability point são linhas do glossário do RFC 0 em que o RFC 22 se apoia.",
-    "newTitle": "Termos novos",
     "newNotes": "De 'Start here · The words you need' (dialect, sessão e tree connect, open e FileId, lease ou oplock, durable ou persistent handle), mais os credits (§3.3), o signing (§4.1), IPC$ (§5.2), o ClientGuid (§4.4), o break e o caching fence (§6.3), a disponibilidade contínua (§5.1), a channel sequence (§6.5), o Witness (§14) e o private-use mapping (§12.3, Apêndice B). Durable e persistent handle reformulam a linha 'durable / persistent open' do RFC 0.",
-    "clashTitle": "Termos em conflito",
     "clashNotes": "FileId e FileID: §6.1 e §9.1 (o FileID do RFC 7 nunca chega à rede SMB). Handle: o file handle do RFC 0 identifica um arquivo; um durable handle SMB é um open. Durable: o RFC 0 separa 'durable' (sincronizado) do durable open. Lease e sessão: glossário do RFC 0 e RFC 20 §2.2. Deny mode: §16.4, Open.Mode.Deny é o complemento de ShareAccess."
   },
   "problem": {
-    "kicker": "O problema",
     "title": "A conexão é frágil, o disco não pode ser",
     "clusterTitle": "O cluster",
     "cluster": "Os [[gateway-node|nós gateway]] **P1** e **P2** mantêm as conexões dos clientes. O nó **S1** é o [[primary]] de `profiles/alice/`, ou seja, o único nó que ordena cada mudança nos arquivos dali. Esses arquivos formam um [[shard]].",
@@ -134,7 +127,7 @@
       "O multichannel deixa uma sessão usar várias conexões, chamadas canais, mas só conexões com o mesmo nó."
     ],
     "footer": "Não existe configuração de assinatura por share, porque o SMB2 não tem como dizer a um cliente que uma share exige assinatura e outra não.",
-    "notes": "§4.1 e §4.2, invariantes S2 e S11. Uma requisição com assinatura inválida recebe STATUS_ACCESS_DENIED no seu message ID e a conexão continua aberta. Uma mensagem que não pode ser decifrada, e um segundo NEGOTIATE na mesma conexão, não recebem resposta: a conexão é fechada (MS-SMB2 3.3.5.2.1.1, 3.3.5.4). Uma sessão que não cifra pode se conectar a uma share cifrada e então precisa cifrar cada requisição ali; só um cliente que não consegue cifrar de jeito nenhum é recusado no tree connect. Multichannel: um bind para uma sessão que este nó não tem recebe STATUS_USER_SESSION_DELETED, e a consulta de endereços lista só os deste nó. Qual identidade resulta, e se o NTLM é permitido, são do RFC 18. Canais: as conexões de uma sessão (§4.2, §6.5)."
+    "notes": "§4.1 e §4.2, invariantes S2 e S11. Uma requisição com assinatura inválida recebe STATUS_ACCESS_DENIED no seu message ID e a conexão continua aberta, como diz o RFC 22 na develop no commit deste deck; na feat/storage-v2, o §4.1 responde assim só para um message ID ainda não usado dentro da janela, e fecha a conexão para qualquer outro. Uma mensagem que não pode ser decifrada, e um segundo NEGOTIATE na mesma conexão, não recebem resposta: a conexão é fechada (MS-SMB2 3.3.5.2.1.1, 3.3.5.4). Uma sessão que não cifra pode se conectar a uma share cifrada e então precisa cifrar cada requisição ali; só um cliente que não consegue cifrar de jeito nenhum é recusado no tree connect. Multichannel: um bind para uma sessão que este nó não tem recebe STATUS_USER_SESSION_DELETED, e a consulta de endereços lista só os deste nó. Qual identidade resulta, e se o NTLM é permitido, são do RFC 18. Canais: as conexões de uma sessão (§4.2, §6.5)."
   },
   "keyless": {
     "title": "Sessões sem chave",
@@ -344,9 +337,6 @@
       "Um deny mode vale também para clientes NFS. Se o open da alice-pc ainda estivesse em uso depois do break, o deny mode dela teria recusado o open do build01."
     ],
     "notes": "§6.3 'Handle caching is broken before a sharing violation' (um MUST NOT falhar na hora; MS-FSA 2.1.5.1.2) e 'The same holds for a request from another protocol' (um OPEN NFS espera o break como o retry do NFS; RFC 14 §6); 'Start here · Scenarios', o primeiro. Invariante S13."
-  },
-  "fail": {
-    "kicker": "Quando algo falha"
   },
   "durable": {
     "title": "[[durable-handle|Durable]] e [[persistent-handle|persistent]] handles",
@@ -565,7 +555,6 @@
   },
   "whom": {
     "kicker": "O que muda",
-    "title": "O que muda, e para quem",
     "usersTitle": "Usuários e operadores Windows",
     "users": "Numa [[share]] [[continuously-available|CA]], os discos de perfil aguentam quedas de rede e a perda de um [[node|nó]]. Nas outras shares, um failover do [[primary]] faz os arquivos abertos falharem, como um reinício de um servidor Windows. Clientes SMB1 e da época do Vista não conseguem se conectar.",
     "devTitle": "Quem desenvolve o [[adapter]]",
@@ -575,7 +564,6 @@
     "notes": "Enquadramento do próprio deck, tirado de 'In short', §1.1, as decisões do §6.4 (o custo para shares que não são continuamente disponíveis), a decisão do §3.1, §16 e a invariante S9. Adapter bytes: §16.4 'The Adapter bytes' e invariante S9; nenhum registro SMB carrega algum. Donos: open state RFC 14, nomes e ids de arquivo RFC 7, política das shares RFC 16, admissão RFC 17, identidade RFC 18."
   },
   "rules": {
-    "kicker": "Regras e não-objetivos",
     "title": "As regras, e o que se decide em outro lugar",
     "rulesTitle": "As regras, em palavras simples",
     "items": [
@@ -596,8 +584,6 @@
     "notes": "Regras: S1, S2, S4, S5 com S12, e S10 do §17. Não decidido: §1.1 Non-goals, uma lista de MUST NOT — incluindo as linhas da tabela de status que decorrem do MS-SMB2, e a enumeração de shares (RFC 17 §4.9). Como um security descriptor do Windows escreve a ACL é do RFC 22 (§11). Ciclo de vida, pipeline, codecs e tratamento de conexões do adapter são do RFC 20 ('In short'). Donos: RFC 14 (registros), RFC 7 (nomes, ids de arquivo), RFC 16 (política das shares), RFC 17 (admissão, tree connect), RFC 18 (autenticação, SIDs), RFC 19 (significado de uma ACL). DFS: §1.1, RFC 17 §1.1."
   },
   "numbers": {
-    "kicker": "Números concretos",
-    "title": "Os números",
     "n1": "8 MiB",
     "w1": "A maior requisição de leitura, escrita ou controle, que custa um [[credit]] a cada 64 KiB",
     "n2": "512",
@@ -613,8 +599,6 @@
     "notes": "8 MiB, 512, 256 e 32 MiB: §3.3. 35 s: §6.3, o prazo de recall do RFC 14 para grants SMB. 60 s: §6.3 e as configurações do RFC 13. 60 e 300 s: a tabela do §6.4. Outros: o caching fence dura 90 s (§6.3); o grace dura um período de lease, 90 s; pending_timeout é 10 minutos por padrão; migration.freeze_timeout 5 minutos; clone_max_len 1 GiB."
   },
   "open": {
-    "kicker": "Ainda em aberto",
-    "title": "Questões em aberto",
     "questions": [
       "Vale a pena guardar, por open, um registro da última escrita sincronizada, para que os durable opens que não perderam nada sobrevivam a um failover?",
       "Alguma aplicação de referência precisa da verificação do Windows sobre arquivos abertos mais fundo dentro de um diretório que está sendo renomeado?",

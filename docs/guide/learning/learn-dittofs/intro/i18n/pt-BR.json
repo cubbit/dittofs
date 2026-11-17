@@ -1,7 +1,5 @@
 {
   "title": "DittoFS — uma introdução",
-  "glossaryKicker": "Glossário",
-  "glossaryTitle": "Todos os termos deste deck",
   "cover": {
     "kicker": "Aprenda DittoFS · Introdução",
     "title": "DittoFS, de fora para dentro",
@@ -314,9 +312,6 @@
       "Não há chunk atual para buscar, e um mais antigo devolveria os bytes como eram antes da escrita, como se fossem os atuais."
     ],
     "notes": "RFC 0 §4.2 (residency: escrito, nenhum chunk atual, nada no journal é Lost e a leitura falha; nunca zeros; a linha do chunk antigo: 'fail; never the stale chunk'), 'One write, followed end to end' passo 5."
-  },
-  "fail": {
-    "kicker": "Quando algo falha"
   },
   "restart": {
     "title": "N1 cai no meio de um upload",

@@ -1,7 +1,5 @@
 {
   "title": "RFC 16 — the metadata store",
-  "glossaryKicker": "Glossary",
-  "glossaryTitle": "Every term in this deck",
   "cover": {
     "kicker": "Learn DittoFS · RFC 16",
     "title": "The [[metadata-store|metadata store]]",
@@ -10,20 +8,15 @@
     "notes": "Source: docs/internals/rfcs/rfc-16-metadata-store.md, commit e22639d. The RFC specifies behaviour, not the current code. What each record means is owned by RFC 6 (content), RFC 7 (files and names) and RFC 14 (open state); this deck covers how they are stored together. Rules marked (cluster) bind only once a second node can serve a share. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
   },
   "intro": {
-    "kicker": "Before we start",
     "twoTitle": "RFC 16 in two sentences",
     "two": "The [[metadata-store|metadata store]] is DittoFS's one transactional database for everything except file bytes: files and names, where content went, durable [[open-state|open state]], users, [[share|shares]], nodes and settings. RFC 16 fixes the [[entity|entities]] callers read, the narrow [[view]] each caller holds, and how both are laid out as keys behind one small transactional interface, the [[kv|KV]].",
     "twoNotes": "From 'Start here · In plain words' and §1 Purpose. The RFC calls itself the one place where the whole metadata layer can be read at once. It owns the rules of §1.2, the entity map, identity and control-plane entities, the views no narrower RFC owns, the KV contract, key layout, codecs, counters and store format, plus testing, benchmarks and observability.",
-    "knownTitle": "Terms you already know",
     "knownLead": "These terms come from RFC 0's glossary and from RFCs 1, 6, 7, 11, 12 and 14, which define them. Click a term to see its definition.",
     "knownNotes": "Every definition restates RFC 0's glossary row, which is the definition of record. RFC 16 depends on RFC 0, 6, 7, 13, 14 and 15 (its front matter).",
-    "newTitle": "New terms",
     "newNotes": "From 'Start here · The words you need' (entity, record, KV, guard, delta and fold, view, format record), plus group commit, store time, change sequence and the key budget (§4.1), the store codec (§4.3), the fold rule (§4.6), principal (§2.2) and Inspect (§3.1).",
-    "clashTitle": "Terms that clash",
     "clashNotes": "Record: RFC 1's journal record vs a KV record. Fold: §4.4 folds deltas into totals, §4.6 folds names by case — the RFC uses one word for both. Codec: RFC 20's adapter codec vs §4.3's value codec. Namespace: RFC 0's remote-tier namespace vs RFC 7's Namespace view (§3). Snapshot: §4.1's transaction snapshot vs RFC 12's share snapshot."
   },
   "problem": {
-    "kicker": "The problem",
     "title": "Everything but the bytes",
     "analogyTitle": "Analogy",
     "analogy": "A library's card catalogue: the books sit in the stacks, and the cards say what exists and where to find it. File bytes are the books; the [[metadata-store|metadata store]] is the cards.",
@@ -33,7 +26,6 @@
     "notes": "'Start here · In plain words', including the analogy and the two-line diagram. What a record means is owned elsewhere: files and names by RFC 7, content by RFC 6, opens and locks by RFC 14 (§1, §1.1)."
   },
   "promises": {
-    "title": "What the RFC promises",
     "items": [
       "One database holds every kind of metadata, so there is only one thing to run, back up, replicate and test.",
       "Reading a file's attributes is one read, however large the file or its directory grows. A directory adds only its recent time changes not yet merged into it. No record holds a list that grows: each entry of a directory is a record of its own.",
@@ -96,7 +88,7 @@
       ],
       [
         "Per namespace",
-        "`C‖` `B‖` `CR‖` `I‖` `NS‖`",
+        "`C‖` `B‖` `CR‖` `I‖` `NS‖` …",
         "chunks, blocks, reverse refs, put intents, GC state"
       ],
       [
@@ -462,8 +454,6 @@
     "notes": "§7.4. Assumptions: 2 PiB logical, mean chunk 256 KiB, no deduplication, 10⁸–10⁹ files, 4 MiB blocks, 30 daily snapshots with 1% rewritten per day. The 1 MiB Target is a non-normative recommendation for media, checkpoints and backups: content records drop from 3.1 TB to 0.76 TB, at the cost of a larger cold fetch per small random read (about 1.2 MiB instead of 0.3 MiB) and coarser deduplication. Target is a namespace setting chosen at creation."
   },
   "rules": {
-    "kicker": "Rules and non-goals",
-    "title": "The rules, in plain words",
     "items": [
       "`Update` reports success only once the transaction's writes are durable.",
       "The embedded backend groups ready commits into one sync, and acknowledges none of them before that sync.",
@@ -485,8 +475,6 @@
     "notes": "§1.1 Non-goals (MUST NOT). The footer: §2.4."
   },
   "open": {
-    "kicker": "Still open",
-    "title": "Open questions",
     "questions": [
       "The throughput the fold can sustain for one share on the replicated store.",
       "Whether reading a directory's entries with their attributes in batches closes enough of the performance gap on NFS's `READDIRPLUS`.",

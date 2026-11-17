@@ -66,5 +66,41 @@
       "name": "The test harness",
       "blurb": "One command that runs every test suite the same way, on a laptop or in CI, and never counts a test that didn't run as passed."
     }
+  },
+  "deck": {
+    "glossaryKicker": "Glossary",
+    "glossaryTitle": "Every term in this deck",
+    "intro": {
+      "kicker": "Before we start",
+      "knownTitle": "Terms you already know",
+      "newTitle": "New terms",
+      "clashTitle": "Terms that clash"
+    },
+    "problem": {
+      "kicker": "The problem"
+    },
+    "numbers": {
+      "kicker": "Concrete numbers",
+      "title": "The numbers"
+    },
+    "fail": {
+      "kicker": "When things fail"
+    },
+    "whom": {
+      "kicker": "What changes for whom",
+      "title": "What changes for whom",
+      "opsTitle": "Operators"
+    },
+    "rules": {
+      "kicker": "Rules and non-goals",
+      "title": "The rules, in plain words"
+    },
+    "promises": {
+      "title": "What the RFC promises"
+    },
+    "open": {
+      "kicker": "Still open",
+      "title": "Open questions"
+    }
   }
 }

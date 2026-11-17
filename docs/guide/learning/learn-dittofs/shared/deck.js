@@ -26,7 +26,13 @@ async function loadLang(lang) {
     get(`i18n/${lang}.json`, true),
     get(`i18n/${SOURCE_LANG}.json`),
   ]);
-  return { ui: new Strings(ui, uiEn), glossaryText: gl, glossaryEn: glEn, deck: new Strings(deck, deckEn), deckEn };
+  return {
+    ui: new Strings(ui, uiEn),
+    glossaryText: gl,
+    glossaryEn: glEn,
+    deck: new Strings(deck, deckEn, ui?.deck, uiEn.deck),
+    deckEn: [deckEn, uiEn.deck],
+  };
 }
 
 // Generated slides are built once: how many there are depends on the deck,

@@ -1,7 +1,5 @@
 {
   "title": "RFC 14 — open state e lock",
-  "glossaryKicker": "Glossario",
-  "glossaryTitle": "Tutti i termini di questa presentazione",
   "cover": {
     "kicker": "Impara DittoFS · RFC 14",
     "title": "[[open-state|Open state]] e lock",
@@ -10,20 +8,15 @@
     "notes": "Fonte: docs/internals/rfcs/rfc-14-open-state.md, commit b0d540b. L'RFC specifica il comportamento, non il codice attuale; la sua Appendice B dice dove il codice differisce. Le regole marcate (cluster) valgono solo quando un secondo nodo può servire una share; la prima release è un nodo solo (RFC 0 §1.4). Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la sua definizione."
   },
   "intro": {
-    "kicker": "Prima di cominciare",
     "twoTitle": "L'RFC 14 in due frasi",
     "two": "L'[[open-state|open state]] è tutto ciò che il server ha promesso su un file — [[open]], [[deny-mode|deny mode]], [[byte-range-lock|lock]], [[caching-grant|caching grant]] — tenuto in una tabella per file sul suo [[primary]], così NFS e SMB seguono le stesse regole. L'RFC 14 dice come questo stato si concede, come entra in conflitto, come si richiama e si recupera quando se ne va un client, un server o un primary.",
     "twoNotes": "Da 'Start here · In plain words' e §1 Purpose: chi tiene aperto questo file, cosa può farci, cosa gli abbiamo promesso, e che fine fa tutto questo quando un client, un server o un primary se ne va? È un solo componente perché ogni tipo di stato è consultato dagli altri (§1).",
-    "knownTitle": "Termini che conosci già",
     "knownLead": "Questi termini vengono dal glossario comune e dai progetti su cui questo si basa: l'albero dei file e i suoi permessi, quale nodo possiede quale shard, la struttura del cluster, il metadata store e il filesystem service. Cliccane uno per leggerne la definizione.",
     "knownNotes": "Ogni definizione riformula in modo semplice la riga del glossario dell'RFC 0, che è la definizione di riferimento. Shard e shard incarnation sono dell'RFC 0 e dell'RFC 11; qui servono per il grace (§4.4). Fonti: RFC 0 (glossario), RFC 7 (nomi, permessi, esistenza), RFC 11 (ownership degli shard), RFC 15 (topologia), RFC 16 (metadata store), RFC 17 (filesystem service).",
-    "newTitle": "Termini nuovi",
     "newNotes": "Da 'Start here · Terms' e dalle sezioni che definiscono ciascun termine: client §2.1, open §2.2, lock e lock owner §2, §2.3, lock waiter §2.10, state reference §2.11, open-state step §3, client lease e lease owner §4.1, grace e reclaim §4.2, grace instance §4.4, NLM/NSM §4.5, recall §5.2, delegation e oplock §5.1, revoked set §5.3, grant budget §5.5, open SMB-durable e persistent §8.1, delete pending §9.4, watch §2.5.",
-    "clashTitle": "Termini in conflitto",
     "clashNotes": "Lease: 'Start here · In plain words' — tre cose condividono la parola, e nient'altro. SMB-durable: 'Start here · Terms' e §8 — nell'RFC 14 durable vuol dire scritto nel metadata store, mentre un open SMB-durable vive solo in memoria; il durable dell'RFC 0 è nel senso del journal. Per questo la presentazione non collega la parola durable al senso del journal del glossario. Reclaim: il glossario dell'RFC 0 separa il reclaim del journal da un client che recupera open state. Grace: glossario dell'RFC 0 (il cestino del GC non è un grace period) e §4.2 (move grace, RFC 27). Handle e session: RFC 0, §2.1 e §8.1."
   },
   "problem": {
-    "kicker": "Il problema",
     "title": "alice-pc, un riavvio e un [[grace-period|grace period]]",
     "notes": "'Start here · The problem, in one example'. alice-pc tiene profiles/alice/ODFC_alice.vhdx tutto il giorno: un open SMB persistent in lettura e scrittura che nega ad altri la scrittura, sotto un lease SMB. Quando N1 si riavvia, la tabella in memoria sparisce; senza una regola, un secondo desktop potrebbe aprire il file in scrittura prima che alice-pc torni. §4.4: prima di rispondere a qualunque richiesta di open state un primary DEVE installare ogni open persistent dello shard, come disconnesso, in Recovery.ServeShard — il Timeout di un open persistent, fino a 300 s, dura più di un grace che arriva al massimo a 90 s. §4.2: durante il grace ogni richiesta che non è un reclaim è rifiutata con ErrGrace, un riprova-dopo; un adapter che tiene in sospeso una richiesta così, come SMB fa con un open, DEVE farla sopravvivere al grace. Il grace DOVREBBE finire prima, appena ogni client il cui record nomina lo shard ha finito (per SMB: ha riconnesso ogni open persistent, o ne ha lasciato scadere il Timeout, §4.4). Poi l'open in sospeso incontra il deny-write di alice-pc (§6). Se l'open fosse stato solo SMB-durable, non sarebbe sopravvissuto al riavvio (§8.1). Durante il grace si accettano solo reclaim (§4.2); i client contati sono quelli il cui record durable nomina lo shard (§4.2, §4.4)."
   },
@@ -489,8 +482,6 @@
     "notes": "§10 e §4.4 'A former primary fences itself'. Senza le entry di dedup, una chiamata ripetuta la cui risposta si è persa nell'handover girerebbe di nuovo: un secondo open, un lock in conflitto con quello del client stesso. Uno spostamento a lotti scrive una forwarding entry sullo shard che cede, così un riferimento che lo nomina riceve un errore di routing, mai bad stateid. Un marker ponytail registra che non esiste ancora una chiamata di export o install per gli handover. L'ultimo paragrafo del §10 vale anche per un nodo singolo: quando parte un nodo che serve uno shard, l'incarnation sale e il write verifier NFS DEVE cambiare. Margine di deriva degli orologi: §4.4, RFC 11 §3.1. Entry di dedup: RFC 15 §4.3. Il commit di uno spostamento a lotti aggiunge lo shard ricevente a ogni record client nominato (§10). Il failover è un takeover dopo la scadenza del node lease del primary (§4.4, §10)."
   },
   "numbers": {
-    "kicker": "Numeri concreti",
-    "title": "I numeri",
     "n1": "90 s",
     "w1": "Il [[client-lease]]. Durano altrettanto il grace, la pausa nei grant dopo un recall mancato e la scadenza del recall di una [[delegation]].",
     "n2": "35 s",
@@ -507,13 +498,10 @@
     "notes": "90 s: decisione del §4.1, non misurata; grace §4.2, fence §5.3, scadenza della delegation §5.3. 35 s: §5.3, fisso. 300 s: §4.4. 10 s: decisione del §4.1, una proposta. Budget: decisione del §5.5. 16: decisione del §5.4, una proposta, con 4.096 recall non inviati per primary. Tetti: decisione del §5.5, 'proposti, da fissare con l'M6 dell'RFC 24'; oltre uno, la richiesta è rifiutata con ErrDelay (DelayResources) prima di cambiare qualcosa. Inoltre: 64 intervalli per richiesta di lock (§2.3); 1.024 watch, 64 modifiche ciascuna (§2.5); 256 shard nella lista degli shard di un client (§8)."
   },
   "whom": {
-    "kicker": "Cosa cambia per chi",
-    "title": "Cosa cambia per chi",
     "devTitle": "Chi scrive gli adapter",
     "dev": "Gli adapter si limitano a tradurre le richieste in chiamate neutre, e gli errori all'indietro. Un [[adapter]] non tiene [[open-state|open state]]. Ciò che una riconnessione deve ritrovare viene salvato come [[adapter-bytes|Adapter bytes]], che la tabella conserva senza leggerli.",
     "svcTitle": "Servizio e store",
     "svc": "Ogni nodo tiene l'open state in una sola tabella. La chiama il [[filesystem-service]], e anche l'[[engine]] per tenere aperta la sorgente di un [[clone]] mentre la copia. La tabella scrive i record durable nel metadata store e non chiama mai un altro nodo.",
-    "opsTitle": "Operatori",
     "ops": "Dopo un riavvio, il nuovo stato può essere rifiutato per un massimo di 90 s. Gli [[persistent-open|open persistent]] si attivano per share. I controlli di salute segnalano grace bloccati, recall mancati, cicli di riavvio e lock concessi senza conferma.",
     "notes": "§3.1 (gli adapter traducono; i byte Adapter viaggiano opachi e sul gateway non fanno mai fede), §3 (la tabella è locale al nodo e verso l'esterno passa solo dal suo Sink; ogni passo tra nodi è del servizio, tramite i Peers dell'RFC 17), §11 (il servizio è l'unico chiamante tranne l'hold di un clone dell'engine), §11.1, §8.1, §14 (quattro condizioni di health: lock_grant_unacknowledged, recall_deadline_misses, client_reboot_loop, grace_stuck). L'engine chiama CloneOpen/CloneClose per la sorgente di un clone (§11). I record durable passano dalla vista OpenRecords dell'RFC 16. Adapter bytes: §3.1."
   },
@@ -530,8 +518,6 @@
     "notes": "Appendice B. Inoltre: un timeout dei waiter (BlockingTimeout, 60 s) dichiarato ma letto da nessuna parte; limiti dei lock come impostazioni; rilevamento dei deadlock (deadlock.go) e delegation di directory (dir_delegation.go), che l'RFC non specifica; un solo RWMutex su una mappa di lock. Appendice B (informativa): internal/adapter/nfs/v4/state, lease manager SMB, handleKey := string(fileHandle), RestoreLocks, due grace machine, byteRangeLockBreakWaitTimeout = 5 s, RecentlyRecalledTTL = 30 s per file."
   },
   "rules": {
-    "kicker": "Regole e non-obiettivi",
-    "title": "Le regole, in parole semplici",
     "items": [
       "L'open state non sta mai in un [[adapter]]. C'è una tabella per file, sul [[primary]] del file.",
       "Un [[deny-mode]] non si ricontrolla a ogni I/O fatto con un open concesso, mentre l'I/O anonimo si controlla a ogni operazione.",
@@ -554,8 +540,6 @@
     "notes": "§1.1. I valori di protocollo che devono sopravvivere a una connessione — una lease key, un create GUID, un app instance, una sequenza di lock — qui sono campi opachi, confrontati e mai interpretati. Non offerti neppure: i layout pNFS, riservati (§2.6); la copia asincrona — ogni copia è sincrona e non tiene open state (§2.7). Le epoch isolano un primary superato (§10). Nomi, permessi ed esistenza: RFC 7; shard record, node lease ed epoch: RFC 11."
   },
   "open": {
-    "kicker": "Ancora aperto",
-    "title": "Domande aperte",
     "questions": [
       "C'è un carico di lavoro che ha bisogno di una scadenza di [[recall]] NFS più corta del lease di 90 s?",
       "Quanto costano gli [[persistent-open|open persistent]]? Nessuno l'ha ancora misurato.",

@@ -1,34 +1,26 @@
 {
   "title": "RFC 1 — o journal",
-  "glossaryKicker": "Glossário",
-  "glossaryTitle": "Todos os termos do deck",
   "cover": {
-    "kicker": "Learn DittoFS · RFC 1",
+    "kicker": "Aprenda DittoFS · RFC 1",
     "title": "O [[journal|journal]]",
     "lead": "O journal é o disco local onde toda escrita chega primeiro. Aqui você vê como ele funciona, e por que responde “[[missing]]” em vez de devolver zeros.",
     "built": "Construído a partir do RFC 1 no commit a34d0b8",
     "notes": "Fonte: docs/internals/rfcs/rfc-1-journal.md, commit a34d0b8. O RFC especifica um comportamento, não o código atual. O formato em disco e a recuperação depois de um crash são o RFC 28, não tratado aqui. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique num termo sublinhado para ver a definição."
   },
   "intro": {
-    "kicker": "Antes de começar",
     "twoTitle": "O RFC 1 em duas frases",
     "two": "O [[journal]] é o disco local rápido onde toda escrita chega e de onde sai a confirmação para o cliente: ele anexa cada escrita como um [[record]] no fim de um arquivo [[segment]], a mantém mesmo depois de um crash e atende leituras dos bytes que ainda guarda. Ele não sabe nada de [[chunk|chunks]] nem do bucket, porque é o [[engine]] que envia os dados e depois [[report|informa]] quais bytes passaram por [[offload|offload]], e só esses bytes podem ser descartados para abrir espaço.",
     "twoNotes": "De 'Start here · In plain words' e §1 Purpose. O journal responde exatamente uma pergunta: tenho estes bytes, em qual offset, e em qual versão?",
-    "knownTitle": "Termos que você já conhece",
     "knownLead": "Estes termos vêm do glossário do RFC 0 e dos RFCs em que este se apoia (2, 3, 6 e 8). Clique num deles para ver a definição.",
     "knownNotes": "Cada definição reformula a linha do glossário do RFC 0, que é a definição oficial.",
-    "newTitle": "Termos novos",
     "newNotes": "De 'Start here · The words you need', mais missing (§3.2), change version (§3.2, §3.4), removal marker (§3.6), placement index (§4), headroom (§6), unreclaimed bytes (§3.5, §7.1) e loss event (§3.8). O glossário final acrescenta append stream, share tag e sequence number.",
-    "clashTitle": "Termos em conflito",
     "clashNotes": "Record: o glossário do RFC 0 tem duas linhas, journal e metadados. Offload: a tabela de verbos do RFC 0 diz que não é o flush de um cliente. Sync: o RFC 0 chama o conteúdo que passou por offload de 'synced to the remote tier'. Release: o RFC 0 lista o sentido do journal e o sentido de arquivo do RFC 7. Durable: o RFC 0 o separa da open durable do RFC 14. Handle: o Handle do RFC 1 §3 é o acesso de uma share ao journal."
   },
   "problem": {
-    "kicker": "O problema",
     "title": "Uma sobrescrita durante um upload",
     "notes": "'Start here · The problem, in one example', passos 1–4, e o exemplo do §3.3. Tamanho do segment e versões são os valores de exemplo do próprio RFC. Depois do passo 5, um release de v42 é recusado até uma offer levá-lo."
   },
   "promises": {
-    "title": "O que o RFC promete",
     "title2": "O que o RFC promete, continuação",
     "items": [
       "Uma escrita confirmada sobrevive à morte do processo desde o momento da confirmação. Ela também sobrevive a um crash do host ou a uma queda de energia depois de [[sync|sincronizada]], o que acontece quando o cliente faz flush ou, no mais tardar, ao fim de um prazo fixo, por exemplo 1 s.",
@@ -224,9 +216,6 @@
     ],
     "notes": "§3.4 Fill: 'A Fill older than the file is refused': se a change version do arquivo é mais nova que asOf, Fill não grava nada e devolve um erro próprio (no RFC, um MUST); Fill nunca sobrescreve nenhuma parte de um held extent (um MUST NOT). 'Start here · Scenarios', o fetch que disputa com uma escrita."
   },
-  "fail": {
-    "kicker": "Quando algo falha"
-  },
   "survive": {
     "title": "O que sobrevive a quê",
     "c1Title": "O processo morre",
@@ -381,8 +370,6 @@
     "notes": "§4.2: cerca de 53 bytes por entrada em ordem e 69 em ordem aleatória, medidos num arquivo de 10^6 extents; muitos arquivos pequenos custam mais por entrada. Releases, deallocates e clone targets que partem um extent são recusados quando a contagem passa o limite em um oitavo; reports, truncates, deletes e Forget nunca."
   },
   "numbers": {
-    "kicker": "Números concretos",
-    "title": "Os números",
     "n1": "256 MiB",
     "w1": "o tamanho de um [[segment|segment]] proposto nos exemplos do RFC",
     "n2": "1 s",
@@ -442,19 +429,15 @@
     "notes": "§1.3 It is testable on its own. O §9.4 agrupa as checagens: perda silenciosa de dados, travamento e uso ilimitado de recursos, recuperação, observabilidade."
   },
   "whom": {
-    "kicker": "O que muda para quem",
     "title": "Quem precisa saber o quê",
     "engTitle": "Quem escreve o [[engine|engine]]",
     "eng": "O [[journal|journal]] não decide nenhuma política. É você quem escolhe o que passa por [[offload|offload]], quando fazer [[release|release]], quanto [[repack|repack]] fazer e como responder a cada recusa. Passe para `Fill` só bytes buscados no remote tier, senão o journal vai tratá-los como offloaded e poderá liberar um conteúdo que não existe em nenhum outro lugar.",
-    "opsTitle": "Quem opera",
     "ops": "Há um journal por disco, dimensionado por um máximo e por limites por share. Um journal cheio faz os clientes tentarem de novo em vez de falharem, enquanto ainda dá para liberar espaço. Tags não reivindicados são informados com os seus bytes e exportados para resgate antes de serem esquecidos.",
     "testTitle": "Quem escreve testes",
     "test": "Os testes usam um filesystem real, uma camada que simula falhas abaixo do journal e um tempo virtual. As checagens procuram perda silenciosa de dados, um journal que trava ou consome recursos sem limite, falhas na recuperação depois de um crash, e verificam o que o journal informa sobre si mesmo.",
     "notes": "Enquadramento do deck, a partir de §3.4 (quem chama Fill), §3.5 e §7.2 (a política é do engine), §6, §3 (strand e salvage), §1.3 e §9.4. Os quatro grupos são os de §9.4: A perda silenciosa de dados, B travamento e uso de recursos sem limite, C recuperação, D observabilidade."
   },
   "rules": {
-    "kicker": "Regras e não objetivos",
-    "title": "As regras, em palavras simples",
     "items": [
       "Uma leitura nunca preenche com zeros nem encurta o que não tem, e a lista `missing` é exata.",
       "`Release` recusa um [[extent|extent]] não informado como [[offload|offloaded]], e um release recusado não libera nada.",
@@ -479,8 +462,6 @@
     "notes": "§1.1 Non-goals (cada um, um MUST NOT), §1.2. A nota de rodapé: §3.5 ('the mechanism of eviction; the policy is the engine's') e §7.2 (o engine chama Repack com um orçamento e um escopo)."
   },
   "open": {
-    "kicker": "Ainda em aberto",
-    "title": "Perguntas abertas",
     "questions": [
       "Ainda não se mediu quanta escrita a mais o [[repack|repack]] causa sob uma carga com muito eviction.",
       "Do índice, foram medidos a memória e o custo de busca, mas não o custo de inserção.",

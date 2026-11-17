@@ -1,7 +1,5 @@
 {
   "title": "RFC 29 — the test harness",
-  "glossaryKicker": "Glossary",
-  "glossaryTitle": "Every term in this deck",
   "cover": {
     "kicker": "Learn DittoFS · RFC 29",
     "title": "One [[dt|test harness]]",
@@ -10,20 +8,13 @@
     "notes": "Source: docs/internals/rfcs/rfc-29-test-harness.md, commit 06b1e48. The RFC describes the harness the project wants to end up with; this deck follows its fifth revision. Keys: → next, S speaker notes. Click any underlined term for its definition."
   },
   "intro": {
-    "kicker": "Before we start",
     "twoTitle": "RFC 29 in two sentences",
     "two": "One Go command, [[dt]], runs every test [[suite]] the same way on a laptop and in CI: it reads one [[registry|list of suites]], builds the DittoFS server each one needs, calls the test tool and [[grade|grades]] every result against lists of [[known-failure|known failures]]. It exists because a green result did not always mean something was tested, failures on develop went unnoticed, and most tests could not block a merge.",
     "twoNotes": "From the Summary ('The problem', 'The proposal') and 'Start here · In plain words'.",
-    "knownTitle": "Terms you already know",
     "knownLead": "RFC 29 builds on no other RFC, because it is about the test tooling rather than the server. The DittoFS terms below appear in it only in passing. Click one to read its definition.",
     "knownNotes": "The RFC index says RFC 29 builds on no other RFC, RFC 0 included. Share: a fixture's shares (§4.2). Adapter: the NFS and SMB adapters a fixture enables (§4.2). Lease: the fixture's NFSv4 lease (§4.2). The journal, syncer and engine appear only as example component groups (§4.9).",
-    "newTitle": "New terms",
     "newNotes": "RFC 29 has no glossary section; each term is defined where the RFC introduces it: dt (§3), registry, suite, option, group (§4.1), cell (§4.4), store profile and fixture (§4.2), needs, dtc and the dedicated host (§4.4, §4.5), the system scenarios (§1, §4.1), tier and blocking (§4.3), gate (§4.8), format, CTRF, grade (§4.6), known failure, expected skip, unexpected pass, quarantine, flaky, retry (§4.7), not run (§4.4, R10), the develop-red issue (§4.8). The glossary at the end adds matrix, shard and client lease.",
-    "clashTitle": "Terms that clash",
     "clashNotes": "Tier: DittoFS's storage tiers (RFC 0, RFC 4) versus RFC 29's test tiers (§4.3). Fixture: the usual test-code sense versus §4.2's whole server. Gate: the gate job (§4.8) versus the performance and allocation gates (§4.10) and the adapters' share gate. Store profile versus performance and coverage profiles (§4.1's unit suite writes a coverage profile). Lease: the fixture's NFSv4 lease (§4.2)."
-  },
-  "problem": {
-    "kicker": "The problem"
   },
   "ways": {
     "title": "Before [[dt]] (October 2026), every [[suite]] ran its own way",
@@ -273,7 +264,7 @@
       ],
       [
         "`pr`",
-        "every pull request",
+        "every pull request, and the merge queue's run on the merged result",
         "20 min for 90 % of runs"
       ],
       [
@@ -293,7 +284,7 @@
       ]
     ],
     "footer": "Each tier runs everything the smaller one runs: `merge` includes `pr`, and `nightly` runs all but the `manual` suites. A [[suite]] names the smallest tier that runs it. Moving it is a one-word change, made on the timings `dt history` has measured.",
-    "notes": "§4.3 Tiers (table and 'Budgets'); §9 'The tier budgets', adjusted on measured numbers. Before dt (October 2026) a PR waited 25–40 min. On 2026-10-12 a merge took a median of 33 minutes to its last check (§9). The pr tier also runs on merge_group: tests.yml maps that event to pr. RFC 29 on develop still says this applies 'if a merge queue is ever available' (§4.3, §4.8); the RFC is being corrected, so the slide names only pull requests. The merge tier runs on pushes to develop, main and feat/storage-v2 (§4.3)."
+    "notes": "§4.3 Tiers (table and 'Budgets'); §9 'The tier budgets', adjusted on measured numbers. Before dt (October 2026) a PR waited 25–40 min. On 2026-10-12 a merge took a median of 33 minutes to its last check (§9). The pr tier also runs on merge_group: tests.yml maps that event to pr. The merge queue is enabled on develop and feat/storage-v2, so a queued pull request runs the pr tier again on the merged result (§4.3, §4.8). The merge tier runs on pushes to develop, main and feat/storage-v2 (§4.3)."
   },
   "whatruns": {
     "title": "What each pull request runs",
@@ -320,7 +311,7 @@
       "One reviewer has approved the pull request.",
       "Before it lands, the pull request is tested again on top of the latest develop."
     ],
-    "notes": "§4.8 CI, Jobs and Merging. Non-blocking cells run in a second matrix the gate doesn't wait for. The gate became required after the pr tier had been green for two weeks (§9), replacing Unit Tests and Integration Tests. A single gate that always runs avoids GitHub's path-filter trap. The last condition is phrased to hold either way: RFC 29 §4.8 on develop still requires up-to-date branches and says a merge queue can't be enabled on a user-owned repository, while tests.yml already runs the pr tier on merge_group; the RFC text is being corrected. Required checks: §4.8 'Merging' and 'Lint'; gitleaks and CodeQL (Analyze (go)) stay GitHub actions (§4.8, §5)."
+    "notes": "§4.8 CI, Jobs and Merging. Non-blocking cells run in a second matrix the gate doesn't wait for. The gate became required after the pr tier had been green for two weeks (§9), replacing Unit Tests and Integration Tests. A single gate that always runs avoids GitHub's path-filter trap. The last condition is the merge queue, which runs the pr tier on merge_group, on the merged result; the ruleset also still requires up-to-date branches (§4.8). Required checks: §4.8 'Merging' and 'Lint'; gitleaks and CodeQL (Analyze (go)) stay GitHub actions (§4.8, §5)."
   },
   "prrun": {
     "title": "A pull request breaks one pjdfstest test",
@@ -335,10 +326,10 @@
     ],
     "why": [
       "No [[retry]] runs on a pull request, so the test is graded `new` and its [[cell]] exits 1. A [[blocking]] cell that did not exit 0 makes the [[gate]] fail.",
-      "In CI, a retry runs only after a merge and on scheduled runs. On a pull request nothing is retried, so a PR cannot merge a [[flaky]] test it introduced.",
+      "In CI, a retry runs only on a push to develop, main or `feat/storage-v2`, which in practice follows a merge, and on scheduled runs. On a pull request nothing is retried, so a PR cannot merge a [[flaky]] test it introduced.",
       "Exit 2 is for a test that did not run. This one ran and failed with no list entry, so it is a new failure and its [[cell]] exits 1."
     ],
-    "notes": "'Start here · Scenarios', the first: graded a new failure, exit 1 (§4.4); no retry on a pull request (§4.7 Retry: 'None on pull requests … so a PR can't merge a flaky test it introduced. On develop and the schedule, --retry 1 …'); the gate fails because a blocking cell did not exit 0 (§4.8). Exit 2 means not run (§4.4). The RFC says 'on develop and the schedule'; tests.yml retries on every push and on the schedule, and the RFC is being corrected, so the slide says 'after a merge'."
+    "notes": "'Start here · Scenarios', the first: graded a new failure, exit 1 (§4.4); no retry on a pull request (§4.7 Retry: 'None on pull requests … so a PR can't merge a flaky test it introduced. On a push and on the schedule, --retry 1 …'); the gate fails because a blocking cell did not exit 0 (§4.8). Exit 2 means not run (§4.4). tests.yml runs on a push only to develop, main and feat/storage-v2, so a push is in practice a merge."
   },
   "grading": {
     "kicker": "Results and grading"
@@ -509,11 +500,11 @@
     "rTitle": "[[retry|Retry]]",
     "r": [
       "Tests are never retried on a pull request, so a PR cannot merge a flaky test it introduced.",
-      "After a merge and on scheduled runs, `--retry 1` runs each new failure once more, and nothing else.",
+      "On a push to develop, main or `feat/storage-v2` (in practice, after a merge) and on scheduled runs, `--retry 1` runs each new failure once more, and nothing else.",
       "A test that passes on retry is flaky. It raises no alert, and `dt history` counts it.",
       "A test that is flaky twice in a week on develop becomes a candidate for quarantine."
     ],
-    "notes": "§4.7 'Quarantine' and 'Retry'. The quarantine list is test/harness/quarantine.yaml; an entry names one test exactly, never a pattern. An expired entry is an error from dt doctor, which lint-repo runs (Repo Checks). The retry runs on the cell's own fixture, within the cell's limit; a test none of the naming rules can name isn't retried. The AD-DC keytab race (#2968) is what quarantine is for. Expiry: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); dt doctor is one of lint-repo's commands (§4.1), and lint-repo is the Repo Checks job, which runs on every pull request (§4.8). The RFC says 'on develop and the schedule'; tests.yml retries on every push and on the schedule, and the RFC is being corrected, so the slide says 'after a merge'."
+    "notes": "§4.7 'Quarantine' and 'Retry'. The quarantine list is test/harness/quarantine.yaml; an entry names one test exactly, never a pattern. An expired entry is an error from dt doctor, which lint-repo runs (Repo Checks). The retry runs on the cell's own fixture, within the cell's limit; a test none of the naming rules can name isn't retried. The AD-DC keytab race (#2968) is what quarantine is for. Expiry: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); dt doctor is one of lint-repo's commands (§4.1), and lint-repo is the Repo Checks job, which runs on every pull request (§4.8). tests.yml runs on a push only to develop, main and feat/storage-v2, so a push is in practice a merge."
   },
   "ctrf": {
     "title": "One result format: [[ctrf|CTRF]], with JUnit beside it",
@@ -589,14 +580,20 @@
       "GitHub's hosted runners share hardware, so their timings are too noisy to fail a pull request over a percentage drop.",
       "`bench-smoke` checks that the benchmarks still work. It does not block pull requests, but it does block the runs after a merge and at night.",
       "The throughput and allocation checks, also called gates, fail when a measurement crosses a threshold. They skip under Go's race detector (`-race`) and short mode (`-short`), which the `unit` suite uses, so no job ran them.",
-      "`unit --nonrace` runs them every night without those flags. One that still trips after its retry turns the nightly run red, but it never fails a pull request.",
+      "`unit --nonrace` runs them every night without those flags. One that still trips after its retry turns the nightly run red, but it never fails a pull request."
+    ],
+    "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. A tripped nonrace gate on the retry turns the nightly run red and posts, and fails no PR. The gates skipping under -race and -short, with no job running them: §1's table, last row. The unit suite runs go test -race, with -short on pull requests; its nonrace option runs the two gate tests nightly (§4.1)."
+  },
+  "baseline": {
+    "title": "Each benchmark against its own baseline",
+    "items": [
+      "After every merge, the benchmarks of each component that names one run again, and `benchstat` compares them with that component's stored baseline.",
+      "A change beyond `benchstat`'s noise band is posted for people to look at; it never fails the run. A baseline is replaced only through a pull request.",
       "`perf-night` on the [[dedicated-host|dedicated host]] runs the same SMB workload against DittoFS and against Samba, which serves only as a reference point for the test. It flags a night whose figures fall below their own recent median, but the flag fails nothing. The figures hold for that one machine, say nothing about either server in general, and are not meant to be reproduced elsewhere. `dt history` records them, and they never decide whether a run passes."
     ],
-    "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. perf-night flags a point, an area or the night's figure below its 7-day median by more than its noise band; the cell fails when a step fails or times out, or the night can't be scored. A tripped nonrace gate on the retry turns the nightly run red and posts, and fails no PR. The gates skipping under -race and -short, with no job running them: §1's table, last row. The unit suite runs go test -race, with -short on pull requests; its nonrace option runs the two gate tests nightly (§4.1). After every merge, a step also runs the benchmarks of the components that name one and compares them with their stored baseline using benchstat. A change beyond benchstat's noise band is posted, never a failed run, and a baseline is replaced only through a pull request (§4.10, 'Comparison against a stored baseline')."
+    "notes": "§4.10 Benchmarks and long runs, 'Comparison against a stored baseline'; §4.6 Metrics. After every merge, a step also runs the benchmarks of the components that name one and compares them with their stored baseline using benchstat. A change beyond benchstat's noise band is posted, never a failed run, and a baseline is replaced only through a pull request (§4.10, 'Comparison against a stored baseline'). perf-night flags a point, an area or the night's figure below its 7-day median by more than its noise band; the cell fails when a step fails or times out, or the night can't be scored."
   },
   "whom": {
-    "kicker": "What changes for whom",
-    "title": "What changes for whom",
     "devTitle": "Developers",
     "dev": "One command, `dt run NAME`, the same as CI's. `dt doctor` says what the machine lacks and how to get it. `dt` runs as you, and calls `sudo -n` only for steps that need root.",
     "revTitle": "Reviewers and maintainers",
@@ -606,7 +603,6 @@
     "notes": "This slide is the deck's framing, from §3 ('Getting dt', sudo), §4.4 (dt doctor), §4.8, §4.2 and §4.7."
   },
   "rules": {
-    "kicker": "Rules and non-goals",
     "title": "What the harness must do",
     "items": [
       "There is one entry point, and it runs the same way on a laptop and in CI.",

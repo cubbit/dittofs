@@ -1,7 +1,5 @@
 {
   "title": "RFC 20 — the adapter model",
-  "glossaryKicker": "Glossary",
-  "glossaryTitle": "Every term in this deck",
   "cover": {
     "kicker": "Learn DittoFS · RFC 20",
     "title": "The [[adapter]] model",
@@ -10,20 +8,15 @@
     "notes": "Source: docs/internals/rfcs/rfc-20-adapters.md, commit b0d540b. The RFC specifies behaviour, not the current code; its Appendix B says where the code differs. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
   },
   "intro": {
-    "kicker": "Before we start",
     "twoTitle": "RFC 20 in two sentences",
     "two": "An [[adapter]] is the code for one wire protocol: it turns bytes into calls on the [[filesystem-service]] and answers back into bytes, deciding nothing about files. RFC 20 fixes the shape every adapter shares — lifecycle, request [[pipeline]], encoding, concurrency — and how tests prove an adapter only translates, and translates correctly.",
     "twoNotes": "From 'Start here · In plain words' and §1 Purpose. RFC 17 fixes what the service offers; RFCs 21 and 22 fix each protocol's own choices; RFC 20 is the part between.",
-    "knownTitle": "Terms you already know",
     "knownLead": "Terms from the RFCs this one builds on, defined in the shared glossary. If one is new to you, click it for its definition.",
     "knownNotes": "Every definition is a plain restatement of RFC 0's glossary row, which is the definition of record.",
-    "newTitle": "New terms",
     "newNotes": "From 'Start here · The words you need' (RFC 20), plus core, the operation table, compound, callback, the error table, held request, the in-memory service and the recording wrapper from §2.5, §4.2, §4.3, §3.3, §4.5, §4.6 and §7.2.",
-    "clashTitle": "Terms that clash",
     "clashNotes": "Adapter: RFC 0's glossary row for the remote block store calls it one backend's adapter; RFC 20 §2.4 uses Adapter bytes. RPC: §3.1 says DCE/RPC shares only a name with ONC RPC. Lease: RFC 0 separates client, node and SMB leases. Handle and FileId: RFC 0 and §2.2."
   },
   "problem": {
-    "kicker": "The problem",
     "title": "A rule is worth what the [[adapter|adapters]] let through",
     "notes": "'Start here · The problem, with one example'. RFC 17 decides, in one place, that build01's write is a sharing violation. If the NFSv3 handler — written for a protocol with no opens — checked permissions itself and called the content engine directly, the service's check would never run: the NFS suite passes, the SMB suite passes, and the service suite tests a path the NFS adapter does not take."
   },
@@ -157,9 +150,6 @@
     "title": "One lifecycle for every [[adapter]]",
     "notes": "§3.1, §3.4 and §3.6. The node drives the states (RFC 23 §2.3) through Start, Reconfigure and Stop. The node starts an adapter last, after its first reconcile has opened the shares, so no request arrives before the service can answer. Stop's context deadline is the drain deadline. A stopped adapter is never started again: the node builds a new one with New (§3.4). Every adapter setting is live but port; for a changed port the node builds a new adapter with New, then stops the old one and starts the new (§3.6, RFC 23 §2.3). Listen addresses are not settings: the node hands them in, and Reconfigure adds or removes one only for a namespace move's release or a floating-address takeover (§3.6). A connection reads the settings once, at accept, and a session at setup (§3.6, invariant A20)."
   },
-  "fail": {
-    "kicker": "When things fail"
-  },
   "drain": {
     "title": "A [[drain]] in the middle of `tar`",
     "lead": "build01 is unpacking a tarball onto its NFS mount, with dozens of requests in flight, when an operator drains the [[node]] to upgrade it.",
@@ -237,7 +227,7 @@
       "It never branches on a file's mode, ACL or type to decide whether the operation is allowed. That decision is the service's."
     ],
     "caption": "This is the whole NFSv3 `WRITE` handler. It looks up no [[share]], checks no permission, tests no lock and never calls the [[engine]].",
-    "notes": "§4.3, the example handler: code verbatim, comments shortened; and invariant A5. Pre- and post-operation attributes come from the write's own result (its WCC), never from a GetAttr after it, which could include another client's write. The service is a field of the handler set, given once by node.New. §4.3 places a few calls outside the one-call rule: SignIn and Find in the requests that need them, session setup's client-record calls (Connect, AddSession, Disconnect), withdrawing a waiter whose Park was refused (CancelLock, Unwatch), and FreeState after a Revoked answer. Each signs in, sets up a session, or undoes or frees state, and changes no file; §7.2's test exempts each by the request it came in, never by its operation alone. A handler that composes fails the import and call-site test (§7.1) or a handler test against the in-memory service (§7.2)."
+    "notes": "§4.3, the example handler: code verbatim, comments shortened; and invariant A5. Pre- and post-operation attributes come from the write's own result (its WCC), never from a GetAttr after it, which could include another client's write. The service is a field of the handler set, given once by node.New. §4.3 places a few calls outside the one-call rule: SignIn and Find in the requests that need them, the client-record calls of a request that sets up a session, SMB SESSION_SETUP or NFSv4.1 CREATE_SESSION (Connect, AddSession, Disconnect), a Disconnect with Last repeated, in any handler, at the newer Gen the previous one returned, withdrawing a waiter whose Park was refused (CancelLock, Unwatch), and FreeState after a Revoked answer. Each signs in, sets up a session, or undoes or frees state, and changes no file; §7.2's test exempts each by the request it came in, never by its operation alone. A handler that composes fails the import and call-site test (§7.1) or a handler test against the in-memory service (§7.2)."
   },
   "compound": {
     "title": "[[compound|Compounds]]: a sequence of [[handler|handlers]]",
@@ -365,8 +355,6 @@
     "notes": "§6.1: one reader, workers, one writer; a worker MUST NOT wait on a client; a reply that cannot be written waits in the connection's writer; once its queue is full the reader stops reading that connection, and past the write deadline the connection is closed. A slow client costs its own connection and nothing else. §6.3: a connection that is not read lets TCP's window push back. Invariant A10."
   },
   "numbers": {
-    "kicker": "Concrete numbers",
-    "title": "The numbers",
     "n1": "30 s",
     "w1": "the deadline for each attempt at a service call",
     "n2": "≥ 35 s + 30 s",
@@ -441,7 +429,6 @@
   },
   "whom": {
     "kicker": "What changes",
-    "title": "What changes for whom",
     "devTitle": "[[adapter|Adapter]] developers",
     "dev": "Each operation gets its own file, each [[handler]] makes one call, and tables replace branches on the version. The build tells you when you cross the boundary.",
     "svcTitle": "Service and store authors",
@@ -451,8 +438,6 @@
     "notes": "Deck's own framing, drawn from 'What this RFC promises', Appendix B ('the goal is feature parity, not a port'), §3.1 and §3.7 (conditions adapter_listener_lost, adapter_refused, sidecar_failed). 'Today's adapters': Appendix B."
   },
   "rules": {
-    "kicker": "Rules and non-goals",
-    "title": "The rules, in plain words",
     "items": [
       "An [[adapter]] imports no store, no [[engine]] and no other adapter. It reaches files only through the service, and caches nothing the service returned.",
       "Every request passes the same stages, in the same order, through one shared implementation.",
@@ -475,8 +460,6 @@
     "notes": "§1.1 Non-goals. RFC 20 fixes only that the adapter runs the protocol's handshake and hands the service what it proved, and where the memory bounds apply, not their values."
   },
   "open": {
-    "kicker": "Still open",
-    "title": "Open questions",
     "questions": [
       "Should the SMB [[codec|codecs]] be generated from the structure tables in MS-SMB2, or stay hand-written with golden vectors? The cost of each has not been measured.",
       "NFSv3 and NFSv4.0 keep recent replies in the [[adapter]] so a retried request is not run twice. In a cluster the service has a [[dedup-table|dedup table]] that answers a resent call with its first result, but only for calls forwarded between nodes. Should it cover this too? RFC 21 will settle it.",

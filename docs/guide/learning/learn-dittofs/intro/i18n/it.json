@@ -1,7 +1,5 @@
 {
   "title": "DittoFS — un'introduzione",
-  "glossaryKicker": "Glossario",
-  "glossaryTitle": "Tutti i termini di questo deck",
   "cover": {
     "kicker": "Impara DittoFS · Introduzione",
     "title": "DittoFS, da fuori a dentro",
@@ -314,9 +312,6 @@
       "Non c'è un chunk corrente da recuperare, e uno più vecchio restituirebbe i byte com'erano prima della scrittura, spacciandoli per attuali."
     ],
     "notes": "RFC 0 §4.2 (residency: scritto, nessun chunk corrente, niente nel journal è Lost e la lettura fallisce; mai zeri; la riga del chunk vecchio: 'fail; never the stale chunk'), 'One write, followed end to end' passo 5."
-  },
-  "fail": {
-    "kicker": "Quando qualcosa si rompe"
   },
   "restart": {
     "title": "N1 va in crash a metà di un upload",

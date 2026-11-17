@@ -1,7 +1,5 @@
 {
   "title": "RFC 17 — il filesystem service",
-  "glossaryKicker": "Glossario",
-  "glossaryTitle": "Tutti i termini del deck",
   "cover": {
     "kicker": "Impara DittoFS · RFC 17",
     "title": "Il [[filesystem-service]]",
@@ -10,20 +8,15 @@
     "notes": "Fonte: docs/internals/rfcs/rfc-17-vfs.md, commit b0d540b. L'RFC descrive il comportamento voluto, non il codice attuale. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la sua definizione."
   },
   "intro": {
-    "kicker": "Prima di iniziare",
     "twoTitle": "L'RFC 17 in due frasi",
     "two": "Il [[filesystem-service]] è l'unica interfaccia che ogni [[adapter]] chiama, ed esegue i controlli di ogni operazione — sulla share, sui permessi, sull'[[open-state|open state]] e sulla quota — sempre nello stesso ordine e in un solo posto, per NFS come per SMB. L'RFC 17 fissa quell'interfaccia, quale componente possiede cosa, l'ordine di ogni chiamata sul [[primary]] del file, cioè il nodo che ne è responsabile, e il modo in cui una chiamata arriva a quel primary in un cluster.",
     "twoNotes": "Da 'Start here · In plain words' e §1 Purpose. La sintesi dell'RFC stesso: il livello di protocollo traduce, e un solo livello sotto di esso ordina e fa rispettare le regole (Appendix A).",
-    "knownTitle": "Termini che conosci già",
     "knownLead": "Dal glossario dell'RFC 0 e dagli RFC su cui questo si basa (7, 8, 11, 14, 15, 16, 18, 20). Cliccane uno per la definizione.",
     "knownNotes": "Ogni definizione riformula in modo semplice la riga del glossario dell'RFC 0, che resta la definizione ufficiale.",
-    "newTitle": "Termini nuovi",
     "newNotes": "Da 'Start here · The words you need': filesystem / gateway, primary, open / anonymous open, admission, chokepoint, caching grant, pseudo-filesystem. In più lo share grant (§4.6), retry-later (§4.3), WCC (§3.0), il lock order (§5.0), le quota reservation (§5.6), il delete on close (§5.3) e il route envelope (§2, RFC 15 §4.3).",
-    "clashTitle": "Termini in conflitto",
     "clashNotes": "VFS: il package prende il nome dal termine del settore per un'API dei file indipendente dal protocollo (§1), non dal VFS di Linux, che l'Appendix A cita solo come precedente. Filesystem: §2 lo usa per *vfs.Filesystem. Grant: lo share grant (§4.6), il grant di un open (§4.6, RFC 7 §7.2) e il caching grant (§3.2) sono tre cose diverse. Release: il glossario dell'RFC 0 gli dà due sensi; l'RFC 17 §5.3 usa quello sui file. Handle e lease: RFC 0."
   },
   "problem": {
-    "kicker": "Il problema",
     "title": "Due protocolli, un file, nessuna regola comune",
     "lead": "alice-pc tiene aperto via SMB per tutto il giorno `profiles/alice/ODFC_alice.vhdx`, con un deny mode che vieta a chiunque altro di scriverci. Uno script su build01 scrive sullo stesso file via NFSv3, un protocollo in cui non esiste il concetto di aprire un file.",
     "smbTitle": "Un [[adapter]] SMB per conto suo",
@@ -538,8 +531,6 @@
     "notes": "§2.5, V33, V34, V35. Start non aspetta la fine del grace. Drain si chiama quando ogni adapter ha fatto drain, e in un cluster quando Serve si è fermato, perché il drain di un adapter consegna ancora conferme di break, CLOSE e unlock. In un cluster l'ordine di arresto cede ogni shard prima che Serve si fermi. Decisioni: i metodi di ciclo di vita non sono su vfs.Service, così un adapter non può mettere in drain il service sotto l'altro protocollo; nessuna impostazione salta il grace, che permetterebbe a un filesystem di servire stato in conflitto prima che i client lo reclamino. I persistent open li installa Recovery.ServeShard dell'RFC 14 prima di rispondere a qualunque cosa (§2.5, passo 1 di Start). Il primo passaggio è il primo reconcile del nodo, che apre le share (tabella di §2.5, riga 5; RFC 23 §2.2). Ordine di stop (§2.5): gli adapter, il gateway, (cluster) il passaggio di ogni shard di cui questo nodo è primary, Serve, il drain del GC, il filesystem, l'identità, l'engine, l'open state, il metadata store."
   },
   "numbers": {
-    "kicker": "Numeri concreti",
-    "title": "I numeri",
     "n1": "5",
     "w1": "controlli di [[admission]], che nessuna chiamata che nomina un handle o un open salta",
     "n2": "35 s",
@@ -594,7 +585,6 @@
   },
   "whom": {
     "kicker": "Cosa cambia",
-    "title": "Cosa cambia per chi",
     "devTitle": "Chi sviluppa [[adapter]]",
     "dev": "Gli adapter importano un solo package, `pkg/vfs`. Non tengono una lista di share, non controllano permessi, non verificano lock e non interpretano [[handle]]. Un adapter traduce la richiesta, fa una sola chiamata e riporta l'errore neutro nel suo protocollo.",
     "storeTitle": "Chi scrive store ed engine",
@@ -604,7 +594,6 @@
     "notes": "Lettura del deck, tratta da §1, §2.1 (decisione: il service è un nuovo livello, non un metadata store cresciuto), §3.3 (ogni decisione è registrata una volta), §4.6 e §9."
   },
   "rules": {
-    "kicker": "Regole e non-obiettivi",
     "title": "Le regole, e cosa il service non fa mai",
     "mustTitle": "Regole",
     "items": [

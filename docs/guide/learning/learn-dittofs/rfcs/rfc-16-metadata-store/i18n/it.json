@@ -1,29 +1,22 @@
 {
   "title": "RFC 16 — il metadata store",
-  "glossaryKicker": "Glossario",
-  "glossaryTitle": "Tutti i termini del deck",
   "cover": {
-    "kicker": "Learn DittoFS · RFC 16",
+    "kicker": "Impara DittoFS · RFC 16",
     "title": "Il [[metadata-store|metadata store]]",
     "lead": "Dove DittoFS ricorda tutto tranne i byte — e perché le creazioni in una cartella affollata procedono comunque in parallelo.",
     "built": "Costruito dall'RFC 16 al commit e22639d",
     "notes": "Fonte: docs/internals/rfcs/rfc-16-metadata-store.md, commit e22639d. L'RFC specifica un comportamento, non il codice attuale. Cosa significa ogni record lo decidono l'RFC 6 (contenuto), l'RFC 7 (file e nomi) e l'RFC 14 (open state); questo deck spiega come vengono salvati insieme. Le regole marcate (cluster) valgono solo quando un secondo nodo può servire una share. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la definizione."
   },
   "intro": {
-    "kicker": "Prima di iniziare",
     "twoTitle": "L'RFC 16 in due frasi",
     "two": "Il [[metadata-store|metadata store]] è l'unico database transazionale di DittoFS per tutto ciò che non è il contenuto dei file: file e nomi, dove è finito il contenuto, l'[[open-state|open state]] durevole, utenti, [[share]], nodi e impostazioni. L'RFC 16 fissa le [[entity|entità]] che i chiamanti leggono, la [[view]] ristretta che ognuno riceve, e come entrambe diventano chiavi dietro una piccola interfaccia transazionale, il [[kv|KV]].",
     "twoNotes": "Da 'Start here · In plain words' e §1 Purpose. L'RFC si definisce l'unico punto in cui si legge tutto il livello dei metadati in una volta. Possiede le regole del §1.2, la mappa delle entità, le entità di identità e del control plane, le view che nessun RFC più specifico possiede, il contratto KV, il layout delle chiavi, i codec, i contatori e il formato dello store, più test, benchmark e osservabilità.",
-    "knownTitle": "Termini che conosci già",
     "knownLead": "Questi termini vengono dal glossario dell'RFC 0 e dagli RFC 1, 6, 7, 11, 12 e 14, che li definiscono. Clicca un termine per leggerne la definizione.",
     "knownNotes": "Ogni definizione riformula la riga del glossario dell'RFC 0, che fa testo. L'RFC 16 dipende da RFC 0, 6, 7, 13, 14 e 15 (front matter).",
-    "newTitle": "Termini nuovi",
     "newNotes": "Da 'Start here · The words you need' (entità, record, KV, guard, delta e fold, view, format record), più group commit, store time, change sequence e key budget (§4.1), il codec dello store (§4.3), la fold rule (§4.6), principal (§2.2) e Inspect (§3.1).",
-    "clashTitle": "Termini in conflitto",
     "clashNotes": "Record: il record del journal dell'RFC 1 contro un record del KV. Fold: il §4.4 consolida (fold) i delta nei totali, il §4.6 fa il case fold dei nomi — l'RFC usa una parola per entrambi. Codec: il codec di adapter dell'RFC 20 contro il codec dei valori del §4.3. Namespace: il namespace del remote tier dell'RFC 0 contro la view Namespace dell'RFC 7 (§3). Snapshot: lo snapshot di transazione del §4.1 contro lo snapshot di share dell'RFC 12."
   },
   "problem": {
-    "kicker": "Il problema",
     "title": "Tutto tranne i byte",
     "analogyTitle": "Analogia",
     "analogy": "Lo schedario di una biblioteca: i libri stanno sugli scaffali, le schede dicono cosa esiste e dove trovarlo. I byte dei file sono i libri; il [[metadata-store|metadata store]] è lo schedario.",
@@ -33,7 +26,6 @@
     "notes": "'Start here · In plain words', analogia e schema in due righe compresi. Cosa significa un record lo decidono altri: file e nomi l'RFC 7, il contenuto l'RFC 6, open e lock l'RFC 14 (§1, §1.1)."
   },
   "promises": {
-    "title": "Cosa promette l'RFC",
     "items": [
       "Un solo database contiene ogni tipo di metadato, quindi c'è una sola cosa da gestire, salvare, replicare e testare.",
       "Leggere gli attributi di un file costa una sola lettura, per quanto crescano il file o la sua directory. Una directory aggiunge solo le modifiche recenti ai suoi tempi non ancora consolidate. Nessun record contiene una lista che cresce: ogni voce di una directory è un record a sé.",
@@ -96,7 +88,7 @@
       ],
       [
         "Per namespace",
-        "`C‖` `B‖` `CR‖` `I‖` `NS‖`",
+        "`C‖` `B‖` `CR‖` `I‖` `NS‖` …",
         "chunk, block, ref inversi, put intent, stato del GC"
       ],
       [
@@ -462,8 +454,6 @@
     "notes": "§7.4. Ipotesi: 2 PiB logici, chunk medio di 256 KiB, niente deduplicazione, 10⁸–10⁹ file, block da 4 MiB, 30 snapshot giornalieri con l'1% riscritto al giorno. Il Target da 1 MiB è una raccomandazione non normativa per media, checkpoint e backup: i record di contenuto scendono da 3,1 TB a 0,76 TB, al prezzo di un fetch a freddo più grande per ogni piccola lettura casuale (circa 1,2 MiB invece di 0,3 MiB) e di una deduplicazione più grossolana. Target è un'impostazione del namespace scelta alla creazione."
   },
   "rules": {
-    "kicker": "Regole e non-obiettivi",
-    "title": "Le regole, in parole semplici",
     "items": [
       "`Update` restituisce successo solo quando le scritture della transazione sono durevoli.",
       "Il backend embedded raggruppa i commit pronti in un solo sync, e non ne conferma nessuno prima di quel sync.",
@@ -485,8 +475,6 @@
     "notes": "§1.1 Non-goals (MUST NOT). Il piè di pagina: §2.4."
   },
   "open": {
-    "kicker": "Ancora aperto",
-    "title": "Domande aperte",
     "questions": [
       "Il throughput che il fold riesce a sostenere per una share sullo store replicato.",
       "Se leggere a lotti le entry di una directory insieme ai loro attributi riduce abbastanza il divario di prestazioni su `READDIRPLUS` di NFS.",

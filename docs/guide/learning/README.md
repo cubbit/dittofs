@@ -45,7 +45,7 @@ docs/guide/learning/
     ├── third-party/           pinned third-party libraries, committed
     │   ├── reveal.js-<ver>/
     │   └── anime-<ver>/
-    ├── i18n/                  UI chrome strings (buttons, labels)
+    ├── i18n/                  UI chrome strings (buttons, labels) and the headings every deck shares
     │   ├── en.json
     │   ├── it.json
     │   └── pt-BR.json
@@ -134,6 +134,18 @@ English (`en`), Italian (`it`) and Brazilian Portuguese (`pt-BR`).
 - **Prose lives only in `i18n/*.json`.** `index.html` holds structure and
   keys (`data-i18n="problem.title"`), never sentences. A missing key falls back
   to English and is outlined in the overflow check so it is visible.
+- **A heading every deck repeats is written once.** "Glossary", "Before we
+  start", "Open questions" and the other fixed headings live under `deck` in
+  `learn-dittofs/i18n/<lang>.json`. A deck's key is looked up in the deck,
+  then there, in the chosen language before English. A deck holds such a key
+  only to say something else ("What RFC 22 promises"), in every language.
+- **Plain language, not the RFCs' language.** A deck teaches; it does not
+  restate an RFC. A rule is a plain sentence of the language it is written
+  in ("the journal never overwrites a held extent", "il journal non
+  sovrascrive mai"), never an RFC keyword in capitals on a slide. The speaker
+  notes cite the RFC and may quote its MUST or MUST NOT; a translation renders
+  that word as it renders any other ("non deve", "não deve") or keeps the
+  quote in English, and either is right.
 - **The switch** is a button in the corner. It changes language in place,
   keeping the current slide and step, and stays in the URL (`?lang=it`) and in
   `localStorage`, so a link opens in the sender's language.

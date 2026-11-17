@@ -1,7 +1,5 @@
 {
   "title": "RFC 8 — the engine",
-  "glossaryKicker": "Glossary",
-  "glossaryTitle": "Every term in this deck",
   "cover": {
     "kicker": "Learn DittoFS · RFC 8",
     "title": "The [[engine|engine]]",
@@ -10,20 +8,13 @@
     "notes": "Source: docs/internals/rfcs/rfc-8-engine.md, commit e22639d. The RFC specifies behaviour, not the current code: the engine it describes is built fresh, beside today's, which it replaces rather than fixes. A choice it labels proposal is not decided: it names the measurement that would overturn it. Rows marked (cluster) are not in the first release and are left out here. Keys: → next, S speaker notes. Click any underlined term for its definition."
   },
   "intro": {
-    "kicker": "Before we start",
     "twoTitle": "RFC 8 in two sentences",
     "two": "The [[engine]] coordinates file content on a [[node]]. It holds no bytes and records no facts of its own, but calls the [[journal]], the [[carver]], the [[syncer]] and the [[metadata-store]] in the right order: it acknowledges a write as soon as the journal holds it, uploads the content later, [[evict|evicts]] only what is safely uploaded, and on a read asks the journal before the metadata store. One engine serves every [[share]] on the node, and after a crash it rebuilds its to-do list from the journal and the metadata store, so it loses time but no content.",
     "twoNotes": "From 'Start here · In plain words', 'What this is' and 'In short'. §1 puts it as one question no component can answer alone: given what the two oracles say, what happens next?",
-    "knownTitle": "Terms you already know",
     "knownLead": "From RFC 0's glossary and the RFCs this one builds on (1, 2, 3, 4, 6, 16). Click one for its definition.",
     "knownNotes": "Every definition restates RFC 0's glossary row, which is the definition of record.",
-    "newTitle": "New terms",
     "newNotes": "From 'Start here · The words you need' (stability point, residency, policy component, storage binding) and the sections that specify the rest: group commit §5.2, work queue §6.1, offload pipeline §6.3, offload guard §6.4, put intent and block name §6.6, speculator §7.4, pacing §10.2.1, self-fence §11.2. Existence, residency, stability point, put intent and block name are RFC 0 glossary rows; RFC 8 is where they are carried out. The glossary at the end adds the loss generation.",
-    "clashTitle": "Terms that clash",
     "clashNotes": "Release: RFC 8 §8 (a file's release is the engine's Delete, never the journal's Release). Stability point: the engine's Commit, against 'commit' meaning a metadata transaction (§5.1, §6.3). Offload guard: RFC 0's glossary row 'guard' (RFC 16 §4.1). Namespace: RFC 0's row, against RFC 7. Offload and sync: RFC 0's verb table and glossary."
-  },
-  "problem": {
-    "kicker": "The problem"
   },
   "chef": {
     "title": "A head chef who cooks nothing",
@@ -42,7 +33,6 @@
     "notes": "'Start here · The problem, with one example', steps 1–5: single-node install N1, journal on NVMe, bucket dfs-data, share profiles, file profiles/alice/ODFC_alice.vhdx over SMB. Step 2: the overwrite waits for the next existence commit, one transaction shared with every other file of that journal; a flush of a file with no committed content yet, only appends and hole fills, is answered after the sync; one whose extent covers committed content also waits for its sync marks to be recorded (§5.1). B1 is the deck's label for the block. Committed content: below the committed size and outside the committed holes (§5.1)."
   },
   "promises": {
-    "title": "What the RFC promises",
     "items": [
       "A write is acknowledged as soon as the [[journal]] holds it, and a flush as soon as the journal has [[sync|synced]] it. A flush over an overwrite also waits for its [[existence]] commit. Nothing waits for S3.",
       "An extent becomes evictable only after the commit that names its [[block]] has landed. If its upload fails, the extent stays [[dirty]] and the upload is retried.",
@@ -258,9 +248,6 @@
     "footer": "While a store refuses uploads, the offload passes of its shards are paused. The pause counts as a failure of no file, and it ends when the syncer's own probes find the store answering again.",
     "notes": "§6.3 rules O1–O8 (O4: the pipeline SHOULD abandon its own intents at once; O5: a block's report never waits for another block; O8: it holds no bytes and persists nothing), the proposals in O2 (offload.retry_min, offload.retry_max, offload.retry_max_pressure, RFC 13), O6's decision marker (five is fixed, not a setting), 'A put-unhealthy store pauses its shards' offload'. E22. The 1 s, 60 s and 5 s on the slide are proposals. The items are, in order, O1, O2, O3, O6 and O7. O7: a commit or intent refused on the primary epoch means the shard has moved, and the shard's passes end without reporting (§6.3)."
   },
-  "fail": {
-    "kicker": "When things fail"
-  },
   "names": {
     "title": "Node N1 crashes after an upload, before its commit",
     "steps": [
@@ -463,19 +450,15 @@
     "notes": "§10.2's refusal table and its decision marker; 'the deadline ends the wait, never the cause's class'. §10: a Dirty extent is never evictable. 'Start here · Scenarios', the bucket stops answering for an hour, and its outcome (§6.3)."
   },
   "whom": {
-    "kicker": "What changes for whom",
     "title": "Who needs to know what",
     "fsTitle": "The [[filesystem-service|filesystem service]]",
     "fs": "It is the only caller of the engine's content methods, such as `Write`, `Commit`, `Read`, `Truncate`, `Clone`, which copies part of a file, and `Overlay`, which returns a file's size and times with pending writes applied. It checks permissions first. Adapters never reach the [[engine]].",
-    "opsTitle": "Operators",
     "ops": "Every share needs a remote block store. A full journal makes clients retry, not fail, while space can still be freed. Watch the age of the oldest extent not yet offloaded, and the conditions that name a store or a file.",
     "devTitle": "Component authors",
     "dev": "For each component it calls, the engine declares an interface holding exactly the methods it calls. Calling any other method of that component fails the build.",
     "notes": "The deck's framing, from §12.1 (the interface table; Overlay is the one read path for size, times and version), §2.1 (consumer-declared interfaces), §10.2 and §11.4. Clone: §9.1 and §12.1; Overlay: §12.1 (size, times and version of the journal's uncommitted operations)."
   },
   "rules": {
-    "kicker": "Rules and non-goals",
-    "title": "The rules, in plain words",
     "items": [
       "A read asks the [[journal]] before the metadata store, and returns zeros only for a [[hole]] or a zero ref, which stands for an all-zero chunk.",
       "An offload pass [[report|reports]] to the journal exactly the extents whose commits succeeded, and no other.",
@@ -499,8 +482,6 @@
     "notes": "§1.2 Non-goals (MUST NOT); §10.5 (GC is one service per remote namespace and schedules itself); §6.5 V1 and E7 (an all-zero chunk becomes a zero ref); §12.3 (the engine writes no residency)."
   },
   "open": {
-    "kicker": "Still open",
-    "title": "Open questions",
     "questions": [
       "The [[fill]] parameters, the low-water mark and the scan threshold, have not been measured yet.",
       "Pre-warm's way of yielding and the read-ahead cap have not been measured yet.",

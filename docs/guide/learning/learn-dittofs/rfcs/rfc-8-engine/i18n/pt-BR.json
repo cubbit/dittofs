@@ -1,29 +1,20 @@
 {
   "title": "RFC 8 — o engine",
-  "glossaryKicker": "Glossário",
-  "glossaryTitle": "Todos os termos deste deck",
   "cover": {
-    "kicker": "Learn DittoFS · RFC 8",
+    "kicker": "Aprenda DittoFS · RFC 8",
     "title": "O [[engine|engine]]",
     "lead": "O engine é um coordenador que não guarda bytes próprios. Para cada share de um nó, ele decide quando o conteúdo novo é confirmado, quando é enviado, quando a cópia local é removida e quando ele é baixado de volta.",
     "built": "Baseado no RFC 8, commit e22639d",
     "notes": "Fonte: docs/internals/rfcs/rfc-8-engine.md, commit e22639d. O RFC especifica um comportamento, não o código atual: o engine que ela descreve é construído do zero, ao lado do de hoje, que ele substitui em vez de corrigir. Uma escolha marcada como proposal não está decidida: ela nomeia a medição que a derrubaria. As linhas marcadas (cluster) não estão na primeira versão e ficam de fora aqui. Teclas: → avançar, S notas do apresentador. Clique em qualquer termo sublinhado para ver a definição."
   },
   "intro": {
-    "kicker": "Antes de começar",
     "twoTitle": "O RFC 8 em duas frases",
     "two": "O [[engine]] coordena o conteúdo dos arquivos em um [[node|nó]]. Ele não guarda bytes nem registra fatos próprios, mas chama o [[journal]], o [[carver]], o [[syncer]] e o [[metadata-store]] na ordem certa: confirma uma escrita assim que o journal a guarda, envia o conteúdo depois, faz o [[evict]] só do que já foi enviado com segurança e, numa leitura, consulta o journal antes do metadata store. Um único engine atende todas as [[share|shares]] do nó e, depois de um crash, reconstrói a sua lista de tarefas a partir do journal e do metadata store: perde tempo, mas não conteúdo.",
     "twoNotes": "De 'Start here · In plain words', 'What this is' e 'In short'. A §1 resume tudo em uma pergunta que nenhum componente responde sozinho: dado o que os dois oráculos dizem, o que acontece agora?",
-    "knownTitle": "Termos que você já conhece",
     "knownLead": "Do glossário do RFC 0 e dos RFCs em que este se apoia (1, 2, 3, 4, 6, 16). Clique em um para ver a definição.",
     "knownNotes": "Cada definição reformula a linha do glossário do RFC 0, que é a definição oficial.",
-    "newTitle": "Termos novos",
     "newNotes": "De 'Start here · The words you need' (stability point, residency, policy component, storage binding) e das seções que especificam o resto: group commit §5.2, work queue §6.1, offload pipeline §6.3, offload guard §6.4, put intent e block name §6.6, speculator §7.4, pacing §10.2.1, self-fence §11.2. Existence, residency, stability point, put intent e block name são linhas do glossário do RFC 0; o RFC 8 é onde eles são postos em prática. O glossário final acrescenta a loss generation.",
-    "clashTitle": "Termos em conflito",
     "clashNotes": "Release: RFC 8 §8 (o release de um arquivo é o Delete do engine, nunca o Release do journal). Stability point: o Commit do engine, contra 'commit' no sentido de transação de metadados (§5.1, §6.3). Offload guard: a linha 'guard' do glossário do RFC 0 (RFC 16 §4.1). Namespace: a linha do RFC 0, contra o RFC 7. Offload e sync: a tabela de verbos e o glossário do RFC 0."
-  },
-  "problem": {
-    "kicker": "O problema"
   },
   "chef": {
     "title": "Um chef que não cozinha nada",
@@ -42,7 +33,6 @@
     "notes": "'Start here · The problem, with one example', passos 1–5: instalação de nó único N1, journal em NVMe, bucket dfs-data, share profiles, arquivo profiles/alice/ODFC_alice.vhdx via SMB. Passo 2: a sobrescrita espera o próximo commit de existência, uma transação compartilhada com todos os outros arquivos daquele journal; o flush de um arquivo ainda sem conteúdo commitado, só com appends e preenchimentos de buracos, é respondido depois do sync; aquele cujo extent cobre conteúdo commitado também espera que os seus sync marks sejam registrados (§5.1). B1 é o rótulo do deck para o bloco. Conteúdo commitado: abaixo do tamanho commitado e fora dos buracos commitados (§5.1)."
   },
   "promises": {
-    "title": "O que o RFC promete",
     "items": [
       "Uma escrita é confirmada quando o [[journal]] a guarda, e um flush quando o journal faz o [[sync]]. O flush de uma sobrescrita também espera o commit da sua [[existence|existência]]. Nada espera o S3.",
       "Um extent só pode ser removido depois que o commit que nomeia o seu [[block|bloco]] se completa. Se o upload falha, o extent continua [[dirty]] e o upload é tentado de novo.",
@@ -258,9 +248,6 @@
     "footer": "Enquanto um store recusa uploads, as passadas de offload dos seus shards ficam em pausa. A pausa não conta como falha de nenhum arquivo, e termina quando as sondas do próprio syncer veem o store respondendo de novo.",
     "notes": "Regras O1–O8 da §6.3 (O4: o pipeline SHOULD abandonar na hora os próprios intents; O5: o report de um bloco nunca espera outro bloco; O8: não guarda bytes e não grava nada), as propostas de O2 (offload.retry_min, offload.retry_max, offload.retry_max_pressure, RFC 13), a marca decision de O6 (cinco é fixo, não uma configuração), 'A put-unhealthy store pauses its shards' offload'. E22. Os valores 1 s, 60 s e 5 s do slide são propostas. Os itens são, em ordem, O1, O2, O3, O6 e O7. O7: um commit ou intent recusado pela primary epoch quer dizer que o shard mudou de lugar, e as passadas do shard terminam sem report (§6.3)."
   },
-  "fail": {
-    "kicker": "Quando algo dá errado"
-  },
   "names": {
     "title": "O nó N1 cai depois de um upload, antes do commit",
     "steps": [
@@ -463,19 +450,15 @@
     "notes": "§10.2: a tabela de recusas e a marca decision dela; 'the deadline ends the wait, never the cause's class'. §10: um extent Dirty nunca é removível. 'Start here · Scenarios', the bucket stops answering for an hour, e o desfecho dele (§6.3)."
   },
   "whom": {
-    "kicker": "O que muda para quem",
     "title": "Quem precisa saber o quê",
     "fsTitle": "O [[filesystem-service|filesystem service]]",
     "fs": "É o único chamador dos métodos de conteúdo do engine, como `Write`, `Commit`, `Read`, `Truncate`, `Clone`, que copia parte de um arquivo, e `Overlay`, que devolve o tamanho e as datas do arquivo com as escritas pendentes aplicadas. Primeiro confere as permissões. Os adapters nunca chegam ao [[engine]].",
-    "opsTitle": "Operadores",
     "ops": "Toda share precisa de um remote block store. Um journal cheio faz os clientes tentarem de novo, não falharem, enquanto ainda for possível liberar espaço. Acompanhe a idade do extent mais antigo ainda sem offload e as condições que apontam um store ou um arquivo.",
     "devTitle": "Quem escreve componentes",
     "dev": "Para cada componente que chama, o engine declara uma interface com exatamente os métodos que usa. Chamar qualquer outro método desse componente quebra o build.",
     "notes": "Enquadramento do deck, a partir da §12.1 (a tabela da interface; Overlay é o único caminho de leitura para tamanho, horários e versão), §2.1 (interfaces declaradas pelo consumidor), §10.2 e §11.4. Clone: §9.1 e §12.1; Overlay: §12.1 (tamanho, datas e versão das operações não commitadas do journal)."
   },
   "rules": {
-    "kicker": "Regras e não-objetivos",
-    "title": "As regras, em palavras simples",
     "items": [
       "Uma leitura consulta o [[journal]] antes do metadata store, e só devolve zeros para um [[hole|buraco]] ou um ref zerado, que representa um chunk só de zeros.",
       "Uma passada de offload faz o [[report]] ao journal de exatamente os extents cujos commits deram certo, e de nenhum outro.",
@@ -499,8 +482,6 @@
     "notes": "§1.2 Non-goals (MUST NOT); §10.5 (o GC é um serviço por namespace remoto e se agenda sozinho); §6.5 V1 e E7 (um chunk todo de zeros vira um ref de zeros); §12.3 (o engine não grava residency)."
   },
   "open": {
-    "kicker": "Ainda em aberto",
-    "title": "Questões abertas",
     "questions": [
       "Os parâmetros do [[fill]], ou seja, a marca mínima e o limite de varredura, ainda não foram medidos.",
       "O jeito como o pre-warm cede a vez e o teto do read-ahead ainda não foram medidos.",

@@ -1,7 +1,5 @@
 {
   "title": "DittoFS — an introduction",
-  "glossaryKicker": "Glossary",
-  "glossaryTitle": "Every term in this deck",
   "cover": {
     "kicker": "Learn DittoFS · Introduction",
     "title": "DittoFS, from the outside in",
@@ -314,9 +312,6 @@
       "There is no current chunk to fetch, and an older one would hand back the bytes as they were before the write, as if they were current."
     ],
     "notes": "RFC 0 §4.2 (residency: written, no current chunk, nothing held in the journal is Lost and the read fails; never zeros; the stale-chunk row: 'fail; never the stale chunk'), 'One write, followed end to end' step 5."
-  },
-  "fail": {
-    "kicker": "When things fail"
   },
   "restart": {
     "title": "N1 crashes in the middle of an upload",

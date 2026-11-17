@@ -1,29 +1,20 @@
 {
   "title": "RFC 8 — l'engine",
-  "glossaryKicker": "Glossario",
-  "glossaryTitle": "Tutti i termini del deck",
   "cover": {
-    "kicker": "Learn DittoFS · RFC 8",
+    "kicker": "Impara DittoFS · RFC 8",
     "title": "L'[[engine|engine]]",
     "lead": "L'engine è un coordinatore che non conserva byte propri. Per ogni share di un nodo decide quando confermare il contenuto nuovo, quando caricarlo, quando rimuoverne la copia locale e quando riscaricarlo.",
     "built": "Basato sull'RFC 8, commit e22639d",
     "notes": "Fonte: docs/internals/rfcs/rfc-8-engine.md, commit e22639d. L'RFC specifica un comportamento, non il codice attuale: l'engine che descrive è costruito da zero, accanto a quello di oggi, che sostituisce invece di correggere. Una scelta etichettata proposal non è decisa: nomina la misura che la ribalterebbe. Le righe marcate (cluster) non sono nella prima release e qui sono omesse. Tasti: → avanti, S note del relatore. Clicca un termine sottolineato per la definizione."
   },
   "intro": {
-    "kicker": "Prima di iniziare",
     "twoTitle": "L'RFC 8 in due frasi",
     "two": "L'[[engine]] coordina il contenuto dei file su un [[node|nodo]]. Non conserva byte e non registra fatti propri, ma chiama il [[journal]], il [[carver]], il [[syncer]] e il [[metadata-store]] nell'ordine giusto: conferma una scrittura appena il journal la contiene, carica il contenuto più tardi, fa l'[[evict]] solo di ciò che è già caricato al sicuro e, in lettura, interroga il journal prima del metadata store. Un solo engine serve tutte le [[share]] del nodo e, dopo un crash, ricostruisce dal journal e dal metadata store la lista delle cose da fare: perde tempo, ma non contenuto.",
     "twoNotes": "Da 'Start here · In plain words', 'What this is' e 'In short'. Il §1 la mette come una domanda a cui nessun componente sa rispondere da solo: dato ciò che dicono i due oracoli, cosa succede adesso?",
-    "knownTitle": "Termini che conosci già",
     "knownLead": "Dal glossario dell'RFC 0 e dagli RFC su cui questo si basa (1, 2, 3, 4, 6, 16). Cliccane uno per la definizione.",
     "knownNotes": "Ogni definizione riformula la riga del glossario dell'RFC 0, che è la definizione ufficiale.",
-    "newTitle": "Termini nuovi",
     "newNotes": "Da 'Start here · The words you need' (stability point, residency, policy component, storage binding) e dalle sezioni che specificano il resto: group commit §5.2, work queue §6.1, offload pipeline §6.3, offload guard §6.4, put intent e block name §6.6, speculator §7.4, pacing §10.2.1, self-fence §11.2. Existence, residency, stability point, put intent e block name sono righe del glossario dell'RFC 0; l'RFC 8 è dove vengono messi in pratica. Il glossario finale aggiunge la loss generation.",
-    "clashTitle": "Termini in conflitto",
     "clashNotes": "Release: RFC 8 §8 (il release di un file è il Delete dell'engine, mai il Release del journal). Stability point: il Commit dell'engine, contro 'commit' nel senso di transazione di metadati (§5.1, §6.3). Offload guard: la riga 'guard' del glossario dell'RFC 0 (RFC 16 §4.1). Namespace: la riga dell'RFC 0, contro l'RFC 7. Offload e sync: la tabella dei verbi e il glossario dell'RFC 0."
-  },
-  "problem": {
-    "kicker": "Il problema"
   },
   "chef": {
     "title": "Uno chef che non cucina niente",
@@ -42,7 +33,6 @@
     "notes": "'Start here · The problem, with one example', passi 1–5: installazione a nodo singolo N1, journal su NVMe, bucket dfs-data, share profiles, file profiles/alice/ODFC_alice.vhdx via SMB. Passo 2: la sovrascrittura aspetta il prossimo commit di esistenza, una transazione condivisa con tutti gli altri file di quel journal; il flush di un file che non ha ancora contenuto committato, solo append e riempimenti di buchi, ha risposta dopo il sync; quello la cui estensione copre contenuto committato aspetta anche che i suoi sync mark siano registrati (§5.1). B1 è l'etichetta del deck per il blocco. Contenuto committato: sotto la dimensione committata e fuori dai buchi committati (§5.1)."
   },
   "promises": {
-    "title": "Cosa promette l'RFC",
     "items": [
       "Una scrittura è confermata appena il [[journal]] la contiene, un flush appena il journal ne ha fatto il [[sync]]. Il flush di una sovrascrittura aspetta anche il commit della sua [[existence|esistenza]]. Niente aspetta S3.",
       "Un extent diventa rimovibile solo quando è andato a buon fine il commit che nomina il suo [[block|blocco]]. Se l'upload fallisce, l'extent resta [[dirty]] e l'upload viene ritentato.",
@@ -258,9 +248,6 @@
     "footer": "Finché uno store rifiuta gli upload, le passate di offload dei suoi shard restano in pausa. La pausa non conta come errore di alcun file, e finisce quando le sonde del syncer trovano di nuovo lo store disponibile.",
     "notes": "Regole O1–O8 del §6.3 (O4: la pipeline SHOULD abbandonare subito i propri intent; O5: il report di un blocco non aspetta mai un altro blocco; O8: non tiene byte e non salva nulla), le proposte di O2 (offload.retry_min, offload.retry_max, offload.retry_max_pressure, RFC 13), la nota decision di O6 (cinque è fisso, non un'impostazione), 'A put-unhealthy store pauses its shards' offload'. E22. Gli 1 s, 60 s e 5 s della slide sono proposte. Gli elementi sono, in ordine, O1, O2, O3, O6 e O7. O7: un commit o un intent rifiutato sulla primary epoch significa che lo shard si è spostato, e le passate dello shard finiscono senza report (§6.3)."
   },
-  "fail": {
-    "kicker": "Quando qualcosa va storto"
-  },
   "names": {
     "title": "Il nodo N1 cade dopo un upload, prima del commit",
     "steps": [
@@ -463,19 +450,15 @@
     "notes": "§10.2: la tabella dei rifiuti e la sua nota decision; 'the deadline ends the wait, never the cause's class'. §10: un extent Dirty non è mai rimovibile. 'Start here · Scenarios', the bucket stops answering for an hour, e il suo esito (§6.3)."
   },
   "whom": {
-    "kicker": "Cosa cambia per chi",
     "title": "Chi deve sapere cosa",
     "fsTitle": "Il [[filesystem-service|filesystem service]]",
     "fs": "È l'unico chiamante dei metodi di contenuto dell'engine, come `Write`, `Commit`, `Read`, `Truncate`, `Clone`, che copia parte di un file, e `Overlay`, che restituisce dimensione e date del file con le scritture in sospeso applicate. Prima controlla i permessi. Gli adapter non raggiungono mai l'[[engine]].",
-    "opsTitle": "Operatori",
     "ops": "Ogni share ha bisogno di un remote block store. Un journal pieno fa ritentare i client, non fallire, finché si può ancora liberare spazio. Tenete d'occhio l'età dell'extent più vecchio non ancora offloaded e le condizioni che indicano uno store o un file.",
     "devTitle": "Chi scrive componenti",
     "dev": "Per ogni componente che chiama, l'engine dichiara un'interfaccia con esattamente i metodi che usa. Chiamare qualunque altro metodo di quel componente fa fallire la build.",
     "notes": "Impostazione del deck, da §12.1 (la tabella dell'interfaccia; Overlay è l'unico percorso di lettura per dimensione, orari e versione), §2.1 (interfacce dichiarate dal consumatore), §10.2 e §11.4. Clone: §9.1 e §12.1; Overlay: §12.1 (dimensione, date e versione delle operazioni non committate del journal)."
   },
   "rules": {
-    "kicker": "Regole e non-obiettivi",
-    "title": "Le regole, in parole semplici",
     "items": [
       "Una lettura interroga il [[journal]] prima del metadata store, e restituisce zeri solo per un [[hole|buco]] o un ref a zero, che sta per un chunk tutto di zeri.",
       "Una passata di offload segnala con un [[report]] al journal esattamente gli extent i cui commit sono riusciti, e nessun altro.",
@@ -499,8 +482,6 @@
     "notes": "§1.2 Non-goals (MUST NOT); §10.5 (il GC è un servizio per namespace remoto e si programma da sé); §6.5 V1 ed E7 (un chunk tutto a zero diventa un ref a zero); §12.3 (l'engine non scrive residency)."
   },
   "open": {
-    "kicker": "Ancora aperto",
-    "title": "Domande aperte",
     "questions": [
       "I parametri del [[fill]], cioè la soglia minima e la soglia di scansione, non sono ancora stati misurati.",
       "Il modo in cui il pre-warm si fa da parte e il limite del read-ahead non sono ancora stati misurati.",

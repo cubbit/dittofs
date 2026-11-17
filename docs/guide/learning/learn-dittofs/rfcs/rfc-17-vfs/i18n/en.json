@@ -1,7 +1,5 @@
 {
   "title": "RFC 17 — the filesystem service",
-  "glossaryKicker": "Glossary",
-  "glossaryTitle": "Every term in this deck",
   "cover": {
     "kicker": "Learn DittoFS · RFC 17",
     "title": "The [[filesystem-service]]",
@@ -10,20 +8,15 @@
     "notes": "Source: docs/internals/rfcs/rfc-17-vfs.md, commit b0d540b. The RFC specifies behaviour, not the current code. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
   },
   "intro": {
-    "kicker": "Before we start",
     "twoTitle": "RFC 17 in two sentences",
     "two": "The [[filesystem-service]] is the one interface every [[adapter]] calls, and it runs each operation's checks — on the share, the permission, the [[open-state|open state]] and the quota — always in the same order and in one place, for NFS and SMB alike. RFC 17 fixes that interface, which component owns what, the order of every call at the file's [[primary]], the node in charge of that file, and how a call reaches that primary in a cluster.",
     "twoNotes": "From 'Start here · In plain words' and §1 Purpose. The RFC's own one-liner: the protocol layer translates, and one layer beneath it orders and enforces (Appendix A).",
-    "knownTitle": "Terms you already know",
     "knownLead": "From RFC 0's glossary and the RFCs this one builds on (7, 8, 11, 14, 15, 16, 18, 20). Click one for its definition.",
     "knownNotes": "Every definition is a plain restatement of RFC 0's glossary row, which is the definition of record.",
-    "newTitle": "New terms",
     "newNotes": "From 'Start here · The words you need': filesystem / gateway, primary, open / anonymous open, admission, the chokepoint, caching grant, pseudo-filesystem. Plus the share grant (§4.6), retry-later (§4.3), WCC (§3.0), the lock order (§5.0), quota reservations (§5.6), delete on close (§5.3) and the route envelope (§2, RFC 15 §4.3).",
-    "clashTitle": "Terms that clash",
     "clashNotes": "VFS: the package is named for the field's word for a protocol-neutral file API (§1), not for the Linux VFS, which Appendix A lists only as prior art. Filesystem: §2 uses it for *vfs.Filesystem. Grant: the share grant (§4.6), the open-time grant (§4.6, RFC 7 §7.2) and the caching grant (§3.2) are three things. Release: RFC 0's glossary gives it two senses; RFC 17 §5.3 uses the file sense. Handle and lease: RFC 0."
   },
   "problem": {
-    "kicker": "The problem",
     "title": "Two protocols, one file, no shared rule",
     "lead": "alice-pc keeps `profiles/alice/ODFC_alice.vhdx` open over SMB all day, with a deny mode that forbids anyone else to write to it. A script on build01 writes to the same file over NFSv3, a protocol with no notion of opening a file.",
     "smbTitle": "An SMB [[adapter]] on its own",
@@ -538,8 +531,6 @@
     "notes": "§2.5, V33, V34, V35. Start does not wait for grace to end. Drain is called once every adapter has drained, and in a cluster once Serve has stopped, since an adapter's drain still delivers break acknowledgements, CLOSEs and unlocks. In a cluster the stop order hands over every shard before Serve stops. Decisions: lifecycle methods are not on vfs.Service, so an adapter cannot drain the service under the other protocol; no setting skips grace, which would let a filesystem serve conflicting state before its clients reclaim it. Persistent opens are installed by RFC 14's Recovery.ServeShard before anything is answered (§2.5, Start step 1). The first pass is the node's first reconcile, which opens the shares (§2.5's table, row 5; RFC 23 §2.2). Stop order (§2.5): the adapters, the gateway, (cluster) the handover of every shard this node is primary of, Serve, the GC drain, the filesystem, identity, the engine, open state, the metadata store."
   },
   "numbers": {
-    "kicker": "Concrete numbers",
-    "title": "The numbers",
     "n1": "5",
     "w1": "[[admission]] checks, which no call naming a handle or an open skips",
     "n2": "35 s",
@@ -594,7 +585,6 @@
   },
   "whom": {
     "kicker": "What changes",
-    "title": "What changes for whom",
     "devTitle": "[[adapter|Adapter]] developers",
     "dev": "Adapters import one package, `pkg/vfs`. They keep no share list, check no permission, test no lock and parse no [[handle]]. An adapter translates the request, makes one call and maps the neutral error back to its protocol.",
     "storeTitle": "Store and engine authors",
@@ -604,7 +594,6 @@
     "notes": "Deck's own framing, drawn from §1, §2.1 (decision: the service is a new layer, not a grown metadata store), §3.3 (each decision is audited once), §4.6 and §9."
   },
   "rules": {
-    "kicker": "Rules and non-goals",
     "title": "The rules, and what the service never does",
     "mustTitle": "Rules",
     "items": [

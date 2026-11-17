@@ -66,5 +66,41 @@
       "name": "O harness de testes",
       "blurb": "Um único comando que roda toda suíte de testes do mesmo jeito, no notebook ou na CI, e nunca conta como aprovado um teste que não rodou."
     }
+  },
+  "deck": {
+    "glossaryKicker": "Glossário",
+    "glossaryTitle": "Todos os termos deste deck",
+    "intro": {
+      "kicker": "Antes de começar",
+      "knownTitle": "Termos que você já conhece",
+      "newTitle": "Termos novos",
+      "clashTitle": "Termos em conflito"
+    },
+    "problem": {
+      "kicker": "O problema"
+    },
+    "numbers": {
+      "kicker": "Números concretos",
+      "title": "Os números"
+    },
+    "fail": {
+      "kicker": "Quando algo falha"
+    },
+    "whom": {
+      "kicker": "O que muda para quem",
+      "title": "O que muda para quem",
+      "opsTitle": "Operadores"
+    },
+    "rules": {
+      "kicker": "Regras e não-objetivos",
+      "title": "As regras, em palavras simples"
+    },
+    "promises": {
+      "title": "O que o RFC promete"
+    },
+    "open": {
+      "kicker": "Ainda em aberto",
+      "title": "Questões em aberto"
+    }
   }
 }

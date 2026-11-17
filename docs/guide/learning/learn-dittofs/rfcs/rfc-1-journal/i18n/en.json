@@ -1,7 +1,5 @@
 {
   "title": "RFC 1 — the journal",
-  "glossaryKicker": "Glossary",
-  "glossaryTitle": "Every term in this deck",
   "cover": {
     "kicker": "Learn DittoFS · RFC 1",
     "title": "The [[journal|journal]]",
@@ -10,25 +8,19 @@
     "notes": "Source: docs/internals/rfcs/rfc-1-journal.md, commit a34d0b8. The RFC specifies behaviour, not the current code. Its on-disk format and its recovery after a crash are RFC 28, not covered here. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
   },
   "intro": {
-    "kicker": "Before we start",
     "twoTitle": "RFC 1 in two sentences",
     "two": "The [[journal]] is the fast local disk that every write lands on and is acknowledged from, appending each write as a [[record]] at the end of a [[segment]] file, keeping it through a crash and serving reads of the bytes it still holds. It knows nothing about [[chunk|chunks]] or the bucket, because the [[engine]] does the uploading and then [[report|reports]] which bytes are [[offload|offloaded]], and only those bytes may be dropped to make room.",
     "twoNotes": "From 'Start here · In plain words' and §1 Purpose. The journal answers exactly one question: do I hold these bytes, at what offset, and which version of them?",
-    "knownTitle": "Terms you already know",
     "knownLead": "These terms come from RFC 0's glossary and from the RFCs this one builds on (2, 3, 6 and 8). Click one to see its definition.",
     "knownNotes": "Every definition restates RFC 0's glossary row, which is the definition of record.",
-    "newTitle": "New terms",
     "newNotes": "From 'Start here · The words you need', plus missing (§3.2), change version (§3.2, §3.4), removal marker (§3.6), placement index (§4), headroom (§6), unreclaimed bytes (§3.5, §7.1) and loss event (§3.8). The glossary at the end adds append stream, share tag and sequence number.",
-    "clashTitle": "Terms that clash",
     "clashNotes": "Record: RFC 0's glossary has two rows, journal and metadata. Offload: RFC 0's verb table says it is not a client's flush. Sync: RFC 0 calls offloaded content 'synced to the remote tier'. Release: RFC 0 lists the journal sense and RFC 7's file sense. Durable: RFC 0 separates it from RFC 14's durable open. Handle: RFC 1 §3's Handle is a share's access to the journal."
   },
   "problem": {
-    "kicker": "The problem",
     "title": "One overwrite during an upload",
     "notes": "'Start here · The problem, in one example', steps 1–4, and §3.3's example. Segment size and versions are the RFC's own example values. After step 5 a release of v42 is refused until an offer has carried it."
   },
   "promises": {
-    "title": "What the RFC promises",
     "title2": "What the RFC promises, continued",
     "items": [
       "An acknowledged write survives the process dying from the moment it is acknowledged. It also survives a host crash or a power loss once it is [[sync|synced]], which happens when the client flushes or, at the latest, after a fixed time bound such as 1 s.",
@@ -224,9 +216,6 @@
     ],
     "notes": "§3.4 Fill: 'A Fill older than the file is refused': if the file's change version is newer than asOf, Fill writes nothing and returns a distinct error (a MUST in the RFC); Fill never overwrites any part of a held extent (a MUST NOT). 'Start here · Scenarios', the fetch that races a write."
   },
-  "fail": {
-    "kicker": "When things fail"
-  },
   "survive": {
     "title": "What survives what",
     "c1Title": "The process dies",
@@ -381,8 +370,6 @@
     "notes": "§4.2: about 53 bytes an entry in order and 69 in random order, measured in one file of 10^6 extents; many small files cost more per entry. Releases, deallocates and clone targets that split an extent are refused once the count is an eighth above the bound; reports, truncates, deletes and Forget never are."
   },
   "numbers": {
-    "kicker": "Concrete numbers",
-    "title": "The numbers",
     "n1": "256 MiB",
     "w1": "the size of one [[segment|segment]], as proposed in the RFC's examples",
     "n2": "1 s",
@@ -442,19 +429,15 @@
     "notes": "§1.3 It is testable on its own. §9.4 groups the checks: silent data loss, wedging and unbounded resource use, recovery, observability."
   },
   "whom": {
-    "kicker": "What changes for whom",
     "title": "Who needs to know what",
     "engTitle": "[[engine|Engine]] authors",
     "eng": "The [[journal|journal]] decides no policy. You choose what to [[offload|offload]], when to [[release|release]], how much to [[repack|repack]], and how to answer each refusal. Pass to `Fill` only bytes fetched from the remote tier, or the journal will treat them as offloaded and may release content that exists nowhere else.",
-    "opsTitle": "Operators",
     "ops": "There is one journal per disk, sized by a maximum and by per-share limits. A full journal makes clients retry, not fail, while space can still be freed. Unclaimed tags are reported with their bytes and exported for salvage before they are forgotten.",
     "testTitle": "Test authors",
     "test": "Tests use a real filesystem, a fault layer beneath the journal and virtual time. The checks look for silent data loss, for a journal that gets stuck or uses resources without bound, for recovery after a crash, and for what the journal reports about itself.",
     "notes": "The deck's framing, from §3.4 (the caller of Fill), §3.5 and §7.2 (policy is the engine's), §6, §3 (strand and salvage), §1.3 and §9.4. The four groups are §9.4's: A silent data loss, B wedging and unbounded resource use, C recovery, D observability."
   },
   "rules": {
-    "kicker": "Rules and non-goals",
-    "title": "The rules, in plain words",
     "items": [
       "A read never fills with zeros or cuts short what it does not hold, and its `missing` list is exact.",
       "`Release` refuses an [[extent|extent]] not reported [[offload|offloaded]], and a refused release frees nothing at all.",
@@ -479,8 +462,6 @@
     "notes": "§1.1 Non-goals (each a MUST NOT), §1.2. The footer: §3.5 ('the mechanism of eviction; the policy is the engine's') and §7.2 (the engine calls Repack with a budget and a scope)."
   },
   "open": {
-    "kicker": "Still open",
-    "title": "Open questions",
     "questions": [
       "How much extra writing [[repack|repack]] causes under a load with many evictions has not been measured.",
       "The index's memory use and lookup cost were measured, but the cost of inserting into it was not.",

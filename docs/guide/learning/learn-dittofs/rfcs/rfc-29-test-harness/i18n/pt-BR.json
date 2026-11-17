@@ -1,29 +1,20 @@
 {
   "title": "RFC 29 — o test harness",
-  "glossaryKicker": "Glossário",
-  "glossaryTitle": "Todos os termos deste deck",
   "cover": {
-    "kicker": "Learn DittoFS · RFC 29",
+    "kicker": "Aprenda DittoFS · RFC 29",
     "title": "Um só [[dt|test harness]]",
     "lead": "Um só comando roda todas as suítes de teste a partir de uma lista única e entrega os resultados num formato único. Uma execução que não testou nada nunca pode sair verde.",
     "built": "Gerado a partir do RFC 29 em 06b1e48",
     "notes": "Fonte: docs/internals/rfcs/rfc-29-test-harness.md, commit 06b1e48. O RFC descreve o harness a que o projeto quer chegar; esta apresentação segue a sua quinta revisão. Teclas: → avançar, S notas do apresentador. Clique em qualquer termo sublinhado para ver a definição."
   },
   "intro": {
-    "kicker": "Antes de começar",
     "twoTitle": "O RFC 29 em duas frases",
     "two": "Um só comando Go, o [[dt]], roda toda [[suite|suíte]] de teste do mesmo jeito no notebook e na CI. Ele lê uma única [[registry|lista de suítes]], monta o servidor DittoFS de que cada uma precisa, chama a ferramenta de teste e [[grade|avalia]] cada resultado comparando-o com listas de [[known-failure|known failures]]. Ele existe porque um resultado verde nem sempre queria dizer que algo tinha sido testado, as falhas na develop passavam despercebidas e a maioria dos testes não conseguia barrar um merge.",
     "twoNotes": "Do Summary ('The problem', 'The proposal') e de 'Start here · In plain words'.",
-    "knownTitle": "Termos que você já conhece",
     "knownLead": "O RFC 29 não se apoia em nenhum outro RFC, porque trata das ferramentas de teste e não do servidor. Os termos do DittoFS abaixo só aparecem nele de passagem. Clique em um para ler a definição.",
     "knownNotes": "O índice de RFCs diz que o RFC 29 não se apoia em nenhum outro RFC, nem no RFC 0. Share: as shares de uma fixture (§4.2). Adapter: os adapters NFS e SMB que uma fixture habilita (§4.2). Lease: o lease NFSv4 da fixture (§4.2). Journal, syncer e engine aparecem só como exemplos de grupos de componentes (§4.9).",
-    "newTitle": "Termos novos",
     "newNotes": "O RFC 29 não tem glossário; cada termo é definido onde o RFC o apresenta: dt (§3), registry, suíte, opção, grupo (§4.1), cell (§4.4), store profile e fixture (§4.2), needs, dtc e host dedicado (§4.4, §4.5), os cenários de sistema (§1, §4.1), tier e blocking (§4.3), gate (§4.8), formato, CTRF, avaliação (§4.6), known failure, expected skip, unexpected pass, quarentena, flaky, retry (§4.7), not run (§4.4, R10), a issue develop-red (§4.8). O glossário no fim acrescenta matriz, shard e client lease.",
-    "clashTitle": "Termos que conflitam",
     "clashNotes": "Tier: os tiers de armazenamento do DittoFS (RFC 0, RFC 4) contra os tiers de teste do RFC 29 (§4.3). Fixture: o sentido habitual em código de teste contra o servidor inteiro do §4.2. Gate: o job gate (§4.8) contra os gates de desempenho e alocação (§4.10) e o share gate dos adapters. Store profile contra perfis de desempenho e de cobertura (a suíte unit do §4.1 grava um coverage profile). Lease: o lease NFSv4 da fixture (§4.2)."
-  },
-  "problem": {
-    "kicker": "O problema"
   },
   "ways": {
     "title": "Antes do [[dt]] (outubro de 2026), cada [[suite|suíte]] rodava do seu jeito",
@@ -273,7 +264,7 @@
       ],
       [
         "`pr`",
-        "todo pull request",
+        "todo pull request, e a execução da merge queue sobre o resultado do merge",
         "20 min para 90 % das execuções"
       ],
       [
@@ -293,7 +284,7 @@
       ]
     ],
     "footer": "Cada tier roda tudo o que o menor roda: `merge` inclui `pr`, e `nightly` roda tudo menos as suítes `manual`. Uma [[suite|suíte]] indica o menor tier que a roda. Mudá-la de tier é trocar uma palavra, com base nos tempos medidos pelo `dt history`.",
-    "notes": "§4.3 Tiers (tabela e 'Budgets'); §9 'The tier budgets', ajustados com números medidos. Antes do dt (outubro de 2026) um PR esperava 25–40 min. Em 2026-10-12 um merge levou uma mediana de 33 minutos até o último check (§9). O tier pr também roda no merge_group: o tests.yml mapeia esse evento para pr. O RFC 29 na develop ainda diz que isso vale 'if a merge queue is ever available' (§4.3, §4.8); o RFC está sendo corrigido, então o slide cita só as pull requests. O tier merge roda nos pushes na develop, main e feat/storage-v2 (§4.3)."
+    "notes": "§4.3 Tiers (tabela e 'Budgets'); §9 'The tier budgets', ajustados com números medidos. Antes do dt (outubro de 2026) um PR esperava 25–40 min. Em 2026-10-12 um merge levou uma mediana de 33 minutos até o último check (§9). O tier pr também roda no merge_group: o tests.yml mapeia esse evento para pr. A merge queue está ativa na develop e na feat/storage-v2, então uma pull request na fila roda de novo o tier pr sobre o resultado do merge (§4.3, §4.8). O tier merge roda nos pushes na develop, main e feat/storage-v2 (§4.3)."
   },
   "whatruns": {
     "title": "O que cada pull request roda",
@@ -320,7 +311,7 @@
       "Um revisor aprovou a pull request.",
       "Antes de entrar, a pull request é testada de novo em cima da develop mais recente."
     ],
-    "notes": "§4.8 CI, Jobs e Merging. As cells não bloqueantes rodam numa segunda matriz que o gate não espera. O gate virou obrigatório depois de duas semanas de tier pr verde (§9), no lugar de Unit Tests e Integration Tests. Um gate único que sempre roda evita a armadilha dos filtros de caminho do GitHub. A última condição está escrita para valer nos dois casos: o RFC 29 §4.8 na develop ainda exige branches atualizados e diz que uma merge queue não pode ser ativada num repositório de usuário, enquanto o tests.yml já roda o tier pr no merge_group; o texto do RFC está sendo corrigido. Checks exigidos: §4.8 'Merging' e 'Lint'; gitleaks e CodeQL (Analyze (go)) continuam como actions do GitHub (§4.8, §5)."
+    "notes": "§4.8 CI, Jobs e Merging. As cells não bloqueantes rodam numa segunda matriz que o gate não espera. O gate virou obrigatório depois de duas semanas de tier pr verde (§9), no lugar de Unit Tests e Integration Tests. Um gate único que sempre roda evita a armadilha dos filtros de caminho do GitHub. A última condição é a merge queue, que roda o tier pr no merge_group, sobre o resultado do merge; o ruleset também ainda exige branches atualizados (§4.8). Checks exigidos: §4.8 'Merging' e 'Lint'; gitleaks e CodeQL (Analyze (go)) continuam como actions do GitHub (§4.8, §5)."
   },
   "prrun": {
     "title": "Um pull request quebra um teste do pjdfstest",
@@ -335,10 +326,10 @@
     ],
     "why": [
       "Nenhum [[retry]] roda numa pull request, então o teste recebe a avaliação `new` e a [[cell]] dele sai com 1. Uma cell [[blocking]] que não sai com 0 faz o [[gate]] falhar.",
-      "No CI, o retry só roda depois de um merge e nas execuções agendadas. Numa pull request nada é repetido, e assim um PR não consegue fazer entrar um teste [[flaky]] que ele mesmo trouxe.",
+      "No CI, o retry só roda num push na develop, na main ou na `feat/storage-v2`, que na prática vem depois de um merge, e nas execuções agendadas. Numa pull request nada é repetido, e assim um PR não consegue fazer entrar um teste [[flaky]] que ele mesmo trouxe.",
       "Exit 2 é para um teste que não rodou. Este rodou e falhou sem entrada em nenhuma lista, então é uma falha nova e a [[cell]] dele sai com 1."
     ],
-    "notes": "'Start here · Scenarios', o primeiro: avaliado como falha nova, exit 1 (§4.4); nenhum retry numa pull request (§4.7 Retry: 'None on pull requests … so a PR can't merge a flaky test it introduced. On develop and the schedule, --retry 1 …'); o gate falha porque uma cell blocking não saiu com 0 (§4.8). Exit 2 quer dizer not run (§4.4). O RFC diz 'on develop and the schedule'; o tests.yml repete em todo push e nas execuções agendadas, e o RFC está sendo corrigido, então o slide diz 'depois de um merge'."
+    "notes": "'Start here · Scenarios', o primeiro: avaliado como falha nova, exit 1 (§4.4); nenhum retry numa pull request (§4.7 Retry: 'None on pull requests … so a PR can't merge a flaky test it introduced. On a push and on the schedule, --retry 1 …'); o gate falha porque uma cell blocking não saiu com 0 (§4.8). Exit 2 quer dizer not run (§4.4). O tests.yml roda num push só para a develop, a main e a feat/storage-v2, então um push é, na prática, um merge."
   },
   "grading": {
     "kicker": "Resultados e avaliação"
@@ -509,11 +500,11 @@
     "rTitle": "[[retry|Retry]]",
     "r": [
       "Numa pull request os testes nunca são repetidos, então uma PR não consegue fazer merge de um teste flaky que ela mesma introduziu.",
-      "Depois de um merge e nas execuções agendadas, o `--retry 1` roda cada falha nova mais uma vez, e nada além disso.",
+      "Num push na develop, na main ou na `feat/storage-v2` (na prática, depois de um merge) e nas execuções agendadas, o `--retry 1` roda cada falha nova mais uma vez, e nada além disso.",
       "Um teste que passa no retry é flaky. Ele não dispara alerta, e o `dt history` o conta.",
       "Um teste que sai flaky duas vezes numa semana na develop vira candidato à quarentena."
     ],
-    "notes": "§4.7 'Quarantine' e 'Retry'. A lista de quarentena é test/harness/quarantine.yaml; uma entrada nomeia exatamente um teste, nunca um padrão. Uma entrada vencida é erro do dt doctor, que o lint-repo roda (Repo Checks). O retry roda na própria fixture da cell, dentro do limite da cell; um teste que nenhuma regra de nome consegue indicar não é repetido. A race do keytab do AD-DC (#2968) é o caso para o qual a quarentena existe. Vencimento: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); o dt doctor é um dos comandos do lint-repo (§4.1), e o lint-repo é o job Repo Checks, que roda em toda pull request (§4.8). O RFC diz 'on develop and the schedule'; o tests.yml repete em todo push e nas execuções agendadas, e o RFC está sendo corrigido, então o slide diz 'depois de um merge'."
+    "notes": "§4.7 'Quarantine' e 'Retry'. A lista de quarentena é test/harness/quarantine.yaml; uma entrada nomeia exatamente um teste, nunca um padrão. Uma entrada vencida é erro do dt doctor, que o lint-repo roda (Repo Checks). O retry roda na própria fixture da cell, dentro do limite da cell; um teste que nenhuma regra de nome consegue indicar não é repetido. A race do keytab do AD-DC (#2968) é o caso para o qual a quarentena existe. Vencimento: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); o dt doctor é um dos comandos do lint-repo (§4.1), e o lint-repo é o job Repo Checks, que roda em toda pull request (§4.8). O tests.yml roda num push só para a develop, a main e a feat/storage-v2, então um push é, na prática, um merge."
   },
   "ctrf": {
     "title": "Um formato só: [[ctrf|CTRF]], com JUnit ao lado",
@@ -589,14 +580,20 @@
       "Os runners hospedados pelo GitHub compartilham hardware, então os tempos deles são ruidosos demais para reprovar uma pull request por uma queda percentual.",
       "O `bench-smoke` verifica se os benchmarks ainda funcionam. Ele não barra pull requests, mas barra as execuções depois de um merge e as noturnas.",
       "As verificações de throughput e de alocação, também chamadas de gates, falham quando uma medida passa de um limite. Elas são puladas com o race detector do Go (`-race`) e no modo short (`-short`), que a suíte `unit` usa, então nenhum job as rodava.",
-      "O `unit --nonrace` as roda toda noite sem essas flags. Uma que ainda dispara depois do retry deixa a execução noturna vermelha, mas nunca reprova uma pull request.",
+      "O `unit --nonrace` as roda toda noite sem essas flags. Uma que ainda dispara depois do retry deixa a execução noturna vermelha, mas nunca reprova uma pull request."
+    ],
+    "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. Um gate nonrace que dispara de novo no retry deixa a execução noturna vermelha e publica, e não reprova nenhum PR. Os gates pulados com -race e -short, que nenhum job rodava: tabela do §1, última linha. A suíte unit roda go test -race, com -short nas pull requests; a opção nonrace dela roda à noite os dois testes de gate (§4.1)."
+  },
+  "baseline": {
+    "title": "Cada benchmark contra a própria baseline",
+    "items": [
+      "Depois de cada merge, os benchmarks de cada componente que indica um rodam de novo, e o `benchstat` os compara com a baseline guardada daquele componente.",
+      "Uma variação além da faixa de ruído do `benchstat` é publicada para alguém olhar, mas nunca reprova a execução. Uma baseline só é trocada por uma pull request.",
       "O `perf-night` no [[dedicated-host|host dedicado]] roda a mesma carga SMB no DittoFS e no Samba, que serve só como ponto de referência para o teste. Ele sinaliza uma noite cujos números caem abaixo da própria mediana recente, mas o sinal não reprova nada. Os números valem para aquela máquina, não dizem nada sobre os dois servidores em geral e não foram feitos para ser reproduzidos em outro lugar. O `dt history` os registra, e eles nunca decidem se uma execução passa."
     ],
-    "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. O perf-night sinaliza um ponto, uma área ou o número da noite abaixo da mediana de 7 dias por mais do que a sua faixa de ruído; a cell falha quando um passo falha ou estoura o tempo, ou quando a noite não pode ser avaliada. Um gate nonrace que dispara de novo no retry deixa a execução noturna vermelha e publica, e não reprova nenhum PR. Os gates pulados com -race e -short, que nenhum job rodava: tabela do §1, última linha. A suíte unit roda go test -race, com -short nas pull requests; a opção nonrace dela roda à noite os dois testes de gate (§4.1). Depois de cada merge, um passo também roda os benchmarks dos componentes que indicam um e os compara com a baseline guardada usando o benchstat. Uma variação além da faixa de ruído do benchstat é publicada, sem nunca reprovar a execução, e uma baseline só é trocada por uma pull request (§4.10, 'Comparison against a stored baseline')."
+    "notes": "§4.10 Benchmarks and long runs, 'Comparison against a stored baseline'; §4.6 Metrics. Depois de cada merge, um passo também roda os benchmarks dos componentes que indicam um e os compara com a baseline guardada usando o benchstat. Uma variação além da faixa de ruído do benchstat é publicada, sem nunca reprovar a execução, e uma baseline só é trocada por uma pull request (§4.10, 'Comparison against a stored baseline'). O perf-night sinaliza um ponto, uma área ou o número da noite abaixo da mediana de 7 dias por mais do que a sua faixa de ruído; a cell falha quando um passo falha ou estoura o tempo, ou quando a noite não pode ser avaliada."
   },
   "whom": {
-    "kicker": "O que muda para quem",
-    "title": "O que muda para quem",
     "devTitle": "Quem desenvolve",
     "dev": "Um comando, `dt run NAME`, o mesmo da CI. O `dt doctor` diz o que falta na máquina e como conseguir. O `dt` roda como você e chama `sudo -n` só nos passos que exigem root.",
     "revTitle": "Revisores e mantenedores",
@@ -606,7 +603,6 @@
     "notes": "Este slide é uma síntese do deck, a partir do §3 ('Getting dt', sudo), §4.4 (dt doctor), §4.8, §4.2 e §4.7."
   },
   "rules": {
-    "kicker": "Regras e não-objetivos",
     "title": "O que o harness precisa fazer",
     "items": [
       "Existe um só ponto de entrada, e ele roda do mesmo jeito no notebook e na CI.",
