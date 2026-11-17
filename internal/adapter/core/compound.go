@@ -121,6 +121,10 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		return
 	}
 	if p.draining.Load() {
+		// ponytail: a compound the drain does not serve whole is refused
+		// whole, since drainErr answers ErrDraining, a NoReply row. Once it
+		// can answer ErrMoved, a refusal with a reply, the compound runs to
+		// the moved member and is answered there (§4.7).
 		if whole, handles := judge(ms, err == nil, r); !whole {
 			p.refused(tr, stageResolveIDs)
 			p.finish(tr, h, tb, errs, row, Invocation{}, nil, drainErr(ctx, handles), release)
@@ -140,10 +144,9 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	// transfer class when such a compound is seen refused.
 	//
 	// ponytail: one reservation of the summed bounds, held whole while the
-	// compound runs, so four such compounds still fill the pool until each
-	// client's turns bound its share. Reserve per member as it runs, or check
-	// what is left of the session's reply size, when the slots bring that
-	// limit.
+	// compound runs, as §4.3 has it, so four such compounds still fill the
+	// pool until each client's turns bound its share. Check what is left of
+	// the session's reply size when the slots bring that limit.
 	if p.sh.reply.Charge(n) > p.sh.reply.Ceiling()/4 {
 		p.refused(tr, stageReplyTooBig)
 		p.finish(tr, h, tb, errs, row, Invocation{}, nil, fmt.Errorf("%w: a compound's reply of %d bytes", ErrReplyTooBig, n), release)
@@ -206,7 +209,14 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	}
 	if err != nil && status == 0 {
 		// The member that did not decode, or names a code the table lacks,
-		// once the members before it have run.
+		// once the members before it have run, counted where a request
+		// alone's would be: a code the table lacks at route, the rest at
+		// decode_args.
+		if errors.Is(err, ErrNotSupported) {
+			mts.refused(stageRoute)
+		} else {
+			mts.refused(stageDecodeArgs)
+		}
 		var send bool
 		if status, send = p.mapped(tr, mt.Errors, err, nil, v, true); !send {
 			p.unanswered(tr, h, tb, reply, err, release)

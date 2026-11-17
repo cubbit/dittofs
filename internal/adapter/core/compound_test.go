@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -319,7 +320,8 @@ func TestTheQuarter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pool := resources.NewBufPool(resources.NewWaitBudget("probe", 1<<30))
 		quarter := pool.Charge(4 << 10) // the small class's charge
-		s := newServed(t, 4*quarter, adapter.Deps{})
+		m := metrics.New("v", "c")
+		s := newServed(t, 4*quarter, adapter.Deps{Metrics: m})
 		// Each Echo's result is 12 bytes and its payload; the compound's
 		// header, head with its 4-byte tag and one result head take 68.
 		fits := testproto.Msg{Op: testproto.OpEcho, Payload: make([]byte, 4<<10-68-12-1)}
@@ -331,6 +333,9 @@ func TestTheQuarter(t *testing.T) {
 		}
 		if hd, rs, err := testproto.Results(r.Body); err != nil || !headIs(hd, testproto.StatusReplyTooBig, tagOf(r.ID)) || len(rs) != 0 {
 			t.Errorf("a compound refused past a quarter is answered %+v with %v (%v), want its status, its tag and no results", hd, rs, err)
+		}
+		if got, _ := scrape(t, m); got["adapter_refusals_total{protocol="+testproto.Name+",stage=reply_too_big}"] != 1 {
+			t.Errorf("the refusal past a quarter counted %v under reply_too_big, want 1", got["adapter_refusals_total{protocol="+testproto.Name+",stage=reply_too_big}"])
 		}
 		s.compound(2, fits)
 		if st, _ := s.results(); st != testproto.StatusOK {
@@ -376,7 +381,8 @@ func TestTheQuarter(t *testing.T) {
 // nothing; a compound begun before the drain runs whole.
 func TestADrainedCompound(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := newServed(t, 1<<20, adapter.Deps{})
+		m := metrics.New("v", "c")
+		s := newServed(t, 1<<20, adapter.Deps{Metrics: m})
 		none := echo
 		none.Role = core.RoleNone
 		hold := s.faults.Hold(vfs.OpCreate)
@@ -392,6 +398,9 @@ func TestADrainedCompound(t *testing.T) {
 		s.compound(2, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, testproto.Msg{Op: testproto.OpCreate, Name: "drained"}, none)
 		if !s.sentNothing() || s.creates() != 0 {
 			t.Errorf("a drained compound with a refused member was answered, or made %d files", s.creates())
+		}
+		if got, _ := scrape(t, m); got["adapter_refusals_total{protocol="+testproto.Name+",stage=resolve_ids}"] != 1 {
+			t.Errorf("the drained compound counted %v under resolve_ids, want 1", got["adapter_refusals_total{protocol="+testproto.Name+",stage=resolve_ids}"])
 		}
 	})
 }
@@ -717,5 +726,129 @@ func TestAnExpiredCredentialInACompound(t *testing.T) {
 	s.compound(1, release, none)
 	if st, rs := s.results(); st != testproto.StatusExpired || !slices.Equal(rs, []core.Status{testproto.StatusOK, testproto.StatusExpired}) {
 		t.Errorf("a compound on an expired session is answered %d with %v, want the release run and the none refused expired", st, rs)
+	}
+}
+
+// A compound's members refused before their calls count under the stage
+// that refused them, in the members' table's series: a member before its
+// version at route, an unknown code at route and not at decode_args, and a
+// member on an expired credential at resolve_ids; a member whose row runs on
+// an expired credential, Session, is answered.
+func TestACompoundsRefusedMembersAreCounted(t *testing.T) {
+	m := metrics.New("v", "c")
+	s := newServed(t, 1<<20, adapter.Deps{Metrics: m})
+	key := "adapter_refusals_total{protocol=" + testproto.Name + ",stage="
+	s.compound(1, echo, testproto.Msg{Op: 99})
+	if st, _ := s.results(); st != testproto.StatusNotSupported {
+		t.Errorf("a compound with an unknown member is answered %d", st)
+	}
+	if got, _ := scrape(t, m); got[key+"route}"] != 1 || got[key+"decode_args}"] != 0 {
+		t.Errorf("an unknown member counted %v at route and %v at decode_args, want 1 and 0", got[key+"route}"], got[key+"decode_args}"])
+	}
+	s.compound(3, echo, testproto.Msg{Op: testproto.OpPark})
+	s.results()
+	if got, _ := scrape(t, m); got[key+"route}"] != 2 {
+		t.Errorf("a member its version does not serve counted %v at route in all, want 2", got[key+"route}"])
+	}
+	s.serve(testproto.Msg{Op: testproto.OpSession, Version: 1, Session: 7, Expires: time.Now().Add(-time.Hour)})
+	s.read()
+	release, none := echo, echo
+	release.Role, none.Role = core.RoleRelease, core.RoleNone
+	s.compound(2, release, testproto.Msg{Op: testproto.OpSession, Session: 7, Expires: time.Now().Add(-time.Hour)}, none)
+	if st, rs := s.results(); st != testproto.StatusExpired || !slices.Equal(rs, []core.Status{testproto.StatusOK, testproto.StatusOK, testproto.StatusExpired}) {
+		t.Errorf("a compound on an expired session is answered %d with %v, want the release and Session run, the none refused expired", st, rs)
+	}
+	if got, _ := scrape(t, m); got[key+"resolve_ids}"] != 1 {
+		t.Errorf("the expired member counted %v at resolve_ids, want 1", got[key+"resolve_ids}"])
+	}
+}
+
+// A compound member whose arguments do not decode is answered, once the
+// member before it ran, and counted at decode_args, as a request alone's
+// would be.
+func TestAMemberWhoseArgumentsDoNotDecodeIsCounted(t *testing.T) {
+	m := metrics.New("v", "c")
+	s := newServed(t, 1<<20, adapter.Deps{Metrics: m})
+	b := body(s.f, testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 1, Members: []testproto.Msg{echo, echo}, Tag: tagOf(1)})
+	// The second Echo's arguments, its role and payload "e", cut to none.
+	b = b[:len(b)-2]
+	binary.BigEndian.PutUint32(b[len(b)-4:], 0)
+	s.serveBody(b)
+	if _, rs := s.results(); !slices.Equal(rs, []core.Status{testproto.StatusOK, testproto.StatusDecode}) {
+		t.Errorf("the compound is answered %v: want the first Echo, then the decode status", rs)
+	}
+	if got, _ := scrape(t, m); got["adapter_refusals_total{protocol="+testproto.Name+",stage=decode_args}"] != 1 {
+		t.Errorf("a member whose arguments do not decode counted %v at decode_args, want 1", got["adapter_refusals_total{protocol="+testproto.Name+",stage=decode_args}"])
+	}
+}
+
+// staleMembers is a Router declared in the test whose compound rows'
+// members tables have Echo's Invocation.Resolve fail, a fault injected in a
+// real row.
+type staleMembers struct {
+	core.Router
+	mu     sync.Mutex
+	tables map[*core.OpTable]*core.OpTable
+}
+
+func (w *staleMembers) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	tb, r, err := w.Router.Route(h, prev)
+	if tb == nil {
+		return tb, r, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.tables == nil {
+		w.tables = map[*core.OpTable]*core.OpTable{}
+	}
+	if cp, ok := w.tables[tb]; ok {
+		return cp, r, err
+	}
+	c := *tb
+	c.Ops = make(map[uint32]*core.Op, len(tb.Ops))
+	for code, op := range tb.Ops {
+		o := *op
+		if op.Members != nil {
+			mc := *op.Members
+			mc.Ops = make(map[uint32]*core.Op, len(op.Members.Ops))
+			for mcode, mop := range op.Members.Ops {
+				mo := *mop
+				if mcode == testproto.OpEcho {
+					dec := mop.Decode
+					mo.Decode = func(b []byte, v core.Version) (core.Invocation, int, error) {
+						inv, n, err := dec(b, v)
+						if err == nil {
+							inv.Resolve = func(*core.Request) error { return vfs.ErrStale }
+						}
+						return inv, n, err
+					}
+				}
+				mc.Ops[mcode] = &mo
+			}
+			o.Members = &mc
+		}
+		c.Ops[code] = &o
+	}
+	w.tables[tb] = &c
+	return &c, r, err
+}
+
+// A compound member whose Resolve fails is counted at resolve_ids.
+func TestAMemberWhoseResolveFailsIsCounted(t *testing.T) {
+	m := metrics.New("v", "c")
+	d := adapter.Deps{Metrics: m}
+	s := newSeamWith(t, edited{testproto.New(d), func(st *core.Stages) { st.Router = &staleMembers{Router: st.Router} }}, 1<<20, d)
+	for _, msg := range []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1},
+		{Op: testproto.OpSession, Version: 1, Session: 7},
+		{Op: testproto.OpTree, Version: 1, Session: 7, Tree: 1},
+	} {
+		s.serve(msg)
+		s.read()
+	}
+	s.serve(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 1, Session: 7, Tree: 1, Members: []testproto.Msg{{Op: testproto.OpEcho, Payload: []byte("e")}}, Tag: tagOf(1)})
+	s.read()
+	if got, _ := scrape(t, m); got["adapter_refusals_total{protocol="+testproto.Name+",stage=resolve_ids}"] != 1 {
+		t.Errorf("a member whose Resolve failed counted %v at resolve_ids, want 1", got["adapter_refusals_total{protocol="+testproto.Name+",stage=resolve_ids}"])
 	}
 }
