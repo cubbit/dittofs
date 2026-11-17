@@ -471,8 +471,27 @@ func v25(t *testing.T, opts ...enginetest.Option) {
 				t.Fatalf("after %v the group commit has not dropped the write", bound)
 			}
 		}
-		if again, err := c.write(t, c.admin, h, 0, []byte("anew")); err != nil || again.Verifier == w.Verifier {
-			t.Errorf("the next write in the same process: verifier %x, %v; want other than the lost write's %x", again.Verifier, err, w.Verifier)
+		// The next write resends a commit delay its engine may answer once.
+		// The poll moves the clock a minute at a time, one existence age per
+		// iteration, so the fence's own bound is passed from the first move
+		// and the fence stands raised whenever the window's loss has a
+		// metadata transaction still settling; the drop is visible in the
+		// overlay before that settle ends, so the write the row sends next
+		// can meet the raised fence and answer ErrDelay (DelayCommit), which
+		// the layer defines as resendable. A client resends it, and the row
+		// does the same within its bound rather than fail on the settle's
+		// tail: the check is the fresh verifier, unchanged.
+		var again vfs.WriteResult
+		for deadline := time.Now().Add(bound); ; time.Sleep(10 * time.Millisecond) {
+			var err error
+			again, err = c.write(t, c.admin, h, 0, []byte("anew"))
+			var d *vfs.Delay
+			if err == nil || !errors.As(err, &d) || d.Cause != vfs.DelayCommit || time.Now().After(deadline) {
+				if err != nil || again.Verifier == w.Verifier {
+					t.Errorf("the next write in the same process: verifier %x, %v; want other than the lost write's %x", again.Verifier, err, w.Verifier)
+				}
+				break
+			}
 		}
 	})
 
