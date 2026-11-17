@@ -33,7 +33,7 @@ func TestRFC8_AQuiescedShareAdmitsNothingNew(t *testing.T) {
 		call func() error
 	}{
 		{"Write", func() error {
-			_, err := f.E.Write(ctx, s, id, 3, []byte("def"), engine.WriteOpts{Done: func() {}})
+			_, err := f.E.Write(ctx, s, id, 3, []byte("XYZ"), engine.WriteOpts{Done: func() {}})
 			return err
 		}},
 		{"Read", func() error { _, err := f.E.Read(ctx, s, id, 0, make([]byte, 3)); return err }},
@@ -55,6 +55,13 @@ func TestRFC8_AQuiescedShareAdmitsNothingNew(t *testing.T) {
 	}
 
 	bind(t, f, engine.Serving)
+
+	// The file is "abc" unless the refused write landed: a short read is fine.
+	p := make([]byte, 6)
+	if n, err := f.E.Read(ctx, s, id, 0, p); err != nil || bytes.Contains(p[:n], []byte("XYZ")) {
+		t.Errorf("read after the resume = %q, %v, want the refused write's %q absent", p[:n], err, "XYZ")
+	}
+
 	write(t, f, id, 3, []byte("def"))
 
 	if got := read(t, f, id, 0, 6); !bytes.Equal(got, []byte("abcdef")) {
