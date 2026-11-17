@@ -2706,9 +2706,21 @@ in an `FSCTL_SRV_COPYCHUNK` or `FSCTL_SRV_COPYCHUNK_WRITE` response returning an
 `SRV_COPYCHUNK_RESPONSE`; `STATUS_NOTIFY_ENUM_DIR` in a `CHANGE_NOTIFY` response.
 They are also `STATUS_BUFFER_OVERFLOW` in an `FSCTL_GET_REPARSE_POINT` response,
 which this server serves (Appendix F) and Windows answers so (MS-SMB2
-Appendix A, note 244). The
+Appendix A, note 244), and an error response carrying the command's error data,
+as `STATUS_STOPPED_ON_SYMLINK`'s does ([§12.4](#12.4%20Reparse%20points)): the
+`CREATE` handler returns its reply beside that status, as RFC 20 §4.7 lets an
+NFSv3 failure return its WCC data, and `CREATE`'s encoder writes the whole
+error response, with the symlink error data (MS-SMB2 2.2.2.2.1), or the
+generic one from a nil reply. The
 named-pipe `READ` case never arises here: a pipe `READ` that does not fit is
 answered a short read with `STATUS_SUCCESS` ([§3.3](#3.3%20Sizes%20and%20credits)).
+
+> decision: the symlink error data reaches the wire through the `CREATE`
+> reply, so nothing carries it from the handler to the header codec. A
+> handler returning its reply beside its error is what an NFSv3 failure
+> already does for its WCC data, and the header codec tells the exception
+> from the command and the status, as it does the others, so
+> `HeaderCodec.Encode` is unchanged.
 
 **Malformed headers.** A message shorter than the 64-byte SMB2 header, a header
 whose command code no request carries (MS-SMB2 2.2.1.2), and a
