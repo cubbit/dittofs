@@ -62,5 +62,23 @@ type SignInFailures struct {
 // source's alone (Account zero), or the two together.
 type SignInKey struct {
 	Account Principal
-	Source  netip.Prefix // as the API normalises a client address
+	Source  netip.Prefix // as SourceKey keys a client address
+}
+
+// SourceKey is the source a client at addr is counted on: an IPv4-mapped
+// address as its IPv4 address, any other IPv6 address by its /64, and its
+// zone dropped. A loopback address is a source like any other. An address
+// that is not valid counts as 0.0.0.0, one source for every such client, so
+// none escapes its source's count.
+func SourceKey(addr netip.Addr) netip.Prefix {
+	if !addr.IsValid() {
+		addr = netip.IPv4Unspecified()
+	}
+	addr = addr.Unmap().WithZone("")
+	bits := 64
+	if addr.Is4() {
+		bits = 32
+	}
+	p, _ := addr.Prefix(bits)
+	return p
 }

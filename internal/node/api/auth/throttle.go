@@ -59,25 +59,13 @@ func (a attempt) key(k kind) (entity.SignInKey, bool) {
 	return entity.SignInKey{Account: a.account, Source: a.source}, hasAccount && hasSource
 }
 
-// sourceOf is the source a connection from addr is counted on: an
-// IPv4-mapped address as its IPv4 address, any other IPv6 address by its
-// /64, and none for a caller on the local socket. A loopback address is a
-// source like any other. An address that is not valid counts as 0.0.0.0, one
-// source for every such caller, so none escapes the source count.
+// sourceOf is the source a connection from addr is counted on: none for a
+// caller on the local socket, entity.SourceKey's for any other.
 func sourceOf(addr netip.Addr, local bool) netip.Prefix {
 	if local {
 		return netip.Prefix{}
 	}
-	if !addr.IsValid() {
-		addr = netip.IPv4Unspecified()
-	}
-	addr = addr.Unmap().WithZone("")
-	bits := 64
-	if addr.Is4() {
-		bits = 32
-	}
-	p, _ := addr.Prefix(bits)
-	return p
+	return entity.SourceKey(addr)
 }
 
 // expired reports whether a count of kind k holding f is forgotten at now: a

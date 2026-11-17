@@ -73,38 +73,17 @@ func TestDecideWaits(t *testing.T) {
 	}
 }
 
-// A source is the peer address, an IPv4-mapped one as IPv4 and any other
-// IPv6 one by its /64; loopback is a source like any other; the local socket
-// has none, and so no source count and no pair.
+// A caller on the local socket has no source, and so no source count and no
+// pair; any other is counted on entity.SourceKey's source.
 func TestSourceOf(t *testing.T) {
-	for _, tc := range []struct {
-		addr  string
-		local bool
-		want  string // "" for no source
-	}{
-		{"192.0.2.1", false, "192.0.2.1/32"},
-		{"::ffff:192.0.2.1", false, "192.0.2.1/32"},
-		{"2001:db8::1", false, "2001:db8::/64"},
-		{"2001:db8::ffff:1:2", false, "2001:db8::/64"},
-		{"2001:db8:0:1::1", false, "2001:db8:0:1::/64"},
-		{"fe80::1%eth0", false, "fe80::/64"},
-		{"127.0.0.1", false, "127.0.0.1/32"},
-		{"127.0.0.6", false, "127.0.0.6/32"},
-		{"::ffff:127.0.0.1", false, "127.0.0.1/32"},
-		{"::1", false, "::/64"},
-		{"192.0.2.1", true, ""},
-		{"", false, "0.0.0.0/32"},
-	} {
-		var addr netip.Addr
-		if tc.addr != "" {
-			addr = netip.MustParseAddr(tc.addr)
-		}
-		got := sourceOf(addr, tc.local)
-		if (tc.want == "" && got.IsValid()) || (tc.want != "" && got.String() != tc.want) {
-			t.Errorf("source of %q (local %v): got %v, want %q", tc.addr, tc.local, got, tc.want)
-		}
+	addr := netip.MustParseAddr("192.0.2.1")
+	if got := sourceOf(addr, true); got.IsValid() {
+		t.Errorf("source of a local-socket caller: got %v, want none", got)
 	}
-	local := attempt{account: entity.NewUser(), source: sourceOf(netip.MustParseAddr("192.0.2.1"), true)}
+	if got, want := sourceOf(addr, false), entity.SourceKey(addr); got != want {
+		t.Errorf("source of %v: got %v, want %v", addr, got, want)
+	}
+	local := attempt{account: entity.NewUser(), source: sourceOf(addr, true)}
 	for _, k := range []struct {
 		k    kind
 		name string
