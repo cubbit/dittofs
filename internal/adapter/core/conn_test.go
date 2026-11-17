@@ -329,3 +329,73 @@ func TestOnClosesContextEndsAfterTheGrace(t *testing.T) {
 		t.Fatal("the teardown did not end")
 	}
 }
+
+// A client that reads nothing is not read past the writer's bound: its next
+// write does not complete, the reader holds no record while it waits, another
+// connection is served meanwhile, and both drain once it reads.
+func TestASilentClientStopsTheReader(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		srv, l := testServer(t, adapter.Deps{Budgets: b}, settings.DefaultNFS())
+		client := testproto.NewClient(nil)
+		_ = client
+		connA, peerA := servedConn(t, srv, &l)
+		_ = connA
+		a := testproto.NewClient(peerA)
+		const sent = 200
+		sending := make(chan error, 1)
+		go func() {
+			for i := range sent {
+				if err := a.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: uint64(i + 1), Payload: []byte("x")}); err != nil {
+					sending <- err
+					return
+				}
+			}
+			sending <- nil
+		}()
+		synctest.Wait()
+		//// The bound is reached: the sender waits in a write, and the reader,
+		//// paused, holds no record.
+		select {
+		case err := <-sending:
+			t.Fatalf("every write completed with the client reading nothing: %v", err)
+		default:
+		}
+		if r := b.Receive.Reserved(); r != 0 {
+			t.Errorf("a paused reader holds %d receive bytes", r)
+		}
+		//// A second connection is served meanwhile.
+		_, peerB := servedConn(t, srv, &l)
+		bm := testproto.NewClient(peerB)
+		if err := bm.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("y")}); err != nil {
+			t.Fatal(err)
+		}
+		rs, err := bm.Recv()
+		if err != nil || len(rs) != 1 {
+			t.Fatalf("the second connection answered %+v: %v", rs, err)
+		}
+		//// Reading A drains both: every reply, in order, then the sender ends.
+		// Every request is answered exactly once: the replies are not in the
+		// requests' order, which a protocol without ordering leaves to xids.
+		answered := make(map[uint64]bool, sent)
+		for i := range sent {
+			rs, err := a.Recv()
+			if err != nil || len(rs) != 1 {
+				t.Fatalf("reply %d: %+v (%v)", i, rs, err)
+			}
+			answered[rs[0].ID] = true
+		}
+		if len(answered) != sent {
+			t.Errorf("%d replies for %d requests: some answered twice, some never", len(answered), sent)
+		}
+		select {
+		case err := <-sending:
+			if err != nil {
+				t.Fatalf("the sender: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("the sender never finished after the client read")
+		}
+	})
+}
