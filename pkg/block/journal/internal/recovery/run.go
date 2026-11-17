@@ -105,6 +105,11 @@ type State struct {
 	// reads Reappends for its lost-tail check.
 	Proof proof
 
+	// Marks is the marks raise phase's answer: the marks themselves, the
+	// predecessor verdicts the spares phase holds takes by, and the
+	// segments withheld from the spare test. The raise phase fills it.
+	Marks marksResults
+
 	// Spares is what the spares phase did with the segments it re-adopted:
 	// each adoption, with the id the allocator owns again, and each id the
 	// phase unlinked.
@@ -136,17 +141,19 @@ func (p phase) String() string { return string(p.span) }
 // rebuild pass replaces the rebuilt index and counters before any later
 // phase reads them — the spares and assembly phases and every phase after.
 // The marks-raise phase is the exception its slot pays: it runs between
-// the rebuild and the proof, so when it gains its run it must re-derive
-// whatever it raised or withheld after the second pass a torn tail made,
-// or fold itself into that pass's replays.
+// the rebuild and the proof, so the second pass a torn tail made replays
+// its answers over the fresh state — the marks' presence map re-raised
+// over the fresh feed, their sequence numbers re-observed over the fresh
+// counters, and the decrements the proof settled replayed over the fresh
+// map.
 var phases = [...]phase{
 	{span: core.SpanOpenAttach, run: runAttach},
 	{span: core.SpanOpenRebuild, run: runRebuild},
-	{span: core.SpanOpenMarksRaise},
+	{span: core.SpanOpenMarksRaise, run: runMarksRaise},
 	{span: core.SpanOpenTailProof, run: runTailProof},
-	{span: core.SpanOpenMarksLostTail},
+	{span: core.SpanOpenMarksLostTail, run: runMarksLostTail},
 	{span: core.SpanOpenSpares, run: runSpares},
-	{span: core.SpanOpenReappend},
+	{span: core.SpanOpenReappend, run: runReappend},
 	{span: core.SpanOpenAssembly, run: runAssemble},
 	{span: core.SpanOpenSeal},
 	{span: core.SpanOpenEmptying},
@@ -167,9 +174,11 @@ func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 // over the same scans — and the phase's answer fills the State's rebuilt,
 // kinds and tails fields. The index carries deps.ExtentLimit, no bound when
 // it is unset; the builder never consults the bound while rebuilding, so a
-// directory past it still opens.
-func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, _ []core.SyncMark) error {
-	out, kinds, tl, err := rebuildOver(ctx, deps, rd, st.Attached, expect, floor, nil, nil)
+// directory past it still opens. The marks name the sequence numbers whose
+// on-disk presence the feed raises into the kinds' answer, the one question
+// the lost-tail check asks of the records the walks attached.
+func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, marks []core.SyncMark) error {
+	out, kinds, tl, err := rebuildOver(ctx, deps, rd, st.Attached, expect, floor, nil, nil, marks)
 	if err != nil {
 		return err
 	}
@@ -187,7 +196,7 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 // the tail classing whose fates the repoint reads in the second pass's
 // place: the fresh scans' classing answers the pre-proof verdicts, while
 // the fates the proof settled are the homes the open really keeps.
-func rebuildOver(ctx context.Context, deps Deps, rd *reader, att Attached, expect core.JournalID, floor core.Version, skip map[index.RecordAt]bool, settled *tails) (rebuilt, kindResults, tails, error) {
+func rebuildOver(ctx context.Context, deps Deps, rd *reader, att Attached, expect core.JournalID, floor core.Version, skip map[index.RecordAt]bool, settled *tails, marks []core.SyncMark) (rebuilt, kindResults, tails, error) {
 	limit := deps.ExtentLimit
 	if limit < 1 {
 		limit = math.MaxInt64
@@ -206,7 +215,7 @@ func rebuildOver(ctx context.Context, deps Deps, rd *reader, att Attached, expec
 	for _, id := range slices.Concat(att.Unverified, att.ZeroHeader) {
 		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
 	}
-	return rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan, deps.Failed, att, skip, settled)
+	return rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan, deps.Failed, att, skip, settled, marks)
 }
 
 // rebuildReaders is the reader bound the rebuild runs under.
@@ -221,23 +230,29 @@ func rebuildReaders(deps Deps) int {
 // recovery phases in order under one open span, checking ctx before each,
 // and running each phase under the context its parent span returned, so
 // every phase span is the open span's child. The attach pass, the rebuild,
-// the spares phase — the open's first writing one, which re-adopts the
-// spare candidates and zeroes their dirty slots after refusing on every
-// range no bounded read completed — and the assembly are built; the phases
-// between them are named, span-covered steps that change nothing, each
-// checked for the context. A cancelled open answers the context's error at
-// the boundary it reached, the directory left as it began for a later
-// open — except for the spares phase, the open's writing one: cancelling
-// under its span stops it at its own context check or at the doorstep of
-// its next write — a write already under way finishes and the next open
-// settles what it left idempotently, but no write begins past the
-// cancellation — and a cancellation after it keeps that phase's unlinks
-// and zeroed slots, which a later open re-reads and re-decides. floor and
-// marks are carried for the phases that consume them — floor for the
-// rebuild, and marks for the spares phase, which withholds every
-// candidate a mark names and each record-less take whose header names a
-// predecessor whose end is not yet proven, and for the marks and
-// tail-proof phases not yet built.
+// the marks raise, the tail's proof, the lost-tail check, the spares
+// phase — the open's first writing one, which re-adopts the spare
+// candidates and zeroes their dirty slots after refusing on every range no
+// bounded read completed — and the re-append — which writes the tail the
+// device lost into a sealed spare of the repack reserve — and the assembly
+// are built; the phases around
+// them are named, span-covered steps that change nothing, each checked for
+// the context. A cancelled open answers the context's
+// error at the boundary it reached, the directory left as it began for a
+// later open — except for the spares phase and the re-append, the open's
+// writing ones:
+// cancelling under the span of either stops it at its own context check or
+// at the doorstep of its next write — a write already under way finishes
+// and the next open settles what it left idempotently, but no write begins
+// past the cancellation — and a cancellation after it keeps that phase's
+// unlinks, zeroed slots and sealed re-appended copies, which a later open
+// re-reads and re-decides.
+// floor and marks are carried for the phases that consume them — floor
+// for the rebuild, and marks for the marks raise phase, which reads them
+// into the state the spares phase holds its takes by, for the spares
+// phase, which withholds every candidate a mark names, and for the
+// lost-tail check, which refuses the open over a mark whose tail the
+// device lost and no copy anywhere answers for.
 func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err

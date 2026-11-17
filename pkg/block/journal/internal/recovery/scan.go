@@ -480,7 +480,10 @@ type rebuilt struct {
 // could not read, as the attach pass's own are. failed is the directory's
 // failed list the pass withholds by, plain data from Deps; att is the
 // attach pass's answer for the segments in own, which the classing reads
-// for what a segment's fate depends on.
+// for what a segment's fate depends on. marks are the caller's sync marks,
+// whose sequence numbers the pass seeds into the kinds' answer so the
+// feed's own pass over the attached records raises the presence the
+// lost-tail check reads.
 //
 // Nothing is written: the phase reads, feeds and finishes; the phases after
 // it own every change the open makes.
@@ -501,7 +504,7 @@ type rebuilt struct {
 // catalogued offsets — walking the two halves of one segment on two
 // readers, merging the scans — when a start-up profile of a journal with
 // huge segments shows the rebuild bound by one.
-func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, named map[core.SegmentID]bool, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool, failed []core.Seq, att Attached, skip map[index.RecordAt]bool, settled *tails) (rebuilt, kindResults, tails, error) {
+func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, named map[core.SegmentID]bool, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool, failed []core.Seq, att Attached, skip map[index.RecordAt]bool, settled *tails, marks []core.SyncMark) (rebuilt, kindResults, tails, error) {
 	ix := index.New(extentLimit)
 	ctr := &index.Counters{}
 	b := ix.Rebuilder(ctr)
@@ -647,6 +650,11 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 		// feeds.
 		tl.Corrupt = ks.subtractCopies(scans, tl)
 	}
+	// The marks' own numbers seed the kinds' answer before the feed: each
+	// entry the feed raises stands for a walk-attached copy carrying the
+	// number, and the lost-tail check reads the map as the answer to whether
+	// the mark's record verifies anywhere.
+	ks.MarkedOnDisk = markedSeqs(marks)
 
 	// The workers did not feed — the scans hold every converted record —
 	// because the feed must wait for the kinds pass and the classing over

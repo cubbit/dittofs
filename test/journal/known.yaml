@@ -1020,9 +1020,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The re-append''s sync is made at open, so the leg runs to its crash and reopen, which fails at the open''s own wall: a journal that has run is not recovered into production until the open wiring lands. Needs the data path, syncs, the reference model agreeing after a crash at this sync point, and the open wiring.'
   issue: '#3814'
-  message: 'stub: the open after a kill'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestDamage_LostWrites/open_spare_zeroing
   status: fail

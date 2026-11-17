@@ -654,7 +654,10 @@ func TestTheSecondPassPlacesTheCopyTheSettledFatesKeep(t *testing.T) {
 	r.writeLiveOnly(name, lAt, goodL) // L whole in the cache alone
 	r.dropSyncs(name)
 
-	st := runTails(t, r)
+	// The third, torn-and-lost handover needs the reserve spare the
+	// re-append's copy draws: the plain runTails plants none, so the open
+	// would refuse on the spare limit rather than hand L over.
+	st := runTailsReserve(t, r)
 
 	wantReappends(t, st, reappendOf(t, 3, lAt, goodL))
 	if len(st.Proof.FailedWindows) != 0 {

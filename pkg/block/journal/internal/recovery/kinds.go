@@ -128,6 +128,23 @@ type kindResults struct {
 	// journal's — withheld records included, for a record the rules
 	// withhold stays on disk and stays charged. Nil until the feed runs.
 	Charging map[core.SegmentID]map[core.ShareTag]Charge
+
+	// MarkedOnDisk holds one entry per sequence number a caller's sync mark
+	// names, a count of the walk-attached copies carrying the number that
+	// the feed met — save one the remainder pass confined, which raises
+	// nothing: its kept run failed the very read that would prove it, so it
+	// verifies nowhere. Rule-withheld copies raise, for a record the failed
+	// list, a loss or a forget withheld is as sound as any fed one, judged
+	// by the header the walk verified. The tail's proof lowers the count by
+	// one for each copy its first read judged bad, for a copy judged rotten
+	// or torn holds nothing and its placement verifies the record nowhere,
+	// the record's only honest copies being what raises the number. The
+	// lost-tail check reads the map, with the aside headers and the
+	// re-append set, as the answer to whether the number names a copy that
+	// verifies anywhere; the aside kinds never feed, so their headers the
+	// check answers from the scans themselves. Nil until the rebuild is
+	// run under marks.
+	MarkedOnDisk map[core.Seq]int
 }
 
 // Charge is one share tag's record bytes on one segment: the whole sizes of
@@ -872,10 +889,13 @@ type feedFilter struct {
 	ks *kindState
 	// losses indexes, per named seq, the collected losses naming it;
 	// forgets, per tag, the collected forgets of the tag; drops, per failed
-	// seq, the collected read-only note of the seq.
+	// seq, the collected read-only note of the seq; marked is the marked-seq
+	// count map the feed raises — nil until the marks' sequence numbers
+	// reach it.
 	losses  map[core.Seq][]int
 	forgets map[core.ShareTag][]int
 	drops   map[core.Seq]int
+	marked  map[core.Seq]int
 }
 
 // newFeedFilter makes the filter's lookups over the collected losses,
@@ -887,6 +907,7 @@ func (ks *kindState) newFeedFilter() *feedFilter {
 		losses:  make(map[core.Seq][]int, len(ks.Losses)),
 		forgets: make(map[core.ShareTag][]int, len(ks.Forgets)),
 		drops:   make(map[core.Seq]int, len(ks.ReadOnlyDrops)),
+		marked:  ks.MarkedOnDisk,
 	}
 	for i := range ks.Losses {
 		f.losses[ks.Losses[i].Dropped] = append(f.losses[ks.Losses[i].Dropped], i)
@@ -934,8 +955,20 @@ func appendSeg(segs []core.SegmentID, id core.SegmentID) []core.SegmentID {
 //
 // A withheld record's numbers fold into Withheld, so the counters a later
 // pass raises open above the numbers the feed never saw.
+//
+// Before any rule decides anything, the record raises the marks' own note:
+// a walk-attached copy carrying a sequence number a caller's sync mark names
+// sets that number's entry, save where the remainder pass confined this
+// copy — its kept run failed the one read an open makes of a payload, so the
+// record verifies nowhere and no mark may lean on it. A rule-withheld copy
+// raises like a fed one, for its bytes are as sound as any attached
+// record's judged by every check the format makes at open.
 func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 	f.note(rec)
+	if _, named := f.marked[rec.Numbers.Seq]; named &&
+		!f.ks.confined[index.RecordAt{Segment: rec.Segment, Offset: rec.At}] {
+		f.marked[rec.Numbers.Seq]++
+	}
 	ks := f.ks
 	seq := rec.Numbers.Seq
 	for _, i := range f.losses[seq] {
