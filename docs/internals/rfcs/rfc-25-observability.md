@@ -1382,7 +1382,6 @@ been removed.
 | [RFC 24 §10](rfc-24-resources.md#10.%20Observability) | `memory_pool_ceiling_bytes{pool}` is a ceiling not named by §2.2's `_limit` rule | `memory_pool_reserved_bytes_limit{pool}` (§2.2) |
 | [RFC 11 §13](rfc-11-ownership.md#13.%20Observability) | `shard_capacity_share` is a fraction without `_ratio` | `shard_capacity_ratio` |
 | [RFC 13 §8](rfc-13-configuration.md#8.%20Observability) | `config_provisioning_applied`: a hash is no gauge value and no fixed info label | `config_provisioning_applied_timestamp_seconds`; the hash goes in the node-status record ([RFC 23 §2.4](rfc-23-control-plane.md#2.4%20What%20a%20node%20reports)) |
-| [RFC 13 §8](rfc-13-configuration.md#8.%20Observability) | `format_supported_range`: one gauge cannot hold a range | `format_supported_min`, `format_supported_max` |
 | [RFC 2 §2.3](rfc-2-carver.md#2.3%20What%20a%20pass%20makes%20observable) | `carver_chunk_size_bytes` buckets at a per-namespace `Target`, which one labelled vector cannot hold | the `size` set (§2.6); the average against `Target` is already `carver_bytes_total` ÷ `carver_chunks_total` |
 | [RFC 26 §7](rfc-26-catalog-backups.md#7.%20Observability) | `backup_folder_*` are "per block folder", with the label unnamed | label `location` |
 | [RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics) | `adapter_requests_in_flight` spells what `vfs_inflight_calls` and `syncer_inflight_bytes` spell otherwise | `adapter_inflight_requests` (one rename instead of two) |
