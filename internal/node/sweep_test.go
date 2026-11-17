@@ -1,8 +1,10 @@
 package node_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"testing"
 	"time"
@@ -12,7 +14,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // The sweep's interval, as the node sets it, and RFC 23's floor for the
@@ -21,6 +25,9 @@ const (
 	sweepInterval  = health.IdleEvery
 	auditRetention = 90 * 24 * time.Hour
 )
+
+// storeBound is how long the node waits on one store call.
+const storeBound = 20 * time.Second
 
 const idempotencyDeleted = "dittofs_api_idempotency_records_deleted_total"
 
@@ -212,5 +219,70 @@ func TestSweepClearsABacklogInOneTurn(t *testing.T) {
 	}
 	if got := series(t, h, idempotencyDeleted, ""); got != fit+1 {
 		t.Errorf("%s after the turn: got %v, want %d", idempotencyDeleted, got, fit+1)
+	}
+}
+
+// While the store hangs, a Sweep call is given up after its bound and the
+// sweep goes on reporting turns, calling the store again only once that call
+// has answered, so the node stays live past the watchdog's stall bound; and
+// Stop returns with the call still hanging.
+func TestSweepBoundedWhileTheStoreHangs(t *testing.T) {
+	h, f := faulted(t)
+	ch := watchSweep(h)
+	started(t, h)
+	awaitSweep(t, ch)
+
+	// Every store write hangs, the sweep's among them, from the turn after
+	// the one awaited.
+	held := sim.NewTestClock(time.Unix(0, 0))
+	setFault(t, f, held, sim.Rule{Op: kvtest.OpUpdate, Key: "*", Count: 1 << 20, Action: sim.FaultAction{Delay: time.Hour}})
+	defer func() { // the hung calls answer once the test ends
+		f.SetFault(nil)
+		held.Advance(time.Hour)
+	}()
+	h.Clock().Advance(sweepInterval)
+	// The turn's call may reach the store after the clock moved, so the
+	// clock moves a second at a time until the call's bound ends the turn.
+	var calls []kvstore.Swept
+	hung := h.Clock().Elapsed()
+	for got := false; !got; {
+		if h.Clock().Elapsed()-hung > 2*storeBound {
+			t.Fatalf("no sweep turn ended within %v of the store hanging, want one ended by its call's bound", 2*storeBound)
+		}
+		h.Clock().Advance(time.Second)
+		select {
+		case calls, got = <-ch:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if len(calls) != 0 {
+		t.Fatalf("Sweep answers in the turn the store hung: got %+v, want none", calls)
+	}
+	pending := held.Pending()
+	for i := range 3 {
+		h.Clock().Advance(sweepInterval)
+		if calls := awaitSweep(t, ch); len(calls) != 0 {
+			t.Errorf("Sweep answers in turn %d while the store hangs: got %+v, want none", i+1, calls)
+		}
+		if n := held.Pending(); n != pending {
+			t.Errorf("store writes hanging after turn %d: got %d, want %d, no Sweep called while one hangs", i+1, n, pending)
+		}
+	}
+	// The other loops report their turns on their own once the clock moved,
+	// so liveness is awaited rather than read once.
+	api, _ := h.Node().Addrs()
+	wait(t, fmt.Sprintf("/health/live answering live %v into the store's hang, past the stall bound", h.Clock().Elapsed()-hung), func() bool {
+		return get(t, api, "/health/live") == answer{http.StatusOK, "live"}
+	})
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- h.Node().Stop(context.Background()) }()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Errorf("Stop while the store hangs: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop while the store hangs: not returned within 10 s")
 	}
 }
