@@ -2479,6 +2479,10 @@ batches. How long it may wait is the call's own:
 // WithHold bounds the service's one wait inside a call: behind a running clone
 // or copy chunk. Zero, or no WithHold at all, answers ErrDelay(DelayClone) at once.
 func WithHold(ctx context.Context, max time.Duration) context.Context
+
+// Hold returns the bound WithHold set on the call: the innermost one, and false
+// when the call carries none, as the service reads it where it waits.
+func Hold(ctx context.Context) (max time.Duration, ok bool)
 ```
 
 A call that waits past its `max`, or its deadline, is answered `ErrDelay` with
