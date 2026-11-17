@@ -128,10 +128,18 @@ func (r *reader) Read(ctx context.Context) (*resources.Buf, error) {
 	}
 	rec.B = rec.B[:total]
 	r.disarm()
-	// Records still unread count as held too: the loop has yet to serve them.
-	r.held.Store(r.off < r.n)
+	// The record is whole and in hand, not yet served: held counts it until
+	// the loop has handed it to the pipeline, so the whole of serve, a
+	// request's decode and admission included, runs under the idle deadline's
+	// rest.
+	r.held.Store(true)
 	return rec, nil
 }
+
+// served reports what the reader holds once the record it handed out is with
+// the pipeline: the records left unread in the buffer, and nothing else, so a
+// reader waiting at the writer's bound holds nothing.
+func (r *reader) served() { r.held.Store(r.off < r.n) }
 
 // header returns the next fragment's header, reading until it is whole.
 func (r *reader) header(ctx context.Context) ([]byte, error) {
@@ -205,9 +213,10 @@ func (r *reader) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	return r.recv.Get(ctx, r.key, n)
 }
 
-// holding reports whether bytes of a record are in hand, partly read, or one
-// read whole and not yet served. The idle deadline rests on it: a connection
-// mid-record is never idle (RFC 20 section 6.4).
+// holding reports whether bytes of a record are in hand: one partly read, one
+// read whole and not yet served, or ones left unread in the buffer. The idle
+// deadline rests on it: a connection mid-record is never idle (RFC 20 section
+// 6.4).
 func (r *reader) holding() bool { return r.held.Load() }
 
 // arm starts the frame deadline, and stops the reader at once if its context
@@ -247,6 +256,8 @@ func (c *Conn) readLoop() {
 			return
 		}
 		c.p.serve(rec)
+		// The record is served: only the buffer's leftovers are held now.
+		c.rd.served()
 	}
 }
 

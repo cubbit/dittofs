@@ -536,7 +536,6 @@ func TestAConnectionsIdleDeadlineRunsFromItsLastReply(t *testing.T) {
 	for _, m := range []testproto.Msg{
 		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
 		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
-		{Op: testproto.OpEcho, Version: 1, ID: 3, Session: 7, Payload: []byte("hi")},
 	} {
 		if err := c.Send(m); err != nil {
 			t.Fatal(err)
@@ -544,6 +543,15 @@ func TestAConnectionsIdleDeadlineRunsFromItsLastReply(t *testing.T) {
 		if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
 			t.Fatalf("over the full protocol: %+v (%v)", rs, err)
 		}
+	}
+	// The clock moves between the session and the Echo, so a deadline armed at
+	// the session and one armed at the Echo's reply are a whole second apart.
+	clk.Advance(time.Second)
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Session: 7, Payload: []byte("hi")}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+		t.Fatalf("the Echo is answered %+v (%v)", rs, err)
 	}
 
 	clk.Advance(idle - time.Millisecond)
@@ -557,6 +565,111 @@ func TestAConnectionsIdleDeadlineRunsFromItsLastReply(t *testing.T) {
 	case <-core.ConnDone(conn):
 	case <-time.After(2 * time.Second):
 		t.Fatal("a connection past its idle deadline stayed open")
+	}
+	// The teardown stopped the connection's other deadline: nothing is armed.
+	if open := clk.pending(); open != 0 {
+		t.Errorf("a torn-down connection leaves %d timers armed", open)
+	}
+}
+
+// An unestablished connection is the handshake deadline's to close, not the
+// idle one's: a protocol whose requests run before its first establishing
+// session, with idle_timeout set under handshake_timeout, is never idled
+// while it is still negotiating.
+func TestAnUnestablishedConnectionRunsToItsHandshakeDeadline(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})}
+	// Negotiate runs before any session, so it runs unestablished: idle_timeout
+	// below handshake_timeout is what makes the two deadlines tell apart. NFS
+	// promotes its Adapter, so the two fields are set on the snapshot itself.
+	snap := settings.DefaultNFS()
+	snap.IdleTimeout = 2 * time.Second
+	snap.HandshakeTimeout = time.Minute
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, snap, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	conn, client := servedConn(t, srv, &l)
+	defer func() { _ = client.Close() }()
+	c := testproto.NewClient(client)
+	if err := c.Send(testproto.Msg{Op: testproto.OpNegotiate, Version: 1, ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+		t.Fatalf("the Negotiate is answered %+v (%v)", rs, err)
+	}
+
+	// Past its idle deadline, unestablished and quiet, the connection stays
+	// open: only the handshake deadline governs it, and that is a minute out.
+	clk.Advance(10 * time.Second)
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("an unestablished connection closed at its idle deadline")
+	default:
+	}
+	// Once it establishes, the idle deadline governs it: it closes there.
+	if err := c.Send(testproto.Msg{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+		t.Fatalf("the Session is answered %+v (%v)", rs, err)
+	}
+	_, idle := deadlines(conn)
+	clk.Advance(idle + time.Second)
+	select {
+	case <-core.ConnDone(conn):
+	case <-time.After(2 * time.Second):
+		t.Fatal("an established connection stayed open past its idle deadline")
+	}
+}
+
+// Zero timeouts disarm their deadlines, as read_timeout's and write_timeout's
+// zero values do: a connection whose settings carry zero stays open past any
+// advance and answers.
+func TestZeroTimeoutsLeaveNoDeadline(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})}
+	snap := settings.DefaultNFS()
+	snap.IdleTimeout = 0
+	snap.HandshakeTimeout = 0
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, snap, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	conn, client := servedConn(t, srv, &l)
+	defer func() { _ = client.Close() }()
+	c := testproto.NewClient(client)
+	for _, m := range []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
+	} {
+		if err := c.Send(m); err != nil {
+			t.Fatal(err)
+		}
+		if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+			t.Fatalf("over the full protocol: %+v (%v)", rs, err)
+		}
+	}
+
+	clk.Advance(24 * time.Hour)
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("a zero-timeout connection closed at a deadline")
+	default:
+	}
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Session: 7, Payload: []byte("hi")}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].ID != 3 {
+		t.Fatalf("past every deadline, a zero-timeout Echo is answered %+v (%v)", rs, err)
 	}
 }
 
