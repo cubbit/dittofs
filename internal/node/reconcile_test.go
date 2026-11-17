@@ -191,23 +191,21 @@ func TestReconcileBindsQuiescesAndResumes(t *testing.T) {
 	}
 }
 
-// Shares spanning more than one page of the store's listing are all bound.
+// Shares spanning more than one page of the store's listing, 256 rows, are
+// all bound. Their binds, not their creation, take most of the test's time.
 func TestReconcileBindsEveryPage(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	started(t, h)
 	configure(t, h, storeA)
-	var shares []entity.Share
-	for b := range 3 {
-		names := make([]string, 100)
-		for i := range names {
-			names[i] = fmt.Sprintf("s%d", 100*b+i)
-		}
-		shares = append(shares, createShares(t, h, storeA, names...)...)
+	names := make([]string, 257)
+	for i := range names {
+		names[i] = fmt.Sprintf("s%d", i)
 	}
+	shares := createShares(t, h, storeA, names...)
 	caughtUp(t, h)
 	for _, sh := range shares {
 		if !inEngine(h, sh.ID) {
-			t.Fatalf("share %s of 300: not bound once reconcile caught up", sh.Name)
+			t.Fatalf("share %s of %d: not bound once reconcile caught up", sh.Name, len(shares))
 		}
 	}
 }
