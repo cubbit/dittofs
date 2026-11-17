@@ -30,8 +30,11 @@ import (
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/tlsconfig"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 	"github.com/google/uuid"
 )
 
@@ -402,6 +405,21 @@ func TestLiveSocket(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("GET %s on the first node's socket after the second's Stop: answered %d, want 200", thing, resp.StatusCode)
+	}
+}
+
+// A store read that fails unavailable answers 503 unavailable with
+// Retry-After, on Badger on disk with every read faulted.
+func TestStoreReadUnavailable(t *testing.T) {
+	disk := newOnDisk(t)
+	s := serve(t, as(entity.RoleViewer, false), disk.use)
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: kvtest.OpView, Key: "*", Action: sim.FaultAction{Err: vfserr.ErrUnavailable}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk.fault.SetFault(sched)
+	if r := s.do(t, http.MethodGet, knobAt(uuid.NewString()), ""); r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable || r.header.Get("Retry-After") != "1" {
+		t.Errorf("GET knob with the store's reads faulted: answered %d %s Retry-After %q, want 503 unavailable with Retry-After 1", r.status, r.body, r.header.Get("Retry-After"))
 	}
 }
 
