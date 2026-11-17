@@ -194,7 +194,14 @@ func (c Call) Verifier() (flavour uint32, body []byte) {
 // COMPOUND begin at its tag. The stage the header codec calls hands them to
 // its rows' Decode without parsing the call again (RFC 20 section 4.7).
 func (c Call) Args() []byte {
-	f, _ := c.fields()
+	f, err := c.fields()
+	if err != nil || !f.verfOK {
+		// A call the parse did not accept, or one it never read that far,
+		// hands out no arguments, as it names no credential: a stage calling
+		// Args before the router refuses such a call gets nothing to hand its
+		// rows (RFC 21 section 11.5).
+		return nil
+	}
 	return c[f.argsAt:]
 }
 
