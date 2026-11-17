@@ -20,9 +20,16 @@ type Swept struct {
 	More                                                      bool
 }
 
-// Sweep deletes, in one batch within the store's key budget, every record
-// whose XP entry is at or before the store time, with its index rows, and
-// every audit record older than auditRetention, with its AUX rows. Expired
+// Sweep deletes the control-plane records whose lifetime has ended:
+// idempotency records, ended operations, sessions, API tokens and sign-in
+// counts, each written with a row in the expiry index (XP) keyed by when it
+// expires, and audit records older than auditRetention. Nothing else deletes
+// them, so a caller runs Sweep periodically.
+//
+// One call is one batch within the store's key budget. It deletes every
+// record whose expiry row is at or before the store time, with its index
+// rows, and every audit record older than auditRetention, with its index
+// rows (AUX). Expired
 // records go first, then audit records; More reports one still due. A
 // session too large for one batch loses as many of its refresh hashes as
 // the batch holds, and is deleted by a later call once the rest fit.

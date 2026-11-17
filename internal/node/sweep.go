@@ -40,6 +40,23 @@ func newSweeper() sweeper {
 	})}
 }
 
+// The sweep is the node's garbage collection of the control-plane records
+// that expire. Several kinds of record are written with a lifetime and are
+// never deleted by the call that wrote them:
+//
+//   - an idempotency record, which answers a retried write with its first
+//     answer, 24 hours after the write;
+//   - an operation, 7 days after it ends;
+//   - a session or an API token, at its expiry;
+//   - a sign-in count, 15 minutes after its last failure for a source and 24
+//     hours after its last attempt for an account and source pair;
+//   - an audit record, once it is older than the audit retention.
+//
+// Each of them is indexed by its expiry when it is written. The store's
+// Sweep reads that index from the oldest row and deletes what is due, and
+// nothing else deletes them: without the sweep the store grows with every
+// write and sign-in, for ever.
+//
 // sweepLoop runs a sweep turn at once and then one every sweepInterval on
 // the node's clock until ctx ends, reporting each to loop.
 func (n *Node) sweepLoop(ctx context.Context, loop *health.Loop) {
