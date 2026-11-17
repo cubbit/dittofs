@@ -71,12 +71,15 @@ func TestFrameLenReadsTheLengthUpToTheCap(t *testing.T) {
 
 func TestAppendFrameReadsBackThroughFrameLen(t *testing.T) {
 	for _, n := range []int{0, 64, 0x123456, wantCap} {
-		hdr := AppendFrame([]byte{0xaa}, n)
+		hdr, err := AppendFrame([]byte{0xaa}, n)
+		if err != nil {
+			t.Fatalf("AppendFrame(0xaa, %d): %v", n, err)
+		}
 		if len(hdr) != 1+FrameHeaderLen || hdr[0] != 0xaa {
 			t.Fatalf("AppendFrame(0xaa, %d) = % x; want 0xaa and 4 bytes after it", n, hdr)
 		}
-		if got, err := FrameLen(hdr[1:]); got != n || err != nil {
-			t.Errorf("FrameLen(AppendFrame(%d)) = %d, %v", n, got, err)
+		if got, ferr := FrameLen(hdr[1:]); got != n || ferr != nil {
+			t.Errorf("FrameLen(AppendFrame(%d)) = %d, %v", n, got, ferr)
 		}
 	}
 }
@@ -263,8 +266,12 @@ func TestAppendReplyGivesTheCapturesResponses(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Errorf("%s: the reply =\n% x\nwant the capture's\n% x", c.name, got, want)
 		}
-		if got, want := AppendFrame(nil, len(resp)-FrameHeaderLen), resp[:FrameHeaderLen]; !bytes.Equal(got, want) {
-			t.Errorf("%s: AppendFrame for the response = % x; want its Direct TCP header % x", c.name, got, want)
+		frame, ferr := AppendFrame(nil, len(resp)-FrameHeaderLen)
+		if ferr != nil {
+			t.Fatalf("%s: the capture's response does not frame: %v", c.name, ferr)
+		}
+		if want := resp[:FrameHeaderLen]; !bytes.Equal(frame, want) {
+			t.Errorf("%s: AppendFrame for the response = % x; want its Direct TCP header % x", c.name, frame, want)
 		}
 	}
 }
@@ -293,8 +300,10 @@ func TestAppendReplyKeepsTheSyncForm(t *testing.T) {
 // RELATED, priority, DFS and REPLAY bits - and no others (MS-SMB2 2.2.1.1's
 // table, 3.3.4.4's echoes): not ASYNC_COMMAND, whose reply form is the hold
 // stage's with the AsyncId it chose, and not the bits no reply carries. The
-// 0xF0000003 request loops every such bit back; the CANCEL's reply rides
-// through with none of them and its 3.2.5.16 rule is why the pin is here.
+// 0xF0000003 request carries its DFS and REPLAY bits back and nothing more,
+// neither RELATED nor a priority bit being set in it; the CANCEL's reply
+// rides through with none of them and its 3.3.5.16 rule is why the pin is
+// here.
 func TestAReplyEchoesOnlyTheBitsItCarries(t *testing.T) {
 	async, err := DecodeHeader(readGolden(t, "async_request"), 0)
 	if err != nil {
@@ -349,13 +358,17 @@ func TestAppendErrorWritesTheNineByteBody(t *testing.T) {
 	}
 }
 
-// A related member's all-ones IDs are replaced with the member before it: the
-// reply the runner builds carries IDs the client can verify, and the sync
-// form takes the tree as well as the session (RFC 20 section 4.7, MS-SMB2
-// 3.2.5.1.3). An async header takes the session alone: its tree offset is
-// the async ID's high half, which a tree written there would corrupt.
-func TestARelatedMemberInheritsTheIDsBeforeIt(t *testing.T) {
+// A related member's all-ones IDs are resolved from the member before it,
+// without the request's bytes being touched: the bytes the client signed are
+// the ones verified, and the resolved IDs go where the reply is built. The
+// sync form takes the tree as well as the session (RFC 20 section 4.7,
+// MS-SMB2 3.2.5.1.3); the async form takes the session alone, its tree
+// offset being the async ID's high half. A member without the sentinels asks
+// for nothing, ok answering false: which member inherits is the caller's
+// gate, its RELATED flag.
+func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
 	chain := readGolden(t, "chain_request")
+	signed := bytes.Clone(chain)
 	first, err := DecodeHeader(chain, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -367,38 +380,53 @@ func TestARelatedMemberInheritsTheIDsBeforeIt(t *testing.T) {
 	if second.SessionID() != ^uint64(0) || second.TreeID() != 0xffffffff {
 		t.Fatalf("the related member carries %x/%x, want the all-ones IDs", second.SessionID(), second.TreeID())
 	}
-	second.Inherit(first)
-	if got, want := second.SessionID(), first.SessionID(); got != want {
-		t.Errorf("the related member's session is %x after Inherit, want the first's %x", got, want)
+	session, tree, ok := second.Inherited(first)
+	if !ok {
+		t.Fatal("the sentinel member asks for no resolution")
 	}
-	if got, want := second.TreeID(), first.TreeID(); got != want {
-		t.Errorf("the related member's tree is %x after Inherit, want the first's %x", got, want)
+	if session != first.SessionID() || tree != first.TreeID() {
+		t.Errorf("the related member resolves to %x/%x, want the first's %x/%x", session, tree, first.SessionID(), first.TreeID())
 	}
+	if !bytes.Equal(chain, signed) {
+		t.Fatalf("resolving a member's IDs wrote into the signed request:\n% x\nwant\n% x", chain, signed)
+	}
+
+	// The reply the runner builds from the unmodified member carries the
+	// all-ones IDs: the resolved ones are written into the reply the stage
+	// signs, never back into the request.
 	reply := AppendReply(nil, second, 0x00000022, 1)
 	r, err := DecodeHeader(reply, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.SessionID() != first.SessionID() || r.TreeID() != first.TreeID() {
-		t.Errorf("the related member's reply carries %x/%x, want the inherited %x/%x", r.SessionID(), r.TreeID(), first.SessionID(), first.TreeID())
+	if r.SessionID() != ^uint64(0) || r.TreeID() != 0xffffffff {
+		t.Errorf("the member's own reply carries %x/%x, want the all-ones the request carried", r.SessionID(), r.TreeID())
 	}
 
-	asyncHdr := readGolden(t, "async_request")
+	asyncHdr := patched(readGolden(t, "async_request"), offSessionID, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)
 	async, err := DecodeHeader(asyncHdr, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if async.Flags()&FlagAsyncCommand == 0 {
-		t.Fatal("the async vector is not of the async form")
+		t.Fatal("the patched async vector is not of the async form")
 	}
-	own := async.AsyncID()
-	third := *async
-	third.Inherit(first)
-	if got, want := third.SessionID(), first.SessionID(); got != want {
-		t.Errorf("an async member's session is %x after Inherit, want the first's %x", got, want)
+	asyncSigned := bytes.Clone(asyncHdr)
+	asyncSession, asyncTree, asyncOK := async.Inherited(first)
+	if !asyncOK {
+		t.Fatal("an async member with the session sentinel asks for no resolution")
 	}
-	if got := third.AsyncID(); got != own {
-		t.Errorf("an async member's async ID is %x after Inherit, want its own %x", got, own)
+	if asyncSession != first.SessionID() || asyncTree != first.TreeID() {
+		t.Errorf("an async member resolves to session %x, want the first's %x", asyncSession, first.SessionID())
+	}
+	if !bytes.Equal(asyncHdr, asyncSigned) {
+		t.Fatalf("resolving an async member's IDs wrote into the signed request:\n% x\nwant\n% x", asyncHdr, asyncSigned)
+	}
+
+	// The member with its own IDs - the first of the chain - asks for no
+	// resolution; the caller's gate is the RELATED flag, not this answer.
+	if _, _, ok := first.Inherited(second); ok {
+		t.Error("a member with its own IDs reports itself as waiting to inherit")
 	}
 }
 
@@ -449,27 +477,63 @@ func TestChainPadsToEightAndPointsAtTheNextReply(t *testing.T) {
 	}
 }
 
-// AppendFrame states no length the reader refuses: a body past the cap panics
-// rather than writes a header the connection would close on.
-func TestAppendFramePastTheCapPanics(t *testing.T) {
+// AppendFrame states no length the reader refuses: a body past the cap, or
+// negative, is refused with the same error FrameLen answers it with, not
+// written - and not a panic either, since a flooded record's answers reach
+// it (reply amplification: see AppendFrame's doc).
+func TestAppendFramePastTheCapIsRefused(t *testing.T) {
 	if MaxRecord >= 1<<24 {
 		t.Fatal("the cap itself would not fit the header's three bytes")
 	}
-	rec := AppendFrame(nil, MaxRecord)
-	if n, err := FrameLen(rec); err != nil || n != MaxRecord {
-		t.Fatalf("the cap's frame reads %d, %v; want %d", n, err, MaxRecord)
+	rec, err := AppendFrame(nil, MaxRecord)
+	if err != nil {
+		t.Fatal(err)
 	}
-	defer func() {
-		if recover() == nil {
-			t.Error("a frame past the cap is written")
+	if n, ferr := FrameLen(rec); ferr != nil || n != MaxRecord {
+		t.Fatalf("the cap's frame reads %d, %v; want %d", n, ferr, MaxRecord)
+	}
+	for _, n := range []int{-1, MaxRecord + 1} {
+		if got, gerr := AppendFrame(nil, n); gerr == nil || !errors.Is(gerr, errFrameTooLong) {
+			t.Errorf("AppendFrame(nil, %d) = %d, %v; want the refusal the reader answers it with", n, got, gerr)
 		}
-	}()
-	AppendFrame(nil, MaxRecord+1)
+	}
+}
+
+// A record of bare 64-byte headers, the flood that answers the most per byte
+// of request, still frames: its replies come to past the cap, and the writer
+// refuses to state them rather than panics.
+func TestAFloodedRecordWritesNoPastCapFrame(t *testing.T) {
+	member := bytes.Clone(readGolden(t, "sync_request"))
+	binary.LittleEndian.PutUint32(member[offNextCommand:], 64)
+	rec := bytes.Repeat(member, MaxRecord/64)
+	binary.LittleEndian.PutUint32(rec[len(rec)-HeaderLen+offNextCommand:], 0) // the last member ends the chain
+	chain := make([]byte, 0, 80)
+	for off := 0; off < len(rec); off += 64 {
+		h, err := DecodeHeader(rec, off)
+		if err != nil {
+			t.Fatalf("the flood's member at %d does not decode: %v", off, err)
+		}
+		at := len(chain)
+		chain = AppendError(AppendReply(chain, h, StatusNotSupported, 1))
+		var cerr error
+		chain, cerr = Chain(chain, at, true)
+		if cerr != nil {
+			t.Fatalf("the flood's chain does not step: %v", cerr)
+		}
+	}
+	if len(chain) <= MaxRecord {
+		t.Fatalf("the flood's answers come to %d bytes, want past the cap %d: the fixture stopped being the flood", len(chain), MaxRecord)
+	}
+	if _, err := AppendFrame(nil, len(chain)); !errors.Is(err, errFrameTooLong) {
+		t.Errorf("AppendFrame of the flood's %d-byte answer = %v; want errFrameTooLong, not a panic", len(chain), err)
+	}
 }
 
 // The accepted path allocates nothing: a header decoded out of the message
-// bytes, the reply appended into the caller's buffer and the frame written
-// around it all hand out views or take the room they were given.
+// bytes, the reply appended into the caller's buffer, its error body and
+// step, and the frame header appended for it - the exercise writes the
+// header after the record only to count the append; on the wire it precedes -
+// hand out views or take the room they were given.
 func TestTheAcceptedPathAllocatesNothing(t *testing.T) {
 	if prof.RaceEnabled {
 		t.Skip("the allocation count says nothing under the detector")
@@ -482,40 +546,76 @@ func TestTheAcceptedPathAllocatesNothing(t *testing.T) {
 		rec := AppendReply(out[:0], h, 0, 1)
 		rec = append(rec, body...)
 		rec, _ = Chain(rec, 0, false)
-		_ = AppendFrame(rec, len(rec))
+		_, _ = AppendFrame(rec, len(rec))
 	}); n != 0 {
 		t.Errorf("decoding and replying allocated %v, want nothing", n)
 	}
 }
 
-// A refusal of a claimed length allocates nothing for it: a buffer allocated
-// before its length is checked would be megabytes, or gigabytes.
-func TestRefusalsOfAClaimedLengthAllocateNoBuffer(t *testing.T) {
-	msg := patched(readGolden(t, "sync_request"), 20, 0xf8, 0xff, 0xff, 0xff) // NextCommand 2^32 - 8
+// Every refusal allocates nothing: a buffer allocated before its length is
+// checked would be megabytes, or gigabytes, and a refusal formatted per call
+// would allocate on every hostile header. All seven are pinned here, each to
+// its own sentinel. The hostile messages are built once, outside the counted
+// call: what is counted is the refusal itself.
+func TestRefusalsAllocateNothing(t *testing.T) {
+	syncReq := readGolden(t, "sync_request")
+	framePastCap := []byte{0x00, 0x80, 0x10, 0x01}
+	// Every fixture is built once, outside the counted call: what is counted
+	// is the refusal itself, not the message it reads.
+	short, badProtoID, badCommand, madStep, badSize := syncReq[:HeaderLen-1],
+		patched(syncReq, 0, 0xfd, 0x53, 0x4d, 0x42),
+		patched(syncReq, 12, 0x13, 0x00),
+		patched(syncReq, 20, 0xf8, 0xff, 0xff, 0xff),
+		patched(syncReq, 4, 0x3f, 0x00)
 	for _, c := range []struct {
-		name   string
-		refuse func() error
+		name string
+		want error
+		refu func() error
 	}{
-		{"a frame of 2^24 - 1 bytes", func() error {
-			_, err := FrameLen([]byte{0x00, 0xff, 0xff, 0xff})
+		{"a frame one byte past the cap", errFrameTooLong, func() error {
+			_, err := FrameLen(framePastCap)
 			return err
 		}},
-		{"a NextCommand of 2^32 - 8", func() error {
-			_, err := DecodeHeader(msg, 0)
+		{"a header shorter than 64 bytes", errShort, func() error {
+			_, err := DecodeHeader(short, 0)
+			return err
+		}},
+		{"a protocol ID other than SMB2's", errProtocolID, func() error {
+			_, err := DecodeHeader(badProtoID, 0)
+			return err
+		}},
+		{"a command code nothing carries", errCommand, func() error {
+			_, err := DecodeHeader(badCommand, 0)
+			return err
+		}},
+		{"a NextCommand of 2^32 - 8", ErrNextCommand, func() error {
+			_, err := DecodeHeader(madStep, 0)
+			return err
+		}},
+		{"a StructureSize other than 64", errStructureSize, func() error {
+			_, err := DecodeHeader(badSize, 0)
+			return err
+		}},
+		{"a chain member outside the buffer", errChain, func() error {
+			_, err := Chain(nil, 0, true)
 			return err
 		}},
 	} {
-		err := c.refuse()
+		err := c.refu()
 		if err == nil {
 			t.Errorf("%s: accepted", c.name)
+			continue
+		}
+		if !errors.Is(err, c.want) {
+			t.Errorf("%s: refused with %v, want it wrapped in %v", c.name, err, c.want)
 		}
 		if prof.RaceEnabled {
-			// Under -race the byte comparison below would fail on bytes the
+			// Under -race the allocation count below reads memory the
 			// detector allocates itself (sync primitives); the unit cell runs
 			// this without the detector.
 			continue
 		}
-		if n := testing.AllocsPerRun(100, func() { _ = c.refuse() }); n != 0 {
+		if n := testing.AllocsPerRun(100, func() { _ = c.refu() }); n != 0 {
 			t.Errorf("%s: refusing it allocated %v, want nothing (a buffer would be megabytes, or gigabytes, before its length was checked)", c.name, n)
 		}
 	}

@@ -41,11 +41,17 @@ const (
 	FlagSigned            = 0x00000008 // the message is signed
 )
 
-// replyFlags is the request's flag bits a reply carries (MS-SMB2 3.3.4.4's
-// echoed bits): RELATED_OPERATIONS, the priority mask, DFS_OPERATION and
-// REPLAY_OPERATION. ASYNC_COMMAND is not one: a reply takes the async form
-// only for a request the server put off, which the stage that does it owns,
-// with the AsyncId it chose.
+// replyFlags is the request's flag bits a reply carries: RELATED_OPERATIONS,
+// the priority mask, DFS_OPERATION and REPLAY_OPERATION. ASYNC_COMMAND is not
+// one: a reply takes the async form only for a request the server put off,
+// which the stage that does it owns, with the AsyncId it chose.
+//
+// decision: MS-SMB2 3.3.4.4, "Sending an Error Response", writes the reply
+// over the request's header without naming which request bits it keeps, and
+// the capture at hand backs RELATED_OPERATIONS and the priority mask alone.
+// DFS_OPERATION and REPLAY_OPERATION are carried on the reading that a reply
+// states nothing the request did not carry. They stay while no capture shows
+// a reply dropping them; withdraw the bit one does.
 const replyFlags = FlagRelatedOperations | 0x00000070 /* PRIORITY_MASK */ | 0x10000000 /* DFS_OPERATION */ | 0x20000000 /* REPLAY_OPERATION */
 
 // The statuses the server's tables name (MS-ERREF 2.3.1).

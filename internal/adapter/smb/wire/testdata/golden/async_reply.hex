@@ -1,10 +1,11 @@
 # The header of the reply to async_request.hex, answered STATUS_NOT_SUPPORTED
 # (MS-ERREF 2.3.1) with no credits, written by hand from MS-SMB2 3.3.4.4: the
-# request's header with Status set, NextCommand 0, SERVER_TO_REDIR set, and,
-# for a request with an async ID, that ID kept, ASYNC_COMMAND set and
-# CreditResponse 0. SIGNED and the signature are cleared: a reply is signed,
-# when it is, after it is encoded. Multi-byte fields are little-endian
-# (MS-SMB2 2.2).
+# request's header with Status set, NextCommand 0, SERVER_TO_REDIR alone in
+# Flags, and, for a request with an async ID, that ID kept at its offset, no
+# ASYNC_COMMAND - a reply in the async form is the hold stage's, with the
+# AsyncId it chose - and CreditResponse 0. SIGNED and the signature are
+# cleared: a reply is signed, when it is, after it is encoded. Multi-byte
+# fields are little-endian (MS-SMB2 2.2).
 fe 53 4d 42                 # [0,4)   ProtocolId 0xFE 'S' 'M' 'B'
 40 00                       # [4,6)   StructureSize 64
 01 00                       # [6,8)   CreditCharge 1, the request's (MS-SMB2 3.3.4.1)

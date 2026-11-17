@@ -2,7 +2,6 @@ package wire
 
 import (
 	"errors"
-	"fmt"
 )
 
 var (
@@ -37,13 +36,19 @@ func FrameLen(hdr []byte) (int, error) {
 	return n, nil
 }
 
-// AppendFrame appends to dst the Direct TCP header of a message of n bytes and
-// returns it. n past MaxRecord or 2^24's three bytes panics: the length the
-// writer states is what the reader refuses, a program bug the same mark on
-// the wire could never be, so it is not written at all.
-func AppendFrame(dst []byte, n int) []byte {
+// AppendFrame appends to dst the Direct TCP header of a message of n bytes
+// and returns it. n past MaxRecord, or negative, is refused with the same
+// error FrameLen answers that length with: the writer states a length the
+// reader would refuse, so it is not written at all. The refusal is not a
+// panic because remote input reaches this without a bug anywhere: a record
+// of bare 64-byte headers, each answered by the 64+9-byte error reply that
+// pads to 80, carries about 131k members whose replies come to about
+// 10.5 MB, past the cap, so the writer of a flooded record meets this.
+// The stage above caps what a record's answers may come to before it; this
+// is the floor under that cap.
+func AppendFrame(dst []byte, n int) ([]byte, error) {
 	if n < 0 || n > MaxRecord {
-		panic(fmt.Sprintf("smb: a frame of %d bytes, past %d", n, MaxRecord))
+		return dst, errFrameTooLong
 	}
-	return append(dst, 0, byte(n>>16), byte(n>>8), byte(n))
+	return append(dst, 0, byte(n>>16), byte(n>>8), byte(n)), nil
 }

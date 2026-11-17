@@ -6,24 +6,44 @@ import (
 	"testing"
 )
 
+// framed is a golden vector with the Direct TCP header the writer states for
+// it in front.
+func framed(f *testing.F, name string) []byte {
+	msg := readGolden(f, name)
+	fr, err := AppendFrame(nil, len(msg))
+	if err != nil {
+		f.Fatalf("the golden %s does not frame: %v", name, err)
+	}
+	return append(fr, msg...)
+}
+
+// framedShort is a frame around a header the message cut short.
+func framedShort(f *testing.F) []byte {
+	short := readGolden(f, "sync_request")[:HeaderLen-1]
+	fr, err := AppendFrame(nil, len(short))
+	if err != nil {
+		f.Fatalf("a cut record does not frame: %v", err)
+	}
+	return append(fr, short...)
+}
+
 // FuzzRecord reads a Direct TCP header and walks the SMB2 headers of the
 // message after it, as a connection's reader and its header stage would. No
 // input may panic either. A length past the cap is never accepted, nor a
 // header or a NextCommand step past the message. The oracle is the fuzz's
-// own reading of the bytes - the frame's big-endian length, the step at the
-// member's own offset, and the answer's fields compared where they lie - so a
-// bug shared with the codec still misses it; and a three-member Chain out of
-// the accepted headers must re-walk to the same members.
+// own reading of the bytes - the frame's big-endian length, the gates an
+// accepted header passed, the step at the member's own offset, and the
+// answer's fields compared where they lie - so a bug shared with the codec
+// still misses it; and the chain the runner would answer - every member's
+// reply appended, padded and pointed - must re-walk to the same members.
 func FuzzRecord(f *testing.F) {
 	for _, name := range []string{"negotiate_request", "negotiate_response", "create_request", "create_response"} {
 		f.Add(readGolden(f, name))
 	}
 	for _, name := range []string{"sync_request", "async_request", "chain_request"} {
-		msg := readGolden(f, name)
-		f.Add(append(AppendFrame(nil, len(msg)), msg...))
+		f.Add(framed(f, name))
 	}
-	short := readGolden(f, "sync_request")[:HeaderLen-1]
-	f.Add(append(AppendFrame(nil, len(short)), short...))
+	f.Add(framedShort(f))
 	f.Add([]byte{0x00, 0x80, 0x10, 0x01})
 	f.Add([]byte{0x01, 0x00, 0x00, 0x40})
 	f.Add([]byte{})
@@ -54,7 +74,9 @@ func FuzzRecord(f *testing.F) {
 			msg = msg[:n]
 		}
 
-		reply := make([]byte, 0, HeaderLen)
+		reply := make([]byte, 0, 80)
+		var chain []byte  // every member's answer, padded and pointed, as the runner builds it
+		var reqOffs []int // the message's member each of those answers stands for
 		for off := 0; ; {
 			h, err := DecodeHeader(msg, off)
 			if h == nil {
@@ -66,15 +88,26 @@ func FuzzRecord(f *testing.F) {
 			if off+HeaderLen > len(msg) || &h[0] != &msg[off] {
 				t.Fatalf("the header at %d is not the message's 64 bytes there, in a message of %d", off, len(msg))
 			}
-			if err != nil {
-				return
-			}
-			// The step is read from the bytes with the fuzz's own arithmetic,
-			// not through the accessor, and its bound is the message's own: a
-			// member ends where its step says or at the message's end.
-			next := int(binary.LittleEndian.Uint32(msg[off+20:]))
-			if next != 0 && (next%8 != 0 || next < HeaderLen || off+next+HeaderLen > len(msg)) {
-				t.Fatalf("DecodeHeader at %d accepted a NextCommand of %d in a message of %d", off, next, len(msg))
+			// The three gates an ACCEPTED header passed - one returned malformed
+			// but answerable is the codec refusing as it should - read off the
+			// bytes with the fuzz's own comparisons, not the codec's: a gate
+			// deleted in DecodeHeader still dies here (SMB2's 0xFE 'S' 'M' 'B',
+			// the command bound, the 64-byte structure size).
+			next := 0
+			if err == nil {
+				if binary.LittleEndian.Uint32(msg[off:]) != 0x424D53FE ||
+					binary.LittleEndian.Uint16(msg[off+12:]) > 0x12 ||
+					binary.LittleEndian.Uint16(msg[off+4:]) != 64 {
+					t.Fatalf("DecodeHeader accepted the header at %d\n% x", off, msg[off:off+HeaderLen])
+				}
+				// The step is read from the bytes with the fuzz's own
+				// arithmetic, not through the accessor, and its bound is the
+				// message's own: a member ends where its step says or at the
+				// message's end.
+				next = int(binary.LittleEndian.Uint32(msg[off+20:]))
+				if next != 0 && (next%8 != 0 || next < HeaderLen || off+next+HeaderLen > len(msg)) {
+					t.Fatalf("DecodeHeader at %d accepted a NextCommand of %d in a message of %d", off, next, len(msg))
+				}
 			}
 
 			reply = AppendReply(reply[:0], h, StatusNotSupported, 1)
@@ -84,30 +117,73 @@ func FuzzRecord(f *testing.F) {
 			// The reply's fields are compared where they lie in the bytes, not
 			// through the codec's accessor: a field read from the wrong offset
 			// misses the same accessor on both sides. The reply echoes the
-			// request's flags (the vector's own rule then), its command,
-			// message ID and session must be the request's own at their
-			// offsets, and a reply sets SERVER_TO_REDIR.
+			// request's command, message ID and session at their offsets, and
+			// carries SERVER_TO_REDIR with exactly the bits a reply echoes
+			// (MS-SMB2 2.2.1.1, 3.3.4.4): the related, priority, DFS and REPLAY
+			// bits and none else - not ASYNC_COMMAND and not SIGNED.
+			wantFlags := uint32(0x1) | binary.LittleEndian.Uint32(msg[off+16:])&0x30000074
 			if !bytes.Equal(reply[12:14], msg[off+12:off+14]) ||
 				!bytes.Equal(reply[24:32], msg[off+24:off+32]) ||
 				!bytes.Equal(reply[40:48], msg[off+40:off+48]) ||
-				binary.LittleEndian.Uint32(reply[16:])&0x1 == 0 { // SERVER_TO_REDIR, MS-SMB2 2.2.1.2
-				t.Fatalf("the reply\n% x\nto the header at %d\n% x\ndoes not answer it", reply, off, h[:])
+				binary.LittleEndian.Uint32(reply[16:]) != wantFlags {
+				t.Fatalf("the reply\n% x\nto the header at %d\n% x\ndoes not answer it: flags are %#x, want %#x",
+					reply, off, h[:], binary.LittleEndian.Uint32(reply[16:]), wantFlags)
 			}
 
-			if next == 0 {
-				// A last member: joined records from Chain must stay whole
-				// members - each step lands on a header inside the padded
-				// record or at its own end. The three-member build walks back
-				// over itself: whichever walk the fuzz supplied, the padding
-				// is a multiple of 8 and never overruns the buffer.
-				joined := append(reply[:0], h[:]...)
-				joined, _ = Chain(joined, 0, false)
-				if got := len(joined) % 8; got != 0 {
-					t.Fatalf("the joined record ends %d bytes past a step, want a multiple of 8", got)
+			// The runner's answer joins every member's reply into one
+			// record: appended, padded to its step and pointed at the next,
+			// the last padded alone. A malformed-but-answerable member ends
+			// the chain, its own reply last.
+			at := len(chain)
+			chain = AppendReply(chain, h, StatusNotSupported, 1)
+			chain = AppendError(chain)
+			reqOffs = append(reqOffs, off)
+			if err != nil || next == 0 {
+				chain, cerr := Chain(chain, at, false)
+				if cerr != nil {
+					t.Fatalf("the answer chain of %d members does not close: %v", len(reqOffs), cerr)
 				}
+				reWalk(t, chain, msg, reqOffs)
 				return
+			}
+			var cerr error
+			chain, cerr = Chain(chain, at, true)
+			if cerr != nil {
+				t.Fatalf("the answer chain of %d members does not step: %v", len(reqOffs), cerr)
 			}
 			off += next
 		}
 	})
+}
+
+// reWalk reads the runner's answer record back with the codec's own reader
+// and checks it against the message its members answered: the same count,
+// every step a multiple of 8 past a whole member, and each reply carrying the
+// command, message ID and session of the member it stands for.
+func reWalk(t *testing.T, chain, msg []byte, reqOffs []int) {
+	t.Helper()
+	for i, at := 0, 0; ; i, at = i+1, at+80 {
+		if i >= len(reqOffs) || at+HeaderLen > len(chain) {
+			t.Fatalf("the answer record re-walks %d members with %d answered", i, len(reqOffs))
+		}
+		if _, err := DecodeHeader(chain, at); err != nil {
+			t.Fatalf("the answer record's member %d does not decode: %v", i, err)
+		}
+		if !bytes.Equal(chain[at+12:at+14], msg[reqOffs[i]+12:reqOffs[i]+14]) ||
+			!bytes.Equal(chain[at+24:at+32], msg[reqOffs[i]+24:reqOffs[i]+32]) ||
+			!bytes.Equal(chain[at+40:at+48], msg[reqOffs[i]+40:reqOffs[i]+48]) {
+			t.Fatalf("the answer record's reply %d\n% x\ndoes not answer the member\n% x",
+				i, chain[at:at+HeaderLen], msg[reqOffs[i]:reqOffs[i]+HeaderLen])
+		}
+		step := int(binary.LittleEndian.Uint32(chain[at+20:]))
+		if step == 0 {
+			if i != len(reqOffs)-1 {
+				t.Fatalf("the answer record ends at member %d with %d still unanswered", i, len(reqOffs)-1-i)
+			}
+			return
+		}
+		if step != 80 {
+			t.Fatalf("the answer record's member %d steps %d, want the 80 of a padded reply", i, step)
+		}
+	}
 }
