@@ -618,8 +618,11 @@ type Evidence struct {
 	SIDs      []SID              // from a verified PAC or a pass-through reply: user SID first; else empty
 	DenyOnly  []SID              // marked deny-only by the signer (§3.4)
 	Expires   time.Time          // the ticket's end time; zero for NTLM
-	digest    [32]byte
+	digest    EvidenceDigest
 }
+
+// EvidenceDigest is a digest of the proof key's evidence part, not key material.
+type EvidenceDigest [32]byte
 
 // Keys is what the adapter's mechanism needs for the AP-REP and for signing
 // and encryption. It is never copied into an Identity. Session is the context
