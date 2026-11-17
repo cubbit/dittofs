@@ -365,7 +365,10 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
     `link` is what the pipeline reads of its connection: `ctx`, the connection's context;
     `remote netip.Addr`, the budgets' key; `set settings.Settings`, the snapshot loaded at
     accept (D22); `out func(msg *resources.Buf, key, before uint64) error`, the writer's
-    enqueue; `close func(err error)`, `Conn.Close`.
+    enqueue; `close func(err error)`, `Conn.Close`; and `idle func()`, which the pipeline
+    calls each time nothing runs, is held, is parked or waits for a status's buffer any more,
+    the moment `wait` returns, for the idle timeout: E4's T4.7a adds it to `link`, an edit to
+    `pipeline.go` it owns (the epic 4 document's D8).
   - `(p *pipeline) serve(rec *resources.Buf)`, called by the reader only, one record at a
     time.
   - `(p *pipeline) drain()`, `(p *pipeline) wait(ctx context.Context) error`, which returns
@@ -393,7 +396,9 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   - **The link.** What the pipeline reads of its connection is handed to `newPipeline`, never
     read from `Conn`: the context every request's context derives from, the remote address as
     a `netip.Addr`, the settings snapshot, `out`, and `Conn.Close`, which the pipeline calls
-    where D6, D18 and D25 close the connection.
+    where D6, D18 and D25 close the connection; E4's T4.11 gives each of those closes, at
+    decode, unwrap, the walk and the wiring, an error its close reason tells apart (RFC 20
+    §10.1), an edit to `pipeline.go` it owns; `idle` (above) is E4's T4.7a's.
   - **`out` never blocks its caller.** It takes `msg`'s reference whatever it returns, `msg`
     already wrapped, and fails only once the connection is closed. `key` is the request's
     `HoldCodec.Key` in a table that holds, else 0; `before` is `Conn.Send`'s, else 0; a message
@@ -890,7 +895,7 @@ pkg/resources/buf.go                  T5.5a: Buf.Recharge; T5.3: BufPool.TryGet,
 pkg/resources/budget.go               T5.3: the unexported try and ceiling they call
 pkg/vfs/hold.go                       T5.5d: WithHold, Hold
 internal/adapter/adaptertest/testproto/   the eleven changes of §1.1, each by its subtask
-test/adapter/known.yaml  T5.1c: the end-to-end entry removed
+test/adapter/known.yaml  the end-to-end entry: removed by E4's T4.2a, not here
 test/suites.yaml         T5.10: ./internal/adapter/core/ added to unit/adapter-allocs
 docs/internals/rfcs/rfc-20-adapters.md   this pull request: §4.1, §4.3, §4.6, §4.7, §5.5,
                                          §6.3, §6.8 (D6, D7, D10, D12, D13, D17, Recharge),
@@ -1821,14 +1826,15 @@ registry. Nothing else is exported.
 - **Deliverables:** in `conn.go`, `Conn.Send`'s body: the message wrapped by the
   connection's `Security` under `h`, then handed to `out` with its `before`. Loopback tests,
   in `conn_test.go`, of the four behaviors only a socket decides (D2) and of `Conn.Close`
-  entered from a handler and from the reader. The end-to-end entry removed from
-  `test/adapter/known.yaml` once CI shows it passing.
+  entered from a handler and from the reader. The end-to-end specification turns green
+  earlier, with E4's T4.2a, which removes its entry from `test/adapter/known.yaml`; this
+  subtask's other loopback tests stand.
 - **Consumers:** E6's `New`, which waits for S3; E4's drain, close and cancellation tests,
   which run on this pipeline; T5.10.
 - **Acceptance criteria:**
-  - `TestConformanceEchoEndToEnd` passes: an `Echo` over `Bare` and over the full protocol
-    is answered, and the server leaks nothing when it stops; its entry is gone from
-    `known.yaml`.
+  - `TestConformanceEchoEndToEnd`, green since E4's T4.2a removed its entry from
+    `known.yaml`, still passes: an `Echo` over `Bare` and over the full protocol is answered,
+    and the server leaks nothing when it stops.
   - On a `Bare` connection with the reply budget full and 65 `Echo` sent, 64 are admitted and
     the connection is not read until one has completed; all 65 are answered once room is
     freed.
@@ -1964,7 +1970,7 @@ T5.2a goes first because `testproto`'s holding table builds on it.
 | 7 | T5.4 | 4.5 | PR 6 | the runner, its walk and its fuzz target, the chain's splits and their count, with D10's cap |
 | 8 | T5.8, T5.5b, T5.5c | 6.75 | PR 4, PR 5, PR 7 | the request's context and the holds built on it |
 | 9 | T5.11 | 3 | PR 8 | parks, on the pending table |
-| 10 | T5.1c | 1.25 | PR 9, E4 | the pipeline on E4's `Conn`: the end-to-end specification green, S3 |
+| 10 | T5.1c | 1.25 | PR 9, E4 | the pipeline on E4's `Conn`: what only a socket decides, S3 |
 | 11 | T5.10 | 1.25 | PR 10 | the gate, measured on the finished path |
 
 A suggestion only: one pull request per subtask works as well.
@@ -2054,7 +2060,7 @@ A suggestion only: one pull request per subtask works as well.
   man-days. The eleven ids stand for the same work. T5.2 is split by order: T5.2a, which
   #4194 delivered in part, builds the table before the pipeline, and T5.2b checks rows in
   it. T5.1 is split by concern: the pipeline at its seam, its observability, and what a
-  socket decides, which with E4 turns the end-to-end specification green (T5.1c). T5.5 is
+  socket decides (T5.1c); the end-to-end specification turns green with E4's T4.2a. T5.5 is
   split in four: it would pass the 5 man-day ceiling whole, T5.5a needs E3 and no
   connection, and T5.5d needs neither. T5.4 is whole: its earlier split by what needs a
   connection went with D2. The total is 30.5 man-days: 26.5, plus about 1 for the amendments
