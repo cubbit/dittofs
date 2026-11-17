@@ -1587,7 +1587,15 @@ more than one mutating call in the in-memory service's record (§7.2).
 **A compound is a sequence of handlers.** NFSv4 `COMPOUND` and SMB compounded
 requests are run by the adapter's compound runner, one handler per operation,
 carrying the compound state of §2.2 between them. The runner stops at the first
-failure as NFSv4 requires, and applies SMB's related-request rule. It holds no
+failure as NFSv4 requires, and applies SMB's related-request rule, under which
+only a failure fails the related members after it. A failure is the protocol's
+to say: an NFSv4 `COMPOUND` stops at the first operation whose status is not
+`NFS4_OK` (RFC 8881 §16.2.3), with no exception; SMB fails a related member
+after one that "fails with an error" (MS-SMB2 3.3.5.2.7.2), and MS-SMB2 3.3.4.4
+counts every status as a failure but the status-and-command pairs it lists,
+`STATUS_BUFFER_OVERFLOW` in a `QUERY_INFO` response and
+`STATUS_MORE_PROCESSING_REQUIRED` in a `SESSION_SETUP` response among them,
+which the protocol's error table marks (§4.7's `ErrorRow.NotFailure`). It holds no
 state between operations beyond that compound state: no lock is held across
 two operations of one compound, and two operations of one compound are two
 service calls, admitted separately
@@ -1633,7 +1641,8 @@ returned open as the compound's current file, answers `QUERY_INFO` from
 `GetAttr` through it, then calls `Close`: three handlers, three service calls,
 each admitted. If `Open` fails, the related `QUERY_INFO` and `CLOSE` are answered
 with the same status, as MS-SMB2 3.3.5.2.7.2 recommends and Windows does, and
-reach no service call.
+reach no service call. A `QUERY_INFO` answered `STATUS_BUFFER_OVERFLOW` is no
+failure, so the related `CLOSE` after it runs and the open is not left behind.
 
 ### 4.4 Identity
 
@@ -2350,13 +2359,20 @@ type Status uint32
 // its Ops or Versions, that holds, sends no reply or answers the fault or
 // success: a header's decode error has no operation, and a client's garbage
 // must reach neither the fault status (§10.1) nor success. A zero Status is
-// success in every protocol here.
+// success in every protocol here, and a row marked NotFailure answers a
+// status its protocol counts as no failure for the operations it names.
+// Every other status is a failure, which ends a compound and fails the
+// related members after it (§4.3).
 type ErrorTable struct{ /* unexported */ }
 type ErrorRow struct {
 	Err      error    // matched with errors.Is: a sentinel matches its whole class, a typed value its own kind only (RFC 17 §4.3)
 	Ops      []uint32 // nil: every operation
 	Versions *Range   // nil: every version
 	NoReply  bool     // no final reply (ErrDraining, and ErrMoved where no move signal fits, §3.1); a table that Holds sends an interim granting the request's credits; Status unused
+	// NotFailure marks Status, for the operations the row names, as one its
+	// protocol counts as no failure: MS-SMB2 3.3.4.4's pairs for SMB, none for
+	// NFS. The related members after it run (§4.3, MS-SMB2 3.3.5.2.7.2).
+	NotFailure bool
 	// Hold, only in a table that Holds (NewOpTable refuses it elsewhere): a
 	// request whose latest attempt maps here is held and re-driven until the
 	// deadline Hold returns, counted from the hold's start, and is then
@@ -2435,7 +2451,9 @@ the `Request`; for an SMB chain it also repeats `Decode`, `Unwrap`, `Admit` and
 `Lookup` per member, since each is signed over its own bytes and charged
 credits on its own. It hands `Unwrap` and `Route` the member before a related
 one, so the IDs it inherits are resolved before its signature is checked and
-its handles carry over. A compound row's reply is one buffer: the runner
+its handles carry over. A member's failure, as §4.3 defines it, ends a compound
+there and fails the related members of a chain after it; a status its row marks
+`NotFailure` does neither. A compound row's reply is one buffer: the runner
 writes the compound's `Invocation.EncodeHead` first, then each member's result as
 `Members.EncodeResult` followed by that member's `Encode`, and last writes the
 head again over its own bytes with the compound's status and the count of

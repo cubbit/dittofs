@@ -2656,6 +2656,12 @@ Appendix A, note 244), and an error response carrying the command's error data,
 as `STATUS_STOPPED_ON_SYMLINK`'s does ([§12.4](#12.4%20Reparse%20points)). The
 named-pipe `READ` case never arises here: a pipe `READ` that does not fit is
 answered a short read with `STATUS_SUCCESS` ([§3.3](#3.3%20Sizes%20and%20credits)).
+The error table marks MS-SMB2 3.3.4.4's pairs above, and `STATUS_BUFFER_OVERFLOW`
+in an `FSCTL_GET_REPARSE_POINT` response, `NotFailure`, so a related member after
+one runs, as MS-SMB2 3.3.5.2.7.2 fails a related member only after a failure; an
+error response that carries error data, as `STATUS_STOPPED_ON_SYMLINK`'s, stays a
+failure
+([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
 
 **Malformed headers.** A message shorter than the 64-byte SMB2 header, a header
 whose command code no request carries (MS-SMB2 2.2.1.2), and a
