@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -221,6 +222,10 @@ func TestStaleSocket(t *testing.T) {
 func TestCallBound(t *testing.T) {
 	hold := api.NewHold(nil)
 	s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) { d.Applied = hold.Applied })
+	// Registered after serve, so it runs before Stop waits for the held
+	// writes, even when an assertion ends the test early.
+	let := sync.OnceFunc(func() { close(hold.Release) })
+	t.Cleanup(let)
 	held := make(chan reply, 64)
 	for range 64 {
 		go func() {
@@ -253,7 +258,7 @@ func TestCallBound(t *testing.T) {
 			t.Errorf("%s at the bound: got %v, want %v", name, got, want)
 		}
 	}
-	close(hold.Release)
+	let()
 	for range 64 {
 		if r := <-held; r.status != http.StatusOK {
 			t.Errorf("a held write once let go: answered %d %s, want 200", r.status, r.body)
