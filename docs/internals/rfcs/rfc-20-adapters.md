@@ -1961,8 +1961,9 @@ type HeaderCodec interface {
 	// Decode reads the header at off in the record: 0, then each member's Next.
 	// A header that does not decode comes back with its error when enough
 	// decoded to address a reply, which Stages.Errors maps; with a nil Header
-	// nothing can be answered, and the connection closes. Either error is
-	// wrapped in ErrDecode. In a record Unwrap has already proved whole (an
+	// nothing can be answered, and the connection closes. Either error is the
+	// codec's own, never ErrDecode: the pipeline wraps it (ErrDecode). In a
+	// record Unwrap has already proved whole (an
 	// encrypted SMB message, §5.5; not a signed chain, whose members are
 	// proved one by one), a header that does not decode but can address a
 	// reply comes back with no error: the codec leaves its refusal to Unwrap,
@@ -2010,7 +2011,9 @@ type Security interface {
 	// inner header of an encrypted SMB message), which carries §5.5's verdict:
 	// the key its answer is signed under, or none, and whether it may be
 	// sealed. It is answered, wrapped under that header, and the connection
-	// kept. A nil Header with its error says close: nothing is answered, and
+	// kept. Unwrap names its own refusals, ErrDecode included, and core passes
+	// them unchanged (ErrDecode). A nil Header with its error says close:
+	// nothing is answered, and
 	// the pipeline closes the connection through Conn.Close with that error (a
 	// message that fails decryption, or an inner header too short to be one,
 	// misaligned, naming a command code no request carries (MS-SMB2 2.2.1.2),
@@ -2109,7 +2112,7 @@ type Op struct {
 	Cacheable bool
 	Role      Role  // what the operation always does to state (§3.1, §4.4); per request: Invocation.Role
 	Expired   bool  // runs on an expired credential: re-authentication, logoff (§4.4; RFC 18 §3.8)
-	Decode    func(body []byte, v Version) (inv Invocation, n int, err error) // n: the bytes of body it consumed
+	Decode    func(body []byte, v Version) (inv Invocation, n int, err error) // n: the bytes of body it consumed; err is the codec's own, which the pipeline wraps (ErrDecode)
 	Members   *OpTable // non-nil on a compound row (NFSv4's COMPOUND): its members' table, which the runner decodes from after n (below)
 	// MaxMembers is a compound row's cap (§4.3): the runner refuses an
 	// Invocation.Count past it with ErrTooLong before it decodes any member.
@@ -2273,7 +2276,7 @@ func (h *Handlers) OpTable() *core.OpTable {
 elided — each `err` is answered as §4.1's table says:
 
 ```go
-h, err := stages.Header.Decode(rec, off)  // off: 0, then each chain member's h.Next(); err wraps ErrDecode
+h, err := stages.Header.Decode(rec, off)  // off: 0, then each chain member's h.Next(); err is the codec's own, which the pipeline wraps in ErrDecode
 h, err = stages.Security.Unwrap(h, rec, prevH) // prevH: the member before a related one
 if key, ok := stages.Hold.Cancels(h); ok { endHold(key); return } // only once verified; no reply
 release, err := stages.Flow.Admit(ctx, h); defer release()
@@ -2281,7 +2284,7 @@ if cached, err := stages.Replay.Lookup(ctx, h); cached != nil { conn.write(wrap(
 tbl, r, err := stages.Router.Route(h, prev) // prev: the member before a related one; tbl comes with err once chosen
 op := tbl.Ops[h.Op()]               // absent: not supported
 err = check(op, h, r)               // Versions, Needs (§4.2)
-inv, _, err := op.Decode(stages.Header.Args(rec, h), h.Version()) // err wraps ErrDecode; the bytes consumed matter to the compound runner only (below)
+inv, _, err := op.Decode(stages.Header.Args(rec, h), h.Version()) // err is the codec's own, which the pipeline wraps in ErrDecode; the bytes consumed matter to the compound runner only (below)
 err = reserveReply(ctx, inv.Bound()+stages.Header.ReplyLen(h)) // RFC 24 §3.3
 err = inv.Resolve(r)
 role := op.Role
@@ -2615,7 +2618,15 @@ var (
 	ErrExpired        = errors.New("core: credential expired")            // §4.4
 	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
-	ErrDecode         = errors.New("core: cannot decode")                 // a header, an operation's or a member's arguments, a step of the record's walk (§4.1)
+	// ErrDecode refuses a header, an operation's or a member's arguments, or a
+	// step of the record's walk that does not decode (§4.1). The pipeline
+	// wraps every error a header's or a row's Decode returns, once, as
+	// fmt.Errorf("%w: %v", ErrDecode, err): the cause's text survives, the
+	// cause itself is not matched. A codec returns its own error and never
+	// ErrDecode. Unwrap's refusals are the stage's to name, since they answer
+	// differently (access denied, ErrDecode for a malformed inner header, or
+	// close); core passes them unchanged.
+	ErrDecode         = errors.New("core: cannot decode")
 	ErrCancelled      = errors.New("core: cancelled by its client")       // a held or parked request its client cancelled (§6.5); wraps nothing
 	// ErrMoved and ErrDraining are what a request §3.1 does not serve gets
 	// while the adapter drains: ErrMoved where the service names a gateway
@@ -3469,6 +3480,9 @@ Three, each per protocol:
 | **codec micro** — `BenchmarkDecode*`, `BenchmarkEncode*` per message | ns and allocations per message | per change, in a non-race cell of its own: allocation gates skip under `-race` ([RFC 29 §4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs)) | `READ`, `WRITE`, `GETATTR`, SMB `READ`/`WRITE`/`QUERY_INFO` decode and encode at **0 allocations**, asserted with `testing.AllocsPerRun` |
 | **pipeline micro** — the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, with no storage underneath | nightly, as above | allocations per request asserted ≤ a checked-in number that may only fall |
 | **end to end** — the composed node with its real stores | small operations (`GETATTR`, `LOOKUP`, SMB `QUERY_INFO`) per second on one connection and on the node; 1 MiB sequential read and write on one and four connections; p99 of a 4 KiB write at half the request budget | nightly, dedicated host | tracked; three nights below the 7-day median adds a note to the develop-status issue (RFC 29 §4.10) |
+
+The gates cover the served path only: a request refused at decode allocates
+one error, the pipeline's wrap of its codec's error in `ErrDecode` (§4.7).
 
 How the load is made:
 
