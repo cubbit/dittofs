@@ -128,7 +128,7 @@ func createShare(_ context.Context, rq request[apiv1.NewShare], _ struct{}, tx e
 // ahead of the checks below; a refusal after it rolls the put back. A patch
 // naming another namespace is refused, since only a re-home moves a share's
 // content, and one naming another case sensitivity, bound at the share's
-// creation.
+// creation; a null case sensitivity is the create's default, sensitive.
 func patchShare(_ context.Context, rq request[shareDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Share, [16]byte, error) {
 	sh, _, err := tx.Share(entity.ShareID(rq.ID))
 	if err != nil {
@@ -141,7 +141,7 @@ func patchShare(_ context.Context, rq request[shareDoc], _ struct{}, tx entity.C
 	if id, err := entity.ParseShareID(rq.Body.Spec.Namespace); err != nil || idString(id) != namespaceOf(sh) {
 		return apiv1.Share{}, rq.ID, &fieldError{field: "spec.namespace", detail: "a share's namespace changes only by :rehome"}
 	}
-	if rq.Body.Spec.CaseSensitivity != caseOf(sh.Fold) {
+	if f, ok := foldOf(rq.Body.Spec.CaseSensitivity); !ok || f != sh.Fold {
 		return apiv1.Share{}, rq.ID, &fieldError{field: "spec.case_sensitivity", detail: "bound when the share is created"}
 	}
 	return shareOf(sh), rq.ID, nil

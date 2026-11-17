@@ -339,7 +339,8 @@ func TestShareDelete(t *testing.T) {
 
 // A PATCH renames and re-paths a share, raising ShareList, leaving its
 // namespace and answering the share at its new generation; one naming
-// another namespace is refused and changes nothing.
+// another namespace is refused and changes nothing; a null case sensitivity
+// on a sensitive share resets it to sensitive, which it already is.
 func TestSharePatch(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	id, loc := s.createShare(t, "builds", s.namespace(t))
@@ -368,6 +369,13 @@ func TestSharePatch(t *testing.T) {
 	}
 	if l := s.shareList(t); l <= list {
 		t.Errorf("ShareList after the rename: %d, want above %d", l, list)
+	}
+	r = s.do(t, http.MethodPatch, loc, `{"spec":{"name":"ci2","case_sensitivity":null}}`, "If-Match", r.header.Get("ETag"))
+	if r.status != http.StatusOK {
+		t.Fatalf("PATCH case_sensitivity null on a sensitive share: answered %d %s, want 200", r.status, r.body)
+	}
+	if got := decodeShare(t, "PATCH case_sensitivity null", r.body); got.Spec.CaseSensitivity != "sensitive" {
+		t.Errorf("PATCH case_sensitivity null: case_sensitivity %q, want sensitive", got.Spec.CaseSensitivity)
 	}
 }
 
