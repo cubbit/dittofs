@@ -41,7 +41,7 @@ func createShare(t *testing.T, h *nodetest.Harness, name string, store [16]byte)
 
 // createShares creates a share of each name, each in a namespace of its own
 // on store, all in one write, and returns them as read back.
-func createShares(t *testing.T, h *nodetest.Harness, store [16]byte, names ...string) []entity.Share {
+func createShares(t testing.TB, h *nodetest.Harness, store [16]byte, names ...string) []entity.Share {
 	t.Helper()
 	shares := make([]entity.Share, len(names))
 	err := h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
@@ -70,7 +70,7 @@ func createShares(t *testing.T, h *nodetest.Harness, store [16]byte, names ...st
 }
 
 // configure gives store a setting, which makes it a configured remote store.
-func configure(t *testing.T, h *nodetest.Harness, store [16]byte) {
+func configure(t testing.TB, h *nodetest.Harness, store [16]byte) {
 	t.Helper()
 	s := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeRemote, ID: store}, Key: "endpoint", Value: []byte("https://store.invalid")}
 	if _, err := h.Store().ControlPlane().PutSetting(t.Context(), s, 0); err != nil {
@@ -90,7 +90,7 @@ func inEngine(h *nodetest.Harness, id entity.ShareID) bool {
 }
 
 // counters reads the counters as another node would.
-func counters(t *testing.T, h *nodetest.Harness) kvstore.Counters {
+func counters(t testing.TB, h *nodetest.Harness) kvstore.Counters {
 	t.Helper()
 	c, err := h.Store().Nodes().Counters(t.Context())
 	if err != nil {
@@ -130,7 +130,7 @@ func turn(h *nodetest.Harness) {
 	}
 }
 
-func started(t *testing.T, h *nodetest.Harness) {
+func started(t testing.TB, h *nodetest.Harness) {
 	t.Helper()
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
