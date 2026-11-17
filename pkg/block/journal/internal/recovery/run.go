@@ -129,6 +129,34 @@ type State struct {
 	Assembled Assembled
 }
 
+// Reporting is the open's own figures about its recovery: the segments read
+// by their catalog and by scan, the segments the attach pass rejected, the
+// tails the cut-and-seal phase cut and sealed, and the scans that
+// resynchronised past a bad range. The journal's Stats serves them as the
+// open found them; the figures the running journal raises past its open are
+// the core's, not these.
+type Reporting struct {
+	CatalogSegments  int
+	ScannedSegments  int
+	RejectedSegments int
+	TornTails        int
+	ScanResyncs      int
+}
+
+// Reporting collects the phases' counting into the figures the opened
+// journal serves. Every segment the rebuild read counts once, by whichever
+// source built its scan — a verified footer named by a successor the catalog
+// route, everything else the walk.
+func (st State) Reporting() Reporting {
+	return Reporting{
+		CatalogSegments:  st.Rebuilt.ByCatalog,
+		ScannedSegments:  len(st.Rebuilt.Scans) - st.Rebuilt.ByCatalog,
+		RejectedSegments: st.Attached.Rejected,
+		TornTails:        st.Tails.TornTails,
+		ScanResyncs:      st.Rebuilt.ScanResyncs,
+	}
+}
+
 // phase is one step of the open's recovery: the span it runs under, and
 // the work it does over the reader the run built, filling the state it
 // rebuilt into st. A phase is one arm of the list below; a phase not yet

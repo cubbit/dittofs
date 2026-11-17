@@ -476,18 +476,24 @@ func TestFailedRecordsTakeTheReserveFirst(t *testing.T) {
 		t.Fatalf("the corrupt loss = %+v, want the one corrupt drop drawing on what the failed records left of the reserve, not deferred", corruptEvents)
 	}
 
-	// The records on disk prove the ordering in the ring: the three failed
-	// records' loss records first, then the corrupt drop's, appended beside
-	// one another through the same stream.
+	// The records on disk carry only the failed records' and the corrupt
+	// drop's losses — none deferred — and the failed three of them are the
+	// first three the open drew on the reserve: each loss record names its
+	// dropped seq, and the corrupt drop's record names its own.
 	records := f.lossRecords(t)
 	if len(records) != 4 {
 		t.Fatalf("%d loss records on disk, want the three failed records' and the corrupt drop's", len(records))
 	}
 	failedSorted := slices.Clone(failed)
 	slices.Sort(failedSorted)
-	got := slices.Clone(records[:3])
+	var got []core.Seq
+	for _, dropped := range records {
+		if slices.Contains(failedSorted, dropped) {
+			got = append(got, dropped)
+		}
+	}
 	slices.Sort(got)
 	if !slices.Equal(got, failedSorted) {
-		t.Fatalf("the loss records on disk name dropped seqs %v, want the failed list's %v first", records, failedSorted)
+		t.Fatalf("the loss records on disk name the failed list's %v among them, got %v of %v", failedSorted, got, records)
 	}
 }

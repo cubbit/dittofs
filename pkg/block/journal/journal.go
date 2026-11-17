@@ -4,8 +4,10 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/recovery"
 )
 
 // Journal is one journal on one directory: the bytes of every share placed on
@@ -50,11 +52,35 @@ type Journal struct {
 	// per Share costs nothing. Upgrade to a field on the core's share if the
 	// public layer ever needs its handle on a hot path.
 	handles map[*datapath.Share]*Handle
+
+	// opened is what the open this journal came from found before its core
+	// served anything: the recovery's own figures, served back by Stats as
+	// the open counted them — the segments it read by catalog and by scan
+	// and how long the run took, the segments the attach pass rejected, the
+	// tails it cut and sealed, the scans that resynchronised. The figures
+	// the running journal raises past its open are the core's, never these;
+	// a journal no open built — the test-built one — holds none.
+	opened openedFigures
+}
+
+// openedFigures is the recovery's own counting of the run a journal opened
+// through, the figures Stats reports beyond the core's.
+type openedFigures struct {
+	reporting recovery.Reporting
+	took      time.Duration
 }
 
 // newJournal returns the Journal that serves c.
 func newJournal(c *datapath.Core) *Journal {
 	return &Journal{core: c, handles: make(map[*datapath.Share]*Handle), closeDone: make(chan struct{})}
+}
+
+// newRecoveredJournal is newJournal over the figures a run of the recovery
+// collected before its core served anything.
+func newRecoveredJournal(c *datapath.Core, opened openedFigures) *Journal {
+	j := newJournal(c)
+	j.opened = opened
+	return j
 }
 
 // Restamp rewrites the installation ID in the format file of the journal in

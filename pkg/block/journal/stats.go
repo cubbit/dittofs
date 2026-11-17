@@ -13,11 +13,13 @@ import (
 // returns the zero Stats, since it has no error to return.
 //
 // decision: fields whose source belongs to a later step (the offload, release
-// and repack counters, PinnedSegments, Recovery, RejectedSegments, TornTails,
-// ScanResyncs) read zero. A zero reads as nothing offered, nothing recovered;
-// no caller may rely on those until the sources land. UnreclaimedBytes is
-// served, from the set's record bytes and overhead and the index's held and
-// retained bytes, clamped at zero and off by at most one operation in flight.
+// and repack counters, PinnedSegments) read zero. A zero reads as nothing
+// offered; no caller may rely on those until the sources land. The open's own
+// figures — Recovery, RejectedSegments, TornTails, ScanResyncs — the open
+// serves as it counted them, for the running journal raises none past its
+// open. UnreclaimedBytes is served, from the set's record bytes and overhead
+// and the index's held and retained bytes, clamped at zero and off by at most
+// one operation in flight.
 func (j *Journal) Stats() Stats {
 	// closed is read first: a Close racing this call leaves the core's
 	// statistics readable, or this returns the zero Stats, and never both
@@ -25,7 +27,16 @@ func (j *Journal) Stats() Stats {
 	if j.closed.Load() || j.core == nil {
 		return Stats{}
 	}
-	return statsFrom(j.core.Stats())
+	s := statsFrom(j.core.Stats())
+	// The open's own figures ride beside the core's: the recovery counted
+	// them before any layer served, and the running journal raises nothing
+	// more into them.
+	r := j.opened.reporting
+	s.Recovery = RecoveryStats{CatalogSegments: r.CatalogSegments, ScannedSegments: r.ScannedSegments, Duration: j.opened.took}
+	s.RejectedSegments += r.RejectedSegments
+	s.Counters.TornTails += uint64(r.TornTails)
+	s.Counters.ScanResyncs += uint64(r.ScanResyncs)
+	return s
 }
 
 // statsFrom converts the core's statistics to the public shape. Maps and

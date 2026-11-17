@@ -2171,16 +2171,19 @@ func TestRFC1A_SinceYieldsOver(t *testing.T) {
 	v3 := write(t, h, id, 0, distinct(1, 4<<10))
 	v5 := write(t, h, id, 0, distinct(2, 8<<10))
 
+	// The checks read through the fixture's current handle, for a crash
+	// replaces the journal and every handle of it.
 	check := func(when string, settled bool) {
 		t.Helper()
+		hh := f.Share(0)
 		want0 := map[journal.Version][]journal.Extent{v5: {ext(0, 4<<10)}}
 		if settled {
 			want0 = map[journal.Version][]journal.Extent{v5: nil}
 		}
-		if got := overOf(t, h, id, journal.Version{}); !maps.EqualFunc(got, want0, slices.Equal) {
+		if got := overOf(t, hh, id, journal.Version{}); !maps.EqualFunc(got, want0, slices.Equal) {
 			t.Fatalf("%s: Since(F, 0) = %v, want %v", when, got, want0)
 		}
-		if got, want := overOf(t, h, id, v3), map[journal.Version][]journal.Extent{v5: nil}; !maps.EqualFunc(got, want, slices.Equal) {
+		if got, want := overOf(t, hh, id, v3), map[journal.Version][]journal.Extent{v5: nil}; !maps.EqualFunc(got, want, slices.Equal) {
 			t.Fatalf("%s: Since(F, v3) = %v, want %v", when, got, want)
 		}
 	}
@@ -2189,6 +2192,6 @@ func TestRFC1A_SinceYieldsOver(t *testing.T) {
 	f.Crash()
 	check("after a crash before any Settle", false)
 
-	h.Settle(id, v5)
+	f.Share(0).Settle(id, v5)
 	check("after Settle(F, v5)", true)
 }

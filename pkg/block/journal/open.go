@@ -309,6 +309,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		if err != nil {
 			return nil, err
 		}
+		started := cfg.Clock.Elapsed()
 		st, err := recovery.Run(ctx, recovery.Deps{
 			FS:              cfg.Storage,
 			Clock:           cfg.Clock,
@@ -323,6 +324,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		if err != nil {
 			return nil, err
 		}
+		found := openedFigures{reporting: st.Reporting(), took: cfg.Clock.Elapsed() - started}
 		// decision: an open that ends a segment — a torn slot, a torn header
 		// or a failed marker window the classing gave an ending — is refused
 		// with ErrNotImplemented naming the lowest segment it ends, not yet
@@ -396,7 +398,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		if cfg.SparesReady != nil {
 			cfg.SparesReady(c)
 		}
-		return newJournal(c), nil
+		return newRecoveredJournal(c, found), nil
 	}
 
 	// The counter is raised before the core is built: a refused floor must
