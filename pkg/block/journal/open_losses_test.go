@@ -407,6 +407,92 @@ func TestPastReserveDeferralServes(t *testing.T) {
 	}
 }
 
+// TestAlreadyNamedCorruptDropDrawsNoReserve holds the reserve arithmetic of
+// the open's dedup: a corrupt drop a loss record on disk already names draws
+// none of the open reserve — the found record's placement takes its piece —
+// so the unnamed drop behind it takes the one record the reserve holds
+// instead of deferring behind a budget the named drop burned.
+func TestAlreadyNamedCorruptDropDrawsNoReserve(t *testing.T) {
+	f := seededJournal(t)
+	file := fileOf(6)
+	older := plantRecord(1, ownerTag, file, 10, 10, 0, 32)
+	second := plantRecord(1, ownerTag, file, 12, 12, 32, 32)
+	// The loss record the disk already holds for the newer write, over its
+	// own extent: unsynced, corrupt-reasoned, naming the dropped record 11.
+	named := raw.Record{
+		Kind: 10, FileID: file.Bytes(), Seq: 21, Version: raw.Version{Counter: 21},
+		Tag: uint32(ownerTag), Offset: 0, Length: 32,
+		Loss: &raw.LossBody{Dropped: 11, Flags: 1 << 8},
+	}
+	// The newer write itself: its header rotted whole, the corrupt drop the
+	// planted record above already names.
+	newer := plantRecord(1, ownerTag, file, 11, 11, 0, 32)
+	offs := plantSealedAt(t, f.seam, f.id, 946, older, newer, second, named)
+	f.rotHeader(t, format.SegmentName(946), int64(offs[1]))
+	f.rotHeader(t, format.SegmentName(946), int64(offs[2]))
+
+	// Two headroom records leave an open reserve of one. The named drop must
+	// leave it whole for the unnamed one, whose loss appends rather than
+	// deferring behind a budget the named drop burned.
+	j := f.publicOpen(t, func(s *Settings) { s.HeadroomRecords = 2 })
+	events := lossEvents(t, j, core.LossCorrupt)
+	if len(events) != 2 {
+		t.Fatalf("the open's corrupt losses = %+v, want the found record placed back and the one unnamed drop's appended", events)
+	}
+	for _, ev := range events {
+		if ev.Deferred {
+			t.Fatalf("a corrupt loss deferred (%+v): the named drop left the reserve whole, so the unnamed one appended", ev)
+		}
+		switch ev.Extent.Off {
+		case 0:
+			// The found record placed back, carrying the planted record's
+			// own version: the named drop's answer, no new record.
+			if ev.Version.Counter != 21 {
+				t.Fatalf("the loss placed over the named drop = %+v, want the found record's own version 21", ev)
+			}
+		case 32:
+			// The unnamed drop's own loss, appended on the reserve.
+		default:
+			t.Fatalf("a corrupt loss over %+v, want one over each of the two named extents", ev.Extent)
+		}
+	}
+	if n := len(f.lossRecords(t)); n != 2 {
+		t.Fatalf("%d loss records on disk, want the planted one and the unnamed drop's: a drop the disk names appends no second record and defers against no segment", n)
+	}
+}
+
+// TestANamedOnlyOpenWaitsOnNoSpareRefill holds the dedup-aware gate: an open
+// whose every append answers to a record the disk already names waits on no
+// refill of the spare pool, so it serves where the device refuses to make
+// one more spare — a wait for a settle would fail the open there.
+func TestANamedOnlyOpenWaitsOnNoSpareRefill(t *testing.T) {
+	f := seededJournal(t)
+	file := fileOf(6)
+	older := plantRecord(1, ownerTag, file, 10, 10, 0, 32)
+	named := raw.Record{
+		Kind: 10, FileID: file.Bytes(), Seq: 21, Version: raw.Version{Counter: 21},
+		Tag: uint32(ownerTag), Offset: 0, Length: 32,
+		Loss: &raw.LossBody{Dropped: 11, Flags: 1 << 8},
+	}
+	newer := plantRecord(1, ownerTag, file, 11, 11, 0, 32)
+	offs := plantSealedAt(t, f.seam, f.id, 946, older, newer, named)
+	f.rotHeader(t, format.SegmentName(946), int64(offs[1]))
+
+	// The device makes no more spares: every spare-target the pool falls
+	// short of cannot be made, so any wait for the pool to settle fails.
+	if err := f.seam.Schedule(kit.Failing(kit.OpCreate, "*", 0, syscall.EIO)); err != nil {
+		t.Fatalf("schedule the spare-less device: %v", err)
+	}
+	j := f.publicOpen(t, func(s *Settings) { s.HeadroomRecords = 2 })
+	events := lossEvents(t, j, core.LossCorrupt)
+	if len(events) != 1 || events[0].Version.Counter != 21 || events[0].Deferred {
+		t.Fatalf("the named-only open's corrupt losses = %+v, want the found record placed back alone, carrying its own version and deferring nothing", events)
+	}
+	if n := len(f.lossRecords(t)); n != 1 {
+		t.Fatalf("%d loss records on disk, want the planted one alone: the drop it names appends no second record, so nothing waited on the spare pool", n)
+	}
+}
+
 // TestFailedRecordsTakeTheReserveFirst holds the ordering of the open's loss
 // records: the records a read-only journal failed earlier in this process —
 // found on disk whole, in a segment whose sync failed — take the open
@@ -462,14 +548,12 @@ func TestFailedRecordsTakeTheReserveFirst(t *testing.T) {
 	f.rotHeader(t, format.SegmentName(corruptSeg), int64(offs[1]))
 
 	j2 := f.publicOpen(t, func(s *Settings) { s.HeadroomRecords = 10 })
+	// The failure was already published when the read-only window failed each
+	// record, so the loss records the open now appends publish nothing: the
+	// ring holds none of the failed-window reason (RFC 1 section 5.4).
 	failedEvents := lossEvents(t, j2, core.LossFailedWindow)
-	if len(failedEvents) != 3 {
-		t.Fatalf("the open published %d failed-window losses, want one per failed record: %+v", len(failedEvents), failedEvents)
-	}
-	for _, ev := range failedEvents {
-		if ev.Deferred {
-			t.Fatalf("a failed record's loss %+v is deferred, want none: the failed leg never defers", ev)
-		}
+	if len(failedEvents) != 0 {
+		t.Fatalf("the open published %+v, want no failed-window event: the records' failure was reported when the window failed", failedEvents)
 	}
 	corruptEvents := lossEvents(t, j2, core.LossCorrupt)
 	if len(corruptEvents) != 1 || corruptEvents[0].Deferred {

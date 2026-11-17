@@ -268,14 +268,30 @@ func (st State) EndedSegments() []core.SegmentID {
 	return out
 }
 
-// OpenAppends reports whether the open this State came from owes the built
-// journal any loss record it must append: a record a read-only journal
-// earlier in this process failed, or a corrupt drop the classing named. The
-// caller that finds true waits for the spare pool before running OpenLosses,
-// for the appends need a spare to land in; the caller that finds false — the
-// open of every clean directory — blocks on nothing.
-func OpenAppends(st State) bool {
-	return len(st.Kinds.ReadOnlyDrops) > 0 || len(st.Tails.Corrupt) > 0
+// corruptLoss spells the Loss the pass sends for the corrupt drop c: its
+// columns from the record's own header where one verified and from the
+// catalogue entry the confined drop carries where none did — a loss record
+// built on zero columns would name no file and no extent, the shape the next
+// open refuses at the record it reads back — with the synced flag the
+// classing proved and the found-at-open mark of its leg. Deferred and its
+// segment the caller names; both are the pass's own to decide on the
+// reserve's answer.
+func corruptLoss(c corruptRecord) durability.Loss {
+	l := durability.Loss{
+		Share:   c.Drop.Header.Tag,
+		File:    c.Drop.Header.File,
+		Extent:  c.Drop.Header.Extent,
+		Version: c.Drop.Header.Version,
+		Seq:     c.Drop.Header.Seq,
+		Reason:  core.LossCorrupt,
+		Synced:  c.Drop.Synced,
+		AtOpen:  true,
+	}
+	if c.Drop.Entry.RecordOffset != 0 {
+		h := headerFromEntry(c.Segment, c.Drop.Entry)
+		l.Share, l.File, l.Extent, l.Version, l.Seq = h.Tag, h.File, h.Extent, h.Version, h.Seq
+	}
+	return l
 }
 
 // OpenLosses appends the open's own loss records through d, the layer the
@@ -286,11 +302,13 @@ func OpenAppends(st State) bool {
 // The records it owes, in the order it appends them: first every record a
 // read-only journal failed earlier in this process and the rebuild found on
 // disk — its eviction from the index the rebuild already made — each handed
-// to Lose marked AtOpen and counted against the open reserve, never
-// deferred, with the sync the record never got; past the reserve the rest
-// append nothing, for the copy that empties each segment still holding one
-// leaves the failed records out, and no event, no marker and no record names
-// them. Then every corrupt drop no loss record on disk names — each one
+// to Lose marked AtOpen, reported already — the read-only journal that
+// failed the record published it when its window failed, so the open's own
+// record appends and the ring holds no new event (RFC 1 section 5.4) — and
+// counted against the open reserve, never deferred, with the sync the record
+// never got; past the reserve the rest append nothing, for the copy that
+// empties each segment still holding one leaves the failed records out, and
+// no marker and no record names them. Then every corrupt drop no loss record on disk names — each one
 // whose (seq, extent) no earlier Lose or Place of this journal took —
 // handed to Lose marked AtOpen with the synced flag the classing proved,
 // while the open reserve lasts; past the reserve each loss is deferred
@@ -316,6 +334,12 @@ func OpenAppends(st State) bool {
 // never appended again — the corrupt leg below hands the drop it names to
 // no second Lose.
 //
+// The settle wait, when the caller passes one, precedes the first record any
+// leg appends and nothing else: a pass whose every loss is named, or whose
+// leftovers defer past the reserve, asks for no refill, so a clean reopen —
+// and a name-only one over a device that cannot make a spare — block on
+// nothing.
+//
 // Lose appends and syncs its record before it returns, so the open's caller
 // holds loss records durable the moment each leg lands; a Lose that fails
 // answers its error here, refusing the open — the piece it took stays
@@ -323,9 +347,26 @@ func OpenAppends(st State) bool {
 // directory's failed list for the next open to answer. The generational
 // raise, the marker and the counters are Lose's own, whichever call they
 // came from: extension of the one rule, not a second one.
-func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroomRecords int) error {
+func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroomRecords int, waitForSpares func() error) error {
 	for _, lo := range st.Kinds.Losses {
 		d.Place(lo.Ev, lo.Dropped)
+	}
+
+	// appends wait for the pool's settle before the first record: asked here
+	// rather than ahead of the pass, for the placement above is what names
+	// the pieces the found records hold — the first open of a process knows
+	// a drop is named only once it has placed the record naming it. The wait
+	// runs once, before the first record that appends — never for a
+	// name-only pass over an open the disk answers whole, and never for a
+	// deferred loss, whose record the copy writes. Nil waits on nothing, the
+	// caller that has settled its pool already.
+	settled := false
+	settle := func() error {
+		if settled || waitForSpares == nil {
+			return nil
+		}
+		settled = true
+		return waitForSpares()
 	}
 
 	// The open reserve: the records this pass may append before the journal
@@ -342,39 +383,36 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 		if reserve <= 0 {
 			break // past the reserve nothing appends: the emptying takes the rest
 		}
-		reserve--
 		l := durability.Loss{
-			Share:   rd.Ev.Share,
-			File:    rd.Ev.File,
-			Extent:  rd.Ev.Extent,
-			Version: rd.Ev.Version,
-			Seq:     rd.Dropped,
-			Reason:  core.LossFailedWindow,
-			AtOpen:  true,
+			Share:    rd.Ev.Share,
+			File:     rd.Ev.File,
+			Extent:   rd.Ev.Extent,
+			Version:  rd.Ev.Version,
+			Seq:      rd.Dropped,
+			Reason:   core.LossFailedWindow,
+			AtOpen:   true,
+			Reported: true,
+		}
+		// A record the disk already names draws none of the reserve: Lose
+		// would answer the zero event and append nothing.
+		if d.Named(l.Seq, l.Extent) {
+			continue
+		}
+		reserve--
+		if err := settle(); err != nil {
+			return err
 		}
 		if _, err := d.Lose(ctx, l); err != nil {
 			return err
 		}
 	}
 	for _, c := range st.Tails.Corrupt {
-		l := durability.Loss{
-			Share:   c.Drop.Header.Tag,
-			File:    c.Drop.Header.File,
-			Extent:  c.Drop.Header.Extent,
-			Version: c.Drop.Header.Version,
-			Seq:     c.Drop.Header.Seq,
-			Reason:  core.LossCorrupt,
-			Synced:  c.Drop.Synced,
-			AtOpen:  true,
-		}
-		// decision: the drop's columns come from the header the catalogue
-		// claims where the record's own did not verify: a confined
-		// catalogue record carries the entry's word alone, and a loss
-		// record built on zero columns would name no file and no extent —
-		// the shape the next open refuses at the record it read back.
-		if c.Drop.Entry.RecordOffset != 0 {
-			h := headerFromEntry(c.Segment, c.Drop.Entry)
-			l.Share, l.File, l.Extent, l.Version, l.Seq = h.Tag, h.File, h.Extent, h.Version, h.Seq
+		l := corruptLoss(c)
+		// A drop the disk already names appends no second record and defers
+		// against no segment; it draws none of the reserve either, for the
+		// record Lose would answer the zero event and append nothing.
+		if d.Named(l.Seq, l.Extent) {
+			continue
 		}
 		if reserve <= 0 {
 			// Past the reserve the loss defers: no record now, the piece
@@ -383,6 +421,9 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 			l.Deferred, l.Seg = true, c.Segment
 		} else {
 			reserve--
+			if err := settle(); err != nil {
+				return err
+			}
 		}
 		if _, err := d.Lose(ctx, l); err != nil {
 			return err

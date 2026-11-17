@@ -46,6 +46,14 @@ type Loss struct {
 	// Lose leaves none.
 	Marked bool
 
+	// Reported says the failure this loss names was already published to the
+	// ring by the caller's own report — a record a read-only journal failed
+	// reported it when its window failed, so the open that appends the
+	// record the failed append owed publishes no new event for it. Lose
+	// appends the record and keeps the causality registration its placement
+	// files, but the ring holds nothing and the zero event answers.
+	Reported bool
+
 	// Deferred appends no record: the copy that retires the dropped
 	// record's segment writes it.
 	Deferred bool
@@ -208,17 +216,27 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	case l.Reason == core.LossSuperseded:
 		d.superseded++
 	}
-	ev := d.pushRingLocked(core.LossEvent{
-		Share:     l.Share,
-		File:      l.File,
-		Extent:    l.Extent,
-		Version:   l.Version,
-		Reason:    l.Reason,
-		Offloaded: l.Offloaded,
-		Synced:    l.Synced,
-		AtOpen:    l.AtOpen,
-		Deferred:  l.Deferred,
-	})
+	ev := core.LossEvent{}
+	if l.Reported {
+		// The failure was already published when the caller first told it:
+		// the open's own leg for a record a read-only journal failed, whose
+		// window reported it then and whose record this call now appends.
+		// The counters and the raise above are the one rule's still, and
+		// the causality registration the append filed answers a retirement
+		// of the failed segment's own; no event exists to answer with.
+	} else {
+		ev = d.pushRingLocked(core.LossEvent{
+			Share:     l.Share,
+			File:      l.File,
+			Extent:    l.Extent,
+			Version:   l.Version,
+			Reason:    l.Reason,
+			Offloaded: l.Offloaded,
+			Synced:    l.Synced,
+			AtOpen:    l.AtOpen,
+			Deferred:  l.Deferred,
+		})
+	}
 	d.lmu.Unlock()
 
 	// decision: a drop whose record could not be appended is never undone.
@@ -341,6 +359,15 @@ func (d *Durability) RaiseWindow() uint64 { return d.dir.raise() }
 // appended, in the directory's life in this process. A later Durability on
 // the directory sees them too.
 func (d *Durability) Failed() []core.Seq { return d.dir.failedSeqs() }
+
+// Named reports whether a Lose or a Place already took the piece of the
+// dropped record seq over ext: a loss record that landed, one that deferred,
+// or one an earlier open found on disk. The open's loss pass asks it before
+// its own takes, so it draws no open reserve and waits on no spare pool for
+// a record the disk already names.
+func (d *Durability) Named(seq core.Seq, ext core.Extent) bool {
+	return d.dir.named(piece{seq, ext})
+}
 
 // DeferredAgainst returns the losses whose record the copy that retires seg
 // owes, the entries Lose deferred against it, in the order they deferred.

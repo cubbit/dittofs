@@ -378,20 +378,17 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		}
 		// The open's own loss records: appended and synced before the open
 		// returns, so the loss records the crash left half-told are durable
-		// the moment the journal is served. Appends need a spare to land in,
-		// so the pass waits for the pool to settle first — only when
-		// something is owed, keeping every clean reopen off the pool's
-		// refill entirely. A failure here closes the core the open built,
-		// leaving the directory to the next open: every record the pass
-		// landed is durable, and every failure the answer costs is on the
-		// directory's failed list.
-		if recovery.OpenAppends(st) {
-			if err := c.WaitSpares(ctx); err != nil {
-				_ = c.Close()
-				return nil, err
-			}
-		}
-		if err := recovery.OpenLosses(ctx, st, c.Durability(), s.HeadroomRecords); err != nil {
+		// the moment the journal is served. An appended record needs a
+		// spare to land in, so the pass waits for the pool's settle before
+		// the first record it appends — never for a pass the disk answers
+		// whole with found records, or one whose leftovers defer — keeping
+		// every clean reopen off the pool's refill entirely. A failure here
+		// closes the core the open built, leaving the directory to the next
+		// open: every record the pass landed is durable, and every failure
+		// the answer costs is on the directory's failed list.
+		if err := recovery.OpenLosses(ctx, st, c.Durability(), s.HeadroomRecords, func() error {
+			return c.WaitSpares(ctx)
+		}); err != nil {
 			_ = c.Close()
 			return nil, err
 		}

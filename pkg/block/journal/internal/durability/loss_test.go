@@ -618,6 +618,44 @@ func TestLoseAFailedWriteKeepsTheDrop(t *testing.T) {
 	assertDropStands(t, e, ev, l)
 }
 
+// TestLoseReportedAppendsTheRecordAndPublishesNothing pins the open's own
+// leg for a record a read-only journal failed: its failure was published
+// when the window failed, so the record the open now appends lands — the
+// causality registration and the piece's take with it — while the ring
+// holds no new event and the caller gets the zero event back.
+func TestLoseReportedAppendsTheRecordAndPublishesNothing(t *testing.T) {
+	e := newEnv(t)
+
+	// The shape the open's failed-record leg sends: the reason a failed
+	// window carries, which never raises the generation.
+	l := loss(5)
+	l.Reason = core.LossFailedWindow
+	l.Reported = true
+	ev, err := e.d.Lose(context.Background(), l)
+	if err != nil {
+		t.Fatalf("the reported Lose: %v", err)
+	}
+	if ev != (core.LossEvent{}) {
+		t.Fatalf("the reported Lose answered %+v, want the zero event: no new event exists", ev)
+	}
+	if got := e.d.Stats().Losses; len(got) != 0 {
+		t.Fatalf("the ring holds %+v, want nothing: the failure was published when the window failed", got)
+	}
+	lh, _ := e.lossRecords()
+	if len(lh) != 1 {
+		t.Fatalf("%d loss records on disk, want the appended one", len(lh))
+	}
+	if got := e.d.Failed(); len(got) != 0 {
+		t.Errorf("Failed() = %v, want empty: the record appended", got)
+	}
+	if !e.d.Named(l.Seq, l.Extent) {
+		t.Errorf("the appended record's piece is not named, want the take the append made")
+	}
+	if got := e.d.Generation(); got != 0 {
+		t.Errorf("the generation = %d, want unchanged: a failed window never raises it", got)
+	}
+}
+
 // TestLoseDeferredAppendsNothingAndOwesNoFailedSeq catches a deferred loss
 // reported as one whose record failed: the retiring copy owes the record.
 func TestLoseDeferredAppendsNothingAndOwesNoFailedSeq(t *testing.T) {

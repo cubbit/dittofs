@@ -139,6 +139,17 @@ func (s *dirState) takePiece(dropped core.Seq, ext core.Extent) bool {
 	return s.take(piece{dropped, ext})
 }
 
+// named reports whether a Lose or a Place of this journal identity already
+// took the piece k: a loss whose record landed or was deferred, or a loss
+// record found on disk. The open's pass consults it apart from its own take,
+// to know which losses no record is owed for.
+func (s *dirState) named(k piece) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.pieces[k]
+	return ok
+}
+
 // release hands back a piece a take claimed: the loss record it names never
 // landed, and the next open owes that record — the failed list the same
 // failure appended holds the claim it retries under. Pieces of losses whose
