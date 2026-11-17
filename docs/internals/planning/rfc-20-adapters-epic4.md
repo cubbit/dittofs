@@ -29,7 +29,8 @@ specification. **E3**, the bodies of `pkg/resources`, merged (#4177, #4178). **E
 `Gauge`), for the subtasks that name them; **T5.4** for T4.5b. **The RFC 20 amendment, #4478**,
 merged, for T4.3. **RFC 17's plan**, for `vfs.Shares.MoveTarget` (T4.5b). **The RFC 20
 amendment #4533**, merged, which settled §9's G1 to G12. **The RFC 20 follow-ups, #4583**, whose
-§6.4 sentence on the accept deadline's own wake D3 and R10 rest on, for T4.2a and T4.7b.
+§6.4 sentence on the accept deadline's own wake D3 and R10 rest on, for T4.2a and T4.7b, and
+whose §4.7 close order and §6.4 check after each deadline write D2 and R15 rest on, for T4.10.
 **Blocks:** E5's T5.1c, with which S3 is reached, and T5.10; E6's T6.3b and T6.4b, and through
 them the RFC 22 plan's SMB scaffold point; E7, which starts, reconfigures and stops adapters,
 reads their health and connections and drives the sidecar runner.
@@ -79,7 +80,7 @@ tellable (T4.11); `internal/sidecar`; the end-to-end entry's `message` and then 
 `test/adapter/known.yaml`. The edits §9 proposes to the program's implementation plan, the RFCs
 and other epic documents are made by other pull requests, but for the ones this pull request
 makes: the plan's deferral ledger's TLS and `ConnInfo.Session` rows and its T4.6 line, and the
-epic 5 and epic 2 documents' lines §9 names.
+epic 5 and epic 2 documents' lines §9 names, but epic 5's close order, which #4449 makes.
 
 ### 1.2 Out of scope
 
@@ -182,7 +183,7 @@ cited by number and title, and how it applies here or why it does not.
 | R7 | Each connection is charged its fixed cost, 64 KiB as RFC 24 proposes, its read buffer included, to the connection-state budget at accept; one that cannot be charged is closed at once, before any byte is read | MUST | §3.2; RFC 24 §4.4 | T4.2a |
 | R8 | A connection past the node's `connection_limit`, or from an address already holding a quarter of it, is closed at accept, before any byte is read, never left in the listen backlog; such an address is named in a log line at warning at most once a minute | MUST | §3.2, §6.4; RFC 24 §4.4, §10 | T4.2b |
 | R9 | One address opening connections in a loop is held at a quarter of the limit, and another address still connects | test row | RFC 24 §9 R10 | T4.2b |
-| R60 | One count, `Budgets.Conns`, spans every adapter of the node: each accept takes from it for the remote address and the connection's teardown gives back, so NFS's and SMB's connections share the limit and each address's quarter; `SetLimit` applies a changed limit to connections accepted afterwards, and those open stay | MUST | §3.6; RFC 24 §2.5, §4.4 | T4.2b |
+| R60 | One count, `Budgets.Conns`, spans every adapter of the node: each accept takes from it for the remote address and gives back at once when the connection-state charge is refused, else at the connection's teardown, so NFS's and SMB's connections share the limit and each address's quarter; `SetLimit` applies a changed limit to connections accepted afterwards, and those open stay | MUST | §3.6; RFC 24 §2.5, §4.4 | T4.2b |
 | R10 | Every `Accept` error is retried after a backoff from 10 ms doubling to 1 s, but the listener's own close (`net.ErrClosed`), which ends its loop, and the accept deadline's own wake, which reports idle (R11); `adapter_listener_lost` holds while `Accept` keeps failing, its last failure within 2 s and the run's first 60 s back, and clears at the next accepted connection or 2 s after the last failure | MUST | §6.4 (the deadline's wake as #4583 amends it), §3.7; RFC 25 §3.4 | T4.2a, T4.7b |
 | R11 | Each accept loop reports a turn through `Deps.Watch`, or reports idle through an accept deadline that wakes it at least every 30 s, a wake that is no `Accept` failure (R10); a nil `Watch` watches nothing; a connection's reader is not watched | MUST | §3.4 (`Deps.Watch`), §3.7; RFC 25 §3.5 | T4.7b |
 
@@ -221,7 +222,7 @@ cited by number and title, and how it applies here or why it does not.
 | R30 | The writer sends whole messages, never interleaves two and transforms none; it frames each with `Framer.Frame` and writes the header and the message together; a failed write closes the connection | MUST | §6.2; §4.7 (`Framer.Frame`, as amended) | T4.4 |
 | R31 | A message handed with `before` goes out ahead of the reply of that key still queued; every other message goes out as it completes | MUST | §6.2, §3.3; the epic 5 document's D1 | T4.4 |
 | R32 | The writer's queue is bounded at 64 messages for every protocol, counting every message `out` takes; `out` never blocks its caller, also past the bound, takes the message's reference whatever it returns and fails only once the connection is closed; at the bound the reader stops reading until the queue falls below it | MUST | §6.1, §6.2; RFC 24 §5.1; the epic 5 document's D1 | T4.4, T4.10 |
-| R33 | On each wake the writer drains every queued message into one gathered write | invariant | §6.6 (coalesced sends), §6.9 | T4.4 |
+| R33 | Each gathered write takes the first queued message and those behind it while their bodies stay within the protocol's record cap | invariant | §6.6 (coalesced sends, its item 4), §6.9 | T4.4 |
 | R34 | A message not written within `write_timeout` closes the connection | MUST | §6.4 | T4.4 |
 | R35 | A buffer holding a reply is never reused before the writer has sent it: the writer holds its reference from queueing until the bytes are on the socket, and releases it once sent or discarded | invariant | §5.3, §6.8 | T4.4 |
 
@@ -275,7 +276,7 @@ cited by number and title, and how it applies here or why it does not.
 | R53 | A close's `reason` is from a closed set that holds `pool`, `limit` and `per_address` for a connection closed at accept and `reply_wait` for one whose status found no reply buffer within 30 s | MUST | §10.1; RFC 24 §10 | T4.11, T4.2b |
 | R54 | `Conn.Close`'s error is logged and counted; a misbehaving client is logged once per connection, not once per request | MUST | §4.7 (`Conn.Close`), §10.3 | T4.11 |
 | R55 | No metric carries a client, principal, share or path label | MUST NOT | §10.1; RFC 25 §2.4 | T4.11 |
-| R59 | `NewServer` calls each listener's `Protocol.NewConn` once with a nil `Conn`, keeps its `Stages.Protocol` as the label of a connection closed before its stages are built, and refuses a listener whose stages accept would refuse, so a wiring fault fails at configured | MUST | §4.7 (`Protocol.NewConn`, `NewServer`), §10.1 | T4.11 |
+| R59 | `NewServer` calls each listener's `Protocol.NewConn` once with a nil `Conn`, keeps its `Stages.Protocol` as the label of a connection closed before its stages are built, and refuses a listener whose nil-`Conn` stages accept would refuse, so a wiring fault those stages show fails at configured. `NewConn` returns stages of the same shape for a nil `Conn` and a real one, the protocol's contract; a real connection whose stages accept still refuses is closed under `wiring` and counted (R14, D2) | MUST | §4.7 (`Protocol.NewConn`, `NewServer`), §10.1 | T4.11 |
 
 **Sidecars**
 
@@ -353,9 +354,10 @@ allocator in `Deps`", the compiler, since `Deps` has no such field.
   fragment instead (checked: "bit value 1 implies the fragment is the last fragment"); the
   inversion is `testproto`'s alone. `decision:` at `testproto`'s framer.
 - **D5, the writer's queue is a slice and a wake.** `out` inserts under the connection's mutex
-  (ahead of its key's reply for a `before`) and wakes the writer; the writer takes every queued
-  message per wake into one `net.Buffers`, `Frame`'s header before each body; a channel closed
-  when the queue falls below its bound releases a paused reader. The bound is 64 messages,
+  (ahead of its key's reply for a `before`) and wakes the writer; the writer takes the queued
+  messages per wake into `net.Buffers` writes, each within the record cap (R33), `Frame`'s
+  header before each body; a channel closed when the queue falls below its bound releases a
+  paused reader. The bound is 64 messages,
   RFC 20 §6.3's cap, which for `testproto`'s credit target is the flow-control bound too, and
   for every protocol as #4533 settled G4. `ponytail:` at the bound, naming RFC 24 §5.1's
   upgrade, the connection's flow-control bound. Prior art: E5's recorder in `out_test.go`, held to the same suite.
@@ -396,7 +398,8 @@ internal/adapter/core/
   accept.go             T4.2a: the accept loop, the charge, the backoff, a lost listener;
                         T4.7b: the accept deadline and Deps.Watch; T4.2b: the connection limit
   conn.go               T4.10: Conn's fields, Settings, Close, the teardown; T4.7a: Established,
-                        Keep, the handshake and idle timers (Send's body: E5's T5.1c)
+                        Keep, the handshake and idle timers (Send's body: E5's T5.1c); T4.11:
+                        Established's move of adapter_connections
   reader.go             T4.3: the record cut, fragments, the frame deadline; T4.10: the loop
   writer.go             T4.4: the writer
   reconfigure.go        T4.6: Reconfigure
@@ -522,6 +525,7 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   fits copied out of the read buffer (D7), a larger one its part read copied and the rest read
   with `io.ReadFull`, fragments as R27 states, and the frame deadline of R28 through the
   socket's read deadline. Consumed by T4.10's reader loop.
+- **Landed:** whole, in #4541, merged.
 - **Acceptance criteria:**
   - Records of 0, 40, 4,000, 5,000 and 1 MiB bytes, written by a client one by one, and a
     burst of 100 small ones in one write, come out whole and in order, the receive budget
@@ -567,9 +571,11 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 - **Deliverables:** `writer.go`: `writer`, built over a `net.Conn`, the protocol's `Framer`,
   `write_timeout` from the connection's snapshot and `Conn.Close`; its `out` with D1's signature
   (the epic 5 document's), D5's queue of 64 messages, its goroutine framing and writing each
-  wake's messages in one `net.Buffers` under a write deadline, releasing each message once sent,
-  closing on a failed or late write and releasing what is queued; its stop, which the teardown
-  calls last. Consumed by T4.10, which hands `out` to `newPipeline` and reads the bound.
+  wake's messages in `net.Buffers` writes within the record cap (R33), each under a write
+  deadline, releasing each message once sent, closing on a failed or late write and releasing
+  what is queued; its stop, which the teardown calls last. Consumed by T4.10, which hands `out` to `newPipeline` and reads the bound.
+- **Landed:** whole, in #4543, merged, which also wrote RFC 20 §6.6 item 4: a gathered write
+  stops at the protocol's record cap (R33).
 - **Acceptance criteria:**
   - The writer passes the suite of `out` (`testOut`).
   - With the peer holding the first write, nine more messages queued go out in one gathered
@@ -589,8 +595,9 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 **Subtask T4.10 estimate: 3.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.1, T4.3, T4.4, T5.1a.
-- **Waits for:** nothing: #4533 settled G3 in RFC 20 §3.2 and §4.7, the context `OnClose` runs
-  under.
+- **Waits for:** #4583, for RFC 20 §4.7's close order, the context cancelled before the
+  reader's read is stopped (D2), and §6.4's context check after each deadline write, which the
+  held reader tests. #4533 settled G3 in §3.2 and §4.7, the context `OnClose` runs under.
 - **Covers:** R12, R13, R14, R15, R16, R17, R18, R19, R20 (the connection's goroutines), R21,
   R22, R29 (the fuzz), R32 (the reader's pause).
 - **Deliverables:** in `server.go`, the receive and reply pools of each `Server` and
@@ -731,7 +738,7 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 - **Track:** B. **Depends on:** T4.7a.
 - **Waits for:** nothing: #4533 settled G3 in RFC 20 §3.1 and §3.4, the drain deadline and how
   long `Stop` waits for `OnClose`.
-- **Covers:** R5 (with connections), R38, R39, R40.
+- **Covers:** R5 (with connections), R38, R39, R40, R58.
 - **Deliverables:** in `server.go`, `Stop`: draining, the accept loops ended and the listeners
   closed; `drain` on every connection's pipeline, and on one being built, before its first
   record; waiting until nothing runs on any connection, through each `link.idle` (D8), or the
@@ -756,7 +763,7 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   deadlines and the slow `OnClose`, pipe tests in a `synctest` bubble on the server's real
   clock, so `Stop`'s context deadline and `drain_timeout` both run on the bubble's time (D3). The answered
   `Echo` (catches a drain that closes connections at once). The deadline (catches a drain with
-  no deadline, under which `Stop` never returns, and an abandoned request answered, R39). The
+  no deadline, under which `Stop` never returns, and an abandoned request answered, R39, R58). The
   dial (catches a listener left accepting, R38). The two connections (catch `drain` told to one
   pipeline only). The concurrent `Stop` (catches a second call that returns before the
   teardowns, R5, R40). The two deadlines (catch a drain deadline read from one of them only).
@@ -925,9 +932,12 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   most once a minute per reason and `per_address` per address (T4.2b), the minute on the
   server's clock (RFC 20 §10.3, D3). In `server.go`, `NewServer` calls each listener's `Protocol.NewConn(nil)` once, keeps its `Stages.Protocol`
   as the label a connection closed at accept is counted under, and refuses a listener whose
-  stages `withDefaults` refuses (R59, RFC 20 §4.7 as #4533 amended it). Every close past accept
-  is counted, and the gauge lowered, in `teardown` alone (D2), a stage refusal's under
-  `wiring`. This brings back
+  nil-`Conn` stages `withDefaults` refuses (R59, RFC 20 §4.7 as #4533 amended it); a protocol
+  whose real stages differ in shape from those breaks R59's contract, and its connections close
+  under `wiring` at accept. In `conn.go`, `Conn.Established` moves `adapter_connections` from
+  `handshake` to `established`, once (RFC 20 §10.1). Every close past accept is counted, and
+  the gauge lowered from the connection's state, in `teardown` alone (D2), a stage refusal's
+  under `wiring`. This brings back
   develop's `dittofs_client_connections_active{protocol}`. Consumed by E7's alert rules and
   dashboards.
 - **Acceptance criteria:** for each reason RFC 20 §10.1 lists, a loopback test causing that close finds
@@ -937,8 +947,10 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   `client`. Two closes at accept for `pool` within a minute log one line, and a third after the
   test advances the clock past the minute logs a second, carrying the count held back (RFC 25
   §5.2). T4.10's stages-without-`Errors` close ends with `adapter_connections` back at its
-  level and `adapter_connection_closes_total{reason="wiring"}` up by one. A protocol declared
-  in the test whose stages lack `Errors` is refused by `NewServer`, naming the listener, with nothing bound; a connection
+  level and `adapter_connection_closes_total{reason="wiring"}` up by one. A full-protocol
+  connection that sends `Session` reads `adapter_connections{state="established"}` at 1 and
+  `{state="handshake"}` at 0. A protocol declared in the test whose nil-`Conn` stages lack
+  `Errors` is refused by `NewServer`, naming the listener, with nothing bound; a connection
   closed at accept, the connection-state budget short, counts under its listener's label.
 - **Tests:** loopback tests in `conn_test.go`, one per reason (catch a close counted under
   another reason or not at all, and a gauge not decremented, R52, R53); the byte counts (catch a
@@ -948,8 +960,10 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   vanished peer under `read_timeout`). The closes at accept (catch a line per close, which a
   client in a reconnect loop turns into a line per attempt, and a held-back count dropped, RFC
   20 §10.3). The stage refusal at accept (catches a close counted outside `teardown`, which
-  leaves the gauge raised and `wiring` unmoved, D2). The refused stages,
-  in `server_test.go` (catch `NewConn(nil)` never called, so a wiring fault reaches accept, R59); the close at
+  leaves the gauge raised and `wiring` unmoved, D2). The connection that sends `Session`
+  (catches an `Established` that leaves the gauge at `handshake`, R52). The refused stages,
+  in `server_test.go` (catch `NewConn(nil)` never called, so a wiring fault its stages show
+  reaches accept, R59); the close at
   accept (catches its label read from somewhere other than its listener's stages, or left
   empty, R59).
 - **Rules:** rule 3.
@@ -970,9 +984,10 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   read by the next `Take` while the connections open stay; `Budgets`' comment, and
   `Deps.Budgets`' in `pkg/adapter/deps.go`, naming the count (RFC 20 §3.4). In `accept.go`,
   each accepted socket's `Take` for its remote address before the connection-state charge
-  (R7), a refusal closed before any byte is read and counted under `limit` or `per_address`,
-  and the teardown's `Release` after the charge's (D2); `NewServer` refusing a `Deps.Budgets`
-  without `Conns`, naming it, with its `decision:`, since a nil count would drop the bound
+  (R7), a refusal closed before any byte is read and counted under `limit` or `per_address`;
+  a charge refused after `Take` calls `Release` before the socket is closed, and the
+  teardown's `Release`, after the charge's (D2), gives back only what admission took;
+  `NewServer` refusing a `Deps.Budgets` without `Conns`, naming it, with its `decision:`, since a nil count would drop the bound
   silently, and `adaptertest.Budgets`, the four budgets and a count, through which every test
   that builds a server gets one; the address named at warning at most once a minute, the next
   line carrying the count held back (RFC 25 §5.2). Consumed by E7, which builds `Budgets.Conns` from `connection_limit` and calls
@@ -995,6 +1010,10 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
     its quarter, is closed under `limit`; once the first closes, the second address connects.
     Two sources reach the limit only here: at 2 the quarter is 1, so every refusal there is
     also the quarter's.
+  - With the connection-state budget one byte short of a connection's charge and a limit of 2,
+    a dial from `127.0.0.1` and one from `127.0.0.2` are each closed under `pool`; once the
+    budget has room, one from each address is admitted: the refused accepts used no slot, and
+    the count was back at zero.
   - Two servers over one `Budgets`: an address holding two connections on one is refused on
     the other.
   - `NewServer` with a `Budgets` whose `Conns` is nil is refused, naming `Budgets.Conns`.
@@ -1005,9 +1024,11 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   not a loopback source, as on macOS without an alias (catch the quarter not applied, applied
   to the node rather than the address, a closed connection counted under the wrong reason, and a warning that drops
   the count it held back, R8, R9). The limit of 1 (catches `limit` and `per_address` swapped,
-  and a count the teardown never releases, which `CheckLeaks` cannot read, G13). The two
-  servers (catches a count per server, under which NFS and SMB each get the whole limit, R60).
-  The nil count (catches a server that runs with no limit).
+  and a count the teardown never releases, which `CheckLeaks` cannot read, G13). The budget
+  short by a byte under a limit of 2 (catches a slot kept when the charge is refused, under
+  which `connection_limit` such refusals shut every adapter of the node to new connections,
+  R60). The two servers (catches a count per server, under which NFS and SMB each get the
+  whole limit, R60). The nil count (catches a server that runs with no limit).
 - **Rules:** rule 7: the nil count's `decision:`; rule 9: `resources.golden`.
 
 ### T4.5b The move target
@@ -1055,9 +1076,9 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-**What can start now.** T4.3 has merged (#4541); T4.1 is in review (#4536), and T4.4 (#4543)
-on E5's T5.1a (#4487, stacked on #4456). Nothing else: every later subtask builds on the
-connection, T4.10, which needs all three.
+**What can start now.** T4.3 (#4541) and T4.4 (#4543) have merged, and E5's T5.1a (#4487)
+with them; T4.1 is in review (#4536). Nothing else: every later subtask builds on the
+connection, T4.10, which needs T4.1 too, and #4583.
 
 **What E5 and E6 wait on.**
 
@@ -1204,9 +1225,10 @@ open, for Lucian to accept, change or refuse.
   amended. Blocks nothing: until then T4.2b's tests show every count released by taking the
   full limit again.
 
-**For the epic 5 document, and its architect's confirmation.** D8 adds `link.idle` to D1's
-seam, owned by T4.7a. T4.11 makes the pipeline's own closes tellable (decode, unwrap, the
-walk, the wiring), owned by T4.11. `TestConformanceEchoEndToEnd` turns green with T4.2a, which
+**For the epic 5 document, and its architect's confirmation.** D1's close order: cancel the
+connection's context, then stop the reader's read, as D2 and R15 state; #4449 carries that
+edit. D8 adds `link.idle` to D1's seam, owned by T4.7a. T4.11 makes the pipeline's own
+closes tellable (decode, unwrap, the walk, the wiring), owned by T4.11. `TestConformanceEchoEndToEnd` turns green with T4.2a, which
 removes its `known.yaml` entry, not with T5.1c, whose other loopback tests stand. The
 epic 2 document's table names T4.4 for `Notify`'s order, which T5.1c's loopback test now
 holds (T4.4 holds `before` through the suite of `out`), and T4.5 for `OnClose` on close, now
