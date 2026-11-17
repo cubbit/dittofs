@@ -10,18 +10,32 @@ import (
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
+// maxAuditPath bounds the path an audit record copies, in bytes, well past
+// any path a row names.
+const maxAuditPath = 512
+
 // auditOf is the audit record of r as it arrived, before its target and
 // outcome are known: the caller ctx carries, by principal, name and
 // credential, the node and the client's address, and the request's method,
 // path without its query, request ID and idempotency key, never its body.
+// The path is cut to maxAuditPath bytes and a key over maxKey, refused for
+// its length, is left out, so a caller cannot grow the audit by what it
+// sends.
 func (s *Server) auditOf(ctx context.Context, r *http.Request) entity.AuditRecord {
 	c, _ := auth.CallerFrom(ctx)
+	path, key := r.URL.Path, r.Header.Get("Idempotency-Key")
+	if len(path) > maxAuditPath {
+		path = path[:maxAuditPath]
+	}
+	if len(key) > maxKey {
+		key = ""
+	}
 	req, _ := json.Marshal(struct { // strings always encode
 		Method         string `json:"method"`
 		Path           string `json:"path"`
 		RequestID      string `json:"request_id"`
 		IdempotencyKey string `json:"idempotency_key,omitempty"`
-	}{r.Method, r.URL.Path, requestID(ctx), r.Header.Get("Idempotency-Key")})
+	}{r.Method, path, requestID(ctx), key})
 	return entity.AuditRecord{Actor: c.Principal, ActorName: c.Name, Credential: c.Credential,
 		Node: s.d.Node, Source: r.RemoteAddr, Request: req}
 }

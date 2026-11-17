@@ -723,3 +723,44 @@ func TestRefusalAuditFailureLogged(t *testing.T) {
 	}
 	t.Errorf("log %q: no Error line for request %q's unwritten audit record", s.log.String(), id)
 }
+
+// A refused request's audit record holds at most 512 bytes of its path and no
+// key over 255 bytes, however long the caller sends them: a role refused
+// before the adapter, and the adapter's refusal of a key too long.
+func TestAuditRequestBounded(t *testing.T) {
+	var role atomic.Uint32
+	s := serve(t, func(*http.Request) (auth.Caller, error) {
+		return auth.Caller{Principal: entity.NewUser(), Role: entity.APIRole(role.Load())}, nil
+	})
+	key := strings.Repeat("k", 64<<10)
+	for _, tc := range []struct {
+		name, method, path string
+		role               entity.APIRole
+		status             int
+	}{
+		{"role", http.MethodPost, "/api/v1/things/" + strings.Repeat("x", 64<<10) + ":poke", entity.RoleViewer, 403},
+		{"key", http.MethodPut, knobPath, entity.RoleOperator, 400},
+	} {
+		role.Store(uint32(tc.role))
+		before := len(s.audits(t))
+		if r := s.do(t, tc.method, tc.path, `{"spec":{"value":"a"}}`, "Idempotency-Key", key, "If-Match", `"1"`); r.status != tc.status {
+			t.Errorf("%s: answered %d %s, want %d", tc.name, r.status, r.body, tc.status)
+			continue
+		}
+		recs := s.audits(t)[before:]
+		if len(recs) != 1 {
+			t.Errorf("%s: audited %q, want one record", tc.name, outcomes(recs))
+			continue
+		}
+		var req struct {
+			Path           string `json:"path"`
+			IdempotencyKey string `json:"idempotency_key"`
+		}
+		if err := json.Unmarshal(recs[0].Request, &req); err != nil {
+			t.Fatalf("%s: audit request %s: %v", tc.name, recs[0].Request, err)
+		}
+		if len(req.Path) > 512 || !strings.HasPrefix(tc.path, req.Path) || req.IdempotencyKey != "" {
+			t.Errorf("%s: audit request holds a path of %d bytes and a key of %d, want a prefix of the path of at most 512 and no key", tc.name, len(req.Path), len(req.IdempotencyKey))
+		}
+	}
+}
