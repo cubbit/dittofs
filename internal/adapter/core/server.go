@@ -93,11 +93,12 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 	}
 	// A listener whose stages accept would refuse shows its wiring fault
 	// here, at configured, rather than at its first request (RFC 20 section
-	// 3.1): NewConn(nil) is the one call that reads no connection.
+	// 3.1): NewConn(nil) is the one call that reads no connection, and
+	// withDefaults is accept's own check, so the faults one refuses can
+	// never drift from the faults the other would.
 	for i := range ls {
-		st := ls[i].Protocol.NewConn(nil)
-		if st.Header == nil || st.Router == nil || st.Protocol == "" {
-			return nil, fmt.Errorf("core: new server: listener %d %q: stages without Header, Router or Protocol", i, ls[i].Services)
+		if _, err := withDefaults(ls[i].Protocol.NewConn(nil)); err != nil {
+			return nil, fmt.Errorf("core: new server: listener %d %q: %w", i, ls[i].Services, err)
 		}
 	}
 	srv := &Server{ls: ls, listen: (&net.ListenConfig{}).Listen}

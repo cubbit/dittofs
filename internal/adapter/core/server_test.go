@@ -50,6 +50,17 @@ type emptyStages struct{ core.Protocol }
 
 func (emptyStages) NewConn(*core.Conn) core.Stages { return core.Stages{} }
 
+// noErrors is a protocol whose stages set everything but Errors: the one
+// fault a stage list copied by hand had left out, which accept's own check
+// still names.
+type noErrors struct{ *testproto.Protocol }
+
+func (n noErrors) NewConn(c *core.Conn) core.Stages {
+	st := n.Protocol.NewConn(c)
+	st.Errors = nil
+	return st
+}
+
 // tcp is a listener of p at port carrying services.
 func tcp(p core.Protocol, port uint16, services ...string) core.Listener {
 	return core.Listener{Services: services, Network: "tcp", Port: port, Protocol: p}
@@ -121,7 +132,8 @@ func TestNewServerRefusesMalformedListeners(t *testing.T) {
 		{"a service twice", set, []core.Listener{tcp(p, 0, "a", "b", "a")}, "names a twice", false},
 		{"no protocol", set, []core.Listener{tcp(p, 0, "b"), {Services: []string{"c"}, Network: "tcp"}}, "names no protocol", false},
 		{"a typed-nil protocol", set, []core.Listener{tcp((*testproto.Protocol)(nil), 0, "a")}, "names no protocol", false},
-		{"stages accept would refuse", set, []core.Listener{tcp(p, 0, "b", "c"), {Services: []string{"d"}, Network: "tcp", Protocol: emptyStages{p}}}, "stages without Header, Router or Protocol", false},
+		{"stages accept would refuse", set, []core.Listener{tcp(p, 0, "b", "c"), {Services: []string{"d"}, Network: "tcp", Protocol: emptyStages{p}}}, "stages without Header", false},
+		{"stages without Errors alone", set, []core.Listener{tcp(p, 0, "b", "c"), {Services: []string{"d"}, Network: "tcp", Protocol: noErrors{p}}}, "stages without Errors", false},
 		{"two listeners on one Socket", set, []core.Listener{tcp(p, 0, "a"), tcp(p, 0, "b", "a")}, "listener 1", false},
 		{"two listeners on one port", set, []core.Listener{tcp(p, 2049, "a"), tcp(p, 2049, "b")}, "listener 1", false},
 		{"a udp listener", set, []core.Listener{tcp(p, 0, "a"), {Services: []string{"b"}, Network: "udp", Protocol: p}}, "listener 1", true},
