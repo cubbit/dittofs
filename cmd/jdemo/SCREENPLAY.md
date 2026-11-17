@@ -225,3 +225,45 @@ come first, and what truncate does not give back.*
    own quarter is overhead the budget lives under.
 7. **truncate gives back nothing — yet.** held falls, used doesn't:
    *"reclaimed space is repack's to free."* The honesty ledger ends it.
+
+---
+
+# Caption glossary (the plain-language pass — adopt, adapt, or ignore)
+
+The room's test: "held", "drawn from the window", "spare pool" are words
+the journal's author uses, not words a generalist met yet. When the
+on-screen caption loses the room, the spoken line below carries the
+same beat in plain nouns. Read the caption OR the gloss — not both.
+
+- **STEP 1 (online):** "One directory, one file that names the journal.
+  Before anything writes, the journal sets aside a chunk of version
+  numbers so a crash can never re-issue one."
+- **STEP 2 (attach):** "Everything I write goes through one open
+  connection, tagged with this share's number — like a tenant ID on
+  every box."
+- **STEP 3 (a first write):** "Watch: one write becomes one record —
+  never half of one. The 11 lands, and the journal hands back v1: the
+  first version of this file it has never seen before."
+- **STEP 4 (overwrite):** "I overwrite two bytes. The old bytes are NOT
+  deleted — kept where a restart can find them, until the layer above
+  confirms it has noted the change. Delete-later is the whole game."
+- **STEP 5 (the roll):** "Now 300 MB. Watch the segment count: the
+  current file filled up, and the journal switched to a spare it had
+  already prepared — that switch is the only cost of a full disk file."
+- **STEP 6 (make it durable):** "This is the receipt. Sync tells me:
+  everything up to THIS point is physically on the disk. I record the
+  receipt, and after a crash I hand it back — recovery starts there."
+- **STEP 7 (gap read):** "I ask for 16 bytes. The journal has 11, a hole,
+  then more. It returns what it has and TELLS me the hole — never
+  silent zeros."
+- **STEP 8 (change feed):** "The journal keeps a diary of every change.
+  This is what the layer above reads to catch up: what exists, in
+  order."
+- **STEP 9 (truncate):** "Everything past 32 goes. Note: already
+  durable — the removal is a record too."
+- **STEP 10 (settle):** "The layer above says: noted. The journal drops
+  the bookkeeping. Cleaned-up means GONE, not hidden."
+- **STEP 11 (reserved write):** "The engine reserves capacity before a
+  burst — pays up front, so no limit can interrupt the burst."
+- **STEP 12/13 (stub honesty):** "These two are not built yet — the
+  journal says so itself, in its own words. That is the point."

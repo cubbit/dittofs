@@ -1,6 +1,7 @@
 package jdemo
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"os"
@@ -320,5 +321,51 @@ func TestScanStopsAtTornTail(t *testing.T) {
 	}
 	if len(kept) != 0 {
 		t.Errorf("scanSegment: %d records from a mid-body torn segment, want the incomplete one dropped", len(kept))
+	}
+}
+
+func TestDumpAgreesWithTheJournalOwnRead(t *testing.T) {
+	// The record walker is a transcript, not an import: the one check
+	// that can hold it honest is comparing its payload against the bytes
+	// the journal itself serves — a drift in the format would make the
+	// walk decode plausible wrong bytes while ReadAt keeps reading the
+	// true ones, and this is where the two disagree.
+	base := t.TempDir()
+	dir := filepath.Join(base, "journal")
+	d, out := newTestDemo(t, dir, "")
+	if err := d.open(context.Background()); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = d.J.Close() }()
+	h, _ := d.J.Share(1, 0, journal.Version{})
+	d.H[1] = h
+	if _, err := h.WriteAt(context.Background(), StoryFile, 0, []byte("hello world"), 0); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// The journal's own read of the bytes:
+	p := make([]byte, 11)
+	if _, _, _, _, err := h.ReadAt(context.Background(), StoryFile, 0, p); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	// The walk's read of the same bytes: the write record's body after
+	// its 8-byte mtime prefix must equal the journal's read byte-for-byte.
+	_, recs := findWriteStep(t, d.Dir)
+	var w *dumpRecord
+	for i := range recs {
+		if recs[i].kindName() == "write" && recs[i].length == 11 {
+			w = &recs[i]
+		}
+	}
+	if w == nil {
+		t.Fatalf("no 11-byte write record found in any segment")
+	}
+	d.viewDump()
+	if !bytes.Equal(w.body[8:], p) {
+		t.Errorf("the walk's payload %q disagrees with the journal's own ReadAt %q — the transcript has drifted", w.body[8:], p)
+	}
+	if !strings.Contains(out.String(), "hello") {
+		t.Errorf("the dump screen lacks the payload the journal serves:\n%s", out.String())
 	}
 }

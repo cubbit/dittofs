@@ -315,7 +315,11 @@ func (d *Demo) promptLoop() {
 			return
 		}
 		switch line {
-		case "":
+		case "", "s":
+			if line == "s" {
+				// The fumble exit: announce, move on, touch nothing.
+				d.Printf("→ skipped to the next beat\n")
+			}
 			return
 		case "q":
 			d.quit = true
@@ -345,6 +349,12 @@ func (d *Demo) waitEnter() bool {
 	if line == "q" {
 		d.Printf("quit\n")
 		d.quit = true
+		return false
+	}
+	if line == "s" {
+		// A skipped beat leaves the journal untouched — the screen says
+		// so, and the story continues with the next beat.
+		d.Printf("skip — the beat's work left undone\n")
 		return false
 	}
 	return true
