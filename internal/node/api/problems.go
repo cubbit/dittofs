@@ -165,9 +165,9 @@ func (r *refusal) Error() string { return string(r.code) + ": " + r.detail }
 
 // problemOf is err's problem body, without its request ID, and whether the
 // table names err: an error it does not name is a 500 with no code, since no
-// code of the closed set names it, which the caller counts and logs. Only a refusal's or a refused field's text reaches the
-// detail; any other error's text stays in the log, since it may carry what
-// no caller should read.
+// code of the closed set names it, which the caller counts and logs. Only a
+// refusal's or a refused field's text reaches the detail; any other error's
+// text stays in the log, since it may carry what no caller should read.
 func problemOf(err error) (apiv1.Problem, bool) {
 	a, ok := lookup(err)
 	if !ok {
