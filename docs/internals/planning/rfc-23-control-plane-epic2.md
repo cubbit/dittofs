@@ -146,7 +146,7 @@ them.
 | R15 | Every `Put*`, `Set*` and `Delete*` of the view but `SetShareState` takes `expect`, reads the record with conflict tracking, refuses `ErrGenerationMismatch` when the stored generation or version differs, and raises it; zero expects the record absent, so the write is create-only. `SetShareState` takes none: its `from` argument is its compare-and-set | MUST | RFC 16 §3; RFC 23 §4.4, CP5 | T2.3 |
 | R16 | `SetGrant` and `DeleteGrant` each write the share's grant-list version, `S‖id‖gv`, as the writing commit's version in the same transaction; `DeleteGrant` deletes the grant and its `GR` key; a user's or a group's deletion moves `S‖id‖gv` of each share whose grant it drops | MUST | RFC 16 §3, §4.2 (`S‖id‖gv`) | T2.3 |
 | R17 | Every control-plane write that names a share — `PutShare`, `SetShareState`, `SetGrant`, `DeleteGrant`, `PutExportPolicy`, a share-scoped `PutSetting` — reads `S‖id‖st` with tracking and refuses a share being removed or retired with `ErrStale` | MUST | RFC 16 §2.3.2 (step 1) | T2.3 |
-| R18 | `Write` runs `fn` over a `ControlPlaneTx`, which carries the view's writes without their `ctx`, each checking its `expect`, and the tracked reads `Setting`, `User`, `Share` and `SignInFailures`; a deletion's transaction form is its mark | MUST | RFC 16 §3 | T2.4, T2.9 |
+| R18 | `Write` runs `fn` over a `ControlPlaneTx`, which carries the view's writes without their `ctx`, each checking its `expect`, and the tracked reads `Setting`, `User`, `Share`, `SignInFailures` and `RunningOperation`; a deletion's transaction form is its mark | MUST | RFC 16 §3 | T2.4, T2.7, T2.9 |
 | R19 | `Write` writes `meta`'s `AuditRecord` and, when `meta` names a key, its `IdempotencyRecord`, after `fn` returns, so `fn` may complete the audit record's `After` and `Outcome` and the idempotency record's `Answer`; the change and both records commit together or none of them | MUST | RFC 16 §3; RFC 23 §4.3, §6, CP12 | T2.4, T2.5 |
 | R20 | A transaction conflict retries the whole transaction, the key's read included, bounded by the call's deadline with randomised backoff, so `fn` holds no state between calls and what commits is the attempt that committed | MUST | RFC 16 §3 | T2.4 |
 | R21 | An `expect` that does not match returns `ErrGenerationMismatch` through `fn`, commits nothing and is not retried | MUST | RFC 16 §3 | T2.4 |
@@ -394,7 +394,7 @@ pkg/metadata/kvstore/
   write.go            T2.4  Write, the ControlPlaneTx over kv.Txn; idempotency (T2.5)
   audit.go            T2.4  AU, AUX rows, AuditRecords read
   nodes.go            T2.6  the Nodes view, Counters; node records (T2.8)
-  operations.go       T2.7  OP, OPR, PutOperation, Operation, Operations
+  operations.go       T2.7  OP, OPR, PutOperation, Operation, Operations, RunningOperation
   numbers.go          T2.8  idNodeEpoch gone, RaiseNodeEpoch on N‖node
   sessions.go         T2.9  SS, SSH, AT, ATH, ATA, SF
   sweep.go            T2.10 Sweep
@@ -656,18 +656,25 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 **Subtask T2.7 estimate: 2 man-days.**
 
 - **Track:** C. **Depends on:** T2.4.
-- **Covers:** R4, R11, R12, R13, R29, R30, R31, R36.
+- **Covers:** R4, R11, R12, R13, R18, R29, R30, R31, R36.
 - **Deliverables:** `entity.Operation`, `OpState`, `OpClaim` with R4's fields; the `OP` and `OPR`
   kinds; `PutOperation(ctx, op, expect)` on the view and on `ControlPlaneTx`, which writes the
   running index at start, deletes it and writes the `XP` row (tag 0x02, 7 days after the end) at
   the end, and refuses a second operation of one kind on one target with
   `entity.ErrOperationRunning`; `Operation(ctx, id)`, `Operations(ctx, after)` and
-  `RunningOperation(ctx, kind, target)`. Consumed by E3's runner and E4's operation routes.
+  `RunningOperation(ctx, kind, target)` on the view, and `RunningOperation(kind, target)` on
+  `ControlPlaneTx` as a tracked read of the running index, so a step that refuses while an
+  operation of another kind runs (the RFC 18 plan's epic 7, its R63, T7.12, T7.14 and T7.15: a
+  join and a machine-password rotation) conflicts with that operation's start. Consumed by E3's
+  runner, E4's operation routes and the RFC 18 plan's epic 7.
 - **Acceptance criteria:**
   - Starting a second operation of one kind on one target is refused while the first runs, and
     accepted once it has ended.
   - An ended operation has an `XP` row 7 days after its end; a running one has none.
-- **Tests:** at kvstore's conformance suite: the refusal and its end (R29); the `XP` row's presence
+- **Tests:** at kvstore's conformance suite: the refusal and its end (R29); a `Write` that reads
+  `RunningOperation(kind, target)` in its transaction and finds none, while another `Write`'s
+  `PutOperation` starting that kind on that target commits first: the first retries and finds it
+  running (catches an untracked read, which lets a join and a rotation both start, R18); the `XP` row's presence
   by state (R30, R36); a state change through `Write` with its audit record committed in the same
   transaction (R31); golden vectors, refusal cases and a `FuzzControlPlaneValues` entry (R12, R13).
   No double.
