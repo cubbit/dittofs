@@ -171,14 +171,7 @@ func TestMetricsListener(t *testing.T) {
 // the test rather than passing it.
 func TestStartLeavesNothingOpen(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	free, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := free.Addr().String()
-	if err := free.Close(); err != nil {
-		t.Fatal(err)
-	}
+	addr := freeAddr(t)
 	held, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
