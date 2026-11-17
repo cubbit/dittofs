@@ -146,6 +146,7 @@ func Run(t *testing.T, open Opener) {
 		{"APITokens", testAPITokens},
 		{"SignInFailures", testSignInFailures},
 		{"SignInFailuresRace", testSignInFailuresRace},
+		{"ClearSourceSignIns", testClearSourceSignIns},
 		{"Positions", testPositions},
 		{"PrincipalsRaisedOncePerWrite", testPrincipalsRaisedOncePerWrite},
 		{"PrincipalRemovalsRaise", testPrincipalRemovalsRaise},

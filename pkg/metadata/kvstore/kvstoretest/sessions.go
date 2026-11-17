@@ -2,6 +2,7 @@ package kvstoretest
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -344,5 +345,46 @@ func testSignInFailuresRace(t *testing.T, kvo Opener) {
 				t.Errorf("count after two concurrent raises: got %d, want 2", got.Count)
 			}
 		})
+	}
+}
+
+// Clearing source counts, batch after batch until none is left, deletes
+// every source's count and no account's or pair's; a store with none left
+// reports none.
+func testClearSourceSignIns(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	alice := entity.NewUser()
+	e := time.Unix(1_900_000_000, 0).UTC()
+	var sources []entity.SignInKey
+	for i := range 5 {
+		sources = append(sources, entity.SignInKey{Source: netip.PrefixFrom(netip.AddrFrom4([4]byte{192, 0, 2, byte(i)}), 32)})
+	}
+	kept := []entity.SignInKey{{Account: alice}, {Account: alice, Source: sources[0].Source}}
+	must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		for _, k := range append(slices.Clone(sources), kept...) {
+			if err := tx.PutSignInFailures(k, entity.SignInFailures{Count: 1, Last: e, Failed: e}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+	for more := true; more; {
+		var err error
+		more, err = cp.ClearSourceSignIns(ctx)
+		must(t, err)
+	}
+	for _, k := range sources {
+		if _, ok, err := cp.SignInFailures(ctx, k); err != nil || ok {
+			t.Errorf("source %v's count after the clear: found %v, %v; want absent", k.Source, ok, err)
+		}
+	}
+	for _, k := range kept {
+		if _, ok, err := cp.SignInFailures(ctx, k); err != nil || !ok {
+			t.Errorf("count %+v after the clear: found %v, %v; want kept", k, ok, err)
+		}
+	}
+	if more, err := cp.ClearSourceSignIns(ctx); err != nil || more {
+		t.Errorf("a clear with no source count left: more %v, %v; want false, nil", more, err)
 	}
 }

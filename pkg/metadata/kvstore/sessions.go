@@ -449,6 +449,40 @@ func (c ControlPlane) SignInFailures(ctx context.Context, k entity.SignInKey) (f
 	return f, found, err
 }
 
+// ClearSourceSignIns deletes a batch of source counts with their expiry
+// rows, in one transaction within the key budget, and reports whether
+// source counts are left. Account and pair counts are untouched.
+func (c ControlPlane) ClearSourceSignIns(ctx context.Context) (more bool, err error) {
+	n := max(1, c.s.k/2)
+	prefix := []byte{keys.KindSF, keys.SFSource}
+	err = c.s.kv.Update(ctx, func(tx kv.Txn) error {
+		more = false
+		var rows [][]byte
+		for row, err := range tx.Scan(prefix, nil) {
+			if err != nil {
+				return err
+			}
+			if len(rows) == 2*n {
+				more = true
+				break
+			}
+			f, err := decodeSignIn(row.Value)
+			if err != nil {
+				return err
+			}
+			tail := row.Key[len(prefix):]
+			rows = append(rows, bytes.Clone(row.Key), signInExpiryKey(keys.SFSource, bytes.Clone(tail), f))
+		}
+		for _, k := range rows {
+			if err := tx.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return more, err
+}
+
 // Session reads one session: the per-call check of an access token's. A
 // session whose account is deleted or marked deleted is not found.
 func (c ControlPlane) Session(ctx context.Context, id [16]byte) (s entity.Session, found bool, err error) {
