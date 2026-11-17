@@ -352,7 +352,8 @@ that needs it.
     crossing a node channel;
   - the groups of the evidence's verified SIDs include each mapped principal's store closure (§6.3);
   - §3.8's expiry is refused by the adapter, which alone knows which requests release state, and
-    `Resolve` never checks `Expires`, so epic 8 no longer tests a refusal at `Resolve`;
+    `Resolve` never checks `Expires`, so epic 5 owns only the `Expires` value and epic 8 no longer
+    tests a refusal at `Resolve`;
   - §9.2 names the caller cache's metrics, `vfs_caller_cache_lookups_total{result}` and
     `vfs_caller_cache_evictions_total`.
 
@@ -1354,7 +1355,8 @@ expiry).
 mints machine principals.
 
 **Owns:** RFC 18 §2.4's machine principals, §3.3 (the imported keytab, A4), §3.4, §3.7's sign-in
-half for Kerberos, §3.8's expiry, and §4.2 steps 1, 2 and 4.
+half for Kerberos, §3.8's `Expires` value (the refusal past it is the adapter's, A21), and §4.2
+steps 1, 2 and 4.
 
 **Done when:**
 - RFC 18 §10's rows "PAC", "replay", "clock skew", "service name", "ticket addresses", "keytab
@@ -1395,7 +1397,8 @@ half for Kerberos, §3.8's expiry, and §4.2 steps 1, 2 and 4.
   the directory's realm the SID the directory holds for the name, and the PAC binds to it for a
   record the row selected (RFC 18 §4.2, A17).
 - Machine principals minted on first sign-in (RFC 18 §2.4).
-- Expiry, and the release calls past it (RFC 18 §3.8).
+- `Evidence.Expires` set from the ticket's end time (RFC 18 §3.8); refusing a call past it, and
+  letting the release calls through, is the adapter's (RFC 20 §4.4, A21).
 - `Keys.Session` as RFC 4121 §2's context key, with a test for an AP-REQ whose authenticator holds
   no subkey: the session key is the ticket's.
 
@@ -1748,7 +1751,7 @@ What the plan knowingly does not build. Each row cites the section that defers i
 | RFC 18 §3.5 | E2 (NT hashes, NTLM off), E4 (local), E6 (`identity.netbios_name` against the directory's NetBIOS domain), E7 (pass-through, machine account) |
 | RFC 18 §3.6 | E4 |
 | RFC 18 §3.7 | E3 (resolution), E4, E5, E7 (sign-in) |
-| RFC 18 §3.8 | E4, E5 (expiry) |
+| RFC 18 §3.8 | E4, E5 (`Expires`; the refusal is the adapter's, A21) |
 | RFC 18 §4.1 | E1 (interface), E2 |
 | RFC 18 §4.2 | E5 (steps 1, 2, 4), E6 (step 3) |
 | RFC 18 §4.3 | deferred, O2 |
