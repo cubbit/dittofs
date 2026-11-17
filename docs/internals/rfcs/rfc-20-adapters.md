@@ -2041,7 +2041,14 @@ type ReplayCache interface {
 	// pipeline's own reservation does; the pipeline wraps the copy in place
 	// and sends it. Or a sequence error, or the reservation's ErrDelay of
 	// DelayResources past ctx's deadline, either mapped by Stages.Errors; or
-	// nil, nil to run.
+	// nil, nil to run. A chain asks it first under an ended ctx (§4.7).
+	//
+	// ponytail: the copy is reserved under no client's key, since a stage is
+	// handed none, so a chain copies a hit into a buffer of its own (§4.7).
+	// Only the test protocol both chains and returns copies: SMB's replay is
+	// the open's (RFC 22 §6.5) and returns none, and NFS's reply caches serve
+	// no chain. Hand Lookup the client's key, and drop the copy, when a
+	// protocol that chains returns copies.
 	Lookup(ctx context.Context, h Header) (*Buf, error)
 	// Store keeps its own clear copy of a cacheable row's encoded reply, taken
 	// before Wrap; the caller's reply is then wrapped in place.
@@ -2359,6 +2366,15 @@ replies before it go out as a record of their own, wrapped
 once, and only then does the member reserve under its deadline: a chain never
 waits on the reply pool while holding it
 ([RFC 24 §2.6](rfc-24-resources.md#2.6%20Reservations%20are%20taken%20in%20one%20order)).
+A member's replay hit keeps the same rule. `Lookup` is first asked under an
+ended context, which tries its copy's reservation once; on its `ErrDelay` of
+`DelayResources` the replies before it go out first, and it is asked again
+under the member's deadline. Its copy is reserved under no client's key, which
+`Join` refuses beside the chain's buffers, so the runner copies the hit into a
+buffer of the chain's own, taken with `BufPool.TryGet`, and releases the
+cache's copy. When that try fails, the replies before it go out first and the
+hit goes out in a record of its own, so nothing waits while holding the
+cache's copy. These splits count as `reply_pool`.
 The record cap keeps a joined record within what one `Frame` header can state:
 SMB's Direct TCP length is 3 bytes, and a quarter of a large node's reply pool
 can pass it ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)). A member `Unwrap`
