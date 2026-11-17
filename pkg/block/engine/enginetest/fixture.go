@@ -439,6 +439,13 @@ func WithFakeJournal() Option {
 	}
 }
 
+// Fake is the in-memory journal WithFakeJournal put under every process
+// start, nil without it, for a check that loses its records or fails its sync
+// windows with the fake's own calls.
+func (f *Fixture) Fake() *FakeJournal {
+	return f.fake
+}
+
 // The fake journal's segment model under WithFakeJournal: 1 MiB segments
 // under a maximum well above the share's limit. The rows need the model on,
 // so repack has segments to free, not these sizes: a capacity pass seals the
