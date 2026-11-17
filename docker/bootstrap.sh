@@ -7,9 +7,7 @@
 # partial run left undone instead of wedging on the first conflict.
 set -eu
 
-# The API is served over TLS on every address but loopback, under the host's
-# certificate, which this sidecar does not trust, so curl skips verifying it.
-API=https://dittofs:8080
+API=http://dittofs:8080
 PROFILE="${PROFILE:-default}"
 SHARE="/export"
 ADMIN_PASSWORD="${DITTOFS_ADMIN_INITIAL_PASSWORD:?must be set}"
@@ -30,7 +28,7 @@ json_escape() {
 
 # sh has no pipefail, so a failed login reaches the token check as empty output
 # rather than as a non-zero status.
-login=$(curl -sSk -X POST "$API/api/v1/auth/login" \
+login=$(curl -sS -X POST "$API/api/v1/auth/login" \
     -H 'Content-Type: application/json' \
     -d "{\"username\":\"admin\",\"password\":\"$(json_escape "$ADMIN_PASSWORD")\"}") || true
 TOKEN=$(printf '%s' "$login" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
@@ -44,7 +42,7 @@ fi
 # instantiated before its name is checked, so a second `badger` create reports
 # the data directory as locked instead. Asking first keeps a re-run quiet.
 exists() {
-    code=$(curl -sSk -o /dev/null -w '%{http_code}' \
+    code=$(curl -sS -o /dev/null -w '%{http_code}' \
         -H "Authorization: Bearer $TOKEN" "$API$1")
     case "$code" in
     2??) return 0 ;;
@@ -55,7 +53,7 @@ exists() {
 # send METHOD PATH BODY — 409 means the resource is already there, which is
 # what provisioning wanted.
 send() {
-    out=$(curl -sSk -w '\n%{http_code}' -X "$1" "$API$2" \
+    out=$(curl -sS -w '\n%{http_code}' -X "$1" "$API$2" \
         -H "Authorization: Bearer $TOKEN" \
         -H 'Content-Type: application/json' \
         -d "$3")
