@@ -15,7 +15,7 @@ RFC 5531 §9, §11 and Appendix A, for the bytes. For T6.5 and T6.6, the generat
 §5.1 to §5.4, RFC 21 §11 and RFC 22 §16, as #4562 amends them on develop (§1.3), MS-SMB2 2.2 and
 RFC 4506.
 **Track:** C.
-**Epic 6 estimate: 8 subtasks, 25.5 man-days.**
+**Epic 6 estimate: 8 subtasks, 22.5 man-days.**
 **Depends on:** **S2, `testproto` and the import test in CI**: E1's frozen surface of `core`,
 `pkg/adapter/settings` and the two public `New` stubs; E2's import test with its `wire` rule,
 `adaptertest.CheckLeaks` and the `unit/adapter-allocs` cell; E5's T5.7 and T5.2a, which gave
@@ -51,11 +51,11 @@ package whose stages adapt those codecs to `core` and route every request to a t
 
 - `pkg/adapter/smb.New` and `pkg/adapter/nfs.New` return a `*core.Server`, behind
   `adapter.Adapter`, that binds `Port` at `Start` and answers over loopback: SMB, every command
-  `STATUS_NOT_SUPPORTED` but a `CANCEL`, answered nothing; NFS, each program, version and procedure as RFC 20 §4.8 and RFC 21
-  §2.1 say, a credential RFC 21 §11.1 refuses `AUTH_BADCRED`, and a `COMPOUND` of a minor
-  version not served `NFS4ERR_MINOR_VERS_MISMATCH`; a malformed header that can be addressed,
-  its protocol's invalid-parameter or garbage-args answer; a broken frame, or a record past its
-  cap, by closing the connection; each test ending with `adaptertest.CheckLeaks`;
+  `STATUS_NOT_SUPPORTED` but a `CANCEL`, answered nothing; NFS, each program, version and
+  procedure as RFC 20 §4.8 and RFC 21 §2.1 say, a credential RFC 21 §11.1 refuses `AUTH_BADCRED`,
+  and a `COMPOUND` of a minor version not served `NFS4ERR_MINOR_VERS_MISMATCH`; a malformed header
+  that can be addressed, its protocol's invalid-parameter or garbage-args answer; a broken frame, or
+  a record past its cap, by closing the connection; each test ending with `adaptertest.CheckLeaks`;
 - an NFS connection's first routed call ends its handshake deadline;
 - each protocol's header stage decodes and encodes at 0 allocations, gated in
   `unit/adapter-allocs`, over `wire` packages with golden vectors from the specifications and
@@ -186,7 +186,7 @@ cited by number and title, and how it applies here or why it does not.
 | rule 6, nothing deferred is lost | T6.3b, T6.4a, T6.4b, T6.5, T6.6 | the ledger rows §1.2 cites; the row §9 proposes for each request's `Identity`; the TLS row as #4496 rewords it for #4533's G7; the six rows §9 proposes for the tag rules and the encoder's segment |
 | rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | all | each decision of §4 leaves the marker it names at its code site. None of RFC 20's own notes that the rule lists is this epic's |
 | rule 8, a test must be able to fail ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests)) | all | each test in §6 names the change that fails it; a golden vector is written from the specification or cut from a reference capture, never produced by the codec under test |
-| rule 9, a symbol is exported only if RFC 20's interface uses it | all | the public surface does not change: `smb.golden` and `nfs.golden` keep their one line. `core` gains `Framer.Frame` and `HeaderCodec.Args` and `ReplyLen` with E5's T5.1a, and `Framer.BodyLen`'s `last` and `MaxRecord` with E4's reader, as RFC 20 §4.7 is amended; this epic implements them and exports nothing in `core`. Inside `internal/adapter/<protocol>`, `wire` exports what `protocol` calls, `protocol` exports `Protocol`, `New` and, for NFS, `Tables` (RFC 20 §4.8), which `smb.go` and `nfs.go` call, and each `New` returns the `*core.Server` its public `New` hands back. A `wire` accessor nothing here calls is exported by the RFC 21 or RFC 22 plan's subtask that first reads it |
+| rule 9, a symbol is exported only if RFC 20's interface uses it | all | the public surface does not change: `smb.golden` and `nfs.golden` keep their one line. `core` gains `Framer.Frame` and `HeaderCodec.Args` and `ReplyLen` with E5's T5.1a, and `Framer.BodyLen`'s `last` and `MaxRecord` with E4's reader, as RFC 20 §4.7 is amended; this epic implements them and exports nothing in `core`. Inside `internal/adapter/<protocol>`, `wire` exports what `protocol` calls, `protocol` exports `Protocol`, `New` and, for NFS, `Tables` (RFC 20 §4.8), which `smb.go` and `nfs.go` call, and each `New` returns the `*core.Server` its public `New` hands back. `smb/wire`'s `Header` accessors that §5 lists with the stage reading each are T6.1's (#4539); any other `wire` accessor nothing here calls is exported by the RFC 21 or RFC 22 plan's subtask that first reads it |
 | rule 10, each subtask creates only what it declares | all | no `ops/`, `callbacks.go`, `gss/`, `translate/` or `dcerpc/`; no request encoder in `wire`'s header codecs, since nothing in this epic sends a request; the empty tables live in `smb.go` and `nfs.go`; each new package lands with a test that can fail, as `lint-repo`'s new-package check requires |
 
 ## 3. Requirements and invariants
@@ -440,6 +440,24 @@ Exported symbols added, all under `internal/adapter/`:
   of the error body `AppendError` writes, which T6.3a's `ReplyLen` counts; the constants of
   `const.go`, `CommandCancel` (0x000C) among them. Consumers: T6.3a and T6.3b; the RFC 22
   plan's epic 2 harness and its T3.1, T3.4 and T3.6.
+  T6.1 (#4539) also exports these `Header` accessors, each with the stage that reads it:
+  - `StructureSize()`: the header stage (T6.3a), which answers a header whose `StructureSize`
+    is not 64 `STATUS_INVALID_PARAMETER`, and `FuzzRecord`'s assertion on it;
+  - `CreditCharge()`: the reply's encoder, which carries it from the request (MS-SMB2
+    3.3.4.1), and the RFC 22 plan's `Flow` (its T3.6), which charges it;
+  - `Credits()`: the RFC 22 plan's `Flow` (its T3.6), the credits a request asks and the grant
+    its reply carries;
+  - `MessageID()`: the RFC 22 plan's `Replay` and `HoldCodec` (its T3.6 and T3.7), the
+    message-ID window and a sync `CANCEL`'s key;
+  - `AsyncID()`: the RFC 22 plan's `HoldCodec` (its T3.7), an async `CANCEL`'s key, and the
+    async-form reply T6.3a's `Encode` writes;
+  - `TreeID()`: the RFC 22 plan's request state (its epic 1) and `Security.Unwrap` (its T3.4),
+    the tree a request reaches, which `Inherit` writes;
+  - `SessionID()`: the RFC 22 plan's `Security` (its T3.3 and T3.4), the session whose key signs
+    and seals, which a reply mirrors (MS-SMB2 3.2.5.1.3);
+  - `Inherit(prev *Header)`: the RFC 22 plan's `Security.Unwrap` (its T3.4), which, as RFC 20
+    §4.7 has `Unwrap` take a related member's IDs from `prev` before the check, writes the
+    session and, in the sync form, the tree of the member before.
 - `smb/protocol` (T6.3a): `ErrCancel`, the router's refusal of a `CANCEL`, which the table's
   error rows name to answer it nothing.
 - `smb/protocol` (T6.3b): `type Protocol`, `New(t *core.OpTable) *Protocol`, with `Framer` and
@@ -454,7 +472,8 @@ Exported symbols added, all under `internal/adapter/`:
   `ParseCall(b []byte) (Call, error)`, which bounds every length first; `type AuthSysParms`
   (fixed arrays, nothing allocated; `AuthSys` is the flavour constant beside `AuthNone`, as
   RFC 5531 names them) and `DecodeAuthSys(body []byte) (AuthSysParms, error)`;
-  `AppendAccepted`, `AppendDenied` and `AppendCompoundStatus`; the constants of `const.go`.
+  `AppendAccepted`, `AppendProgMismatch`, `AppendDenied` and `AppendCompoundStatus`; the
+  constants of `const.go`; all landed with #4540.
   Consumers: T6.4a and T6.4b; the RFC 21 plan's codecs.
 - `nfs/protocol`: `Tables` (T6.4a); `type Protocol`, `New(t Tables) *Protocol` (T6.4b). `nfs`
   (T6.4b): `New(d adapter.Deps, s settings.NFS) (*core.Server, error)`.
@@ -631,7 +650,8 @@ framer's.
   holding an unpaired surrogate is decoded, not refused, since RFC 22 §12.3 has the handler
   answer it `STATUS_OBJECT_NAME_INVALID` while §16 answers a decode failure
   `STATUS_INVALID_PARAMETER`, and is kept apart from U+FFFD as RFC 22 §16 settles it, WTF-8
-  until then (§9's finding). The generator, a program
+  until then, with a `decision:` at the conversion citing §9's finding. The generator, a
+  program
   `go generate` runs over a package's tagged structs, which writes each struct's decoder and
   encoder as Go source, so what runs is ordinary pure code; if E2's import test's `wire` rule
   reaches the generator, which does file I/O, the generator sits where the rule allows and the
@@ -690,8 +710,9 @@ framer's.
   decoder and encoder share, which a round trip alone cannot fail). The claimed lengths (catch
   a buffer allocated before its length is checked).
 - **Rules:** rule 2: `FuzzCodec`; rule 6: the control-code, information-class and
-  self-relative-offset rules and the encoder's segment, §9's ledger rows; rule 8: no vector
-  produced by the codec under test; rule 10: the runtime and the generator land with their
+  self-relative-offset rules and the encoder's segment, §9's ledger rows; rule 7: the UTF-16
+  conversion's `decision:`, citing §9's finding until RFC 22 §16 settles WTF-8; rule 8: no
+  vector produced by the codec under test; rule 10: the runtime and the generator land with their
   suite and fuzz target. The 6.75 man-days: about 1.5 for the generator and its tags, 1.25 for
   the runtime's offsets, padding, contexts and dialects, 0.5 for the contexts' bodies by name,
   0.25 for UTF-16, 1.25 for the suite, 1.5 for the second decoder and the fuzz target, and 0.5
@@ -768,7 +789,7 @@ framer's.
   header, an error body after a success, a row lost in routing; and shows a command as tagged
   structs and one `core.Row` line, the shape every command has). The port (catches `New` binding a fixed port, or binding at `New`,
   which a rebuild on a `port` change would collide on). The label (catches a stage or table
-  labelled other than `smb`, whose series split from the rest). `pkg/adapter/smb`'s two tests
+  labeled other than `smb`, whose series split from the rest). `pkg/adapter/smb`'s two tests
   (catch a typed nil server handed back in the interface).
 - **Rules:** rule 3: the label read back; rule 9: `smb.golden` unchanged; rule 10: the empty
   table in `smb.go`, and a test in each new package. The 2.25 man-days: 2 for the framer,
@@ -776,14 +797,19 @@ framer's.
 
 ### T6.2 `nfs/wire`: the record mark, the RPC header and `AUTH_SYS`
 
-**Subtask T6.2 estimate: 3 man-days.**
+**Subtask T6.2 estimate: 0 man-days.**
 
 - **Track:** C. **Depends on:** S2, and the RFC 20 amendment (#4478).
 - **Needs E4 or E5:** nothing.
 - **Covers:** R1 (the length and the cap), R3 (the record mark's fields), R4 (the bytes), R5,
   R6, R7, R8, R9, R14, R15, R16, R21 (the decoders), R40 (the decoder).
-- **Deliverables:** `internal/adapter/nfs/wire/` as §5 lists it: `Fragment` reads RFC 5531
-  §11's record mark, its last-fragment bit and its length, refusing a length past `MaxRecord`,
+- **Landed:** whole, #4540 (6a941cd4d on `feat/storage-v2`), with the RPC header and
+  `AUTH_SYS` hand-written, as RFC 20 §2.5 and §5.1 have them on the base; its reply encoders
+  add `AppendProgMismatch` for `PROG_MISMATCH`. The criteria and tests below are what landed,
+  kept as the record later subtasks keep passing; whether the headers are generated is §9's
+  open point for the architect.
+- **Deliverables:** none left. `internal/adapter/nfs/wire/` as §5 lists it: `Fragment` reads RFC
+  5531 §11's record mark, its last-fragment bit and its length, refusing a length past `MaxRecord`,
   1 MiB and 4 KiB (RFC 21 §2.3), and `AppendRecordMark` writes one with the last-fragment bit
   set; `ParseCall` bounds RFC 5531 §9's call: the transaction ID, the message type, the RPC
   version, the program, version and procedure, the credential and the verifier, each body at
@@ -944,8 +970,9 @@ framer's.
   there. One golden-vector suite over structs
   declared in the test files that use every tag rule, each vector written from RFC 4506's
   encodings or cut from the knfsd capture (D3); `FuzzCodec`, against a second decoder written
-  by hand in the test file from RFC 4506, as T6.5's. The RPC header codec stays hand-written
-  (T6.2) while §9's question to the architect is open.
+  by hand in the test file from RFC 4506, as T6.5's. The RPC header codec is T6.2's,
+  hand-written (#4540); should §9's question to the architect be answered generated, T6.6
+  regenerates it and `AUTH_SYS`.
 - **Consumers:** T6.4b's test-only `NULL` row; the RFC 21 plan's first procedure and every one
   after it.
 - **Acceptance criteria:**
@@ -1001,7 +1028,7 @@ framer's.
   `ErrDecode` to `GARBAGE_ARGS`: NFSv3's, fault `NFS3ERR_SERVERFAULT`; the auxiliary programs',
   fault `SYSTEM_ERR`; and NFSv4's, fault `NFS4ERR_SERVERFAULT`, adding `ErrVersion` to
   `NFS4ERR_MINOR_VERS_MISMATCH` (RFC 21 §11.5); and the five empty tables RFC 20 §4.8's example
-  names, `V4` labelled `nfs4` and the rest `nfs3`, in `nfs.go` for the reason T6.3b gives; and
+  names, `V4` labeled `nfs4` and the rest `nfs3`, in `nfs.go` for the reason T6.3b gives; and
   returns `core.NewServer` with one TCP listener naming `nfs`, `mount`, `nlm` and `nsm` on
   `s.Port`. `pkg/adapter/nfs.New`, a call into it that returns a nil adapter with an error.
   Tests in `internal/adapter/nfs/nfs_test.go`, with a helper that writes a call and reads a
@@ -1056,10 +1083,10 @@ framer's.
   both ways (catch a range read from `New`'s copy or reread after accept, R18, and `New`
   building only the tables in range, R27). The two adapters (catch a served set kept in a
   package variable, R29). The port and the listener (catch `New` binding a fixed port, and a
-  program left off the TCP listener, R22, R30, and a UDP listener bound, R42). The labels (catch `V4` labelled `nfs3`, whose
-  series merge with NFSv3's). `pkg/adapter/nfs`'s two tests (catch a typed nil server). The TLS
-  modes, with missing files (catch a mode other than off accepted, and a file read before the
-  refusal, whose error would name the file).
+  program left off the TCP listener, R22, R30, and a UDP listener bound, R42). The labels (catch
+  `V4` labeled `nfs3`, whose series merge with NFSv3's). `pkg/adapter/nfs`'s two tests (catch a
+  typed nil server). The TLS modes, with missing files (catch a mode other than off accepted, and a
+  file read before the refusal, whose error would name the file).
 - **Rules:** rule 3: the labels read back; rule 6: the TLS row as #4496 rewords it; rule 9:
   `nfs.golden` unchanged; rule 10: a test in each new package. The 2.25
   man-days are for its nine criteria over loopback, the fragment cases among them, which need
@@ -1082,7 +1109,7 @@ flowchart TD
   R(["E5: core.Row, beside its T5.1a"]):::sync --> T6_3b
   S3(["S3, after E4 and E5's T5.1c"]):::sync --> T6_3b
   T6_3b --> C2(["after T6.3b: the RFC 22 plan's SMB scaffold point"]):::sync
-  S2 --> T6_2["T6.2 nfs/wire"]
+  S2 --> T6_2["T6.2 nfs/wire, landed (#4540)"]
   A --> T6_2
   T6_2 --> T6_4a["T6.4a nfs/protocol header stage and router"]
   H --> T6_4a
@@ -1105,28 +1132,28 @@ which lands first.
 
 | When | Subtasks | Man-days |
 | --- | --- | --- |
-| from S2, needing neither E4 nor E5 | T6.1, T6.2 | 5.5 |
-| once Marco's amendment lands, after T6.1 and T6.2 in turn, needing neither E4 nor E5 | T6.5, T6.6 | 11.5 |
+| from S2, needing neither E4 nor E5 | T6.1 (T6.2 has landed, #4540) | 2.5 |
+| #4562 having merged, T6.5 after T6.1 and T6.6 now, needing neither E4 nor E5 | T6.5, T6.6 | 11.5 |
 | once E5's T5.1a has landed `HeaderCodec.Args` and `ReplyLen`, needing nothing of E4 | T6.3a, T6.4a | 4 |
 | from S3, which needs E4's `Server`, `Start`, `Stop`, accept, reader (with `Framer.BodyLen`'s `last` and `MaxRecord`), writer and `Addrs`, and E5's T5.1c after its T5.1a and T5.9; T6.4b also needs E4's `Conn.Settings`, `Conn.Established` and `Reconfigure` | T6.3b, T6.4b | 4.5 |
 
 T6.3a and T6.4a need only E5, its T5.1a; T6.3b and T6.4b need E4 and E5 through S3, E5's
 `core.Row`, and T6.5 or T6.6. **The critical path** to the RFC 22 plan's SMB scaffold point is
 now T6.1, T6.5 and T6.3b, 11.5 man-days, T6.3a's 1.25 running beside T6.5; T6.5 also gates
-the RFC 22 plan's first command. T6.2, T6.6 and T6.4a fill the waits. The least certain
-subtasks are T6.5 and T6.6, whose generators and second decoders are new work, then T6.2,
-T6.4a and T6.4b (§9).
+the RFC 22 plan's first command. T6.6 and T6.4a fill the waits, T6.2 having landed (#4540).
+The least certain subtasks are T6.5 and T6.6, whose generators and second decoders are new
+work, then T6.4a and T6.4b (§9).
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T6.1, T6.3a | 3.75 | the RFC 20 amendment (#4478); E5's T5.1a for T6.3a | SMB's bytes and header stage: what the RFC 22 plan's harness and stages build on |
-| 2 | T6.2, T6.4a | 5.75 | the RFC 20 amendment (#4478); E5's T5.1a for T6.4a | the RPC layer: the call header, the credential, the router; open beside PR 1 |
+| 2 | T6.4a | 2.75 | E5's T5.1a; T6.2, delivered by #4540 | the RPC layer's header stage and router over T6.2's `wire`; open beside PR 1 |
 | 3 | T6.5 | 6.75 | PR 1's T6.1, Marco's amendment | SMB2's generated codec, before the RFC 22 plan's first command |
-| 4 | T6.6 | 4.75 | PR 2's T6.2, Marco's amendment | XDR's generated codec, before the RFC 21 plan's first procedure; open beside PR 3 |
+| 4 | T6.6 | 4.75 | T6.2 (#4540), Marco's amendment | XDR's generated codec, before the RFC 21 plan's first procedure; open beside PR 3 |
 | 5 | T6.3b | 2.25 | PR 1, PR 3, S3, E5's `core.Row` | SMB's framer and server end to end, the RFC 22 plan's SMB scaffold point |
-| 6 | T6.4b | 2.25 | PR 2, PR 4, S3, E5's `core.Row` | NFS's framer and server end to end; open beside PR 5 |
+| 6 | T6.4b | 2.25 | #4540, PR 2, PR 4, S3, E5's `core.Row` | NFS's framer and server end to end; open beside PR 5 |
 
 A suggestion only: one pull request per subtask works as well. T6.1 is open as #4539, and T6.2
 merged as #4540.
@@ -1170,10 +1197,10 @@ merged as #4540.
     hand"). #4562's RFC 20 §5.1 puts the generator's "output for shared types, the RPC and
     SMB2 headers, credentials, XDR's primitives" in `wire/`, and its note decides T6.2's XDR
     "generated"; its §2.5 lists "the RPC or SMB2 header codec" in `wire/` apart from "its
-    output for shared types". If the headers are generated, T6.1's and T6.2's header and
-    `AUTH_SYS` codecs are, and T6.5 and T6.6 come before T6.1 and T6.2, not after. If they stay
-    hand-written, #4562's §5.1 needs a one-line fix. T6.1 and T6.2 stay as written until he
-    answers.
+    output for shared types". T6.2 has merged with the RPC header and `AUTH_SYS` hand-written
+    (#4540). If the headers are generated, T6.6 regenerates those codecs, and only T6.5 moves
+    ahead of T6.1, whose SMB2 header it would generate. If they stay hand-written, #4562's §5.1
+    needs a one-line fix. T6.1 stays as written until he answers.
   - Its RFC 20 §4.7 decodes a `COMPOUND`'s tag, minor version and count through the generated
     codec, while #4478 has NFS's header codec read the tag and minor version with the RPC
     header (R14), which `Encode` answers `NFS4ERR_MINOR_VERS_MISMATCH` with. One of the two
@@ -1206,8 +1233,8 @@ merged as #4540.
     the RFC 22 plan's T8.2, the information-class codecs;
   - a security descriptor in its self-relative form, its parts found by offsets counted from
     the descriptor's own start and carrying no lengths (RFC 22 §16, §11): the RFC 22 plan's
-    T7.1, whose `SecD` create context is the first descriptor decoded; its T12.1, the
-    descriptor codec, then writes the SIDs, ACLs and entries on the rule;
+    T12.1, the descriptor codec, which its plan gives the self-relative form; its T7.1 keeps
+    a `SecD` create context's descriptor as bytes until T12.1 lands;
   - `fattr4`'s `attrlist4` decoded into one optional field per attribute its `attrmask`
     selects (RFC 21 §11): the RFC 21 plan, with its first NFSv4 operation that carries
     attributes, `GETATTR`.
@@ -1243,7 +1270,8 @@ merged as #4540.
     amendment, #4478, brings both to RFC 20 §4.7.
 - **Edits this document proposes to the program's implementation plan**, for the coordinator's
   pull request, not made here:
-  - epic 6's description, its row in §2 and its estimate line: 8 subtasks, 25.5 man-days,
+  - epic 6's description, its row in §2 and its estimate line: 8 subtasks, 22.5 man-days, T6.2
+    landed (#4540),
     T6.5 and T6.6 the generated codecs, T6.3 and T6.4 split by letter, the `NEGOTIATE` item of T6.3 moved to the RFC 22 plan's
     subtask T3.2, and "MS-SMB2's examples" and "RFC 5531's encodings" replaced by the field
     tables and the reference captures (D3);
@@ -1265,7 +1293,7 @@ merged as #4540.
   - six new ledger rows, each with one owner and triggered by the first command that needs
     it: "an `IOCTL` buffer decoded by its control code (RFC 22 §16)", the RFC 22 plan's T3.5;
     "a buffer decoded by its information class (RFC 22 §16)", its T8.2; "a security
-    descriptor's self-relative offsets (RFC 22 §16, §11)", its T7.1; "`fattr4`'s attributes
+    descriptor's self-relative offsets (RFC 22 §16, §11)", its T12.1; "`fattr4`'s attributes
     selected by `attrmask` (RFC 21 §11)", the RFC 21 plan; and "the encoder's
     `resources.Buf` segment (RFC 20 §5.3)", once RFC 20 names the call (above), one row for
     SMB2's generator, the RFC 22 plan's T7.6, and one for XDR's, the RFC 21 plan's first
@@ -1288,9 +1316,9 @@ merged as #4540.
   captures already in `test/pcap-corpus`, and fuzzing each `wire` package with one target. The
   architect's decision on how a command is written adds T6.5 and T6.6, 11.5 man-days with the
   tag rules #4562 lists for them, and T6.3b 0.25 for its `ErrCancel` row and `CANCEL` tests,
-  for a total of 25.5.
+  for a total of 25.5. #4540 then landed T6.2 whole, so T6.2 is 0 and the total 22.5.
 - **Least certain.** T6.5 and T6.6, whose generators and second decoders are new work, and
-  whose order against T6.1 and T6.2 waits on the architect's answer above; then T6.2, T6.4a
-  and T6.4b, for the edge cases of the RPC header, a record in several fragments and the order
-  of the router's refusals; T6.3b and T6.4b, whose loopback tests are written against E4's
-  `Server`, reader, `Reconfigure` and handshake deadline.
+  T6.5's order against T6.1, which waits on the architect's answer above; then T6.4a and T6.4b,
+  for the edge cases of a record in several fragments and the order of the router's refusals; T6.3b
+  and T6.4b, whose loopback tests are written against E4's `Server`, reader, `Reconfigure` and
+  handshake deadline.
