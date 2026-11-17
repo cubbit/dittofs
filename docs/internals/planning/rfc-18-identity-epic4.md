@@ -148,7 +148,7 @@ tests can cite them. Sources are RFC 18 unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R5 | The message's domain is compared with ASCII letters folded only: empty with a user name that holds no `@`, or `identity.netbios_name`, is local; with no pass-through row, anything else is `ErrLogonFailure` counted `unknown_domain`; E7 adds the pass-through row | MUST | §3.5, §4.6 | T4.2 |
+| R5 | The message's domain is compared with ASCII letters folded only: empty with a user name that holds neither `@` nor `\`, or `identity.netbios_name`, is local; with no pass-through row, anything else, an empty domain with a user name holding `\` among it, is `ErrLogonFailure` counted `unknown_domain`; E7 adds the pass-through row | MUST | §3.5, §4.6 | T4.2 |
 | R6 | A UPN under an alternate suffix, or a domain with a trailing dot, is `unknown_domain`, by §3.5's `decision:` note | invariant | §3.5 | T4.2 |
 
 **NTLMv2 verification**
@@ -435,7 +435,8 @@ internal/vfs/
     across domains, R8);
   - "NTLM domain", local and refusal: `nas01` against `NAS01` verified; an empty domain and
     `alice` verified; `OTHER`, refused; `alice@corp.example.com` with an empty domain, refused
-    while no pass-through row exists; `KIOSK` sent with U+212A for `K`, refused (catches a
+    while no pass-through row exists; `CORP\bob` with an empty domain, refused `unknown_domain`
+    (catches a `\`-holding name routed local, R5); `KIOSK` sent with U+212A for `K`, refused (catches a
     Unicode fold, R5, R28); the alternate-suffix and trailing-dot forms refused (R6);
   - a 24-byte response for a known user while `kvtest`'s fault wrapper fails every read:
     `ErrLogonFailure`, not `ErrUnavailable` (catches a check after a read, R7); a malformed
