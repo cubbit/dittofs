@@ -1180,10 +1180,10 @@ func TestTheRebuildReadsNoPayloadOfAnyNewestOrOlderSegment(t *testing.T) {
 	ctx := context.Background()
 	rd := newReader(ctx, rec, r.clk, nil)
 	var st State
-	if err := runAttach(ctx, deps, rd, &st, journalID, core.Version{}); err != nil {
+	if err := runAttach(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	if err := runRebuild(ctx, deps, rd, &st, journalID, core.Version{}); err != nil {
+	if err := runRebuild(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
 
