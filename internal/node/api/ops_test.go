@@ -209,23 +209,27 @@ func TestCancel(t *testing.T) {
 }
 
 // An operation the schedule started, written with the zero Account as
-// identity's loop writes it, reads through both routes as the zero
-// Principal, never as an account's; and, on a node with no Progress, with
-// its progress unknown.
+// identity's loop writes it, reads through both routes with the account
+// {"kind":"schedule"}, the spelling the audit's actor filter takes, never as
+// an account's; and, on a node with no Progress, with its progress unknown.
 func TestScheduledOperationReadsAsTheSchedule(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	op := s.putOp(t, newOp(apiv1.OpRotateMachinePassword, entity.Principal{}), 0)
+	const want = `{"kind":"schedule"}`
 	r := s.do(t, http.MethodGet, opPath(op.ID), "")
-	if got := decodeOp(t, "GET operation", r.body).Account; r.status != http.StatusOK || got != (apiv1.Principal{}) {
-		t.Errorf("GET %s: answered %d account %+v, want 200 the zero principal", opPath(op.ID), r.status, got)
+	var one struct{ Account json.RawMessage }
+	if err := json.Unmarshal(r.body, &one); err != nil || r.status != http.StatusOK || string(one.Account) != want {
+		t.Errorf("GET %s: answered %d account %s, want 200 %s", opPath(op.ID), r.status, one.Account, want)
 	}
 	if got := decodeOp(t, "GET operation", r.body).Progress; got != (apiv1.Progress{Total: -1}) {
 		t.Errorf("GET %s with no Progress: progress %+v, want total -1, unknown", opPath(op.ID), got)
 	}
 	r = s.do(t, http.MethodGet, "/api/v1/operations", "")
-	var page apiv1.Page[apiv1.Operation]
-	if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK || len(page.Items) != 1 || page.Items[0].Account != (apiv1.Principal{}) {
-		t.Errorf("GET /api/v1/operations: answered %d %s, want 200 one operation with the zero principal", r.status, r.body)
+	var page struct {
+		Items []struct{ Account json.RawMessage }
+	}
+	if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK || len(page.Items) != 1 || string(page.Items[0].Account) != want {
+		t.Errorf("GET /api/v1/operations: answered %d %s, want 200 one operation with the account %s", r.status, r.body, want)
 	}
 }
 
@@ -393,6 +397,9 @@ func TestAuditRead(t *testing.T) {
 	all := page("").Items
 	if len(all) != 4 {
 		t.Fatalf("GET /api/v1/audit: %d records, want 4", len(all))
+	}
+	if got, want := all[3].Actor, (apiv1.Principal{Kind: "schedule"}); got != want {
+		t.Errorf("GET /api/v1/audit: the schedule's record reads with actor %+v, want %+v, as ?actor=schedule names it", got, want)
 	}
 	for _, tc := range []struct {
 		q    string

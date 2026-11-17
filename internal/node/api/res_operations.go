@@ -57,15 +57,16 @@ func viewOp(ctx context.Context, d Deps, op entity.Operation) opRead {
 	return v
 }
 
-// principalOf is p on the wire.
+// principalOf is p on the wire, an operation's account and an audit
+// record's actor alike.
 //
-// decision: the zero principal is the schedule's, and reads as the zero
-// Principal, with no kind and no ID, never as a kind and the zero ID, which
-// would read as an account having acted. Overturned if the wire gains a
-// field naming the schedule apart from the account.
+// decision: the zero principal is the schedule's, and reads as the kind
+// schedule with no ID, the spelling the audit's actor filter takes, never as
+// a kind and the zero ID, which would read as an account having acted.
+// Overturned if a principal kind is ever named schedule.
 func principalOf(p entity.Principal) apiv1.Principal {
 	if p == (entity.Principal{}) {
-		return apiv1.Principal{}
+		return apiv1.Principal{Kind: apiv1.ScheduleKind}
 	}
 	return apiv1.Principal{Kind: p.Kind.String(), ID: p.ID.String()}
 }
