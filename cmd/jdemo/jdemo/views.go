@@ -37,7 +37,7 @@ func (d *Demo) viewFS() {
 		}
 		rows = append(rows, viewRow{
 			key:  e.Name(),
-			text: fmt.Sprintf("%-32s %9s  %s", e.Name(), humanSize(size), note),
+			text: fmt.Sprintf("%-32s %9s  %s", e.Name(), HumanSize(size), note),
 		})
 	}
 	// ReadDir's ascending names leave growth reading downward: the newest
@@ -48,7 +48,7 @@ func (d *Demo) viewFS() {
 
 // humanSize renders bytes at the scale a screen can carry: at distance,
 // "256 MiB" reads and "268435456" does not.
-func humanSize(n int64) string {
+func HumanSize(n int64) string {
 	switch {
 	case n >= 1<<30:
 		return strconv.FormatInt(n>>30, 10) + " GiB"
