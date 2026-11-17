@@ -16,11 +16,13 @@ type ShareSpec struct {
 }
 
 // ShareStatus is what the system records of a share: its state, enabled,
-// quiesced, removing or retired; and on how many nodes it is applied, absent
-// from a write's answer, which is made before any node can have applied it.
+// quiesced, removing or retired; on how many nodes it is applied; and how
+// many of the nodes reporting a status refused it. A write's answer, made
+// before any node can have applied the share, carries neither count.
 type ShareStatus struct {
 	State   string   `json:"state"`
 	Applied *Applied `json:"applied,omitempty"`
+	Refused int      `json:"refused,omitempty"`
 }
 
 // NewShare is the body that creates a share: its spec and its export policy.

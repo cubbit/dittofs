@@ -557,7 +557,7 @@ func TestExportPolicyDefault(t *testing.T) {
 
 // ?wait=serving on a share returns once every node reporting a status has
 // reconciled the share list through the share, on the clock's next second,
-// or once a node refuses it; a node refusing a record of another kind with
+// or once a node refuses it, counting the refusal in the status; a node refusing a record of another kind with
 // the share's ID leaves it parked.
 func TestShareWaitServing(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
@@ -565,20 +565,21 @@ func TestShareWaitServing(t *testing.T) {
 		name, what string
 		then       func(entity.NodeStatus, entity.Share) entity.NodeStatus
 		want       *apiv1.Applied
+		refused    int
 	}{
 		{"a", "the second node reconciled through it", func(st entity.NodeStatus, sh entity.Share) entity.NodeStatus {
 			st.ShareList = sh.Position
 			return st
-		}, &apiv1.Applied{Nodes: 2, Of: 2}},
+		}, &apiv1.Applied{Nodes: 2, Of: 2}, 0},
 		{"b", "the second node refused it", func(st entity.NodeStatus, sh entity.Share) entity.NodeStatus {
 			st.ShareList = sh.Position
 			st.Refused = []entity.RefusedRecord{{Record: entity.ResourceRef{Kind: entity.ResourceShare, ID: sh.ID[:]}}}
 			return st
-		}, &apiv1.Applied{Nodes: 1, Of: 2}},
+		}, &apiv1.Applied{Nodes: 1, Of: 2}, 1},
 		{"c", "the second node refused another kind's record of its ID", func(st entity.NodeStatus, sh entity.Share) entity.NodeStatus {
 			st.Refused = []entity.RefusedRecord{{Record: entity.ResourceRef{Kind: entity.ResourceSetting, ID: sh.ID[:]}}}
 			return st
-		}, nil},
+		}, nil, 0},
 	} {
 		id, loc := s.createShare(t, tc.name, s.namespace(t))
 		sh, _ := s.share(t, id)
@@ -608,8 +609,8 @@ func TestShareWaitServing(t *testing.T) {
 			t.Fatalf("poll after %s: parked again, want answered", tc.what)
 		}
 		var got apiv1.Share
-		if p.err != nil || p.status != http.StatusOK || json.Unmarshal(p.body, &got) != nil || got.Status.Applied == nil || *got.Status.Applied != *tc.want {
-			t.Errorf("poll after %s: answered %d %s err %v, want 200 applied %+v", tc.what, p.status, p.body, p.err, *tc.want)
+		if p.err != nil || p.status != http.StatusOK || json.Unmarshal(p.body, &got) != nil || got.Status.Applied == nil || *got.Status.Applied != *tc.want || got.Status.Refused != tc.refused {
+			t.Errorf("poll after %s: answered %d %s err %v, want 200 applied %+v refused %d", tc.what, p.status, p.body, p.err, *tc.want, tc.refused)
 		}
 	}
 }
