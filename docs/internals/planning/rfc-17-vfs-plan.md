@@ -56,15 +56,16 @@ is the contract to agree with the journal v2 team before either side builds agai
   `Deps.Identity` as the target RFC 18 brings. RFC 18's plan (#4058) adds the field in its epic 1
   and moves this resolver into identity in its epic 3.
 - It lives in `internal/vfs/admit`, since resolving the caller is admission's step 4 (§4.9), over
-  `Principals.SharePolicy`, `ByProtocolID` (a `Claimed` caller's uid), `Groups`, `Grant` and
-  `User` (refusing a disabled or deleted principal, RFC 18 §6.1), filling
+  the share's policy built from one `ShareIndex.Share` read (the share, its `GrantVersion` and
+  its export policy in one snapshot, RFC 16 §3's `SharePolicy`), `ByProtocolID` (a `Claimed`
+  caller's uid), `Groups`, `Grant` and `User` (refusing a disabled or deleted principal, RFC 18 §6.1), filling
   `Caller.Mapped` before squash and `Principal` after it, so open state receives the unsquashed
   principal (RFC 14's `Caller.Principal`). It is the resolver, not a fake of it, so squash is
   written once.
 - It caches nothing, so there is no cache key to get wrong in the meantime:
 
   ```go
-  // ponytail: resolves from the store's SharePolicy, Groups and Grant alone,
+  // ponytail: resolves from the store's ShareIndex.Share, Groups and Grant alone,
   // uncached; RFC 18's resolver replaces it, behind Deps.Identity, adding the
   // cache and directories.
   ```
@@ -460,7 +461,7 @@ which are the node's, a removal's or a cut's.
 
    | Needed by | Missing on `feat/storage-v2` |
    |---|---|
-   | D4's resolver (admission's step 4) | `Principals.SharePolicy`; `Grant` returns `(ShareAccess, error)`, not RFC 16's `(ShareAccess, bool, error)` |
+   | D4's resolver (admission's step 4) | `Grant` returns `(ShareAccess, error)`, not RFC 16's `(ShareAccess, bool, error)` |
    | piece 6 streams | `Files.Streams` (RFC 7) |
    | a migration of `develop`'s shares into this store, if one is ever built (§6's ledger) | the upgrade mapping, with a case per mapping: `require_kerberos` to `MinProof` Ticket, else `allow_auth_sys` to None, else Secret; `min_kerberos_level` krb5i and krb5p to Integrity and Privacy, and to none on a share whose mapped `MinProof` admits AUTH_SYS (None or Claimed), so a `require_kerberos` krb5p share stored with `allow_auth_sys`, as `develop` stores it by default, keeps Privacy; SMB's guest flag set where the adapter-wide guest setting is on and the share has `allow_auth_sys`; SMB's encrypt flag set by `encrypt_data` or a mapped Privacy; both minimums binding SMB on the share as today (RFC 16 §2.3) |
    | piece 3 `StatFS` | `Capacity.Info`; `Usage` has a different signature |
