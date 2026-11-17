@@ -881,21 +881,6 @@ func TestAConnectionHasOneStatusWait(t *testing.T) {
 	})
 }
 
-// A record that chains a second message closes the connection, answered
-// nothing, until every member of a chain is served.
-func TestAChainedRecordClosesTheConnection(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		s := newSeam(t, testproto.New(adapter.Deps{}).Bare(), 1<<20)
-		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2})
-		if err := <-s.closed; !errors.Is(err, core.ErrChain) {
-			t.Errorf("a chained record closed the connection with %v", err)
-		}
-		if !s.sentNothing() {
-			t.Error("a chained record was answered")
-		}
-	})
-}
-
 // A Cancel ends the hold it names and is answered nothing.
 func TestACancelIsAnsweredNothing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

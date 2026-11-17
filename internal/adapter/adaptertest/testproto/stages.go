@@ -10,6 +10,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // The stages a connection of the full protocol sets.
@@ -180,6 +181,8 @@ func asHeader(h core.Header) (*header, bool) {
 		return h, true
 	case *tagged:
 		return h.header, true
+	case stepless:
+		return h.header, true
 	case *final:
 		return &h.header, true
 	}
@@ -302,8 +305,9 @@ type replay struct {
 }
 
 // Lookup returns a fresh copy of the reply cached for h's session and
-// sequence, in a buffer reserved from the reply budget under ctx; or nil, nil
-// when none is cached. The copy grants afresh, what the replayed request
+// sequence, in a buffer reserved from the reply budget under ctx, whose
+// deadline passing answers ErrDelay of DelayResources; or nil, nil when none
+// is cached. The copy grants afresh, what the replayed request
 // charged and at least one, through the connection's credits: the grant the
 // stored reply carried was counted when that reply was encoded.
 //
@@ -328,6 +332,9 @@ func (r *replay) Lookup(ctx context.Context, h core.Header) (*resources.Buf, err
 		return nil, errors.New("testproto: a cached reply and no reply budget to copy it under")
 	}
 	buf, err := r.pool.Get(ctx, netip.Addr{}, len(cached))
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, &vfs.Delay{Cause: vfs.DelayResources}
+	}
 	if err != nil {
 		return nil, err
 	}

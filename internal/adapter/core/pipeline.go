@@ -313,11 +313,8 @@ func newPipeline(sh *shared, st Stages, l link) *pipeline {
 // connection at its bound is not read; the request runs on a goroutine of its
 // own from there.
 //
-// decision: a record is served by its first message alone. One whose first
-// header names a next, a chain, closes the connection, and one whose next is
-// not a valid step is answered as a decode error and then closes it, since
-// nothing past it can be read. The ceiling: a client that chains is
-// disconnected. Withdraw it when the chain runner serves every member.
+// A record whose first header names a next is a chain, which serveChain
+// takes from there (§4.7).
 //
 // decision: the reader runs a record's first message as far as Admit, so a
 // connection at its bound is not read, and everything after runs on the
@@ -344,16 +341,16 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		return
 	}
 	tr.version, tr.versioned = h.Version(), true
+	if h.Next() != 0 {
+		p.serveChain(tr, rec, h, err)
+		return
+	}
 	if err != nil {
 		// The refusal of a header that failed Decode is not passed to Wrap:
 		// nothing proved the session it names, so a signature under that
 		// session would hand a peer a valid checksum under a key it does not
 		// hold (§5.5).
-		p.refuse(tr, rec, h, stageDecodeHeader, fmt.Errorf("%w: %v", ErrDecode, err), false, h.Next() != 0)
-		return
-	}
-	if h.Next() != 0 {
-		p.drop(tr, rec, errChain)
+		p.refuse(tr, rec, h, stageDecodeHeader, fmt.Errorf("%w: %v", ErrDecode, err), false, false)
 		return
 	}
 	u, err := p.st.Security.Unwrap(h, rec, nil)
@@ -415,9 +412,6 @@ func (p *pipeline) drop(tr *track, rec *resources.Buf, err error) {
 	}
 	p.l.close(err)
 }
-
-// errChain closes a connection whose record chains more than one message.
-var errChain = errors.New("core: a record of more than one message")
 
 // errUnwrapNeither closes a connection whose Unwrap returned no header and
 // no error.
@@ -526,6 +520,11 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 type answerer interface {
 	// reserve takes the reply buffer of n bytes the message's call answers in.
 	reserve(ctx context.Context, n int) (*resources.Buf, error)
+	// status takes the buffer of n bytes a status alone goes out in, or
+	// none once its wait has ended.
+	status(ctx context.Context, n int) *resources.Buf
+	// lookup asks the replay cache for h's reply.
+	lookup(ctx context.Context, h Header) (*resources.Buf, error)
 	// answered takes the message's encoded reply, its key and its status.
 	answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, err error)
 	// unanswered ends a message a NoReply row answered.
@@ -537,6 +536,14 @@ type alone struct{ p *pipeline }
 
 func (a alone) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	return a.p.sh.reserveReply(ctx, a.p.l.remote, n)
+}
+
+func (a alone) status(ctx context.Context, n int) *resources.Buf {
+	return a.p.sh.reserveStatus(ctx, a.p.l.remote, n, a.p.l.close)
+}
+
+func (a alone) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
+	return a.p.st.Replay.Lookup(ctx, h)
 }
 
 func (a alone) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, err error) {
@@ -556,7 +563,7 @@ func (a alone) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf
 // request, for a related member after it.
 func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Request, release func(), a answerer) *Request {
 	ctx := tr.ctx
-	cached, err := p.st.Replay.Lookup(ctx, h)
+	cached, err := a.lookup(ctx, h)
 	if cached != nil {
 		tr.label.replayHit()
 		tr.cached = true
@@ -622,8 +629,16 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 			err = fmt.Errorf("%w: %v", ErrDecode, err)
 			p.refused(tr, stageDecodeArgs)
 		} else if op.Members != nil {
-			p.compound(tr, h, r, tb, op, inv, args[n:], release)
-			return r
+			if _, ok := a.(alone); ok {
+				p.compound(tr, h, r, tb, op, inv, args[n:], release)
+				return r
+			}
+			// decision: a compound row reached as a chain's member is
+			// refused not supported: its one reply cannot join the chain's
+			// record, and no protocol chains one (NFSv4 does not chain, and
+			// SMB has no compound row). Overturned if a protocol must.
+			err = fmt.Errorf("%w: a compound row as a chain's member", ErrNotSupported)
+			p.refused(tr, stageRoute)
 		}
 	}
 	var reply *resources.Buf
@@ -703,7 +718,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 		return
 	}
 	if reply == nil {
-		if reply = p.sh.reserveStatus(ctx, p.l.remote, p.st.Header.ReplyLen(h), p.l.close); reply == nil {
+		if reply = a.status(ctx, p.st.Header.ReplyLen(h)); reply == nil {
 			release()
 			p.end(tr, false, 0, 0, err)
 			return

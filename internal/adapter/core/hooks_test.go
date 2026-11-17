@@ -181,7 +181,6 @@ type Pipeline = pipeline
 
 var (
 	WithDefaults     = withDefaults
-	ErrChain         = errChain
 	ErrUnwrapNeither = errUnwrapNeither
 	ErrNoHold        = errNoHold
 )

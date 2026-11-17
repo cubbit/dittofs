@@ -172,6 +172,7 @@ type protocolSeries struct {
 	refusals           [stages]adder
 	wire               [stages]observer
 	mapped             [len(serviceErrors)]adder
+	splits             [splits]adder
 }
 
 // labelSeries is what a request records before Route returns its table.
@@ -188,7 +189,6 @@ type tableSeries struct {
 	member                                bool            // the table is a compound row's Members
 	chains                                map[uint32]Call // by operation code
 	heldRequests, heldBytes, holdRefusals adder
-	splits                                [splits]adder
 	panics                                map[uint32]adder        // by operation code
 	panicLines                            map[uint32]*lineLimiter // by operation code
 	names                                 map[uint32]string       // the request span's name, by operation code
@@ -207,8 +207,8 @@ func (t *tableSeries) routed(from *labelSeries) {
 	t.inFlight.Add(1)
 }
 
-func (t *tableSeries) holdRefused()  { t.holdRefusals.Add(1) }
-func (t *tableSeries) split(r split) { t.splits[r].Add(1) }
+func (t *tableSeries) holdRefused()     { t.holdRefusals.Add(1) }
+func (s *protocolSeries) split(r split) { s.splits[r].Add(1) }
 
 // panicked counts op's panic. An op outside the table counts nothing: a
 // recovered panic is never turned into a crash.
@@ -302,6 +302,9 @@ func (sh *shared) newProtocol(p string) protocolSeries {
 	for _, st := range timed {
 		ps.wire[st] = sh.wire(p, stageNames[st])
 	}
+	for r, reason := range splitReasons {
+		ps.splits[r] = sh.fam[vChainSplits](p, reason)
+	}
 	return ps
 }
 
@@ -319,9 +322,6 @@ func (sh *shared) newTable(p string, t *OpTable, member bool) *tableSeries {
 		panics:         make(map[uint32]adder, len(t.Ops)),
 		panicLines:     make(map[uint32]*lineLimiter, len(t.Ops)),
 		names:          make(map[uint32]string, len(t.Ops)),
-	}
-	for r, reason := range splitReasons {
-		ts.splits[r] = sh.fam[vChainSplits](p, reason)
 	}
 	for code, op := range t.Ops {
 		ts.panics[code] = sh.fam[vPanics](p, strings.ToLower(op.Name))
