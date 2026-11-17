@@ -257,8 +257,9 @@ func TestPreconditions(t *testing.T) {
 }
 
 // A body the request type refuses is refused before anything else, a
-// status field and a patch setting one, an unknown field or a wrong type
-// among them, and writes nothing.
+// status field and a patch setting one, an unknown field or a wrong type,
+// a patch of null or of nothing among them, ahead of a stale tag, and
+// writes nothing.
 func TestBodyRefused(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	id := uuid.NewString()
@@ -273,8 +274,10 @@ func TestBodyRefused(t *testing.T) {
 		{"PATCH of an unknown field", http.MethodPatch, `{"spec":{"colour":"red"}}`, "spec.colour"},
 		{"PATCH of a wrong type", http.MethodPatch, `{"spec":{"turns":"many"}}`, "spec.turns"},
 		{"PATCH that is no object", http.MethodPatch, `[]`, ""},
+		{"PATCH of null", http.MethodPatch, `null`, ""},
+		{"PATCH with no body", http.MethodPatch, ``, ""},
 	} {
-		r := s.do(t, tc.method, knobAt(id), tc.body, "If-Match", `"1"`)
+		r := s.do(t, tc.method, knobAt(id), tc.body, "If-Match", `"9"`)
 		if r.status != http.StatusBadRequest {
 			t.Errorf("%s: answered %d %s, want 400", tc.name, r.status, r.body)
 			continue

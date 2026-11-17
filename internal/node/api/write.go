@@ -96,6 +96,13 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		if err := decode(bytes.NewReader(body), &rq.Body); err != nil {
 			return answer{}, err
 		}
+		if r.Method == http.MethodPatch {
+			// An empty body or a null decodes as a body setting nothing,
+			// so the patch's own shape is checked here, before its key.
+			if _, err := mergePatch([]byte("{}"), body); err != nil {
+				return answer{}, err
+			}
+		}
 		var idem *entity.IdempotencyRecord
 		if key != "" {
 			c, _ := auth.CallerFrom(ctx)
