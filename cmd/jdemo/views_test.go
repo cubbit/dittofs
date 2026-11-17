@@ -59,3 +59,36 @@ func TestFileSystemViewListsSegments(t *testing.T) {
 		t.Errorf("filesystem view seems to list the state file inside the dir:\n%s", screen)
 	}
 }
+
+func TestIndexViewAnswersRealRows(t *testing.T) {
+	// The flip T7.6 made: Inspect().File answers the live index's rows,
+	// not a refusal. The returned entry names the same record the dump
+	// walk reads — segment 3, offset 48 — the two views agree on the
+	// truth of where hello world lives.
+	base := t.TempDir()
+	dir := filepath.Join(base, "journal")
+	d, out := newTestDemo(t, dir, "")
+	if err := d.open(context.Background()); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = d.j.Close() }()
+	h, err := d.j.Share(1, 0, journal.Version{})
+	if err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	if _, err := h.WriteAt(context.Background(), FILE, 0, []byte("hello world"), 0); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	d.viewIndex()
+	screen := out.String()
+	for _, want := range []string{
+		"held",        // the entry's kind
+		"0–11",        // its extent
+		"v1",          // its version
+		"record 3@48", // its backing record, where the dump walks to it
+	} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("index view after a write lacks %q:\n%s", want, screen)
+		}
+	}
+}

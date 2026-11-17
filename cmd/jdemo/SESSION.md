@@ -48,15 +48,16 @@ go run ./cmd/jdemo --dir talk-journal    # name the directory (a used one opens 
 
 ## What answers "not implemented" today, and why
 
-`sync`, the offload family, holds/stamps, `repack`, `Inspect().File`,
-`Inspect().Verify` answer the journal's own `journal: not implemented`
-verbatim, and the story walks on — the tool never claims a layer beneath
-the built ones. The `index` all-entries view and the per-segment
-accounting answer empty (no error to print): the view says so in one
-line. Rebase this branch onto fresh `feat/storage-v2` as those subtasks
-land and the same story fills in — recovery's assembly (T7.6) brings the
-reopen and the index rows, epic 9a the segment accounting and the
-offload flow.
+`sync`, the offload family, holds/stamps, `repack` and `Inspect().Verify`
+answer the journal's own `journal: not implemented` verbatim, and the
+story walks on — the tool never claims a layer beneath the built ones.
+`(i)` shows the story file's real index rows (the read-out landed with
+recovery's assembly); `(s)` answers empty with its one-line note, and a
+used `--dir` still refuses to reopen — the recovery pass that reopens a
+served journal is its own later subtask, the assembly only rebuilds what
+an open holds. Rebase this branch onto fresh `feat/storage-v2` as those
+subtasks land and the same story fills in — epic 9a's T9.9 the segment
+accounting, the offload flow, and the recovery pass the reopen.
 
 ## Numbers worth narrating
 

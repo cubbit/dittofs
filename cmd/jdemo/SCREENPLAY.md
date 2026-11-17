@@ -41,7 +41,12 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
 - **"Eleven bytes became ONE record — that's the unit: never a partial write."**
 - **"v1 is not a timestamp — it's a drawn version, from the window we raised.
     Every byte range answers to one."**
-- Now open `f` — **the room sees this:**
+- Now open `i` — **THE MOMENT**: "the honesty period ends here — here is
+  the placement index itself, the in-memory structure every read walks:
+  ONE held entry, v1, backed by the record at segment 3, offset 48." Let
+  the room read the row; point at `record 3@48` — "the same place the
+  data dump will take you to."
+- Then `f` — **the room sees this:**
   - **"Four segments already on disk, before we wrote anything. This is the
     open's work, and it isn't waste — walk the numbers:"**
     - **"Segment 1 — the HEADROOM spare. The class records that RETURN

@@ -104,7 +104,7 @@ func (d *demo) viewStats() {
 func (d *demo) viewIndex() {
 	es, err := d.j.Inspect().File(FILE)
 	if err != nil {
-		d.printf("index: %v   // the read-out lands with recovery's assembly\n", err)
+		d.printf("index: %v\n", err)
 		return
 	}
 	rows := make([]viewRow, 0, len(es))
