@@ -624,9 +624,11 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   - Two connections carrying one `testproto` session: the first's close leaves the session to
     the second, and the second's ends it.
   - `Violate`, which calls `Conn.Close` from its handler, returns, and the connection closes.
-  - On a pipe, a reader held by a hook between each write of its read deadline (the arming,
-    the restart after a receive grant, the disarm) and its context check while `Conn.Close`
-    runs still stops, each time (RFC 20 §6.4, as #4583 states the check).
+  - On a pipe, a reader held by a hook just before each write of its read deadline (the
+    arming, the restart after a receive grant, the disarm), while `Conn.Close` runs to its
+    end, cancel then the past deadline, and then released, so its write overwrites the stop:
+    it stops before a backstop shorter than `read_timeout`, each time (RFC 20 §6.4, as #4583
+    states the check).
   - `Stop` with three connections open returns once each is closed and torn down.
   - An `OnClose` declared in the test finds its context live after the connection's close, and
     ended 30 s from the close.
@@ -640,8 +642,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   ended context (catches `OnClose` run before what runs has ended, a reply sent after the close,
   and a reservation kept, R15). The two connections (catch `OnClose` run twice or not at all).
   `Violate` under a backstop deadline (catches a `Conn.Close` that waits for its caller, R16).
-  The held reader (catches a deadline write with no context check after it, whose disarm
-  overwrites the stop, R15).
+  The held reader (catches a deadline write with no context check after it: the disarm then
+  hangs and the other two run to `read_timeout`, past the backstop, R15).
   `Stop` (catches connections left open by `Stop`). The `OnClose` context, the clock advanced
   by the test (catches the connection's context handed on, which the close has cancelled, and a
   context with no end). `FuzzConnection`, over a pipe connection
@@ -999,8 +1001,9 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 - **Tests:** in `pkg/resources/budget_test.go`, the count alone (catch a quarter that rounds to
   0 under a limit of 3, a `SetLimit` that drops or recounts the connections open, and a count
   updated outside the mutex, R60). Loopback tests in `accept_test.go`, clients on
-  `127.0.0.1` and `127.0.0.2` (catch the quarter not applied, applied to the node rather than
-  the address, a closed connection counted under the wrong reason, and a warning that drops
+  `127.0.0.1` and `127.0.0.2`, each case needing two sources skipped where `127.0.0.2` is
+  not a loopback source, as on macOS without an alias (catch the quarter not applied, applied
+  to the node rather than the address, a closed connection counted under the wrong reason, and a warning that drops
   the count it held back, R8, R9). The limit of 1 (catches `limit` and `per_address` swapped,
   and a count the teardown never releases, which `CheckLeaks` cannot read, G13). The two
   servers (catches a count per server, under which NFS and SMB each get the whole limit, R60).
@@ -1080,9 +1083,9 @@ deadline's interplay with the receive wait (G10).
 | 1 | T4.1 | 2.5 | none | the server's states and listeners, with nothing accepted; open at once |
 | 2 | T4.3 | 2.5 | #4478 | the record cut and the `Framer` change; beside PR 1 |
 | 3 | T4.4 | 2.5 | T5.1a | the writer, held to the suite of `out`; beside PR 1 and PR 2 |
-| 4 | T4.10, T4.2a, T4.7a | 7 | PR 1, PR 2, PR 3 | one connection end to end: the end-to-end specification green, and E4's part of S3 |
+| 4 | T4.10, T4.2a, T4.7a | 7 | PR 1, PR 2, PR 3, #4583 | one connection end to end: the end-to-end specification green, and E4's part of S3 |
 | 5 | T4.5a, T4.6 | 5.25 | PR 4 | what the node calls while serving and stopping: the drain and `Reconfigure` |
-| 6 | T4.7b, T4.9 | 3.75 | PR 5 | what the node reads and drives: liveness, `Connections`, the sidecar runner |
+| 6 | T4.7b, T4.9 | 3.75 | PR 5, #4583 | what the node reads and drives: liveness, `Connections`, the sidecar runner |
 | 7 | T4.8, T4.11 | 2.5 | PR 5, T5.9 | the socket's options and the connection series |
 | 8 | T4.2b | 2 | PR 7 | the connection limit and its count, `resources.ConnLimit` |
 | 9 | T4.5b | 0.75 | PR 5, T5.4, `MoveTarget` | the drain's move target, once the service names one |
@@ -1235,7 +1238,8 @@ part waits on something the rest does not: T4.2 (the accept loop now; the limit 
 `Connections` after). T4.10 (the connection, about 3.5 man-days) and T4.11 (the series, 1.5)
 are new; T4.3 gains the `Framer` change and `testproto`'s fragments; T4.9 gains the order
 around each adapter call and, since #4533, the retry of a failed `Sync`; T4.2b gains RFC 24's
-connection count, `resources.ConnLimit`, which #4533 added after E3 had merged. Cited work moved: the connection-state charge, from T4.2 to T4.2a;
+connection count, `resources.ConnLimit`, which #4533 added after E3 had merged; T4.6 gains
+`settings.NFS.Validate`'s TLS refusal (+0.25). Cited work moved: the connection-state charge, from T4.2 to T4.2a;
 `adapter_listener_lost` in `Health`, from T4.7 to T4.2a; `OnClose` on close, from T4.5 to
 T4.10; the reader's pause at the writer's bound, from T4.4 to T4.10; `Notify`'s order over
 loopback, from T4.4 to E5's T5.1c.
