@@ -210,6 +210,7 @@ func TestARemovalLeftAtItsMarkIsJoinedAtStart(t *testing.T) {
 	})))
 	configure(t, h, storeA)
 	sh = createShare(t, h, "a", storeA)
+	file := createFiles(t, h, sh, 1)[0]
 	deleteShare(t, h, sh)
 	if s := tagState(t, h, sh.ID); s != entity.TagServing {
 		t.Fatalf("the shard before the start: %v, want serving", s)
@@ -225,6 +226,9 @@ func TestARemovalLeftAtItsMarkIsJoinedAtStart(t *testing.T) {
 	}
 	if _, ok := h.Node().Bound(sh.ID); ok {
 		t.Error("the share being removed after the start: in the running set, want out")
+	}
+	if _, err := h.Node().Engine().Read(t.Context(), sh.ID, file.ID, 0, make([]byte, 1)); !errors.Is(err, vfs.ErrStale) {
+		t.Errorf("a read of the share being removed after the start: got %v, want %v, its binding unbound", err, vfs.ErrStale)
 	}
 }
 
