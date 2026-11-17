@@ -4,8 +4,8 @@
     "kicker": "Impara DittoFS · RFC 29",
     "title": "Un solo [[dt|test harness]]",
     "lead": "Un solo comando esegue tutte le suite di test a partire da un unico elenco e riporta i risultati in un unico formato. Un'esecuzione che non ha testato nulla non può mai risultare verde.",
-    "built": "Costruito dall'RFC 29 a 06b1e48",
-    "notes": "Fonte: docs/internals/rfcs/rfc-29-test-harness.md, commit 06b1e48. L'RFC descrive l'harness a cui il progetto vuole arrivare; questa presentazione segue la sua quinta revisione. Tasti: → avanti, S note del relatore. Clicca un termine sottolineato per la definizione."
+    "built": "Costruito dall'RFC 29 a 9255091",
+    "notes": "Fonte: docs/internals/rfcs/rfc-29-test-harness.md, commit 9255091. L'RFC descrive l'harness a cui il progetto vuole arrivare; questa presentazione segue la sua quinta revisione. Tasti: → avanti, S note del relatore. Clicca un termine sottolineato per la definizione."
   },
   "intro": {
     "twoTitle": "L'RFC 29 in due frasi",

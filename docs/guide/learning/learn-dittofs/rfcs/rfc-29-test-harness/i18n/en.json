@@ -4,8 +4,8 @@
     "kicker": "Learn DittoFS · RFC 29",
     "title": "One [[dt|test harness]]",
     "lead": "One command runs every test suite from one list and reports in one result format, and a run that tested nothing can never come out green.",
-    "built": "Built from RFC 29 at 06b1e48",
-    "notes": "Source: docs/internals/rfcs/rfc-29-test-harness.md, commit 06b1e48. The RFC describes the harness the project wants to end up with; this deck follows its fifth revision. Keys: → next, S speaker notes. Click any underlined term for its definition."
+    "built": "Built from RFC 29 at 9255091",
+    "notes": "Source: docs/internals/rfcs/rfc-29-test-harness.md, commit 9255091. The RFC describes the harness the project wants to end up with; this deck follows its fifth revision. Keys: → next, S speaker notes. Click any underlined term for its definition."
   },
   "intro": {
     "twoTitle": "RFC 29 in two sentences",
