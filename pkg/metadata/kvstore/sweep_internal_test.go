@@ -210,6 +210,26 @@ func TestSweepTrimKeepsSession(t *testing.T) {
 	}
 }
 
+// A batch with 8 keys left reads 5 of a session's 20 refresh hashes, each with
+// its mirror, not all of them.
+func TestSessionHashRowsStopsAtTrim(t *testing.T) {
+	f := sweepFix{t, openStore(t)}
+	s := f.session(20)
+	err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
+		rows, err := sessionHashRows(r, s.ID, trimRows(8))
+		if err != nil {
+			return err
+		}
+		if len(rows) != 10 {
+			t.Errorf("hash rows read for a batch with 8 keys left: got %d, want 10", len(rows))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // An expiry row naming a running operation at the time its end would expire
 // it is stale: the row goes, the operation stays.
 func TestSweepRunningOperation(t *testing.T) {
