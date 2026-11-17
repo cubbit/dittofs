@@ -54,7 +54,7 @@ func sweepAt(t *testing.T, clk *sim.TestClock, open func() kv.KV, at time.Time) 
 // Each expiring kind outlives a sweep just before its expiry, and one sweep
 // just after it deletes the record with every row it had.
 func testSweepExpires(t *testing.T, d Durable) {
-	alice := entity.NewUser()
+	var alice entity.Principal
 	src := netip.MustParsePrefix("192.0.2.1/32")
 	for _, c := range []struct {
 		name  string
@@ -110,6 +110,7 @@ func testSweepExpires(t *testing.T, d Durable) {
 			must(t, kvstore.Init(ctx, db, uuid.New()))
 			s, err := kvstore.Open(ctx, db)
 			must(t, err)
+			alice = account(t, s)
 			expires := c.write(t, s.ControlPlane(), clk.Now())
 			written := rowsOf(t, db, c.kinds)
 			for kind, n := range written {
@@ -155,7 +156,7 @@ func testSweepRacesRefresh(t *testing.T, kvo Opener) {
 		t.Run(b.name, func(t *testing.T) {
 			s, h := heldStore(t, b)
 			cp := s.ControlPlane()
-			sess := entity.Session{ID: uuid.New(), Account: entity.NewUser(), Refresh: [32]byte{1}, Expires: time.Unix(1, 0).UTC()}
+			sess := entity.Session{ID: uuid.New(), Account: account(t, s), Refresh: [32]byte{1}, Expires: time.Unix(1, 0).UTC()}
 			must(t, cp.PutSession(ctx, sess))
 			var sw kvstore.Swept
 			outer, inner := race(h,
@@ -182,7 +183,7 @@ func testSweepRacesRefresh(t *testing.T, kvo Opener) {
 func testSweepStaleRows(t *testing.T, kvo Opener) {
 	s, db := newStore(t, kvo)
 	cp := s.ControlPlane()
-	alice := entity.NewUser()
+	alice := account(t, s)
 	sess := entity.Session{ID: uuid.New(), Account: alice, Refresh: [32]byte{1}, Expires: time.Unix(4_000_000_000, 0).UTC()}
 	must(t, cp.PutSession(ctx, sess))
 	pair := entity.SignInKey{Account: alice, Source: netip.MustParsePrefix("192.0.2.1/32")}

@@ -64,9 +64,10 @@ func (f sweepFix) counts(n int) {
 
 // tokens writes n tokens due at 1970-01-01 01:00.
 func (f sweepFix) tokens(n int) {
+	account := storedUser(f.t, f.s)
 	f.write(func(tx entity.ControlPlaneTx) error {
 		for i := range n {
-			tok := entity.APIToken{ID: uuid.New(), Account: entity.NewUser(), Hash: [32]byte{byte(i + 1)}, Expires: time.Unix(3600, 0)}
+			tok := entity.APIToken{ID: uuid.New(), Account: account, Hash: [32]byte{byte(i + 1)}, Expires: time.Unix(3600, 0)}
 			if err := tx.PutAPIToken(tok); err != nil {
 				return err
 			}
@@ -89,7 +90,7 @@ func (f sweepFix) audit() {
 // session writes a session due at 1970-01-01 02:00 that has had n refresh
 // hashes.
 func (f sweepFix) session(n int) entity.Session {
-	s := entity.Session{ID: uuid.New(), Account: entity.NewUser(), Expires: time.Unix(7200, 0).UTC()}
+	s := entity.Session{ID: uuid.New(), Account: storedUser(f.t, f.s), Expires: time.Unix(7200, 0).UTC()}
 	f.write(func(tx entity.ControlPlaneTx) error {
 		s.Refresh = [32]byte{1}
 		if err := tx.PutSession(s); err != nil {
