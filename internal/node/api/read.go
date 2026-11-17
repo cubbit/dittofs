@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"iter"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -81,12 +82,15 @@ func (p perPage) applied(ref entity.ResourceRef, at uint64, through func(entity.
 // or deleted behind it make the next page neither skip nor repeat one that
 // was there when the listing started. A query parameter the listing does not
 // filter on is refused, naming it: a filter the store would answer by a scan
-// is not offered. Every node's status is read once for the page, whatever
+// is not offered. With several at fault, the 400 names the first in name
+// order. Every node's status is read once for the page, whatever
 // its size, and handed to each item.
 func list[E, T any](l listing[E, T]) adapter {
 	return func(ctx context.Context, s *Server, r *http.Request, _ [16]byte) (answer, error) {
 		limit, after, filter := defaultLimit, []byte(nil), map[string]string{}
-		for k, v := range r.URL.Query() {
+		q := r.URL.Query()
+		for _, k := range slices.Sorted(maps.Keys(q)) {
+			v := q[k]
 			if len(v) != 1 {
 				return answer{}, &fieldError{field: k, detail: "given more than once"}
 			}

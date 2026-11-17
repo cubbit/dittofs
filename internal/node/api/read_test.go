@@ -138,6 +138,20 @@ func TestListingRefusesUnindexedFilter(t *testing.T) {
 	}
 }
 
+// With several query parameters at fault, the 400 names the first in name
+// order, every time: a listing's and a read's alike.
+func TestFirstBadParameterNamed(t *testing.T) {
+	s := serve(t, as(entity.RoleViewer, false))
+	for _, path := range []string{"/api/v1/tags", knobAt(uuid.NewString())} {
+		for range 20 {
+			r := s.do(t, http.MethodGet, path+"?d=1&c=1&b=1&a=1", "")
+			if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "a" {
+				t.Fatalf("GET %s?d=1&c=1&b=1&a=1: answered %d field %q, want 400 naming a", path, r.status, p.Field)
+			}
+		}
+	}
+}
+
 // A name filter answers a list of zero or one.
 func TestNameFilter(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))

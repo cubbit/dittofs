@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"maps"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -52,7 +54,8 @@ func changes[R any](differ func(first, now R) bool) func(string) (time.Duration,
 // once a second on the API's clock, under the context the first read had,
 // and answers the first read that is done, or the last one once the wait
 // has passed, on the clock's elapsed time, or the API listener shuts down.
-// No query parameter but wait is accepted. A node parks at most 256 calls,
+// No query parameter but wait is accepted; with several at fault, the 400
+// names the first in name order. A node parks at most 256 calls,
 // apart from the calls it runs, and refuses the next 503.
 //
 // ponytail: a parked poll re-reads its record once a second on the API's
@@ -65,7 +68,9 @@ func watch[R any](w watching[R]) adapter {
 	return func(ctx context.Context, s *Server, r *http.Request, id [16]byte) (answer, error) {
 		var wait time.Duration
 		var done func(first, now R) bool
-		for k, v := range r.URL.Query() {
+		q := r.URL.Query()
+		for _, k := range slices.Sorted(maps.Keys(q)) {
+			v := q[k]
 			var err error
 			switch {
 			case len(v) != 1:
