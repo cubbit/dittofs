@@ -677,7 +677,7 @@ card. A client asks for the server's addresses
   a client never discovers another node's.
 - A bind (`SESSION_SETUP` with `SMB2_SESSION_FLAG_BINDING`) for a session this
   node does not hold is answered `STATUS_USER_SESSION_DELETED` (MS-SMB2
-  3.3.5.5.2); the client keeps the channels it has.
+  3.3.5.5); the client keeps the channels it has.
 
 > decision: no multichannel across nodes. A session's keys, credits, open table
 > and replay state live on the node that set it up
@@ -2643,7 +2643,8 @@ error response, which the header codec writes after the header, and a command's
 encoder handed no reply writes nothing
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
 `HeaderCodec.Encode`). The exceptions are the command's encoder's, and the
-header codec leaves them to it. They are the statuses MS-SMB2 3.3.4.4 does not
+header codec leaves them to it. They are the statuses
+[MS-SMB2 3.3.4.4](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/41295064-be3f-41dc-9aa5-f68545f945f0) does not
 count as failures: `STATUS_MORE_PROCESSING_REQUIRED` in a `SESSION_SETUP`
 response; `STATUS_BUFFER_OVERFLOW` in a `QUERY_INFO` response, in an
 `FSCTL_PIPE_TRANSCEIVE`, `FSCTL_PIPE_PEEK` or `FSCTL_DFS_GET_REFERRALS`
@@ -2656,6 +2657,64 @@ Appendix A, note 244), and an error response carrying the command's error data,
 as `STATUS_STOPPED_ON_SYMLINK`'s does ([§12.4](#12.4%20Reparse%20points)). The
 named-pipe `READ` case never arises here: a pipe `READ` that does not fit is
 answered a short read with `STATUS_SUCCESS` ([§3.3](#3.3%20Sizes%20and%20credits)).
+The error table marks MS-SMB2 3.3.4.4's pairs above, and `STATUS_BUFFER_OVERFLOW`
+in an `FSCTL_GET_REPARSE_POINT` response, `NotFailure`, so a related member after
+one runs, as MS-SMB2 3.3.5.2.7.2 fails a related member only after a failure; an
+error response that carries error data, as `STATUS_STOPPED_ON_SYMLINK`'s, stays a
+failure
+([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
+Each pair reaches the runner as an error its handler returns beside the reply
+its encoder writes the body from
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`Invocation.Encode`): a `QUERY_INFO` whose output buffer is too small returns
+the information cut to the buffer with an error of its own, never a success its
+encoder truncates, so the runner reads the verdict from the row alone. Each
+pair's error is its own, a typed value only that pair's handler returns, never
+`ErrInvalid` or another class sentinel, since an `IOCTL` row names the command
+and not the FSCTL (RFC 20 §4.7's `ErrorRow`): copychunk's
+`STATUS_INVALID_PARAMETER` with an `SRV_COPYCHUNK_RESPONSE` maps from a value
+of its own, while a plain copychunk failure with the same status, as a
+`MaxOutputResponse` below the response's 12 bytes (MS-SMB2 3.3.5.15.6), stays
+one, and `STATUS_BUFFER_OVERFLOW` in an
+`FSCTL_QUERY_ALLOCATED_RANGES` response whose buffer holds at least one range
+but not every one the queried range has ([MS-FSA's `FSCTL_QUERY_ALLOCATED_RANGES`](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/385dec98-90fe-477f-9789-20a47a7b8467); below one range it is
+`STATUS_BUFFER_TOO_SMALL`) is not in 3.3.4.4's list and stays a failure. The
+totality test pins the table's `NotFailure` rows to exactly the pairs marked
+above, but the named-pipe `READ`, which never arises
+([RFC 20 §7.3](rfc-20-adapters.md#7.3%20The%20error%20tables%20are%20total)).
+A `SESSION_SETUP` answered `STATUS_MORE_PROCESSING_REQUIRED` is no failure, so
+a related member after it reaches `Unwrap`, which looks its inherited session
+up before it checks any signature (RFC 20 §5.5). A new session still in setup
+is `InProgress` (MS-SMB2 3.3.5.5.1), and on such a session MS-SMB2 3.3.5.2.9
+has the server "continue to process the SMB2 LOGOFF, SMB2 CLOSE, and SMB2 LOCK
+commands" and fail any other: `Unwrap` lets those three through, and refuses
+any other with `ErrNoSession`, `STATUS_USER_SESSION_DELETED`, which splits the
+chain
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
+A related `CLOSE` or `LOCK` inherits neither a tree nor a `FileId` from the
+`SESSION_SETUP` before it (MS-SMB2 3.3.5.2.7.2), so it is refused at RFC 20's
+`check`, which runs before `Resolve`
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+pipeline), before any open is looked up; a `LOGOFF` ends the setup. A session
+being re-authenticated keeps its state until a leg succeeds
+(re-authentication in place, §4.1): a valid one stays valid, as MS-SMB2
+3.3.5.5.2 leaves it, its keys and identity unchanged, so a related member
+after its leg runs as the identity the session already holds, which gains it
+nothing; an expired one keeps §4.1's rule for an expired session, though
+3.3.5.5.2 sets it `InProgress`, so a client can go on releasing what it holds
+while it renews. A binding
+leg (`SMB2_SESSION_FLAG_BINDING`, §4.2) is no re-authentication: a bind adds
+the session to its connection's session table, and the connection to the
+session's channels, only once it succeeds (MS-SMB2 3.3.5.5.3). Until then
+`Unwrap` refuses every related member after it, `LOGOFF`, `CLOSE` and `LOCK`
+included, with `ErrNoSession`, `STATUS_USER_SESSION_DELETED`, the status
+3.3.5.2.9 gives a session the connection does not hold.
+
+> decision: a member on a session in setup is answered
+> `STATUS_USER_SESSION_DELETED`, the status 3.3.5.2.9 gives a session it does
+> not find. MS-SMB2 leaves the code to the implementation, and Windows answers
+> `0x80090302` under GSS-API (Appendix A, note 273). Withdraw it if a client
+> is seen to act on Windows' code.
 
 **Malformed headers.** A message shorter than the 64-byte SMB2 header, a header
 whose command code no request carries (MS-SMB2 2.2.1.2), and a
@@ -2740,6 +2799,10 @@ service, before any wire suite runs:
 | §16.4 SMB deny-write against an NFS write open | Hold an SMB open with `FILE_SHARE_READ` only and no lease; open the file for write over NFSv4 and write it over NFSv3: refused, `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES`; close the SMB open and both succeed. | a deny mode enforced within one protocol only |
 | §16.4 persistent state | Fail the primary over under a persistent open with a lease and locks, reconnect: open, lease and locks as left. Open delete-on-close, revoke the client: the open is released and the pending delete runs as its marker. | a reconnect that loses the lease |
 | §3.3 parked pipe `READ` | Bind to `\pipe\srvsvc`, send a 64 KiB `READ` on the empty pipe so it parks, then write a `NetShareEnumAll` request whose reply is larger than 4 KiB, with a client that reports each `READ`'s status: the parked `READ` returns a short read with `STATUS_SUCCESS`, and the `READ`s after it return the rest. | a parked pipe `READ` that answers `STATUS_BUFFER_OVERFLOW` where an unparked one answers a short read |
+| §16.5 a non-failure in a chain | On a file whose name is longer than 2 characters, send `CREATE`, then a related `QUERY_INFO` for `FileAllInformation` with a 104-byte output buffer, MS-FSA's minimum for that class, which holds the fixed part but not the whole name, then a related `CLOSE`: the `QUERY_INFO` answers `STATUS_BUFFER_OVERFLOW` with the name cut to the buffer, the `CLOSE` answers `STATUS_SUCCESS`, and the open is gone (a `READ` on its `FileId` answers `STATUS_FILE_CLOSED`). A fixed-size class, or a buffer below the minimum, would answer `STATUS_INFO_LENGTH_MISMATCH`, a failure, so the row names this class and size. | a related member after a status MS-SMB2 3.3.4.4 counts as no failure refused as after a failure, which leaves the open behind |
+| §16.5 a failure an `IOCTL` shares | Mark a file sparse (`FSCTL_SET_SPARSE`) and write two data ranges with a hole between of at least 64 KiB, aligned to 64 KiB, as a Windows reference needs to report a hole. Send `CREATE`, then a related `IOCTL` `FSCTL_QUERY_ALLOCATED_RANGES` over the file with a 16-byte output buffer, then a related `CLOSE`: the `CLOSE` answers the `IOCTL`'s status with no call, and the open stays (a `READ` on its `FileId` succeeds). The file is marked sparse so the row holds against a server that reports a file not marked so as one range, which would fit. | a `NotFailure` row keyed by a sentinel other FSCTLs share, which runs the related members after a failure |
+| §16.5 a copychunk failure in a chain | Open a file and take its resume key (`FSCTL_SRV_REQUEST_RESUME_KEY`). Send `FSCTL_SRV_COPYCHUNK` on that open with a `MaxOutputResponse` of 8 bytes, below the 12-byte `SRV_COPYCHUNK_RESPONSE`, then a related `CLOSE`: the `IOCTL` is a plain `STATUS_INVALID_PARAMETER` failure (MS-SMB2 3.3.5.15.6), the status of copychunk's `NotFailure` pair, and the `CLOSE` answers it with no call, and the open stays. | a `NotFailure` row for copychunk keyed on its status or a shared error rather than its own value, which would run the related members after a plain failure |
+| §16.5 a session in setup | Send a `SESSION_SETUP` for a new session that the server answers `STATUS_MORE_PROCESSING_REQUIRED`, then a related `TREE_CONNECT`: it is refused at `Unwrap` with `STATUS_USER_SESSION_DELETED`, in a record of its own, its response's `SessionId` the new session's, and no tree is connected; a related `CLOSE` in its place is refused, and no open is closed. Then re-authenticate a valid session with a leg answered `STATUS_MORE_PROCESSING_REQUIRED`, followed by a related `TREE_CONNECT`: it runs as the identity the session already holds. Repeat on an expired session: the `TREE_CONNECT` is refused `STATUS_NETWORK_SESSION_EXPIRED`, §4.1's rule. Bind a second connection to a valid session with a leg answered `STATUS_MORE_PROCESSING_REQUIRED`, followed by a related `LOGOFF`: it is refused with `STATUS_USER_SESSION_DELETED`, and the session still serves its first connection. | a related member run on a new session that has not finished its setup, or on a connection not yet bound to its session, or one refused on a valid session mid re-authentication |
 | §16.4 end to end | smbtorture and the Windows Protocol Test Suites run through `dt` ([RFC 29](rfc-29-test-harness.md)) as the end-to-end layer above the vectors and fuzz targets. | a translation correct in vectors but wrong against a real client |
 
 ### 16.7 Monitoring

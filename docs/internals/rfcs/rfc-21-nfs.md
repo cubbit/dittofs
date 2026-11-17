@@ -365,6 +365,33 @@ A record, its fragments together, is at most the transfer class's capacity, 1
 MiB and 4 KiB, in at most 64 fragments: a record mark that would take it past
 either closes the connection ([RFC 20 §5.2](rfc-20-adapters.md#5.2%20Decoding%20is%20bounded),
 [RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)).
+A reply record is held to the same cap, `Framer.MaxRecord`'s bytes. A single
+operation's reply is bounded by its class. In a `COMPOUND`, each `READ` and
+`READ_PLUS` is clamped by its row's `Bound` hook before it runs, to what is
+left of the cap after the replies before it and the bounds of the operations
+that follow it, and answered as a short read (RFC 8881 §18.22, RFC 7530
+§16.23.5, RFC 7862 §15.10.3). It is never lowered below one byte, since Linux
+turns a short read of no data with `eof` false into `EIO`: a `COMPOUND` that
+would leave one less is refused, as one whose operation after a `READ` has a
+bound near the cap is
+([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
+In an NFSv4.1 session the hook also lowers the room it is handed by what the
+session's `ca_maxresponsesize` falls short of the cap, read from the session
+the compound's own `SEQUENCE` resolved into `Request.State` (§3.1), so the
+reply stays within that budget too.
+
+> decision: a `READDIR`'s `maxcount`, and a `LISTXATTRS`'s `lxa_maxcount`
+> (RFC 8276 §8.4.3), are not clamped to the room, as a `READ`'s count is.
+> Their floor is one entry, not one byte, and an entry's size is not known
+> before the listing is read: a count too small for one is `NFS4ERR_TOOSMALL`
+> (RFC 8881 §18.23.3), which would fail an operation whose own count fits.
+> The ceiling: a `COMPOUND` whose `READDIR` or `LISTXATTRS`, with the
+> operations around it, would pass the cap is refused; Linux's own
+> directory-read compound (`PUTFH`, `READDIR`, after `SEQUENCE` in NFSv4.1)
+> carries no `GETATTR`, so the cap holds its `READDIR` whole. Clamp the count
+> in their `Bound` hooks too, since a client resumes from its cookie, once a
+> client is seen sending one beside an operation whose bound passes the cap's
+> header room.
 
 > ponytail: 64 fragments let a record of the cap arrive in fragments of just
 > over 16 KiB (1028 KiB over 64) and more; common clients send one. Raise it
@@ -2549,7 +2576,9 @@ which RFC 20 §4.7's `NewErrorTable` demands of every table; `ErrTooLong` to
 `NFS4ERR_TOO_MANY_OPS` in a row naming no version, which RFC 20 §4.7's
 `NewOpTable` demands of a table with a compound row, and to `NFS4ERR_RESOURCE`
 for NFSv4.0, which has no such status, in a row naming it that wins there; `ErrReplyTooBig`, a
-`COMPOUND` whose reply would hold more than a quarter of the reply pool
+`COMPOUND` whose reply would hold more than a quarter of the reply pool, or
+would pass the reply record cap of §2.3, or leave a `READ` or `READ_PLUS` less
+than one byte under it
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)),
 to `NFS4ERR_REP_TOO_BIG` (RFC 8881 §15.1.3.6) in a row naming no version, which
 RFC 20 §4.7's `NewOpTable` demands of a table with a compound row, and to
@@ -2762,6 +2791,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §5.4 single-node restart | On one node: a client mounts, sending `RECLAIM_COMPLETE`, and takes a lock; restart the node. Assert the shard's incarnation rose, the client's reclaim of the lock is granted rather than `NFS4ERR_NO_GRACE`, and a second client's conflicting lock is refused until the reclaim. | an incarnation raised only when a journal begins serving, so the grace instance repeats |
 | §5.4 NFSv4.0 signal | An NFSv4.0 client holds an open in a shard that fails over. Assert its `RENEW` is `NFS4ERR_STALE_CLIENTID`, a `READ` under the open's stateid `NFS4ERR_STALE_STATEID`, and after it repeats `SETCLIENTID` and the confirm, the client ID unchanged and its reclaim granted. A Linux client completes recovery without looping. | `NFS4ERR_STALE_STATEID` with a valid client ID as the only signal |
 | §11.5 full journal | Fill the journal with offload stalled and the remote reachable; assert a write is answered `NFS4ERR_DELAY` (v4) and `NFS3ERR_JUKEBOX` (v3), not `NFS4ERR_NOSPC`, and succeeds on retry once offload resumes. Fill one share's journal limit the same way: assert `NFS4ERR_DELAY` too, and success once offload drains it. Fill the journal with the store unreachable for 2 minutes, past the caller's deadline: assert every retry is `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`, never `NOSPC`, and the writes succeed once the store returns. Make the store deny puts; assert `NFS4ERR_NOSPC` at once. Exceed a user quota; assert `NFS4ERR_DQUOT` at once. Exceed a project quota, then a share-wide one; assert `NFS4ERR_NOSPC` at once for each. | a share's journal limit answered "no space" at once, a transient refusal turned into "no space" at its deadline, or a quota answered "retry" |
+| §2.3 a compound's reply under the record cap | Over NFSv4.0, on a file longer than 2 MiB, send `PUTFH, READ(1 MiB)` followed by `GETATTR`s of fixed-size attributes (`type`, `size`, `change`, `time_modify`), whose bounds those attributes state, enough that they sum past the 4 KiB of header room: assert the `READ` is answered short, with at least one byte and `eof` false, each `GETATTR` answered, and the reply within 1 MiB and 4 KiB. Over NFSv4.2, send `SEQUENCE, PUTFH, READ_PLUS(1 MiB)` and the same `GETATTR`s: assert the `READ_PLUS` is answered short likewise. Send `PUTFH, READ(1 MiB), READ(1 MiB)`: assert the first `READ` is answered short and the second whole. Send `PUTFH` and three `READ(1 MiB)`; `PUTFH, READ(1 MiB), READDIR` with a `maxcount` of 1 MiB followed by those `GETATTR`s, where the `READDIR` leaves the `READ` no byte; and the same without the `READ`: assert `NFS4ERR_RESOURCE` before any operation runs; repeat over NFSv4.1 and assert `NFS4ERR_REP_TOO_BIG`. Over NFSv4.1, on a session whose `ca_maxresponsesize` is 512 KiB, send `SEQUENCE, PUTFH, READ(1 MiB)`: assert the `READ` is answered short within 512 KiB. Assert `adapter_reads_shortened_total` rose by one per short `READ` and `READ_PLUS`. | a compound refused for a reply a short read would fit, a reply past the cap or the session's budget, a `READ` or `READ_PLUS` answered no data with `eof` false, or a `READDIR` clamped rather than refused |
 | §5.3 lock recall | Client A holds a write delegation; client B sends an NLM lock and, separately, an NFSv4 `LOCK` over a range A locked locally. Assert `CB_RECALL` before B's answer and A's lock sent to the server; once the recall ends, B's NFSv4 `LOCK` is `NFS4ERR_DENIED`, a non-blocking NLM lock `NLM4_DENIED`, and a blocking NLM lock stays `NLM4_BLOCKED` behind A's lock and is sent `NLMPROC4_GRANTED` when A unlocks. Repeat with A holding a read delegation and no local lock; assert `CB_RECALL` before B is granted. While A delays its `DELEGRETURN`, assert B's NFSv4 `LOCK` answered `NFS4ERR_DELAY`, a blocking NLM lock `NLM4_BLOCKED` and then `NLMPROC4_GRANTED` once A returns, and a non-blocking one `NLM4_DENIED_GRACE_PERIOD` — never `NFS4ERR_DENIED` or `NLM4_DENIED`. | a lock request that does not recall, recalls write delegations only, or is answered "held" or "blocked" with no waiter while the recall runs |
 | §5.3 handle-cached deny mode | An SMB client opens with deny-write under an RWH lease and closes its handle locally. An NFSv4 client opens for write, and an NFSv3 client writes: assert each `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX` while the break runs, then succeeds. Repeat with the SMB handle still in use: assert `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES` only after the break. | an NFS request refused by a deny mode only a handle cache held |
 | §6 NLM | cthon04 lock tests over NFSv3; an NLM lock against an SMB byte-range lock and an SMB deny mode against `NLMPROC4_SHARE`. Fail a shard over and assert `SM_NOTIFY` reaches the client's statd and it reclaims. | NLM state held in the adapter |
