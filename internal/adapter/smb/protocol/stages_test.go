@@ -407,3 +407,23 @@ func TestAForeignHeader(t *testing.T) {
 		t.Errorf("Args of a foreign header is %v", args)
 	}
 }
+
+// An async-form request's reply grants no credit and keeps its async ID
+// (MS-SMB2 3.3.4.4), where every other reply grants one.
+func TestAnAsyncReplyGrantsNoCredit(t *testing.T) {
+	req := request(wire.CommandCancel, wire.FlagAsyncCommand, 0, 42, 0, 0)
+	h, err := headerStage{}.Decode(&resources.Buf{B: req}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &resources.Buf{}
+	if err := (headerStage{}).Encode(h, wire.StatusNotSupported, out); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint16(out.B[14:]); got != 0 {
+		t.Errorf("an async reply grants %d credits, want none", got)
+	}
+	if got := binary.LittleEndian.Uint32(out.B[16:]); got&wire.FlagAsyncCommand == 0 {
+		t.Errorf("an async reply's flags are %#x, want ASYNC_COMMAND", got)
+	}
+}
