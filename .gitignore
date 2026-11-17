@@ -106,6 +106,8 @@ bench-results-*/
 # local artifacts / caches (never committed)
 graphify-out/
 .tokensave/
+# any results/ directory at any depth: harness and conformance runs drop
+# credential-bearing logs there (test/smb-conformance/results, pynfs, mailbox)
 results/
 bench/results/
 # Upstream NFS suites fetched by test/nfs-mount/fetch.sh
