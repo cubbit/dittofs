@@ -183,10 +183,21 @@ func deleteShare(_ context.Context, rq request[none], _ struct{}, tx entity.Cont
 	return none{}, rq.ID, tx.DeleteShare(entity.ShareID(rq.ID), d, rq.Expect)
 }
 
-// appliedOf is on how many nodes sh is applied: those that have reconciled
-// the share list through its position.
-func appliedOf(pp perPage, sh entity.Share) apiv1.Applied {
-	return pp.applied(entity.ResourceRef{Kind: entity.ResourceShare, ID: sh.ID[:]}, sh.Position, func(st entity.NodeStatus) uint64 { return st.ShareList })
+// statusOf is sh's status as a read answers it: on how many nodes it is
+// applied, those that have reconciled the share list through its position,
+// and how many refused it.
+func statusOf(pp perPage, sh entity.Share) apiv1.ShareStatus {
+	ref := entity.ResourceRef{Kind: entity.ResourceShare, ID: sh.ID[:]}
+	a := pp.applied(ref, sh.Position, func(st entity.NodeStatus) uint64 { return st.ShareList })
+	v := apiv1.ShareStatus{State: sh.State.String(), Applied: &a}
+	for _, st := range pp.statuses {
+		if slices.ContainsFunc(st.Refused, func(r entity.RefusedRecord) bool {
+			return r.Record.Kind == ref.Kind && bytes.Equal(r.Record.ID, ref.ID)
+		}) {
+			v.Refused++
+		}
+	}
+	return v
 }
 
 // shareRow is a share as a listing yields it, with the key its cursor
@@ -248,8 +259,8 @@ var shares = listing[shareRow, apiv1.Share]{
 	},
 	key: func(r shareRow) []byte { return r.key },
 	item: func(r shareRow, pp perPage) apiv1.Share {
-		v, a := shareOf(r.sh), appliedOf(pp, r.sh)
-		v.Status.Applied = &a
+		v := shareOf(r.sh)
+		v.Status = statusOf(pp, r.sh)
 		return v
 	},
 }
@@ -264,7 +275,8 @@ type shareRead struct {
 }
 
 // readShare is the share the request names, 404 when it does not exist, with
-// on how many nodes it is applied.
+// on how many nodes it is applied and how many refused it, so a wait that
+// ends on a refusal tells the caller which ending it was.
 //
 // ponytail: a node's status carries no binding state, so a share is applied,
 // and serving, on a node once that node has reconciled the share list through
@@ -287,14 +299,10 @@ func readShare(ctx context.Context, d Deps, rq request[none]) (shareRead, error)
 	if pp.statuses, err = d.Nodes.RegisteredStatuses(ctx); err != nil {
 		return shareRead{}, err
 	}
-	v, a := shareOf(sh), appliedOf(pp, sh)
-	v.Status.Applied = &a
-	refused := slices.ContainsFunc(pp.statuses, func(st entity.NodeStatus) bool {
-		return slices.ContainsFunc(st.Refused, func(r entity.RefusedRecord) bool {
-			return r.Record.Kind == entity.ResourceShare && bytes.Equal(r.Record.ID, sh.ID[:])
-		})
-	})
-	return shareRead{v, sh.State, a.Of > 0 && a.Nodes == a.Of || refused}, nil
+	v := shareOf(sh)
+	v.Status = statusOf(pp, sh)
+	a := v.Status.Applied
+	return shareRead{v, sh.State, a.Of > 0 && a.Nodes == a.Of || v.Status.Refused > 0}, nil
 }
 
 // share is GET /shares/{id}. ?wait=serving returns once the share is
