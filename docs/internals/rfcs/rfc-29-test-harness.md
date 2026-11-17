@@ -11,8 +11,10 @@ tags:
 ---
 # RFC 29 — one test harness, with a suite registry, one runner and one result format
 
-**Status:** reviewed: accepted (#2975), revision 5: the questions §9 held are settled. Nothing here is
-implemented yet; §8 orders the work.
+**Status:** reviewed: accepted (#2975), revision 5: the questions §9 held are settled. Built: the
+harness, its registry and its suites follow it, and [`testing.md`](../testing.md) is the guide to them.
+Not built yet: §4.10's comparison against a stored baseline and its two manual suites, and `dt`
+reading `dfsbench-json` (§4.6).
 **Discussion:** #2975, and the pull request that settled §9.
 
 ## Summary
@@ -34,7 +36,7 @@ reliable way to tell what they found.
 **The proposal.**
 
 - **One command, `dt`, written in Go,** runs every suite the same way on a laptop and in CI.
-- **One file, `test/suites.yaml`, lists the 15 suites.** A variant of a suite is an option of it,
+- **One file, `test/suites.yaml`, lists every suite.** A variant of a suite is an option of it,
   and sets of suites are groups.
 - **`dt` builds the DittoFS server each suite needs** (the fixture) and calls each test tool
   directly. The per-suite scripts go.
@@ -43,9 +45,9 @@ reliable way to tell what they found.
   pass.
 - **One result format:** CTRF JSON, with JUnit for CI tools. Results are graded against known
   failures and expected skips kept as YAML, and history answers "is this flaky?".
-- **Three tiers.** A quick run on every PR, on the production storage profile only, aiming at 20
-  minutes or less. The full set after every merge. The long suites nightly. One gate check decides
-  merges.
+- **Four tiers.** A quick run on every PR, on the production storage profile only, aiming at 20
+  minutes or less. The full set after every merge. The long suites nightly. The rest are `manual`,
+  run by hand. One gate check decides merges.
 - **One develop-red issue, updated in place,** plus an issue per failing test with guardrails.
   Red gets noticed, without the floods that got the last alarm removed (#1705).
 

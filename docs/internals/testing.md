@@ -43,6 +43,14 @@ test/harness/bin/dt run unit --changed   # the unit tests of the packages your b
 test/harness/bin/dt report               # the last run again, with its new failures
 ```
 
+To complete `dt`'s arguments with TAB, alias it once from the repository root, then load the
+script (zsh; for bash, `dt completion bash`, which needs the bash-completion package):
+
+```bash
+alias dt="$PWD/test/harness/bin/dt"
+source <(dt completion zsh)
+```
+
 A suite that needs Linux runs from a Mac in dtc, the harness's Linux container:
 
 ```bash
@@ -249,6 +257,8 @@ test/harness/bin/dt unit                                       # unit, integrati
 | `--retry N` | Runs each new failure again, up to N times; a pass on retry is graded flaky |
 | `--ci` | What CI uses: an unmet need makes the cell not run (exit 2) instead of skipping it, and failures print GitHub annotations |
 | `--results DIR` | Where results go, inside the checkout. Default `test/harness/results` |
+| `--json` | Prints the run on stdout once it ends, as `dt report --format json` does, and everything else on stderr. The exit code is unchanged |
+| `--no-color` | No colors. On a terminal, results are colored by default: passed green, failed red, not run yellow; `NO_COLOR` also turns them off |
 | `--place P` | Runs every cell of the tier that `dt plan` gives place P, as the dedicated host does |
 | `--OPTION` | Runs the suite's option of that name: `--kerberos`, `--nonrace`, `--knfsd`, `--smb21`, `--macos`, `--windows`, `--stress`, `--portmap`, `--ad-dc`, `--cross-protocol`, `--smb` |
 
@@ -330,7 +340,8 @@ run can exit 0 having skipped most of what you asked for. Read the table it prin
 | `LOCALSTACK_ENDPOINT`, `DITTOFS_TEST_POSTGRES_DSN`, `DITTOFS_TEST_KMIP*` | Use these services instead of the local ones |
 | `GITHUB_TOKEN` | Lets `dt history --ci`, `dt plan --estimate --ci` and `dt known prune --ci` read CI's results |
 | `DITTOFS_REPO` | Points `dtc` and the environment commands at another checkout |
-| `DITTOFS_E2E_*`, `DT_*` | Passed through into dtc |
+| `DITTOFS_E2E_*`, `DT_*`, `NO_COLOR` | Passed through into dtc |
+| `NO_COLOR` | Set to anything but empty, turns `dt run`'s colors off, as `--no-color` does |
 | `DITTOFS_SKIP_PREPUSH`, `DITTOFS_SKIP_*`, `DITTOFS_PREPUSH_BASE` | Git hook switches (see [Git hooks](#git-hooks)) |
 
 Suites that run as root (e2e, pjdfstest and the other mounting suites) go through `sudo`, which
@@ -350,7 +361,11 @@ Each run writes to `test/harness/results/<UTC time>-<commit>/`:
 | `<cell>/` | The cell's own outputs: `dfs.log`, the tool's result files, `coverage.txt` for unit, a failed scenario's logs under `failed/` |
 | `bin/`, `tools/` | The `dfs` and `dfsctl` built for the run, and the test tools it used |
 
+A run ends with its results directory and a line counting its cells by result, with the run's time:
+`cells: 1 failed, 2 passed, 1 skipped, 4 total in 1m12s`.
+
 ```bash
+test/harness/bin/dt run SUITE --json > run.json # the run as JSON on stdout, the rest on stderr
 test/harness/bin/dt report                      # the last run: each cell's result and time, then its new failures
 test/harness/bin/dt report --failures           # only the new failures
 test/harness/bin/dt report RUN_DIR              # another run, such as one downloaded from CI

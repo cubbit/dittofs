@@ -305,14 +305,15 @@ Full docs live in [`docs/`](docs/), split by audience.
 ## Testing
 
 ```bash
-go test ./...                    # unit + integration
-go test -race ./...              # with the race detector
-
-# E2E (Linux, a kernel NFS client and passwordless sudo)
-test/harness/bin/dt run e2e
+test/harness/bin/dt run unit                     # the Go tests
+test/harness/bin/dt services up postgres kmip localstack   # the services integration and e2e need
+test/harness/bin/dt run integration
+test/harness/bin/dt run e2e                      # Linux, a kernel NFS client and passwordless sudo
 ```
 
-See [test/e2e/](test/e2e/) (and [test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md)) and [docs/internals/contributing.md](docs/internals/contributing.md).
+[docs/internals/testing.md](docs/internals/testing.md) is the guide: what each suite needs, how to
+run and read a run, the conformance suites and the Windows checklists. See also
+[test/e2e/](test/e2e/) and, for the benchmarks, [bench/README.md](bench/README.md).
 
 ## Security
 
