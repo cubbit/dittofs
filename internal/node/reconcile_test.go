@@ -494,7 +494,8 @@ func TestReconcileActsOnEveryKindAfterAFailedRead(t *testing.T) {
 
 // A share whose removal is marked while a share pass that listed it runs,
 // and which the removal drops before the pass binds it, is not bound: the
-// late bind is refused. Dropping it again answers nil.
+// late bind is refused, and the share is not listed among the refusals, as
+// it is gone. Dropping it again answers nil.
 func TestReconcileDoesNotBindAShareDroppedMidPass(t *testing.T) {
 	h, f := faulted(t)
 	started(t, h)
@@ -521,6 +522,9 @@ func TestReconcileDoesNotBindAShareDroppedMidPass(t *testing.T) {
 	}
 	if _, ok := h.Node().Bound(sh.ID); ok {
 		t.Errorf("share dropped while the pass that listed it ran: in the running set, want not")
+	}
+	if refusedShare(h.Node().Refused(), sh.ID) {
+		t.Errorf("share dropped while the pass that listed it ran: among the refusals, want not, as it is gone")
 	}
 	if err := h.Node().Engine().Drop(t.Context(), sh.ID); err != nil {
 		t.Errorf("a second drop of the share the engine never bound: got %v, want nil, as it holds no tag to forget", err)

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/netip"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -41,6 +40,9 @@ type Deps struct {
 	Audit   func(vfs.ShareID) authz.Policy // each share's audit policy; nil: every share's is off
 	Metrics prometheus.Registerer          // nil: the filesystem's metrics are kept but not registered
 	Logger  *slog.Logger                   // nil: slog.Default()
+	// Running reports whether the node has bound a share, which admission
+	// serves only then; nil: every share is served.
+	Running func(entity.ShareID) bool
 }
 
 // Content is the engine's content methods, declared where the filesystem calls
@@ -154,9 +156,8 @@ type Filesystem struct {
 	active   int                     // how many of calls there are, so Drain tells none from some
 	stop     context.Context         // ends at Drain's deadline, ending every admitted call's context
 	cancel   context.CancelFunc
-	joins    map[entity.ShareID]*join // the calls counted against each share
-	// removed is every share whose removal removeShare has started.
-	removed map[entity.ShareID]bool
+	joins    map[entity.ShareID]*join  // the calls counted against each share
+	running  func(entity.ShareID) bool // nil: every share is served
 
 	beforeShareRead func() // run by admission before it reads the share; nil but in tests
 	beforeBuild     func() // run by tree before it reads the share list to build; nil but in tests
@@ -189,9 +190,9 @@ func New(d Deps) (*Filesystem, error) {
 		reg:       newRegistry(),
 		build:     make(chan struct{}, 1),
 		joins:     map[entity.ShareID]*join{},
-		removed:   map[entity.ShareID]bool{},
 		served:    map[entity.ShareID]bool{},
 		events:    d.Events,
+		running:   d.Running,
 		marks:     openMark{d.Open.Opens()},
 		inflight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "dittofs", Name: "vfs_inflight_calls",
@@ -228,11 +229,10 @@ func New(d Deps) (*Filesystem, error) {
 
 // Start starts serving: from it on, calls are admitted. It is called once,
 // on a built filesystem, before any adapter serves, and after the node has
-// started open state with the filesystem as its Sink. It serves the shards
-// first, so each installs its persistent opens and enters grace, then ends
-// the open state of each share being removed; it does not wait for grace to
-// end. A step that fails leaves the filesystem built, and Start answers its
-// error.
+// started open state with the filesystem as its Sink. It serves the shards,
+// so each installs its persistent opens and enters grace; it does not wait
+// for grace to end. A step that fails leaves the filesystem built, and Start
+// answers its error.
 //
 // decision: a shard a failed Start served stays served, where RFC 17 §2.5
 // stops what the earlier steps started, as open state builds no
@@ -259,12 +259,11 @@ func (fs *Filesystem) Start(ctx context.Context) error {
 	return nil
 }
 
-// serveShards is Start's first step. It serves the shard of every share,
-// live or being removed, that no failed Start before it served, so each
-// installs its persistent opens, then has open state drop the state of every
-// share being removed, as its removal's step at a start does, telling each
-// holder: no call is admitted yet, so none is left to join. The table raises
-// its events meanwhile, which the filesystem delivers as when serving.
+// serveShards is Start's step. It serves the shard of every share, live or
+// being removed, that no failed Start before it served, so each installs its
+// persistent opens: the node's removal driver then drops the open state of
+// each share being removed, before any call is admitted. The table raises its
+// events meanwhile, which the filesystem delivers as when serving.
 func (fs *Filesystem) serveShards(ctx context.Context) error {
 	ix := fs.meta.ShareIndex()
 	_, shares, err := ix.List(ctx)
@@ -285,20 +284,7 @@ func (fs *Filesystem) serveShards(ctx context.Context) error {
 	fs.mu.Lock()
 	shares = slices.DeleteFunc(shares, func(sh entity.Share) bool { return fs.served[sh.ID] })
 	fs.mu.Unlock()
-	if err := fs.serve(ctx, shares); err != nil {
-		return err
-	}
-	fs.mu.Lock()
-	for _, id := range removing {
-		fs.removed[id] = true
-	}
-	fs.mu.Unlock()
-	for _, id := range removing {
-		if err := fs.recovery.DropShare(ctx, id, netip.Addr{}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return fs.serve(ctx, shares)
 }
 
 // serve raises the incarnation of each share's shard, in one transaction, a

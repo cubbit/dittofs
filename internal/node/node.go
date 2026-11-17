@@ -16,9 +16,11 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/openstate"
 )
 
@@ -57,6 +59,9 @@ type Node struct {
 	watchdog *health.Watchdog
 	api      *api.Server
 	life     lifecycle
+	// ending, when set, is called by step 3 of each share removal once its
+	// bound is set on the clock, before it waits on anything.
+	ending func(entity.ShareID)
 }
 
 // New opens the metadata store over cfg.KV, refusing a KV that holds no
@@ -133,10 +138,12 @@ func build(cfg Config) (*Node, error) {
 	n.health = &health.Evaluator{}
 	n.health.Add(&engineConditions{n.engine.Stats})
 	n.health.Add(&nodeConditions{n})
-	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger}); err != nil {
+	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
-	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node, cfg.Logger, operationSteps(n.meta.Nodes()))
+	steps := operationSteps(n.meta.Nodes())
+	steps[string(apiv1.OpShareDelete)] = stepRow{n.shareDeletion, n.removalProgress}
+	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node, cfg.Logger, steps)
 	n.watchdog = health.NewWatchdog(cfg.Clock)
 	n.life.ready.Store(readyStarting)
 	n.api = api.New(api.Deps{

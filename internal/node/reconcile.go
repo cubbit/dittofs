@@ -17,6 +17,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 const (
@@ -37,10 +38,11 @@ type reconciler struct {
 	wake chan struct{}
 	// paused, when set, is called with the counters each pass read, before
 	// the pass acts on them; binding, when set, with each share before
-	// reconcile binds it; applying, when set, with the counters each apply
-	// acts on.
+	// reconcile binds it, and bound once the engine bound it; applying, when
+	// set, with the counters each apply acts on.
 	paused   func(kvstore.Counters)
 	binding  func(entity.Share)
+	bound    func(entity.Share)
 	applying func(kvstore.Counters)
 
 	// Read and written by Start's steps and then by the loop alone.
@@ -52,8 +54,15 @@ type reconciler struct {
 	// change up to each, applied or refused.
 	pos   kvstore.Counters
 	moved chan struct{} // closed when pos moves, then replaced
-	// bound is the running set: each share as the engine binds it.
-	bound map[entity.ShareID]entity.Share
+	// running is the running set: each share as the engine binds it.
+	running map[entity.ShareID]entity.Share
+	// gone is every share a removal has unbound, which a share pass that
+	// listed it before its mark neither runs nor refuses.
+	//
+	// ponytail: one entry per share removed since the node started. Forget
+	// a share once no pass that listed it before its mark can still run, if
+	// the count shows in a profile.
+	gone map[entity.ShareID]bool
 	// shares and applied are the records the last share pass and the last
 	// apply refused.
 	shares, applied []refusal
@@ -110,8 +119,37 @@ func (r *reconciler) lags(now time.Duration) (lag [len(counterKinds)]time.Durati
 	return lag
 }
 
+// serves reports whether share id is in the running set: the filesystem
+// admits calls into it only then.
+func (r *reconciler) serves(id entity.ShareID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.running[id]
+	return ok
+}
+
+// unbound takes share id, which its removal has unbound, out of the running
+// set and out of the refusals, and keeps a pass that listed it before its
+// mark from putting it back, so neither the filesystem nor the node status
+// keeps a share that is gone.
+func (r *reconciler) unbound(id entity.ShareID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gone[id] = true
+	delete(r.running, id)
+	r.shares = r.notGone(r.shares)
+}
+
+// notGone is refusals without those of a share gone. r.mu is held.
+func (r *reconciler) notGone(refusals []refusal) []refusal {
+	return slices.DeleteFunc(slices.Clone(refusals), func(f refusal) bool {
+		return f.rec.Record.Kind == entity.ResourceShare && r.gone[entity.ShareID(f.rec.Record.ID)]
+	})
+}
+
 func newReconciler() reconciler {
-	return reconciler{wake: make(chan struct{}, 1), moved: make(chan struct{}), bound: map[entity.ShareID]entity.Share{}}
+	return reconciler{wake: make(chan struct{}, 1), moved: make(chan struct{}),
+		running: map[entity.ShareID]entity.Share{}, gone: map[entity.ShareID]bool{}}
 }
 
 // refusal is a record the node did not apply, and whether to try it again on
@@ -366,13 +404,10 @@ func (n *Node) pass(ctx context.Context) error {
 
 // reconcileShares binds each share planShares names, a new one or one whose
 // state changed, and records the refusals: a share with no remote store,
-// and one the engine refused, which is retried.
-//
-// ponytail: a share is bound here in the engine only; the filesystem serves
-// every share the share list holds by itself, refused here or not, as its
-// admission serves a listed share's shard on the first call that sees the
-// list move. Have admission take reconcile's running set instead, so a share
-// reconcile refused is not served.
+// and one the engine refused, which is retried. A share whose removal
+// unbound it after the listing is neither run nor refused: the engine refuses
+// its late bind stale, and one bound just before the unbind is gone. The
+// filesystem admits calls only into the shares run here.
 //
 // ponytail: every share's namespace is taken as held, so no namespace is
 // claimed and no binding is fenced. Claim the namespace here, before the
@@ -384,23 +419,32 @@ func (n *Node) reconcileShares(ctx context.Context) error {
 		return err
 	}
 	r.mu.Lock()
-	bind, refusals := planShares(r.bound, listed, remote)
+	bind, refusals := planShares(r.running, listed, remote)
 	r.mu.Unlock()
 	for _, s := range bind {
 		if r.binding != nil {
 			r.binding(s)
 		}
-		if err := n.engine.Bind(ctx, enginewire.Binding(s, 0)); err != nil {
+		err := n.engine.Bind(ctx, enginewire.Binding(s, 0))
+		if errors.Is(err, vfserr.ErrStale) {
+			continue
+		}
+		if err != nil {
 			r.errors[kindShares].Add(1)
 			refusals = append(refusals, refused(s, true, err))
 			continue
 		}
+		if r.bound != nil {
+			r.bound(s)
+		}
 		r.mu.Lock()
-		r.bound[s.ID] = s
+		if !r.gone[s.ID] {
+			r.running[s.ID] = s
+		}
 		r.mu.Unlock()
 	}
 	r.mu.Lock()
-	r.shares = refusals
+	r.shares = r.notGone(refusals)
 	r.mu.Unlock()
 	return nil
 }

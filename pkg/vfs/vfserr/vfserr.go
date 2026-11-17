@@ -143,7 +143,7 @@ const (
 	DelayRecall    DelayCause = iota + 1 // a caching grant is being recalled
 	DelayClone                           // a running clone or copy chunk holds the extent past the call's hold
 	DelayConflict                        // a metadata conflict still unresolved at the call's deadline, or another numbered request of the same open-state owner in flight
-	DelayFrozen                          // the share is quiesced, frozen for a move, or moved away; or the open-state shard is not yet served here
+	DelayFrozen                          // the share is quiesced, frozen for a move, or moved away; or the node has not bound it, or refused it; or the open-state shard is not yet served here
 	DelayCapacity                        // the journal's capacity, or a share's journal limit
 	DelayCommit                          // a metadata commit is not landing, a durable open's record included; or a stable write's sync may have lost it
 	DelayResources                       // a node memory pool or an open-state cap is spent

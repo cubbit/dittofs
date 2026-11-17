@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
@@ -64,4 +65,51 @@ func TestDeleteSharePausedNamespace(t *testing.T) {
 	if err := s.ControlPlane().DeleteShare(ctx, share, entity.SnapshotsDelete, 0); !errors.Is(err, ErrMoving) {
 		t.Fatalf("DeleteShare under a pause: %v", err)
 	}
+}
+
+// RemovalStep reads the step ContinueRemoval last answered, at every step of
+// a removal run to its end, and refuses a share not being removed.
+func TestRemovalStepReadsTheRemovalsRecord(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	share := newShare(t, s)
+	nodes := s.Nodes()
+	if _, _, err := nodes.RemovalStep(ctx, share); !isInvalidArgument(err) {
+		t.Fatalf("RemovalStep of a live share: %v, want an invalid argument", err)
+	}
+	if err := s.ControlPlane().DeleteShare(ctx, share, entity.SnapshotsDelete, 1); err != nil {
+		t.Fatal(err)
+	}
+	sh, _, err := s.ShareIndex().Share(ctx, share)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := uint8(1)
+	for done := false; !done; {
+		got, gotDone, err := nodes.RemovalStep(ctx, share)
+		if err != nil || got != want || gotDone {
+			t.Fatalf("RemovalStep: got step %d, done %v, %v; want step %d, not done", got, gotDone, err, want)
+		}
+		if want, done, err = nodes.ContinueRemoval(ctx, share); err != nil {
+			t.Fatal(err)
+		}
+		if reached, ok := map[uint8]entity.TagState{3: entity.TagOffloaded, 4: entity.TagForgotten}[want]; ok {
+			if err := nodes.RecordShardRemoval(ctx, share, sh.Shard, reached); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for shardDone := want != 4; !shardDone; {
+			if shardDone, err = nodes.ContinueShardRemoval(ctx, share, sh.Shard); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, done, err := nodes.RemovalStep(ctx, share); err != nil || !done {
+		t.Errorf("RemovalStep once the removal ended: done %v, %v; want done", done, err)
+	}
+}
+
+func isInvalidArgument(err error) bool {
+	se, ok := errors.AsType[*merrs.StoreError](err)
+	return ok && se.Code == merrs.ErrInvalidArgument
 }

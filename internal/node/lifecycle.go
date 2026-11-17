@@ -50,6 +50,7 @@ type lifecycle struct {
 	started  bool       // a Start ran: the node does not start again
 	parts    []*part    // what Start started and Stop has not stopped, in start order
 	shares   []entity.Share
+	removing []entity.Share // the shares being removed, as Start read them
 	api, met net.Addr
 	failed   atomic.Pointer[error] // the error a failed Start stopped at, kept for start_failed
 	ready    atomic.Value          // the readiness word
@@ -280,9 +281,10 @@ func (n *Node) register(ctx context.Context) error {
 }
 
 // readRecords reads the counters and the shares, keeping those reconcile
-// binds for the engine's start, then calls apply. The counters it read are
-// those reconcile has acted on, so only Start's full first pass, not a
-// counter, makes reconcile record the refusals.
+// binds, and the shares being removed, for the engine's start, then calls
+// apply. The counters it read are those reconcile has acted on, so only
+// Start's full first pass, not a counter, makes reconcile record the
+// refusals.
 func (n *Node) readRecords(ctx context.Context) error {
 	c, err := n.counters(ctx)
 	if err != nil {
@@ -292,7 +294,10 @@ func (n *Node) readRecords(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	n.life.shares, _ = planShares(n.rec.bound, listed, remote)
+	n.life.shares, _ = planShares(n.rec.running, listed, remote)
+	if n.life.removing, err = n.readRemoving(ctx); err != nil {
+		return err
+	}
 	if _, err := n.apply(ctx, c); err != nil {
 		return err
 	}
@@ -302,14 +307,17 @@ func (n *Node) readRecords(ctx context.Context) error {
 
 // startEngine starts open state, with the filesystem as its Sink and its
 // admission as its Order, then the engine over every share readRecords kept.
+// A share being removed is handed to the engine too, which attaches it until
+// its removal's step 3 unbinds it and drops its tag, but it joins no running
+// set.
 //
 // ponytail: every share's namespace is taken as held, so every share kept is
 // bound, serving or quiesced as its record says, with no journal limit. Add
 // the namespace's claim, and the limit, once namespaces are claimed and the
 // limit is a setting.
 func (n *Node) startEngine(ctx context.Context) error {
-	bound := make([]engine.Share, 0, len(n.life.shares))
-	for _, s := range n.life.shares {
+	bound := make([]engine.Share, 0, len(n.life.shares)+len(n.life.removing))
+	for _, s := range append(slices.Clone(n.life.shares), n.life.removing...) {
 		bound = append(bound, enginewire.Binding(s, 0))
 	}
 	if err := enginewire.Start(ctx, n.open, n.engine, n.fs, n.fs.Admission, bound); err != nil {
@@ -317,17 +325,23 @@ func (n *Node) startEngine(ctx context.Context) error {
 	}
 	// A share the engine refused at its start is left out of the running
 	// set, so the first full pass binds it again and records the refusal.
+	// The running set is written here without the reconciler's mutex: Start
+	// runs its steps one after another, and reconcile, the only other
+	// writer, starts at a later step, as do the runner and the admitted
+	// calls that read it.
 	refused := n.engine.Stats().Shares
 	for _, s := range n.life.shares {
 		if refused[s.ID].Refused == nil {
-			n.rec.bound[s.ID] = s
+			n.rec.running[s.ID] = s
 		}
 	}
 	n.started(stepEngine, func(ctx context.Context) error { return enginewire.Stop(ctx, n.open, n.engine) })
 	return nil
 }
 
-// startFilesystem starts the filesystem, which serves every share's shard.
+// startFilesystem starts the filesystem, which serves every share's shard,
+// then runs step 3 of every share removal a crash interrupted, before any
+// call is admitted.
 func (n *Node) startFilesystem(ctx context.Context) error {
 	if err := n.fs.Start(ctx); err != nil {
 		return err
@@ -335,7 +349,7 @@ func (n *Node) startFilesystem(ctx context.Context) error {
 	n.started(stepFilesystem, func(ctx context.Context) error {
 		return errors.Join(n.fs.Drain(ctx), n.fs.Stop())
 	}, stepEngine)
-	return nil
+	return n.joinRemovals(ctx)
 }
 
 // startRunner starts the operation runner, watched by the watchdog. Its
