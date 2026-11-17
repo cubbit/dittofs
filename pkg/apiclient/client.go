@@ -73,7 +73,7 @@ func WithClock(clock Clock) Option { return func(c *Client) { c.clock = clock } 
 // contacts nothing until its first call, and follows no redirect: an answer
 // 3xx is a refusal.
 func New(server string, opts ...Option) (*Client, error) {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr := transport(http.DefaultTransport)
 	// ponytail: every request goes on a connection of its own, since
 	// net/http resends a bodyless GET or a keyed request by itself, at once,
 	// when its answer is lost on a reused connection, outside do's wait and
@@ -106,11 +106,27 @@ func New(server string, opts ...Option) (*Client, error) {
 	}
 	u, err := url.Parse(server)
 	if err != nil || u.User != nil || u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" ||
-		u.Path != "" && u.Path != "/" || u.Scheme != "https" && (u.Scheme != "http" || !loopback(u.Hostname())) {
+		u.Path != "" && u.Path != "/" || u.Hostname() == "" ||
+		u.Scheme != "https" && (u.Scheme != "http" || !loopback(u.Hostname())) {
 		return nil, refused
 	}
 	c.base = u.Scheme + "://" + u.Host
 	return c, nil
+}
+
+// transport is a clone of rt when it is an *http.Transport; otherwise, as
+// when a program wraps http.DefaultTransport for tracing, a transport of its
+// own that still honours the proxy environment and bounds the dial and the
+// TLS handshake as http.DefaultTransport does.
+func transport(rt http.RoundTripper) *http.Transport {
+	if tr, ok := rt.(*http.Transport); ok {
+		return tr.Clone()
+	}
+	return &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		DialContext:         (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
 }
 
 // loopback reports whether host is a loopback address. A name, even

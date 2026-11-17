@@ -139,6 +139,8 @@ func TestNew(t *testing.T) {
 		{"http://127.0.0.1:8080?", false},
 		{"http://127.0.0.1:8080/#top", false},
 		{"node.example.com:8443", false},
+		{"https://", false},
+		{"https://:443", false},
 		{"api.sock", false},
 	} {
 		if _, err := apiclient.New(tc.server); (err == nil) != tc.ok {

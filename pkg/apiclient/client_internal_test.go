@@ -68,6 +68,24 @@ func TestAccepted(t *testing.T) {
 	}
 }
 
+// A program's http.DefaultTransport that is no *http.Transport, as a tracing
+// wrapper is, gives a transport that still reads the proxy environment and
+// bounds the dial and the TLS handshake; an *http.Transport is cloned.
+func TestTransport(t *testing.T) {
+	tr := transport(wrapped{http.DefaultTransport})
+	if tr.Proxy == nil || tr.DialContext == nil || tr.TLSHandshakeTimeout <= 0 {
+		t.Errorf("transport(a wrapper): Proxy set %v, DialContext set %v, TLS handshake timeout %v, want both set and a timeout",
+			tr.Proxy != nil, tr.DialContext != nil, tr.TLSHandshakeTimeout)
+	}
+	base := &http.Transport{TLSHandshakeTimeout: 7 * time.Second}
+	if tr := transport(base); tr == base || tr.TLSHandshakeTimeout != 7*time.Second {
+		t.Errorf("transport(an *http.Transport): %p with handshake timeout %v, want a clone of %p with 7s", tr, tr.TLSHandshakeTimeout, base)
+	}
+}
+
+// wrapped is a RoundTripper wrapping another, as a tracing setup's is.
+type wrapped struct{ http.RoundTripper }
+
 // An operation has ended once it succeeded, failed or was cancelled; a
 // state the client does not know is refused.
 func TestEnded(t *testing.T) {
