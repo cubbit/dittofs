@@ -139,6 +139,11 @@ func testOut(t *testing.T, build newOut) {
 				if err := out(msg(t, pool, m.body), m.key, m.before); err != nil {
 					t.Fatal(err)
 				}
+				if m.body == "first" {
+					// The writer holds "first" alone before the rest arrives,
+					// so the callback can still go ahead of its reply.
+					synctest.Wait()
+				}
 			}
 			var got []string
 			for range 4 {

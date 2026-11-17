@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while the receive charge waits. A record the peer cuts mid-stream is an
   unexpected end, told apart from a clean close between records.
 
+- **The adapter sends each connection's replies through a bounded queue in
+  gathered writes.** A worker hands its reply over without blocking; the
+  reader stops reading the connection once 64 messages are held, so the
+  client's TCP window pushes back. Queued replies go out framed in one
+  `net.Buffers` write each, up to the protocol's record cap of bodies, each
+  write bounded by `write_timeout`; a failed or late write closes the
+  connection and releases everything queued.
+
 - **The request path is measurable, per protocol and per operation.** Prometheus
   now carries requests in flight, refusals and wire time by stage, replay hits,
   held requests and bytes, chain splits by reason, and per operation the
