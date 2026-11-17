@@ -244,6 +244,13 @@ func Members(row *Op, inv Invocation, rest []byte, v Version) (n, at int, err er
 	return len(ms), at, err
 }
 
+// Later is the headers a chain's interim is handed after the member at off,
+// whose header is h, read through st's HeaderCodec.
+func Later(st Stages, rec *resources.Buf, off int, h Header) []Header {
+	c := &chain{p: &pipeline{st: st}, rec: rec, cur: entry{off: off, h: h}}
+	return c.later(nil)
+}
+
 // Judge is judge over the members rest holds, decoded as the runner does.
 func Judge(row *Op, inv Invocation, rest []byte, v Version, r *Request) (whole bool, handles []vfs.Handle) {
 	ms, _, _, err := members(row, inv, rest, v)

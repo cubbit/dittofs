@@ -1503,3 +1503,46 @@ func TestARefusedMembersSplitCountsUnderIt(t *testing.T) {
 		}
 	})
 }
+
+// A success clears a chain's failure: after a member refused and an
+// unrelated one answered, a related member runs and is answered its own
+// reply, not the refusal's status.
+func TestASuccessClearsAChainsFailure(t *testing.T) {
+	s := newSeam(t, testproto.New(adapter.Deps{}).Bare(), 1<<20)
+	s.serve(
+		testproto.Msg{Op: 99, Version: 1, ID: 1},
+		testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2},
+		testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Related: true},
+	)
+	rs, err := s.client.Recv()
+	if err != nil || len(rs) != 3 || rs[0].Status != testproto.StatusNotSupported || rs[1].Status != testproto.StatusOK || rs[2].ID != 3 || rs[2].Status != testproto.StatusOK {
+		t.Errorf("the chain is answered %+v, %v: want the refusal, then both Echo answered", rs, err)
+	}
+}
+
+// The headers a drain's interim is handed stop at a step that is not
+// forward: through a lax codec, a third member whose next points back at the
+// second's header ends them, each header read once.
+func TestLaterHeadersStopAtABadStep(t *testing.T) {
+	codec := &laxCodec{}
+	st := testproto.New(adapter.Deps{}).Bare().NewConn(nil)
+	codec.HeaderCodec = st.Header
+	st.Header = codec
+	echo := func(id uint64) testproto.Msg { return testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: id} }
+	b, offs := chainOf(testproto.New(adapter.Deps{}).Framer(), echo(1), echo(2), echo(3))
+	binary.BigEndian.PutUint32(b[offs[2]:], uint32(offs[1]))
+	rec := &resources.Buf{B: b}
+	first, err := codec.Decode(rec, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codec.reads = nil
+	hs := core.Later(st, rec, 0, first)
+	read := make([]int, len(codec.reads))
+	for i, r := range codec.reads {
+		read[i] = r.off
+	}
+	if len(hs) != 2 || !slices.Equal(read, []int{offs[1], offs[2]}) {
+		t.Errorf("the interim is handed %d headers, read at %v: want the second's and the third's, at %d and %d", len(hs), read, offs[1], offs[2])
+	}
+}
