@@ -166,7 +166,7 @@ cited by number and title, and how it applies here or why it does not.
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests); [Verifying a change](../../../CLAUDE.md#verifying-a-change)) | all | `wire` is tested on golden vectors and a fuzz target, with no double. Each stage is tested alone at the interface `core` calls (`core.Framer`, `core.HeaderCodec`, `core.Router`, the stages' `ErrorTable`), with no socket. `New` is tested over loopback through `core`'s real pipeline, on `memory.New` and real budgets. A range is asserted on a connection accepted after the settings that set it. No `core` test imports `smb` or `nfs` |
 | rule 2, fuzz tests where relevant | T6.1, T6.2 | one record-level target per `wire` package, which runs every decoder of a peer's bytes in turn: the Direct TCP header and the SMB2 headers of a chain; the record mark, the RPC call header, its credential and verifier, the `AUTH_SYS` body and the `COMPOUND` prefix. Seeded with the golden vectors and the reference captures. The property: accepted or refused, never a panic, never a length past the cap or the record accepted, and an accepted header's reply carries its IDs |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T6.3b, T6.4b | protocol code records nothing; it names the labels `core` records under: `Stages.Protocol` `smb` and `nfs3`, `OpTable.Protocol` `smb`, `nfs3` and `nfs4` (RFC 20 §10.1). Each loopback test reads one series `core` records under the label it expects |
-| rule 4, leaks and allocations | T6.3a, T6.4a, T6.3b, T6.4b | each protocol's header stage, the header codec `core` calls, decodes and encodes at 0 allocations, a chained SMB member past the first at one (D1), NFS's gate covering `Route`'s credential check too; each gate registered in `unit/adapter-allocs` by the subtask that writes it. Every loopback test ends with `CheckLeaks` |
+| rule 4, leaks and allocations | T6.3a, T6.4a, T6.3b, T6.4b | each protocol's header stage, the header codec `core` calls, decodes and encodes at 0 allocations, a chained SMB member past the first at one (D1), NFS's gate covering `Route`'s credential check too, at one allocation, its own `Request`; each gate registered in `unit/adapter-allocs` by the subtask that writes it. Every loopback test ends with `CheckLeaks` |
 | rule 5, v2 ignores v1 | all | nothing is lifted: RFC 20 Appendix B marks none of v1's framing, headers or routing keep. E1's TLS loading in `nfs.New` goes with the public stub: until `StartTLS`, `Validate` refuses every mode but off (RFC 20 §3.6), so there is nothing to load (T6.4b) |
 | rule 6, nothing deferred is lost | T6.3b, T6.4a, T6.4b | the ledger rows §1.2 cites; the row §9 proposes for each request's `Identity`; the TLS row as #4496 rewords it for #4533's G7 |
 | rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | all | each decision of §4 leaves the marker it names at its code site. None of RFC 20's own notes that the rule lists is this epic's |
@@ -316,7 +316,8 @@ reads, so every loopback test fails.
 - **D4, a scaffold reply grants one credit.** RFC 22 §3.3's grant (what the client asks, at
   least 1, up to the connection's target) needs the credit count that the RFC 22 plan's `Flow`
   (its T3.6) keeps. **`wire`'s reply encoder takes the grant as an argument; the header stage
-  passes 1, which never takes a client past any target and keeps its balance above zero.**
+  passes 1, which never takes a client past any target and keeps its balance above zero, and 0
+  for an async-form reply, which MS-SMB2 3.3.4.4 has grant none.**
   `ponytail:` at the call, naming the grant RFC 22 §3.3 states, which needs the connection's
   credit count, as the upgrade. No prior art sought.
 - **D5, `RPCSEC_GSS` is refused as a flavour not served, until the GSS stage.** With no
@@ -384,16 +385,23 @@ Exported symbols added, all under `internal/adapter/`:
   with the accessors `protocol` reads (`Command`, `Flags`, `NextCommand`);
   `DecodeHeader(b []byte, off int) (*Header, error)`, its error saying whether the header can be
   addressed; `AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte`;
-  `AppendError(out []byte) []byte`; `Chain(out []byte, prev int) ([]byte, error)`; the
-  constants of `const.go`. Consumers: T6.3a and T6.3b; the RFC 22 plan's epic 2 harness and
-  its T3.1, T3.4 and T3.6.
+  `AppendError(out []byte) []byte`; `Chain(out []byte, prev int) ([]byte, error)`;
+  `ErrNextCommand`, `DecodeHeader`'s refusal of a header for its `NextCommand`, so T6.3a tells
+  a refused step, which ends the chain, from a refused `StructureSize`; `ErrorLen`, the 9 bytes
+  of the error body `AppendError` writes, which T6.3a's `ReplyLen` counts; the constants of
+  `const.go`, `CommandCancel` (0x000C) among them. Consumers: T6.3a and T6.3b; the RFC 22
+  plan's epic 2 harness and its T3.1, T3.4 and T3.6.
+- `smb/protocol` (T6.3a): `ErrCancel`, the router's refusal of a `CANCEL`, which the table's
+  error rows name to answer it nothing.
 - `smb/protocol` (T6.3b): `type Protocol`, `New(t *core.OpTable) *Protocol`, with `Framer` and
   `NewConn`, a concrete type as RFC 20 §2.5's patterns have an implementation return. `smb`
   (T6.3b): `New(d adapter.Deps, s settings.SMB) (*core.Server, error)`.
 - `nfs/wire` (T6.2): `RecordMarkLen`, `MaxRecord` (1 MiB and 4 KiB), `MaxFragments` (64),
   `Fragment(hdr []byte) (n int, last bool, err error)`, `AppendRecordMark(dst []byte, n int)
   []byte`; `type Call []byte`, with an accessor per field, the credential and verifier as their
-  flavour and a slice of the record, and a `COMPOUND`'s tag and minor version, and
+  flavour and a slice of the record, and a `COMPOUND`'s tag and minor version, and `Args`,
+  where the arguments start, past the verifier (a `COMPOUND`'s from its tag), which T6.4a's
+  `HeaderCodec.Args` returns, and
   `ParseCall(b []byte) (Call, error)`, which bounds every length first; `type AuthSysParms`
   (fixed arrays, nothing allocated; `AuthSys` is the flavour constant beside `AuthNone`, as
   RFC 5531 names them) and `DecodeAuthSys(body []byte) (AuthSysParms, error)`;
@@ -495,15 +503,17 @@ framer's.
   elsewhere, `nil` with the error for a header `wire` cannot address and the header with it for
   one it can, a header refused for its `NextCommand` reporting as `Next` an offset past the
   record's end, which the walk refuses (RFC 20 §4.7); whose `Encode` calls `wire.AppendReply`
-  with one credit (D4) and, for a failure answered with a status alone, appends
+  with one credit, and none for an async-form reply (D4; MS-SMB2 3.3.4.4), and, for a failure answered with a status alone, appends
   `wire.AppendError`'s body, every refusal of this epic being one (the pairs RFC 22 §16.5
   leaves to a command's encoder are added here by the RFC 22 plan, with each command); whose
   `Chain` calls `wire.Chain`; whose `Args` is a message's bytes past its 64-byte header to the
   next message or the record's end; and whose `ReplyLen` is the 64 bytes of the header, the 9
   of the error body and the 7 of `Chain`'s padding. The `core.Header` methods (`Op` the
   command, `Version` 0, since no dialect is negotiated here, `Next` the absolute offset or 0,
-  `Related` the flag); the router, which returns the table it is built with and a `Request` at
-  `NeedsNothing`, version 0, with the connection and no state, `decision:` at the router naming
+  `Related` the flag); the router, which refuses a `CANCEL` (`wire.CommandCancel`, 0x000C)
+  with the table and `ErrCancel`, which the table's error rows map to a `NoReply` row, since a
+  `CANCEL` is answered nothing (MS-SMB2 3.3.5.16), and otherwise returns the table it is built
+  with and a `Request` at `NeedsNothing`, version 0, with the connection and no state, `decision:` at the router naming
   `NEGOTIATE`, which fixes a connection's dialect, and the session and tree a request reaches
   as what give it a dialect and a level. `TestHeaderStageAllocs`;
   `./internal/adapter/smb/protocol/` added to `unit/adapter-allocs`' command.
@@ -517,13 +527,15 @@ framer's.
     header and the error; a header whose `NextCommand` is 68 does, and its `Next` lies past the
     record's end.
   - `Encode` of `STATUS_NOT_SUPPORTED` gives the reply header with one credit, then the 9-byte
-    error body; of status 0, the header alone. Three replies encoded and chained lie at
+    error body; of status 0, the header alone; over an async request, the async-form reply with
+    no credit. Three replies encoded and chained lie at
     multiples of 8, each `NextCommand` pointing at the next.
   - `Args` of each member of the chain of three is its own arguments, none of the next
     member's header; `Encode` of any status, with `Chain`'s padding, writes no more than
     `ReplyLen`.
   - `Route` returns the table it was built with for every command, with a `Request` at
-    `NeedsNothing` and version 0 whose `Conn` is the one the router was built with.
+    `NeedsNothing` and version 0 whose `Conn` is the one the router was built with; for a
+    `CANCEL`, sync or async, the table, no `Request` and `ErrCancel`.
   - The header stage's `Decode` and `Encode` of a single message, and `Decode` of each refusal
     with a header, allocate nothing; `Decode` of a chained member past the first allocates
     once.
@@ -538,10 +550,13 @@ framer's.
   member's header as its arguments). `ReplyLen` against `Encode` (catches a reservation
   smaller than the status's reply, which the error body or the padding then overruns).
   `Route` (catches a request routed to no table, or at a level that would let a later row skip
-  its `Needs`). `TestHeaderStageAllocs` (catches a header boxed by value, which allocates per
+  its `Needs`); the `CANCEL`s (catch a `CANCEL` answered, which MS-SMB2 3.3.5.16 forbids, and
+  one refused with no table, which `Stages.Errors` would answer). The async reply (catches a
+  credit granted on an async-form reply, against MS-SMB2 3.3.4.4). `TestHeaderStageAllocs` (catches a header boxed by value, which allocates per
   request, a member allocated at offset 0, and an error built on a refusal's path).
 - **Rules:** rule 4: the gate; rule 7: D1's `decision:` at the view and `ponytail:` at the
-  member, D4's `ponytail:`; rule 9: nothing exported.
+  member, D4's `ponytail:`; rule 9: `ErrCancel` alone exported, which the table's error rows
+  name.
 
 ### T6.3b `smb.New`: the framer, the protocol, the table and the server
 
@@ -730,7 +745,9 @@ framer's.
   - `Args` of frame 8's `COMPOUND` begins at its tag, past the `AUTH_SYS` credential and the
     verifier; `Encode` of every status above writes no more than `ReplyLen`, D3's `COMPOUND`
     and its tag included.
-  - The header stage's `Decode`, `Route` and `Encode` of an `AUTH_SYS` call allocate nothing.
+  - The header stage's `Decode` and `Encode` of an `AUTH_SYS` call allocate nothing, and
+    `Route` allocates one `Request` per call, since one shared across a connection's
+    concurrent requests races.
 - **Tests:** stage tests in `stages_test.go`, in the package, through `core.HeaderCodec`,
   `core.Router` and the stages' `ErrorTable.Map`, each refusal followed to the bytes `Encode`
   writes for its status. No test double: a settings value and the tables are inputs. The table
