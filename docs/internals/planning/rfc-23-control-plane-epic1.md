@@ -49,8 +49,8 @@ its drift test; the architecture tests that need no package this epic does not c
   `pkg/metadata/entity` (D3): E2 declares and fills them together, so no stub of
   them is frozen here. E2 adds `Alloc` to `PutUser` and `PutGroup` (its D2), refusing
   an allocation until the RFC 18 plan's counters land.
-- `pkg/apiclient`: the package goes with its v1 body (D6), and E4 lands it whole, one generic
-  `Resource[Spec, Status]` with its core.
+- `pkg/apiclient`: the package goes with its v1 body (D6), and E4 lands it whole at
+  `pkg/node/apiv1/client`, one generic `Resource[Spec, Status]` with its core.
 - Each resource's spec and status types in `pkg/node/apiv1`: E4 for the resources its routes
   serve, E5 for API tokens, sessions and sign-in.
 - The kvstore settings view's delete and cross-scope read and the secrets view (`DeleteSetting`,
@@ -212,11 +212,13 @@ that subtasks and tests can cite them.
   Prior art: Kubernetes' string reason codes (from memory).
 - **D6, `pkg/apiclient` goes with its v1 body and returns whole in E4.** After T1.2 nothing imports
   the client: `dfsctl`'s commands refuse (D11) and the test drivers are gone. So the package is
-  deleted rather than left empty, and E4 lands it at the same path as one generic
+  deleted rather than left empty, and E4 lands it as one generic
   `Resource[Spec, Status]` (`List`, `Get`, `Create`, `Replace`, `Patch`, `Delete`) with its core, each
-  resource's accessor added with its route. The CLI-closure rule names `pkg/apiclient` among the
-  allowed packages, so it holds the client from the day E4 lands it. The user's decision. No
-  marker. Prior art: the Kubernetes dynamic client's generic resource interface (from memory).
+  resource's accessor added with its route. E4 first landed it at the v1 path; it then moved to
+  `pkg/node/apiv1/client`, beside the wire types it speaks, before any command imported it (the
+  user's decision, 2026-11-17), and `pkg/apiclient` joined the paths the no-v1 rule refuses. The
+  CLI-closure rule names `pkg/node/apiv1/client` among the allowed packages, so it holds the client
+  from the day E4 lands it. The user's decision. No marker. Prior art: the Kubernetes dynamic client's generic resource interface (from memory).
 - **D7, the API's package is not created here.** `internal/node/api` lands with E4, its first
   consumer, and `internal/node/api/auth` with E5; neither touches this epic's surface. The two
   architecture rules about that package land with it in E4 (RFC 23's plan, §1.3). No marker.
@@ -254,7 +256,7 @@ test/harness/fixture/
   spec.go                                  T1.1  Unsupported, Placeholders, Network, moved from fixture.go
   fixture.go, api.go, shares.go            T1.1  deleted, with their tests
 test/harness/run/fixture.go                T1.1  a DittoFS-server fixture refused
-pkg/apiclient/                             T1.2  deleted, with its v1 body (D6); E4 lands it again
+pkg/apiclient/                             T1.2  deleted, with its v1 body (D6); E4 lands it at pkg/node/apiv1/client
 cmd/dfsctl/commands/**                     T1.2  bodies replaced by a refusal (D11); tree and flags kept
 pkg/controlplane/  internal/controlplane/
 pkg/snapshot/  pkg/identity/               T1.3  deleted (internal/auth/netlogon stays, with no production importer)
@@ -468,9 +470,9 @@ internal/node/
 - **Deliverables:** three rules added to `internal/node/arch_test.go`, each a function of a source root (D10), run
   over the module and over `internal/node/testdata/arch/<rule>/`:
   - **no v1 import** (R3): no `.go` file outside `testdata` imports a path under
-    `pkg/controlplane`, `internal/controlplane` or `pkg/snapshot`. `pkg/identity`
-    returns in v2 at the same path, so the compiler guards its deletion and the
-    rule does not name it; `pkg/apiclient` returns as `pkg/node/apiv1/client`;
+    `pkg/controlplane`, `internal/controlplane`, `pkg/snapshot` or `pkg/apiclient`, whose client
+    returns as `pkg/node/apiv1/client`. `pkg/identity` returns in v2 at the same path, so the
+    compiler guards its deletion and the rule does not name it;
   - **who imports the node** (R19): only `cmd/dfs/commands/start.go` and files under
     `internal/node/nodetest` import `internal/node`; a `decision:` marker says the harness is the
     one exemption RFC 23 names. `nodetest` does not exist until E3, so the rule's `testdata` tree
