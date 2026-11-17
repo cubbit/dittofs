@@ -788,6 +788,6 @@ of one another and can be open at once.
     request of its own that also updates the copies. *Pending: no PR yet.*
 12. **Where a write loss fires.** D5's fault log credits a write loss to the client call in
     flight when it fires. That holds if the journal writes a record to its storage inside the
-    call that appends it. T10.1 checks that first. If a record can reach the storage after its
-    call returned, the log credits the fault to the ranges written since the file's last
-    sync, and case c is narrower. *Pending: T10.1.*
+    call that appends it. T10.1 does not rely on it: a loss that fires in any other call is
+    credited to every write of the process not yet acknowledged, in every file, since the
+    soak cannot tell which record it reached, and case c is narrower. *Settled.*
