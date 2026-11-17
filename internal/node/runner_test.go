@@ -403,37 +403,53 @@ func TestStateChangeCommitsWithItsAudit(t *testing.T) {
 	}
 }
 
-// A done step whose End panics fails the operation, as a step's panic does,
-// without the panic reaching the runner's caller: the End's writes roll
-// back, the cursor stays as recorded, and the failure is audited.
+// A done step whose End panics, or answers a step failure or a problem,
+// fails the operation as the step's own would, without a panic reaching the
+// runner's caller: the End's writes roll back, the cursor stays as recorded,
+// and the failure is audited.
 func TestEndPanicFailsOperation(t *testing.T) {
-	b := newBench(t, "", nil)
-	op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning, Step: []byte("s1")})
-	setting := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "ended", Value: []byte("yes")}
-	r := b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
-		return step.StepResult{Next: []byte("s2"), Done: true, End: func(tx entity.ControlPlaneTx) error {
-			if _, err := tx.PutSetting(setting, 0); err != nil {
-				return err
+	gone := &apiv1.Problem{Status: 404, Code: "not_found", Title: "no such user"}
+	goneBody, _ := json.Marshal(gone)
+	for _, c := range []struct {
+		name  string
+		end   func() error
+		error string
+	}{
+		{"a panic", func() error { panic("boom") },
+			`{"status":500,"code":"","title":"the operation failed","detail":"step failed: operation end: panic: boom","retryable":false,"request_id":""}`},
+		{"a step failure", func() error { return fmt.Errorf("%w: x", step.ErrStepFailed) },
+			`{"status":500,"code":"","title":"the operation failed","detail":"step failed: x","retryable":false,"request_id":""}`},
+		{"a problem", func() error { return gone }, string(goneBody)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := newBench(t, "", nil)
+			op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning, Step: []byte("s1")})
+			setting := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "ended", Value: []byte("yes")}
+			r := b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
+				return step.StepResult{Next: []byte("s2"), Done: true, End: func(tx entity.ControlPlaneTx) error {
+					if _, err := tx.PutSetting(setting, 0); err != nil {
+						return err
+					}
+					return c.end()
+				}}, nil
+			}}})
+
+			b.at(r, 0)
+
+			got := b.read(op.ID)
+			if got.State != entity.OpFailed || string(got.Step) != "s1" || string(got.Error) != c.error || got.Result != nil {
+				t.Errorf("operation whose End answered %s: got state %v, step %q, error %s, result %s; want failed, \"s1\", %s, none", c.name, got.State, got.Step, got.Error, got.Result, c.error)
 			}
-			panic("boom")
-		}}, nil
-	}}})
-
-	b.at(r, 0)
-
-	got := b.read(op.ID)
-	want := `{"status":500,"code":"","title":"the operation failed","detail":"step failed: operation end: panic: boom","retryable":false,"request_id":""}`
-	if got.State != entity.OpFailed || string(got.Step) != "s1" || string(got.Error) != want || got.Result != nil {
-		t.Errorf("operation whose End panicked: got state %v, step %q, error %s, result %s; want failed, \"s1\", %s, none", got.State, got.Step, got.Error, got.Result, want)
-	}
-	for s, err := range b.store.ControlPlane().Settings(t.Context(), setting.Scope) {
-		b.must("list the settings", err)
-		if s.Key == setting.Key {
-			t.Errorf("setting the panicking End wrote: got %q, want it rolled back", s.Value)
-		}
-	}
-	if a, change := b.opAudits(op.ID), `{"state":{"old":"running","new":"failed"}}`; len(a) != 1 || string(a[0].Change) != change {
-		t.Errorf("audit records of the failed end: got %v, want one with change %s", a, change)
+			for s, err := range b.store.ControlPlane().Settings(t.Context(), setting.Scope) {
+				b.must("list the settings", err)
+				if s.Key == setting.Key {
+					t.Errorf("setting the failing End wrote: got %q, want it rolled back", s.Value)
+				}
+			}
+			if a, change := b.opAudits(op.ID), `{"state":{"old":"running","new":"failed"}}`; len(a) != 1 || string(a[0].Change) != change {
+				t.Errorf("audit records of the failed end: got %v, want one with change %s", a, change)
+			}
+		})
 	}
 }
 

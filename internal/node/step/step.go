@@ -14,9 +14,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
-// ErrStepFailed, wrapped by a step's error, fails the operation with that
-// error. A step returns a *apiv1.Problem instead to fail it with a coded
-// problem. Any other error is retried.
+// ErrStepFailed, wrapped by a step's error or its End's, fails the operation
+// with that error. A step or an End returns a *apiv1.Problem instead to fail
+// it with a coded problem. Any other error is retried.
 var ErrStepFailed = errors.New("step failed")
 
 // StepResult is what one turn of an operation's work answers.
@@ -29,7 +29,8 @@ type StepResult struct {
 	// Result, set with Done, is recorded as Operation.Result.
 	Result json.RawMessage
 	// End, set with Done, writes in the transaction that ends the operation:
-	// both commit or neither does.
+	// both commit or neither does. Its error is sorted as a step's is, and
+	// its panic fails the operation.
 	End func(tx entity.ControlPlaneTx) error
 }
 
