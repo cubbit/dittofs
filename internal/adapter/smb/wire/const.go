@@ -26,7 +26,7 @@ const (
 	FlagServerToRedir     = 0x00000001 // the message is a response
 	FlagAsyncCommand      = 0x00000002 // the header is in its async form
 	FlagRelatedOperations = 0x00000004 // the request is a related member of a chain
-	flagSigned            = 0x00000008 // the message is signed
+	FlagSigned            = 0x00000008 // the message is signed
 )
 
 // The statuses the server's tables name (MS-ERREF 2.3.1).

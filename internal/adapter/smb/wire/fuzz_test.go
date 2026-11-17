@@ -66,7 +66,7 @@ func FuzzRecord(f *testing.F) {
 			if err != nil {
 				t.Fatalf("the reply to the header at %d does not decode: %v\n% x", off, err, reply)
 			}
-			if r.Command() != h.Command() || r.messageID() != h.messageID() || r.sessionID() != h.sessionID() ||
+			if r.Command() != h.Command() || r.MessageID() != h.MessageID() || r.SessionID() != h.SessionID() ||
 				binary.LittleEndian.Uint32(reply[16:])&0x1 == 0 { // SERVER_TO_REDIR, MS-SMB2 2.2.1.2
 				t.Fatalf("the reply\n% x\nto the header at %d\n% x\ndoes not answer it", reply, off, h[:])
 			}

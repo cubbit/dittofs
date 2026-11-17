@@ -141,11 +141,11 @@ func TestDecodeHeaderReadsEachFieldInPlace(t *testing.T) {
 			t.Errorf("%s: the header is a copy, not a view of the message at %d", c.name, c.off)
 		}
 		got := fields{
-			command: h.Command(), flags: h.Flags(), next: h.NextCommand(), creditCharge: h.creditCharge(),
-			credits: h.credits(), messageID: h.messageID(), id: uint64(h.treeID()), sessionID: h.sessionID(),
+			command: h.Command(), flags: h.Flags(), next: h.NextCommand(), creditCharge: h.CreditCharge(),
+			credits: h.Credits(), messageID: h.MessageID(), id: uint64(h.TreeID()), sessionID: h.SessionID(),
 		}
 		if c.async {
-			got.id = h.asyncID()
+			got.id = h.AsyncID()
 		}
 		if got != c.want {
 			t.Errorf("%s: decoded to\n%+v\nwant\n%+v", c.name, got, c.want)
@@ -218,10 +218,10 @@ func TestDecodeHeaderReturnsAMalformedHeaderWithItsError(t *testing.T) {
 	}{
 		{"StructureSize 65", patched(sync, 4, 0x41, 0x00), errStructureSize},
 		{"StructureSize 63", patched(sync, 4, 0x3f, 0x00), errStructureSize},
-		{"NextCommand 68, not a multiple of 8", room(68, 68), errNextCommand},
-		{"NextCommand 72, its header one byte past the message", room(72, 72-1), errNextCommand},
-		{"NextCommand 8, inside this header", room(8, 64), errNextCommand},
-		{"NextCommand 68 and StructureSize 65: the step's refusal first", patched(room(68, 68), 4, 0x41), errNextCommand},
+		{"NextCommand 68, not a multiple of 8", room(68, 68), ErrNextCommand},
+		{"NextCommand 72, its header one byte past the message", room(72, 72-1), ErrNextCommand},
+		{"NextCommand 8, inside this header", room(8, 64), ErrNextCommand},
+		{"NextCommand 68 and StructureSize 65: the step's refusal first", patched(room(68, 68), 4, 0x41), ErrNextCommand},
 	} {
 		h, err := DecodeHeader(c.msg, 0)
 		if h == nil || &h[0] != &c.msg[0] || !errors.Is(err, c.err) || errors.Is(err, ErrUnaddressable) {
@@ -305,6 +305,59 @@ func TestAppendErrorWritesTheNineByteBody(t *testing.T) {
 	got := AppendError([]byte{0xaa})
 	if want := append([]byte{0xaa}, readGolden(t, "error_body")...); !bytes.Equal(got, want) {
 		t.Errorf("AppendError after one byte = % x; want % x", got, want)
+	}
+}
+
+// A related member's all-ones IDs are replaced with the member before it: the
+// reply the runner builds carries IDs the client can verify, and the sync
+// form takes the tree as well as the session (RFC 20 section 4.7, MS-SMB2
+// 3.2.5.1.3). An async header takes the session alone: its tree offset is
+// the async ID's high half, which a tree written there would corrupt.
+func TestARelatedMemberInheritsTheIDsBeforeIt(t *testing.T) {
+	chain := readGolden(t, "chain_request")
+	first, err := DecodeHeader(chain, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := DecodeHeader(chain, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.SessionID() != ^uint64(0) || second.TreeID() != 0xffffffff {
+		t.Fatalf("the related member carries %x/%x, want the all-ones IDs", second.SessionID(), second.TreeID())
+	}
+	second.Inherit(first)
+	if got, want := second.SessionID(), first.SessionID(); got != want {
+		t.Errorf("the related member's session is %x after Inherit, want the first's %x", got, want)
+	}
+	if got, want := second.TreeID(), first.TreeID(); got != want {
+		t.Errorf("the related member's tree is %x after Inherit, want the first's %x", got, want)
+	}
+	reply := AppendReply(nil, second, 0x00000022, 1)
+	r, err := DecodeHeader(reply, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.SessionID() != first.SessionID() || r.TreeID() != first.TreeID() {
+		t.Errorf("the related member's reply carries %x/%x, want the inherited %x/%x", r.SessionID(), r.TreeID(), first.SessionID(), first.TreeID())
+	}
+
+	asyncHdr := readGolden(t, "async_request")
+	async, err := DecodeHeader(asyncHdr, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if async.Flags()&FlagAsyncCommand == 0 {
+		t.Fatal("the async vector is not of the async form")
+	}
+	own := async.AsyncID()
+	third := *async
+	third.Inherit(first)
+	if got, want := third.SessionID(), first.SessionID(); got != want {
+		t.Errorf("an async member's session is %x after Inherit, want the first's %x", got, want)
+	}
+	if got := third.AsyncID(); got != own {
+		t.Errorf("an async member's async ID is %x after Inherit, want its own %x", got, own)
 	}
 }
 

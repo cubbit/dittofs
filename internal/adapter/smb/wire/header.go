@@ -42,8 +42,13 @@ var (
 	errCommand    = fmt.Errorf("%w: a command code no SMB2 request carries", ErrUnaddressable)
 )
 
+// ErrNextCommand is a NextCommand that is not a step to an 8-byte aligned
+// header inside the message: the chain ends at the member carrying it, which
+// the stage above tells from a structure flaw by errors.Is, since the two
+// refusals need different answers (RFC 22 section 16.5).
+var ErrNextCommand = errors.New("smb: a NextCommand that is not a step to an 8-byte aligned header inside the message")
+
 var (
-	errNextCommand   = errors.New("smb: a NextCommand that is not a step to an 8-byte aligned header inside the message")
 	errStructureSize = errors.New("smb: an SMB2 header whose StructureSize is not 64")
 	errChain         = errors.New("smb: a chained reply that does not lie in the buffer")
 )
@@ -61,13 +66,43 @@ func (h *Header) Flags() uint32 { return binary.LittleEndian.Uint32(h[offFlags:]
 // start, 0 for the last.
 func (h *Header) NextCommand() uint32 { return binary.LittleEndian.Uint32(h[offNextCommand:]) }
 
-func (h *Header) structureSize() uint16 { return binary.LittleEndian.Uint16(h[offStructureSize:]) }
-func (h *Header) creditCharge() uint16  { return binary.LittleEndian.Uint16(h[offCreditCharge:]) }
-func (h *Header) credits() uint16       { return binary.LittleEndian.Uint16(h[offCredits:]) }
-func (h *Header) messageID() uint64     { return binary.LittleEndian.Uint64(h[offMessageID:]) }
-func (h *Header) asyncID() uint64       { return binary.LittleEndian.Uint64(h[offAsyncID:]) }
-func (h *Header) treeID() uint32        { return binary.LittleEndian.Uint32(h[offTreeID:]) }
-func (h *Header) sessionID() uint64     { return binary.LittleEndian.Uint64(h[offSessionID:]) }
+// StructureSize is the header's StructureSize, 64 in a well-formed header.
+func (h *Header) StructureSize() uint16 { return binary.LittleEndian.Uint16(h[offStructureSize:]) }
+
+// CreditCharge is the header's CreditCharge, which a reply carries from its
+// request (MS-SMB2 3.3.4.1).
+func (h *Header) CreditCharge() uint16 { return binary.LittleEndian.Uint16(h[offCreditCharge:]) }
+
+// Credits is CreditRequest in a request or CreditResponse in a reply.
+func (h *Header) Credits() uint16 { return binary.LittleEndian.Uint16(h[offCredits:]) }
+
+// MessageID is the header's MessageId.
+func (h *Header) MessageID() uint64 { return binary.LittleEndian.Uint64(h[offMessageID:]) }
+
+// AsyncID is the async form's AsyncId; in the sync form its offset is
+// Reserved and the tree ID's.
+func (h *Header) AsyncID() uint64 { return binary.LittleEndian.Uint64(h[offAsyncID:]) }
+
+// TreeID is the sync form's TreeId.
+func (h *Header) TreeID() uint32 { return binary.LittleEndian.Uint32(h[offTreeID:]) }
+
+// SessionID is the header's SessionId, which names the session a client looks
+// a signed reply up by (MS-SMB2 3.2.5.1.3).
+func (h *Header) SessionID() uint64 { return binary.LittleEndian.Uint64(h[offSessionID:]) }
+
+// Inherit takes the IDs a related member carries as all-ones from the member
+// before it: its session and tree. RFC 20 section 4.7 has Unwrap take them
+// "from prev before the check", and that stage calls this so the reply the
+// runner builds carries IDs the client can verify and resolve, not the
+// all-ones the request carried. The sync and async forms share the tree's
+// offset: a header of the sync form takes the tree, of the async form
+// nothing, those bytes being the async ID's high half.
+func (h *Header) Inherit(prev *Header) {
+	binary.LittleEndian.PutUint64(h[offSessionID:], prev.SessionID())
+	if h.Flags()&FlagAsyncCommand == 0 {
+		binary.LittleEndian.PutUint32(h[offTreeID:], prev.TreeID())
+	}
+}
 
 // DecodeHeader returns the SMB2 header at off in msg, as a view of msg's
 // bytes.
@@ -95,9 +130,9 @@ func DecodeHeader(msg []byte, off int) (*Header, error) {
 	}
 	next := h.NextCommand()
 	if next != 0 && (next%8 != 0 || next < HeaderLen || uint64(next) > uint64(len(msg)-off-HeaderLen)) {
-		return h, errNextCommand
+		return h, ErrNextCommand
 	}
-	if h.structureSize() != HeaderLen {
+	if h.StructureSize() != HeaderLen {
 		return h, errStructureSize
 	}
 
@@ -121,7 +156,7 @@ func AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte 
 	binary.LittleEndian.PutUint16(r[offStructureSize:], HeaderLen)
 	binary.LittleEndian.PutUint32(r[offStatus:], status)
 	binary.LittleEndian.PutUint16(r[offCredits:], credits)
-	binary.LittleEndian.PutUint32(r[offFlags:], FlagServerToRedir|req.Flags()&^flagSigned)
+	binary.LittleEndian.PutUint32(r[offFlags:], FlagServerToRedir|req.Flags()&^FlagSigned)
 	binary.LittleEndian.PutUint32(r[offNextCommand:], 0)
 	clear(r[offSignature:])
 
@@ -144,10 +179,10 @@ func AppendError(out []byte) []byte {
 
 // Chain pads the reply at prev in out to a multiple of 8 and, when more is
 // true, points it at the member appended after it: its NextCommand becomes
-// that step, and the last member of a chain, which MS-SMB2 2.2.1.2 has end
-// with 0, is padded with more false so the field stays as AppendReply left
-// it (MS-SMB2 3.3.4.1.3). Chain is called between a chain's members, never
-// after the last one. It returns out.
+// that step. A chain's last member, which MS-SMB2 2.2.1.2 has end with 0, is
+// padded too, with more false so the field stays as AppendReply left it
+// (MS-SMB2 3.3.4.1.3; RFC 20 section 4.7 counts Chain's padding for every
+// reply). It returns out.
 func Chain(out []byte, prev int, more bool) ([]byte, error) {
 	if prev < 0 || len(out)-prev < HeaderLen {
 		return out, errChain
