@@ -226,8 +226,8 @@ func walkImports(root string, tests bool, fn func(file string, imports []string)
 }
 
 // v1Paths are v1's control plane, which never returns at these paths.
-// pkg/identity and pkg/apiclient come back in v2 at the same paths, so the
-// compiler, not this rule, guards their deletion.
+// pkg/identity comes back in v2 at the same path, so the compiler, not this
+// rule, guards its deletion.
 var v1Paths = []string{module + "pkg/controlplane", module + "internal/controlplane", module + "pkg/snapshot"}
 
 // v1Imports returns each import of a v1 path by a file under root, tests
@@ -290,13 +290,14 @@ func enginewireImporters(root string) ([]string, error) {
 // of this module it may reach: neither the metadata or block stores, nor the
 // control-plane server, nor anything that reads the host's bootstrap.
 var (
-	cliRoots   = []string{"cmd/dfsctl", "pkg/node/apiv1", "pkg/apiclient"}
-	cliAllowed = []string{"cmd/dfsctl", "pkg/apiclient", "pkg/node/apiv1", "internal/cli"}
+	cliRoots   = []string{"cmd/dfsctl", "pkg/node/apiv1", "pkg/node/apiv1/client"}
+	cliAllowed = []string{"cmd/dfsctl", "pkg/node/apiv1", "pkg/node/apiv1/client", "internal/cli"}
 )
 
 // cliClosure returns each package of this module the CLI's binary reaches
 // outside cliAllowed, and each import of a package under pkg/node/apiv1
-// outside the standard library. It follows non-test files only, as the
+// outside the standard library and pkg/node/apiv1 itself, which its client
+// imports. It follows non-test files only, as the
 // binary is built from them.
 func cliClosure(root string) ([]string, error) {
 	pkgs := map[string][]string{}
@@ -319,7 +320,7 @@ func cliClosure(root string) ([]string, error) {
 		dir := queue[0]
 		queue = queue[1:]
 		for _, imp := range pkgs[dir] {
-			if under(dir, "pkg/node/apiv1") && !standard(imp) {
+			if under(dir, "pkg/node/apiv1") && !standard(imp) && imp != module+"pkg/node/apiv1" {
 				bad = append(bad, dir+" imports "+imp+" outside the standard library")
 			}
 			dep, ok := strings.CutPrefix(imp, module)
@@ -388,6 +389,7 @@ func TestImportRules(t *testing.T) {
 			[]string{
 				"pkg/node/apiv1 imports C outside the standard library",
 				"pkg/node/apiv1 imports github.com/spf13/cobra outside the standard library",
+				"pkg/node/apiv1/client imports github.com/google/uuid outside the standard library",
 			}},
 		{"the API settings' imports", settingsImports, "settings-leaf",
 			[]string{"internal/node/api/apisettings/settings.go imports " + module + "pkg/node/apiv1"}},

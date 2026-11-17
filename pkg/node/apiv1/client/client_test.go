@@ -1,4 +1,4 @@
-package apiclient_test
+package client_test
 
 import (
 	"context"
@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/google/uuid"
 )
@@ -143,7 +143,7 @@ func TestNew(t *testing.T) {
 		{"https://:443", false},
 		{"api.sock", false},
 	} {
-		if _, err := apiclient.New(tc.server); (err == nil) != tc.ok {
+		if _, err := client.New(tc.server); (err == nil) != tc.ok {
 			t.Errorf("New(%q): error %v, want accepted %v", tc.server, err, tc.ok)
 		}
 	}
@@ -161,7 +161,7 @@ func TestResourceOverEachTransport(t *testing.T) {
 	pool.AddCert(tlsFront.Certificate())
 	clock := newClock()
 	err := settled(t, "https without the server's CA", clock, func(ctx context.Context) error {
-		_, err := client(t, tlsFront.URL, clock).Shares().Get(ctx, uuid.NewString())
+		_, err := dial(t, tlsFront.URL, clock).Shares().Get(ctx, uuid.NewString())
 		return err
 	})
 	if err == nil || errors.As(err, new(*apiv1.Problem)) {
@@ -170,13 +170,13 @@ func TestResourceOverEachTransport(t *testing.T) {
 	ns := s.namespace(t)
 	for _, tc := range []struct {
 		name, server string
-		opts         []apiclient.Option
+		opts         []client.Option
 	}{
 		{"http", s.url, nil},
 		{"socket", s.socket(t), nil},
-		{"https", tlsFront.URL, []apiclient.Option{apiclient.WithTLS(&tls.Config{RootCAs: pool})}},
+		{"https", tlsFront.URL, []client.Option{client.WithTLS(&tls.Config{RootCAs: pool})}},
 	} {
-		c := client(t, tc.server, newClock(), tc.opts...)
+		c := dial(t, tc.server, newClock(), tc.opts...)
 		name := "builds-" + tc.name
 		made, err := c.CreateShare(t.Context(), newShare(name, ns))
 		if err != nil || made.Spec.Name != name || made.ETag == "" {
@@ -221,7 +221,7 @@ func TestRetries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := serve(t, admin())
 			clock := newClock()
-			c := client(t, s.url, clock)
+			c := dial(t, s.url, clock)
 			ns := s.namespace(t)
 			ft := tc.ft
 			ft.match = func(r *http.Request) bool {
@@ -267,7 +267,7 @@ func TestRetries(t *testing.T) {
 func TestAtMostFiveSends(t *testing.T) {
 	s := serve(t, admin())
 	clock := newClock()
-	c := client(t, s.url, clock)
+	c := dial(t, s.url, clock)
 	id := uuid.NewString()
 	for range 5 {
 		s.front.add(fault{match: on(http.MethodGet, "/api/v1/shares/"+id), drop: true})
@@ -295,7 +295,7 @@ func TestAtMostFiveSends(t *testing.T) {
 func TestNonProblemBodyIsFinal(t *testing.T) {
 	s := serve(t, admin())
 	clock := newClock()
-	c := client(t, s.url, clock)
+	c := dial(t, s.url, clock)
 	id := uuid.NewString()
 	s.front.add(fault{match: on(http.MethodGet, "/api/v1/shares/"+id), status: http.StatusServiceUnavailable,
 		header: http.Header{"Content-Type": {"text/html"}}, body: "<html>busy</html>"})
@@ -312,7 +312,7 @@ func TestNonProblemBodyIsFinal(t *testing.T) {
 func TestAnswerTooLong(t *testing.T) {
 	s := serve(t, admin())
 	clock := newClock()
-	c := client(t, s.url, clock)
+	c := dial(t, s.url, clock)
 	id := uuid.NewString()
 	s.front.add(fault{match: on(http.MethodGet, "/api/v1/shares/"+id), status: http.StatusInternalServerError,
 		header: http.Header{"Content-Type": {"text/plain"}}, body: strings.Repeat("x", 16<<20+1)})
@@ -339,7 +339,7 @@ func TestRedirectNotFollowed(t *testing.T) {
 	}))
 	t.Cleanup(redirect.Close)
 	ts := tokens{"secret", func(string) (string, error) { return "", errors.New("refreshed, want no refresh") }}
-	_, err := client(t, redirect.URL, newClock(), apiclient.WithTokenSource(ts)).Health(t.Context())
+	_, err := dial(t, redirect.URL, newClock(), client.WithTokenSource(ts)).Health(t.Context())
 	for _, r := range s.front.requests(http.MethodGet) {
 		if a := r.header.Get("Authorization"); a != "" {
 			t.Errorf("the redirect's target was sent GET %s with Authorization %q, want none", r.uri, a)
@@ -356,7 +356,7 @@ func TestVersionWaitEndsWithContext(t *testing.T) {
 	s := serve(t, admin())
 	hold := make(chan struct{})
 	s.front.add(fault{match: on(http.MethodGet, "/api/version"), hold: hold})
-	c := client(t, s.url, newClock())
+	c := dial(t, s.url, newClock())
 	first := make(chan error, 1)
 	go func() {
 		_, err := c.Health(t.Context())
@@ -392,7 +392,7 @@ func TestVersionRefused(t *testing.T) {
 	s := serve(t, admin())
 	s.front.add(fault{match: on(http.MethodGet, "/api/version"), status: http.StatusOK,
 		header: http.Header{"Content-Type": {"application/json"}}, body: `{"majors":["v2"]}`})
-	_, err := client(t, s.url, newClock()).Health(t.Context())
+	_, err := dial(t, s.url, newClock()).Health(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "v1") || !strings.Contains(err.Error(), "v2") {
 		t.Errorf("Health against a server serving only v2: error %v, want one naming v1 and v2", err)
 	}
@@ -407,7 +407,7 @@ func TestVersionResentAfterLostAnswer(t *testing.T) {
 	s := serve(t, admin())
 	s.front.add(fault{match: on(http.MethodGet, "/api/version"), drop: true})
 	clock := newClock()
-	c := client(t, s.url, clock)
+	c := dial(t, s.url, clock)
 	done := make(chan error, 1)
 	go func() {
 		_, err := c.Health(t.Context())
@@ -434,7 +434,7 @@ func TestVersionResentAfterLostAnswer(t *testing.T) {
 func TestStaleTagStops(t *testing.T) {
 	s := serve(t, admin())
 	clock := newClock()
-	c := client(t, s.url, clock)
+	c := dial(t, s.url, clock)
 	sh, err := c.CreateShare(t.Context(), newShare("builds", s.namespace(t)))
 	if err != nil {
 		t.Fatalf("CreateShare: %v", err)
@@ -462,13 +462,13 @@ func TestLostWriteAnswerNotResent(t *testing.T) {
 		name   string
 		method string
 		path   string
-		write  func(context.Context, *apiclient.Client, apiclient.Tagged[apiv1.ShareSpec, apiv1.ShareStatus]) error
+		write  func(context.Context, *client.Client, client.Tagged[apiv1.ShareSpec, apiv1.ShareStatus]) error
 	}{
-		{"Patch of a share", http.MethodPatch, "", func(ctx context.Context, c *apiclient.Client, sh apiclient.Tagged[apiv1.ShareSpec, apiv1.ShareStatus]) error {
+		{"Patch of a share", http.MethodPatch, "", func(ctx context.Context, c *client.Client, sh client.Tagged[apiv1.ShareSpec, apiv1.ShareStatus]) error {
 			_, err := c.Shares().Patch(ctx, sh.ID, map[string]any{"spec": map[string]any{"name": "ci"}}, sh.ETag)
 			return err
 		}},
-		{"Put of an export policy", http.MethodPut, "/export-policy", func(ctx context.Context, c *apiclient.Client, sh apiclient.Tagged[apiv1.ShareSpec, apiv1.ShareStatus]) error {
+		{"Put of an export policy", http.MethodPut, "/export-policy", func(ctx context.Context, c *client.Client, sh client.Tagged[apiv1.ShareSpec, apiv1.ShareStatus]) error {
 			pol, err := c.ExportPolicies().Get(ctx, sh.ID)
 			if err != nil {
 				return fmt.Errorf("get the policy: %w", err)
@@ -480,7 +480,7 @@ func TestLostWriteAnswerNotResent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := serve(t, admin())
 			clock := newClock()
-			c := client(t, s.url, clock)
+			c := dial(t, s.url, clock)
 			sh, err := c.CreateShare(t.Context(), newShare("builds", s.namespace(t)))
 			if err != nil {
 				t.Fatalf("CreateShare: %v", err)
@@ -505,7 +505,7 @@ func TestLostWriteAnswerNotResent(t *testing.T) {
 func TestExportPolicy(t *testing.T) {
 	s := serve(t, admin())
 	clock := newClock()
-	c := client(t, s.url, clock)
+	c := dial(t, s.url, clock)
 	sh, err := c.CreateShare(t.Context(), newShare("builds", s.namespace(t)))
 	if err != nil {
 		t.Fatalf("CreateShare: %v", err)
@@ -548,7 +548,7 @@ func TestExportPolicy(t *testing.T) {
 func TestWithoutIdempotencyKey(t *testing.T) {
 	s := serve(t, admin())
 	clock := newClock()
-	c := client(t, s.url, clock)
+	c := dial(t, s.url, clock)
 	sh, err := c.CreateShare(t.Context(), newShare("builds", s.namespace(t)))
 	if err != nil {
 		t.Fatalf("CreateShare: %v", err)
@@ -557,11 +557,11 @@ func TestWithoutIdempotencyKey(t *testing.T) {
 	if err != nil || res.Operation != nil || res.Resource == nil || res.Resource.Status.State != "quiesced" || res.Resource.ETag == "" {
 		t.Errorf(":quiesce: %+v err %v, want the share quiesced with its ETag and no operation", res, err)
 	}
-	_, err = c.Shares().Create(t.Context(), apiv1.ShareSpec{Name: "ci"}, apiclient.WithoutIdempotencyKey())
+	_, err = c.Shares().Create(t.Context(), apiv1.ShareSpec{Name: "ci"}, client.WithoutIdempotencyKey())
 	if p := problem(t, "Create without a key", err); p.Code != apiv1.CodePreconditionRequired {
 		t.Errorf("Create without a key: %q, want precondition_required", p.Code)
 	}
-	_, err = c.Shares().Action(t.Context(), sh.ID, "resume", nil, "", apiclient.WithoutIdempotencyKey())
+	_, err = c.Shares().Action(t.Context(), sh.ID, "resume", nil, "", client.WithoutIdempotencyKey())
 	if p := problem(t, "Action without a key", err); p.Code != apiv1.CodePreconditionRequired {
 		t.Errorf("Action without a key: %q, want precondition_required", p.Code)
 	}
@@ -571,7 +571,7 @@ func TestWithoutIdempotencyKey(t *testing.T) {
 
 	s.front.add(fault{match: on(http.MethodPost, "/api/v1/shares/"+sh.ID+":resume"), drop: true})
 	err = settled(t, "Action without a key, its answer lost", clock, func(ctx context.Context) error {
-		_, err := c.Shares().Action(ctx, sh.ID, "resume", nil, "", apiclient.WithoutIdempotencyKey())
+		_, err := c.Shares().Action(ctx, sh.ID, "resume", nil, "", client.WithoutIdempotencyKey())
 		return err
 	})
 	if err == nil || errors.As(err, new(*apiv1.Problem)) {
@@ -585,7 +585,7 @@ func TestWithoutIdempotencyKey(t *testing.T) {
 	ft.match = on(http.MethodPost, "/api/v1/shares")
 	s.front.add(ft)
 	err = settled(t, "Create without a key, refused 503", clock, func(ctx context.Context) error {
-		_, err := c.Shares().Create(ctx, apiv1.ShareSpec{Name: "qa"}, apiclient.WithoutIdempotencyKey())
+		_, err := c.Shares().Create(ctx, apiv1.ShareSpec{Name: "qa"}, client.WithoutIdempotencyKey())
 		return err
 	})
 	if p := problem(t, "Create without a key, refused 503", err); p.Status != http.StatusServiceUnavailable {
@@ -599,7 +599,7 @@ func TestActionAccepted(t *testing.T) {
 	id := uuid.NewString()
 	s.front.add(fault{match: on(http.MethodPost, "/api/v1/shares/"+id+":quiesce"), status: http.StatusAccepted,
 		header: http.Header{"Content-Type": {"application/json"}}, body: `{"id":"op1","state":"pending"}`})
-	res, err := client(t, s.url, newClock()).Shares().Action(t.Context(), id, "quiesce", nil, "")
+	res, err := dial(t, s.url, newClock()).Shares().Action(t.Context(), id, "quiesce", nil, "")
 	if err != nil || res.Operation == nil || res.Operation.ID != "op1" || res.Resource != nil {
 		t.Errorf(":quiesce answered 202: operation %+v resource %+v err %v, want operation op1 and no resource", res.Operation, res.Resource, err)
 	}
@@ -611,16 +611,16 @@ func TestActionAccepted(t *testing.T) {
 // a DELETE carries a key.
 func TestDeleteAndWait(t *testing.T) {
 	s := serve(t, admin())
-	c := client(t, s.url, newClock())
+	c := dial(t, s.url, newClock())
 	sh, err := c.CreateShare(t.Context(), newShare("builds", s.namespace(t)))
 	if err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
-	_, err = c.Shares().Delete(t.Context(), sh.ID, sh.ETag, apiclient.WithQuery(url.Values{"snapshots": {"keep"}}))
+	_, err = c.Shares().Delete(t.Context(), sh.ID, sh.ETag, client.WithQuery(url.Values{"snapshots": {"keep"}}))
 	if p := problem(t, "Delete ?snapshots=keep", err); p.Status != http.StatusBadRequest || p.Field != "snapshots" {
 		t.Errorf("Delete ?snapshots=keep: %d field %q, want 400 on snapshots", p.Status, p.Field)
 	}
-	op, err := c.Shares().Delete(t.Context(), sh.ID, sh.ETag, apiclient.WithQuery(url.Values{"snapshots": {"delete"}}))
+	op, err := c.Shares().Delete(t.Context(), sh.ID, sh.ETag, client.WithQuery(url.Values{"snapshots": {"delete"}}))
 	if err != nil || op == nil || op.Kind != apiv1.OpShareDelete || op.Target.ID != sh.ID {
 		t.Fatalf("Delete ?snapshots=delete: %+v err %v, want a share.delete on %s", op, err, sh.ID)
 	}
@@ -703,7 +703,7 @@ func TestUnauthorizedRefreshesOnce(t *testing.T) {
 			status: http.StatusUnauthorized, header: http.Header{"Content-Type": {apiv1.MediaTypeProblem}},
 			body: `{"status":401,"code":"unauthenticated","title":"Unauthorized","retryable":false,"request_id":"r1"}`,
 		})
-		c := client(t, s.url, newClock(), apiclient.WithTokenSource(tokens{"stale", fresh}))
+		c := dial(t, s.url, newClock(), client.WithTokenSource(tokens{"stale", fresh}))
 		sh, err := c.CreateShare(t.Context(), newShare("builds", s.namespace(t)))
 		if err != nil {
 			t.Fatalf("CreateShare refused 401 once: %v", err)
@@ -720,7 +720,7 @@ func TestUnauthorizedRefreshesOnce(t *testing.T) {
 	t.Run("refused again", func(t *testing.T) {
 		s := serve(t, nil)
 		always := tokens{"stale", func(string) (string, error) { return "fresh", nil }}
-		_, err := client(t, s.url, newClock(), apiclient.WithTokenSource(always)).Shares().Get(t.Context(), uuid.NewString())
+		_, err := dial(t, s.url, newClock(), client.WithTokenSource(always)).Shares().Get(t.Context(), uuid.NewString())
 		if p := problem(t, "Get refused 401 twice", err); p.Status != http.StatusUnauthorized {
 			t.Errorf("Get refused 401 twice: %d, want 401", p.Status)
 		}
@@ -732,7 +732,7 @@ func TestUnauthorizedRefreshesOnce(t *testing.T) {
 		s := serve(t, nil)
 		gone := errors.New("the session is gone")
 		ts := tokens{"stale", func(string) (string, error) { return "", gone }}
-		_, err := client(t, s.url, newClock(), apiclient.WithTokenSource(ts)).Shares().Get(t.Context(), uuid.NewString())
+		_, err := dial(t, s.url, newClock(), client.WithTokenSource(ts)).Shares().Get(t.Context(), uuid.NewString())
 		if p := problem(t, "Get refused 401", err); p.Status != http.StatusUnauthorized || p.Code != apiv1.CodeUnauthenticated {
 			t.Errorf("Get refused 401 with the refresh failing: %d %q, want 401 unauthenticated", p.Status, p.Code)
 		}
@@ -748,7 +748,7 @@ func TestUnauthorizedRefreshesOnce(t *testing.T) {
 // A listing follows every page, and a filter admitting none yields none.
 func TestListPages(t *testing.T) {
 	s := serve(t, admin())
-	c := client(t, s.url, newClock())
+	c := dial(t, s.url, newClock())
 	ns := s.namespace(t)
 	var want []string
 	for _, name := range []string{"a", "b", "c"} {
@@ -793,7 +793,7 @@ func TestListRefusesARepeatedCursor(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := serve(t, admin())
-			c := client(t, s.url, newClock())
+			c := dial(t, s.url, newClock())
 			ns := s.namespace(t)
 			for _, name := range []string{"a", "b", "c"} {
 				if _, err := c.CreateShare(t.Context(), newShare(name, ns)); err != nil {
@@ -840,7 +840,7 @@ func TestListRefusesARepeatedCursor(t *testing.T) {
 // the server's version once.
 func TestReads(t *testing.T) {
 	s := serve(t, admin())
-	c := client(t, s.url, newClock())
+	c := dial(t, s.url, newClock())
 	node, err := s.nodes.RegisterNode(t.Context(), entity.Node{ID: entity.NodeID(uuid.New()), Address: "10.0.0.7:12049", Roles: entity.NodeRoleProtocol | entity.NodeRoleStorage, Binary: "v9"})
 	if err != nil {
 		t.Fatalf("register a node: %v", err)

@@ -1,4 +1,4 @@
-package apiclient
+package client
 
 import (
 	"context"
@@ -182,7 +182,7 @@ func list[T any](ctx context.Context, c *Client, path string, filter url.Values)
 				return
 			}
 			if seen[page.Next] {
-				yield(zero, fmt.Errorf("apiclient: the listing at %s repeated its cursor %q", path, page.Next))
+				yield(zero, fmt.Errorf("client: the listing at %s repeated its cursor %q", path, page.Next))
 				return
 			}
 			seen[page.Next] = true

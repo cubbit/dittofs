@@ -1,9 +1,9 @@
-// Package apiclient is the management API's client: it reaches a node over
+// Package client is the management API's client: it reaches a node over
 // https, over http on loopback, or over the node's local socket, checks at
 // first contact that the node serves a version it speaks, and sends every
 // call with the headers the API requires, retrying what the API says may be
 // retried.
-package apiclient
+package client
 
 import (
 	"bytes"
@@ -91,7 +91,7 @@ func New(server string, opts ...Option) (*Client, error) {
 	for _, opt := range opts {
 		opt(c)
 	}
-	refused := fmt.Errorf("apiclient: %q is neither an https URL, an http URL on a loopback address, nor a socket's path", server)
+	refused := fmt.Errorf("client: %q is neither an https URL, an http URL on a loopback address, nor a socket's path", server)
 	if !strings.Contains(server, "://") {
 		if !strings.Contains(server, "/") {
 			return nil, refused
@@ -185,7 +185,7 @@ const (
 // and the call is not sent again.
 const maxBody = 16 << 20
 
-var errTooLong = errors.New("apiclient: the answer is longer than 16 MiB")
+var errTooLong = errors.New("client: the answer is longer than 16 MiB")
 
 // do sends c, checking the server's version first, and returns its answer,
 // a 2xx; or the problem it was refused with, a 3xx included, as a
@@ -354,10 +354,10 @@ func (c *Client) version(ctx context.Context) error {
 func checkVersion(body []byte) error {
 	var v apiv1.Version
 	if err := json.Unmarshal(body, &v); err != nil {
-		return fmt.Errorf("apiclient: the server's version %q: %w", body[:min(len(body), 64)], err)
+		return fmt.Errorf("client: the server's version %q: %w", body[:min(len(body), 64)], err)
 	}
 	if !slices.Contains(v.Majors, "v1") {
-		return fmt.Errorf("apiclient: the server serves API versions %q, and this client speaks only v1", v.Majors)
+		return fmt.Errorf("client: the server serves API versions %q, and this client speaks only v1", v.Majors)
 	}
 	return nil
 }
