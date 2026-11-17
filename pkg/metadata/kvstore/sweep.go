@@ -9,6 +9,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
@@ -52,17 +53,19 @@ func (n Nodes) Sweep(ctx context.Context, auditRetention time.Duration) (Swept, 
 			return err
 		}
 		for _, row := range rows {
-			// decision: a row that does not decode stops this call and every
-			// later one, audit retention included, until it is repaired, rather
-			// than being skipped: skipping would leave its record and rows
-			// forever with nothing to report them. SweepRowUndecodable names it.
+			// decision: a row, or the record it names, that does not decode
+			// stops this call and every later one, audit retention included,
+			// until it is repaired, rather than being skipped: skipping would
+			// leave its record and rows forever with nothing to report them. An
+			// audit record that does not decode stops every call the same way.
+			// SweepRowUndecodable names both.
 			if err := b.expired(row, &sw); err != nil || b.full {
 				sw.More = true
 				return err
 			}
 		}
 		if !more {
-			if rows, more, err = due(tx, []byte{keys.KindAU}, b.left, func(t time.Time) bool { return auditDue(t, now, auditRetention) }); err != nil {
+			if rows, more, err = due(tx, []byte{keys.KindAU}, max(b.left, 0)/auditCost, func(t time.Time) bool { return auditDue(t, now, auditRetention) }); err != nil {
 				return err
 			}
 			for _, row := range rows {
@@ -86,9 +89,12 @@ func (n Nodes) Sweep(ctx context.Context, auditRetention time.Duration) (Swept, 
 }
 
 // SweepRowUndecodable reports that err is a Sweep stopped by an expiry row,
-// or the record it names, that does not decode: every later Sweep stops on
-// it the same way until it is repaired.
-func SweepRowUndecodable(err error) bool { return errors.Is(err, errMalformed) }
+// the record it names, or an audit record, that does not decode: every later
+// Sweep stops on it the same way until it is repaired.
+func SweepRowUndecodable(err error) bool {
+	return errors.Is(err, errMalformed) || errors.Is(err, codec.ErrTruncated) ||
+		errors.Is(err, codec.ErrTrailing) || errors.Is(err, codec.ErrVersion)
+}
 
 // xpDue reports whether an expiry row at t is due at store time now.
 func xpDue(t, now time.Time) bool { return !t.After(now) }
@@ -161,7 +167,7 @@ func (b *sweepBatch) expired(row []byte, sw *Swept) error {
 	if tag != keys.XPIdempotency && tag != keys.XPSource && tag != keys.XPPair && len(tail) != keys.IDLen {
 		return errMalformed
 	}
-	e, err := expiringIn(b.tx, tag, tail, sw)
+	e, err := expiringIn(b.tx, tag, tail, b.left, sw)
 	if err != nil {
 		return err
 	}
@@ -198,8 +204,9 @@ type expiring struct {
 }
 
 // expiringIn reads the record an expiry row's tag and tail name; a nil count
-// when it is not there, or is an operation still running.
-func expiringIn(tx kv.Txn, tag byte, tail []byte, sw *Swept) (expiring, error) {
+// when it is not there, or is an operation still running. A session's hashes
+// are read only up to one more than a batch with left keys can trim.
+func expiringIn(tx kv.Txn, tag byte, tail []byte, left int, sw *Swept) (expiring, error) {
 	c := controlTx{tx, new(uint64)}
 	switch tag {
 	case keys.XPIdempotency:
@@ -221,7 +228,7 @@ func expiringIn(tx kv.Txn, tag byte, tail []byte, sw *Swept) (expiring, error) {
 		if err != nil || !found {
 			return expiring{}, err
 		}
-		hashes, err := sessionHashRows(tx, s.ID)
+		hashes, err := sessionHashRows(tx, s.ID, trimRows(left))
 		if err != nil {
 			return expiring{}, err
 		}

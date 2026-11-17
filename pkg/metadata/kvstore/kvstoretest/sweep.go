@@ -140,6 +140,33 @@ func testSweepExpires(t *testing.T, d Durable) {
 	}
 }
 
+// One due record more than a batch holds takes two calls: the first deletes
+// those that fit and reports More, the second the last.
+func testSweepBatches(t *testing.T, d Durable) {
+	const fit = 12 / 2 // source counts a batch of twelve keys holds, two keys each
+	clk := newClock()
+	open := d(t, clk.Now)
+	db := open()
+	must(t, kvstore.Init(ctx, db, uuid.New()))
+	s, err := kvstore.Open(ctx, db)
+	must(t, err)
+	start := clk.Now()
+	for i := range fit + 1 {
+		src := netip.PrefixFrom(netip.AddrFrom4([4]byte{192, 0, 2, byte(i)}), 32)
+		putSignIn(t, s.ControlPlane(), entity.SignInKey{Source: src}, entity.SignInFailures{Count: 1, Last: start, Failed: start})
+	}
+	clk.Jump(16 * time.Minute)
+	for i, want := range []kvstore.Swept{{SignIns: fit, More: true}, {SignIns: 1}} {
+		s, err := kvstore.Open(ctx, oneRowBatches{open()})
+		must(t, err)
+		got, err := s.Nodes().Sweep(ctx, sweepRetention)
+		must(t, err)
+		if got != want {
+			t.Errorf("sweep %d of %d due counts: got %+v, want %+v", i+1, fit+1, got, want)
+		}
+	}
+}
+
 func putSignIn(t *testing.T, cp kvstore.ControlPlane, k entity.SignInKey, f entity.SignInFailures) {
 	t.Helper()
 	must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.PutSignInFailures(k, f) }))

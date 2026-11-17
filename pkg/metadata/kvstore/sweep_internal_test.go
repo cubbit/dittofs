@@ -107,6 +107,17 @@ func (f sweepFix) session(n int) entity.Session {
 	return s
 }
 
+// staleRows writes n expiry rows due at 1970-01-01 01:00 naming no token.
+func (f sweepFix) staleRows(n int) {
+	f.t.Helper()
+	var kvs [][]byte
+	for range n {
+		id := uuid.New()
+		kvs = append(kvs, keys.ID(append(keys.Uint64([]byte{keys.KindXP}, uint64(time.Unix(3600, 0).UnixNano())), keys.XPToken), id[:]), nil)
+	}
+	rows(f.t, f.s, kvs...)
+}
+
 func (f sweepFix) rows(kinds ...byte) int {
 	f.t.Helper()
 	n := 0
@@ -150,6 +161,10 @@ func TestSweepKeyBudget(t *testing.T) {
 			[]Swept{{SignIns: 1, Tokens: 1, More: true}, {Tokens: 1}}},
 		{"a session past the whole budget", func(f sweepFix) { f.session(6) },
 			[]Swept{{More: true}, {Sessions: 1}}},
+		{"stale rows past the budget", func(f sweepFix) { f.staleRows(k + 1) },
+			[]Swept{{More: true}, {}}},
+		{"a second audit record past what is left", func(f sweepFix) { f.counts(1); f.audit(); f.audit() },
+			[]Swept{{SignIns: 1, Audit: 1, More: true}, {Audit: 1}}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := sweepFix{t, openStore(t)}
@@ -171,14 +186,20 @@ func TestSweepKeyBudget(t *testing.T) {
 	}
 }
 
-// A session trimmed by a call keeps its record and its expiry row, so the
-// next call still finds and finishes it.
+// A session trimmed by a call loses no more keys than the batch holds, and
+// keeps its record and its expiry row, so the next call still finds and
+// finishes it.
 func TestSweepTrimKeepsSession(t *testing.T) {
 	f := sweepFix{t, openStore(t)}
 	f.s.SetKeyBudget(8)
 	s := f.session(6)
+	kinds := []byte{keys.KindSS, keys.KindSSH, keys.KindSSA, keys.KindXP}
+	before := f.rows(kinds...)
 	if _, err := f.s.Nodes().Sweep(context.Background(), time.Hour); err != nil {
 		t.Fatal(err)
+	}
+	if d := before - f.rows(kinds...); d > 8 {
+		t.Errorf("keys a call trimming a session deleted: got %d, want at most the budget, 8", d)
 	}
 	got, found, err := f.s.ControlPlane().Session(context.Background(), s.ID)
 	if err != nil || !found || got != s {
@@ -234,5 +255,43 @@ func TestSweepRowUndecodable(t *testing.T) {
 	}
 	if n := f.rows(keys.KindSF); n != 1 {
 		t.Errorf("counts after sweeps that stopped: got %d, want the one rolled back", n)
+	}
+}
+
+// A stale row due after counts that fill the batch waits for the next call.
+func TestSweepStaleRowPastBudget(t *testing.T) {
+	f := sweepFix{t, openStore(t)}
+	f.s.SetKeyBudget(8)
+	f.counts(8 / countCost)
+	f.staleRows(1)
+	if _, err := f.s.Nodes().Sweep(context.Background(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.rows(keys.KindXP); n != 1 {
+		t.Errorf("expiry rows after a call the counts filled: got %d, want the stale one kept", n)
+	}
+}
+
+// A truncated record, a session under a due expiry row or an audit record
+// past retention, stops every call on it, reported as SweepRowUndecodable.
+func TestSweepRecordUndecodable(t *testing.T) {
+	id := uuid.New()
+	for _, c := range []struct {
+		name string
+		kvs  [][]byte
+	}{
+		{"session", [][]byte{sessionKey(id), {v1},
+			keys.ID(append(keys.Uint64([]byte{keys.KindXP}, uint64(time.Unix(3600, 0).UnixNano())), keys.XPSession), id[:]), nil}},
+		{"audit", [][]byte{auditKey(time.Unix(1, 0), id), {v1}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := sweepFix{t, openStore(t)}
+			rows(t, f.s, c.kvs...)
+			for i := range 2 {
+				if _, err := f.s.Nodes().Sweep(context.Background(), time.Hour); !SweepRowUndecodable(err) {
+					t.Errorf("sweep %d over a truncated %s record: got %v, want SweepRowUndecodable", i+1, c.name, err)
+				}
+			}
+		})
 	}
 }
