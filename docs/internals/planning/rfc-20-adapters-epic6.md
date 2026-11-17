@@ -434,7 +434,7 @@ Exported symbols added, all under `internal/adapter/`:
   with the accessors `protocol` reads (`Command`, `Flags`, `NextCommand`);
   `DecodeHeader(b []byte, off int) (*Header, error)`, its error saying whether the header can be
   addressed; `AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte`;
-  `AppendError(out []byte) []byte`; `Chain(out []byte, prev int) ([]byte, error)`;
+  `AppendError(out []byte) []byte`; `Chain(out []byte, prev int, more bool) ([]byte, error)`;
   `ErrNextCommand`, `DecodeHeader`'s refusal of a header for its `NextCommand`, so T6.3a tells
   a refused step, which ends the chain, from a refused `StructureSize`; `ErrorLen`, the 9 bytes
   of the error body `AppendError` writes, which T6.3a's `ReplyLen` counts; the constants of
