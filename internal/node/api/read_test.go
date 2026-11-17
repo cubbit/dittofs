@@ -337,10 +337,14 @@ func TestParkedPollsAreBounded(t *testing.T) {
 	id := uuid.NewString()
 	base := s.clock.Pending()
 	var parked []<-chan polled
-	for range 256 {
+	// Dialled in batches that each park before the next, so no dial
+	// outruns the listener's accept backlog.
+	for i := range 256 {
 		parked = append(parked, s.poll(t.Context(), knobAt(id)+"?wait=30s"))
+		if (i+1)%64 == 0 {
+			eventually(t, "a batch of polls parks", func() bool { return s.clock.Pending() == base+i+1 })
+		}
 	}
-	eventually(t, "256 polls park", func() bool { return s.clock.Pending() == base+256 })
 	next := s.poll(t.Context(), knobAt(id)+"?wait=30s")
 	refused := s.settle(t, "the 257th poll", next, base+256)
 	s.clock.Advance(30 * time.Second)
