@@ -216,26 +216,27 @@ var shares = listing[shareRow, apiv1.Share]{
 	filters: []string{"name", "namespace"},
 	records: func(ctx context.Context, d Deps, after []byte, f map[string]string) iter.Seq2[shareRow, error] {
 		return func(yield func(shareRow, error) bool) {
-			ns, inNS := f["namespace"]
+			raw, inNS := f["namespace"]
+			var ns entity.ShareID
 			if inNS {
-				if _, err := entity.ParseShareID(ns); err != nil {
+				var err error
+				if ns, err = entity.ParseShareID(raw); err != nil {
 					yield(shareRow{}, &fieldError{field: "namespace", detail: "not a namespace ID"})
 					return
 				}
 			}
 			if name, ok := f["name"]; ok {
 				sh, found, err := d.Store.ShareNamed(ctx, name)
-				if err != nil || found && (!inNS || namespaceOf(sh) == ns) {
+				if err != nil || found && (!inNS || namespaceOf(sh) == idString(ns)) {
 					yield(shareRow{sh, nil}, err)
 				}
 				return
 			}
 			var all iter.Seq2[entity.Share, error]
 			if inNS {
-				id, _ := entity.ParseShareID(ns)
 				var from entity.ShareID
 				copy(from[:], after)
-				all = d.Store.NamespaceShares(ctx, entity.NamespaceID(id), from)
+				all = d.Store.NamespaceShares(ctx, entity.NamespaceID(ns), from)
 			} else {
 				all = d.Store.SharesAfter(ctx, string(after))
 			}

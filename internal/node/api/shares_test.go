@@ -465,6 +465,7 @@ func TestShareList(t *testing.T) {
 		{"?name= of no share", page("?name=zz"), nil, false},
 		{"?name= of a share being removed", page("?name=d"), nil, false},
 		{"?name= in another namespace", page("?name=b&namespace=" + one), nil, false},
+		{"?name= in its namespace, the ID in upper case", page("?name=b&namespace=" + strings.ToUpper(two)), []string{"b"}, false},
 		{"?namespace=", page("?namespace=" + one), byID, false},
 		{"?namespace= a page of 1", page("?limit=1&namespace=" + one), byID[:1], true},
 		{"?namespace= the page after it", page("?limit=1&namespace=" + one + "&after=" + page("?limit=1&namespace="+one).Next), byID[1:], false},
