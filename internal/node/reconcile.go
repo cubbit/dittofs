@@ -66,19 +66,21 @@ type reconciler struct {
 	errors [len(counterKinds)]atomic.Uint64
 }
 
-// refusals is the records the node refused, the shares' first.
-func (r *reconciler) refusals() []entity.RefusedRecord {
+// report is the counters the node has reconciled through and the records
+// it refused, the shares' first, read together.
+func (r *reconciler) report() (kvstore.Counters, []entity.RefusedRecord) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []entity.RefusedRecord
 	for _, f := range append(slices.Clone(r.shares), r.applied...) {
 		out = append(out, f.rec)
 	}
-	return out
+	return r.pos, out
 }
 
 // read notes the counters c a pass read at now: each above the position
-// reconciled through is marked so from now, unless it already was.
+// reconciled through is marked so from now, unless it already was, so a
+// pass that fails leaves the lag counting from the first read.
 func (r *reconciler) read(c kvstore.Counters, now time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -88,6 +90,24 @@ func (r *reconciler) read(c kvstore.Counters, now time.Duration) {
 			r.above[k], r.aboveSince[k] = true, now
 		}
 	}
+}
+
+// lags is how long each counter has been read above the position
+// reconciled through at now, zero for one that is not. r.mu is held.
+//
+// decision: the lag counts only from a read above the position, so a pass
+// that read the counters at its position and then hangs inside Bind or
+// Apply raises no lag, however long it hangs, and the counters may move
+// meanwhile unread. The watchdog backstops it: the pass reports no turn, so
+// liveness fails after 60 s. Have the status turn read the counters too,
+// bounded, if a hung pass must show as a lag before liveness fails.
+func (r *reconciler) lags(now time.Duration) (lag [len(counterKinds)]time.Duration) {
+	for k, above := range r.above {
+		if above {
+			lag[k] = now - r.aboveSince[k]
+		}
+	}
+	return lag
 }
 
 func newReconciler() reconciler {
@@ -193,7 +213,7 @@ func (n *Node) readShares(ctx context.Context) ([]entity.Share, func(entity.Shar
 		configured map[[16]byte]bool
 	}
 	var got *read
-	err := n.bounded(ctx, func(ctx context.Context) error {
+	_, err := n.bounded(ctx, func(ctx context.Context) error {
 		r := read{stores: map[entity.NamespaceID][16]byte{}, configured: map[[16]byte]bool{}}
 		for rec, err := range n.meta.Nodes().List(ctx, entity.ResourceShare, nil) {
 			if err != nil {
@@ -236,8 +256,9 @@ func (n *Node) readShares(ctx context.Context) ([]entity.Share, func(entity.Shar
 // bound passed without f answering. f's answer is then dropped, and so is
 // what it writes after, so a store that ignores its context holds no pass
 // past the bound: f writes its results only into what the caller reads once
-// bounded answered nil.
-func (n *Node) bounded(ctx context.Context, f func(context.Context) error) error {
+// bounded answered nil. With the timeout it also answers the channel f
+// answers on once it returns, for a caller whose call may still commit.
+func (n *Node) bounded(ctx context.Context, f func(context.Context) error) (running <-chan error, err error) {
 	bound := n.cfg.Clock.After(storeBound)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -245,16 +266,16 @@ func (n *Node) bounded(ctx context.Context, f func(context.Context) error) error
 	go func() { done <- f(ctx) }()
 	select {
 	case err := <-done:
-		return err
+		return nil, err
 	case <-bound:
-		return fmt.Errorf("the store did not answer within %v", storeBound)
+		return done, fmt.Errorf("the store did not answer within %v", storeBound)
 	}
 }
 
 // counters reads the counters, bounded.
 func (n *Node) counters(ctx context.Context) (kvstore.Counters, error) {
 	var got *kvstore.Counters
-	err := n.bounded(ctx, func(ctx context.Context) error {
+	_, err := n.bounded(ctx, func(ctx context.Context) error {
 		c, err := n.meta.Nodes().Counters(ctx)
 		got = &c
 		return err

@@ -49,6 +49,10 @@ type runner struct {
 	steps   map[string]stepRow
 	retries map[entity.OperationID]retry
 
+	// turned, when set, is called after each turn, once the wait for the
+	// next is set on the clock.
+	turned func()
+
 	mu      sync.Mutex
 	refused map[string]bool // the kinds found with no step
 }
@@ -73,10 +77,14 @@ func (r *runner) run(ctx context.Context, loop *health.Loop) {
 	for {
 		r.turn(ctx)
 		loop.Turn()
+		next := r.clock.After(runInterval)
+		if r.turned != nil {
+			r.turned()
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-r.clock.After(runInterval):
+		case <-next:
 		}
 	}
 }

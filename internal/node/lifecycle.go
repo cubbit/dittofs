@@ -359,7 +359,10 @@ func (n *Node) startRunner(context.Context) error {
 
 // startFailed is the node's start_failed condition after a Start that
 // failed, naming the step and its error, and nil otherwise. It does not wait
-// for a Start or a Stop in progress. The health evaluator reads it.
+// for a Start or a Stop in progress. The health evaluator reads it, but
+// nothing in production reads the evaluator on a node whose Start failed
+// until the health call serves it: the status writer runs only on a started
+// node.
 //
 // ponytail: a Start that failed writes no node status, as the status writer
 // runs only on a started node, and the KV a Start refused at its first step
