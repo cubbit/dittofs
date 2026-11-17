@@ -176,7 +176,9 @@ func TestShareCreateRefusesPolicy(t *testing.T) {
 func TestShareQuiesce(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	id, loc := s.createShare(t, "builds")
-	post := func(verb, key string) reply { return s.do(t, http.MethodPost, loc+":"+verb, "", "Idempotency-Key", key) }
+	post := func(verb, key string) reply {
+		return s.do(t, http.MethodPost, loc+":"+verb, "", "Idempotency-Key", key)
+	}
 	if r := post("quiesce", "q1"); r.status != http.StatusOK {
 		t.Fatalf("quiesce: answered %d %s, want 200", r.status, r.body)
 	}
@@ -312,6 +314,9 @@ func TestExportPolicy(t *testing.T) {
 	if _, p = s.share(t, id); !p.ReadOnly || !slices.Equal(p.Flavors, []entity.AuthFlavor{entity.FlavorKerberos}) {
 		t.Errorf("after PUT: read-only %v flavours %v, want true and [kerberos]", p.ReadOnly, p.Flavors)
 	}
+	if g := s.do(t, http.MethodGet, path, ""); json.Unmarshal(g.body, &got) != nil || !reflect.DeepEqual(got.Spec, next) || g.header.Get("ETag") != put.header.Get("ETag") {
+		t.Errorf("GET after PUT: ETag %s spec %+v, want %s and %+v", g.header.Get("ETag"), got.Spec, put.header.Get("ETag"), next)
+	}
 	if tag := s.do(t, http.MethodGet, loc, "").header.Get("ETag"); tag != shareTag {
 		t.Errorf("share's ETag after its export policy's PUT: %s, want %s unchanged", tag, shareTag)
 	}
@@ -333,8 +338,8 @@ func TestShareWaitServing(t *testing.T) {
 	base := s.clock.Pending()
 	for _, tc := range []struct {
 		name, what string
-		then func(entity.NodeStatus, entity.Share) entity.NodeStatus
-		want apiv1.Applied
+		then       func(entity.NodeStatus, entity.Share) entity.NodeStatus
+		want       apiv1.Applied
 	}{
 		{"a", "the second node reconciled through it", func(st entity.NodeStatus, sh entity.Share) entity.NodeStatus {
 			st.ShareList = sh.Position
@@ -355,10 +360,13 @@ func TestShareWaitServing(t *testing.T) {
 			}
 		}
 		ch := s.poll(t.Context(), loc+"?wait=serving")
-		eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
-		s.clock.Advance(time.Second)
-		if p := s.settle(t, "poll before "+tc.what, ch, base); p.status != 0 || p.err != nil {
-			t.Fatalf("poll before %s: answered %d %s err %v, want it parked", tc.what, p.status, p.body, p.err)
+		for i, at := range []string{"at once", "a second on"} {
+			if i > 0 {
+				s.clock.Advance(time.Second)
+			}
+			if p := s.settle(t, "poll "+at, ch, base); p.status != 0 || p.err != nil {
+				t.Fatalf("poll %s, before %s: answered %d %s err %v, want it parked", at, tc.what, p.status, p.body, p.err)
+			}
 		}
 		if err := s.nodes.PutNodeStatus(t.Context(), tc.then(two, sh)); err != nil {
 			t.Fatalf("put node status: %v", err)
