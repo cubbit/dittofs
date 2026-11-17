@@ -2,80 +2,48 @@
 package prompt
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
-
-	"github.com/manifoldco/promptui"
 )
 
-// Confirm prompts the user for yes/no confirmation.
-// Returns true if the user confirms, false otherwise.
-// Returns ErrAborted if the user presses Ctrl+C.
-func Confirm(label string, defaultYes bool) (bool, error) {
-	defaultStr := "y/N"
+// ErrAborted is returned when the reader ends before the user answers.
+var ErrAborted = errors.New("aborted")
+
+// Confirm writes label to out and reads one line from in as a yes/no answer.
+// An empty answer takes defaultYes; a reader that ends before any input is
+// ErrAborted.
+func Confirm(in io.Reader, out io.Writer, label string, defaultYes bool) (bool, error) {
+	hint := "y/N"
 	if defaultYes {
-		defaultStr = "Y/n"
+		hint = "Y/n"
 	}
-
-	prompt := promptui.Prompt{
-		Label:     fmt.Sprintf("%s [%s]", label, defaultStr),
-		IsConfirm: true,
-		Default:   "",
-	}
-
-	result, err := prompt.Run()
-	if err != nil {
-		// Ctrl+C should abort
-		if err == promptui.ErrInterrupt {
-			return false, ErrAborted
-		}
-		// promptui returns ErrAbort for "n" response
-		if err == promptui.ErrAbort {
-			return false, nil
-		}
-		// Empty input uses default
-		if result == "" {
-			return defaultYes, nil
-		}
+	if _, err := fmt.Fprintf(out, "%s [%s] ", label, hint); err != nil {
 		return false, err
 	}
-
-	return strings.ToLower(result) == "y" || strings.ToLower(result) == "yes", nil
-}
-
-// ConfirmDanger prompts for confirmation of a dangerous operation.
-// Requires typing the confirmation word to proceed.
-// Returns ErrAborted if the user presses Ctrl+C.
-func ConfirmDanger(label, confirmWord string) (bool, error) {
-	prompt := promptui.Prompt{
-		Label: fmt.Sprintf("%s (type '%s' to confirm)", label, confirmWord),
-		Validate: func(input string) error {
-			if input != confirmWord {
-				return fmt.Errorf("type '%s' to confirm", confirmWord)
-			}
-			return nil
-		},
-	}
-
-	result, err := prompt.Run()
+	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil {
-		if err == promptui.ErrInterrupt {
+		if !errors.Is(err, io.EOF) {
+			return false, err
+		}
+		if line == "" {
 			return false, ErrAborted
 		}
-		if err == promptui.ErrAbort {
-			return false, nil
-		}
-		return false, err
 	}
-
-	return result == confirmWord, nil
+	return parseConfirm(line, defaultYes), nil
 }
 
-// ConfirmWithForce returns true immediately if force is true,
-// otherwise prompts for confirmation.
-func ConfirmWithForce(label string, force bool) (bool, error) {
-	if force {
-		return true, nil
+// parseConfirm reads a yes/no answer: y or yes is yes, an empty answer is
+// defaultYes, and anything else is no.
+func parseConfirm(line string, defaultYes bool) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "":
+		return defaultYes
+	case "y", "yes":
+		return true
+	default:
+		return false
 	}
-	return Confirm(label, false)
 }

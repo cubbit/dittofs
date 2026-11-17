@@ -5,11 +5,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Cmd is the parent command for user management.
-var Cmd = &cobra.Command{
-	Use:   "user",
-	Short: "User management",
-	Long: `Manage local user accounts on the DittoFS server. Local users are
+// New returns the parent command for user management.
+func New() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "user",
+		Short: "User management",
+		Long: `Manage local user accounts on the DittoFS server. Local users are
 distinct from identities resolved via Kerberos or LDAP — they are accounts
 stored in the DittoFS control plane and used for direct authentication.
 Most subcommands require admin privileges; "change-password" operates on the
@@ -33,14 +34,13 @@ Examples:
 
   # Remove a user (prompts for confirmation)
   dfsctl user remove alice`,
-}
-
-func init() {
-	Cmd.AddCommand(listCmd)
-	Cmd.AddCommand(createCmd)
-	Cmd.AddCommand(removeCmd)
-	Cmd.AddCommand(getCmd)
-	Cmd.AddCommand(editCmd)
-	Cmd.AddCommand(passwordCmd)
-	Cmd.AddCommand(changePasswordCmd)
+	}
+	cmd.AddCommand(newListCmd())
+	cmd.AddCommand(newCreateCmd())
+	cmd.AddCommand(newRemoveCmd())
+	cmd.AddCommand(newGetCmd())
+	cmd.AddCommand(newEditCmd())
+	cmd.AddCommand(newPasswordCmd())
+	cmd.AddCommand(newChangePasswordCmd())
+	return cmd
 }

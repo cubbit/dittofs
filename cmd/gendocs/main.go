@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	dfs "github.com/cubbit/dittofs/cmd/dfs/commands"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	dfsctl "github.com/cubbit/dittofs/cmd/dfsctl/commands"
 )
 
@@ -47,7 +48,7 @@ func generate(out string) error {
 		name string
 	}{
 		{dfs.GetRootCmd(), "dfs"},
-		{dfsctl.GetRootCmd(), "dfsctl"},
+		{dfsctl.NewRoot(cmdutil.Env{}), "dfsctl"},
 	} {
 		bin.root.DisableAutoGenTag = true
 		initHelpFlags(bin.root)

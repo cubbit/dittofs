@@ -5,16 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	removeScope string
-	removeID    int64
-	removeForce bool
-)
-
-var removeCmd = &cobra.Command{
-	Use:   "remove <share>",
-	Short: "Remove a per-identity quota",
-	Long: `Remove a per-identity quota from a share.
+func newRemoveCmd() *cobra.Command {
+	removeCmd := &cobra.Command{
+		Use:   "remove <share>",
+		Short: "Remove a per-identity quota",
+		Long: `Remove a per-identity quota from a share.
 
 Once removed, the identity reverts to the default-user fallback quota (if
 one exists) or becomes unlimited. The operation is irreversible and requires
@@ -29,12 +24,11 @@ Examples:
 
   # Remove a per-group quota (gid 2000) without prompting
   dfsctl quota remove /archive --scope group --id 2000 --force`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
-}
-
-func init() {
-	removeCmd.Flags().StringVar(&removeScope, "scope", "", "Quota scope (user|group|default-user) (required)")
-	removeCmd.Flags().Int64Var(&removeID, "id", -1, "Identity id (uid for user, gid for group). Required for user/group; omit for default-user.")
-	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Skip confirmation prompt")
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	removeCmd.Flags().String("scope", "", "Quota scope (user|group|default-user) (required)")
+	removeCmd.Flags().Int64("id", -1, "Identity id (uid for user, gid for group). Required for user/group; omit for default-user.")
+	removeCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt")
 	_ = removeCmd.MarkFlagRequired("scope")
+	return removeCmd
 }

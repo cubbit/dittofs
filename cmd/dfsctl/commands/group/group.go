@@ -5,11 +5,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Cmd is the parent command for group management.
-var Cmd = &cobra.Command{
-	Use:   "group",
-	Short: "Group management",
-	Long: `Manage Unix groups on the DittoFS server. Groups bundle users together so
+// New returns the parent command for group management.
+func New() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "group",
+		Short: "Group management",
+		Long: `Manage Unix groups on the DittoFS server. Groups bundle users together so
 that share permissions can be granted to multiple users at once using a single
 group reference. Each group carries a Unix GID used for NFS uid/gid resolution.
 All subcommands require admin privileges.
@@ -35,14 +36,13 @@ Examples:
 
   # Remove a group (prompts for confirmation)
   dfsctl group remove editors`,
-}
-
-func init() {
-	Cmd.AddCommand(listCmd)
-	Cmd.AddCommand(getCmd)
-	Cmd.AddCommand(createCmd)
-	Cmd.AddCommand(editCmd)
-	Cmd.AddCommand(removeCmd)
-	Cmd.AddCommand(addUserCmd)
-	Cmd.AddCommand(removeUserCmd)
+	}
+	cmd.AddCommand(newListCmd())
+	cmd.AddCommand(newGetCmd())
+	cmd.AddCommand(newCreateCmd())
+	cmd.AddCommand(newEditCmd())
+	cmd.AddCommand(newRemoveCmd())
+	cmd.AddCommand(newAddUserCmd())
+	cmd.AddCommand(newRemoveUserCmd())
+	return cmd
 }

@@ -3,16 +3,15 @@ package share
 
 import (
 	"github.com/cubbit/dittofs/cmd/dfsctl/commands/share/permission"
-	"github.com/cubbit/dittofs/cmd/dfsctl/commands/share/snapshot"
-	"github.com/cubbit/dittofs/cmd/dfsctl/commands/share/snapshotpolicy"
 	"github.com/spf13/cobra"
 )
 
-// Cmd is the parent command for share management.
-var Cmd = &cobra.Command{
-	Use:   "share",
-	Short: "Share management",
-	Long: `Manage shares on the DittoFS server.
+// New returns the parent command for share management.
+func New() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "share",
+		Short: "Share management",
+		Long: `Manage shares on the DittoFS server.
 
 The ` + "`share`" + ` tree uses ` + "`share <verb> <name>`" + ` — Cobra
 resolves the verb as the subcommand and ` + "`<name>`" + ` as its positional
@@ -45,26 +44,16 @@ Examples:
 
   # Grant permission
   dfsctl share permission grant /archive --user alice --level read-write`,
-}
-
-func init() {
-	// Root-level verbs (no target name).
-	Cmd.AddCommand(listCmd)
-	Cmd.AddCommand(createCmd)
-	Cmd.AddCommand(permission.Cmd)     // nested sub-tree keeps its own shape
-	Cmd.AddCommand(snapshot.Cmd)       // nested sub-tree keeps its own shape
-	Cmd.AddCommand(snapshotpolicy.Cmd) // nested sub-tree keeps its own shape
-	Cmd.AddCommand(listMountsCmd)      // list-mounts is a list, not a per-share verb
-
-	// Per-share verbs — each leaf uses cobra.ExactArgs(1) with args[0] = <name>
-	Cmd.AddCommand(showCmd)
-	Cmd.AddCommand(editCmd)
-	Cmd.AddCommand(removeCmd)
-	Cmd.AddCommand(mountCmd)
-	Cmd.AddCommand(unmountCmd)
-
-	Cmd.AddCommand(disableCmd)
-	Cmd.AddCommand(enableCmd)
-
-	Cmd.AddCommand(nfsConfigCmd) // per-share NFS adapter config (squash, netgroup, auth)
+	}
+	cmd.AddCommand(newListCmd())
+	cmd.AddCommand(newCreateCmd())
+	cmd.AddCommand(permission.New()) // nested sub-tree keeps its own shape
+	cmd.AddCommand(newShowCmd())
+	cmd.AddCommand(newEditCmd())
+	cmd.AddCommand(newRemoveCmd())
+	cmd.AddCommand(newMountCmd())
+	cmd.AddCommand(newDisableCmd())
+	cmd.AddCommand(newEnableCmd())
+	cmd.AddCommand(newNfsConfigCmd()) // per-share NFS adapter config (squash, netgroup, auth)
+	return cmd
 }

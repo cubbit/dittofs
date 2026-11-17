@@ -209,31 +209,8 @@ restart) or seeded from the config file / environment on first boot.
 
 ### Over the API (recommended; hot-reloads)
 
-```bash
-dfsctl identity-provider set ldap --config '{
-  "enabled": true,
-  "url": "ldaps://dc.example.com:636",
-  "base_dn": "DC=example,DC=com",
-  "bind_dn": "CN=svc-dittofs,CN=Users,DC=example,DC=com",
-  "bind_password": "s3cret",
-  "idmap": "rfc2307",
-  "nested_groups": true,
-  "user_attr": "sAMAccountName"
-}'
-```
-
-Validate reachability without persisting:
-
-```bash
-dfsctl identity-provider test ldap --config '{ ... same JSON ... }'
-```
-
-Inspect and list (the bind password is redacted to `********`):
-
-```bash
-dfsctl identity-provider get ldap
-dfsctl identity-provider list
-```
+The CLI no longer configures identity providers, and the v2 CLI does not
+rebuild that command.
 
 **Config field names** (the JSON shape matches the API schema, source
 `pkg/apiclient/identity_providers.go` / the handler DTO in
@@ -348,26 +325,8 @@ config at startup.
 
 ### Over the API
 
-```bash
-dfsctl identity-provider set kerberos --config '{
-  "enabled": true,
-  "keytab_path": "/etc/dittofs/dittofs.keytab",
-  "service_principal": "nfs/server.example.com@EXAMPLE.COM",
-  "realm": "EXAMPLE.COM",
-  "netbios_domain": "EXAMPLE",
-  "dns_domain": "example.com",
-  "krb5_conf": "/etc/krb5.conf"
-}'
-```
-
-The `--config` argument also accepts `@/path/to/krb.json` to read from a file.
-On success, `dfsctl` reminds you the change applies on the next restart. Validate
-the keytab/krb5.conf without persisting:
-
-```bash
-dfsctl identity-provider test kerberos --config '{ ... }'
-dfsctl identity-provider get kerberos
-```
+The CLI no longer configures identity providers, and the v2 CLI does not
+rebuild that command.
 
 **Config field names** (source `pkg/apiclient/identity_providers.go`
 `KerberosProviderConfig` / the handler `KerberosConfigDTO`):

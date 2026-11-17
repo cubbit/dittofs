@@ -5,10 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var enableCmd = &cobra.Command{
-	Use:   "enable <name>",
-	Short: "Enable a share (accept new connections)",
-	Long: `Enable a share on the DittoFS server.
+func newEnableCmd() *cobra.Command {
+	enableCmd := &cobra.Command{
+		Use:   "enable <name>",
+		Short: "Enable a share (accept new connections)",
+		Long: `Enable a share on the DittoFS server.
 
 Re-enabling a share allows new client connections and lifts the drain state
 set by 'share disable'. Re-enabling is a deliberate operator act; no
@@ -20,5 +21,7 @@ Examples:
 
   # Emit the updated Share record as JSON
   dfsctl share enable /archive -o json`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	return enableCmd
 }

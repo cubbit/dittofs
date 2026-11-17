@@ -2,106 +2,92 @@
 package commands
 
 import (
-	"os"
+	"fmt"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	ctxcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/context"
 	groupcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/group"
-	idpcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/identityprovider"
-	idmapcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/idmap"
-	netlogoncmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/netlogon"
 	quotacmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/quota"
-	settingscmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/settings"
 	sharecmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/share"
-	storecmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/store"
-	systemcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/system"
-	trashcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/trash"
 	usercmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/user"
 	"github.com/spf13/cobra"
 )
 
+// Version, Commit and Date describe the build; main sets them from the values
+// -ldflags gives it, before building a root.
 var (
-	// Version information injected at build time.
 	Version = "dev"
 	Commit  = "none"
 	Date    = "unknown"
 )
 
-// rootCmd represents the base command when called without any subcommands.
-var rootCmd = &cobra.Command{
-	Use:   "dfsctl",
-	Short: "DittoFS Control - Remote management client",
-	Long: `dfsctl is the command-line client for managing DittoFS servers remotely.
+// NewRoot builds dfsctl's command tree for one invocation, reading and writing
+// only through env.
+func NewRoot(env cmdutil.Env) *cobra.Command {
+	root := &cobra.Command{
+		Use:   "dfsctl",
+		Short: "DittoFS Control - Remote management client",
+		Long: `dfsctl is the command-line client for managing DittoFS servers remotely.
 
-Its commands for users, groups, shares, stores and server settings return with
-the server's v2 API; until then each refuses. The context subcommand manages
-the server contexts kept in ~/.config/dfsctl/config.json.
+Its commands for users, groups, shares and quotas return with the server's v2
+API; until then each refuses. The context subcommand manages the server
+contexts kept in ~/.config/dfsctl/config.json.
 
 Use "dfsctl [command] --help" for more information about a command.`,
-	SilenceUsage:  true,
-	SilenceErrors: true,
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		// Sync flags to cmdutil.Flags for subcommands
-		cmdutil.Flags.Output, _ = cmd.Flags().GetString("output")
-		cmdutil.Flags.NoColor, _ = cmd.Flags().GetBool("no-color")
-	},
-}
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	root.SetIn(env.In)
+	root.SetOut(env.Out)
+	root.SetErr(env.Err)
 
-// Execute adds all child commands to the root command and sets flags appropriately.
-func Execute() error {
-	return rootCmd.Execute()
-}
+	root.PersistentFlags().String("server", "", "Server URL (overrides stored credential)")
+	root.PersistentFlags().StringP("output", "o", "table", "Output format (table|json|yaml)")
+	root.PersistentFlags().Bool("no-color", false, "Disable colored output")
+	root.PersistentFlags().BoolP("verbose", "v", false, "Enable verbose output")
+	root.PersistentFlags().String("cacert", "", "Path to a PEM CA bundle trusted for the server certificate (overrides stored)")
 
-// GetRootCmd returns the root command for testing purposes.
-func GetRootCmd() *cobra.Command {
-	return rootCmd
-}
-
-func init() {
-	// Global persistent flags
-	rootCmd.PersistentFlags().String("server", "", "Server URL (overrides stored credential)")
-	rootCmd.PersistentFlags().String("token", "", "Bearer token (overrides stored credential)")
-	rootCmd.PersistentFlags().StringP("output", "o", "table", "Output format (table|json|yaml)")
-	rootCmd.PersistentFlags().Bool("no-color", false, "Disable colored output")
-	rootCmd.PersistentFlags().BoolP("verbose", "v", false, "Enable verbose output")
-
-	// TLS escape-hatch overrides (login-time flags persist into the context;
-	// these override the stored material for a single invocation).
-	rootCmd.PersistentFlags().String("cacert", "", "Path to a PEM CA bundle trusted for the server certificate (overrides stored)")
-	rootCmd.PersistentFlags().String("client-cert", "", "Path to a PEM client certificate for mutual TLS (overrides stored)")
-	rootCmd.PersistentFlags().String("client-key", "", "Path to the PEM client private key for mutual TLS (overrides stored)")
-	rootCmd.PersistentFlags().Bool("tls-skip-verify", false, "Disable TLS certificate verification (insecure; overrides stored)")
-
-	// Add subcommands
-	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(loginCmd)
-	rootCmd.AddCommand(logoutCmd)
-	rootCmd.AddCommand(ctxcmd.Cmd)
-	rootCmd.AddCommand(usercmd.Cmd)
-	rootCmd.AddCommand(groupcmd.Cmd)
-	rootCmd.AddCommand(sharecmd.Cmd)
-	rootCmd.AddCommand(quotacmd.Cmd)
-	rootCmd.AddCommand(trashcmd.Cmd)
-	rootCmd.AddCommand(storecmd.Cmd)
-	rootCmd.AddCommand(netlogoncmd.Cmd)
-	rootCmd.AddCommand(idmapcmd.Cmd)
-	rootCmd.AddCommand(idpcmd.Cmd)
-	rootCmd.AddCommand(settingscmd.Cmd)
-	rootCmd.AddCommand(switchUserCmd)
-	rootCmd.AddCommand(systemcmd.Cmd)
-	rootCmd.AddCommand(completionCmd)
+	root.AddCommand(
+		newVersionCmd(),
+		newLoginCmd(),
+		newLogoutCmd(),
+		newStatusCmd(),
+		ctxcmd.New(env),
+		usercmd.New(),
+		groupcmd.New(),
+		sharecmd.New(),
+		quotacmd.New(),
+		newCompletionCmd(),
+	)
 
 	// Hide the default completion command (we provide our own)
-	rootCmd.CompletionOptions.DisableDefaultCmd = true
+	root.CompletionOptions.DisableDefaultCmd = true
+	runGroups(root)
+	return root
 }
 
-// PrintErr prints an error message to stderr.
-func PrintErr(format string, args ...any) {
-	rootCmd.PrintErrf(format+"\n", args...)
+// runGroups makes every command below root that only groups subcommands print
+// its help when run bare and refuse anything else as an unknown command; Cobra
+// checks for an unknown subcommand only at the root, and a group with no body
+// would otherwise print its help and exit 0 for a verb it does not have.
+func runGroups(c *cobra.Command) {
+	for _, sub := range c.Commands() {
+		if sub.HasSubCommands() && !sub.Runnable() {
+			sub.Args = cobra.NoArgs
+			sub.RunE = func(cmd *cobra.Command, _ []string) error { return cmd.Help() }
+		}
+		runGroups(sub)
+	}
 }
 
-// Exit prints an error and exits with code 1.
-func Exit(format string, args ...any) {
-	PrintErr(format, args...)
-	os.Exit(1)
+// Run executes one dfsctl invocation with args, printing any error to env.Err,
+// and returns the process's exit status.
+func Run(env cmdutil.Env, args []string) int {
+	root := NewRoot(env)
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		_, _ = fmt.Fprintf(env.Err, "Error: %v\n", err)
+		return 1
+	}
+	return 0
 }

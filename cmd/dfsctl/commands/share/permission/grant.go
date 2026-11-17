@@ -5,17 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	grantUser  string
-	grantGroup string
-	grantSID   string
-	grantLevel string
-)
-
-var grantCmd = &cobra.Command{
-	Use:   "grant <share>",
-	Short: "Grant permission on a share",
-	Long: `Grant a permission level to a user or group on a share.
+func newGrantCmd() *cobra.Command {
+	grantCmd := &cobra.Command{
+		Use:   "grant <share>",
+		Short: "Grant permission on a share",
+		Long: `Grant a permission level to a user or group on a share.
 
 Specify exactly one of --user, --group, or --sid together with --level.
 Re-running the command on a principal that already has a permission replaces the
@@ -46,13 +40,12 @@ Examples:
 
   # Grant to a raw Windows SID (no directory lookup)
   dfsctl share permission grant /archive --sid S-1-5-21-1111-2222-3333-1104 --level read`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
-}
-
-func init() {
-	grantCmd.Flags().StringVar(&grantUser, "user", "", "User to grant permission to (local name, AD name, or SID)")
-	grantCmd.Flags().StringVar(&grantGroup, "group", "", "Group to grant permission to (local name, AD name, or SID)")
-	grantCmd.Flags().StringVar(&grantSID, "sid", "", "Raw Windows SID to grant permission to (e.g. S-1-5-21-...)")
-	grantCmd.Flags().StringVar(&grantLevel, "level", "", "Permission level (none|read|read-write|admin)")
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	grantCmd.Flags().String("user", "", "User to grant permission to (local name, AD name, or SID)")
+	grantCmd.Flags().String("group", "", "Group to grant permission to (local name, AD name, or SID)")
+	grantCmd.Flags().String("sid", "", "Raw Windows SID to grant permission to (e.g. S-1-5-21-...)")
+	grantCmd.Flags().String("level", "", "Permission level (none|read|read-write|admin)")
 	_ = grantCmd.MarkFlagRequired("level")
+	return grantCmd
 }

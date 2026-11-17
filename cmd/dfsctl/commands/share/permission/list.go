@@ -5,10 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var listCmd = &cobra.Command{
-	Use:   "list <share>",
-	Short: "List permissions on a share",
-	Long: `List all user and group permissions configured on a share.
+func newListCmd() *cobra.Command {
+	listCmd := &cobra.Command{
+		Use:   "list <share>",
+		Short: "List permissions on a share",
+		Long: `List all user and group permissions configured on a share.
 
 Each row shows the principal type (user or group), the principal's name, and
 the permission level (none, read, read-write, or admin). Note that these are
@@ -24,5 +25,7 @@ Examples:
 
   # Emit as YAML
   dfsctl share permission list /archive -o yaml`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	return listCmd
 }

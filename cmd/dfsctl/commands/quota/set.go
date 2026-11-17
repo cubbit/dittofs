@@ -5,20 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	setScope        string
-	setID           int64
-	setLimitBytes   string
-	setSoftBytes    string
-	setLimitFiles   int64
-	setSoftFiles    int64
-	setGraceSeconds int64
-)
-
-var setCmd = &cobra.Command{
-	Use:   "set <share>",
-	Short: "Create or update a per-identity quota",
-	Long: `Create or update a per-identity quota on a share.
+func newSetCmd() *cobra.Command {
+	setCmd := &cobra.Command{
+		Use:   "set <share>",
+		Short: "Create or update a per-identity quota",
+		Long: `Create or update a per-identity quota on a share.
 
 The --scope flag selects user, group, or default-user. For user/group scopes an
 identity --id (uid or gid) is required. The default-user scope is a fallback
@@ -35,16 +26,15 @@ Examples:
 
   # Per-group quota with soft thresholds and a 7-day grace period
   dfsctl quota set /archive --scope group --id 2000 --limit-bytes 50GiB --soft-bytes 45GiB --grace-seconds 604800`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
-}
-
-func init() {
-	setCmd.Flags().StringVar(&setScope, "scope", "", "Quota scope (user|group|default-user) (required)")
-	setCmd.Flags().Int64Var(&setID, "id", -1, "Identity id (uid for user, gid for group). Required for user/group; omit for default-user.")
-	setCmd.Flags().StringVar(&setLimitBytes, "limit-bytes", "", "Hard byte ceiling (e.g., '10GiB', '500MiB'). 0/empty = unlimited.")
-	setCmd.Flags().StringVar(&setSoftBytes, "soft-bytes", "", "Soft byte threshold (e.g., '8GiB'). 0/empty = none.")
-	setCmd.Flags().Int64Var(&setLimitFiles, "limit-files", 0, "Hard inode (file-count) ceiling. 0 = unlimited.")
-	setCmd.Flags().Int64Var(&setSoftFiles, "soft-files", 0, "Soft inode threshold. 0 = none.")
-	setCmd.Flags().Int64Var(&setGraceSeconds, "grace-seconds", 0, "Seconds usage may exceed a soft threshold before it is enforced as hard. 0 = grace disabled.")
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	setCmd.Flags().String("scope", "", "Quota scope (user|group|default-user) (required)")
+	setCmd.Flags().Int64("id", -1, "Identity id (uid for user, gid for group). Required for user/group; omit for default-user.")
+	setCmd.Flags().String("limit-bytes", "", "Hard byte ceiling (e.g., '10GiB', '500MiB'). 0/empty = unlimited.")
+	setCmd.Flags().String("soft-bytes", "", "Soft byte threshold (e.g., '8GiB'). 0/empty = none.")
+	setCmd.Flags().Int64("limit-files", 0, "Hard inode (file-count) ceiling. 0 = unlimited.")
+	setCmd.Flags().Int64("soft-files", 0, "Soft inode threshold. 0 = none.")
+	setCmd.Flags().Int64("grace-seconds", 0, "Seconds usage may exceed a soft threshold before it is enforced as hard. 0 = grace disabled.")
 	_ = setCmd.MarkFlagRequired("scope")
+	return setCmd
 }

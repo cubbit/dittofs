@@ -156,13 +156,6 @@ the only metadata store type`; see the
 key-value store (TiKV preferred) is the planned backend for multi-node deployments;
 it is not implemented yet.
 
-Configure your metadata store accordingly:
-
-```bash
-./dfsctl store metadata add --name persistent --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata"}'
-```
-
 ### Can I import an existing filesystem into DittoFS?
 
 Not yet, but the path-based file handle strategy in BadgerDB enables this as a future feature. The
@@ -210,13 +203,10 @@ Triggers:
 - Periodic, on by default. The server runs GC every `gc.auto_interval`
   (default 15m; values in (0, 1m) are refused) unless `gc.auto_enabled` is
   false. See [Garbage Collection](garbage-collection.md#automatic-gc-default).
-  A scheduled run reports in the server log only; `gc-status` shows the last
-  on-demand run.
-- On-demand via `dfsctl store block gc <share> [--dry-run]`. Inspect the
-  most recent run with `dfsctl store block gc-status <share>`. The
-  mark-sweep is global across every share that targets the same remote, and
-  every run scans every remote. `<share>` only selects where the run
-  summary is written.
+  A scheduled run reports in the server log only.
+- The CLI no longer has a command to run GC on demand or to show the last
+  run. Remote (block) store commands return as resource commands of the v2
+  management API.
 
 See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
 and [CONFIGURATION.md](configuration.md) for the full design and every
@@ -230,8 +220,7 @@ file. Other chunks referenced by the file — and any chunks shared with
 other files via cross-file dedup — stay warm.
 
 If you are seeing whole-file cold misses after a write, that is a bug.
-File a report with the `dfsctl store block audit-refcounts <share>`
-output (see below).
+File a report.
 
 The mechanism: `engine.WriteAt` returns the new `[]BlockRef`, the
 caller commits it in the same metadata transaction that updates
@@ -239,43 +228,6 @@ caller commits it in the same metadata transaction that updates
 removedHashes)` with **only the hashes that disappeared from the
 file**. Hashes that survived (unchanged ranges) and hashes still
 referenced by other files via dedup remain in the cache.
-
-### How do I run the manifest audit (`audit-refcounts`)?
-
-The audit walks every file in the share and checks that each block
-reference in the file's manifest (`FileAttr.Blocks`) has a backing
-`FileChunk` row in the metadata store, at the same offset and with the
-same hash. A reference without one is a dangling reference: the file
-claims a chunk the store has no record of, so a read of that range
-returns zeros or fails.
-
-```bash
-# Aggregate counts to stdout (text by default)
-dfsctl store block audit-refcounts /archive
-
-# Structured JSON for log aggregation / alerting
-dfsctl store block audit-refcounts /archive -o json
-
-# YAML if your tooling prefers it
-dfsctl store block audit-refcounts /archive -o yaml
-```
-
-The JSON output reports, under `result`: `share`, `started_at`,
-`completed_at`, `duration_ms`, `total_files`, `total_refs`, `backed_refs`,
-`dangling_refs`, and `delta` (equal to `dangling_refs`). The invariant is
-`dangling_refs == 0`. **A non-zero count is real corruption**: the command
-reports it and exits non-zero in every output format, so
-`audit-refcounts <share> || alert` works. The audit also persists its
-last-run summary at `<localStore>/audit-state/last-inv02.json`.
-
-The audit does not look for unreferenced (leaked) blocks. Use
-`dfsctl store block reconcile` for a read-only orphan report, or
-`dfsctl store block gc <share> --dry-run` to preview what GC would delete.
-
-The audit is **operator-invoked**, not periodic. Schedule via cron at
-the cadence that matches your operational risk tolerance.
-
-See [CLI.md](cli.md) for the full reference.
 
 ### What's a BlockRef?
 
@@ -362,19 +314,11 @@ See [NFS.md](nfs.md) and [SMB.md](smb.md) for more details.
 
 ### Can I have multiple shares with different backends?
 
-Yes! This is a core feature. Create stores and shares via CLI:
+Yes! This is a core feature. Each share names its own stores. The CLI no
+longer creates stores: remote (block) stores return as resource commands of
+the v2 management API.
 
 ```bash
-# Create metadata stores
-./dfsctl store metadata add --name fast-memory --in-memory
-./dfsctl store metadata add --name persistent-db --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata"}'
-
-# Create block stores — every share needs one
-./dfsctl store block add --name scratch --type memory
-./dfsctl store block add --name cloud-s3 --type s3 \
-  --config '{"region":"us-east-1","bucket":"my-bucket"}'
-
 # Create shares referencing different stores
 ./dfsctl share create --name /temp --metadata fast-memory \
   --block-store scratch
@@ -389,16 +333,6 @@ See [CONFIGURATION.md](configuration.md) for more examples.
 Yes! Multiple shares can reference the same store instance for resource efficiency:
 
 ```bash
-# Create one shared metadata store
-./dfsctl store metadata add --name shared-meta --type badger \
-  --config '{"path":"/var/lib/dittofs/shared-metadata"}'
-
-# Create separate remote block stores
-./dfsctl store block add --name s3-prod --type s3 \
-  --config '{"region":"us-east-1","bucket":"prod-bucket"}'
-./dfsctl store block add --name s3-archive --type s3 \
-  --config '{"region":"us-east-1","bucket":"archive-bucket"}'
-
 # Both shares use the same metadata store; remote stores are ref-counted
 ./dfsctl share create --name /prod --metadata shared-meta --block-store s3-prod
 ./dfsctl share create --name /archive --metadata shared-meta --block-store s3-archive
@@ -410,24 +344,13 @@ Yes, on an opt-in, per-share basis. When a share has the recycle bin
 enabled, deleting a file or directory moves it into a visible
 `#recycle` directory at the share root instead of destroying it. You
 can browse and restore from `#recycle` over NFS or SMB like any other
-folder (just drag the item back out), or manage it with
-`dfsctl trash`:
+folder (just drag the item back out). The CLI no longer has commands or
+flags to enable, list, restore or empty the bin; they return with their own
+API.
 
-```bash
-# Enable the bin on a new or existing share
-dfsctl share create --name /docs ... --enable-trash
-dfsctl share edit /docs --enable-trash true
-
-# List, restore, inspect, and empty the bin
-dfsctl trash list /docs
-dfsctl trash restore /docs "#recycle/report.txt"
-dfsctl trash status /docs
-dfsctl trash empty /docs --force
-```
-
-Retention is configurable per share: `--trash-retention-days N`
+Retention is configurable per share: `trash_retention_days`
 auto-purges entries older than N days (`0` = keep forever), and
-`--trash-max-size BYTES` caps the bin and evicts oldest-first when
+`trash_max_bytes` caps the bin and evicts oldest-first when
 exceeded (`0` = unbounded). A background reaper enforces both hourly.
 
 Caveats:
@@ -440,11 +363,10 @@ Caveats:
 - Deleting an item that is already inside `#recycle` is **permanent**.
 - **Disabling trash auto-empties the bin**, permanently deleting its
   contents.
-- Exclude globs (`--trash-exclude GLOB`, repeatable) cause matching
+- Exclude globs (`trash_exclude_patterns`) cause matching
   deletions to bypass the bin entirely.
 
-See [CLI.md](cli.md#dfsctl-trash) for the full command reference,
-[CONFIGURATION.md](configuration.md#recycle-bin-trash) for the
+See [CONFIGURATION.md](configuration.md#recycle-bin-trash) for the
 per-share settings, and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
 for the recycle-trap design.
 

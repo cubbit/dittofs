@@ -5,12 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var removeForce bool
-
-var removeCmd = &cobra.Command{
-	Use:   "remove <name>",
-	Short: "Remove a share",
-	Long: `Permanently remove a share from the DittoFS server.
+func newRemoveCmd() *cobra.Command {
+	removeCmd := &cobra.Command{
+		Use:   "remove <name>",
+		Short: "Remove a share",
+		Long: `Permanently remove a share from the DittoFS server.
 
 Removing a share deletes its configuration, its records in its metadata store
 and its local journal, so a share created again under the same name starts
@@ -30,9 +29,8 @@ Examples:
 
   # Drain clients first, then remove without prompting
   dfsctl share disable /archive && dfsctl share remove /archive --force`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
-}
-
-func init() {
-	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Skip confirmation prompt")
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	removeCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt")
+	return removeCmd
 }

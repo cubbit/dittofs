@@ -285,8 +285,7 @@ still names the objects that were in it. That destroys every already-offloaded p
 outright; the journal is not a fallback for them, it has merely not been asked for the
 space yet. The default profile is the same story with the block store in RAM.
 Localstack is an S3 stand-in for exercising the S3 path, not a place to keep bytes — point
-the block store at a real bucket (`dfsctl store block add --type s3 …`) for anything you
-care about.
+the block store at a real bucket for anything you care about.
 
 The stack is built from the checkout rather than pulled, because the compose file and the
 server have to agree on the store model and the published image trails the repository
@@ -351,12 +350,9 @@ Removing DittoFS takes three steps:
 
 Removing the binaries never deletes your data.
 
-Before you start, if you plan to delete metadata stores, note their
-configuration while the server is still running:
-
-```bash
-dfsctl store metadata list -o json   # config.path for on-disk stores
-```
+Before you start, if you plan to delete metadata stores, note the directory
+each on-disk store was created with (its `config.path`). The CLI no longer has a
+command that lists metadata stores.
 
 ### 1. Stop the server and unmount shares
 

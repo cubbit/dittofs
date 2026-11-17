@@ -130,17 +130,13 @@ go build -o dfsctl cmd/dfsctl/main.go
 # 2. Start DittoFS
 ./dfs start
 
-# 3. Create test stores
-./dfsctl store metadata add --name test-meta --in-memory
-./dfsctl store block add --name test-blocks --type memory
-
-# 4. Create a test share
+# 3. Create a test share (the CLI no longer creates stores)
 ./dfsctl share create --name /smbbasic --metadata test-meta --block-store test-blocks
 
-# 5. Create a test user
+# 4. Create a test user
 ./dfsctl user create --username testuser    # enter password when prompted
 
-# 6. Grant permissions
+# 5. Grant permissions
 ./dfsctl share permission grant /smbbasic --user testuser --level read-write
 ```
 
