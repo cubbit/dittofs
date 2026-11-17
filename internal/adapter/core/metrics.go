@@ -168,9 +168,10 @@ var splitReasons = [splits]string{"unwrap", "decode", "flow", "reply_pool", "qua
 // Route under its connection's Stages.Protocol, from it under its table's.
 // refusals holds the refusing stages, wire the timed ones.
 type protocolSeries struct {
-	inFlight adder
-	refusals [stages]adder
-	wire     [stages]observer
+	inFlight, unmapped adder
+	refusals           [stages]adder
+	wire               [stages]observer
+	mapped             [len(serviceErrors)]adder
 }
 
 // labelSeries is what a request records before Route returns its table.
@@ -183,14 +184,14 @@ type labelSeries struct {
 // chains, built with it.
 type tableSeries struct {
 	protocolSeries
-	protocol                                        string
-	member                                          bool            // the table is a compound row's Members
-	chains                                          map[uint32]Call // by operation code
-	unmapped, heldRequests, heldBytes, holdRefusals adder
-	splits                                          [splits]adder
-	panics                                          map[uint32]adder        // by operation code
-	panicLines                                      map[uint32]*lineLimiter // by operation code
-	mapped                                          [len(serviceErrors)]adder
+	protocol                              string
+	member                                bool            // the table is a compound row's Members
+	chains                                map[uint32]Call // by operation code
+	heldRequests, heldBytes, holdRefusals adder
+	splits                                [splits]adder
+	panics                                map[uint32]adder        // by operation code
+	panicLines                            map[uint32]*lineLimiter // by operation code
+	names                                 map[uint32]string       // the request span's name, by operation code
 }
 
 func (s *protocolSeries) answered()                         { s.inFlight.Add(-1) }
@@ -206,7 +207,6 @@ func (t *tableSeries) routed(from *labelSeries) {
 	t.inFlight.Add(1)
 }
 
-func (t *tableSeries) unmappedErr()  { t.unmapped.Add(1) }
 func (t *tableSeries) holdRefused()  { t.holdRefusals.Add(1) }
 func (t *tableSeries) split(r split) { t.splits[r].Add(1) }
 
@@ -220,11 +220,14 @@ func (t *tableSeries) panicked(op *Op) {
 
 // statusMapped counts a service error a row answered under the sentinel it
 // matches; an error of core's own matches none and is not counted.
-func (t *tableSeries) statusMapped(err error) {
+func (s *protocolSeries) statusMapped(err error) {
 	if i := serviceError(err); i >= 0 {
-		t.mapped[i].Add(1)
+		s.mapped[i].Add(1)
 	}
 }
+
+// unmappedErr counts an error no row of the table maps.
+func (s *protocolSeries) unmappedErr() { s.unmapped.Add(1) }
 
 // serviceError is the index in serviceErrors of the sentinel err matches,
 // or -1 for an error outside the service's set.
@@ -289,7 +292,10 @@ func (sh *shared) label(p string) *labelSeries {
 }
 
 func (sh *shared) newProtocol(p string) protocolSeries {
-	ps := protocolSeries{inFlight: sh.fam[vInFlight](p)}
+	ps := protocolSeries{inFlight: sh.fam[vInFlight](p), unmapped: sh.fam[vUnmapped](p)}
+	for i, e := range serviceErrors {
+		ps.mapped[i] = sh.fam[vStatusMapped](p, e.name)
+	}
 	for _, st := range refusing {
 		ps.refusals[st] = sh.fam[vRefusals](p, stageNames[st])
 	}
@@ -307,12 +313,12 @@ func (sh *shared) newTable(p string, t *OpTable, member bool) *tableSeries {
 		protocol:       p,
 		member:         member,
 		chains:         make(map[uint32]Call, len(t.Ops)),
-		unmapped:       sh.fam[vUnmapped](p),
 		heldRequests:   sh.fam[vHeldRequests](p),
 		heldBytes:      sh.fam[vHeldBytes](p),
 		holdRefusals:   sh.fam[vHoldRefusals](p),
 		panics:         make(map[uint32]adder, len(t.Ops)),
 		panicLines:     make(map[uint32]*lineLimiter, len(t.Ops)),
+		names:          make(map[uint32]string, len(t.Ops)),
 	}
 	for r, reason := range splitReasons {
 		ts.splits[r] = sh.fam[vChainSplits](p, reason)
@@ -320,9 +326,7 @@ func (sh *shared) newTable(p string, t *OpTable, member bool) *tableSeries {
 	for code, op := range t.Ops {
 		ts.panics[code] = sh.fam[vPanics](p, strings.ToLower(op.Name))
 		ts.panicLines[code] = sh.panicLine(p, op.Name)
-	}
-	for i, e := range serviceErrors {
-		ts.mapped[i] = sh.fam[vStatusMapped](p, e.name)
+		ts.names[code] = "adapter." + p + "." + op.Name
 	}
 	for code, op := range t.Ops {
 		ts.chains[code] = sh.chain(op, ts)

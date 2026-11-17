@@ -236,9 +236,9 @@ func TestDeadlineContextStartsNoGoroutine(t *testing.T) {
 }
 
 // A panicking handler is answered ErrPanicked, logged once at error with its
-// operation, the panic value's type and its stack, and counted under its
-// operation alone. The value, which may hold a name a user chose, is logged
-// at debug only (RFC 25 §5.4).
+// operation, the panic value's type, its stack and the call's trace and span
+// IDs where it has them, and counted under its operation alone. The value,
+// which may hold a name a user chose, is logged at debug only (RFC 25 §5.4).
 func TestRecoveryAnswersAPanic(t *testing.T) {
 	var logged bytes.Buffer
 	m := metrics.New("v", "c")
@@ -249,8 +249,10 @@ func TestRecoveryAnswersAPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 	echo := tb.Ops[testproto.OpEcho]
+	ctx, span := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample())).Tracer("test").Start(context.Background(), "call")
+	defer span.End()
 	const value = "open /exports/plans-2027.ods"
-	err = sh.Recovery(echo, ts)(func(context.Context, *core.Request) error { panic(value) })(context.Background(), nil)
+	err = sh.Recovery(echo, ts)(func(context.Context, *core.Request) error { panic(value) })(ctx, nil)
 	if !errors.Is(err, core.ErrPanicked) {
 		t.Errorf("a panic is answered %v, want ErrPanicked", err)
 	}
@@ -258,6 +260,7 @@ func TestRecoveryAnswersAPanic(t *testing.T) {
 	var rec, debug struct {
 		Level, Op, Stack, Panic string
 		PanicType               string `json:"panic_type"`
+		SpanID                  string `json:"span_id"`
 	}
 	if len(lines) != 2 || json.Unmarshal([]byte(lines[0]), &rec) != nil || json.Unmarshal([]byte(lines[1]), &debug) != nil {
 		t.Fatalf("logged %q, want two records", logged.String())
@@ -271,6 +274,9 @@ func TestRecoveryAnswersAPanic(t *testing.T) {
 	if debug.Level != "DEBUG" || debug.Op != echo.Name || debug.Panic != value {
 		t.Errorf("logged %+v at debug, want the panic value", debug)
 	}
+	if want := span.SpanContext().SpanID().String(); rec.SpanID != want || debug.SpanID != want {
+		t.Errorf("logged span_id %q and %q, want the call's %q on both lines", rec.SpanID, debug.SpanID, want)
+	}
 	got, _ := scrape(t, m)
 	for _, op := range tb.Ops {
 		want := 0.0
@@ -280,6 +286,25 @@ func TestRecoveryAnswersAPanic(t *testing.T) {
 		if k := "adapter_handler_panics_total{op=" + strings.ToLower(op.Name) + ",protocol=" + testproto.Name + "}"; got[k] != want {
 			t.Errorf("%s = %v, want %v", k, got[k], want)
 		}
+	}
+}
+
+// A panic logged with no span carries no span_id, since there is none to name.
+func TestRecoveryLogsNoSpanIDWithoutOne(t *testing.T) {
+	var logged bytes.Buffer
+	sh := core.NewShared(adapter.Deps{Logger: slog.New(slog.NewJSONHandler(&logged, nil))}, nil)
+	tb := routed(t)[0]
+	ts, err := sh.Table(tb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sh.Recovery(tb.Ops[testproto.OpEcho], ts)(func(context.Context, *core.Request) error { panic("boom") })(context.Background(), nil)
+	var rec map[string]any
+	if err := json.Unmarshal(logged.Bytes(), &rec); err != nil {
+		t.Fatalf("logged %q, want one record", logged.String())
+	}
+	if id, ok := rec["span_id"]; ok {
+		t.Errorf("a panic logged with no span carries span_id %q", id)
 	}
 }
 

@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -148,6 +151,7 @@ func Bind[Req, Rep any](
 }
 
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
+// each name, lower-cased, lower-case letters, digits and underscores alone,
 // no ErrorRow.Hold unless holds, and, where it holds, a row answering
 // ErrCancelled for every operation and version (one naming neither Ops nor
 // Versions that replies at once with a status other than the fault or
@@ -167,6 +171,9 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 		}
 		if op.Versions.First > op.Versions.Last {
 			panic(fmt.Sprintf("core: op table: %s serves versions %d to %d, first past last", op.Name, op.Versions.First, op.Versions.Last))
+		}
+		if !labelName(op.Name) {
+			panic(fmt.Sprintf("core: op table: %q, lower-cased, is not lower-case letters, digits and underscores alone", op.Name))
 		}
 		t.Ops[op.Code] = op
 	}
@@ -202,6 +209,22 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 		}
 	}
 	return t
+}
+
+// labelName says whether name, lower-cased, is a value of the op label:
+// lower-case letters, digits and underscores (§10.1). The empty name is
+// refused as well, which that set admits vacuously: a row without one has no
+// label to record, and nothing to be named by when a check panics.
+func labelName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range strings.ToLower(name) {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // Version is a protocol's version, minor version or dialect; Range a closed
@@ -244,6 +267,7 @@ type Request struct {
 	invoke       Call
 	resolveStart time.Time
 	callEnd      time.Time
+	trace        trace.TraceID // every log line for the request carries it
 }
 
 // Park holds the request until done: core sends the interim, and answers

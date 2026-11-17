@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -167,10 +168,15 @@ func (sh *shared) recovery(op *Op, ts *tableSeries) Middleware {
 		return func(ctx context.Context, r *Request) (err error) {
 			defer func() {
 				if p := recover(); p != nil {
-					if ok, suppressed := line.take(sh.clock.Now()); ok {
-						sh.log.ErrorContext(ctx, "handler panicked", "op", op.Name, "panic_type", fmt.Sprintf("%T", p), "suppressed", suppressed, "stack", string(debug.Stack()))
+					keys := []any{"op", op.Name, "trace_id", traceOf(r)}
+					if id := spanIDOf(ctx); id != "" {
+						keys = append(keys, "span_id", id)
 					}
-					sh.log.DebugContext(ctx, "handler panicked", "op", op.Name, "panic", p)
+					keys = slices.Clip(keys) // each line appends its own to a copy
+					if ok, suppressed := line.take(sh.clock.Now()); ok {
+						sh.log.ErrorContext(ctx, "handler panicked", append(keys, "panic_type", fmt.Sprintf("%T", p), "suppressed", suppressed, "stack", string(debug.Stack()))...)
+					}
+					sh.log.DebugContext(ctx, "handler panicked", append(keys, "panic", p)...)
 					ts.panicked(op)
 					err = errPanicked
 				}
@@ -321,4 +327,21 @@ func (c *clockCtx) end(err error) {
 	for _, f := range funcs {
 		go f()
 	}
+}
+
+// traceOf is r's trace ID, for a log line; empty for no request.
+func traceOf(r *Request) string {
+	if r == nil {
+		return ""
+	}
+	return r.trace.String()
+}
+
+// spanIDOf is ctx's span ID, where its span has one: a call with no span, or
+// under a tracer that draws none, logs no span_id (RFC 25 §5.3).
+func spanIDOf(ctx context.Context) string {
+	if id := trace.SpanContextFromContext(ctx).SpanID(); id.IsValid() {
+		return id.String()
+	}
+	return ""
 }

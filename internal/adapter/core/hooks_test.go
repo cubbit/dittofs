@@ -7,6 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
@@ -65,14 +68,14 @@ func (s *protocolSeries) Observe(st int, d time.Duration) { s.observe(stage(st),
 func (s *labelSeries) Admitted()  { s.admitted() }
 func (s *labelSeries) ReplayHit() { s.replayHit() }
 
-func (t *tableSeries) Routed(from *LabelSeries) { t.routed(from) }
-func (t *tableSeries) UnmappedErr()             { t.unmappedErr() }
-func (t *tableSeries) HoldRefused()             { t.holdRefused() }
-func (t *tableSeries) Split(reason int)         { t.split(split(reason)) }
-func (t *tableSeries) Panicked(op *Op)          { t.panicked(op) }
-func (t *tableSeries) StatusMapped(err error)   { t.statusMapped(err) }
-func (t *tableSeries) Held(n int64)             { t.held(n) }
-func (t *tableSeries) Released(n int64)         { t.released(n) }
+func (t *tableSeries) Routed(from *LabelSeries)  { t.routed(from) }
+func (s *protocolSeries) UnmappedErr()           { s.unmappedErr() }
+func (t *tableSeries) HoldRefused()              { t.holdRefused() }
+func (t *tableSeries) Split(reason int)          { t.split(split(reason)) }
+func (t *tableSeries) Panicked(op *Op)           { t.panicked(op) }
+func (s *protocolSeries) StatusMapped(err error) { s.statusMapped(err) }
+func (t *tableSeries) Held(n int64)              { t.held(n) }
+func (t *tableSeries) Released(n int64)          { t.released(n) }
 
 // CountLookups makes n count each child sh resolves from here on, each a
 // WithLabelValues on a registry.
@@ -182,8 +185,8 @@ var (
 	ErrNoHold        = errNoHold
 )
 
-func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, out func(*resources.Buf, uint64, uint64) error, close func(error)) *Pipeline {
-	return newPipeline(sh, st, link{ctx: ctx, remote: remote, out: out, close: close})
+func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, set settings.Settings, out func(*resources.Buf, uint64, uint64) error, close func(error)) *Pipeline {
+	return newPipeline(sh, st, link{ctx: ctx, remote: remote, set: set, out: out, close: close})
 }
 
 func (p *pipeline) Serve(rec *resources.Buf)       { p.serve(rec) }
@@ -224,3 +227,11 @@ func OnBatch(t *TestWriter, fn func(n int)) { t.w.onBatch = fn }
 // Pause is the writer's bound as the reader sees it: a channel closed once the
 // messages held fall below it, and whether they are at it.
 func Pause(t *TestWriter) (<-chan struct{}, bool) { return t.w.pause() }
+
+// Track opens and ends one request's tracking over rec, as serve and a
+// request that sent nothing do.
+func (p *pipeline) Track(rec *resources.Buf) { p.end(p.begin(rec), false, 0, 0, nil) }
+
+// Sampled is the pipeline's verdict on a request whose trace ID is id, under
+// a SampleRatio of ratio.
+func Sampled(id trace.TraceID, ratio float64) bool { return sampled(id, sampleBound(ratio)) }

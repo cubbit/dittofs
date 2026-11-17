@@ -1,12 +1,16 @@
 package core_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,9 +18,15 @@ import (
 	"testing/synctest"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace/noop"
+
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
@@ -320,6 +330,19 @@ type seam struct {
 // newSeam builds a seam for proto's stages, its reply budget of reply bytes.
 func newSeam(t *testing.T, proto core.Protocol, reply int64) *seam {
 	t.Helper()
+	return newSeamWith(t, proto, reply, adapter.Deps{})
+}
+
+// newSeamWith is newSeam on a server whose Deps are d: its registry, logger
+// and tracer.
+func newSeamWith(t *testing.T, proto core.Protocol, reply int64, d adapter.Deps) *seam {
+	t.Helper()
+	return newSeamSet(t, proto, reply, d, nil)
+}
+
+// newSeamSet is newSeamWith on a connection that loaded set at accept.
+func newSeamSet(t *testing.T, proto core.Protocol, reply int64, d adapter.Deps, set settings.Settings) *seam {
+	t.Helper()
 	s := &seam{
 		t:       t,
 		budgets: &resources.Budgets{Receive: resources.NewWaitBudget("receive", 64<<20), Reply: resources.NewWaitBudget("reply", reply)},
@@ -334,7 +357,7 @@ func newSeam(t *testing.T, proto core.Protocol, reply int64) *seam {
 	}
 	out, stop, conn, _ := newRecorder(s.f)
 	s.stop, s.client = stop, testproto.NewClient(conn)
-	s.p = core.NewPipeline(core.NewShared(adapter.Deps{}, s.reply), st, context.Background(), peer, out, func(err error) {
+	s.p = core.NewPipeline(core.NewShared(d, s.reply), st, context.Background(), peer, set, out, func(err error) {
 		select {
 		case s.closed <- err:
 		default:
@@ -875,6 +898,635 @@ func TestACancelIsAnsweredNothing(t *testing.T) {
 	})
 }
 
+// refusingFlow is a Flow that refuses every request with err: an input.
+type refusingFlow struct{ err error }
+
+func (f refusingFlow) Admit(context.Context, core.Header) (func(), error) { return nil, f.err }
+
+var errUnmappable = errors.New("a refusal no row maps")
+
+// logSink is a logger whose records, from debug up, the test reads back.
+type logSink struct{ buf bytes.Buffer }
+
+func (l *logSink) logger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(&l.buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// at is the records logged at level.
+func (l *logSink) at(t *testing.T, level string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(l.buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("a log line %q: %v", line, err)
+		}
+		if rec["level"] == level {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// An error no row maps is answered the fault status, logged once at error
+// with the request's trace ID, and counted.
+func TestAnUnmappedErrorIsAnsweredTheFaultAndCounted(t *testing.T) {
+	m, logs := metrics.New("v", "c"), &logSink{}
+	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Flow = refusingFlow{errUnmappable} }}, 1<<20, adapter.Deps{Metrics: m, Logger: logs.logger()})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+	if r := s.read(); r.Status != testproto.StatusFault {
+		t.Errorf("an unmapped refusal is answered %+v, want the fault status", r)
+	}
+	errs := logs.at(t, "ERROR")
+	if len(errs) != 1 || errs[0]["trace_id"] == "" || errs[0]["trace_id"] == strings.Repeat("0", 32) {
+		t.Errorf("logged at error %v, want one line with the request's trace ID", errs)
+	}
+	got, _ := scrape(t, m)
+	if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 1 {
+		t.Errorf("%s = %v, want 1", k, got[k])
+	}
+}
+
+// A wait the connection's close ends, for the request's reply reservation
+// or for a replay copy's, is no error: the request counts neither as an error
+// no row maps nor as a refusal, and logs nothing at error (RFC 20 §10.1).
+func TestAWaitTheCloseEndsIsNoError(t *testing.T) {
+	setup := []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
+		{Op: testproto.OpTree, Version: 1, ID: 3, Session: 7, Tree: 1},
+	}
+	// A Create with no filehandle is refused, and its reply stored for its
+	// sequence: the same Create again is answered from the replay cache.
+	create := testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 4, Session: 7, Tree: 1, Seq: 1, Name: "f"}
+	for _, c := range []struct {
+		name  string
+		first []testproto.Msg // served and answered before the pool fills
+		waits testproto.Msg   // served with the pool full, then the close
+		fill  func(s *seam, copies *resources.BufPool) func()
+	}{
+		{"the reply reservation", nil, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 5},
+			func(s *seam, _ *resources.BufPool) func() { return s.full() }},
+		{"a replay copy", append(setup, create), create,
+			func(s *seam, copies *resources.BufPool) func() {
+				held, ok := copies.TryGet(peer, 0)
+				if !ok {
+					t.Fatal("the replay copies' budget is not free to fill")
+				}
+				return held.Release
+			}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, logs := metrics.New("v", "c"), &logSink{}
+				copies := resources.NewWaitBudget("reply", smallCharge)
+				proto := testproto.New(adapter.Deps{Budgets: &resources.Budgets{Reply: copies}})
+				s := newSeamWith(t, proto, smallCharge, adapter.Deps{Metrics: m, Logger: logs.logger()})
+				for _, msg := range c.first {
+					s.serve(msg)
+					s.read()
+				}
+				synctest.Wait() // the last reply's buffer is given back after its send
+				free := c.fill(s, resources.NewBufPool(copies))
+				defer free()
+				s.serve(c.waits)
+				synctest.Wait()
+				s.p.Close()
+				if err := s.p.Wait(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				got, _ := scrape(t, m)
+				for _, k := range []string{
+					"adapter_unmapped_errors_total{protocol=" + testproto.Name + "}",
+					"adapter_refusals_total{protocol=" + testproto.Name + ",stage=replay_check}",
+				} {
+					if got[k] != 0 {
+						t.Errorf("%s = %v after a wait the close ended, want 0", k, got[k])
+					}
+				}
+				if e := logs.at(t, "ERROR"); len(e) != 0 {
+					t.Errorf("a wait the close ended logged at error: %v", e)
+				}
+			})
+		})
+	}
+}
+
+// A connection at its cap closed while the next request waits in Admit, and
+// the 64 admitted wait for their reply buffers: none of those waits is an
+// error. Nothing counts as refused or as an error no row maps, and nothing
+// logs at error.
+func TestAnAdmissionTheCloseEndsIsNoError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, logs := metrics.New("v", "c"), &logSink{}
+		s := newSeamWith(t, testproto.New(adapter.Deps{}).Bare(), smallCharge, adapter.Deps{Metrics: m, Logger: logs.logger()})
+		free := s.full()
+		defer free()
+		var served atomic.Int64
+		all := start(func() {
+			for i := range 65 {
+				s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: uint64(i + 1)})
+				served.Add(1)
+			}
+		})
+		synctest.Wait()
+		if n := served.Load(); n != 64 {
+			t.Fatalf("%d serves returned with the reply budget full, want 64, the 65th held in Admit", n)
+		}
+		s.p.Close()
+		<-all.done
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := scrape(t, m)
+		for _, k := range []string{
+			"adapter_unmapped_errors_total{protocol=" + testproto.Name + "}",
+			"adapter_refusals_total{protocol=" + testproto.Name + ",stage=admit}",
+		} {
+			if got[k] != 0 {
+				t.Errorf("%s = %v after the close ended the waits, want 0", k, got[k])
+			}
+		}
+		if e := logs.at(t, "ERROR"); len(e) != 0 {
+			t.Errorf("the waits the close ended logged at error: %v", e)
+		}
+	})
+}
+
+// failingLookup wraps the stages' replay cache, whose Lookup it fails with
+// err, after closing the connection where close is set.
+type failingLookup struct {
+	core.ReplayCache
+	err   error
+	close func()
+}
+
+func (l failingLookup) Lookup(context.Context, core.Header) (*resources.Buf, error) {
+	if l.close != nil {
+		l.close()
+	}
+	return nil, l.err
+}
+
+// Only a wait the close ended is no error. A cancel on a connection still
+// open is answered, here the fault status of an error no row maps; and an
+// error no row maps that meets the close is counted, as a bug is.
+func TestOnlyAWaitTheCloseEndedIsNoError(t *testing.T) {
+	unmapped := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"
+	t.Run("a cancel on an open connection", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			m := metrics.New("v", "c")
+			s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Replay = failingLookup{ReplayCache: st.Replay, err: context.Canceled} }}, 1<<20, adapter.Deps{Metrics: m})
+			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+			synctest.Wait()
+			if got, _ := scrape(t, m); got[unmapped] != 1 {
+				t.Fatalf("%s = %v, want 1: the request ended unanswered", unmapped, got[unmapped])
+			}
+			if r := s.read(); r.ID != 1 || r.Status != testproto.StatusFault {
+				t.Errorf("a cancel on an open connection is answered %+v, want the fault status", r)
+			}
+		})
+	})
+	t.Run("an error no row maps at the close", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			m := metrics.New("v", "c")
+			var s *seam
+			closing := edited{testproto.New(adapter.Deps{}), func(st *core.Stages) {
+				st.Replay = failingLookup{ReplayCache: st.Replay, err: errUnmappable, close: func() { s.p.Close() }}
+			}}
+			s = newSeamWith(t, closing, 1<<20, adapter.Deps{Metrics: m})
+			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+			if err := s.p.Wait(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := scrape(t, m); got[unmapped] != 1 {
+				t.Errorf("%s = %v for an error no row maps at the close, want 1", unmapped, got[unmapped])
+			}
+		})
+	})
+}
+
+// A service error a row answers counts under its name, here the reply
+// copy's delay that the stages' table maps, and logs at debug.
+func TestAMappedServiceErrorCountsUnderItsName(t *testing.T) {
+	m, logs := metrics.New("v", "c"), &logSink{}
+	spent := &vfs.Delay{Cause: vfs.DelayResources}
+	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Flow = refusingFlow{spent} }}, 1<<20, adapter.Deps{Metrics: m, Logger: logs.logger()})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+	if r := s.read(); r.Status != testproto.StatusDelay {
+		t.Errorf("a mapped delay is answered %+v", r)
+	}
+	got, _ := scrape(t, m)
+	if k := "adapter_status_mapped_total{error=delay,protocol=" + testproto.Name + "}"; got[k] != 1 {
+		t.Errorf("%s = %v, want 1", k, got[k])
+	}
+	if d := logs.at(t, "DEBUG"); len(d) != 1 || len(logs.at(t, "ERROR")) != 0 {
+		t.Errorf("a mapped error logged %d debug lines and some at error, want one at debug", len(d))
+	}
+}
+
+// Each refusal counts under the stage that refused it (RFC 20 §10.1's
+// values).
+func TestEachRefusalCountsUnderItsStage(t *testing.T) {
+	m := metrics.New("v", "c")
+	s := newSeamWith(t, testproto.New(adapter.Deps{}), 64<<10, adapter.Deps{Metrics: m})
+	bad := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Session: 5})
+	bad[len(bad)-1] ^= 0x01
+	noRole := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 5})
+	for _, c := range []struct {
+		stage string
+		send  func()
+	}{
+		{"unwrap", func() { s.serveBody(bad) }},
+		{"admit", func() { s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Credits: 9}) }},
+		{"route", func() { s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 3, ID: 3}) }},
+		{"route", func() { s.serve(testproto.Msg{Op: 99, Version: 1, ID: 4}) }},
+		{"decode_args", func() { s.serveBody(noRole[:len(noRole)-1]) }},
+		{"reply_too_big", func() {
+			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 6, Payload: make([]byte, 100<<10)})
+		}},
+	} {
+		c.send()
+		s.read()
+	}
+	s.p.Drain()
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Role: core.RoleNone})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 8, Role: core.RoleContext})
+	s.read()
+	badNext := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 9})
+	binary.BigEndian.PutUint32(badNext, 39)
+	s.serveBody(badNext)
+	s.read()
+	if err := s.p.Wait(context.Background()); err != nil { // the drained Echo, answered nothing, has ended
+		t.Fatal(err)
+	}
+	got, _ := scrape(t, m)
+	for stage, want := range map[string]float64{"unwrap": 1, "admit": 1, "route": 2, "decode_args": 1, "reply_too_big": 1, "resolve_ids": 1, "decode_header": 1} {
+		if k := "adapter_refusals_total{protocol=" + testproto.Name + ",stage=" + stage + "}"; got[k] != want {
+			t.Errorf("%s = %v, want %v", k, got[k], want)
+		}
+	}
+}
+
+// adapter_requests_in_flight reads 64 when the 64th of 65 requests has been
+// admitted, and zero when all are answered.
+func TestInFlightFollowsTheRequests(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newSeamWith(t, testproto.New(adapter.Deps{}).Bare(), smallCharge, adapter.Deps{Metrics: m})
+		free := s.full()
+		all := start(func() {
+			for i := range 65 {
+				s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: uint64(i + 1)})
+			}
+		})
+		synctest.Wait()
+		k := "adapter_requests_in_flight{protocol=" + testproto.Name + "}"
+		if got, _ := scrape(t, m); got[k] != 64 {
+			t.Errorf("%s = %v with 64 admitted, want 64", k, got[k])
+		}
+		free()
+		for range 65 {
+			s.read()
+		}
+		<-all.done
+		synctest.Wait()
+		if got, _ := scrape(t, m); got[k] != 0 {
+			t.Errorf("%s = %v once all are answered, want 0", k, got[k])
+		}
+	})
+}
+
+// cachedReplay is a ReplayCache that answers every header from one copy: an
+// input.
+type cachedReplay struct {
+	pool  *resources.BufPool
+	reply []byte
+}
+
+func (c cachedReplay) Lookup(ctx context.Context, _ core.Header) (*resources.Buf, error) {
+	b, err := c.pool.Get(ctx, peer, len(c.reply))
+	if err != nil {
+		return nil, err
+	}
+	b.B = append(b.B[:0], c.reply...)
+	return b, nil
+}
+
+func (cachedReplay) Store(core.Header, *resources.Buf) {}
+
+// On stages and a table of different labels, a header the codec refuses and
+// a replay hit count under the stages', and a routed request's in-flight
+// count moves to its table's at Route, the stages' back at zero.
+func TestTheTwoLabels(t *testing.T) {
+	relabel := func(st *core.Stages) { st.Protocol = "stages" }
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newSeamWith(t, edited{testproto.New(adapter.Deps{}).Bare(), relabel}, smallCharge, adapter.Deps{Metrics: m})
+		free := s.full()
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		synctest.Wait()
+		got, _ := scrape(t, m)
+		if got["adapter_requests_in_flight{protocol=stages}"] != 0 || got["adapter_requests_in_flight{protocol="+testproto.Name+"}"] != 1 {
+			t.Errorf("a routed request in flight: stages %v, table %v; want 0 and 1", got["adapter_requests_in_flight{protocol=stages}"], got["adapter_requests_in_flight{protocol="+testproto.Name+"}"])
+		}
+		free()
+		s.read()
+		badNext := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2})
+		binary.BigEndian.PutUint32(badNext, 39)
+		s.serveBody(badNext)
+		s.read()
+		if got, _ := scrape(t, m); got["adapter_refusals_total{protocol=stages,stage=decode_header}"] != 1 {
+			t.Errorf("a header the codec refused is not counted under the stages' label: %v", got)
+		}
+	})
+	m := metrics.New("v", "c")
+	replyPool := resources.NewBufPool(resources.NewWaitBudget("replay", 1<<20))
+	cached := body(testproto.New(adapter.Deps{}).Framer(), testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 42})
+	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}).Bare(), func(st *core.Stages) {
+		relabel(st)
+		st.Replay = cachedReplay{replyPool, cached}
+	}}, 1<<20, adapter.Deps{Metrics: m})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 42})
+	s.read()
+	if got, _ := scrape(t, m); got["adapter_replay_hits_total{protocol=stages}"] != 1 {
+		t.Errorf("a replay hit is not counted under the stages' label: %v", got)
+	}
+}
+
+// Each request has one span, ended, named after its operation once routed,
+// with §10.2's keys alone: a served Echo its status, result and sizes, a
+// refusal at Unwrap the stage that refused it.
+func TestEachRequestHasOneSpan(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+	s := newSeamWith(t, testproto.New(adapter.Deps{}), 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1})
+	echo := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("hi")})
+	s.serveBody(echo)
+	s.read()
+	bad := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Session: 5})
+	bad[len(bad)-1] ^= 0x01
+	s.serveBody(bad)
+	s.read()
+	// A record whose header does not decode at all names no version, no
+	// operation and no status: it is dropped rather than refused, and the
+	// connection is closed, so no reply comes back.
+	s.serveBody([]byte{0x01})
+	s.finish()
+	ended := spans.Ended()
+	if len(ended) != 3 {
+		t.Fatalf("%d spans ended for three requests", len(ended))
+	}
+	// The spans are found by what they carry, not by the order they ended in:
+	// a request's span ends on its own goroutine, after its reply is queued.
+	names, attrs := make([]string, len(ended)), make([]map[string]string, len(ended))
+	for i, sd := range ended {
+		names[i], attrs[i] = sd.Name(), map[string]string{}
+		for _, kv := range sd.Attributes() {
+			if !slices.Contains(spanKeys, string(kv.Key)) {
+				t.Errorf("span %q carries %s, outside §10.2's keys", sd.Name(), kv.Key)
+			}
+			attrs[i][string(kv.Key)] = kv.Value.String()
+		}
+	}
+	used := make([]bool, len(ended))
+	pick := func(what string, match func(i int) bool) (string, map[string]string) {
+		t.Helper()
+		for i := range ended {
+			if !used[i] && match(i) {
+				used[i] = true
+				return names[i], attrs[i]
+			}
+		}
+		t.Fatalf("no span %s among %v", what, names)
+		return "", nil
+	}
+	echoed := "adapter." + testproto.Name + ".Echo"
+	name, served := pick("named after its Echo", func(i int) bool { return names[i] == echoed })
+	if name != echoed || served["op"] != "echo" || served["version"] != "1" || served["status"] != "0" || served["result"] != "ok" ||
+		served["request_bytes"] != strconv.Itoa(len(echo)) || served["reply_bytes"] != "42" || served["stage"] != "" {
+		t.Errorf("the served Echo's span is %q %v", name, served)
+	}
+	name, refused := pick("refused at unwrap", func(i int) bool { return attrs[i]["stage"] == "unwrap" })
+	if name != "adapter."+testproto.Name || refused["op"] != "" || refused["result"] != "" {
+		t.Errorf("the refused message's span is %q %v, want its stage and no operation or result", name, refused)
+	}
+	// A header that does not decode is dropped, not refused: no operation, no
+	// version and no status, which only a reply carries.
+	name, undecoded := pick("dropped", func(i int) bool { return true })
+	if name != "adapter."+testproto.Name || undecoded["version"] != "" || undecoded["op"] != "" || undecoded["status"] != "" {
+		t.Errorf("the undecodable header's span is %q %v, want no version, op or status", name, undecoded)
+	}
+}
+
+// A reply whose reservation waits is timed under reply_wait, between
+// decode_args and resolve_ids: the wait's own sample, not the request's, and
+// its length the time it waited.
+func TestAReplyWaitIsTimed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newSeamWith(t, testproto.New(adapter.Deps{}).Bare(), smallCharge, adapter.Deps{Metrics: m})
+		free := s.full()
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		synctest.Wait()
+		// The request is blocked in its reservation; the clock moves while it
+		// waits, so a sample that says how long it waited says 50ms.
+		time.Sleep(50 * time.Millisecond)
+		free()
+		s.read()
+		got, _ := scrape(t, m)
+		k := "adapter_wire_seconds{protocol=" + testproto.Name + ",stage=reply_wait}"
+		if got[k] != 1 {
+			t.Errorf("a reservation that waited observed %v reply_wait samples, want one", got[k])
+		}
+		if sum := got["adapter_wire_seconds_sum{protocol="+testproto.Name+",stage=reply_wait}"]; sum < 0.049 || sum > 0.051 {
+			t.Errorf("the wait's samples sum to %v seconds, want 0.05", sum)
+		}
+	})
+}
+
+// A refusal before the service carries no result, even where its error is one
+// the service's closed set names: the pipeline raised it, the service did not
+// (RFC 20 §10.2).
+func TestARefusalCarriesNoResult(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+	spent := &vfs.Delay{Cause: vfs.DelayResources}
+	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Flow = refusingFlow{spent} }}, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+	s.read()
+	s.finish()
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("%d spans ended for one refused request", len(ended))
+	}
+	got := map[string]string{}
+	for _, kv := range ended[0].Attributes() {
+		got[string(kv.Key)] = kv.Value.String()
+	}
+	if got["stage"] != "admit" || got["status"] == "" || got["result"] != "" {
+		t.Errorf("a delay refused at admit carries %v, want its stage and status and no result", got)
+	}
+}
+
+// A replay hit's span carries the sizes but no status and no result: the
+// pipeline sends a copy whose status it never read, and no operation ran.
+func TestAReplayHitsSpanCarriesNoStatus(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+	replyPool := resources.NewBufPool(resources.NewWaitBudget("replay", 1<<20))
+	cached := body(testproto.New(adapter.Deps{}).Framer(), testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 42})
+	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}).Bare(), func(st *core.Stages) {
+		st.Replay = cachedReplay{replyPool, cached}
+	}}, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 42})
+	s.read()
+	s.finish()
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("%d spans ended for one replay hit", len(ended))
+	}
+	got := map[string]string{}
+	for _, kv := range ended[0].Attributes() {
+		got[string(kv.Key)] = kv.Value.String()
+	}
+	if got["reply_bytes"] == "" || got["status"] != "" || got["result"] != "" || got["op"] != "" {
+		t.Errorf("a replay hit's span is %v, want its reply's size alone", got)
+	}
+}
+
+// Every line logged for a request carries its trace ID, with a tracer or
+// none; a second refusal at Unwrap on one connection logs nothing more; a
+// mapped refusal logs at debug.
+func TestLogLinesCarryTheTraceID(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+	for name, c := range map[string]struct {
+		d    adapter.Deps
+		span bool
+	}{
+		"a tracer":               {adapter.Deps{Tracer: tracer, SampleRatio: 1}, true},
+		"no tracer":              {adapter.Deps{}, false},
+		"a tracer drawing no ID": {adapter.Deps{Tracer: noop.NewTracerProvider().Tracer("test"), SampleRatio: 1}, false},
+		"a tracer sampling none": {adapter.Deps{Tracer: tracer}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := c.d
+			logs := &logSink{}
+			d.Logger = logs.logger()
+			s := newSeamWith(t, testproto.New(adapter.Deps{}), 1<<20, d)
+			for id := range uint64(2) {
+				bad := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: id, Session: 5})
+				bad[len(bad)-1] ^= 0x01
+				s.serveBody(bad)
+				s.read()
+			}
+			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 3, ID: 3})
+			s.read()
+			s.finish()
+			traced := map[string]bool{}
+			for _, sp := range spans.Ended() {
+				traced[sp.SpanContext().TraceID().String()] = true
+			}
+			warns, debugs := logs.at(t, "WARN"), logs.at(t, "DEBUG")
+			if len(warns) != 1 {
+				t.Errorf("two refusals at Unwrap logged %d warnings, want one per connection", len(warns))
+			}
+			if len(debugs) != 1 {
+				t.Errorf("a mapped refusal logged %d debug lines, want one", len(debugs))
+			}
+			for _, rec := range append(warns, debugs...) {
+				if id, _ := rec["trace_id"].(string); len(id) != 32 || id == strings.Repeat("0", 32) {
+					t.Errorf("a line logged for a request carries trace ID %q", id)
+				}
+				id, has := rec["span_id"].(string)
+				if c.span && (!has || len(id) != 16) {
+					t.Errorf("a line logged under a span carries span ID %q", id)
+				}
+				if c.span && !traced[rec["trace_id"].(string)] {
+					t.Errorf("a line logged under a span carries trace ID %v, not its span's", rec["trace_id"])
+				}
+				if !c.span {
+					if _, ok := rec["span_id"]; ok {
+						t.Errorf("a line logged with no span carries span_id %q", id)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The row's checks, each alone: an unknown code, whose arguments do not
+// decode, and an Echo switched off by name answered not supported, beside a
+// Negotiate served; Park in version 1 the version status; then, as the
+// connection reaches each level, Tree before a session, PutFH before a tree
+// and Create with no filehandle their own statuses, and Create before a
+// session the session status, not the filehandle's.
+func TestTheRowChecks(t *testing.T) {
+	// Switched off in capitals, which matches Echo's row as the op label's
+	// echo does: names match case aside, on both sides.
+	off := testproto.Settings{Adapter: settings.Adapter{DisabledOperations: []string{"ECHO"}}}
+	s := newSeamSet(t, testproto.New(adapter.Deps{}), 1<<20, adapter.Deps{}, off)
+	noRole := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2})
+	garbage := body(s.f, testproto.Msg{Op: 99, Version: 1, ID: 1})
+	for _, c := range []struct {
+		name string
+		send func()
+		want core.Status
+	}{
+		{"an unknown code with arguments that do not decode", func() { s.serveBody(append(garbage, 0xff)) }, testproto.StatusNotSupported},
+		{"a switched-off Echo, its arguments never decoded", func() { s.serveBody(noRole[:len(noRole)-1]) }, testproto.StatusNotSupported},
+		{"Park in version 1", func() { s.serve(testproto.Msg{Op: testproto.OpPark, Version: 1, ID: 3}) }, testproto.StatusVersion},
+		{"Create before a session", func() { s.serve(testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 4, Name: "f"}) }, testproto.StatusNotNegotiated},
+		{"Negotiate", func() { s.serve(testproto.Msg{Op: testproto.OpNegotiate, Version: 1, ID: 5}) }, testproto.StatusOK},
+		{"Create before a session, negotiated", func() { s.serve(testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 6, Session: 7, Name: "f"}) }, testproto.StatusNoSession},
+		{"Tree before a session", func() { s.serve(testproto.Msg{Op: testproto.OpTree, Version: 1, ID: 7, Session: 7}) }, testproto.StatusNoSession},
+		{"Session", func() { s.serve(testproto.Msg{Op: testproto.OpSession, Version: 1, ID: 8, Session: 7}) }, testproto.StatusOK},
+		{"PutFH before a tree", func() {
+			s.serve(testproto.Msg{Op: testproto.OpPutFH, Version: 1, ID: 9, Session: 7, Handle: []byte("h")})
+		}, testproto.StatusNoTree},
+		{"Tree", func() { s.serve(testproto.Msg{Op: testproto.OpTree, Version: 1, ID: 10, Session: 7, Tree: 1}) }, testproto.StatusOK},
+		{"Create with a tree and no filehandle", func() {
+			s.serve(testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 11, Session: 7, Tree: 1, Name: "f"})
+		}, testproto.StatusNoFH},
+	} {
+		c.send()
+		if r := s.read(); r.Status != c.want {
+			t.Errorf("%s: answered %d, want %d", c.name, r.Status, c.want)
+		}
+	}
+}
+
+// On an expired session Tree is answered the expired status, Session and
+// Logoff run, and an Echo runs only when its argument says release: one that
+// says flush, which the drain serves, is refused.
+func TestAnExpiredCredential(t *testing.T) {
+	s := newSeam(t, testproto.New(adapter.Deps{}), 1<<20)
+	ended := time.Now().Add(-time.Hour)
+	for _, c := range []struct {
+		name string
+		m    testproto.Msg
+		want core.Status
+	}{
+		{"Negotiate", testproto.Msg{Op: testproto.OpNegotiate, Version: 1, ID: 1}, testproto.StatusOK},
+		{"a session whose credential has ended", testproto.Msg{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7, Expires: ended}, testproto.StatusOK},
+		{"Tree", testproto.Msg{Op: testproto.OpTree, Version: 1, ID: 3, Session: 7, Tree: 1}, testproto.StatusExpired},
+		{"an Echo that says flush", testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 4, Session: 7, Role: core.RoleFlush}, testproto.StatusExpired},
+		{"an Echo that says none", testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 5, Session: 7, Role: core.RoleNone}, testproto.StatusExpired},
+		{"an Echo that says release", testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 6, Session: 7, Role: core.RoleRelease}, testproto.StatusOK},
+		{"Session again", testproto.Msg{Op: testproto.OpSession, Version: 1, ID: 7, Session: 7, Expires: ended}, testproto.StatusOK},
+		{"Logoff", testproto.Msg{Op: testproto.OpLogoff, Version: 1, ID: 8, Session: 7}, testproto.StatusOK},
+	} {
+		s.serve(c.m)
+		if r := s.read(); r.Status != c.want {
+			t.Errorf("%s: answered %d, want %d", c.name, r.Status, c.want)
+		}
+	}
+}
+
 // wrapped is a Router whose tables' rows hand each Invocation they decode to
 // wrap: a pass-through the test reads where the call itself is what is
 // checked. It counts the Routes it is asked. With fail set, every row's
@@ -1187,4 +1839,52 @@ func TestARefusalAfterCloseIsNotRun(t *testing.T) {
 			}
 		}
 	})
+}
+
+// lastVersion is a Router declared in the test whose tables' Echo row ends
+// at version 1: an input standing for a row a newer version withdraws.
+type lastVersion struct {
+	core.Router
+	mu     sync.Mutex
+	tables map[*core.OpTable]*core.OpTable
+}
+
+func (l *lastVersion) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	tb, r, err := l.Router.Route(h, prev)
+	if tb == nil {
+		return tb, r, err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.tables == nil {
+		l.tables = map[*core.OpTable]*core.OpTable{}
+	}
+	cp, ok := l.tables[tb]
+	if !ok {
+		c := *tb
+		c.Ops = make(map[uint32]*core.Op, len(tb.Ops))
+		for code, op := range tb.Ops {
+			o := *op
+			if code == testproto.OpEcho {
+				o.Versions.Last = 1
+			}
+			c.Ops[code] = &o
+		}
+		cp = &c
+		l.tables[tb] = cp
+	}
+	return cp, r, err
+}
+
+// A row whose versions end below the request's is refused the version status.
+func TestARowPastItsLastVersionIsRefused(t *testing.T) {
+	s := newSeam(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Router = &lastVersion{Router: st.Router} }}, 1<<20)
+	s.serve(testproto.Msg{Op: testproto.OpNegotiate, Version: 2, ID: 1})
+	if r := s.read(); r.Status != testproto.StatusOK {
+		t.Fatalf("negotiating version 2: %+v", r)
+	}
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 2, ID: 2})
+	if r := s.read(); r.Status != testproto.StatusVersion {
+		t.Errorf("an Echo in version 2, its row ending at 1, is answered %d, want the version status", r.Status)
+	}
 }

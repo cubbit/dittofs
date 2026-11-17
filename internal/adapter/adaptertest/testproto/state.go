@@ -150,12 +150,16 @@ func (p *Protocol) session(_ context.Context, r *core.Request, req *sessionReq) 
 	if s.sid == 0 || s.sid == inherited {
 		return nil, errNoSessionID
 	}
-	r.Conn.Established()
+	// At the seam a request has no Conn: the handshake and the keep are
+	// the connection's, which the seam does not build.
+	if r.Conn != nil {
+		r.Conn.Established()
+	}
 	if s.conn.p.bare {
 		return &empty{}, nil // Bare carries no session: it has no OnClose to drop one
 	}
 	var release func()
-	if req.keep {
+	if req.keep && r.Conn != nil {
 		release = r.Conn.Keep()
 	}
 	p.reg.join(s.sid, s.conn, req.expires, release)
