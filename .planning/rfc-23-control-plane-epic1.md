@@ -414,7 +414,7 @@ internal/node/
   - `--foreground`, `--pid-file` and `--log-file` dropped from every `dfs start` invocation the
     gendocs tests do not read, as `rg -- '--foreground|--pid-file|--log-file'` finds them outside
     `cmd/dfs`, `CHANGELOG.md`, `docs/guide/cli.md` and the files T1.3 rewrote (it also finds other
-    programs' flags, which stay). On `feat/storage-v2`: `packaging/dfs.service`; the `CMD` of
+    programs' flags, which stay). On `feat/storage-v2`: `scripts/packaging/dfs.service`; the `CMD` of
     `Dockerfile`, `Dockerfile.goreleaser` and `Dockerfile.prebuilt`;
     `scripts/setup-dittofs-demo.sh`; the operator's pod `Args`
     (`k8s/dittofs-operator/internal/controller/dittoserver_controller.go`), so its pods still start;
