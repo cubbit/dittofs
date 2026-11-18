@@ -60,9 +60,10 @@
 //	Compound  count (4 bytes), tag length (4), the tag, then per member: operation (4), length (4), arguments
 //
 // Every other operation has none. A Cancel names its target by carrying the
-// target's message ID as its own. A reply's arguments are its body; a
-// compound's reply body is its status (4 bytes), its tag's length (4), the tag and its count of results (4),
-// then per result: operation (4), status (4), length (4), body.
+// target's message ID as its own. A reply's arguments are its body; a Park's
+// is its name; a compound's reply body is its status (4 bytes), its tag's
+// length (4), the tag and its count of results (4), then per result:
+// operation (4), status (4), length (4), body.
 package testproto
 
 import (
@@ -120,7 +121,7 @@ const (
 	OpEcho                        // NeedsNothing; Invocation.Role is Msg.Role
 	OpCreate                      // NeedsTree|NeedsFH, Cacheable; one vfs.Service.Create of Msg.Name
 	OpPanic                       // its handler panics
-	OpPark                        // version 2: Request.Park, then a Create of Msg.Name
+	OpPark                        // version 2: a GetAttr of the current filehandle, Request.Park, then a GetAttr and a Create of Msg.Name; its reply carries the name
 	OpNotify                      // Conn.Send ahead of the reply keyed by Msg.Target
 	OpViolate                     // Conn.Close
 	OpCancel                      // never routed: HoldCodec.Cancels names the request keyed by Msg.Target

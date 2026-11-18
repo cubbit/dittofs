@@ -192,19 +192,28 @@ func (p *Protocol) tree(_ context.Context, r *core.Request, _ *empty) (*empty, e
 	return &empty{}, nil
 }
 
-// park parks the request and then makes its one service call, a Create of the
-// name, whose answer completes it.
+// park reads the current filehandle, parks the request, and then reads it
+// again and, unless the park was cancelled meanwhile, makes its one mutating
+// call, a Create of the name, whose answer completes it. Its reply carries
+// the name.
 //
-// decision: a parked request waits on a held service call, not on a lock or a
-// notification. A test parks one by having the service it supplied hold that
-// Create, completes it by releasing the hold, and reads a withdrawal from the
-// outcome: a cancelled park answers the cancel status and no file of the name
-// exists, and a refused park makes no call. The service's own waits are
-// proven by NFS's and SMB's handler tests. Withdraw it if core's parking
-// comes to depend on what the waiter is.
-func (p *Protocol) park(ctx context.Context, r *core.Request, req *nameReq) (*empty, error) {
+// decision: a parked request waits on a service call a test holds, not on a
+// lock or a notification. The first read stands in for a waiting lock's own
+// call, which the service may delay, so a request can hold and then park on
+// its re-drive; the second is the wait, a cancel during which makes no file,
+// while a cancel during the held Create, which the service applies whatever
+// its context, still makes it. A test parks one by holding a call, completes
+// it by releasing the hold, and reads a withdrawal from the outcome: a
+// cancelled park answers the cancel status and no file of the name exists,
+// and a refused park makes no Create. The service's own waits are proven by
+// NFS's and SMB's handler tests. Withdraw it if core's parking comes to
+// depend on what the waiter is.
+func (p *Protocol) park(ctx context.Context, r *core.Request, req *nameReq) (*nameRep, error) {
 	s, err := stateOf(r)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := p.d.VFS.GetAttr(ctx, r.Call, s.fh); err != nil {
 		return nil, err
 	}
 	callCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -218,11 +227,17 @@ func (p *Protocol) park(ctx context.Context, r *core.Request, req *nameReq) (*em
 	call, dir, name := r.Call, s.fh, bytes.Clone(req.name)
 	go func() {
 		defer cancel()
-		_, err := p.d.VFS.Create(callCtx, call, dir, name, vfs.CreateArgs{})
+		_, err := p.d.VFS.GetAttr(callCtx, call, dir)
+		if err == nil {
+			err = callCtx.Err()
+		}
+		if err == nil {
+			_, err = p.d.VFS.Create(callCtx, call, dir, name, vfs.CreateArgs{Kind: vfs.CreateRegular})
+		}
 		done(err)
 	}()
 
-	return &empty{}, core.ErrParked
+	return &nameRep{name: name}, core.ErrParked
 }
 
 // targetReq is Notify's arguments: the message ID of the request it names.
