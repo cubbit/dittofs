@@ -231,6 +231,13 @@ func newEmptyingHarness(t *testing.T, r *rig, st *State, targets ...segment.Targ
 	tr.OpenDone()
 	maker := segment.NewMaker(r.seam.FS(), set, math.MaxInt64, st.Attached.MaxID, nil)
 	pool := segment.NewPool(maker, poolTargets, nil, nil)
+	// The spares the spares phase re-adopted reach the pool before it
+	// starts, in their classes, as the open's own core hands them over.
+	for _, a := range st.Spares.Adopted {
+		if err := pool.Adopt(a.ID, a.Class); err != nil {
+			t.Fatalf("the harness pool's adoption of spare %d: %v", a.ID, err)
+		}
+	}
 	pool.Start()
 	t.Cleanup(pool.Stop)
 	cache := segment.NewDescriptors(r.seam.FS(), format.SegmentName, core.NewDescriptorBudget(8))
@@ -251,14 +258,19 @@ func newEmptyingHarness(t *testing.T, r *rig, st *State, targets ...segment.Targ
 	d.Retire = retirer.Retire
 	d.Dir = r.dir
 	// The pool's own take of the repack reserve, the shape the open hands
-	// the emptying's copies: a wait for the pool's settle when the class is
-	// short, then the take. The pool was started above, so the take finds
-	// the spares the retire step's recycles and the refill made.
-	d.DrawReserve = func() (core.SegmentID, error) {
-		if err := pool.WaitSpares(t.Context()); err != nil {
+	// the emptying's copies: the take, and when the class is short a wait
+	// for one reserve spare and the take again. The pool was started above,
+	// so the take finds the adopted spares and those the retire step's
+	// recycles and the refill made.
+	d.DrawReserve = func(floor core.SegmentID) (core.SegmentID, error) {
+		id, err := pool.TakeReserveAbove(floor)
+		if err == nil || !errors.Is(err, core.ErrNoSpace) {
+			return id, err
+		}
+		if err := pool.WaitReserveSpare(t.Context()); err != nil {
 			return 0, err
 		}
-		return pool.Take(segment.Reserve)
+		return pool.TakeReserveAbove(floor)
 	}
 	return &emptyingHarness{deps: d, pool: pool}
 }
@@ -1665,5 +1677,56 @@ func TestTheCopyOutranksARottenTwinAcrossTwoOpens(t *testing.T) {
 				t.Errorf("the second open serves seq %d from segment %d at %d, which does not verify (rot %v, err %v), want the copy above the rotten twin %d", p.Seq, p.Record.Segment, p.Record.Offset, rot, rerr, tc.twin)
 			}
 		})
+	}
+}
+
+// TestACarryOverARottenTwinSkipsAnAdoptedReserveSpareBelowIt holds the draw's
+// floor over the pool's own reserve: the spare 1 the spares phase re-adopts
+// into the repack reserve keeps its old id, below the twin 7 whose copy of
+// the ended segment 4's record rots before the emptying reads it. A carry
+// into that spare would lose to the twin at the next open, whose walk
+// verifies no payload; the carry lands above the twin, and the low spare
+// stays the pool's, on disk and ready.
+func TestACarryOverARottenTwinSkipsAnAdoptedReserveSpareBelowIt(t *testing.T) {
+	file := tailFile()
+	r := newRig(t)
+	r.writeFormat()
+	r.write(format.SegmentName(1), make([]byte, testSegCap))
+	r.plantSeg(4, damageHeader(buildSeg(4, collectWrite(7, file, 5, 5, 0, 16))))
+	twin, _ := buildSealed(7, collectWrite(7, file, 5, 5, 0, 16), collectWrite(7, file, 6, 6, 0x5100, 16))
+	r.plantSeg(7, twin)
+
+	d := r.runDeps()
+	d.SpareTargets = segment.Targets{Reserve: 1}
+	st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 1, Class: segment.Reserve}}; !slices.Equal(got, want) {
+		t.Fatalf("the spares phase adopted %v, want %v", got, want)
+	}
+	rotByte(t, r, format.SegmentName(7), format.SegmentHeaderSize+format.RecordHeaderSize)
+	h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 1})
+	if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil); err != nil {
+		t.Fatalf("Emptying: %v", err)
+	}
+	if !slices.Contains(r.listing(), format.SegmentName(1)) {
+		t.Errorf("the adopted reserve spare 1 is gone from the directory, want it standing as the pool's spare")
+	}
+	if got := h.pool.Counters().RepackReserveBytes; got < testSegCap {
+		t.Errorf("the pool's ready repack reserve after the emptying got %d bytes, want at least the %d-byte cap: the skipped low spare stays ready", got, testSegCap)
+	}
+
+	st2, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	if err != nil {
+		t.Fatalf("the second Run: %v", err)
+	}
+	p, ok := st2.Rebuilt.Index.Lookup(file, 0)
+	if !ok {
+		t.Fatalf("the second open serves nothing at seq 5's extent, want a verifying copy")
+	}
+	rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
+	if _, _, rot, rerr := readRecordWhole(rd, journalID, p.Record.Segment, int64(p.Record.Offset)); rerr != nil || rot {
+		t.Errorf("the second open serves seq %d from segment %d at %d, which does not verify (rot %v, err %v), want the copy above the rotten twin 7", p.Seq, p.Record.Segment, p.Record.Offset, rot, rerr)
 	}
 }

@@ -2601,3 +2601,26 @@ func TestPoolWaitReserveSpareAnswersTheReserveAlone(t *testing.T) {
 		t.Fatalf("Take(Reserve) after the wait answered: %v, want the ready reserve spare", err)
 	}
 }
+
+// TestPoolTakeReserveAboveSkipsALowSpare: a reserve whose one ready spare is
+// an adopted id below the floor answers the take with a spare made above
+// every id the directory held, and leaves the low spare ready in its class
+// for the next take that needs no floor.
+func TestPoolTakeReserveAboveSkipsALowSpare(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, _, _, p := poolOf(t, segment.Targets{Reserve: 1}, noMax, 10, nil)
+	if err := p.Adopt(3, segment.Reserve); err != nil {
+		t.Fatalf("Adopt(3, Reserve): %v", err)
+	}
+	p.Start()
+	defer p.Stop()
+
+	id, err := p.TakeReserveAbove(5)
+	if err != nil || id <= 10 {
+		t.Fatalf("TakeReserveAbove(5) over a reserve holding only spare 3 = %d, %v, want a spare made above the seed 10", id, err)
+	}
+	if got, err := p.Take(segment.Reserve); err != nil || got != 3 {
+		t.Fatalf("Take(Reserve) after the floored take = %d, %v, want the skipped spare 3 still ready", got, err)
+	}
+}

@@ -77,15 +77,17 @@ type Deps struct {
 	// emptying, the same refusal as Liveness's.
 	Retire func(id core.SegmentID, reason segment.Reason) (segment.Retirement, error)
 
-	// DrawReserve hands back one ready spare of the pool's repack reserve,
-	// the one class an open's copies draw on: the journal the open built
+	// DrawReserve hands back one spare of the pool's repack reserve whose id
+	// is above floor, the one class an open's copies draw on — a ready one
+	// that clears the floor, else one made above every id the directory
+	// held, the ready ones below it left in the pool: the journal the open built
 	// answers it with its pool's own take of that class, so the emptying
 	// draws on the pool the assembled journal runs rather than a list
 	// recovery keeps for itself. Its error — the pool's refusal when no
 	// spare of the class is ready and none can be made, or the wait's word
 	// for why the refill stopped — is the open's when it answers a draw. Nil
 	// is no emptying, the same refusal as Liveness's.
-	DrawReserve func() (core.SegmentID, error)
+	DrawReserve func(floor core.SegmentID) (core.SegmentID, error)
 
 	// EndDeferral ends one deferred loss whose record the emptying copied
 	// into its target: the durability layer the open built holds the

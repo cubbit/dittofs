@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -367,6 +368,57 @@ func (p *Pool) Take(c Class) (core.SegmentID, error) {
 		// The take popped the spare off the ready list above, its class saw
 		// it go, and the ledger that cannot find it answers for the rest:
 		// the pool and the ledger both hold no spare the other lost.
+		return 0, fmt.Errorf("segment: the pool took spare %d: %w", uint64(id), err)
+	}
+	return id, nil
+}
+
+// TakeReserveAbove returns a spare of the repack reserve whose id is above
+// floor, into the set as the segment a copy writes: the oldest ready one that
+// clears it, the ready ones below it left in place, else — when the class
+// holds only spares below the floor — one the Maker makes now, whose id is
+// above every id the directory held. A class with no ready spare answers the
+// spare refusal Take gives, the caller's to wait on; a floor of zero is Take
+// of the reserve.
+//
+// decision: a spare below the floor is skipped, never taken, and never
+// returned: it stays ready in its class for the next take that needs no
+// floor, so nothing is lost or handed out twice. The spare made in its
+// place costs one cap past the reserve's target until a later take spends
+// the low one — the price of a copy that must outrank the copy it replaces.
+// A make the maximum refuses answers its refusal, so the copy is never
+// placed low. Overturned by a rebuild that verifies payloads, which would
+// let a copy below its twin win.
+func (p *Pool) TakeReserveAbove(floor core.SegmentID) (core.SegmentID, error) {
+	defer p.Kick()
+
+	p.mu.Lock()
+	if p.stopped {
+		p.mu.Unlock()
+		return 0, core.ErrClosed
+	}
+	if !p.started || len(p.ready[Reserve]) == 0 {
+		p.mu.Unlock()
+		return 0, &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
+	}
+	var id core.SegmentID
+	for i, r := range p.ready[Reserve] {
+		if r > floor {
+			id = r
+			p.ready[Reserve] = slices.Delete(p.ready[Reserve], i, i+1)
+			break
+		}
+	}
+	p.mu.Unlock()
+
+	if id == 0 {
+		made, err := p.m.Make()
+		if err != nil {
+			return 0, err
+		}
+		id = made
+	}
+	if err := p.m.set.Take(id); err != nil {
 		return 0, fmt.Errorf("segment: the pool took spare %d: %w", uint64(id), err)
 	}
 	return id, nil

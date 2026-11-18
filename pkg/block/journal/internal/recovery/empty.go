@@ -240,11 +240,10 @@ type emptying struct {
 
 	// freed holds the takes a durable unlink released, in the order they were
 	// freed; a copy draws the first one above its id floor (drawAbove). A
-	// freed take is the emptying's own spare alone, exactly the shape a freed
-	// successor would reach the running pool through once the pool's
-	// open-time wiring exists; until then the pool
-	// learns nothing of it, as it learns nothing of the spares the spares
-	// phase adopted.
+	// freed take is the emptying's own spare alone: the pool adopts the
+	// spares the spares phase re-adopted, before it starts, but a take freed
+	// here comes after the start and never reaches it — an undrawn one
+	// stays a ledger row the next open re-adopts.
 	freed []core.SegmentID
 
 	// carried keys every aside record this run already copied into a sealed
@@ -385,9 +384,9 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			// open serves it and retires the stale duplicate as unheld; the
 			// duplicate lasts one open.
 			//
-			// Hazard: once the pool adopts the spares an open re-adopts, the
-			// reserve can hand out one whose old id sits below the twin, and
-			// a copy into it loses to the twin at the next open the same way.
+			// The pool's reserve holds the spares an open re-adopts, whose
+			// old ids can sit below the twin; the draw passes the twin as its
+			// floor, so the reserve skips them and hands one above it.
 			//
 			// Withdrawn when the walk verifies payloads or the open records a
 			// rotten placement, so a restart cannot serve the twin again.
@@ -733,7 +732,9 @@ func (e *emptying) finish(ctx context.Context, id core.SegmentID, target core.Se
 // drawAbove hands the copier one spare the copy may take whose id is above
 // floor: the first take a durable unlink freed that clears it, the others
 // left for later copies, else the pool's own repack reserve through the
-// closure the open wired, whose ids are above every id the directory held.
+// closure the open wired, handed the same floor: its ready spares include the
+// ones the open re-adopted under their old ids, so it skips those below the
+// floor and makes one above every id the directory held when none clears it.
 // floor is zero for a copy that carries nothing in a twin's place.
 //
 // decision: a copy lands above every copy it replaces. The rule: the rebuild
@@ -742,9 +743,10 @@ func (e *emptying) finish(ctx context.Context, id core.SegmentID, target core.Se
 // above the twin and must stay held until the older copies are gone, or the
 // next open serves the twin again. The hazard: a freed take
 // below the floor would hold the only verifying copy under the twin, which
-// the next open serves rotten; so such a take is skipped, never drawn. When
-// every freed take is below the floor and the pool's reserve is empty, the
-// draw answers the pool's spare refusal, which the copier returns as the pool
+// the next open serves rotten; so such a take, or a reserve spare, is skipped,
+// never drawn. When every freed take is below the floor and the pool's
+// reserve is empty, or no spare above it can be made, the draw answers the
+// pool's spare refusal, which the copier returns as the pool
 // gave it: the open fails, the ended segment stands, and the copy is never
 // placed low. Withdrawn when the rebuild verifies payloads, or the open
 // records a rotten placement so a restart cannot serve it again.
@@ -755,7 +757,7 @@ func (e *emptying) drawAbove(floor core.SegmentID) (core.SegmentID, error) {
 			return id, nil
 		}
 	}
-	return e.deps.DrawReserve()
+	return e.deps.DrawReserve(floor)
 }
 
 // freedTakes answers the takes a durable unlink of predecessor freed, in id

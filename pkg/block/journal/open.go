@@ -397,8 +397,8 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			// retirement itself decides and refills the pool behind itself.
 			recoveryDeps.Liveness = c.Liveness()
 			recoveryDeps.Retire = c.Retire
-			recoveryDeps.DrawReserve = func() (core.SegmentID, error) {
-				return c.TakeReserve(ctx)
+			recoveryDeps.DrawReserve = func(floor core.SegmentID) (core.SegmentID, error) {
+				return c.TakeReserve(ctx, floor)
 			}
 			recoveryDeps.EndDeferral = func(seg core.SegmentID, l durability.Loss) bool {
 				ended := c.Durability().EndDeferral(seg, l)
