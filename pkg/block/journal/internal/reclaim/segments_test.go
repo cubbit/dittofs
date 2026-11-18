@@ -145,6 +145,54 @@ func TestSegmentRows_AgreeWithAWalk(t *testing.T) {
 	}
 }
 
+// TestSegmentRows_SplitWriteRepacks plants writes until the segment cap splits
+// one, then repacks the file's segments whole: a split record holds only the
+// bytes its placement placed, so its pieces must name the sub-extents the way
+// the writer's path publishes them — a repack that stitches a full-extent
+// piece against a partial record's payload reads past it.
+func TestSegmentRows_SplitWriteRepacks(t *testing.T) {
+	f := newCopyFixture(t)
+	file := copyFile(9)
+	const want = 17 * 4096
+	var planted []core.SegmentID
+	for i := range 17 {
+		v, err := f.counters.Draw()
+		if err != nil {
+			t.Fatalf("Draw: %v", err)
+		}
+		rec, _ := f.plantAt(t, copyTag, file, core.Extent{Off: int64(i) * 4096, Len: 4096}, make([]byte, 4096), 0, v)
+		if !slices.Contains(planted, rec.Segment) {
+			planted = append(planted, rec.Segment)
+		}
+	}
+	f.sealSource(t, file)
+	// The repacks run until the core's worker retires every segment the
+	// planted writes landed in, the split record's among them, so the whole
+	// file's content has been copied and repointed. Polling the rows, one
+	// repack per round, with the fixture's own wait as the backstop.
+	for deadline := time.Now().Add(copyWait); ; {
+		var left []core.SegmentID
+		for _, row := range f.core.Segments() {
+			if !row.Retired && slices.Contains(planted, row.ID) {
+				left = append(left, row.ID)
+			}
+		}
+		if len(left) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the segments %v of the split writes are still not retired after %v of repacks, want them copied and retired by the core's worker", left, copyWait)
+		}
+		if _, err := f.core.Repack(t.Context(), 2*copySegCap, reclaim.Scope{}); err != nil {
+			t.Fatalf("Repack: %v", err)
+		}
+		f.waitSpares(t)
+	}
+	if st := f.core.Stats(); st.HeldBytes != want {
+		t.Fatalf("after the repacks the journal holds %d bytes, want the %d planted", st.HeldBytes, want)
+	}
+}
+
 // TestSegmentRows_SuspectAndClear reads a segment's record through the unread
 // set under a read fault: the row reports the segment suspect with the range
 // that failed, and reports neither once the range reads.
