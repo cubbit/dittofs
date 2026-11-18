@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   table marks as no failure no longer ends a compound or fails the related
   requests of a chain after it.
 
+- **Held requests, and a 30 s deadline on every attempt.** Each request runs
+  under a 30 s deadline from its arrival, its waits for reply memory and a
+  replay copy included. Where the protocol holds, a request still in the
+  service after 1 s, or answered a delay, gets an interim reply and is retried
+  on a 10 ms to 1 s backoff until its hold's bound, keeping no goroutine or
+  reply buffer between attempts; a cancel or a closed connection ends it.
+
 ### Changed
 
 - **The journal's open proves its unproven tail on the device.** A seal marker
