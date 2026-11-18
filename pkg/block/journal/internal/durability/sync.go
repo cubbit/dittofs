@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sync"
@@ -1050,12 +1051,16 @@ type cand struct {
 // work is a caller's targets on one stream. cands is kept beside the targets
 // rather than reduced from them because the targets name one record per file
 // per segment, and a file's records in older segments are waited on through
-// their seals.
+// their seals. failLost asks check to answer, as an error, the failure of a
+// window that dropped one of the caller's targets: the wait a repack copy
+// takes, whose record never comes back, unlike a re-appended header-only
+// record. The mark settle sets still tells the file's calls.
 type work struct {
-	st      *stream
-	ids     []core.FileID
-	targets []target
-	cands   []cand
+	st       *stream
+	ids      []core.FileID
+	targets  []target
+	cands    []cand
+	failLost bool
 }
 
 // pending reports whether the record at loc is in a pending window, or still in
@@ -1342,6 +1347,54 @@ func (d *Durability) WaitDurable(at segment.Location) error {
 	return d.await(context.Background(), ws, false)
 }
 
+// WaitCopy waits for one repack copy's place to become durable, as WaitDurable
+// does, except on a failed window: once the window that failed it has settled
+// and the copy is out of it, the copy is dead — the layer re-appends a
+// header-only record but never a content one, and the copy's bytes live on in
+// its source until a pass repoints them — so the wait answers the window's
+// own error instead of waiting for a durability that will not come. The
+// failure has already been marked to the copy's file, whose next Sync reports
+// it, and the wait takes no mark itself (settle). The caller holds no file's
+// append domain, as for WaitDurable.
+func (d *Durability) WaitCopy(at segment.Location) error {
+	var ws []work
+	for _, st := range d.snapshot() {
+		st.mu.Lock()
+		if now := st.followLocked(at); now != at {
+			// The copy moved behind a failed window whose resolution
+			// finished before this wait began: the place the caller holds
+			// is dead all the same, so the wait answers the failure rather
+			// than follow the re-append the caller cannot name.
+			err := st.movedCopyErrorLocked(at, now)
+			st.mu.Unlock()
+			return err
+		}
+		ok := st.pending(at)
+		st.mu.Unlock()
+		if ok {
+			ws = append(ws, work{st: st, targets: []target{{loc: at}}, failLost: true})
+		}
+	}
+	return d.await(context.Background(), ws, false)
+}
+
+// movedCopyErrorLocked returns the failure a record's move out of at answers
+// a copy wait with: the segment's recorded window failure while the window's
+// resolution has not ended with it, the stream's last recorded failure once
+// it has, and, the day neither names it, the move itself. The caller holds
+// mu. A record moves only out of a failed window — the copy wait reads the
+// move as the failure it is (D8) — so a caller that never sees a failure
+// here never had a copy to wait for.
+func (st *stream) movedCopyErrorLocked(at, now segment.Location) error {
+	if err, kept := st.failed[at.Segment]; kept {
+		return err
+	}
+	if f := st.lastFail.Load(); f != nil {
+		return f.Err
+	}
+	return fmt.Errorf("durability: the record placed at %+v moved to %+v behind its failed window", at, now)
+}
+
 func (d *Durability) snapshot() []*stream {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -1452,7 +1505,7 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 		wait := d.changes()
 		pending, failing := false, false
 		for _, w := range ws {
-			p, f, found, err := w.st.check(w.ids, w.targets, w.cands, failFast)
+			p, f, found, err := w.st.check(w.ids, w.targets, w.cands, failFast, w.failLost)
 			if found != nil {
 				// Every stream owes the call its marks, and a mark left on one
 				// stream would be told to the file's next Sync again: the rest
@@ -1622,7 +1675,7 @@ func (st *stream) undoingLocked(ids []core.FileID) bool {
 //
 // The wait's candidates cs are re-resolved under the same lock, while the
 // stream's move table still names the records that re-appended; see cand.
-func (st *stream) check(ids []core.FileID, targets []target, cs []cand, failFast bool) (pending, failing bool, found *owedFailure, err error) {
+func (st *stream) check(ids []core.FileID, targets []target, cs []cand, failFast, failLost bool) (pending, failing bool, found *owedFailure, err error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.resolveCandsLocked(cs)
@@ -1659,12 +1712,25 @@ func (st *stream) check(ids []core.FileID, targets []target, cs []cand, failFast
 	for _, t := range targets {
 		// A record re-appended since the call began is found where it is now.
 		loc := st.followLocked(t.loc)
+		if failLost && loc != t.loc {
+			// A copy wait reads the move as the failure it is: a record moves
+			// only out of a failed window, resolved by its re-append, and the
+			// pass that waits for its copy must abandon the unit, never
+			// publish its pieces at a place whose window failed.
+			return false, false, owed, st.movedCopyErrorLocked(t.loc, loc)
+		}
 		if l, lost := st.lost[loc]; lost {
 			if l.undone {
 				// A header-only record the read-only journal undid fails every
 				// Sync and WaitDurable that waits on it.
 				refused = l.err
 				continue
+			}
+			if failLost {
+				// A copy wait asks for the failure: the record itself is the
+				// wait's whole concern, it is dead, and the mark settle set
+				// answers the file's callers.
+				return false, false, owed, l.err
 			}
 			if !failFast {
 				// A durability wait on a failed record ends with the

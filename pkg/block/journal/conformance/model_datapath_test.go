@@ -89,13 +89,14 @@ const (
 // 0xffff decodes as the region at the end of the largest file, which the
 // generated draws reach; any other offset beyond 16 bits has no encoding,
 // and none is drawn. A short input is a short sequence, never an error, and
-// bytes past the step cap are ignored.
-func decodeDataPathSteps(data []byte) []model.Step {
+// bytes past the step cap are ignored. The operations are drawn from ops,
+// the set the caller names.
+func decodeSteps(data []byte, ops []model.Op) []model.Step {
 	var steps []model.Step
 	for ; len(data) >= fuzzStepBytes && len(steps) < maxFuzzSteps; data = data[fuzzStepBytes:] {
 		d := data[:fuzzStepBytes]
 		s := model.Step{
-			Op:    model.DataPathOps[int(d[0])%len(model.DataPathOps)],
+			Op:    ops[int(d[0])%len(ops)],
 			Share: int(d[1] % 2), // a share past the two would not run
 			File:  int(d[2] % 4), // nor a file past the four
 			Pick:  d[3],
@@ -116,6 +117,14 @@ func decodeDataPathSteps(data []byte) []model.Step {
 // in model.DataPathOps first, an offset beyond 16 bits as the far-window
 // byte pair the decoder widens by the step's length.
 func encodeDataPathSteps(steps []model.Step) []byte {
+	return encodeSteps(steps, model.DataPathOps)
+}
+
+// encodeSteps writes steps as a fuzz input of the form decodeSteps reads
+// over ops: one byte per step field, the operation's place in ops first, an
+// offset beyond 16 bits as the far-window byte pair the decoder widens by
+// the step's length.
+func encodeSteps(steps []model.Step, ops []model.Op) []byte {
 	out := make([]byte, 0, len(steps)*fuzzStepBytes)
 	for _, s := range steps {
 		off := s.Off
@@ -123,7 +132,7 @@ func encodeDataPathSteps(steps []model.Step) []byte {
 			off = math.MaxUint16
 		}
 		out = append(out,
-			byte(slices.Index(model.DataPathOps, s.Op)),
+			byte(slices.Index(ops, s.Op)),
 			byte(s.Share), byte(s.File), s.Pick, s.Byte,
 			byte(off), byte(off>>8), byte(s.Len), byte(s.Len>>8))
 	}
@@ -150,6 +159,6 @@ func FuzzModelDataPath(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		prof.Watch(t, prof.Options{})
 		open, _ := journaltest.DataPathTargets(t)
-		model.CheckDataPath(t, "fuzz.txt", decodeDataPathSteps(data), open, "decoded from the fuzz input")
+		model.CheckDataPath(t, "fuzz.txt", decodeSteps(data, model.DataPathOps), open, "decoded from the fuzz input")
 	})
 }

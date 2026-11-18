@@ -40,6 +40,13 @@ const (
 // no offload needs to report content first.
 var DataPathOps = []Op{OpWrite, OpRead, OpFill, OpStaleFill, OpTruncate, OpDeallocate, OpDelete, OpSettle}
 
+// RepackOps is the operation set a repack sequence draws from: the data
+// path's calls, a repack pass among them, and the restarts around both — no
+// offload and no release, whose machinery the caller drives and these
+// sequences do not model. A crash sits among the draws beside the pass so
+// the comparison also checks what a reopen rebuilds from a pass's copies.
+var RepackOps = []Op{OpWrite, OpSync, OpRead, OpFill, OpStaleFill, OpTruncate, OpDeallocate, OpDelete, OpSettle, OpRepack, OpCrash, OpReopen}
+
 // Generate draws n steps from seed. The same seed draws the same steps.
 //
 // Extents are mostly small and near the start of the file, so writes overlap

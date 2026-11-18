@@ -6,13 +6,16 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
@@ -551,5 +554,333 @@ func TestPassSpanAndCounters(t *testing.T) {
 	}
 	if got := p.f.core.Stats().Counters.RepackedBytes; got != uint64(len(payload)) {
 		t.Fatalf("RepackedBytes after the pass = %d, want %d: the same bytes the span named", got, len(payload))
+	}
+}
+
+// passHeldEntries returns every held index entry of file, straight from the
+// index the pass repoints.
+func passHeldEntries(t *testing.T, f *copyFixture, file core.FileID) []index.Entry {
+	t.Helper()
+
+	var out []index.Entry
+	for id, es := range f.ix.InspectAll() {
+		if id != file {
+			continue
+		}
+		for _, e := range es {
+			if e.Kind == index.EntryHeld {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
+}
+
+// TestPassAHeldCopySyncPublishesNothing runs a pass whose copies' sync is
+// held at the seam and checks the index while it is: no held entry of the
+// file names a copy — every one still names the planted source record — and
+// the source is neither retired nor freed. Nothing is published before its
+// copy is durable (R36); once the sync completes the pass repoints the file
+// in one index step and retires the source.
+func TestPassAHeldCopySyncPublishesNothing(t *testing.T) {
+	p := newPassFixture(t)
+	file := copyFile(6)
+	payload := bytes.Repeat([]byte("held-copy!"), 24)
+	rec, _, _ := p.f.plant(t, copyTag, file, payload, 0)
+	src := rec.Segment
+	p.f.sealSource(t, file)
+	// The stream keeps an active target so the copies append without a roll
+	// and the pool makes nothing behind the pass: the first sync the seam
+	// can hold is the pass's own.
+	p.retainActivity(t, p.f.core.Streams().IndexFor(file), file)
+
+	hold := p.f.seam.Hold(t, kit.OpSync, "*")
+	done := p.goRepack(context.Background(), copySegCap*8, src)
+	reachHold(t, hold)
+
+	held := passHeldEntries(t, p.f, file)
+	if len(held) == 0 {
+		t.Fatal("the file holds no held entries after its write, want the planted record")
+	}
+	for _, e := range held {
+		if e.Record != rec {
+			t.Fatalf("while the copies' sync was held a held entry of the file named record %+v, want the planted source record %+v: nothing is published before its copy is durable", e.Record, rec)
+		}
+	}
+	if p.setGone(src) {
+		t.Fatal("the source left the set while its copies' sync was held, want it claimed and unreclaimed")
+	}
+	if gain := p.freedGain(0); gain != 0 {
+		t.Fatalf("the retirer freed %d while the copies' sync was held, want nothing handed over", gain)
+	}
+
+	hold.Release()
+	r := awaitRepack(t, done)
+	if r.err != nil {
+		t.Fatalf("Repack over the held sync once released: %v", r.err)
+	}
+	if r.freed <= 0 {
+		t.Fatalf("Repack freed %d, want the source retired once its copies were durable", r.freed)
+	}
+	held = passHeldEntries(t, p.f, file)
+	if len(held) == 0 {
+		t.Fatal("the file holds no held entries after the pass, want the copies")
+	}
+	for _, e := range held {
+		if e.Record == rec {
+			t.Fatalf("after the pass a held entry still names the source record %+v, want the copy the pass repointed to", rec)
+		}
+	}
+	if got := p.readAll(t, file, 0, int64(len(payload))); !bytes.Equal(got, payload) {
+		t.Fatal("the file does not read back whole after the pass")
+	}
+}
+
+// TestPassAReaderNeverMissesARepointedExtent loops a reader over the file's
+// extents while a pass copies it: every read returns the written bytes with
+// nothing missing — the old or the new location, never neither — and the two
+// goroutines run under the race detector, so an unindexed window between the
+// copy's append and the repoint shows as a missed read (R37, R40). The
+// reader stops once the pass has answered, and a pass that never reclaims
+// under a continuous reader runs out of that answer's bounded wait (R48).
+func TestPassAReaderNeverMissesARepointedExtent(t *testing.T) {
+	p := newPassFixture(t)
+	file := copyFile(14)
+	const n, pieceLen, patLen = 3, 512, 9
+	payload := bytes.Repeat([]byte("race-run!"), n*pieceLen/patLen+1)[:n*pieceLen]
+	// One run of several adjacent records, so the pass's repoint moves
+	// several pieces of the file in one index step.
+	v, err := p.f.counters.Draw()
+	if err != nil {
+		t.Fatalf("the run's version: %v", err)
+	}
+	rec, _ := p.f.plantAt(t, copyTag, file, core.Extent{Len: pieceLen}, payload[:pieceLen], 0, v)
+	for i := 1; i < n; i++ {
+		p.f.plantAt(t, copyTag, file, core.Extent{Off: int64(i) * pieceLen, Len: pieceLen}, payload[i*pieceLen:(i+1)*pieceLen], 0, v)
+	}
+	src := rec.Segment
+	p.f.sealSource(t, file)
+	p.retainActivity(t, p.f.core.Streams().IndexFor(file), file)
+	h := p.theShare(t)
+
+	// The pass is parked at its copies' sync, so the reader proves its reads
+	// against the source's bytes first, and continues across the repoint the
+	// release lets land. Its stop signal is its own channel: the pass's
+	// single answer is awaited below.
+	hold := p.f.seam.Hold(t, kit.OpSync, "*")
+	done := p.goRepack(context.Background(), copySegCap*8, src)
+	reachHold(t, hold)
+	stopped := make(chan struct{})
+	var reads atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stopped:
+				return
+			default:
+			}
+			buf := make([]byte, len(payload))
+			read, missing, _, _, err := p.f.core.ReadAt(context.Background(), h, file, 0, buf)
+			if err != nil {
+				t.Errorf("ReadAt under the pass: %v", err)
+				return
+			}
+			if int64(read) != int64(len(payload)) || len(missing) != 0 {
+				t.Errorf("ReadAt under the pass read %d of %d bytes, missing %+v: a read must see the old or the new location, never neither", read, len(payload), missing)
+				return
+			}
+			if !bytes.Equal(buf, payload) {
+				t.Error("ReadAt under the pass returned other bytes than were written")
+				return
+			}
+			reads.Add(1)
+		}
+	}()
+	// The reader turns at least once while the pass is parked: a read that
+	// must straddle the repoint starts from inside the hold. Polling the
+	// read count with the copy family's wait as the backstop is bounded.
+	for n := 0; reads.Load() == 0; n++ {
+		if n > int(copyWait/time.Millisecond) {
+			t.Fatal("the reader did not read within the wait while the pass was parked, want at least one read before the release")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	hold.Release()
+	r := awaitRepack(t, done)
+	close(stopped)
+	wg.Wait()
+	if r.err != nil {
+		t.Fatalf("Repack under the looping reader: %v", r.err)
+	}
+	if r.freed <= 0 {
+		t.Fatalf("Repack under the looping reader freed %d, want the unit to complete within the reader's run (R48)", r.freed)
+	}
+	if !p.setGone(src) {
+		t.Fatal("the source is still in the set, want it retired under the reader")
+	}
+	if got := p.readAll(t, file, 0, int64(len(payload))); !bytes.Equal(got, payload) {
+		t.Fatal("the file does not read back whole after the pass")
+	}
+}
+
+// TestPassAbandonsItsUnitOnAFailedCopyWindow runs a pass whose copies' sync
+// fails at the seam: the unit is abandoned whole — nothing repointed, the
+// source not retired, freed nothing, the error returned — and the file still
+// reads whole from its original record, so a later pass finds the extents
+// where the abandoned one left them (D8, Review Focus 1).
+func TestPassAbandonsItsUnitOnAFailedCopyWindow(t *testing.T) {
+	p := newPassFixture(t)
+	file := copyFile(13)
+	payload := bytes.Repeat([]byte("abandoned-window-copy!"), 8)
+	rec, _, _ := p.f.plant(t, copyTag, file, payload, 0)
+	src := rec.Segment
+	p.f.sealSource(t, file)
+	// The stream keeps a live active target, as the held-sync walks need.
+	p.retainActivity(t, p.f.core.Streams().IndexFor(file), file)
+
+	// Every sync onto every segment file fails, so whichever segment holds
+	// the copies when the pass reaches them — the stream may have rolled
+	// under the re-append that an earlier failure of the durability worker's
+	// own bounded timer resolved — answers the window the pass waits on
+	// with its failure. The pool's refills sync their own temporary names,
+	// and the pass's next run comes after the fault is cleared.
+	boom := errors.New("the copies' window fails")
+	if err := p.f.seam.Schedule(kit.Failing(kit.OpSync, "*.seg", 0, boom)); err != nil {
+		t.Fatalf("scheduling the failing sync: %v", err)
+	}
+	r := awaitRepack(t, p.goRepack(context.Background(), copySegCap*8, src))
+	if r.err == nil || !strings.Contains(r.err.Error(), boom.Error()) {
+		t.Fatalf("Repack over a failed copy window = %v, want the window's own error", r.err)
+	}
+	if r.freed != 0 {
+		t.Fatalf("Repack over a failed copy window freed %d, want nothing retired", r.freed)
+	}
+	if p.setGone(src) {
+		t.Fatal("the abandoned unit's source left the set, want the abandoned unit to retire nothing")
+	}
+	held := passHeldEntries(t, p.f, file)
+	if len(held) == 0 {
+		t.Fatal("the file holds no held entries after the abandoned window, want the planted record")
+	}
+	for _, e := range held {
+		if e.Record != rec {
+			t.Fatalf("after the abandoned window a held entry names record %+v, want the planted source record %+v: nothing is repointed", e.Record, rec)
+		}
+	}
+	if got := p.readAll(t, file, 0, int64(len(payload))); !bytes.Equal(got, payload) {
+		t.Fatal("the file does not read back whole after the abandoned window")
+	}
+	// A later pass still finds the extents: the abandon cost its copies
+	// alone, so the source answers a selection again, its pieces whole where
+	// the index holds them. The run that retires it cannot ride this
+	// fixture: a stream whose segments failed in a row stays stopped until
+	// a later open, and the fault that fails the copies' window does not
+	// spare the ones the durability worker's own timer sync leads, so the
+	// stream here is stopped whichever window the pass took.
+	sel := p.f.selector()
+	cands := sel.Select(reclaim.Scope{Segments: []core.SegmentID{src}}, 1)
+	if len(cands) == 0 || cands[0].ID != src {
+		t.Fatalf("the abandoned source answers no candidate for a later pass (got %+v), want the abandon to cost its copies alone", cands)
+	}
+	sel.Done(cands[0].ID)
+}
+
+// TestPassFreedWaitsForTheRetiresDirSync holds the retire's directory sync
+// at the seam while its unit reclaims a source: the pass has not returned,
+// the storage in use has not moved and nothing is freed until that sync
+// completes — then freed equals the storage the retirer returned and the
+// storage in use falls by it, never before (R38). A read of another file
+// completes while the directory sync is held, for reclamation holds nothing
+// a reader of another segment waits on (R49).
+func TestPassFreedWaitsForTheRetiresDirSync(t *testing.T) {
+	p := newPassFixture(t)
+	fa, _ := passFilesOnDistinctStreams(p.f)
+	payload := []byte("the write whose retirement's directory sync holds the freed")
+	src := p.plantSealed(t, fa, payload)
+	p.retainActivity(t, p.f.core.Streams().IndexFor(fa), fa)
+	// The filler record of the stream's active segment is the other file the
+	// held reclamation must not stop a read of.
+	var other core.FileID
+	var otherOff int64 = 1 << 20
+	for b := byte(1); b != 0; b++ {
+		if f := copyFile(b); f != fa && p.f.core.Streams().IndexFor(f) == p.f.core.Streams().IndexFor(fa) {
+			other = f
+			p.f.plantAt(t, copyTag, other, core.Extent{Off: otherOff, Len: 48}, []byte("the other file's bytes, read under the held sync"), 0, core.Version{Counter: 7})
+			break
+		}
+	}
+	if other == (core.FileID{}) {
+		t.Fatal("no second file on the source's stream to read under the held sync")
+	}
+	p.f.waitSpares(t)
+
+	inUse := func() int64 {
+		s := p.f.core.Stats()
+		return s.UsedBytes - int64(s.Spares)*copySegCap
+	}
+	before := inUse()
+	freedBefore := p.f.core.Stats().Counters.FreedBytes
+
+	hold := p.f.seam.Hold(t, kit.OpSyncDir, "*")
+	done := p.goRepack(context.Background(), copySegCap*8, src)
+	reachHold(t, hold)
+	select {
+	case r := <-done:
+		t.Fatalf("the pass returned (freed %d, err %v) before the retire's directory sync completed", r.freed, r.err)
+	default:
+	}
+	if got := inUse(); got != before {
+		t.Fatalf("the storage in use moved %d → %d while the retire's directory sync was held, want it to fall only once the unlink is durable", before, got)
+	}
+	if gain := p.freedGain(freedBefore); gain != 0 {
+		t.Fatalf("the retirer freed %d while its directory sync was held, want the freed to be counted only once the unlink is durable", gain)
+	}
+	// The other file's extent reads to its end while the directory sync
+	// stands held: a reader of another segment waits on nothing the
+	// reclamation holds. The bounded wait is the assertion.
+	otherRead := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 48)
+		read, missing, _, _, err := p.f.core.ReadAt(context.Background(), p.theShare(t), other, otherOff, buf)
+		if err != nil || int64(read) != 48 || len(missing) != 0 {
+			t.Errorf("the other file's read under the held directory sync: read %d, missing %+v, err %v", read, missing, err)
+			otherRead <- nil
+			return
+		}
+		otherRead <- buf
+	}()
+	var read []byte
+	select {
+	case read = <-otherRead:
+	case <-time.After(copyWait):
+		t.Fatal("the other file's read did not return while the retire's directory sync was held, want a reader of another segment to wait on nothing the reclamation holds")
+	}
+	if read == nil {
+		t.Fatal("the other file's read failed under the held directory sync")
+	}
+
+	hold.Release()
+	r := awaitRepack(t, done)
+	if r.err != nil {
+		t.Fatalf("Repack over the held directory sync once released: %v", r.err)
+	}
+	if r.freed <= 0 {
+		t.Fatalf("Repack freed %d, want the source's retirement", r.freed)
+	}
+	if gain := p.freedGain(freedBefore); int64(gain) != r.freed {
+		t.Fatalf("the retirer freed %d, want the %d the pass returned", gain, r.freed)
+	}
+	// The pool's refill behind the recycled-or-unlinked storage settles
+	// before the accounting is read.
+	p.f.waitSpares(t)
+	if got, want := inUse(), before-r.freed; got != want {
+		t.Fatalf("the storage in use after the pass = %d, want %d: the %d before less the %d freed, and no sooner than the freed", got, want, before, r.freed)
+	}
+	srcread := p.readAll(t, fa, 0, int64(len(payload)))
+	if !bytes.Equal(srcread, payload) {
+		t.Fatal("the repacked file does not read back whole after the pass")
 	}
 }

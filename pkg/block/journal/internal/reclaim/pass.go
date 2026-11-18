@@ -12,10 +12,15 @@ import (
 )
 
 // Durable waits for one record's place to become durable: the durability
-// layer's own WaitDurable, which starts a sync for a record that has none and
-// follows a re-appended record to its new place.
+// layer's own waiters. WaitDurable starts a sync for a record that has none
+// and follows a re-appended record to its new place, so it serves the carry's
+// header-only records, whose failed window re-appends them. WaitCopy serves
+// a copy instead: a content record's window failure does not re-append it,
+// so the wait answers the failure the window settled with (D8) rather than
+// wait for a durability that will not come.
 type Durable interface {
 	WaitDurable(at segment.Location) error
+	WaitCopy(at segment.Location) error
 }
 
 // Retirer is the retirement executor a pass hands its sources to, one at a
@@ -216,7 +221,7 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 	// copies, its carried records and the deferred loss records its carry
 	// appended — is waited for before one index entry moves.
 	for _, cp := range res.Copies {
-		if werr := p.wait.WaitDurable(cp.Loc); werr != nil {
+		if werr := p.wait.WaitCopy(cp.Loc); werr != nil {
 			return 0, 0, false, p.abandon(seg, werr)
 		}
 	}

@@ -132,6 +132,20 @@ func TestRFC1A_CrashMidRepack(t *testing.T) {
 		write(t, h, id, 0, p)
 		syncFile(t, h, id)
 		seg := heldEntry(t, f, id).Location.Segment
+		// The 256 KiB write sits in a segment of sixteen times its size, so
+		// only the idle sealer seals it: the source must be sealed before the
+		// pass runs, for a segment a pass selects is one no appends reach. The
+		// seal is waited on the marker in the segment's own bytes — the
+		// per-segment inspection that would name it is not served yet, and a
+		// journal-wide sealed counter would answer from another leg's crash
+		// as soon as the reopen seals the copy's segment.
+		f.Advance(2 * journaltest.IdleSealAge)
+		name := segmentName(seg)
+		from := indexedEnd(t, "the crash mid-repack", f, seg)
+		eventually(t, "the written segment was not sealed once idle", func() bool {
+			_, ok := sealMarkerAt(t, f, name, seg, from)
+			return ok
+		})
 
 		// The pass copies the record and syncs it, and only then reclaims
 		// the source. Its reclamation is held at the source's unlink-or-
