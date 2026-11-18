@@ -422,29 +422,38 @@ func readOf(res testproto.Result) (eof bool, data []byte) {
 	return res.Body[0] == 1, res.Body[1:]
 }
 
-// The record cap a compound's Echo members pass, whose hooks ignore their
-// room, refuses the compound before any member runs, counted reply_too_big;
-// at the cap it runs, its payload intact. The reply pool's quarter holds
-// both, so the cap alone refuses.
+// The record cap a compound's members pass, the Echo's hook ignoring its
+// room, refuses the compound before any member runs, counted reply_too_big:
+// the Create after the Echo makes no file. At the cap it runs, its payload
+// intact and the file made. The reply pool's quarter holds both, so the cap
+// alone refuses.
 func TestTheRecordCapRefusesACompoundPastIt(t *testing.T) {
 	m := metrics.New("v", "c")
 	s := newServed(t, 64<<20, adapter.Deps{Metrics: m})
 	record, _ := testproto.New(adapter.Deps{}).Framer().MaxRecord()
+	// Each empty Echo adds a 12-byte result head to the reply and fewer bytes
+	// to the request, which the record cap also bounds, so the reply passes
+	// the cap while the request, the root's handle in it, does not.
+	of := func(payload []byte, name string) []testproto.Msg {
+		empty := testproto.Msg{Op: testproto.OpEcho}
+		return []testproto.Msg{{Op: testproto.OpPutFH, Handle: s.root}, {Op: testproto.OpEcho, Payload: payload},
+			empty, empty, empty, empty, {Op: testproto.OpCreate, Name: name}}
+	}
 	// The compound's ReplyLen, its header, its head with a 4-byte tag and
-	// one result's head, takes 68, and the Echo's result head 12.
-	at := record - 68 - 12
-	s.compound(1, testproto.Msg{Op: testproto.OpEcho, Payload: make([]byte, at+1)})
+	// one result's head, takes 68, and the seven results' heads 12 each.
+	at := record - 68 - 7*12
+	s.compound(1, of(make([]byte, at+1), "a")...)
 	r := s.read()
-	if hd, rs, err := testproto.Results(r.Body); r.Status != testproto.StatusReplyTooBig || err != nil || !headIs(hd, testproto.StatusReplyTooBig, tagOf(1)) || len(rs) != 0 {
-		t.Errorf("a compound one byte past the record cap is answered %d, head %d with %d results (%v); want the too-big status and no results", r.Status, hd.Status, len(rs), err)
+	if hd, rs, err := testproto.Results(r.Body); r.Status != testproto.StatusReplyTooBig || err != nil || !headIs(hd, testproto.StatusReplyTooBig, tagOf(1)) || len(rs) != 0 || s.creates() != 0 {
+		t.Errorf("a compound one byte past the record cap is answered %d, head %d with %d results (%v), %d files made; want the too-big status, no results and no file", r.Status, hd.Status, len(rs), err, s.creates())
 	}
 	if got, _ := scrape(t, m); got["adapter_refusals_total{protocol="+testproto.Name+",stage=reply_too_big}"] != 1 {
 		t.Errorf("the refusal past the record cap counted %v under reply_too_big, want 1", got["adapter_refusals_total{protocol="+testproto.Name+",stage=reply_too_big}"])
 	}
 	payload := bytes.Repeat([]byte("ab"), at/2)
-	s.compound(2, testproto.Msg{Op: testproto.OpEcho, Payload: payload})
-	if st, rs := s.resultsWithOps(); st != testproto.StatusOK || len(rs) != 1 || !bytes.Equal(rs[0].Body, payload) {
-		t.Errorf("a compound at the record cap is answered %d with %d results; want its payload of %d bytes back intact", st, len(rs), len(payload))
+	s.compound(2, of(payload, "b")...)
+	if st, rs := s.resultsWithOps(); st != testproto.StatusOK || len(rs) != 7 || !bytes.Equal(rs[1].Body, payload) || s.creates() != 1 {
+		t.Errorf("a compound at the record cap is answered %d with %d results, %d files made; want its payload of %d bytes back intact and one file", st, len(rs), s.creates(), len(payload))
 	}
 }
 
@@ -479,16 +488,16 @@ func TestACompoundsReadIsShortenedToItsRoom(t *testing.T) {
 
 // A Read whose room, the members after it counted at their bounds, holds no
 // byte refuses the compound before any member runs, though the Read after it
-// could be shortened to make room (RFC 20 §4.3).
+// could be shortened to make room: the Create before it makes no file (RFC 20
+// §4.3).
 func TestAReadLeftNoByteRefusesTheCompound(t *testing.T) {
 	s := newServed(t, 64<<20, adapter.Deps{})
-	fh, _ := s.file("f", 2<<20)
-	s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: fh},
+	s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, testproto.Msg{Op: testproto.OpCreate, Name: "f"},
 		testproto.Msg{Op: testproto.OpRead, Offset: 0, Count: 10},
 		testproto.Msg{Op: testproto.OpRead, Offset: 10, Count: 2 << 20})
 	r := s.read()
-	if hd, rs, err := testproto.Results(r.Body); r.Status != testproto.StatusReplyTooBig || err != nil || !headIs(hd, testproto.StatusReplyTooBig, tagOf(1)) || len(rs) != 0 {
-		t.Errorf("a compound whose first Read has no room is answered %d, head %d with %d results (%v); want the too-big status and no results", r.Status, hd.Status, len(rs), err)
+	if hd, rs, err := testproto.Results(r.Body); r.Status != testproto.StatusReplyTooBig || err != nil || !headIs(hd, testproto.StatusReplyTooBig, tagOf(1)) || len(rs) != 0 || s.creates() != 0 {
+		t.Errorf("a compound whose first Read has no room is answered %d, head %d with %d results (%v), %d files made; want the too-big status, no results and no file", r.Status, hd.Status, len(rs), err, s.creates())
 	}
 }
 
