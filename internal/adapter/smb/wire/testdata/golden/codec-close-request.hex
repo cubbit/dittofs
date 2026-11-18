@@ -1,0 +1,9 @@
+# test/pcap-corpus/smb-sd/reference.pcap, frame 18: the body of a client's
+# SMB2 CLOSE request (MS-SMB2 2.2.15), bytes 68 to 92 of the frame's TCP
+# payload as tshark cuts it (tcp.payload). Positions count from the SMB2
+# header's first byte. Multi-byte fields are little-endian (MS-SMB2 2.2).
+18 00                       # [64,66)  StructureSize 24
+00 00                       # [66,68)  Flags: none
+00 00 00 00                 # [68,72)  Reserved
+32 80 ad b4 00 00 00 00     # [72,88)  FileId: Persistent, then Volatile
+66 44 93 43 00 00 00 00

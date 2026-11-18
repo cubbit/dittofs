@@ -154,7 +154,8 @@ func DecodeHeader(msg []byte, off int) (*Header, error) {
 // written, NextCommand 0 until Chain sets it, SERVER_TO_REDIR set, and the
 // grant written as handed. The choice of grant is the answering stage's,
 // which knows what the request was put off with - 3.3.4.4 grants no credits
-// for a request with an async ID - and this codec writes what it is handed.
+// for a request the server put off with an interim's AsyncId - and this
+// codec writes what it is handed.
 // Of the request's flags it carries the bits replyFlags'
 // decision names - RELATED_OPERATIONS, the priority mask, DFS_OPERATION and
 // REPLAY_OPERATION - and not ASYNC_COMMAND, whose reply form belongs to the

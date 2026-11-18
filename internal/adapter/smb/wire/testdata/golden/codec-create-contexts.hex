@@ -1,0 +1,56 @@
+# The body of an SMB2 CREATE request (MS-SMB2 2.2.13) for a.txt with three
+# create contexts (MS-SMB2 2.2.13.2), written by hand: DH2Q and AlSi, whose
+# data has a struct, and MxAc, whose data has none and is kept as bytes. Each
+# context's offsets count from its own first byte, its data 8-byte aligned,
+# and Next steps to the next context, 0 on the last. Positions count from the
+# SMB2 header's first byte, as the request's offsets do. Multi-byte fields are
+# little-endian (MS-SMB2 2.2).
+39 00                       # [64,66)   StructureSize 57
+00                          # [66]      SecurityFlags 0
+00                          # [67]      RequestedOplockLevel 0: none
+02 00 00 00                 # [68,72)   ImpersonationLevel 2: Impersonation
+00 00 00 00 00 00 00 00     # [72,80)   SmbCreateFlags 0
+00 00 00 00 00 00 00 00     # [80,88)   Reserved
+89 00 12 00                 # [88,92)   DesiredAccess 0x00120089: FILE_GENERIC_READ
+80 00 00 00                 # [92,96)   FileAttributes 0x80: NORMAL
+07 00 00 00                 # [96,100)  ShareAccess 7: READ, WRITE, DELETE
+03 00 00 00                 # [100,104) CreateDisposition 3: FILE_OPEN_IF
+40 00 00 00                 # [104,108) CreateOptions 0x40: FILE_NON_DIRECTORY_FILE
+78 00                       # [108,110) NameOffset 120
+0a 00                       # [110,112) NameLength 10
+88 00 00 00                 # [112,116) CreateContextsOffset 136
+78 00 00 00                 # [116,120) CreateContextsLength 120
+61 00 2e 00 74 00 78 00     # [120,130) Buffer: "a.txt" in UTF-16LE
+74 00
+00 00 00 00 00 00           # [130,136) Padding to 8
+38 00 00 00                 # [136,140) Next 56
+10 00                       # [140,142) NameOffset 16
+04 00                       # [142,144) NameLength 4
+00 00                       # [144,146) Reserved
+18 00                       # [146,148) DataOffset 24
+20 00 00 00                 # [148,152) DataLength 32
+44 48 32 51                 # [152,156) Name "DH2Q"
+00 00 00 00                 # [156,160) Padding to 8
+60 ea 00 00                 # [160,164) Timeout 60000 (MS-SMB2 2.2.13.2.11)
+02 00 00 00                 # [164,168) Flags 2: PERSISTENT
+00 00 00 00 00 00 00 00     # [168,176) Reserved
+01 02 03 04 05 06 07 08     # [176,192) CreateGuid
+09 0a 0b 0c 0d 0e 0f 10
+20 00 00 00                 # [192,196) Next 32
+10 00                       # [196,198) NameOffset 16
+04 00                       # [198,200) NameLength 4
+00 00                       # [200,202) Reserved
+18 00                       # [202,204) DataOffset 24
+08 00 00 00                 # [204,208) DataLength 8
+41 6c 53 69                 # [208,212) Name "AlSi"
+00 00 00 00                 # [212,216) Padding to 8
+00 00 10 00 00 00 00 00     # [216,224) AllocationSize 1 MiB (MS-SMB2 2.2.13.2.6)
+00 00 00 00                 # [224,228) Next 0: the last context
+10 00                       # [228,230) NameOffset 16
+04 00                       # [230,232) NameLength 4
+00 00                       # [232,234) Reserved
+18 00                       # [234,236) DataOffset 24
+08 00 00 00                 # [236,240) DataLength 8
+4d 78 41 63                 # [240,244) Name "MxAc"
+00 00 00 00                 # [244,248) Padding to 8
+f2 f5 aa 4a c4 01 dd 01     # [248,256) Data: a Timestamp (MS-SMB2 2.2.13.2.5), kept as bytes
