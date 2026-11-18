@@ -181,6 +181,12 @@ func (framer) MaxRecord() (int, int) { return maxBody, maxFragments }
 // fields out, if core ever releases a record before its request ends.
 type header [headerLen]byte
 
+// stepless is a header refused for its own next step: its Next is one the
+// chain's walk refuses, so the chain ends there (RFC 20 §4.7).
+type stepless struct{ *header }
+
+func (stepless) Next() int { return -1 }
+
 // tagged is a compound request's header once Unwrap has read the tag from
 // its arguments, clear by then: Encode echoes it in the head of a refusal
 // answered with its status alone, and ReplyLen counts it.
@@ -196,6 +202,8 @@ func plain(h core.Header) (*header, bool) {
 	case *header:
 		return h, true
 	case *tagged:
+		return h.header, true
+	case stepless:
 		return h.header, true
 	}
 
@@ -293,7 +301,7 @@ type headerCodec struct{ flow *flow }
 func (headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
 	h, err := headerAt(rec.B, off)
 	if errors.Is(err, errNext) {
-		return h, err
+		return stepless{h}, err
 	}
 	if err != nil {
 		return nil, err

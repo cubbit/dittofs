@@ -313,11 +313,8 @@ func newPipeline(sh *shared, st Stages, l link) *pipeline {
 // connection at its bound is not read; the request runs on a goroutine of its
 // own from there.
 //
-// decision: a record is served by its first message alone. One whose first
-// header names a next, a chain, closes the connection, and one whose next is
-// not a valid step is answered as a decode error and then closes it, since
-// nothing past it can be read. The ceiling: a client that chains is
-// disconnected. Withdraw it when the chain runner serves every member.
+// A record whose first header names a next is a chain, which serveChain
+// takes from there (§4.7).
 //
 // decision: the reader runs a record's first message as far as Admit, so a
 // connection at its bound is not read, and everything after runs on the
@@ -344,16 +341,16 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		return
 	}
 	tr.version, tr.versioned = h.Version(), true
+	if h.Next() != 0 {
+		p.serveChain(tr, rec, h, err)
+		return
+	}
 	if err != nil {
 		// The refusal of a header that failed Decode is not passed to Wrap:
 		// nothing proved the session it names, so a signature under that
 		// session would hand a peer a valid checksum under a key it does not
 		// hold (§5.5).
-		p.refuse(tr, rec, h, stageDecodeHeader, fmt.Errorf("%w: %v", ErrDecode, err), false, h.Next() != 0)
-		return
-	}
-	if h.Next() != 0 {
-		p.drop(tr, rec, errChain)
+		p.refuse(tr, rec, h, stageDecodeHeader, fmt.Errorf("%w: %v", ErrDecode, err), false, false)
 		return
 	}
 	u, err := p.st.Security.Unwrap(h, rec, nil)
@@ -415,9 +412,6 @@ func (p *pipeline) drop(tr *track, rec *resources.Buf, err error) {
 	}
 	p.l.close(err)
 }
-
-// errChain closes a connection whose record chains more than one message.
-var errChain = errors.New("core: a record of more than one message")
 
 // errUnwrapNeither closes a connection whose Unwrap returned no header and
 // no error.
@@ -512,28 +506,81 @@ func (p *pipeline) out(msg *resources.Buf, key uint64) {
 	_ = p.l.out(msg, key, 0)
 }
 
-// run is one admitted request from the replay check to out, on its own
-// goroutine, in §4.7's order. A refusal is mapped by the stages' table until
-// Route returns one, and by that table after.
+// run is one admitted request alone, on its own goroutine, from the replay
+// check to out.
 func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) {
 	defer p.done()
 	defer rec.Release()
+	p.message(tr, rec, h, nil, release, alone{p})
+}
+
+// answerer is where one message's answer goes, and how its reply is
+// reserved: a request alone goes out at once, and a chain's member into its
+// chain's record (§4.7).
+type answerer interface {
+	// reserve takes the reply buffer of n bytes the message's call answers in.
+	reserve(ctx context.Context, n int) (*resources.Buf, error)
+	// status takes the buffer of n bytes a status alone goes out in, or
+	// none once its wait has ended.
+	status(ctx context.Context, n int) *resources.Buf
+	// lookup asks the replay cache for h's reply.
+	lookup(ctx context.Context, h Header) (*resources.Buf, error)
+	// halted says the message is to run no further: its chain stopped, its
+	// connection closed by a split, while it looked up or reserved.
+	halted() bool
+	// answered takes the message's encoded reply, its key and its status.
+	answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, err error)
+	// unanswered ends a message a NoReply row answered.
+	unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func())
+}
+
+// alone answers a request that is no chain's member.
+type alone struct{ p *pipeline }
+
+func (a alone) reserve(ctx context.Context, n int) (*resources.Buf, error) {
+	return a.p.sh.reserveReply(ctx, a.p.l.remote, n)
+}
+
+func (a alone) status(ctx context.Context, n int) *resources.Buf {
+	return a.p.sh.reserveStatus(ctx, a.p.l.remote, n, a.p.l.close)
+}
+
+func (a alone) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
+	return a.p.st.Replay.Lookup(ctx, h)
+}
+
+func (alone) halted() bool { return false }
+
+func (a alone) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, err error) {
+	n := len(reply.B)
+	a.p.send(h, reply, key)
+	a.p.end(tr, true, s, n, err)
+}
+
+func (a alone) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
+	a.p.unanswered(tr, h, tb, reply, err, release)
+}
+
+// message runs one admitted message from the replay check to its answer, in
+// §4.7's order, under prev, the request of the member before a related one,
+// and answers it through a. A refusal is mapped by the stages' table until
+// Route returns one, and by that table after. It returns the message's
+// request, for a related member after it.
+func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Request, release func(), a answerer) *Request {
 	ctx := tr.ctx
-	cached, err := p.st.Replay.Lookup(ctx, h)
+	cached, err := a.lookup(ctx, h)
 	if cached != nil {
 		tr.label.replayHit()
 		tr.cached = true
 		release()
-		n := len(cached.B)
-		p.send(h, cached, 0)
-		p.end(tr, true, 0, n, nil)
-		return
+		a.answered(tr, h, cached, 0, 0, nil)
+		return nil
 	}
 	if err != nil {
 		if p.endedByClose(err) {
 			release()
 			p.end(tr, false, 0, 0, err)
-			return
+			return nil
 		}
 		p.refused(tr, stageReplayCheck)
 	}
@@ -546,7 +593,7 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		inv Invocation
 	)
 	if err == nil {
-		tb, r, err = p.st.Router.Route(h, nil)
+		tb, r, err = p.st.Router.Route(h, prev)
 	}
 	if tb != nil {
 		var serr error
@@ -560,7 +607,7 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		if serr != nil {
 			release()
 			p.drop(tr, nil, serr)
-			return
+			return nil
 		}
 		p.routed(tr, ts, h.Op())
 		errs = tb.Errors
@@ -587,8 +634,16 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 			err = fmt.Errorf("%w: %v", ErrDecode, err)
 			p.refused(tr, stageDecodeArgs)
 		} else if op.Members != nil {
-			p.compound(tr, h, r, tb, op, inv, args[n:], release)
-			return
+			if _, ok := a.(alone); ok {
+				p.compound(tr, h, r, tb, op, inv, args[n:], release)
+				return r
+			}
+			// decision: a compound row reached as a chain's member is
+			// refused not supported: its one reply cannot join the chain's
+			// record, and no protocol chains one (NFSv4 does not chain, and
+			// SMB has no compound row). Overturned if a protocol must.
+			err = fmt.Errorf("%w: a compound row as a chain's member", ErrNotSupported)
+			p.refused(tr, stageRoute)
 		}
 	}
 	var reply *resources.Buf
@@ -597,7 +652,7 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		// reservation can wait as long as the pool stays full. Wait under the
 		// attempt's deadline once the request context lands.
 		start := p.sh.clock.Now()
-		if reply, err = p.sh.reserveReply(ctx, p.l.remote, inv.Bound()+p.st.Header.ReplyLen(h)); err != nil {
+		if reply, err = a.reserve(ctx, inv.Bound()+p.st.Header.ReplyLen(h)); err != nil {
 			if st, ok := reservationStage(err); ok {
 				p.refused(tr, st)
 			}
@@ -605,6 +660,16 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 			r.resolveStart = p.sh.clock.Now()
 			ts.observe(stageReplyWait, r.resolveStart.Sub(start))
 		}
+	}
+	if a.halted() {
+		// Its chain stopped while it looked up or reserved, its connection
+		// closed: it neither calls nor answers.
+		if reply != nil {
+			reply.Release()
+		}
+		release()
+		p.end(tr, false, 0, 0, nil)
+		return r
 	}
 	if err == nil {
 		if err = inv.Resolve(r); err != nil {
@@ -634,14 +699,15 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		tr.ran = true
 		err = ts.chains[op.Code](ctx, r)
 	}
-	p.finish(tr, h, tb, errs, op, inv, reply, err, release)
+	p.finish(tr, h, tb, errs, op, inv, reply, err, release, a)
+	return r
 }
 
 // finish answers a request whose call, or refusal, gave err: its status
 // mapped by errs, encoded into reply or, with none reserved, a status's
-// buffer, stored where its row is cacheable, and sent; or, for a NoReply
-// row, nothing, or an interim where the table holds.
-func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op *Op, inv Invocation, reply *resources.Buf, err error, release func()) {
+// buffer, stored where its row is cacheable, and handed to a; or, for a
+// NoReply row, a's unanswered.
+func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op *Op, inv Invocation, reply *resources.Buf, err error, release func(), a answerer) {
 	ctx := tr.ctx
 	if err != nil && p.endedByClose(err) {
 		if reply != nil {
@@ -663,11 +729,11 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 		s, send = p.mapped(tr, errs, err, op, h.Version(), true)
 	}
 	if !send {
-		p.unanswered(tr, h, tb, reply, err, release)
+		a.unanswered(tr, h, tb, reply, err, release)
 		return
 	}
 	if reply == nil {
-		if reply = p.sh.reserveStatus(ctx, p.l.remote, p.st.Header.ReplyLen(h), p.l.close); reply == nil {
+		if reply = a.status(ctx, p.st.Header.ReplyLen(h)); reply == nil {
 			release()
 			p.end(tr, false, 0, 0, err)
 			return
@@ -688,9 +754,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 	if tb != nil && tb.Holds {
 		key = p.st.Hold.Key(h)
 	}
-	n := len(reply.B)
-	p.send(h, reply, key)
-	p.end(tr, true, s, n, err)
+	a.answered(tr, h, reply, key, s, err)
 }
 
 // track is what the pipeline keeps of one request for its span, its log

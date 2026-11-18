@@ -88,7 +88,11 @@ type Security interface {
 
 // FlowControl admits a request against the connection's slots, credits or cap.
 type FlowControl interface {
-	Admit(ctx context.Context, h Header) (release func(), err error) // slot, credit or cap; the reader waits here
+	// Admit takes a slot, a credit or a place under the cap; the reader waits
+	// here. Under a context already ended it tries once, and where it would
+	// wait answers an error wrapping that context's error, which a chain's
+	// split reads (§4.7).
+	Admit(ctx context.Context, h Header) (release func(), err error)
 }
 
 // ReplayCache answers a retransmission from the reply it cached.
@@ -97,7 +101,9 @@ type ReplayCache interface {
 	// reservation of its size that waits under ctx, as the pipeline's own
 	// reservation does; the pipeline wraps the copy in place and sends it. Or
 	// a sequence error, or the reservation's ErrDelay of DelayResources past
-	// ctx's deadline, either mapped by the table; or nil, nil to run.
+	// ctx's deadline, either mapped by the table; or nil, nil to run. Under a
+	// context whose deadline has passed it tries the reservation once, which
+	// a chain asks first (§4.7).
 	Lookup(ctx context.Context, h Header) (*resources.Buf, error)
 	// Store keeps its own clear copy of a cacheable row's encoded reply, taken
 	// before Wrap; the caller's reply is then wrapped in place.

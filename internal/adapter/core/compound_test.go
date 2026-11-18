@@ -175,6 +175,7 @@ type served struct {
 	svc    *memory.Service
 	faults *vfstest.FaultService
 	root   vfs.Handle
+	proto  core.Protocol // the server's protocol, for another connection
 }
 
 func newServed(t *testing.T, reply int64, d adapter.Deps) *served {
@@ -587,9 +588,11 @@ func laxRow(steps *[]int) *core.Op {
 	return &core.Op{Code: 9, Name: "Compound", Versions: one, Members: members, MaxMembers: 8}
 }
 
-// The walk over any bytes ends, reads each member's code strictly forward
-// and inside them, and refuses a step that is not with the walk's own
-// errors.
+// The walks over any bytes end: a compound's reads each member's code
+// strictly forward and inside them, and refuses a step that is not with the
+// walk's own errors; a chain's, served through a lax codec, reads each header
+// strictly forward and inside the record, and closes on a bad step with
+// ErrDecode.
 func FuzzRecordWalk(f *testing.F) {
 	for _, seed := range [][]byte{
 		{2, 0, 2, 1, 0, 1, 2, 1, 0},
@@ -603,7 +606,16 @@ func FuzzRecordWalk(f *testing.F) {
 	} {
 		f.Add(seed)
 	}
+	fr := testproto.New(adapter.Deps{}).Framer()
+	e := func(id uint64) testproto.Msg { return testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: id} }
+	three, offs := chainOf(fr, e(1), e(2), e(3))
+	for _, next := range []int{0, offs[1], offs[1] - 1, len(three), 1 << 31} {
+		b := slices.Clone(three)
+		binary.BigEndian.PutUint32(b[offs[1]:], uint32(next))
+		f.Add(b)
+	}
 	f.Fuzz(func(t *testing.T, b []byte) {
+		walkChain(t, b)
 		if len(b) == 0 {
 			return
 		}

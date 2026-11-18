@@ -149,6 +149,9 @@ func Watches(ctx context.Context) int {
 // NewCapped is the FlowControl a connection gets where its protocol has none.
 func NewCapped() FlowControl { return newCapped() }
 
+// NewCappedN is that FlowControl with n places.
+func NewCappedN(n int) FlowControl { return make(capped, n) }
+
 var ErrReplyWait = errReplyWait
 
 func (sh *shared) ReserveReply(ctx context.Context, key netip.Addr, bound int) (*resources.Buf, error) {
@@ -181,7 +184,6 @@ type Pipeline = pipeline
 
 var (
 	WithDefaults     = withDefaults
-	ErrChain         = errChain
 	ErrUnwrapNeither = errUnwrapNeither
 	ErrNoHold        = errNoHold
 )
@@ -243,6 +245,13 @@ func Sampled(id trace.TraceID, ratio float64) bool { return sampled(id, sampleBo
 func Members(row *Op, inv Invocation, rest []byte, v Version) (n, at int, err error) {
 	ms, at, _, err := members(row, inv, rest, v)
 	return len(ms), at, err
+}
+
+// Later is the headers a chain's interim is handed after the member at off,
+// whose header is h, read through st's HeaderCodec.
+func Later(st Stages, rec *resources.Buf, off int, h Header) []Header {
+	c := &chain{p: &pipeline{st: st}, rec: rec, cur: entry{off: off, h: h}}
+	return c.later(nil)
 }
 
 // Judge is judge over the members rest holds, decoded as the runner does.

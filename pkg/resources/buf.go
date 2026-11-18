@@ -233,6 +233,51 @@ func (b *Buf) borrow(delta int32, released string) (was int32) {
 	}
 }
 
+// Join is a chain's record (RFC 20 §4.7): an empty buffer with room for n
+// bytes that takes over every reservation of bufs, with no new charge and no
+// wait, and carries them to its last Release. The caller appends each
+// member's bytes, with what goes between them, and releases the member,
+// which then returns bytes only. n is at most the members' charges summed,
+// and they share one budget and one key; Join panics otherwise. The record's
+// bytes are in no class: allocated at n and dropped at its last Release. A
+// Join of one buffer returns it unchanged.
+//
+// From Join until the caller releases them, the members hold their bytes
+// with no reservation, their record having taken it: resident memory passes
+// what the pool counts by at most the record's length, the one exception to
+// reserving before holding (RFC 24 §2.5).
+//
+// decision: the record takes over its members' reservations rather than
+// reserving its own, which would wait on the reply pool while the chain
+// holds reply reservations (RFC 24 §2.6), or, tried once, could be refused
+// with the replies already encoded. Reserve the record with TryGet, keeping
+// each member's reservation until its release, if chains are seen taking
+// resident memory past the ceiling.
+func Join(n int, bufs ...*Buf) *Buf {
+	var res Reservation
+	for i, b := range bufs {
+		if i > 0 && (b.res.b != res.b || b.res.w != res.w || b.res.key != res.key) {
+			panic("resources: Join of buffers charged to another budget or key")
+		}
+		res.b, res.w, res.key, res.n = b.res.b, b.res.w, b.res.key, res.n+b.res.n
+	}
+	if int64(n) > res.n {
+		panic(fmt.Sprintf("resources: Join of room for %d bytes past its members' charges of %d", n, res.n))
+	}
+	if len(bufs) == 1 {
+		return bufs[0]
+	}
+	var pool *BufPool
+	for _, b := range bufs {
+		b.res = Reservation{}
+		if pool == nil {
+			pool = b.pool
+		}
+	}
+	mem := make([]byte, n)
+	return &Buf{B: mem[:0], mem: mem, pool: pool, class: unpooled, res: res}
+}
+
 // Recharge moves b's whole charge to a reservation from to: it reserves the
 // charge from to, and only then releases b's old reservation and keeps the
 // new one, so the charge is never absent. Refused, it returns the error and

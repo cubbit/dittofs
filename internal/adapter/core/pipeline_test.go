@@ -320,6 +320,7 @@ type seam struct {
 	budgets *resources.Budgets
 	recv    *resources.BufPool
 	reply   *resources.BufPool
+	sh      *core.Shared
 	p       *core.Pipeline
 	client  *testproto.Client
 	closed  chan error
@@ -343,22 +344,49 @@ func newSeamWith(t *testing.T, proto core.Protocol, reply int64, d adapter.Deps)
 	return newSeamSet(t, proto, reply, d, nil)
 }
 
-// newSeamSet is newSeamWith on a connection that loaded set at accept.
+// newSeamSet is newSeamWith on a connection that loaded set at accept. Its
+// budgets are d's where the test gives them, so a stage built on d draws on
+// the server's, and otherwise its own, of reply bytes for replies.
 func newSeamSet(t *testing.T, proto core.Protocol, reply int64, d adapter.Deps, set settings.Settings) *seam {
 	t.Helper()
+	budgets := d.Budgets
+	if budgets == nil {
+		budgets = &resources.Budgets{Receive: resources.NewWaitBudget("receive", 64<<20), Reply: resources.NewWaitBudget("reply", reply)}
+	}
 	s := &seam{
 		t:       t,
-		budgets: &resources.Budgets{Receive: resources.NewWaitBudget("receive", 64<<20), Reply: resources.NewWaitBudget("reply", reply)},
+		budgets: budgets,
 		closed:  make(chan error, 8),
 		f:       proto.Framer(),
 	}
 	s.recv = resources.NewBufPool(s.budgets.Receive)
 	s.reply = resources.NewBufPool(s.budgets.Reply)
+	s.sh = core.NewShared(d, s.reply)
+	s.connect(proto, peer, set)
+	return s
+}
+
+// another is a second connection of s's server, from remote: its own
+// pipeline and client over s's budgets and shared state.
+func (s *seam) another(proto core.Protocol, remote netip.Addr) *seam {
+	s.t.Helper()
+	o := &seam{t: s.t, budgets: s.budgets, recv: s.recv, reply: s.reply, sh: s.sh, closed: make(chan error, 8), f: proto.Framer()}
+	o.connect(proto, remote, nil)
+	return o
+}
+
+// connect accepts s's connection from remote on proto's stages.
+func (s *seam) connect(proto core.Protocol, remote netip.Addr, set settings.Settings) {
+	s.t.Helper()
 	st, err := core.WithDefaults(proto.NewConn(nil))
 	if err != nil {
-		t.Fatal(err)
+		s.t.Fatal(err)
 	}
 	out, stop, conn, _ := newRecorder(s.f)
+	// A reply that never comes fails the read an hour on, by the bubble's
+	// clock where the test runs in one, rather than holding the test to its
+	// timeout.
+	_ = conn.SetReadDeadline(time.Now().Add(time.Hour))
 	s.stop, s.client = stop, testproto.NewClient(conn)
 	sent := func(msg *resources.Buf, key, before uint64) error {
 		if s.sent != nil {
@@ -366,15 +394,14 @@ func newSeamSet(t *testing.T, proto core.Protocol, reply int64, d adapter.Deps, 
 		}
 		return out(msg, key, before)
 	}
-	s.p = core.NewPipeline(core.NewShared(d, s.reply), st, context.Background(), peer, set, sent, func(err error) {
+	s.p = core.NewPipeline(s.sh, st, context.Background(), remote, set, sent, func(err error) {
 		select {
 		case s.closed <- err:
 		default:
 		}
 		s.p.Close()
 	})
-	t.Cleanup(s.finish)
-	return s
+	s.t.Cleanup(s.finish)
 }
 
 // finish closes the pipeline, waits for what runs, and stops the recorder; a
@@ -877,21 +904,6 @@ func TestAConnectionHasOneStatusWait(t *testing.T) {
 		}
 		if r := s.budgets.Receive.Reserved(); r != 0 {
 			t.Errorf("after a close during the wait, wait returned with %d bytes of the record held", r)
-		}
-	})
-}
-
-// A record that chains a second message closes the connection, answered
-// nothing, until every member of a chain is served.
-func TestAChainedRecordClosesTheConnection(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		s := newSeam(t, testproto.New(adapter.Deps{}).Bare(), 1<<20)
-		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2})
-		if err := <-s.closed; !errors.Is(err, core.ErrChain) {
-			t.Errorf("a chained record closed the connection with %v", err)
-		}
-		if !s.sentNothing() {
-			t.Error("a chained record was answered")
 		}
 	})
 }
