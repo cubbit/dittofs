@@ -39,7 +39,7 @@ retiring a key keeps existing blocks readable while new writes move onto
 the new key. There is no re-wrap tooling, so a retired key must stay
 configured for as long as any block references it — dropping it makes
 those blocks permanently unreadable. See
-[`keyprovider`](keyprovider/) for the full behaviour.
+[`keyprovider`](../../../keyprovider/) for the full behaviour.
 
 ## Wire format
 

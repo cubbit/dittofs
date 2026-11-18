@@ -13,8 +13,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/middleware"
 	"github.com/cubbit/dittofs/pkg/block/middleware/compression"
 	"github.com/cubbit/dittofs/pkg/block/middleware/encryption"
-	"github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
 	remotememory "github.com/cubbit/dittofs/pkg/block/remote/memory"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 )
 
 // compressibleBody is a highly redundant payload: any working compressor

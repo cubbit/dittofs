@@ -14,7 +14,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block"
 	"github.com/cubbit/dittofs/pkg/block/middleware"
-	"github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 )
 
 // Transform is the encryption stage of a middleware pipeline. It AEAD-seals a

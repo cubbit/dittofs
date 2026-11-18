@@ -239,7 +239,8 @@ func TestIntegrationRunsTheKMIPTests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const keyProvider = "github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
+
+	const keyProvider = "github.com/cubbit/dittofs/pkg/keyprovider"
 	if !slices.Contains(pkgs, keyProvider) {
 		t.Errorf("integration's packages leave out %s: %q", keyProvider, pkgs)
 	}
