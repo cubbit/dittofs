@@ -367,6 +367,30 @@ func testAllocSkipsHeldIDs(t *testing.T, kvo Opener) {
 	}
 }
 
+// A block of uids an operator assigned at the start of the range, as an
+// import writes them, is passed in a few reads: an allocation probing them
+// one read each would outlast a remote store's transaction age.
+func testAllocPastHeldBlock(t *testing.T, kvo Opener) {
+	const held = 3000
+	r := entity.IDRange{Lo: 10_000, Hi: 60_000}
+
+	s, c := newStore(t, kvo)
+	allocUser(t, s, "first", r)
+	empty := c.TakeReads()
+
+	s, c = newStore(t, kvo)
+	for n := r.Lo; n < r.Lo+held; n++ {
+		must(t, errOf(s.ControlPlane().PutUser(ctx, user(fmt.Sprint("op", n), uid(fmt.Sprint(n))), 0, entity.Alloc{})))
+	}
+	c.TakeReads()
+	if got, _ := allocUser(t, s, "alice", r); got != fmt.Sprint(r.Lo+held) {
+		t.Errorf("uid allocated past %d held uids: %s, want %d", held, got, r.Lo+held)
+	}
+	if got := c.TakeReads() - empty; got > held/100 {
+		t.Errorf("reads past %d held uids: %d more than an allocation in an empty range, want at most %d", held, got, held/100)
+	}
+}
+
 // A change of range applies to the next allocation and moves no ID already
 // given; a range with no ID left refuses the write, which writes nothing.
 func testAllocRange(t *testing.T, kvo Opener) {

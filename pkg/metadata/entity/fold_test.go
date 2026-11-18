@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // The upcase table is part of the store format: this hash pins it, so a
@@ -23,6 +25,29 @@ func TestUpcaseTablePinned(t *testing.T) {
 }
 
 const upcaseTableHash = "ef3afc2ef80306f33ab22613219fa1ad074ce73db455a448775bf471139f5a9a"
+
+// The principal fold is part of the store format too, keying every user and
+// group name row: this hash of every rune it changes pins it, so a
+// regenerated table, or a fold that reads the toolchain's Unicode tables
+// again, fails here instead of moving stored name keys.
+func TestPrincipalFoldPinned(t *testing.T) {
+	h := sha256.New()
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if !utf8.ValidRune(r) {
+			continue
+		}
+		if f := []rune(FoldPrincipalName(string(r))); len(f) != 1 || f[0] != r {
+			if err := binary.Write(h, binary.BigEndian, append([]rune{r}, f...)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if got, want := hex.EncodeToString(h.Sum(nil)), principalFoldHash; got != want {
+		t.Fatalf("principal fold hash %s, want %s: a changed fold is a new store format, re-key the name rows", got, want)
+	}
+}
+
+const principalFoldHash = "c57ca6770bf92b0c56447f133229d847285189276709ee3f143f3db71a2e81b9"
 
 // RFC 7 §12.1's case-insensitive name cases.
 func TestFoldUpcase(t *testing.T) {

@@ -53,9 +53,16 @@ func (c controlTx) allocate(kind entity.PrincipalKind, ids entity.ProtocolIDs, e
 			return entity.ProtocolID{Scheme: scheme, Value: strconv.FormatUint(uint64(n), 10)}, nil
 		}
 	}
+	var install *entity.Installation // read once, not once per RID draw probes
 	rid := func(n uint32) (entity.ProtocolID, error) {
-		in, err := c.Installation()
-		return domainSID(in.ID, n), err
+		if install == nil {
+			in, err := c.Installation()
+			if err != nil {
+				return entity.ProtocolID{}, err
+			}
+			install = &in
+		}
+		return domainSID(install.ID, n), nil
 	}
 	for _, d := range []struct {
 		on      bool
@@ -83,31 +90,57 @@ func (c controlTx) allocate(kind entity.PrincipalKind, ids entity.ProtocolIDs, e
 	return ids, nil
 }
 
+// drawBatch is how many IDs draw probes with one read.
+const drawBatch = 256
+
 // draw gives the next ID of counter: the counter's value plus one, or lo if
 // that is higher, skipping one whose spelling a principal holds, and
 // 65534 where reserved. The counter is raised to it, so it is never given
 // again, even once its principal is deleted. Every read is tracked, so a
 // create racing for the same ID, or a write claiming it, conflicts.
+//
+// It probes drawBatch IDs per read, so a block of IDs an operator assigned
+// inside the range, an import's thousands of explicit uids, costs one round
+// trip per drawBatch of them rather than one each. The batch's probes past
+// the ID given are tracked too, so a write claiming one of them conflicts
+// and retries, which costs a retry and no wrong answer.
+//
+// ponytail: a block of held IDs is still walked on every draw until the
+// counter passes it, up to the range's size in reads per draw. Raise the
+// counter past an explicit ID written inside the range when a range holding
+// more than a few hundred thousand of them makes a draw outlast a
+// transaction.
 func (c controlTx) draw(counter byte, lo, hi uint32, reserved bool, spell func(uint32) (entity.ProtocolID, error)) (entity.ProtocolID, error) {
 	key := idKey(counter)
 	mark, err := counterIn(c.tx, key)
 	if err != nil {
 		return entity.ProtocolID{}, err
 	}
-	for n := max(mark+1, uint64(lo)); n <= uint64(hi); n++ {
-		if reserved && n == 65534 {
-			continue
+	for n := max(mark+1, uint64(lo)); n <= uint64(hi); {
+		var ns []uint64
+		var ids []entity.ProtocolID
+		var ks [][]byte
+		for ; n <= uint64(hi) && len(ns) < drawBatch; n++ {
+			if reserved && n == 65534 {
+				continue
+			}
+			id, err := spell(uint32(n))
+			if err != nil {
+				return entity.ProtocolID{}, err
+			}
+			ns, ids, ks = append(ns, n), append(ids, id), append(ks, protocolKey(id))
 		}
-		id, err := spell(uint32(n))
+		if len(ks) == 0 {
+			break
+		}
+		vs, err := c.tx.GetMany(ks)
 		if err != nil {
 			return entity.ProtocolID{}, err
 		}
-		_, held, err := get(c.tx, protocolKey(id))
-		if err != nil {
-			return entity.ProtocolID{}, err
-		}
-		if !held {
-			return id, c.tx.Set(key, encodeCounter(n))
+		for i, v := range vs {
+			if v == nil {
+				return ids[i], c.tx.Set(key, encodeCounter(ns[i]))
+			}
 		}
 	}
 	return entity.ProtocolID{}, &merrs.StoreError{Code: merrs.ErrNoSpace, Message: "no ID left to allocate in the range"}
@@ -146,7 +179,7 @@ func fileSpellings(kind entity.PrincipalKind, ids entity.ProtocolIDs) error {
 	switch {
 	case kind == entity.PrincipalUser && has(entity.SchemeUID) != has(entity.SchemeSID):
 		return merrs.NewInvalidArgumentError("a user holds a uid and a SID, or neither")
-	case kind == entity.PrincipalGroup && !(has(entity.SchemeGID) && has(entity.SchemeSID)):
+	case kind == entity.PrincipalGroup && (!has(entity.SchemeGID) || !has(entity.SchemeSID)):
 		return merrs.NewInvalidArgumentError("a group holds a gid and a SID")
 	}
 	return nil
