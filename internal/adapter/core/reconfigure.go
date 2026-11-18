@@ -46,9 +46,16 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 		return fmt.Errorf("core: reconfigure: %w", adapter.ErrPortChanged)
 	}
 	s.mu.Lock()
-	switch s.state {
+	st := s.state
+	if st == adapter.StateServing && s.stopDone != nil {
+		// A Stop is running: it set its marker under this lock before it
+		// closed a listener, so a Reconfigure reaching it here is refused
+		// as draining, though the state still reads serving until the
+		// loops end their hand-overs (RFC 20 sections 3.4 and 3.6).
+		st = adapter.StateDraining
+	}
+	switch st {
 	case adapter.StateDraining, adapter.StateStopped:
-		st := s.state
 		s.mu.Unlock()
 		return fmt.Errorf("core: reconfigure: the server is %s", st)
 	case adapter.StateConfigured:
@@ -89,11 +96,17 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 		kept = append(kept, b)
 	}
 	s.bound = kept
-	s.mu.Unlock()
+	// The removed sockets close under the lock the settings store and the
+	// bounds sat under, so no other lifecycle call can split a snapshot
+	// change from the closure of what it named. The loop-end and teardown
+	// waits below cannot share it: each loop hands its last connection to
+	// the registry under this lock, and a teardown drops its registration
+	// under it too, so holding it through their waits would deadlock.
 	for _, b := range off {
 		close(b.stopped)
 		_ = b.ln.Close()
 	}
+	s.mu.Unlock()
 	// Each removed loop hands every connection it accepted to the registry
 	// before it ends, so the walk after this wait is complete.
 	for _, b := range off {

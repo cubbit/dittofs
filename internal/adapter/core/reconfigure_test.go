@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -462,4 +463,132 @@ func TestAStoppedServerIsNeverReconfigured(t *testing.T) {
 	if h := srv.Health(); h.State != adapter.StateStopped {
 		t.Errorf("after the refusal the server is %s, want stopped", h.State)
 	}
+}
+
+// gatedHandover is a protocol that stops at its first accepted connection,
+// asking the test before it wires the stages: the accept loop then sits in
+// its hand-over, which parks a Stop between the closure of its sockets and
+// its final registry - the gap a Reconfigure arriving under the Stop must
+// be refused across.
+type gatedHandover struct {
+	core.Protocol
+	atHandover chan struct{}
+	through    chan struct{}
+}
+
+func (p gatedHandover) NewConn(c *core.Conn) core.Stages {
+	if c != nil {
+		p.atHandover <- struct{}{}
+		<-p.through
+	}
+	return p.Protocol.NewConn(c)
+}
+
+// A Reconfigure arriving while a Stop is ending its accept loops is refused
+// as draining, and the server ends stopped with no socket left and no
+// address: a Stop sets its marker under the server's lock before it closes
+// a listener, so a Reconfigure that reaches the server across one meets
+// the refusal, although the state still reads serving until the loops have
+// ended their hand-overs. A Stop a Reconfigure can run alongside takes this
+// test's Reconfigure in its window: it binds what it names, and the
+// refusal's absence, the address left listening and the dial completing
+// each fail it.
+func TestAReconfigureUnderAStopIsRefusedAsDraining(t *testing.T) {
+	needIPv6Loopback(t)
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	gate := gatedHandover{Protocol: testproto.New(adapter.Deps{}), atHandover: make(chan struct{}), through: make(chan struct{})}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, drainOn("127.0.0.1"), core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: gate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	at := testAddr(t, srv)
+	_, _ = clientAt(t, at)
+	<-gate.atHandover // the first accepted connection parks in its hand-over
+
+	// The gate lets go from the cleanup too, so a failure before the flow
+	// reaches it cannot leave the teardown's Stop waiting a hand-over the
+	// test holds.
+	var openGate sync.Once
+	release := func() { openGate.Do(func() { close(gate.through) }) }
+	t.Cleanup(release)
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- srv.Stop(context.Background()) }()
+	waitsFor(t, "the Stop to close the listener", func() bool {
+		c, derr := net.Dial("tcp", at.String())
+		if derr != nil {
+			return true
+		}
+		_ = c.Close()
+		return false
+	})
+	err = srv.Reconfigure(context.Background(), drainOn("127.0.0.1", "::1"))
+	if err == nil || !strings.Contains(err.Error(), "draining") {
+		t.Fatalf("Reconfigure under a Stop: %v, want refused naming draining", err)
+	}
+	release()
+	if err := <-stopped; err != nil {
+		t.Fatalf("the parked Stop: %v", err)
+	}
+	if got := srv.Addrs(); len(got) != 0 {
+		t.Errorf("after the stopped server's refused Reconfigure, Addrs = %v, want none", got)
+	}
+	six := netip.AddrPortFrom(netip.IPv6Loopback(), at.Port())
+	dialRefused(t, six)
+	dialRefused(t, at)
+}
+
+// A Reconfigure that took the lock first finishes what it names: the Stop
+// behind it waits, then closes the socket that Reconfigure bound, and the
+// server ends stopped with every address refusing. A Stop that skips the
+// order, closing below what a Reconfigure under it had already bound, takes
+// the dial that owes to refuse here.
+func TestAStopWaitsThenClosesWhatAReconfigureBound(t *testing.T) {
+	needIPv6Loopback(t)
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	snap := drainOn("127.0.0.1")
+	srv := servingOn(t, b, snap)
+	before := srv.Addrs()
+	inBind := make(chan struct{})
+	throughBind := make(chan struct{})
+	core.SetListen(srv, func(ctx context.Context, network, addr string) (net.Listener, error) {
+		ln, err := net.Listen(network, addr)
+		if err != nil {
+			return nil, err
+		}
+		if strings.Contains(addr, "::1") {
+			inBind <- struct{}{}
+			<-throughBind
+		}
+		return ln, nil
+	})
+
+	reconfigured := make(chan error, 1)
+	go func() { reconfigured <- srv.Reconfigure(context.Background(), drainOn("127.0.0.1", "::1")) }()
+	<-inBind // the Reconfigure holds the lock, inside the address it adds
+
+	var openBind sync.Once
+	through := func() { openBind.Do(func() { close(throughBind) }) }
+	t.Cleanup(through)
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- srv.Stop(context.Background()) }()
+	through()
+	if err := <-reconfigured; err != nil {
+		t.Fatalf("the Reconfigure that held the lock: %v", err)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatalf("the Stop that waited it out: %v", err)
+	}
+	if got := srv.Addrs(); len(got) != 0 {
+		t.Errorf("after the Stop behind the Reconfigure, Addrs = %v, want none", got)
+	}
+	dialRefused(t, before[key("test")][0])
+	dialRefused(t, netip.AddrPortFrom(netip.IPv6Loopback(), before[key("test")][0].Port()))
 }
