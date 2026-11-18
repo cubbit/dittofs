@@ -443,10 +443,10 @@ internal/identity/
   (catches `PrincipalMachine` left out of `principalKinds`, R3); in `entity`, `PrincipalUserPart`
   of `alice`, `ALICE`, `CORP\alice` and `Alice@CORP.EXAMPLE` each equal to
   `FoldPrincipalName("alice")` (catches a form left unstripped or unfolded, D2);
-  `UnnamedPrincipals`, an unnamed user, an unnamed group and a machine each found by its protocol ID while
-  `ControlPlane.Users` lists only the named user and `Groups` nothing (catches a listing over the
-  `U‖` or `G‖` records, which the deferral ledger's "Listing every user or group record" leaves to
-  RFC 23). No test double.
+  `UnnamedPrincipals`, an unnamed user, an unnamed group and a machine each found by its
+  protocol ID while `ControlPlane.Users` lists only the named user and `Groups` nothing (catches
+  a listing over the `U‖` or `G‖` records, which the deferral ledger's "Listing every user or
+  group record" leaves to RFC 23). No test double.
 
 ### T2.2 The ID counters and the domain SID: the allocation behind RFC 23's `Alloc`
 
