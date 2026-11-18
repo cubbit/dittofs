@@ -1143,6 +1143,23 @@ func TestARelatedMemberAfterACancelStartsFromNoRequest(t *testing.T) {
 	})
 }
 
+// A cancel is the member before the next, so a related member after it is
+// not answered the failure of the member before the cancel (§4.3).
+func TestARelatedMemberAfterACancelIsNotFailedByTheMemberBeforeIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		s.serve(
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 180, Session: 7, Tree: 1, Name: "nohandle"},
+			testproto.Msg{Op: testproto.OpCancel, Version: 2, Session: 7, Tree: 1, Target: 9},
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 182, Session: inherited, Tree: 1, Handle: s.root, Related: true},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[0].Status != testproto.StatusNoFH || rs[1].ID != 182 || rs[1].Status != 0 {
+			t.Errorf("the chain is answered %+v, %v: want the Create refused for no handle and the related PutFH after the cancel answered success", rs, err)
+		}
+	})
+}
+
 // A chain admitted after close is not run: no Route, no call, no reply.
 func TestAChainAfterCloseIsNotRun(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
