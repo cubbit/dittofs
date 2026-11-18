@@ -181,19 +181,20 @@ func Bind[Req, Rep any](
 
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
 // each name, lower-cased, lower-case letters, digits and underscores alone,
-// no ErrorRow.Hold unless holds, and, where it holds, a row answering
-// ErrCancelled for every operation and version (one naming neither Ops nor
-// Versions that replies at once with a status other than the fault or
-// success) and no row for it, whatever its Ops or Versions, that holds, sends
-// no reply or answers the fault or success; and, where it holds, the same of
-// a typed row for &vfs.Delay{Cause: vfs.DelayResources}, read among the typed
-// rows alone.
+// and unique once lower-cased (§10.1's op), no ErrorRow.Hold unless holds,
+// and, where it holds, a row answering ErrCancelled for every operation and
+// version (one naming neither Ops nor Versions that replies at once with a
+// status other than the fault or success) and no row for it, whatever its
+// Ops or Versions, that holds, sends no reply or answers the fault or
+// success; and, where it holds, the same of a typed row for
+// &vfs.Delay{Cause: vfs.DelayResources}, read among the typed rows alone.
 //
 // decision: a table that fails a check panics, naming the row, as
 // NewErrorTable does: a table is program text and NewOpTable returns no
 // error. Overturned if a table is ever built from configuration.
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 	t := &OpTable{Ops: make(map[uint32]*Op, len(ops)), Errors: errs, Holds: holds}
+	names := make(map[string]string, len(ops)) // by name lower-cased
 	for _, op := range ops {
 		if prev, dup := t.Ops[op.Code]; dup {
 			panic(fmt.Sprintf("core: op table: %s and %s share code %d", prev.Name, op.Name, op.Code))
@@ -204,6 +205,10 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 		if !labelName(op.Name) {
 			panic(fmt.Sprintf("core: op table: %q, lower-cased, is not lower-case letters, digits and underscores alone", op.Name))
 		}
+		if prev, dup := names[strings.ToLower(op.Name)]; dup {
+			panic(fmt.Sprintf("core: op table: %s and %s are one name once lower-cased", prev, op.Name))
+		}
+		names[strings.ToLower(op.Name)] = op.Name
 		if op.Members != nil && op.MaxMembers <= 0 {
 			panic(fmt.Sprintf("core: op table: %s has members and no MaxMembers", op.Name))
 		}

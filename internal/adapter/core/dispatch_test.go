@@ -24,10 +24,11 @@ type protoCancel struct{}
 func (protoCancel) Error() string        { return "proto: cancelled" }
 func (protoCancel) Is(target error) bool { return target == core.ErrCancelled }
 
-// NewOpTable refuses a table with two rows under one code, a row whose
-// versions run backwards, or a row of its error table that holds when the
-// table does not or that holds and sends no reply, each naming the row; a
-// table that holds takes a row that holds and replies.
+// NewOpTable refuses a table with two rows under one code or two names that
+// are one once lower-cased, a row whose versions run backwards, or a row of
+// its error table that holds when the table does not or that holds and sends
+// no reply, each naming the row; a table that holds takes a row that holds
+// and replies.
 // A table that holds also answers ErrCancelled for every operation and
 // version: one with no row for it naming neither operations nor versions is
 // refused, and so is one with a row for it, whatever it names, that holds,
@@ -86,6 +87,7 @@ func TestNewOpTableChecksItsRows(t *testing.T) {
 		{"a name in another case, lower-cased to a label value", plain, false, []*core.Op{{Code: 7, Name: "Create_Session", Versions: one}}, ""},
 		{"a name with a space", plain, false, []*core.Op{{Code: 7, Name: "Read All", Versions: one}}, "is not lower-case letters, digits and underscores alone"},
 		{"a name that is empty", plain, false, []*core.Op{{Code: 7, Name: "", Versions: one}}, "is not lower-case letters, digits and underscores alone"},
+		{"two names one once lower-cased", plain, false, []*core.Op{{Code: 7, Name: "Read", Versions: one}, {Code: 9, Name: "READ", Versions: one}}, "Read and READ are one name once lower-cased"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := opTablePanic(c.errs, c.holds, c.ops...)
