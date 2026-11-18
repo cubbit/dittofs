@@ -611,7 +611,12 @@ names ([RFC 28 §3.3](rfc-28-journal-format.md#A%20read%20that%20fails%20is%20no
 its device and the rule or the range, and the engine raises `journal_unsuitable`
 or `journal_range_unreadable` and retries the open — every 30 s for unsuitable
 storage, the probe constant of [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write), and every 60 s (proposal) for an
-unread range, which waits on a device rather than a probe. An unread range
+unread range, which waits on a device rather than a probe. A share whose journal
+`Open` refuses at its own recovery, with `ErrOpenRefused` ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) for a cause a retry can
+clear, a lost synced tail or a range that names no record, is left unattached
+the same way, raises `journal_open_refused` and is retried every 30 s; a record
+kind the journal cannot build answers `ErrNotImplemented`, which no retry
+clears, and fails `Start`. An unread range
 also ends when an operator acknowledges it ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)): the retry then
 runs `AcknowledgeUnreadable`, passed the sync marks step 1 read for `Open`, opens the journal, drops what metadata cannot show
 current before step 3 — as a start that finds an acknowledgement running with
@@ -645,8 +650,8 @@ device, gated as below, and raises `journal_lost` in place of
 `journal_unsuitable` or `journal_range_unreadable`. A retried open, or a late attach, that fails for any
 other cause closes what it opened, in reverse, leaves the shares unattached,
 and is retried; `journal_unsuitable` then names that cause. Each retry
-follows the cause its latest open met — unsuitable storage at 30 s, an unread
-range at 60 s, raising that cause's condition and clearing the other — so a
+follows the cause its latest open met — unsuitable storage and a recovery
+refusal at 30 s, an unread range at 60 s, raising that cause's condition and clearing the other — so a
 journal whose cause changes between opens is never held on the wrong one. A recovery import
 whose adopted journal is refused publishes nothing, since it cannot raise the
 tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)).
@@ -3620,6 +3625,10 @@ The engine raises these [RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condi
 open or late attach, the rule or another cause, until the late attach serves, [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)),
 `journal_headroom_short` (journal, while `Stats.HeadroomSparesShort` is above zero, [RFC 1 §6](rfc-1-journal.md#6.%20Capacity)),
 `journal_unreconciled` (share, naming the metadata read that failed, or journal, naming the `Reconciled` refusal or a settling step the headroom refuses, while the metadata reconcile of [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) is retried),
+`journal_open_refused` (journal, naming the directory and the recovery rule the
+open refused, when an open at start, a retried open or a reopen is refused by
+the journal's own recovery for a cause a retry can clear, until an open stops
+refusing, [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)),
 `journal_range_unreadable` (journal, naming the segment and the byte range,
 when an open at start, a retried open or a reopen fails on an unread range
 nothing names or on an unreadable `format`, until the range reads or an operator
