@@ -1,8 +1,10 @@
 package engine_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,7 +107,7 @@ func TestUnreadableRangeConditionNamesTheRanges(t *testing.T) {
 		t.Fatal("journal_range_unreadable was not raised")
 	}
 
-	want := "segment 4 at 4096 for 16 bytes; the device's shares are not attached; the open is retried every 30s"
+	want := "segment 4 at 4096 for 16 bytes; the device's shares are not attached; the open is retried every 1m0s"
 	if c.Detail != want {
 		t.Errorf("the condition's detail = %q, want %q", c.Detail, want)
 	}
@@ -121,18 +123,21 @@ func TestARefusedReopenIsRetriedToTheSameRefusal(t *testing.T) {
 		refusal   func() error
 		cause     error
 		condition string
+		every     time.Duration
 	}{
 		{
 			name:      "a lost synced tail",
 			refusal:   lostTailRefusal,
 			cause:     journal.ErrOpenRefused,
 			condition: "journal_open_refused",
+			every:     retryEvery,
 		},
 		{
 			name:      "an unreadable range",
 			refusal:   unreadableRefusal,
 			cause:     journal.ErrUnreadable,
 			condition: "journal_range_unreadable",
+			every:     2 * retryEvery,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -143,11 +148,11 @@ func TestARefusedReopenIsRetriedToTheSameRefusal(t *testing.T) {
 				t.Fatalf("Start = %v, want nil", err)
 			}
 
-			s.retry(t, retryEvery-time.Second)
+			s.retry(t, tc.every-time.Second)
 
 			for _, id := range []entity.ShareID{s.one.ID, s.two.ID} {
 				if s.refused(id) == nil {
-					t.Fatalf("share %v is attached 29 s after Start, want unattached until the 30th second", id)
+					t.Fatalf("share %v is attached 29 s after Start, want unattached until the interval's last second", id)
 				}
 			}
 
@@ -170,7 +175,7 @@ func TestARefusedReopenIsRetriedToTheSameRefusal(t *testing.T) {
 				t.Errorf("conditions after a second refusal = %+v, want one %s", st.Journals[startDevice].Conditions, tc.condition)
 			}
 
-			s.retry(t, retryEvery)
+			s.retry(t, tc.every)
 			s.attached(t)
 
 			for _, id := range []entity.ShareID{s.one.ID, s.two.ID} {
@@ -206,7 +211,7 @@ func TestRefusalConditionsNameTheirRemedy(t *testing.T) {
 			name:      "an unreadable format file",
 			refusal:   &journal.UnreadableRangesError{Format: true},
 			condition: "journal_range_unreadable",
-			want:      "the format file is unreadable; the device's shares are not attached; the open is retried every 30s",
+			want:      "the format file is unreadable; the device's shares are not attached; the open is retried every 1m0s",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -239,5 +244,54 @@ func TestABareNotImplementedAtOpenFailsStart(t *testing.T) {
 	err := s.start(t)
 	if !errors.Is(err, journal.ErrNotImplemented) {
 		t.Fatalf("Start = %v, want it failed with the open's ErrNotImplemented", err)
+	}
+}
+
+// Each retry follows the cause its open met: a refusal on an unread range is
+// retried at 60 s, so the timer is still armed after 30 s with no second open,
+// while unsuitable storage is retried at 30 s.
+func TestARetryFollowsTheIntervalOfItsCause(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refusal func() error
+		half    bool // the 30 s mark must not fire the retry
+	}{
+		{name: "an unreadable range", refusal: unreadableRefusal, half: true},
+		{name: "unsuitable storage", refusal: unsuitable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+
+			s := newStarter(t, withStartDeps(func(d *engine.Deps) {
+				d.Open = func(context.Context, string, journal.Version, journal.JournalID) (engine.Journal, error) {
+					calls.Add(1)
+
+					return nil, tc.refusal()
+				}
+			}))
+			s.closeAtEnd(t)
+
+			if err := s.start(t); err != nil {
+				t.Fatalf("Start = %v, want nil", err)
+			}
+
+			s.retry(t, retryEvery)
+
+			if tc.half {
+				if got := s.clock.Pending(); got != 1 {
+					t.Fatalf("%d timers pending 30 s after Start, want the 60 s retry still armed", got)
+				}
+
+				if got := calls.Load(); got != 1 {
+					t.Fatalf("%d opens 30 s after Start, want 1: an unread range is not retried at 30 s", got)
+				}
+
+				s.clock.Advance(retryEvery)
+			}
+
+			eventually(t, "the second open", func() bool {
+				return calls.Load() == 2
+			})
+		})
 	}
 }

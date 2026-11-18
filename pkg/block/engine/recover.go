@@ -42,6 +42,10 @@ var (
 // unsuitable storage.
 const unsuitableRetry = 30 * time.Second
 
+// unreadableRetry is the interval of the retried open of a journal refused on
+// an unread range, which waits on a device rather than a probe (RFC 8 §2.5).
+const unreadableRetry = 60 * time.Second
+
 // opened is what start steps 1 and 2 leave for Start to publish: the
 // journal with its version limit, nil when its device was refused; the share
 // table; the shares refused and the conditions raised; and the shards step 2
@@ -169,7 +173,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 
 // retryUnsuitable is the retried open of a journal Start refused — as
 // unsuitable, or with the journal's own refusal at recovery — one goroutine
-// for the journal: every unsuitableRetry it runs
+// for the journal: every retryInterval it runs
 // the start steps again over shares, until the journal attaches or Close
 // cancels it (RFC 8 §2.5). It runs only once Start has published, so a Start
 // that fails leaves none.
@@ -178,7 +182,7 @@ func (e *Engine) retryUnsuitable(shares []Share) {
 
 	for {
 		select {
-		case <-e.d.Clock.After(unsuitableRetry):
+		case <-e.d.Clock.After(e.retryInterval()):
 		case <-e.retrying.ctx.Done():
 			return
 		}
@@ -187,6 +191,22 @@ func (e *Engine) retryUnsuitable(shares []Share) {
 			return
 		}
 	}
+}
+
+// retryInterval is the wait before the next retried open: that of the
+// condition the latest open published, so each retry follows its cause. Any
+// other cause retries at the unsuitable interval.
+func (e *Engine) retryInterval() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for _, c := range e.health.Journals[e.d.Devices[0]].Conditions {
+		if c.Name == conditionJournalRangeUnreadable {
+			return unreadableRetry
+		}
+	}
+
+	return unsuitableRetry
 }
 
 // attachLate is one retried open and, when it succeeds, the late attach: the
@@ -533,7 +553,7 @@ func unreadableCondition(dir string, id journal.JournalID, cause error) *Conditi
 			Name:  dir,
 		},
 		Cause:  cause,
-		Detail: fmt.Sprintf("%s; the device's shares are not attached; the open is retried every %v", ranges, unsuitableRetry),
+		Detail: fmt.Sprintf("%s; the device's shares are not attached; the open is retried every %v", ranges, unreadableRetry),
 	}
 }
 
