@@ -73,13 +73,16 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 		opened[j].loopDone = make(chan struct{})
 	}
 	s.bound = append(s.bound, opened...)
-	for _, b := range opened {
-		// The loop runs before the snapshot changes, so the added address
-		// serves from the moment the settings name it (RFC 20 section 3.6).
-		go s.acceptLoop(b)
-	}
 	s.settings.Store(&next)
 	s.addrs = slices.Clone(next.Common().Addrs)
+	for _, b := range opened {
+		// The loop starts once the snapshot names its address, so a
+		// connection it accepts loads the settings that added it; the socket
+		// is bound already, so a client dialing in between waits in its
+		// backlog and the address serves from the moment the settings name it
+		// (RFC 20 section 3.6).
+		go s.acceptLoop(b)
+	}
 	// A removed address's listeners close after the snapshot changes, so a
 	// moved address is never unserved between the two (RFC 20 section 3.6).
 	off := make([]*bound, 0, len(drop))

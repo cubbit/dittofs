@@ -364,22 +364,25 @@ func TestARemovedAddressClosesItsConnectionsBeforeReconfigureReturns(t *testing.
 }
 
 // While configured Reconfigure binds nothing and replaces the settings Start
-// will bind: adding ::1 leaves the server bound nowhere and configured, and
-// Start then binds what the reconfigured settings name. A bind before Start
-// fails the empty Addrs; a reconfigure that changes nothing Start binds fails
-// the ::1 dial.
+// will bind: moving a server built on 127.0.0.1 at version 1 to ::1 at
+// version 2 leaves it bound nowhere and configured, and Start then binds ::1
+// alone, and a connection there negotiates 2. A bind before Start fails the
+// empty Addrs; a reconfigure that keeps the built settings binds 127.0.0.1
+// and negotiates 1.
 func TestWhileConfiguredReconfigureBindsWhatStartWill(t *testing.T) {
 	needIPv6Loopback(t)
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
-	snap := drainOn("::1")
-	snap.MaxVersion = 2
-	srv, err := core.NewServer(adapter.Deps{Budgets: b}, snap, core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})})
+	built := drainOn("127.0.0.1")
+	built.MaxVersion = 1
+	next := drainOn("::1")
+	next.MaxVersion = 2
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, built, core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})})
 	if err != nil {
 		t.Fatal(err)
 	}
 	stopAtEnd(t, srv)
-	if err := srv.Reconfigure(context.Background(), snap); err != nil {
+	if err := srv.Reconfigure(context.Background(), next); err != nil {
 		t.Fatalf("Reconfigure while configured: %v", err)
 	}
 	if h := srv.Health(); h.State != adapter.StateConfigured {
