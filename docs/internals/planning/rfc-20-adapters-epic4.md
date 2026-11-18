@@ -13,11 +13,11 @@ series, §10.3's close logs, and §9's A10, A11, A14, A19 and A20;
 and the reader's exemption), §3.2
 (receive at frame, records in fragments), §4.4 (connections), §5.1's connection and writer rows,
 §6.1 (goroutines), §9's R3, R6 and R10, §10's closes at accept;
-[RFC 25](../rfcs/rfc-25-observability.md) §3.5 (liveness). Cited, not owned: RFC 20 §4.1 and
-§6.3 (the pipeline and the cap of 64, epic 5's), §6.10 (epic 5's pipeline benchmark),
-[RFC 13](../rfcs/rfc-13-configuration.md) Appendix B (each setting's class), RFC 17 §3's
-`MoveTarget`, and the epic 5 document's D1 (the seam between a connection and its pipeline),
-D2, D9, D23 and D24.
+[RFC 25](../rfcs/rfc-25-observability.md) §3.5 (liveness); [RFC 17](../rfcs/rfc-17-vfs.md)
+§3's `Shares.MoveTarget`, which T4.5b builds. Cited, not owned: RFC 20 §4.1 and §6.3 (the
+pipeline and the cap of 64, epic 5's), §6.10 (epic 5's pipeline benchmark),
+[RFC 13](../rfcs/rfc-13-configuration.md) Appendix B (each setting's class), and the epic 5
+document's D1 (the seam between a connection and its pipeline), D2, D9, D23 and D24.
 **Track:** B.
 **Epic 4 estimate: 14 subtasks, 28.75 man-days.**
 **Depends on:** **S2**: E1's surface (`Server`, `Conn`, `Listener` and `NewServer` with stub
@@ -27,7 +27,7 @@ specification. **E3**, the bodies of `pkg/resources`, merged (#4177, #4178). **E
 (the pipeline's functions the epic 5 document's D1 names, the suite of `out`, `Framer.Frame`,
 `Stages.Errors`) and **T5.9** (`Stages.Protocol`, and the registry's `Spec`, `Counter` and
 `Gauge`), for the subtasks that name them; **T5.4** for T4.5b. **The RFC 20 amendment, #4478**,
-merged, for T4.3. **RFC 17's plan**, for `vfs.Shares.MoveTarget` (T4.5b). **The RFC 20
+merged, for T4.3. **The RFC 20
 amendment #4533**, merged, which settled §9's G1 to G12. **The RFC 20 follow-ups, #4583**, whose
 §6.4 sentence on the accept deadline's own wake D3 and R10 rest on, for T4.2a and T4.7b, and
 whose §4.7 close order and §6.4 check after each deadline write D2 and R15 rest on, for T4.10.
@@ -150,15 +150,15 @@ cited by number and title, and how it applies here or why it does not.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests); [Verifying a change](../../../CLAUDE.md#verifying-a-change)) | all | every test is in `package core_test`, or `package sidecar_test`, and imports no protocol but `testproto`. Connections are real TCP over loopback with real deadlines, short ones where a deadline is the subject, and socket options read back from the accepted socket; where only time decides, a pipe test in a `synctest` bubble. The timers this epic arms run on the server's clock (D3). A setting is asserted on a connection accepted after the change, never on the snapshot. Doubles: `vfstest.Faults` around `memory.New` (kind 3) for `MoveTarget`'s answers; a listener that fails `Accept` on cue (kind 3, T4.2a); a sidecar that fails its `Sync` on cue (kind 3, T4.9). A protocol or a sidecar declared in a test file is an input, not a double |
+| rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests); [Verifying a change](../../../CLAUDE.md#verifying-a-change)) | all | every test is in `package core_test`, or `package sidecar_test`, and imports no protocol but `testproto`. Connections are real TCP over loopback with real deadlines, short ones where a deadline is the subject, and socket options read back from the accepted socket; where only time decides, a pipe test in a `synctest` bubble. The timers this epic arms run on the server's clock (D3). A setting is asserted on a connection accepted after the change, never on the snapshot. Doubles: a fault wrapper declared in the test around `memory.New` (kind 3) for `MoveTarget`'s answers; a listener that fails `Accept` on cue (kind 3, T4.2a); a sidecar that fails its `Sync` on cue (kind 3, T4.9). A protocol or a sidecar declared in a test file is an input, not a double |
 | rule 2, fuzz tests where relevant | T4.10 | the record cut reads a peer's bytes: `FuzzConnection` drives a connection with arbitrary record headers, fragments, `testproto` messages, `Panic` among them, and closes at random points, and holds RFC 24's R3 and R6: no panic, the cap held, nothing reserved past it, every budget at zero after. `testproto`'s `FuzzFrame` gains the fragment bit with T4.3 |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T4.11, T4.2a, T4.7b | T4.11 resolves the connection, close and byte series once per server and records them with an atomic add; `adapter_listener_lost` is a condition (T4.2a) and liveness goes through `Deps.Watch` (T4.7b), both RFC 25 §3's; closes are logged through `Deps.Logger`. No span: RFC 20 §10.2's spans are per request, E5's. Protocol code records nothing |
 | rule 4, leaks and allocations | all loopback and pipe tests | every loopback and pipe test ends with `CheckLeaks` over all four budgets. No gate of this epic's own: the reader's and writer's cost per request is inside E5's T5.10 gate, which runs over loopback on them. A change to the connection code after T5.10 reports that benchmark's allocations and its mutex and block profiles (RFC 20 §6.9) |
 | rule 5, v2 ignores v1 | T4.2a, T4.3, T4.9 | the accept backoff is lifted from develop's `pkg/adapter/base.go`, which RFC 20 Appendix B marks keep; the frame deadline, also keep, is written again as `read_timeout` (T4.3); nothing of v1's sidecar group carries over (D9) |
-| rule 6, nothing deferred is lost | T4.1, T4.6, T4.5b, T4.11 | the ledger rows §1.2 cites; §9 proposes the rows G7 and G8 need, and the close-reasons row leaving the ledger with T4.11 |
+| rule 6, nothing deferred is lost | T4.1, T4.6, T4.5b, T4.11 | the ledger rows §1.2 cites; §9 proposes the rows G7 and G8 need, the close-reasons row leaving the ledger once T4.11 lands, and the `MoveTarget` row once T4.5b lands |
 | rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | all | each decision of §4 leaves the marker it names at its code site. Of RFC 20's notes the rule lists, two are this epic's: `Addrs` live, at `Reconfigure` (T4.6), and no self-probe, at `Health` (T4.7b) |
 | rule 8, a test must be able to fail ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests)) | all | each test in §6 names the change that fails it. The end-to-end specification's `message` follows its first failure (T4.1) until T4.2a turns it green and removes its entry |
-| rule 9, a symbol is exported only if RFC 20's interface uses it | T4.3, T4.6, T4.2b | `core` gains `Framer.BodyLen`'s `last` and `Framer.MaxRecord`, as the amendment #4478 states them, with `core.golden` (T4.3); `pkg/adapter` gains the port sentinel, `ErrPortChanged`, as #4533 named it (G9, T4.6), with `adapter.golden`; `pkg/resources` gains `ConnLimit`, `NewConnLimit`, `Take`, `Release`, `SetLimit`, `ErrConnLimit`, `ErrConnQuarter` and `Budgets.Conns`, as RFC 24 §2.5 states them since #4533 settled G1 (T4.2b), with `resources.golden`. Every other symbol is unexported but the sidecar runner's, internal to the module (D9); G13's reader would add surface only through its amendment |
+| rule 9, a symbol is exported only if RFC 20's interface uses it | T4.3, T4.6, T4.2b, T4.5b | `core` gains `Framer.BodyLen`'s `last` and `Framer.MaxRecord`, as the amendment #4478 states them, with `core.golden` (T4.3); `pkg/adapter` gains the port sentinel, `ErrPortChanged`, as #4533 named it (G9, T4.6), with `adapter.golden`; `pkg/resources` gains `ConnLimit`, `NewConnLimit`, `Take`, `Release`, `SetLimit`, `ErrConnLimit`, `ErrConnQuarter` and `Budgets.Conns`, as RFC 24 §2.5 states them since #4533 settled G1 (T4.2b), with `resources.golden`. `pkg/vfs` gains `Shares.MoveTarget` and `OpMoveTarget`, the method RFC 17 names (T4.5b). Every other symbol is unexported but the sidecar runner's, internal to the module (D9); G13's reader would add surface only through its amendment |
 | rule 10, each subtask creates only what it declares | all | each file lands with its first consumer; `internal/sidecar` lands with its tests, as RFC 20 §2.5 places it, and is driven by E7; no hook in `hooks_test.go` lands before the test that reaches through it |
 
 ## 3. Requirements and invariants
@@ -198,7 +198,7 @@ cited by number and title, and how it applies here or why it does not.
 | R16 | `Conn.Close` is idempotent and never waits for the goroutine that called it, so a handler and the reader may call it | MUST | §4.7 (`Conn.Close`); the epic 5 document's D1 | T4.10 |
 | R17 | Each `Server` builds its own buffer pools, over the receive budget for requests and the reply budget for replies, and hands the reply pool to `newShared`; `Deps` carries no allocator | invariant | §6.8; the epic 5 document's D1 | T4.10 |
 | R18 | A slow client costs only its own connection: a reply it does not read waits in its connection's writer, never in a worker; that connection is not read once its writer is at its bound, and closes past the write deadline | MUST | §6.1, A10 | T4.10, T4.4 |
-| R19 | No wait is entered while holding a reservation later in RFC 24 §2.6's order: the reader waits for receive room and for its writer holding no record, and at flow control holding only the record it has framed, RFC 24 §2.6's one exemption | MUST NOT | RFC 24 §2.6 | T4.10 |
+| R19 | No wait is entered while holding a reservation later in RFC 24 §2.6's order: the reader waits for receive room and for its writer holding no record, and at flow control holding only the record it has framed, the first of RFC 24 §2.6's two exemptions | MUST NOT | RFC 24 §2.6 | T4.10 |
 | R20 | Every goroutine is one RFC 24 §6.1 lists: a connection's reader and writer, an admitted request, a fixed loop per bound socket; none for a waiting reader or a closing connection | MUST NOT | RFC 24 §6.1 | T4.10, T4.2a |
 | R21 | The connection registry is a map under a read-write mutex, never held across a service call | invariant | §6.9, §6.6 | T4.10 |
 | R22 | Every pipeline test ends with every budget at zero; a fuzz of the frame stage with random cancellations and panics asserts the same | test row | RFC 24 §9 R3; §6.8 | T4.10 |
@@ -249,7 +249,7 @@ cited by number and title, and how it applies here or why it does not.
 | --- | --- | --- | --- | --- |
 | R42 | `Reconfigure` refuses the other protocol's shape, any other type, and settings `Validate` refuses; a refusal leaves the adapter as it was | MUST | §3.4 (`Reconfigure`), §3.6 | T4.6 |
 | R43 | `Reconfigure` refuses a changed `port` with `adapter.ErrPortChanged`, comparing that field alone | MUST | §3.4, §3.6 | T4.6 |
-| R44 | `Reconfigure` opens the listeners of an added address, all or none, before the snapshot changes, and closes a removed address's listeners and every connection accepted on them after, returning once those are torn down; the other addresses serve on. While configured it binds nothing and replaces what `Start` will bind; while draining or stopped it is refused | MUST | §3.1 (`Reconfigure`), §3.4, §3.6 | T4.6 |
+| R44 | `Reconfigure` opens the listeners of an added address, all or none, before the snapshot changes, and closes a removed address's listeners and every connection accepted on them after, returning once those are torn down; the other addresses serve on. While configured it binds nothing and replaces what `Start` will bind; while draining or stopped, or once a `Stop` has begun, it is refused | MUST | §3.1 (`Reconfigure`), §3.4, §3.6 | T4.6 |
 | R45 | `settings.NFS`'s `Validate` refuses a TLS mode other than off until `StartTLS`, naming `TLS.Mode`, so `Reconfigure` loads no TLS file (G7); the modes and the loading are the ledger's NFS-over-TLS row's | MUST | §3.6, §5.5 | T4.6 |
 | R46 | `core`'s tests show on `testproto` over the in-memory service that an open connection keeps its settings, a new one gets the new ones, a removed address's connections close, and a bind that fails changes nothing | test row | §3.6 | T4.6 |
 
@@ -408,6 +408,7 @@ internal/adapter/core/
   metrics.go            T4.11: the connection series, beside T5.9's
   pipeline.go           E5's; T4.7a: link's idle; T4.5b: drainErr asks MoveTarget;
                         T4.11: the pipeline's closes made tellable
+  compound.go           E5's; T4.5b: a drained compound asks MoveTarget for each handle it names
   hooks_test.go         each subtask's hooks, with the test that reaches through them
   server_test.go  accept_test.go  conn_test.go  reader_test.go  writer_test.go
   reconfigure_test.go  drain_test.go  tcp_test.go  tcp_linux_test.go  fuzz_test.go
@@ -416,6 +417,7 @@ internal/adapter/core/
 internal/adapter/adaptertest/testproto/
   wire.go  wire_test.go                 T4.3: the fragment flag, MaxRecord (D4)
   conformance_test.go                   T4.3: BodyLen's three results
+  proto.go  proto_test.go               T4.5b: StatusMoved, version 1's Create answering ErrMoved
 internal/adapter/adaptertest/
   budgets.go                            T4.2b: Budgets, the four budgets and a count for a test
 internal/adapter/core/out_test.go       E5's; T4.3: its reader of BodyLen's three results
@@ -430,6 +432,11 @@ internal/adapter/core/testdata/surface/resources.golden T4.2b: ConnLimit, Budget
 internal/sidecar/
   runner.go  runner_test.go             T4.9
   export_test.go                        T4.9: the retry's clock
+pkg/vfs/
+  service.go  service_test.go           T4.5b: Shares.MoveTarget, OpMoveTarget
+  vfstest/null.go  faults.go  mutations.go    T4.5b: MoveTarget, Null's answering none
+internal/vfs/
+  shares.go                             T4.5b: Filesystem's MoveTarget, answering none
 test/adapter/known.yaml                 T4.1: the end-to-end entry's message; T4.2a: removed
 ```
 
@@ -444,7 +451,9 @@ netip.Addr) error`, `(*ConnLimit).Release(addr netip.Addr)`, `(*ConnLimit).SetLi
 name string, a adapter.Adapter) error`, `(*Runner).Reconfigure(ctx, name string, a
 adapter.Adapter, next settings.Settings) error`, `(*Runner).Stop(ctx, name string, a
 adapter.Adapter) error`, `(*Runner).SetEnabled(ctx, sidecar string, on bool) error`,
-`(*Runner).Failed() []string` and `(*Runner).Close()` (T4.9, D9), internal to the module. The unexported surface
+`(*Runner).Failed() []string` and `(*Runner).Close()` (T4.9, D9), internal to the module; in
+`pkg/vfs`, `Shares.MoveTarget(ctx context.Context, c Call, h Handle) (netip.Addr, error)` and
+`OpMoveTarget` (T4.5b). The unexported surface
 inside `core`: `writer` with `out(msg *resources.Buf, key, before uint64) error`, the record
 cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the registry, and
 `link.idle func()` (D8).
@@ -512,7 +521,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 - **Track:** B. **Depends on:** none. The RFC 20 amendment #4478 merged first, since it states
   `BodyLen`'s `last` and `MaxRecord` (rule 9).
 - **Waits for:** nothing: #4533 settled G10 in RFC 20 §6.4 and RFC 24 §3.2, the frame deadline
-  stopped while the reader waits for receive room.
+  running again in full once receive room is granted, nothing reading the connection while
+  the reader waits for it.
 - **Covers:** R23, R24, R25, R26, R27, R28, R29 (its named case).
 - **Deliverables:** in `protocol.go`, `Framer.BodyLen`'s three results and `MaxRecord`, with
   `core.golden`; `testproto`'s framer with D4's flag and `MaxRecord`, its vectors and
@@ -789,7 +799,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   loaded, since `Validate` refuses every mode that would need one; an added address's listeners bound all or none before the snapshot swap and
   their accept loops started; a removed address's listeners and their connections closed after,
   and torn down before it returns; while configured, the settings `Start` will bind replaced
-  with nothing bound; while draining or stopped, refused naming the state (G5);
+  with nothing bound; while draining or stopped, or once a `Stop` has begun, refused naming
+  the state (G5);
   the `decision:` RFC 20 §3.6 states for `Addrs` being live. Consumed by T4.9; E6's T6.4b (the
   range read from a connection's snapshot); E7.
 - **Acceptance criteria:**
@@ -1035,18 +1046,25 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 
 **Subtask T4.5b estimate: 0.75 man-days.**
 
-- **Track:** B. **Depends on:** T4.5a, T5.4. `vfs.Shares.MoveTarget` in `pkg/vfs`, the RFC 17
-  plan's (the ledger's row).
+- **Track:** B. **Depends on:** T4.5a, T5.4.
 - **Covers:** R41.
-- **Deliverables:** in `pipeline.go`, `drainErr` asking `Deps.VFS`'s `MoveTarget` about the
+- **Deliverables:** `vfs.Shares.MoveTarget` in `pkg/vfs`, `*vfs.Filesystem` (so `memory.New`)
+  and `vfstest.Null` answering none (the ledger's row); in `pipeline.go`, `drainErr` asking
+  `Deps.VFS`'s `MoveTarget` about the
   handle a refused request names, or every handle a refused compound's members name, and its
   `decision:` withdrawn. Consumed by E5's drain paths and the protocols' tables.
-- **Acceptance criteria:** while draining, over `vfstest.Faults` around `memory.New` naming a
-  target for one share: a refused `PutFH` of a handle in it gets `ErrMoved`'s row, one in
-  another share `ErrDraining`'s; a compound naming handles in both gets `ErrDraining`'s.
-- **Tests:** loopback tests in `drain_test.go`, the target given by `vfstest.Faults` (kind 3)
-  (catch `ErrMoved` answered without asking, asked once per compound for one handle only, and
-  given to a compound one of whose handles has no target, R41).
+- **Acceptance criteria:** while draining, over `moving`, a wrapper around `memory.New`
+  declared in the test that names a target for its one share: a compound of a `PutFH` of a
+  handle in it and a refused `Create` gets `ErrMoved`'s row at the `Create`, one whose
+  `PutFH` names the pseudo-root, in no share, `ErrDraining`'s; a compound naming handles in
+  both gets `ErrDraining`'s; one in the share with a later member refused with no reply, or
+  with a member that does not decode, answers nothing and runs nothing (RFC 20 §4.7).
+- **Tests:** `TestADrainedCompoundMovesOnlyWhenEveryHandleItNamesHasATarget` and
+  `TestADrainedCompoundWithANoReplyRefusalAnswersNothing` in `drain_test.go`, over `net.Pipe`
+  in a `synctest` bubble, the target given by `moving` (catch `ErrMoved` answered without
+  asking, asked once per compound for one handle only, and given to a compound one of whose
+  handles has no target, R41; and a compound run to its first refused member past a later
+  refusal with no reply, or past a member that does not decode).
 
 ## 7. Order of work
 
@@ -1072,7 +1090,7 @@ flowchart TD
   T5_9(["E5 T5.9: the registry's calls"]):::sync --> T4_11
   T4_11 --> T4_2b["T4.2b the connection limit and its count"]
   T4_5a --> T4_5b["T4.5b the move target"]
-  MT(["MoveTarget in pkg/vfs; E5 T5.4"]):::sync --> T4_5b
+  MT(["E5 T5.4: the compound runner"]):::sync --> T4_5b
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -1109,7 +1127,7 @@ deadline's interplay with the receive wait (G10).
 | 6 | T4.7b, T4.9 | 3.75 | PR 5, #4583 | what the node reads and drives: liveness, `Connections`, the sidecar runner |
 | 7 | T4.8, T4.11 | 2.5 | PR 5, T5.9 | the socket's options and the connection series |
 | 8 | T4.2b | 2 | PR 7 | the connection limit and its count, `resources.ConnLimit` |
-| 9 | T4.5b | 0.75 | PR 5, T5.4, `MoveTarget` | the drain's move target, once the service names one |
+| 9 | T4.5b | 0.75 | PR 5, T5.4 | `MoveTarget`, answering none, and the drain's move target |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -1167,9 +1185,10 @@ open, for Lucian to accept, change or refuse.
   nor whether `Reconfigure` returns before a removed address's connections are torn down.
   **Recommendation:** `Stop` on a configured adapter moves it to stopped; `Start` other than from
   configured is refused naming the state; `Reconfigure` while configured replaces what `Start`
-  will bind, and is refused while draining or stopped; it returns once the removed listeners
-  are closed and their connections torn down, so the node's `Sync` after it advertises nothing
-  stale. RFC 20 §3.1 and §3.4 amended. Blocks parts of T4.1 and T4.6.
+  will bind, and is refused while draining or stopped or once a `Stop` has begun; it returns
+  once the removed listeners are closed and their connections torn down, so the node's `Sync`
+  after it advertises nothing stale. RFC 20 §3.1 and §3.4 amended. Blocks parts of T4.1 and
+  T4.6.
 - **G6, which `Accept` errors are retried.** RFC 20 §6.4 retries "an Accept error the listener
   can recover from, such as no file descriptor left", and §3.7 raises `adapter_listener_lost`
   for "a listener whose socket failed while serving", without saying what happens to an error
@@ -1201,9 +1220,9 @@ open, for Lucian to accept, change or refuse.
   RFC 24 §3.2 also has the reader wait at the receive ceiling with "no deadline of its own",
   for as long as the requests holding the pool run. A deadline that ran through that wait
   would close a connection for the node's lack of memory. **Recommendation:** the deadline runs
-  from the record's first byte, stops while the reader waits for receive room, and runs a full
-  `read_timeout` once the reservation is granted. RFC 20 §6.4 and RFC 24 §3.2 amended. Blocks
-  the deadline's part of T4.3.
+  from the record's first byte, nothing reading the connection while the reader waits for
+  receive room, and runs a full `read_timeout` once the reservation is granted. RFC 20 §6.4
+  and RFC 24 §3.2 amended. Blocks the deadline's part of T4.3.
 - **G11, a sidecar that failed.** RFC 20 §3.5 has a failing sidecar raise `sidecar_failed`,
   and RFC 25 derives a condition from current evidence, but nothing says whether a failed
   `Sync` is tried again, so a recovered sidecar would stay failed until the serving set next
@@ -1250,8 +1269,9 @@ description, which gains `Budgets.Conns` built from `connection_limit`, its `Set
 change, and the sidecar runner's `Close`; epic 4's description, which gains the connection
 (T4.10), the series (T4.11) and the splits, and loses the session cleanup wait; the ledger's row "close reasons for the pipeline's own closes" leaving
 once T4.11 lands, since what an epic builds is not a row (`CLAUDE.md`, Deferral ledgers); the
-`MoveTarget` row's trigger naming T4.5b. The ledger's TLS row and its `ConnInfo.Session` row are
-made in this pull request, since #4533 settled G7 and G8.
+`MoveTarget` row leaving once T4.5b lands, for the same reason, since T4.5b builds the method.
+The ledger's TLS row and its `ConnInfo.Session` row are made in this pull request, since #4533
+settled G7 and G8.
 
 **Against the program's figure.** The program gave epic 4 9 subtasks and 20 man-days, leaving
 the seam work and the series unpriced. The cited ids keep their work, split by letter where

@@ -508,8 +508,9 @@ flight.
   a drain's refusals aside,
   one fewer than the credit target, as `MaxAsyncCredits` minus one bounds them
   today; past it a new one is answered `STATUS_INSUFFICIENT_RESOURCES` at once.
-  A call still in the service when its interim goes out is never refused, by
-  the ceiling or the floor, since it may still apply. Past the ceiling, or past
+  A call still in the service when its interim goes out is not refused while
+  it runs, by the ceiling or the floor, since it may still apply. Past the
+  ceiling, or past
   the floor with the hold pool full, its interim withholds its credits but for
   what keeps the client's balance at one, and its final response grants the
   rest, so the client's balance falls to one and it sends one request at a
@@ -2596,7 +2597,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrIO` — a journal read the device could not complete, after its bounded retry ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), on a `READ`, a `FLUSH`, a write-through `WRITE`, or a copychunk or duplicate-extents reading its source | `STATUS_UNEXPECTED_IO_ERROR` at once, never held; a `READ` whose verified bytes reach its `MinimumCount` is answered with them |
 | `ErrUnavailable` — a read, query or control request meeting a remote outage on a block not held locally ([RFC 8 §7.5](rfc-8-engine.md#7.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably)) | held pending and re-run up to `pending_timeout`, as a store stall is; only there `STATUS_UNEXPECTED_IO_ERROR`. A `READ` whose verified bytes reach its `MinimumCount` is answered with them at once, short; one whose verified bytes fall below `MinimumCount` is held the same way, never answered short, since MS-SMB2 3.3.5.12 fails a read below `MinimumCount` and the client would see an error for a transient outage. `ErrLost` and `ErrCorrupt` are answered at once ([RFC 17 §5.2](rfc-17-vfs.md#5.2%20Read)) |
 | `ErrIncomplete` — a read, through a snapshot or a copy made from one, of a file its cut lists as incomplete ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), or a copychunk or duplicate-extents from such a file, refused before anything changes ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)) | `STATUS_UNEXPECTED_IO_ERROR` at once |
-| no service error — the adapter's own refusal of a request whose hold starts on an error the service returned, past its connection's floor while the node's hold pool cannot take it; a call still in the service when its interim goes out is never refused (§3.3) | `STATUS_INSUFFICIENT_RESOURCES` at once; nothing is held, never `STATUS_DISK_FULL` or `STATUS_FILE_LOCK_CONFLICT` |
+| no service error — the adapter's own refusal of a request whose hold starts on an error the service returned, past its connection's floor while the node's hold pool cannot take it; a call still in the service when its interim goes out is not refused while it runs (§3.3) | `STATUS_INSUFFICIENT_RESOURCES` at once; nothing is held, never `STATUS_DISK_FULL` or `STATUS_FILE_LOCK_CONFLICT` |
 | `ErrDelay` — a node memory pool spent: the share's cap on the request buffers, open state, or a reply reservation's deadline (`DelayResources`, [RFC 24 §4.2](rfc-24-resources.md#4.2%20Across%20shares%3A%20the%20share%20cap%20at%20admission)) | `STATUS_INSUFFICIENT_RESOURCES` at once; never held, since holding it would spend the hold pool on the share short of memory |
 | `ErrBlocked` — a lock left waiting (§7) | pending, with no deadline; completed on grant, or after `CancelLock` |
 | `ErrStale` — the share is being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) | `STATUS_NETWORK_NAME_DELETED` for every request on a tree connected to it, so the client drops the tree; a new `TREE_CONNECT` to its name, now free, is `STATUS_BAD_NETWORK_NAME`; a durable handle's reconnect is `STATUS_OBJECT_NAME_NOT_FOUND`. A request held pending on the share's state is answered when `Revoked` reports it with the share-removed reason ([RFC 14 §11](rfc-14-open-state.md#11.%20Interface), [RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)): an outstanding `CHANGE_NOTIFY` with `STATUS_NOTIFY_CLEANUP`, a waiting lock or any other with `STATUS_NETWORK_NAME_DELETED`; the waiter is already gone, so no `CancelLock` precedes it |
@@ -2715,6 +2716,8 @@ error response, with the symlink error data (MS-SMB2 2.2.2.2.1), or the
 generic one from a nil reply. The
 named-pipe `READ` case never arises here: a pipe `READ` that does not fit is
 answered a short read with `STATUS_SUCCESS` ([§3.3](#3.3%20Sizes%20and%20credits)).
+Nor does the `FSCTL_DFS_GET_REFERRALS` case: Appendix F answers that control
+code `STATUS_FS_DRIVER_REQUIRED`.
 The error table marks MS-SMB2 3.3.4.4's pairs above, and `STATUS_BUFFER_OVERFLOW`
 in an `FSCTL_GET_REPARSE_POINT` response, `NotFailure`, so a related member after
 one runs, as MS-SMB2 3.3.5.2.7.2 fails a related member only after a failure; an
@@ -3203,6 +3206,7 @@ maximum component length 255; and the file system name `NTFS`
 | `QUERY_NETWORK_INTERFACE_INFO` | this node's addresses | [§4.2](#4.2%20Multichannel%20only%20within%20one%20node) |
 | `VALIDATE_NEGOTIATE_INFO` | the connection | [§3.1](#3.1%20Dialects) |
 | `PIPE_TRANSCEIVE`, `PIPE_WAIT`, `PIPE_PEEK` | IPC$ | [§5.2](#5.2%20IPC%24%20and%20the%20RPC%20services) |
+| `DFS_GET_REFERRALS`, `DFS_GET_REFERRALS_EX` | `STATUS_FS_DRIVER_REQUIRED`, with no open looked up | the server is not DFS capable (MS-SMB2 3.3.5.15.2); referrals are a non-goal ([§1.1](#1.1%20Non-goals)) |
 | `OFFLOAD_READ`, `OFFLOAD_WRITE` (ODX) | `STATUS_NOT_SUPPORTED` | [§10](#10.%20Control%20codes) |
 | `LMR_REQUEST_RESILIENCY`, `SET_COMPRESSION`, `FILE_LEVEL_TRIM`, `GET/SET_INTEGRITY_INFORMATION`, `SVHDX_*` | `STATUS_NOT_SUPPORTED` | |
 

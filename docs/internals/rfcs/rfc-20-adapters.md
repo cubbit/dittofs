@@ -560,6 +560,9 @@ beyond the standard library and `pkg/resources`'s buffers, which the import
 test checks (§7.1). The protocol's golden-vector suite and fuzz target are
 there, one of each for every command (§5.4). What holds state — a GSS context,
 a session, a credit window — is in `protocol/`, the protocol's stages.
+The one exception to `wire`'s imports is `<protocol>/wire/gen`, the generator:
+it may import `os` to write its file, and no other package that does I/O, still
+from the standard library alone.
 
 > ponytail: a line count, not a complexity measure. A 500-line file of table
 > rows is fine and a 300-line handler that composes is not; §4.3 and §7.2 catch
@@ -619,8 +622,9 @@ Every adapter runs through the same four states, driven by the node
   behind a `GETATTR` runs, and a client told the share moved can read
   `fs_locations`. Any other new request gets the drain's error: `ErrMoved` when
   the service names another gateway node the request's share can move to,
-  `ErrDraining` when it names none (the only node stopping) or the request
-  names no filehandle. `core` asks the service's `MoveTarget`
+  `ErrDraining` when it names none (the only node stopping), answers an error,
+  which counts as none, or the request names no filehandle. `core` asks the
+  service's `MoveTarget`
   ([RFC 17](rfc-17-vfs.md)) for each request it refuses, about the handle the
   request names (§4.7's `Invocation.Handle`), so each share is judged on its
   own; until [RFC 15](rfc-15-topology.md)'s topology exists it answers none. A table maps `ErrMoved` to the protocol's move signal where
@@ -634,7 +638,9 @@ Every adapter runs through the same four states, driven by the node
   interim `STATUS_PENDING` that grants the request's credits back and no final
   response, so the client can still send the releases and flushes the drain
   serves ([RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)). An NFSv4 `COMPOUND`
-  with any operation the drain refuses runs none of them (§4.7).
+  with any operation the drain refuses with no reply runs none of them; one
+  whose refusal has a reply (`NFS4ERR_MOVED`) runs to it and is answered there
+  (§4.7).
   Requests already handed to the service run to their answer, and their
   replies are sent. A parked request — a waiting lock, a change notification —
   is cancelled as draining begins and answered as its table answers the drain's
@@ -694,8 +700,8 @@ a namespace move's release asks of an adapter
 leaves the others serving. It returns once the removed listeners are closed
 and their connections torn down, so the node's `Sync` after it (§3.5)
 advertises nothing stale. While configured it binds nothing and
-replaces the settings `Start` will bind; while draining or stopped it is
-refused.
+replaces the settings `Start` will bind; while draining or stopped, or once
+a `Stop` has begun, it is refused.
 
 **Other transitions.** `Stop` on a configured adapter moves it to stopped,
 with nothing to drain. `Start` from any state but configured is refused with an
@@ -943,7 +949,8 @@ type Adapter interface {
 	// and a changed port is refused with ErrPortChanged. It returns once the
 	// removed addresses' listeners are closed and their connections torn
 	// down. While configured it binds nothing and replaces what Start will
-	// bind; while draining or stopped it is refused.
+	// bind; while draining or stopped, or once a Stop has begun, it is
+	// refused.
 	Reconfigure(ctx context.Context, s settings.Settings) error
 
 	// Stop moves serving to draining to stopped, and configured to stopped.
@@ -1046,7 +1053,9 @@ type Deps struct {
 	// Watch registers a loop with the node's liveness watchdog (RFC 25 §3.5)
 	// and returns it: Turn reports a pass, Idle a wait with nothing to do (an
 	// accept loop at its accept deadline), Close unregisters it at unbind.
-	// RFC 25's health loop satisfies Loop as it is. nil watches nothing.
+	// RFC 25's health loop satisfies Loop as it is. nil watches nothing. An
+	// accept loop names itself "accept <services> on <address>", the services
+	// its listener serves and the address it is bound to.
 	Watch func(loop string) Loop
 	// DialClient opens a connection back to a client, for a callback (NLM's
 	// GRANTED over "tcp", NSM's SM_NOTIFY over "udp"), from the local address
@@ -1391,19 +1400,29 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 	if next.Common().Port != (*s.settings.Load()).Common().Port {
 		return adapter.ErrPortChanged // the node builds a new adapter instead
 	}
-	switch st := s.state(); st {
+	s.mu.Lock() // Stop marks its start under it before it closes a listener
+	st := s.state()
+	if st != adapter.StateStopped && s.stopping {
+		st = adapter.StateDraining // nothing binds once a Stop began
+	}
+	switch st {
 	case adapter.StateDraining, adapter.StateStopped:
+		s.mu.Unlock()
 		return fmt.Errorf("reconfigure while %s", st) // refused (§3.4)
 	case adapter.StateConfigured:
 		s.settings.Store(&next) // what Start will bind; nothing is bound now
+		s.mu.Unlock()
 		return nil
 	}
 	addrs := next.Common().Addrs
 	if err := s.listeners.open(added(addrs)); err != nil {
+		s.mu.Unlock()
 		return err // all or none
 	}
-	s.settings.Store(&next)                // read by the next accept
-	s.listeners.close(ctx, removed(addrs)) // and their connections (§3.1)
+	s.settings.Store(&next)                  // read by the next accept
+	off := s.listeners.close(removed(addrs)) // their sockets, under s.mu
+	s.mu.Unlock()
+	off.wait(ctx) // their accept loops and connections (§3.1), outside s.mu: a hand-over registers and a teardown unregisters under it
 	return nil
 }
 ```
@@ -2007,8 +2026,9 @@ it holds — the service counts nothing about holds:
   decoded request. A request held between attempts keeps its record's `Buf`
   until its final answer, write data or not, since `core` cannot tell which
   decoded arguments point into the record (§4.7 adds no release hook); a
-  parked request releases it in `Park`, whose handler has copied out what it
-  needs, so a waiting lock or change notification holds no receive bytes;
+  parked request releases it as its handler returns `ErrParked`, having copied
+  out what it needs, so a waiting lock or change notification holds no receive
+  bytes;
 - **every call carries `vfs.WithHold`**, the most it may wait inside the service
   behind a running clone ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)):
   the request's remaining deadline for NFSv3, NFSv4.0 and NLM; for NFSv4.1, the
@@ -2029,19 +2049,22 @@ it holds — the service counts nothing about holds:
   returned, is answered `ErrDelay` of `DelayResources` at once (SMB's
   `STATUS_INSUFFICIENT_RESOURCES`, §6.3), holds nothing and is counted
   (§10.1). A call still in the service when its interim goes out is counted
-  and never refused, as below. The count lives and dies with the
-  connection, so it needs no key across processes;
+  and not refused while it runs, as below. The count lives and dies
+  with the connection, so it needs no key across processes;
 - **the interim response is the adapter's timer.** An SMB request still
   unanswered a short interval after it reached the service — a call waiting
   behind a clone — or answered an error whose row has a `Hold` gets its
   interim `STATUS_PENDING` from the adapter's own timer, so nothing crosses
-  into the service to announce a hold;
+  into the service to announce a hold. A call still in the service gets its
+  interim only in a buffer the reply pool has at once (`BufPool.TryGet`), tried
+  once; with none, it goes on unannounced and is answered as any other call;
 - each attempt re-runs the held `Invocation`'s `Resolve` and `Call` (§4.7), with
   a fresh 30 s attempt deadline inside the hold's bound (§6.4) —
   the same decoded arguments, the wire IDs resolved again, so an open closed
   meanwhile is seen;
 - how long a request is held is its row's `Hold` (§4.7's `ErrorRow`),
-  evaluated on each attempt's error from the hold's start; a row without
+  evaluated on each attempt's error from the hold's start, which is its
+  first attempt's (§6.4); a row without
   `Hold` is answered at once with its status. A handler never chooses. The
   bounds are the protocol's ([RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)). It
   is a function because the settings behind it are live and a freeze's bound
@@ -2062,23 +2085,26 @@ it holds — the service counts nothing about holds:
   which the table maps to the protocol's cancel status, unless the call took
   effect (§6.5);
 - every request pending on a connection, held past its interim or parked,
-  counts toward one ceiling, `Stages.MaxPending` (SMB: 511, RFC 22 §3.3). It is
-  checked when a hold starts on an error the service returned, and in
-  `Park`; past it the request is answered at once with `ErrTooManyPending`. A
-  call the interim timer finds still in the service goes pending past it, and
-  past the hold floor with the hold pool full; its interim then withholds its
-  own credits but for what keeps the client's balance at one, and its final
-  reply grants the rest. The credits of chain members answered before it ride
-  on that interim and are granted in full. A drain's refusal, answered by an
-  interim that no final follows (§4.7), holds nothing and counts toward
-  neither the ceiling nor the floor.
+  counts toward one ceiling, `Stages.MaxPending` (SMB: 511, RFC 22 §3.3). It
+  is checked when a hold starts on an error the service returned, and in
+  `Park` for a request not yet pending; past it the request is answered at
+  once with `ErrTooManyPending`. A call whose interim the timer sends while it
+  is still in the service goes pending past it, and past the hold floor with
+  the hold pool full; its interim then withholds its own credits but for what
+  keeps the client's balance at one, and its final reply grants the rest. The
+  credits of chain members answered before it ride on that interim and are
+  granted in full. Where its call then returns an error whose row holds, it is
+  held, checked as any hold that starts on an error the service returned, with
+  no second interim. A drain's refusal, answered by an interim that no final
+  follows (§4.7), holds nothing and counts toward neither the ceiling nor the
+  floor.
 
 > decision: a held request's bound follows the adapter's live settings, not
 > its connection's snapshot. A hold outlives the settings change it straddles,
 > and the operator's new bound is the one that should apply. Overturn it if a
 > client is found that breaks when a held request's bound moves.
 
-> decision: a call the interim timer finds in the service goes pending past the
+> decision: a call announced while in the service goes pending past the
 > ceiling, and past the floor with the hold pool full, because answering it at
 > once could report a failure for a call that applies a moment later (§4.7's
 > `Pends` decision). Its interim withholds its credits but for what keeps the
@@ -2106,9 +2132,10 @@ it holds — the service counts nothing about holds:
 > decision: a parked request is off the hold floor, which counts held requests
 > and their records, because it holds neither: a waiting lock or a change
 > notification can wait for hours and would starve the floor of the writes it
-> exists for. It stays bounded by the pending ceiling in count and by the small
-> class in reply bytes (§4.7's `Park`). Withdraw it if a client is found that
-> keeps the ceiling full of parks and starves its own held writes.
+> exists for. It stays bounded in count by the pending ceiling, but for the
+> calls that went pending past it in the service before they parked, and by
+> the small class in reply bytes (§4.7's `Park`). Withdraw it if a client is
+> found that keeps the ceiling full of parks and starves its own held writes.
 
 ### 4.7 Wiring: what a protocol plugs into `core`
 
@@ -2142,7 +2169,9 @@ type Protocol interface {
 	// keeps only Stages.Protocol, the label of a connection closed before its
 	// stages are built (§10.1), checking the stages as accept does, so a
 	// missing required field fails at configured. With a nil c it reads no
-	// setting.
+	// setting, and returns stages of the same shape as for a real c, the
+	// protocol's contract; a connection whose stages accept still refuses is
+	// closed as a wiring fault (§10.1).
 	NewConn(c *Conn) Stages
 	// Tables is every operation table the protocol's Router can return.
 	// NewServer checks them and resolves their series once, each compound
@@ -2290,7 +2319,8 @@ type ReplayCache interface {
 	// pipeline's own reservation does; the pipeline wraps the copy in place
 	// and sends it. Or a sequence error, or the reservation's ErrDelay of
 	// DelayResources past ctx's deadline, either mapped by Stages.Errors; or
-	// nil, nil to run. A chain asks it first under an ended ctx (§4.7).
+	// nil, nil to run. Every request asks it first under an ended ctx, a
+	// chain's member as one alone (§4.7).
 	//
 	// ponytail: the copy is reserved under no client's key, since a stage is
 	// handed none, so a chain copies a hit into a buffer of its own (§4.7).
@@ -2578,9 +2608,9 @@ type Status uint32
 // Every other status is a failure, which ends a compound there and fails the
 // related members of a chain after it (§4.3). NewErrorTable also refuses a
 // NotFailure row that names no Ops, whose Status is zero or the fault, that
-// sets NoReply or Hold, or whose Err matches, by errors.Is, any value of
-// vfs.Errors() or Errors(), which every operation shares: such a row would
-// let the members after any failure run.
+// sets NoReply or Hold, or whose Err a value of vfs.Errors() or Errors(),
+// which every operation shares, matches (errors.Is(value, Err)): such a row
+// would let the members after any failure run.
 type ErrorTable struct{ /* unexported */ }
 type ErrorRow struct {
 	Err      error    // matched with errors.Is: a sentinel matches its whole class, a typed value its own kind only (RFC 17 §4.3)
@@ -2589,8 +2619,9 @@ type ErrorRow struct {
 	NoReply  bool     // no final reply (ErrDraining, and ErrMoved where no move signal fits, §3.1); a table that Holds sends an interim granting the request's credits; Status unused
 	// NotFailure marks Status, for the operations the row names, as one its
 	// protocol counts as no failure: for SMB the pairs RFC 22 §16.5 lists,
-	// MS-SMB2 3.3.4.4's but the named-pipe READ, which never arises, and
-	// FSCTL_GET_REPARSE_POINT's (its Appendix A, note 244); none for NFS. The
+	// MS-SMB2 3.3.4.4's but the named-pipe READ and FSCTL_DFS_GET_REFERRALS,
+	// which never arise, and FSCTL_GET_REPARSE_POINT's (its Appendix A, note
+	// 244); none for NFS. The
 	// related members after it run (§4.3, MS-SMB2 3.3.5.2.7.2). Its Err is a
 	// value specific to its pair (for IOCTL, one per FSCTL), returned only by
 	// that pair's handler, never a sentinel that other operations or FSCTLs
@@ -2658,9 +2689,9 @@ if err == nil && expired(r) && !op.Expired && role != RoleRelease { err = ErrExp
 if err == nil && draining && role == RoleNone { err = drainErr(ctx, r, inv) } // §3.1: ErrMoved if MoveTarget names a gateway for inv.Handle's share, else ErrDraining; never per operation in a single-reply compound (below)
 if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve until the Hold of the row err maps to passes (§4.6)
 st, send, notFailure := tbl.Errors.Map(err, op, h.Version())
-failed := err != nil && !notFailure
-runner.after(h, failed) // the compound runner stops a compound, and fails a chain's related members, only after a failed member (§4.3)
 if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back, and those of the chain members after it, whose headers it is handed (none outside a chain) (HoldCodec.Interim)
+failed := st != 0 && !notFailure
+runner.after(h, failed) // the compound runner stops a compound, and fails a chain's related members, only after a failed member (§4.3)
 reply := encode(stages.Header, h, st, inv)
 if op.Cacheable { stages.Replay.Store(h, reply) } // a clear copy, before Wrap
 err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
@@ -2741,7 +2772,7 @@ ceiling (§4.3), or when the record its reservation would join, as `Frame`
 states it (below), would pass the protocol's record cap, `Framer.MaxRecord`'s bytes, the
 replies before it go out as a record of their own, wrapped
 once, and only then does the member reserve under its deadline: a chain never
-waits on the reply pool while holding it
+waits on the reply pool while holding it, a park's interim aside
 ([RFC 24 §2.6](rfc-24-resources.md#2.6%20Reservations%20are%20taken%20in%20one%20order)).
 A member answered with a status alone takes its status's buffer the same way:
 `TryGet` first, and when it is refused the replies before it go out first,
@@ -2818,13 +2849,16 @@ A member before the last that the service answered an error whose row holds
 (an `ErrDelay`, a grace, an unavailable share), so applied nothing, is
 answered in one of two ways, as `HoldCodec.Pends` says for that error: at once, the runner replacing the
 error with `ErrNotLast` before its table maps it, since a hold row's
-status speaks for a hold that will not happen, and the chain goes on; or pending, as the last member is, the
+status speaks for a hold that will not happen, while its span records the
+error the service returned (§10.2), and the chain goes on; or pending, as the last member is, the
 replies before it and its interim going out as one chain and the members after
 it running once it has answered, their replies chained after its final one.
 The runner does both; which one each cause takes is RFC 22's (before the
 last, Windows goes pending only for a `CREATE` that triggers an oplock break,
-and answers any other `STATUS_INTERNAL_ERROR`, MS-SMB2 3.3.5.2.7). A member before the last that
-the interim timer finds still waiting in the service always goes pending. A
+and answers any other `STATUS_INTERNAL_ERROR`, MS-SMB2 3.3.5.2.7). A member before the last whose
+interim the timer sends while it still waits in the service (§4.6) always goes
+pending, and where its call then returns an error whose row holds, it is held as the
+last member is, with no `Pends` asked. A
 member before the last never parks: `Park` refuses it with `ErrNotLast` before
 anything is sent, and its table maps that error. A member whose row is
 `NoReply` (a drain's refusal) stops the chain: the members after it do not
@@ -2938,7 +2972,10 @@ type Conn struct{ /* unexported */ }
 // passes it through Security.Wrap under h first, so a lease break on an
 // encrypting session is sealed. before is the HoldCodec.Key of the request
 // whose reply it must precede (§6.2), 0 for none; core keys every request of
-// a table that Holds that way.
+// a table that Holds that way. Send owns msg on every path: an error releases
+// it, and a Send after Close is dropped, returning net.ErrClosed. Wrap's
+// refusal is returned and leaves the connection open, the caller deciding; a
+// reply's closes it, since its request has no other answer.
 func (c *Conn) Send(h Header, msg *Buf, before uint64) error
 
 // Established ends the handshake deadline (§6.4): SMB at its first
@@ -2966,13 +3003,17 @@ func (c *Conn) Settings() settings.Settings
 func (c *Conn) Close(err error)
 
 // HoldCodec is the stage a table that Holds needs (§4.6). The key doubles as
-// the async ID the interim and final replies carry. The interim, like every
+// the async ID the interim and final replies carry; no two of a connection's
+// pending requests share one, since the replay check refuses a message ID
+// already used (§4.1; MS-SMB2 3.3.5.2.3). The interim, like every
 // reply, passes Security.Wrap, so an encrypting session sends nothing in clear.
 // Cancels is asked after Unwrap, so an unverified cancel ends no hold. A
-// cancel that finds no hold or park with its key is remembered for at most
-// 5 s, and at most MaxPending per connection, the oldest dropped first; a
-// request with that key that holds or parks meanwhile ends as cancelled. A
-// cancel whose target was already answered leaves nothing after 5 s.
+// cancel that ends no hold or park with its key, which includes one that
+// finds its target's attempt running, is remembered for at most 5 s, and at most
+// MaxPending per connection, the oldest dropped first; the first request with
+// that key that holds or parks meanwhile ends as cancelled, its interim sent
+// first and its final under Final's header, and uses the cancel up. A cancel
+// whose target was already answered leaves nothing after 5 s.
 //
 // ponytail: a cancel that arrives more than 5 s before its target holds or
 // parks is lost, and the target runs to its answer. Keep the record until the
@@ -2995,13 +3036,15 @@ type HoldCodec interface {
 	Interim(h Header, grant bool, after []Header, out *Buf) error
 	// Final is the final reply's header, with the async ID. If grant (true
 	// only when its interim withheld), it grants the request's credits less
-	// what the interim granted of them; otherwise none.
+	// what the interim granted of them; otherwise none. It must not point
+	// into the request's record, which a parked request releases (Park).
 	Final(h Header, grant bool) Header
 	Cancels(h Header) (key uint64, ok bool) // a CANCEL ends the hold it names and gets no reply
 	// Pends says whether a chain member before the last, answered err whose
 	// row holds, goes pending (true) or is answered at once as ErrNotLast.
 	// It is asked only for an error the service returned;
-	// a member the interim timer finds still in the service always pends.
+	// a member whose interim the timer sent while it was still in the service
+	// always pends.
 	Pends(h Header, err error) bool
 }
 
@@ -3013,36 +3056,46 @@ var ErrParked = errors.New("core: parked")
 // Park holds the request until done. A handler calls it once its call
 // reports a wait (a waiting lock's ErrBlocked, a watch set): the service has
 // registered the waiter by then. Park refuses a member before the last of a
-// chain with ErrNotLast, a connection at Stages.MaxPending with
-// ErrTooManyPending, a draining connection with the drain's error
-// (ErrDraining or ErrMoved), and, when the request's own reply reservation is
-// larger than the small class, a reply pool that cannot take a small-class one
-// at once with ErrDelay of DelayResources, answered at once in the reservation
-// the request still holds (§6.3);
-// nothing is sent, and the handler withdraws its
-// waiter (CancelLock, Unwatch; §4.3) and returns the error for its table to
-// map, or success if CancelLock reports the lock granted (§6.5). A callback
-// that fires before Park returns is kept by the handler and passed to done
-// once it has it. On a connection already closed, Park calls cancel at once
-// and done's reply is dropped, as a close would.
+// chain with ErrNotLast, a request not yet pending on a connection at
+// Stages.MaxPending with ErrTooManyPending, a draining connection with the
+// drain's error (ErrDraining or ErrMoved), and, when the request's own reply
+// reservation is larger than the small class, a reply pool that cannot take a
+// small-class one at once with ErrDelay of DelayResources, answered at once in
+// the reservation the request still holds (§6.3); Park sends no interim, a
+// request already pending having had its own, and the
+// handler withdraws its waiter (CancelLock, Unwatch; §4.3) and returns the
+// error for its table to map, or success if CancelLock reports the lock
+// granted (§6.5). A callback that fires before Park returns is kept by the
+// handler and passed to done once it has it. On a connection already closed,
+// Park calls cancel at once and done's reply is dropped, as a close would.
 //
-// Otherwise core sends the interim reply at once and releases the record's Buf
-// with its receive reservation, the handler having copied out of the decoded
-// arguments what done needs (§4.6), and the reply keeps a small-class reply
-// reservation: the request's own when it is of that class, else one taken
-// before the request's own is released (RFC 24 §3.3); a reply that would not
-// fit is answered as its protocol answers an overflow (RFC 22 §3.3). A request
-// already pending past its interim (a LOCK re-driven after a hold, then
-// blocked) gets no second interim: its slot moves from held to parked. A parked
-// request holds no worker and no record and is not counted against the hold
-// floor (§4.6): MaxPending bounds it. On done core encodes the reply, wraps it
-// and sends it under Final's header. A client cancel calls cancel first, and
-// done's error is replaced by ErrCancelled, which the table maps to the
-// protocol's cancel status (§6.5). The start of a drain calls cancel, and
-// done's error is replaced by the drain's, answered as its table maps it
-// (§3.1). Either way a done(nil), a call that took effect (a waiting lock
-// CancelLock reports granted), is answered success (§6.5, RFC 22 §7). A closed
-// connection calls cancel, and done's reply is dropped.
+// Otherwise core sends the interim reply at once; where the reply keeps the
+// request's own reservation, the interim goes in a status's buffer, taken at
+// once or waiting as any status of that request waits (RFC 24 §2.6, §3.3).
+// Then core takes Final's header, which reads what the interim granted and
+// must not point into the record. Once the handler
+// returns ErrParked, having copied out of the decoded arguments what done
+// needs, core releases the record's Buf with its receive reservation (§4.6).
+// The reply keeps a small-class reply reservation: the request's own when it
+// is of that class, else one taken before the request's own is released
+// (RFC 24 §3.3); a reply that would not fit is answered as its protocol
+// answers an overflow (RFC 22 §3.3). A request already pending past its
+// interim (a LOCK re-driven after a hold, then blocked) gets no second
+// interim: its slot moves from held to parked. A parked request holds no
+// worker and no record and is not counted against the hold floor (§4.6):
+// MaxPending bounds it, but for the calls that went pending past it in the
+// service (§4.6). On done core encodes the reply, wraps it and sends it
+// under Final's header, and never stores it in the replay cache. A client
+// cancel calls cancel first, and done's error is replaced by ErrCancelled,
+// which the table maps to the protocol's cancel status (§6.5). The start of a
+// drain calls cancel, and done's error is replaced by ErrDraining, the drain's
+// error decided with no filehandle, the record that named one gone, answered as
+// its table maps it (§3.1); under a NoReply row nothing follows the interim,
+// credits it withheld included, since §4.6 kept the client's balance at one
+// for what the drain waits on. Either way a done(nil), a call that took effect
+// (a waiting lock CancelLock reports granted), is answered success (§6.5,
+// RFC 22 §7). A closed connection calls cancel, and done's reply is dropped.
+// core calls cancel at most once, whichever of these comes first.
 func (r *Request) Park(cancel func()) (done func(err error), err error)
 
 // core's own refusals. Each table maps every one, and §7.3's totality test
@@ -3750,6 +3803,9 @@ client whose request caused it — the callback is queued ahead of that request'
 reply, so the client never sees an answer before the break it depends on. The
 callback goes ahead of its request's reply when it is queued while that reply
 still waits; one queued once the reply is being written lands behind it. A
+chain's joined record is queued under its last member's key, so a callback
+goes ahead of it only when its request is the last member; one whose request
+is an earlier member, queued once the record waits, lands behind it. A
 break that needs an acknowledgement holds its request until the break ends
 ([RFC 22 §6.3](rfc-22-smb.md#6.3%20Breaks)), so it is always queued first. That
 is the only order the writer keeps between messages; every other reply goes out
@@ -3790,8 +3846,8 @@ inside the service, or a reply reservation's deadline, before it — is one clas
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), which the
 adapter builds itself for its own reply-reservation refusal. A request whose
 hold starts on an error the service returned, past its connection's hold
-floor with the hold pool full, is the adapter's own refusal, the same
-`ErrDelay` with `DelayResources`; a call still in the service is never refused
+floor with the hold pool full, is the adapter's own refusal, the same `ErrDelay`
+with `DelayResources`; a call still in the service is not refused while it runs
 (§4.6). The error table answers both at once and holds neither: in a table
 that Holds, a typed row for that cause with no `Hold` wins over a holding
 `ErrDelay` row (§4.7's `ErrorTable`), and `NewOpTable` refuses a table that
@@ -3811,14 +3867,14 @@ the statuses are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors
 | Limit | Applies to | On expiry |
 | --- | --- | --- |
 | request deadline | each attempt of every service call: a fixed 30 s from the attempt's start, set by the pipeline and carried in the context ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). The first attempt starts at the request's arrival; a later chain member's starts at its own admission (§4.7). A held request (§4.6) is bounded in total by its cause's hold bound (SMB's `recall_timeout` on a recall, `pending_timeout` for a transient refusal), and each re-drive is a fresh 30 s attempt inside it; a waiting lock and an SMB `CHANGE_NOTIFY` have none | the service's answer at the deadline is mapped as any other; a drain or closed connection cancels |
-| read timeout, `read_timeout` | the rest of a request once its first byte has arrived, and only while the reader cuts a record: armed at the record's first byte, one already read included when the reader comes back to it; stopped while the reader waits for its receive reservation ([RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)), and a full `read_timeout` again once the reservation is granted; disarmed between records, so a reader paused outside a record, at the writer's bound or by the protocol's flow control, is never closed for it | connection closed: a client that trickles a request holds a receive reservation (§4.1) |
+| read timeout, `read_timeout` | the rest of a request once its first byte has arrived, and only while the reader cuts a record: armed at the record's first byte, one already read included when the reader comes back to it, and a full `read_timeout` again once its receive reservation is granted ([RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)), nothing reading the connection while it waits; disarmed between records, so a reader paused outside a record, at the writer's bound or by the protocol's flow control, is never closed for it | connection closed: a client that trickles a request holds a receive reservation (§4.1) |
 | idle timeout, `idle_timeout` | a connection with no request and no held state | closed |
 | write timeout, `write_timeout` | each gathered write of the writer (§6.6), from its start | connection closed |
 | handshake timeout, `handshake_timeout` | negotiate and authenticate | connection closed |
 | connection limit | per node, `connection_limit`, and a quarter of it per address ([RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)) | new connections closed at accept, never left in the listen backlog |
 | accept failure | every `Accept` error but the listener's own close (`net.ErrClosed`), which ends its accept loop, and the accept deadline's own wake (`os.ErrDeadlineExceeded`, §3.4's `Deps.Watch`), which reports idle, re-arms the deadline counted from now, never from the one that passed, so a deadline already past cannot spin the loop, and is no failure, so it neither backs off nor counts toward `adapter_listener_lost` | retried after a backoff from 10 ms doubling to 1 s; `adapter_listener_lost` (§3.7) holds while `Accept` keeps failing, its last failure within 2 s, twice the backoff's cap, and the run's first failure 60 s back, and clears at the next accepted connection or once the failures stop |
 | drain timeout, `drain_timeout` | draining (§3.1) | remaining requests abandoned |
-| status buffer wait | a reply carrying a status alone that holds no reply reservation, keeping its record's receive charge meanwhile ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)): 30 s from when it starts waiting, for the connection's one status wait (§4.7) and then for its buffer ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)) | connection closed, counted under `status_wait` while still waiting for the one status wait, else `reply_wait` (§10.1) |
+| status buffer wait | a reply carrying a status alone that holds no reply reservation, or a park's interim ([RFC 24 §2.6](rfc-24-resources.md#2.6%20Reservations%20are%20taken%20in%20one%20order)), keeping its record's receive charge meanwhile ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)): 30 s from when it starts waiting, for the connection's one status wait (§4.7), which a request admitted outside a chain does not take, and then for its buffer ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)) | connection closed, counted under `status_wait` while still waiting for the one status wait, else `reply_wait` (§10.1) |
 
 The reader checks the connection's context after every write of its read
 deadline: the arming at a record's first byte, the restart once a receive
@@ -3850,7 +3906,9 @@ service decides what a cancelled context means for a call already in progress.
 A client `CANCEL` does not cancel a running call: it ends a hold between
 attempts — answered `STATUS_CANCELLED`, since the last attempt returned
 `ErrDelay` and applied nothing — calls `CancelLock` for a waiting lock, and
-lets a running attempt finish and answer with its own result. What the adapter
+lets a running attempt finish and answer with its own result, or, where that
+attempt holds while the cancel is still remembered, at most 5 s (§4.7's
+`HoldCodec`), ends its hold as cancelled. What the adapter
 does with the reply depends on which it was:
 
 - **A client cancel is answered.** The connection is live and the client still
@@ -3862,7 +3920,9 @@ does with the reply depends on which it was:
   `CancelLock` reports not granted. `CANCEL` itself has no response.
 - **A closed connection or an expired drain abandons.** There is no one to
   answer, or no answer that is safe (§3.1): the adapter stops waiting and drops
-  the reply.
+  the reply. A chain whose held member the close ends goes on to its next
+  member, which is dropped at admission; `OnClose` runs only once nothing
+  runs, so that member's `Unwrap` never reads state `OnClose` has dropped.
 
 Either way, a mutation that the service applied after the cancel is applied:
 the adapter **MUST NOT** report to the client that it was not.
@@ -4060,7 +4120,7 @@ Three, each per protocol:
 | Benchmark | Measures | Runs | Gate |
 | --- | --- | --- | --- |
 | **codec micro**: `BenchmarkDecode*`, `BenchmarkEncode*` per message | ns and allocations per message | per change, in a non-race cell of its own: allocation gates skip under `-race` ([RFC 29 §4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs)) | `READ`, `WRITE`, `GETATTR`, SMB `READ`/`WRITE`/`QUERY_INFO` decode and encode at **0 allocations**, asserted with `testing.AllocsPerRun` |
-| **pipeline micro**: the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, ns and allocations, with no storage underneath | nightly, as above | allocations per request asserted ≤ a checked-in number that may only fall, with tracing off; at ratio 0.01, with `Deps.TraceIDs` returning only IDs the ratio rule rejects (bit 63 of the low eight bytes set), warm-up included, `testing.AllocsPerRun(N, …)` asserted equal to tracing off's (§10.2). In `core`'s run, `testproto`'s `Create`, whose handler returns a zero-size reply on either answer, run at a level that drops every line once with the call answered success and once through a wrapper around the null service, declared in the test, that answers every call one `ErrDelay` of `DelayResources`, which both of `testproto`'s tables map to `StatusDelay` at once, an expected refusal logged at debug (§4.5), arming nothing per call: the two counts asserted equal (§10.3). ns per request reported, with no gate until a baseline is checked in |
+| **pipeline micro**: the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, ns and allocations, with no storage underneath | nightly, as above | allocations per request, a chain's per record it sends, asserted ≤ a checked-in number that may only fall, with tracing off; at ratio 0.01, with `Deps.TraceIDs` returning only IDs the ratio rule rejects (bit 63 of the low eight bytes set), warm-up included, `testing.AllocsPerRun(N, …)` asserted equal to tracing off's (§10.2). In `core`'s run, `testproto`'s `Create`, whose handler returns a zero-size reply on either answer, run at a level that drops every line once with the call answered success and once through a wrapper around the null service, declared in the test, that answers every call one `ErrDelay` of `DelayResources`, which both of `testproto`'s tables map to `StatusDelay` at once, an expected refusal logged at debug (§4.5), arming nothing per call: the two counts asserted equal (§10.3). ns per request reported, with no gate until a baseline is checked in |
 | **end to end**: the composed node with its real stores | small operations (`GETATTR`, `LOOKUP`, SMB `QUERY_INFO`) per second on one connection and on the node; 1 MiB sequential read and write on one and four connections; p99 of a 4 KiB write at half the request budget | nightly, dedicated host | tracked; three nights below the 7-day median adds a note to the develop-status issue (RFC 29 §4.10) |
 
 The gates cover the served path and the mapped refusal above; a request
@@ -4463,7 +4523,7 @@ measures only what happens before and after the service call.
 | How often does a handler fault? | `adapter_handler_panics_total{protocol, op}` | counter |
 | How often does an error have no row? | `adapter_unmapped_errors_total{protocol}` | counter |
 | What is held pending, and how often is a request refused past its floor with the hold pool full (§4.6)? | `adapter_held_requests{protocol}`, `adapter_held_bytes{protocol}`, `adapter_hold_pool_bytes`, `adapter_hold_refusals_total{protocol}` | gauge, gauge, gauge, counter |
-| Bytes in and out | `adapter_bytes_total{protocol, direction}` | counter |
+| Bytes in and out, `direction` `in` for bytes read from the client and `out` for bytes written to it | `adapter_bytes_total{protocol, direction}` | counter |
 | How often is a protocol input refused as unmappable? | `adapter_translation_refused_total{protocol, reason}` | counter |
 | Which neutral errors reach the wire? | `adapter_status_mapped_total{protocol, error}`, `error` from the service's closed error set | counter |
 | How often do `Adapter` bytes fail to decode? | `adapter_record_decode_failures_total{protocol, reason}`, `reason` = `truncated`, `corrupt`, `unknown_version` | counter |
@@ -4479,6 +4539,7 @@ measures only what happens before and after the service call.
 | `stage`, of `adapter_wire_seconds` | the stages from `decode_header` to `send`, `call_service` excepted: `decode_header`, `unwrap`, `admit`, `replay_check`, `route`, `decode_args`, `reply_wait`, `resolve_ids`, `map_error`, `encode`, `wrap` and `send`. `frame` mostly waits on the client, and the call's latency is the service's ([RFC 17 §7](rfc-17-vfs.md#7.%20Observability)). One observation is one request's time in a stage, so a stage's count is the requests that ran it, each member of an SMB chain being a request (§10.2). A stage its connection's `Stages` leave nil (§4.7), `unwrap`, `admit` or `replay_check`, runs `core`'s default and is neither timed nor observed, so its count is the requests a protocol's own stage ran. A stage a request runs more than once is observed once, its runs summed (the decision below). An NFSv4 compound runs the stages before its first member once, `decode_args` decoding every member before any runs (§4.7) and `reply_wait` taking its one reservation (§4.3); then `route` (each member's row checks), `resolve_ids`, `map_error` and `encode` once per member, as its runner repeats them, each run adding to its sum; then `wrap` and `send` once. A chain's members share `wrap` and `send`, observed once per record it sends, joined or split (§4.7), so their counts are records. Each run is timed from the end of the step before it. The pipeline times and observes every stage; the metrics middleware (§4.7) only marks the call's start, which ends `resolve_ids`, and the call's end, from which `map_error` is timed. A parked request's `map_error` is timed from `done` (§4.7's `Park`): the wait between `Park` and `done` is the park's, never a stage's. A request refused before its call times the stage that refused it, where that stage is timed, and `map_error` from there. Each attempt of a held request (§4.6) times its own stages from the attempt's start, adding to its sums; the wait between attempts is the hold's, which `adapter_held_requests` shows, never a stage's |
 | `error` | one value per sentinel of the service's closed error set ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), spelled as [RFC 25 §2.4](rfc-25-observability.md#2.4%20Labels) spells an error label, such as `not_found`, `exist`, `name_too_long` or `io`: a list kept by hand, which §7.3's test keeps whole. A typed error counts under its sentinel, the only one it matches (RFC 17 §4.3). Core's own refusals are not among them: `adapter_refusals_total` counts each by its stage. An `ErrDelay` with `DelayResources` that `core` builds itself, at a reply reservation's deadline, in `Park` or at a full hold pool, is the service's sentinel and counts under `delay`. That is a second event, not the refusal counted twice ([RFC 25 §2.7](rfc-25-observability.md#2.7%20One%20event%2C%20one%20owner)): this label counts the status that reaches the wire, and the refusal is counted where `core` decided it, under its stage, or, for the hold pool's, which comes after the call, by `adapter_hold_refusals_total`. An error no row maps (§4.5) takes no value: `adapter_unmapped_errors_total` counts it. A `NoReply` row counts nothing here, since nothing reaches the wire; a refusal it answers still counts under its stage |
 | `op` | the operation's name in its table, lower-cased, such as `read` or `create_session`. Lower-cased, it is lower-case letters, digits and underscores only, and unique within its table; `NewOpTable` refuses a row that breaks either, naming it. One `protocol` and `op` pair is one series, so rows that share it count as one operation. `NewServer` refuses two tables its protocols list, of one `OpTable.Protocol`, that both hold a row name, so `New` fails at configured, not on a request (§4.7's `Protocol.Tables`), but for two cases of one operation reached two ways: two tables that both set `OpTable.Versions`, to ranges that do not overlap, as `testproto`'s two version tables do, and a compound row's `Members`, which take the compound's table's `OpTable.Protocol` and `OpTable.Versions` and whose rows may share a name with that table alone, as `testproto`'s do (the decision on comparing tables, below). NFS sets no `Versions`, so all its tables of one label compare, and its auxiliary programs name their rows apart with their program's name first, as `mount_null` and `nlm_lock`. A table two listeners list is one table, known by its pointer, so NFS's NLM and NSM tables, listed over TCP and UDP (§4.8), are checked once |
+| `direction` | `in`, bytes read from the client, and `out`, bytes written to it (`adapter_bytes_total`) |
 
 `adapter_wire_seconds` takes the `request` bucket set
 ([RFC 25 §2.6](rfc-25-observability.md#2.6%20Histogram%20buckets)).
@@ -4516,9 +4577,10 @@ close:
   failed, as when keepalive or `TCP_USER_TIMEOUT` ends a peer that vanished
   (§6.7);
 - at a deadline (§6.4): `handshake`, `read_timeout`, `idle`, `write_timeout`,
-  `status_wait`, a reply carrying a status alone that had not taken the
-  connection's one status wait within 30 s of starting to wait, and
-  `reply_wait`, one that held it and had no reply buffer by then
+  `status_wait`, a reply carrying a status alone, a park's interim among them,
+  that had not taken the connection's one status wait within 30 s of starting
+  to wait, and `reply_wait`, one that had no reply buffer by then, holding that
+  wait or, as a request admitted outside a chain does, waiting without it
   ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits));
 - by `core`: `write`, a failed write; `frame`, a framing error; `decode`, a
   header that did not decode far enough to address a reply; `unwrap`, an
@@ -4607,14 +4669,20 @@ adapter.nfs4.COMPOUND              request span: frame → send, opened by the p
   table gives it ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)); a
   single-operation request has none. A handler opens no span.
 - **A held request** (§4.6) keeps its request span across its re-drives, with
-  one child per attempt, so the wait shows as the gaps between them.
+  one child per attempt once its hold begins, the first dated from its call's
+  start, so the wait shows as the gaps between them; a call that never holds
+  has none.
 - **Attributes** are the closed-set fields, under these keys:
   `protocol`; `version`, the version or dialect `Route` accepted, set only
   then; `op`; `status`; `result`, what the service's call returned: `ok`, the
   closed error's name as the `error` label writes it, or `unmapped` for an
   error no row maps (§4.5); a request `core` refused, before its call or after
-  it (§10.1's `map_error`, `Park`'s refusals among them), has none;
-  `request_bytes` and `reply_bytes`; `stage`, the stage that refused. `result` never takes an error's text, which
+  it (§10.1's `map_error`, `Park`'s refusals among them), has none, but for a
+  chain member before the last answered `ErrNotLast` in place of an error
+  whose row holds, whose `result` is that error (§4.7);
+  `request_bytes` and `reply_bytes`, a reply the writer never takes, its
+  connection closed or its wrap refused, leaving `status` and `reply_bytes`
+  off; `stage`, the stage that refused. `result` never takes an error's text, which
   can carry a path. Never a
   path, a name, a principal or a client address
   ([RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)).
