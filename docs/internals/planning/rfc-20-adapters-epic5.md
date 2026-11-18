@@ -15,9 +15,10 @@ registry's calls); [RFC 22](../rfcs/rfc-22-smb.md) §6.3 (the re-run backoff).
 **Depends on:** **S2, `testproto` and the import test in CI**: E1's frozen surface of `core`,
 E2's `testproto` with its stateful half, `adaptertest.CheckLeaks`, the `adapter-conformance`
 suite and its end-to-end specification, the `unit/adapter-allocs` cell. **E3**: the bodies of
-`pkg/resources`, which every subtask that reserves needs. **E4**: `Server`, accept, the reader
-and the writer of `Conn`, for the two subtasks that need a socket, T5.1c and T5.10; every other
-subtask is tested at the pipeline's seam (D2, §7).
+`pkg/resources`, which every subtask that reserves needs. **E4**: `NewServer`'s body, for
+T5.9's resolution and refusals (#4536); and `Server`, accept, the reader and the writer of
+`Conn`, for the two subtasks that need a socket, T5.1c and T5.10; every other subtask is
+tested at the pipeline's seam (D2, §7).
 **Blocks:** E4's writer, which must pass the suite of `out` that T5.1a lands (D1); E4's drain,
 close and cancellation tests, which run this pipeline; S3, which for this epic is T5.1c, and
 through it E6's `New`; RFC 17's clone wait, which reads `vfs.WithHold`.
@@ -177,7 +178,8 @@ T5.1a's deliverable, not a change of this list.
   subtask this document means wherever it says S3. T5.10's gate comes after it.
 - **Track A, B, C**: the three lines of work through the middle epics. This epic is track
   A's. The program's split lets track C, while it waits for S3, take three of this epic's
-  subtasks that need only E1's types and `testproto`: T5.6, T5.7 and T5.9. Each says so.
+  subtasks that need only E1's types and `testproto`: T5.6, T5.7 and T5.9, whose resolution at
+  `NewServer` also needs E4's `NewServer` (#4536). Each says so.
 - **The deferral ledger**: the list of everything RFC 20 or develop's v1 provides that the
   branch does not serve yet, each row naming the owner that brings it back.
 - **The RFC 21 plan, the RFC 22 plan**: the implementation plans of the NFS and SMB protocol
@@ -206,7 +208,7 @@ cited by number and title, and how it applies here or why it does not.
 | rule 6, nothing deferred is lost | T5.7, T5.4, T5.5b, T5.9 | the ledger rows §1.2 cites, each as §9's list of edits to the ledger leaves it |
 | rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | all | each decision of §4 leaves the marker it names at its code site; RFC 20's notes go at theirs. As `decision:`: parked requests off the hold floor, `Pends` asked only for an error the service returned, a call in the service pending past the ceiling and the floor, context and attribute reads served while draining, a drain's refusal answered by an interim with no final, the expired credential running only releases, a status's wait for its buffer closing its connection at 30 s (D9), the panic line written once a minute per table operation and the frame that panicked, so a peer that can trigger a panic takes that minute's stack line (R80), a chain member refused after its chain gave its place back waiting for the one status wait in no place, which only the receive pool bounds (D9). As `ponytail:`: the cancel record's 5 s, `unwrap` on the reader (in `serve`, D8), a chain split per member under contention (D8), the cap of 64, one goroutine per request, one reply reservation of a compound's summed bounds and its `ReplyLen(h)` (D11) |
 | rule 8, a test must be able to fail ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests)) | all | each test in §6 names the change that fails it; the end-to-end specification fails today and passes only on E4's and this epic's bodies |
-| rule 9, a symbol is exported only if RFC 20's interface uses it | T5.7, T5.2a, T5.3, T5.1a, T5.1b, T5.4, T5.5a, T5.9 | `core` gains five exported fields, `Stages.Errors` (D6), `Stages.Protocol`, `OpTable.Protocol` and `OpTable.Versions` (D18) and `Op.MaxMembers` (D10), a method, `Protocol.Tables` (D18), and three errors, `ErrDecode` (D7), `ErrCancelled` (D17) and `ErrReplyTooBig` (D11); `pkg/adapter` gains `Deps.SampleRatio`, `Deps.TraceIDs`, `StartRequestSpan` and `TraceIDFromContext` (T5.1b), as #4440 declares them in RFC 20 §3.4 and §10.2; `core` also gains `HeaderCodec.Args` and `ReplyLen` and `Framer.Frame` (T5.1a) and `OpTable.EncodeResult` and `Invocation.EncodeHead` (T5.4), as #4478 declares them, and `ErrorRow.NotFailure` with `Map`'s third result (T5.4), as #4583 declares them; `Bind`'s `bound` and `Invocation.Bound` taking the request and the room and reporting whether it fits, `func(r *Request, req *Req, room int) (n int, ok bool)` and `func(r *Request, room int) (n int, ok bool)` (T5.4), as #4583 declares them, a changed signature rather than a new symbol; `Row`, `Decoder`, `Encoder` and `Hooks` (T5.1a), as #4562 declares them on `develop`, which `feat/storage-v2`'s RFC 20 gains only with the RFC sync from `develop` after #4697; `pkg/resources` gains `Buf.Recharge`, `Buf.Charge`, `BufPool.TryGet` and `BufPool.Ceiling` (T5.3, T5.5a, landed), and `BufPool.Charge` and `Join` (T5.4) (D8, D9, D11), each with its RFC amendment and its golden file in `testdata/surface`; everything else in `core` is unexported. `pkg/vfs` and `pkg/metrics` are outside RFC 20's surface: their additions are RFC 17 §5.9's and RFC 25 §8.2's |
+| rule 9, a symbol is exported only if RFC 20's interface uses it | T5.7, T5.2a, T5.3, T5.1a, T5.1b, T5.4, T5.5a, T5.9 | `core` gains five exported fields, `Stages.Errors` (D6), `Stages.Protocol`, `OpTable.Protocol` and `OpTable.Versions` (D18) and `Op.MaxMembers` (D10), a method, `Protocol.Tables` (D18), and three errors, `ErrDecode` (D7), `ErrCancelled` (D17) and `ErrReplyTooBig` (D11); `pkg/adapter` gains `Deps.SampleRatio`, `Deps.TraceIDs`, `StartRequestSpan` and `TraceIDFromContext` (T5.1b), as #4440 declares them in RFC 20 §3.4 and §10.2; `core` also gains `HeaderCodec.Args` and `ReplyLen` and `Framer.Frame` (T5.1a) and `OpTable.EncodeResult` and `Invocation.EncodeHead` (T5.4), as #4478 declares them, and `ErrorRow.NotFailure` with `Map`'s third result (T5.4), as #4583 declares them; `Bind`'s `bound` and `Invocation.Bound` taking the request and the room and reporting whether it fits, `func(r *Request, req *Req, room int) (n int, ok bool)` and `func(r *Request, room int) (n int, ok bool)` (T5.4), as #4583 declares them, a changed signature rather than a new symbol; `Row`, `Decoder`, `Encoder` and `Hooks` (T5.1a), as #4562 declares them, which `feat/storage-v2`'s RFC 20 gained with #4751; `pkg/resources` gains `Buf.Recharge`, `Buf.Charge`, `BufPool.TryGet` and `BufPool.Ceiling` (T5.3, T5.5a, landed), and `BufPool.Charge` and `Join` (T5.4) (D8, D9, D11), each with its RFC amendment and its golden file in `testdata/surface`; everything else in `core` is unexported. `pkg/vfs` and `pkg/metrics` are outside RFC 20's surface: their additions are RFC 17 §5.9's and RFC 25 §8.2's |
 | rule 10, each subtask creates only what it declares | all | no totality helper (D5), no session reply budget (D11), no request ID, no series this epic does not record; a part built before the pipeline names the subtask that wires it |
 
 ## 3. Requirements and invariants
@@ -1050,7 +1052,7 @@ and `func TraceIDFromContext(ctx context.Context) (trace.TraceID, bool)` (T5.1b)
 `func Join(n int, bufs ...*Buf) *Buf` (T5.4); in `core`, `HeaderCodec.Args(rec *Buf, h Header)
 []byte`, `HeaderCodec.ReplyLen(h Header) int` and `Framer.Frame(dst []byte, body int) []byte`
 (T5.1a), and `OpTable.EncodeResult` and `Invocation.EncodeHead` (T5.4), as #4478 declares them;
-`Row`, `Decoder`, `Encoder` and `Hooks` (T5.1a), as #4562 declares them on `develop`;
+`Row`, `Decoder`, `Encoder` and `Hooks` (T5.1a), as RFC 20 §4.7 declares them since #4751;
 `ErrorRow.NotFailure`, and `Map` returning `(s Status, reply, notFailure bool)` (T5.4), as
 #4583 declares them; `Bind`'s `bound` and `Invocation.Bound` taking the request and the
 room, `func(r *Request, req *Req, room int) (n int, ok bool)` and
@@ -1157,7 +1159,8 @@ registry. Nothing else is exported.
 
 - **Track:** A; one of the three the program's split lets track C take.
   **Depends on:** T5.2a.
-- **Needs E4:** nothing.
+- **Needs E4:** `NewServer`'s body (#4536): the resolution and the refusals D18 lists run inside
+  it, and the refusals' test calls it.
 - **Covers:** R84, R85 (resolution), R86, R87.
 - **Landed:** all but the case of two registries, with #4444: D19's `Spec`, `Buckets` and the
   registry's three calls in `pkg/metrics`; R85's series in `metrics.go`, one struct per table
@@ -1423,10 +1426,7 @@ registry. Nothing else is exported.
 
 **Subtask T5.1a estimate: 2.75 man-days.**
 
-- **Track:** A. **Depends on:** T5.2a, T5.9, T5.6, T5.3; `core.Row` also on the RFC sync from
-  `develop`, after #4697, that brings #4562's §4.7 text (`Row`, `Decoder`, `Encoder`, `Hooks`)
-  to `feat/storage-v2`'s RFC 20, which declares none of them, since rule 9's amendment
-  precedes its symbol.
+- **Track:** A. **Depends on:** T5.2a, T5.9, T5.6, T5.3.
 - **Needs E4:** nothing: every test is a seam test (D2). The drain cases call `drain` through
   `hooks_test.go`, as E4's drain will.
 - **Covers:** R1, R2, R3, R4, R5 (the miss), R6, R7, R8, R10, R14, R21, R22, R23, R25, R30,
@@ -1460,12 +1460,12 @@ registry. Nothing else is exported.
   pool, key, n, close)`, `n` being `ReplyLen(h)` (RFC 20 §4.7's `HeaderCodec.ReplyLen`, which the pipeline
   reserves alone for a reply carrying a status alone), in place of the small class T5.3's form
   took. Every reply buffer from the reply pool (D9), as RFC 24 §3.3 says since this pull
-  request. `core.Row`, beside `Bind`, as #4562's RFC 20 §4.7 declares it on develop, with its
+  request. `core.Row`, beside `Bind`, as RFC 20 §4.7 declares it since #4751, with its
   `Decoder` and `Encoder` constraints and `Hooks`: it wraps `Bind`, takes `dec` and `enc` from
   the request's and reply's `DecodeWire` and `EncodeWire`, the methods epic 6's generated
   codecs write (its T6.5 and T6.6), and returns the `Op` with `Code`, `Name` and `Needs` set,
   with `core.golden`'s lines; epic 6's T6.3b and T6.4b build their test-only rows with it.
-  `Hooks.Bound` takes the room as `Bind`'s `bound` does (T5.4), the sync carrying #4583's
+  `Hooks.Bound` takes the room as `Bind`'s `bound` does (T5.4), #4751 having carried #4583's
   signature into `Hooks`; a nil one, the codec's largest encoding, ignores the room and reports
   `ok`, so every `READ` and `READ_PLUS` row sets its hook (RFC 20 §4.3, as #4583 amends
   it): `core` cannot tell a `READ` row, so that is checked in review and by each protocol
@@ -2390,6 +2390,7 @@ flowchart TD
   S2(["S2 testproto and the import test in CI"]):::sync --> T5_7["T5.7 error tables, landed"]
   S2 --> T5_2a["T5.2a NewOpTable, landed"]
   T5_2a --> T5_9["T5.9 series, landed in part"]
+  E4N(["E4 NewServer, #4536"]):::sync --> T5_9
   T5_9 --> T5_6["T5.6 middleware chain, landed in part"]
   S2 --> T5_5d["T5.5d WithHold, landed"]
   S2 --> T5_3["T5.3 cap and reply reservation, landed"]
@@ -2399,7 +2400,6 @@ flowchart TD
   T5_9 --> T5_1a
   T5_6 --> T5_1a
   T5_3 --> T5_1a
-  SYNC(["RFC sync from develop after #4697: Row, Hooks"]):::sync --> T5_1a
   T5_1a --> T5_1b["T5.1b span, logs and counts, landed in part"]
   T5_1a --> T5_2b["T5.2b row checks, landed"]
   T5_1b --> T5_4["T5.4 compound runner, landed in part"]
@@ -2417,23 +2417,25 @@ flowchart TD
   T5_11 --> T5_1c
   T5_1c --> C3(["S3: core serves testproto end to end"]):::sync
   T5_1c --> T5_10["T5.10 benchmark and gate"]
+  T5_1b --> T5_10
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
 Fifteen subtasks need no socket, 24 man-days at their estimates; six have landed whole
 (T5.7, T5.2a, T5.3, T5.5a, T5.5d, T5.2b), each priced 0, and five in part (T5.9, T5.6, T5.1a,
-T5.1b, T5.4), §6 saying what each left:
+T5.1b, T5.4), §6 saying what each left. One landed in part keeps its estimate until it lands
+whole, but T5.9, priced at what is left of it (§9):
 
 | When | Subtasks | Man-days |
 | --- | --- | --- |
-| at S2, now | T5.9's case of two registries and its resolution at `NewServer`, then T5.6's frame key and hinge (T5.7 and T5.2a have landed, #4194, #4229, #4266 and #4426, T5.5d too, #4441, and T5.9 and T5.6 in part, #4444, #4456) | 2.75 |
-| now, E3's two pull requests having merged (#4177, #4178) | T5.1a's `core.Row`, after the RFC sync from `develop`; T5.1b's stage clock and trace IDs; T5.4, T5.8, T5.5b, T5.5c, T5.11 (T5.3, T5.5a and T5.2b have landed, #4443, #4521, and T5.1a, T5.1b and T5.4 in part, #4487, #4521, #4522, #4566, #4722) | 21.25 |
+| at S2, now; T5.9's resolution at `NewServer` once E4's `NewServer` has landed (#4536) | T5.9's case of two registries and its resolution at `NewServer`, then T5.6's frame key and hinge (T5.7 and T5.2a have landed, #4194, #4229, #4266 and #4426, T5.5d too, #4441, and T5.9 and T5.6 in part, #4444, #4456) | 2.75 |
+| now, E3's two pull requests having merged (#4177, #4178) | T5.1a's `core.Row`; T5.1b's stage clock and trace IDs; T5.4, T5.8, T5.5b, T5.5c, T5.11 (T5.3, T5.5a and T5.2b have landed, #4443, #4521, and T5.1a, T5.1b and T5.4 in part, #4487, #4521, #4522, #4566, #4722) | 21.25 |
 | once E4's `Server`, accept, reader and writer have landed, its writer passing the suite of `out`, with `Conn.Settings`, `Conn.Established` and `Conn.Close` | T5.1c, T5.10 | 2.5 |
 
 **The critical path** is T5.9, T5.6, T5.1a, T5.1b, T5.4, T5.8, T5.5b, T5.5c, T5.11, T5.1c
 and T5.10: all 26.5 man-days, serial, with S3 reached at T5.1c after 25.25. Every subtask
-with work left is on it; the six landed whole are priced 0. Only
-T5.1c and T5.10 wait for E4, 2.5
+with work left is on it; the six landed whole are priced 0. T5.9's resolution at `NewServer`
+waits for E4's `NewServer` (#4536), and T5.1c and T5.10 for the rest of E4, 2.5
 man-days after it lands. The least certain subtasks, T5.4, T5.5b and T5.1a, are on the path.
 Track C taking T5.9 and T5.6 shortens it only while track A has something else to build;
 T5.2a went first because `testproto`'s holding table builds on it.
@@ -2443,13 +2445,13 @@ T5.2a went first because `testproto`'s holding table builds on it.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T5.2a | 0 | none | D17's `DelayResources` check and `testproto`'s typed row; delivered by #4194, #4229, #4266 and #4426, with the whole of T5.7 |
-| 2 | T5.9 | 1 | PR 1 | the case of two registries and the resolution at `NewServer` (#4440); the registry's calls and `core`'s series under D18's two labels delivered by #4444 |
+| 2 | T5.9 | 1 | PR 1, E4's `NewServer` (#4536) | the case of two registries and the resolution at `NewServer` (#4440); the registry's calls and `core`'s series under D18's two labels delivered by #4444 |
 | 3 | T5.6 | 1.75 | PR 2 | the chain; delivered by #4456 but the panic line's frame key (#4583) and the hinge that only marks (#4440) |
 | 4 | T5.3, T5.5a | 0 | E3 | what reserves: the cap, the reply reservation, the status's bounded wait, `TryGet` and the ceiling, `Recharge`; delivered by #4443, but for `BufPool.Charge`, now T5.4's |
 | 5 | T5.5d | 0 | none | `WithHold` and its reader, which RFC 17's clone wait builds on; delivered by #4441 |
-| 6 | T5.1a, T5.1b, T5.2b | 4.5 | PR 3, PR 4; for `core.Row`, the RFC sync from `develop` after #4697 | the suite of `out` first, then one request at the seam with its observability and its row checks: D6's paths; delivered by #4487 and #4521 but `core.Row`, which waits for that sync, and T5.1b's stage clock and trace IDs |
-| 7a | T5.4, the compound | 3.25 | PR 6 | the walk, `judge` and the compound runner: D10's cap, D11's quarter, R98's clamp and its four criteria, the compound of `PutFH`, `Echo` and `Create` past `NotFailure` with `Map`'s third result, `NewErrorTable`'s refusals and the joined error, per #4583, the compound's stage sums (R97's first case), every row's largest reply, and `FuzzRecordWalk` over compound members; #4522, merged |
-| 7b | T5.4, the chain | 3.5 | PR 7a | the chain: D8's kept place and splits with their count, the record as `Frame` states it, `Join`, R40 to R45 and R94 to R96, D9's one 30 s, the chain of `PutFH`, `Echo` and related `Create` past `NotFailure`, R97's chain cases, and `FuzzRecordWalk` over a chain's `Next` steps; #4566, merged |
+| 6 | T5.1a, T5.1b, T5.2b | 4.5 | PR 3, PR 4 | the suite of `out` first, then one request at the seam with its observability and its row checks: D6's paths; delivered by #4487 and #4521 but `core.Row` and T5.1b's stage clock and trace IDs |
+| 7a | T5.4, the compound | 3.25 | PR 6 | the walk, `judge` and the compound runner: D10's cap, D11's quarter, R98's clamp and its four criteria, the compound of `PutFH`, `Echo` and `Create` past `NotFailure` with `Map`'s third result, `NewErrorTable`'s refusals and the joined error, per #4583, the compound's stage sums (R97's first case), every row's largest reply, and `FuzzRecordWalk` over compound members; delivered by #4522 but for R98's clamp, `NotFailure` with `Map`'s third result, `NewErrorTable`'s refusals and the joined error, in #4723, and the compound's stage sums, left |
+| 7b | T5.4, the chain | 3.5 | PR 7a | the chain: D8's kept place and splits with their count, the record as `Frame` states it, `Join`, R40 to R45 and R94 to R96, D9's one 30 s, the chain of `PutFH`, `Echo` and related `Create` past `NotFailure`, R97's chain cases, and `FuzzRecordWalk` over a chain's `Next` steps; delivered by #4566 and #4722 but for the chain past `NotFailure`, in #4723, and D9's one 30 s and R97's chain cases, left |
 | 8 | T5.8, T5.5b, T5.5c | 7 | PR 4, PR 5, PR 7b | the request's context and the holds built on it |
 | 9 | T5.11 | 3 | PR 8 | parks, on the pending table |
 | 10 | T5.1c | 1.25 | PR 9, E4 | the pipeline on E4's `Conn`: what only a socket decides, S3 |
@@ -2617,11 +2619,13 @@ A suggestion only: one pull request per subtask works as well.
   and #4722 T5.4 in part. Simone's next review prices T5.5d and T5.2b at 0, as the other
   landed subtasks are (1.5 less), and raises T5.9 to 1 for #4440's resolution at `NewServer`,
   which its 0.25 did not cover (0.75 more): the total is 26.5, which the program plan carries.
+  A subtask landed in part keeps its estimate until it lands whole (§7), T5.1a its 2.75 though
+  only `core.Row`, the 0.25 above, is left; T5.9 alone is priced at what is left of it.
 - **Edits to the program's implementation plan and to the epic 1 and epic 2 documents**,
   made in this document's pull request:
   - the ledger's row for each protocol's error-table rows and totality test now names the
-    helper it calls and the pin of its `NotFailure` rows to its RFC's list (R100), and the coverage
-    rows for RFC 20 §4.5 and §7.3 send the helper there (D5);
+    helper it calls, and the coverage rows for RFC 20 §4.5 and §7.3 send the helper there
+    (D5);
   - the row for NFSv4.1's slots now names the session's reply budget and the bound by a
     quarter of the slots on calls waiting under `vfs.WithHold`, and the coverage row for
     RFC 20 §4.3 says what of the reply budget this epic builds (D11, D16);
