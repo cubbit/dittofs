@@ -47,6 +47,7 @@ type writer struct {
 	held     int // messages out took and has not yet written or released
 	wake     chan struct{}
 	room     chan struct{} // closed while the messages held are below the bound
+	empty    chan struct{} // made by a drain's wait while messages are held, closed when none are
 	closed   bool
 	stopped  chan struct{}
 	done     chan struct{}
@@ -131,7 +132,7 @@ func (w *writer) stop() {
 		_ = w.nc.SetWriteDeadline(time.Now().Add(-time.Second))
 		q := w.queue
 		w.queue = nil
-		w.held -= len(q)
+		w.less(len(q))
 		if !isClosed(w.room) {
 			close(w.room)
 		}
@@ -210,7 +211,7 @@ func (w *writer) take() []queued {
 func (w *writer) written(n int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.held -= n
+	w.less(n)
 	if w.held < writeBound && !isClosed(w.room) {
 		close(w.room)
 	}
@@ -251,7 +252,7 @@ func (w *writer) fail() bool {
 	w.mu.Lock()
 	q := w.queue
 	w.queue = nil
-	w.held -= len(q)
+	w.less(len(q))
 	if !isClosed(w.room) {
 		close(w.room)
 	}
@@ -262,6 +263,32 @@ func (w *writer) fail() bool {
 		m.msg.Release()
 	}
 	return !closed
+}
+
+// less drops n messages from the held count, under w.mu, and wakes a drain
+// waiting for none to be held.
+func (w *writer) less(n int) {
+	w.held -= n
+	if w.held == 0 && w.empty != nil {
+		close(w.empty)
+		w.empty = nil
+	}
+}
+
+// flushed returns a channel closed once the writer holds no message, each one
+// out took written, failed or released, or nil when it holds none now: the
+// drain waits there, so the reply of a request it let finish is sent before
+// the close (RFC 20 section 3.1).
+func (w *writer) flushed() <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.held == 0 {
+		return nil
+	}
+	if w.empty == nil {
+		w.empty = make(chan struct{})
+	}
+	return w.empty
 }
 
 // isClosed reports whether ch is closed.

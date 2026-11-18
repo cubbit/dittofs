@@ -332,6 +332,7 @@ func TestTheDrainDeadlineIsTakenWhereDrainingIsPublished(t *testing.T) {
 	b.Reply = resources.NewWaitBudget("reply", chargeOfReply(t, 8))
 	adaptertest.CheckLeaks(t, b)
 	gate := make(chan struct{})
+	open := sync.OnceFunc(func() { close(gate) })
 	listen := func(ctx context.Context, network, addr string) (net.Listener, error) {
 		ln, err := (&net.ListenConfig{}).Listen(ctx, network, addr)
 		if err != nil {
@@ -347,7 +348,7 @@ func TestTheDrainDeadlineIsTakenWhereDrainingIsPublished(t *testing.T) {
 	stopAtEnd(t, srv)
 	clk := newManualClock()
 	core.SetServerClock(srv, clk)
-	core.SetServerListen(srv, listen)
+	core.SetListen(srv, listen)
 	if err := srv.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +356,10 @@ func TestTheDrainDeadlineIsTakenWhereDrainingIsPublished(t *testing.T) {
 	c, nc := clientAt(t, at)
 	conn := theConn(t, p)
 	registered(t, srv, p)
-	free := holdsRoom(t, b, 1)
+	free := sync.OnceFunc(holdsRoom(t, b, 1))
+	// Registered past stopAtEnd, so it runs before that Stop: a failure below
+	// cannot leave the running Stop parked on the gate, the room or the clock.
+	t.Cleanup(func() { open(); free(); clk.Advance(time.Second) })
 	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Payload: []byte("hi")}); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +372,7 @@ func TestTheDrainDeadlineIsTakenWhereDrainingIsPublished(t *testing.T) {
 		return srv.Health().State == adapter.StateDraining
 	})
 	clk.Advance(201 * time.Millisecond)
-	close(gate)
+	open()
 	select {
 	case err := <-stopped:
 		if err != nil {
@@ -461,6 +465,7 @@ func TestWhileDrainingARequestIsServedByRole(t *testing.T) {
 	// The listener's accept is parked past the publication until the test
 	// lets it go, so the none Echo below arrives while its loop is waited.
 	loop := make(chan struct{})
+	letLoop := sync.OnceFunc(func() { close(loop) })
 	listen := func(ctx context.Context, network, addr string) (net.Listener, error) {
 		ln, err := (&net.ListenConfig{}).Listen(ctx, network, addr)
 		if err != nil {
@@ -468,20 +473,14 @@ func TestWhileDrainingARequestIsServedByRole(t *testing.T) {
 		}
 		return &parkedAccept{Listener: ln, gate: loop}, nil
 	}
-	// The gate holds each teardown until the answered reply was read, so the
-	// queue the writer holds is flushed and not dropped by its stop.
-	gate := make(chan struct{})
-	var open sync.Once
-	defer open.Do(func() { close(gate) })
 	p := newCapturing(testproto.New(adapter.Deps{}).Bare())
-	p.Protocol = withOnClose{p.Protocol, func(context.Context) { <-gate }}
 	srv, err := core.NewServer(adapter.Deps{Budgets: b}, drainSnap("127.0.0.1"), core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: p})
 	if err != nil {
 		t.Fatal(err)
 	}
 	stopAtEnd(t, srv)
 	core.SetServerClock(srv, newManualClock())
-	core.SetServerListen(srv, listen)
+	core.SetListen(srv, listen)
 	if err := srv.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +491,10 @@ func TestWhileDrainingARequestIsServedByRole(t *testing.T) {
 		return len(p.list()) == 2
 	})
 	registered(t, srv, p)
-	free := holdsRoom(t, b, 2)
+	free := sync.OnceFunc(holdsRoom(t, b, 2))
+	// Registered past stopAtEnd, so it runs before that Stop: a failure below
+	// cannot leave the running Stop parked on the loop or the rooms.
+	t.Cleanup(func() { letLoop(); free() })
 	if err := rel.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Role: core.RoleRelease, Payload: []byte("r")}); err != nil {
 		t.Fatal(err)
 	}
@@ -533,8 +535,7 @@ func TestWhileDrainingARequestIsServedByRole(t *testing.T) {
 	if rs, err := rel.Recv(); err != nil || len(rs) != 1 || rs[0].ID != 1 || rs[0].Status != testproto.StatusOK {
 		t.Errorf("the release Echo sent under the drain is answered %+v (%v)", rs, err)
 	}
-	open.Do(func() { close(gate) })
-	close(loop)
+	letLoop()
 	select {
 	case err := <-stopped:
 		if err != nil {
@@ -725,6 +726,50 @@ func TestTheDrainEndsAtTheEarlierOfTheTwoDeadlines(t *testing.T) {
 		}
 		if h := srv.Health(); h.State != adapter.StateStopped {
 			t.Errorf("after Stop the server is %s, want stopped", h.State)
+		}
+	})
+}
+
+// A request that answers while the server drains has its reply written before
+// Stop closes its connection (RFC 20 section 3.1): in a pipe-test bubble whose
+// client reads nothing yet, an Echo freed from its reply room answers into a
+// writer the client holds, and Stop has not returned; once the client reads,
+// the reply is the Echo's and Stop returns. A drain that reads the connection
+// quiet once the reply is queued closes it with the reply unsent.
+func TestADrainSendsTheReplyOfARequestItLetFinish(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		b.Reply = resources.NewWaitBudget("reply", chargeOfReply(t, 8))
+		adaptertest.CheckLeaks(t, b)
+		srv, l := bubbleServer(t, b, drainSnap(), nil)
+		conn, peer := servedConn(t, srv, &l)
+		defer func() { _ = peer.Close() }() // a failure below still ends the write
+		c := testproto.NewClient(peer)
+		free := sync.OnceFunc(holdsRoom(t, b, 1))
+		defer free()
+		if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Role: core.RoleRelease, Payload: []byte("hi")}); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait() // the Echo on its reply room
+		if got := pipelineRuns(conn); got != 1 {
+			t.Fatalf("the Echo runs %d, want it parked on its reply room", got)
+		}
+		stopped := make(chan error, 1)
+		go func() { stopped <- srv.Stop(context.Background()) }()
+		synctest.Wait() // the drain waits on the Echo
+		free()
+		synctest.Wait() // the Echo answered into a writer the client holds
+		select {
+		case err := <-stopped:
+			t.Fatalf("Stop returned (%v) with the answered Echo's reply unsent", err)
+		default:
+		}
+		rs, err := c.Recv()
+		if err != nil || len(rs) != 1 || rs[0].ID != 7 || rs[0].Status != 0 {
+			t.Fatalf("the answered Echo's reply: %+v (%v)", rs, err)
+		}
+		if err := <-stopped; err != nil {
+			t.Fatalf("Stop: %v", err)
 		}
 	})
 }

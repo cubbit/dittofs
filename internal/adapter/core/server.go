@@ -411,14 +411,16 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
-// drainConns waits until nothing runs on any connection, or until the drain
-// deadline, the earlier of ctx's deadline and drain_timeout from the
-// snapshot, on the server's clock, taken with the pipelines' drain where
-// draining is published, under Stop's first lock, so a clock a reader of the
-// state advances cannot move the take past it. Both run from there, the
-// drain's start, which is how section 3.1 words it; the wait below only
-// parks while the accept loops end. What still runs at it is left for the
-// close that follows (RFC 20 sections 3.1 and 3.4).
+// drainConns waits until nothing runs on any connection and no writer holds a
+// reply, since a request ends once its reply is queued and the close releases
+// what a writer still holds unsent, or until the drain deadline, the earlier
+// of ctx's deadline and drain_timeout from the snapshot, on the server's
+// clock, taken with the pipelines' drain where draining is published, under
+// Stop's first lock, so a clock a reader of the state advances cannot move
+// the take past it. Both run from there, the drain's start, which is how
+// section 3.1 words it; the wait below only parks while the accept loops
+// end. What still runs at it is left for the close that follows (RFC 20
+// sections 3.1 and 3.4).
 func (s *Server) drainConns(ctx context.Context, conns []*Conn, at time.Time) {
 	if len(conns) == 0 {
 		return
@@ -435,12 +437,19 @@ func (s *Server) drainConns(ctx context.Context, conns []*Conn, at time.Time) {
 	for {
 		waited := false
 		for _, c := range conns {
-			if c.p.quiet() {
-				continue
+			if !c.p.quiet() {
+				waited = true
+				if err := c.p.wait(wait); err != nil {
+					return // the drain deadline: the close abandons what runs
+				}
 			}
-			waited = true
-			if err := c.p.wait(wait); err != nil {
-				return // the drain deadline: the close abandons what runs
+			if sent := c.w.flushed(); sent != nil {
+				waited = true
+				select {
+				case <-sent:
+				case <-wait.Done():
+					return // the drain deadline: the close drops what is unsent
+				}
 			}
 		}
 		if !waited {
