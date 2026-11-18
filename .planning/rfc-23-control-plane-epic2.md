@@ -704,6 +704,9 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   func (n Nodes) AllSettings(ctx context.Context, after entity.SettingKey) iter.Seq2[entity.Setting, error]
   ```
   `RaiseNodeEpoch` raises `N‖node`'s `Epoch` and `idNodeEpoch` goes, with its `ponytail:` (D15).
+  `AllSettings` yields a row that does not decode as a pair whose error wraps `entity.ErrBadRow`,
+  declared beside `entity.SettingsReader`, and goes on; the RFC 13 plan's epic 3 relies on it (its
+  D2). Being built in #4812 (open).
   Consumed by E3 (registration at start, the status writer, reconcile's listings), E4 (`applied`,
   the node resource) and the RFC 13 plan (its version gate writes the ranges, its `Prune` reads the
   secret versions).
@@ -718,8 +721,10 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   more than one page, every setting once in `CFG`'s key order; a write between the first page and the
   second, which the second page shows and the first does not (each page is its own transaction, which
   is why reconcile reads `CFGGEN` around the walk, RFC 23 §2.3); a walk resumed after a deleted key
-  still finding the rest; and the zero `entity.SettingKey` starting at the first (catches a cursor that
-  skips or repeats). R38 is held by the compiler:
+  still finding the rest; the zero `entity.SettingKey` starting at the first (catches a cursor that
+  skips or repeats); and a row that does not decode, among valid rows, yielded as a pair whose error
+  wraps `entity.ErrBadRow` while the walk goes on, so one bad row stops only its own section (RFC 13
+  §6, the RFC 13 plan's epic 3 D2). R38 is held by the compiler:
   `ControlPlane` has no write of a status. No double.
 
 ### T2.9 Sessions, API tokens and sign-in counts

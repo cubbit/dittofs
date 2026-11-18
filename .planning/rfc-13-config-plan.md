@@ -868,6 +868,9 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, h
 	if err != nil {
 		return err
 	}
+	// lookup lets a delete of a key the section does not declare, under a declared prefix,
+	// through; Check takes it here, before the rank below: admin-only whatever sec.writeRole,
+	// and it skips the class and bound gates (epic 3's D1, T3.5).
 	if rank(caller) < rank(sec.writeRole) { // an explicit rank, never the names; an empty or unknown role ranks lowest, and Of panics on an unknown WriteRole
 		return ErrForbidden // admin-only sections, identity.directory among them, its first value included (RFC 13 Appendix B, A1)
 	}
