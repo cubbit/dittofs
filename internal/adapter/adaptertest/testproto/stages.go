@@ -88,13 +88,8 @@ func (security) Unwrap(h core.Header, rec *resources.Buf, prev core.Header) (cor
 		xorKey(args, s)
 	}
 	binary.BigEndian.PutUint32(hd[offSession:], s)
-	if args := arguments(rec.B, off, hd); hd.Op() == OpCompound && len(args) >= 8 {
-		if n := binary.BigEndian.Uint32(args[4:]); int64(n) <= int64(len(args)-8) {
-			return &tagged{hd, bytes.Clone(args[8 : 8+n])}, nil
-		}
-	}
 
-	return hd, nil
+	return withTag(hd, arguments(rec.B, off, hd)), nil
 }
 
 // Wrap seals every reply in reply under its session, in place, and a reply

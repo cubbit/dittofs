@@ -67,6 +67,7 @@
 package testproto
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -189,12 +190,24 @@ type stepless struct{ *header }
 
 func (stepless) Next() int { return -1 }
 
-// tagged is a compound request's header once Unwrap has read the tag from
-// its arguments, clear by then: Encode echoes it in the head of a refusal
+// tagged is a compound request's header with the tag read from its
+// arguments, where they are clear: Encode echoes it in the head of a refusal
 // answered with its status alone, and ReplyLen counts it.
 type tagged struct {
 	*header
 	tag []byte
+}
+
+// withTag is h on a tagged header where h is a compound whose clear
+// arguments, args, carry its tag whole, and h itself otherwise.
+func withTag(h *header, args []byte) core.Header {
+	if h.Op() == OpCompound && len(args) >= 8 {
+		if n := binary.BigEndian.Uint32(args[4:]); int64(n) <= int64(len(args)-8) {
+			return &tagged{h, bytes.Clone(args[8 : 8+n])}
+		}
+	}
+
+	return h
 }
 
 // plain is h as the header in its record: a request's own, or a compound's
@@ -212,7 +225,8 @@ func plain(h core.Header) (*header, bool) {
 	return nil, false
 }
 
-// tagOf is a compound request's tag, as Unwrap read it, or none.
+// tagOf is a compound request's tag, as its header's codec or Unwrap read it,
+// or none.
 func tagOf(h core.Header) []byte {
 	if t, ok := h.(*tagged); ok {
 		return t.tag
@@ -299,7 +313,10 @@ type headerCodec struct{ flow *flow }
 
 // Decode returns the header at off in the record. A header whose fields
 // decoded and whose next is bad comes back with its error, so its refusal
-// can be addressed; one that runs past the record, with none.
+// can be addressed; one that runs past the record, with none. A compound's
+// tag is read with its header, as RFC 20 §4.1 reads an NFSv4 COMPOUND's,
+// where its arguments are clear, under session 0, so stages with no Security
+// echo and count it too; under a session, Unwrap reads it once they are.
 func (headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
 	h, err := headerAt(rec.B, off)
 	if errors.Is(err, errNext) {
@@ -307,6 +324,9 @@ func (headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if h.session() == 0 {
+		return withTag(h, arguments(rec.B, off, h)), nil
 	}
 
 	return h, nil
@@ -342,7 +362,7 @@ func (c headerCodec) Encode(h core.Header, s core.Status, out *resources.Buf) er
 	binary.BigEndian.PutUint32(rep[offChecksum:], 0)
 	if req.Op() == OpCompound && s != 0 {
 		// A compound answered a status alone carries its head, with the tag
-		// Unwrap read and no results.
+		// its header's codec or Unwrap read and no results.
 		out.B = appendHead(out.B, s, tagOf(h), 0)
 	}
 

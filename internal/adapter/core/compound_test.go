@@ -549,6 +549,29 @@ func TestADrainedCompound(t *testing.T) {
 	})
 }
 
+// A compound still waiting for its reply when the drain begins has not been
+// handed to the service, so it is judged once its reply is reserved, as a
+// request alone is: one the drain does not serve whole is answered nothing
+// and runs nothing (§3.1, §4.7).
+func TestACompoundWaitingForItsReplyAtTheDrainIsJudged(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newServed(t, 4*smallCharge, adapter.Deps{})
+		none := echo
+		none.Role = core.RoleNone
+		synctest.Wait() // the set-up's replies are released
+		frees := []func(){s.full(), s.full(), s.full(), s.full()}
+		s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, testproto.Msg{Op: testproto.OpCreate, Name: "late"}, none)
+		synctest.Wait() // the compound waits for its reply
+		s.p.Drain()
+		for _, free := range frees {
+			free()
+		}
+		if !s.sentNothing() || s.creates() != 0 {
+			t.Errorf("a compound that waited for its reply through the drain was answered, or made %d files", s.creates())
+		}
+	})
+}
+
 // A member whose call the connection's close ended ends the compound with
 // nothing sent and no member after it run: the close's cancel is no error, so
 // nothing counts as an error no row maps and nothing logs at error. The second
@@ -801,15 +824,20 @@ func TestACompoundRowThatSetsNoHeadClosesTheConnection(t *testing.T) {
 
 // A compound refused at route, before its row decodes it, is answered its
 // status alone with its head: the tag its header's codec read, and no
-// results.
+// results. So it is on Bare too, whose stages have no Security to read the
+// tag after the header (RFC 20 §4.1).
 func TestACompoundRefusedAtRouteEchoesItsTag(t *testing.T) {
 	off := testproto.Settings{Adapter: settings.Adapter{DisabledOperations: []string{"Compound"}}}
-	s := newSeamSet(t, testproto.New(adapter.Deps{}), 1<<20, adapter.Deps{}, off)
-	s.serve(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 3, Tag: tagOf(3), Members: []testproto.Msg{echo}})
-	r := s.read()
-	hd, rs, err := testproto.Results(r.Body)
-	if r.Status != testproto.StatusNotSupported || err != nil || !headIs(hd, testproto.StatusNotSupported, tagOf(3)) || len(rs) != 0 {
-		t.Errorf("a compound switched off is answered %d with head %+v and %v (%v), want not supported, its tag and no results", r.Status, hd, rs, err)
+	for name, proto := range map[string]core.Protocol{"full": testproto.New(adapter.Deps{}), "bare": testproto.New(adapter.Deps{}).Bare()} {
+		t.Run(name, func(t *testing.T) {
+			s := newSeamSet(t, proto, 1<<20, adapter.Deps{}, off)
+			s.serve(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 3, Tag: tagOf(3), Members: []testproto.Msg{echo}})
+			r := s.read()
+			hd, rs, err := testproto.Results(r.Body)
+			if r.Status != testproto.StatusNotSupported || err != nil || !headIs(hd, testproto.StatusNotSupported, tagOf(3)) || len(rs) != 0 {
+				t.Errorf("a compound switched off is answered %d with head %+v and %v (%v), want not supported, its tag and no results", r.Status, hd, rs, err)
+			}
+		})
 	}
 }
 
