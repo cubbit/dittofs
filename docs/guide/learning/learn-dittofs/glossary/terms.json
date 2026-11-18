@@ -1,0 +1,1220 @@
+{
+  "filesystem-service": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-17", "rfc-20", "rfc-8"],
+    "code": [],
+    "target": ["pkg/vfs"]
+  },
+  "share": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-16", "rfc-17", "rfc-29", "rfc-8"]
+  },
+  "node": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-15", "rfc-17", "rfc-8"]
+  },
+  "primary": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-11", "rfc-14", "rfc-17", "rfc-22", "rfc-8"]
+  },
+  "gateway-node": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-15", "rfc-17", "rfc-22"],
+    "target": ["pkg/vfs (vfs.Gateway)"]
+  },
+  "open-state": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-17", "rfc-22", "rfc-7"]
+  },
+  "deny-mode": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-17", "rfc-22"]
+  },
+  "handle": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-14", "rfc-17", "rfc-22", "rfc-7"]
+  },
+  "caching-grant": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-17", "rfc-22"]
+  },
+  "retry-later": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-17", "rfc-20", "rfc-22", "rfc-8"]
+  },
+  "anonymous-open": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-17"]
+  },
+  "admission": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-17", "rfc-22"]
+  },
+  "adapter": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-17", "rfc-20", "rfc-14"],
+    "code": ["pkg/adapter", "internal/adapter"],
+    "target": ["internal/adapter/nfs", "internal/adapter/smb"]
+  },
+  "core": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#25-architecture-and-package-layout",
+    "sourceLabel": "RFC 20 §2.5",
+    "rfcs": ["rfc-20"],
+    "target": ["internal/adapter/core"]
+  },
+  "pipeline": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#41-one-pipeline",
+    "sourceLabel": "RFC 20 §4.1",
+    "rfcs": ["rfc-20"],
+    "target": ["internal/adapter/core/pipeline.go"]
+  },
+  "codec": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#51-codecs-are-pure",
+    "sourceLabel": "RFC 20 §5.1",
+    "rfcs": ["rfc-20"],
+    "code": ["internal/adapter/nfs/xdr", "internal/adapter/smb/smbenc"],
+    "target": ["internal/adapter/nfs/wire", "internal/adapter/smb/wire"]
+  },
+  "handler": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#43-a-handler-makes-at-most-one-mutating-call",
+    "sourceLabel": "RFC 20 §4.3",
+    "rfcs": ["rfc-20"],
+    "code": ["internal/adapter/nfs/v3", "internal/adapter/nfs/v4", "internal/adapter/smb/handlers"]
+  },
+  "operation-table": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#42-the-operation-table",
+    "sourceLabel": "RFC 20 §4.2",
+    "rfcs": ["rfc-20"],
+    "target": ["internal/adapter/core/dispatch.go"]
+  },
+  "error-table": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#45-one-error-table-per-protocol",
+    "sourceLabel": "RFC 20 §4.5",
+    "rfcs": ["rfc-20", "rfc-22"],
+    "target": ["internal/adapter/core/errors.go"]
+  },
+  "connection-state": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#22-what-an-adapter-may-hold",
+    "sourceLabel": "RFC 20 §2.2",
+    "rfcs": ["rfc-20"]
+  },
+  "client-held-name": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#21-two-questions-place-every-piece-of-logic",
+    "sourceLabel": "RFC 20 §2.1",
+    "rfcs": ["rfc-20"]
+  },
+  "compound": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#43-a-handler-makes-at-most-one-mutating-call",
+    "sourceLabel": "RFC 20 §4.3",
+    "rfcs": ["rfc-20", "rfc-21", "rfc-22"],
+    "target": ["internal/adapter/core/compound.go"]
+  },
+  "held-request": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#46-held-requests",
+    "sourceLabel": "RFC 20 §4.6",
+    "rfcs": ["rfc-20", "rfc-22"],
+    "code": ["internal/adapter/smb/pending"],
+    "target": ["internal/adapter/core/hold.go"]
+  },
+  "callback": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#33-callbacks-are-the-adapters-to-deliver",
+    "sourceLabel": "RFC 20 §3.3",
+    "rfcs": ["rfc-14", "rfc-17", "rfc-20", "rfc-22"]
+  },
+  "auxiliary-service": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#31-the-adapters-states",
+    "sourceLabel": "RFC 20 §3.1",
+    "rfcs": ["rfc-20", "rfc-21"],
+    "code": ["internal/adapter/nfs/mount", "internal/adapter/nfs/nlm", "internal/adapter/nfs/nsm"]
+  },
+  "sidecar": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#35-sidecars",
+    "sourceLabel": "RFC 20 §3.5",
+    "rfcs": ["rfc-20"],
+    "code": ["pkg/adapter/sidecar"],
+    "target": ["internal/sidecar"]
+  },
+  "recording-service": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#72-handlers-against-a-verified-service",
+    "sourceLabel": "RFC 20 §7.2",
+    "rfcs": ["rfc-20"],
+    "target": ["pkg/vfs/vfstest"]
+  },
+  "null-service": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#7-tests",
+    "sourceLabel": "RFC 20 §7",
+    "rfcs": ["rfc-20"],
+    "target": ["pkg/vfs/vfstest"]
+  },
+  "reference-server": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#82-differential-runs",
+    "sourceLabel": "RFC 20 §8",
+    "rfcs": ["rfc-20"]
+  },
+  "wire-test": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#82-differential-runs",
+    "sourceLabel": "RFC 20 §8.2",
+    "rfcs": ["rfc-20", "rfc-29"]
+  },
+  "drain": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#31-the-adapters-states",
+    "sourceLabel": "RFC 20 §3.1",
+    "rfcs": ["rfc-20", "rfc-23", "rfc-22"]
+  },
+  "identity": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#44-identity",
+    "sourceLabel": "RFC 20 §4.4",
+    "rfcs": ["rfc-17", "rfc-18", "rfc-20", "rfc-22"],
+    "target": ["internal/adapter/auth"]
+  },
+  "flow-control": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#63-flow-control-is-the-protocols-own",
+    "sourceLabel": "RFC 20 §6.3",
+    "rfcs": ["rfc-20", "rfc-24", "rfc-22"]
+  },
+  "session": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#22-what-an-adapter-may-hold",
+    "sourceLabel": "RFC 20 §2.2",
+    "rfcs": ["rfc-20", "rfc-21", "rfc-22", "rfc-14"]
+  },
+  "rpc": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#31-the-adapters-states",
+    "sourceLabel": "RFC 20 §3.1",
+    "rfcs": ["rfc-20", "rfc-21", "rfc-22"]
+  },
+  "lease": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-11", "rfc-14", "rfc-17", "rfc-22", "rfc-29"]
+  },
+  "engine": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8", "rfc-17"],
+    "code": ["pkg/block/engine"]
+  },
+  "extent": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "chunk": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-8"],
+    "code": ["pkg/block/chunker"]
+  },
+  "block": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-4", "rfc-8"]
+  },
+  "remote-tier": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-4", "rfc-8"],
+    "code": ["pkg/block/remote"]
+  },
+  "carver": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-8"],
+    "code": ["pkg/block/carver"]
+  },
+  "syncer": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-3", "rfc-8"],
+    "code": ["pkg/block/syncer"]
+  },
+  "dirty": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "durable": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-14", "rfc-22", "rfc-8"]
+  },
+  "evict": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "hole": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-6", "rfc-8"]
+  },
+  "lost": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "write-verifier": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-17", "rfc-22", "rfc-8"]
+  },
+  "journal": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-17", "rfc-22", "rfc-28", "rfc-8"],
+    "code": ["pkg/block/journal (v1, one per share)"],
+    "target": ["pkg/block/journal (v2, on feat/storage-v2, where it replaced v1)"]
+  },
+  "record": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-28", "rfc-8"]
+  },
+  "segment": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-28", "rfc-8"]
+  },
+  "held-extent": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "offloaded-bit": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "offer": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "report": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "release": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-17", "rfc-7", "rfc-8"]
+  },
+  "fill": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "repack": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "unreclaimed-bytes": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "loss-event": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "offload": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "sync": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-22", "rfc-8"]
+  },
+  "content-version": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#43-versions",
+    "sourceLabel": "RFC 1 · §4.3 Versions",
+    "rfcs": ["rfc-1", "rfc-6", "rfc-28", "rfc-8"]
+  },
+  "change-version": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#34-fill",
+    "sourceLabel": "RFC 1 · §3.4 Fill",
+    "rfcs": ["rfc-1", "rfc-8"]
+  },
+  "removal-marker": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#36-truncate-deallocate-and-delete",
+    "sourceLabel": "RFC 1 · §3.6 Truncate, deallocate and delete",
+    "rfcs": ["rfc-1", "rfc-8"]
+  },
+  "headroom": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#6-capacity",
+    "sourceLabel": "RFC 1 · §6 Capacity",
+    "rfcs": ["rfc-1"]
+  },
+  "missing": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#32-read",
+    "sourceLabel": "RFC 1 · §3.2 Read",
+    "rfcs": ["rfc-1", "rfc-0", "rfc-8"]
+  },
+  "placement-index": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#4-the-placement-index",
+    "sourceLabel": "RFC 1 · §4 The placement index",
+    "rfcs": ["rfc-1", "rfc-28"]
+  },
+  "append-stream": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#52-syncing",
+    "sourceLabel": "RFC 1 · §5.2 Syncing",
+    "rfcs": ["rfc-1", "rfc-28"]
+  },
+  "share-tag": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#3-interface",
+    "sourceLabel": "RFC 1 · §3 Interface",
+    "rfcs": ["rfc-1", "rfc-16"]
+  },
+  "sequence-number": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#43-versions",
+    "sourceLabel": "RFC 1 · §4.3 Versions",
+    "rfcs": ["rfc-1", "rfc-28"]
+  },
+  "storage-binding": {
+    "source": "docs/internals/rfcs/rfc-8-engine.md#23-one-engine-per-node-a-share-is-a-storage-binding",
+    "sourceLabel": "RFC 8 §2.3",
+    "rfcs": ["rfc-0", "rfc-8"],
+    "target": ["pkg/block/engine/share.go"]
+  },
+  "stability-point": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-17", "rfc-22", "rfc-8"],
+    "target": ["pkg/block/engine/commit.go"]
+  },
+  "existence": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-6", "rfc-8"]
+  },
+  "group-commit": {
+    "source": "docs/internals/rfcs/rfc-8-engine.md#52-group-commit-is-bounded-and-retries-only-the-files-that-conflict",
+    "sourceLabel": "RFC 8 §5.2",
+    "rfcs": ["rfc-8"],
+    "target": ["pkg/block/engine/groupcommit.go"]
+  },
+  "residency": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-8"]
+  },
+  "ref": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-16", "rfc-6", "rfc-8"]
+  },
+  "carved": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-6", "rfc-8"]
+  },
+  "policy-component": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-8"],
+    "target": ["pkg/block/engine/policy.go"]
+  },
+  "work-queue": {
+    "source": "docs/internals/rfcs/rfc-8-engine.md#61-the-work-queue",
+    "sourceLabel": "RFC 8 §6.1",
+    "rfcs": ["rfc-8", "rfc-9"],
+    "target": ["pkg/block/engine/queue.go", "pkg/sched"]
+  },
+  "offload-pipeline": {
+    "source": "docs/internals/rfcs/rfc-8-engine.md#63-the-offload-pipeline",
+    "sourceLabel": "RFC 8 §6.3",
+    "rfcs": ["rfc-8"],
+    "target": ["pkg/block/engine/offload"]
+  },
+  "offload-guard": {
+    "source": "docs/internals/rfcs/rfc-8-engine.md#64-the-offload-guard-is-narrow",
+    "sourceLabel": "RFC 8 §6.4",
+    "rfcs": ["rfc-8"]
+  },
+  "put-intent": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-6", "rfc-8", "rfc-9"]
+  },
+  "block-name": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-4", "rfc-8"]
+  },
+  "speculator": {
+    "source": "docs/internals/rfcs/rfc-8-engine.md#74-the-speculator",
+    "sourceLabel": "RFC 8 §7.4",
+    "rfcs": ["rfc-3", "rfc-8"],
+    "target": ["pkg/block/engine/speculate.go"]
+  },
+  "pacing": {
+    "source": "docs/internals/rfcs/rfc-8-engine.md#1021-writes-are-paced-before-the-limit-not-stopped-at-it",
+    "sourceLabel": "RFC 8 §10.2.1",
+    "rfcs": ["rfc-8"],
+    "target": ["pkg/block/engine/capacity.go"]
+  },
+  "self-fence": {
+    "source": "docs/internals/rfcs/rfc-8-engine.md#112-every-condition-in-rfc-0-10-has-its-engine-behaviour-here",
+    "sourceLabel": "RFC 8 §11.2",
+    "rfcs": ["rfc-0", "rfc-8", "rfc-10", "rfc-11"],
+    "target": ["pkg/block/engine/fence.go"]
+  },
+  "loss-generation": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-1", "rfc-8"]
+  },
+  "metadata-store": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-16", "rfc-8"],
+    "code": ["pkg/metadata", "pkg/metadata (Store, store.go)", "pkg/metadata/store/badger"],
+    "target": ["pkg/metadata/kvstore (feat/storage-v2)"]
+  },
+  "namespace": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-12", "rfc-16", "rfc-27", "rfc-6", "rfc-8"]
+  },
+  "remote-block-store": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-4", "rfc-8"],
+    "code": ["pkg/block/remote"]
+  },
+  "shard": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-11", "rfc-14", "rfc-15", "rfc-16", "rfc-17"]
+  },
+  "shard-incarnation": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-10", "rfc-11", "rfc-14"]
+  },
+  "client-id": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-21", "rfc-22"],
+    "code": ["internal/adapter/nfs/v4/state/client.go"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "open": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-17"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "lock-owner": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#2-the-entities",
+    "sourceLabel": "RFC 14 §2",
+    "rfcs": ["rfc-14"],
+    "code": ["internal/adapter/nfs/v4/state/lockowner.go"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "byte-range-lock": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14"],
+    "code": ["pkg/metadata/lock/byterange.go"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "lock-waiter": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#210-lock-waiters",
+    "sourceLabel": "RFC 14 §2.10",
+    "rfcs": ["rfc-14"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "state-reference": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#211-state-references",
+    "sourceLabel": "RFC 14 §2.11",
+    "rfcs": ["rfc-14", "rfc-17"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "open-state-step": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#3-one-table-per-file-at-one-primary",
+    "sourceLabel": "RFC 14 §3",
+    "rfcs": ["rfc-14", "rfc-17"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "client-lease": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14"],
+    "code": ["internal/adapter/nfs/v4/state/lease.go"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "lease-owner": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#41-a-client-lease",
+    "sourceLabel": "RFC 14 §4.1",
+    "rfcs": ["rfc-14"]
+  },
+  "grace-period": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-17", "rfc-21", "rfc-22", "rfc-27"],
+    "code": ["pkg/metadata/lock/grace.go", "internal/adapter/nfs/v4/state/grace.go"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "grace-instance": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#44-grace-is-per-shard",
+    "sourceLabel": "RFC 14 §4.4",
+    "rfcs": ["rfc-14", "rfc-11"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "open-reclaim": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#42-grace-makes-volatile-state-safe",
+    "sourceLabel": "RFC 14 §4.2",
+    "rfcs": ["rfc-14", "rfc-21", "rfc-22"],
+    "code": ["pkg/metadata/lock/reclaim.go"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "recall": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#52-a-recall-and-why-nothing-is-merged",
+    "sourceLabel": "RFC 14 §5.2",
+    "rfcs": ["rfc-14", "rfc-17"],
+    "code": ["pkg/metadata/lock/break.go"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "delegation": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#51-what-a-grant-is",
+    "sourceLabel": "RFC 14 §5.1",
+    "rfcs": ["rfc-14", "rfc-21"],
+    "code": ["internal/adapter/nfs/v4/state/delegation.go"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "oplock": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#62-oplocks-are-leases",
+    "sourceLabel": "RFC 22 §6.2",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-22"],
+    "code": ["internal/adapter/smb/lease"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "revoked-set": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#53-a-recall-must-end-within-a-bounded-time",
+    "sourceLabel": "RFC 14 §5.3",
+    "rfcs": ["rfc-14"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "grant-budget": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#55-a-clients-grants-are-bounded",
+    "sourceLabel": "RFC 14 §5.5",
+    "rfcs": ["rfc-14", "rfc-24"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "delete-pending": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-17", "rfc-22", "rfc-7"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "smb-durable-open": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-22"],
+    "code": ["pkg/metadata/lock/durable_store.go", "internal/adapter/smb/handlers/durable_context.go"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "persistent-open": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-15", "rfc-22"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "nlm": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#45-nlm-locks-and-restart-notification",
+    "sourceLabel": "RFC 14 §4.5",
+    "rfcs": ["rfc-14", "rfc-21"],
+    "code": ["internal/adapter/nfs/nlm", "internal/adapter/nfs/nsm"]
+  },
+  "watch": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#25-watch",
+    "sourceLabel": "RFC 14 §2.5",
+    "rfcs": ["rfc-14", "rfc-22"],
+    "code": ["internal/adapter/smb/changenotify"],
+    "target": ["pkg/openstate (built on feat/storage-v2)"]
+  },
+  "installation": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-13", "rfc-16"]
+  },
+  "snapshot": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-12", "rfc-16"]
+  },
+  "gc": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-9", "rfc-16"]
+  },
+  "fence-records": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-6", "rfc-11", "rfc-16"]
+  },
+  "entity": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-16"],
+    "target": ["pkg/metadata/entity (feat/storage-v2)"]
+  },
+  "metadata-record": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#42-keys-per-file-per-share-content-addressed",
+    "sourceLabel": "RFC 16 · §4.2 Keys",
+    "rfcs": ["rfc-16"],
+    "target": ["pkg/metadata/kvstore/keys.go (feat/storage-v2)"]
+  },
+  "kv": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-16"],
+    "target": ["pkg/metadata/kv (feat/storage-v2)", "pkg/metadata/kv/badgerkv", "pkg/metadata/kv/fdbkv"]
+  },
+  "guard": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-7", "rfc-16"],
+    "target": ["pkg/metadata/kv: Txn.Guard, Txn.GuardRange (feat/storage-v2)"]
+  },
+  "delta-fold": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#44-counters-that-many-writers-change",
+    "sourceLabel": "RFC 16 · §4.4",
+    "rfcs": ["rfc-16", "rfc-7"],
+    "target": ["pkg/metadata/kvstore: usage.go, dirfold.go (feat/storage-v2)"]
+  },
+  "fold-rule": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#46-store-format",
+    "sourceLabel": "RFC 16 · §4.6",
+    "rfcs": ["rfc-16", "rfc-7"],
+    "target": ["pkg/metadata/entity: fold.go, upcase_table.go (feat/storage-v2)"]
+  },
+  "view": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#3-interfaces-by-consumer",
+    "sourceLabel": "RFC 16 · §3",
+    "rfcs": ["rfc-16", "rfc-0"]
+  },
+  "format-record": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#46-store-format",
+    "sourceLabel": "RFC 16 · §4.6",
+    "rfcs": ["rfc-16", "rfc-13"],
+    "target": ["pkg/metadata/kv/keys: Format (feat/storage-v2)"]
+  },
+  "store-group-commit": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#41-one-small-interface-per-backend",
+    "sourceLabel": "RFC 16 · §4.1",
+    "rfcs": ["rfc-16", "rfc-8"],
+    "target": ["pkg/metadata/kv/badgerkv/sync.go (feat/storage-v2)"]
+  },
+  "store-time": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#41-one-small-interface-per-backend",
+    "sourceLabel": "RFC 16 · §4.1",
+    "rfcs": ["rfc-16", "rfc-9", "rfc-11"],
+    "target": ["pkg/metadata/kv: Txn.Now (feat/storage-v2)"]
+  },
+  "value-codec": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#43-codecs",
+    "sourceLabel": "RFC 16 · §4.3",
+    "rfcs": ["rfc-16"],
+    "target": ["pkg/metadata/kv/codec (feat/storage-v2)"]
+  },
+  "principal": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#22-identity-types",
+    "sourceLabel": "RFC 16 · §2.2",
+    "rfcs": ["rfc-16", "rfc-18"],
+    "target": ["pkg/metadata/entity: Principal (feat/storage-v2)"]
+  },
+  "change-sequence": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#41-one-small-interface-per-backend",
+    "sourceLabel": "RFC 16 · §4.1",
+    "rfcs": ["rfc-16", "rfc-27"],
+    "target": ["pkg/metadata/kv: Reader.Versions (feat/storage-v2)"]
+  },
+  "key-budget": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#41-one-small-interface-per-backend",
+    "sourceLabel": "RFC 16 · §4.1",
+    "rfcs": ["rfc-16", "rfc-6"],
+    "target": ["pkg/metadata/kv: KV.Limits (feat/storage-v2)"]
+  },
+  "inspect": {
+    "source": "docs/internals/rfcs/rfc-16-metadata-store.md#31-lookups-by-id-listings-and-who-may-use-them",
+    "sourceLabel": "RFC 16 · §3.1",
+    "rfcs": ["rfc-16"]
+  },
+  "vfs-filesystem": {
+    "source": "docs/internals/rfcs/rfc-17-vfs.md#2-gateway-and-filesystem",
+    "sourceLabel": "RFC 17 §2",
+    "rfcs": ["rfc-0", "rfc-17"],
+    "code": [],
+    "target": ["internal/vfs (Filesystem)"]
+  },
+  "chokepoint": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-7", "rfc-17", "rfc-19"],
+    "code": ["pkg/metadata/auth_permissions.go"],
+    "target": ["Files.Authorize (RFC 7 §7.1)", "internal/vfs/authz"]
+  },
+  "share-grant": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-7", "rfc-17", "rfc-18"]
+  },
+  "pseudo-filesystem": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-17", "rfc-21"],
+    "code": ["internal/adapter/nfs/v4/pseudofs"],
+    "target": ["internal/vfs/pseudofs"]
+  },
+  "route-envelope": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-15", "rfc-17"],
+    "code": [],
+    "target": ["internal/vfs/envelope.go"]
+  },
+  "lock-order": {
+    "source": "docs/internals/rfcs/rfc-17-vfs.md#50-one-lock-order",
+    "sourceLabel": "RFC 17 §5.0",
+    "rfcs": ["rfc-7", "rfc-8", "rfc-14", "rfc-17"],
+    "code": [],
+    "target": ["internal/vfs/lockorder"]
+  },
+  "wcc": {
+    "source": "docs/internals/rfcs/rfc-17-vfs.md#30-value-types",
+    "sourceLabel": "RFC 17 §3.0",
+    "rfcs": ["rfc-17", "rfc-21"],
+    "code": ["internal/adapter/nfs/types/types.go"],
+    "target": ["pkg/vfs (WCC)"]
+  },
+  "quota-reservation": {
+    "source": "docs/internals/rfcs/rfc-17-vfs.md#56-quota",
+    "sourceLabel": "RFC 17 §5.6",
+    "rfcs": ["rfc-16", "rfc-17"],
+    "code": [],
+    "target": ["internal/vfs/quota"]
+  },
+  "file-release": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-7", "rfc-8", "rfc-17"]
+  },
+  "dialect": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#31-dialects",
+    "sourceLabel": "RFC 22 §3.1",
+    "rfcs": ["rfc-22"],
+    "code": ["internal/adapter/smb/handlers/negotiate.go"]
+  },
+  "credit": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#33-sizes-and-credits",
+    "sourceLabel": "RFC 22 §3.3",
+    "rfcs": ["rfc-20", "rfc-22", "rfc-24"],
+    "code": ["internal/adapter/smb/session/credits.go"]
+  },
+  "signing": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#41-signing-in",
+    "sourceLabel": "RFC 22 §4.1",
+    "rfcs": ["rfc-18", "rfc-22"],
+    "code": ["internal/adapter/smb/signing"]
+  },
+  "tree-connect": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#51-share-flags",
+    "sourceLabel": "RFC 22 §5.1",
+    "rfcs": ["rfc-17", "rfc-22"],
+    "code": ["internal/adapter/smb/handlers/tree_connect.go"]
+  },
+  "ipc": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#52-ipc-and-the-rpc-services",
+    "sourceLabel": "RFC 22 §5.2",
+    "rfcs": ["rfc-20", "rfc-22"],
+    "code": ["internal/adapter/smb/rpc"]
+  },
+  "file-id": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#61-opening-a-file",
+    "sourceLabel": "RFC 22 §6.1",
+    "rfcs": ["rfc-14", "rfc-22"],
+    "code": ["internal/adapter/smb/types/open_file.go"]
+  },
+  "lease-break": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#63-breaks",
+    "sourceLabel": "RFC 22 §6.3",
+    "rfcs": ["rfc-14", "rfc-22"],
+    "code": ["internal/adapter/smb/lease"]
+  },
+  "caching-fence": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#63-breaks",
+    "sourceLabel": "RFC 22 §6.3",
+    "rfcs": ["rfc-14", "rfc-22"]
+  },
+  "durable-handle": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-22"],
+    "code": ["internal/adapter/smb/handlers/durable_context.go"]
+  },
+  "persistent-handle": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-14", "rfc-22"],
+    "code": ["internal/adapter/smb/handlers/durable_context.go"]
+  },
+  "continuously-available": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#51-share-flags",
+    "sourceLabel": "RFC 22 §5.1",
+    "rfcs": ["rfc-15", "rfc-16", "rfc-22"]
+  },
+  "client-guid": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#44-the-client-record-is-the-machine",
+    "sourceLabel": "RFC 22 §4.4",
+    "rfcs": ["rfc-14", "rfc-22"],
+    "code": ["internal/adapter/smb/session/session.go"]
+  },
+  "channel-sequence": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#65-replay",
+    "sourceLabel": "RFC 22 §6.5",
+    "rfcs": ["rfc-14", "rfc-22"],
+    "code": ["internal/adapter/smb/channel_sequence.go"]
+  },
+  "witness": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-15", "rfc-22"]
+  },
+  "private-use-mapping": {
+    "source": "docs/internals/rfcs/rfc-22-smb.md#123-names-smb-cannot-carry",
+    "sourceLabel": "RFC 22 §12.3",
+    "rfcs": ["rfc-7", "rfc-22"]
+  },
+  "dt": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#3-decision-a-command-line-tool-written-in-go",
+    "sourceLabel": "RFC 29 §3",
+    "rfcs": ["rfc-29"],
+    "code": ["cmd/dt", "test/harness/bin/dt"]
+  },
+  "registry": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#41-the-registry-testsuitesyaml",
+    "sourceLabel": "RFC 29 §4.1",
+    "rfcs": ["rfc-29"],
+    "code": ["test/suites.yaml", "test/harness/registry"]
+  },
+  "suite": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#41-the-registry-testsuitesyaml",
+    "sourceLabel": "RFC 29 §4.1",
+    "rfcs": ["rfc-29"],
+    "code": ["test/suites.yaml", "test/harness/registry"]
+  },
+  "suite-option": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#41-the-registry-testsuitesyaml",
+    "sourceLabel": "RFC 29 §4.1",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/registry"]
+  },
+  "suite-group": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#41-the-registry-testsuitesyaml",
+    "sourceLabel": "RFC 29 §4.1",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/registry"]
+  },
+  "cell": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#44-the-command-line",
+    "sourceLabel": "RFC 29 §4.4",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/plan"]
+  },
+  "matrix": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#41-the-registry-testsuitesyaml",
+    "sourceLabel": "RFC 29 §4.1",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/plan"]
+  },
+  "test-shard": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#44-the-command-line",
+    "sourceLabel": "RFC 29 §4.4",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/plan"]
+  },
+  "store-profile": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#42-fixtures-the-dittofs-a-suite-runs-against",
+    "sourceLabel": "RFC 29 §4.2",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/fixture"]
+  },
+  "fixture": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#42-fixtures-the-dittofs-a-suite-runs-against",
+    "sourceLabel": "RFC 29 §4.2",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/fixture", "test/harness/run/fixture.go"]
+  },
+  "needs": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#45-where-a-suite-runs",
+    "sourceLabel": "RFC 29 §4.5",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/needs"]
+  },
+  "dedicated-host": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#45-where-a-suite-runs",
+    "sourceLabel": "RFC 29 §4.5",
+    "rfcs": ["rfc-29"]
+  },
+  "tier": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#43-tiers",
+    "sourceLabel": "RFC 29 §4.3",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/registry", "test/harness/plan"]
+  },
+  "blocking": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#43-tiers",
+    "sourceLabel": "RFC 29 §4.3",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/registry"]
+  },
+  "gate": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#48-ci",
+    "sourceLabel": "RFC 29 §4.8",
+    "rfcs": ["rfc-29"],
+    "code": [".github/workflows/tests.yml"]
+  },
+  "result-format": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#46-results",
+    "sourceLabel": "RFC 29 §4.6",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/run/readers.go"]
+  },
+  "ctrf": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#46-results",
+    "sourceLabel": "RFC 29 §4.6",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/report"]
+  },
+  "grade": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#46-results",
+    "sourceLabel": "RFC 29 §4.6",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/known/grade.go"]
+  },
+  "known-failure": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#47-grading-known-failures-expected-skips-quarantine-retries",
+    "sourceLabel": "RFC 29 §4.7",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/known"]
+  },
+  "expected-skip": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#47-grading-known-failures-expected-skips-quarantine-retries",
+    "sourceLabel": "RFC 29 §4.7",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/known"]
+  },
+  "unexpected-pass": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#47-grading-known-failures-expected-skips-quarantine-retries",
+    "sourceLabel": "RFC 29 §4.7",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/known/grade.go"]
+  },
+  "not-run": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#44-the-command-line",
+    "sourceLabel": "RFC 29 §4.4",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/run"]
+  },
+  "quarantine": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#47-grading-known-failures-expected-skips-quarantine-retries",
+    "sourceLabel": "RFC 29 §4.7",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/known/quarantine.go", "test/harness/quarantine.yaml"]
+  },
+  "flaky": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#47-grading-known-failures-expected-skips-quarantine-retries",
+    "sourceLabel": "RFC 29 §4.7",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/history"]
+  },
+  "retry": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#47-grading-known-failures-expected-skips-quarantine-retries",
+    "sourceLabel": "RFC 29 §4.7",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/run"]
+  },
+  "develop-red": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#48-ci",
+    "sourceLabel": "RFC 29 §4.8",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/issues"]
+  },
+  "baseline": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#48-ci",
+    "sourceLabel": "RFC 29 §4.8",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/report/baseline.go"]
+  },
+  "control-plane": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-13", "rfc-23"],
+    "code": ["pkg/controlplane"]
+  },
+  "management-api": {
+    "source": "docs/internals/rfcs/rfc-23-control-plane.md#in-plain-words",
+    "sourceLabel": "RFC 23 · In plain words",
+    "rfcs": ["rfc-23"],
+    "code": ["pkg/controlplane/api"]
+  },
+  "runtime": {
+    "source": "docs/internals/architecture.md#key-interfaces",
+    "sourceLabel": "architecture.md · Key Interfaces",
+    "rfcs": ["rfc-23"],
+    "code": ["pkg/controlplane/runtime"]
+  },
+  "dfsctl": {
+    "source": "docs/guide/cli.md#dfsctl",
+    "sourceLabel": "CLI reference · dfsctl",
+    "rfcs": ["rfc-23"],
+    "code": ["cmd/dfsctl", "pkg/apiclient"]
+  },
+  "epoch": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-10", "rfc-11", "rfc-15", "rfc-17", "rfc-8"]
+  },
+  "node-epoch": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-10", "rfc-11", "rfc-15", "rfc-8"]
+  },
+  "node-lease": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-11", "rfc-14"]
+  },
+  "handover": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-10", "rfc-14", "rfc-22"]
+  },
+  "namespace-move": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-17", "rfc-20", "rfc-22", "rfc-27"]
+  },
+  "clone": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-6", "rfc-12", "rfc-14", "rfc-17", "rfc-22"]
+  },
+  "deduplication": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#31-deduplication",
+    "sourceLabel": "RFC 0 §3.1",
+    "rfcs": ["rfc-0", "rfc-6", "rfc-8"]
+  },
+  "dedup-table": {
+    "source": "docs/internals/rfcs/rfc-15-topology.md#43-the-route-envelope",
+    "sourceLabel": "RFC 15 §4.3",
+    "rfcs": ["rfc-15", "rfc-14", "rfc-17", "rfc-20"]
+  },
+  "sync-mark": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#31-write",
+    "sourceLabel": "RFC 1 §3.1",
+    "rfcs": ["rfc-1", "rfc-8", "rfc-28"]
+  },
+  "adapter-bytes": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#21-client",
+    "sourceLabel": "RFC 14 §2.1",
+    "rfcs": ["rfc-14", "rfc-15", "rfc-17", "rfc-20", "rfc-22"]
+  },
+  "floor-bucket": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#34-fill",
+    "sourceLabel": "RFC 1 §3.4",
+    "rfcs": ["rfc-1"]
+  },
+  "version-limit": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#43-versions",
+    "sourceLabel": "RFC 1 §4.3",
+    "rfcs": ["rfc-1", "rfc-7", "rfc-8"]
+  },
+  "admission-lock": {
+    "source": "docs/internals/rfcs/rfc-17-vfs.md#50-one-lock-order",
+    "sourceLabel": "RFC 17 §5.0",
+    "rfcs": ["rfc-17", "rfc-14", "rfc-7"]
+  },
+  "fold-admission": {
+    "source": "docs/internals/rfcs/rfc-7-namespace-metadata.md#92-timestamps",
+    "sourceLabel": "RFC 7 §9.2",
+    "rfcs": ["rfc-7", "rfc-17"]
+  },
+  "accept-lock": {
+    "source": "docs/internals/rfcs/rfc-7-namespace-metadata.md#92-timestamps",
+    "sourceLabel": "RFC 7 §9.2",
+    "rfcs": ["rfc-7", "rfc-1", "rfc-8", "rfc-17"]
+  },
+  "not-yours": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#22-open",
+    "sourceLabel": "RFC 14 §2.2",
+    "rfcs": ["rfc-14", "rfc-17", "rfc-21", "rfc-22"]
+  },
+  "handle-caching": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#6-a-deny-mode-is-checked-at-open",
+    "sourceLabel": "RFC 14 §6",
+    "rfcs": ["rfc-14", "rfc-17", "rfc-22"]
+  },
+  "quota": {
+    "source": "docs/internals/rfcs/rfc-7-namespace-metadata.md#28-a-share-is-one-filesystem",
+    "sourceLabel": "RFC 7 §2.8",
+    "rfcs": ["rfc-7", "rfc-16", "rfc-17"]
+  },
+  "named-stream": {
+    "source": "docs/internals/rfcs/rfc-7-namespace-metadata.md#27-extended-attributes-and-named-streams",
+    "sourceLabel": "RFC 7 §2.7",
+    "rfcs": ["rfc-7", "rfc-14", "rfc-17", "rfc-20", "rfc-22"]
+  },
+  "dtc": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#45-where-a-suite-runs",
+    "sourceLabel": "RFC 29 §4.5",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/bin/dtc", "test/harness/docker/dev.Dockerfile"]
+  },
+  "system-scenario": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#41-the-registry-testsuitesyaml",
+    "sourceLabel": "RFC 29 §4.1",
+    "rfcs": ["rfc-29", "rfc-17"],
+    "code": ["test/scenarios"]
+  },
+  "floating-address": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-15", "rfc-22"]
+  },
+  "pending-release": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-7", "rfc-8", "rfc-17"]
+  },
+  "takeover": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-10", "rfc-14", "rfc-17", "rfc-8"]
+  },
+  "in-memory-service": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#72-handlers-against-a-verified-service",
+    "sourceLabel": "RFC 20 §7.2",
+    "rfcs": ["rfc-20", "rfc-17", "rfc-29"],
+    "target": ["pkg/vfs/vfstest"]
+  }
+}

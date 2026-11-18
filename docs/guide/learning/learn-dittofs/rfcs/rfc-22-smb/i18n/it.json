@@ -1,0 +1,664 @@
+{
+  "title": "RFC 22 — SMB",
+  "cover": {
+    "kicker": "Impara DittoFS · RFC 22",
+    "title": "Gli [[adapter]], parte 2: SMB",
+    "lead": "Come DittoFS serve le condivisioni di file Windows via SMB, e che cosa vede un client Windows quando viene a mancare un nodo da cui dipende.",
+    "built": "Costruito dall'RFC 22 al commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-22-smb.md, commit {commit}. L'RFC specifica un comportamento, non il codice attuale. La parte uno di questa sezione è il deck dell'RFC 20, il modello degli adapter: questo deck lo dà per noto e non lo ripete. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la sua definizione."
+  },
+  "intro": {
+    "twoTitle": "L'RFC 22 in due frasi",
+    "two": "L'[[adapter]] SMB parla il protocollo che Windows usa per le cartelle condivise e trasforma ogni richiesta in una chiamata al [[filesystem-service]]. L'RFC 22 fa tutte le scelte che le specifiche SMB lasciano al server — i [[dialect]], i [[credit]], come si riconosce un [[durable-handle]] alla riconnessione, come appare su Windows un nome creato via NFS — e indica, per ogni oggetto SMB, quale record lo rappresenta altrove.",
+    "partOne": "La prima parte, il deck dell'RFC 20, copre ciò che hanno in comune tutti gli adapter — la [[pipeline]], il ciclo di vita e il [[drain]], gli [[handler]], la [[error-table]]. Questo deck tratta solo ciò che è specifico di SMB.",
+    "twoNotes": "Da 'Start here · In plain words' e §1 Purpose. L'adapter non possiede alcun record durevole, solo gli Adapter bytes opachi dentro i record dell'RFC 14 (§16.4). Nomi, file ID e attributi sono dell'RFC 7; open, lease, lock e identità durable dell'RFC 14; le share e chi può connettersi dell'RFC 17. 'In short': è costruito come descrive l'RFC 20.",
+    "knownLead": "Dal glossario dell'RFC 0 e dalla prima parte (RFC 20), più gli RFC 1, 14 e 17. Cliccane uno per la definizione.",
+    "knownNotes": "Ogni definizione riformula in modo semplice la riga del glossario dell'RFC 0 o la voce del deck dell'RFC 20. Il grace period e lo stability point sono righe del glossario dell'RFC 0 su cui l'RFC 22 si appoggia.",
+    "newNotes": "Da 'Start here · The words you need' (dialect, sessione e tree connect, open e FileId, lease o oplock, durable o persistent handle), più i credit (§3.3), il signing (§4.1), IPC$ (§5.2), il ClientGuid (§4.4), il break e il caching fence (§6.3), la disponibilità continua (§5.1), la channel sequence (§6.5), Witness (§14) e il private-use mapping (§12.3, Appendice B). Durable e persistent handle riformulano la riga 'durable / persistent open' dell'RFC 0.",
+    "clashNotes": "FileId e FileID: §6.1 e §9.1 (il FileID dell'RFC 7 non arriva mai sulla rete SMB). Handle: il file handle dell'RFC 0 identifica un file; un durable handle SMB è un open. Durable: l'RFC 0 distingue 'durable' (sincronizzato) dal durable open. Lease e sessione: glossario dell'RFC 0 e RFC 20 §2.2. Deny mode: §16.4, Open.Mode.Deny è il complemento di ShareAccess."
+  },
+  "problem": {
+    "title": "La connessione è fragile, il disco non deve esserlo",
+    "clusterTitle": "Il cluster",
+    "cluster": "I [[gateway-node|nodi gateway]] **P1** e **P2** tengono le connessioni dei client. Il nodo **S1** è il [[primary]] di `profiles/alice/`, cioè l'unico nodo che mette in ordine ogni modifica ai file che contiene. Quei file formano uno [[shard]].",
+    "diskTitle": "Il profile container di alice",
+    "disk": "Quando alice fa login, Windows monta il suo profile container `ODFC_alice.vhdx`, un disco virtuale da 30 GB di cui circa 10,5 GB occupati. Windows lo tiene aperto tutto il giorno con un solo handle e lo scrive a pezzi da 64 KiB.",
+    "stake": "Se quell'open va perso quando cade una connessione o un nodo, il desktop di alice perde il suo disco. Ancora peggio sarebbe un disco che torna con un buco silenzioso, senza scritture che il server aveva già confermato.",
+    "single": "È il cluster che l'RFC usa come esempio. La prima release gira su un solo [[node|nodo]], che svolge tutti e tre i ruoli.",
+    "notes": "'Start here · The problem, with one example' e §2 (il carico di riferimento: il profilo Windows di ogni utente in un disco virtuale, agganciato al login e tenuto fino al logout). Il 'buco silenzioso che si presenta come corruzione giorni dopo' è l'argomento del §6.4. Nodo singolo: §18 'Where each check runs' e RFC 0 §1.4. Shard: i file di cui S1 è il primary formano uno shard, che ha il suo grace (§2, §4.3)."
+  },
+  "placement": {
+    "title": "Dove vive lo stato SMB",
+    "notes": "'Start here', passi 1–3, e la figura sulla posizione dello stato. Chiavi di sessione: §4.1 (tenute nella memoria del gateway node, MUST NOT essere salvate o inviate a un altro nodo). Tree connect: §5.1 e 'The words you need'. L'open, il deny mode, il lease e l'identità durable sono dell'RFC 14, sul primary (§6). Le due metà del FileId: §6.1, invariante S3. Credit: §3.3."
+  },
+  "promises": {
+    "title": "Cosa promette l'RFC 22",
+    "items": [
+      "Quando si perde un [[gateway-node|nodo gateway]], non si perde con lui nessun [[open-state|open state]] e non parte alcun [[grace-period]].",
+      "Quando si perde un [[primary]], si perdono anche i suoi [[durable-handle|durable]] open. I [[persistent-handle|persistent]] open sopravvivono, e con loro ogni scrittura confermata attraverso di essi.",
+      "Un durable open può essere riconnesso solo dallo stesso utente, sulla stessa [[share]], dalla stessa macchina client, e solo prima che scada il suo timeout.",
+      "Una richiesta in attesa di un [[lease-break|break]] non tiene occupato nessuno dei thread di lavoro del server, e il break finisce sempre prima della scadenza di quella richiesta.",
+      "Ogni [[oplock]] e ogni [[lease]] è lo stesso [[caching-grant]] di una delegation NFS. Un nome che non è UTF-8 valido resta nascosto ai client SMB."
+    ],
+    "notes": "'Start here · What this RFC promises', tutti e sei i punti (l'ultimo ne unisce due). Gli open né durable né persistent vanno persi dopo qualsiasi guasto del server, come su ogni server. 'In tempo': entro il timeout dell'open. 'Il break finisce prima': ogni break finisce, con la conferma o alla sua scadenza, prima della scadenza della richiesta in attesa (S12). La promessa dice l'esito; l'elenco completo delle corrispondenze, lease key compresa, è nella slide sulla riconnessione (§6.4). Thread di lavoro: §6.3, la richiesta riceve STATUS_PENDING e il suo worker viene liberato."
+  },
+  "connect": {
+    "kicker": "Connessione"
+  },
+  "dialects": {
+    "title": "Quale SMB viene servito",
+    "table": [
+      [
+        "Dialetto o funzione",
+        "Risposta",
+        "Perché"
+      ],
+      [
+        "3.1.1, 3.0.2, 3.0, 2.1",
+        "Servito, alla versione più alta che offre anche il client, entro l'intervallo dell'operatore",
+        "Sono le versioni delle release di Windows ancora supportate. L'intervallo è `adapters.smb.dialects`, di default tutte e quattro."
+      ],
+      [
+        "SMB1",
+        "Rifiutato",
+        "La sua firma si può violare, e non ha né [[durable-handle|durable]] handle né lease."
+      ],
+      [
+        "Solo SMB 2.0.2",
+        "Rifiutato con `STATUS_NOT_SUPPORTED`",
+        "Non ha lease e non invia alcun [[client-guid|ClientGuid]]."
+      ],
+      [
+        "Compressione",
+        "Non offerta",
+        "DittoFS comprime già da sé i contenuti salvati dove conviene. Comprimere ogni messaggio costerebbe CPU."
+      ],
+      [
+        "SMB Direct (RDMA), QUIC",
+        "Non offerti",
+        "L'[[adapter]] non ha nessuno dei due trasporti."
+      ]
+    ],
+    "footer": "Windows Vista e Server 2008 (non R2) si fermano alla 2.0.2, quindi questa tabella li lascia fuori. Windows 7 e Server 2008 R2 negoziano la 2.1. Su questo punto l'adapter SMB di oggi si comporta diversamente: accetta ancora SMB 2.0.2 di default, quindi Vista e Server 2008 possono ancora connettersi.",
+    "notes": "§3.1 e §3.2 con le loro decisioni. L'intervallo scelto dall'operatore, adapters.smb.dialects, di default comprende tutti e quattro i dialect (§3.1, RFC 20 §4.8). SMB1: un negotiate che nomina una stringa di dialect SMB2 riceve la risposta multi-protocollo SMB2; uno che non ne nomina nessuna viene chiuso. Sulla 3.1.1 il server prende il primo del proprio ordine che il client offre: SHA-512 per l'integrità di preautenticazione; AES-256-GCM, AES-128-GCM, AES-256-CCM, AES-128-CCM; firma AES-GMAC, AES-CMAC (HMAC-SHA256 sulla 2.1). La risposta NEGOTIATE annuncia esattamente ciò che è servito, per dialect: directory leasing e DFS sempre spenti. La 2.0.2 va riconsiderata solo per client che non sanno negoziare la 2.1. L'adapter di oggi: il MinDialect di default è SMB2.0 (pkg/controlplane/models/adapter_settings.go, internal/adapter/smb/handlers/handler.go); questo non lo dice l'RFC 22. Il piè di pagina è l'unica nota del deck sul codice di oggi. Compressione: decisione di §3.2 (il contenuto è già compresso sotto il protocollo, RFC 5)."
+  },
+  "credits": {
+    "title": "I [[credit]] e le richieste in attesa",
+    "items": [
+      "I credit sono il [[flow-control|flow control]] di SMB. Ogni richiesta spende credit e ogni risposta ne restituisce alcuni, e così si limita quanto un client può avere in volo.",
+      "Una lettura, una scrittura o una richiesta di controllo può arrivare a **8 MiB** e costa un credit ogni 64 KiB. Il server punta a tenere **512** credit in circolo su ogni connessione.",
+      "Una [[held-request|richiesta trattenuta]] riceve i suoi credit già nella risposta provvisoria `STATUS_PENDING`, così nel frattempo il client continua a inviare altro. La risposta finale poi non ne concede nessuno. L'unica eccezione, una connessione arrivata ai suoi limiti, è nella slide “Una chiamata già in corso rallenta, non viene rifiutata”."
+    ],
+    "notes": "§3.3 e il suo marker ponytail; invariante S27. L'obiettivo di 512 conta i credit che il client ha in mano e quelli che la risposta finale deve ancora concedere quando la risposta provvisoria li ha tenuti da parte. Una risposta sincrona, e la risposta provvisoria di una richiesta trattenuta, concede quanto chiede il client, almeno 1, fino all'obiettivo. Il server non concede mai oltre l'obiettivo, salvo l'unico credit che tiene il saldo del client a uno, e non revoca mai credit già concessi. L'eccezione, una risposta provvisoria che tiene da parte i credit della sua richiesta, è nella slide sul tetto delle richieste in sospeso. La soglia è di 256 richieste trattenute e 32 MiB di dati WRITE trattenuti; i 32 MiB valgono l'obiettivo di credit, 512 credit da 64 KiB. L'eccezione: §3.3, una risposta provvisoria che trattiene i credit della sua richiesta."
+  },
+  "pool": {
+    "title": "Dove finiscono le richieste trattenute",
+    "items": [
+      "Ogni connessione può sempre trattenere **256** richieste e **32 MiB** di dati in scrittura. Oltre quella soglia, le richieste trattenute attingono a un unico pool condiviso per [[node|nodo]].",
+      "Se il servizio risponde a una richiesta con [[retry-later|ErrDelay]], cioè «riprova tra poco», mentre la sua connessione ha superato quella soglia e il pool è esaurito, la richiesta non viene trattenuta. Viene rifiutata subito con `STATUS_INSUFFICIENT_RESOURCES`."
+    ],
+    "footer": "Perché un pool condiviso? Un host desktop multi-[[session|sessione]] fa passare tutti i suoi utenti su una sola connessione. Con i dischi di profilo di 40 utenti, ciascuno con 8 richieste in volo, si arriva a 320 richieste trattenute entro un secondo da quando il [[metadata-store|metadata store]] smette per un attimo di rispondere.",
+    "notes": "§3.3 e il suo marker ponytail; invariante S27; §16.5, la riga del rifiuto deciso dall'adapter stesso. Il pool è un sedicesimo del limite di memoria del processo (4 GiB su un nodo da 64 GiB), ed è dell'RFC 24 §4.3; ogni richiesta trattenuta oltre la soglia conta tutto il suo addebito di ricezione: la sua classe di buffer e l'overhead per richiesta. La soglia è di 256 richieste trattenute e 32 MiB di dati WRITE trattenuti; i 32 MiB valgono l'obiettivo di credit, 512 credit da 64 KiB. Il conteggio è dell'adapter (RFC 20 §4.6): ogni richiesta che trattiene, tra una riesecuzione e l'altra o in attesa nel servizio dietro un clone, dalla prima volta che la trattiene finché non riceve risposta. MS-SMB2 3.3.4.2 ammette STATUS_INSUFFICIENT_RESOURCES quando l'elaborazione asincrona supererebbe le risorse del server. Viene rifiutata così solo una richiesta la cui attesa comincia da un ErrDelay restituito dal servizio; una chiamata ancora nel servizio quando parte la sua risposta provvisoria non viene mai rifiutata (slide successiva). I lock in attesa, le notifiche di modifica e i READ di una named pipe vuota non contano per la soglia: non tengono dati in scrittura né worker. Vengono invece parcheggiati (il Park dell'RFC 20 §4.7) e conservano al più una risposta piccola: una notifica le cui modifiche non ci stanno riceve STATUS_NOTIFY_ENUM_DIR, e un READ della pipe restituisce ciò che ci sta come lettura corta con STATUS_SUCCESS. Piè di pagina: il ponytail di §3.3 indica come causa un congelamento o un blocco dello store. Blocco dello store: ponytail di §3.3, e DelayCommit in §16.5."
+  },
+  "ceiling": {
+    "title": "Un tetto alle richieste in sospeso",
+    "items": [
+      "Una connessione può avere al più **511** richieste in sospeso, una in meno del suo obiettivo di [[credit]]. Contano anche le richieste che aspettano soltanto un evento, come un lock in attesa di essere concesso.",
+      "Oltre quel tetto, una richiesta che dovrebbe mettersi in attesa, perché il servizio le ha risposto [[retry-later|ErrDelay]] o perché è un lock che deve aspettare, viene rifiutata subito con `STATUS_INSUFFICIENT_RESOURCES`."
+    ],
+    "notes": "§3.3 ('A connection puts at most 511 requests pending' e i punti sui credit); invariante S27; §18, le righe 'credits under a hold' e 'pending ceiling'. Il tetto conta insieme le richieste trattenute e quelle parcheggiate (lock in attesa, notifiche di modifica e READ di una named pipe vuota), esclusi i rifiuti di un drain; vale MaxAsyncCredits meno uno. Una risposta provvisoria che tiene da parte i credit concede solo quanto tiene il saldo del client a uno, cioè 0 finché ne ha di più, e la risposta finale concede il resto. Poiché l'obiettivo di 512 conta ciò che quelle risposte finali devono ancora e una risposta sincrona non concede oltre l'obiettivo, il client invia una richiesta alla volta. Oltre la soglia la chiamata conserva la sua riserva di ricezione (RFC 20 §4.6). Questo limita il ritmo, non il numero: una richiesta inviata con l'ultimo credit che il timer della risposta provvisoria trova anch'essa nel servizio va in sospeso allo stesso modo, quindi finché quelle chiamate restano nel servizio le richieste in sospeso crescono di una per round trip, e a limitarle sono i byte (la soglia, il pool e le loro riserve di ricezione). Il saldo non arriva mai a zero (MS-SMB2 3.3.1.2), nemmeno con i rifiuti di un drain (§16.5), così il client può confermare un lease break che la chiamata forse sta aspettando. I credit dei membri di una catena a cui si è già risposto viaggiano sulla sua risposta provvisoria e sono concessi per intero. Una chiamata ancora senza risposta poco dopo essere arrivata al servizio riceve il suo STATUS_PENDING provvisorio dal timer dell'adapter, senza alcun ErrDelay (RFC 20 §4.6, §3.3 'A call still in the service when its interim goes out is never refused'). Il tetto rifiuta un nuovo hold o park: una richiesta con risposta ErrDelay, un lock in attesa, una notifica di modifica, una READ su una pipe vuota."
+  },
+  "ceilingRun": {
+    "title": "Una chiamata già in corso rallenta, non viene rifiutata",
+    "items": [
+      "Una richiesta può andare in sospeso anche senza alcun ErrDelay. Se una chiamata è ancora in corso nel servizio poco dopo esserci arrivata, l'adapter manda comunque la sua risposta provvisoria. Una chiamata così non viene mai rifiutata, perché potrebbe ancora riuscire, e va in sospeso anche oltre il tetto, o oltre la soglia con il pool esaurito.",
+      "La sua risposta provvisoria allora non restituisce credit finché il client ne ha più di uno, così il saldo del client scende a uno. Il client invia una richiesta alla volta finché una risposta finale non concede il resto, e poiché il saldo non arriva mai a zero può ancora confermare un [[lease-break|lease break]]."
+    ],
+    "footer": "Il tetto quindi rallenta il client invece di limitare il numero delle sue richieste. Oltre il tetto, a limitare le richieste in sospeso è la memoria: la soglia della connessione e il pool del nodo.",
+    "notes": "§3.3 ('A connection puts at most 511 requests pending' e i punti sui credit); invariante S27; §18, le righe 'credits under a hold' e 'pending ceiling'. Il tetto conta insieme le richieste trattenute e quelle parcheggiate (lock in attesa, notifiche di modifica e READ di una named pipe vuota), esclusi i rifiuti di un drain; vale MaxAsyncCredits meno uno. Una risposta provvisoria che tiene da parte i credit concede solo quanto tiene il saldo del client a uno, cioè 0 finché ne ha di più, e la risposta finale concede il resto. Poiché l'obiettivo di 512 conta ciò che quelle risposte finali devono ancora e una risposta sincrona non concede oltre l'obiettivo, il client invia una richiesta alla volta. Oltre la soglia la chiamata conserva la sua riserva di ricezione (RFC 20 §4.6). Questo limita il ritmo, non il numero: una richiesta inviata con l'ultimo credit che il timer della risposta provvisoria trova anch'essa nel servizio va in sospeso allo stesso modo, quindi finché quelle chiamate restano nel servizio le richieste in sospeso crescono di una per round trip, e a limitarle sono i byte (la soglia, il pool e le loro riserve di ricezione). Il saldo non arriva mai a zero (MS-SMB2 3.3.1.2), nemmeno con i rifiuti di un drain (§16.5), così il client può confermare un lease break che la chiamata forse sta aspettando. I credit dei membri di una catena a cui si è già risposto viaggiano sulla sua risposta provvisoria e sono concessi per intero. Una chiamata ancora senza risposta poco dopo essere arrivata al servizio riceve il suo STATUS_PENDING provvisorio dal timer dell'adapter, senza alcun ErrDelay (RFC 20 §4.6, §3.3 'A call still in the service when its interim goes out is never refused'). Il tetto rifiuta un nuovo hold o park: una richiesta con risposta ErrDelay, un lock in attesa, una notifica di modifica, una READ su una pipe vuota."
+  },
+  "signin": {
+    "title": "Login: le chiavi restano su un solo [[node|nodo]]",
+    "items": [
+      "Un client fa login con `SESSION_SETUP`, usando Kerberos o NTLMv2 dentro SPNEGO. I più vecchi NTLMv1 e LM vengono rifiutati.",
+      "Le chiavi della sessione stanno nella memoria del [[gateway-node|nodo gateway]]. Non vengono mai salvate né inviate a un altro nodo.",
+      "Ogni risposta a `NEGOTIATE` dichiara che la [[signing|firma]] è obbligatoria. Dopo il login, una richiesta né firmata né cifrata viene rifiutata con `STATUS_ACCESS_DENIED`. Ne sono esenti le sessioni null e guest, che non hanno una chiave.",
+      "La cifratura si imposta per [[share]] e vale per ogni [[tree-connect]], non per la [[session|sessione]]. Una sessione che non cifra può connettersi, ma poi deve cifrare ogni richiesta su quel tree.",
+      "Il multichannel permette a una sessione di usare più connessioni, dette canali, ma solo verso lo stesso nodo."
+    ],
+    "footer": "Non esiste un'impostazione di firma per singola share, perché SMB2 non ha modo di dire a un client che una share richiede la firma e un'altra no.",
+    "notes": "§4.1 e §4.2, invarianti S2 e S11. Una richiesta con firma non valida riceve STATUS_ACCESS_DENIED sul suo message ID e la connessione resta aperta, come dice l'RFC 22 su develop al commit di questo deck; su feat/storage-v2 il §4.1 risponde così solo per un message ID non ancora usato dentro la finestra, e per qualunque altro chiude la connessione. Un messaggio che non si riesce a decifrare, e un secondo NEGOTIATE sulla stessa connessione, non ricevono risposta: la connessione viene chiusa (MS-SMB2 3.3.5.2.1.1, 3.3.5.4). Una sessione che non cifra può connettersi a una share cifrata e deve poi cifrare ogni richiesta lì; solo un client che non sa cifrare affatto viene rifiutato al tree connect. Multichannel: un bind per una sessione che questo nodo non ha riceve STATUS_USER_SESSION_DELETED, e la richiesta degli indirizzi elenca solo quelli di questo nodo. Quale identità risulta, e se NTLM è ammesso, sono dell'RFC 18. Canali: le connessioni di una sessione (§4.2, §6.5)."
+  },
+  "keyless": {
+    "title": "Sessioni senza chiave",
+    "lead": "Le [[session|sessioni]] null (anonime) e guest non hanno una chiave di sessione, quindi non possono firmare. Sono esentate dalla firma, e in cambio raggiungono solo ciò che questa tabella consente.",
+    "table": [
+      [
+        "Sessione",
+        "Può connettersi a",
+        "Mai"
+      ],
+      [
+        "null (anonima)",
+        "solo [[ipc|IPC$]]",
+        "Qualsiasi altra [[share]]"
+      ],
+      [
+        "guest",
+        "IPC$, e le share con il flag guest attivo che non cifrano",
+        "Una share che richiede la cifratura. L'accesso guest è spento di default."
+      ],
+      [
+        "una credenziale respinta",
+        "Niente, perché il login fallisce",
+        "Trasformata invece in una sessione guest o anonima"
+      ]
+    ],
+    "reauth": "Quando una sessione rifà l'autenticazione e ci riesce, la sua [[identity|identità]] viene sostituita sul posto, e gli handle già aperti mantengono l'accesso ottenuto all'apertura. Se la nuova autenticazione fallisce, la sessione viene chiusa.",
+    "notes": "§4.1 ('A session without a key reaches only what admits it' e la sua decisione), invariante S19. Il confinamento è dell'RFC 22, non dell'RFC 18, quindi nessuna regola di ammissione altrove può allargarlo. Riautenticazione: §4.1 e la sua decisione; una sessione riautenticata come null o guest tiene i suoi tree e le sue chiavi. Una sessione scaduta conserva solo SESSION_SETUP, LOGOFF, CLOSE, un LOCK di sblocco e la conferma di un break; tutto il resto è STATUS_NETWORK_SESSION_EXPIRED."
+  },
+  "record": {
+    "title": "Una macchina, un client record",
+    "lead": "alice e bob fanno login sullo stesso host desktop multi-[[session|sessione]]. Una macchina Windows invia lo stesso [[client-guid|ClientGuid]] su ogni connessione, quindi i due utenti condividono un unico record client, e quel record non indica nessun utente.",
+    "steps": [
+      "Entrambi i login trovano lo stesso record, e nessuno dei due viene rifiutato per l'utente che è.",
+      "Dopo un'interruzione di rete di 10 s, la sessione di bob prova a riconnettere un open indicando il [[file-id|FileId]] di alice. Viene rifiutata, perché quell'open è di alice e non di bob.",
+      "bob fa logout prima che alice si sia riconnessa. Si chiudono solo gli open della sua sessione, e l'open disconnesso di alice continua a scorrere il suo timeout."
+    ],
+    "rule": "Gli utenti sono legati a ogni sessione e a ogni open, mai al record. Per questo un [[lease-break|break]] va a una sessione che tiene uno degli open del [[lease]], e mai semplicemente al record della macchina.",
+    "notes": "'Start here · Scenarios', l'host multi-sessione, e §4.4 con le sue decisioni; invariante S20. La riconnessione di bob riceve STATUS_OBJECT_NAME_NOT_FOUND (§6.4). Una sessione null o guest non entra mai in un client, quindi i suoi open non ricevono lease né oplock. A un lease si unisce solo chi ne è opener, o una sessione su una connessione che porta la sessione di un opener. Il costo di un record per macchina: un break mancato esclude dal caching ogni utente della macchina per 90 s, e il budget di grant è condiviso. Un break i cui open sono tutti disconnessi va solo a una sessione di quel client autenticata come uno degli opener; se non ce n'è, a nessuno, e il break scade."
+  },
+  "flags": {
+    "title": "Cosa dice al client un [[tree-connect]]",
+    "table": [
+      [
+        "Flag della share",
+        "Che cosa vede il client"
+      ],
+      [
+        "encrypt",
+        "Il flag `SMB2_SHAREFLAG_ENCRYPT_DATA`. Ogni richiesta successiva su questo tree deve essere cifrata."
+      ],
+      [
+        "guest",
+        "Niente sul filo. Lascia entrare le sessioni guest, a meno che la [[share]] cifri, ed è spento di default."
+      ],
+      [
+        "[[continuously-available|continuamente disponibile]]",
+        "Le capability di disponibilità continua e di cluster (SMB 3.0 e successivi). Vengono concessi [[persistent-handle|persistent]] handle. In un cluster viene servito anche [[witness|Witness]]; un nodo singolo non lo serve."
+      ],
+      [
+        "hidden",
+        "Niente sul filo. La share non compare negli elenchi delle share."
+      ],
+      [
+        "access-based enumeration",
+        "Gli elenchi mostrano solo ciò che il chiamante può leggere. Li filtra il filesystem service, non l'adapter."
+      ]
+    ],
+    "ipc": "[[ipc|IPC$]] non è una vera share, ma l'endpoint [[rpc|RPC]] dell'[[adapter]]. Non raggiunge alcun file e risponde solo a tre servizi di gestione: srvsvc per gli elenchi delle share, wkssvc per il nome del server e lsarpc per tradurre gli identificatori di sicurezza in nomi utente. Ogni altra chiamata viene rifiutata.",
+    "notes": "§5.1 (l'ExportPolicy.SMB della share, che è dell'RFC 16) e §5.2. Ammissione e tree connect sono dell'RFC 17 §4.9. La risposta al tree connect che porta il flag encrypt viaggia in chiaro se la sessione non cifra, perché è proprio da lì che il client lo impara. La chiamata rifiutata riceve DCERPC_FAULT_OP_RNG_ERROR. Tre servizi perché servono a Explorer, net view e alla scheda Sicurezza (ponytail). Witness è servito solo in un cluster (§14; RFC 0 §1.4: il nodo singolo non lo serve), via RPC su TCP, non su IPC$. L'Appendice C elenca i flag che ogni share riporta."
+  },
+  "quizRecord": {
+    "question": "alice e bob lavorano sullo stesso host desktop. Dopo un'interruzione di rete, bob fa logout prima che alice si sia riconnessa. Che fine fa l'open di alice?",
+    "options": [
+      "Si chiude, perché il logout di bob libera il record client che i due condividono.",
+      "Ora bob può riconnetterlo, perché gli open appartengono al record della macchina.",
+      "Non succede nulla, perché il logout chiude solo gli open della sessione di bob."
+    ],
+    "why": [
+      "Un logout chiude solo gli open della propria [[session|sessione]]. Il record client sparisce solo quando non contiene più open né timeout ancora in corso.",
+      "Ogni open è legato all'utente che l'ha aperto, mai al record, quindi una riconnessione dalla sessione di bob che indica l'open di alice viene rifiutata.",
+      "Gli utenti sono legati a ogni sessione e a ogni open, mai al record. Il logout di bob chiude quindi solo i suoi open, e per l'open di alice il timeout continua a scorrere."
+    ],
+    "notes": "§4.4 'A logoff closes only its own session's opens' (MS-SMB2 3.3.5.6); il record resta finché contiene un open o un timeout durable in corso (RFC 14 §4.1). I principal si legano a ogni sessione e a ogni open, mai al record (§4.4, RFC 14 §2.2), quindi la riconnessione di bob che indica il FileId di alice riceve STATUS_OBJECT_NAME_NOT_FOUND (§6.4). Invariante S20."
+  },
+  "opens": {
+    "kicker": "Open e lease"
+  },
+  "create": {
+    "title": "`CREATE` è un unico `Open` atomico",
+    "items": [
+      "Un `CREATE` dice cosa fare se il file esiste, l'accesso richiesto, lo share access (che diventa il [[deny-mode]]), il [[lease]] desiderato e la durabilità. L'adapter passa tutto in un'unica chiamata `Open`, applicata in un solo passo.",
+      "Il [[file-id|FileId]] ha due metà. Quella persistente deriva dall'ID dell'open e indica il suo [[shard]], quindi qualsiasi [[node|nodo]] può instradare una richiesta in base a essa.",
+      "Quella volatile indica una voce nella tabella di questo [[gateway-node|nodo gateway]], e su qualsiasi altro nodo non significa nulla.",
+      "I diritti generici come `GENERIC_READ` vengono tradotti in diritti sui file prima della chiamata. I client SMB Linux chiedono `GENERIC_READ` e `GENERIC_WRITE` nei loro open, quindi senza traduzione nessuno li concederebbe e ognuno di quegli open verrebbe rifiutato.",
+      "Un open che chiede `DELETE` viene verificato anche sulla directory padre. Basta una directory che permetta al chiamante di cancellare i propri figli."
+    ],
+    "notes": "§6.1 e Appendice D. L'apertura per id numerico è rifiutata (nulla indicizza i file per id), e così la condivisione di dischi virtuali. I diritti minori degli insiemi mappati seguono i bit del mode (RFC 19 §4.1). I tempi impostati tramite un open il cui grant ha FILE_WRITE_ATTRIBUTES salvano i valori del client (S30). Senza DELETE tramite il padre, in una directory 0775 un membro del gruppo potrebbe cancellare via NFS un file che non può cancellare da Explorer. I client Linux mandano GENERIC_READ e GENERIC_WRITE nei loro open (§6.1)."
+  },
+  "leases": {
+    "title": "Gli [[oplock]] sono lease",
+    "lead": "Un [[oplock]] è la vecchia promessa di caching di SMB e appartiene a un solo open. Il [[lease]] è quella più recente. È legato a una chiave scelta dal client, e lo condividono tutti gli open del file che il client fa con quella chiave.",
+    "table": [
+      [
+        "SMB",
+        "[[caching-grant|Caching grant]]",
+        "Il client può"
+      ],
+      [
+        "oplock Level II",
+        "R",
+        "tenere in cache le letture"
+      ],
+      [
+        "oplock exclusive",
+        "R W",
+        "tenere in cache le letture e accumulare le scritture"
+      ],
+      [
+        "oplock batch",
+        "R W H",
+        "anche tenere aperto un file dopo che l'applicazione lo ha chiuso"
+      ],
+      [
+        "lease",
+        "R, RW, RH o RWH",
+        "fare lo stesso, per tutti gli open sotto una chiave"
+      ]
+    ],
+    "footer": "Ciascuno è lo stesso tipo di grant di una delegation NFS, quindi client SMB e NFS dello stesso file entrano in conflitto correttamente. Le directory non hanno lease, perché ogni file creato in una directory ne provocherebbe il [[lease-break|break]].",
+    "notes": "§6.2 con la sua decisione, invariante S6. Due oplock dello stesso client si fanno break a vicenda, perché sono legati all'open; due open sotto la stessa lease key no. Lease key, parent key ed epoch viaggiano sul grant dell'RFC 14. Una conferma duplicata o tardiva è ErrState (NoRecall): STATUS_UNSUCCESSFUL per un lease, STATUS_INVALID_DEVICE_STATE per un oplock. Niente directory lease costa un round trip ogni volta che Explorer rilegge una cartella."
+  },
+  "breaks": {
+    "title": "Un [[lease-break|break]] non occupa worker",
+    "notes": "§6.3 e la sua figura del lease break; passo 7 del §2; invarianti S5, S12, S26. Il service segnala il conflitto come ErrDelay; i client NFS ritentano, quelli SMB no, quindi l'adapter trattiene la richiesta (RFC 20 §4.6). Il backoff è un ponytail: il nodo in attesa scopre che il break è finito rieseguendo, perché la conferma può arrivare a un altro nodo. La scadenza del CREATE trattenuto è recall_timeout, 60 s di default, che deve superare i 35 s del break. Un break da lettura a nessuno non richiede conferma."
+  },
+  "handlefirst": {
+    "title": "Prima il caching di handle, poi la sharing violation",
+    "lead": "alice-pc tiene un file sotto un [[lease]] con caching di handle e con un [[deny-mode]] che rifiuta chi scrive. Poi build01, un client NFS, apre lo stesso file in scrittura.",
+    "steps": [
+      "L'unico ostacolo è il deny mode di alice-pc, quindi build01 non viene ancora rifiutato. Gli si dice di riprovare mentre si fa il break del caching di handle di alice-pc.",
+      "Se l'applicazione di alice-pc aveva già chiuso il file e il client lo teneva solo aperto, il [[lease-break|break]] costringe alice-pc a chiuderlo, e l'open di build01 riesce.",
+      "Se dopo il break l'open di alice-pc è ancora in uso, il suo deny mode rifiuta l'open di build01."
+    ],
+    "outcome": "Una sharing violation si decide solo dopo il break del caching di handle che c'è dietro — per una richiesta SMB come per una NFS.",
+    "notes": "'Start here · Scenarios', il primo, e §6.3 ('Handle caching is broken before a sharing violation', un MUST NOT fallire subito; MS-FSA 2.1.5.1.2); invariante S13. Lo stesso vale per un OPEN NFS e per una lettura o scrittura con stateid anonimo o di delegation. Allo stesso modo una richiesta di lock da un altro client riporta a nessuno il caching di lettura o scrittura prima che il lock venga deciso (§6.3, §7)."
+  },
+  "holds": {
+    "title": "Per quanto si trattiene una richiesta",
+    "lead": "I client SMB non ritentano da soli. Perciò, quando il servizio risponde con un errore che può risolversi da sé, [[retry-later|ErrDelay]], oppure [[grace-period|ErrGrace]] durante un grace period, l'adapter trattiene la richiesta invece di farla fallire. Per quanto tempo dipende dalla causa del ritardo, mai dall'operazione. Fa eccezione un nodo a corto di memoria. In quel caso la richiesta riceve subito `STATUS_INSUFFICIENT_RESOURCES` e non viene mai trattenuta.",
+    "table": [
+      [
+        "Trattenuta a causa di",
+        "Trattenuta fino a",
+        "Poi"
+      ],
+      [
+        "un [[lease-break|break]] o un recall",
+        "`recall_timeout`, 60 s di default",
+        "Viene rieseguita. Il break finisce sempre entro 35 s, ben prima. Una richiesta ancora ritardata da un altro break o recall a quel limite riceve `STATUS_FILE_NOT_AVAILABLE`."
+      ],
+      [
+        "il [[grace-period|grace period]] dopo un failover",
+        "la fine del grace, più 35 s",
+        "Viene rieseguita, oppure riceve `STATUS_FILE_NOT_AVAILABLE`"
+      ],
+      [
+        "una [[share]] congelata durante l'ultimo passo di uno [[namespace-move|spostamento di namespace]]",
+        "la fine del congelamento, più 35 s",
+        "Viene rieseguita, oppure riceve `STATUS_FILE_NOT_AVAILABLE`"
+      ]
+    ],
+    "notes": "§6.3 e §16.5 (il paragrafo dei limiti, 'The hold follows the delay's cause' e la tabella); invarianti S21 e S23. Break o recall: un break che arriva alla sua scadenza di 35 s viene forzato e la richiesta rieseguita con il proprio esito; una ancora ritardata da un altro break o recall a recall_timeout dà STATUS_FILE_NOT_AVAILABLE. Lo stesso limite recall_timeout vale per l'ErrDelay di un clone che occupa l'intervallo (STATUS_FILE_LOCK_CONFLICT oltre la scadenza del clone) Ogni ErrDelay porta la sua causa (DelayCause), e l'attesa si sceglie da quella causa. Grace (ErrGrace): trattenuta fino alla fine del grace più 35 s. Freeze: trattenuta fino alla fine del freeze più 35 s, al massimo migration.freeze_timeout (5 min di default) più 35 s; se il namespace è stato spostato, invece, i tree delle share spostate finiscono con STATUS_NETWORK_NAME_DELETED. Una scrittura ritardata da un freeze non riceve mai STATUS_DISK_FULL. L'eccezione citata nel testo: un ErrDelay con DelayResources (un pool di memoria del nodo esaurito, RFC 24 §4.2) dà subito STATUS_INSUFFICIENT_RESOURCES e non viene mai trattenuto. ErrGrace è il rifiuto del grace period (RFC 14 §4.4). Il congelamento è l'ultimo passo di uno spostamento di namespace (RFC 27), §6.3 'A request refused for a frozen share outlives the freeze'."
+  },
+  "holdsMore": {
+    "title": "Richieste trattenute: journal pieno e lock in attesa",
+    "table": [
+      [
+        "Trattenuta a causa di",
+        "Trattenuta fino a",
+        "Poi"
+      ],
+      [
+        "un [[journal]] pieno che l'offload può ancora svuotare",
+        "`pending_timeout`, 10 min di default",
+        "Viene rieseguita finché dura la causa. Riceve `STATUS_DISK_FULL` solo a quel limite, o subito se la causa diventa permanente."
+      ],
+      [
+        "un lock in attesa",
+        "nessuna scadenza",
+        "Finisce quando il lock viene concesso o annullato, o il suo open si chiude"
+      ]
+    ],
+    "footer": "Una quota, o una mancanza di spazio permanente, riceve subito la risposta, perché nessuna delle due si risolve da sé.",
+    "notes": "§16.5 (il paragrafo dei limiti e la tabella) e §7; invarianti S21 e S23. Un journal pieno, o il limite di journal di una share, che rifiuta una scrittura mentre offload o repack possono svuotarlo, anche durante un'interruzione del remote, è trattenuto e rieseguito fino a pending_timeout (10 min di default); STATUS_DISK_FULL solo lì, o subito se la causa diventa permanente. Uno stallo dello store (DelayCommit) è trattenuto fino a pending_timeout, poi STATUS_UNEXPECTED_IO_ERROR; lo stesso vale per un journal in sola lettura (DelayJournal: un errore del dispositivo che può risolversi, o una rimozione che aspetta la riapertura del journal) e per una lettura che incontra un'interruzione del remote (ErrUnavailable). Una quota utente o di gruppo dà subito STATUS_DISK_QUOTA_EXCEEDED; una quota di share o di progetto subito STATUS_DISK_FULL. Un lock in attesa (§7) non ha scadenza e non tiene un worker; termina alla concessione, a un CANCEL, quando il suo open si chiude o la connessione cade, e con STATUS_NETWORK_NAME_DELETED quando la sua share viene rimossa o spostata. Qualsiasi risposta diversa dalla concessione arriva solo dopo che CancelLock è tornato."
+  },
+  "quizHandle": {
+    "question": "alice-pc, che [[deny-mode|rifiuta chi scrive]], tiene in cache l'handle di un file già chiuso dalla sua applicazione. Cosa succede se build01 lo apre in scrittura via NFS?",
+    "options": [
+      "build01 aspetta il break del caching di handle di alice-pc, poi il suo open riesce.",
+      "build01 viene rifiutato subito, perché il deny mode di alice-pc rifiuta chi scrive.",
+      "L'open di build01 riesce subito, perché i deny mode SMB non valgono per i client NFS."
+    ],
+    "why": [
+      "Il [[lease-break|break]] arriva prima di qualunque sharing violation. Costringe alice-pc a chiudere il file che teneva solo aperto, e così nessun deny mode rifiuta più build01.",
+      "Un [[deny-mode]] coperto dal caching di handle non rifiuta mai subito, perché l'applicazione potrebbe aver già chiuso quell'open. Prima viene il break.",
+      "Un deny mode vale anche per i client NFS. Se dopo il break l'open di alice-pc fosse stato ancora in uso, il suo deny mode avrebbe rifiutato l'open di build01."
+    ],
+    "notes": "§6.3 'Handle caching is broken before a sharing violation' (un MUST NOT fallire subito; MS-FSA 2.1.5.1.2) e 'The same holds for a request from another protocol' (un OPEN NFS aspetta il break come retry NFS; RFC 14 §6); 'Start here · Scenarios', il primo. Invariante S13."
+  },
+  "durable": {
+    "title": "[[durable-handle|Durable]] e [[persistent-handle|persistent]] handle",
+    "table": [
+      [
+        "Richiesta",
+        "Concessa quando",
+        "Sopravvive a"
+      ],
+      [
+        "durable v1 `DHnQ`",
+        "viene concesso un [[oplock]] batch o un [[lease]] con caching di handle",
+        "una connessione persa, per 60 s"
+      ],
+      [
+        "durable v2 `DH2Q`",
+        "come per la v1",
+        "una connessione persa, per il timeout del client (60 s se non ne chiede, al massimo 300 s)"
+      ],
+      [
+        "v2 con `PERSISTENT`",
+        "la [[share]] è [[continuously-available|continuamente disponibile]]",
+        "anche alla perdita del [[primary]], perché è salvato"
+      ]
+    ],
+    "items": [
+      "Un durable open sta solo nella memoria del primary. Un [[handover|passaggio di consegne pianificato]] del suo [[shard]] a un nuovo primary lo porta con sé, ma un riavvio o un failover del primary lo perde.",
+      "Su una share continuamente disponibile, ogni scrittura è stabile da qualunque open arrivi: viene sincronizzata nel [[journal]] prima di essere confermata.",
+      "SMB non ha un [[write-verifier]]. Quando si perde un primary, niente può avvisare il client che scritture date per fatte sono andate perse con lui."
+    ],
+    "notes": "§6.4, la sua tabella e le due decisioni; invariante S10. Una richiesta persistent su uno stream con nome viene concessa durable. Rendere stabili le scritture sugli open che sopravvivono, e rifiutare i durable open che non sopravvivono, elimina entrambe le metà del problema del 'buco silenzioso in un disco virtuale'. Il costo su una share CA: un sync del journal per scrittura e, per una sovrascrittura di byte già committati, una quota del successivo group commit. Una perdita mentre il processo resta in piedi viene comunicata al FLUSH successivo dell'open (§9.4). Handover: §6.4, 'a handover of its shard carries it, a restart or failover of the primary does not'."
+  },
+  "reconnect": {
+    "title": "Riconnettersi: le condizioni e il FileId",
+    "lead": "Ogni open è legato alla [[session|sessione]] che l'ha creato o riconnesso per ultima. Quando quella sessione perde l'ultima connessione, i suoi open [[durable-handle|durable]] e persistent si disconnettono e parte il loro timeout. Al nuovo login il client può indicare la vecchia sessione, che il nodo chiude se la tiene ancora.",
+    "matchTitle": "Riesce solo se",
+    "match": [
+      "l'open è [[durable-handle|durable]] o [[persistent-handle|persistent]], e il suo timeout non è scaduto;",
+      "utente, [[share]] e [[client-guid|ClientGuid]] della sessione che si riconnette sono quelli dell'open;",
+      "per un open v2, coincide il `CreateGuid`, l'identificatore che il client gli ha dato alla creazione;",
+      "coincide la lease key dell'open, se ne ha una;",
+      "l'open è disconnesso, non legato a nessuna [[session|sessione]] attiva."
+    ],
+    "routeTitle": "Instradata, mai per path",
+    "route": "Un durable handle è un [[client-held-name]]. La metà persistente del suo [[file-id|FileId]] indica l'open e il suo [[shard]], quindi la riconnessione va dritta al [[primary]] giusto, e una rinomina nel frattempo non può sviarla.",
+    "footer": "Una riconnessione che manca una condizione riceve `STATUS_OBJECT_NAME_NOT_FOUND`. Se riesce, l'open passa alla nuova sessione. Se restasse legato a quella perduta, una seconda interruzione non lo disconnetterebbe e il suo timeout non ripartirebbe più.",
+    "notes": "§6.4 'Reconnect', un MUST; invarianti S4, S14, S29. Una sessione precedente ancora tenuta da questo nodo viene chiusa da PreviousSessionId prima che arrivi la riconnessione (§4.3), ma solo dopo che il nuovo SignIn è riuscito con lo stesso principal. Un open nomina la sua sessione con gateway node, node epoch e session ID, perché i session ID ripartono da 1 in ogni processo. Dopo la perdita di un primary, una riconnessione durable MUST ricevere STATUS_OBJECT_NAME_NOT_FOUND e MUST NOT essere accettata come reclaim. Introduzione: §4.3 'A disconnect is per session, at its last channel' (ogni open registra la sessione che l'ha creato o riconnesso per ultima; il Disconnect all'ultimo canale della sessione fa partire i timeout dei suoi open durable e persistent). CreateGuid: §6.4, §6.5, §16.4 Durable.Create. Vecchia sessione: PreviousSessionId, §4.3; vale solo dopo che il nuovo login è riuscito con lo stesso principal."
+  },
+  "failover": {
+    "title": "La giornata di alice: un'interruzione e due [[node|nodi]] persi",
+    "notes": "§2 passi 3–6 (la share si assume continuamente disponibile e cifrata), §4.3 e §6.4. Passo 2: PreviousSessionId sul nodo che tiene ancora la vecchia sessione (§4.3). Passo 3: l'indirizzo flottante si sposta; Witness, un servizio solo da cluster, lo dice ad alice-pc (§14); un gateway node perso non perde open state, quindi niente grace. Passo 4: perdere il primary è un failover; le connessioni del client vengono interrotte perché si riconnetta e faccia il reclaim dei suoi persistent open, e i nuovi open aspettano la fine del grace dello shard. Passo 5: §6.4 'After a primary is lost' e la decisione; il software dei profili vede il disco fallire invece di riagganciarne uno con un buco. Sulla share CA di questo scenario ogni scrittura è stabile anche attraverso un open non persistent (la decisione di §6.4), quindi lì il rifiuto non perde scritture; il buco che evita è quello su una share non CA. Dettaglio del passo 2: la vecchia sessione è ancora tenuta perché il nodo non si è ancora accorto che la vecchia connessione è morta; chiuderla segna come disconnessi i suoi open durable e persistent (§4.3). Indirizzo flottante: §2 passo 5, §4.3, RFC 15 §5.3."
+  },
+  "replay": {
+    "title": "Un replay non viene mai applicato due volte",
+    "lead": "Un client che ha perso una risposta invia di nuovo la richiesta, marcata come replay, e il server non la applica mai due volte. I replay si riconoscono all'open, che sta sul [[primary]]. Il nodo gateway non tiene alcuno stato dei replay.",
+    "items": [
+      "Un replay di `CREATE` si riconosce dal suo `CreateGuid`, un identificatore dato dal client all'open. Resta con l'open, quindi vale su qualsiasi [[node|nodo]].",
+      "Un replay di `LOCK` si riconosce da un numero di sequenza che il client mette in ogni `LOCK`. Un `LOCK` il cui numero l'open ha già registrato riesce senza essere applicato una seconda volta. Un [[persistent-handle|persistent]] open salva questi numeri insieme al lock."
+    ],
+    "notes": "§6.5 e §16.2; invariante S25. Il rifiuto è STATUS_FILE_NOT_AVAILABLE. Channel.Seq è salvato con un persistent open, scritto in una transazione prima che giri la richiesta che lo alza; succede solo quando un client sposta l'open su un nuovo canale, quindi costa una transazione per spostamento di canale. I conteggi in volo non vengono mai scritti; un nuovo primary li fa partire da zero. I resilient handle non sono offerti, quindi la 2.1 non ha replay dei lock. Sequenza dei lock: §6.5 e §16.4 (LockSequenceNumber e LockSequenceIndex; una richiesta il cui indice ha già il suo numero riesce senza essere riapplicata). Channel.Seq sale solo quando il client sposta l'open su un nuovo canale dopo un guasto; i message ID sono per connessione (§6.5)."
+  },
+  "replayMore": {
+    "title": "Il replay delle altre richieste",
+    "items": [
+      "Su SMB 3.x ogni altra richiesta viene confrontata con la [[channel-sequence]] dell'open, che il client alza quando sposta l'open su un nuovo canale dopo un guasto. Un `WRITE`, un `SET_INFO` o un `IOCTL` superato viene rifiutato.",
+      "Un `WRITE`, `SET_INFO` o `IOCTL` ripetuto viene rifiutato anche finché l'originale è ancora in corso, e il client lo rimanda.",
+      "Un replay non viene mai riconosciuto dal message ID, perché i message ID si contano per connessione, e due canali della stessa sessione possono inviare due richieste diverse con lo stesso."
+    ],
+    "notes": "§6.5 e §16.2; invariante S25. Il rifiuto è STATUS_FILE_NOT_AVAILABLE. Channel.Seq è salvato con un persistent open, scritto in una transazione prima che giri la richiesta che lo alza; succede solo quando un client sposta l'open su un nuovo canale, quindi costa una transazione per spostamento di canale. I conteggi in volo non vengono mai scritti; un nuovo primary li fa partire da zero. I resilient handle non sono offerti, quindi la 2.1 non ha replay dei lock. Sequenza dei lock: §6.5 e §16.4 (LockSequenceNumber e LockSequenceIndex; una richiesta il cui indice ha già il suo numero riesce senza essere riapplicata). Channel.Seq sale solo quando il client sposta l'open su un nuovo canale dopo un guasto; i message ID sono per connessione (§6.5)."
+  },
+  "quizDurable": {
+    "question": "Su una share non continuamente disponibile si guasta il [[primary]] dell'open [[durable-handle|durable]] di alice. Cosa riceve la sua riconnessione?",
+    "options": [
+      "Riesce sul nuovo primary, che ripristina l'open con il suo lease.",
+      "Viene rifiutata con STATUS_OBJECT_NAME_NOT_FOUND, e il disco fallisce in modo visibile.",
+      "Riesce, e il client rimanda le scritture che il vecchio primary non aveva sincronizzato."
+    ],
+    "why": [
+      "Solo un open [[persistent-handle|persistent]] è salvato e si riconnette con il suo [[lease]]. Un open durable stava solo nella memoria del vecchio primary ed è sparito con lui.",
+      "L'open durable stava solo nella memoria del primary perso. Rifiutare la riconnessione rende visibile il guasto, invece di ricollegare un disco con un buco.",
+      "SMB non ha un [[write-verifier]], quindi il client non scopre mai che delle scritture sono andate perse e non le rimanda. Accettare la riconnessione lascerebbe un buco silenzioso."
+    ],
+    "notes": "§6.4 'After a primary is lost' (la riconnessione MUST ricevere STATUS_OBJECT_NAME_NOT_FOUND e MUST NOT essere accettata come reclaim; un open persistent si riconnette con il suo lease) e la sua prima decisione; §6.4 sull'assenza di write verifier in SMB, per cui le scritture perse non vengono mai rimandate. Invariante S10."
+  },
+  "files": {
+    "kicker": "I file sulla rete"
+  },
+  "locks": {
+    "title": "Lock su intervalli di byte: obbligatori, una chiamata",
+    "items": [
+      "Un lock Windows è obbligatorio. Finché è attivo, letture e scritture di quell'intervallo da altri open falliscono con `STATUS_FILE_LOCK_CONFLICT`.",
+      "Un `LOCK` corrisponde a una sola chiamata al servizio. Un elenco di lock si ottiene tutto o niente, e un elenco di unlock si ferma al primo intervallo che non è bloccato.",
+      "Solo un `LOCK` con un unico intervallo può restare in attesa. Un lock in attesa non ha **alcuna scadenza** e non occupa worker.",
+      "Prima di rispondere a un lock in attesa con qualcosa di diverso dalla concessione, l'[[adapter]] chiama `CancelLock` e aspetta che termini.",
+      "Un lock di un altro client toglie prima ogni caching in lettura o in scrittura del file, che sia un [[lease]] SMB o una delegation NFS."
+    ],
+    "footer": "Senza il passaggio da `CancelLock`, un lock potrebbe essere concesso dopo che la sua richiesta ha già ricevuto un fallimento. Resterebbe un lock orfano, che nessun client sa di avere.",
+    "notes": "§7 con la sua decisione; invariante S21. Una lista di più elementi in cui uno non ha FAIL_IMMEDIATELY è STATUS_INVALID_PARAMETER; un array misto di lock e unlock è rifiutato prima di toccare qualsiasi intervallo. Un lock in conflitto che chiede di fallire subito riceve STATUS_LOCK_NOT_GRANTED. Se CancelLock riferisce che il lock era già stato concesso, la risposta è successo, anche su CANCEL. Un lock di lunghezza zero in X è in conflitto solo con un lock che tiene sia X − 1 sia X."
+  },
+  "flush": {
+    "title": "Scritture, `FLUSH`, e una perdita che nessuno ha visto",
+    "items": [
+      "Un `WRITE` è instabile, a meno che chieda il write-through, che il suo open sia stato fatto con `FILE_WRITE_THROUGH`, che l'open sia [[persistent-handle|persistent]] o che la [[share]] sia [[continuously-available|continuamente disponibile]].",
+      "Un `FLUSH` è uno [[stability-point]]. Riceve risposta quando il [[journal]] ha sincronizzato il suo intervallo e le sovrascritture in quell'intervallo sono committate.",
+      "Se il journal perde scritture confermate mentre il server resta in funzione, perché un record si è rivelato corrotto o una sincronizzazione è fallita, il `FLUSH` successivo di ogni open che era aperto durante la perdita fallisce, una volta sola.",
+      "Se il metadata store si blocca, una risposta che dipende da lui viene trattenuta fino a `pending_timeout` invece di fallire subito."
+    ],
+    "why": "SMB non ha un [[write-verifier]] con cui avvisare il client della perdita, quindi lo avvisa il `FLUSH` successivo di ogni open, che fallisce con `STATUS_UNEXPECTED_IO_ERROR`. I flush successivi tornano a riuscire.",
+    "notes": "§9.4, invariante S22. La risposta di stabilità aspetta anche, quando il suo intervallo copre contenuto committato, un sync mark registrato; un append o il riempimento di un buco non aspetta il commit di esistenza, e una risposta in attesa si unisce al group commit successivo (RFC 8 §5.1). Gli eventi di perdita sono quelli dell'RFC 1 §3.8. LossSeen torna a 0 per un persistent open ripristinato dopo il riavvio o il failover del suo primary. Una lettura che incontra un'interruzione del remote sotto il suo MinimumCount resta in pending, non riceve una risposta corta. Cause di una perdita senza riavvio: un record scartato perché corrotto o una finestra di sync fallita (§9.4, RFC 1 §3.8)."
+  },
+  "times": {
+    "title": "Timestamp congelati, e un ctime che cambia sempre",
+    "items": [
+      "In `FileBasicInformation` un client imposta un orario a −1 per congelarlo per il resto della vita dell'open, a −2 per farlo ripartire, o a 0 per lasciarlo com'è.",
+      "Il congelamento è registrato con l'open sul [[primary]], che fissa gli orari di ogni scrittura nel momento in cui la accetta.",
+      "Una scrittura attraverso l'open che ha congelato l'orario non sposta `LastWriteTime`, mentre una scrittura attraverso un altro open dello stesso file lo sposta ancora.",
+      "`ChangeTime` non viene mai congelato, perché è il ctime che i client NFSv3 controllano per sapere se la loro cache è ancora valida."
+    ],
+    "footer": "Poiché sta con l'open, il congelamento sopravvive a una riconnessione dopo un'interruzione di rete, e quello di un [[persistent-handle|persistent]] open sopravvive anche alla perdita del primary.",
+    "notes": "§9.3 'Timestamps' e le due decisioni; invarianti S7 e S15. Anche un tempo esplicito sospende, come −1. Nell'adapter, il congelamento potrebbe solo riscrivere i tempi dopo che il commit li ha fissati, e un client che legge da un altro nodo li vedrebbe cambiare due volte. Un ctime congelato lascerebbe ogni lettore NFS di un disco di profilo con dati vecchi dopo le scritture SMB."
+  },
+  "volume": {
+    "title": "Cosa si dice a Windows del volume",
+    "items": [
+      "Il volume dichiara `NTFS` come file system, perché gli installer rifiutano altri nomi. Una serie di flag dice quali funzioni sono davvero supportate.",
+      "L'ID interno del file, quello che un [[handle|file handle NFS]] porta con sé, non arriva mai sul filo SMB. Windows vede invece il numero a 64 bit salvato per il file, oppure un id a 128 bit costruito dalla share e da quel numero.",
+      "I nomi brevi 8.3 del vecchio Windows (come `PROGRA~1`) non vengono mai generati.",
+      "Impostare una dimensione di allocazione oltre la fine del file vale come semplice suggerimento. L'operazione riesce, ma non viene riservato spazio.",
+      "`FSCTL_SET_SPARSE` imposta solo l'attributo sparse, perché qualsiasi file può comunque avere dei buchi."
+    ],
+    "notes": "§9.1 e la sua decisione, §9.2, §9.3 'Allocation size' e 'Sparse files', Appendice E; invariante S15. Il FileID resta fuori dalla rete perché un handle NFSv3 è un bearer token: conoscere il FileID di un file è già quasi raggiungerlo. L'id a 128 bit è un digest con chiave dello ShareID sotto un segreto dell'installazione, seguito da Number. Rifiutare un'allocazione più grande farebbe fallire ogni copia di Windows, che la imposta prima di scrivere; il costo è che una scrittura successiva può ricevere STATUS_DISK_FULL. Il FileID interno è quello dell'RFC 7, portato da un file handle (§9.1)."
+  },
+  "names": {
+    "title": "Un nome creato via NFS arriva a Windows",
+    "lead": "Un nome salvato è solo una sequenza di byte, mentre SMB trasporta i nomi in UTF-16. Una [[share]] in modalità `windows` salva solo nomi che Windows sa mostrare. Una share in modalità `posix` salva anche nomi che Windows non sa mostrare, e un nome creato lì via NFS arriva a Windows così.",
+    "table": [
+      [
+        "Nome salvato",
+        "Via SMB",
+        "Esempio"
+      ],
+      [
+        "UTF-8 valido, senza caratteri riservati da Windows",
+        "Convertito in UTF-16 e ritorno",
+        "`report.docx`"
+      ],
+      [
+        "UTF-8 valido, con un carattere riservato da Windows",
+        "Mostrato attraverso la [[private-use-mapping]]",
+        "`a:b` appare con U+F022 al posto dei due punti"
+      ],
+      [
+        "UTF-8 non valido",
+        "**Nascosto**. Non compare negli elenchi e non si può aprire per nome.",
+        "Un nome in una vecchia codifica a 8 bit"
+      ]
+    ],
+    "items": [
+      "Questi nomi vengono nascosti anziché trasformati con un escape, perché qualsiasi escape di byte arbitrari potrebbe coincidere con un nome che qualcuno può davvero digitare.",
+      "Via SMB, creare un nome come `x?`, `CON`, `con.txt` o `CON .txt` viene rifiutato. Su una share `posix`, un file chiamato `CON` creato via NFS si può comunque aprire."
+    ],
+    "notes": "§12.3 con la sua decisione, Appendice B, invarianti S8 e S17; 'Start here · Scenarios', il terzo. Un nome salvato che contiene già uno dei code point dell'area privata viene trattato come nascosto. Una directory che contiene solo nomi nascosti non è vuota per Unlink. Su una share windows il mapping non si applica: un carattere riservato che arriva via NFS viene salvato già nella sua forma ad area privata e rifiutato da ogni altro protocollo, un nome non UTF-8 viene rifiutato via NFS (§18, la riga di §12.3), e un nome con U+F001–U+F07F viene salvato e mostrato così com'è. Il rifiuto è STATUS_OBJECT_NAME_INVALID. I controlli valgono per il nome base e per il nome dello stream; quello sui nomi di dispositivo solo per il nome base, quindi uno stream chiamato CON è ammesso. L'elenco dei dispositivi contiene anche CONIN$, CONOUT$, COM¹–COM³ e LPT¹–LPT³, e gli spazi prima del punto (CON .txt) non cambiano nulla. Solo su una share posix un nome di dispositivo creato via NFS è elencato e apribile via SMB; lì solo U+F001–U+F029 scrivono un carattere riservato, e uno spazio o un punto finale inviato via SMB viene salvato (una share windows lo rifiuta, RFC 7 §3.8). Su una share windows, a:b creato via NFS viene salvato come a U+F022 b, che poi anche NFS elenca. Le destinazioni dei symlink sono tradotte, / in \\, mai seguite sul server (§12.4). Due modalità per i nomi: share posix e share windows (§12.3, RFC 7 §3.8)."
+  },
+  "security": {
+    "title": "Security descriptor: una ACL, scritta per Windows",
+    "items": [
+      "Un file ha un solo proprietario, un solo gruppo e una sola lista di accesso, qualunque protocollo li legga. SMB li legge e li scrive sotto forma di security descriptor Windows, la cui lista di accesso si chiama DACL.",
+      "Per leggere o scrivere la lista di audit (SACL) serve il diritto `ACCESS_SYSTEM_SECURITY`, che hanno solo gli amministratori. Non lo concedono né la proprietà né l'ACL.",
+      "Una voce di tipo allow senza flag di ereditarietà che indica il SID del proprietario viene salvata come `OWNER@`, una voce che indica sempre il proprietario attuale del file. Se poi un `chown` cambia proprietario, la voce segue il nuovo proprietario.",
+      "Alcune voci Windows, come le voci di oggetto e quelle condizionali, non hanno una forma salvabile. Un descriptor che ne contiene una viene rifiutato e non se ne salva nulla, perché saltare una voce deny concederebbe proprio ciò che doveva negare.",
+      "Il privilegio di backup e restore di un chiamante vale solo su un handle il cui `CREATE` ha dichiarato l'intento di backup o restore. Da lì copre ogni richiesta fatta attraverso quell'handle."
+    ],
+    "notes": "§11 e le sue decisioni; invarianti S15 e S28. Cosa significa una ACL e come si valuta sono dell'RFC 19; principal e SID dell'RFC 18. I deny che nominano il proprietario restano nominativi. Un SID di owner che nessun principal ha dà STATUS_INVALID_OWNER. Il cambio di owner e gruppo segue l'RFC 7 §7.4: via SMB un admin imposta un altro owner solo tramite un handle con intento, più stretto di Windows e chiuso in caso di dubbio. MaximalAccess si calcola senza il privilegio, anche su un handle con intento. L'unica ACL è quella dell'RFC 7; OWNER@ è il principal speciale di NFSv4 per il proprietario del file (§11). Che cosa può contenere un'impostazione: la tabella di §11 (voci object, callback, mandatory-label, resource-attribute e scoped-policy danno STATUS_INVALID_SECURITY_DESCR; non si salva nulla) e la sua decisione; RFC 19 §2.8."
+  },
+  "inuse": {
+    "title": "Le regole di Windows per i file in uso",
+    "items": [
+      "Per rinominare un file, l'open che lo fa deve avere l'accesso `DELETE`, e ogni altro open del file deve averlo consentito nel proprio share access.",
+      "Via SMB, una directory con un file aperto direttamente al suo interno non si può rinominare né cancellare. Il tentativo viene rifiutato con `STATUS_ACCESS_DENIED`.",
+      "I file aperti più in profondità nell'albero non vengono controllati.",
+      "Una cancellazione ha effetto solo all'ultima chiusura del file. Fino ad allora, un `CREATE` con lo stesso nome viene rifiutato con `STATUS_DELETE_PENDING`.",
+      "Uno stream con nome, cioè dati aggiuntivi legati a un file, non viene mai cancellato né rinominato da solo. Attraverso un open che ha `DELETE`, il tentativo viene rifiutato con `STATUS_NOT_SUPPORTED`. Senza `DELETE` viene rifiutato come per qualunque file, con `STATUS_ACCESS_DENIED`."
+    ],
+    "example": "Mentre alice-pc tiene aperto `ODFC_alice.vhdx`, rinominare `profiles/alice/` via SMB viene rifiutato. Un `RENAME` NFS della stessa directory invece riesce, perché NFS non ha questa regola.",
+    "notes": "§13 e il suo esempio; §12.1 per gli stream, con la sua decisione (i test smbtorture streams.rename diventano fallimenti noti); questione aperta 2. Stream (§12.1, §16.5): FILE_DELETE_ON_CLOSE sul CREATE di uno stream che chiede DELETE dà STATUS_NOT_SUPPORTED dalla sola richiesta, e senza DELETE riceve la risposta di un file qualunque. Una disposition o un rename attraverso l'open di uno stream è un solo SetAttr o Rename; il servizio lo rifiuta ErrAccess senza DELETE (STATUS_ACCESS_DENIED) ed ErrInvalid con DELETE, a cui si risponde STATUS_NOT_SUPPORTED. Una destinazione di rename che comincia con ':' o nomina uno stream è STATUS_NOT_SUPPORTED dalla sola richiesta, qualunque cosa tenga l'open. Il tipo di stream $DATA si confronta senza distinguere maiuscole. L'RFC 14 controlla queste regole sul primary, quindi valgono qualunque protocollo tenga il file aperto; rifiuta con ErrShareViolation, a cui l'adapter risponde STATUS_ACCESS_DENIED, come fa Windows. L'unlink all'ultimo close è autorizzato dal grant dell'open che l'ha impostato."
+  },
+  "also": {
+    "title": "Anche nell'RFC 22",
+    "copyTitle": "Copia lato server",
+    "copy": "Quando Explorer copia un file dentro una stessa share, i dati non attraversano mai la rete. Il server li copia a blocchi limitati (copychunk) o li clona in un solo passo atomico (duplicate-extents). Tra share con storage separati, come sono le share di default, il file lo copia il client.",
+    "notifyTitle": "Notifica dei cambiamenti",
+    "notify": "La finestra di Explorer si aggiorna da sola quando i file cambiano. I nomi nelle notifiche sono scritti come li scrive un elenco della directory. In un cluster, una modifica in un altro [[shard]] dice solo al client di rileggere la cartella.",
+    "witnessTitle": "[[witness|Witness]]",
+    "witness": "In un cluster, Witness dice al client di una [[share]] [[continuously-available|CA]] quali indirizzi del server sono attivi, e gli chiede di spostarsi prima che un [[node|nodo]] venga svuotato. Un nodo singolo non lo serve. Le sue registrazioni non vengono mai salvate.",
+    "versionsTitle": "Versioni precedenti",
+    "versions": "La scheda Versioni precedenti di Explorer elenca gli snapshot di sola lettura della share, dal più recente. Ogni snapshot riporta un proprio numero di serie del volume e propri id dei file.",
+    "notes": "§10 e Appendice F (copychunk: 256 chunk da 1 MiB, 16 MiB per richiesta; duplicate-extents oltre clone_max_len, 1 GiB di default, dà STATUS_INVALID_PARAMETER; fra namespace diversi STATUS_NOT_SUPPORTED; decisione su ODX). §8 (un cambiamento fatto via NFS senza un open per nome, come un WRITE NFSv3, non arriva a nessun watch; l'overflow è STATUS_NOTIFY_ENUM_DIR). §8: un watch ricorsivo che attraversa più shard è (cluster); su un nodo solo ogni modifica arriva con il suo dettaglio. §14: Witness è (cluster), e il nodo singolo non lo serve (RFC 0 §1.4); SHARE_MOVE non viene inviato. §15 (i token sono visibili per path; un open in scrittura lì è STATUS_ACCESS_DENIED), invariante S18. Copia solo dentro un namespace; di default ogni share ha il suo namespace, quindi una copia tra share passa dal client (§10, STATUS_NOT_SUPPORTED). ODX non è offerto (decisione di §10)."
+  },
+  "tests": {
+    "kicker": "Test",
+    "title": "Come si testa — e quali sostituti non valgono",
+    "layers": [
+      "Ogni tabella di traduzione è testata come funzioni pure, su vettori di riferimento e verificando che copra ogni input possibile.",
+      "Ogni decoder è sottoposto a fuzzing: create context, maschere di accesso, elementi di `LOCK` e security descriptor.",
+      "smbtorture e le Windows Protocol Test Suites girano attraverso `dt`, l'harness di test dell'RFC 29.",
+      "Dove serve proprio Windows, si usa un vero client Windows."
+    ],
+    "notTitle": "Questi non possono scoprire una regola violata",
+    "not": [
+      "Un solo [[node|nodo]] non può verificare le regole che coinvolgono più nodi.",
+      "Un client che conferma sempre non può verificare un [[lease-break|break]] che scade.",
+      "Un test di failover che fa flush prima di uccidere il [[primary]] non perde mai una scrittura non ancora salvata."
+    ],
+    "footer": "Le suite di protocollo girano su un solo nodo, come la prima release. Lì riavviare il nodo fa le veci della perdita del primary.",
+    "notes": "§16.6, §18 ('Where each check runs', 'What must not stand in', 'Suites'). In un test di failover contano le scritture non ancora passate da un flush. Un client di harness che si riconnette a comando non può far fallire la riga sullo spostamento del namespace, che esiste per vedere cosa fa Windows con lo stato che riceve."
+  },
+  "whom": {
+    "kicker": "Cosa cambia",
+    "usersTitle": "Utenti e operatori Windows",
+    "users": "Su una [[share]] [[continuously-available|CA]], i dischi di profilo superano le interruzioni di rete e la perdita di un [[node|nodo]]. Sulle altre share, un failover del [[primary]] fa fallire i file aperti, come il riavvio di un server Windows. I client SMB1 e quelli dell'epoca di Vista non possono connettersi.",
+    "devTitle": "Chi sviluppa l'[[adapter]]",
+    "dev": "Ogni oggetto SMB corrisponde a un record di cui è proprietario un altro RFC. L'adapter tiene solo il [[connection-state]] e gli [[adapter-bytes|Adapter bytes]], che un record dell'open state conserva per lui senza mai leggerli. Ogni traduzione è una tabella che copre tutti i casi.",
+    "othersTitle": "Altre parti di DittoFS",
+    "others": "Open, lease, lock e identità durable spettano all'[[open-state|open state]] presso il primary. Nomi e id dei file spettano ai metadati dell'albero dei file, le impostazioni delle share al [[metadata-store|metadata store]], l'ammissione al [[filesystem-service|filesystem service]] e l'identità dell'utente al login.",
+    "notes": "Inquadramento del deck, ricavato da 'In short', §1.1, le decisioni del §6.4 (il costo per le share non continuamente disponibili), la decisione del §3.1, §16 e l'invariante S9. Adapter bytes: §16.4 'The Adapter bytes' e invariante S9; nessun record SMB ne contiene. Proprietari: open state RFC 14, nomi e id dei file RFC 7, policy delle share RFC 16, ammissione RFC 17, identità RFC 18."
+  },
+  "rules": {
+    "title": "Le regole, e cosa si decide altrove",
+    "rulesTitle": "Le regole, in parole semplici",
+    "items": [
+      "SMB1 e SMB 2.0.2 non vengono mai negoziati.",
+      "Chiavi di sessione, canali, [[credit]] e tree vivono nella memoria di un solo nodo gateway e non vengono mai salvati.",
+      "Una riconnessione [[durable-handle|durable]] riesce solo con utente, [[share]] e `ClientGuid` dell'open stesso, la sua lease key se ne ha una e, per un open v2, il suo `CreateGuid`.",
+      "Nessun worker resta in attesa di un [[lease-break|break]]. Un break che scade declassa il grant e lascia aperti gli open.",
+      "Su un [[persistent-handle|persistent]] open o su una share [[continuously-available|CA]], una scrittura è stabile prima di essere confermata."
+    ],
+    "notTitle": "Non deciso dall'RFC 22",
+    "not": [
+      "Record: open, lease e lock stanno nell'[[open-state|open state]], nomi e id dei file nei metadati dell'albero dei file.",
+      "Le impostazioni delle share stanno nel [[metadata-store|metadata store]], e ammissione e [[tree-connect]] le decide il [[filesystem-service|filesystem service]].",
+      "Come si autentica un utente, quali SID porta e che cosa concede un'ACL si decide fuori dall'adapter SMB.",
+      "Il framing di MS-SMB2 non viene ripetuto. Ai referral DFS, che mandano un client verso un percorso su un altro server, non si risponde mai."
+    ],
+    "footer": "L'RFC 22 elenca trenta invarianti, da S1 a S30, e queste sono cinque di loro.",
+    "notes": "Regole: S1, S2, S4, S5 con S12, e S10 dal §17. Non deciso: §1.1 Non-goals, una lista di MUST NOT — comprese le righe della tabella degli stati che discendono da MS-SMB2, e l'enumerazione delle share (RFC 17 §4.9). Come un security descriptor di Windows scrive la ACL è dell'RFC 22 (§11). Ciclo di vita, pipeline, codec e gestione delle connessioni dell'adapter sono dell'RFC 20 ('In short'). Proprietari: RFC 14 (record), RFC 7 (nomi, id dei file), RFC 16 (policy delle share), RFC 17 (ammissione, tree connect), RFC 18 (autenticazione, SID), RFC 19 (significato delle ACL). DFS: §1.1, RFC 17 §1.1."
+  },
+  "numbers": {
+    "n1": "8 MiB",
+    "w1": "La richiesta di lettura, scrittura o controllo più grande, che costa un [[credit]] ogni 64 KiB",
+    "n2": "512",
+    "w2": "I credit che il server punta a tenere in circolo su ogni connessione",
+    "n3": "256 · 32 MiB",
+    "w3": "Le richieste trattenute e i dati in scrittura trattenuti sempre concessi a ogni connessione",
+    "n4": "35 s",
+    "w4": "La scadenza di un [[lease-break|break]], il valore usato dai server Windows",
+    "n5": "60 s",
+    "w5": "Il valore di default di `recall_timeout`, che è più lungo della scadenza del break",
+    "n6": "60 s · 300 s",
+    "w6": "Il timeout di un [[durable-handle|durable]] open se il client non ne chiede uno, e il massimo che può chiedere",
+    "notes": "8 MiB, 512, 256 e 32 MiB: §3.3. 35 s: §6.3, la scadenza di recall dell'RFC 14 per i grant SMB. 60 s: §6.3 e le impostazioni dell'RFC 13. 60 e 300 s: la tabella del §6.4. Altri: il caching fence dura 90 s (§6.3); il grace dura un periodo di lease, 90 s; pending_timeout è 10 minuti di default; migration.freeze_timeout 5 minuti; clone_max_len 1 GiB."
+  },
+  "openQuestions": {
+    "questions": [
+      "Vale la pena tenere per ogni open un record dell'ultima scrittura sincronizzata, così che i durable open che non hanno perso nulla sopravvivano a un failover?",
+      "C'è un'applicazione di riferimento che ha bisogno del controllo di Windows sui file aperti in profondità dentro una directory che si rinomina?",
+      "Il server dovrebbe supportare le estensioni POSIX di SMB 3.1.1 per i client Linux?",
+      "Vanno offerti i lease sulle directory, insieme alle directory delegation di NFS?"
+    ],
+    "notes": "§20 Open questions."
+  },
+  "scenes": {
+    "common": {
+      "gateway": "nodo gateway",
+      "primary": "primary di profiles/alice/"
+    },
+    "placement": {
+      "client": "desktop Windows",
+      "keys": "chiavi di sessione · credit",
+      "tree": "tree: profiles",
+      "open": "open · deny mode · lease RWH",
+      "durable": "identità durable",
+      "fileid": "FileId = open di S1 + tabella di P1",
+      "steps": [
+        "alice-pc fa login su P1. Le chiavi della [[session|sessione]], che firmano e cifrano i suoi messaggi, e i suoi [[credit]] restano nella memoria di P1.",
+        "alice-pc si connette alla share `\\\\dittofs\\profiles`. Anche quel [[tree-connect]] vive solo nella memoria di P1 e non viene mai salvato.",
+        "alice-pc invia `CREATE` per aprire il suo disco, e P1 lo passa a S1, il [[primary]]. L'open, il suo [[deny-mode]], il suo [[lease]] e la sua identità durable vengono registrati tutti su S1.",
+        "La risposta contiene un [[file-id|FileId]] in due metà. Una deriva dal record dell'open su S1 ed è valida su qualsiasi nodo. L'altra indica una voce nella tabella di P1."
+      ]
+    },
+    "brk": {
+      "holder": "lease RWH · deny-write",
+      "desk": "secondo desktop",
+      "freed": "worker liberato",
+      "giveUp": "rinuncia al caching di handle",
+      "backoff": "riesegue: 10 ms → 1 s",
+      "deny": "il deny mode rifiuta",
+      "timeout": "35 s: lease azzerato",
+      "fenced": "gli open restano · niente lease per 90 s",
+      "steps": [
+        "alice fa login su un secondo desktop, e il suo `CREATE` del disco entra in conflitto con il [[lease]] di alice-pc. P2 risponde subito `STATUS_PENDING` e libera il worker che gestiva la richiesta.",
+        "S1 [[callback|richiama]] alice-pc attraverso P1 con un [[lease-break|break]]. alice-pc deve rinunciare al caching di handle e confermare.",
+        "Intanto P2 riesegue il `CREATE` a intervalli crescenti, da 10 ms raddoppiando fino a 1 s, finché il break non è finito.",
+        "alice-pc conferma il break. Il `CREATE` rieseguito incontra allora il [[deny-mode]] di alice-pc, che rifiuta chi scrive, e fallisce con `STATUS_SHARING_VIOLATION`.",
+        "Se alice-pc non risponde entro 35 s, il suo lease scende a nessun caching ma i suoi open restano aperti. Poi alla sua macchina non viene offerto alcun nuovo lease per 90 s: è il [[caching-fence]]."
+      ]
+    },
+    "failover": {
+      "newPrimary": "nuovo primary",
+      "synced": "sincronizzata, poi confermata",
+      "previous": "vecchia sessione chiusa",
+      "match": "stesso utente, share, client, lease",
+      "witness": "perso · Witness: vai su P2",
+      "noGrace": "nessun open state perso · niente grace",
+      "persistent": "persistent: torna con il suo lease",
+      "durable": "durable: era nella memoria di S1",
+      "steps": [
+        "Su una [[share]] [[continuously-available|continuamente disponibile]], ogni scrittura da 64 KiB viene sincronizzata su S1 prima di essere confermata.",
+        "Dopo un'interruzione di rete di 10 s l'open è ancora su S1. alice-pc rifà login su P1 e indica l'ID della sua vecchia [[session|sessione]], che P1 tiene ancora perché non si è ancora accorto che la connessione è caduta. P1 chiude quella sessione, e così l'open risulta disconnesso. alice-pc lo riconnette, e deve coincidere per utente, share, client e lease.",
+        "Poi P1 si guasta. Il suo [[floating-address|indirizzo flottante]], quello a cui si connette alice-pc, passa a P2, e [[witness|Witness]] lo comunica ad alice-pc. Su P1 non c'era alcun open state, quindi non serve un [[grace-period]].",
+        "Poi si guasta S1 e un altro [[node|nodo]] diventa primary. Il [[persistent-handle]] di alice-pc era salvato, quindi si riconnette lì con il suo [[lease]].",
+        "Se l'handle fosse stato solo [[durable-handle|durable]], sarebbe vissuto nella memoria di S1 e sarebbe sparito con S1, quindi la riconnessione viene rifiutata. Su una share che non è continuamente disponibile, dove le scritture possono non essere ancora sincronizzate, quel rifiuto fa fallire il disco in modo visibile invece di farlo tornare con un buco."
+      ]
+    }
+  }
+}

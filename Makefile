@@ -64,7 +64,7 @@ build:
 	go build -o dfsctl ./cmd/dfsctl
 
 # Phase 12 perf gate (D-43): rand-read regression gate vs per-machine
-# microbench floor in test/e2e/BENCHMARKS.md. -benchtime=10s gives a
+# microbench floor in perf_bench_phase12_test.go. -benchtime=10s gives a
 # stable b.N auto-tune; -run=^$$ skips all tests so only the gate
 # benchmark runs. The benchmark fails fast (b.Fatalf) on >5%
 # regression, which surfaces as a non-zero exit from `go test -bench`.
