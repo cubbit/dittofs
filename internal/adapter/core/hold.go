@@ -13,13 +13,17 @@ import (
 )
 
 // HoldCodec is the stage a table that Holds needs. The key doubles as the
-// async ID the interim and final replies carry. The interim, like every reply,
+// async ID the interim and final replies carry; no two of a connection's
+// pending requests share one, since the replay check refuses a message ID
+// already used (§4.1; MS-SMB2 3.3.5.2.3). The interim, like every reply,
 // passes Security.Wrap, so an encrypting session sends nothing in clear.
 // Cancels is asked after Unwrap, so an unverified cancel ends no hold. A
-// cancel that finds no hold or park with its key is remembered for at most
-// 5 s, and at most MaxPending per connection, the oldest dropped first; a
-// request with that key that holds or parks meanwhile ends as cancelled. A
-// cancel whose target was already answered leaves nothing after 5 s.
+// cancel that ends no hold or park with its key, one that finds its target's
+// attempt running included, is remembered for at most 5 s, and at most
+// MaxPending per connection, the oldest dropped first; the first request with
+// that key that holds or parks meanwhile ends as cancelled, its interim sent
+// first and its final under Final's header, and uses the cancel up. A cancel
+// whose target was already answered leaves nothing after 5 s.
 //
 // ponytail: a cancel that arrives more than 5 s before its target holds or
 // parks is lost, and the target runs to its answer. Keep the record until the
@@ -45,13 +49,16 @@ type HoldCodec interface {
 	Final(h Header, grant bool) Header
 	Cancels(h Header) (key uint64, ok bool) // a CANCEL ends the hold it names and gets no reply
 	// Pends says whether a chain member before the last, answered err whose
-	// row holds, goes pending (true) or is answered at once as ErrNotLast.
+	// row holds, goes pending (true) or is answered at once as ErrNotLast. A
+	// member the interim timer found with no buffer for its interim got none,
+	// went on unannounced, and is asked like any other.
 	//
 	// decision: Pends is asked only for an error the service returned; a
-	// member the interim timer finds still in the service always pends, since
-	// it can apply after any answer, and answering it at once could report a
-	// failed WRITE whose data lands a moment later. Withdraw it only if the
-	// service gains a way to withdraw a call it has not yet applied.
+	// member whose interim the timer sent while it was still in the service
+	// always pends, since it can apply after any answer, and answering it at
+	// once could report a failed WRITE whose data lands a moment later.
+	// Withdraw it only if the service gains a way to withdraw a call it has
+	// not yet applied.
 	Pends(h Header, err error) bool
 }
 
@@ -182,7 +189,7 @@ type pending struct {
 
 // watch arms the interim timer of a call about to start in a table that
 // holds, and returns its record: a call still in the service when the timer
-// fires gets its interim (§4.6).
+// fires gets its interim where the reply pool has a buffer at once (§4.6).
 func (p *pipeline) watch(tr *track, rec *resources.Buf, h Header, r *Request, tb *OpTable, ts *tableSeries, op *Op, inv Invocation, a answerer) *pending {
 	pd := &pending{tr: tr, rec: rec, h: h, r: r, tb: tb, ts: ts, op: op, inv: inv, a: a, key: p.st.Hold.Key(h), start: tr.req.start}
 	if tr.span != nil {
@@ -196,7 +203,8 @@ func (p *pipeline) watch(tr *track, rec *resources.Buf, h Header, r *Request, tb
 }
 
 // found is the interim timer's: a call still in the service goes pending and
-// gets its interim, in a buffer the reply pool has room for at once.
+// gets its interim, only in a buffer the reply pool has at once; with none,
+// it goes on unannounced and is answered as any other call (§4.6).
 func (p *pipeline) found(pd *pending) {
 	pd.mu.Lock()
 	defer pd.mu.Unlock()
@@ -205,8 +213,6 @@ func (p *pipeline) found(pd *pending) {
 	}
 	buf, ok := p.sh.reply.TryGet(p.l.remote, p.st.Header.ReplyLen(pd.h))
 	if !ok {
-		// RFC 20 §4.6 names no buffer for this interim; with none free at
-		// once the call runs on unannounced and is answered as any other.
 		return
 	}
 	grant, _ := p.count(pd, false)
@@ -302,8 +308,8 @@ func (p *pipeline) interimIn(pd *pending, buf *resources.Buf, grant bool) {
 // interim yet holds only where Pends says it goes pending; otherwise
 // ErrNotLast replaces err before its table maps it, since the row's status
 // speaks for a hold that does not happen (§4.7), and its last keeps err for
-// its span's result (§10.2). A member the interim timer found in the service
-// has its interim, so Pends is not asked of it.
+// its span's result (§10.2). A member whose interim the timer sent while it
+// was in the service is not asked Pends.
 func (p *pipeline) after(pd *pending, err error, reply *resources.Buf, release func()) (bool, error) {
 	pd.mu.Lock()
 	pd.in = false
