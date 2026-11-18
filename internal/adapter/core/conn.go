@@ -60,8 +60,16 @@ type Conn struct {
 // encrypting session is sealed. before is the HoldCodec.Key of the request
 // whose reply it must precede, 0 for none; core keys every request of a table
 // that Holds that way.
+//
+// decision: Send takes msg's reference whatever it returns, a Wrap refusal
+// included, as the writer's out does, so its caller never releases it.
+// Overturned if RFC 20 section 4.7 leaves a refused message with its caller.
 func (c *Conn) Send(h Header, msg *resources.Buf, before uint64) error {
-	return fmt.Errorf("core: send: %w", errors.ErrUnsupported)
+	if err := c.p.st.Security.Wrap(h, msg); err != nil {
+		msg.Release()
+		return err
+	}
+	return c.w.out(msg, 0, before)
 }
 
 // Established ends the handshake deadline: SMB at its first authenticated
