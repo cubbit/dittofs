@@ -82,9 +82,10 @@ func (r Record) GroupAttr() string {
 }
 
 // Validate refuses an unknown schema, an address that is not ldaps:// or
-// ldap:// with a host, trust roots that are not PEM certificates, and an ad
-// realm holding a lower-case ASCII letter, since a ticket's realm is compared
-// exactly.
+// ldap:// with a host and an optional port and nothing more (no userinfo,
+// path, query or fragment), trust roots that are not PEM certificates, and an
+// ad realm holding a lower-case ASCII letter, since a ticket's realm is
+// compared exactly.
 //
 // decision: TLS is the address's scheme and nothing turns it off: ldaps://
 // dials TLS, ldap:// always upgrades with StartTLS before the bind, and the
@@ -107,6 +108,11 @@ func (r Record) Validate() error {
 	}
 	if u.Hostname() == "" {
 		return fmt.Errorf("identity.directory: address %q names no host", r.Address)
+	}
+	// A password in the address would sit in a plain setting, past the
+	// BindCredential reference meant to hold it.
+	if u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return fmt.Errorf("identity.directory: address %q holds more than ldaps:// or ldap://, a host and a port", r.Address)
 	}
 	if err := checkPEM(r.TrustRoots); err != nil {
 		return err
