@@ -55,7 +55,8 @@ func servingOn(t *testing.T, b *resources.Budgets, snap testproto.Settings) *cor
 }
 
 // servingCapturing is servingOn with its connections kept where a test
-// reaches them, to park a drain on one.
+// reaches them, to park a drain on one or read back the settings an
+// accepted connection carries.
 func servingCapturing(t *testing.T, b *resources.Budgets, snap testproto.Settings) (*core.Server, *capturing) {
 	t.Helper()
 	p := newCapturing(testproto.New(adapter.Deps{}))
@@ -113,7 +114,7 @@ func TestReconfigureRefusesAndLeavesTheServerAsItWas(t *testing.T) {
 	adaptertest.CheckLeaks(t, b)
 	snap := drainOn("127.0.0.1")
 	snap.MaxVersion = 2
-	srv := servingOn(t, b, snap)
+	srv, conns := servingCapturing(t, b, snap)
 	before := srv.Addrs()
 
 	refused := snap
@@ -137,20 +138,35 @@ func TestReconfigureRefusesAndLeavesTheServerAsItWas(t *testing.T) {
 		if got := srv.Addrs(); !sameAddrs(got, before) {
 			t.Errorf("%s: Addrs after the refusal %v, want the server as it was %v", c.name, got, before)
 		}
+		from := len(conns.list())
 		if v := negotiateOn(t, srv, 2); v != 2 {
 			t.Errorf("%s: a connection accepted after the refusal negotiates %d, want 2: the snapshot moved", c.name, v)
+		}
+		waitsFor(t, c.name+"'s served connection to be captured", func() bool {
+			return len(conns.list()) > from
+		})
+		if got := conns.list()[from].Settings().(testproto.Settings).MaxVersion; got != 2 {
+			t.Errorf("%s: a connection accepted after the refusal carries MaxVersion %d, want 2: the snapshot moved", c.name, got)
 		}
 	}
 	portChanged := snap
 	portChanged.Port = 2049
+	portChanged.MaxVersion = 1
 	if err := srv.Reconfigure(context.Background(), portChanged); !errors.Is(err, adapter.ErrPortChanged) {
 		t.Errorf("a changed Port: Reconfigure = %v, want adapter.ErrPortChanged", err)
 	}
 	if got := srv.Addrs(); !sameAddrs(got, before) {
 		t.Errorf("a changed Port: Addrs after the refusal %v, want the server as it was %v", got, before)
 	}
+	from := len(conns.list())
 	if v := negotiateOn(t, srv, 2); v != 2 {
 		t.Errorf("a changed Port: a connection accepted after the refusal negotiates %d, want 2", v)
+	}
+	waitsFor(t, "the port refusal's served connection to be captured", func() bool {
+		return len(conns.list()) > from
+	})
+	if got := conns.list()[from].Settings().(testproto.Settings).MaxVersion; got != 2 {
+		t.Errorf("a changed Port: a connection accepted after the refusal carries MaxVersion %d, want 2: the snapshot moved", got)
 	}
 }
 
@@ -237,7 +253,11 @@ func TestAHeldPortOnAnAddedAddressChangesNothing(t *testing.T) {
 	}
 	defer func() { _ = held.Close() }()
 
-	if err := srv.Reconfigure(context.Background(), drainOn("127.0.0.1", "::1")); err == nil || !strings.Contains(err.Error(), netip.AddrPortFrom(netip.IPv6Loopback(), pb).String()) {
+	// The refused shape lowers MaxVersion, so the cap a snapshot swapped
+	// before the failing bind would store is a number the negotiation sees.
+	next := drainOn("127.0.0.1", "::1")
+	next.MaxVersion = 1
+	if err := srv.Reconfigure(context.Background(), next); err == nil || !strings.Contains(err.Error(), netip.AddrPortFrom(netip.IPv6Loopback(), pb).String()) {
 		t.Fatalf("Reconfigure over a held port: %v, want the refusal naming [::1]:%d", err, pb)
 	}
 	if got := srv.Addrs(); !sameAddrs(got, before) {
