@@ -116,6 +116,18 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 	if d.Budgets == nil {
 		return nil, fmt.Errorf("core: new server: %w", errNoBudgets)
 	}
+	// A Budgets without its connection count would drop the node's bound
+	// silently: every accept would take no count, and connection_limit would
+	// bind nothing.
+	//
+	// decision: NewServer refuses a nil Conns where it refuses a nil
+	// Budgets, named by the field the node sets, since a missing count is the
+	// same fault as a missing budget, the bound silently gone, and the check
+	// belongs at configured, not at the first accept. Overturned if an
+	// adapter is ever allowed to run under no connection limit.
+	if d.Budgets.Conns == nil {
+		return nil, fmt.Errorf("core: new server: %w", errNoConns)
+	}
 	// A listener whose stages accept would refuse shows its wiring fault
 	// here, at configured, rather than at its first request (RFC 20 section
 	// 3.1): NewConn(nil) is the one call that reads no connection, and
@@ -488,6 +500,10 @@ var errDrain = errors.New("core: the drain abandoned a request still running")
 
 // errNoBudgets is a server built without the budgets its pools need.
 var errNoBudgets = errors.New("no budgets")
+
+// errNoConns is a server built without the node's connection count, whose
+// limit every accept would silently not take.
+var errNoConns = errors.New("no Budgets.Conns, the node's connection count")
 
 // register adds a connection to the registry, and reports false when the
 // server is not serving: such a connection is closed at once, before it reads,

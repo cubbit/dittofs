@@ -2,10 +2,13 @@ package core_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"maps"
 	"net"
+	"net/netip"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -19,6 +22,7 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
@@ -839,4 +843,469 @@ func dial(t *testing.T, fl *failingListener) net.Conn {
 		t.Fatal(err)
 	}
 	return c
+}
+
+// loop1 and loop2 are the two loopback addresses the limit's cases connect
+// from: a case needing a second source skips where the host has only 127.0.0.1
+// aliased.
+var (
+	loop1 = netip.MustParseAddr("127.0.0.1")
+	loop2 = netip.MustParseAddr("127.0.0.2")
+)
+
+// need127_0_0_2 skips t where 127.0.0.2 cannot be a connection's source: the
+// probe binds the address before it connects, so the local bind's refusal is
+// the host's own answer.
+func need127_0_0_2(t *testing.T) {
+	t.Helper()
+	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: loop2.AsSlice()}}
+	c, err := d.DialContext(context.Background(), "tcp", "127.0.0.1:0")
+	if err == nil {
+		_ = c.Close()
+		return
+	}
+	if errors.Is(err, syscall.EADDRNOTAVAIL) {
+		t.Skipf("127.0.0.2 cannot be a source here: %v", err)
+	}
+}
+
+// dialFrom connects to at with local as the connection's source, so the
+// address the server counts is the test's own.
+func dialFrom(t *testing.T, local netip.Addr, at netip.AddrPort) net.Conn {
+	t.Helper()
+	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: local.AsSlice()}}
+	c, err := d.DialContext(context.Background(), "tcp", at.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// refusesFast fails t unless c, a socket refused at accept, sees its end at
+// once: no byte of it is read, so nothing is written back.
+func refusesFast(t *testing.T, c net.Conn) {
+	t.Helper()
+	defer func() { _ = c.Close() }()
+	var buf [1]byte
+	if _, err := c.Read(buf[:]); err == nil {
+		t.Error("a socket refused at accept was written to")
+	} else if !errors.Is(err, io.EOF) && !errors.Is(err, syscall.ECONNRESET) {
+		t.Errorf("a socket refused at accept reads %v, want its end at once", err)
+	}
+}
+
+// limitServer starts a serving loopback server over the bare protocol on the
+// settings' addresses, its Budgets and every other field of d the test set.
+func limitServer(t *testing.T, snap settings.Settings, d adapter.Deps) (*core.Server, netip.AddrPort) {
+	t.Helper()
+	srv, _ := protoServer(t, d, snap, testproto.New(adapter.Deps{}).Bare())
+	stopAtEnd(t, srv)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return srv, testAddr(t, srv)
+}
+
+// perAddress is the value of the per_address close counter over the test
+// protocol's label, and limitCloses the limit's.
+func perAddress(t *testing.T, m *metrics.Registry) float64 {
+	t.Helper()
+	values, _ := scrape(t, m)
+	return values[closesKey("per_address")]
+}
+
+func limitCloses(t *testing.T, m *metrics.Registry) float64 {
+	t.Helper()
+	values, _ := scrape(t, m)
+	return values[closesKey("limit")]
+}
+
+// closesKey is a close counter's label, named by its reason.
+func closesKey(reason string) string {
+	return "adapter_connection_closes_total{protocol=" + testproto.Name + ",reason=" + reason + "}"
+}
+
+// Over loopback with a limit of 8: one address holds two connections and its
+// third is closed under per_address before any byte of it is read, and a
+// second address still connects. Each refusal's line names its own
+// address, so two addresses refused in the same minute log two lines, not
+// one and a suppressed count between them (RFC 20 section 10.3).
+func TestTheQuarterHoldsOneAddressWhileAnotherConnects(t *testing.T) {
+	need127_0_0_2(t)
+	m := metrics.New("v", "c")
+	logged := &syncLog{}
+	b := budgets()
+	b.Conns = resources.NewConnLimit(8)
+	adaptertest.CheckLeaks(t, b)
+	srv, at := limitServer(t, on("127.0.0.1"), adapter.Deps{Metrics: m, Budgets: b, Logger: slog.New(slog.NewJSONHandler(logged, nil))})
+
+	var held []net.Conn
+	t.Cleanup(func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+	// 127.0.0.1 holds its quarter of two; its third is closed under
+	// per_address, never under limit.
+	for range 2 {
+		held = append(held, dialFrom(t, loop1, at))
+	}
+	waitsFor(t, "the first address's two connections", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n == 2
+	})
+	refusesFast(t, dialFrom(t, loop1, at))
+	waitsFor(t, "the per_address close to count", func() bool {
+		return perAddress(t, m) == 1
+	})
+	if v := limitCloses(t, m); v != 0 {
+		t.Errorf("the quarter's close counts %v under limit too, want per_address alone", v)
+	}
+
+	// The second address still connects: it holds two beside the first
+	// address's two, and its third, at its own quarter, is closed with a
+	// line of its own.
+	for range 2 {
+		held = append(held, dialFrom(t, loop2, at))
+	}
+	waitsFor(t, "the second address's two connections", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n == 4
+	})
+	refusesFast(t, dialFrom(t, loop2, at))
+	waitsFor(t, "the second address's close to count", func() bool {
+		return perAddress(t, m) == 2
+	})
+
+	// Two addresses refused in one minute, one line each, each naming its
+	// own address: a line rate-limited per reason alone would hold the
+	// second one back.
+	waitsFor(t, "the two addresses' lines to land", func() bool { return len(logged.lines()) == 2 })
+	clients := []string{}
+	for _, ln := range logged.lines() {
+		var line struct {
+			Level, Reason, Client string
+			Suppressed            int64
+		}
+		if json.Unmarshal([]byte(ln), &line) != nil || line.Level != "WARN" || line.Reason != "per_address" || line.Suppressed != 0 {
+			t.Fatalf("an address's refused close logged '%s', want a warning under per_address carrying none held back", ln)
+		}
+		clients = append(clients, line.Client)
+	}
+	slices.Sort(clients)
+	if len(clients) != 2 || clients[0] != "127.0.0.1" || clients[1] != "127.0.0.2" {
+		t.Errorf("the two lines name %v, want one line per address", clients)
+	}
+}
+
+// The per_address close's line names the address its quarter refused, at most
+// once a minute: two refused connections over the first address log one line
+// carrying the address, and once the server's clock passes the minute the
+// next refusal logs a second, carrying the count it held back (RFC 25
+// section 5.2). A line per close, one that names no address, or one that
+// drops the held-back count, fails here.
+func TestTheQuarterCloseLineNamesTheAddressOnceAMinute(t *testing.T) {
+	logged := &syncLog{}
+	m := metrics.New("v", "c")
+	b := budgets()
+	b.Conns = resources.NewConnLimit(8)
+	adaptertest.CheckLeaks(t, b)
+	snap := on("127.0.0.1")
+	snap.HandshakeTimeout = 0 // the connections held past the minute stay: no deadline closes them
+	srv, _ := protoServer(t, adapter.Deps{Metrics: m, Budgets: b, Logger: slog.New(slog.NewJSONHandler(logged, nil))}, snap, testproto.New(adapter.Deps{}).Bare())
+	stopAtEnd(t, srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	at := testAddr(t, srv)
+
+	var held []net.Conn
+	t.Cleanup(func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+	for range 2 {
+		held = append(held, dialFrom(t, loop1, at))
+	}
+	waitsFor(t, "the address's two connections", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n == 2
+	})
+	// The line is decided before the close counts, so a wait on the count
+	// finds it decided: the second close's held back, its minute read before
+	// the clock moves.
+	refusesFast(t, dialFrom(t, loop1, at))
+	waitsFor(t, "the first refused close's line", func() bool { return len(logged.lines()) == 1 })
+	var first struct {
+		Level, Reason, Client string
+		Suppressed            int64
+	}
+	if json.Unmarshal([]byte(logged.lines()[0]), &first) != nil || first.Level != "WARN" || first.Reason != "per_address" || first.Client != "127.0.0.1" || first.Suppressed != 0 {
+		t.Fatalf("the first refused close logged '%s', want a warning under per_address naming 127.0.0.1 carrying none held back", logged.lines()[0])
+	}
+	refusesFast(t, dialFrom(t, loop1, at))
+	waitsFor(t, "the close to count unheld", func() bool { return perAddress(t, m) == 2 })
+
+	logged.reset()
+	clk.Advance(61 * time.Second)
+	refusesFast(t, dialFrom(t, loop1, at))
+	waitsFor(t, "the second line, past the minute", func() bool {
+		return len(logged.lines()) == 1 && perAddress(t, m) == 3
+	})
+	var last struct {
+		Level, Reason, Client string
+		Suppressed            int64
+	}
+	if json.Unmarshal([]byte(logged.lines()[0]), &last) != nil || last.Level != "WARN" || last.Reason != "per_address" || last.Client != "127.0.0.1" || last.Suppressed != 1 {
+		t.Fatalf("the first close past the minute logged '%s', want a warning under per_address naming the address carrying one held back", logged.lines()[0])
+	}
+	if v := limitCloses(t, m); v != 0 {
+		t.Errorf("the quarter's closes count %v under limit too, want per_address alone", v)
+	}
+}
+
+// With a limit of 1: a connection from 127.0.0.1 holds it, and one from
+// 127.0.0.2, below its own quarter, is closed under limit; once the first
+// closes the second address connects, its count given back at the
+// teardown. Two sources are needed because at 2 the quarter is 1, so every
+// refusal from an address holding one would be the quarter's too; here the
+// second address holds none, so the limit's refusal is its own. A count the
+// teardown never releases fails the last dial, which CheckLeaks cannot
+// read.
+func TestALimitOfOneClosesASecondAddressUntilTheFirstCloses(t *testing.T) {
+	need127_0_0_2(t)
+	m := metrics.New("v", "c")
+	b := budgets()
+	b.Conns = resources.NewConnLimit(1)
+	adaptertest.CheckLeaks(t, b)
+	srv, at := limitServer(t, on("127.0.0.1"), adapter.Deps{Metrics: m, Budgets: b})
+
+	first := dialFrom(t, loop1, at)
+	defer func() { _ = first.Close() }()
+	waitsFor(t, "the first address's connection", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n == 1
+	})
+	refusesFast(t, dialFrom(t, loop2, at))
+	waitsFor(t, "the limit's close to count", func() bool { return limitCloses(t, m) == 1 })
+	values, _ := scrape(t, m)
+	if v := values[closesKey("per_address")]; v != 0 {
+		t.Errorf("a socket below its quarter counts %v under per_address, want limit alone", v)
+	}
+
+	_ = first.Close()
+	waitsFor(t, "the held connection to leave", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n == 0
+	})
+	second := dialFrom(t, loop2, at)
+	defer func() { _ = second.Close() }()
+	waitsFor(t, "the second address to connect once the first closed", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n == 1
+	})
+}
+
+// With the connection-state budget one byte short of a connection's charge
+// and a limit of 2: a dial from 127.0.0.1 and one from 127.0.0.2 are each
+// closed under pool; once the budget has room, one from each address is
+// admitted, and a third is refused at the limit the two now hold: the
+// refused accepts used no slot, and the count was back at zero. A slot
+// kept by a refused accept fails the second dial of this test, under which
+// connection_limit such refusals shut every adapter of the node to new
+// connections.
+func TestAChargeRefusedAfterAdmissionGivesItsSlotBack(t *testing.T) {
+	need127_0_0_2(t)
+	m := metrics.New("v", "c")
+	b := budgets()
+	b.Conns = resources.NewConnLimit(2)
+	b.Connection = resources.NewBudget("connection", 4*core.ConnCharge())
+	adaptertest.CheckLeaks(t, b)
+	srv, at := limitServer(t, on("127.0.0.1"), adapter.Deps{Metrics: m, Budgets: b})
+	// The bytes the budget has left are one short of a connection's charge.
+	block, err := b.Connection.Reserve(3*core.ConnCharge() + 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer block.Release()
+
+	refusesFast(t, dialFrom(t, loop1, at))
+	waitsFor(t, "the first refused accept's close", func() bool { return poolCloses(t, m) == 1 })
+	refusesFast(t, dialFrom(t, loop2, at))
+	waitsFor(t, "the second refused accept's close", func() bool { return poolCloses(t, m) == 2 })
+	if v := limitCloses(t, m); v != 0 {
+		t.Errorf("a socket the pool refused counts %v under limit, want pool alone", v)
+	}
+	if v := perAddress(t, m); v != 0 {
+		t.Errorf("a socket the pool refused counts %v under per_address, want pool alone", v)
+	}
+
+	block.Release()
+	var held []net.Conn
+	t.Cleanup(func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+	for _, local := range []netip.Addr{loop1, loop2} {
+		held = append(held, dialFrom(t, local, at))
+	}
+	waitsFor(t, "one connection from each address", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n == 2
+	})
+	// The admitted two are the limit exactly: a third dial, from either
+	// address, is refused under limit, the count the refused accepts left
+	// behind would have spent.
+	refusesFast(t, dialFrom(t, loop1, at))
+	waitsFor(t, "the third dial's refusal at the full limit", func() bool { return limitCloses(t, m) == 1 })
+
+	// Once the two close, the count is back at zero: a further connection is
+	// admitted, which a slot either teardown kept would refuse.
+	for _, c := range held {
+		_ = c.Close()
+	}
+	held = held[:0]
+	waitsFor(t, "the two connections to leave", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n == 0
+	})
+	held = append(held, dialFrom(t, loop1, at))
+	waitsFor(t, "a connection after the two closed", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n == 1
+	})
+}
+
+// A handover the server refuses, with the count admission took beside its
+// charge, gives both back once, in its teardown, before the handover
+// returns. The node's limit stays whole: one connection's slot may be taken
+// again, and a take past the limit after it still refuses. A refusal that
+// releases the count a second time spends the limit instead, and the take
+// past it succeeds.
+func TestARefusedHandoverReleasesItsCountOnce(t *testing.T) {
+	b := budgets()
+	b.Conns = resources.NewConnLimit(1)
+	adaptertest.CheckLeaks(t, b)
+	srv, l := testServer(t, adapter.Deps{Budgets: b}, settings.DefaultNFS())
+	// The server is stopped, so a socket handed over has its registration
+	// refused, as a handover racing a Stop does.
+	if err := srv.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	charge, err := b.Connection.Reserve(64 << 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := netip.Addr{}
+	if err := b.Conns.Take(remote); err != nil {
+		t.Fatal(err)
+	}
+	nc, client2 := net.Pipe()
+	refused := core.ServeConnAdmitted(srv, nc, &l, b.Conns, &charge)
+	if r := b.Connection.Reserved(); r != 0 {
+		t.Fatalf("the refused handover's charge is still %d bytes", r)
+	}
+	_ = client2.Close()
+	select {
+	case <-core.ConnDone(refused):
+	case <-time.After(2 * time.Second):
+		t.Fatal("the refused handover's teardown did not end")
+	}
+	// The count is back: one connection's slot may be taken again...
+	if err := b.Conns.Take(remote); err != nil {
+		t.Fatalf("the refused handover kept its count: %v", err)
+	}
+	// ...and the take past the limit, from a fresh address whose own quarter
+	// does not refuse it, still refuses at the limit itself.
+	if err := b.Conns.Take(netip.MustParseAddr("127.0.0.5")); err == nil {
+		t.Error("a second take past the limit succeeded: the refused handover released its count twice")
+	}
+}
+
+// poolCloses is the pool close counter over the test protocol's label.
+func poolCloses(t *testing.T, m *metrics.Registry) float64 {
+	t.Helper()
+	values, _ := scrape(t, m)
+	return values[closesKey("pool")]
+}
+
+// Two servers over one Budgets share the count: an address holding two
+// connections on one is refused on the other. A count per server,
+// under which NFS's and SMB's connections would each get the whole limit,
+// fails here.
+func TestTwoServersShareOneConnectionCount(t *testing.T) {
+	m := metrics.New("v", "c")
+	b := budgets()
+	b.Conns = resources.NewConnLimit(8)
+	adaptertest.CheckLeaks(t, b)
+	d := adapter.Deps{Metrics: m, Budgets: b}
+	srv1, at1 := limitServer(t, freePort(), d)
+	srv2, at2 := limitServer(t, freePort(), d)
+
+	var held []net.Conn
+	t.Cleanup(func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+	for range 2 {
+		held = append(held, dialFrom(t, loop1, at1))
+	}
+	waitsFor(t, "the two connections on the first server", func() bool {
+		n := 0
+		for range srv1.Connections() {
+			n++
+		}
+		return n == 2
+	})
+	refusesFast(t, dialFrom(t, loop1, at2))
+	waitsFor(t, "the second server's refusal to count", func() bool { return perAddress(t, m) == 1 })
+	if v := limitCloses(t, m); v != 0 {
+		t.Errorf("the second server's refusal counts %v under limit, want per_address alone", v)
+	}
+	if n := len(slices.Collect(srv2.Connections())); n != 0 {
+		t.Errorf("the second server holds %d connections, want it to have refused the address's third", n)
+	}
+}
+
+// freePort is the settings of a loopback server on a port the system picks,
+// so two servers of one test bind apart.
+func freePort() settings.Settings {
+	s := on("127.0.0.1")
+	s.Port = 0
+	return s
 }

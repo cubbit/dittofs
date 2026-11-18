@@ -36,6 +36,7 @@ type Conn struct {
 	service    string                 // the first service its listener names, which the client list reports
 	since      time.Time              // accepted at
 	charge     *resources.Reservation // the connection-state charge the accept loop took; nil for none
+	count      *resources.ConnLimit   // the node's connection count admission took it from, given back at the teardown; nil where admission took none, a hook's socket
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -291,16 +292,17 @@ func closeReason(err error) reason {
 // options (section 6.7), set before its stages are built, and the connection
 // counts into its series (§10.1), both from the snapshot it loads here. b is
 // the bound socket that accepted it, whose removal by a Reconfigure closes
-// this connection; nil for a hook's connection, which no removal closes. A
-// connection whose stages withDefaults refuses never starts its reader, so
-// serveConn runs its teardown itself: the close is counted under wiring, the
-// gauge lowered, the error-level line rate-limited (§10.1, §10.3). charge is
-// the connection-state reservation the accept loop took, which the teardown
-// releases; nil for none.
-func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, charge *resources.Reservation) *Conn {
+// this connection; nil for a hook's connection, which no removal closes.
+// count is the node's connection count admission took the socket from and
+// charge the connection-state reservation it charged, both of which the
+// teardown gives back; each nil for none. A connection whose stages
+// withDefaults refuses never starts its reader, so serveConn runs its
+// teardown itself: the close is counted under wiring, the gauge lowered, the
+// error-level line rate-limited (§10.1, §10.3).
+func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, count *resources.ConnLimit, charge *resources.Reservation) *Conn {
 	snap := *s.settings.Load()
 	remote, port := remoteOf(nc)
-	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, series: s.sh.label(l.label), remote: remote, remoteAddr: port, accept: b, service: l.Services[0], since: time.Now(), charge: charge, done: make(chan struct{})}
+	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, series: s.sh.label(l.label), remote: remote, remoteAddr: port, accept: b, service: l.Services[0], since: time.Now(), charge: charge, count: count, done: make(chan struct{})}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.series.accepted()
 	common := snap.Common()
@@ -346,9 +348,10 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, charge *resources
 // teardown runs once, on the reader as its loop ends, or on the accept loop for
 // a connection the registry or its stages refused: the close counted and its
 // gauge lowered, here alone, then the requests still running, OnClose
-// under a context of its own, the writer, the charge and the registry
-// (RFC 20 section 3.2's order). A teardown with no pipeline is a close at
-// accept: the stages' refusal, whose line the minute rate-limits (§10.3).
+// under a context of its own, the writer, the charge, the count and the
+// registry (RFC 20 section 3.2's order). A teardown with no pipeline is a
+// close at accept: the stages' refusal, whose line the minute rate-limits
+// (§10.3).
 func (c *Conn) teardown() {
 	defer close(c.done)
 	c.stopTimers()
@@ -400,12 +403,17 @@ func (c *Conn) closeErr() error {
 }
 
 // release gives the connection's charge back to the connection-state budget
-// once, from the teardown, or from the refusal of a NewConn that failed.
+// and its count to the node's connection count, in that order, each only
+// where admission took it. Each path a connection ends by calls it once: the
+// teardown, or the refusal of a NewConn that failed.
 func (c *Conn) release() {
 	if c.charge != nil {
 		r := c.charge
 		c.charge = nil
 		r.Release()
+	}
+	if c.count != nil {
+		c.count.Release(c.remote)
 	}
 }
 

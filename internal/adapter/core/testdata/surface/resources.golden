@@ -14,6 +14,12 @@ func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Rese
 
 func (b *WaitBudget) Reserved() int64
 
+func (l *ConnLimit) Release(addr netip.Addr)
+
+func (l *ConnLimit) SetLimit(limit int)
+
+func (l *ConnLimit) Take(addr netip.Addr) error
+
 func (p *BufPool) Ceiling() int64
 
 func (p *BufPool) Charge(n int) int64
@@ -30,6 +36,8 @@ func NewBudget(name string, ceiling int64) *Budget
 
 func NewBufPool(b *WaitBudget) *BufPool
 
+func NewConnLimit(limit int) *ConnLimit
+
 func NewWaitBudget(name string, ceiling int64) *WaitBudget
 
 type Budget struct{}
@@ -37,6 +45,7 @@ type Budget struct{}
 type Budgets struct {
 	Receive, Reply   *WaitBudget
 	Connection, Hold *Budget
+	Conns            *ConnLimit
 }
 
 type Buf struct {
@@ -45,9 +54,17 @@ type Buf struct {
 
 type BufPool struct{}
 
+type ConnLimit struct{}
+
 type Reservation struct{}
 
 type WaitBudget struct{}
+
+var (
+	ErrConnLimit = errors.New("resources: at the connection limit")
+
+	ErrConnQuarter = errors.New("resources: address at its quarter of the connection limit")
+)
 
 var ErrTooLarge = errors.New("resources: charge past the ceiling")
 

@@ -45,12 +45,7 @@ func tablesBuilt(p *Protocol) (err error) {
 // One Echo accepted over loopback by a core server on testproto is answered,
 // and the server leaks nothing when it stops.
 func TestConformanceEchoEndToEnd(t *testing.T) {
-	budgets := &resources.Budgets{
-		Receive:    resources.NewWaitBudget("receive", 8<<20),
-		Reply:      resources.NewWaitBudget("reply", 8<<20),
-		Connection: resources.NewBudget("connection", 1<<20),
-		Hold:       resources.NewBudget("hold", 1<<20),
-	}
+	budgets := adaptertest.Budgets()
 	deps := adapter.Deps{VFS: vfstest.Null{}, Budgets: budgets}
 	p := New(deps)
 

@@ -34,21 +34,22 @@ import (
 // shows a first resolution's copy to matter, which it cannot at a handful of
 // tables.
 type shared struct {
-	fam      [vecs]family
-	wire     histFamily
-	holdPool adder // no protocol label
-	mu       sync.Mutex
-	tables   atomic.Pointer[map[*OpTable]*tableSeries]
-	labels   atomic.Pointer[map[string]*labelSeries]
-	panics   map[[2]string]*lineLimiter // by protocol and operation, under mu
-	closes   map[reason]*lineLimiter    // a close at accept's line, by reason, under mu
-	clock    clock
-	log      *slog.Logger
-	tracer   trace.Tracer // nil: no spans
-	sample   uint64       // Deps.SampleRatio as sampled compares it
-	reply    *resources.BufPool
-	shares   vfs.Shares        // Deps.VFS
-	hold     *resources.Budget // the node's hold pool; nil: none, so the floor bounds every connection's holds
+	fam          [vecs]family
+	wire         histFamily
+	holdPool     adder // no protocol label
+	mu           sync.Mutex
+	tables       atomic.Pointer[map[*OpTable]*tableSeries]
+	labels       atomic.Pointer[map[string]*labelSeries]
+	panics       map[[2]string]*lineLimiter  // by protocol and operation, under mu
+	closes       map[reason]*lineLimiter     // a close at accept's line, by reason, under mu
+	addressLines map[netip.Addr]*lineLimiter // the per_address close at accept's line, by address, under mu
+	clock        clock
+	log          *slog.Logger
+	tracer       trace.Tracer // nil: no spans
+	sample       uint64       // Deps.SampleRatio as sampled compares it
+	reply        *resources.BufPool
+	shares       vfs.Shares        // Deps.VFS
+	hold         *resources.Budget // the node's hold pool; nil: none, so the floor bounds every connection's holds
 	// The floor each connection's held requests count against before the
 	// hold pool, in requests and in their records' receive charge (§4.6).
 	floorRequests int
@@ -61,7 +62,7 @@ type shared struct {
 // discards, d.Tracer and d.VFS; held requests past a connection's floor of 256
 // requests and 32 MiB go to d.Budgets' hold pool (§4.6).
 func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), reply: reply, panics: map[[2]string]*lineLimiter{}, closes: map[reason]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), reply: reply, panics: map[[2]string]*lineLimiter{}, closes: map[reason]*lineLimiter{}, addressLines: map[netip.Addr]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
 	if d.Budgets != nil {
 		sh.hold = d.Budgets.Hold
 	}

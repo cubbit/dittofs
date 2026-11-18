@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/resources"
 )
 
 // connCharge is each connection's fixed cost to the connection-state budget,
@@ -52,9 +53,12 @@ const acceptIdle = 10 * time.Second
 // does. It registers itself with Deps.Watch at bind and closes the watch at
 // unbind: a Turn per accepted connection, an Idle at each accept deadline
 // the clock reaches while no client arrives; a nil Watch watches nothing
-// (RFC 20 sections 3.4 and 3.7). Every accepted socket is charged to the
-// connection-state budget, closed at once when the budget refuses it, before
-// any byte is read, and handed to serveConn with the charge when it does not.
+// (RFC 20 sections 3.4 and 3.7). Every accepted socket is taken from the
+// node's connection count for its remote address, then charged to the
+// connection-state budget; one either of them refuses is closed at once,
+// before any byte is read, its admission given back where the charge
+// refused it, and handed to serveConn with both when neither does (RFC 24
+// section 4.4).
 // An Accept error but the listener's own close and the deadline's own wake
 // is retried after the backoff; the first and the last failure of each
 // streak are recorded on the server's clock, so Health derives the lost
@@ -121,19 +125,41 @@ func (s *Server) acceptLoop(b *bound) {
 		backoff = 0
 		b.firstFailure.Store(0)
 		b.lastFailure.Store(0)
-		// ponytail: the gate here is the connection-state budget's one global
-		// charge alone, with no per-address cap, so one address can take every
-		// slot. Lift it when connection_limit and the per-address quarter land
-		// (RFC 24 sections 4.4 and 9 R10).
 		if watch != nil {
 			watch.Turn()
+		}
+		// One count per node: the socket is taken from it for its remote
+		// address before the connection-state charge. A refusal
+		// closes the socket at once, before any byte is read, and counts
+		// under limit, or under per_address where its address's quarter
+		// refused it, whose line names the address.
+		remote, _ := remoteOf(nc)
+		if lerr := s.d.Budgets.Conns.Take(remote); lerr != nil {
+			_ = nc.Close()
+			r := rsnLimit
+			if errors.Is(lerr, resources.ErrConnQuarter) {
+				r = rsnPerAddress
+			}
+			ls := s.sh.label(b.l.label)
+			// The line's minute is read before the close counts, so a reader
+			// of the count finds that read done.
+			if r == rsnPerAddress {
+				s.sh.closeAddressLine(ls, remote, lerr)
+			} else {
+				s.sh.closeLine(ls, r, lerr, true)
+			}
+			ls.refusedAtAccept(r)
+			continue
 		}
 		charge, cerr := s.d.Budgets.Connection.Reserve(connCharge)
 		if cerr != nil {
 			// The budget is full: the socket closes at once, before any byte
-			// is read, and the server holds nothing of it. The close counts
-			// under pool, at accept, whose line the minute rate-limits
-			// (§10.1, §10.3).
+			// is read, and the server holds nothing of it. The count its
+			// admission took goes back at once, before the close, so such a
+			// refusal shuts no adapter of the node to new connections.
+			// The close counts under pool, at accept, whose line the minute
+			// rate-limits (§10.1, §10.3).
+			s.d.Budgets.Conns.Release(remote)
 			_ = nc.Close()
 			ls := s.sh.label(b.l.label)
 			// The line's minute is read before the close counts, so a reader
@@ -142,7 +168,7 @@ func (s *Server) acceptLoop(b *bound) {
 			ls.refusedAtAccept(rsnPool)
 			continue
 		}
-		s.serveConn(nc, b.l, b, &charge)
+		s.serveConn(nc, b.l, b, s.d.Budgets.Conns, &charge)
 	}
 }
 

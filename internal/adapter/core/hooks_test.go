@@ -1,6 +1,9 @@
 package core
 
 import (
+	"fmt"
+	"testing"
+
 	"context"
 	"net"
 	"net/netip"
@@ -328,17 +331,26 @@ func SetListen(s *Server, f func(ctx context.Context, network, addr string) (net
 // ServeConn hands the server a socket, which its accept loop does in
 // production, and returns the connection it serves on it. A hook's connection
 // names no bound address, so a Reconfigure that removes an address never
-// closes it. Label its listener first where the test reads what the
+// closes it, and admission gave it no count and no charge, so its teardown
+// gives neither back. Label its listener first where the test reads what the
 // connection counts: a listener a test builds carries no accept-close label,
 // the server's own clones carrying theirs from NewServer.
 func ServeConn(s *Server, nc net.Conn, l *Listener) *Conn {
-	return s.serveConn(nc, l, nil, nil)
+	return s.serveConn(nc, l, nil, nil, nil)
 }
 
 // ServeConnCharged hands the server a socket with the connection-state charge
-// its accept loop would take, and returns the connection.
+// its accept loop would take, and returns the connection; its count stays
+// untaken, as a hook that did not admit the socket.
 func ServeConnCharged(s *Server, nc net.Conn, l *Listener, charge *resources.Reservation) *Conn {
-	return s.serveConn(nc, l, nil, charge)
+	return s.serveConn(nc, l, nil, nil, charge)
+}
+
+// ServeConnAdmitted hands the server a socket with the count its accept loop
+// took at admission beside the connection-state charge, as the loop does: a
+// handover the server refuses then gives both back, each once.
+func ServeConnAdmitted(s *Server, nc net.Conn, l *Listener, count *resources.ConnLimit, charge *resources.Reservation) *Conn {
+	return s.serveConn(nc, l, nil, count, charge)
 }
 
 // Labeled sets on l the label a connection closed at accept counts under,
@@ -440,4 +452,26 @@ func Stopping(s *Server, done chan struct{}) {
 	s.state = adapter.StateDraining
 	s.stopDone = done
 	s.mu.Unlock()
+}
+
+// Past the per-address line map's cap the addresses share the reason's own
+// line: the map stops at its cap, so a client rotating through a prefix
+// grows the server's memory no further, and the shared line is still one,
+// not none (RFC 20 s10.3, RFC 25 s5.2).
+func TestPerAddressLinesPastTheCapShareTheReasonLine(t *testing.T) {
+	sh := &shared{closes: map[reason]*lineLimiter{}, addressLines: map[netip.Addr]*lineLimiter{}}
+	for i := range addressLinesMax {
+		sh.addressLine(netip.MustParseAddr(fmt.Sprintf("10.1.%d.%d", i/256, i%256)))
+	}
+	if len(sh.addressLines) != addressLinesMax {
+		t.Fatalf("below the cap the map holds %d, want the cap alone", len(sh.addressLines))
+	}
+	first := sh.addressLine(netip.MustParseAddr("10.2.0.1"))
+	second := sh.addressLine(netip.MustParseAddr("10.3.0.1"))
+	if len(sh.addressLines) != addressLinesMax {
+		t.Errorf("an address past the cap grew the map to %d", len(sh.addressLines))
+	}
+	if first != second || first != sh.closes[rsnPerAddress] {
+		t.Error("the addresses past the cap do not share the reason's own line")
+	}
 }

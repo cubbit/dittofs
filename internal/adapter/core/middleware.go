@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -268,11 +269,45 @@ func (sh *shared) panicLine(p, op string) *lineLimiter {
 func (sh *shared) acceptLine(r reason) *lineLimiter {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
+	return sh.acceptLineLocked(r)
+}
+
+// acceptLineLocked is acceptLine with sh already held.
+func (sh *shared) acceptLineLocked(r reason) *lineLimiter {
 	if l, ok := sh.closes[r]; ok {
 		return l
 	}
 	l := &lineLimiter{}
 	sh.closes[r] = l
+	return l
+}
+
+// addressLinesMax bounds the per-address line map: a client rotating through
+// a prefix grows it no further, and every address past the cap shares the
+// reason's own line, one a minute, so the noisy-client mean the per-address
+// minute buys stays and the total stays bounded (RFC 25 section 5.2).
+const addressLinesMax = 1024
+
+// addressLine is the limiter of the per_address close at accept's line, one
+// per address per server, resolved under sh.mu.
+//
+// decision: the per_address line's minute is held per address, where every
+// other close-at-accept reason holds its minute per reason (RFC 20
+// section 10.3), so one noisy client cannot spend the reason's minute for
+// every other address.
+func (sh *shared) addressLine(addr netip.Addr) *lineLimiter {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if l, ok := sh.addressLines[addr]; ok {
+		return l
+	}
+	if len(sh.addressLines) >= addressLinesMax {
+		// The map is at its cap: this address shares the reason's own
+		// line rather than growing the server's memory.
+		return sh.acceptLineLocked(rsnPerAddress)
+	}
+	l := &lineLimiter{}
+	sh.addressLines[addr] = l
 	return l
 }
 
@@ -295,6 +330,22 @@ func (sh *shared) closeLine(ls *labelSeries, r reason, err error, atAccept bool)
 	sh.log.LogAttrs(context.Background(), r.level(), "a connection closed",
 		slog.String("reason", reasonNames[r]), slog.String("protocol", ls.protocol),
 		slog.Any("error", err))
+}
+
+// closeAddressLine writes the per_address close at accept's line, naming the
+// address its quarter held back: warning, at most once a minute per
+// address, the next line carrying the count held back since the last
+// (RFC 25 section 5.2), on the server's clock, which decides the minute.
+// The line names the address because no metric may carry a client label,
+// so the log is where the noisy client is found.
+func (sh *shared) closeAddressLine(ls *labelSeries, addr netip.Addr, err error) {
+	ok, held := sh.addressLine(addr).take(sh.clock.Now())
+	if !ok {
+		return
+	}
+	sh.log.LogAttrs(context.Background(), rsnPerAddress.level(), "a connection closed at accept",
+		slog.String("reason", reasonNames[rsnPerAddress]), slog.String("protocol", ls.protocol),
+		slog.String("client", addr.String()), slog.Any("error", err), slog.Int64("suppressed", held))
 }
 
 // clockCtx is a context whose deadline is on a clock: its Deadline, Done and
