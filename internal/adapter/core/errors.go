@@ -45,13 +45,13 @@ type ErrorRow struct {
 	// refuses a row keyed on an error every operation shares; review holds
 	// the rest, and each protocol's test pins its table's NotFailure rows.
 	NotFailure bool
-	// Hold, only in a table that Holds (NewOpTable refuses it elsewhere): a
-	// request whose latest attempt maps here is held and re-driven until the
-	// deadline Hold returns, counted from the hold's start, and is then
-	// answered Status; a deadline at or before the attempt's time answers
-	// Status now. nil: answered Status at once. The protocol's New builds it
-	// as a closure over the adapter's live settings, so a held request
-	// follows the latest settings.
+	// Hold, only in a table that Holds and never beside NoReply (NewOpTable
+	// refuses it elsewhere): a request whose latest attempt maps here is held
+	// and re-driven until the deadline Hold returns, counted from the hold's
+	// start, and is then answered Status; a deadline at or before the
+	// attempt's time answers Status now. nil: answered Status at once. The
+	// protocol's New builds it as a closure over the adapter's live settings,
+	// so a held request follows the latest settings.
 	Hold   func(err error, start time.Time) time.Time
 	Status Status
 }
@@ -166,6 +166,17 @@ func (t *ErrorTable) row(err error, op *Op, v Version) (ErrorRow, bool) {
 		}
 	}
 	return ErrorRow{Status: t.fault}, false
+}
+
+// hold is the Hold of the row that maps err for op at v: nil where that row
+// has none, or no row maps err.
+func (t *ErrorTable) hold(err error, op *Op, v Version) func(error, time.Time) time.Time {
+	for _, r := range t.rows {
+		if r.matches(err, op, v) {
+			return r.Hold
+		}
+	}
+	return nil
 }
 
 // matches reports whether r maps err for op at v. A nil op matches only a

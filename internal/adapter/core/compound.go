@@ -121,7 +121,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	ms, at, code, err := members(row, inv, rest, v)
 	if at < 0 {
 		p.refused(tr, stageDecodeArgs)
-		p.finish(tr, h, tb, errs, row, Invocation{}, nil, err, release, alone{p})
+		p.finish(tr, h, tb, errs, row, Invocation{}, nil, err, release, alone{p}, nil)
 		return
 	}
 	if p.draining.Load() {
@@ -131,7 +131,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		// the moved member and is answered there (§4.7).
 		if whole, handles := judge(ms, err == nil, r); !whole {
 			p.refused(tr, stageResolveIDs)
-			p.finish(tr, h, tb, errs, row, Invocation{}, nil, drainErr(ctx, handles), release, alone{p})
+			p.finish(tr, h, tb, errs, row, Invocation{}, nil, drainErr(ctx, handles), release, alone{p}, nil)
 			return
 		}
 	}
@@ -189,7 +189,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	}
 	if big != nil {
 		p.refused(tr, stageReplyTooBig)
-		p.finish(tr, h, tb, errs, row, Invocation{}, nil, big, release, alone{p})
+		p.finish(tr, h, tb, errs, row, Invocation{}, nil, big, release, alone{p}, nil)
 		return
 	}
 	mts, serr := p.sh.table(row.Members)
@@ -204,7 +204,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		if st, ok := reservationStage(rerr); ok {
 			p.refused(tr, st)
 		}
-		p.finish(tr, h, tb, errs, row, Invocation{}, nil, rerr, release, alone{p})
+		p.finish(tr, h, tb, errs, row, Invocation{}, nil, rerr, release, alone{p}, nil)
 		return
 	}
 	mts.observe(stageReplyWait, p.sh.clock.Now().Sub(start))
@@ -297,8 +297,10 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 // before left it. A refusal counts under the stage that refused it, in the
 // members' table's series. send is false for an error a NoReply row maps,
 // which leaves the whole compound unanswered (RFC 20 §4.3): a results array
-// cut short under a success is malformed; and for a call the connection's
-// close ended, which is mapped as no error. notFailure is a NotFailure row's
+// cut short under a success is malformed; and once the connection's close
+// has cancelled the request's context, whatever the member answered, so the
+// compound is dropped with no member after it run (RFC 20 §6.5). The
+// close's own cancel is mapped as no error. notFailure is a NotFailure row's
 // status, past which the compound runs its next member.
 func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version) (s Status, send, notFailure bool, err error) {
 	err = p.check(m.op, r)
@@ -322,18 +324,15 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 		tr.ran = true
 		err = mts.chains[m.op.Code](tr.ctx, r)
 	}
+	send = true
 	switch {
-	case err == nil:
-		return 0, true, false, nil
+	case err == nil, p.endedByClose(err):
 	case errors.Is(err, errPanicked):
-		return errs.fault, true, false, err
-	case p.endedByClose(err):
-		// A call the close ended is no error: the compound ends unsent, as
-		// unanswered ends it.
-		return 0, false, false, err
+		s = errs.fault
+	default:
+		s, send, notFailure = p.mapped(tr, errs, err, m.op, v, true)
 	}
-	s, send, notFailure = p.mapped(tr, errs, err, m.op, v, true)
-	return s, send, notFailure, err
+	return s, send && tr.ctx.Err() == nil, notFailure, err
 }
 
 // result encodes one member's result into reply: its head, then, where the

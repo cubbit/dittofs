@@ -223,11 +223,14 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 			}
 		}
 	}
-	if !holds {
-		for _, r := range errs.rows {
-			if r.Hold != nil {
-				panic(fmt.Sprintf("core: op table: error row %s holds, in a table that does not", describe(r)))
-			}
+	// A row that sends no reply answers a request no final reply follows,
+	// which holds nothing (§4.6), so no row both holds and sends no reply.
+	for _, r := range errs.rows {
+		switch {
+		case r.Hold != nil && !holds:
+			panic(fmt.Sprintf("core: op table: error row %s holds, in a table that does not", describe(r)))
+		case r.Hold != nil && r.NoReply:
+			panic(fmt.Sprintf("core: op table: error row %s holds and sends no reply", describe(r)))
 		}
 	}
 	// A cancel ends a hold or a park of any operation in any version, and is

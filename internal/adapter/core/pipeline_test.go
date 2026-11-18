@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
@@ -1909,4 +1910,340 @@ func TestARowPastItsLastVersionIsRefused(t *testing.T) {
 	if r := s.read(); r.Status != testproto.StatusVersion {
 		t.Errorf("an Echo in version 2, its row ending at 1, is answered %d, want the version status", r.Status)
 	}
+}
+
+// newTimed is a served seam whose server reads clk from here on, its stages
+// changed by edit.
+func newTimed(t *testing.T, reply int64, d adapter.Deps, clk core.Clock, edit ...func(*core.Stages)) *served {
+	t.Helper()
+	s := newServed(t, reply, d, edit...)
+	synctest.Wait() // the last reply's buffer is given back after its send
+	core.SetClock(s.sh, clk)
+	return s
+}
+
+// fhThenCreate is a version 1 chain under session 7 and tree 1: a PutFH of
+// the root's handle, then a related Create of name.
+func (s *served) fhThenCreate(id uint64, name string) []testproto.Msg {
+	return []testproto.Msg{
+		{Op: testproto.OpPutFH, Version: 1, ID: id, Session: 7, Tree: 1, Handle: s.root},
+		{Op: testproto.OpCreate, Version: 1, ID: id + 1, Session: inherited, Tree: 1, Name: name, Related: true},
+	}
+}
+
+// statuses is the statuses of the next record's replies.
+func (s *served) statuses() []core.Status {
+	s.t.Helper()
+	rs, err := s.client.Recv()
+	if err != nil {
+		s.t.Fatalf("reading a record: %v", err)
+	}
+	var out []core.Status
+	for _, r := range rs {
+		out = append(out, r.Status)
+	}
+	return out
+}
+
+// A chain of a PutFH and a Create, with the reply budget room for one
+// buffer: the Create's reservation waits on the PutFH's reply, which the
+// client reads at 10 s on the clock. Its call, held in the service, is
+// answered 30 s from its start, the record's arrival, though it waited, and
+// not before (§6.4; RFC 24 §3.3).
+func TestAReplyReservationWaitsUnderTheAttemptsDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newTimed(t, smallCharge, adapter.Deps{}, clk)
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.fhThenCreate(1, "f")...)
+		synctest.Wait()
+		clk.Advance(10 * time.Second)
+		if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusOK}) {
+			t.Fatalf("the PutFH's record is answered %v, want it alone, ok", st)
+		}
+		<-hold.Reached()
+		next := s.recvLater()
+		clk.Advance(20*time.Second - time.Nanosecond)
+		if next.arrived() {
+			t.Fatalf("the Create was answered %+v before its deadline", next.rs)
+		}
+		clk.Advance(time.Nanosecond)
+		if !next.arrived() {
+			t.Fatal("the Create is not answered at its deadline, 30 s from its start")
+		}
+		if next.err != nil || len(next.rs) != 1 || next.rs[0].Status != testproto.StatusOK {
+			t.Errorf("at its deadline the Create is answered %+v (%v), want the service's success", next.rs, next.err)
+		}
+	})
+}
+
+// The same chain, the PutFH's reply read only at 40 s on the clock: the
+// Create's reservation ends at its deadline, 30 s from its start, so it makes
+// no call, and is answered the delay status once room frees (§6.4; RFC 24
+// §3.3).
+func TestAReplyReservationPastItsDeadlineMakesNoCall(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newTimed(t, smallCharge, adapter.Deps{}, clk)
+		s.serve(s.fhThenCreate(1, "f")...)
+		synctest.Wait()
+		clk.Advance(30 * time.Second)
+		synctest.Wait()
+		clk.Advance(10 * time.Second)
+		if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusOK}) {
+			t.Errorf("the PutFH's record is answered %v, want it alone, ok", st)
+		}
+		if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusDelay}) {
+			t.Errorf("the Create's record is answered %v, want the delay status", st)
+		}
+		if n := s.creates(); n != 0 {
+			t.Errorf("%d files made, want none", n)
+		}
+	})
+}
+
+// A sequenced Create sent again while the reply budget's one buffer holds a
+// reply the client has not read: the cache's copy waits for room under the
+// attempt's deadline, 30 s from its start, whether the Create comes alone or
+// as a chain's member. Room at 10 s, it is answered the cached reply; room
+// at 30 s, its wait has ended, and it is answered the delay status (§4.7,
+// §6.4).
+func TestAReplayCopyWaitsUnderTheAttemptsDeadline(t *testing.T) {
+	cached := func(s *served, id uint64) []testproto.Msg {
+		msgs := s.fhThenCreate(id, "f")
+		msgs[1].Seq = 1
+		return msgs
+	}
+	alone := func(s *served) [][]testproto.Msg {
+		return [][]testproto.Msg{
+			{{Op: testproto.OpEcho, Version: 1, ID: 20, Payload: []byte("x")}},
+			{{Op: testproto.OpCreate, Version: 1, ID: 21, Session: 7, Tree: 1, Seq: 1, Name: "f"}},
+		}
+	}
+	chained := func(s *served) [][]testproto.Msg { return [][]testproto.Msg{cached(s, 30)} }
+	for _, c := range []struct {
+		name    string
+		records func(*served) [][]testproto.Msg // the first reply holds the buffer until the client reads it
+		room    time.Duration
+		status  core.Status
+	}{
+		{"alone, room at 10 s", alone, 10 * time.Second, testproto.StatusOK},
+		{"alone, room at 30 s", alone, 30 * time.Second, testproto.StatusDelay},
+		{"a chain's member, room at 30 s", chained, 30 * time.Second, testproto.StatusDelay},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				clk := newManualClock()
+				s := newTimed(t, smallCharge, adapter.Deps{Budgets: serverBudgets(smallCharge)}, clk)
+				s.serve(cached(s, 1)...)
+				s.statuses()
+				if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusOK}) {
+					t.Fatalf("the first Create is answered %v, want ok", st)
+				}
+				synctest.Wait()
+				for _, msgs := range c.records(s) {
+					s.serve(msgs...)
+					synctest.Wait()
+				}
+				clk.Advance(c.room)
+				s.statuses()
+				if st := s.statuses(); !slices.Equal(st, []core.Status{c.status}) {
+					t.Errorf("the Create sent again is answered %v, want [%d]", st, c.status)
+				}
+			})
+		})
+	}
+}
+
+// With the connection's one place held until 10 s on the clock by a chain
+// whose Create is in the service, the request after it waits in Admit, then
+// for a reply buffer, which the chain's unread reply holds. Its first attempt
+// starts at its arrival, as serve takes its record, so the wait ends at
+// 30 s on the clock, not 30 s from its admission, and it is answered the
+// delay status once room frees (§6.4).
+func TestAFirstAttemptStartsAtArrival(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		msgs func(*served) []testproto.Msg
+	}{
+		{"a request alone", func(*served) []testproto.Msg {
+			return []testproto.Msg{{Op: testproto.OpEcho, Version: 1, ID: 9, Payload: []byte("x")}}
+		}},
+		{"a chain", func(s *served) []testproto.Msg { return s.fhThenCreate(9, "b") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				clk := newManualClock()
+				s := newTimed(t, smallCharge, adapter.Deps{}, clk, func(st *core.Stages) { st.Flow = core.NewCappedN(1) })
+				hold := s.faults.Hold(vfs.OpCreate)
+				defer hold.Release()
+				s.serve(s.fhThenCreate(1, "a")...)
+				s.statuses() // the PutFH's, read so that the Create can reserve
+				<-hold.Reached()
+				msgs := c.msgs(s)
+				next := start(func() { s.serve(msgs...) })
+				synctest.Wait()
+				if next.returned() {
+					t.Fatal("the next request was admitted while the chain held the one place")
+				}
+				clk.Advance(10 * time.Second)
+				hold.Release()
+				<-next.done
+				synctest.Wait()
+				clk.Advance(20 * time.Second)
+				if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusOK}) {
+					t.Fatalf("the first chain's Create is answered %v, want ok", st)
+				}
+				var got []core.Status
+				for len(got) < len(msgs) {
+					got = append(got, s.statuses()...)
+				}
+				if want := slices.Repeat([]core.Status{testproto.StatusDelay}, len(msgs)); !slices.Equal(got, want) {
+					t.Errorf("the request after it is answered %v, want %v", got, want)
+				}
+			})
+		})
+	}
+}
+
+// A Create held in the service is answered once the clock passes its
+// deadline, 30 s from its arrival, and not before; the service's answer
+// then, success, is mapped as any other (§6.4).
+func TestAHeldCallIsAnsweredAtItsDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newTimed(t, 1<<20, adapter.Deps{}, clk)
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.fhThenCreate(1, "f")...)
+		<-hold.Reached()
+		next := s.recvLater()
+		clk.Advance(30*time.Second - time.Nanosecond)
+		if next.arrived() {
+			t.Fatalf("the held Create was answered %+v (%v) before its deadline", next.rs, next.err)
+		}
+		clk.Advance(time.Nanosecond)
+		<-next.done
+		if next.err != nil || len(next.rs) != 2 || next.rs[0].Status != testproto.StatusOK || next.rs[1].Status != testproto.StatusOK {
+			t.Errorf("past its deadline the chain is answered %+v (%v), want the PutFH's and the Create's ok", next.rs, next.err)
+		}
+	})
+}
+
+// A service error wrapping the deadline's own is mapped by the table: the
+// fault status, since testproto has no row for it (§6.4).
+func TestADeadlineErrorIsMappedByTheTable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newServed(t, 1<<20, adapter.Deps{})
+		s.faults.Fail(vfs.OpCreate, fmt.Errorf("the service at its deadline: %w", context.DeadlineExceeded))
+		s.serve(s.fhThenCreate(1, "f")...)
+		if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusOK, testproto.StatusFault}) {
+			t.Errorf("the chain is answered %v, want the PutFH's ok and the Create's the fault status", st)
+		}
+	})
+}
+
+// A Create held in the service when its connection closes sees its context
+// cancelled, which ends the hold, and the chain is dropped: the client reads
+// nothing, neither member's span ended as sent, and every budget back at
+// zero (§3.1, §6.5).
+func TestARequestTheCloseCancelsIsDropped(t *testing.T) {
+	budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", 64<<20), Reply: resources.NewWaitBudget("reply", 1<<20)}
+	adaptertest.CheckLeaks(t, budgets)
+	synctest.Test(t, func(t *testing.T) {
+		spans := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+		s := newTimed(t, 0, adapter.Deps{Budgets: budgets, Tracer: tracer, SampleRatio: 1}, newManualClock())
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.fhThenCreate(1, "f")...)
+		<-hold.Reached()
+		s.p.Close()
+		wait, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := s.p.Wait(wait); err != nil {
+			t.Fatalf("the request outlived its connection: %v", err)
+		}
+		ended := map[string]bool{}
+		for _, sd := range spans.Ended() {
+			name := strings.TrimPrefix(sd.Name(), "adapter."+testproto.Name+".")
+			if name != "PutFH" && name != "Create" {
+				continue
+			}
+			ended[name] = true
+			for _, kv := range sd.Attributes() {
+				if kv.Key == "reply_bytes" || kv.Key == "status" {
+					t.Errorf("the %s's span ended with %s %s, want it dropped", name, kv.Key, kv.Value.String())
+				}
+			}
+		}
+		if !ended["PutFH"] || !ended["Create"] {
+			t.Errorf("the spans ended: %v, want the PutFH's and the Create's", ended)
+		}
+		if !s.sentNothing() {
+			t.Error("the closed chain was answered")
+		}
+	})
+}
+
+// A compound whose held Create answers once the close has cancelled its
+// context runs no member after it (§6.5).
+func TestACompoundTheCloseCancelsRunsNoMoreMembers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newServed(t, 1<<20, adapter.Deps{})
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, testproto.Msg{Op: testproto.OpCreate, Name: "a"}, testproto.Msg{Op: testproto.OpCreate, Name: "b"})
+		<-hold.Reached()
+		s.p.Close()
+		wait, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := s.p.Wait(wait); err != nil {
+			t.Fatalf("the compound outlived its connection: %v", err)
+		}
+		if n := s.creates(); n != 1 {
+			t.Errorf("the compound made %d files, want the held Create's alone", n)
+		}
+	})
+}
+
+// A chain's third member that waits in Admit, behind a compound that took
+// the connection's one place as the member before it gave it back, starts
+// its attempt at its own admission, 10 s on the clock, not when the chain
+// reached it: held in the service, it is answered at 40 s, and not before
+// (§6.4).
+func TestALaterMemberStartsAtItsOwnAdmission(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newTimed(t, 1<<20, adapter.Deps{}, clk, func(st *core.Stages) { st.Flow = core.NewCappedN(1) })
+		first, second, third := s.faults.Hold(vfs.OpCreate), s.faults.Hold(vfs.OpCreate), s.faults.Hold(vfs.OpCreate)
+		defer first.Release()
+		defer second.Release()
+		defer third.Release()
+		s.serve(append(s.fhThenCreate(1, "x"), testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 3, Session: inherited, Tree: 1, Name: "y", Related: true})...)
+		<-first.Reached()
+		compound := start(func() {
+			s.compound(5, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, testproto.Msg{Op: testproto.OpCreate, Name: "c"})
+		})
+		synctest.Wait()
+		first.Release()
+		<-second.Reached()
+		<-compound.done
+		synctest.Wait()
+		clk.Advance(10 * time.Second)
+		second.Release()
+		<-third.Reached()
+		s.statuses() // the PutFH's and the first Create's
+		s.statuses() // the compound's
+		next := s.recvLater()
+		clk.Advance(30*time.Second - time.Nanosecond)
+		if next.arrived() {
+			t.Fatalf("the chain's third member was answered %+v before its deadline", next.rs)
+		}
+		clk.Advance(time.Nanosecond)
+		if !next.arrived() {
+			t.Fatal("the chain's third member is not answered at its deadline, 30 s from its admission")
+		}
+	})
 }

@@ -46,14 +46,23 @@ type shared struct {
 	tracer   trace.Tracer // nil: no spans
 	sample   uint64       // Deps.SampleRatio as sampled compares it
 	reply    *resources.BufPool
+	hold     *resources.Budget // the node's hold pool; nil: none, so the floor bounds every connection's holds
+	// The floor each connection's held requests count against before the
+	// hold pool, in requests and in their records' receive charge (§4.6).
+	floorRequests int
+	floorBytes    int64
 }
 
 // newShared is a server's shared state over reply, the pool every reply
 // buffer is taken from: its vectors registered on d.Metrics, or recording
 // nothing without one, on the runtime's clock, d.Logger, or a logger that
-// discards, and d.Tracer.
+// discards, and d.Tracer; held requests past a connection's floor of 256
+// requests and 32 MiB go to d.Budgets' hold pool (§4.6).
 func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, sample: sampleBound(d.SampleRatio), reply: reply, panics: map[[2]string]*lineLimiter{}}
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, sample: sampleBound(d.SampleRatio), reply: reply, panics: map[[2]string]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
+	if d.Budgets != nil {
+		sh.hold = d.Budgets.Hold
+	}
 	if sh.log == nil {
 		sh.log = slog.New(slog.DiscardHandler)
 	}
@@ -109,10 +118,12 @@ func (c capped) Admit(ctx context.Context, _ Header) (release func(), err error)
 }
 
 // reserveReply takes a reply buffer of bound bytes from the reply pool for
-// key, waiting within ctx, the attempt's. A wait that ends at ctx's deadline
-// is the adapter's own refusal for a node memory pool, ErrDelay of
-// DelayResources (RFC 20 §6.3), and a charge past the pool's ceiling, which
-// the pool refuses at once under any ctx, is ErrReplyTooBig (RFC 20 §4.3); a
+// key: at once when the pool has room with no waiter ahead, otherwise
+// waiting until the deadline of ctx's attempt, so a pool held full ends the
+// wait (RFC 20 §6.4; RFC 24 §3.3). A wait that ends at that deadline is the
+// adapter's own refusal for a node memory pool, ErrDelay of DelayResources
+// (RFC 20 §6.3), and a charge past the pool's ceiling, which the pool
+// refuses at once under any ctx, is ErrReplyTooBig (RFC 20 §4.3); a
 // cancellation, and any other error, is returned as it is. On an error
 // nothing is reserved.
 //
@@ -123,6 +134,12 @@ func (c capped) Admit(ctx context.Context, _ Header) (release func(), err error)
 // statuses, when the reply budget is shown to bind before the receive budget
 // does.
 func (sh *shared) reserveReply(ctx context.Context, key netip.Addr, bound int) (*resources.Buf, error) {
+	// A reply that fits at once arms no deadline.
+	if buf, ok := sh.reply.TryGet(key, bound); ok {
+		return buf, nil
+	}
+	ctx, cancel := sh.attempt(ctx)
+	defer cancel()
 	buf, err := sh.reply.Get(ctx, key, bound)
 	switch {
 	case err == nil:
@@ -282,8 +299,10 @@ type pipeline struct {
 	status   chan struct{} // the one wait for a status's buffer a connection has
 
 	mu   sync.Mutex
-	runs int           // requests running and statuses waiting
+	runs int           // requests running, held and statuses waiting
 	idle chan struct{} // made by a wait while runs is above 0, closed when it falls to 0
+
+	pend pends
 }
 
 // newPipeline builds a connection's pipeline over stages withDefaults filled.
@@ -369,12 +388,11 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		p.refuse(tr, rec, u, stageUnwrap, err, true, false)
 		return
 	}
-	if _, ok := p.st.Hold.Cancels(u); ok {
-		// ponytail: the key a cancel names is dropped, since nothing holds a
-		// request yet. End the hold it names, and keep an early cancel for
-		// HoldCodec's while, once the hold registry lands.
+	if key, ok := p.st.Hold.Cancels(u); ok {
+		// A cancel gets no reply of its own (§4.7).
 		p.end(tr, false, 0, 0, nil)
 		rec.Release()
+		p.endHold(key)
 		return
 	}
 	release, err := p.st.Flow.Admit(tr.ctx, u)
@@ -525,7 +543,7 @@ type answerer interface {
 	// none once its wait has ended.
 	status(ctx context.Context, n int) *resources.Buf
 	// lookup asks the replay cache for h's reply.
-	lookup(ctx context.Context, h Header) (*resources.Buf, error)
+	lookup(tr *track, h Header) (*resources.Buf, error)
 	// halted says the message is to run no further: its chain stopped, its
 	// connection closed by a split, while it looked up or reserved.
 	halted() bool
@@ -534,6 +552,12 @@ type answerer interface {
 	answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, failed bool, err error)
 	// unanswered ends a message a NoReply row answered.
 	unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func())
+	// pended sends the interim of a message that went pending, keyed key,
+	// with the replies answered before it.
+	pended(h Header, interim *resources.Buf, key uint64)
+	// resume runs answer, the end of a message held between attempts, and
+	// what comes after it: for a chain's member, the members after it.
+	resume(answer func())
 }
 
 // alone answers a request that is no chain's member.
@@ -547,8 +571,29 @@ func (a alone) status(ctx context.Context, n int) *resources.Buf {
 	return a.p.sh.reserveStatus(ctx, a.p.l.remote, n, a.p.l.close)
 }
 
-func (a alone) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
+// lookup asks the replay cache under an ended context first, which tries its
+// copy's reservation once; where that would wait, it asks again under the
+// attempt's deadline, which the copy's reservation waits under (§4.7, §6.4).
+//
+// decision: a request alone asks first under an ended context too, as a
+// chain's member does, so a request whose copy fits at once, or that has
+// none, arms no deadline: every request asks, on a protocol with no cache
+// too. Overturned if a protocol's cache must be asked once per request.
+func (a alone) lookup(tr *track, h Header) (*resources.Buf, error) {
+	cached, err := a.p.st.Replay.Lookup(tr.ended(), h)
+	if !copyWaits(err) {
+		return cached, err
+	}
+	ctx, cancel := a.p.sh.attempt(tr.ctx)
+	defer cancel()
 	return a.p.st.Replay.Lookup(ctx, h)
+}
+
+// copyWaits says a Lookup under an ended context refused because its copy's
+// reservation would wait (§4.7).
+func copyWaits(err error) bool {
+	var d *vfs.Delay
+	return errors.As(err, &d) && d.Cause == vfs.DelayResources
 }
 
 func (alone) halted() bool { return false }
@@ -563,26 +608,31 @@ func (a alone) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf
 	a.p.unanswered(tr, h, tb, reply, err, release)
 }
 
+func (a alone) pended(h Header, interim *resources.Buf, key uint64) { a.p.send(h, interim, key) }
+
+func (alone) resume(answer func()) { answer() }
+
 // message runs one admitted message from the replay check to its answer, in
 // §4.7's order, under prev, the request of the member before a related one,
 // and answers it through a. A refusal is mapped by the stages' table until
 // Route returns one, and by that table after. It returns the message's
-// request, for a related member after it.
-func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Request, release func(), a answerer) *Request {
+// request, for a related member after it, and whether it is held between
+// attempts, which its answer then ends.
+func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Request, release func(), a answerer) (*Request, bool) {
 	ctx := tr.ctx
-	cached, err := a.lookup(ctx, h)
+	cached, err := a.lookup(tr, h)
 	if cached != nil {
 		tr.label.replayHit()
 		tr.cached = true
 		release()
 		a.answered(tr, h, cached, 0, 0, false, nil)
-		return nil
+		return nil, false
 	}
 	if err != nil {
 		if p.endedByClose(err) {
 			release()
 			p.end(tr, false, 0, 0, err)
-			return nil
+			return nil, false
 		}
 		p.refused(tr, stageReplayCheck)
 	}
@@ -609,7 +659,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		if serr != nil {
 			release()
 			p.drop(tr, nil, serr)
-			return nil
+			return nil, false
 		}
 		p.routed(tr, ts, h.Op())
 		errs = tb.Errors
@@ -638,7 +688,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		} else if op.Members != nil {
 			if _, ok := a.(alone); ok {
 				p.compound(tr, h, r, tb, op, inv, args[n:], release)
-				return r
+				return r, false
 			}
 			// decision: a compound row reached as a chain's member is
 			// refused not supported: its one reply cannot join the chain's
@@ -651,19 +701,16 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 	}
 	var reply *resources.Buf
 	if err == nil {
-		// ponytail: ctx is the connection's, which has no deadline, so the
-		// reservation can wait as long as the pool stays full. Wait under the
-		// attempt's deadline once the request context lands.
-		start := p.sh.clock.Now()
-		n, _ := inv.Bound(r, p.l.record-p.st.Header.ReplyLen(h))
-		if reply, err = a.reserve(ctx, n+p.st.Header.ReplyLen(h)); err != nil {
-			if st, ok := reservationStage(err); ok {
-				p.refused(tr, st)
+		if tb.Holds {
+			// Each call carries the clone wait's hold: the deadline the row
+			// mapping it returns, evaluated at the request's arrival with the
+			// hold's start at it, or none where that row has no Hold (§4.6).
+			tr.req.holds = true
+			if bound := tb.Errors.hold(cloneWait, op, h.Version()); bound != nil {
+				tr.req.clone = bound(cloneWait, tr.req.start)
 			}
-		} else {
-			r.resolveStart = p.sh.clock.Now()
-			ts.observe(stageReplyWait, r.resolveStart.Sub(start))
 		}
+		reply, err = p.reserve(tr, ts, a, inv, h, r)
 	}
 	if a.halted() {
 		// Its chain stopped while it looked up or reserved, its connection
@@ -673,57 +720,93 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		}
 		release()
 		p.end(tr, false, 0, 0, nil)
-		return r
+		return r, false
 	}
 	if err == nil {
-		if err = inv.Resolve(r); err != nil {
-			p.refused(tr, stageResolveIDs)
-		}
+		err = p.resolve(tr, r, op, inv, p.draining.Load())
 	}
-	if err == nil {
-		// The role is asked only while draining or on an expired credential,
-		// so a request served normally pays for no second lookup.
-		draining, expired := p.draining.Load(), p.expired(r)
-		role := op.Role
-		if draining || expired {
-			role = roleOf(op, inv, r)
-		}
-		switch {
-		case expired && !op.Expired && role != RoleRelease:
-			err = ErrExpired
-		case draining && role == RoleNone:
-			err = drainErr(ctx, handlesOf(inv))
-		}
-		if err != nil {
-			p.refused(tr, stageResolveIDs)
-		}
-	}
+	var pd *pending
 	if err == nil {
 		r.invoke = inv.Call
 		tr.ran = true
+		if tb.Holds {
+			pd = p.watch(tr, rec, h, r, tb, ts, op, inv, a)
+		}
 		err = ts.chains[op.Code](ctx, r)
 	}
-	p.finish(tr, h, tb, errs, op, inv, reply, err, release, a)
-	return r
+	if pd != nil {
+		var held bool
+		if held, err = p.after(pd, err, reply, release); held {
+			return r, true
+		}
+	}
+	p.finish(tr, h, tb, errs, op, inv, reply, err, release, a, pd)
+	if pd != nil {
+		p.unpend(pd)
+	}
+	return r, false
+}
+
+// reserve takes the reply buffer of h's attempt through a, its wait timed
+// and its refusal counted.
+func (p *pipeline) reserve(tr *track, ts *tableSeries, a answerer, inv Invocation, h Header, r *Request) (*resources.Buf, error) {
+	start := p.sh.clock.Now()
+	n, _ := inv.Bound(r, p.l.record-p.st.Header.ReplyLen(h))
+	reply, err := a.reserve(tr.ctx, n+p.st.Header.ReplyLen(h))
+	if err != nil {
+		if st, ok := reservationStage(err); ok {
+			p.refused(tr, st)
+		}
+		return nil, err
+	}
+	r.resolveStart = p.sh.clock.Now()
+	ts.observe(stageReplyWait, r.resolveStart.Sub(start))
+	return reply, nil
+}
+
+// resolve runs inv's Resolve, then the expired credential's check and, where
+// draining, the drain's, each refusal counted (§4.4, §3.1).
+func (p *pipeline) resolve(tr *track, r *Request, op *Op, inv Invocation, draining bool) error {
+	if err := inv.Resolve(r); err != nil {
+		p.refused(tr, stageResolveIDs)
+		return err
+	}
+	// The role is asked only while draining or on an expired credential, so
+	// a request served normally pays for no second lookup.
+	expired := p.expired(r)
+	role := op.Role
+	if draining || expired {
+		role = roleOf(op, inv, r)
+	}
+	var err error
+	switch {
+	case expired && !op.Expired && role != RoleRelease:
+		err = ErrExpired
+	case draining && role == RoleNone:
+		err = drainErr(tr.ctx, handlesOf(inv))
+	}
+	if err != nil {
+		p.refused(tr, stageResolveIDs)
+	}
+	return err
 }
 
 // finish answers a request whose call, or refusal, gave err: its status
 // mapped by errs, encoded into reply or, with none reserved, a status's
 // buffer, stored where its row is cacheable, and handed to a; or, for a
-// NoReply row, a's unanswered.
-func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op *Op, inv Invocation, reply *resources.Buf, err error, release func(), a answerer) {
+// NoReply row, a's unanswered. A request pd says is pending is answered
+// under Final's header. A request whose context the connection's close
+// cancelled is dropped instead: its reservations released, nothing encoded,
+// and its span ended unsent (§3.1, §6.5). Its error is still mapped, unless
+// it is the close's own cancel, which is no error.
+func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op *Op, inv Invocation, reply *resources.Buf, err error, release func(), a answerer, pd *pending) {
 	ctx := tr.ctx
-	if err != nil && p.endedByClose(err) {
-		if reply != nil {
-			reply.Release()
-		}
-		release()
-		p.end(tr, false, 0, 0, err)
-		return
-	}
 	var s Status
 	send, notFailure := true, false
 	switch {
+	case p.endedByClose(err):
+		// The close's own cancel is mapped by no row, counted and logged by
+		// none.
 	case errors.Is(err, errPanicked):
 		// decision: a recovered panic is answered the fault status without
 		// Map, so it is counted once, as a panic, and never also as an error
@@ -731,6 +814,14 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 		s = errs.fault
 	case err != nil:
 		s, send, notFailure = p.mapped(tr, errs, err, op, h.Version(), true)
+	}
+	if ctx.Err() != nil {
+		if reply != nil {
+			reply.Release()
+		}
+		release()
+		p.end(tr, false, 0, 0, err)
+		return
 	}
 	if !send {
 		a.unanswered(tr, h, tb, reply, err, release)
@@ -743,8 +834,12 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 			return
 		}
 	}
+	eh := h
+	if pd != nil && pd.pend {
+		eh = p.st.Hold.Final(h, pd.grant)
+	}
 	reply.B = reply.B[:0] // a buffer comes back as long as its reservation, for a read
-	if encErr := p.encode(h, s, reply, inv); encErr != nil {
+	if encErr := p.encode(eh, s, reply, inv); encErr != nil {
 		reply.Release()
 		release()
 		p.drop(tr, nil, encErr)
@@ -758,16 +853,23 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 	if tb != nil && tb.Holds {
 		key = p.st.Hold.Key(h)
 	}
-	a.answered(tr, h, reply, key, s, s != 0 && !notFailure, err)
+	if pd != nil && err == ErrNotLast {
+		// Its status is ErrNotLast's; its span's result is the error the
+		// service returned (§4.7, §10.2).
+		err = pd.last
+	}
+	a.answered(tr, eh, reply, key, s, s != 0 && !notFailure, err)
 }
 
 // track is what the pipeline keeps of one request for its span, its log
 // lines and its counts, from serve taking its record to its reply going to
 // out or being dropped.
 type track struct {
-	ctx       context.Context // carries the request span, where there is one
-	span      trace.Span      // nil on a server with no tracer
-	id        trace.TraceID   // drawn even when the request is not traced
+	ctx       context.Context // &req, the request's context
+	req       requestCtx
+	try       endedCtx      // ctx ended, for a first try; reused so a try boxes nothing
+	span      trace.Span    // nil on a server with no tracer
+	id        trace.TraceID // drawn even when the request is not traced
 	label     *labelSeries
 	table     *tableSeries // from Route on
 	protocol  string       // the label it records under: the stages', then the table's
@@ -788,16 +890,48 @@ type track struct {
 // nothing for tracing (RFC 25 §6.3). Its span, named after the connection's
 // label until Route names its operation, takes the drawn ID through the
 // root's ID generator; with a provider that draws its own, the request's
-// lines carry the span's.
+// lines carry the span's. The request's context starts its first attempt
+// now, the request's arrival (§6.4).
 func (p *pipeline) begin(rec *resources.Buf) *track {
-	tr := &track{ctx: p.ctx, label: p.label, protocol: p.st.Protocol, bytes: len(rec.B), id: newTraceID()}
+	tr := &track{label: p.label, protocol: p.st.Protocol, bytes: len(rec.B), id: newTraceID()}
+	parent := p.ctx
 	if p.sh.tracer != nil && sampled(tr.id, p.sh.sample) {
-		tr.ctx, tr.span = p.sh.tracer.Start(adapter.ContextWithTraceID(p.ctx, tr.id), p.name)
+		parent, tr.span = p.sh.tracer.Start(adapter.ContextWithTraceID(p.ctx, tr.id), p.name)
 		if id := tr.span.SpanContext().TraceID(); id.IsValid() {
 			tr.id = id
 		}
 	}
+	tr.req = requestCtx{Context: parent, start: p.sh.clock.Now()}
+	tr.ctx = &tr.req
 	return tr
+}
+
+// requestCtx is a request's one context: its connection's, through the
+// request span where it has one, so the connection's close cancels the
+// request (§6.5, §6.9). It keeps what each attempt reads, and answers
+// attemptKey with itself, so an attempt adds no context to carry them (§4.6,
+// §6.4).
+type requestCtx struct {
+	context.Context
+	start time.Time // the attempt's
+	hold  time.Time // a re-drive's hold deadline; zero for none
+	holds bool      // its table holds
+	clone time.Time // in a table that holds, the clone wait's deadline its row returned at arrival; zero for none
+}
+
+func (c *requestCtx) Value(key any) any {
+	if _, ok := key.(attemptKey); ok {
+		return c
+	}
+	return c.Context.Value(key)
+}
+
+// ended is the request's context ended, for its first try at the replay
+// cache or at flow control: its one endedCtx, repointed at its context,
+// which a stage, as any call's, keeps no further than its return.
+func (tr *track) ended() context.Context {
+	tr.try.Context = tr.ctx
+	return &tr.try
 }
 
 // series is what the request records into now: its connection's label's
@@ -884,6 +1018,10 @@ func (tr *track) attrs(err error) []slog.Attr {
 // attributes: what was sent, if anything, its status and reply size, the
 // service's result, and the stage that refused it.
 func (p *pipeline) end(tr *track, sent bool, s Status, reply int, err error) {
+	if tr == nil {
+		// The interim of a request still pending: its request goes on.
+		return
+	}
 	if tr.flight {
 		tr.series().answered()
 		tr.flight = false
@@ -1075,7 +1213,8 @@ func drainErr(context.Context, []vfs.Handle) error { return ErrDraining }
 // none is refused with drainErr.
 func (p *pipeline) drain() { p.draining.Store(true) }
 
-// wait returns nil once nothing runs and no status waits, or ctx's error.
+// wait returns nil once nothing runs, is held or waits for a status, or
+// ctx's error.
 func (p *pipeline) wait(ctx context.Context) error {
 	p.mu.Lock()
 	if p.runs == 0 {
@@ -1097,10 +1236,14 @@ func (p *pipeline) wait(ctx context.Context) error {
 
 // close starts the teardown and returns at once, so it may be entered from a
 // handler's own goroutine and from the reader: it ends the pipeline's
-// context, which ends every wait a request or a status is in.
-func (p *pipeline) close() { p.cancel() }
+// context, which ends every wait a request or a status is in, and every
+// hold between attempts (§4.6, §6.5).
+func (p *pipeline) close() {
+	p.cancel()
+	p.endHolds()
+}
 
-// add counts a request or a status wait starting; done, one ending.
+// add counts a request, a hold or a status wait starting; done, one ending.
 func (p *pipeline) add() {
 	p.mu.Lock()
 	p.runs++

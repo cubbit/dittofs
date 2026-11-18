@@ -9,13 +9,12 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/resources"
-	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// endedCtx is a member's context with its deadline passed: Admit under it
+// endedCtx is a request's context with its deadline passed: Admit under it
 // tries once and, where it would wait, answers its error at once, and Lookup
 // tries its copy's reservation once, answering ErrDelay of DelayResources
-// (§4.7). It keeps the member's values, its trace ID and span among them.
+// (§4.7). It keeps the request's values, its trace ID and span among them.
 type endedCtx struct{ context.Context }
 
 // closedDone is the done channel of every endedCtx.
@@ -36,6 +35,7 @@ type entry struct {
 	h, u      Header // as Decode and Unwrap returned them
 	unwrapped bool   // Unwrap ran on the reader, for the first member
 	cancel    bool   // it cancels a hold, and is answered nothing
+	key       uint64 // with cancel, the key of the request it cancels
 	st        stage  // the stage that refused it, read only with err
 	err       error
 	release   func() // its admission
@@ -66,11 +66,16 @@ type chain struct {
 	prevR    *Request
 	failed   bool // the member before failed, with failS
 	failS    Status
-	cur      entry    // the member running
-	stopped  bool     // a NoReply member ended the chain, or the connection closed
-	slot     bool     // the chain holds the connection's one status wait
-	kept     func()   // the place of the last member admitted, until the next is admitted or would wait
-	try      endedCtx // the running member's context, ended, for its first try; reused so a try boxes nothing
+	cur      entry  // the member running
+	stopped  bool   // a NoReply member ended the chain, or the connection closed
+	slot     bool   // the chain holds the connection's one status wait
+	kept     func() // the place of the last member admitted, until the next is admitted or would wait
+
+	// The hand-over of a member held between attempts, whose answer runs the
+	// rest of the chain: one goroutine runs the chain at a time.
+	mu   sync.Mutex
+	away bool   // the goroutine that held the member has let go of the chain
+	then func() // the member's answer, come before that goroutine let go
 }
 
 // serveChain takes a record whose messages chain (§4.7). On the reader it
@@ -98,8 +103,8 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 		case err != nil:
 			e.st, e.err = stageUnwrap, err
 		default:
-			if _, ok := p.st.Hold.Cancels(u); ok {
-				e.cancel = true
+			if key, ok := p.st.Hold.Cancels(u); ok {
+				e.cancel, e.key = true, key
 			} else if release, err := p.st.Flow.Admit(tr.ctx, u); err != nil {
 				e.st, e.err = stageAdmit, err
 			} else {
@@ -137,38 +142,95 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 }
 
 // run takes the chain's members in turn, from e, each at the next of the one
-// before, and sends what the chain holds once the last has run. A step that
-// does not lead forward to a header inside the record ends the chain: what it
-// holds goes out, and the connection closes, since the members past it can
-// be neither read nor answered (§4.7).
+// before, and sends what the chain holds once the last has run. A member held
+// between attempts hands the chain over to its answer, which runs the members
+// after it on the goroutine that gives it (§4.7).
 func (c *chain) run(e entry) {
-	p := c.p
-	defer p.done()
-	defer c.rec.Release()
-	defer c.free()
-	defer c.giveBack()
 	for {
-		c.one(&e)
+		held := c.one(&e)
 		c.free() // a first member answered with no status wait gives the slot back
-		if c.stopped {
-			return
-		}
-		next := e.h.Next()
-		if next == 0 {
-			break
-		}
-		if next <= e.off || next >= len(c.rec.B) {
-			c.flush(splits, nil)
-			if !c.stopped {
-				p.l.close(fmt.Errorf("%w: a chain's step from %d to %d, in a record of %d bytes", ErrDecode, e.off, next, len(c.rec.B)))
+		if held {
+			answer := c.handOver()
+			if answer == nil {
+				return
 			}
-			return
+			answer()
 		}
-		if e = c.at(next); e.tr == nil {
+		if !c.next(&e) {
+			c.end()
 			return
 		}
 	}
-	c.flush(splits, nil)
+}
+
+// next moves e on to the member at its next, or reports false: once the
+// chain has stopped, and after the last member, once what the chain holds
+// has gone out. A step that does not lead forward to a header inside the
+// record ends the chain too: what it holds goes out, and the connection
+// closes, since the members past it can be neither read nor answered (§4.7).
+func (c *chain) next(e *entry) bool {
+	if c.stopped {
+		return false
+	}
+	next := e.h.Next()
+	if next == 0 {
+		c.flush(splits, nil)
+		return false
+	}
+	if next <= e.off || next >= len(c.rec.B) {
+		c.flush(splits, nil)
+		if !c.stopped {
+			c.p.l.close(fmt.Errorf("%w: a chain's step from %d to %d, in a record of %d bytes", ErrDecode, e.off, next, len(c.rec.B)))
+		}
+		return false
+	}
+	*e = c.at(next)
+	return e.tr != nil
+}
+
+// end gives back what the chain holds once none of its members runs: the
+// place it kept, the status wait, its record and its count.
+func (c *chain) end() {
+	c.giveBack()
+	c.free()
+	c.rec.Release()
+	c.p.done()
+}
+
+// handOver lets go of the chain at a member held between attempts, giving
+// back the place it kept, since a held request keeps none (§4.6): the
+// member's answer, on the goroutine that gives it, runs the rest. An answer
+// that came before is returned, for this goroutine to run.
+func (c *chain) handOver() func() {
+	c.giveBack()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	answer := c.then
+	c.then, c.away = nil, answer == nil
+	return answer
+}
+
+// resume runs a held member's answer into the chain and then, on the same
+// goroutine, the members after it, each admitted as §4.7 says: a re-drive's
+// timer goroutine, a cancel's own, or the close's, whose member after it is
+// dropped as one admitted after a close is (§4.6, §4.7). An answer that comes
+// before the goroutine that held the member has let go is left for that
+// goroutine to run.
+func (c *chain) resume(answer func()) {
+	c.mu.Lock()
+	if !c.away {
+		c.then = answer
+		c.mu.Unlock()
+		return
+	}
+	c.away = false
+	c.mu.Unlock()
+	answer()
+	if e := c.cur; c.next(&e) {
+		c.run(e)
+		return
+	}
+	c.end()
 }
 
 // at is the member whose header is at off. A nil header closes the
@@ -202,8 +264,9 @@ func memberBytes(rec *resources.Buf, off, next int) int {
 // one runs one member: unwrapped under the member before where related,
 // admitted, and run as a request alone runs, its answer held for the record;
 // or refused, which for a header that did not decode or that Unwrap refused
-// splits the chain (§4.7).
-func (c *chain) one(e *entry) {
+// splits the chain (§4.7). It reports whether the member is held between
+// attempts, its answer to come.
+func (c *chain) one(e *entry) bool {
 	p := c.p
 	c.cur = *e
 	related := e.h.Related()
@@ -216,7 +279,7 @@ func (c *chain) one(e *entry) {
 		c.clear, c.isolated = true, true
 		c.prevH = e.h
 		c.refusal(e, e.h)
-		return
+		return false
 	}
 	if !e.unwrapped {
 		var prev Header
@@ -229,15 +292,15 @@ func (c *chain) one(e *entry) {
 				err = errUnwrapNeither
 			}
 			c.abort(e.tr, err)
-			return
+			return false
 		}
 		e.u = u
 		switch {
 		case err != nil:
 			e.st, e.err = stageUnwrap, err
 		default:
-			if _, ok := p.st.Hold.Cancels(u); ok {
-				e.cancel = true
+			if key, ok := p.st.Hold.Cancels(u); ok {
+				e.cancel, e.key = true, key
 				break
 			}
 			c.admit(e)
@@ -250,7 +313,7 @@ func (c *chain) one(e *entry) {
 					e.release()
 				}
 				c.drop(e.tr, nil)
-				return
+				return false
 			}
 		}
 	}
@@ -263,22 +326,23 @@ func (c *chain) one(e *entry) {
 		c.prevR = nil
 		c.failed, c.failS = false, 0
 		p.end(e.tr, false, 0, 0, nil)
-		return
+		p.endHold(e.key)
+		return false
 	case e.err == nil:
 	case e.st == stageUnwrap:
 		c.flush(splitUnwrap, e.tr)
 		c.clear, c.isolated = false, true
 		c.refusal(e, e.u)
-		return
+		return false
 	case e.st == stageAdmit:
 		c.refusal(e, e.u)
-		return
+		return false
 	}
 	e.tr.label.admitted()
 	e.tr.flight = true
 	if related && c.failed {
 		c.answerFailed(e)
-		return
+		return false
 	}
 	var prev *Request
 	if related {
@@ -291,9 +355,11 @@ func (c *chain) one(e *entry) {
 	// returns cached copies and a hit's own state must carry over.
 	release := e.release
 	keep := func() { c.keep(release) }
-	if r := p.message(e.tr, c.rec, e.u, prev, keep, c); r != nil || !e.tr.cached || !related {
+	r, held := p.message(e.tr, c.rec, e.u, prev, keep, c)
+	if r != nil || !e.tr.cached || !related {
 		c.prevR = r
 	}
+	return held
 }
 
 // admit admits a member after the first, as §4.7 has it: tried once under
@@ -306,7 +372,7 @@ func (c *chain) one(e *entry) {
 // a place.
 func (c *chain) admit(e *entry) {
 	p := c.p
-	try := c.ended(e.tr.ctx)
+	try := e.tr.ended()
 	release, err := p.st.Flow.Admit(try, e.u)
 	if err != nil && errors.Is(err, context.DeadlineExceeded) {
 		c.giveBack() // never wait at flow control holding a place
@@ -324,6 +390,10 @@ func (c *chain) admit(e *entry) {
 	}
 	c.giveBack()
 	e.release = release
+	// A member after the first starts its attempt at its own admission, so
+	// one that waited behind the members before it does not start on their
+	// spent deadline (§6.4).
+	e.tr.req.start = c.p.sh.clock.Now()
 }
 
 // refusal answers e's refusal at its stage, before Route, as the stages'
@@ -477,26 +547,19 @@ func (c *chain) free() {
 	}
 }
 
-// ended is ctx ended, for a member's first try: the chain's one endedCtx,
-// repointed at ctx, which a stage, as any call's, keeps no further than its
-// return.
-func (c *chain) ended(ctx context.Context) context.Context {
-	c.try.Context = ctx
-	return &c.try
-}
-
 // lookup asks the replay cache under an ended context first: when its
 // copy's reservation would wait, the replies the chain holds go out, and it
-// is asked again under the member's deadline, so the chain never waits on
-// the reply pool holding it (§4.7).
-func (c *chain) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
-	cached, err := c.p.st.Replay.Lookup(c.ended(ctx), h)
-	var d *vfs.Delay
-	if errors.As(err, &d) && d.Cause == vfs.DelayResources {
-		c.flush(splitReplyPool, c.cur.tr)
-		return c.p.st.Replay.Lookup(ctx, h)
+// is asked again under the member's attempt deadline, so the chain never
+// waits on the reply pool holding it (§4.7, §6.4).
+func (c *chain) lookup(tr *track, h Header) (*resources.Buf, error) {
+	cached, err := c.p.st.Replay.Lookup(tr.ended(), h)
+	if !copyWaits(err) {
+		return cached, err
 	}
-	return cached, err
+	c.flush(splitReplyPool, c.cur.tr)
+	ctx, cancel := c.p.sh.attempt(tr.ctx)
+	defer cancel()
+	return c.p.st.Replay.Lookup(ctx, h)
 }
 
 func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, failed bool, err error) {
@@ -567,6 +630,13 @@ func (c *chain) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Bu
 	c.flush(splits, nil)
 }
 
+// pended holds a pending member's interim, which carries no track since its
+// request goes on, and sends it at once with the replies before it (§4.7).
+func (c *chain) pended(h Header, interim *resources.Buf, key uint64) {
+	c.hold(held{h: h, reply: interim, key: key})
+	c.flush(splits, nil)
+}
+
 // laterHeaders is the slices of later members' headers an interim is handed,
 // taken only on a drain's refusal: a connection runs up to its cap of
 // requests at once, so no per-connection slice is safe (§4.7).
@@ -606,13 +676,23 @@ func (c *chain) hold(m held) {
 // is a header's refusal, which no Wrap sees; why, where it is one of the
 // split reasons, counts the split under tr's series. A flush that holds
 // nothing changes nothing, and a refusal's record keeps its clear and
-// isolated marks across a split inside it: only its end clears them.
+// isolated marks across a split inside it: only its end clears them. Once
+// the connection's close has cancelled the members' contexts, what the
+// chain holds is dropped, neither joined nor wrapped, each member ended
+// unsent (§6.5).
 func (c *chain) flush(why split, tr *track) {
 	p := c.p
 	if len(c.held) == 0 {
 		return
 	}
 	defer func() { c.held, c.charge = c.held[:0], 0 }()
+	if p.ctx.Err() != nil {
+		for _, m := range c.held {
+			m.reply.Release()
+			p.end(m.tr, false, 0, 0, m.err)
+		}
+		return
+	}
 	if why < splits && tr != nil {
 		tr.series().split(why)
 	}
@@ -633,8 +713,8 @@ func (c *chain) flush(why split, tr *track) {
 	// ponytail: the record is queued under its last member's key, so a
 	// message that must go before a middle member's reply, sent once the
 	// record is queued, finds none to go before. Queue it under every
-	// member's key once held requests send interims that can race their
-	// final replies.
+	// member's key once Conn.Send, the only caller that hands out a before,
+	// is implemented.
 	p.out(rec, c.held[len(c.held)-1].key)
 	for _, m := range c.held {
 		p.end(m.tr, m.final, m.s, m.n, m.err)

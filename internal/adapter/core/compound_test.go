@@ -175,10 +175,13 @@ type served struct {
 	svc    *memory.Service
 	faults *vfstest.FaultService
 	root   vfs.Handle
-	proto  core.Protocol // the server's protocol, for another connection
+	proto  core.Protocol       // the server's protocol, for another connection
+	tp     *testproto.Protocol // the testproto under proto, for SetHold; set by newChained
 }
 
-func newServed(t *testing.T, reply int64, d adapter.Deps) *served {
+// newServed is a served seam in version 1, whose table answers every error
+// at once, its stages changed by edit.
+func newServed(t *testing.T, reply int64, d adapter.Deps, edit ...func(*core.Stages)) *served {
 	t.Helper()
 	svc := memory.New(t)
 	root, _, err := svc.Root(t.Context(), svc.Admin(), vfs.ShareRef{Name: svc.Store.Share.Name})
@@ -187,7 +190,11 @@ func newServed(t *testing.T, reply int64, d adapter.Deps) *served {
 	}
 	faults := vfstest.Faults(svc)
 	d.VFS = faults
-	s := &served{seam: newSeamWith(t, testproto.New(d).WithCall(svc.Admin()), reply, d), svc: svc, faults: faults, root: root}
+	var proto core.Protocol = testproto.New(d).WithCall(svc.Admin())
+	for _, e := range edit {
+		proto = edited{proto, e}
+	}
+	s := &served{seam: newSeamWith(t, proto, reply, d), svc: svc, faults: faults, root: root, proto: proto}
 	for _, m := range []testproto.Msg{
 		{Op: testproto.OpNegotiate, Version: 1},
 		{Op: testproto.OpSession, Version: 1, Session: 7},
