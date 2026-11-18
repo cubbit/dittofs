@@ -444,6 +444,18 @@ flight.
 
 - The largest read, write and control request (`MaxReadSize`, `MaxWriteSize`,
   `MaxTransactSize`) is **8 MiB**, a request costing one credit per 64 KiB.
+- A message, as its Direct TCP header counts it, is at most the large class's
+  capacity, 8 MiB and 4 KiB
+  ([RFC 24 §3.1](rfc-24-resources.md#3.1%20Buffer%20classes)): a longer one
+  closes the connection ([RFC 20 §5.2](rfc-20-adapters.md#5.2%20Decoding%20is%20bounded)).
+- A response record is held to the same cap, and so stays within Direct TCP's
+  3-byte `StreamProtocolLength` (MS-SMB2 2.1), which no record of 2^24 bytes or
+  more fits. A single response is bounded by its class; a chain sends the
+  responses it holds as a record of their own before its joined record would
+  pass the cap
+  ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
+  as it does before passing a quarter of the reply pool, which is past 16 MiB
+  on a node whose memory limit is past 1 GiB.
 - Each connection targets **512** credits outstanding, counting those the client holds and
   those a withheld interim's final response still owes. A synchronous response,
   and the interim response of a request held pending, grants what the client
@@ -528,6 +540,15 @@ flight.
 > connections exhaust a node; the pool's own ceiling and trigger are RFC 24
 > §4.3's, read from `adapter_hold_refusals_total{protocol="smb"}` (§19).
 
+> decision: a compounded response is held to the message cap, 8 MiB and 4
+> KiB, not to MS-SMB2 3.3.4.1.3's `Connection.MaxTransactSize` + 256, here 8
+> MiB and 256 bytes, which is tighter by 3,840 bytes. That line is a SHOULD NOT
+> that Windows servers do not compute ("Windows-based servers do not calculate
+> the size of the response message", Appendix A, note 239), and `core` holds a
+> chain to the one cap its framer states for every record. Hold a chain to
+> `MaxTransactSize` + 256 if a client is seen refusing a compounded response
+> between the two.
+
 ## 4. Sessions
 
 A session is a user signed in on a connection; it holds the keys that sign and
@@ -557,9 +578,20 @@ one gateway node's memory; a client that loses the node signs in again.
   `STATUS_ACCESS_DENIED`. A request whose signature fails verification is
   answered `STATUS_ACCESS_DENIED` on its message ID too, and the connection
   stays open (MS-SMB2 3.3.5.2.4): it is never dropped unanswered, which would
-  leave the client waiting out its timeout. A message that fails decryption,
+  leave the client waiting out its timeout. That refusal is signed only for a
+  message ID inside the window and unused, which it consumes: the window is
+  checked first (MS-SMB2 3.3.5.2.3), and a message ID outside it, or already
+  used, closes the connection with nothing signed, since a second message
+  signed under one message ID reuses AES-GMAC's nonce (MS-SMB2 3.1.4.1). A message that fails
+  decryption,
   and a second `NEGOTIATE` on a connection, are not answered: the connection
-  is closed (MS-SMB2 3.3.5.2.1.1, 3.3.5.4; RFC 20 §4.7's `Conn.Close`). There is no per-share signing setting: SMB2 cannot
+  is closed (MS-SMB2 3.3.5.2.1.1, 3.3.5.4; RFC 20 §4.7's `Conn.Close`). An
+  encrypted message's inner headers are checked at unwrap: a malformed one is
+  `STATUS_INVALID_PARAMETER`, encrypted, and the connection stays open; one too
+  short to be a header, misaligned, or, for an unrelated member, naming another
+  session than the transform header closes it (MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6;
+  [RFC 20 §5.5](rfc-20-adapters.md#5.5%20Message%20transforms)). There is no
+  per-share signing setting: SMB2 cannot
   tell a client that one share needs signing and another does not, so a
   per-share requirement could only refuse an unsigned client's every request on
   that share.
@@ -1618,11 +1650,11 @@ and nothing else: every file may have holes, sparse or not, and holes are
   verifier to tell the client. A `FLUSH` through an open whose `LossSeen` is
   below the file's loss sequence is `ErrLost`, answered
   `STATUS_UNEXPECTED_IO_ERROR`, and brings `LossSeen` up to date, so each open
-  that was open across the loss learns of it once, at its next flush, and later
+  that was open across the loss learns of it once, at its next flush that commits, and later
   flushes succeed
   ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
   A durable open that reconnects after such a loss carries the same mark, so
-  its next flush fails too. The loss sequence lives for one process, so a
+  its next flush that commits fails too. The loss sequence lives for one process, so a
   persistent open reinstated after its primary's restart or failover, or
   imported at another installation by a namespace move, has `LossSeen` reset
   to 0
@@ -2642,8 +2674,13 @@ pends ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%2
 `Errors()`) map as: `ErrNotSupported` and `ErrVersion` to `STATUS_NOT_SUPPORTED`;
 `ErrNoSession` to `STATUS_USER_SESSION_DELETED`; `ErrNoTree` to
 `STATUS_NETWORK_NAME_DELETED`; `ErrExpired` to `STATUS_NETWORK_SESSION_EXPIRED`;
-`ErrNotLast` to `STATUS_INTERNAL_ERROR`; `ErrTooManyPending` to
-`STATUS_INSUFFICIENT_RESOURCES`; `ErrDraining` and `ErrMoved` to an interim
+`ErrNotLast`, and `ErrReplyTooBig`, which never reaches SMB since a chain
+sends early rather than refuse, to `STATUS_INTERNAL_ERROR`; `ErrTooManyPending`
+to `STATUS_INSUFFICIENT_RESOURCES`; `ErrDecode` to `STATUS_INVALID_PARAMETER`,
+in a row naming no command or dialect, which RFC 20 §4.7's `NewErrorTable`
+demands of every table; `ErrCancelled` to `STATUS_CANCELLED` (MS-SMB2
+3.3.5.16), in a row naming no command or dialect, which its `NewOpTable`
+demands of a table that holds; `ErrDraining` and `ErrMoved` to an interim
 `STATUS_PENDING` that grants the request's credits, and the credits of the
 chain members after it, which do not run and of which `core` reads only the
 headers (`HoldCodec.Interim`'s `after`), and that no final response ever
@@ -2654,6 +2691,64 @@ replays the lock or the notification once it reconnects, so the application
 sees no `ERROR_OPERATION_ABORTED`. `ErrNotNegotiated`,
 `ErrNoFH` and `ErrTooLong` are settled against MS-SMB2 when the table is
 built; the totality test fails until they have rows.
+
+**A status's body.** A reply whose status is not success is MS-SMB2 2.2.2's
+error response, which the header codec writes after the header, and a command's
+encoder handed no reply writes nothing
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`HeaderCodec.Encode`). The exceptions are the command's encoder's, and the
+header codec leaves them to it. They are the statuses MS-SMB2 3.3.4.4 does not
+count as failures: `STATUS_MORE_PROCESSING_REQUIRED` in a `SESSION_SETUP`
+response; `STATUS_BUFFER_OVERFLOW` in a `QUERY_INFO` response, in an
+`FSCTL_PIPE_TRANSCEIVE`, `FSCTL_PIPE_PEEK` or `FSCTL_DFS_GET_REFERRALS`
+response, and in a `READ` response on a named pipe; `STATUS_INVALID_PARAMETER`
+in an `FSCTL_SRV_COPYCHUNK` or `FSCTL_SRV_COPYCHUNK_WRITE` response returning an
+`SRV_COPYCHUNK_RESPONSE`; `STATUS_NOTIFY_ENUM_DIR` in a `CHANGE_NOTIFY` response.
+They are also `STATUS_BUFFER_OVERFLOW` in an `FSCTL_GET_REPARSE_POINT` response,
+which this server serves (Appendix F) and Windows answers so (MS-SMB2
+Appendix A, note 244), and an error response carrying the command's error data,
+as `STATUS_STOPPED_ON_SYMLINK`'s does ([§12.4](#12.4%20Reparse%20points)): the
+`CREATE` handler returns its reply beside that status, as RFC 20 §4.7 lets an
+NFSv3 failure return its WCC data, and `CREATE`'s encoder writes the whole
+error response, with the symlink error data (MS-SMB2 2.2.2.2.1), or the
+generic one from a nil reply. The
+named-pipe `READ` case never arises here: a pipe `READ` that does not fit is
+answered a short read with `STATUS_SUCCESS` ([§3.3](#3.3%20Sizes%20and%20credits)).
+
+> decision: the symlink error data reaches the wire through the `CREATE`
+> reply, so nothing carries it from the handler to the header codec. A
+> handler returning its reply beside its error is what an NFSv3 failure
+> already does for its WCC data, and the header codec tells the exception
+> from the command and the status, as it does the others, so
+> `HeaderCodec.Encode` is unchanged.
+
+**Malformed headers.** A message shorter than the 64-byte SMB2 header, a header
+whose command code no request carries (MS-SMB2 2.2.1.2), and a
+protocol ID the server does not read (it reads SMB2's, the transform header's,
+[§4.1](#4.1%20Signing%20in), and an SMB1 `NEGOTIATE`'s,
+[§3.1](#3.1%20Dialects)) close the connection with no error response; an
+encrypted message's inner headers close it as RFC 20 §4.1's unwrap row says.
+A request carries one of the codes of 2.2.1.2's table, `NEGOTIATE` to
+`OPLOCK_BREAK`: MS-SMB2 3.3.5.2.6 disconnects for a code outside 2.2.1, and
+the asynchronous header's table (2.2.1.1) adds only
+`SERVER_TO_CLIENT_NOTIFICATION` (0x0013), which "is sent by the server"
+(2.2.44.1). A request carrying it matches no request structure of MS-SMB2
+section 2, which 3.3.5.2.6 fails with `STATUS_INVALID_PARAMETER` and lets the
+server disconnect for, so the server closes on it as on any other code no
+request carries.
+Any other, a `StructureSize`
+other than 64, or a `NextCommand` that is not a multiple of 8, is non-zero and
+below 64, the header's size, or leaves no room for a header before the
+message's end, is answered `STATUS_INVALID_PARAMETER` from the
+row for `ErrDecode` (MS-SMB2 3.3.5.2.6): `NextCommand` is the offset "to the
+start of the subsequent 8-byte aligned SMB2 header" (2.2.1.2), and one below
+64 points inside the header it ends. A `NextCommand` so refused ends the chain
+there, and the connection closes once the replies before it are sent
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
+
+**The fault status**
+([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)) is
+`STATUS_INTERNAL_ERROR`.
 
 **What runs while draining** is each command's `Role`
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)):
@@ -2785,7 +2880,7 @@ name, a SID, a principal or a client address
 | Requirement | Check | Fails without the rule |
 | --- | --- | --- |
 | §3.1 dialects | An SMB1-only and a 2.0.2-only negotiate are refused; a 3.1.1 client gets SHA-512 and its first shared cipher. | an SMB1 fallback left in |
-| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Set up a null session and a guest one: assert each `TREE_CONNECT` to `IPC$` succeeds and to a data share without the guest flag is `STATUS_ACCESS_DENIED`. Set the share's guest flag: assert the guest's `TREE_CONNECT` succeeds unsigned and the null session's is still `STATUS_ACCESS_DENIED`; set the share to encrypt as well: assert the guest refused. Re-authenticate a signed session as guest: assert it succeeds and its trees remain. Send a signed request with one signature byte flipped; assert `STATUS_ACCESS_DENIED` on its message ID and the next request on the connection served. | a per-share signing flag, unsigned requests accepted, a null session or a guest without the share's flag reaching data, a guest on an encrypting share, or a bad signature dropped unanswered |
+| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Replay a message ID already answered, with a bad signature: assert the connection closed and no second signed response for that ID. Set up a null session and a guest one: assert each `TREE_CONNECT` to `IPC$` succeeds and to a data share without the guest flag is `STATUS_ACCESS_DENIED`. Set the share's guest flag: assert the guest's `TREE_CONNECT` succeeds unsigned and the null session's is still `STATUS_ACCESS_DENIED`; set the share to encrypt as well: assert the guest refused. Re-authenticate a signed session as guest: assert it succeeds and its trees remain. Send a signed request with one signature byte flipped; assert `STATUS_ACCESS_DENIED` on its message ID and the next request on the connection served. | a per-share signing flag, unsigned requests accepted, a null session or a guest without the share's flag reaching data, a guest on an encrypting share, or a bad signature dropped unanswered |
 | §4.4 client record | From one machine, sign in as alice and then bob on two connections with one `ClientGuid`: assert both sessions succeed under one client record, and that bob's durable reconnect naming alice's FileId is refused. | a principal kept on the SMB client record, or opens checked against it |
 | §4.1, §5.1 encryption | A 3.1.1 session that does not encrypt connects to an encrypting share: assert the tree connect reply is unencrypted and carries `SMB2_SHAREFLAG_ENCRYPT_DATA`, the next request is accepted only encrypted, and an unencrypted one is `STATUS_ACCESS_DENIED`. A 3.1.1 client sharing no cipher, and a 2.1 client, are refused at tree connect. | a session refused at tree connect for not encrypting, or an unencrypted request accepted on an encrypting share |
 | §4.1 ticket addresses | Sign in with Kerberos tickets carrying no addresses, a NetBIOS address only, the connection's IPv4 address, and another IPv4 address only: assert the first three accepted and the last refused. | addresses ignored, or a NetBIOS entry treated as a restriction |

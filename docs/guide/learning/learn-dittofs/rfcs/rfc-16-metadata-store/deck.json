@@ -1,0 +1,24 @@
+{
+  "rfc": {
+    "number": 16,
+    "title": "the metadata store",
+    "path": "docs/internals/rfcs/rfc-16-metadata-store.md",
+    "commit": "e22639da68030a4729ac63339d097e2a7f6b73b4",
+    "status": "draft"
+  },
+  "terms": {
+    "known": [
+      "share", "node", "installation", "primary", "shard", "journal", "engine",
+      "filesystem-service", "open-state", "handle", "admission", "chunk", "block",
+      "ref", "hole", "namespace", "remote-tier", "snapshot", "gc", "fence-records",
+      "share-tag", "retry-later"
+    ],
+    "new": [
+      "metadata-store", "entity", "metadata-record", "kv",
+      "view", "guard", "delta-fold", "store-group-commit",
+      "store-time", "change-sequence", "key-budget", "value-codec",
+      "format-record", "fold-rule", "principal", "inspect"
+    ],
+    "conflicts": ["metadata-record", "delta-fold", "fold-rule", "value-codec", "namespace", "snapshot"]
+  }
+}

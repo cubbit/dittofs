@@ -1,0 +1,22 @@
+{
+  "rfc": {
+    "number": 17,
+    "title": "the filesystem service",
+    "path": "docs/internals/rfcs/rfc-17-vfs.md",
+    "commit": "b0d540b2db9c5b2358e7f838ef07960fb6f612b0",
+    "status": "draft"
+  },
+  "terms": {
+    "known": [
+      "share", "node", "shard", "primary", "adapter", "handle", "identity", "open-state",
+      "deny-mode", "caching-grant", "lease", "grace-period", "engine", "journal", "write-verifier", "callback"
+    ],
+    "new": [
+      "filesystem-service", "vfs-filesystem", "gateway-node", "admission",
+      "chokepoint", "share-grant", "anonymous-open", "pseudo-filesystem",
+      "retry-later", "wcc", "lock-order", "quota-reservation",
+      "delete-pending", "route-envelope"
+    ],
+    "conflicts": ["filesystem-service", "vfs-filesystem", "share-grant", "handle", "lease", "file-release"]
+  }
+}

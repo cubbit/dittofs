@@ -342,7 +342,7 @@ What goes: 35 of the 92 shell scripts under `test/` and `.github/scripts/`, abou
 
 What stays, because it isn't an entry point:
 - the 42 scenarios, `setup.sh` and `lib/report.sh`;
-- the tests and tools written in shell: the two crash rigs, `edge-test.sh`, the NLM interop driver
+- the tests and tools written in shell: the two crash rigs, the NLM interop driver
   and `pcap-diff.sh`;
 - the three entrypoints of the KDC and AD-DC service containers;
 - the repository checks lint runs: `required-tests.sh`, `new-package-tests.sh`,
@@ -1986,6 +1986,9 @@ counter the kind 2 exports and its conformance suite covers, or from the record 
 and a tunable such as a sampling rate is an input passed through the constructor. A `Null`
 service answers every call at once to measure the adapter's own cost (the allocation gate and
 benchmarks); nothing asserts on its answers, so it is a load, not a double.
+A test-only implementation of an interface the code under test runs, such as a test protocol
+driving a protocol runner, is an input too, provided it answers nothing in place of a
+dependency: errors and delays still come from a kind 2 or 3.
 A hook in the code under test that pauses it at a point, or delivers what it reached there, is
 not a double either: it is set per instance from `export_test.go`, never through a package
 variable, and never answers in place of the code.

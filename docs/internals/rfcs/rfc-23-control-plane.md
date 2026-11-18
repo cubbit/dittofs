@@ -515,7 +515,8 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    this node and device, and into no other ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap), [RFC 28 §2.1](rfc-28-journal-format.md#2.1%20Layout)).
 2. **Open the listeners.** From here the node's health endpoints answer
    (§2.5): live, not ready. The node's API address and the metrics listener
-   open here. Until step 7, every `/api/v1` route but `/api/v1/health` answers
+   open here, the metrics listener unless `metrics.listen` is `off`
+   ([RFC 13 Appendix C](rfc-13-configuration.md#Appendix%20C%3A%20the%20bootstrap%20file)). Until step 7, every `/api/v1` route but `/api/v1/health` answers
    `503` `starting`.
 3. **Register the node**: its version ranges and roles in its node record
    ([RFC 13 §5.5](rfc-13-configuration.md#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)), refused in the same transaction if an active version lies
@@ -601,6 +602,10 @@ before `vfs.Serve` stops (step 4), while other nodes can still reach it:
 2. The sidecars are synced with the empty set, so nothing is advertised that is
    about to stop; then every adapter is `Stop`ped, which drains it
    ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)), all of them concurrently, under one drain deadline.
+   The step's bound is that deadline plus 30 s, the longest a `Stop` waits for
+   its connections' `OnClose`. Then the retrier the adapters hand a failing
+   `Disconnect` to, `Deps.Retry`, stops, dropping what it still holds
+   ([RFC 20 §3.2](rfc-20-adapters.md#3.2%20A%20connection%27s%20lifecycle)).
 3. The management API stops accepting calls, and calls in flight run to their
    answer within the drain deadline; then the operation runner stops, leaving
    each operation it drives at its last durable step and releasing its claim
@@ -712,7 +717,10 @@ one is applied on every node from its commit. A record at position *S* is **appl
 on a node once that node has reconciled its kind through at least *S* and the
 record is in neither its refused set nor its restart-pending set. The API joins
 these reports into each resource's status (§4.1), so "applied on 2 of 3 nodes;
-N3 behind by 7 s" is a read, not an inference.
+N3 behind by 7 s" is a read, not an inference. The "of" counts the registered
+nodes, each node record's status read, so a node that stopped reporting still
+counts and shows as not applied, rather than leaving the count as though it
+were never there.
 
 > ponytail: a node reports three reconciled positions and the exceptions, not
 > one generation per record, so the report stays one small record at 10⁴
@@ -742,7 +750,8 @@ refusing connections.
 **The metrics listener** ([RFC 25 §2.8](rfc-25-observability.md#2.8%20Export)) has an address of its own, separate
 from the API's, a bootstrap fact of the host
 ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)). It is served without authentication, over the API's TLS on
-every address but loopback, and opens at start step 2.
+every address but loopback, and opens at start step 2, unless `metrics.listen` is `off`,
+which opens none ([RFC 13 Appendix C](rfc-13-configuration.md#Appendix%20C%3A%20the%20bootstrap%20file)).
 
 > decision: the metrics listener asks for no token, because a scraper must
 > reach every node and holds no API account. What it
@@ -822,7 +831,11 @@ A share is **serving** on a node once that node has added its storage binding
 and the binding reports serving ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). Create returns at commit,
 before that; the share's status shows each node's state, and `?wait=serving`
 on a `GET` returns when every node that serves it reports serving or a node
-refuses it.
+refuses it. A refusal counts only from a node that has reconciled the share
+list through the share's position, since a node keeps a refusal until it acts
+on a later change, and one from before a fix is stale. Until membership says
+which nodes serve a share, every registered node counts, so a node that has
+reported nothing holds the wait to its bound.
 
 **Quiesce and resume name their expected state.** Each is one
 `SetShareState(from, to)` ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)), and needs no `If-Match`: the
@@ -1048,7 +1061,7 @@ parts in every resource:
   "id": "sh_7Qk2...",
   "generation": 15,
   "spec":   { "name": "builds", "path": "/builds", "namespace": "ns_b4...", "...": "..." },
-  "status": { "state": "enabled", "applied": { "nodes": 3, "of": 3 }, "...": "..." },
+  "status": { "state": "enabled", "namespaces": ["ns_b4..."], "applied": { "nodes": 3, "of": 3 }, "...": "..." },
   "managed": null
 }
 ```
@@ -1060,6 +1073,12 @@ parts in every resource:
   status field is refused, as RFC 13 §2.4 refuses a file that declares a system
   field. A listing page reads the node-status records once and computes
   every row's `applied` from them.
+- **A share's namespace is declared once and moved by a re-home.**
+  `spec.namespace` names the namespace the share writes to: the one it is
+  created in, and after a re-home the one it moved to. It changes only
+  through `:rehome`, never through a write of the share.
+  `status.namespaces` lists every namespace the share holds content in,
+  the old one included while a re-home drains it.
 - **Paths take IDs, never names.** `/shares/sh_7Qk2…`, not `/shares/builds`. A
   name is found by `GET /shares?name=builds`, which answers a list of zero or
   one.
@@ -1201,8 +1220,12 @@ for one that cannot answer).
 settings package, one function per record kind it reads. The function takes the
 value and the current values of the settings a cross-setting rule relates it
 to, read tracked in the write's transaction
-([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). It imports nothing that
-runs. The root hands the API a table of them, keyed by setting prefix, so the
+([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). The one store state
+beyond settings a validator reads is the uid and gid counters, through the
+`ControlPlaneTx` as tracked reads, for identity's refusal of an
+`identity.id_range` no further ID could be drawn from
+([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)).
+It imports nothing that runs. The root hands the API a table of them, keyed by setting prefix, so the
 API imports no component. A prefix with no validator is refused `400`.
 
 **Unknown fields are refused**, in requests as in records
@@ -1253,7 +1276,9 @@ state it expects.
   conflicts, retries, reads the new tag and is refused `412`.
 - **A background writer is not overwritten.** The parts of a resource that a
   component changes — a share's state during a cut or removal, its namespaces
-  during a re-home — are never in a `spec`, so a stale `PUT` cannot revert them.
+  during a re-home — are never written through a `spec`: they are `status`,
+  and the one `spec.namespace` changes only through `:rehome` (§4.1), so a
+  stale `PUT` cannot revert them.
 
 > decision: `If-Match` is required, not optional. Optional, every script omits
 > it, and the lost update of the Start-here example is the default behaviour.
@@ -1266,8 +1291,12 @@ state it expects.
 Every `POST` and every `DELETE` **MUST** carry an `Idempotency-Key`, a client
 value unique per intended action and at most 255 bytes, except the credential
 calls below; one without is refused `428`, and a longer one `400`. The server
-keeps, per (account, key), the digest of the request — method, path, body — and
-the answer it gave, written in the request's own transaction:
+keeps, per (account, key), the digest of the request — method, path with its
+query, body — and the answer it gave, written in the request's own transaction.
+The digest is keyed, never a plain hash: an HMAC-SHA256 under a key derived
+from the installation's signing key, so a body that carries a secret before
+the server seals it leaves nothing in the store a dump could test guesses
+against, and every node computes the same digest:
 
 - a request whose key is recorded with the **same** digest gets the recorded
   answer, status and body included, and changes nothing — `202` and the same
@@ -1280,7 +1309,11 @@ the answer it gave, written in the request's own transaction:
   ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)'s `Write`), so a recorded key with a different digest
   answers `422` even when the request would also fail them; a body that does
   not decode, an unknown field included, is refused before the key is read;
-- records are kept 24 h, then deleted.
+- records are kept 24 h, then deleted;
+- the digest is keyed by the signing key's current version, so a retry first
+  answered before a rotation computes another digest and is refused `422`,
+  never applied twice; a client that must replay across a rotation is the
+  evidence for keeping each version for a record's life.
 
 **A call that carries or issues a credential keeps no idempotency record.**
 Sign-in, refresh, `POST /auth/password`, `:set-password`, API-token creation and
@@ -1411,14 +1444,18 @@ An error is an `application/problem+json` body (RFC 9457) with these fields:
 name, and the API adds only its own: `unauthenticated`, `forbidden`,
 `generation_mismatch`, `precondition_required`, `idempotency_mismatch`,
 `managed`, `operation_running`, `not_cancellable`, `last_admin`, `not_a_copy`,
-`password_change_required`, `throttled`, `starting`, `unavailable`. One table maps every
+`password_change_required`, `throttled`, `starting`, `unavailable`. One component
+error is answered by the API's own code instead of its name: a failed sign-in,
+RFC 18's `ErrLogonFailure`, is `401` `unauthenticated`, so a refused credential
+reads as any other missing or refused token and the body tells no failure
+apart. One table maps every
 error to a status, as [RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol) maps every service error to a wire
 status, and a test proves it total (§12):
 
 | Status | When |
 | --- | --- |
-| `400` | a refused value or unknown field (`ErrInvalid`) |
-| `401` | no valid token |
+| `400` | a refused value or unknown field (`ErrInvalid`); a spelling no principal holds (`ErrUnknownPrincipal`) |
+| `401` | no valid token; a failed sign-in (`ErrLogonFailure`) |
 | `403` | the role does not permit the call; a token that may only change its password |
 | `404` | no such resource, or one the caller may not know exists |
 | `409` | the resource's state refuses it: `ErrStale`, `ErrLocked`, `ErrMoving`, `ErrDelay`, a bound setting, a managed record, an operation running, the last admin, a namespace that is not a copy |
@@ -1635,9 +1672,18 @@ second store.
 - **Transport.** The API **MUST** be served over TLS on every address but
   loopback (`127.0.0.0/8` and `::1`, an IPv4-mapped address read as its IPv4
   address). Its certificate and key are bootstrap facts of the host. It is
-  also served without TLS on a **local socket**, a Unix socket at a path the
-  host's bootstrap names, readable and writable by the server's user only, so
-  a caller on it is a process of the host that holds that user's rights.
+  also served without TLS on a **local socket**, a Unix socket at the path the
+  bootstrap names, `dfs.sock` in the runtime directory by default (`api.socket`,
+  [RFC 13 Appendix C](rfc-13-configuration.md#Appendix%20C%3A%20the%20bootstrap%20file)),
+  readable and writable by the server's user only, in a directory only that user
+  owns, so a caller on it is a process of the host that holds that user's rights.
+  A start refuses a directory the server's user does not own or that group or
+  others can write. On a volume the user does not own but its group can write
+  (a Kubernetes `fsGroup`), the node creates a `0700` subdirectory for the
+  socket ([RFC 13 Appendix C](rfc-13-configuration.md#Appendix%20C%3A%20the%20bootstrap%20file)).
+  A start probes a socket the path names that is already there: it refuses while
+  one answers, so a second node never takes over a live one's socket, and
+  replaces only one that does not.
 
 ### 5.4 The bootstrap administrator and the first password
 
@@ -1732,7 +1778,7 @@ Every management action leaves an **audit record**:
 | Field | Holds |
 | --- | --- |
 | time | store time of the commit |
-| actor | the account's principal and name, the session or token ID; for the break-glass reset, the host; for an operation no call started, the schedule (§4.6) |
+| actor | the account's principal and name, the session or token ID; for the break-glass reset, the host; for an operation no call started, the schedule, written `{"kind": "schedule"}` (§4.6) |
 | node, source | the node that took the request; the client's address |
 | request | method, path, the request ID, the idempotency key |
 | target | the resource's kind and ID, and the generation before and after |
@@ -1745,8 +1791,12 @@ Every management action leaves an **audit record**:
   commit cannot either. An operation's state changes — started, each phase,
   ended — are audited in the transactions that make them.
 - **Refusals are audited too**, in a transaction of their own: every request
-  refused after authentication, and every sign-in whose password is checked,
-  failed or not. A request refused before authentication is counted, not
+  refused after authentication, a read's included, and every sign-in whose
+  password is checked, failed or not. A refusal before the request reaches
+  its resource's handler, a role the route does not admit for one, names the
+  route's resource kind and the path's ID when it parses. A path that names
+  no route is the one exception: it names no resource to record, so it is
+  counted, not recorded. A request refused before authentication is counted, not
   recorded, a sign-in answered `429` included (§5.3), so throttling bounds the
   rate of the records sign-in writes.
 - **The audit is append-only.** No API call edits or deletes a record. Records

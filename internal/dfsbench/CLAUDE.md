@@ -7,7 +7,7 @@ Run playbook for the DittoFS-vs-competitors benchmark. The *design* is in
 Harness = `cmd/bench` (binary `dfsbench`), library here in `internal/dfsbench/`.
 `fio` is the **only** load generator; competitors are mounted FUSE filesystems
 re-exported over kernel NFS/Samba so fio hits them identically. Latest published
-run: `docs/BENCHMARKS.md`.
+run: `docs/internals/dfsbench-results.md`.
 
 ## Where we stand (2026-07-10, `develop@0d79ede1`, NFSv3, 7 systems)
 
@@ -118,6 +118,5 @@ smoke 3s), `--results` (`./bench-results`). One JSON per cell, slug-named.
   design from the native-S3 handicap.
 - **Cold-read barrier runs before EACH read cell** (`managed.go` `coldBarrier`),
   not once — a single evict warms later cells and inflates cold rand-read.
-- Superseded: `bench/results/*.json` + `bench/orchestrator/` are the **old**
-  harness (March 2026, dittofs 47 ops/s). Ignore them; current truth is
-  `internal/dfsbench` + `docs/BENCHMARKS.md`.
+- Current truth is `internal/dfsbench` + `docs/internals/dfsbench-results.md`;
+  the March 2026 harness and its results are gone.

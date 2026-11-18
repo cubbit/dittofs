@@ -80,7 +80,7 @@
   <text x="36" y="332" class="s">A compound crossing from one share into another is re-admitted, and re-resolved, at the crossing.</text>
   <text x="36" y="350" class="s">Root — for MNT, PUTROOTFH and TREE_CONNECT — resolves, admits and authorises too: that is where a client fails early, not where it is</text>
   <text x="36" y="366" class="s">gated, since every later call is admitted again.</text>
-  <text x="36" y="384" class="s">Steps 1–4 may be cached per (share, identity) only with ExportPolicy.Version, the netgroups', ShareList and grant-list</text>
-  <text x="36" y="400" class="s">versions and the principals generation in the key — and the client address when a client rule decided. Step 5 is never cached.</text>
+  <text x="36" y="384" class="s">Steps 1–3 and 5 run on every call. Only step 4's caller may be cached, keyed as RFC 18 §7.1 lists: the proof key, the share's</text>
+  <text x="36" y="400" class="s">policy and grant-list versions, the identity State's serial, step 3's read-only cause, and the client address if a rule decided.</text>
   <text x="16" y="430" class="s">A client removed from a share is refused on its next call, whatever handles it holds.</text>
 </svg>
