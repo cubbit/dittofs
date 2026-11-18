@@ -340,9 +340,6 @@ type heldRun struct {
 	rec *record
 }
 
-// heldRuns returns the held bytes of st as runs sorted by offset.
-func (st *fileState) heldRuns() []heldRun { return st.spans }
-
 func (st *fileState) runs() []run {
 	held, bits := st.cells(), st.bits()
 	offs := slices.Sorted(maps.Keys(held))

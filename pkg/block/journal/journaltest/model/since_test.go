@@ -77,7 +77,7 @@ func TestSinceDiffersJudgesPiecesAsBytes(t *testing.T) {
 		if right {
 			// The right answer, which says nothing, or nearly: one run's
 			// mtime turned.
-			for _, h := range st.heldRuns() {
+			for _, h := range st.spans {
 				if h.rec.ver.Compare(sv.from) > 0 {
 					b := sinceByte{ver: h.rec.ver}
 					if h.rec.kind == kindWrite {
@@ -98,7 +98,7 @@ func TestSinceDiffersJudgesPiecesAsBytes(t *testing.T) {
 		}
 
 		want := sinceDiffersByByte(sv, st)
-		if got := sinceDiffers(sv, st.heldRuns(), st); got != want {
+		if got := sinceDiffers(sv, extentsOf(st.spans, func(h heldRun) extent { return h.ext }), st); got != want {
 			t.Fatalf("draw %d: sinceDiffers = %q, want the byte walk's %q", i, got, want)
 		}
 		if want != "" {

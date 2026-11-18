@@ -243,7 +243,7 @@ func decide(f *file, o *observation) (settled, shownLost map[*record]bool) {
 // records as they were before decide split any of them.
 func classify(f *file, r *record, o *observation, i int) evidence {
 	off := r.ext.Off + int64(i)
-	got, held := o.held[off]
+	got, held := o.heldAt(off)
 	switch {
 	case held && got.ver == r.ver && got.b == r.data[i] && !servedByAnother(f, r, off):
 		return kept
@@ -256,7 +256,7 @@ func classify(f *file, r *record, o *observation, i int) evidence {
 			return hidden
 		}
 		return lost
-	case !held && o.missing[off]:
+	case !held && o.missingAt(off):
 		if removedAbove(f, r, off) {
 			return hidden
 		}
