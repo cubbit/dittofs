@@ -699,7 +699,14 @@ func TestDeferredHolderStaysHeldForTheRunningWorker(t *testing.T) {
 	offsB := plantSealedAt(t, f.seam, f.id, 948, newer)
 	f.rotHeader(t, format.SegmentName(948), int64(offsB[0]))
 
+	ticks := make(chan struct{}, 8)
 	j := f.publicOpen(t, func(s *Settings) { s.HeadroomRecords = 2 })
+	j.core.AfterRetirementTick(func() {
+		select {
+		case ticks <- struct{}{}:
+		default:
+		}
+	})
 	if defss, derr := durability.DeferredFor(f.dir, f.id); derr != nil || len(defss[948]) != 1 {
 		t.Fatalf("the deferred registry answers %+v (err %v), want the one loss against segment 948", defss, derr)
 	}
@@ -708,15 +715,23 @@ func TestDeferredHolderStaysHeldForTheRunningWorker(t *testing.T) {
 	if !j.core.Liveness().Held(948) {
 		t.Fatalf("the tracker answers segment 948 not held while its deferred loss stands, want held: the running worker would unlink it and a reopen would serve the older bytes over the synced write")
 	}
-	// The worker's own decision: its tick scan offers a not-held segment and
-	// the next tick retires it, so a holder the worker would take is gone
-	// within about two ticks. No clock reaches the worker, so the bounded
-	// wait is the assertion: it runs past those ticks and the segment must
-	// still be listed.
-	for deadline := time.Now().Add(3500 * time.Millisecond); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if !slices.Contains(f.segmentFileNames(t), format.SegmentName(948)) {
-			t.Fatalf("the running worker unlinked the deferred holder 948, want it standing while its deferral does")
+	// The worker's own decision: its first tick offers a not-held segment and
+	// the next tick, a full tick later, retires it. The test waits on the
+	// worker's tick events for three ticks, then closes the journal, which
+	// joins the worker and any retirement it handed over, and asserts the
+	// holder is still listed: a holder the worker would take is gone by then.
+	for range 3 {
+		select {
+		case <-ticks:
+		case <-time.After(30 * time.Second): // backstop only: a tick comes each second
+			t.Fatalf("the retirement worker completed no tick")
 		}
+	}
+	if err := j.Close(); err != nil {
+		t.Fatalf("close the journal: %v", err)
+	}
+	if !slices.Contains(f.segmentFileNames(t), format.SegmentName(948)) {
+		t.Fatalf("the running worker unlinked the deferred holder 948, want it standing while its deferral does")
 	}
 }
 

@@ -917,6 +917,11 @@ func (c *Core) retiredSegment(id core.SegmentID) {
 	c.cap.RetiredEverySeeded()
 }
 
+// AfterRetirementTick makes the retirement worker call fn after each tick's
+// scan and pass. It has no production caller: a test waits on the worker's
+// own events through it, where the worker's real timer allows no clock.
+func (c *Core) AfterRetirementTick(fn func()) { c.retiring.AfterTick(fn) }
+
 // WaitSpares blocks until the pool has readied every spare the open's own
 // targets name, or reports the pool's word for why it stopped filling. It is
 // the core half of the hook Open hands its caller's SparesReady callback: the
