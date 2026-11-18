@@ -53,14 +53,15 @@ type Conn struct {
 // passes it through Security.Wrap under h first, so a lease break on an
 // encrypting session is sealed. before is the HoldCodec.Key of the request
 // whose reply it must precede, 0 for none; core keys every request of a table
-// that Holds that way. Once the connection is closed Send writes nothing: it
-// drops msg and returns net.ErrClosed, as the writer's out does once stopped.
+// that Holds that way. Once Close has run, or before the connection's
+// pipeline exists (a Send inside NewConn), Send writes nothing: it drops msg
+// and returns net.ErrClosed, as the writer's out does from the close on.
 //
 // decision: Send takes msg's reference whatever it returns, a Wrap refusal
 // included, as the writer's out does, so its caller never releases it.
 // Overturned if RFC 20 section 4.7 leaves a refused message with its caller.
 func (c *Conn) Send(h Header, msg *resources.Buf, before uint64) error {
-	if c.p.ctx.Err() != nil {
+	if c.p == nil || c.p.ctx.Err() != nil {
 		msg.Release()
 		return net.ErrClosed
 	}
@@ -203,13 +204,14 @@ func (c *Conn) Settings() settings.Settings { return c.snap }
 // closed connection (cancel called, replies dropped), and OnClose runs. err is
 // logged at the debug level, named with the connection's remote address.
 //
-// decision: Close records the error, cancels the connection's context and then
-// stops the reader's read, in that order, so a reader re-arming its deadline
-// either sees the ended context or has its new deadline overwritten by the
-// stop; it then ends the pipeline and returns, so a close from a handler or
-// from the reader never waits on itself. The reader's goroutine runs the rest
-// of the teardown once its loop ends. Overturned if the teardown needs its own
-// goroutine.
+// decision: Close records the error, cancels the connection's context, ends
+// what the writer takes, so a Send or a reply past its closed check is
+// dropped, and then stops the reader's read, in that order, so a reader
+// re-arming its deadline either sees the ended context or has its new
+// deadline overwritten by the stop; it then ends the pipeline and returns, so
+// a close from a handler or from the reader never waits on itself. The
+// reader's goroutine runs the rest of the teardown once its loop ends.
+// Overturned if the teardown needs its own goroutine.
 func (c *Conn) Close(err error) {
 	if err == nil {
 		err = errConnClosed
@@ -220,6 +222,9 @@ func (c *Conn) Close(err error) {
 	c.err.Store(&err)
 	c.closedAt.CompareAndSwap(0, c.sh.clock.Now().UnixNano())
 	c.cancel()
+	if c.w != nil {
+		c.w.refuse()
+	}
 	_ = c.nc.SetReadDeadline(time.Now().Add(-time.Second))
 	if c.p != nil {
 		c.p.close()

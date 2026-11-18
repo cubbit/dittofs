@@ -47,7 +47,7 @@ type writer struct {
 	held     int // messages out took and has not yet written or released
 	wake     chan struct{}
 	room     chan struct{} // closed while the messages held are below the bound
-	closed   bool
+	closed   bool          // out takes nothing more: the connection closed, or the writer stopped or failed
 	stopped  chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
@@ -122,6 +122,15 @@ func (w *writer) pause() (<-chan struct{}, bool) {
 	return w.room, true
 }
 
+// refuse ends what out takes, the connection's close calls it: a message
+// handed after that is dropped, while run still sends what was queued before
+// it, until the teardown's stop.
+func (w *writer) refuse() {
+	w.mu.Lock()
+	w.closed = true
+	w.mu.Unlock()
+}
+
 // stop ends the writer: what is queued is released unsent. The connection's
 // teardown calls it last.
 func (w *writer) stop() {
@@ -184,7 +193,7 @@ func (w *writer) queued() bool {
 // those behind it while their bodies stay within the record cap, so
 // write_timeout bounds no more bytes than the largest single record's. It arms
 // the write deadline for them under the mutex: a stop that set a deadline in
-// the past is never overwritten, because a closed writer takes nothing.
+// the past is never overwritten, because the stop empties the queue under it.
 func (w *writer) take() []queued {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -200,7 +209,7 @@ func (w *writer) take() []queued {
 	k := copy(w.queue, w.queue[n:])
 	clear(w.queue[k:])
 	w.queue = w.queue[:k]
-	if !w.closed && w.timeout > 0 {
+	if w.timeout > 0 {
 		_ = w.nc.SetWriteDeadline(time.Now().Add(w.timeout))
 	}
 	return w.batch
@@ -246,8 +255,8 @@ func (w *writer) flush() error {
 }
 
 // fail ends the writer on a failed or late write: it releases what is queued
-// and reports whether the connection's close is owed, which it is unless a
-// stop came first.
+// and reports whether the connection's close is owed, which it is unless the
+// close or a stop came first.
 func (w *writer) fail() bool {
 	w.mu.Lock()
 	q := w.queue
