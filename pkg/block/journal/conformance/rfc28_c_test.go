@@ -960,10 +960,17 @@ func TestRFC28C_ASealMarkerOnlyTheCacheHolds(t *testing.T) {
 	if got := f.Seam.CallsFor(kit.OpReadDirect, name); got < 1 {
 		t.Fatalf("the reopen read %s past the cache %d times, want at least once: a seal marker no successor names is proven on the device", name, got)
 	}
-	// The unsealed source ends: the proof re-answers its fate once the
-	// marker fails on the device, the emptying copies its surviving record
-	// out and unlinks it, so the journal's segments answer no row for it.
-	segmentGone(t, f, seg, "the unsealed ended source emptied and unlinked after the reopen whose marker did not verify on the device")
+	// The marker that failed on the device is part of the segment's torn
+	// tail: the segment is not ended and not emptied, the open cuts the tail
+	// and seals it again, and it stands in the directory until a seal of its
+	// own is durable. Its record reads back through that segment.
+	names, lerr := f.Seam.List()
+	if lerr != nil {
+		t.Fatalf("list the journal's directory: %v", lerr)
+	}
+	if !slices.Contains(names, name) {
+		t.Fatalf("segment %d is gone from the directory after the reopen, want it standing: its marker is a torn tail the open cuts and seals again, never an ended segment", seg)
+	}
 	if bytes.Contains(durable(t, f, name), []byte("DJS1")) {
 		t.Fatalf("the reopen made the marker of segment %d durable through a sync that wrote nothing", seg)
 	}
