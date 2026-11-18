@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
+	"github.com/cubbit/dittofs/pkg/resources"
 )
 
 // Server is one adapter: its listeners, connections, drain and health, for
@@ -33,17 +34,27 @@ type Server struct {
 	// the server is shared.
 	settings atomic.Pointer[settings.Settings] // the protocol's whole shape, as New or the last Reconfigure gave it
 	addrs    []netip.Addr                      // the settings' addresses, the server's own copy: the caller's settings may change under it
+	d        adapter.Deps
+	recv     *resources.BufPool // the receive pool every record is charged to
+	reply    *resources.BufPool // the reply pool every reply is taken from
+	sh       *shared            // the pools, metrics, clock and logger every connection shares
 
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	state adapter.State
-	bound []bound // every socket open now, by listener, then by address in the settings' order
+	bound []*bound           // every socket open now, by listener, then by address in the settings' order
+	conns map[*Conn]struct{} // every connection open now
 }
 
-// bound is one listener's socket on one address.
+// bound is one listener's socket on one address, with the state its accept
+// loop and the server's health share.
 type bound struct {
-	l    *Listener
-	addr netip.AddrPort // the address as the settings name it, at the port the socket bound
-	ln   net.Listener
+	l            *Listener
+	addr         netip.AddrPort // the address as the settings name it, at the port the socket bound
+	ln           net.Listener   // the socket itself; its close ends the accept loop
+	stopped      chan struct{}  // closed with the socket, so a backoff's sleep ends too
+	loopDone     chan struct{}  // closed once the accept loop ended
+	firstFailure atomic.Int64   // the streak's first Accept failure, 0 while the listener is accepting
+	lastFailure  atomic.Int64   // the streak's last one, from which Health derives the lost listener
 }
 
 var _ adapter.Adapter = (*Server)(nil)
@@ -91,6 +102,9 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 	if err := checkListeners(ls); err != nil {
 		return nil, fmt.Errorf("core: new server: %w", err)
 	}
+	if d.Budgets == nil {
+		return nil, fmt.Errorf("core: new server: %w", errNoBudgets)
+	}
 	// A listener whose stages accept would refuse shows its wiring fault
 	// here, at configured, rather than at its first request (RFC 20 section
 	// 3.1): NewConn(nil) is the one call that reads no connection, and
@@ -101,7 +115,10 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 			return nil, fmt.Errorf("core: new server: listener %d %q: %w", i, ls[i].Services, err)
 		}
 	}
-	srv := &Server{ls: ls, listen: (&net.ListenConfig{}).Listen}
+	srv := &Server{ls: ls, d: d, conns: map[*Conn]struct{}{}, listen: (&net.ListenConfig{}).Listen}
+	srv.recv = resources.NewBufPool(d.Budgets.Receive)
+	srv.reply = resources.NewBufPool(d.Budgets.Reply)
+	srv.sh = newShared(d, srv.reply)
 	// The server owns the Addrs alone: srv.addrs is its own copy, and Start
 	// binds that. The rest of the settings is the snapshot as New handed it,
 	// shared with the caller where the settings sit behind a pointer - the
@@ -196,9 +213,18 @@ func (s *Server) Start(ctx context.Context) error {
 			s.closeBound()
 			return fmt.Errorf("core: start: %w", err)
 		}
+		for j := range opened {
+			opened[j].stopped = make(chan struct{})
+			opened[j].loopDone = make(chan struct{})
+		}
 		s.bound = append(s.bound, opened...)
 	}
+	// The loops run only over sockets Start opened, so the all-or-none bind
+	// above is not undone by a later failure.
 	s.state = adapter.StateServing
+	for _, b := range s.bound {
+		go s.acceptLoop(b)
+	}
 	return nil
 }
 
@@ -217,9 +243,9 @@ const portRepicks = 2
 // freedom this process does not own. A port the node configured that is
 // taken is a real refusal, never repicked. Withdraw the repicks when a Start
 // can ask for one port on every family at once.
-func (s *Server) bindEach(ctx context.Context, i int) ([]bound, error) {
+func (s *Server) bindEach(ctx context.Context, i int) ([]*bound, error) {
 	for repick := 0; ; repick++ {
-		opened := make([]bound, 0, len(s.addrs))
+		opened := make([]*bound, 0, len(s.addrs))
 		port := s.ls[i].Port
 		for j, a := range s.addrs {
 			// One listener is one port: a port the system picked is resolved
@@ -260,14 +286,14 @@ func (s *Server) bindEach(ctx context.Context, i int) ([]bound, error) {
 // reports [::] and collides with a second listener on :: at the same port; on
 // tcp6 it sets IPV6_V6ONLY. Withdraw it if a deployment needs one dual-stack
 // socket per wildcard.
-func bind(ctx context.Context, listen func(context.Context, string, string) (net.Listener, error), l *Listener, a netip.Addr, port uint16) (bound, error) {
+func bind(ctx context.Context, listen func(context.Context, string, string) (net.Listener, error), l *Listener, a netip.Addr, port uint16) (*bound, error) {
 	ip, network := a.Unmap(), "tcp6"
 	if ip.Is4() {
 		network = "tcp4"
 	}
 	ln, err := listen(ctx, network, netip.AddrPortFrom(ip, port).String())
 	if err != nil {
-		return bound{}, fmt.Errorf("listener %q on %s: %w", l.Services, netip.AddrPortFrom(a, port), err)
+		return nil, fmt.Errorf("listener %q on %s: %w", l.Services, netip.AddrPortFrom(a, port), err)
 	}
 	ta, ok := ln.Addr().(*net.TCPAddr)
 	if !ok {
@@ -275,16 +301,18 @@ func bind(ctx context.Context, listen func(context.Context, string, string) (net
 		// address the settings gave, so it is closed and refused, not read
 		// for a port that is not there.
 		_ = ln.Close()
-		return bound{}, fmt.Errorf("listener %q on %s: the opener answered a %T, not a TCP listener", l.Services, netip.AddrPortFrom(a, port), ln.Addr())
+		return nil, fmt.Errorf("listener %q on %s: the opener answered a %T, not a TCP listener", l.Services, netip.AddrPortFrom(a, port), ln.Addr())
 	}
-	bound := bound{l: l, ln: ln}
-	bound.addr = netip.AddrPortFrom(a, ta.AddrPort().Port())
-	return bound, nil
+	b := &bound{l: l, ln: ln}
+	b.addr = netip.AddrPortFrom(a, ta.AddrPort().Port())
+	return b, nil
 }
 
-// closeBound closes every socket open now. The caller holds s.mu.
+// closeBound closes every socket open now, ending its accept loop, in its
+// Accept or in its backoff's sleep. The caller holds s.mu.
 func (s *Server) closeBound() {
 	for _, b := range s.bound {
+		close(b.stopped)
 		_ = b.ln.Close()
 	}
 	s.bound = nil
@@ -297,14 +325,69 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 	return fmt.Errorf("core: reconfigure: %w", errors.ErrUnsupported)
 }
 
-// Stop closes every listener and moves the server to stopped, from any
-// state; a second call returns nil.
+// Stop closes every listener, closes every connection and moves the server to
+// stopped, from any state. It moves to draining under the first lock, before
+// it waits its loops, so a context that ends mid-stop leaves every listener
+// closed, register refusing (and Health reporting draining, one of the four
+// states, RFC 20 section 3.1) and the next Stop closing every connection.
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.state = adapter.StateDraining
+	looped := slices.Clone(s.bound)
 	s.closeBound()
+	s.mu.Unlock()
+	if err := s.stopOnLoops(looped, ctx); err != nil {
+		return err
+	}
+	// The loops have ended, so not one more socket can be accepted: every
+	// connection the registry will ever hold while this server stops is in
+	// this snapshot, and a socket its loop was handing to serveConn as it
+	// ended was refused at its registration and torn down on that loop,
+	// OnClose included, before the loop ended.
+	s.mu.Lock()
 	s.state = adapter.StateStopped
+	conns := make([]*Conn, 0, len(s.conns))
+	for c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
+	for _, c := range conns {
+		c.Close(errStop)
+	}
+	for _, c := range conns {
+		select {
+		case <-c.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
+}
+
+// errStop is a connection's close, the server stopping.
+var errStop = errors.New("core: the server stopped")
+
+// errNoBudgets is a server built without the budgets its pools need.
+var errNoBudgets = errors.New("no budgets")
+
+// register adds a connection to the registry, and reports false when the
+// server is not serving: such a connection is closed at once, before it reads,
+// so Stop's snapshot is never missed.
+func (s *Server) register(c *Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != adapter.StateServing {
+		return false
+	}
+	s.conns[c] = struct{}{}
+	return true
+}
+
+// unregister drops a connection from the registry once its teardown ended.
+func (s *Server) unregister(c *Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.conns, c)
 }
 
 // Addrs is every address each listener is bound on now, by service and
@@ -327,15 +410,37 @@ func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort {
 	return m
 }
 
-// Health is the server's state; it raises no condition, so it is ready while
-// serving.
+// Health is the server's state with the conditions its sockets' own evidence
+// derives: a lost listener raises adapter_listener_lost until its next
+// accepted connection. The server reports no other condition.
 func (s *Server) Health() adapter.Health {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return adapter.Health{State: s.state}
+	h := adapter.Health{State: s.state}
+	now := s.sh.clock.Now()
+	for _, b := range s.bound {
+		if b.lost(now) {
+			h.Conditions = []string{conditionListenerLost}
+			break
+		}
+	}
+	return h
 }
 
-// Connections lists the connections open now.
+// Connections lists the connections open now, as the API's client list reads
+// them; a connection whose protocol names no session reports none.
 func (s *Server) Connections() iter.Seq[adapter.ConnInfo] {
-	panic("not implemented")
+	s.mu.RLock()
+	infos := make([]adapter.ConnInfo, 0, len(s.conns))
+	for c := range s.conns {
+		infos = append(infos, adapter.ConnInfo{Protocol: c.protocol(), Remote: c.remoteAddr, Since: c.since})
+	}
+	s.mu.RUnlock()
+	return func(yield func(adapter.ConnInfo) bool) {
+		for _, info := range infos {
+			if !yield(info) {
+				return
+			}
+		}
+	}
 }

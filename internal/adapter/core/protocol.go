@@ -22,7 +22,10 @@ type Protocol interface {
 	// on and read their callbacks from. NewServer also calls it with a nil
 	// c, at configure, to read the stages a listener's wiring would answer
 	// with (RFC 20 section 3.1): an implementation dereferences nothing at
-	// that call.
+	// that call. It calls neither Established nor Keep: each answers a
+	// request (RFC 20 section 6.4: SMB's first authenticated session, NFS's
+	// first routed call), and the connection's pipeline and reader exist only
+	// once NewConn returns.
 	NewConn(c *Conn) Stages
 }
 

@@ -2,10 +2,6 @@
 # the epic expected to turn it green. A test that starts to pass fails the run: remove its entry
 # in the change that turned it green. Each entry's message is the failure it is known by: a test
 # failing for any other reason is unexpected.
-- test: TestConformanceEchoEndToEnd
-  message: 'testproto: receive: read tcp'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epics 4 and 5: one Echo accepted over loopback by a core server on testproto is answered, and the server leaks nothing when it stops. The server binds, but nothing accepts yet, so the reply''s read stops at its 10 s backstop (i/o timeout); accept is epic 4''s, and whichever epic moves the first failure updates this message.'
-  issue: '#3966'
+# None: the accept loop answers the one specification this list carried. A
+# failing test returns as an entry, one per test, naming the epic expected to
+# turn it green.

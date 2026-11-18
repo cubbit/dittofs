@@ -257,6 +257,8 @@ type link struct {
 	record int               // the protocol's record cap, Framer.MaxRecord's bytes: a chain's record and a compound's reply stay within it
 	out    func(msg *resources.Buf, key, before uint64) error
 	close  func(err error)
+	idle   func() // called at each moment nothing runs any more
+	turn   func() // called when a request starts or ends, under the pipeline's mutex, so a connection's idle deadline knows its arm was superseded
 }
 
 // The stages a protocol leaves nil, filled once at accept so the pipeline
@@ -1316,18 +1318,41 @@ func (p *pipeline) close() {
 }
 
 // add counts a request, a hold, a park or a status wait starting; done, one
-// ending.
+// ending. Each also reports the turn to the link, under the same mutex, so a
+// connection's idle deadline learns its arm was superseded before the quiet is
+// visible.
 func (p *pipeline) add() {
 	p.mu.Lock()
 	p.runs++
+	if p.l.turn != nil {
+		p.l.turn()
+	}
 	p.mu.Unlock()
 }
 
 func (p *pipeline) done() {
 	p.mu.Lock()
-	if p.runs--; p.runs == 0 && p.idle != nil {
-		close(p.idle)
-		p.idle = nil
+	quiet := false
+	if p.runs--; p.runs == 0 {
+		if p.idle != nil {
+			close(p.idle)
+			p.idle = nil
+		}
+		quiet = true
+	}
+	if p.l.turn != nil {
+		p.l.turn()
 	}
 	p.mu.Unlock()
+	if quiet && p.l.idle != nil {
+		p.l.idle()
+	}
+}
+
+// quiet reports whether nothing runs: no request and no status wait, the
+// moment wait returns at once.
+func (p *pipeline) quiet() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.runs == 0
 }

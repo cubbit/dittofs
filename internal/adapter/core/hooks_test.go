@@ -9,6 +9,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -288,4 +289,97 @@ func Judge(row *Op, inv Invocation, rest []byte, v Version, r *Request) (whole b
 // injects it, without any other server's bind meeting the same hook.
 func SetListen(s *Server, f func(ctx context.Context, network, addr string) (net.Listener, error)) {
 	s.listen = f
+}
+
+// The connection and accept seams: what the connection's and the accept
+// loop's tests reach.
+
+// ServeConn hands the server a socket, which its accept loop does in
+// production, and returns the connection it serves on it.
+func ServeConn(s *Server, nc net.Conn, l *Listener) *Conn { return s.serveConn(nc, l, nil) }
+
+// ServeConnCharged hands the server a socket with the connection-state charge
+// its accept loop would take, and returns the connection.
+func ServeConnCharged(s *Server, nc net.Conn, l *Listener, charge *resources.Reservation) *Conn {
+	return s.serveConn(nc, l, charge)
+}
+
+// SetServerSettings replaces the server's current snapshot, as Reconfigure
+// does once it lands, so a test can tell a connection's own from it.
+func SetServerSettings(s *Server, snap settings.Settings) { s.settings.Store(&snap) }
+
+// SetServerClock replaces the server's shared clock with a test's.
+func SetServerClock(s *Server, c Clock) { s.sh.clock = c }
+
+// Serving moves a server to serving, as Start does once its listeners are
+// bound: a test hands the server sockets itself and needs no listener.
+func Serving(s *Server) {
+	s.mu.Lock()
+	s.state = adapter.StateServing
+	s.mu.Unlock()
+}
+
+// ConnContext is a connection's context, for a test that proves a close ends
+// it.
+func ConnContext(c *Conn) context.Context { return c.ctx }
+
+// ConnDone is a connection's teardown end, for a test that waits for it.
+func ConnDone(c *Conn) <-chan struct{} { return c.done }
+
+// ConnPipeline is a connection's pipeline, for a test that reads what runs.
+func ConnPipeline(c *Conn) *Pipeline { return c.p }
+
+// ConnSettings is a connection's snapshot, as Settings reports it.
+func ConnSettings(c *Conn) settings.Settings { return c.Settings() }
+
+// Kept is how many Keeps a connection holds unreleased.
+func Kept(c *Conn) int32 { return c.kept.Load() }
+
+// ConnCharge is what the accept loop charges a connection, its fixed cost to
+// the connection-state budget (RFC 24 section 4.4).
+func ConnCharge() int64 { return connCharge }
+
+// Runs is how many requests or status waits the pipeline has running.
+func Runs(p *Pipeline) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.runs
+}
+
+// AddBound appends a bound socket over ln to a serving server and starts its
+// accept loop: the seam a test's listener, a failing one say, runs on. The
+// socket closes and its loop ends with Stop, as Start's own do, and loopDone
+// reports the loop's end.
+func AddBound(s *Server, l *Listener, ln net.Listener) (loopDone <-chan struct{}) {
+	b := &bound{l: l, addr: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), 0), ln: ln, stopped: make(chan struct{})}
+	b.loopDone = make(chan struct{})
+	s.mu.Lock()
+	s.bound = append(s.bound, b)
+	s.mu.Unlock()
+	go s.acceptLoop(b)
+	return b.loopDone
+}
+
+// WatchIdleArms hands c's idle arms to the test from now on, and returns
+// what reports whether the deadline armed last is the current one, armed
+// since the connection's last request started or ended: a test waits on it
+// before advancing, so its advance lands after that arm and no earlier one,
+// however many arms a step makes.
+func WatchIdleArms(c *Conn) (current func() bool) {
+	var last uint64 // under timersMu, as the hook runs
+	c.timersMu.Lock()
+	c.onIdleArm = func(g uint64) { last = g }
+	c.timersMu.Unlock()
+	return func() bool {
+		c.timersMu.Lock()
+		defer c.timersMu.Unlock()
+		return c.idleT != nil && last == c.idleGen.Load()
+	}
+}
+
+// RecordHeld reports whether the connection's reader still holds bytes of a
+// record: a test waits it out before advancing, so a deadline firing into the
+// record's tail closes instead of re-arming.
+func RecordHeld(c *Conn) bool {
+	return c.rd.holding()
 }

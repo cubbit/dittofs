@@ -96,6 +96,20 @@ func (c *manualClock) pending() int {
 	return len(c.timers)
 }
 
+// nextIn is how far the nearest armed timer sits from now: the window a test's
+// next Advance has to cover.
+func (c *manualClock) nextIn() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var next time.Duration
+	for _, tm := range c.timers {
+		if d := tm.at.Sub(c.now); next == 0 || d < next {
+			next = d
+		}
+	}
+	return next
+}
+
 // The call's deadline is on the server's clock: 30 s from the attempt's
 // start the context carries, or the hold's deadline where that is sooner,
 // or 30 s from the clock's now with no start. The context is done when the

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/resources"
@@ -40,6 +41,7 @@ type reader struct {
 	off     int
 	n       int
 	armed   bool
+	held    atomic.Bool // bytes of a record are in hand, or one is read and not yet served; the idle deadline rests on it (RFC 20 section 6.4)
 }
 
 // newReader wraps a connection's bytes: f frames them, recv reserves each
@@ -75,6 +77,7 @@ func (r *reader) Read(ctx context.Context) (*resources.Buf, error) {
 		return nil, fmt.Errorf("%w: %w", errFrame, err)
 	}
 	r.off += r.framer.HeaderLen()
+	r.held.Store(true) // a record is cut: its body may still be outstanding
 
 	reserve, frags := n, 1
 	if !last {
@@ -125,8 +128,18 @@ func (r *reader) Read(ctx context.Context) (*resources.Buf, error) {
 	}
 	rec.B = rec.B[:total]
 	r.disarm()
+	// The record is whole and in hand, not yet served: held counts it until
+	// the loop has handed it to the pipeline, so the whole of serve, a
+	// request's decode and admission included, runs under the idle deadline's
+	// rest.
+	r.held.Store(true)
 	return rec, nil
 }
+
+// served reports what the reader holds once the record it handed out is with
+// the pipeline: the records left unread in the buffer, and nothing else, so a
+// reader waiting at the writer's bound holds nothing.
+func (r *reader) served() { r.held.Store(r.off < r.n) }
 
 // header returns the next fragment's header, reading until it is whole.
 func (r *reader) header(ctx context.Context) ([]byte, error) {
@@ -177,6 +190,7 @@ func (r *reader) fill(ctx context.Context) error {
 	}
 	m, err := r.nc.Read(r.buf[r.n:])
 	r.n += m
+	r.held.Store(r.n > r.off)
 	if m > 0 && !r.armed {
 		if aerr := r.arm(ctx); aerr != nil {
 			return aerr
@@ -199,6 +213,12 @@ func (r *reader) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	return r.recv.Get(ctx, r.key, n)
 }
 
+// holding reports whether bytes of a record are in hand: one partly read, one
+// read whole and not yet served, or ones left unread in the buffer. The idle
+// deadline rests on it: a connection mid-record is never idle (RFC 20 section
+// 6.4).
+func (r *reader) holding() bool { return r.held.Load() }
+
 // arm starts the frame deadline, and stops the reader at once if its context
 // has ended: a connection's close cancels the context before it sets a deadline
 // in the past, so the stop is never overwritten by an arm.
@@ -217,5 +237,42 @@ func (r *reader) disarm() {
 	if r.armed {
 		_ = r.nc.SetReadDeadline(time.Time{})
 		r.armed = false
+	}
+}
+
+// readLoop cuts the connection's records and hands each to the pipeline: it
+// waits while the writer is at its bound, holding no record, then cuts one and
+// serves it. Its end runs the connection's teardown (RFC 20 sections 6.1 and
+// 6.2).
+func (c *Conn) readLoop() {
+	defer c.teardown()
+	for {
+		if err := c.waitForRoom(); err != nil {
+			return
+		}
+		rec, err := c.rd.Read(c.ctx)
+		if err != nil {
+			c.Close(err)
+			return
+		}
+		c.p.serve(rec)
+		// The record is served: only the buffer's leftovers are held now.
+		c.rd.served()
+	}
+}
+
+// waitForRoom waits while the writer's queue is at its bound, so a client that
+// reads nothing stops being read rather than growing the queue (RFC 20 section
+// 6.2, R32).
+func (c *Conn) waitForRoom() error {
+	room, at := c.w.pause()
+	if !at {
+		return nil
+	}
+	select {
+	case <-room:
+		return nil
+	case <-c.ctx.Done():
+		return c.ctx.Err()
 	}
 }
