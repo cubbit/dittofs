@@ -493,9 +493,11 @@ It verifies:
   as `DITTOFS$`, or as an account an online join just created, validates alice's
   NTLMv2 logon and returns her SID and groups, across a credential reload and a
   machine password rotation.
+- **NETLOGON over TCP** (`TestNetlogonTCPSchannel`): NETLOGON on
+  `ncacn_ip_tcp` with a schannel-sealed binding and no SMB session.
 
-The PAC tests replay PACs captured from this fixture. To regenerate them, with
-the keys that verify them, run
+Unit tests that need a real PAC can replay captures from this fixture. To
+capture them, with the keys that verify them, run
 
 ```bash
 test/integration/ad-dc/capture-pacs.sh <output dir>
