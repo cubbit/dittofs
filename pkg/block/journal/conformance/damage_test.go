@@ -75,7 +75,7 @@ func (d *driven) write(s, i int, off int64, p []byte) rec {
 
 	h, id := d.f.Share(s), journaltest.File(i)
 	var w wrote
-	w.err = journaltest.RetrySpare(func() error {
+	w.err = d.f.RetrySpare(func() error {
 		w.v, w.err = h.WriteAt(d.t.Context(), id, off, p, 0)
 		return w.err
 	})

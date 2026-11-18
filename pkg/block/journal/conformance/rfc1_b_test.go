@@ -1131,7 +1131,7 @@ func TestRFC1B_HeadroomIsAllocated(t *testing.T) {
 	hs := []*journal.Handle{f.Share(0), f.Share(1)}
 	refused := false
 	for i := range int64(2 * journaltest.FixtureMaxBytes / (256 << 10)) {
-		_, err := tryWrite(t, hs[i%2], journaltest.File(5+int(i%2)), i/2*256<<10, pattern(fmt.Sprint("new", i), 256<<10))
+		_, err := tryWriteIn(t, f, hs[i%2], journaltest.File(5+int(i%2)), i/2*256<<10, pattern(fmt.Sprint("new", i), 256<<10))
 		if err != nil {
 			wantENOSPC(t, err, "a content write on a full device")
 			refused = true

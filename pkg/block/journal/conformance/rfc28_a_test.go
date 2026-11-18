@@ -36,7 +36,7 @@ func writeSynced(t *testing.T, f *journaltest.Fixture, s, i int, off int64, size
 
 	id := journaltest.File(i)
 	p := pattern(fmtTag("s", s, i, off), size)
-	v := write(t, f.Share(s), id, off, p)
+	v := writeIn(t, f, s, id, off, p)
 	syncFiles(t, f.Share(s), id)
 
 	return rec{s, id, journal.Extent{Off: off, Len: int64(size)}, v, p}

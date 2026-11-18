@@ -37,7 +37,7 @@ func fillSegment(t *testing.T, f *journaltest.Fixture, s, i int, size int) ([]re
 	for n := 0; n <= 2*journaltest.FixtureSegmentCap/size; n++ {
 		off := int64(n) * int64(size)
 		p := pattern(fmtTag("r", s, i, off), size)
-		v := write(t, f.Share(s), id, off, p)
+		v := writeIn(t, f, s, id, off, p)
 		seg := entryAt(t, f, id, off).Location.Segment
 		if n == 0 {
 			first = seg
@@ -356,7 +356,7 @@ func writeRec(t *testing.T, f *journaltest.Fixture, s, i int, off int64, size in
 
 	id := journaltest.File(i)
 	p := pattern(fmtTag("u", s, i, off), size)
-	v := write(t, f.Share(s), id, off, p)
+	v := writeIn(t, f, s, id, off, p)
 
 	return rec{s, id, journal.Extent{Off: off, Len: int64(size)}, v, p}
 }

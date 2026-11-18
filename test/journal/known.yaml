@@ -758,7 +758,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'write 65536 bytes at 0: journaltest: 4194304 calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
+  message: 'write 65536 bytes at 0: journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
 
 - test: TestRFC28C_RetiredSegmentsAreRecycled
   status: fail
@@ -766,7 +766,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the spare pool, repack, recycling by rename and zeroing, idle seals, failed syncs and the refusal of a roll naming the pool.'
   issue: '#3379'
-  message: 'write 65536 bytes at 0: journaltest: 4194304 calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
+  message: 'write 65536 bytes at 0: journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
 
 - test: TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead
   status: fail
@@ -774,7 +774,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs recycling, recovery by scan with the torn-tail rule on a recycled segment, failed appends, reservations and repack.'
   issue: '#3379'
-  message: 'write 65536 bytes at 0: journaltest: 4194304 calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
+  message: 'write 65536 bytes at 0: journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
 
 - test: TestRFC28C_StaleExtent
   status: fail
@@ -854,7 +854,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3815'
-  message: 'open_spare_zeroing: model: model: write file 66696c652d3030303030303030303031: returned journaltest: 4194304 calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
+  message: 'open_spare_zeroing: model: model: write file 66696c652d3030303030303030303031: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
 
 - test: TestDamage_LostWrites/recycle_rename
   status: fail
@@ -862,7 +862,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3815'
-  message: 'recycle_rename: model: model: write file 66696c652d3030303030303030303031: returned journaltest: 4194304 calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
+  message: 'recycle_rename: model: model: write file 66696c652d3030303030303030303031: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
 
 - test: TestDamage_LostWrites/open_tmp_unlink
   status: fail
@@ -870,7 +870,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3815'
-  message: 'open_tmp_unlink: model: model: write file 66696c652d3030303030303030303030: returned journaltest: 4194304 calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
+  message: 'open_tmp_unlink: model: model: write file 66696c652d3030303030303030303030: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
 
 - test: TestDamage_LostWrites/failed_unlink
   status: fail
