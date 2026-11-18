@@ -1052,6 +1052,20 @@ func TestADoubleReleaseHoldsASecondKeep(t *testing.T) {
 	}
 }
 
+// establishedRefuser is a protocol whose NewConn establishes the connection
+// and then answers stages without a Header, which core refuses at accept: the
+// refusal comes last, with the idle deadline its protocol already armed. The
+// configure-time probe NewConn(nil) reads the embedded protocol's wiring.
+type establishedRefuser struct{ core.Protocol }
+
+func (p establishedRefuser) NewConn(c *core.Conn) core.Stages {
+	if c == nil {
+		return p.Protocol.NewConn(nil)
+	}
+	c.Established()
+	return core.Stages{}
+}
+
 // withRouter is a protocol whose connection's Router the test wraps.
 type withRouter struct {
 	core.Protocol
@@ -1286,7 +1300,9 @@ func TestTheRegistryListsLiveConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn2, client2 := servedConn(t, srv, &l)
-	if err := client2.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	// The server closed its end at once: setting a deadline on the closed
+	// pipe is that, not a failure to answer.
+	if err := client2.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil && !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatal(err)
 	}
 	if _, err := client2.Write([]byte{0, 0, 0, 4}); err == nil {
@@ -1299,6 +1315,29 @@ func TestTheRegistryListsLiveConnections(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a connection served after Stop did not close")
 	}
+}
+
+// A connection refused after its protocol established is closed with its
+// timers stopped: the idle deadline a protocol armed inside NewConn has no
+// pipeline to read at its expiry, and would read c.p as nil there.
+func TestARefusedConnectionStopsItsTimers(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: establishedRefuser{testproto.New(adapter.Deps{}).Bare()}}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	servedConn(t, srv, &l)
+	// ServeConn returned already, the connection refused: the deadline its
+	// protocol armed must be stopped with it, none left to fire.
+	if pending := clk.pending(); pending != 0 {
+		t.Fatalf("a refused connection left %d timer(s) armed", pending)
+	}
+	clk.Advance(2 * time.Minute)
 }
 
 // A connection answers an Echo over the full protocol, session and tree set up.

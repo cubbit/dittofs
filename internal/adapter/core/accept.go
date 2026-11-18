@@ -77,6 +77,11 @@ func (s *Server) acceptLoop(b *bound) {
 		backoff = 0
 		b.firstFailure.Store(0)
 		b.lastFailure.Store(0)
+		// ponytail: the gate here is the connection-state budget's one global
+		// charge alone; connection_limit and the per-address quarter (RFC 24
+		// sections 4.4 and 9 R10) arrive with the limit step that follows
+		// this stack, and lift it, so one address can take every slot only
+		// until then.
 		charge, cerr := s.d.Budgets.Connection.Reserve(connCharge)
 		if cerr != nil {
 			// The budget is full: the socket closes at once, before any byte

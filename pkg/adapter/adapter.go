@@ -77,6 +77,7 @@ const (
 	StateConfigured State = iota
 	StateServing
 	StateDraining
+	StateStopping
 	StateStopped
 )
 
@@ -89,6 +90,8 @@ func (s State) String() string {
 		return "serving"
 	case StateDraining:
 		return "draining"
+	case StateStopping:
+		return "stopping"
 	case StateStopped:
 		return "stopped"
 	}

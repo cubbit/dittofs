@@ -2,6 +2,7 @@ const (
 	StateConfigured State = iota
 	StateServing
 	StateDraining
+	StateStopping
 	StateStopped
 )
 

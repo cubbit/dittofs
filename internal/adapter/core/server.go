@@ -326,9 +326,13 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 }
 
 // Stop closes every listener, closes every connection and moves the server to
-// stopped, from any state; a second call returns nil.
+// stopped, from any state. It moves to stopping under the first lock, before it
+// waits its loops, so a context that ends mid-stop leaves every listener
+// closed, register refusing (and Health reporting stopping) and the next Stop
+// closing every connection.
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
+	s.state = adapter.StateStopping
 	looped := slices.Clone(s.bound)
 	s.closeBound()
 	s.mu.Unlock()

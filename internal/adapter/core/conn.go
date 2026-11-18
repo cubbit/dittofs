@@ -129,6 +129,22 @@ func (c *Conn) idleExpired() {
 	c.Close(errIdle)
 }
 
+// stopTimers stops the connection's two deadlines and forgets them, under
+// timersMu: the teardown at its end, and a connection refused at accept, which
+// a protocol may leave armed from inside NewConn.
+func (c *Conn) stopTimers() {
+	c.timersMu.Lock()
+	defer c.timersMu.Unlock()
+	if c.handshakeT != nil {
+		c.handshakeT.Stop()
+		c.handshakeT = nil
+	}
+	if c.idleT != nil {
+		c.idleT.Stop()
+		c.idleT = nil
+	}
+}
+
 // armHandshake arms the handshake deadline at accept, for the snapshot's
 // handshake_timeout (RFC 20 section 6.4).
 func (c *Conn) armHandshake() {
@@ -196,23 +212,32 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservati
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	st, err := withDefaults(l.Protocol.NewConn(c))
 	if err != nil {
+		// A protocol that armed a deadline inside NewConn leaves it armed
+		// here: the connection is closed and its timers stopped, as no
+		// reader ever starts to stop them.
+		c.closed.Store(true)
+		c.stopTimers()
 		s.sh.log.ErrorContext(c.ctx, "connection refused", "err", err)
 		_ = nc.Close()
 		c.release()
 		close(c.done)
 		return c
 	}
-	c.armHandshake()
 	f := l.Protocol.Framer()
 	common := snap.Common()
 	c.w = newWriter(nc, f, common.WriteTimeout, c.Close)
 	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, set: snap, out: c.w.out, close: c.Close, idle: c.idle})
 	c.rd = newReader(nc, f, s.recv, c.remote, common.ReadTimeout)
+	// Armed only once the writer, pipeline and reader exist, so a deadline
+	// that fires at once never races their assignment.
+	c.armHandshake()
 	registered := s.register(c)
 	if !registered {
 		// The server is not serving: the connection closes before its reader
-		// is started, so not one record is cut.
+		// is started, so not one record is cut, and its charge is back at
+		// once, so a Stop this races never returns holding it.
 		c.Close(errStop)
+		c.release()
 	}
 	go c.readLoop()
 	return c
@@ -223,16 +248,7 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservati
 // (RFC 20 section 3.2's order).
 func (c *Conn) teardown() {
 	defer close(c.done)
-	c.timersMu.Lock()
-	if c.handshakeT != nil {
-		c.handshakeT.Stop()
-		c.handshakeT = nil
-	}
-	if c.idleT != nil {
-		c.idleT.Stop()
-		c.idleT = nil
-	}
-	c.timersMu.Unlock()
+	c.stopTimers()
 	if ep := c.err.Load(); ep != nil {
 		c.sh.log.Debug("core: connection closed", "remote", c.remoteAddr, "err", *ep)
 	}
@@ -271,9 +287,15 @@ func (c *Conn) protocol() string {
 }
 
 // release returns the connection's charge to the connection-state budget.
+// release gives the connection's charge back once. A register refusal
+// releases it at once, so a Stop it races never returns holding it; the
+// teardown's later release then gives nothing back, and neither waits for
+// the other, the refusal running before the reader starts.
 func (c *Conn) release() {
 	if c.charge != nil {
-		c.charge.Release()
+		r := c.charge
+		c.charge = nil
+		r.Release()
 	}
 }
 

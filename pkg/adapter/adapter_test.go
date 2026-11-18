@@ -7,7 +7,8 @@ import (
 func TestStateString(t *testing.T) {
 	for s, want := range map[State]string{
 		StateConfigured: "configured", StateServing: "serving",
-		StateDraining: "draining", StateStopped: "stopped", 9: "State(9)",
+		StateDraining: "draining", StateStopping: "stopping", StateStopped: "stopped",
+		9: "State(9)",
 	} {
 		if got := s.String(); got != want {
 			t.Errorf("State(%d).String() = %q, want %q", s, got, want)
@@ -25,6 +26,7 @@ func TestHealthReady(t *testing.T) {
 		{Health{State: StateServing, Conditions: []string{"adapter_listener_lost"}}, false},
 		{Health{State: StateConfigured}, false},
 		{Health{State: StateDraining}, false},
+		{Health{State: StateStopping}, false},
 		{Health{State: StateStopped}, false},
 	} {
 		if got := c.h.Ready(); got != c.want {
