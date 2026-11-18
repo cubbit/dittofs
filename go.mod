@@ -19,7 +19,7 @@ require (
 	github.com/go-ldap/ldap/v3 v3.4.15
 	github.com/go-playground/validator/v10 v10.30.5
 	github.com/invopop/jsonschema v0.14.0
-	github.com/jcmturner/gofork v1.7.6 // indirect
+	github.com/jcmturner/gofork v1.7.6
 	github.com/jcmturner/gokrb5/v8 v8.4.4
 	github.com/manifoldco/promptui v0.9.0
 	github.com/oiweiwei/go-msrpc v1.6.4

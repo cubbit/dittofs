@@ -26,6 +26,7 @@ type Authenticator interface {
 type SignInStep struct {
 	Kerberos  []byte            // an AP-REQ
 	Service   Service           // the keytab service name a ticket is for
+	Transport Transport         // the protocol the step arrived over, which the adapter sets
 	NTLM      *NTLMAuthenticate // or an NTLM response to Challenge
 	Challenge [8]byte
 	Client    netip.Addr
@@ -39,6 +40,16 @@ const (
 	ServiceNFS Service = iota + 1
 	ServiceCIFS
 	ServiceHost
+)
+
+// Transport is the file protocol a sign-in step arrived over. A Kerberos
+// step's client-address rule applies over SMB, whatever service name its
+// ticket is for, so the step names its transport apart from its Service.
+type Transport uint8
+
+const (
+	TransportNFS Transport = iota + 1
+	TransportSMB
 )
 
 // NTLMAuthenticate is the decoded AUTHENTICATE message the adapter's NTLM
