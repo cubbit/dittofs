@@ -154,9 +154,15 @@ func TestRetirementNeverTakesSparesOrDeferred(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	preRun := slices.Clone(r.listing())
 	h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 1})
 	if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil); err != nil {
 		t.Fatalf("Emptying: %v", err)
+	}
+	// The pool refills in the background on the same id sequence as the
+	// retirer's recycle, so the reserve is read once the pool has settled.
+	if err := h.pool.WaitSpares(context.Background()); err != nil {
+		t.Fatalf("the pool's settle: %v", err)
 	}
 
 	// The dead full seal retired by the retirement path's own rule for a
@@ -166,9 +172,16 @@ func TestRetirementNeverTakesSparesOrDeferred(t *testing.T) {
 	if slices.Contains(r.listing(), format.SegmentName(1)) {
 		t.Errorf("the dead full seal's old name is still on disk, want it recycled by the retire step")
 	}
-	fresh := format.SegmentName(st.Attached.MaxID + 1)
-	if !slices.Contains(r.listing(), fresh) {
-		t.Errorf("the recycle's fresh spare %s is not on disk, want it refilled into the reserve the emptying draws on", fresh)
+	// A spare is new when its name was not in the directory before the run;
+	// which of the recycle and the pool's refill made it is not the row's.
+	var added int
+	for _, name := range r.listing() {
+		if kind, _ := format.ClassifyName(name); kind == format.NameSegment && !slices.Contains(preRun, name) {
+			added++
+		}
+	}
+	if added < 1 {
+		t.Errorf("no new spare is on disk after the retire step, want the recycle's refill in the reserve the emptying draws on")
 	}
 	if got, want := h.pool.Counters().RepackReserveBytes, d.SegmentCap; got < want {
 		t.Errorf("the pool's ready repack reserve after the retire step got %d bytes, want at least the %d-byte cap: each retirement refills the reserve before the next emptying, the refill's own spare beside it", got, want)
