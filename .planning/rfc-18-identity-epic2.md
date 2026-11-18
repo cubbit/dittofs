@@ -117,6 +117,10 @@ behind `Alloc` on `PutUser` and `PutGroup`; `Minter.Create`; identity's settings
   deferral ledger row "NFSv4 owner strings (RFC 18 §4.5) and `FuzzOwnerString`".
 - The `oidc` scheme: deferred with `TokenVerifier`, the ledger row "OpenID Connect's
   `TokenVerifier` (RFC 18 §8.2) and §10's token rows".
+- Listing machines and unnamed users: `ControlPlane.Users` and `Groups` walk the name index, so
+  they leave both out, and the `UnnamedPrincipals` conformance case pins that. A listing of every
+  record is the RFC 18 plan's deferral ledger row "Listing every user record", owned by RFC 23's
+  plan.
 
 ### 1.3 Names used here
 

@@ -1742,6 +1742,7 @@ What the plan knowingly does not build. Each row cites the section that defers i
 | Leaving the domain | O5: RFC 18 states no rule for it | RFC 18 | RFC 18 defines leaving the domain |
 | Interop against a Windows Server domain controller: online and offline join, pass-through, a Windows client's ticket | O11: CI has only Samba AD (§1.5 rule 8) | unowned | v1.0's release candidate is cut |
 | "roles grant nothing" | §1.4: RFC 23 §12's row | RFC 23 plan (#4050) | its epic that runs RFC 23 §12 |
+| Listing every user record: machines and unnamed users, which `ControlPlane.Users` leaves out because it walks the name index (RFC 16 §3; RFC 18 §2.4 gives a machine no name) | E2: no RFC asks for it, and no RFC 23 endpoint lists machines; E2's `UnnamedPrincipals` conformance case pins the subset | RFC 23 plan (#4050) | an RFC 23 endpoint that lists machines or unnamed users, which brings an RFC 16 §3 amendment for a walk of the `U‖` records |
 
 ## 7. RFC coverage
 
