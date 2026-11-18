@@ -378,17 +378,11 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 		// window that opened since the selection keeps its source for a
 		// pass that runs once its records are carried and resolved.
 		//
-		// decision: this re-read's ceiling is the durability layer's own
-		// take of the failure. A segment a failed append ended answers
-		// Ended at once, but its window opens only when the layer's worker
-		// takes the end event, so a pass that reaches a newly failed
-		// segment before the take sees no window and is free to reclaim
-		// it: the gate the pass owns is this re-read under the claim, not a
-		// refusal to race the worker's take. Overturned by a ruled need
-		// for the take to be synchronous with the write's failure — the
-		// executor would have to report the ended segment to the
-		// durability layer before the writer answers, a design change,
-		// not a pass change.
+		// An ended segment's window is owed from the end itself — the set
+		// carries the end not yet taken, and WindowOpen reads it — so no
+		// gap exists for a pass to reach the segment through, however the
+		// durability layer's take of the end event races: a newly failed
+		// segment is declined here as long as its window stands.
 		if p.dur != nil && (p.dur.WindowOpen(seg) || p.dur.ReclaimBlocked(seg)) {
 			// The claim stays with the run, as the hold does above: the
 			// ended segment whose window reopened keeps its place out of

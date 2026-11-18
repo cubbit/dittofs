@@ -97,12 +97,12 @@ func TestALossRecordCarriedFromItsSegmentJournalLevel(t *testing.T) {
 // TestFailedAppendCarriedOnceResolvedJournalLevel is the journal-level form
 // of the recycled segment's failed-append leg (R68): a failed append into
 // the stream's active segment, with a synced record beside it and an
-// unsynced one left after it, ends that segment with a window owed; once a
-// Sync of the file resolves the window the next pass carries the records
+// unsynced one left after it, ends that segment with a window owed; a pass
+// that reaches the segment before the end event is taken declines it, once
+// a Sync of the file resolves the window the next pass carries the records
 // synced into the segment before the failure and retires it, unlinked
 // rather than recycled, and the carried bytes read whole before and after
-// a crash. The window-open leg itself is not this test's — the pointer at
-// the resolution says why.
+// a crash.
 //
 // decision: the segment the append fails into is the stream's own active
 // one, whose provenance the test does not reach — driving a retired full
@@ -138,6 +138,24 @@ func TestFailedAppendCarriedOnceResolvedJournalLevel(t *testing.T) {
 	if at := segmentOf(t, f, id, off+3*size); at != seg {
 		t.Fatalf("C was written into segment %d, want segment %d beside B", at, seg)
 	}
+
+	// A Sync of the file, started while the segment stands open, stops at
+	// the seam on the segment's fsync: with it in flight the failing append
+	// below ends the segment, and the end's event — owed from the end
+	// itself, recorded before the notifier starts — is stuck behind the
+	// parked sync, its window not yet the durability layer's to name.
+	parked := f.Seam.Hold(t, kit.OpSync, segmentName(seg))
+	syncDone := make(chan error, 1)
+	go func() {
+		_, serr := h.Sync(t.Context(), id)
+		syncDone <- serr
+	}()
+	select {
+	case <-parked.Reached():
+	case <-time.After(backgroundWait):
+		t.Fatal("the sync beside C did not reach the held fsync of its segment")
+	}
+
 	f.FailNext(kit.OpWrite, segmentName(seg), 1)
 	if _, err := tryWrite(t, h, id, off+4*size, distinct(30, 10<<10)); err == nil {
 		t.Fatal("the append the fault was set to fail succeeded")
@@ -148,13 +166,28 @@ func TestFailedAppendCarriedOnceResolvedJournalLevel(t *testing.T) {
 		t.Fatalf("the write beside the failed append reads missing %+v or other bytes", missing)
 	}
 
-	// No decline-while-open leg runs here: the decision at the pass's R5
-	// gate (internal/reclaim/pass.go) names the ceiling — the window the
-	// failed append opens is the durability layer's, which learns of the
-	// ended segment only from the end event its own worker takes, so a
-	// pass racing the take is, by its deferred re-read, allowed to reclaim
-	// the segment. The pointer replaces the leg the first revision of this
-	// test ran, which raced that take.
+	// The end's event has not been taken, its window cannot be named yet,
+	// and still a pass over the segment declines it: the owed end answers
+	// for the window from the moment the segment ends, so the segment stays
+	// — the claimed source of records the pass must not copy out from
+	// under a window that has yet to open.
+	if err := within(t, f, "the pass over the untaken end", func() error {
+		_, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{Segments: []journal.SegmentID{seg}})
+		return err
+	}); err != nil {
+		t.Fatalf("the pass over the segment whose end stood untaken: %v", err)
+	}
+	if _, ok := segmentInfo(f, seg); !ok {
+		t.Fatalf("the pass retired segment %d while its end event stood untaken behind the parked sync", seg)
+	}
+
+	parked.Release()
+	select {
+	case err := <-syncDone:
+		stub(t, "the parked Sync", err)
+	case <-time.After(backgroundWait):
+		t.Fatal("the parked sync did not return once the hold released")
+	}
 
 	// The file's Sync resolves the failed append's window either way it
 	// goes — re-appending C, or failing it out of the index — and the

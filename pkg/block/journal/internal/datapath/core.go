@@ -498,6 +498,11 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		Counters: c.counters,
 		// The durability layer hands the delta Lose returns to Account itself.
 		MarkLoss: c.index.Lose,
+		// The owed ends: a segment that ended is answered window-open by the
+		// set until this layer takes its event, so a pass that reaches a
+		// newly failed segment between its end and the take declines it.
+		EndOwed: state.Set.EndOwed,
+		TakeEnd: state.Set.TakeEnd,
 		// Each loss record counts live where it landed: a segment holding
 		// one stays held until the record's own liveness ends.
 		LossRegistered: func(l durability.Loss, seq core.Seq, at segment.Location) {

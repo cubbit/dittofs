@@ -162,6 +162,14 @@ type Set struct {
 	// or already moved into retired, never both and never neither.
 	retired map[core.ShareTag]int64
 
+	// untaken holds the segments whose end event has not been taken by its
+	// consumer yet: the end itself is made synchronously in the step that
+	// ends the segment, while the event hands over on its own goroutine, so
+	// the untaken flag is the reader's proof of the end before the take. It
+	// is cleared by the take and by the segment's own removal, and kept
+	// beside the set's state under mu.
+	untaken map[core.SegmentID]struct{}
+
 	// c holds the counters of Counters above, maintained at each event that
 	// moves one and never rebuilt: every read is one lock and a copy.
 	c Counters
@@ -242,6 +250,7 @@ func NewSet(segCap int64, log *slog.Logger) *Set {
 		tags:    make(map[core.ShareTag]int64),
 		over:    make(map[core.ShareTag]int64),
 		retired: make(map[core.ShareTag]int64),
+		untaken: make(map[core.SegmentID]struct{}),
 	}
 }
 
@@ -652,6 +661,38 @@ func (s *Set) End(id core.SegmentID) error {
 	}
 	e.state = Ended
 	return nil
+}
+
+// OweEnd records that id, already ended, is owed an end event its consumer
+// has not taken yet: the segment's failure opened a window the consumer —
+// not the end's own maker — is the only word for, so from the moment the end
+// is made a reader that asks about the segment before the take must be
+// answered as though the window were open already. The step that ends the
+// segment and starts its event is the caller; TakeEnd is the take's.
+func (s *Set) OweEnd(id core.SegmentID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.untaken[id] = struct{}{}
+}
+
+// TakeEnd clears the owed end of id: its event reached the consumer, whose
+// own state — the window it made, the failure it recorded — answers from
+// here. One taken is not owed; a second take changes nothing.
+func (s *Set) TakeEnd(id core.SegmentID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.untaken, id)
+}
+
+// EndOwed reports whether id ended and its end event has not been taken yet.
+func (s *Set) EndOwed(id core.SegmentID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, ok := s.untaken[id]
+	return ok
 }
 
 // Shrink lowers the accounted size of a segment of the set that no stream
@@ -1092,6 +1133,9 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 // found the entry in the set.
 func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 	delete(s.segs, id)
+	// The removed segment is owed no end event any more: whatever the take
+	// did, the segment's leaving is the reader's later word.
+	delete(s.untaken, id)
 	if e.state == Sealed {
 		s.c.Sealed--
 	}

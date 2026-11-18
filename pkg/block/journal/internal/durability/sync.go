@@ -76,6 +76,18 @@ type Config struct {
 	// registers nothing.
 	LossRegistered func(l Loss, seq core.Seq, at segment.Location)
 
+	// EndOwed, when set, answers whether a segment ended and its end event
+	// has not been taken yet: the end is made synchronously with the write
+	// or sync that failed, while the event hands over on its own goroutine
+	// and reaches this layer's window only at the take, so the owed end is
+	// the only word for the segment between the two. TakeEnd, when set,
+	// clears the owed end in the step that takes the event — the same step
+	// this layer makes the segment's window in. Nil reads and clears
+	// nothing: WindowOpen then knows the segment's failure only once the
+	// event has been queued and taken.
+	EndOwed func(core.SegmentID) bool
+	TakeEnd func(core.SegmentID)
+
 	// Emptied, when set, is told of the segments whose per-segment held or
 	// retained counters a move of this layer lowered — a lift of a completed
 	// sync, a synced loss's marker, a failed window's cut of its records —
@@ -229,6 +241,10 @@ type Durability struct {
 
 	// lossRegistered and emptied are Config.LossRegistered and Config.Emptied.
 	lossRegistered func(Loss, core.Seq, segment.Location)
+	// endOwed and takeEnd are Config.EndOwed and Config.TakeEnd: the owed
+	// ends the segment set carries between an end and this layer's take.
+	endOwed func(core.SegmentID) bool
+	takeEnd func(core.SegmentID)
 	// A move with no segment to name, or no causality record to gate them on,
 	// reports nothing, so a nil hook is a no-op by the same guard.
 	emptied func([]core.SegmentID, segment.Location)
@@ -492,6 +508,8 @@ func New(cfg Config) (*Durability, error) {
 		account:        cfg.Account,
 		lossRegistered: cfg.LossRegistered,
 		emptied:        cfg.Emptied,
+		endOwed:        cfg.EndOwed,
+		takeEnd:        cfg.TakeEnd,
 	}
 	d.refuse = d.Admit
 	d.readOnly = d.Enter
