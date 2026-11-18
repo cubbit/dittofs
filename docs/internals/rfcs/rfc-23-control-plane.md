@@ -716,7 +716,10 @@ one is applied on every node from its commit. A record at position *S* is **appl
 on a node once that node has reconciled its kind through at least *S* and the
 record is in neither its refused set nor its restart-pending set. The API joins
 these reports into each resource's status (§4.1), so "applied on 2 of 3 nodes;
-N3 behind by 7 s" is a read, not an inference.
+N3 behind by 7 s" is a read, not an inference. The "of" counts the registered
+nodes, each node record's status read, so a node that stopped reporting still
+counts and shows as not applied, rather than leaving the count as though it
+were never there.
 
 > ponytail: a node reports three reconciled positions and the exceptions, not
 > one generation per record, so the report stays one small record at 10⁴
@@ -826,7 +829,11 @@ A share is **serving** on a node once that node has added its storage binding
 and the binding reports serving ([RFC 8 §2.3](rfc-8-engine.md#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). Create returns at commit,
 before that; the share's status shows each node's state, and `?wait=serving`
 on a `GET` returns when every node that serves it reports serving or a node
-refuses it.
+refuses it. A refusal counts only from a node that has reconciled the share
+list through the share's position, since a node keeps a refusal until it acts
+on a later change, and one from before a fix is stale. Until membership says
+which nodes serve a share, every registered node counts, so a node that has
+reported nothing holds the wait to its bound.
 
 **Quiesce and resume name their expected state.** Each is one
 `SetShareState(from, to)` ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)), and needs no `If-Match`: the
@@ -1052,7 +1059,7 @@ parts in every resource:
   "id": "sh_7Qk2...",
   "generation": 15,
   "spec":   { "name": "builds", "path": "/builds", "namespace": "ns_b4...", "...": "..." },
-  "status": { "state": "enabled", "applied": { "nodes": 3, "of": 3 }, "...": "..." },
+  "status": { "state": "enabled", "namespaces": ["ns_b4..."], "applied": { "nodes": 3, "of": 3 }, "...": "..." },
   "managed": null
 }
 ```
@@ -1064,6 +1071,12 @@ parts in every resource:
   status field is refused, as RFC 13 §2.4 refuses a file that declares a system
   field. A listing page reads the node-status records once and computes
   every row's `applied` from them.
+- **A share's namespace is declared once and moved by a re-home.**
+  `spec.namespace` names the namespace the share writes to: the one it is
+  created in, and after a re-home the one it moved to. It changes only
+  through `:rehome`, never through a write of the share.
+  `status.namespaces` lists every namespace the share holds content in,
+  the old one included while a re-home drains it.
 - **Paths take IDs, never names.** `/shares/sh_7Qk2…`, not `/shares/builds`. A
   name is found by `GET /shares?name=builds`, which answers a list of zero or
   one.
@@ -1257,7 +1270,9 @@ state it expects.
   conflicts, retries, reads the new tag and is refused `412`.
 - **A background writer is not overwritten.** The parts of a resource that a
   component changes — a share's state during a cut or removal, its namespaces
-  during a re-home — are never in a `spec`, so a stale `PUT` cannot revert them.
+  during a re-home — are never written through a `spec`: they are `status`,
+  and the one `spec.namespace` changes only through `:rehome` (§4.1), so a
+  stale `PUT` cannot revert them.
 
 > decision: `If-Match` is required, not optional. Optional, every script omits
 > it, and the lost update of the Start-here example is the default behaviour.
@@ -1270,8 +1285,12 @@ state it expects.
 Every `POST` and every `DELETE` **MUST** carry an `Idempotency-Key`, a client
 value unique per intended action and at most 255 bytes, except the credential
 calls below; one without is refused `428`, and a longer one `400`. The server
-keeps, per (account, key), the digest of the request — method, path, body — and
-the answer it gave, written in the request's own transaction:
+keeps, per (account, key), the digest of the request — method, path with its
+query, body — and the answer it gave, written in the request's own transaction.
+The digest is keyed, never a plain hash: an HMAC-SHA256 under a key derived
+from the installation's signing key, so a body that carries a secret before
+the server seals it leaves nothing in the store a dump could test guesses
+against, and every node computes the same digest:
 
 - a request whose key is recorded with the **same** digest gets the recorded
   answer, status and body included, and changes nothing — `202` and the same
@@ -1284,7 +1303,11 @@ the answer it gave, written in the request's own transaction:
   ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)'s `Write`), so a recorded key with a different digest
   answers `422` even when the request would also fail them; a body that does
   not decode, an unknown field included, is refused before the key is read;
-- records are kept 24 h, then deleted.
+- records are kept 24 h, then deleted;
+- the digest is keyed by the signing key's current version, so a retry first
+  answered before a rotation computes another digest and is refused `422`,
+  never applied twice; a client that must replay across a rotation is the
+  evidence for keeping each version for a record's life.
 
 **A call that carries or issues a credential keeps no idempotency record.**
 Sign-in, refresh, `POST /auth/password`, `:set-password`, API-token creation and
@@ -1736,7 +1759,7 @@ Every management action leaves an **audit record**:
 | Field | Holds |
 | --- | --- |
 | time | store time of the commit |
-| actor | the account's principal and name, the session or token ID; for the break-glass reset, the host; for an operation no call started, the schedule (§4.6) |
+| actor | the account's principal and name, the session or token ID; for the break-glass reset, the host; for an operation no call started, the schedule, written `{"kind": "schedule"}` (§4.6) |
 | node, source | the node that took the request; the client's address |
 | request | method, path, the request ID, the idempotency key |
 | target | the resource's kind and ID, and the generation before and after |
@@ -1749,8 +1772,12 @@ Every management action leaves an **audit record**:
   commit cannot either. An operation's state changes — started, each phase,
   ended — are audited in the transactions that make them.
 - **Refusals are audited too**, in a transaction of their own: every request
-  refused after authentication, and every sign-in whose password is checked,
-  failed or not. A request refused before authentication is counted, not
+  refused after authentication, a read's included, and every sign-in whose
+  password is checked, failed or not. A refusal before the request reaches
+  its resource's handler, a role the route does not admit for one, names the
+  route's resource kind and the path's ID when it parses. A path that names
+  no route is the one exception: it names no resource to record, so it is
+  counted, not recorded. A request refused before authentication is counted, not
   recorded, a sign-in answered `429` included (§5.3), so throttling bounds the
   rate of the records sign-in writes.
 - **The audit is append-only.** No API call edits or deletes a record. Records
