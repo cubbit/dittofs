@@ -20,11 +20,11 @@ import (
 // bind (RFC 24 section 5.1).
 const writeBound = 64
 
-// queued is one message the writer holds: its record, and the key of the
-// request whose reply it must precede.
+// queued is one message the writer holds: its record, and the least and
+// greatest keys of the replies it carries, 0 for none.
 type queued struct {
-	msg *resources.Buf
-	key uint64
+	msg    *resources.Buf
+	lo, hi uint64
 }
 
 // writer sends a connection's messages: a bounded queue, net.Buffers writes
@@ -50,7 +50,7 @@ type writer struct {
 	wake     chan struct{}
 	room     chan struct{} // closed while the messages held are below the bound
 	empty    chan struct{} // made by a drain's wait while messages are held, closed when none are
-	closed   bool
+	closed   bool          // out takes nothing more: the connection closed, or the writer stopped or failed
 	stopped  chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
@@ -80,10 +80,11 @@ func newWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(erro
 }
 
 // out queues msg, returning before it is sent: past the bound the queue still
-// takes it, so a caller never blocks. A message handed with before goes out
-// ahead of the reply of that key still queued. The writer takes the message's
-// reference whatever it returns.
-func (w *writer) out(msg *resources.Buf, key, before uint64) error {
+// takes it, so a caller never blocks. lo and hi are the least and greatest
+// keys of the replies msg carries; a message handed with before goes out
+// ahead of the first queued message whose keys span it. The writer takes the
+// message's reference whatever it returns.
+func (w *writer) out(msg *resources.Buf, lo, hi, before uint64) error {
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
@@ -93,7 +94,7 @@ func (w *writer) out(msg *resources.Buf, key, before uint64) error {
 	at := len(w.queue)
 	if before != 0 {
 		for i := range w.queue {
-			if w.queue[i].key == before {
+			if w.queue[i].lo <= before && before <= w.queue[i].hi {
 				at = i
 				break
 			}
@@ -101,7 +102,7 @@ func (w *writer) out(msg *resources.Buf, key, before uint64) error {
 	}
 	w.queue = append(w.queue, queued{})
 	copy(w.queue[at+1:], w.queue[at:])
-	w.queue[at] = queued{msg: msg, key: key}
+	w.queue[at] = queued{msg: msg, lo: lo, hi: hi}
 	w.held++
 	if w.held >= writeBound && isClosed(w.room) {
 		w.room = make(chan struct{})
@@ -125,6 +126,15 @@ func (w *writer) pause() (<-chan struct{}, bool) {
 		return nil, false
 	}
 	return w.room, true
+}
+
+// refuse ends what out takes, the connection's close calls it: a message
+// handed after that is dropped, while run still sends what was queued before
+// it, until the teardown's stop.
+func (w *writer) refuse() {
+	w.mu.Lock()
+	w.closed = true
+	w.mu.Unlock()
 }
 
 // stop ends the writer: what is queued is released unsent. The connection's
@@ -189,7 +199,7 @@ func (w *writer) queued() bool {
 // those behind it while their bodies stay within the record cap, so
 // write_timeout bounds no more bytes than the largest single record's. It arms
 // the write deadline for them under the mutex: a stop that set a deadline in
-// the past is never overwritten, because a closed writer takes nothing.
+// the past is never overwritten, because the stop empties the queue under it.
 func (w *writer) take() []queued {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -205,7 +215,7 @@ func (w *writer) take() []queued {
 	k := copy(w.queue, w.queue[n:])
 	clear(w.queue[k:])
 	w.queue = w.queue[:k]
-	if !w.closed && w.timeout > 0 {
+	if w.timeout > 0 {
 		_ = w.nc.SetWriteDeadline(time.Now().Add(w.timeout))
 	}
 	return w.batch
@@ -252,8 +262,8 @@ func (w *writer) flush() error {
 }
 
 // fail ends the writer on a failed or late write: it releases what is queued
-// and reports whether the connection's close is owed, which it is unless a
-// stop came first.
+// and reports whether the connection's close is owed, which it is unless the
+// close or a stop came first.
 func (w *writer) fail() bool {
 	w.mu.Lock()
 	q := w.queue

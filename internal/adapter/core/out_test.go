@@ -23,7 +23,7 @@ type bound struct{ msgs, bytes int }
 
 // newOut builds a writer of records framed by f: its out and close, the peer
 // end of the connection it writes to, and its queue's bound.
-type newOut func(f core.Framer) (out func(msg *resources.Buf, key, before uint64) error, close func(error), peer net.Conn, b bound)
+type newOut func(f core.Framer) (out func(msg *resources.Buf, lo, hi, before uint64) error, close func(error), peer net.Conn, b bound)
 
 // testOut is the suite of out, which every writer passes (the pipeline's
 // seam with its connection):
@@ -31,8 +31,9 @@ type newOut func(f core.Framer) (out func(msg *resources.Buf, key, before uint64
 //   - it takes msg's reference whatever it returns, and the writer releases
 //     it once sent or discarded;
 //   - it fails only once the connection is closed;
-//   - a message handed with before goes out ahead of the reply of that key
-//     still queued.
+//   - a message handed with before goes out ahead of the first queued
+//     message whose keys span it, lo <= before <= hi: a reply alone, lo and
+//     hi its key, or a record of several, lo and hi its least and greatest.
 func testOut(t *testing.T, build newOut) {
 	f := testproto.New(adapter.Deps{}).Framer()
 	msg := func(t *testing.T, pool *resources.BufPool, body string) *resources.Buf {
@@ -77,7 +78,7 @@ func testOut(t *testing.T, build newOut) {
 			returned := make(chan error, 1)
 			go func() {
 				for i, m := range msgs {
-					if err := out(m, 0, 0); err != nil {
+					if err := out(m, 0, 0, 0); err != nil {
 						returned <- fmt.Errorf("message %d: out = %w before the close", i, err)
 						return
 					}
@@ -111,11 +112,11 @@ func testOut(t *testing.T, build newOut) {
 			budget := resources.NewWaitBudget("reply", 1<<30)
 			pool := resources.NewBufPool(budget)
 			out, closeOut, _, _ := build(f)
-			if err := out(msg(t, pool, "queued"), 0, 0); err != nil {
+			if err := out(msg(t, pool, "queued"), 0, 0, 0); err != nil {
 				t.Fatalf("out before the close = %v", err)
 			}
 			closeOut(nil)
-			if err := out(msg(t, pool, "late"), 0, 0); err == nil {
+			if err := out(msg(t, pool, "late"), 0, 0, 0); err == nil {
 				t.Error("out after the close succeeded")
 			}
 			synctest.Wait()
@@ -133,10 +134,10 @@ func testOut(t *testing.T, build newOut) {
 			// The writer is held on the first message until the peer reads,
 			// so the reply of key 7 is still queued when the callback comes.
 			for _, m := range []struct {
-				body        string
-				key, before uint64
-			}{{"first", 0, 0}, {"reply", 7, 0}, {"other", 0, 0}, {"callback", 0, 7}} {
-				if err := out(msg(t, pool, m.body), m.key, m.before); err != nil {
+				body           string
+				lo, hi, before uint64
+			}{{"first", 0, 0, 0}, {"reply", 7, 7, 0}, {"other", 0, 0, 0}, {"callback", 0, 0, 7}} {
+				if err := out(msg(t, pool, m.body), m.lo, m.hi, m.before); err != nil {
 					t.Fatal(err)
 				}
 				if m.body == "first" {
@@ -151,6 +152,35 @@ func testOut(t *testing.T, build newOut) {
 			}
 			if want := []string{"first", "callback", "reply", "other"}; !slices.Equal(got, want) {
 				t.Errorf("sent %v, want %v: the callback ahead of the reply of its key", got, want)
+			}
+		})
+	})
+
+	t.Run("before goes ahead of a record whose keys span it", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			pool := resources.NewBufPool(resources.NewWaitBudget("reply", 1<<30))
+			out, closeOut, peer, _ := build(f)
+			defer closeOut(nil)
+			// A record of the replies keyed 7, 8 and 9 is queued behind the
+			// first message, which holds the writer, when a callback names
+			// its middle reply.
+			for _, m := range []struct {
+				body           string
+				lo, hi, before uint64
+			}{{"first", 0, 0, 0}, {"record", 7, 9, 0}, {"other", 0, 0, 0}, {"callback", 0, 0, 8}} {
+				if err := out(msg(t, pool, m.body), m.lo, m.hi, m.before); err != nil {
+					t.Fatal(err)
+				}
+				if m.body == "first" {
+					synctest.Wait()
+				}
+			}
+			var got []string
+			for range 4 {
+				got = append(got, read(t, peer))
+			}
+			if want := []string{"first", "callback", "record", "other"}; !slices.Equal(got, want) {
+				t.Errorf("sent %v, want %v: the callback ahead of the record holding the reply it names", got, want)
 			}
 		})
 	})
@@ -171,19 +201,19 @@ type recorder struct {
 }
 
 type queued struct {
-	msg *resources.Buf
-	key uint64
+	msg    *resources.Buf
+	lo, hi uint64
 }
 
 // newRecorder starts a recorder framing with f; its queue has no bound.
-func newRecorder(f core.Framer) (out func(msg *resources.Buf, key, before uint64) error, close func(error), peer net.Conn, b bound) {
+func newRecorder(f core.Framer) (out func(msg *resources.Buf, lo, hi, before uint64) error, close func(error), peer net.Conn, b bound) {
 	conn, peer := net.Pipe()
 	r := &recorder{f: f, conn: conn, wake: make(chan struct{}, 1), done: make(chan struct{})}
 	go r.write()
 	return r.out, r.close, peer, bound{}
 }
 
-func (r *recorder) out(msg *resources.Buf, key, before uint64) error {
+func (r *recorder) out(msg *resources.Buf, lo, hi, before uint64) error {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -193,7 +223,7 @@ func (r *recorder) out(msg *resources.Buf, key, before uint64) error {
 	at := len(r.queue)
 	if before != 0 {
 		for i, q := range r.queue {
-			if q.key == before {
+			if q.lo <= before && before <= q.hi {
 				at = i
 				break
 			}
@@ -201,7 +231,7 @@ func (r *recorder) out(msg *resources.Buf, key, before uint64) error {
 	}
 	r.queue = append(r.queue, queued{})
 	copy(r.queue[at+1:], r.queue[at:])
-	r.queue[at] = queued{msg, key}
+	r.queue[at] = queued{msg, lo, hi}
 	r.mu.Unlock()
 	select {
 	case r.wake <- struct{}{}:

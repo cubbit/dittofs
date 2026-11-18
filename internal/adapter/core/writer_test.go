@@ -36,7 +36,7 @@ func chargeOfChunk(n int) int64 {
 // buildWriter is the connection's writer, held to the suite of out every
 // writer passes.
 func buildWriter(t *testing.T) newOut {
-	return func(f core.Framer) (func(*resources.Buf, uint64, uint64) error, func(error), net.Conn, bound) {
+	return func(f core.Framer) (func(*resources.Buf, uint64, uint64, uint64) error, func(error), net.Conn, bound) {
 		conn, peer := net.Pipe()
 		w := core.NewTestWriter(conn, f, 0, func(error) {})
 		closeOut := func(error) {
@@ -77,14 +77,14 @@ func TestTheGatheredWrite(t *testing.T) {
 		b.B = append(b.B[:0], body...)
 		return b
 	}
-	if err := w.Out(msg("first"), 0, 0); err != nil {
+	if err := w.Out(msg("first"), 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if n := <-batches; n != 1 {
 		t.Fatalf("the first write gathered %d messages, want 1", n)
 	}
 	for i := range 9 {
-		if err := w.Out(msg(string(rune('a'+i))), 0, 0); err != nil {
+		if err := w.Out(msg(string(rune('a'+i))), 0, 0, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -111,7 +111,7 @@ func TestTheGatheredWrite(t *testing.T) {
 	}
 	// A later batch's hook follows the one before it, whose messages are
 	// released by then: queue one and read it, then only its charge is held.
-	if err := w.Out(msg("z"), 0, 0); err != nil {
+	if err := w.Out(msg("z"), 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if n := <-batches; n != 1 {
@@ -159,7 +159,7 @@ func TestTheSilentPeerCloses(t *testing.T) {
 		}
 		msg.B = append(msg.B[:0], "stuck"...)
 		start := time.Now()
-		if err := w.Out(msg, 0, 0); err != nil {
+		if err := w.Out(msg, 0, 0, 0); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
@@ -214,7 +214,7 @@ func TestTheClosedPeerCloses(t *testing.T) {
 	if err := peer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Out(msg, 0, 0); err != nil {
+	if err := w.Out(msg, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -266,7 +266,7 @@ func TestTheDeadlineIsArmedForEachBatch(t *testing.T) {
 			return b
 		}
 		start := time.Now()
-		if err := w.Out(msg("first"), 0, 0); err != nil {
+		if err := w.Out(msg("first"), 0, 0, 0); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
@@ -274,7 +274,7 @@ func TestTheDeadlineIsArmedForEachBatch(t *testing.T) {
 		if err := readRecord(peer, f); err != nil { // the first batch's write ends here
 			t.Fatal(err)
 		}
-		if err := w.Out(msg("second"), 0, 0); err != nil {
+		if err := w.Out(msg("second"), 0, 0, 0); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
@@ -314,11 +314,11 @@ func TestAFailedWriteReleasesTheQueue(t *testing.T) {
 			b.B = append(b.B[:0], body...)
 			return b
 		}
-		if err := w.Out(msg("held"), 0, 0); err != nil {
+		if err := w.Out(msg("held"), 0, 0, 0); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
-		if err := w.Out(msg("behind"), 0, 0); err != nil {
+		if err := w.Out(msg("behind"), 0, 0, 0); err != nil {
 			t.Fatal(err)
 		}
 		_ = peer.Close() // the write fails; both messages must be released
@@ -345,7 +345,7 @@ func TestStopEndsAHeldWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 		b.B = append(b.B[:0], "held"...)
-		if err := w.Out(b, 0, 0); err != nil {
+		if err := w.Out(b, 0, 0, 0); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait() // the writer is in the write; the peer reads nothing
@@ -380,7 +380,7 @@ func TestTheBoundReleasesTheReader(t *testing.T) {
 				t.Fatal(err)
 			}
 			b.B = append(b.B[:0], byte('a'+i%26))
-			if err := w.Out(b, 0, 0); err != nil {
+			if err := w.Out(b, 0, 0, 0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -442,7 +442,7 @@ func TestACloseThatStopsTheWriterReturns(t *testing.T) {
 				t.Fatal(err)
 			}
 			b.B = append(b.B[:0], body...)
-			if err := w.Out(b, 0, 0); err != nil {
+			if err := w.Out(b, 0, 0, 0); err != nil {
 				t.Fatal(err)
 			}
 			synctest.Wait()
@@ -492,13 +492,13 @@ func TestABatchStopsAtTheRecordCap(t *testing.T) {
 			b.B = append(b.B[:0], make([]byte, n)...)
 			return b
 		}
-		if err := w.Out(msg(1), 0, 0); err != nil { // holds the writer while the rest queues
+		if err := w.Out(msg(1), 0, 0, 0); err != nil { // holds the writer while the rest queues
 			t.Fatal(err)
 		}
 		synctest.Wait()
 		capBytes, _ := f.MaxRecord()
 		for range 4 {
-			if err := w.Out(msg(capBytes/2), 0, 0); err != nil {
+			if err := w.Out(msg(capBytes/2), 0, 0, 0); err != nil {
 				t.Fatal(err)
 			}
 		}
