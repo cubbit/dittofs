@@ -17,8 +17,8 @@ published NTLMv2 vectors.
 **Depends on:** **S1**, epic 1's surface frozen: `SignInStep`, `NTLMAuthenticate`,
 `SignInResult`, `Keys`, `Authenticator`, `*Server` with a stubbed `SignIn`, `vfs.Deps.Auth`.
 **E2, partly**: T4.2 waits for E2's T2.1 (`User.NTHash` and the name fold), T2.4
-(`State.Settings` with its `NTLM` and `NetBIOSName` keys, `Deps.Secrets`), T2.5 (`Find` by user
-name) and T2.6 (`NewHashes`, whose NT hash T4.2's tests sign in against). T2.6 does not wait for
+(`State.Settings` with its `NTLM` and `NetBIOSName` keys, `Deps.Secrets`), and T2.6 (`Lookup` by user
+name, and `NewHashes`, whose NT hash T4.2's tests sign in against). T2.6 does not wait for
 RFC 23's user deletion (#4326's T2.11) once its marked-deleted cases move to E2's T2.8 (#4316),
 which waits for T2.11 and which RFC 23's password write waits for, so S2 does not; RFC 23's
 epic 2 PR table names T2.8 rather than T2.6 in #4336. T4.1 starts at S1.
@@ -93,7 +93,7 @@ the local check against a sealed NT hash; the NTLM-off refusal at sign-in; the t
 
 - **E1**, the contract and the server's surface: `pkg/identity`, `internal/identity`'s
   lifecycle, `vfs.Deps.Auth`, and the import rule that only `internal/node` imports the server.
-- **E2**, principals and accounts: `Find`, `NewHashes`, `User.NTHash`, `State.Settings`,
+- **E2**, principals and accounts: `Lookup`, `NewHashes`, `User.NTHash`, `State.Settings`,
   `Deps.Secrets`, the name fold.
 - **E3**, resolution, whose T3.1 adds `Deps.Tracer`.
 - **E4**, this epic.
@@ -385,7 +385,7 @@ internal/vfs/
 
 **Subtask T4.2 estimate: 2.75 man-days.**
 
-- **Track:** B. **Depends on:** T4.1; E2's T2.1, T2.4, T2.5, T2.6.
+- **Track:** B. **Depends on:** T4.1; E2's T2.1, T2.4, T2.6.
 - **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15, R16, R17, R27,
   R28.
 - **Deliverables:** `(*Server).SignIn`'s body, reading one `State` for the call:
@@ -510,10 +510,11 @@ internal/vfs/
   - 10 failures spread over `alice`, `ALICE`, `CORP\alice` (refused `unknown_domain` here) and
     `alice@CORP.EXAMPLE`, then the right password as `alice`: refused (catches a spelling that
     resets the count, R21);
-  - `alice`, `ALICE` and `NAS01\alice`, each sent as the user name with an empty domain and the
-    right password: `Lookup` and `SignIn` give alice's principal for each, and the throttle's key,
-    read through an `export_test.go` accessor, is one for all three (catches the sign-in finding
-    the literal name, which makes one string two principals, D6);
+  - `alice` and `ALICE` sent with an empty domain, and `alice` sent with domain `NAS01`, each
+    with the right password: `Lookup` and `SignIn` give alice's principal for each, `Lookup` of
+    `NAS01\alice` gives it too, and the throttle's key, read through an `export_test.go`
+    accessor, is one for all three (catches the sign-in finding the literal name, which makes one
+    string two principals, D6);
   - 10 sign-ins for alice from A while `kvtest`'s fault wrapper fails the user's read, each
     `ErrUnavailable`, then the right password with the wrapper off: accepted (catches a store
     fault counted, D3, D5);
@@ -585,7 +586,7 @@ internal/vfs/
 flowchart TD
   S1(["S1 identity surface frozen"]):::sync --> T4_1["T4.1 NTLMv2 cryptography"]
   T4_1 --> T4_2["T4.2 Local NTLMv2 sign-in"]
-  X2(["E2's T2.1, T2.4, T2.5, T2.6"]):::sync --> T4_2
+  X2(["E2's T2.1, T2.4, T2.6"]):::sync --> T4_2
   T4_2 --> T4_3["T4.3 vfs SignIn through Auth"]
   T4_3 --> S2(["S2 sign-in in vfs, with E3"]):::sync
   T4_2 --> T4_4["T4.4 Logon throttle"]
@@ -605,7 +606,7 @@ pass-through row inherit.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T4.1 | 1.5 | — | the cryptography and its vectors, one review of the lifted code; open at S1 |
-| 2 | T4.2, T4.3 | 3 | PR 1, E2's T2.1, T2.4, T2.5, T2.6 | a local user signs in through `vfs.Service`: S2's sign-in half |
+| 2 | T4.2, T4.3 | 3 | PR 1, E2's T2.1, T2.4, T2.6 | a local user signs in through `vfs.Service`: S2's sign-in half |
 | 3 | T4.4, T4.5 | 3 | PR 2, E3's T3.1 | every attempt throttled and recorded |
 
 A suggestion only: one pull request per subtask works as well.

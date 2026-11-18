@@ -39,7 +39,7 @@ waits for T2.4 (T6.3, T6.5; T6.9 reads the range), T2.2 and T2.5 (T6.9) and T2.6
 (T5.7, the domain SID) and T2.1 (T5.9, `Machine`); **E3**, partly, whose T3.10 needs root (T2.1;
 anonymous already exists) and whose `ntlm_off` refusal reads the `NTLM` key of T2.4's
 `State.Settings`; **E4**, partly, whose local check reads T2.1's `NTHash`, finds a user by name
-through T2.5's `Find`, signs in against T2.6's `NewHashes` and resolves through T2.4's
+through T2.6's `Lookup`, signs in against T2.6's `NewHashes` and resolves through T2.4's
 `Deps.Secrets`, and whose routing reads T2.4's `identity.netbios_name`; and RFC 23's plan's epic
 5, which builds its accounts on T2.6's `NewHashes` and `APISignIn`, and whose password writes (its
 T5.7 and T5.10), the first code to store an NT hash, wait for T2.8; and RFC 23's plan's epic 4,
@@ -270,7 +270,8 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   refuse a range the write committed, which would leave the API's range, read from `pkg/settings`,
   and identity's minting callers' `State.Settings` apart. `decision:` marker at the check. The
   alternative, kvstore reading the setting's raw row in the write's transaction, couples the store
-  to a section's encoding. Needs an RFC 16 §3 amendment for `Alloc.Range`, and amendments for the
+  to a section's encoding. Needs an RFC 16 §3 amendment for `Alloc.Range` and for `ControlPlaneTx.IDHighWater` among its
+  tracked reads, which RFC 23's plan's epic 2 declares in `entity/write.go` (its R18's list), and amendments for the
   refusal: RFC 13 §6 and RFC 23 §4.3, whose write checks read only settings, not the ID counters,
   and RFC 13 Appendix B's and RFC 18 §2.6's `identity.id_range` rows, which say only that a change
   applies to the next allocation. `decision:` marker at `Alloc`. Prior art:
@@ -371,12 +372,13 @@ pkg/metadata/entity/
   fold.go           T2.1  FoldPrincipalName and PrincipalUserPart (D2), beside FoldShareName
   control.go        T2.1  User.Password, User.NTHash (User.Secret renamed), SchemeDir (D7)
                     T2.2  IDRange, Alloc.Range (D1)
+  write.go          T2.9  ControlPlaneTx.IDHighWater, the tracked read CheckTx calls (D1)
 pkg/metadata/kvstore/
   users.go          T2.1  shape checks (D3), the @ rule, cross-kind uniqueness
                     T2.2  the allocation behind Alloc on PutUser and PutGroup, SID immutable
                     T2.8  NTHash among the references DeleteUser's last batch deletes (R34)
   alloc.go          T2.2  IDS‖0x04 uid, IDS‖0x05 gid, IDS‖0x06 RID; the installation's domain SID
-                    T2.9  ControlPlaneTx.IDHighWater (D1)
+                    T2.9  IDHighWater's body on the transaction (D1)
   minter.go         T2.3  Minter, Create
   nthash.go         T2.7  DropNTHashes (D4)
   codecs.go         T2.1  User's two references, the machine record
@@ -533,6 +535,12 @@ pkg/settings/
   E4, E6's T6.3 and T6.5, E6's T6.9 (the range) and E8, which lists the section in the node's
   table. Later keys join the section: `identity.keytab` from E5's T5.2 and `DirectoryStaleGrace`
   from E6's T6.7.
+- **Acceptance criteria:**
+  - `Apply` of a valid `State` makes it current; of one whose settings fail `Validate` it is
+    refused and the last applied `State` kept (R29).
+  - A section with no rows yields RFC 13 Appendix B's defaults: `NTLM` on, `NetBIOSName`
+    `DITTOFS`, the default range (R30).
+  - A reader never sees a `State` whose `Settings` and `Generation` come from two `Apply`s (R35).
 - **Tests:** over the memory KV store, under the leak check: `Apply` of a valid `State`, then of one
   with `NetBIOSName` `"dittofs.lab"`, then reading the current `State` through `export_test.go`:
   the first kept (catches an invalid setting applied, R29); a section with no rows yields `NTLM`
@@ -717,7 +725,7 @@ pkg/settings/
   - A write of another `identity.*` key commits while the range is used up (D1).
 - **Tests:** over the memory KV store, under the leak check: uids allocated through T2.2 until the
   uid counter reaches 1 000 006, then each of these written through `pkg/settings`' `Check` and
-  `PutSetting` in one `Write`: `[1000, 2000]` refused `ErrInvalid`, `CFGGEN` unchanged and the next create drawing 1 000 007 (catches a
+  `PutSetting` in one `Write`: `[1000, 2000]` refused `ErrInvalid`, `CFGGEN` and the uid counter unchanged (catches a
   lowered range committed, which leaves every later `Alloc` `ErrNoSpace`, R11, D1);
   `[1 000 000, 1 000 006]` refused (catches `Hi < mark` written for `Hi <= mark`, D1);
   `[1 000 000, 1 000 007]` committed, then one more uid allocated, using it up: `identity.ntlm`
@@ -790,8 +798,9 @@ readers do not wait for the RFC 13 plan's epic 3 (T2.9, D1).
 - **Where `Alloc`'s range comes from (D1).** RFC 16 §3's `Alloc` is silent, and so are the RID
   counter's start and an exhausted range. Recommended: a `Range` field set by the caller, the next
   value `max(counter+1, Range.Lo)`, `ErrNoSpace` on exhaustion, the settings write refusing a range at or
-  below a counter's high-water mark in its own transaction, and RIDs from 1000, in an RFC 16 §3
-  amendment; the refusal also needs RFC 13 §6 and Appendix B, RFC 18 §2.6 and RFC 23 §4.3 amended
+  below a counter's high-water mark in its own transaction through `ControlPlaneTx.IDHighWater`, a
+  tracked read, and RIDs from 1000, in an RFC 16 §3
+  amendment (`IDHighWater` written into §3 by this pull request), with RFC 23's plan's epic 2's R18 list gaining the read; the refusal also needs RFC 13 §6 and Appendix B, RFC 18 §2.6 and RFC 23 §4.3 amended
   (D1). Alternative: kvstore reads the setting's row in the write's transaction.
 - **The NT-hash deletion's store calls (D4).** RFC 16 §3 has no call that drops secrets by kind,
   RFC 18 §2.6 says the `Minter`'s are identity's only writes, and zeroing `User.NTHash` overwrites a
