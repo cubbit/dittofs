@@ -34,11 +34,11 @@ type Deps struct {
 }
 
 // Store is the store's calls the server makes: the principals and their
-// records, and, as identity comes to need them, the calls that mint
-// principals. Declaring it here keeps a change to the store's write calls
-// inside the store.
+// records, and the one write that mints principals. Declaring it here keeps a
+// change to the store's write calls inside the store.
 type Store interface {
 	Principals() kvstore.Principals
+	Minter() kvstore.Minter
 }
 
 // Clock is the server's source of time.
@@ -89,6 +89,8 @@ type Server struct {
 	tracer   trace.Tracer
 	logger   *slog.Logger
 	refusals *prometheus.CounterVec // by reason
+	mints    *prometheus.CounterVec // by kind
+	unnamed  *prometheus.CounterVec // by kind
 }
 
 // refusalsSpec counts the calls resolution refuses, by the reason refused.
@@ -123,12 +125,18 @@ func New(d Deps) (*Server, error) {
 	if s.tracer == nil {
 		s.tracer = noop.NewTracerProvider().Tracer("")
 	}
-	if d.Metrics != nil {
-		s.refusals = d.Metrics.Counter(refusalsSpec)
-	} else {
-		s.refusals = prometheus.NewCounterVec(prometheus.CounterOpts{Name: refusalsSpec.Name, Help: refusalsSpec.Help}, refusalsSpec.Labels)
-	}
+	s.refusals = counter(d.Metrics, refusalsSpec)
+	s.mints = counter(d.Metrics, mintsSpec)
+	s.unnamed = counter(d.Metrics, unnamedSpec)
 	return s, nil
+}
+
+// counter is spec registered on reg, or an unregistered one for a nil reg.
+func counter(reg *metrics.Registry, spec metrics.Spec) *prometheus.CounterVec {
+	if reg != nil {
+		return reg.Counter(spec)
+	}
+	return prometheus.NewCounterVec(prometheus.CounterOpts{Name: spec.Name, Help: spec.Help}, spec.Labels)
 }
 
 // Apply makes st the State every later call reads, in one swap. A State
