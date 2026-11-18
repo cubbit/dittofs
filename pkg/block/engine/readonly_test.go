@@ -348,20 +348,33 @@ func TestAReadOnlyJournalIsLoggedOnce(t *testing.T) {
 
 // A clone past its journal step whose copies the read-only journal refuses
 // is retried without logging at Error each retry: the transition is logged
-// once.
+// once. Each attempt logs its refusal at Debug after any Error it logs, so
+// the test waits for several attempts' Debug records before counting.
 func TestACloneRetriedOverAReadOnlyJournalLogsOnce(t *testing.T) {
-	var errs atomic.Int64
-	u, h := clonedHookedUnit(t, func(d *engine.Deps) { d.Logger = slog.New(countHandler{errors: &errs}) })
+	logs := newLogRecorder()
+	u, h := clonedHookedUnit(t, func(d *engine.Deps) { d.Logger = slog.New(logs) })
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	h.cloneTarget.set(func() { u.j.ReadOnly(syscall.EIO) }) // after the clone's journal step
 	_ = u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
-	for range 20 {
-		u.clock.Advance(time.Second)
-		time.Sleep(time.Millisecond)
+	count := func() (errs, retries int) {
+		for _, r := range logs.records() {
+			if r.Level == slog.LevelError {
+				errs++
+			}
+			if strings.Contains(r.Message, "refused by the read-only journal: retried") {
+				retries++
+			}
+		}
+		return errs, retries
 	}
-	if n := errs.Load(); n != 1 {
-		t.Errorf("%d records at Error, want 1", n)
+	const attempts = 5
+	u.until(t, fmt.Sprintf("%d attempts of the clone's copies", attempts), func() bool {
+		_, n := count()
+		return n >= attempts
+	})
+	if n, _ := count(); n != 1 {
+		t.Errorf("%d records at Error over %d attempts, want 1", n, attempts)
 	}
 }
 
