@@ -77,7 +77,10 @@ Fourteen changes to `testproto`, each made by the subtask whose tests need it:
 6. The hold row's bound read from a value a test sets on the `Protocol`, `HoldFor` its default
    (T5.5b).
 7. `Park`'s reply carrying its name, its encoder refusing a name that does not fit the buffer
-   it is handed with an error a new row maps (T5.11, D26).
+   it is handed with an error a new row maps; its handler reading the current filehandle
+   before `Park`, so a request can hold on the service's delay and park on its re-drive (R74),
+   and again after it, the wait a cancel or a drain ends, then creating a regular file of the
+   name, unless the park was cancelled meanwhile, as `done`'s answer (T5.11, D26).
 8. A row for `ErrDecode`, with a status of its own, in every table (T5.7, D7); the row that
    names `context.Canceled` naming `ErrCancelled` instead (T5.2a, D17), both landed with #4229;
    a row for
@@ -329,7 +332,7 @@ cited by number and title, and how it applies here or why it does not.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R70 | `Park` refuses a member before the last of a chain with `ErrNotLast`, a connection at `Stages.MaxPending` with `ErrTooManyPending`, a draining connection with the drain's error, and, when the request's own reply reservation is larger than the small class, a reply pool that cannot take a small-class one with `ErrDelay` of `DelayResources`; nothing is sent | MUST | §4.7; RFC 24 §3.3 | T5.11 |
-| R71 | Otherwise `Park` sends the interim at once, releases the receive reservation and keeps a small-class reply reservation, and no more, while the request waits: it holds no worker, no admission and no write data | MUST | §4.7, §4.6; RFC 24 §3.3 | T5.11 |
+| R71 | Otherwise `Park` sends the interim at once and keeps a small-class reply reservation, and no more, while the request waits, its receive reservation released once the handler returns `ErrParked`: it holds no worker, no admission and no write data | MUST | §4.7, §4.6; RFC 24 §3.3 | T5.11 |
 | R72 | A parked request's reply that would not fit that reservation is answered as its protocol answers an overflow (D26) | MUST | §4.7 | T5.11 |
 | R73 | A parked request has no request deadline: it waits until `done`, a cancel, a drain or a close | MUST | §6.4, §4.7 | T5.11 |
 | R74 | A request already pending past its interim gets no second one when it parks: its slot moves from held to parked | MUST | §4.7 | T5.11 |
@@ -802,9 +805,9 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   request without write data copy its arguments out and release its receive reservation, and
   §4.7 declines the release hook that would let `core` do so: `core` cannot tell which
   arguments point into the record. **A request held between attempts keeps its record's `Buf`
-  until its final answer; a parked request releases it in `Park`, whose handler has copied what
-  it needs.** RFC 20 §4.6's first bullet and `Park`'s comment in §4.7 say so, as this pull
-  request amends them. `decision:` on the hold record. No prior art sought: the two RFC
+  until its final answer; a parked request releases it once its handler returns `ErrParked`,
+  having copied what it needs.** RFC 20 §4.6's first bullet and `Park`'s comment in §4.7 are
+  amended to say so. `decision:` on the hold record. No prior art sought: the two RFC
   sentences conflict, and one must give.
 - **D13, a held request counts its receive charge toward the floor's bytes.** RFC 24 §4.3
   counted "the write's bytes", which `core` does not read; RFC 24 §4.3 and RFC 20 §4.6 now count
@@ -2232,10 +2235,13 @@ registry. Nothing else is exported.
   by a hold's). The long name (catches a reply encoded outside its reservation). The four
   refusals, with no file in the service (catch a refusal after the interim, and the full
   reply pool's `DelayResources` held by the `ErrDelay` row's `Hold`). The two
-  cancels, the second by releasing the hold before the cancel is sent (catches a granted call
-  reported cancelled). The drain, its success case by releasing the hold first, and the close
-  (catch a park that waits for the drain's deadline, a granted call unanswered, a
-  reservation kept by a dropped reply, and a `close` that waits for the park it ends). The
+  cancels: the first during the park's wait, before its `Create`, the second once its `Create`
+  is held in the service, where the cancel ends the call's context, the hold passes the call
+  through and the memory service applies it, `done` reporting no error (catches a granted call
+  reported cancelled). The drain, its success case drained the same way once the `Create` is
+  held, and the close (catch a park that waits for the drain's deadline, a granted call
+  unanswered, a reservation kept by a dropped reply, and a `close` that waits for the park it
+  ends). The
   single interim (catches a second one). The held gauge unchanged by eight parks (catches a
   park counted as held). The pool filled by parks, the clock moved past 30 s with none
   released (catches a status that waits for a park to end, holding its `Flow` place and, at
