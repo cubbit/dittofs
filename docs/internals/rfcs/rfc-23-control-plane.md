@@ -479,7 +479,7 @@ type Config struct {
 type Records interface {
 	RegisterNode(ctx context.Context, n NodeRecord) error                      // §2.2 step 3: roles and version ranges, refused in the same transaction if an active version lies outside them (RFC 13 §5.5)
 	List(ctx context.Context, kind Kind, after string) iter.Seq2[Record, error] // paged (RFC 16 §3.1)
-	AllSettings(ctx context.Context, after metadata.SettingKey) iter.Seq2[metadata.Setting, error] // every scope's settings in `CFG`'s key order, in pages of 256, one read transaction each, like the listings (RFC 16 §3.1), for the reconcile (§2.3): on every moved settings generation and on a full run
+	AllSettings(ctx context.Context, after metadata.SettingKey) iter.Seq2[metadata.Setting, error] // every scope's settings in `CFG`'s key order, resumed from a cursor like every listing (RFC 16 §3.1), in kvstore's pages of 256, one read transaction each, for the reconcile (§2.3): on every moved settings generation and on a full run
 	Counters(ctx context.Context) (Counters, error)                            // settings, share list, principals, claim generation
 	PutNodeStatus(ctx context.Context, s NodeStatus) error                     // §2.4
 }
@@ -2057,7 +2057,12 @@ in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi
    not only on a full run, so its cost is part of what is weighed here. Whether
    it needs a rate bound, and whether reconciling only the records above the
    reconciled position needs an index by (kind, position) in RFC 16, is
-   unmeasured.
+   unmeasured. So is the walk's own progress: while writes raise the settings
+   generation faster than a walk of many pages ends, §2.3 discards every walk and
+   the node's reconciled position stops until the writes pause. Whether the
+   restarts are bounded, and what a bounded walk falls back to, is open: one read
+   transaction over every page runs into the age past which a store aborts a
+   transaction ([RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend), `Limits`).
 
 ## Appendix A — prior art
 

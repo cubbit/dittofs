@@ -722,11 +722,11 @@ Each carries a `ponytail:` marker at the code site:
     stops verifying the old password.
   - *Epic:* 4.
 - **One `CFGGEN` key for every setting and secret write.** Each write raises it in its
-  transaction, so writes contend on one key, and each costs every node one reconcile scan.
+  transaction, so writes contend on one key, and each costs every node one reconcile walk.
   - *Ceiling:* the commit rate of epic 4's benchmark, eight concurrent `Seal` and `tx.PutSecret`
     writers on Badger under `t.TempDir()`, in the `manual` tier, run with the `CFGGEN` raise and
     again without it as a baseline, compared by `benchstat` over `-count=10`; reconcile, polling once a second, folds every write of that
-    second into one scan. Bulk provisioning of users reaches it first. The trigger is the run with
+    second into one walk. Bulk provisioning of users reaches it first. The trigger is the run with
     the raise committing under half the baseline's rate.
   - *Upgrade path:* a generation per section, or secrets off `CFGGEN` with their own counter, when
     the trigger fires.
@@ -929,6 +929,7 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 		}
 		cur = cur.Keep(section, prev) // prev is non-nil once the section has started
 	}
+	// decision: a secret resolved here is read after the second CFGGEN read, so it can be newer than gen, the generation reported; the next poll walks again and the position only lags. Overturned if a consumer needs the secret version applied to equal the reported generation.
 	for section, err := range n.resolveSecrets(ctx, cur) { // before any section applies: a moved or deleted
 		n.refused(section, err) // secret resolved again; one that fails (wrong kind, unwrap, a retired key gone)
 		cur = n.holdOrKeep(section, cur) // fails closed: held at start, else keeps its last snapshot
@@ -1484,7 +1485,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys |
 | The cluster rules: §5's two-step restart value, §5.4 and §5.5 across nodes, the two-node §9 rows; a lagging node refusing the raise (header, §4.3's `ponytail:`, O1, §1.4) | single node only | RFC 15 | a second node |
 | Pruning an old secret version once every node's status reports the new one (§4.3's `ponytail:`) | a node that is down keeps its last report and holds the prune back | RFC 15 | a second node |
-| Reconcile reading only records above its position, with an index by position (§4.3's `ponytail:`) | one paged walk of `CFG` per generation move | unowned | the scan shows at the settings count of 10⁴ shares |
+| Reconcile reading only records above its position, with an index by position (§4.3's `ponytail:`) | one paged walk of `CFG` per generation move | unowned | the walk shows at the settings count of 10⁴ shares |
 | The cross-component rule, RFC 13 §6's example (§4.3's `ponytail:`) | its second setting, `migration.freeze_timeout`, does not exist | unowned | that setting is declared |
 | A per-role passphrase variable for key files (§4.3's `ponytail:`) | `keyprovider` reads one variable | unowned | two roles need distinct passphrases |
 | The replacement of `kmip_fake_test.go`'s canned KMIP server, a fake that passes a conformance suite; the canned server itself moves with `keyprovider` (D5, E1's D3) | the move changes no line of it, so the "no canned stub" rule does not fire on it | unowned | the fake's first change, or its first new caller |

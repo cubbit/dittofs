@@ -279,8 +279,8 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   apart from `identity.*` by #4059's `Read`, and E2's `Settings` is that section's struct. A
   second field, `Directory *directory.Record`, nil with no directory, keeps each section one
   struct. Needs an RFC 18 §2.6 amendment. Prior art: none found.
-- **D3, the bind name is a field, and the bind credential a kind of its own, pending the user's
-  answer (§9).** A simple bind needs a name and a password; RFC 13's row names only the
+- **D3, the bind name is a field, pending the user's answer (§9), and the bind credential a kind of
+  its own.** A simple bind needs a name and a password; RFC 13's row names only the
   credential's reference. The record gains `bind_name`, the distinguished name or UPN that binds,
   shown to an operator like the base; the password is a `Secret` of a new kind, `directory
   credential`, sealed under the `protocol` key RFC 13 §7 assigns to identity-provider bind
@@ -938,9 +938,9 @@ much of v1's client survives D4 and D10, and the swap's ordering inside one tran
   other section, which makes E2's struct two sections' shape.
 - **The bind name and the credential's kind (D3).** RFC 13 Appendix B's row has no bind name, and
   RFC 16 §2.3's `Secret.Kind` list names the `directory credential` kind since #4491. Recommended:
-  a `bind_name` field, amending Appendix B's row. Alternative: the sealed
-  value holds the name and the password together, which hides from an operator which account
-  binds.
+  a `bind_name` field, amending Appendix B's row. Alternative: the
+  `directory credential` secret's sealed value holds the name and the password together, which
+  hides from an operator which account binds.
 - **The swap's one transaction (D5).** RFC 16 §3's `Rename` takes one principal; RFC 18 §5.1
   wants a swap's renames in one transaction. Recommended: `Rename` takes a list, amending RFC 16 §3.
   Alternative: a `Renames` call beside the single one.

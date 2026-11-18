@@ -745,10 +745,17 @@ type Setting struct {
 	Schema     uint32       // the record's schema version; a reader that does not know it refuses the record (RFC 13 §2.3)
 }
 
+// ScopeKind is a setting scope's kind, one byte: installation, node, namespace,
+// remote store or share. Its codes are the `CFG` scope tag of §4.2's enumerated
+// components, never reassigned. It is a type of its own, so a scope's code and a
+// ResourceKind, which give namespace and remote store opposite codes, do not mix
+// without a conversion.
+type ScopeKind uint8
+
 // SettingScope is where a setting is set (RFC 13 §3): the scope's kind and, but
 // for the installation, the ID of the node, namespace, remote store or share.
 type SettingScope struct {
-	Kind uint8    // installation, node, namespace, remote store or share: the `CFG` scope tag of §4.2's enumerated components, a code never reassigned
+	Kind ScopeKind
 	ID   [16]byte // the scope's ID (§4.2's identifier); zero for the installation
 }
 
@@ -791,7 +798,7 @@ type ResourceKind uint8
 // additional data seals Kind, which a code that never changes keeps opening.
 type ResourceRef struct {
 	Kind ResourceKind // the record's kind, one byte
-	ID   []byte // the record's key: its minted 16-byte ID (FileID, ShareID, PrincipalID, §2.2), else its natural key, encoded as §4.2 encodes that record's key components (a netgroup's name as a byte string; a setting's tagged scope then its byte-string key, for an `OPR` or `AUX` target only, since a SecretOwner never names a setting through Record; a grant's ShareID then its Principal; a snapshot's ShareID then its Cut, as `S‖id‖snap‖cut` keys it), the variable-length ID §4.2's `OPR` and `AUX` targets carry
+	ID   []byte // the record's key: its minted 16-byte ID (ShareID, PrincipalID, §2.2), else its natural key's components as raw bytes, the variable-length one last: a netgroup's name; a setting's scope tag, its scope ID below the installation, then its key (for an `OPR` or `AUX` target only, since a SecretOwner never names a setting through Record); a grant's ShareID then its Principal; a snapshot's ShareID then its Cut, as `S‖id‖snap‖cut` keys it. §4.2's `OPR` and `AUX` targets write the whole ID as one byte string
 }
 
 // SecretOwner is the one holder a secret belongs to: a record's field (a
