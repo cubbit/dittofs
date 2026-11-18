@@ -887,7 +887,7 @@ Metric names are shown without the deployment's prefix, which the exporter adds.
 | the position a node has reconciled through per kind — `settings`, `shares`, `principals` — read against the store's current counter per kind | RFC 23's `runtime_applied_generation{kind}` | gauge |
 | how long a node's reconciled position has been behind the store's counter, per kind — `settings` (`CFGGEN`), `shares` (`SL`), `principals` (`PGEN`) | `config_generation_lag_seconds{kind}` | gauge |
 | secrets a node holds at an older version than the current one | `config_secrets_behind` | gauge, a count |
-| each format's active version, and the range each node registers | `format_active_version`, `format_supported_range` | gauges, labelled by format |
+| each format's active version, and the lowest and highest version each node registers | `format_active_version`, `format_supported_min`, `format_supported_max` | gauges, labelled by format |
 | records refused, by component and reason | `config_refused_total` | counter |
 | changes refused because a setting is bound | `config_bound_refusals_total` | counter |
 | the provisioning file hash each node applied, and applies refused by reason | `config_provisioning_applied`, `config_provisioning_refused_total` | gauge, counter |
