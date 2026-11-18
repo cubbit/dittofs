@@ -1229,7 +1229,7 @@ route that failed, and the bug counters above.
 
 `node.New` ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components))
 builds each component below once per process and hands it to its consumers as a
-`Deps` field: no global, no registry lookup, no value carried in a context. A
+`Deps` field: no global, no registry lookup, no component carried in a context. A
 field is a concrete type where there is one implementation, as in
 [RFC 17 §2.3](rfc-17-vfs.md#2.3%20Dependencies%20and%20wiring). Start and stop
 steps are [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)'s.
