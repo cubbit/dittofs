@@ -113,8 +113,10 @@ func (r *resolving) refusals(t *testing.T, reason string) float64 {
 	return 0
 }
 
+// uid is a user's file spellings: the uid n and its SID, since a user holds
+// both or neither.
 func uid(n string) entity.ProtocolIDs {
-	return entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: n}}
+	return entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: n}, {Scheme: entity.SchemeSID, Value: "sid-" + n}}
 }
 
 func ticket(p entity.Principal, name string) pid.Identity {
