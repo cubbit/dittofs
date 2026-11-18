@@ -200,7 +200,7 @@ func Bind[Req, Rep any](
 // its error, and writes what its operation's reply carries beside the status
 // the header codec wrote (§4.7's Invocation.Encode). A reply is its
 // operation's result past the status, and its zero value is its fail arm:
-// what only a success carries is an ok field, nil until the handler sets it,
+// an arm its status selects is an arm field, nil until the handler sets it,
 // so a nil or empty reply writes the fail arm whole.
 type Decoder[T any] interface {
 	*T
@@ -239,10 +239,11 @@ type Hooks[Req any] struct {
 // answer of a request refused before its call does (Invocation.Encode).
 //
 // decision: Rep is the operation's result past the status, its zero value its
-// fail arm (§4.7), and a handler returns only fail-arm content beside its
-// error, as an NFSv3 failure returns its WCC data: a reply filled for a
-// success and then failed would go out after the error status, which the
-// encoder, never seeing the status, cannot tell.
+// fail arm (§4.7), and a handler sets exactly the arm its status selects, at
+// most one, so beside an error only that error's arm or the fail arm's own
+// content, as an NFSv3 failure returns its WCC data: an arm set for another
+// status would go out after the error's, which the encoder, never seeing the
+// status, cannot tell.
 //
 // decision: more than one Hooks panics, naming the row, as NewOpTable does: a
 // row is program text, and a dropped Role would fail open while draining.

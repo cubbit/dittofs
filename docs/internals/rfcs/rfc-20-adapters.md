@@ -2516,10 +2516,12 @@ func Bind[Req, Rep any](
 // returned beside its error, or an empty one; SMB2 answers a failure with its
 // ERROR body, which the header codec writes, not Rep, but for RFC 22 §16.5's
 // exceptions, which it tells from the command and the status. Rep is the
-// operation's result past the status, its zero value its fail arm: what only
-// a success carries is an ok field, a pointer the encoder writes whole when
-// set and skips when nil, with no discriminant, since the status before it is
-// one; a handler returns only fail-arm content beside its error. A CREATE
+// operation's result past the status, its zero value its fail arm: an arm its
+// status selects is an arm field, a pointer the encoder writes whole when set
+// and skips when nil, with no discriminant, since the status before it is
+// one; a handler sets exactly the arm its status selects, at most one. For
+// SMB2 the fail arm past the status is the header codec's ERROR body, so its
+// encoder writes nothing from nil. A CREATE
 // returns its reply beside STATUS_STOPPED_ON_SYMLINK, as an NFSv3 failure
 // returns its WCC data (Invocation.Encode), and its encoder writes the whole
 // ERROR body with the symlink data, or the generic one from a nil reply. A

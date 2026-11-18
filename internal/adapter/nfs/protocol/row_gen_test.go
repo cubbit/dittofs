@@ -62,8 +62,6 @@ func (x *AccessRes) EncodeWire(v uint32, out *resources.Buf) error {
 }
 
 func (x *AccessRes) decodeXDR(d *wire.Decoder, v uint32) {
-	x.Ok = new(AccessResOk)
-	x.Ok.decodeXDR(d, v)
 }
 
 func (x *AccessRes) encodeXDR(e *wire.Encoder, v uint32) {
@@ -188,8 +186,6 @@ func (x *Write3Res) EncodeWire(v uint32, out *resources.Buf) error {
 
 func (x *Write3Res) decodeXDR(d *wire.Decoder, v uint32) {
 	x.FileWcc.decodeXDR(d, v)
-	x.Ok = new(Write3ResOk)
-	x.Ok.decodeXDR(d, v)
 }
 
 func (x *Write3Res) encodeXDR(e *wire.Encoder, v uint32) {
@@ -250,6 +246,138 @@ func (x *Write3ResOk) IsZero() bool {
 	return x.Count == 0 &&
 		x.Committed == 0 &&
 		x.Verf == [8]byte{}
+}
+
+func (x *Lookup3Args) DecodeWire(b []byte, v uint32) (int, error) {
+	d := wire.Decoder{B: b}
+	x.decodeXDR(&d, v)
+	return d.N, d.Err
+}
+
+func (x *Lookup3Args) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(Lookup3Args)
+	}
+	e := wire.Encoder{B: out.B}
+	x.encodeXDR(&e, v)
+	if e.Err != nil {
+		return e.Err
+	}
+	out.B = e.B
+	return nil
+}
+
+func (x *Lookup3Args) decodeXDR(d *wire.Decoder, v uint32) {
+	x.Dir = d.Opaque(64)
+	x.Name = d.String(255)
+}
+
+func (x *Lookup3Args) encodeXDR(e *wire.Encoder, v uint32) {
+	e.Opaque(x.Dir, 64)
+	e.String(x.Name, 255)
+}
+
+func (*Lookup3Args) MaxWire(v uint32) int {
+	return 328
+}
+
+func (x *Lookup3Args) IsZero() bool {
+	return len(x.Dir) == 0 &&
+		x.Name == ""
+}
+
+func (x *Lookup3Res) DecodeWire(b []byte, v uint32) (int, error) {
+	d := wire.Decoder{B: b}
+	x.decodeXDR(&d, v)
+	return d.N, d.Err
+}
+
+func (x *Lookup3Res) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(Lookup3Res)
+	}
+	e := wire.Encoder{B: out.B}
+	x.encodeXDR(&e, v)
+	if e.Err != nil {
+		return e.Err
+	}
+	out.B = e.B
+	return nil
+}
+
+func (x *Lookup3Res) decodeXDR(d *wire.Decoder, v uint32) {
+	if d.Bool() {
+		x.DirAttributes = new(Fattr3)
+		x.DirAttributes.decodeXDR(d, v)
+	}
+}
+
+func (x *Lookup3Res) encodeXDR(e *wire.Encoder, v uint32) {
+	if x.Ok != nil {
+		x.Ok.encodeXDR(e, v)
+	}
+	e.Bool(x.DirAttributes != nil)
+	if x.DirAttributes != nil {
+		x.DirAttributes.encodeXDR(e, v)
+	}
+}
+
+func (*Lookup3Res) MaxWire(v uint32) int {
+	n := 0
+	n += (*Lookup3ResOk)(nil).MaxWire(v)
+	n += 4 + (*Fattr3)(nil).MaxWire(v)
+	return n
+}
+
+func (x *Lookup3Res) IsZero() bool {
+	return x.Ok == nil &&
+		x.DirAttributes == nil
+}
+
+func (x *Lookup3ResOk) DecodeWire(b []byte, v uint32) (int, error) {
+	d := wire.Decoder{B: b}
+	x.decodeXDR(&d, v)
+	return d.N, d.Err
+}
+
+func (x *Lookup3ResOk) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(Lookup3ResOk)
+	}
+	e := wire.Encoder{B: out.B}
+	x.encodeXDR(&e, v)
+	if e.Err != nil {
+		return e.Err
+	}
+	out.B = e.B
+	return nil
+}
+
+func (x *Lookup3ResOk) decodeXDR(d *wire.Decoder, v uint32) {
+	x.Object = d.Opaque(64)
+	if d.Bool() {
+		x.ObjAttributes = new(Fattr3)
+		x.ObjAttributes.decodeXDR(d, v)
+	}
+}
+
+func (x *Lookup3ResOk) encodeXDR(e *wire.Encoder, v uint32) {
+	e.Opaque(x.Object, 64)
+	e.Bool(x.ObjAttributes != nil)
+	if x.ObjAttributes != nil {
+		x.ObjAttributes.encodeXDR(e, v)
+	}
+}
+
+func (*Lookup3ResOk) MaxWire(v uint32) int {
+	n := 68
+	n += 4 + (*Fattr3)(nil).MaxWire(v)
+	return n
+}
+
+func (x *Lookup3ResOk) IsZero() bool {
+	return len(x.Object) == 0 &&
+		x.ObjAttributes == nil
 }
 
 func (x *WccData) DecodeWire(b []byte, v uint32) (int, error) {

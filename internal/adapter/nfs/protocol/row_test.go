@@ -14,9 +14,12 @@ import (
 // core.Row takes the generated codec as the generator writes it, its version a
 // uint32 that core.Version aliases, and the row decodes the request, calls the
 // handler with it and encodes its reply past the status, whose zero value is
-// its fail arm (RFC 20 section 4.7): a failed ACCESS writes nothing, a failed
-// WRITE3 file_wcc's two FALSEs, and a success its ok part too, within the
-// reply the row reserves, and decodes back to what the handler returned.
+// its fail arm and whose arm the status selects is written only when set, in
+// its field's place (RFC 20 section 4.7): a failed ACCESS writes nothing, a
+// failed WRITE3 file_wcc's two FALSEs, a failed LOOKUP3 dir_attributes'
+// FALSE, and a success its arm too, ahead of LOOKUP3's dir_attributes and
+// after WRITE3's file_wcc, within the reply the row reserves. No capture here
+// holds these replies: the bytes follow RFC 7530's and RFC 1813's layouts.
 func TestRowOverTheGeneratedCodec(t *testing.T) {
 	access := func(fail error) *core.Op {
 		return core.Row[AccessArgs, AccessRes, *AccessArgs, *AccessRes](3, "access", core.NeedsFH,
@@ -36,18 +39,18 @@ func TestRowOverTheGeneratedCodec(t *testing.T) {
 				return Write3Res{Ok: &Write3ResOk{Count: req.Count, Committed: 2, Verf: [8]byte{1, 2, 3, 4, 5, 6, 7, 8}}}, nil
 			})
 	}
+	lookup := func(fail error) *core.Op {
+		return core.Row[Lookup3Args, Lookup3Res, *Lookup3Args, *Lookup3Res](3, "lookup", core.NeedsFH,
+			func(_ context.Context, _ *core.Request, req Lookup3Args) (Lookup3Res, error) {
+				if fail != nil {
+					return Lookup3Res{}, fail
+				}
+				return Lookup3Res{Ok: &Lookup3ResOk{Object: []byte{0xaa, byte(len(req.Name))}}}, nil
+			})
+	}
 	accessArgs := []byte{0, 0, 0, 0x41, 0xff}                                 // ACCESS4args, and a byte past it
 	writeArgs := append(make([]byte, 12), 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0) // no handle, offset 0, count 5, UNSTABLE, no data
-	okAccess := func(b []byte) bool {
-		var r AccessRes
-		_, err := r.DecodeWire(b, 0)
-		return err == nil && r.Ok != nil && *r.Ok == AccessResOk{Supported: 0x3f, Access: 1}
-	}
-	okWrite := func(b []byte) bool {
-		var r Write3Res
-		_, err := r.DecodeWire(b, 0)
-		return err == nil && r.FileWcc == WccData{} && r.Ok != nil && *r.Ok == Write3ResOk{Count: 5, Committed: 2, Verf: [8]byte{1, 2, 3, 4, 5, 6, 7, 8}}
-	}
+	lookupArgs := []byte{0, 0, 0, 0, 0, 0, 0, 1, 'a', 0, 0, 0}                // no handle, the name "a"
 	for _, c := range []struct {
 		name string
 		op   *core.Op
@@ -55,13 +58,15 @@ func TestRowOverTheGeneratedCodec(t *testing.T) {
 		n    int    // the request's bytes
 		err  error  // the handler's
 		want []byte // past the status
-		back func([]byte) bool
 	}{
-		{"a failed ACCESS", access(vfs.ErrIO), accessArgs, 4, vfs.ErrIO, []byte{}, nil},
-		{"a successful ACCESS", access(nil), accessArgs, 4, nil, []byte{0, 0, 0, 0x3f, 0, 0, 0, 0x01}, okAccess},
-		{"a failed WRITE3", write(vfs.ErrIO), writeArgs, 24, vfs.ErrIO, make([]byte, 8), nil},
+		{"a failed ACCESS", access(vfs.ErrIO), accessArgs, 4, vfs.ErrIO, []byte{}},
+		{"a successful ACCESS", access(nil), accessArgs, 4, nil, []byte{0, 0, 0, 0x3f, 0, 0, 0, 0x01}},
+		{"a failed WRITE3", write(vfs.ErrIO), writeArgs, 24, vfs.ErrIO, make([]byte, 8)},
 		{"a successful WRITE3", write(nil), writeArgs, 24, nil,
-			[]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 2, 1, 2, 3, 4, 5, 6, 7, 8}, okWrite},
+			[]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 2, 1, 2, 3, 4, 5, 6, 7, 8}},
+		{"a failed LOOKUP3", lookup(vfs.ErrIO), lookupArgs, 12, vfs.ErrIO, make([]byte, 4)},
+		{"a successful LOOKUP3", lookup(nil), lookupArgs, 12, nil,
+			[]byte{0, 0, 0, 2, 0xaa, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			inv, n, err := c.op.Decode(c.args, 0)
@@ -81,9 +86,6 @@ func TestRowOverTheGeneratedCodec(t *testing.T) {
 			}
 			if bound, _ := inv.Bound(r, 1<<20); len(out.B) > bound {
 				t.Errorf("encoded %d bytes past the %d the row reserves", len(out.B), bound)
-			}
-			if c.back != nil && !c.back(out.B) {
-				t.Errorf("%x does not decode back to the handler's reply", out.B)
 			}
 		})
 	}

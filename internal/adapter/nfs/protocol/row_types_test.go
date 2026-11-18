@@ -11,7 +11,7 @@ type AccessArgs struct {
 // AccessRes is ACCESS4res past its status: ACCESS4resok on a success, its
 // fail arm void.
 type AccessRes struct {
-	Ok *AccessResOk `xdr:"ok"`
+	Ok *AccessResOk `xdr:"arm"`
 }
 
 // AccessResOk is ACCESS4resok.
@@ -34,7 +34,7 @@ type Write3Args struct {
 // success the rest of WRITE3resok.
 type Write3Res struct {
 	FileWcc WccData
-	Ok      *Write3ResOk `xdr:"ok"`
+	Ok      *Write3ResOk `xdr:"arm"`
 }
 
 // Write3ResOk is WRITE3resok past its file_wcc.
@@ -42,6 +42,27 @@ type Write3ResOk struct {
 	Count     uint32
 	Committed uint32 // stable_how
 	Verf      [8]byte
+}
+
+// Lookup3Args is LOOKUP3args (RFC 1813 section 3.3.3), diropargs3, its name
+// bounded at 255 bytes, the test's bound.
+type Lookup3Args struct {
+	Dir  []byte `xdr:"max=64"` // nfs_fh3
+	Name string `xdr:"max=255"`
+}
+
+// Lookup3Res is LOOKUP3res past its status: on a success LOOKUP3resok's
+// object and obj_attributes, ahead of the dir_attributes either arm carries,
+// so the arm comes first.
+type Lookup3Res struct {
+	Ok            *Lookup3ResOk `xdr:"arm"`
+	DirAttributes *Fattr3       // post_op_attr
+}
+
+// Lookup3ResOk is LOOKUP3resok before its dir_attributes.
+type Lookup3ResOk struct {
+	Object        []byte  `xdr:"max=64"` // nfs_fh3
+	ObjAttributes *Fattr3 // post_op_attr
 }
 
 // WccData is wcc_data: pre_op_attr and post_op_attr, each optional.
