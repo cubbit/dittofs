@@ -90,7 +90,7 @@ func (c controlTx) allocate(kind entity.PrincipalKind, ids entity.ProtocolIDs, e
 	return ids, nil
 }
 
-// drawBatch is how many IDs draw probes with one read.
+// drawBatch is the most IDs draw probes with one read.
 const drawBatch = 256
 
 // draw gives the next ID of counter: the counter's value plus one, or lo if
@@ -99,11 +99,16 @@ const drawBatch = 256
 // again, even once its principal is deleted. Every read is tracked, so a
 // create racing for the same ID, or a write claiming it, conflicts.
 //
-// It probes drawBatch IDs per read, so a block of IDs an operator assigned
-// inside the range, an import's thousands of explicit uids, costs one round
-// trip per drawBatch of them rather than one each. The batch's probes past
-// the ID given are tracked too, so a write claiming one of them conflicts
-// and retries, which costs a retry and no wrong answer.
+// It probes one ID first, the common case of a free next ID costing one key,
+// and doubles the probe after each read that finds every ID held, up to
+// drawBatch: a block of IDs an operator assigned inside the range, an
+// import's thousands of explicit uids, then costs one round trip per
+// drawBatch of them rather than one each. Every probed key is a tracked read
+// that counts toward the transaction's size, so a batch minting hundreds of
+// principals in one transaction reads one key per ID it draws, not
+// drawBatch. The probes past the ID given are tracked too, so a write
+// claiming one of them conflicts and retries, which costs a retry and no
+// wrong answer.
 //
 // ponytail: a block of held IDs is still walked on every draw until the
 // counter passes it, up to the range's size in reads per draw. Raise the
@@ -116,11 +121,12 @@ func (c controlTx) draw(counter byte, lo, hi uint32, reserved bool, spell func(u
 	if err != nil {
 		return entity.ProtocolID{}, err
 	}
-	for n := max(mark+1, uint64(lo)); n <= uint64(hi); {
+	width := 1
+	for n := max(mark+1, uint64(lo)); n <= uint64(hi); width = min(2*width, drawBatch) {
 		var ns []uint64
 		var ids []entity.ProtocolID
 		var ks [][]byte
-		for ; n <= uint64(hi) && len(ns) < drawBatch; n++ {
+		for ; n <= uint64(hi) && len(ns) < width; n++ {
 			if reserved && n == 65534 {
 				continue
 			}
