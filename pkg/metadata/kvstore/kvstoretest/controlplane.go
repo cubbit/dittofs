@@ -67,6 +67,26 @@ func grantVersion(t *testing.T, cp kvstore.ControlPlane, share entity.ShareID, p
 	return g.Version
 }
 
+// effective is the share access the store's check gives p, signed in, with
+// its store groups: none when the share's root is refused, read when a write
+// to it is, else read-write. The caller is privileged, so no ACL decides and
+// the grants alone do.
+func effective(t *testing.T, s *kvstore.Store, share entity.ShareID, p entity.Principal) entity.ShareAccess {
+	t.Helper()
+	id := entity.Identity{Principal: p, Groups: all(t, s.Principals().Groups(ctx, p)), Authenticated: true, Privileged: true}
+	root, _, err := s.Files().Root(ctx, id, share)
+	if isDenied(err) {
+		return entity.AccessNone
+	}
+	must(t, err)
+	err = s.Files().Authorize(ctx, id, root, nil, entity.WriteData)
+	if isDenied(err) {
+		return entity.AccessRead
+	}
+	must(t, err)
+	return entity.AccessReadWrite
+}
+
 func group(name string) entity.Group { return entity.Group{Principal: entity.NewGroup(), Name: name} }
 
 func uid(n string) entity.ProtocolID { return entity.ProtocolID{Scheme: entity.SchemeUID, Value: n} }
@@ -170,8 +190,8 @@ func testDeleteRemovesMembershipsAndGrants(t *testing.T, kvo Opener) {
 	if got := all(t, p.Groups(ctx, u.Principal)); len(got) != 2 {
 		t.Fatalf("Groups = %v", got)
 	}
-	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessRead {
-		t.Fatalf("grant through nested groups = %v", a)
+	if a := effective(t, s, sh.ID, u.Principal); a != entity.AccessRead {
+		t.Fatalf("access through nested groups = %v, want read", a)
 	}
 
 	// Deleting the middle group cuts u off from outer and its grant.
@@ -179,15 +199,15 @@ func testDeleteRemovesMembershipsAndGrants(t *testing.T, kvo Opener) {
 	if got := all(t, p.Groups(ctx, u.Principal)); len(got) != 0 {
 		t.Errorf("Groups after DeleteGroup = %v", got)
 	}
-	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessNone {
-		t.Errorf("grant after DeleteGroup = %v", a)
+	if a := effective(t, s, sh.ID, u.Principal); a != entity.AccessNone {
+		t.Errorf("access after DeleteGroup = %v, want none", a)
 	}
 	// Deleting outer drops its grant; a new group can take the name.
 	must(t, cp.DeleteGroup(ctx, outer.Principal, groupGeneration(t, cp, outer.Principal)))
 	again := group("all")
 	must(t, errOf(cp.PutGroup(ctx, again, 0, entity.Alloc{})))
-	if a, _ := p.Grant(ctx, sh.ID, again.Principal); a != entity.AccessNone {
-		t.Errorf("a new group inherited a deleted one's grant: %v", a)
+	if a, ok, err := p.Grant(ctx, sh.ID, again.Principal); err != nil || ok {
+		t.Errorf("a new group inherited a deleted one's grant: %v, %v, %v; want none, false", a, ok, err)
 	}
 	must(t, cp.DeleteUser(ctx, u.Principal, userGeneration(t, s, u.Principal)))
 	if _, err := p.ByName(ctx, entity.PrincipalUser, "alice"); !merrs.IsNotFoundError(err) {
@@ -321,16 +341,19 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	moved("a user's grant", func() error {
 		return errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0))
 	})
-	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessRead {
-		t.Errorf("own grant = %v", a)
+	if a, ok, err := p.Grant(ctx, sh.ID, u.Principal); err != nil || !ok || a != entity.AccessRead {
+		t.Errorf("own grant = %v, %v, %v; want read, true", a, ok, err)
 	}
 	// Setting none is a grant of its own that blocks; only deleting it lets
 	// the group's decide again.
 	moved("a grant changed to none", func() error {
 		return errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessNone}, grantVersion(t, cp, sh.ID, u.Principal)))
 	})
-	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessNone {
-		t.Errorf("own grant of none = %v", a)
+	if a, ok, err := p.Grant(ctx, sh.ID, u.Principal); err != nil || !ok || a != entity.AccessNone {
+		t.Errorf("own grant of none = %v, %v, %v; want none, true", a, ok, err)
+	}
+	if a := effective(t, s, sh.ID, u.Principal); a != entity.AccessNone {
+		t.Errorf("access under an own grant of none in a read-write group = %v, want none", a)
 	}
 	moved("a grant's delete", func() error {
 		return cp.DeleteGrant(ctx, sh.ID, u.Principal, grantVersion(t, cp, sh.ID, u.Principal))
@@ -338,7 +361,10 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	if _, ok, err := cp.ShareGrant(ctx, sh.ID, u.Principal); err != nil || ok {
 		t.Errorf("a deleted grant: found %v, %v; want none", ok, err)
 	}
-	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessReadWrite {
+	if a, ok, err := p.Grant(ctx, sh.ID, u.Principal); err != nil || ok {
+		t.Errorf("Grant after the own grant's delete = %v, %v, %v; want none, false", a, ok, err)
+	}
+	if a := effective(t, s, sh.ID, u.Principal); a != entity.AccessReadWrite {
 		t.Errorf("a group member after its own grant's delete: %v, want the group's %v", a, entity.AccessReadWrite)
 	}
 	// The grant's reverse row goes with it.

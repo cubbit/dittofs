@@ -43,8 +43,8 @@ func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
 	if got := all(t, p.Groups(ctx, u.Principal)); len(got) != 0 {
 		t.Errorf("alice's groups with staff marked: got %v, want none, as all is reached only through staff", got)
 	}
-	if a, err := p.Grant(ctx, sh.ID, u.Principal); err != nil || a != entity.AccessNone {
-		t.Errorf("alice's grant through a marked group: got %v, %v; want none", a, err)
+	if a := effective(t, s, sh.ID, u.Principal); a != entity.AccessNone {
+		t.Errorf("alice's access through a marked group: got %v, want none", a)
 	}
 	if got, err := p.User(ctx, u.Principal); err != nil || !got.Primary.IsZero() {
 		t.Errorf("alice's primary naming a marked group: got %v, %v; want zero", got.Primary, err)

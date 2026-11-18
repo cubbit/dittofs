@@ -737,6 +737,25 @@ func TestAProvenCallersGrantIsReadBeforeTheSquash(t *testing.T) {
 	}
 }
 
+// On a squashed share, a proven caller with no grant of its own is held to
+// the widest of its groups' grants, read before the squash, though the
+// anonymous principal it then acts as is granted none.
+func TestAProvenCallersGroupGrantIsReadBeforeTheSquash(t *testing.T) {
+	s := newShares(t, nil, nil)
+	ctx := t.Context()
+	nobody := s.user(t, "nobody", "", s.share, entity.AccessNone)
+	dan := s.user(t, "dan", "", s.share, entity.AccessNone)
+	s.must(t, s.cp.DeleteGrant(ctx, s.share, dan.Principal, grantVersion(t, s.cp, s.share, dan.Principal)))
+	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
+	s.must(t, errOf(s.cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
+	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: dan.Principal}))
+	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: staff.Principal, Access: entity.AccessReadWrite}, 0)))
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashAll, Anonymous: nobody.Principal}, 0)))
+	if _, err := s.StatFS(ctx, proven(dan.Principal, inLab), s.fs.Root); err != nil {
+		t.Errorf("a proven caller through its group's read-write, anonymous granted none: %v", err)
+	}
+}
+
 // A claimed caller is not authenticated: a share whose only grant names
 // authenticated users refuses it, and admits a proven one.
 func TestAClaimedCallerIsNotAuthenticated(t *testing.T) {
