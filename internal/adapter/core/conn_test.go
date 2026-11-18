@@ -1550,3 +1550,56 @@ func TestTheChargeIsReleasedAtTeardown(t *testing.T) {
 		t.Errorf("the connection-state budget holds %d bytes after the teardown", r)
 	}
 }
+
+// A Notify's message goes out through Conn.Send: sealed under its session,
+// which the client verifies, and ahead of the reply of the request it names,
+// that reply queued behind a write the client has not read (RFC 20 section
+// 4.7).
+func TestANotifyIsSealedAndGoesAheadOfTheReplyItNames(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		d := adapter.Deps{Budgets: b}
+		l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(d)}
+		srv, err := core.NewServer(d, settings.DefaultNFS(), l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		core.Serving(srv)
+		_, peer := servedConn(t, srv, &l)
+		c := testproto.NewClient(peer)
+		// The client reads nothing yet: the first Echo's reply holds the writer
+		// in its write, and the second's, keyed in version 2's table, which
+		// holds, waits in the queue behind it.
+		for _, m := range []testproto.Msg{
+			{Op: testproto.OpEcho, Version: 2, ID: 1, Session: 7, Payload: []byte("first")},
+			{Op: testproto.OpEcho, Version: 2, ID: 2, Session: 7, Payload: []byte("named")},
+			{Op: testproto.OpNotify, Version: 2, ID: 3, Session: 7, Target: 2},
+		} {
+			if err := c.Send(m); err != nil {
+				t.Fatal(err)
+			}
+			synctest.Wait()
+		}
+		var got []testproto.Reply
+		for range 4 {
+			rs, err := c.Recv()
+			if err != nil || len(rs) != 1 {
+				t.Fatalf("after %+v, a record of %+v: %v", got, rs, err)
+			}
+			got = append(got, rs[0])
+		}
+		if got[0].ID != 1 || string(got[0].Body) != "first" {
+			t.Errorf("the first record is %+v, want the first Echo's reply", got[0])
+		}
+		if n := got[1]; n.ID != 2 || len(n.Body) != 0 || n.Session != 7 || n.Checksum == 0 || n.Signed {
+			t.Errorf("the second record is %+v, want the Notify's message for 2, sealed under session 7", n)
+		}
+		if got[2].ID != 2 || string(got[2].Body) != "named" {
+			t.Errorf("the third record is %+v, want the named Echo's reply, behind the Notify's message", got[2])
+		}
+		if got[3].ID != 3 || got[3].Status != testproto.StatusOK {
+			t.Errorf("the fourth record is %+v, want the Notify's own success", got[3])
+		}
+	})
+}
