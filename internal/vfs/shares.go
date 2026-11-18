@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/netip"
 	"slices"
 
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
@@ -314,6 +315,17 @@ func (fs *Filesystem) Snapshots(ctx context.Context, c vfs.Call, h vfs.Handle) (
 	}
 	release()
 	return nil, nil
+}
+
+// MoveTarget names no gateway node for any handle: none exists until RFC 15's
+// topology does (RFC 17 §4.9). The call is entered like any other.
+func (fs *Filesystem) MoveTarget(ctx context.Context, c vfs.Call, h vfs.Handle) (netip.Addr, error) {
+	_, done, err := fs.enter(ctx)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	done()
+	return netip.Addr{}, nil
 }
 
 // pseudoOnly is a call's answer when admitHandle admitted it to no share:

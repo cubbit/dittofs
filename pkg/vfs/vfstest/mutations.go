@@ -2,6 +2,7 @@ package vfstest
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -306,6 +307,11 @@ func (rec *Mutations) Quota(ctx context.Context, c vfs.Call, h vfs.Handle, p vfs
 func (rec *Mutations) Snapshots(ctx context.Context, c vfs.Call, h vfs.Handle) ([]vfs.SnapshotInfo, error) {
 	rec.note(vfs.OpSnapshots)
 	return rec.s.Snapshots(ctx, c, h)
+}
+
+func (rec *Mutations) MoveTarget(ctx context.Context, c vfs.Call, h vfs.Handle) (netip.Addr, error) {
+	rec.note(vfs.OpMoveTarget)
+	return rec.s.MoveTarget(ctx, c, h)
 }
 
 func (rec *Mutations) SignIn(ctx context.Context, step vfs.SignInStep) (vfs.SignInResult, error) {

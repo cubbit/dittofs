@@ -1,6 +1,9 @@
 package vfs
 
-import "context"
+import (
+	"context"
+	"net/netip"
+)
 
 // Service is the filesystem service: every operation any protocol needs, one
 // interface per area. An adapter is handed the whole Service; a component
@@ -181,6 +184,11 @@ type Shares interface {
 	// Quota is p's own, else the share's default for its kind.
 	Quota(ctx context.Context, c Call, h Handle, p Principal) (Usage, Quota, error)
 	Snapshots(ctx context.Context, c Call, h Handle) ([]SnapshotInfo, error)
+	// MoveTarget is, while this node drains, another gateway node serving
+	// h's share at the same path, for an adapter's ErrMoved and NFSv4's
+	// fs_locations; the zero Addr when none, which is every answer until
+	// RFC 15's topology exists.
+	MoveTarget(ctx context.Context, c Call, h Handle) (netip.Addr, error)
 }
 
 // Principals is sign-in and principal spellings. They act on no share, are
@@ -254,6 +262,7 @@ const (
 	OpStatFS
 	OpQuota
 	OpSnapshots
+	OpMoveTarget
 
 	OpSignIn
 	OpSpell
@@ -278,8 +287,8 @@ var opNames = [...]string{
 	OpLock:  "Lock", OpCancelLock: "CancelLock", OpTestLock: "TestLock", OpUnlock: "Unlock",
 	OpAckRecall: "AckRecall", OpWatch: "Watch", OpUnwatch: "Unwatch",
 	OpRoot: "Root", OpSecInfo: "SecInfo", OpListShares: "ListShares", OpStatFS: "StatFS", OpQuota: "Quota",
-	OpSnapshots: "Snapshots",
-	OpSignIn:    "SignIn", OpSpell: "Spell", OpFind: "Find",
+	OpSnapshots: "Snapshots", OpMoveTarget: "MoveTarget",
+	OpSignIn: "SignIn", OpSpell: "Spell", OpFind: "Find",
 }
 
 // String is the Service method op names.
@@ -294,7 +303,7 @@ func (op Op) String() string {
 // record or a lease. A handler makes at most one call for which it is true,
 // and any number of the rest.
 //
-// decision: the calls that change nothing are exactly the twenty in the
+// decision: the calls that change nothing are exactly the twenty-one in the
 // switch below, the service contract's list of calls a handler may repeat.
 // Record and Spell are on it: an NFSv4 GETATTR asking for owner and
 // owner_group spells twice, and a READDIR asking for them once per entry.
@@ -304,7 +313,7 @@ func Mutates(op Op) bool {
 	switch op {
 	case OpPropose, OpTestState, OpLookup, OpReadDir, OpGetAttr, OpGetACL, OpXattrs, OpStreams,
 		OpAccess, OpRead, OpSeek, OpTestLock, OpRoot, OpSecInfo, OpListShares, OpStatFS, OpQuota,
-		OpSnapshots, OpRecord, OpSpell:
+		OpSnapshots, OpMoveTarget, OpRecord, OpSpell:
 		return false
 	}
 	return true

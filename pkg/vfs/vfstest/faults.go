@@ -2,6 +2,7 @@ package vfstest
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -478,6 +479,13 @@ func (f *FaultService) Snapshots(ctx context.Context, c vfs.Call, h vfs.Handle) 
 		return nil, err
 	}
 	return f.inner.Snapshots(ctx, c, h)
+}
+
+func (f *FaultService) MoveTarget(ctx context.Context, c vfs.Call, h vfs.Handle) (netip.Addr, error) {
+	if err := f.at(ctx, vfs.OpMoveTarget); err != nil {
+		return netip.Addr{}, err
+	}
+	return f.inner.MoveTarget(ctx, c, h)
 }
 
 func (f *FaultService) SignIn(ctx context.Context, step vfs.SignInStep) (vfs.SignInResult, error) {
