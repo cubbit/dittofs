@@ -1034,8 +1034,10 @@ func (e *emptying) lossOnDisk(l durability.Loss) bool {
 		}
 	}
 	// The records the re-append sealed into its target: the walks never read
-	// that target, whose proof is its own seal.
-	if e.st.Proof.ReappendTarget != 0 {
+	// that target, whose proof is its own seal. Only while the target still
+	// stands: the retire step unlinks a target nothing holds, and its loss
+	// record then survives only in the unproven bytes it was copied from.
+	if state, err := e.st.Assembled.Set.State(e.st.Proof.ReappendTarget); e.st.Proof.ReappendTarget != 0 && err == nil && state == segment.Sealed {
 		for _, rec := range e.st.Proof.Reappends {
 			h := rec.Header
 			if h.Kind != format.KindLoss || h.Extent != l.Extent || int64(len(rec.First)) < format.RecordHeaderSize+h.BodySize() {

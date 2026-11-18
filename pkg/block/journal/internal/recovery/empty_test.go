@@ -678,8 +678,8 @@ func TestADeferralIsNotEndedByAnUnsealedRowsLossRecord(t *testing.T) {
 			t.Fatalf("read %s: %v", name, err)
 		}
 		walk, werr := format.ScanSegmentHeaders(bytes.NewReader(bs), int64(len(bs)), journalID, id)
-		if werr != nil {
-			continue
+		if werr != nil || !walk.Sealed {
+			continue // only a segment whose seal marker verifies proves its records
 		}
 		for _, rec := range walk.Records {
 			if rec.Header.Kind == format.KindLoss {
@@ -689,6 +689,130 @@ func TestADeferralIsNotEndedByAnUnsealedRowsLossRecord(t *testing.T) {
 	}
 	if sealed != 1 {
 		t.Errorf("%d loss records sit in the sealed segments, want the one the emptying wrote: an unsealed row's record is no proof the deferral may end on", sealed)
+	}
+}
+
+// TestADeferralIsNotEndedOnARetiredReappendTarget holds the re-append
+// branch of the on-disk loss lookup: the loss record a deferral owes sits in
+// a failed segment whose tail the open re-appended into a target that holds
+// nothing but that record, so the retire step unlinks the target before any
+// ended segment is emptied. The deferred holder, emptied first, must not end
+// its deferral on a record whose only standing copy is the failed segment's
+// unproven bytes: a power cut before that copy is carried would leave no loss
+// record, and the older bytes the loss masks would serve again.
+func TestADeferralIsNotEndedOnARetiredReappendTarget(t *testing.T) {
+	const tag = core.ShareTag(7)
+	file := tailFile()
+	r := newRig(t)
+	r.writeFormat()
+	// The sealed segment holds the older bytes the loss masks and the newer
+	// write that supersedes the deferred holder's only record, so the holder
+	// has no payload the index serves and nothing to carry but its deferral.
+	other := srcFileFileID()
+	older, _ := buildSealed(1, collectWrite(tag, file, 10, 10, 0, 16), collectWrite(tag, other, 6, 6, 0, 16))
+	r.plantSeg(1, older)
+	r.plantSeg(2, damageHeader(buildSeg(2, collectWrite(tag, other, 5, 5, 0, 16))))
+	// The failed segment holds the loss record in the cache alone, as the
+	// first emptying left it when the power went before its seal.
+	full := buildSeg(3, collectLoss(tag, file, 22, 23, 923, 0, 16, 1<<8))
+	r.plantSeg(3, full[:format.SegmentHeaderSize])
+	r.writeLiveOnly(format.SegmentName(3), format.SegmentHeaderSize, full[format.SegmentHeaderSize:])
+	r.failSyncs(format.SegmentName(3), 1) // the proof's sync fails: the loss record is handed over
+	dur := r.registryDurability(t, journalID)
+	RegistryPlant(t, dur, durability.Loss{
+		Share: tag, File: file, Extent: core.Extent{Off: 0, Len: 16},
+		Version: core.Version{Counter: 30}, Seq: 22, Reason: core.LossCorrupt,
+		Synced: true, Deferred: true, Seg: 2,
+	})
+	d := r.reserveDeps(9)
+	st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if st.Proof.ReappendTarget == 0 {
+		t.Fatalf("no re-append target: the fixture no longer plants the case")
+	}
+	if err := st.Assembled.Set.Seal(st.Proof.ReappendTarget, true); err != nil {
+		t.Fatalf("sealing the target: %v", err)
+	}
+	h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 2})
+	h.deps.EndDeferral = dur.EndDeferral
+	if err := h.pool.WaitSpares(context.Background()); err != nil {
+		t.Fatalf("the pool's prewarm: %v", err)
+	}
+	// The cut lands at the first write into a spare during the emptying:
+	// the retire step writes nothing, so that write is the carry of the failed
+	// segment's loss record, and the deferred holder's turn has either come
+	// and gone before it, or not yet.
+	hold := r.seam.HoldFirst(t, kit.OpWrite, "*.seg")
+	done := make(chan error, 1)
+	go func() { done <- Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil) }()
+	select {
+	case <-hold.Reached():
+	case err := <-done:
+		t.Fatalf("the emptying returned (%v) before the carry's write", err)
+	}
+	if err := r.seam.Crash(); err != nil {
+		t.Fatalf("the power cut before the carry sealed: %v", err)
+	}
+	hold.Release()
+	select {
+	case err := <-done:
+		_ = err // the crashed call's own error says nothing the reopens do not
+	case <-time.After(30 * time.Second): // backstop only: the held call returns once released
+		t.Fatalf("the crashed emptying never returned")
+	}
+
+	// The reopens settle the directory; the loss the deferral owes must
+	// stand on a sealed copy, and the older write it masks must not serve.
+	var st2 State
+	for range 2 {
+		d2 := r.runDeps()
+		d2.SpareTargets = segment.Targets{Reserve: 2}
+		var rerr error
+		st2, rerr = Run(context.Background(), d2, core.Version{}, journalID, nil)
+		if rerr != nil {
+			t.Fatalf("the reopen's Run: %v", rerr)
+		}
+		if tgt := st2.Proof.ReappendTarget; tgt != 0 {
+			if err := st2.Assembled.Set.Seal(tgt, true); err != nil {
+				t.Fatalf("sealing the target: %v", err)
+			}
+		}
+		h2 := newEmptyingHarness(t, r, &st2, segment.Targets{Reserve: 2})
+		h2.deps.EndDeferral = dur.EndDeferral
+		if err := Emptying(context.Background(), h2.deps, &st2, journalID, core.Version{}, nil); err != nil {
+			t.Fatalf("the reopen's Emptying: %v", err)
+		}
+	}
+	losses := 0
+	for _, name := range r.listing() {
+		kind, id := format.ClassifyName(name)
+		if kind != format.NameSegment {
+			continue
+		}
+		bs, derr := r.seam.Durable(name)
+		if derr != nil {
+			t.Fatalf("read %s: %v", name, derr)
+		}
+		walk, werr := format.ScanSegmentHeaders(bytes.NewReader(bs), int64(len(bs)), journalID, id)
+		if werr != nil {
+			continue
+		}
+		for _, rec := range walk.Records {
+			if rec.Header.Kind != format.KindLoss || rec.Header.Offset+rec.Header.Size() > int64(len(bs)) {
+				continue
+			}
+			if body, berr := format.VerifyRecordBody(bs[rec.Header.Offset+format.RecordHeaderSize:rec.Header.Offset+rec.Header.Size()], journalID, rec.Header); berr == nil && body.Loss.Dropped == 22 {
+				losses++
+			}
+		}
+	}
+	if losses == 0 {
+		t.Errorf("no loss record names the dropped record 22 on disk after the settle, want the one the deferral owes")
+	}
+	if p, ok := st2.Rebuilt.Index.Lookup(file, 0); ok && p.Seq == 10 {
+		t.Errorf("the extent serves the older record of seq 10 after the settle, want the loss masking it")
 	}
 }
 
