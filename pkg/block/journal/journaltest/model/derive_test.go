@@ -65,13 +65,13 @@ func TestDeriveDecidesRunsAsBytes(t *testing.T) {
 			r := &record{kind: kinds[rng.IntN(len(kinds))], ver: ver(uint64(1 + rng.IntN(4))), seq: uint64(n)}
 			off, size := rng.Int64N(40), 1+rng.Int64N(20)
 			r.ext = ext(off, size)
-			switch {
-			case r.kind == kindWrite || r.kind == kindFill:
+			switch r.kind {
+			case kindWrite, kindFill:
 				r.data = make([]byte, size)
 				for j := range r.data {
 					r.data[j] = byte(rng.IntN(3))
 				}
-			case r.kind == kindTruncate:
+			case kindTruncate:
 				r.ext = ext(off, toEnd(off))
 			}
 			f.recs = append(f.recs, r)
