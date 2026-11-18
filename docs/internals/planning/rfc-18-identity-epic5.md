@@ -12,7 +12,7 @@ named in §3 below with its Fuzz paragraph, as pull request #4058 merged them (8
 rollover, and Appendix B's `identity.directory` row; [RFC 22](../rfcs/rfc-22-smb.md) §4.1's
 ticket addresses and §16.3's well-known SIDs a PAC may carry.
 **Track:** B.
-**Epic 5 estimate: 11 subtasks, 18.75 man-days.**
+**Epic 5 estimate: 11 subtasks, 19.25 man-days.**
 **Depends on:** **S1**: E1's `pkg/identity` (`SignInStep`, `SignInResult`, `Keys`, `Evidence`,
 `Service`), `internal/identity`'s `Server` with `Deps{Store, Clock, Metrics, Logger}` and
 `State{Generation}`. **E2, partly**: T5.2 waits for T2.4 (`State.Settings`, which the
@@ -143,7 +143,7 @@ number and title and not copied.
 | rule 6, known failures shrink | none | no suite RFC 18 names keeps a `known.yaml`; every test lands green |
 | rule 7, v2 ignores v1 | T5.3, T5.4 | `develop`'s `internal/auth/kerberos` is lifted from history and rewritten: the AP-REP builder and the address rule kept; `VerifyAPREQ`, the best-effort PAC decode RFC 18 Appendix B names as fail-open, and the replay cache's `time.Now` and unbounded map replaced (D1, D5) |
 | rule 8, real dependencies for properties of those dependencies | T5.1, T5.6, T5.11 | the fixture's Samba domain controller, in `integration/ad-dc`, issues the captured PACs (T5.1, T5.6) and the AP-REQ alice signs in with (T5.11), which `unit` then replays on the injected clock |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T5.2 to T5.9 | RFC 18's `decision:` notes of §2.4 (machines minted on sight, T5.9), §3.3 (AES only, T5.2; an unknown user refused, T5.5) and §3.4 (only the server signature, T5.6); its `ponytail:` notes of §3.3 (the replay cache in memory, T5.4; the skew constant, T5.3); the replay cache's fixed-count `ponytail:` (T5.4); this document's D1 to D12, D14 and D15 markers at their sites |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T5.2 to T5.9 | RFC 18's `decision:` notes of §2.4 (machines minted on sight, T5.9), §3.3 (AES only, T5.2; an unknown user refused, T5.5) and §3.4 (only the server signature, T5.6); its `ponytail:` notes of §3.3 (the replay cache in memory, T5.4; the skew constant, T5.3); the replay cache's fixed-count `ponytail:` (T5.4); this document's D1 to D12 and D14 to D16 markers at their sites |
 | rule 10, a test must be able to fail | all | every R row is held by a test named in its subtask, each with the bug it catches, or by what is named in its place |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T5.2, T5.3 | `internal/identity` exports `State.Keytab`, which `internal/node` fills (E8's T8.2); nothing outside `internal/node` and identity's tests imports it; `CheckKeytab` in `pkg/identity` is pending an RFC 18 §2.7 amendment (D3); the test realm is `identitytest`'s, the package RFC 18 §2.7 gives test helpers, and imports no `internal/identity` |
 | rule 12, each subtask creates only what it declares | all | `State.Keytab` with T5.2, its first reader; `entity.ProtocolID`'s linked SID with T5.8a; the record's `require_pac` with T5.8b; the test realm with T5.3, its first consumer |
@@ -172,7 +172,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R8 | Over SMB, only a ticket's IPv4 and IPv6 addresses restrict it: a ticket with none is accepted from any address, and one with any is refused `ErrLogonFailure` unless `SignInStep.Client` is one of them; a NetBIOS address is ignored. "Over SMB" is the step's `Transport`, never its `Service`, so a `host/` ticket presented over SMB is checked too, and an unset `Transport` is refused `ErrInvalid` (D15) | MUST | §3.3; RFC 22 §4.1; §10 "ticket addresses" | T5.3 |
 | R9 | An authenticator seen before is refused, counted with outcome `replay`, by a replay cache held in the node's memory | MUST | §3.3, §9.2; §10 "replay" | T5.4 |
 | R10 | The replay cache holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone | invariant | §7.3; §10 "replay" | T5.4 |
-| R11 | The replay cache is bounded, and a sign-in that would need one more entry fails `ErrUnavailable` | bound | §7.3 | T5.4 |
+| R11 | The replay cache is bounded, and a sign-in that would need one more entry fails `ErrUnavailable`; an authenticator takes an entry only once R45's throttle has admitted its (name, client address), so a pair the throttle refuses takes none; one ticket client holds at most a sixty-fourth of the bound, and a sign-in past its share fails `ErrUnavailable` for that client alone (D5) | bound | §7.3, §3.1 | T5.4, T5.5 |
 | R12 | `Keys.Session` is RFC 4121 §2's context key: the acceptor's subkey when the AP-REP sends one, else the authenticator's subkey, else the ticket's session key, kept whole; the AP-REP sends none, so `Keys.Subkey` is empty; `Keys.APRep` is the AP-REP; the evidence holds no key | invariant | §3.1 | T5.3 |
 
 **The sign-in**
@@ -189,9 +189,9 @@ tests can cite them. Sources are RFC 18 unless named.
 | R20 | A re-authentication on a context past `Expires` is admitted, and a successful one replaces the context's evidence, the new `Expires` with it | invariant | §3.8 | T5.5 |
 | R21 | Every error a Kerberos sign-in returns is `ErrLogonFailure`, `ErrInvalid` for a malformed message, or `ErrUnavailable` for a keytab or store fault | MUST | §3.1 | T5.3, T5.5 |
 | R22 | A Kerberos sign-in's logon event carries the mechanism, the name as presented, the outcome, the principal on success and the client address, and never the ticket or a key | MUST NOT | §3.1 | T5.5 |
-| R23 | A Kerberos sign-in writes only the record a first sign-in mints | invariant | §3.1 | T5.9 |
+| R23 | A Kerberos sign-in writes only the record a first sign-in mints, and the one exception R41 names: the `Linked` a machine minted without a PAC takes from its first verified PAC (D16) | invariant | §3.1 | T5.9 |
 | R24 | `identity_authentications_total{protocol, mechanism, outcome}` counts each Kerberos attempt, mechanism `kerberos`, with this epic's outcomes `ok`, `logon_failure`, `disabled`, `invalid`, `unavailable`, `replay` and `no_pac` (`throttled` is E4's T4.4); no label carries a name or SID | invariant | §9.2 | T5.5, T5.8b |
-| R45 | Past 10 `ErrLogonFailure` results in 10 minutes for one (name, client address), the name the user part without its realm, folded, every further Kerberos attempt from that pair fails `ErrLogonFailure` before its credential is checked, counted with NTLM's under one name | MUST | §3.1 | T5.5 |
+| R45 | Past 10 `ErrLogonFailure` results in 10 minutes for one (name, client address), the name the user part without its realm, folded, every further Kerberos attempt from that pair fails `ErrLogonFailure` before its credential is checked and before its authenticator enters the replay cache, counted with NTLM's under one name | MUST | §3.1 | T5.5 |
 
 **The PAC**
 
@@ -216,9 +216,9 @@ tests can cite them. Sources are RFC 18 unless named.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R38 | A `krb` row is linked for a SID: beside its principal it stores the directory user SID the link was made for, or none, and an edit that moves the spelling keeps it | invariant | §4.2, §2.4; RFC 16 §4.2 (`PX‖scheme‖id`) | T5.8a; RFC 23 plan epic 4's T4.11 (the move) |
-| R39 | The PAC's user SID equals the SID on the record §4.2 selected, or, when step 1's `krb` row selected it, the SID that row is linked for; a row linked for no SID binds no ticket that carries a PAC; a mismatch fails `ErrLogonFailure`, logs both principals and binds nothing, so a reused name is refused rather than bound to the wrong person | MUST | §3.4, §4.2; §10 "PAC", "PAC bound to the record" | T5.8b |
+| R39 | The PAC's user SID equals the SID on the record §4.2 selected, or, when step 1's `krb` row selected it, the SID that row is linked for; a row linked for no SID binds no ticket that carries a PAC; a mismatch fails `ErrLogonFailure`, logs both principals and binds nothing, so a reused name is refused rather than bound to the wrong person; the one exception is a `Machine` record whose `krb` row is linked for no SID, which the first verified PAC links and binds (R41, D16), every later PAC checked against that SID | MUST | §3.4, §4.2; §10 "PAC", "PAC bound to the record" | T5.8b, T5.9 |
 | R40 | A Kerberos name whose first component is a service name (`host`, `nfs`, `cifs`, or any name with a `/`), or whose user part ends in `$`, is a machine name | invariant | §2.4 | T5.9 |
-| R41 | A machine name's first successful sign-in with no record mints it: a `User` record of kind `Machine` with its `krb` spelling, linked for its PAC's user SID if it had one, and nothing else, in one batch | MUST | §2.4, §4.1; RFC 16 §2.3, §3 (`MintBatch`) | T5.9 |
+| R41 | A machine name's first successful sign-in with no record mints it: a `User` record of kind `Machine` with its `krb` spelling, linked for its PAC's user SID if it had one, and nothing else, in one batch; one minted without a PAC is linked for the user SID of its first sign-in whose PAC verifies, once, and that sign-in binds it (D16) | MUST | §2.4, §4.1; RFC 16 §2.3, §3 (`MintBatch`) | T5.9 |
 | R42 | A mint refused because another sign-in took the row is run again and binds the principal that took it; a re-run that binds none fails `ErrUnavailable`, writes nothing and logs both `PrincipalID`s | invariant | §4.1 | T5.9, on E6's T6.2 |
 | R43 | Each machine minted counts in `identity_mints_total{kind="machine"}` | invariant | §9.2 | T5.9 |
 
@@ -246,8 +246,8 @@ record are E6's and E8's to drive, on the rule this epic builds.
   when a key version number is unknown. So identity parses with `messages.APReq.Unmarshal`,
   selects the key from its own ring (D2), decrypts with `Ticket.Decrypt` and
   `APReq.DecryptAuthenticator`, and makes every check itself: the encryption types, the service
-  name, the times, the authenticator's client against the ticket's, the addresses, the replay
-  cache. A `decision:` marker at the verifier. Prior art (from memory): Heimdal's
+  name, the times, the authenticator's client against the ticket's, the addresses; the replay
+  cache follows D9's throttle (D5). A `decision:` marker at the verifier. Prior art (from memory): Heimdal's
   `krb5_rd_req_ctx` takes its time and its replay cache from the caller's context.
 - **D2, the key ring is built at `Apply`, one map from (service name folded, key version
   number, encryption type) to a key.** `Apply` parses each `State.Keytab` version with gokrb5's
@@ -274,9 +274,21 @@ record are E6's and E8's to drive, on the rule this epic builds.
   is the authenticator's client name and realm, its time and microseconds, and the ticket's
   service name (RFC 4120 §3.2.3); an entry lives until the authenticator's time plus 5 minutes;
   an insert first drops expired entries from the heap's head, and a full cache refuses
-  `ErrUnavailable`. One mutex, no goroutine. A `ponytail:` marker names the fixed count and RFC
-  24's pool as its upgrade. Prior art (from memory): MIT krb5's replay cache keys on a hash of
-  the authenticator and expires on its time plus the skew.
+  `ErrUnavailable`. One mutex, no goroutine. The order is: the authenticator decrypts, D9's
+  throttle admits the (name, address) pair, then the insert; so a pair flooding failures takes at
+  most the throttle's 10 entries per window. The throttle counts failures only, so the cache also
+  caps each client: entries are counted per ticket client name and realm, which a flooder cannot
+  vary without another ticket from the KDC, and a client holding a sixty-fourth of the bound
+  (16 384 entries) is refused `ErrUnavailable`, outcome `unavailable`, while every other client
+  still inserts; its count falls as its entries expire. A sixty-fourth because an entry lives at
+  most 10 minutes (an authenticator 5 minutes ahead, plus the skew), so filling a share takes
+  over 27 sign-ins a second from one principal, far past a client signing in per session, while
+  the whole cache still fills only when 64 principals flood at once. `export_test.go` sets the
+  bound and the share apart. A `ponytail:` marker names the fixed count and share, RFC 24's pool
+  as their upgrade, and the ceiling: 64 ticket holders flooding together still fill the cache and
+  refuse every client, each named in its logon events; a share that shrinks as the cache fills
+  is the upgrade once such a flood is seen. Prior art (from memory): MIT krb5's replay cache keys
+  on a hash of the authenticator and expires on its time plus the skew.
 - **D6, the PAC is decoded by gokrb5, behind a bounds guard, and its checksum is checked by
   identity.** gokrb5's `PACType.Unmarshal` reads the header and buffer array and keeps the bytes
   as received; `ProcessPACInfoBuffers` decodes each type's first buffer and ignores later ones
@@ -310,8 +322,8 @@ record are E6's and E8's to drive, on the rule this epic builds.
   decrypts under the service key.** RFC 18 §3.1 throttles before the credential is checked, but a
   ticket's client name is inside its encrypted part; decrypting under the service key checks no
   credential of the user's, which the KDC already checked. A ticket that does not decrypt has no
-  name and is refused uncounted by the throttle. A `decision:` marker at the call. Prior art:
-  none found.
+  name and is refused uncounted by the throttle. The throttle runs before the replay cache's
+  insert (D5). A `decision:` marker at the call. Prior art: none found.
 - **D10, the test realm is `identitytest.Realm`.** It holds test AES keys for a realm and its
   service names, and builds AP-REQs and PACs as a KDC does: `Ticket(TicketOpts) []byte` and
   `Keytab() []byte`, thin over gokrb5's `messages.NewTicket`, `messages.NewAPReq` and the keytab's
@@ -357,6 +369,21 @@ record are E6's and E8's to drive, on the rule this epic builds.
   and `Host` names no transport, so a `host/` ticket over SMB would skip R8, which RFC 22 §4.1
   forbids. Amends RFC 18 §3.1's `SignInStep` (§9). A `decision:` marker at the check. Prior art:
   none found.
+- **D16, the first verified PAC links a machine minted without one, an exception to R23.** Where a
+  PAC-less ticket is accepted (a keytab realm other than the directory's, or `require_pac` false,
+  T5.8b), a machine's first sign-in mints it with no `Linked` (R41). R39 would then refuse its
+  every PAC-bearing ticket, and nothing else writes a machine's `Linked`, so the machine would be
+  locked out for good. So a sign-in whose PAC verifies, on a `Machine` record whose `krb` row has
+  no `Linked`, writes that row's `Linked` as the PAC's user SID in one batch conditioned on the row
+  still holding none, and binds the machine; a sign-in that loses that race is checked against
+  the winner's SID (R39). Its ceiling: whoever first presents a verified PAC under the machine's
+  name claims the record, so a computer account deleted and recreated under the same name before
+  that first PAC-bearing sign-in inherits the machine's files. It is bounded to `Machine` records,
+  to an empty `Linked`, and to the window before the first verified PAC, and the KDC issues a
+  ticket under a machine's name only to the account holding that name's key. Evidence that would
+  overturn it: one realm seen issuing PAC-less and PAC-bearing tickets for one machine name to
+  different accounts, which would make an operator link through the API the only way to set
+  `Linked`. A `decision:` marker at the write. Prior art: none found.
 
 ## 5. Target tree
 
@@ -371,7 +398,7 @@ internal/identity/
   replay.go            T5.4   the replay cache (D5), lifted from develop's and rewritten
   pac.go               T5.6   the bounds guard, gokrb5's decode, the server checksum, client info (D6)
                        T5.7   the SIDs, their filter and DenyOnly (D7, D8)
-  machine.go           T5.9   machine names and their mint (D12)
+  machine.go           T5.9   machine names, their mint (D12) and their first PAC's link (D16)
   *_test.go            T5.2 to T5.9
   fuzz_test.go         T5.3   FuzzAPReq;  T5.6  FuzzPAC
   testdata/pac/        T5.6   PACs captured from the fixture, with their keytabs
@@ -511,39 +538,47 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
 
 ### T5.4 The replay cache
 
-**Subtask T5.4 estimate: 1.25 man-days.**
+**Subtask T5.4 estimate: 1.5 man-days.**
 
 - **Track:** B. **Depends on:** T5.3.
 - **Covers:** R9, R10, R11.
 - **Deliverables:** `develop`'s `replay.go` lifted and rewritten as D5's cache: keyed on the
   authenticator's client, time and microseconds and the ticket's service name, each entry kept
   until the authenticator's time plus 5 minutes on the injected clock, bounded at 1 048 576, a
-  full cache answering `ErrUnavailable`; checked by `verifyAPReq` after the authenticator
-  decrypts, a replay `ErrLogonFailure` marked with outcome `replay`; RFC 18 §3.3's replay
-  `ponytail:` and D5's fixed-count `ponytail:`. Consumed by T5.5.
+  full cache answering `ErrUnavailable`; a count per ticket client capping each at 16 384, a
+  sixty-fourth of the bound, past which that client alone is answered `ErrUnavailable`, its count
+  falling as its entries expire (D5); its insert returned for T5.5 to call once the
+  authenticator has decrypted and D9's throttle has admitted the pair (D5), a replay
+  `ErrLogonFailure` marked with outcome `replay`; RFC 18 §3.3's replay
+  `ponytail:` and D5's fixed-count and share `ponytail:`. Consumed by T5.5.
 - **Acceptance criteria:**
   - The same AP-REQ twice: the second refused with outcome `replay`.
   - An entry is dropped only once its authenticator's time plus the skew has passed.
-- **Tests:** at `verifyAPReq` on the injected clock: §10's "replay", the same AP-REQ twice, the
+  - A client past its share is refused while another client still inserts.
+- **Tests:** at the insert, on authenticators `verifyAPReq` decrypted, on the injected clock:
+  §10's "replay", the same AP-REQ twice, the
   second refused with outcome `replay` (R9); an authenticator stamped 4 minutes ahead, replayed 6
   minutes after it was first seen: refused (catches an entry kept from its arrival rather than its
   time, R10); once the clock passes its time plus the skew, the next insert leaves the cache's
   entry count, read through `export_test.go`, at one (catches a cache that never forgets, which
-  the skew check would hide at `verifyAPReq`, R10); a cache of bound 2 holding two live entries:
+  the skew check would hide at `SignIn`, R10); a cache of bound 2 and share 2 holding two live entries:
   the third authenticator `ErrUnavailable`, and after the clock passes the first
   entry's time plus the skew the third is accepted (catches a full cache evicting a live entry,
   which would admit its replay, R11); 64 goroutines presenting one AP-REQ at once under `-race`:
   exactly one accepted (catches a lookup and an insert under two locks, which admits a replay
-  that races its original, R9).
+  that races its original, R9); a cache of bound 8 and share 2: `carol`'s third authenticator
+  `ErrUnavailable` while `alice`'s first is accepted, and once `carol`'s first entry passes its
+  time plus the skew, her next is accepted (catches a cache with no per-client cap, and a share
+  never released, R11). The flood through `SignIn` is T5.5's test, where the order lives (R11).
 
 ### T5.5 Kerberos sign-in without a PAC
 
 **Subtask T5.5 estimate: 2.25 man-days.**
 
 - **Track:** B. **Depends on:** T5.4, T4.2, T4.4, T4.5.
-- **Covers:** R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R24, R45.
+- **Covers:** R11, R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R24, R45.
 - **Deliverables:** the Kerberos branch of E4's `SignIn`: `verifyAPReq`, then D9's throttle call,
-  then RFC 18 §4.2's step 1, the `krb` row through the store's `Principals` view by the name as
+  then T5.4's replay insert (D5), then RFC 18 §4.2's step 1, the `krb` row through the store's `Principals` view by the name as
   the ticket spells it, and step 2, a local user by the user part under E2's fold in one of the
   ring's realms, not a directory principal and holding a uid; a name with a service part skipping
   step 2; step 4 refusing a user name `ErrLogonFailure` (machines are T5.9's); a disabled or
@@ -580,7 +615,14 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   `throttled` with no store read, held by the fault wrapper failing every read; 20 tickets that
   do not decrypt, from `192.0.2.2`, then 10 failures for `bob` there: the 11th refused, not the
   first (catches a Kerberos failure the
-  throttle misses, or one counted under no name, R45).
+  throttle misses, or one counted under no name, R45); a replay cache of bound 32 and share 16
+  through `export_test.go`: unknown `bob@TEST.REALM` from `192.0.2.3` presenting one ticket with
+  20 authenticators of distinct timestamps: the 11th onward refused `throttled`, the cache holding
+  10 entries (catches the replay insert ahead of the throttle, R45); `carol@TEST.REALM`, a valid
+  user, from `192.0.2.5` presenting one ticket with 40 authenticators of distinct timestamps: the
+  first 16 accepted, the 17th onward `ErrUnavailable`, outcome `unavailable`; then `alice` from
+  `192.0.2.4` signs in: accepted, where without the cap `carol` would have filled the cache (catches a cache with no per-client cap, which lets one ticket
+  holder's successful sign-ins fill it and refuse every client, R11).
 - **Rules:** rule 5 (each refusal at `SignIn`'s answer, the event at E4's sink); D9's marker.
 
 ### T5.6 The PAC verified
@@ -713,31 +755,40 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
 
 ### T5.9 Machine principals
 
-**Subtask T5.9 estimate: 1 man-days.**
+**Subtask T5.9 estimate: 1.25 man-days.**
 
 - **Track:** B. **Depends on:** T5.8b, T2.1, E6's T6.2.
-- **Covers:** R17, R23, R40, R41, R42, R43.
+- **Covers:** R17, R23, R39, R40, R41, R42, R43.
 - **Deliverables:** RFC 18 §2.4's machine-name test; step 4 minting a machine name through E6's
   T6.2 `mint` (D12), with a plan that looks the `krb` row up and returns one `MintBatch` holding a
   `User` of kind `Machine` with its `krb` spelling, `Linked` set to the PAC's user SID when the
-  ticket carried one, nothing else, so a refused mint's re-run binds whoever took the row; RFC 18
-  §2.4's `decision:`. `identity_mints_total{kind}` is T6.2's. Consumed by T5.11, E8 and E9 ("no
+  ticket carried one, nothing else, so a refused mint's re-run binds whoever took the row; a
+  machine minted without a PAC linked by its first verified PAC (D16); RFC 18 §2.4's `decision:`
+  and D16's marker. `identity_mints_total{kind}` is T6.2's. Consumed by T5.11, E8 and E9 ("no
   file spelling").
 - **Acceptance criteria:**
   - `host/build01.test.realm@TEST.REALM`'s first ticket mints one machine and binds it; its second
     binds the same one.
+  - A machine minted from a PAC-less ticket signs in with a PAC: bound and linked for its user SID.
 - **Tests:** at `SignIn` over the memory KV store: `host/build01.test.realm`, `nfs/build01` and
   `BUILD01$` each minted on first sign-in, the record a `Machine` with one `krb` spelling and no
   name, uid, SID or secret, `identity_mints_total{kind="machine"}` 3 (R40, R41, R43); §10's "PAC"
   clause, a machine minted from a ticket with a PAC signs in again: bound, `Linked` its PAC's user
-  SID (catches a machine mint that loses its SID, R41); two first sign-ins of one machine held at
+  SID (catches a machine mint that loses its SID, R41); in a keytab realm other than the
+  directory's, `host/build02` minted from a PAC-less ticket, then a ticket whose PAC carries
+  `S-1-5-21-1-2-3-1105`: bound to the same `PrincipalID`, its `krb` row's `Linked` that SID, the
+  key count unchanged (catches a machine locked out once it presents a PAC, R41); then a PAC
+  carrying `S-1-5-21-1-2-3-1106`: refused `ErrLogonFailure`, `Linked` still `…-1105` (catches a
+  link every PAC rewrites, R39); two first PAC-bearing sign-ins of `host/build02` with different
+  SIDs held at an `export_test.go` hook before the link's write, released together: one linked,
+  the other refused (catches a link written unconditionally, R39); two first sign-ins of one machine held at
   an `export_test.go` hook before `Create`, released together: one record, both bound to it
   (catches a plan that does not look the row up again, R42); a user name with no record still
   refused, nothing written, the store's key count unchanged (R17, R23); an existing user's and an
   existing machine's successful sign-ins leave the key count unchanged (catches a write on success,
   R23); the batch failing through `kvtest` with a store error: `ErrUnavailable`, nothing written
   (R23). A re-run that binds none is T6.2's test (R42).
-- **Rules:** rule 3 (`identity_mints_total`).
+- **Rules:** rule 3 (`identity_mints_total`); rule 9 (D16's marker).
 
 T5.10, the keytab's retention and prune, is removed: RFC 23 §3.3's credential rotation owns it
 (D13). Its number is not reused.
@@ -810,9 +861,9 @@ domain controller's captured AP-REQ does.
 | --- | --- | --- | --- | --- |
 | 1 | T5.1 | 2 | #4420 | the fixture's Kerberos part, open on `feat/storage-v2` as #4421 |
 | 2 | T5.8a | 0.75 | S1 | the field RFC 23's plan's epic 4's T4.11 writes, ahead of the PAC work |
-| 3 | T5.2, T5.3, T5.4 | 6 | E2's T2.4 | the keytab and the AP-REQ's checks, the surface E7 builds on |
+| 3 | T5.2, T5.3, T5.4 | 6.25 | E2's T2.4 | the keytab and the AP-REQ's checks, the surface E7 builds on |
 | 4 | T5.5, T5.6, T5.7 | 6.25 | PR 3, PR 1, E4's T4.5, E3's T3.5 | a Kerberos sign-in end to end, with its PAC verified and its SIDs filtered |
-| 5 | T5.8b, T5.9, T5.11 | 3.75 | PR 4, PR 2, E6's T6.2 and T6.3 | who a ticket binds to, machines minted, and the Samba ticket that checks it all |
+| 5 | T5.8b, T5.9, T5.11 | 4 | PR 4, PR 2, E6's T6.2 and T6.3 | who a ticket binds to, machines minted, and the Samba ticket that checks it all |
 
 A suggestion only: one pull request per subtask works as well. PRs 1 and 2 have no dependency in
 this epic and can open at once.
@@ -856,6 +907,9 @@ the version this document was written against.
 - RFC 18 §7.3 refuses a sign-in when the replay cache is full and counts nothing; a full cache
   is visible only as outcome `unavailable`. §9.2 could name a series, as E3 asks for the caller
   cache's.
+- RFC 18 §7.3 bounds the replay cache as a whole; D5 also caps each ticket client at a
+  sixty-fourth of it, so one ticket holder cannot fill it. A §7.3 sentence would make the share
+  the RFC's.
 - RFC 18 §3.1's `SignInStep` has no transport, so §9.2's `protocol` label and RFC 22 §4.1's
   SMB-only address check have no source; D15 adds `Transport`, which the RFC 21 and RFC 22 plans'
   adapters set.
@@ -902,11 +956,12 @@ the version this document was written against.
 
 **Other:**
 
-- The estimate is 11 subtasks, 18.75 man-days, against the plan's 10 subtasks, 21.5 man-days:
+- The estimate is 11 subtasks, 19.25 man-days, against the plan's 10 subtasks, 21.5 man-days:
   less for the keytab's retention, which RFC 23's rotation owns (D13, T5.10's 2 man-days removed),
   for the PAC, which gokrb5 decodes behind a guard (D6), for the Samba ticket, replayed
   from a capture, and for the mint path, E6's T6.2 (D12, T5.9 down 0.5); more for the Kerberos
-  throttle (R45) and the test realm (D10). T5.8's split into T5.8a and T5.8b moves no man-day.
+  throttle (R45), the test realm (D10), the replay cache's share per client (D5, T5.4 up 0.25) and a
+  machine's link from its first PAC (D16, T5.9 up 0.25). T5.8's split into T5.8a and T5.8b moves no man-day.
   The fixture's 2 stays as the plan has it though it is built, since it has not merged. T5.3 is the least certain.
 - `identity_mints_total` and the mint path's re-run are E6's T6.2 (D12), as E2's §1.2 names
   them.
