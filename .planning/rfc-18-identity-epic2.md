@@ -153,7 +153,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no external system is reached |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1, T2.2, T2.4, T2.5, T2.6, T2.7, T2.9 | RFC 18's `decision:` notes of §2.1 (root) at root's ID, §2.3 (a missing uid is allocated) at `Alloc`, §3.5 (NTLM on by default) at the setting's default, §4.4 (a deleted principal is the null SID) at `Spell`, §8 (one `User` record) at `Account`; D1's, D3's and D8's `decision:` markers, D2's and D4's `ponytail:` markers, and the NT-hash cost marker at `NewHashes`; epic 1's stub `ponytail:` markers removed from each body this epic fills |
 | rule 10, a test must be able to fail | all | each R-row's test is named in its subtask with the bug it catches; R24's purity, R27's constant-time compare and R33's single writer are held by the code's shape, each named as such |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T2.1, T2.2, T2.4, T2.5, T2.9 | the exports are `entity`'s and kvstore's fields and methods RFC 16 declares, `Scheme.Stored()` (RFC 18 §2.2), `entity.FoldPrincipalName` and `entity.PrincipalUserPart` (D2), `ControlPlaneTx.IDHighWater` and `pkg/settings`' `CheckTx` option (D1), identity's settings struct, `Deps.Secrets`, and the deletion's step and progress, typed by `internal/node/step` |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T2.1, T2.2, T2.4, T2.5, T2.9 | the exports are `entity`'s and kvstore's fields and methods RFC 16 declares, `Scheme.Stored()` (RFC 18 §2.2), `entity.FoldPrincipalName` and `entity.PrincipalUserPart` (D2), `ControlPlaneTx.IDHighWater` and the identity section's `CheckTx` function (D1), identity's settings struct, `Deps.Secrets`, and the deletion's step and progress, typed by `internal/node/step` |
 | rule 12, each subtask creates only what it declares | all | each deliverable names its consumer; `SchemeDir` lands with `Stored()` and `NewHashes`, `Rename` and `SetEmail` with E6, the mint path with E6's T6.2 |
 
 ## 3. Requirements and invariants
@@ -242,7 +242,7 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
 
 ## 4. Decisions this epic takes
 
-- **D1, `Alloc` carries the range, pending the user's answer (§9).** RFC 16 §3's `Alloc` names
+- **D1, `Alloc` carries the range.** RFC 16 §3's `Alloc` named
   the IDs to allocate but not where `identity.id_range` comes from, and kvstore cannot decode
   identity's settings section without importing `internal/identity`. RFC 23's plan's
   `entity.Alloc` (its D2) gains `Range entity.IDRange{Lo, Hi uint32}`, set by the caller from the
@@ -255,8 +255,9 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   `Range.Hi <= mark`, a counter's high-water mark, could never allocate again: its next value,
   `mark+1` at least, is past `Hi`. A settings write of `identity.id_range`, a put or a delete
   that leaves the default, refuses such a range `ErrInvalid` before it commits, so the operator
-  sees the refusal: the identity section's check, which `pkg/settings`' `Check` runs inside the
-  write's transaction and hands the `Write`, reads both marks through
+  sees the refusal: the identity section's `CheckTx` function, which it hands the RFC 13 plan's
+  `CheckTx` option and which `pkg/settings`' `Check` runs inside the write's transaction, handing
+  it the `Write`, reads both marks through
   `ControlPlaneTx.IDHighWater`, a tracked read (T2.9). It returns at once for any other key, so
   a range already used up never refuses an unrelated write such as `identity.ntlm` or
   `identity.netbios_name`. A create that commits between that read
@@ -270,11 +271,10 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   refuse a range the write committed, which would leave the API's range, read from `pkg/settings`,
   and identity's minting callers' `State.Settings` apart. `decision:` marker at the check. The
   alternative, kvstore reading the setting's raw row in the write's transaction, couples the store
-  to a section's encoding. Needs an RFC 16 §3 amendment for `Alloc.Range` and for `ControlPlaneTx.IDHighWater` among its
-  tracked reads, which RFC 23's plan's epic 2 declares in `entity/write.go` (its R18's list), and amendments for the
-  refusal: RFC 13 §6 and RFC 23 §4.3, whose write checks read only settings, not the ID counters,
-  and RFC 13 Appendix B's and RFC 18 §2.6's `identity.id_range` rows, which say only that a change
-  applies to the next allocation. `decision:` marker at `Alloc`. Prior art:
+  to a section's encoding. The amendments have landed: RFC 16 §3 has `Alloc.Range` and, written
+  by this pull request, `ControlPlaneTx.IDHighWater` among its tracked reads, which RFC 23's plan's
+  epic 2 lists in its R18; RFC 13 §6 and Appendix B, RFC 18 §2.6 and RFC 23 §4.3 state the
+  refusal. `decision:` marker at `Alloc`. Prior art:
   Samba's `idmap_tdb` takes its range from the caller's configuration (from memory).
 - **D2, the name fold is the minimum of each rune's simple-fold orbit.** The `NX‖user` and
   `NX‖group` key is the name with each rune replaced by the smallest rune `unicode.SimpleFold`
@@ -372,7 +372,7 @@ pkg/metadata/entity/
   fold.go           T2.1  FoldPrincipalName and PrincipalUserPart (D2), beside FoldShareName
   control.go        T2.1  User.Password, User.NTHash (User.Secret renamed), SchemeDir (D7)
                     T2.2  IDRange, Alloc.Range (D1)
-  write.go          T2.9  ControlPlaneTx.IDHighWater, the tracked read CheckTx calls (D1)
+  write.go          T2.9  ControlPlaneTx.IDHighWater, the tracked read identity's CheckTx calls (D1)
 pkg/metadata/kvstore/
   users.go          T2.1  shape checks (D3), the @ rule, cross-kind uniqueness
                     T2.2  the allocation behind Alloc on PutUser and PutGroup, SID immutable
@@ -391,14 +391,12 @@ pkg/identity/
   hashes_test.go    T2.6  the table test
 internal/identity/
   settings.go       T2.4  Settings, its defaults and Validate, the section's registration
-                    T2.9  its CheckTx against the ID marks (D1)
+                    T2.9  its CheckTx function against the ID marks, handed to Of (D1)
   server.go         T2.4  SecretProvider, Deps.Secrets, State.Settings, Apply's Validate refusal
                     T2.6  Clock.After (D8)
   names.go          T2.5  Spell, Find
   account.go        T2.6  Lookup, VerifyPassword, Account, the hashing semaphore
   ntlmoff.go        T2.7  NTHashDeleteStep, NTHashDeleteProgress
-pkg/settings/
-  table.go          T2.9  the CheckTx option, run by Check after Validate (D1)
 ```
 
 ## 6. Subtasks
@@ -714,10 +712,10 @@ pkg/settings/
   section's `CheckTx` (D1).
 - **Covers:** R11.
 - **Deliverables:** `ControlPlaneTx.IDHighWater() (uid, gid uint32, err error)`, a tracked read of
-  T2.2's `IDS‖0x04` and `IDS‖0x05` counters; `pkg/settings`' `CheckTx[T](func(entity.ControlPlaneTx,
-  settings.Write, T) error)` option on `Of`, which `Check` runs after `Validate` inside the write's
-  transaction, handing it the `Write`; and the identity section's `CheckTx`, returning nil when
-  `w.Key` is not `identity.id_range` and otherwise refusing `ErrInvalid` a range with `Hi` at or
+  T2.2's `IDS‖0x04` and `IDS‖0x05` counters; and the identity section's own `CheckTx` function,
+  handed to the RFC 13 plan's existing `CheckTx` option on `Of` (its epic 1's T1.6), which `Check`
+  runs after `Validate` inside the write's transaction, handing it the `Write`; it returns nil when
+  `w.Key` is not `identity.id_range` and otherwise refuses `ErrInvalid` a range with `Hi` at or
   below either mark, with D1's `decision:` marker (D1). Nothing else in this plan waits for it.
 - **Acceptance criteria:**
   - A settings write of an `identity.id_range` whose `Hi` is at or below the uid or gid counter's
@@ -789,19 +787,13 @@ The plan's figure for this epic is 8 subtasks, 13 man-days; this document's is 9
 `entity.Alloc` on `PutUser` and `PutGroup` comes in (T2.2), which RFC 23's plan's epic 2 refuses
 until it lands (its D2), as does `NTHash` among the secrets `DeleteUser` deletes, which the plan lists
 nowhere (T2.8, R34); `Installation.NTLMOff` is RFC 23's plan's epic 2's (its T2.2, R54); and the
-deletion's step can fail on a record it cannot decode (T2.7, R36); and the settings write refuses a range at or below a counter's high-water mark inside its
-transaction, through a `CheckTx` option `pkg/settings` gains, its own subtask so that T2.4's
-readers do not wait for the RFC 13 plan's epic 3 (T2.9, D1).
+deletion's step can fail on a record it cannot decode (T2.7, R36); and the settings write refuses
+a range at or below a counter's high-water mark inside its transaction, through identity's
+function handed to the RFC 13 plan's `CheckTx` option, its own subtask so that T2.4's readers do
+not wait for the RFC 13 plan's epic 3 (T2.9, D1).
 
 **Pending the user's answer** (the recommended option is written in place):
 
-- **Where `Alloc`'s range comes from (D1).** RFC 16 §3's `Alloc` is silent, and so are the RID
-  counter's start and an exhausted range. Recommended: a `Range` field set by the caller, the next
-  value `max(counter+1, Range.Lo)`, `ErrNoSpace` on exhaustion, the settings write refusing a range at or
-  below a counter's high-water mark in its own transaction through `ControlPlaneTx.IDHighWater`, a
-  tracked read, and RIDs from 1000, in an RFC 16 §3
-  amendment (`IDHighWater` written into §3 by this pull request), with RFC 23's plan's epic 2's R18 list gaining the read; the refusal also needs RFC 13 §6 and Appendix B, RFC 18 §2.6 and RFC 23 §4.3 amended
-  (D1). Alternative: kvstore reads the setting's row in the write's transaction.
 - **The NT-hash deletion's store calls (D4).** RFC 16 §3 has no call that drops secrets by kind,
   RFC 18 §2.6 says the `Minter`'s are identity's only writes, and zeroing `User.NTHash` overwrites a
   record. Recommended: `DropNTHashes`, with amendments to RFC 16 §3 and RFC 18 §2.6; the end is
@@ -824,16 +816,13 @@ readers do not wait for the RFC 13 plan's epic 3 (T2.9, D1).
   the same transaction", but RFC 16 §3 applies `Alloc` only to a create. T2.2 follows RFC 16 and
   refuses `Alloc` on an update; RFC 18 §2.4 or RFC 16 §3 needs an amendment.
 - **`Alloc` on an update (R12).** R12 refuses `Alloc` on an update where RFC 16 §3 says it
-  allocates nothing. The refusal is the stricter reading, and the amendment D1 asks for should
-  state it.
-- **A `\` in a local name (R8).** RFC 18 §4.6 refuses only `@`. R8 refuses `\` too, since §4.6's
-  `qualified` scheme spells a local principal `<NetBIOS name>\<name>` and `Lookup` strips a
-  `DOMAIN\` prefix, so a local `CORP\alice` would name one principal through `Find` and `alice`
-  through `Lookup`; §4.6 needs the same amendment.
-- **`CheckTx` and the RFC 13 plan.** That plan's S1 freezes `Of` and its options, its sketch lists
-  four, and its `Check` has no `CheckTx` step. T2.9 adds the option after the plan's epic 3, which
-  breaks no caller since the options are variadic, but the plan's sketch and `Check` order should
-  list it, and the RFC 18 plan's §3.3 row for #4059's epic 3 should block E2's T2.9 too.
+  allocates nothing. The refusal is the stricter reading, and RFC 16 §3 needs an amendment
+  stating it.
+- **A `\` in a local name (R8).** RFC 18 §4.6, as #4609 merged it, refuses `@` and `\` in a local
+  name; this epic implements the refusal.
+- **`CheckTx` and the RFC 13 plan.** That plan's S1 already lists `CheckTx` among `Of`'s options
+  (its sketch, its epic 1's T1.6) and its `Check` runs it after `Validate`; this epic is its first
+  caller, so there is no disagreement to record.
 - **A cancelled deletion.** RFC 18 §10's "NTLM off" row turns NTLM on "after it is cancelled", while
   RFC 23 §4.1 says a deletion has no cancel. T2.7 builds no cancel; the row needs mending.
 - **`DeleteUser`'s secrets (R34).** RFC 16 §3 deletes "every version of the secret it names",
@@ -849,6 +838,10 @@ readers do not wait for the RFC 13 plan's epic 3 (T2.9, D1).
 
 **Other:**
 
+- **Where `Alloc`'s range comes from (D1).** Answered and landed: RFC 16 §3 has `Alloc.Range` and
+  `ControlPlaneTx.IDHighWater` among its tracked reads (`IDHighWater` written into §3 by this pull
+  request), RFC 23's plan's epic 2 lists the read in its R18, and RFC 13 §6 and Appendix B, RFC 18
+  §2.6 and RFC 23 §4.3 state the refusal.
 - `tx.PutSecret`, which the API's password write uses (D5), is #4059's secrets view on
   `ControlPlaneTx`; whichever of the RFC 13 plan's view changes and RFC 23's plan's epic 2 lands
   second adds the transaction form (#4326, D4).
