@@ -31,6 +31,8 @@ import (
 const (
 	progNFS   = 100003
 	progMount = 100005
+	progNLM   = 100021
+	progNSM   = 100024
 
 	authNone = 0
 	authSys  = 1
@@ -288,6 +290,10 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 	}{
 		{"MOUNT's NULL from its empty table", "nfs3",
 			call(1, progMount, 3, 0, none), accepted(1, procUnavail)},
+		{"NLM's NULL from its empty table", "nfs3",
+			call(31, progNLM, 4, 0, none), accepted(31, procUnavail)},
+		{"NSM's NULL from its empty table", "nfs3",
+			call(32, progNSM, 1, 0, none), accepted(32, procUnavail)},
 		{"NFS v2 from the stages' table", "nfs3",
 			call(2, progNFS, 2, 0, none), accepted(2, progMismatch, 3, 4)},
 		{"an AUTH_SYS credential of 17 groups", "nfs3",
@@ -334,6 +340,7 @@ func TestFragmentsUpToTheCaps(t *testing.T) {
 		{"a call of the cap in 2 fragments", fragments(padded(maxRecord), 2), true},
 		// The second fragment's body is not sent: the reader closes at its mark.
 		{"a call a byte past the cap in 2 fragments", fragments(padded(maxRecord+1), 2)[:4+(maxRecord+1)/2+4], false},
+		{"a mark a byte past the cap", words(lastFragment | (maxRecord + 1)), false},
 	} {
 		c := dial(t, srv)
 		if _, err := c.Write(tc.record); err != nil {
@@ -482,9 +489,10 @@ func TestTwoAdaptersServeTheirOwnRanges(t *testing.T) {
 	}
 }
 
-// Each program's table maps the refusals of core that reach it, and an error
-// no row names to its program's fault (RFC 21 section 11.5): no loopback call
-// reaches a fault, or a table's decode row, before a row decodes arguments.
+// Each program's table maps what the loopback tests leave unreached:
+// arguments that do not decode, which only a row decodes, an error no row
+// names, which is its program's fault, and a procedure NFSv4's table lacks
+// (RFC 21 section 11.5).
 func TestEachTableMapsCoresRefusals(t *testing.T) {
 	adaptertest.CheckLeaks(t, nil)
 	// accept is an RPC accept state's status, as the header stage encodes it:
@@ -499,14 +507,11 @@ func TestEachTableMapsCoresRefusals(t *testing.T) {
 		err   error
 		want  core.Status
 	}{
-		{"NFSv3's not supported", ts.V3, core.ErrNotSupported, accept(procUnavail)},
 		{"NFSv3's decode", ts.V3, core.ErrDecode, accept(garbageArgs)},
 		{"NFSv3's fault", ts.V3, other, serverFault},
 		{"NFSv4's not supported", ts.V4, core.ErrNotSupported, accept(procUnavail)},
 		{"NFSv4's decode", ts.V4, core.ErrDecode, accept(garbageArgs)},
-		{"NFSv4's minor version", ts.V4, core.ErrVersion, minorVersMismatch},
 		{"NFSv4's fault", ts.V4, other, serverFault},
-		{"MOUNT's not supported", ts.Mount, core.ErrNotSupported, accept(procUnavail)},
 		{"MOUNT's decode", ts.Mount, core.ErrDecode, accept(garbageArgs)},
 		{"MOUNT's fault", ts.Mount, other, accept(systemErr)},
 		{"NLM's fault", ts.NLM, other, accept(systemErr)},
