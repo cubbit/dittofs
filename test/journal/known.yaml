@@ -668,9 +668,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens over the directory holding segments and reads its own synced write; the row now stops at the read-only state, which the probe and its 30s wait reach only once they are wired.'
-  issue: '#3748'
-  message: 'the journal to turn read-only within 2s'
+  reason: 'The journal opens over the directory holding segments; the reopen seals the segment the cache-only marker names, and the mark the probe reads back names the open''s emptying as its next wall: the row stops there, and the assemble the emptying''s fate reads reaches the emptying last.'
+  issue: '#4033'
+  message: 'segment 3 is not among the journal's'
 
 - test: TestRFC28A_FooterIsNotAuthoritative
   status: fail
@@ -831,14 +831,6 @@
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3815'
   message: 'stub: the repack'
-
-- test: TestDamage_LostWrites/spare_entry
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
-  issue: '#3814'
-  message: 'spare_entry: model:'
 
 - test: TestDamage_LostWrites/open_torn_tail_truncation
   status: fail
