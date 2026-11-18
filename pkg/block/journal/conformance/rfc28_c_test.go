@@ -1358,6 +1358,9 @@ func poolNow(t *testing.T, f *journaltest.Fixture) pool {
 func wantReadopted(t *testing.T, f *journaltest.Fixture, before pool) {
 	t.Helper()
 
+	// The pool is settled before it is counted, so a refill the open started
+	// is counted whole rather than racing the read.
+	f.WaitSpares()
 	now := poolNow(t, f)
 	for _, name := range before.spares {
 		if !slices.Contains(now.spares, name) {

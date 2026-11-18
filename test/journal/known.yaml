@@ -668,7 +668,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs spares made ahead, recovery that re-adopts them and the reserves accounted. The count the row reads now varies between runs: the emptying spends the repack reserve a copy target when a crash ends a segment with live records, and how many creates the open then answers races the refill — the entry''s message names the invariant the failing line itself carries, the count-free half.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs spares made ahead, recovery that re-adopts them and the reserves accounted. The open now spends the repack reserve on a copy target when a crash ends a segment with live records, and the refill that follows creates segments; the row settles the pool before it counts, so the count line is the one that fails.'
   issue: '#3814'
   message: 'every spare was on disk'
 
