@@ -3,13 +3,10 @@
 package ad_dc_test
 
 import (
+	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"os"
 	"strconv"
@@ -20,6 +17,7 @@ import (
 
 	"github.com/go-ldap/ldap/v3"
 
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/identity"
@@ -27,87 +25,77 @@ import (
 )
 
 // The Samba domain controller passes the domain controller's conformance
-// suite, so the in-memory one stands in for it only where both answer alike.
-//
-// Its secure channel is netlogon.NewDialer's; the account calls are built
-// here over plain LDAP until the production ones exist, which then replace
-// sambaDC and run this same suite.
+// suite through netlogon.NewDialer, the production client, so the in-memory
+// one stands in for it only where both answer alike.
 func TestDomainControllerConformance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping AD-DC integration test in short mode")
 	}
 	dcIP := setupADDC(t)
 	waitForMachinePassword(t, dcIP, "dittofs", machineAccountPass)
-	ca, err := os.ReadFile(copyADCA(t))
-	if err != nil {
-		t.Fatalf("read the fixture CA: %v", err)
-	}
-	roots := x509.NewCertPool()
-	roots.AppendCertsFromPEM(ca)
+	rec, ca := dcRecord(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	// Samba counts badPwdCount only under a lockout threshold, which the
-	// fixture's domain leaves at 0; 100 locks no row out.
-	if out, err := adDockerExec("samba-tool", "domain", "passwordsettings", "set", "--account-lockout-threshold=100"); err != nil {
-		t.Fatalf("set the lockout threshold: %v\n%s", err, out)
-	}
-	t.Cleanup(func() {
-		if out, err := adDockerExec("samba-tool", "domain", "passwordsettings", "set", "--account-lockout-threshold=0"); err != nil {
-			t.Errorf("set the lockout threshold back to 0: %v\n%s", err, out)
-		}
-	})
 	seed := &sambaDCSeeder{conn: adminLDAP(t, dcIP, ca), ip: dcIP}
 	dialer := netlogon.NewDialer((&net.Dialer{}).DialContext)
 
 	identitytest.DomainControllerConformance(t, func(t *testing.T) (netlogon.DC, identitytest.DCSeeder) {
-		nl, err := dialer.Dial(ctx, fixtureRecord(), dcIP)
+		dc, err := dialer.Dial(ctx, rec, dcIP)
 		if err != nil {
 			t.Fatalf("dial the DC: %v", err)
 		}
-		return &sambaDC{DC: nl, ip: dcIP, roots: roots}, seed
+		return dc, seed
 	})
 }
 
-// sambaDC is a netlogon.DC over the fixture's Samba: the production secure
-// channel, and LDAPS as its administrator for the account calls.
-type sambaDC struct {
-	netlogon.DC
-	ip    string
-	roots *x509.CertPool
-
-	mu     sync.Mutex
-	closed bool
-}
-
-var errSambaClosed = errors.New("sambaDC: closed")
-
-func (d *sambaDC) check() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.closed {
-		return errSambaClosed
+// A pre-staged account reads back the owner its creator left and its
+// delegation value as stored: offjoinowned$ is owned by joiner and lets
+// dittofs$ act on its behalf. The read binds as joiner, a plain user as a
+// directory's bind account is, who may read no security descriptor's SACL.
+func TestDomainControllerAccountOwnerAndDelegation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping AD-DC integration test in short mode")
 	}
-	return nil
-}
-
-func (d *sambaDC) Close() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.closed = true
-	return d.DC.Close()
-}
-
-func (d *sambaDC) ldap(bind identity.JoinCredential) (*ldap.Conn, error) {
-	conn, err := ldap.DialURL("ldaps://"+d.ip+":636",
-		ldap.DialWithTLSConfig(&tls.Config{RootCAs: d.roots, ServerName: adDCHost}))
+	dcIP := setupADDC(t)
+	rec, _ := dcRecord(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	dc, err := netlogon.NewDialer((&net.Dialer{}).DialContext).Dial(ctx, rec, dcIP)
 	if err != nil {
-		return nil, err
+		t.Fatalf("dial the DC: %v", err)
 	}
-	if err := conn.Bind(bind.User, string(bind.Password)); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("bind as %s: %w: %w", bind.User, err, netlogon.ErrRejected)
+	defer func() { _ = dc.Close() }()
+	a, err := dc.Account(ctx, identity.JoinCredential{User: "joiner@" + adRealm, Password: []byte(adUserPass)}, "offjoinowned")
+	if err != nil {
+		t.Fatalf("Account offjoinowned$: %v", err)
 	}
-	return conn, nil
+	joiner := adAttrs(t, "user", "joiner", "objectSid")["objectSid"]
+	if got := sid.FormatSID(&a.Owner); got != joiner {
+		t.Errorf("offjoinowned$'s owner %s, want joiner's %s", got, joiner)
+	}
+	dittofs, err := sid.ParseSIDString(adAttrs(t, "computer", "dittofs", "objectSid")["objectSid"])
+	if err != nil {
+		t.Fatalf("parse dittofs$'s objectSid: %v", err)
+	}
+	var enc bytes.Buffer
+	sid.EncodeSID(&enc, dittofs)
+	if !bytes.Contains(a.Delegation, enc.Bytes()) {
+		t.Errorf("offjoinowned$'s msDS-AllowedToActOnBehalfOfOtherIdentity %x, want a descriptor naming dittofs$ %s",
+			a.Delegation, sid.FormatSID(dittofs))
+	}
+}
+
+// dcRecord is the fixture's directory record as the domain controller's
+// account calls read it, and the fixture's CA.
+func dcRecord(t *testing.T) (directory.Record, []byte) {
+	t.Helper()
+	ca, err := os.ReadFile(copyADCA(t))
+	if err != nil {
+		t.Fatalf("read the fixture CA: %v", err)
+	}
+	rec := fixtureRecord()
+	rec.Address, rec.Base, rec.TrustRoots = "ldaps://"+adDCHost, adBaseDN, string(ca)
+	return rec, ca
 }
 
 // entry reads the computer account name$ with attrs.
@@ -121,54 +109,6 @@ func entry(conn *ldap.Conn, name string, attrs ...string) (*ldap.Entry, error) {
 		return nil, fmt.Errorf("%s$: %w", name, netlogon.ErrNoAccount)
 	}
 	return res.Entries[0], nil
-}
-
-func (d *sambaDC) Account(ctx context.Context, bind identity.JoinCredential, name string) (netlogon.Account, error) {
-	if err := d.check(); err != nil {
-		return netlogon.Account{}, err
-	}
-	conn, err := d.ldap(bind)
-	if err != nil {
-		return netlogon.Account{}, err
-	}
-	defer func() { _ = conn.Close() }()
-	const deleg = "msDS-AllowedToActOnBehalfOfOtherIdentity"
-	e, err := entry(conn, name, "msDS-KeyVersionNumber", "msDS-SupportedEncryptionTypes",
-		"servicePrincipalName", "nTSecurityDescriptor", deleg)
-	if err != nil {
-		return netlogon.Account{}, err
-	}
-	kvno, _ := strconv.ParseUint(e.GetAttributeValue("msDS-KeyVersionNumber"), 10, 32)
-	enc, _ := strconv.ParseUint(e.GetAttributeValue("msDS-SupportedEncryptionTypes"), 10, 32)
-	a := netlogon.Account{DN: e.DN, KeyVersion: uint32(kvno), EncTypes: uint32(enc),
-		Delegation: e.GetRawAttributeValue(deleg)}
-	if sd := e.GetRawAttributeValue("nTSecurityDescriptor"); len(sd) >= 20 {
-		if off := binary.LittleEndian.Uint32(sd[4:]); off != 0 && int(off) < len(sd) {
-			if o, _, err := sid.DecodeSID(sd[off:]); err == nil {
-				a.Owner = *o
-			}
-		}
-	}
-	res, err := conn.Search(ldap.NewSearchRequest("CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,"+adBaseDN,
-		ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"sPNMappings"}, nil))
-	if err != nil || len(res.Entries) != 1 {
-		return netlogon.Account{}, fmt.Errorf("read sPNMappings: %v", err)
-	}
-	var hostTo []string
-	for _, m := range res.Entries[0].GetAttributeValues("sPNMappings") {
-		if k, v, ok := strings.Cut(m, "="); ok && strings.EqualFold(k, "host") {
-			hostTo = append(hostTo, strings.Split(v, ",")...)
-		}
-	}
-	for _, n := range e.GetAttributeValues("servicePrincipalName") {
-		a.Names = append(a.Names, n)
-		if svc, host, ok := strings.Cut(n, "/"); ok && strings.EqualFold(svc, "host") {
-			for _, m := range hostTo {
-				a.Names = append(a.Names, m+"/"+host)
-			}
-		}
-	}
-	return a, nil
 }
 
 // computersGUID is the Computers container's well-known GUID.
@@ -188,57 +128,6 @@ func wellKnownComputers(conn *ldap.Conn) (value, dn string, err error) {
 		}
 	}
 	return "", "", errors.New("wellKnownObjects names no Computers container")
-}
-
-func (d *sambaDC) Create(ctx context.Context, admin identity.JoinCredential, c netlogon.Computer, password []byte) error {
-	if err := d.check(); err != nil {
-		return err
-	}
-	conn, err := d.ldap(admin)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close() }()
-	ou := c.OU
-	if ou == "" {
-		if _, ou, err = wellKnownComputers(conn); err != nil {
-			return err
-		}
-	}
-	add := ldap.NewAddRequest("CN="+c.Name+","+ou, nil)
-	add.Attribute("objectClass", []string{"top", "person", "organizationalPerson", "user", "computer"})
-	add.Attribute("sAMAccountName", []string{c.Name + "$"})
-	add.Attribute("userAccountControl", []string{"4096"})
-	add.Attribute("unicodePwd", []string{unicodePwd(string(password))})
-	add.Attribute("dNSHostName", []string{c.DNSHostName})
-	add.Attribute("servicePrincipalName", []string{"HOST/" + c.Name, "HOST/" + c.DNSHostName,
-		"cifs/" + c.Name, "cifs/" + c.DNSHostName})
-	add.Attribute("msDS-SupportedEncryptionTypes", []string{"24"})
-	if err := conn.Add(add); err != nil {
-		if ldap.IsErrorWithCode(err, ldap.LDAPResultEntryAlreadyExists) {
-			return fmt.Errorf("%s$: %w: %w", c.Name, err, fs.ErrExist)
-		}
-		return err
-	}
-	return nil
-}
-
-func (d *sambaDC) Reset(ctx context.Context, admin identity.JoinCredential, name string, password []byte) error {
-	if err := d.check(); err != nil {
-		return err
-	}
-	conn, err := d.ldap(admin)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close() }()
-	e, err := entry(conn, name)
-	if err != nil {
-		return err
-	}
-	mod := ldap.NewModifyRequest(e.DN, nil)
-	mod.Replace("unicodePwd", []string{unicodePwd(string(password))})
-	return conn.Modify(mod)
 }
 
 // sambaDCSeeder seeds the fixture's Samba over LDAPS as its administrator.
@@ -374,7 +263,7 @@ func (s *sambaDCSeeder) Unreachable(t testing.TB) netlogon.DC {
 	if err != nil {
 		t.Fatalf("build the unreachable controller: %v", err)
 	}
-	return &sambaDC{DC: dc, ip: s.ip}
+	return dc
 }
 
 func (s *sambaDCSeeder) MoveComputersContainer(t testing.TB, ou string) {

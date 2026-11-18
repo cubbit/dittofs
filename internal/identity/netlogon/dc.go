@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,13 +38,43 @@ func NewDialer(dial func(ctx context.Context, network, addr string) (net.Conn, e
 
 type dialer struct{ dial dialFunc }
 
-// Lookup is not built yet: it answers errors.ErrUnsupported.
+// Lookup answers the controllers of realm's domain from its DC locator
+// record, _ldap._tcp.dc._msdcs.<realm>, in the order RFC 2782 gives them:
+// by priority, then randomised by weight. With dnsServer, a host or
+// host:port, set, the query goes to it alone, through dial; a domain's
+// controllers are normally its DNS servers.
 func (d *dialer) Lookup(ctx context.Context, realm, dnsServer string) ([]string, error) {
-	return nil, errors.ErrUnsupported
+	realm = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(realm)), ".")
+	if realm == "" {
+		return nil, errors.New("netlogon: look up controllers: empty realm")
+	}
+	resolver := net.DefaultResolver
+	if dnsServer != "" {
+		if _, _, err := net.SplitHostPort(dnsServer); err != nil {
+			dnsServer = net.JoinHostPort(dnsServer, "53")
+		}
+		resolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return d.dial(ctx, network, dnsServer)
+		}}
+	}
+	_, srvs, err := resolver.LookupSRV(ctx, "ldap", "tcp", "dc._msdcs."+realm)
+	if err != nil {
+		return nil, fmt.Errorf("netlogon: look up _ldap._tcp.dc._msdcs.%s: %w", realm, err)
+	}
+	addrs := make([]string, 0, len(srvs))
+	for _, s := range srvs {
+		addrs = append(addrs, strings.TrimSuffix(s.Target, "."))
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("netlogon: _ldap._tcp.dc._msdcs.%s names no controller", realm)
+	}
+	return addrs, nil
 }
 
-// Dial asks the endpoint mapper on addr's port 135 for NETLOGON's
-// ncacn_ip_tcp port; every later connection goes to that port.
+// Dial opens the controller at addr: its NETLOGON calls go to the
+// ncacn_ip_tcp port addr's endpoint mapper on port 135 names, asked at the
+// first Channel, and its account calls over LDAP to addr, under rec's scheme,
+// port and trust roots.
 //
 // decision: NETLOGON runs on ncacn_ip_tcp sealed with schannel, never over
 // an SMB named pipe, so no SMB session and no Kerberos client key is needed,
@@ -51,16 +83,33 @@ func (d *dialer) Lookup(ctx context.Context, realm, dnsServer string) ([]string,
 // pipe after a refused alter context that no longer reproduces. Withdraw it
 // for a controller that refuses schannel on ncacn_ip_tcp.
 func (d *dialer) Dial(ctx context.Context, rec directory.Record, addr string) (DC, error) {
-	port, err := netlogonPort(ctx, d.dial, addr)
-	if err != nil {
-		return nil, fmt.Errorf("netlogon: endpoint mapper on %s: %w", addr, err)
-	}
 	return &dc{
-		dial:    d.dial,
-		binding: "ncacn_ip_tcp:" + addr + "[" + port + "]",
-		server:  logonServer(addr),
-		realm:   rec.Realm,
+		dial:   d.dial,
+		addr:   addr,
+		server: logonServer(addr),
+		realm:  rec.Realm,
+		ldap:   ldapRecord(rec, addr),
 	}, nil
+}
+
+// ldapRecord is rec with its address naming addr, the pinned controller,
+// under rec's scheme and port, so the account calls reach the controller the
+// channel does, verified against rec's trust roots.
+func ldapRecord(rec directory.Record, addr string) directory.Record {
+	u, err := url.Parse(rec.Address)
+	if err != nil {
+		return rec // Validate refuses it at the first account call
+	}
+	host := addr
+	if strings.Contains(addr, ":") {
+		host = "[" + addr + "]"
+	}
+	if port := u.Port(); port != "" {
+		host = net.JoinHostPort(addr, port)
+	}
+	u.Host = host
+	rec.Address = u.String()
+	return rec
 }
 
 // netlogonPort is the ncacn_ip_tcp port addr's endpoint mapper names for
@@ -135,33 +184,74 @@ func logonServer(addr string) string {
 
 // dc is one domain controller reached through its NETLOGON port.
 type dc struct {
-	dial    dialFunc
-	binding string
-	server  string
-	realm   string
+	dial   dialFunc
+	addr   string
+	server string
+	realm  string
+	ldap   directory.Record
 
-	mu     sync.Mutex // serialises channel set-up: the controller keeps one credential per account
-	closed bool
+	mu      sync.Mutex // serialises channel set-up: the controller keeps one credential per account
+	binding string     // NETLOGON's binding, once the endpoint mapper named it
+	closed  bool
 }
 
 var errClosed = errors.New("netlogon: domain controller closed")
 
-// Account is not built yet: it answers errors.ErrUnsupported.
+// netlogonBinding is NETLOGON's binding on the controller, asking the
+// endpoint mapper the first time. d.mu is held.
+func (d *dc) netlogonBinding(ctx context.Context) (string, error) {
+	if d.binding == "" {
+		port, err := netlogonPort(ctx, d.dial, d.addr)
+		if err != nil {
+			return "", fmt.Errorf("netlogon: endpoint mapper on %s: %w", d.addr, err)
+		}
+		d.binding = "ncacn_ip_tcp:" + d.addr + "[" + port + "]"
+	}
+	return d.binding, nil
+}
+
+func (d *dc) isClosed() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.closed
+}
+
+// Account reads the computer account over LDAP as bind.
 func (d *dc) Account(ctx context.Context, bind identity.JoinCredential, name string) (Account, error) {
-	return Account{}, errors.ErrUnsupported
+	if d.isClosed() {
+		return Account{}, errClosed
+	}
+	a, err := directory.ReadComputer(ctx, d.ldap, bind.User, bind.Password, name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Account{}, fmt.Errorf("%w: %w", ErrNoAccount, err)
+	}
+	if err != nil {
+		return Account{}, err
+	}
+	return Account(a), nil
 }
 
-// Create is not built yet: it answers errors.ErrUnsupported.
+// Create creates the computer account over LDAP as admin.
 func (d *dc) Create(ctx context.Context, admin identity.JoinCredential, c Computer, password []byte) error {
-	return errors.ErrUnsupported
+	if d.isClosed() {
+		return errClosed
+	}
+	return directory.CreateComputer(ctx, d.ldap, admin.User, admin.Password, directory.NewComputer(c), password)
 }
 
-// Reset is not built yet: it answers errors.ErrUnsupported.
+// Reset sets the computer account's password over LDAP as admin.
 func (d *dc) Reset(ctx context.Context, admin identity.JoinCredential, name string, password []byte) error {
-	return errors.ErrUnsupported
+	if d.isClosed() {
+		return errClosed
+	}
+	err := directory.ResetComputer(ctx, d.ldap, admin.User, admin.Password, name, password)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %w", ErrNoAccount, err)
+	}
+	return err
 }
 
-// Close refuses every later Channel; a channel already set up keeps working
+// Close refuses every later call; a channel already set up keeps working
 // until its own Close.
 func (d *dc) Close() error {
 	d.mu.Lock()

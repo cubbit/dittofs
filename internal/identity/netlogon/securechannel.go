@@ -91,20 +91,24 @@ func (d *dc) Channel(ctx context.Context, account string, password []byte) (Chan
 	if d.closed {
 		return nil, errClosed
 	}
+	binding, err := d.netlogonBinding(ctx)
+	if err != nil {
+		return nil, err
+	}
 	name := strings.ToUpper(account)
 	machine, err := machineCredential(name, d.realm, password)
 	if err != nil {
 		return nil, err
 	}
-	cfg, cred, err := d.authenticate(ctx, name, machine)
+	cfg, cred, err := d.authenticate(ctx, binding, name, machine)
 	if err != nil {
 		return nil, err
 	}
-	as, err := d.seal(ctx, cfg, machine)
+	as, err := d.seal(ctx, binding, cfg, machine)
 	if err != nil {
 		return nil, err
 	}
-	return &channel{dc: d, name: name, cfg: cfg, machine: machine, cred: cred, as: as}, nil
+	return &channel{dc: d, binding: binding, name: name, cfg: cfg, machine: machine, cred: cred, as: as}, nil
 }
 
 // machineCredential is the computer account name$ keyed by its NT hash, so no
@@ -126,8 +130,8 @@ func machineCredential(name, realm string, password []byte) (credential.Credenti
 
 // authenticate runs the challenge and NetrServerAuthenticate3 as name on an
 // association of its own, closed before it returns.
-func (d *dc) authenticate(ctx context.Context, name string, machine credential.Credential) (*nlssp.Config, *nlssp.SecureCredential, error) {
-	cc, err := dcerpc.Dial(ctx, d.binding, dcerpc.WithDialer(d.dial))
+func (d *dc) authenticate(ctx context.Context, binding, name string, machine credential.Credential) (*nlssp.Config, *nlssp.SecureCredential, error) {
+	cc, err := dcerpc.Dial(ctx, binding, dcerpc.WithDialer(d.dial))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -250,12 +254,12 @@ func (a *assoc) close() {
 // go-msrpc ties an association's lifetime to the context it was bound under,
 // so it is bound under one ctx's cancellation does not reach, and ctx bounds
 // the bind by closing the connection.
-func (d *dc) seal(ctx context.Context, cfg *nlssp.Config, machine credential.Credential) (*assoc, error) {
+func (d *dc) seal(ctx context.Context, binding string, cfg *nlssp.Config, machine credential.Credential) (*assoc, error) {
 	a := &assoc{}
 	stop := context.AfterFunc(ctx, a.abort)
 	defer stop()
 	life := context.WithoutCancel(ctx)
-	cc, err := dcerpc.Dial(life, d.binding, dcerpc.WithDialer(a.dialer(d.dial)))
+	cc, err := dcerpc.Dial(life, binding, dcerpc.WithDialer(a.dialer(d.dial)))
 	if err != nil {
 		a.abort()
 		return nil, err
@@ -284,6 +288,7 @@ func (d *dc) seal(ctx context.Context, cfg *nlssp.Config, machine credential.Cre
 // other in a profile.
 type channel struct {
 	dc      *dc
+	binding string
 	name    string
 	cfg     *nlssp.Config
 	machine credential.Credential
@@ -305,7 +310,7 @@ func (c *channel) association(ctx context.Context) (*assoc, error) {
 		return nil, errChannelClosed
 	}
 	if c.as == nil {
-		as, err := c.dc.seal(ctx, c.cfg, c.machine)
+		as, err := c.dc.seal(ctx, c.binding, c.cfg, c.machine)
 		if err != nil {
 			return nil, err
 		}
