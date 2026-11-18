@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"syscall"
 	"testing"
 	"time"
 
@@ -788,14 +789,21 @@ func TestReadFoundRotRidesTheLossRecord(t *testing.T) {
 // content never served (the survivor reads back whole wherever it sits,
 // never a hole an unmasked older piece would fill).
 //
-// decision: the second open's SyncDir durability — the fourth step the
-// acceptance names — is covered by the second power loss landing after the
-// second open's own unlink went durable: a removal already synced must
-// survive the loss, which is the one crash it cannot lose.
+// The cuts are the target's append, both syncs of its seal (the records',
+// then the marker's, footer's and trailer's), the append into the retry's
+// own spare after the first spare's syncs failed, the source's unlink, and
+// the directory sync that follows the unlink, held with the removal applied
+// and not yet durable, so the cut resurrects the source.
+//
+// decision: the directory sync cut holds the first sync_dir after the
+// unlink, which the pool's own refill may also issue; either way a power cut
+// lands in a directory sync of the emptying and the same invariants hold,
+// so the row does not tell the retirer's sync from the refill's. Withdrawn
+// if a refill's directory sync must be told apart from the retirer's.
 //
 // ponytail: the retire step's own recycles are out of this matrix — the
 // fixture holds no dead sealed segments, so each run's retire step retires
-// nothing — and the pool's spare is prewarmed before the hold engages, so
+// nothing — and the pool's spares are prewarmed before the hold engages, so
 // a held write can only be the copy's own. Upgrade the fixture with a dead
 // full seal when the retire step's crash points owe their own rows.
 func TestCrashAtEveryEmptyingStep(t *testing.T) {
@@ -834,7 +842,7 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the reopen's Run: %v", err)
 		}
-		h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 1})
+		h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 2})
 		if dur != nil {
 			h.deps.EndDeferral = dur.EndDeferral
 		}
@@ -845,10 +853,25 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 		return &st
 	}
 
-	for _, tc := range []struct{ name, op, key string }{
-		{"target_append", "write", ""},
-		{"target_seal_sync", "sync", ""},
-		{"source_unlink", "remove", ""},
+	for _, tc := range []struct {
+		name string
+		op   string
+		// nth is the call of op the crash lands in: the seal's second sync
+		// is the one that carries the marker, the footer and the trailer.
+		nth int
+		// retry makes the first spare's syncs fail, so the crash lands in
+		// the retry's own spare.
+		retry bool
+		// afterRemove lands the crash in the directory sync that follows
+		// the source's unlink instead, the removal not yet durable.
+		afterRemove bool
+	}{
+		{name: "target_append", op: "write", nth: 1},
+		{name: "target_seal_first_sync", op: "sync", nth: 1},
+		{name: "target_seal_second_sync", op: "sync", nth: 2},
+		{name: "retry_spare_append", op: "write", nth: 1, retry: true},
+		{name: "source_unlink", op: "remove", nth: 1},
+		{name: "directory_sync_after_unlink", op: "remove", nth: 1, afterRemove: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, d := plantOne(t)
@@ -871,33 +894,54 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the first Run: %v", err)
 			}
-			h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 1})
+			h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 2})
 			h.deps.EndDeferral = dur.EndDeferral
-			// Prewarm the pool's spare so a held write is the copy's own:
+			// Prewarm the pool's spares so a held write is the copy's own:
 			// the settle the draw waits on already happened.
 			if err := h.pool.WaitSpares(context.Background()); err != nil {
 				t.Fatalf("the pool's prewarm: %v", err)
 			}
-			// The crash key: the spare the copy draws is the first id above
-			// every id the directory holds, the source's own name for the
-			// unlink leg.
-			key := tc.key
-			if key == "" {
-				key = format.SegmentName(st.Attached.MaxID + 1)
-				if tc.op == "remove" {
-					key = format.SegmentName(2)
-				}
+			// The crash keys: the spares the copy draws are the first ids
+			// above every id the directory holds, in order, and the source's
+			// own name for the unlink leg.
+			spare1 := format.SegmentName(st.Attached.MaxID + 1)
+			spare2 := format.SegmentName(st.Attached.MaxID + 2)
+			key := spare1
+			if tc.retry {
+				r.failSyncs(spare1, 0) // the first target never syncs: the copy retries in the next spare
+				key = spare2
 			}
-			hold := r.seam.Hold(t, kitOp(tc.op), key)
+			if tc.op == "remove" {
+				key = format.SegmentName(2)
+			}
 
 			crashed := make(chan error, 1)
+			reach := func(hold *kit.Hold, what string) {
+				t.Helper()
+				select {
+				case <-hold.Reached():
+				case err := <-crashed:
+					t.Fatalf("the emptying returned (%v) before the held step %s", err, what)
+				}
+			}
+			hold := r.seam.HoldFirst(t, kitOp(tc.op), key)
 			go func() {
 				crashed <- Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil)
 			}()
-			select {
-			case <-hold.Reached():
-			case err := <-crashed:
-				t.Fatalf("the emptying returned (%v) before the held step %s on %s", err, tc.op, key)
+			reach(hold, tc.op+" on "+key)
+			switch {
+			case tc.nth == 2:
+				// The first call is parked and already matched its hold, so
+				// a hold made now catches the call after it.
+				next := r.seam.HoldFirst(t, kitOp(tc.op), key)
+				hold.Release()
+				reach(next, "the second "+tc.op+" on "+key)
+				hold = next
+			case tc.afterRemove:
+				next := r.seam.Hold(t, kit.OpSyncDir, "*")
+				hold.Release()
+				reach(next, "the directory sync after the unlink")
+				hold = next
 			}
 			if err := r.seam.Crash(); err != nil {
 				t.Fatalf("the power cut at the held step: %v", err)
@@ -908,6 +952,10 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 				_ = err
 			case <-time.After(30 * time.Second):
 				t.Fatalf("the crashed emptying never returned: a hold at the %s step wedged the phase past the crash", tc.name)
+			}
+			if tc.retry {
+				r.faults = nil
+				r.scheduleFaults() // the reopen runs on a device that syncs again
 			}
 
 			// The process-killed reopen: settled state and invariants.
@@ -1015,4 +1063,71 @@ func TestCopyPastOneCapIsAnOpenRefusal(t *testing.T) {
 	if !errors.Is(err, core.ErrOpenRefused) {
 		t.Fatalf("a copy needing more than one cap answered %v, want an error matching core.ErrOpenRefused", err)
 	}
+}
+
+// TestEmptyingTargetSyncFailure holds the copy target's failure at the
+// emptying: a first spare whose syncs fail is a failed segment, ended and
+// never sealed, and the copy lands whole in the next spare; a second failing
+// spare in a row fails the emptying with the device's own error, leaving the
+// ended source standing with its bytes.
+func TestEmptyingTargetSyncFailure(t *testing.T) {
+	plant := func(t *testing.T) (*rig, *State, *emptyingHarness) {
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(2, damageHeader(buildSeg(2, collectWrite(7, tailFile(), 2, 2, 0x4100, 16))))
+		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 2})
+		if err := h.pool.WaitSpares(context.Background()); err != nil {
+			t.Fatalf("the pool's prewarm: %v", err)
+		}
+		return r, &st, h
+	}
+	t.Run("the retry lands in the next spare", func(t *testing.T) {
+		r, st, h := plant(t)
+		first := core.SegmentID(st.Attached.MaxID + 1)
+		r.failSyncs(format.SegmentName(first), 0)
+		if err := Emptying(context.Background(), h.deps, st, journalID, core.Version{}, nil); err != nil {
+			t.Fatalf("Emptying over a first target whose syncs fail: %v", err)
+		}
+		if got, err := st.Assembled.Set.State(first); err != nil || got != segment.Ended {
+			t.Errorf("the failed target's row is %v (%v), want Ended: nothing of it was proved", got, err)
+		}
+		if slices.Contains(r.listing(), format.SegmentName(2)) {
+			t.Errorf("the source is still on disk, want it unlinked once the retry's copy held")
+		}
+		placed, ok := st.Rebuilt.Index.Lookup(tailFile(), 0x4100)
+		if !ok {
+			t.Fatalf("the index answers no record at 0x4100, want the retry's copy")
+		}
+		if placed.Record.Segment == first {
+			t.Errorf("the record serves from the failed target %d, want the retry's spare", first)
+		}
+		if got, err := st.Assembled.Set.State(placed.Record.Segment); err != nil || got != segment.Sealed {
+			t.Errorf("the copy's segment row is %v (%v), want Sealed", got, err)
+		}
+	})
+	t.Run("a second failing spare fails the emptying and keeps the source", func(t *testing.T) {
+		r, st, h := plant(t)
+		first := core.SegmentID(st.Attached.MaxID + 1)
+		r.failSyncs(format.SegmentName(first), 0)
+		r.failSyncs(format.SegmentName(first+1), 0)
+		before, err := r.seam.Durable(format.SegmentName(2))
+		if err != nil {
+			t.Fatalf("read the source: %v", err)
+		}
+		err = Emptying(context.Background(), h.deps, st, journalID, core.Version{}, nil)
+		if !errors.Is(err, syscall.EIO) {
+			t.Fatalf("Emptying over two failing targets answered %v, want the sync's own EIO", err)
+		}
+		after, aerr := r.seam.Durable(format.SegmentName(2))
+		if aerr != nil || !slices.Equal(before, after) {
+			t.Errorf("the refused emptying changed the source: got %x (err %v), want the planted bytes", after, aerr)
+		}
+		if got, serr := st.Assembled.Set.State(2); serr != nil || got != segment.Ended {
+			t.Errorf("the source's row is %v (%v), want Ended and standing", got, serr)
+		}
+	})
 }
