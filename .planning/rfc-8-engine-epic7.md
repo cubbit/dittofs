@@ -358,7 +358,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   through a stall leaves none behind, as RFC 25 §3.4 derives a condition from current
   evidence.
 - **D8, `Stats`' fields.** `Stats` holds `Journals` (per device: `MaxBytes`, `UsedBytes`,
-  `DirtyBytes`, `UnreclaimedBytes`, `NextVersion`, `VersionLimit`, its conditions, and per
+  `DirtyBytes`, `UnreclaimedBytes`, `NextVersion`, `VersionLimit` (the journal plan's T13.1 replaces these six by the journal's own `Stats`), its conditions, and per
   `ShareID` the journal's figures for that share's tag: `Limit`, `UsedBytes`, `HeldBytes`,
   `UnreclaimedBytes`), `Shares` (per `ShareID`: its conditions, and the device and cause of
   a share refused or left unattached at start), `Node` (its conditions), and the counters of

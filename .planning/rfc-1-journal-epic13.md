@@ -3,7 +3,7 @@
 **Sources:** [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §3.7 and §3.9; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.5 and
 §2.8; [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §2.6 (`Deps.Tracer`).
 **Track:** B.
-**Epic 13 estimate: 4 subtasks, 10.5 man-days.**
+**Epic 13 estimate: 4 subtasks, 13.25 man-days.**
 
 This is not the old epic 11 ("the engine on the RFC 16 store"), which is superseded.
 
@@ -19,20 +19,25 @@ This is not the old epic 11 ("the engine on the RFC 16 store"), which is superse
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | Everything an operator needs to tell a wedged journal from a slow one is readable from one `Stats` call | MUST | RFC 1 §3.7 | T13.1 |
-| R2 | The engine exports every `Stats` field of §3.7 and the §3.9 counters, with no exclusion: a counter as `journal_<field>_total`, a gauge as `journal_<field>`, labelled with the journal | MUST | RFC 1 §3.9 | T13.2 |
+| R2 | The engine exports every `Stats` field of §3.7 and the §3.9 counters, each as a series or with a written reason: a counter as `journal_<field>_total`, a gauge as `journal_<field>`, labelled with the journal | MUST | RFC 1 §3.9 | T13.2 |
 | R3 | Per-share fields are exported as worst-n gauges: labelled `share` for the `metrics.top_shares` shares worst by that gauge (selection recomputed at every export), and, without a `share` label, as the sum over every share and, for an age or a headroom, the worst value | MUST | RFC 1 §3.9; RFC 25 §2.5 | T13.2 |
-| R4 | `corrupt_extents` is labelled `outcome` (`data_loss` for an extent whose offloaded bit is unset, `repairable` for one whose bit is set); `descriptor_overruns` and `descriptor_open_failures` are labelled `kind` (`read` or `write`) | MUST | RFC 1 §3.9 | T13.2 |
+| R4 | `corrupt_extents` is labelled `outcome` (`data_loss` for an extent whose offloaded bit is unset, `repairable` for one whose bit is set); `descriptor_overruns` and `descriptor_open_failures` are labelled `kind` (`read` or `write`), once the journal maintains them | MUST | RFC 1 §3.9 | T13.2 |
 | R5 | Only what the journal alone knows is a `journal_` metric: `WriteAt` timing and read hits and misses are the caller's | MUST NOT | RFC 1 §3.9 | T13.2 |
 | R6 | The export is a read-through collector over a fresh `Stats` snapshot; it takes no lock a request path needs beyond what `Stats` takes, and its cost does not grow with work in flight | MUST | RFC 25 §2.8 | T13.2 |
 | R7 | A component the export cannot read within 5 s is omitted and counted in `health_export_partial_total`, never waited for | MUST | RFC 25 §2.8 | T13.2 |
 | R8 | An export carries no file name, no user content and no secret | MUST NOT | RFC 25 §2.8 | T13.2 |
 | R9 | The journal's spans reach the engine's tracer, `Deps.Tracer` | MUST | RFC 8 §2.6 | T13.3 |
-| R10 | `Stats` is served from maintained counters, with no walk and no lock a write needs | MUST, MUST NOT | RFC 1 §3.7; epic 8 R96, R97 | T13.4 |
+| R10 | `Stats` is served from maintained counters, with no walk and no lock a write needs: none of the locks below | MUST, MUST NOT | RFC 1 §3.7; epic 8 R96, R97 | T13.4 |
 
 `Stats` itself breaks RFC 1 §3.7 today, so R10 has its own subtask (T13.4).
 
-- `Core.Account` runs on every publish and takes `dirtyFiles.mu`.
-- `oldestDirty` takes the same lock and walks `byTime` (`datapath/dirty.go`).
+- `Core.Stats` (`datapath/stats.go`) takes six locks that writes take:
+  - `dirtyFiles.mu`: `Account` runs on every publish, and `oldestDirty` walks `byTime` under it;
+  - `cap.mu`, through `ReservedBytes`, `ReservedByTag` and `RefusedCount`: `Take` holds it on every write and fill;
+  - `set.mu`, through `Counters` and `TagFigures`: `AddRecord` holds it;
+  - `pool.mu`, through `Counters`;
+  - `retirer.mu`, through `Counters`;
+  - `shares.mu`, through `shareFigures`: `Account` holds it on every publish.
 - Epic 8 owns the rule as R96 and R97 and has landed, so the fix is owned here.
 
 Deferred, with owners in the plan's ledger:
@@ -47,7 +52,7 @@ Deferred, with owners in the plan's ledger:
 
 ### T13.1 Carry the journal's snapshot to the node
 
-**Subtask T13.1 estimate: 1 man-days.**
+**Subtask T13.1 estimate: 1.25 man-days.**
 
 - **Depends on:** none. The RFC 8 owner agreed the change on the PR: T7.3 has landed (#3940), and he asks for one copy of each figure.
 - **Covers requirements:** R1.
@@ -57,12 +62,14 @@ Deferred, with owners in the plan's ledger:
   - The copy is in `engine.go`'s `Stats` assembly: it becomes one assignment per `engine.Stats` call.
   - Move the readers of the six: `engine/stats_test.go` reads `UsedBytes`, `NextVersion` and `VersionLimit`.
   - `Shares` (keyed by share id) and `Conditions` stay.
+  - The share table's tag to share id map travels beside the snapshot: only the engine knows which share holds a tag.
   - One copy per figure, per share too:
     - The four figures `JournalShareStats` carries are exported from it.
-    - The collector reads only the other per-tag fields from the carried `Stats`.
+    - The collector reads only the other per-tag fields from the carried `Stats`, and finds each one's share through the map.
 - **Acceptance criteria:**
   - The carried snapshot equals the journal's `Stats` at the moment of the call.
   - `engine.JournalStats` declares none of the six fields.
+  - The map names every attached share's tag, and no other.
 - **Tests:**
   - At `engine.Stats`, over a real journal under `t.TempDir()`.
   - After a write, a sync and a refused reservation, the snapshot equals the journal's `Stats`.
@@ -71,18 +78,18 @@ Deferred, with owners in the plan's ledger:
 
 ### T13.2 The `journal_` collector
 
-**Subtask T13.2 estimate: 4.5 man-days.**
+**Subtask T13.2 estimate: 5 man-days.**
 
 - **Depends on:** T13.1.
 - **Covers requirements:** R2, R3, R4, R5, R6, R7, R8.
 - **Deliverables:**
   - One read-through collector in the node's `stats.go`, beside the engine series.
   - Names per R2; `outcome` and `kind` labels per R4.
-  - Every `Stats` field has a series, including the five an operator needs most:
+  - Every `Stats` field has a series or a written reason, as the table below says, including the five an operator needs most:
     - `OldestDirty`: an age gauge in seconds, from the injected clock.
     - `LastSyncError`: a 0 or 1 flag. The error text is never a label (R8).
     - `ReadOnly`: a 0 or 1 flag.
-    - `Recovery`: the recovery duration and the catalog and scan counts, as gauges.
+    - `Recovery`: the recovery duration and the catalog and scanned segment counts, as gauges.
     - `SyncDuration`: a histogram.
   - Per-share gauges per R3, as RFC 25 §2.5 words it:
     - labelled `share`, for the `metrics.top_shares` worst shares (default 20), selection recomputed at every export;
@@ -98,11 +105,18 @@ Deferred, with owners in the plan's ledger:
     - On the deadline: omit the series and count it in `health_export_partial_total` (R7).
   - A closed journal exports no series: its `Stats` is the zero value, which would read as healthy.
   - Labels come from an allow-list of names: `journal`, `outcome`, `kind`, `share` (R8).
-  - No exclusion: a field that cannot be a series is listed here with its reason. None is known.
+  - A tag no attached share holds (a detached share's records) has no `share` label, because nothing names it. The sum without a `share` label still covers it.
+  - The field-to-series table, which the reflection test enforces:
+    - `Counters`: one series per counter, named after its field.
+    - `Recovery`: its three gauges (duration, catalog segments, scanned segments).
+    - `Losses`, `TagConflicts`: counts only (`LossGeneration`, and the length of `TagConflicts`). Events and files are lists, and a series per element needs a file label, which R8 forbids.
+    - `ReadOnly`: the 0 or 1 flag. Any text it carries is excluded, because R8 forbids it as a label.
+    - `Shares`: per-share gauges, per R3.
+    - `SuspectSegments`, `SyncMarks`, `HeadroomSparesShort` and the descriptor counters: excluded, because `journal.Stats` does not carry them yet (`stats.go` says nothing maintains a source). Each gets its series when its source lands, with a `stream` label added to the allow-list for `SyncMarks`. The reflection test fails when the field is added to `Stats` with no series.
 - **Acceptance criteria:**
   - Every `Stats` field and §3.9 counter has a series under its name.
   - Per-share gauges carry at most `metrics.top_shares` `share` values, and an unlabelled total beside them.
-  - A scrape of a wedged journal returns at the injected deadline, engine series included, with the series omitted.
+  - A scrape of a wedged journal returns at the injected deadline. The whole snapshot is omitted, `engineSeries` too, because `engine.Stats` calls each journal's `Stats` in turn.
   - The partial counter rises.
   - Repeated scrapes of a wedged journal keep the goroutine count flat.
   - No label name outside the allow-list appears.
@@ -120,12 +134,15 @@ Deferred, with owners in the plan's ledger:
   - Assert each named series moved by the amount driven.
     - This is RFC 1's "every metric is reachable" check.
     - Its `known.yaml` entry leaves with it, for the metrics that need no 9b call.
-  - A reflection test: every field of `journal.Stats` maps to exactly one series.
+  - A reflection test: every field of `journal.Stats` maps to the table above, exactly one series or one written reason.
     - It fails when a field is added to `Stats` with no series.
     - It fails when a figure has two sources (the four per-share figures are the named case).
   - More shares than `metrics.top_shares`: only the worst appear with a `share` label, the total covers all.
+  - Two scrapes with a different share worst in between: the `share` labels follow it and the old one goes.
+    - Catches a collector that picks the worst shares once and keeps them.
+  - A tag no attached share holds: it has no `share` label and is in the total.
   - A wedged journal held by a test hook, the injected clock advanced past 5 s.
-    - The scrape returns, with the engine series too, and the goroutine count is the same after 100 scrapes.
+    - The scrape returns, the engine series omitted with the rest, and the goroutine count is the same after 100 scrapes.
   - A closed journal: its series are absent after the close.
   - The label names of every series are checked against the allow-list.
 
@@ -166,32 +183,37 @@ Deferred, with owners in the plan's ledger:
 
 ### T13.4 `Stats` without a walk or a write lock
 
-**Subtask T13.4 estimate: 2 man-days.**
+**Subtask T13.4 estimate: 4 man-days.**
 
 - **Depends on:** none.
 - **Covers requirements:** R10.
 - **Deliverables:**
   - The oldest dirty write kept as a maintained value, updated where files enter and leave the dirty set.
     - `oldestDirty` no longer walks `byTime` under `dirtyFiles.mu`.
-  - `Stats` takes no lock the publish path takes, or reads it only as an atomic.
+  - `Stats` takes none of the six locks listed under R10, or reads its figure as an atomic.
+    - Each lock is either taken out of `Stats`' path or kept with a `decision:` naming why holding it cannot stall a write.
+  - `Account` keeps the minimum, so the next-oldest scan moves onto the clean path and off `Stats`.
   - A `ponytail:` at the maintained value if it keeps one-second resolution, as `oldestDirty` does today.
 - **Acceptance criteria:**
   - `Stats` costs the same at 10^3 and 10^5 dirty files.
-  - `Stats` returns while a writer holds the publish path's lock.
+  - `Stats` returns while a writer holds each of the six locks, one at a time.
   - The inequalities `Stats` keeps (RFC 1 §3.7) still hold under concurrent writes.
 - **Tests:**
   - At `Journal.Stats`, the public call.
   - A benchmark at 10^3 and 10^5 dirty files with `b.ReportAllocs()` and setup before `b.ResetTimer()`: flat.
-  - A test hook holding the publish path's lock: `Stats` returns (catches a lock `Stats` shares with writes).
+    - `byTime` is keyed by the second, so the files are written over distinct seconds on the injected clock.
+    - Ten thousand writes in a tight loop make a handful of keys, and the benchmark cannot fail.
+    - A second benchmark over `Account`, at the same sizes.
+  - One test per lock, with a test hook holding it: `Stats` returns (catches a lock `Stats` shares with writes).
   - The existing Group D check "`Stats` is cheap and keeps its inequalities" still passes.
   - A `-race` run with writers and a `Stats` loop.
 
 ## Order and pull requests
 
 - Order: T13.1, then T13.2. T13.3 and T13.4 are independent.
-- Suggested PR 1: T13.1 and T13.2 (5.5 md).
+- Suggested PR 1: T13.1 and T13.2 (6.25 md).
 - Suggested PR 2: T13.3 (3 md).
-- Suggested PR 3: T13.4 (2 md).
+- Suggested PR 3: T13.4 (4 md).
 - One PR per subtask works too.
 
 ## Open points

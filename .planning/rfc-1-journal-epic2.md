@@ -55,7 +55,7 @@ At the end of the epic:
 - `test/journal/`: the known-failure file and the traceability map with its check.
 - `test/suites.yaml`: the `journal-conformance` suite, the `journal` group, and the new
   build tag added to `lint-go`'s vet line.
-- The catalogue of system scenarios, as §7 of this file, for epics 10 and 11 to write.
+- The catalogue of system scenarios, as §7 of this file, for epic 10 and RFC 8's second part to write.
 
 ### 1.2 Out of scope
 
@@ -108,7 +108,7 @@ is named with the reason.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
-   checks only whether v1 state exists, to refuse it at start (the RFC 23 plan's T3.9), and never reads
+   checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory

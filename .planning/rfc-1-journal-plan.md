@@ -225,7 +225,7 @@ run is a failure ([RFC index, test tiers](../docs/internals/rfcs/rfc-index.md)).
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
-   checks only whether v1 state exists, to refuse it at start (the RFC 23 plan's T3.9), and never reads
+   checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
@@ -265,10 +265,10 @@ run is a failure ([RFC index, test tiers](../docs/internals/rfcs/rfc-index.md)).
 | 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 15 | B | 9a, 9b, 13 |
 | 9a | **Reclamation and tags** | Liveness of records and segments, auto-retire, the journal's unread set, `Repack` (also scoped to a share), `Inspector.Segments`, `Forget`, `Strand` | 12 | B | 7a (T9.1) |
 | 9b | **Offload, release and holds** | `Offload`, `OffloadMany`, pins, `report`, `MarkOffloaded`, `Unmark` and the stale rule, `Release`, snapshot holds | not broken down | B | 13 |
-| 10 | **The start check** | A start over an absent store creates nothing and says what it found: not initialised, store lost, unidentifiable journal, v1 state; a node with no journal device is refused ([epic 10](rfc-1-journal-epic10.md)) | 4 (7 md) | A | 12 |
+| 10 | **The start check** | A start over an absent store creates nothing and says what it found: not initialised, store lost, unidentifiable journal, v1 state; a node with no journal device is refused ([epic 10](rfc-1-journal-epic10.md)) | 4 (7.5 md) | A | 12 |
 | 11 | **The engine on the RFC 16 store** | superseded: [the RFC 8 part-1 plan](rfc-8-journal-only-engine-plan.md)'s; offload half and salvage are RFC 8's second part | none | rif's team | |
-| 12 | **E2E green** 🔀 | Re-triage `known.yaml`, burn down what 7a and 9a leave, counted checks outside `-race`, the model on many seeds, a soak and J1–J3 without offload, tier registration, profiling baselines ([epic 12](rfc-1-journal-epic12.md)) | 8 (24.5 md) | team | release |
-| 13 | **The journal's exports** | The `journal_` collector over the journal's full `Stats`, the tracer and logger wiring, and `Stats` served without a walk ([epic 13](rfc-1-journal-epic13.md)) | 4 (10.5 md) | B | 12 |
+| 12 | **E2E green** 🔀 | Re-triage `known.yaml`, burn down what 7a and 9a leave, counted checks outside `-race`, the model on many seeds, a soak and J1–J3 without offload, tier registration, profiling baselines ([epic 12](rfc-1-journal-epic12.md)) | 8 (25 md) | team | release |
+| 13 | **The journal's exports** | The `journal_` collector over the journal's full `Stats`, the tracer and logger wiring, and `Stats` served without a walk ([epic 13](rfc-1-journal-epic13.md)) | 4 (13.25 md) | B | 12 |
 | | | | **~125 + E7b + E9b** | | |
 
 Epics 7 and 9 are each split in two. Epics 7a and 9a are what a share needs to restart, after a
@@ -1159,14 +1159,14 @@ Run once this epic lands, because each calls `Offload` or `Release`: J4, J5 and 
 `Offload` and `Release` steps of epic 12's model alphabet and of its soak's load, and the pin
 bounds (64 per offer, 256 journal-wide), settled by measurement.
 
-### Epic 10 — The start check (4 subtasks, 7 man-days, A)
+### Epic 10 — The start check (4 subtasks, 7.5 man-days, A)
 
 Broken down in [rfc-1-journal-epic10.md](rfc-1-journal-epic10.md). The initialisation step
 (`journal.Init`, `RecordJournal`, the re-run after an interruption) is the RFC 23 plan's epic 5,
 T5.4, which runs the store's `Init` first, so no device ever names an installation without a store
 and the earlier "wipe of devices left by an interrupted step" is retired. `dfs start` is that
 plan's epic 3, T3.9, whose R3 refuses only a v1 `controlplane.db`; epic 10 refuses a pre-journal (v1) local
-layout under a device or beside the store directory; `controlplane.db` stays T3.9's. `RecordJournal` and the `JournalID` lookup
+layout under a device, beside the store directory or under v1's default root, and makes `kvstore.Init` refuse a v1 Badger store; `controlplane.db` stays T3.9's. `RecordJournal` and the `JournalID` lookup
 exist in the store; the step is their caller.
 
 #### No upgrade from v1
@@ -1184,18 +1184,18 @@ team. The offload wiring, salvage, the system e2e rows and the `Content` conform
 second part (§6.1). The number is kept so older documents still read: wherever one of this plan's
 documents says "epic 11", it means that engine work. The journal's exports are epic 13.
 
-### Epic 12 — E2E green 🔀 (8 subtasks, 24.5 man-days, team)
+### Epic 12 — E2E green 🔀 (8 subtasks, 25 man-days, team)
 
 Broken down in [rfc-1-journal-epic12.md](rfc-1-journal-epic12.md). State: `test/journal/known.yaml`
-holds 261 entries, and `test/engine/known.yaml` another 45 (24 on the reopen) and `test/engine/soak-known.yaml` 2 more. About 108 of the journal's fail on a 7b or 9b call and stay listed with a recorded decision. 105 fail
+holds 261 entries, and `test/engine/known.yaml` another 45 (27 wait on 7a's reopen, 11 on 9a, 7 are RFC 8's) and `test/engine/soak-known.yaml` 2 more. About 110 of the journal's fail on a 7b or 9b call and stay listed with a recorded decision. 105 fail
 on the unbuilt reopen and clear with 7a. J4, J5, J8, the model's `Offload` and `Release` steps and the
 soak's offload load are epic 9b's (§5, epic 9).
 
-### Epic 13 — The journal's exports (4 subtasks, 10.5 man-days, B)
+### Epic 13 — The journal's exports (4 subtasks, 13.25 man-days, B)
 
 Broken down in [rfc-1-journal-epic13.md](rfc-1-journal-epic13.md). What RFC 1 §3.9 and §3.7 require and
 nothing else builds: the `journal_` series over the journal's full `Stats`, the adapter from the
-engine's tracer to the journal's, and `Stats` served without a walk or a write lock.
+engine's tracer to the journal's, and `Stats` served without a walk or a write lock, which means none of the six locks it shares with writes.
 
 ---
 
@@ -1254,4 +1254,5 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | The journal's alert rules (RFC 1 §3.9: any `data_loss`, a growing `OldestDirty`, `RemovalMarkers` growing) (§5, epic 13) | the repository has no alert rules; the series they read ship in epic 13; RFC 25 has no plan | unowned (no plan lists them) | an alert-rule plan exists |
 | API and `dfsctl` journal stats, per device and per share (§5, epic 13) | RFC 1 requires metrics, not an API; no RFC specifies the route and the RFC 23 plan has no journal-stats item | unowned (no plan lists it) | RFC 23 adds a journal resource |
 | Journal configuration keys: share-to-device placement, per-share limit, `ExtentLimit`, `DescriptorLimit`, `headroom_records` (§5, epic 11) | the node passes no journal settings: `enginewire` opens journals on the defaults until `Apply` forwards them; the RFC 13 plan names only `salvage.path` | unowned (RFC 13's plan and RFC 8's `Apply` do not list them) | the node first applies configured journal settings |
+| Fuzzing beyond the seed corpus (RFC 1 §9.1) (§5, epic 3) | RFC 29 defines no fuzz tier; the seed corpora run in every `go test` | unowned (RFC 29 lists no fuzz suite) | RFC 29 adds a fuzz tier |
 | The daily run of J1 to J3 (RFC 1 §9.1): the benchmarks are registered `manual` (§5, epic 12) | no machine is provisioned as a reference runner; the engine's benchmarks are `manual` for the same reason | unowned (RFC 29 §4.10's manual suites do not include them) | a reference runner exists |

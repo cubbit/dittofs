@@ -130,7 +130,7 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
 - **E8**, epic 8, data path and capacity: `WriteAt`, `ReadAt`, reservations, `Stats`, the lock
   recorder.
 - **E9**, epic 9, offload, reclamation, holds and tags: `Offered`, `report`, `Release`, `Repack`.
-- **E10**, epic 10, the start check: the start check and the device configuration.
+- **E10**, epic 10, the start check: the refusals at start.
 - **E11**, epic 11, the engine on the RFC 16 store (superseded: RFC 8's journal-only engine plan owns it): the wiring of configuration, the write
   verifier and the reopen of a read-only journal.
 - **S1**, interfaces frozen: E1's exported surface no longer changes (D2 and D8 are the two
@@ -173,7 +173,7 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
-   checks only whether v1 state exists, to refuse it at start (the RFC 23 plan's T3.9), and never reads
+   checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
