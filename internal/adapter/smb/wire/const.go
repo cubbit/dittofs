@@ -54,4 +54,8 @@ const (
 const replyFlags = FlagRelatedOperations | 0x00000070 /* PRIORITY_MASK */ | 0x10000000 /* DFS_OPERATION */ | 0x20000000 /* REPLAY_OPERATION */
 
 // The statuses the server's tables name (MS-ERREF 2.3.1).
-const StatusNotSupported = 0xC00000BB
+const (
+	StatusInvalidParameter = 0xC000000D
+	StatusNotSupported     = 0xC00000BB
+	StatusInternalError    = 0xC00000E5
+)

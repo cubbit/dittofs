@@ -1,6 +1,7 @@
-// Package protocol adapts SMB2's codecs to core: the header stage that
-// decodes a request's header and encodes its reply's, and the router that
-// hands every request to SMB's one table (RFC 20 §4.7, §4.8).
+// Package protocol adapts SMB2's codecs to core: the framer, the header stage
+// that decodes a request's header and encodes its reply's, and the router
+// that hands every request to SMB's one table, joined in Protocol (RFC 20
+// §4.7, §4.8).
 package protocol
 
 import (
