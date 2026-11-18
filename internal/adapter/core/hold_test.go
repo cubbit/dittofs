@@ -1425,6 +1425,41 @@ func TestAParkOnAClosedConnectionIsDropped(t *testing.T) {
 	})
 }
 
+// Core calls a park's cancel once: a client's cancel, its withdrawal held in
+// the service, then a drain or a close, leaves the service one CancelLock and
+// no Create (§3.1, §4.7, §6.5).
+func TestAParksCancelIsCalledOnce(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		then func(*served)
+	}{
+		{"then a drain", func(s *served) { s.p.Drain() }},
+		{"then a close", func(s *served) { s.p.Close() }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+				wait := s.parkWait()
+				defer wait.Release()
+				withdraw := s.faults.Hold(vfs.OpCancelLock)
+				defer withdraw.Release()
+				s.serve(s.parkChain(1, "f")...)
+				s.interimOf(2)
+				<-wait.Reached()
+				s.serve(cancelOf(2, 7))
+				<-withdraw.Reached()
+				c.then(s)
+				synctest.Wait()
+				withdraw.Release()
+				synctest.Wait()
+				if ops := s.svc.Ops(); !slices.Equal(ops, []vfs.Op{vfs.OpCancelLock}) {
+					t.Errorf("the service saw %v, want one CancelLock", ops)
+				}
+			})
+		})
+	}
+}
+
 // A request held on its read, then parked on its re-drive, has received one
 // interim: its slot moves from held to parked, its record goes, and its
 // final reply comes when released (§4.6, §4.7).

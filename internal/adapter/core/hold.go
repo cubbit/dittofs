@@ -540,17 +540,19 @@ func (p *pipeline) endHolds() {
 }
 
 // parked is what a parked request keeps beside its record of pending: its
-// handler's cancel, the header its final reply goes out under, taken while
-// its record still holds the header, what replaces an error done reports,
-// and how far its end has come, under pending.mu (§4.7).
+// handler's cancel, which core calls at most once, the header its final reply
+// goes out under, taken while its record still holds the header, what
+// replaces an error done reports, and how far its end has come, under
+// pending.mu (§4.7).
 type parked struct {
-	cancel   func()
-	final    Header
-	why      error // ErrCancelled, or the drain's error
-	returned bool  // the call that parked it has returned
-	called   bool  // done was called, with err
-	err      error
-	over     bool // answered or dropped
+	cancel    func()
+	final     Header
+	why       error // ErrCancelled, or the drain's error
+	cancelled bool  // cancel was called, or is being called
+	returned  bool  // the call that parked it has returned
+	called    bool  // done was called, with err
+	err       error
+	over      bool // answered or dropped
 }
 
 // park is Request.Park's body, on the goroutine of pd's call, which the
@@ -637,7 +639,7 @@ func (p *pipeline) park(pd *pending, cancel func()) (func(error), error) {
 	// A cancel that came before it parked ends it as cancelled (§4.7).
 	cancelled := t.cancelledAt(pd.key, p.sh.clock.Now())
 	if cancelled {
-		pk.why = ErrCancelled
+		pk.why, pk.cancelled = ErrCancelled, true
 	}
 	// A held request's count in runs is its park's now; any other's starts
 	// before a close can end it.
@@ -790,36 +792,36 @@ func (p *pipeline) answerPark(pd *pending, err error) {
 }
 
 // cancelPark is a cancel of pd, parked: its client's, why ErrCancelled, or
-// the drain's start, why the drain's error. Unless done has come, why
-// replaces the error done reports, and then its handler's cancel is called
-// (§3.1, §4.7, §6.5).
+// the drain's start, why the drain's error. Unless done has come or its
+// handler's cancel was called, why replaces the error done reports, and then
+// that cancel is called (§3.1, §4.7, §6.5).
 func (p *pipeline) cancelPark(pd *pending, why error) {
 	pk := pd.park
 	pd.mu.Lock()
-	if pk.called || pk.over {
+	if pk.called || pk.over || pk.cancelled {
 		pd.mu.Unlock()
 		return
 	}
-	if pk.why == nil {
-		pk.why = why
-	}
+	pk.why, pk.cancelled = why, true
 	pd.mu.Unlock()
 	pk.cancel()
 }
 
 // closePark ends pd, parked, as its connection closes: its handler's cancel
-// is called, its reply buffer released and its request ended unsent, and a
-// done that comes later does nothing (§4.7, §6.5).
+// is called, unless it was before, its reply buffer released and its request
+// ended unsent, and a done that comes later does nothing (§4.7, §6.5).
 func (p *pipeline) closePark(pd *pending) {
 	pk := pd.park
 	pd.mu.Lock()
-	over := pk.over
+	over, cancelled := pk.over, pk.cancelled
 	pk.over = true
 	pd.mu.Unlock()
 	if over {
 		return
 	}
-	pk.cancel()
+	if !cancelled {
+		pk.cancel()
+	}
 	pd.reply.Release()
 	p.end(pd.tr, false, 0, 0, nil)
 	p.unpark(pd)

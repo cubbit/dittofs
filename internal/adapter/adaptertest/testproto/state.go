@@ -195,7 +195,9 @@ func (p *Protocol) tree(_ context.Context, r *core.Request, _ *empty) (*empty, e
 // park reads the current filehandle, parks the request, and then reads it
 // again and, unless the park was cancelled meanwhile, makes its one mutating
 // call, a Create of the name, whose answer completes it. Its reply carries
-// the name.
+// the name. The cancel it hands Park withdraws the wait as a waiting lock's
+// handler does, with a CancelLock, and then ends the wait's context; a
+// refused Park has begun no wait, so the handler only ends that context.
 //
 // decision: a parked request waits on a service call a test holds, not on a
 // lock or a notification. The first read stands in for a waiting lock's own
@@ -205,9 +207,11 @@ func (p *Protocol) tree(_ context.Context, r *core.Request, _ *empty) (*empty, e
 // its context, still makes it. A test parks one by holding a call, completes
 // it by releasing the hold, and reads a withdrawal from the outcome: a
 // cancelled park answers the cancel status and no file of the name exists,
-// and a refused park makes no Create. The service's own waits are proven by
-// NFS's and SMB's handler tests. Withdraw it if core's parking comes to
-// depend on what the waiter is.
+// and a refused park makes no Create. The withdrawal's CancelLock names no
+// lock, so the service refuses it: it is there so that a test reads each
+// cancel core calls from the service's record of calls, and can hold one.
+// The service's own waits are proven by NFS's and SMB's handler tests.
+// Withdraw it if core's parking comes to depend on what the waiter is.
 func (p *Protocol) park(ctx context.Context, r *core.Request, req *nameReq) (*nameRep, error) {
 	s, err := stateOf(r)
 	if err != nil {
@@ -216,17 +220,21 @@ func (p *Protocol) park(ctx context.Context, r *core.Request, req *nameReq) (*na
 	if _, err := p.d.VFS.GetAttr(ctx, r.Call, s.fh); err != nil {
 		return nil, err
 	}
-	callCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	done, err := r.Park(cancel)
+	callCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
+	call := r.Call
+	done, err := r.Park(func() {
+		_, _ = p.d.VFS.CancelLock(callCtx, call, vfs.OpenRef{}, vfs.LockOwner{}, vfs.ByteRange{})
+		stop()
+	})
 	if err != nil {
-		cancel()
+		stop()
 		return nil, err
 	}
 	// The name lies in the request's record, which core may release once the
 	// handler returns; the call outlives it.
-	call, dir, name := r.Call, s.fh, bytes.Clone(req.name)
+	dir, name := s.fh, bytes.Clone(req.name)
 	go func() {
-		defer cancel()
+		defer stop()
 		_, err := p.d.VFS.GetAttr(callCtx, call, dir)
 		if err == nil {
 			err = callCtx.Err()
