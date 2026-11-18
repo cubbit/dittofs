@@ -144,7 +144,7 @@ number and title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | identity's tests run over the memory KV store and `identitytest`'s in-memory directory, which passes the directory's conformance suite (kind 2); outages, delays and timeouts come from `identitytest`'s fault wrapper around it (kind 3) and store errors from `kvtest`'s; the clock is injected (kind 1), `pkg/sim`'s test clock; the TLS rows dial real listeners on `127.0.0.1:0` |
 | rule 2, fuzz every decoder of untrusted bytes | T6.6 | `go-ldap` decodes BER and SIDs go through `sid.DecodeSID` (E2's `FuzzSID`); the one decoder the client owns, T6.6's range-attribute parser, gets `FuzzRangeAttr`: no panic, a parsed range has `lo ≤ hi` or `hi` = `*`, and it re-formats to text that parses to the same bounds; the client refuses a range whose next `lo` does not advance; the in-memory directory's filter parser reads only what the client builds, and the suite holds it to Samba |
-| rule 3, observability follows RFC 25 | T6.2, T6.7, T6.8, T6.10, T6.11 | `identity_mints_total` and `identity_mints_unnamed_total` (T6.2), `identity_directory_lookups_total` and `identity_directory_seconds` and a span per query (T6.7), `directory_unreachable` (T6.8), `identity_renames_unnamed_total` (T6.10), the `directory_unavailable` refusal (T6.11); no label or attribute carries a name, SID, entry ID or address |
+| rule 3, observability follows RFC 25 | T6.2, T6.7, T6.8, T6.9, T6.10, T6.11 | `identity_mints_total` and `identity_mints_unnamed_total` (T6.2), `identity_mints_remapped_total` (T6.9), `identity_directory_lookups_total` and `identity_directory_seconds` and a span per query (T6.7), `directory_unreachable` (T6.8), `identity_renames_unnamed_total` (T6.10), the `directory_unavailable` refusal (T6.11); no label or attribute carries a name, SID, entry ID or address |
 | rule 4, profiling | all | every test runs under the leak check; T6.7's single flight and T6.8's outage leave no waiter behind |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T6.7, T6.10, T6.11 | a stale entry is proven by a sign-in admitted or refused at `Resolve`, a rename by `Find` of each name, a gone entry by the next call refused, not by the cache's contents |
 | rule 6, known failures shrink | none | no suite this epic touches keeps a `known.yaml`; every test lands green |
@@ -231,14 +231,14 @@ tests can cite them. Sources are RFC 18 unless named.
 | R40 | A name never fails a mint: a principal whose name another of its kind holds under §4.6's comparison is minted without a name, counted in `identity_mints_unnamed_total` and logged naming both | invariant | §4.1, §9.2 | T6.2 |
 | R41 | Every record minted is counted in `identity_mints_total{kind}` | invariant | §9.2 | T6.2 |
 | R42 | A directory record is minted once, from the first answer, and holds its `PrincipalID`, `dir` entry ID, SID, uid and gid from then on; a later answer renames it (R51) | invariant | §5.1 | T6.9 |
-| R43 | A directory principal's uid and gid are the entry's `uidNumber` and `gidNumber` when it has them, else allocated, written once and never recomputed; an entry whose `uidNumber` or `gidNumber` is 0 or 65534 gets an allocated one, and the mint is counted | invariant | §2.3 item 3, §4.3 | T6.9 |
+| R43 | A directory principal's uid and gid are the entry's `uidNumber` and `gidNumber` when it has them, else allocated, written once and never recomputed; an entry whose `uidNumber` or `gidNumber` is 0 or 65534 gets an allocated one, and the mint is counted in `identity_mints_remapped_total{kind}`, `user` or `group` | invariant | §2.3 item 3, §4.3, §9.2 | T6.9 |
 | R44 | A directory principal's SID is its entry's; an entry with none is given a local SID from the RID counter when minted, and keeps it whatever the directory later says | invariant | §4.4, §5.1, §9.1 ID3, ID4 | T6.9, T6.10 |
 | R45 | A SID of the directory's domain with no principal is asked of the directory, and minted only when `FindOpts.Mint` is set; otherwise `Find` answers `ErrUnknownPrincipal` and writes nothing | invariant | §4.4 | T6.9 |
 | R46 | §4.2 step 3: a Kerberos name in the directory's realm maps to the entry the directory holds under its user part, by the record's name attribute, and then to the principal holding that entry's `dir` spelling, never one found by name alone; a name with a service part never matches it | invariant | §4.2 | T6.9 |
 | R47 | The `qualified` scheme spells a directory principal `<directory domain>\<name>` | invariant | §4.6 | T6.9 |
 | R48 | §10's "SID-less directory" row | test row | §10 | T6.9, T6.10 |
 | R49 | §10's "name held at mint" row, but its owner-string clause (§1.2) | test row | §10 | T6.9, T6.10 |
-| R50 | §10's "root" row, its directory clause: an entry with `uidNumber` 0 minted with an allocated uid | test row | §10 | T6.9 |
+| R50 | §10's "root" row, its directory clause: an entry with `uidNumber` 0 minted with an allocated uid, counted in `identity_mints_remapped_total{kind="user"}` | test row | §10, §9.2 | T6.9 |
 | R62 | A directory principal holds no local NT hash and no local password: a local NTLMv2 check refuses it, and giving it a local password is refused; this epic writes the `dir` spelling both refusals read | invariant | §3.5, §5.5 | T6.9 |
 | R63 | The SID a `krb` link is written for is asked of the directory fresh only: a name the directory cannot answer freshly fails `ErrUnavailable`, one with no entry `ErrUnknownPrincipal`, and a name in another realm links no SID | MUST | §4.2; RFC 23 §3.5 | T6.9 |
 
@@ -698,7 +698,8 @@ pkg/settings/
 - **Covers:** R17, R42, R43, R44, R45, R46, R47, R48, R49, R50, R62, R63.
 - **Deliverables:** a directory principal's mint through T6.2, the user and every directory group
   of its closure in one plan: the entry's `uidNumber` and `gidNumber`, or `Alloc` for a missing
-  one, 0 or 65534 replaced by `Alloc` and logged; the entry's SID, or `Alloc.RID` for none; the
+  one, 0 or 65534 replaced by `Alloc`, logged and counted in
+  `identity_mints_remapped_total{kind}` after the commit; the entry's SID, or `Alloc.RID` for none; the
   `dir` spelling and the name. `Find` gaining the directory: a SID of the directory's domain with
   no principal asked of the directory and minted only with `FindOpts.Mint`, §4.4's `decision:` at
   that branch; `qualified` `<directory domain>\name` both ways, the domain compared with ASCII
@@ -718,8 +719,11 @@ pkg/settings/
 - **Tests:** at `Find`, over the memory KV store and the in-memory directory: a directory SID
   without `Mint`: `ErrUnknownPrincipal`, nothing written; with it: the user and its three groups
   minted in one commit (R42, R45); an entry with `uidNumber` 2000 minted with uid 2000, and
-  §10's "root" directory clause, `uidNumber` 0 minted with an allocated uid and counted (catches a
-  directory supplying root, R43, R50); §10's "SID-less directory" row's mint, an `rfc2307` entry
+  §10's "root" directory clause, `uidNumber` 0 minted with an allocated uid, and an entry with
+  `uidNumber` 65534 and one whose group has `gidNumber` 65534, each minted with an allocated ID:
+  `identity_mints_remapped_total` read from the registry `user` 2, `group` 1, and 0 after the
+  2000 mint (catches a directory supplying root or anonymous, and the remap left uncounted, R43,
+  R50); §10's "SID-less directory" row's mint, an `rfc2307` entry
   with no SID minted with `S-1-5-21-a-b-c-RID` (R44, R48); §10's "name held at mint" row's mint,
   a local group `finance` and a directory group `Finance` alice is in: alice's lookup mints it
   unnamed, found by SID, its `qualified` spelling `ErrUnknownPrincipal` (R49); `Find` of
@@ -955,8 +959,8 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
 
 - RFC 18 §2.6's `Deps` sketch has no field for the directory's dialer (D1), and its `State` no
   place for a record that is its own section (D2).
-- RFC 18 §2.3 item 3 counts a mint whose `uidNumber` is 0 or 65534 without naming the counter;
-  T6.9 logs it and counts it in `identity_mints_total`, the only mint counter.
+- RFC 18 §2.3 item 3 counted a mint whose `uidNumber` is 0 or 65534 without naming the counter;
+  §9.2 now names `identity_mints_remapped_total{kind}`, which T6.9 counts (R43).
 - RFC 18 §5.1's question table lists `uidNumber` and `gidNumber` among "who holds this", and §9.2
   their `uid` and `gid` labels; both serve only §4.3's claimed uid, deferred, so the client builds
   neither (§1.2).
