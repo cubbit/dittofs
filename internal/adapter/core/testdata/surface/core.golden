@@ -72,8 +72,7 @@ type ErrorRow struct {
 	Status Status
 }
 
-type ErrorTable struct {
-}
+type ErrorTable struct{}
 
 type FlowControl interface {
 	Admit(ctx context.Context, h Header) (release func(), err error)
@@ -174,6 +173,7 @@ type OpTable struct {
 
 type Protocol interface {
 	Framer() Framer
+
 	NewConn(c *Conn) Stages
 }
 

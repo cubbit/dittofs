@@ -138,6 +138,12 @@ func dropUnexportedFields(expr ast.Expr) {
 		}
 	}
 	st.Fields.List = keep
+	// A struct whose exported fields are all dropped reads as it was
+	// declared: the frozen golden shows a struct gaining only unexported
+	// fields as the plain struct it always was, not as a widened brace.
+	if len(keep) == 0 {
+		st.Fields.Closing = st.Fields.Opening + 1
+	}
 }
 
 // Each frozen package's exported declarations are exactly its golden file:

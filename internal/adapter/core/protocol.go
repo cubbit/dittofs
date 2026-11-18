@@ -18,7 +18,12 @@ import (
 // per datagram.
 type Protocol interface {
 	Framer() Framer
-	NewConn(c *Conn) Stages // at accept; c is what the stages send on (callbacks)
+	// NewConn builds one connection's stages: at accept, c is what they send
+	// on and read their callbacks from. NewServer also calls it with a nil
+	// c, at configure, to read the stages a listener's wiring would answer
+	// with (RFC 20 section 3.1): an implementation dereferences nothing at
+	// that call.
+	NewConn(c *Conn) Stages
 }
 
 // Framer finds a record's length from its header, and writes a reply

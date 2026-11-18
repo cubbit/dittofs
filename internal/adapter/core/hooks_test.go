@@ -262,3 +262,11 @@ func Judge(row *Op, inv Invocation, rest []byte, v Version, r *Request) (whole b
 	ms, _, _, err := members(row, inv, rest, v)
 	return judge(ms, err == nil, r)
 }
+
+// SetListen sets the socket opener s binds with, on s alone: no real bind
+// can be made to answer on demand with what a Start test needs - an
+// in-use refusal, or a listener whose address is no TCP one - so the test
+// injects it, without any other server's bind meeting the same hook.
+func SetListen(s *Server, f func(ctx context.Context, network, addr string) (net.Listener, error)) {
+	s.listen = f
+}
