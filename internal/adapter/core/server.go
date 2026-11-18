@@ -102,13 +102,18 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 	if err := checkListeners(ls); err != nil {
 		return nil, fmt.Errorf("core: new server: %w", err)
 	}
+	if d.Budgets == nil {
+		return nil, fmt.Errorf("core: new server: %w", errNoBudgets)
+	}
+	// A listener whose stages accept would refuse shows its wiring fault
+	// here, at configured, rather than at its first request (RFC 20 section
+	// 3.1): NewConn(nil) is the one call that reads no connection, and
+	// withDefaults is accept's own check, so the faults one refuses can
+	// never drift from the faults the other would.
 	for i := range ls {
 		if _, err := withDefaults(ls[i].Protocol.NewConn(nil)); err != nil {
 			return nil, fmt.Errorf("core: new server: listener %d %q: %w", i, ls[i].Services, err)
 		}
-	}
-	if d.Budgets == nil {
-		return nil, fmt.Errorf("core: new server: %w", errNoBudgets)
 	}
 	srv := &Server{ls: ls, d: d, conns: map[*Conn]struct{}{}, listen: (&net.ListenConfig{}).Listen}
 	srv.recv = resources.NewBufPool(d.Budgets.Receive)
@@ -298,9 +303,9 @@ func bind(ctx context.Context, listen func(context.Context, string, string) (net
 		_ = ln.Close()
 		return nil, fmt.Errorf("listener %q on %s: the opener answered a %T, not a TCP listener", l.Services, netip.AddrPortFrom(a, port), ln.Addr())
 	}
-	b := bound{l: l, ln: ln}
+	b := &bound{l: l, ln: ln}
 	b.addr = netip.AddrPortFrom(a, ta.AddrPort().Port())
-	return &b, nil
+	return b, nil
 }
 
 // closeBound closes every socket open now, ending its accept loop, in its

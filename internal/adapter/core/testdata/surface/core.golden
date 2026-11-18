@@ -59,8 +59,7 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 
 type Call func(ctx context.Context, r *Request) error
 
-type Conn struct {
-}
+type Conn struct{}
 
 type ErrorRow struct {
 	Err      error

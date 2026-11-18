@@ -142,11 +142,21 @@ func TestNewServerRefusesNoBudgets(t *testing.T) {
 	}
 }
 
-// errlessProtocol is a protocol whose stages name no error table.
+// errlessProtocol is a protocol whose stages, on a real connection, name no
+// error table: withDefaults refuses them at serve, and the connection closes
+// before it reads, with nothing to answer its refusals. A nil Conn gets the
+// bare stages whole, so the server's built-time check lets the server build.
 type errlessProtocol struct{}
 
-func (errlessProtocol) Framer() core.Framer            { return testproto.New(adapter.Deps{}).Framer() }
-func (errlessProtocol) NewConn(*core.Conn) core.Stages { return core.Stages{} }
+func (errlessProtocol) Framer() core.Framer { return testproto.New(adapter.Deps{}).Framer() }
+
+func (errlessProtocol) NewConn(c *core.Conn) core.Stages {
+	st := testproto.New(adapter.Deps{}).Bare().NewConn(c)
+	if c != nil {
+		st.Errors = nil
+	}
+	return st
+}
 
 // Stop closes every connection open and returns once each is torn down.
 func TestStopClosesConnections(t *testing.T) {
