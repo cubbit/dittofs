@@ -2,7 +2,7 @@
 # A seed that starts to pass fails the run: remove its entry in the change that turned it
 # green, a journal change included. Each entry's message is the failure it is known by.
 - test: TestSoak/seed=2
-  message: 'the SMB open of f0: vfs: retry shortly: frozen'
+  message: 'a refused range at'
   status: fail
   fix: planned
   category: feature
