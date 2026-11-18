@@ -21,8 +21,8 @@ type ringKey struct {
 	etype int32
 }
 
-// keyRing is every key of the keytab versions in force, built once per
-// differing State, never per sign-in.
+// keyRing is every key of the keytab versions in force, built at every
+// Apply, never per sign-in.
 type keyRing map[ringKey]types.EncryptionKey
 
 // buildRing parses each keytab version into one ring.
