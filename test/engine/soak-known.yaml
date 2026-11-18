@@ -1,17 +1,3 @@
 # The soak's seeds that fail today over the real journal, one entry per seed, never a pattern.
 # A seed that starts to pass fails the run: remove its entry in the change that turned it
 # green, a journal change included. Each entry's message is the failure it is known by.
-- test: TestSoak/seed=1
-  message: 'vfs: retry shortly: frozen'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the open refusing a range it cannot reconcile: the seed''s first crash now restarts, the open recovering the segments the crash left, but the restart''s open refuses a range below a mark that names no record, so the share never attaches and its next SMB open answers retry-later frozen, and the seed stops there. It runs once the open reconciles such a range, which epic 7b''s Acknowledge builds.'
-  issue: '#3596'
-- test: TestSoak/seed=2
-  message: 'the crash is refused: Torn needs an unsynced write in a file it may pick from'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the start over the recovered journal keeping the seed''s writes unsynced across its crash: the first crash now restarts, the open recovering the segments the crash left, and the seed''s calls resume, but the next crash it draws is refused — the Torn variant finds no unsynced write in any file to tear, and the node fences while the start''s store commits nothing — so the seed stops there. It runs once the start''s re-application over the recovered journal leaves the seed''s calls in flight, this change''s remaining work.'
-  issue: '#4032'
