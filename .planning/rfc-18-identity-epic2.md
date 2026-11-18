@@ -117,10 +117,10 @@ behind `Alloc` on `PutUser` and `PutGroup`; `Minter.Create`; identity's settings
   deferral ledger row "NFSv4 owner strings (RFC 18 §4.5) and `FuzzOwnerString`".
 - The `oidc` scheme: deferred with `TokenVerifier`, the ledger row "OpenID Connect's
   `TokenVerifier` (RFC 18 §8.2) and §10's token rows".
-- Listing machines and unnamed users: `ControlPlane.Users` and `Groups` walk the name index, so
-  they leave both out, and the `UnnamedPrincipals` conformance case pins that. A listing of every
-  record is the RFC 18 plan's deferral ledger row "Listing every user record", owned by RFC 23's
-  plan.
+- Listing machines, unnamed users and unnamed groups: `ControlPlane.Users` and `Groups` walk the
+  name index, so they leave all three out, and T2.1's `UnnamedPrincipals` case pins that. A
+  listing of every record is the RFC 18 plan's deferral ledger row "Listing every user or group
+  record", owned by RFC 23's plan.
 
 ### 1.3 Names used here
 
@@ -442,7 +442,11 @@ internal/identity/
   `entity`, a machine principal round-tripping through `MarshalText` and `ParsePrincipal`
   (catches `PrincipalMachine` left out of `principalKinds`, R3); in `entity`, `PrincipalUserPart`
   of `alice`, `ALICE`, `CORP\alice` and `Alice@CORP.EXAMPLE` each equal to
-  `FoldPrincipalName("alice")` (catches a form left unstripped or unfolded, D2). No test double.
+  `FoldPrincipalName("alice")` (catches a form left unstripped or unfolded, D2);
+  `UnnamedPrincipals`, an unnamed user, an unnamed group and a machine each found by its protocol ID while
+  `ControlPlane.Users` lists only the named user and `Groups` nothing (catches a listing over the
+  `U‖` or `G‖` records, which the deferral ledger's "Listing every user or group record" leaves to
+  RFC 23). No test double.
 
 ### T2.2 The ID counters and the domain SID: the allocation behind RFC 23's `Alloc`
 
