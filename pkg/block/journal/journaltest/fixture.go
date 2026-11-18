@@ -79,6 +79,10 @@ type Fixture struct {
 	// Dir is the journal's directory.
 	Dir string
 
+	// Marks is what every open hands Open as the sync marks the caller
+	// recorded durably; nil records none.
+	Marks []journal.SyncMark
+
 	tb      testing.TB
 	clock   *sim.TestClock
 	id      journal.JournalID
@@ -240,7 +244,7 @@ func (f *Fixture) tryOpen(expect journal.JournalID, limit bool) error {
 	f.tb.Helper()
 
 	f.floor = f.limit
-	j, err := journal.Open(f.tb.Context(), f.Dir, f.floor, expect, nil, f.options()...)
+	j, err := journal.Open(f.tb.Context(), f.Dir, f.floor, expect, f.Marks, f.options()...)
 	if err != nil {
 		return err
 	}

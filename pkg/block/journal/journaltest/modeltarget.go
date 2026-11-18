@@ -2,6 +2,7 @@ package journaltest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -36,6 +37,10 @@ type Reach struct {
 	Sealed int
 	// Freed is the bytes every repack freed, over all the sequences.
 	Freed int64
+	// Crashes is the storage losses the sequences ran: the crash steps that
+	// reached the journal, not the ones that found uncertain records and
+	// did nothing.
+	Crashes int
 }
 
 // recorder counts what the calls through the handles reached — the distinct
@@ -239,6 +244,10 @@ func (x *fixtureTarget) countSealed() {
 	x.reach.Sealed = max(x.reach.Sealed, n)
 }
 
+// Crash and Reopen wait for the pool's spares once the journal is open
+// again: an open returns while its pool is still filling, and a call that
+// needs a spare or the headroom is refused at once until one lands, an answer
+// the model has no rule for.
 func (x *fixtureTarget) Crash(kind model.CrashKind, arg uint64) error {
 	var opts []kit.CrashOption
 	switch kind {
@@ -247,10 +256,29 @@ func (x *fixtureTarget) Crash(kind model.CrashKind, arg uint64) error {
 	case model.CrashReordered:
 		opts = append(opts, kit.Reordered(arg))
 	}
-	return reopened(x.tb.guard(func() { x.f.Crash(opts...) }))
+	x.reach.Crashes++
+	return reopened(x.tb.guard(func() {
+		err := x.f.TryCrash(opts...)
+		if errors.Is(err, kit.ErrCrashRefused) {
+			// decision: a torn or reordered crash the seam refuses for want of
+			// an unsynced write to pick is the plain crash, which loses what
+			// no sync covered and so loses nothing here: the sequence goes on
+			// from the same state the refused crash would have left.
+			err = x.f.TryCrash()
+		}
+		if err != nil {
+			x.tb.Fatalf("fixture: crash: %v", err)
+		}
+		x.f.WaitSpares()
+	}))
 }
 
-func (x *fixtureTarget) Reopen() error { return reopened(x.tb.guard(x.f.Reopen)) }
+func (x *fixtureTarget) Reopen() error {
+	return reopened(x.tb.guard(func() {
+		x.f.Reopen()
+		x.f.WaitSpares()
+	}))
+}
 
 // journalFailures are the prefixes of the fixture's failures, during a crash
 // or a reopen, that are the journal's: closing it or a handle, opening it
