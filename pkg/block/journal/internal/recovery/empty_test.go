@@ -1510,3 +1510,79 @@ func TestTheGreatestMarkOfASegmentClassesTheRotAsSynced(t *testing.T) {
 		})
 	}
 }
+
+// TestACarryOverARottenTwinSkipsAFreedTakeBelowIt holds the draw's floor: the
+// unheld segment 2 is emptied first and its durable unlink frees the take 3,
+// then the ended segment 4's record is carried in the place of its rotten
+// twin in the sealed segment 7 — through the rot branch, or, when 4's own
+// copy rots too, through the loss leg carrying a third copy from the sealed
+// segment 5. A carry into the take below the twin would lose to the twin at
+// the next open, whose walk verifies no payload, and the take would go as
+// unheld; the carry draws above the twin, and a copy still verifies after
+// the second open, segment 5's other record superseded before it.
+func TestACarryOverARottenTwinSkipsAFreedTakeBelowIt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		third bool
+	}{
+		{name: "rot_branch"},
+		{name: "loss_leg", third: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := tailFile()
+			r := newRig(t)
+			r.writeFormat()
+			r.plantSeg(4, damageHeader(buildSeg(4, collectWrite(7, file, 5, 5, 0, 16))))
+			pred, _ := buildSealed(2)
+			r.write(format.SegmentName(2), append(pred, make([]byte, testSegCap-int64(len(pred)))...))
+			take := raw.SegmentHeader{Identity: journalID, ID: 3, Predecessor: 2}.Bytes()
+			r.write(format.SegmentName(3), append(take, make([]byte, testSegCap-int64(len(take)))...))
+			if tc.third {
+				third, _ := buildSealed(5, collectWrite(7, file, 5, 5, 0, 16), collectWrite(7, file, 8, 8, 0x6100, 16))
+				r.plantSeg(5, third)
+			}
+			twin, _ := buildSealed(7, collectWrite(7, file, 5, 5, 0, 16), collectWrite(7, file, 6, 6, 0x5100, 16))
+			r.plantSeg(7, twin)
+
+			d := r.runDeps()
+			d.SegmentCap = testSegCap
+			mark := core.SyncMark{Segment: 2, Sequence: 9, Offset: format.SegmentHeaderSize, Through: format.SegmentHeaderSize}
+			st, err := Run(context.Background(), d, core.Version{}, journalID, []core.SyncMark{mark})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !slices.Contains(st.Spares.Held, core.SegmentID(3)) {
+				t.Fatalf("the spares phase did not withhold the take 3 naming the ended predecessor 2")
+			}
+			if p, ok := st.Rebuilt.Index.Lookup(file, 0); !ok || p.Record.Segment != 7 {
+				t.Fatalf("the open serves %+v (%v), want the twin in 7", p, ok)
+			}
+			rotByte(t, r, format.SegmentName(7), format.SegmentHeaderSize+format.RecordHeaderSize)
+			if tc.third {
+				rotByte(t, r, format.SegmentName(4), format.SegmentHeaderSize+format.RecordHeaderSize)
+			}
+			h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 1})
+			if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, []core.SyncMark{mark}); err != nil {
+				t.Fatalf("Emptying: %v", err)
+			}
+			if tc.third {
+				over, _ := buildSealed(20, collectWrite(7, file, 30, 30, 0x6100, 16))
+				r.plantSeg(20, over)
+			}
+			d2 := r.runDeps()
+			d2.SegmentCap = testSegCap
+			st2, err := Run(context.Background(), d2, core.Version{}, journalID, nil)
+			if err != nil {
+				t.Fatalf("the second Run: %v", err)
+			}
+			h2 := newEmptyingHarness(t, r, &st2, segment.Targets{Reserve: 1})
+			if err := Emptying(context.Background(), h2.deps, &st2, journalID, core.Version{}, nil); err != nil {
+				t.Fatalf("the second Emptying: %v", err)
+			}
+			if n := verifyingCopies(t, r, 5); n < 1 {
+				p, ok := st2.Rebuilt.Index.Lookup(file, 0)
+				t.Errorf("seq 5 verifies in %d placements after the second open (serving %+v, %v; listing %v), want at least 1", n, p, ok, r.listing())
+			}
+		})
+	}
+}

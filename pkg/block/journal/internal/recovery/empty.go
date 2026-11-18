@@ -378,18 +378,15 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			// walk verifies no payload: the standing copy is then held by
 			// nothing for this record and goes once its other records are
 			// superseded, leaving only the rotten copy. A carry lands in a
-			// reserve spare whose id is above every id the directory held,
-			// so the next open serves it and retires the stale duplicate
-			// as unheld; the duplicate this leaves lasts one open. Holding a
-			// segment by a repoint lasts only for this process. Ceiling: a
-			// take a durable unlink freed is drawn before the reserve and
-			// may sit below the twin (another stream's later segment), and a
-			// copy into it loses to the twin at the next open the same way;
-			// so would a re-adopted spare once the pool adopts them, for
-			// their ids are old and the pool hands its oldest spare out
-			// first. Withdrawn when the walk
-			// verifies payloads or the open records a rotten placement, so
-			// a restart cannot serve the twin again.
+			// spare drawn above the twin (drawAbove), so the next open serves
+			// it and retires the stale duplicate as unheld; the duplicate
+			// this leaves lasts one open. Holding a segment by a repoint
+			// lasts only for this process. Ceiling: once the pool adopts the
+			// spares an open re-adopts, the reserve can hand out one whose
+			// old id sits below the twin, and a copy into it loses to the
+			// twin at the next open the same way. Withdrawn when the walk
+			// verifies payloads or the open records a rotten placement, so a
+			// restart cannot serve the twin again.
 			from = twin
 		} else {
 			other, found, serr := e.standingCopy(rec, id)
@@ -587,7 +584,15 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 		return e.finish(ctx, id, 0, losses)
 	}
 
-	c := &copier{deps: deps, identity: e.identity, draw: e.draw}
+	// A carry in a twin's place must land above the twin, or the next
+	// open serves the twin over it again.
+	var floor core.SegmentID
+	for i := range ins {
+		if ins[i].repoint && ins[i].from.Segment != id {
+			floor = max(floor, ins[i].from.Segment)
+		}
+	}
+	c := &copier{deps: deps, identity: e.identity, draw: func() (core.SegmentID, error) { return e.drawAbove(floor) }}
 	natural := make([]copyInput, len(ins))
 	for i := range ins {
 		natural[i] = ins[i].in
@@ -721,14 +726,17 @@ func (e *emptying) finish(ctx context.Context, id core.SegmentID, target core.Se
 	return nil
 }
 
-// draw hands the copier one spare the copy may take: a take a durable unlink
-// freed front-first, else the pool's own repack reserve through the closure
-// the open wired.
-func (e *emptying) draw() (core.SegmentID, error) {
-	if len(e.freed) > 0 {
-		id := e.freed[0]
-		e.freed = e.freed[1:]
-		return id, nil
+// drawAbove hands the copier one spare the copy may take whose id is above
+// floor: the first take a durable unlink freed that clears it, the others
+// left for later copies, else the pool's own repack reserve through the
+// closure the open wired, whose ids are above every id the directory held.
+// floor is zero for a copy that carries nothing in a twin's place.
+func (e *emptying) drawAbove(floor core.SegmentID) (core.SegmentID, error) {
+	for i, id := range e.freed {
+		if id > floor {
+			e.freed = slices.Delete(e.freed, i, i+1)
+			return id, nil
+		}
 	}
 	return e.deps.DrawReserve()
 }
