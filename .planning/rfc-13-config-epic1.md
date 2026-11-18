@@ -102,7 +102,7 @@ title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no property of a store, a key file or a journal directory is tested here; E2 and E4 test them on real ones |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T1.4, T1.6 | RFC 13 §7's `decision:` note (two wrapping keys) at `secrets.Role`, the site that declares the two roles; RFC 13's plan's D9 `decision:` note at `secrets.ErrUnproven` and `settings.ErrUnproven`; RFC 13's plan's D11 note is E3's, at `Check`'s body, and T1.6's own note on a secret's rotation sits at `Check`'s declaration |
 | rule 10, a test must be able to fail | T1.2 to T1.7 | each test fails on a planted break: a bootstrap key missing from RFC 13's table, a role swapped in the kind table, a `Value` printed by `%v`, an extra export, a symbol with no caller listed |
-| rule 11, a symbol is exported only if RFC 13's interfaces use it, or a component declares through it | T1.3 to T1.7 | the surface frozen here is R5 to R18; T1.7 pins each package's exports and lists each symbol's first caller, `ObserveLag` (E3's D5, first caller E5's reconcile) the one export added after the freeze |
+| rule 11, a symbol is exported only if RFC 13's interfaces use it, or a component declares through it | T1.3 to T1.7 | the surface frozen here is R5 to R18; T1.7 pins each package's exports and lists each symbol's first caller, `Of`'s `FormatVersion(field)` option (E3's D6, first caller the section of the component's plan that declares the block format version's key) the one export added after the freeze |
 | rule 12, each subtask creates only what it declares | all | each package lands with the subtask that declares its whole surface; a stub is declared only where T1.7 names its caller in a later epic or plan (D4); no test helper lands without the test that uses it |
 
 ## 3. Requirements and invariants
@@ -272,7 +272,7 @@ bullets describe RFC 26's and RFC 5's records.
   `s`, `m` or `h`", and "a bare number is refused". Two types on `feat/storage-v2` hold a duration
   another way. `pkg/adapter/settings` declares `time.Duration` fields with plain `json` tags, which
   `encoding/json` writes as integer nanoseconds (`30000000000`): E3 gives those structs a string
-  codec (`"30s"`), with a `Schema` raise by RFC 13's plan's D11. `keyprovider.Config` holds
+  codec (`"30s"`). `keyprovider.Config` holds
   `TimeoutMS int` (`timeout_ms`), and keeps it: `encryption.ParsePolicy` decodes that struct
   out of the stored per-remote policy with a plain `json.Unmarshal`, which drops an unknown
   field without an error, so renaming it would leave a stored `"timeout_ms": 5000` behind and
@@ -561,7 +561,10 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     below declares real sections;
   - `Scope` and its three constructors, `At`, `PerThing` and `Override`;
   - `Section`, `Of` and its options `WriteRole`, `Required`, `CheckTx` and `SecretRef(field, kind)`
-  (D9);
+  (D9). `Of`'s fifth option, `FormatVersion(field)`, naming the field whose key holds the block
+  format version, so that `Check` refuses a version past this node's range with
+  `ErrFormatVersion`, is not this subtask's: E3's T3.6 adds it with its gate and to this pin, the
+  one exception to the freeze (E3's D6);
   - `Table`, `Snapshot`, `Read(ctx, cp, table, node)` returning the snapshot and the sections it
     refused, `Change`, and
     `Get[T any](snap *Snapshot, section string, node entity.NodeID) (T, error)` (an error for a
@@ -617,9 +620,10 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
   - The caller list, in the pull request's description: each frozen symbol with its first caller
     (an E2 to E5 subtask, RFC 23's T3.10, T5.3 or T5.4, or the RFC 18 plan's epic 2), and each
     symbol of T1.3 to T1.6's deliverables checked present. `Delete`, pinned here without a transaction, is
-    provisional like `AllSettings` and listed as gaining one when E4 fills it, and `ObserveLag`,
-    which E3's D5 adds to `pkg/settings` after the freeze, is listed with E5's reconcile as its
-    first caller.
+    provisional like `AllSettings` and listed as gaining one when E4 fills it, and `Of`'s
+    `FormatVersion(field)` option, which E3's D6 adds to `pkg/settings` after the freeze, is
+    listed with the section of the component's plan that declares the block format version's key
+    as its first caller.
 - **Acceptance criteria:**
   - Every symbol T1.3 to T1.6 deliver is exported (they are RFC 13's plan's S1 list), and nothing
     else is but D7's `New` and the `pkg/bootstrap` exports kept above, each with its caller.
