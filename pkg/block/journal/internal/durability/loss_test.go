@@ -1039,6 +1039,72 @@ func TestAPieceFollowsItsRecord(t *testing.T) {
 	})
 }
 
+// TestAPlacedButUnsyncedPieceIsOwedItsRecord holds the other side of the
+// kept piece: a loss record placed but never synced keeps its piece named,
+// yet nothing durable names the loss, so a reopen in this process tells that
+// piece from one a found or synced record holds and appends the record again,
+// already reported and raised — no second event, no second raise — while a
+// piece whose record synced stays answered by its take alone.
+func TestAPlacedButUnsyncedPieceIsOwedItsRecord(t *testing.T) {
+	e := newEnv(t)
+	if err := e.seam.Schedule(kit.Failing(kit.OpSync, "*.seg", 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	l := loss(5)
+	if _, err := e.d.Lose(context.Background(), l); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("Lose = %v, want the sync's EIO over the placed record", err)
+	}
+	synced := loss(6)
+	synced.Extent = core.Extent{Off: 8192, Len: 4096}
+	if _, err := e.d.Lose(context.Background(), synced); err != nil {
+		t.Fatalf("Lose of the loss whose record syncs = %v, want nil", err)
+	}
+	gen := e.d.Generation()
+
+	reopen := e.newDurability()
+	// The reopen places the record it finds, as the open does: the unsynced
+	// copy still reads back in this process, yet it is not durable.
+	reopen.Place(core.LossEvent{File: l.File, Extent: l.Extent, Reason: core.LossCorrupt}, l.Seq)
+	if !reopen.PlacedUnsynced(l.Seq, l.Extent) {
+		t.Fatalf("PlacedUnsynced(%d) = false after a placement whose sync failed, want true: no durable record names the loss", l.Seq)
+	}
+	if reopen.PlacedUnsynced(synced.Seq, synced.Extent) {
+		t.Fatalf("PlacedUnsynced(%d) = true for a loss whose record synced, want false", synced.Seq)
+	}
+
+	before := len(e.registrations())
+	again := l
+	again.AtOpen, again.Reported, again.Raised = true, true, true
+	ev, err := reopen.Lose(context.Background(), again)
+	if err != nil || ev != (core.LossEvent{}) {
+		t.Fatalf("the reopen's Lose of the owed record = %+v, %v, want the zero event and nil: the loss was published once", ev, err)
+	}
+	if got := len(e.registrations()) - before; got != 1 {
+		t.Fatalf("the reopen's Lose placed %d loss records, want 1: the piece a failed placement holds is owed its record", got)
+	}
+	if reopen.PlacedUnsynced(l.Seq, l.Extent) {
+		t.Errorf("PlacedUnsynced(%d) = true after the record synced, want false", l.Seq)
+	}
+	if got := len(reopen.Stats().Losses); got != 0 {
+		t.Errorf("the reopen's ring holds %d events, want none: the loss was published by the failed placement", got)
+	}
+	if got := reopen.Generation(); got != gen {
+		t.Errorf("Generation = %d after the owed record, want %d: the failed placement's Lose raised it already", got, gen)
+	}
+
+	// A piece whose record synced is answered by its take: a second Lose of
+	// it, reported or not, appends nothing.
+	syncedAgain := synced
+	syncedAgain.Reported = true
+	before = len(e.registrations())
+	if _, err := reopen.Lose(context.Background(), syncedAgain); err != nil {
+		t.Fatalf("the reopen's Lose of the synced piece = %v, want nil", err)
+	}
+	if got := len(e.registrations()) - before; got != 0 {
+		t.Errorf("the reopen's Lose of a synced piece placed %d records, want none", got)
+	}
+}
+
 // TestLoseOfAReasonThatNamesNoneIsRefusedOnEveryPath catches a deferred loss
 // publishing an event with no reason, where the appending path panics.
 func TestLoseOfAReasonThatNamesNoneIsRefusedOnEveryPath(t *testing.T) {

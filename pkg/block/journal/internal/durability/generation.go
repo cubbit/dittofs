@@ -76,6 +76,12 @@ type dirState struct {
 	// directory with a long loss history shows up in a heap profile.
 	pieces map[piece]struct{}
 
+	// unsynced holds the taken pieces whose loss record placed but never
+	// synced: the take stops a second event, but no durable record names
+	// the loss, so a reopen's pass appends the record again. A piece leaves
+	// once a later Lose of it takes it back to append.
+	unsynced map[piece]struct{}
+
 	// deferred holds, per segment, the losses a Lose deferred against it —
 	// one entry per deferred piece taken, the entry the copy that retires
 	// the segment builds its loss record from. It lives here and not on a
@@ -159,6 +165,38 @@ func (s *dirState) release(k piece) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.pieces, k)
+}
+
+// holdUnsynced marks the taken piece k as held by a loss record that placed
+// but never synced.
+func (s *dirState) holdUnsynced(k piece) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.unsynced == nil {
+		s.unsynced = map[piece]struct{}{}
+	}
+	s.unsynced[k] = struct{}{}
+}
+
+// isUnsynced reports whether a placed but unsynced loss record holds k.
+func (s *dirState) isUnsynced(k piece) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.unsynced[k]
+	return ok
+}
+
+// retakeUnsynced takes back the piece k a placed but unsynced record holds,
+// for the caller to append the record it is owed, reporting false when no
+// such record holds it. The piece stays taken.
+func (s *dirState) retakeUnsynced(k piece) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.unsynced[k]; !ok {
+		return false
+	}
+	delete(s.unsynced, k)
+	return true
 }
 
 // raise raises the generation by one and returns it.

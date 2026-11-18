@@ -51,7 +51,9 @@ type Loss struct {
 	// reported it when its window failed, so the open that appends the
 	// record the failed append owed publishes no new event for it. Lose
 	// appends the record and keeps the causality registration its placement
-	// files, but the ring holds nothing and the zero event answers.
+	// files, but the ring holds nothing and the zero event answers. A
+	// reported loss also takes back a piece a placed but unsynced record of
+	// an earlier Lose holds, to append the record that one never synced.
 	Reported bool
 
 	// Deferred appends no record: the copy that retires the dropped
@@ -149,7 +151,11 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// The piece is taken in the directory's state, shared with every other
 	// Durability on it: one already named by an earlier open's Lose or Place
 	// is reported by whichever call took it, never again.
-	if !d.dir.take(piece{l.Seq, l.Extent}) {
+	//
+	// A reported loss takes back a piece a placed but unsynced record holds:
+	// the take stopped its second event, not the record it is still owed.
+	k := piece{l.Seq, l.Extent}
+	if !d.dir.take(k) && !(l.Reported && d.dir.retakeUnsynced(k)) {
 		return core.LossEvent{}, nil
 	}
 
@@ -278,9 +284,13 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 			// report the same loss record as new (see the release doc's own
 			// rule). Overturned by a caller that appends the record itself
 			// instead of retrying the loss, which would make the taken piece
-			// the dedup that stops a second attempt.
+			// the dedup that stops a second attempt. A kept piece is marked
+			// unsynced, so the open's pass can tell it from one a durable
+			// record holds and append the record it is still owed.
 			if at == (segment.Location{}) {
-				d.dir.release(piece{l.Seq, l.Extent})
+				d.dir.release(k)
+			} else {
+				d.dir.holdUnsynced(k)
 			}
 		}
 		if refused || errors.Is(recErr, core.ErrNoSpace) || errors.Is(recErr, core.ErrClosed) ||
@@ -386,6 +396,14 @@ func (d *Durability) Failed() []core.Seq { return d.dir.failedSeqs() }
 // a record the disk already names.
 func (d *Durability) Named(seq core.Seq, ext core.Extent) bool {
 	return d.dir.named(piece{seq, ext})
+}
+
+// PlacedUnsynced reports whether the piece of the dropped record seq over ext
+// is held by a loss record that placed but never synced: Named answers it
+// true, yet nothing durable names the loss, so the open's pass appends the
+// record again, reported, as a Lose that takes the piece back.
+func (d *Durability) PlacedUnsynced(seq core.Seq, ext core.Extent) bool {
+	return d.dir.isUnsynced(piece{seq, ext})
 }
 
 // DeferredAgainst returns the losses whose record the copy that retires seg

@@ -359,7 +359,7 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 	// before the crash still opens and still records what the crash
 	// corrupted. Withdrawn when the open draws these records through the
 	// capacity ledger instead of counting its own reserve.
-	plan, pastReserve := planOpenLosses(st, d.Named, capacity.OpenReserveRecords(headroomRecords))
+	plan, pastReserve := planOpenLosses(st, d.Named, d.PlacedUnsynced, capacity.OpenReserveRecords(headroomRecords))
 	if pastReserve != nil {
 		return pastReserve
 	}
@@ -440,7 +440,26 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 // journal's own debt from the run that failed them, and a corrupt drop's
 // record is owed to the copy that retires its segment, so the failed
 // records could starve it.
-func planOpenLosses(st State, named func(seq core.Seq, ext core.Extent) bool, reserve int) ([]durability.Loss, *LostPastReserveError) {
+//
+// A corrupt drop whose piece only a loss record placed but never synced
+// names — unsynced answers it — is not named by anything durable: the
+// retirement worker this open starts may unlink the segment holding the
+// drop, and a crash would then take the unsynced record and serve the
+// content the drop superseded. The corrupt leg plans it like an unnamed
+// drop, on the reserve, marked reported and raised, for the placement that
+// failed already published its event and raised the generation.
+//
+// decision: only the corrupt leg appends a piece an unsynced record holds.
+// The failed leg's piece is the failed list's: the in-process list drops the
+// record and a new process holds the write again, so nothing is served
+// wrong. A loss no corrupt drop of this open names — an acknowledged loss,
+// whose record still verifies — reaches no leg and gets no second record
+// here, and the found copy of an unsynced record that the reopen placed
+// does not count as durable, so the pass may append a second loss record
+// over one piece, which the next open's placement answers once. Withdrawn
+// when the open learns which found loss records are durable, or when an
+// acknowledged loss's record reaches the pass.
+func planOpenLosses(st State, named, unsynced func(seq core.Seq, ext core.Extent) bool, reserve int) ([]durability.Loss, *LostPastReserveError) {
 	type pieceKey struct {
 		seq core.Seq
 		ext core.Extent
@@ -476,10 +495,17 @@ func planOpenLosses(st State, named func(seq core.Seq, ext core.Extent) bool, re
 		// neither appends through this leg, and neither draws the reserve —
 		// the Lose that would answer it holds the zero event and appends
 		// nothing.
-		if seen[k] || named(l.Seq, l.Extent) {
+		if seen[k] {
+			continue
+		}
+		owed := unsynced(l.Seq, l.Extent)
+		if !owed && named(l.Seq, l.Extent) {
 			continue
 		}
 		seen[k] = true
+		if owed {
+			l.Reported, l.Raised = true, true
+		}
 		if reserve > 0 {
 			reserve--
 			plan = append(plan, l)

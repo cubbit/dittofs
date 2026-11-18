@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -74,6 +75,7 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 		corrupt   []corruptRecord
 		reserve   int
 		named     []core.Seq // the pieces a record on disk already names
+		unsynced  []core.Seq // of those, the pieces a placed but unsynced record holds
 		want      []wanted
 		refuseN   int
 		refuseSeg core.SegmentID
@@ -131,6 +133,26 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 			named:   []core.Seq{10, 12},
 		},
 		{
+			// A loss record placed but never synced holds its piece named,
+			// yet nothing durable names the loss: the corrupt leg appends it
+			// again, already reported and raised, on the reserve.
+			name:     "a piece only a placed but unsynced record names plans its append",
+			corrupt:  []corruptRecord{planCorrupt(951, 12), planCorrupt(951, 13)},
+			reserve:  2,
+			named:    []core.Seq{12, 13},
+			unsynced: []core.Seq{12},
+			want:     []wanted{{12, false}},
+		},
+		{
+			// The failed leg's piece is the failed list's to answer, not the
+			// corrupt leg's, so a held piece there plans nothing new.
+			name:     "a failed-leg piece a placed but unsynced record names plans nothing",
+			failed:   []ReadOnlyDrop{planFailed(10)},
+			reserve:  1,
+			named:    []core.Seq{10},
+			unsynced: []core.Seq{10},
+		},
+		{
 			name: "the same corrupt piece twice plans one entry",
 			// The same (seq, extent) reaching the corrupt list through two
 			// lists, as the marks' and the proof's each answer one drop.
@@ -151,8 +173,11 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 			named := func(seq core.Seq, ext core.Extent) bool {
 				return namedSeqs[seq] && ext == planExtent(uint64(seq))
 			}
+			unsynced := func(seq core.Seq, ext core.Extent) bool {
+				return slices.Contains(c.unsynced, seq) && ext == planExtent(uint64(seq))
+			}
 
-			plan, refuse := planOpenLosses(st, named, c.reserve)
+			plan, refuse := planOpenLosses(st, named, unsynced, c.reserve)
 
 			if c.refuseN > 0 {
 				if refuse == nil {
@@ -180,8 +205,12 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 				if w.failed && (got.Reason != core.LossFailedWindow || !got.Reported) {
 					t.Errorf("plan entry %d = %+v, want the failed leg's: reason %d and reported", i, got, core.LossFailedWindow)
 				}
-				if !w.failed && (got.Reason != core.LossCorrupt || got.Reported) {
-					t.Errorf("plan entry %d = %+v, want the corrupt leg's: reason %d and unreported", i, got, core.LossCorrupt)
+				// A corrupt-leg piece a placed but unsynced record holds was
+				// published by the failed placement: it appends reported and
+				// raised, so no second event or raise goes out for it.
+				reported := slices.Contains(c.unsynced, w.seq)
+				if !w.failed && (got.Reason != core.LossCorrupt || got.Reported != reported || got.Raised != reported) {
+					t.Errorf("plan entry %d = %+v, want the corrupt leg's: reason %d, reported and raised %v", i, got, core.LossCorrupt, reported)
 				}
 				if !got.AtOpen {
 					t.Errorf("plan entry %d is not marked AtOpen", i)
