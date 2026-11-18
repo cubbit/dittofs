@@ -40,7 +40,7 @@ func TestNewRefusesAKVWithNoInstallation(t *testing.T) {
 
 	_, err = node.New(
 		node.Config{
-			Bootstrap: bootstrap.Bootstrap{APIAddr: "127.0.0.1:0", MetricsAddr: "127.0.0.1:0"},
+			Bootstrap: listening("127.0.0.1:0", "127.0.0.1:0"),
 			KV:        db,
 			Clock:     sim.NewTestClock(time.Unix(0, 0)),
 			Metrics:   metrics.New("test", "test"),
@@ -59,11 +59,12 @@ func TestNewRefusesAKVWithNoInstallation(t *testing.T) {
 // port on every interface, and closes the KV it was handed.
 func TestNewRefusesAnEmptyAddress(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		api, metrics string
+		name    string
+		metrics string
+		api     []string
 	}{
-		{"api", "", "127.0.0.1:0"},
-		{"metrics", "127.0.0.1:0", ""},
+		{"api", "127.0.0.1:0", nil},
+		{"metrics", "", []string{"127.0.0.1:0"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, err := badgerkv.Open(badgerkv.Options{})
@@ -71,11 +72,13 @@ func TestNewRefusesAnEmptyAddress(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = node.New(node.Config{
-				Bootstrap: bootstrap.Bootstrap{APIAddr: tc.api, MetricsAddr: tc.metrics},
+				Bootstrap: listening(tc.metrics, tc.api...),
 				KV:        db, Clock: sim.NewTestClock(time.Unix(0, 0)), Metrics: metrics.New("test", "test"),
 				Logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
 			})
-			if err == nil || !strings.Contains(err.Error(), "APIAddr and MetricsAddr must both be set") {
+
+			want := "api.listen and metrics.listen must both be set"
+			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Errorf("New with %s address empty: got %v, want refused for the empty address", tc.name, err)
 			}
 			if err := db.View(t.Context(), func(kv.Reader) error { return nil }); err == nil {
@@ -83,6 +86,54 @@ func TestNewRefusesAnEmptyAddress(t *testing.T) {
 			}
 		})
 	}
+}
+
+// New refuses more than one API address, naming the key and never an
+// address, which may come from the environment, and closes the KV it was
+// handed.
+func TestNewRefusesTwoAPIAddresses(t *testing.T) {
+	db, err := badgerkv.Open(badgerkv.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = node.New(node.Config{
+		Bootstrap: listening("127.0.0.1:0", "127.0.0.1:18080", "127.0.0.2:18081"),
+		KV:        db,
+		Clock:     sim.NewTestClock(time.Unix(0, 0)),
+		Metrics:   metrics.New("test", "test"),
+		Logger:    slog.New(slog.NewTextHandler(t.Output(), nil)),
+	})
+
+	want := "node: api.listen names 2 addresses, and the node's API binds one address for now"
+	if err == nil || err.Error() != want {
+		t.Fatalf("New with two API addresses: got %v, want %q", err, want)
+	}
+
+	for _, addr := range []string{"127.0.0.1:18080", "127.0.0.2:18081"} {
+		if strings.Contains(err.Error(), addr) {
+			t.Errorf(
+				"the refusal %q prints the address %s, which may come from the environment",
+				err,
+				addr,
+			)
+		}
+	}
+
+	if err := db.View(t.Context(), func(kv.Reader) error { return nil }); err == nil {
+		t.Error("the KV after a refused New: a View succeeded, want it closed")
+	}
+}
+
+// listening is a bootstrap whose only facts are the metrics address and the
+// API's addresses.
+func listening(metrics string, api ...string) bootstrap.Bootstrap {
+	var b bootstrap.Bootstrap
+
+	b.Metrics.Listen = metrics
+	b.API.Listen = api
+
+	return b
 }
 
 // The engine's series are in the registry the node was handed from New on,

@@ -31,19 +31,60 @@ type Bootstrap struct {
 	// Blockstore holds the per-share local state root.
 	Blockstore BlockstoreConfig `mapstructure:"blockstore" yaml:"blockstore"`
 
-	// Node is this node's identity, Devices its journal directories, one
-	// per device, which the engine opens its journals in, and APIAddr and
-	// MetricsAddr the host:port its API and metrics listeners bind, a port
-	// of 0 picking a free one.
-	//
-	// ponytail: nothing in the file sets any of them today, and Load never
-	// reads them: the host sets them before it builds the node. RFC 13's
-	// bootstrap loader reads them once the node's identity, its devices and
-	// its listen addresses are bootstrap facts.
-	Node        entity.NodeID `mapstructure:"-" yaml:"-" json:"-"`
-	Devices     []string      `mapstructure:"-" yaml:"-" json:"-"`
-	APIAddr     string        `mapstructure:"-" yaml:"-" json:"-"`
-	MetricsAddr string        `mapstructure:"-" yaml:"-" json:"-"`
+	// Node is this node's identity and its roles. The file names the
+	// identity only when every journal directory's node-id copy is lost.
+	Node struct {
+		ID    entity.NodeID `mapstructure:"id"    yaml:"id"`
+		Roles []string      `mapstructure:"roles" yaml:"roles"`
+	} `mapstructure:"node" yaml:"node"`
+
+	// Metadata is where the metadata store is and how to reach it. The
+	// store's credential is files, so only their paths are held here.
+	Metadata struct {
+		Backend string `mapstructure:"backend" yaml:"backend"`
+		Badger  struct {
+			Path string `mapstructure:"path" yaml:"path"`
+		} `mapstructure:"badger" yaml:"badger"`
+		FoundationDB struct {
+			ClusterFile string `mapstructure:"cluster_file" yaml:"cluster_file"`
+			TLS         struct {
+				CertFile string `mapstructure:"cert_file" yaml:"cert_file"`
+				KeyFile  string `mapstructure:"key_file"  yaml:"key_file"`
+				CAFile   string `mapstructure:"ca_file"   yaml:"ca_file"`
+			} `mapstructure:"tls" yaml:"tls"`
+		} `mapstructure:"foundationdb" yaml:"foundationdb"`
+	} `mapstructure:"metadata" yaml:"metadata"`
+
+	// Journals are the node's journal devices, one directory each.
+	Journals []Journal `mapstructure:"journals" yaml:"journals"`
+
+	// Adapters holds the addresses the protocol adapters bind; each
+	// adapter's port is its own setting.
+	Adapters struct {
+		Listen []string `mapstructure:"listen" yaml:"listen"`
+	} `mapstructure:"adapters" yaml:"adapters"`
+
+	// API is where the management API listens: its ip:port addresses, its
+	// TLS certificate and key, and its local socket.
+	API struct {
+		Listen []string `mapstructure:"listen" yaml:"listen"`
+		TLS    struct {
+			CertFile string `mapstructure:"cert_file" yaml:"cert_file"`
+			KeyFile  string `mapstructure:"key_file"  yaml:"key_file"`
+		} `mapstructure:"tls" yaml:"tls"`
+		Socket string `mapstructure:"socket" yaml:"socket"`
+	} `mapstructure:"api" yaml:"api"`
+
+	// Metrics is the metrics listener's ip:port, or off.
+	Metrics struct {
+		Listen string `mapstructure:"listen" yaml:"listen"`
+	} `mapstructure:"metrics" yaml:"metrics"`
+
+	// Keys names each role's wrapping key for Secret records.
+	Keys struct {
+		Protocol WrappingKey `mapstructure:"protocol" yaml:"protocol"`
+		Storage  WrappingKey `mapstructure:"storage"  yaml:"storage"`
+	} `mapstructure:"keys" yaml:"keys"`
 }
 
 // LoggingConfig controls logging behavior.
@@ -137,6 +178,7 @@ func Load(configPath string, environ []string) (*Bootstrap, error) {
 	var cfg Bootstrap
 	if err := v.Unmarshal(&cfg,
 		func(dc *mapstructure.DecoderConfig) { dc.Metadata = &md },
+		viper.DecodeHook(decodeHook()),
 	); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}

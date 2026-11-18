@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
-
-	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 func TestLoad_DefaultConfig(t *testing.T) {
@@ -263,25 +261,5 @@ blockstore:
 	}
 	if cfg.Blockstore.Journal.Path != "/srv/blocks" {
 		t.Errorf("Expected journal path /srv/blocks from env var, got %q", cfg.Blockstore.Journal.Path)
-	}
-}
-
-// Load never reads the node's identity or its devices, which the host sets:
-// a file naming them leaves both zero.
-func TestLoad_LeavesNodeAndDevicesToTheHost(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	content := "logging:\n  level: INFO\n  format: text\n  output: stdout\nnode: [1, 2, 3]\ndevices:\n  - /dev/one\n"
-	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	cfg, err := Load(configPath, os.Environ())
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Node != (entity.NodeID{}) {
-		t.Errorf("Node after Load: got %x, want zero", cfg.Node)
-	}
-	if cfg.Devices != nil {
-		t.Errorf("Devices after Load: got %q, want nil", cfg.Devices)
 	}
 }

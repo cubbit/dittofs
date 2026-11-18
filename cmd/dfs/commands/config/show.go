@@ -1,11 +1,14 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -50,7 +53,11 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Print configuration
+	return printConfig(os.Stdout, cfg, format)
+}
+
+// printConfig writes cfg to w in format, as show prints it.
+func printConfig(w io.Writer, cfg *bootstrap.Bootstrap, format output.Format) error {
 	switch format {
 	case output.FormatJSON:
 		// The Config structs carry only mapstructure/yaml tags (no json
@@ -63,9 +70,15 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		return output.PrintJSON(os.Stdout, keyed)
+
+		return output.PrintJSON(w, keyed)
 	default:
-		return output.PrintYAML(os.Stdout, cfg)
+		view, err := configView(cfg)
+		if err != nil {
+			return err
+		}
+
+		return output.PrintYAML(w, view)
 	}
 }
 
@@ -74,13 +87,51 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 // the same lowercase key namespace bootstrap.Load consumes, so the JSON encoding
 // of the result round-trips through Load.
 func yamlKeyedView(cfg *bootstrap.Bootstrap) (interface{}, error) {
-	data, err := yaml.Marshal(cfg)
+	doc, err := configView(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal config: %w", err)
+		return nil, err
 	}
 	var view interface{}
-	if err := yaml.Unmarshal(data, &view); err != nil {
+	if err := doc.Decode(&view); err != nil {
 		return nil, fmt.Errorf("failed to re-key config: %w", err)
 	}
 	return view, nil
+}
+
+// configView is cfg as the YAML tree show prints, with node.id in the UUID
+// form the file takes rather than the 16 numbers of its array. The store's
+// own encoding of the identity is left as it is.
+func configView(cfg *bootstrap.Bootstrap) (*yaml.Node, error) {
+	var doc yaml.Node
+	if err := doc.Encode(cfg); err != nil {
+		return nil, fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	id := mappingValue(mappingValue(&doc, "node"), "id")
+	if id == nil {
+		return nil, errors.New("failed to marshal config: no node.id")
+	}
+
+	*id = yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!str",
+		Value: uuid.UUID(cfg.Node.ID).String(),
+	}
+
+	return &doc, nil
+}
+
+// mappingValue is the value under key in the YAML mapping n, or nil.
+func mappingValue(n *yaml.Node, key string) *yaml.Node {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+
+	return nil
 }

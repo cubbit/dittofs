@@ -25,6 +25,7 @@ import (
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
@@ -267,7 +268,8 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 			if _, err := journal.Init(t.Context(), dir, journal.InstallationID{'f', 'o', 'r', 'e', 'i', 'g', 'n'}, journal.WithClock(sim.NewTestClock(time.Unix(0, 0))), journaltest.SuitableMount()); err != nil {
 				t.Fatalf("init a foreign journal: %v", err)
 			}
-			cfg.Bootstrap.Devices = []string{dir}
+
+			cfg.Bootstrap.Journals = []bootstrap.Journal{{Path: dir}}
 		}},
 		// The step reads each device with the node's journal options: one the
 		// journal refuses fails it here, before the engine would.
@@ -280,7 +282,8 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = l.Close() })
-			cfg.Bootstrap.APIAddr = l.Addr().String()
+
+			cfg.Bootstrap.API.Listen = []string{l.Addr().String()}
 		}},
 		{step: "register", fault: func(k string) sim.Rule { return failOn(kvtest.OpSet, k, 1) }},
 		{step: "apply", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 1) }, registered: true},
@@ -422,7 +425,7 @@ func TestStartRefusesAnUnreadableDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
-		cfg.Bootstrap.Devices = append(cfg.Bootstrap.Devices, dir)
+		cfg.Bootstrap.Journals = append(cfg.Bootstrap.Journals, bootstrap.Journal{Path: dir})
 		return node.New(cfg)
 	}))
 	err := h.Node().Start(t.Context())
@@ -484,6 +487,55 @@ func TestStartLogsTheBoundAddresses(t *testing.T) {
 			t.Errorf("the log after Start: %s=%s missing from %q", name, addr, out)
 		}
 	}
+}
+
+// The API listens on api.listen and the metrics listener on metrics.listen,
+// each on its own address.
+func TestStartListensOnEachKeysAddress(t *testing.T) {
+	apiAddr, metAddr := freeAddr(t), freeAddr(t)
+	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		cfg.Bootstrap.API.Listen = []string{apiAddr}
+		cfg.Bootstrap.Metrics.Listen = metAddr
+
+		return node.New(cfg)
+	}))
+
+	if err := h.Node().Start(t.Context()); err != nil {
+		t.Fatalf("Start with the API on %s and metrics on %s: %v", apiAddr, metAddr, err)
+	}
+
+	api, met := h.Node().Addrs()
+	if err := h.Node().Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if api != apiAddr || met != metAddr {
+		t.Errorf(
+			"bound addresses: got api %s, metrics %s; want api %s, metrics %s",
+			api,
+			met,
+			apiAddr,
+			metAddr,
+		)
+	}
+}
+
+// freeAddr is a loopback address with a port no listener holds: one the
+// test bound and closed.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return addr
 }
 
 // syncBuffer is a buffer the node's goroutines can log to while the test

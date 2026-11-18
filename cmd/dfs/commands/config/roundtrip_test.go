@@ -18,6 +18,13 @@ import (
 var expectedTopLevelYAMLKeys = []string{
 	"logging",
 	"blockstore",
+	"node",
+	"metadata",
+	"journals",
+	"adapters",
+	"api",
+	"metrics",
+	"keys",
 }
 
 // TestConfigSchema_TopLevelKeysAreYAMLKeys asserts the generated JSON schema's

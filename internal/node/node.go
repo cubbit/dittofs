@@ -110,8 +110,20 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 		return nil, errors.New("node: Config.Metrics is missing")
 	}
 	// An empty address would bind a random port on every interface.
-	if cfg.Bootstrap.APIAddr == "" || cfg.Bootstrap.MetricsAddr == "" {
-		return nil, errors.New("node: Config.Bootstrap.APIAddr and MetricsAddr must both be set")
+	if len(cfg.Bootstrap.API.Listen) == 0 || cfg.Bootstrap.Metrics.Listen == "" {
+		return nil, errors.New("node: api.listen and metrics.listen must both be set")
+	}
+	// decision: RFC 13 Appendix C makes api.listen a list of addresses, but
+	// the API binds one, so a second address is refused rather than left
+	// unbound while the operator believes the API listens there. The refusal
+	// names the key and the count, never an address, which may come from the
+	// environment (RFC 13 §6). Withdraw it once the API listens on every
+	// address the key lists.
+	if n := len(cfg.Bootstrap.API.Listen); n > 1 {
+		return nil, fmt.Errorf(
+			"node: api.listen names %d addresses, and the node's API binds one address for now",
+			n,
+		)
 	}
 	n := &Node{cfg: cfg, rec: newReconciler(), sweep: newSweeper()}
 	var err error
@@ -119,8 +131,8 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 		return nil, fmt.Errorf("node: metadata store: %w", err)
 	}
 	open, deps, err := enginewire.Compose(enginewire.Params{
-		Node:    cfg.Bootstrap.Node,
-		Devices: cfg.Bootstrap.Devices,
+		Node:    cfg.Bootstrap.Node.ID,
+		Devices: journalPaths(cfg.Bootstrap.Journals),
 		Store:   n.meta,
 		Clock:   cfg.Clock,
 		Logger:  cfg.Logger,
@@ -151,7 +163,7 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 	}
 	steps := operationSteps(n.meta.Nodes())
 	steps[string(apiv1.OpShareDelete)] = stepRow{n.shareDeletion, n.removalProgress}
-	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node, cfg.Logger, steps)
+	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node.ID, cfg.Logger, steps)
 	n.watchdog = health.NewWatchdog(cfg.Clock)
 	n.life.ready.Store(readyStarting)
 	// decision: the API gets no TLS, local socket, signing key or tracer,
@@ -169,8 +181,8 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 		Ready:        n.life.readiness,
 		Served:       n.life.served.Load,
 		Live:         n.watchdog.Live,
-		Addr:         cfg.Bootstrap.APIAddr,
-		MetricsAddr:  cfg.Bootstrap.MetricsAddr,
+		Addr:         cfg.Bootstrap.API.Listen[0],
+		MetricsAddr:  cfg.Bootstrap.Metrics.Listen,
 		Metrics:      cfg.Metrics,
 		Logger:       cfg.Logger,
 		Authenticate: authenticate,
@@ -179,8 +191,18 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 		Progress:     n.runner.progressOf,
 		Health:       n.health,
 		Clock:        cfg.Clock,
-		Node:         cfg.Bootstrap.Node,
+		Node:         cfg.Bootstrap.Node.ID,
 		Applied:      n.applied,
 	})
 	return n, nil
+}
+
+// journalPaths is the directory of each journal device, in order.
+func journalPaths(journals []bootstrap.Journal) []string {
+	paths := make([]string, len(journals))
+	for i, j := range journals {
+		paths[i] = j.Path
+	}
+
+	return paths
 }

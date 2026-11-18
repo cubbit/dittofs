@@ -14,8 +14,13 @@ import (
 // opens.
 func TestTheRecordedJournalOpens(t *testing.T) {
 	h := New(t, Watch(), InMemory())
-	dev := h.cfg.Bootstrap.Devices[0]
-	id, err := h.Store().Lifecycle().JournalID(t.Context(), h.cfg.Bootstrap.Node, entity.JournalDir(dev))
+	dev := h.cfg.Bootstrap.Journals[0].Path
+
+	id, err := h.Store().Lifecycle().JournalID(
+		t.Context(),
+		h.cfg.Bootstrap.Node.ID,
+		entity.JournalDir(dev),
+	)
 	if err != nil || id == ([16]byte{}) {
 		t.Fatalf("JournalID of the node's device: got %x, %v; want the recorded journal", id, err)
 	}
@@ -34,7 +39,7 @@ func TestTheRecordedJournalOpens(t *testing.T) {
 // before this, or, if it initialises one, fails here.
 func TestRestartKeepsTheInstallation(t *testing.T) {
 	h := New(t, Watch())
-	dev := entity.JournalDir(h.cfg.Bootstrap.Devices[0])
+	dev := entity.JournalDir(h.cfg.Bootstrap.Journals[0].Path)
 	jBefore, err := h.Store().Lifecycle().JournalID(t.Context(), nodeID, dev)
 	if err != nil {
 		t.Fatal(err)
