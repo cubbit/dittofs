@@ -170,13 +170,6 @@
   category: feature
   reason: 'the fixture failing one file''s sync window (internal/vfs/integration/content_journal_test.go:18): a loss changes the verifier and raises only the lost file''s loss sequence. The run supplies no Lose, so the case skips: the fixture fails a whole sync window, every file pending in it, where the case needs one file''s content lost and another''s loss sequence left alone; the engine''s run over the fake journal covers it. It runs once the fixture can fail one file''s window.'
   issue: '#4206'
-- test: TestRFC8A_CloneResumedAtAFullLimit
-  message: 'the share''s journal bytes after the restart: 0, want'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'a clone crashed after its copies, before its phase 1, on a share at its journal limit is resumed by the restart without copying again, other files are served and the clone finishes. The open recovers the segments, but the share''s journal reads 0 bytes after the restart, the copies'' records dropped at the reopen; another file of the share then answers retry shortly: frozen and the resumed clone never finishes.'
-  issue: '#4711'
 - test: TestRFC8A_TheJoin
   message: 'the lost extent reads "oooooooo", <nil>; want ErrLost'
   status: fail
