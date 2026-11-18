@@ -1517,7 +1517,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | RFC 13 §5.1 | E3; E6 (rows) |
 | RFC 13 §5.2 | E3 (D9's refusal); the proof O1 |
 | RFC 13 §5.3 | the engine's (RFC 8); the node's table carries its keys (E5) |
-| RFC 13 §5.4 | E3 (refusal to advance), E2 (join refusal), single node; cluster O1 |
+| RFC 13 §5.4 | E3 (refusal to advance); the join refusal waits with the namespace key (§6.1); cluster O1 |
 | RFC 13 §5.5 | E2 (single node); the raise call and cluster O1 |
 | RFC 13 §6 | E3; E5 (the port rule, at write); E6 (rows); the port rule at start O1; cross-component rule §4.3 above |
 | RFC 13 §7 | E4; E5 (the credential rotation, the reconcile's prune and revocation report); material bullets RFC 5's, O1; reseal and wrapping-key rotation §4.3 above, O1 |
