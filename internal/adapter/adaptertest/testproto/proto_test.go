@@ -254,12 +254,13 @@ func TestRows(t *testing.T) {
 }
 
 // Each error is answered by the first row that matches it in NewErrorTable's
-// order, a typed row before a sentinel's, since no row here names operations
-// or versions. Every refusal of core's has a status of its own, the two drain
-// errors answer nothing, and only the table that holds holds ErrDelay, for
-// HoldFor from the hold's start, or for what SetHold set, read on each call;
-// ErrDelay of DelayResources is answered StatusDelay at once in both tables,
-// by a typed row.
+// order, a typed row before a sentinel's, for any operation but version 1's
+// Create: no row here names versions, and only the move signal names an
+// operation. Every refusal of core's has a status of its own, the two drain
+// errors answer nothing there, and only the table that holds holds ErrDelay,
+// for HoldFor from the hold's start, or for what SetHold set, read on each
+// call; ErrDelay of DelayResources is answered StatusDelay at once in both
+// tables, by a typed row.
 func TestErrorRows(t *testing.T) {
 	resources := &vfs.Delay{Cause: vfs.DelayResources}
 	for _, holds := range []bool{false, true} {

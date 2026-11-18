@@ -611,7 +611,7 @@ func TestANoReplyMemberLeavesTheCompoundUnanswered(t *testing.T) {
 		hold := s.faults.Hold(vfs.OpCreate)
 		s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, testproto.Msg{Op: testproto.OpCreate, Name: "a"}, testproto.Msg{Op: testproto.OpCreate, Name: "b"}, echo)
 		<-hold.Reached()
-		s.faults.Fail(vfs.OpCreate, core.ErrMoved)
+		s.faults.Fail(vfs.OpCreate, core.ErrDraining)
 		hold.Release()
 		if !s.sentNothing() || s.creates() != 1 {
 			t.Errorf("a compound whose second Create meets a NoReply row was answered, or made %d files; want nothing sent and the first file made", s.creates())
