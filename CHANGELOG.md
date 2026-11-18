@@ -53,6 +53,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved once per table or stages label, so recording is one atomic add or
   histogram observation with no label lookup.
 
+- **A compound's reply stays within the protocol's record cap, and only a
+  failure stops it.** Before any of a compound's operations runs, each READ
+  is shortened to the room the operations beside it leave in one record,
+  never below one byte, and counted in `adapter_reads_shortened_total`; a
+  compound that would leave a READ no byte, or whose replies pass the cap
+  with nothing to shorten, is refused whole. A status the protocol's error
+  table marks as no failure no longer ends a compound or fails the related
+  requests of a chain after it.
+
 ### Changed
 
 - **The journal's open proves its unproven tail on the device.** A seal marker
