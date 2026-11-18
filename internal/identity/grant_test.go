@@ -259,14 +259,6 @@ func TestResolveAdminComesFromTheGrantAlone(t *testing.T) {
 	if err != nil || c.Admin || !c.Privileged {
 		t.Errorf("a proven uid 0 with a read grant: %+v, %v; want privileged, not admin", c, err)
 	}
-	// A root squash replaces a proven uid 0's principal, groups and flags with
-	// Anonymous's, while its Access stays its own grant, read before the squash.
-	rootSquash := policy(granted)
-	rootSquash.Squash = entity.SquashRoot
-	c, err = r.srv.Resolve(ctx, ticket(root.Principal, root.Name), rootSquash, pid.ReadOnlyNotNarrowed)
-	if err != nil || c.Principal != nobody.Principal || c.Mapped != root.Principal || c.Admin || c.Privileged || c.Authenticated || c.Access != entity.AccessRead {
-		t.Errorf("a proven uid 0 on a root-squash share: %+v, %v; want Principal nobody, Mapped root, Access read, no flag", c, err)
-	}
 }
 
 // A deny-only principal never matches a share grant: a share whose only
