@@ -549,6 +549,29 @@ func TestADrainedCompound(t *testing.T) {
 	})
 }
 
+// A compound still waiting for its reply when the drain begins has not been
+// handed to the service, so it is judged once its reply is reserved, as a
+// request alone is: one the drain does not serve whole is answered nothing
+// and runs nothing (§3.1, §4.7).
+func TestACompoundWaitingForItsReplyAtTheDrainIsJudged(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newServed(t, 4*smallCharge, adapter.Deps{})
+		none := echo
+		none.Role = core.RoleNone
+		synctest.Wait() // the set-up's replies are released
+		frees := []func(){s.full(), s.full(), s.full(), s.full()}
+		s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, testproto.Msg{Op: testproto.OpCreate, Name: "late"}, none)
+		synctest.Wait() // the compound waits for its reply
+		s.p.Drain()
+		for _, free := range frees {
+			free()
+		}
+		if !s.sentNothing() || s.creates() != 0 {
+			t.Errorf("a compound that waited for its reply through the drain was answered, or made %d files", s.creates())
+		}
+	})
+}
+
 // A member whose call the connection's close ended ends the compound with
 // nothing sent and no member after it run: the close's cancel is no error, so
 // nothing counts as an error no row maps and nothing logs at error. The second

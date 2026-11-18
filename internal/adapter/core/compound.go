@@ -97,17 +97,18 @@ func judge(ms []member, decoded bool, r *Request) (whole bool, handles []vfs.Han
 }
 
 // compound runs a compound row's request from its members' walk to out:
-// every member decoded first; while draining, the compound judged whole, the
-// drain read once, before any member runs; each member's bound handed its
-// room within the protocol's record cap; one reply buffer of the members'
-// bounds and the compound's header and head, refused past the record cap or
-// a quarter of the reply pool's ceiling; then each member in turn, through
-// the row's checks, Resolve and its chain, carrying r between them, the first
-// failure ending the reply, a NotFailure row's status being none (RFC 20
-// §4.3), and one a NoReply row maps leaving it unanswered. The head, which
-// the compound's own Invocation encodes, goes first and again, in place, with
-// the final status and count. A compound refused whole is answered its
-// status alone, whose head, with no results, its header's codec writes.
+// every member decoded first; each member's bound handed its room within the
+// protocol's record cap; one reply buffer of the members' bounds and the
+// compound's header and head, refused past the record cap or a quarter of
+// the reply pool's ceiling; while draining, the compound judged whole, the
+// drain read once, after that buffer is reserved and before any member runs;
+// then each member in turn, through the row's checks, Resolve and its chain,
+// carrying r between them, the first failure ending the reply, a NotFailure
+// row's status being none (RFC 20 §4.3), and one a NoReply row maps leaving
+// it unanswered. The head, which the compound's own Invocation encodes, goes
+// first and again, in place, with the final status and count. A compound
+// refused whole is answered its status alone, whose head, with no results,
+// its header's codec writes.
 func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *Op, inv Invocation, rest []byte, release func()) {
 	ctx, v, errs := tr.ctx, h.Version(), tb.Errors
 	if inv.EncodeHead == nil {
@@ -123,17 +124,6 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		p.refused(tr, stageDecodeArgs)
 		p.finish(tr, h, tb, errs, row, Invocation{}, nil, err, release, alone{p}, nil)
 		return
-	}
-	if p.draining.Load() {
-		// ponytail: a compound the drain does not serve whole is refused
-		// whole, since drainErr answers ErrDraining, a NoReply row. Once it
-		// can answer ErrMoved, a refusal with a reply, the compound runs to
-		// the moved member and is answered there (§4.7).
-		if whole, handles := judge(ms, err == nil, r); !whole {
-			p.refused(tr, stageResolveIDs)
-			p.finish(tr, h, tb, errs, row, Invocation{}, nil, drainErr(ctx, handles), release, alone{p}, nil)
-			return
-		}
 	}
 	// Each member's bound is first taken for the record cap less the
 	// compound's ReplyLen, as a request's is, then handed its room: what the
@@ -208,6 +198,20 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		return
 	}
 	mts.observe(stageReplyWait, p.sh.clock.Now().Sub(start))
+	// The drain is read once the reply is reserved, which can wait: a
+	// compound that waited through the drain's start has not been handed to
+	// the service, so it is a new request, which the drain judges (§3.1).
+	if p.draining.Load() {
+		// ponytail: a compound the drain does not serve whole is refused
+		// whole, since drainErr answers ErrDraining, a NoReply row. Once it
+		// can answer ErrMoved, a refusal with a reply, the compound runs to
+		// the moved member and is answered there (§4.7).
+		if whole, handles := judge(ms, err == nil, r); !whole {
+			p.refused(tr, stageResolveIDs)
+			p.finish(tr, h, tb, errs, row, Invocation{}, reply, drainErr(ctx, handles), release, alone{p}, nil)
+			return
+		}
+	}
 	mts.readsShortened(shortened)
 	reply.B = reply.B[:0]
 	mt := row.Members
