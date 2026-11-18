@@ -532,7 +532,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Segments keeps the row of a retired damaged segment, marked retired, until close (RFC 1 section 4.4), and this check expects the repacked segment gone from the list: the RFC and the check disagree for a segment repack emptied before retiring it.'
+  reason: 'The journal opens; the disagreement is over the row of a retired segment, not over any stub. RFC 1 section 4.4 keeps the row of a damaged retired segment, marked retired, until close, and this check reads the row''s expectation to cover also a segment repack emptied and then retired, a case the section''s text names neither way. A wording gap for the RFC owner; the PR text carries it.'
   issue: '#3815'
   message: 'is still among the journal'
 

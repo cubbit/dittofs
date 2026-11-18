@@ -82,7 +82,7 @@ rfc1 / 9.4 / A / "re-append trusts no page cache":
 rfc1 / 9.4 / A / "loss by exact record":
   tests: [TestRFC1A_LossByExactRecord]
 rfc1 / 9.4 / A / "a synced loss masks what it superseded":
-  tests: [TestRFC1A_SyncedLossMasksSuperseded]
+  tests: [TestRFC1A_SyncedLossMasksSuperseded, TestALossRecordCarriedFromItsSegmentJournalLevel]
 rfc1 / 9.4 / A / "a failed window is reported once":
   tests: [TestRFC1A_FailedWindowReportedOnce, TestRFC1A_FailedWindowsCarryNoMarks]
 rfc1 / 9.4 / A / "a re-append keeps its numbers":
