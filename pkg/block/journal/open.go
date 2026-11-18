@@ -477,8 +477,8 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 // ponytail: a deferral held here ends only through EndDeferral, which the
 // emptying calls for an ended holder, or a sealed one holding a failed record
 // past the open reserve, alone. Any other sealed holder's deferral therefore
-// never ends in this process, its loss is never recorded, and the next open re-defers it, so it
-// stands across restarts too. Upgrade to an emptying that copies sealed
+// never ends in this process, its loss is never recorded, and the next open
+// re-defers it, so it stands across restarts too. Upgrade to an emptying that copies sealed
 // holders, ending the deferral in the copy, when a holder standing this way
 // shows up in the disk accounting.
 func holdDeferredHolders(c *datapath.Core, dir string, id core.JournalID) error {

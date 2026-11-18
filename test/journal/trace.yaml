@@ -388,7 +388,20 @@ rfc28 / 4.2 / C / "an ended segment is emptied once":
 rfc28 / 4.2 / C / "an open at an exhausted headroom":
   tests: [TestRFC28C_AnOpenAtAnExhaustedHeadroom]
   owner: epic 7
-  reason: 'the test asserts only part of the row, and the row stays uncertified until the rest is added. Asserted: an open at an exhausted headroom succeeds, one synced loss record on the open reserve names the corrupt record of a sealed segment, the superseded content is never served, and a second open appends no second loss record. Built and asserted only by the journal''s package tests: the corrupt records past the reserve deferred, an ended holder''s emptying writing the deferred loss record into its target, and a sealed segment holding failed records past the reserve emptied without them. Not built, by owner. Epic 7: a sealed holder''s deferral ended in the process that deferred it, which instead stands held until a restart re-detects and re-defers it; the emptying of an unsealed segment holding failed records past the reserve. Epic 9: the repack of the segments holding deferred records, whose targets carry their loss records, since the copier has no production caller. Not checked: Files and Since listing a deferred loss before Settle'
+  reason: >-
+    The test asserts only part of the row; the row stays uncertified until the rest is added.
+    Asserted: an open at an exhausted headroom succeeds.
+    One synced loss record on the open reserve names the corrupt record of a sealed segment.
+    The superseded content is never served, and a second open appends no second loss record.
+    Asserted only by the journal's package tests: the corrupt records past the reserve defer;
+    an ended holder's emptying writes the deferred loss record into its target;
+    a sealed segment holding failed records past the reserve is emptied without them.
+    Not built, epic 7: ending a sealed holder's deferral. It never ends in-process and stands
+    across restarts, each open re-detecting and re-deferring it.
+    Not built, epic 7: the emptying of an unsealed segment holding failed records past the reserve.
+    Not built, epic 9: the repack of the segments holding deferred records, whose targets carry
+    their loss records; the copier has no production caller.
+    Not checked: Files and Since listing a deferred loss before Settle.
 rfc1 / 9.4 / B / "a closed writer forgets its error":
   owner: epic 5
   reason: 'the descriptor cache does not keep a writer''s error past its close yet'

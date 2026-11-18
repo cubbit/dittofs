@@ -150,10 +150,10 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 
 // runEmptying is the emptying's second step: each segment the open ended —
 // the rows the assembled ledger answers Ended — is copied out and unlinked,
-// one at a time. The order the two steps run in is the whole contract: the
-// loss records the pass above made durable mask what the crash corrupted,
-// and only past them may a segment's file go, for a segment may hold the
-// only copy of a record an older one would otherwise serve over.
+// one at a time. The order the steps run in is the whole contract: the loss
+// pass makes its records durable first, so each corrupt record is masked
+// before any segment's file is unlinked. A segment may hold the only copy of
+// a record; unlinked before its mask, an older copy would serve in its place.
 //
 // decision: a segment recovery ends is emptied whole at this open, never
 // re-read as a live row: an ended segment takes no append and no seal, so a
@@ -228,9 +228,9 @@ func boolRank(b bool) int {
 // emptying carries the state one run of the emptying step shares across the
 // ended segments it walks: the spares the durable unlinks freed — the takes
 // naming a predecessor the emptying unlinked, which the spares phase's own
-// verdict held back — are drawn front-first, before the pool's reserve, but
-// only when the take's id is above every segment the copy replaces: a copy
-// below a rotten twin it replaces would not outlive the next open.
+// verdict held back — are drawn before the pool's reserve, but only when the
+// take's id is above every segment the copy replaces: a copy below a rotten
+// twin it replaces would not outlive the next open.
 type emptying struct {
 	deps     Deps
 	rd       *reader
@@ -238,10 +238,11 @@ type emptying struct {
 	identity core.JournalID
 	marks    []core.SyncMark
 
-	// freed holds the takes a durable unlink released, drawn front-first for
-	// the copies that follow whose id floor it clears. A freed take is the emptying's own spare alone,
-	// exactly the shape a freed successor would reach the running pool
-	// through once the pool's open-time wiring exists; until then the pool
+	// freed holds the takes a durable unlink released, in the order they were
+	// freed; a copy draws the first one above its id floor (drawAbove). A
+	// freed take is the emptying's own spare alone, exactly the shape a freed
+	// successor would reach the running pool through once the pool's
+	// open-time wiring exists; until then the pool
 	// learns nothing of it, as it learns nothing of the spares the spares
 	// phase adopted.
 	freed []core.SegmentID
@@ -372,22 +373,24 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 				continue
 			}
 			// decision: the rot branch always carries, even when another
-			// sealed copy verifies, though a standing copy would let the
-			// segment that holds it stay held. The index serves the greatest
-			// copy among the kept segments, so any such copy sits below the
-			// rotten twin, and the twin wins again at the next open, whose
-			// walk verifies no payload: the standing copy is then held by
-			// nothing for this record and goes once its other records are
-			// superseded, leaving only the rotten copy. A carry lands in a
-			// spare drawn above the twin (drawAbove), so the next open serves
-			// it and retires the stale duplicate as unheld; the duplicate
-			// this leaves lasts one open. Holding a segment by a repoint
-			// lasts only for this process. Ceiling: once the pool adopts the
-			// spares an open re-adopts, the reserve can hand out one whose
-			// old id sits below the twin, and a copy into it loses to the
-			// twin at the next open the same way. Withdrawn when the walk
-			// verifies payloads or the open records a rotten placement, so a
-			// restart cannot serve the twin again.
+			// sealed copy verifies.
+			//
+			// Why: the index serves the greatest copy among the kept
+			// segments, so any other verifying copy sits below the rotten
+			// twin. Repointing to it holds its segment only for this
+			// process; the next open's walk verifies no payload and serves
+			// the twin again, and the lower copy, held by nothing for this
+			// record, goes once its other records are superseded. A carry
+			// lands in a spare drawn above the twin (drawAbove), so the next
+			// open serves it and retires the stale duplicate as unheld; the
+			// duplicate lasts one open.
+			//
+			// Hazard: once the pool adopts the spares an open re-adopts, the
+			// reserve can hand out one whose old id sits below the twin, and
+			// a copy into it loses to the twin at the next open the same way.
+			//
+			// Withdrawn when the walk verifies payloads or the open records a
+			// rotten placement, so a restart cannot serve the twin again.
 			from = twin
 		} else {
 			other, found, serr := e.standingCopy(rec, id)
