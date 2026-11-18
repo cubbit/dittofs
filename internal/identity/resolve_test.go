@@ -293,7 +293,7 @@ func TestResolveOpensItsSpan(t *testing.T) {
 			found = true
 			attrs := map[string]string{}
 			for _, a := range s.Attributes() {
-				v := a.Value.Emit()
+				v := a.Value.String()
 				attrs[string(a.Key)] = v
 				if strings.Contains(v, c.who.Name) || strings.Contains(v, sid.FormatSID(userSID)) {
 					t.Errorf("%s: attribute %s = %q carries a name or a SID", c.who.Name, a.Key, v)
