@@ -244,6 +244,20 @@ type emptying struct {
 	// learns nothing of it, as it learns nothing of the spares the spares
 	// phase adopted.
 	freed []core.SegmentID
+
+	// carried keys every aside record this run already copied into a sealed
+	// target: the skip counts this step's own new segments, so a duplicate a
+	// later segment holds is not carried a second time.
+	carried map[asideKey]bool
+}
+
+// asideKey is what makes two aside records copies of one another: the
+// standing test asideCopyVerifies matches on the same fields.
+type asideKey struct {
+	kind format.Kind
+	seq  core.Seq
+	file core.FileID
+	ext  core.Extent
 }
 
 // carriedCopy is one record travelling to the copy target: the input the
@@ -446,8 +460,8 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 		if deps.Liveness.Droppable(rec) {
 			continue // a loss, a release or a marker the registry and the index already answer dead
 		}
-		if e.asideCopyVerifies(rec, id) {
-			continue // another copy verifies in a standing segment: nothing is carried
+		if e.carried[asideKey{rec.Kind, rec.Seq, rec.File, rec.Ext}] || e.asideCopyVerifies(rec, id) {
+			continue // another copy verifies in a standing segment or this run's own target: nothing is carried
 		}
 		bytes, refused := e.readAside(rec)
 		if refused != nil {
@@ -574,6 +588,10 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 		} else {
 			deps.Liveness.Register(cp)
 		}
+		if e.carried == nil {
+			e.carried = make(map[asideKey]bool)
+		}
+		e.carried[asideKey{rec.Kind, rec.Seq, rec.File, rec.Ext}] = true
 		if rec.File != (core.FileID{}) {
 			if nerr := st.Rebuilt.Index.NotePlaced(rec.Tag, rec.File, target, coveredRec(rec), rec.Pair); nerr != nil {
 				return nerr
@@ -778,9 +796,11 @@ func (e *emptying) asideCopyVerifies(rec reclaim.Rec, id core.SegmentID) bool {
 		// decision: a sealed row this run also empties is a standing copy
 		// all the same. The asides register one record per copy, so each
 		// segment owes its own carry, and a segment emptied later finds the
-		// earlier one's row gone (State errors, so it is skipped here) and
-		// carries; the last of any set of duplicates always does. Withdrawn
-		// if the open ever registers one record for a set of duplicates.
+		// earlier one's row gone (State errors, so it is skipped here): it
+		// skips when the earlier one carried its copy into this run's own
+		// target, and carries otherwise, so the last of any set of
+		// duplicates leaves exactly one. Withdrawn if the open ever
+		// registers one record for a set of duplicates.
 		state, err := e.st.Assembled.Set.State(sc.ID)
 		if err != nil || state != segment.Sealed {
 			continue // the same trust standingCopy keeps: a sealed row alone

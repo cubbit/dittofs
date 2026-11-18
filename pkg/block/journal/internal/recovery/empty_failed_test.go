@@ -234,8 +234,9 @@ func TestCrashAtEveryFailedHolderEmptyingStep(t *testing.T) {
 // segment holds a live loss record whose duplicate sits in a sealed holder of
 // a failed record, which the emptying also empties. Each copy is registered
 // at its own segment, so whichever segment is emptied last finds no standing
-// duplicate left and carries the loss; the row holds that for both id
-// orders, and fails if both skip on each other.
+// duplicate left and carries the loss, while one emptied after a copy this
+// run already carried skips it; the row holds exactly one durable copy for
+// both id orders, failing if both skip on each other or both carry.
 func TestAnAsideDuplicateInASealedHolderThisRunEmptiesStillSurvives(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -300,8 +301,8 @@ func TestAnAsideDuplicateInASealedHolderThisRunEmptiesStillSurvives(t *testing.T
 					}
 				}
 			}
-			if survivors == 0 {
-				t.Errorf("no durable copy of the loss record of seq 41 remains, want one: both copies went with their segments")
+			if survivors != 1 {
+				t.Errorf("%d durable copies of the loss record of seq 41 remain, want exactly one: none lost with its segment, none carried twice", survivors)
 			}
 		})
 	}
