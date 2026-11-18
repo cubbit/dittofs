@@ -853,6 +853,11 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 	if tb != nil && tb.Holds {
 		key = p.st.Hold.Key(h)
 	}
+	if pd != nil && err == ErrNotLast {
+		// Its status is ErrNotLast's; its span's result is the error the
+		// service returned (§4.7, §10.2).
+		err = pd.last
+	}
 	a.answered(tr, eh, reply, key, s, s != 0 && !notFailure, err)
 }
 

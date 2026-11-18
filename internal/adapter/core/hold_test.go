@@ -866,15 +866,28 @@ func TestTheCreditsBeforeAPendingMemberRideOnItsInterim(t *testing.T) {
 // Without the pend flag, a chain's member before the last that the service
 // answers ErrDelay is answered the not-last status at once, with no interim,
 // since the delay row's status would speak for a hold that does not happen,
-// and the Echo after it runs (§4.7).
+// and the Echo after it runs; its span's result is the delay the service
+// returned (§4.7, §10.2).
 func TestAMemberThatDoesNotPendIsAnsweredNotLast(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		spans := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+		s := newHeld(t, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1}, newManualClock())
 		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
 		s.serve(s.pendChain(1, false)...)
 		rs, err := s.client.Recv()
 		if err != nil || len(rs) != 3 || rs[1].Interim || rs[1].ID != 2 || rs[1].Status != testproto.StatusNotLast || rs[2].ID != 3 || rs[2].Status != testproto.StatusOK {
 			t.Errorf("the chain is answered %+v (%v), want the Create's not-last status at once and the Echo's success", rs, err)
+		}
+		synctest.Wait()
+		var result string
+		for _, kv := range requestSpan(t, spans, "Create").Attributes() {
+			if kv.Key == "result" {
+				result = kv.Value.AsString()
+			}
+		}
+		if result != "delay" {
+			t.Errorf("the Create's span carries result %q, want the service's delay", result)
 		}
 	})
 }

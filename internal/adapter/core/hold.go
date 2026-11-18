@@ -301,8 +301,9 @@ func (p *pipeline) interimIn(pd *pending, buf *resources.Buf, grant bool) {
 // the request to be answered. A chain's member before the last with no
 // interim yet holds only where Pends says it goes pending; otherwise
 // ErrNotLast replaces err before its table maps it, since the row's status
-// speaks for a hold that does not happen (§4.7). A member the interim timer
-// found in the service has its interim, so Pends is not asked of it.
+// speaks for a hold that does not happen (§4.7), and its last keeps err for
+// its span's result (§10.2). A member the interim timer found in the service
+// has its interim, so Pends is not asked of it.
 func (p *pipeline) after(pd *pending, err error, reply *resources.Buf, release func()) (bool, error) {
 	pd.mu.Lock()
 	defer pd.mu.Unlock()
@@ -316,6 +317,7 @@ func (p *pipeline) after(pd *pending, err error, reply *resources.Buf, release f
 		return false, err
 	}
 	if pd.h.Next() != 0 && !pd.pend && !p.st.Hold.Pends(pd.h, err) {
+		pd.last = err
 		return false, ErrNotLast
 	}
 	now := p.sh.clock.Now()
