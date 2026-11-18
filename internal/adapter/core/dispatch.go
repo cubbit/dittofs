@@ -191,6 +191,87 @@ func Bind[Req, Rep any](
 	}
 }
 
+// Decoder and Encoder are what the generator writes for every tagged request
+// and reply struct; Row's constraints, so a struct the generator never saw
+// does not build (§5.1). The generator emits MaxWire on every reply; a reply
+// whose tags do not bound it fails generation unless its row passes its own
+// Bound (§4.7).
+type Decoder[T any] interface {
+	*T
+	DecodeWire(b []byte, v Version) (n int, err error)
+}
+
+type Encoder[T any] interface {
+	*T
+	EncodeWire(v Version, out *resources.Buf) error
+	MaxWire(v Version) int // the reply's largest encoding at v under its tags' maxima
+	IsZero() bool          // needed only while Rep is returned by value (§11 question 4)
+}
+
+// Hooks are Bind's optional arguments, typed against the row's request; at
+// most one (§4.7). Every nil field is nil to Bind, but Bound, whose nil is
+// the reply's MaxWire at the request's version: the codec's largest encoding,
+// the room ignored and ok true.
+type Hooks[Req any] struct {
+	Bound   func(r *Request, req *Req, room int) (n int, ok bool) // a reply sized by the request: a READ's count
+	Resolve func(r *Request, req *Req) error
+	Role    func(r *Request, req *Req) Role
+	Handle  func(req *Req) (vfs.Handle, bool)
+}
+
+// Row is the row of one ops file's handler, and how every row but a compound
+// row is built. It infers Req and Rep from h, takes their decoder and encoder
+// from the protocol's generated codec (§5.1), and returns the Op whose Decode
+// is Bind's over them, with Code, Name and Needs set. The columns Row does
+// not take (Versions, Cacheable, Role, Expired) are set on the Op it returns
+// where a row needs other than their zero value (§4.7).
+//
+// decision: the handler takes the ops file's form, its request and its reply
+// by value, and Row lifts it to Handler (§4.3): a reply returned beside its
+// error is kept and encoded from, as a failure reply carries its protocol's
+// fail arm, and a nil one reaches the encoder as is, the answer of a request
+// refused before its call.
+func Row[Req, Rep any, PReq Decoder[Req], PRep Encoder[Rep]](
+	code uint32, name string, needs Needs,
+	h func(ctx context.Context, r *Request, req Req) (Rep, error),
+	hooks ...Hooks[Req],
+) *Op {
+	var hk Hooks[Req]
+	if len(hooks) > 0 { // at most one (§4.7): the first when a call site hands several
+		hk = hooks[0]
+	}
+	var bound func(r *Request, req *Req, room int) (n int, ok bool)
+	if hk.Bound != nil {
+		bound = hk.Bound
+	} else {
+		var rep PRep = new(Rep)
+		bound = func(r *Request, _ *Req, _ int) (n int, ok bool) {
+			return rep.MaxWire(r.Version), true
+		}
+	}
+	return &Op{
+		Code:  code,
+		Name:  name,
+		Needs: needs,
+		Decode: Bind(
+			func(b []byte, v Version, req *Req) (n int, err error) {
+				return PReq(req).DecodeWire(b, v)
+			},
+			bound,
+			hk.Resolve,
+			hk.Role,
+			hk.Handle,
+			func(ctx context.Context, r *Request, req *Req) (*Rep, error) {
+				rep, err := h(ctx, r, *req)
+				return &rep, err
+			},
+			func(rep *Rep, v Version, out *resources.Buf) error {
+				return PRep(rep).EncodeWire(v, out)
+			},
+		),
+	}
+}
+
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
 // each name, lower-cased, lower-case letters, digits and underscores alone,
 // and unique once lower-cased (§10.1's op), no ErrorRow.Hold unless holds,
