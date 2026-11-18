@@ -395,11 +395,14 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   - `newPipeline(sh *shared, st Stages, l link) *pipeline`, once per connection at accept.
     `link` is what the pipeline reads of its connection: `ctx`, the connection's context;
     `remote netip.Addr`, the budgets' key; `set settings.Settings`, the snapshot loaded at
-    accept (D22); `out func(msg *resources.Buf, key, before uint64) error`, the writer's
+    accept (D22); `out func(msg *resources.Buf, lo, hi, before uint64) error`, the writer's
     enqueue of a buffer that holds the reply's body alone, which the writer frames with
-    `Framer.Frame` (the RFC 20 amendment, #4478); `maxRecord int`, the bytes half of
-    `Framer.MaxRecord()`, which #4541 has landed in `core`'s `Framer` and `testproto`'s, and
-    D8's early send and R98 compare; `close func(err error)`, `Conn.Close`; and
+    `Framer.Frame` (the RFC 20 amendment, #4478), `lo` and `hi` the least and greatest
+    `HoldCodec` key of the replies it carries (equal for a reply alone, 0 for none), and a
+    non-zero `before` going ahead of the first queued message whose span holds it;
+    `maxRecord int`, the bytes half of `Framer.MaxRecord()`, which #4541 has landed in
+    `core`'s `Framer` and `testproto`'s, and D8's early send and R98 compare;
+    `close func(err error)`, `Conn.Close`; and
     `idle func()`, which the pipeline calls each time nothing runs, is held, is parked or
     waits for a status's buffer any more, the moment `wait` returns, for the idle timeout:
     E4's T4.7a adds it to `link`, an edit to `pipeline.go` it owns (the epic 4 document's D8).
@@ -434,9 +437,11 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
     decode, unwrap, the walk and the wiring, an error its close reason tells apart (RFC 20
     §10.1), an edit to `pipeline.go` it owns; `idle` (above) is E4's T4.7a's.
   - **`out` never blocks its caller.** It takes `msg`'s reference whatever it returns, `msg`
-    already wrapped, and fails only once the connection is closed. `key` is the request's
-    `HoldCodec.Key` in a table that holds, else 0; `before` is `Conn.Send`'s, else 0; a message
-    handed with `before` goes out ahead of the reply of that key.
+    already wrapped, and fails only once the connection is closed. `lo` and `hi` are the least
+    and greatest `HoldCodec.Key` of the replies `msg` carries in a table that holds, else 0;
+    `before` is `Conn.Send`'s, else 0; a message handed with `before` goes out ahead of the
+    first queued message whose span holds it, so a chain's record counts as each member's
+    reply (RFC 20 §6.2).
   - **The queue behind `out` is bounded** (RFC 20 §6.2), by messages and by bytes, and the
     bound counts every message `out` takes: replies, interims and `Conn.Send`'s alike. At the
     bound the reader stops reading the connection until the queue drains below it (RFC 20
@@ -2272,30 +2277,32 @@ registry. Nothing else is exported.
   which run on this pipeline; T5.10.
 - **Acceptance criteria:**
   - `TestConformanceEchoEndToEnd`, green since E4's T4.2a removed its entry from
-    `known.yaml`, still passes: an `Echo` over `Bare` and over the full protocol is answered,
-    and the server leaks nothing when it stops.
-  - On a `Bare` connection with the reply budget full and 65 `Echo` sent, 64 are admitted and
-    the connection is not read until one has completed; all 65 are answered once room is
-    freed.
+    `known.yaml`, still passes: an `Echo` over the full protocol is answered, and the server
+    leaks nothing when it stops; `TestAnEchoIsAnswered` answers one over `Bare` on the real
+    `Conn`.
+  - On a `Bare` connection with the reply budget full and 66 `Echo` sent, 64 are admitted, the
+    65th is read and waits at `Admit`, and the 66th is not read until one has completed; all
+    66 are answered once room is freed.
   - With a client that sends 16 `Echo` and reads nothing, all 16 requests complete; closing
     that client's connection drops their replies and leaves every budget at zero.
   - A `Notify` sends its message through `Conn.Send`: the client verifies its checksum, and
     receives it ahead of the reply of the request it names, that reply queued while the
     client did not read.
   - `Violate`, which calls `Conn.Close` from its handler, returns, and the connection closes;
-    so does a connection whose `Unwrap` says close on the reader (D6). A chain of `Violate`
-    and a related `Park` has `cancel` called at once, makes no file and leaves every budget
-    at zero.
+    so does a connection whose `Unwrap` says close on the reader (D6). A chain of `PutFH`
+    and a related `Park` whose read is held while `Violate`, in a record of its own, closes
+    the connection has `cancel` called at once, makes no file and leaves every budget at
+    zero.
 - **Tests:** loopback tests in `conn_test.go`, each ending with `CheckLeaks`. The
-  specification (catches a stage left unwired between E4's reader and writer). The 65
-  requests, read from the stream of admissions and completions: the 65th admission comes
-  after the first completion (catches a reader that reads on past a blocked `Admit`). The
-  client that reads nothing, on the same stream (catches a request goroutine that writes to
-  the socket itself). The notify (catches a `Send` that skips `Wrap`, which the client then
-  refuses for its checksum, and a `before` the writer ignores). `Violate`, `Unwrap`'s close
-  and the chain of `Violate` and a related `Park`, each under a backstop deadline (catch a
-  `Conn.Close` that waits for the goroutine that called it, so that the test never ends, and
-  a park registered on a closed connection, which nothing would ever end).
+  specification (catches a stage left unwired between E4's reader and writer). The 66
+  requests: the 66th is not read until the first completes (catches a reader that reads on
+  past a blocked `Admit`). The client that reads nothing (catches a request goroutine that
+  writes to the socket itself). The notify, its checksum non-zero and verified (catches a
+  `Send` that skips `Wrap`, and a `before` the writer ignores, a chain's record included).
+  `Violate`, `Unwrap`'s close and the `Park` that `Violate` closes, each under a backstop
+  deadline (catch a `Conn.Close` that waits for the goroutine that called it, so that the
+  test never ends, and a park registered on a closed connection, which nothing would ever
+  end).
 
 ### T5.10 The pipeline benchmark and its gate
 
