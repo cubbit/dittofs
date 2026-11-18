@@ -62,9 +62,20 @@ func ServiceErrorNames() map[error]string {
 	return m
 }
 
-func (sh *shared) Table(t *OpTable) (*TableSeries, error) { return sh.table(t) }
-func (sh *shared) Label(p string) *LabelSeries            { return sh.label(p) }
-func (sh *shared) HoldPoolCharged(n int64)                { sh.holdPoolCharged(n) }
+// ResolveTables checks the tables ls's protocols list and resolves their
+// series on sh, as NewServer does.
+func ResolveTables(sh *Shared, ls ...Listener) error {
+	tables, err := checkTables(ls)
+	if err != nil {
+		return err
+	}
+	sh.resolveTables(tables)
+	return nil
+}
+
+func (sh *shared) Table(t *OpTable, v Version) (*TableSeries, error) { return sh.table(t, v) }
+func (sh *shared) Label(p string) *LabelSeries                       { return sh.label(p) }
+func (sh *shared) HoldPoolCharged(n int64)                           { sh.holdPoolCharged(n) }
 
 // The connection series, reached by the metric tests: a connection's moves
 // and a close's count, and the byte directions, by their index for Closed and

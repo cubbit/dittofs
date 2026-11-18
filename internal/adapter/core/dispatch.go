@@ -20,15 +20,27 @@ type OpTable struct {
 	Errors *ErrorTable // per operation table, so NFSv3 and NFSv4 map differently
 	Holds  bool        // the table holds and re-drives what its protocol holds, by error and cause; else every error is answered at once
 	// Protocol is the label of every series this table's requests record from
-	// Route on (§10.1), set after NewOpTable as ReadOp is; a server refuses a
-	// table without one at the first Route that returns it. A compound row's
-	// Members take their parent's.
+	// Route on (§10.1), set after NewOpTable as ReadOp is; NewServer refuses a
+	// table without one (Protocol.Tables). A compound row's Members take their
+	// parent's.
 	//
 	// decision: the label is a field the protocol sets, not a name NewOpTable
-	// is given or a registry it resolves into: core first sees a table when
-	// Route returns it, and two servers may share one table. Overturned if a
-	// table is built per server.
+	// is given or a registry it resolves into: two servers may share one
+	// table, and each resolves its series into its own registry at NewServer.
+	// Overturned if a table is built per server.
 	Protocol string
+	// Versions narrows the versions the Router returns this table for, set
+	// as Protocol is; nil is every version, as ErrorRow.Versions is. A
+	// compound row's Members take their parent's. NewServer refuses one
+	// whose First is past its Last, and compares the row names of two tables
+	// of one Protocol unless both set Versions and the two do not overlap
+	// (§10.1's op). A table Route returns for a header whose Version it does
+	// not hold closes the connection as a wiring fault (Protocol.Tables).
+	//
+	// decision: two tables of one Protocol are told apart only by a Versions
+	// a protocol opts into, not by a range every table must carry, as §10.1
+	// decides: NFS numbers its versions per program and sets none.
+	Versions *Range
 	// ReadOp reads the operation code at the head of a compound member's bytes,
 	// and how many bytes it took: NFSv4's argop. Its error is its own, which
 	// the runner wraps (ErrDecode). Set on a table that is a compound row's

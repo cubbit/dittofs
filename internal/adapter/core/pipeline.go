@@ -28,19 +28,19 @@ import (
 //
 // decision: the series are kept here, never in a table: two servers may
 // share a table, and a node's servers share its one registry. A table's are
-// resolved at the first Route that returns it and a label's at the first
-// accept that names it, into copy-on-write maps that every request reads with
-// no lock and no label lookup, and that mu fills. Overturned if a profile
-// shows a first resolution's copy to matter, which it cannot at a handful of
-// tables.
+// resolved at NewServer, for every table its listeners' protocols list, into
+// a map no request writes; a label's at the first accept that names it, into
+// a copy-on-write map that mu fills. Every request reads both with no lock
+// and no label lookup. Overturned if a profile shows a first label
+// resolution's copy to matter, which it cannot at a handful of labels.
 type shared struct {
 	fam          [vecs]family
 	wire         histFamily
-	holdPool     adder // no protocol label
+	holdPool     adder                      // no protocol label
+	tables       map[*OpTable]*tableSeries  // filled at NewServer, then only read
+	panics       map[[2]string]*lineLimiter // by protocol and operation, filled with tables
 	mu           sync.Mutex
-	tables       atomic.Pointer[map[*OpTable]*tableSeries]
 	labels       atomic.Pointer[map[string]*labelSeries]
-	panics       map[[2]string]*lineLimiter  // by protocol and operation, under mu
 	closes       map[reason]*lineLimiter     // a close at accept's line, by reason, under mu
 	addressLines map[netip.Addr]*lineLimiter // the per_address close at accept's line, by address, under mu
 	clock        clock
@@ -62,7 +62,7 @@ type shared struct {
 // discards, d.Tracer and d.VFS; held requests past a connection's floor of 256
 // requests and 32 MiB go to d.Budgets' hold pool (§4.6).
 func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), reply: reply, panics: map[[2]string]*lineLimiter{}, closes: map[reason]*lineLimiter{}, addressLines: map[netip.Addr]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), reply: reply, tables: map[*OpTable]*tableSeries{}, panics: map[[2]string]*lineLimiter{}, closes: map[reason]*lineLimiter{}, addressLines: map[netip.Addr]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
 	if d.Budgets != nil {
 		sh.hold = d.Budgets.Hold
 	}
@@ -71,7 +71,6 @@ func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
 	}
 	sh.fam, sh.wire = newFamilies(d.Metrics)
 	sh.holdPool = sh.fam[vHoldPoolBytes]()
-	sh.tables.Store(&map[*OpTable]*tableSeries{})
 	sh.labels.Store(&map[string]*labelSeries{})
 	return sh
 }
@@ -732,7 +731,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		// is a fault of the protocol's wiring, since nothing could key or
 		// cancel its holds: the connection is closed naming the table, not
 		// served. Overturned if a protocol must hold with no cancel.
-		if ts, serr = p.sh.table(tb); serr == nil && tb.Holds && p.noHold {
+		if ts, serr = p.sh.table(tb, h.Version()); serr == nil && tb.Holds && p.noHold {
 			serr = fmt.Errorf("%w: the table of %s", errNoHold, opNames(tb))
 		}
 		if serr != nil {

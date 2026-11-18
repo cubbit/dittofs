@@ -183,12 +183,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		p.finish(tr, h, tb, errs, row, Invocation{}, nil, big, release, alone{p}, nil)
 		return
 	}
-	mts, serr := p.sh.table(row.Members)
-	if serr != nil {
-		release()
-		p.drop(tr, nil, serr)
-		return
-	}
+	mts := p.sh.tables[row.Members] // resolved with its parent's, at NewServer
 	start := p.sh.clock.Now()
 	reply, rerr := p.sh.reserveReply(ctx, p.l.remote, n)
 	if rerr != nil {

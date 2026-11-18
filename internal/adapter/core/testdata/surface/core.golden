@@ -168,6 +168,8 @@ type OpTable struct {
 
 	Protocol string
 
+	Versions *Range
+
 	ReadOp func(b []byte) (op uint32, n int, err error)
 
 	EncodeResult func(out *resources.Buf, op uint32, s Status, v Version) error
@@ -177,6 +179,8 @@ type Protocol interface {
 	Framer() Framer
 
 	NewConn(c *Conn) Stages
+
+	Tables() []*OpTable
 }
 
 type Range struct{ First, Last Version }

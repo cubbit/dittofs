@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +37,29 @@ func routed(t *testing.T) [2]*core.OpTable {
 		}
 	}
 	return tables
+}
+
+// listing is testproto's framer and stages, listing tables of the test's
+// own: what NewServer reads of a listener's protocol before it accepts.
+type listing struct {
+	*testproto.Protocol
+	tables []*core.OpTable
+}
+
+func (l listing) Tables() []*core.OpTable { return l.tables }
+
+// seriesOf is sh's series of tb, resolved as NewServer resolves a table its
+// listeners list, and found as Route finds it, at tb's first version.
+func seriesOf(t *testing.T, sh *core.Shared, tb *core.OpTable) *core.TableSeries {
+	t.Helper()
+	if err := core.ResolveTables(sh, core.Listener{Protocol: listing{tables: []*core.OpTable{tb}}}); err != nil {
+		t.Fatal(err)
+	}
+	ts, err := sh.Table(tb, tb.Versions.First)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ts
 }
 
 // scrape is m's adapter_ series: each value keyed by its name and labels, as
@@ -120,10 +142,7 @@ func TestSeriesRecordEachIntoItsOwnSeries(t *testing.T) {
 	m := metrics.New("v", "c")
 	sh := core.NewShared(adapter.Deps{Metrics: m}, nil)
 	tb := routed(t)[0]
-	ts, err := sh.Table(tb)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ts := seriesOf(t, sh, tb)
 	ls := sh.Label("before")
 	const p = "{protocol=" + testproto.Name + "}"
 	for _, step := range []struct {
@@ -236,9 +255,7 @@ func TestSeriesCarryOnlyTheirLabels(t *testing.T) {
 	m := metrics.New("v", "c")
 	sh := core.NewShared(adapter.Deps{Metrics: m}, nil)
 	tb := routed(t)[0]
-	if _, err := sh.Table(tb); err != nil {
-		t.Fatal(err)
-	}
+	seriesOf(t, sh, tb)
 	ls := sh.Label(testproto.Name)
 	// One record of each connection series, so each vector's children exist to
 	// check their labels: a connection in and moved to established, closed at a
@@ -372,31 +389,33 @@ func TestServiceErrorsNameEverySentinel(t *testing.T) {
 	}
 }
 
-// A server resolves a table's series once and a label's once; two tables
-// under one label share their series, and so does a stages label of that
-// name; a compound row's Members are resolved with their parent.
+// A server resolves each table's series once, testproto's tables listed by
+// two listeners among them, and a label's once; two tables under one label
+// share their series, and so does a stages label of that name; a compound
+// row's Members are resolved with their table.
 func TestSeriesResolvedOncePerServer(t *testing.T) {
-	m := metrics.New("v", "c")
-	sh := core.NewShared(adapter.Deps{Metrics: m}, nil)
-	var n atomic.Int64
-	core.CountLookups(sh, &n)
-	tables := routed(t)
-	members := tables[0].Ops[testproto.OpCompound].Members
-	if _, err := sh.Table(members); err == nil {
-		t.Fatal("a compound row's Members, which carry no Protocol, resolved on their own")
+	p := testproto.New(adapter.Deps{})
+	tables := p.Tables()
+	resolve := func(ls ...core.Listener) (*core.Shared, *metrics.Registry, *atomic.Int64) {
+		t.Helper()
+		m := metrics.New("v", "c")
+		sh := core.NewShared(adapter.Deps{Metrics: m}, nil)
+		n := new(atomic.Int64)
+		core.CountLookups(sh, n)
+		if err := core.ResolveTables(sh, ls...); err != nil {
+			t.Fatal(err)
+		}
+		return sh, m, n
 	}
-	v1, err := sh.Table(tables[0])
+	sh, m, n := resolve(core.Listener{Protocol: p}, core.Listener{Protocol: p.Bare()})
+	v1, err := sh.Table(tables[0], 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	once := n.Load()
-	if again, err := sh.Table(tables[0]); again != v1 || err != nil || n.Load() != once {
-		t.Errorf("the second resolution of one table gave %p (%v), looking up %d children; want %p and none", again, err, n.Load()-once, v1)
+	if _, err := sh.Table(tables[0].Ops[testproto.OpCompound].Members, 1); err != nil {
+		t.Errorf("a compound row's Members, resolved with their table: %v", err)
 	}
-	if _, err := sh.Table(members); err != nil {
-		t.Errorf("a compound row's Members, resolved with their parent: %v", err)
-	}
-	v2, err := sh.Table(tables[1])
+	v2, err := sh.Table(tables[1], 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,50 +435,67 @@ func TestSeriesResolvedOncePerServer(t *testing.T) {
 	}
 }
 
-// Two first resolutions of one table at once, on one server, resolve it
-// once: both get the series a later call gets.
-func TestSeriesTwoFirstResolutionsAtOnce(t *testing.T) {
-	for range 20 {
-		sh := core.NewShared(adapter.Deps{Metrics: metrics.New("v", "c")}, nil)
-		tb := routed(t)[0]
-		var got [2]*core.TableSeries
-		var wg sync.WaitGroup
-		start := make(chan struct{})
-		for i := range got {
-			wg.Go(func() {
-				<-start
-				ts, err := sh.Table(tb)
-				if err != nil {
-					t.Errorf("Table: %v", err)
-				}
-				got[i] = ts
-			})
+// NewServer refuses, naming it, a listed table with no Protocol and one
+// whose Versions has First past Last; and two listed tables of one Protocol
+// that both hold a row name, whether neither sets Versions, one does, or
+// both do with ranges that overlap, a compound row's Members among them,
+// which take their table's Protocol and Versions. A refused server registers
+// no series. It accepts testproto's tables, whose version 1 compound row's
+// Members hold that table's names, one table two listeners list, checked
+// once, and two tables of different Protocols that share a name.
+func TestNewServerChecksTheListedTables(t *testing.T) {
+	p := testproto.New(adapter.Deps{})
+	v1, v2 := p.Tables()[0], p.Tables()[1]
+	with := func(tb *core.OpTable, edits ...func(*core.OpTable)) *core.OpTable {
+		c := *tb
+		for _, edit := range edits {
+			edit(&c)
 		}
-		close(start)
-		wg.Wait()
-		later, err := sh.Table(tb)
-		if err != nil {
-			t.Fatalf("Table: %v", err)
-		}
-		if got[0] != later || got[1] != later {
-			t.Fatalf("two first resolutions at once gave %p and %p, and a later one %p", got[0], got[1], later)
-		}
+		return &c
 	}
-}
-
-// A table with no Protocol is refused, naming its operations, every time,
-// and resolves no series.
-func TestSeriesRefuseATableWithoutProtocol(t *testing.T) {
-	m := metrics.New("v", "c")
-	sh := core.NewShared(adapter.Deps{Metrics: m}, nil)
-	tb := core.NewOpTable(table(), false, &core.Op{Code: 7, Name: "Read", Versions: core.Range{First: 1, Last: 1}})
-	for range 2 {
-		if _, err := sh.Table(tb); err == nil || !strings.Contains(err.Error(), "Read") {
-			t.Errorf("a table with no Protocol: %v, want an error naming Read", err)
-		}
+	at := func(first, last core.Version) func(*core.OpTable) {
+		return func(c *core.OpTable) { c.Versions = &core.Range{First: first, Last: last} }
 	}
-	if got, _ := scrape(t, m); len(got) != 1 {
-		t.Errorf("a refused table left series %v, want the hold pool's alone", got)
+	every := func(c *core.OpTable) { c.Versions = nil }
+	only := func(code uint32) func(*core.OpTable) {
+		return func(c *core.OpTable) { c.Ops = map[uint32]*core.Op{code: c.Ops[code]} }
+	}
+	lists := func(tables ...*core.OpTable) []core.Listener {
+		return []core.Listener{tcp(listing{p, tables}, 0, "a")}
+	}
+	for _, c := range []struct {
+		name   string
+		ls     []core.Listener
+		refuse string // what the refusal names; empty: accepted
+	}{
+		{"testproto's tables", []core.Listener{tcp(p, 0, "a")}, ""},
+		{"one table two listeners list", []core.Listener{tcp(p, 0, "a"), tcp(p.Bare(), 0, "b")}, ""},
+		{"two tables of different Protocols", lists(v1, with(v2, every, func(c *core.OpTable) { c.Protocol = "alt" })), ""},
+		{"the later version's table listed first", lists(v2, v1), ""},
+		{"a table with no Protocol", lists(with(v1, only(testproto.OpEcho), func(c *core.OpTable) { c.Protocol = "" })), "the table of Echo has no Protocol"},
+		{"Versions first past last", lists(with(v2, only(testproto.OpEcho), at(2, 1))), "the table of Echo has Versions 2 to 1, first past last"},
+		{"two tables, neither setting Versions", lists(with(v2, every), with(v2, every)), "both hold the row"},
+		{"two tables, one setting Versions", lists(with(v2, every), v2), "both hold the row"},
+		{"two tables whose Versions overlap", lists(with(v2, at(1, 2)), v2), "both hold the row"},
+		{"a member's name in another table of its versions", lists(with(v1, only(testproto.OpCompound)), with(v2, only(testproto.OpEcho), at(1, 1))), "both hold the row echo"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			deps := newDeps()
+			m := metrics.New("v", "c")
+			deps.Metrics = m
+			srv, err := core.NewServer(deps, on("127.0.0.1"), c.ls...)
+			switch {
+			case c.refuse == "" && err != nil:
+				t.Fatalf("NewServer refused valid tables: %v", err)
+			case c.refuse == "":
+				stopAtEnd(t, srv)
+			case err == nil || !strings.Contains(err.Error(), c.refuse):
+				t.Errorf("NewServer: %v; want a refusal naming %s", err, c.refuse)
+			}
+			if got, _ := scrape(t, m); c.refuse != "" && len(got) != 0 {
+				t.Errorf("a refused server registered %d series, want none", len(got))
+			}
+		})
 	}
 }
 
@@ -469,11 +505,7 @@ func TestSeriesTwoServersOnOneRegistry(t *testing.T) {
 	m := metrics.New("v", "c")
 	tb := routed(t)[0]
 	for range 2 {
-		ts, err := core.NewShared(adapter.Deps{Metrics: m}, nil).Table(tb)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ts.UnmappedErr()
+		seriesOf(t, core.NewShared(adapter.Deps{Metrics: m}, nil), tb).UnmappedErr()
 	}
 	got, _ := scrape(t, m)
 	if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 2 {
@@ -487,10 +519,7 @@ func TestSeriesOneTableOnTwoRegistries(t *testing.T) {
 	tb := routed(t)[0]
 	ms := [2]*metrics.Registry{metrics.New("v", "c"), metrics.New("v", "c")}
 	for i, m := range ms {
-		ts, err := core.NewShared(adapter.Deps{Metrics: m}, nil).Table(tb)
-		if err != nil {
-			t.Fatal(err)
-		}
+		ts := seriesOf(t, core.NewShared(adapter.Deps{Metrics: m}, nil), tb)
 		for range i + 1 {
 			ts.UnmappedErr()
 		}
@@ -510,12 +539,9 @@ func TestSeriesPanicsByOperation(t *testing.T) {
 	m := metrics.New("v", "c")
 	sh := core.NewShared(adapter.Deps{Metrics: m}, nil)
 	tb := routed(t)[0]
-	ts, err := sh.Table(tb)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ts := seriesOf(t, sh, tb)
 	members := tb.Ops[testproto.OpCompound].Members
-	ms, err := sh.Table(members)
+	ms, err := sh.Table(members, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,10 +602,7 @@ func TestSeriesRecordAllocatesNothing(t *testing.T) {
 	for name, d := range map[string]adapter.Deps{"a registry": {Metrics: metrics.New("v", "c")}, "no registry": {}} {
 		sh := core.NewShared(d, nil)
 		tb := routed(t)[0]
-		ts, err := sh.Table(tb)
-		if err != nil {
-			t.Fatal(err)
-		}
+		ts := seriesOf(t, sh, tb)
 		ls := sh.Label(testproto.Name)
 		op := tb.Ops[testproto.OpEcho]
 		client, pool := reasonOf(t, "client"), reasonOf(t, "pool")
@@ -587,7 +610,7 @@ func TestSeriesRecordAllocatesNothing(t *testing.T) {
 			t.Errorf("with %s, recording allocates %v times per run, want 0", name, n)
 		}
 		if n := testing.AllocsPerRun(100, func() {
-			_, _ = sh.Table(tb)
+			_, _ = sh.Table(tb, 1)
 			sh.Label(testproto.Name)
 		}); n != 0 {
 			t.Errorf("with %s, finding a resolved table's and label's series allocates %v times per run, want 0", name, n)
@@ -601,10 +624,7 @@ func TestSeriesRecordLooksNothingUp(t *testing.T) {
 	var n atomic.Int64
 	core.CountLookups(sh, &n)
 	tb := routed(t)[0]
-	ts, err := sh.Table(tb)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ts := seriesOf(t, sh, tb)
 	ls := sh.Label(testproto.Name)
 	resolved := n.Load()
 	record(sh, ts, ls, tb.Ops[testproto.OpEcho], reasonOf(t, "client"), reasonOf(t, "pool"))

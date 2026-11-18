@@ -207,6 +207,9 @@ type errlessProtocol struct{}
 
 func (errlessProtocol) Framer() core.Framer { return testproto.New(adapter.Deps{}).Framer() }
 
+// Tables lists none: no connection's stages get as far as a Route.
+func (errlessProtocol) Tables() []*core.OpTable { return nil }
+
 func (errlessProtocol) NewConn(c *core.Conn) core.Stages {
 	st := testproto.New(adapter.Deps{}).Bare().NewConn(c)
 	if c != nil {
@@ -475,10 +478,27 @@ func TestOnClosesDeadlineIsTheWaits(t *testing.T) {
 		release := make(chan struct{})
 		started := make(chan error, 1)
 		l := core.Listener{Services: []string{"test"}, Network: "tcp"}
+		// Echo's handler holds until the test releases it, so the request
+		// outlives the wait's grace.
+		stubborn := retable(testproto.New(adapter.Deps{}).Bare(), func(op *core.Op, member bool) {
+			if member || op.Code != testproto.OpEcho {
+				return
+			}
+			decode := op.Decode
+			op.Decode = func(body []byte, v core.Version) (core.Invocation, int, error) {
+				inv, n, err := decode(body, v)
+				if err == nil {
+					inv.Call = func(context.Context, *core.Request) error {
+						close(reached)
+						<-release
+						return nil
+					}
+				}
+				return inv, n, err
+			}
+		})
 		l.Protocol = withOnClose{
-			withRouter{testproto.New(adapter.Deps{}).Bare(), func(rt core.Router) core.Router {
-				return &stubborn{Router: rt, reached: reached, release: release}
-			}},
+			stubborn,
 			func(ctx context.Context) {
 				started <- ctx.Err()
 				<-ctx.Done()
@@ -1115,60 +1135,6 @@ func (p establishedRefuser) NewConn(c *core.Conn) core.Stages {
 	}
 	c.Established()
 	return core.Stages{}
-}
-
-// withRouter is a protocol whose connection's Router the test wraps.
-type withRouter struct {
-	core.Protocol
-	wrap func(core.Router) core.Router
-}
-
-func (p withRouter) NewConn(c *core.Conn) core.Stages {
-	st := p.Protocol.NewConn(c)
-	st.Router = p.wrap(st.Router)
-	return st
-}
-
-// stubborn is a router whose Echo runs past its context: the handler holds
-// until the test releases it, so the request outlives the wait's grace.
-type stubborn struct {
-	core.Router
-	reached chan struct{}
-	release chan struct{}
-	once    sync.Once
-	table   *core.OpTable
-}
-
-func (r *stubborn) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
-	tb, req, err := r.Router.Route(h, prev)
-	if tb == nil || err != nil {
-		return tb, req, err
-	}
-	// One copy of the table, labelled as its own: a table per route would open
-	// a series per request.
-	r.once.Do(func() {
-		ops := make(map[uint32]*core.Op, len(tb.Ops))
-		for code, op := range tb.Ops {
-			op := *op
-			decode := op.Decode
-			op.Decode = func(body []byte, v core.Version) (core.Invocation, int, error) {
-				inv, n, err := decode(body, v)
-				if err == nil && code == testproto.OpEcho {
-					inv.Call = func(context.Context, *core.Request) error {
-						close(r.reached)
-						<-r.release
-						return nil
-					}
-				}
-				return inv, n, err
-			}
-			ops[code] = &op
-		}
-		t := *tb
-		t.Ops = ops
-		r.table = &t
-	})
-	return r.table, req, nil
 }
 
 // A client that reads nothing is not read past the writer's bound: its next

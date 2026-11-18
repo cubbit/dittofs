@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -96,9 +97,11 @@ type Listener struct {
 // listener naming no protocol (a typed nil among them), a listener naming no
 // service, an empty one or one twice, two listeners naming the same Socket or
 // the same network and nonzero port, and a listener on any network but tcp,
-// with an error wrapping errors.ErrUnsupported. It keeps its own copy of ls,
-// so a later change to the caller's leaves the server as checked. It opens
-// nothing: the server is configured.
+// with an error wrapping errors.ErrUnsupported; and the tables the
+// listeners' protocols list, as checkTables refuses them, whose series it
+// then resolves before any listener accepts (§10.1). It keeps its own copy
+// of ls, so a later change to the caller's leaves the server as checked. It
+// opens nothing: the server is configured.
 func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error) {
 	if isNil(s) {
 		// Settings are the protocol's whole shape; a nil one is a program bug
@@ -142,10 +145,15 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 		}
 		ls[i].label = st.Protocol
 	}
+	tables, err := checkTables(ls)
+	if err != nil {
+		return nil, fmt.Errorf("core: new server: %w", err)
+	}
 	srv := &Server{ls: ls, d: d, conns: map[*Conn]struct{}{}, listen: listenCfg.Listen}
 	srv.recv = resources.NewBufPool(d.Budgets.Receive)
 	srv.reply = resources.NewBufPool(d.Budgets.Reply)
 	srv.sh = newShared(d, srv.reply)
+	srv.sh.resolveTables(tables)
 	// The server owns the Addrs alone: srv.addrs is its own copy, and Start
 	// binds that. The rest of the settings is the snapshot as New handed it,
 	// shared with the caller where the settings sit behind a pointer - the
@@ -217,6 +225,73 @@ func checkListeners(ls []Listener) error {
 		}
 	}
 	return nil
+}
+
+// checkTables returns every table ls's protocols list, each once, known by
+// its pointer, in the order listed. It refuses, naming the table or the row,
+// a table whose Protocol is empty, one whose Versions has First past Last,
+// and two of one Protocol that both hold a row name, lower-cased as the op
+// label is, unless both set Versions and the two do not overlap: a compound
+// row's Members take their table's Protocol and Versions, and may share a
+// name with that table alone (§4.7's Protocol.Tables, §10.1's op).
+func checkTables(ls []Listener) ([]*OpTable, error) {
+	var tables []*OpTable
+	seen := map[*OpTable]bool{}
+	for _, l := range ls {
+		for _, t := range l.Protocol.Tables() {
+			if seen[t] {
+				continue
+			}
+			seen[t] = true
+			if t.Protocol == "" {
+				return nil, fmt.Errorf("the table of %s has no Protocol", opNames(t))
+			}
+			if v := t.Versions; v != nil && v.First > v.Last {
+				return nil, fmt.Errorf("the table of %s has Versions %d to %d, first past last", opNames(t), v.First, v.Last)
+			}
+			tables = append(tables, t)
+		}
+	}
+	// Each listed table and each of its compound rows' Members, with the
+	// table whose Protocol and Versions it takes and its row names,
+	// lower-cased as the op label is.
+	type named struct {
+		of      *OpTable
+		members bool
+		names   map[string]bool
+	}
+	var all []named
+	lower := func(t *OpTable) map[string]bool {
+		names := make(map[string]bool, len(t.Ops))
+		for _, op := range t.Ops {
+			names[strings.ToLower(op.Name)] = true
+		}
+		return names
+	}
+	for _, t := range tables {
+		all = append(all, named{t, false, lower(t)})
+		for _, op := range t.Ops {
+			if op.Members != nil {
+				all = append(all, named{t, true, lower(op.Members)})
+			}
+		}
+	}
+	for i, a := range all {
+		for _, b := range all[i+1:] {
+			va, vb := a.of.Versions, b.of.Versions
+			apart := va != nil && vb != nil && (va.Last < vb.First || vb.Last < va.First)
+			ownMembers := a.of == b.of && a.members != b.members
+			if a.of.Protocol != b.of.Protocol || apart || ownMembers {
+				continue
+			}
+			for name := range a.names {
+				if b.names[name] {
+					return nil, fmt.Errorf("two tables of %q both hold the row %s", a.of.Protocol, name)
+				}
+			}
+		}
+	}
+	return tables, nil
 }
 
 // Start moves configured to serving once every listener is bound on each of

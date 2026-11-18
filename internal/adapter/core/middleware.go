@@ -252,8 +252,8 @@ func (l *lineLimiter) take(now time.Time) (bool, int64) {
 }
 
 // panicLine is the limiter of op's panic line under protocol p, one per
-// operation across a protocol's tables and a compound row's members. The
-// caller holds sh.mu.
+// operation across a protocol's tables and a compound row's members, taken
+// as NewServer resolves its tables.
 func (sh *shared) panicLine(p, op string) *lineLimiter {
 	k := [2]string{p, op}
 	if l, ok := sh.panics[k]; ok {

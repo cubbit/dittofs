@@ -229,9 +229,10 @@ func TestAHeldPortOnAnAddedAddressChangesNothing(t *testing.T) {
 	needIPv6Loopback(t)
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
+	p := testproto.New(adapter.Deps{}) // one protocol, so the two list one set of tables
 	ls := []core.Listener{
-		{Services: []string{"a"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})},
-		{Services: []string{"b"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})},
+		{Services: []string{"a"}, Network: "tcp", Protocol: p},
+		{Services: []string{"b"}, Network: "tcp", Protocol: p},
 	}
 	snap := drainOn("127.0.0.1")
 	snap.MaxVersion = 2
