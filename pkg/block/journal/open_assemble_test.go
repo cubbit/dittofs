@@ -205,29 +205,22 @@ func (f *assembledJournal) tryReopen(t *testing.T, floor Version, set func(*Sett
 		MaxBytes:      s.MaxBytes,
 		IdleSealBytes: s.IdleSealBytes,
 	})
-	c, err := datapath.New(deps, state)
-	if err != nil {
-		return nil, err
-	}
-	j := newJournal(c)
 	// A backstop only, the same bound mustWaitSpares takes: the wait itself
 	// is the pool's settle, and a seam that drops what a row's fill needs
 	// must fail the row's own assertion rather than hang it to the runner's
 	// timeout.
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	if err := c.WaitSpares(ctx); err != nil {
-		_ = j.Close()
-		return nil, err
-	}
 	// The seam skips the loss pass — its directories hold no loss records
-	// an open owes — and keeps the rest of the public order: the retirement
-	// worker starts once the pass it stands in for would be done.
-	if err := c.StartRetiring(); err != nil {
-		_ = j.Close()
+	// an open owes — and keeps the rest of the public order: the hook
+	// Continue runs before the retirement worker starts settles the pool.
+	c, err := datapath.Continue(deps, state, func(c *datapath.Core) error {
+		return c.WaitSpares(ctx)
+	})
+	if err != nil {
 		return nil, err
 	}
-	return j, nil
+	return newJournal(c), nil
 }
 
 // crash ends the seam's view under a power loss, so the bytes no sync made

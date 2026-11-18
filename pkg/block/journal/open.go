@@ -227,6 +227,14 @@ func namesIdentity(fs storage.FS, id JournalID) bool {
 // Open requires WithClock. Without it, Open fails with ErrNoClock and opens
 // nothing.
 //
+// A recovery that cannot be answered over the directory as it stands — a
+// lost synced tail, a range or a record it cannot feed, a segment the open
+// would end, corrupt losses past the open reserve — fails with
+// ErrOpenRefused, leaving the directory for the next open, which answers the
+// same until the directory or the settings change; the past-reserve refusal
+// also carries a LostPastReserveError. Bytes no bounded read completed fail
+// with an UnreadableRangesError, matched by ErrUnreadable.
+//
 // decision: Open returns while the spare pool is still making its first
 // spares, so the journal a caller holds may have none ready yet. Until one
 // lands, a write on a stream that needs a spare to roll onto is refused at
@@ -374,15 +382,6 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 				return nil, err
 			}
 		}
-		c, err := datapath.New(deps, state)
-		if err != nil {
-			// datapath.New takes its own cleanup when a layer below it fails, and
-			// nothing runs after it here, so no error from the open itself can
-			// leave the core it stopped. Any step added between the core and the
-			// journal it serves must close the core on its error before
-			// returning it.
-			return nil, err
-		}
 		// The open's own loss records: appended and synced before the open
 		// returns, so the loss records the crash left half-told are durable
 		// the moment the journal is served. An appended record needs a
@@ -391,17 +390,18 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// whole with found records — keeping every clean reopen off the
 		// pool's refill entirely. A pass whose corrupt drops would run past
 		// the open reserve refuses here, before any of its records appends
-		// (the refusal and its reasoning live with the pass itself): the
-		// open closes the core it built and answers nothing, so a retry
-		// over a journal whose reserve holds the drops answers whole. A
-		// failure here closes the core the open built, leaving the
-		// directory to the next open: every record the pass landed is
-		// durable, and every failure the answer costs is on the directory's
-		// failed list.
-		if err := recovery.OpenLosses(ctx, st, c.Durability(), s.HeadroomRecords, func() error {
-			return c.WaitSpares(ctx)
-		}); err != nil {
-			_ = c.Close()
+		// (the refusal and its reasoning live with the pass itself), so a
+		// retry over a journal whose reserve holds the drops answers whole.
+		// Continue runs the pass between the core and its retirement worker
+		// and closes the core on any failure, leaving the directory to the
+		// next open: every record the pass landed is durable, and every
+		// failure the answer costs is on the directory's failed list.
+		c, err := datapath.Continue(deps, state, func(c *datapath.Core) error {
+			return recovery.OpenLosses(ctx, st, c.Durability(), s.HeadroomRecords, func() error {
+				return c.WaitSpares(ctx)
+			})
+		})
+		if err != nil {
 			var pastReserve *recovery.LostPastReserveError
 			if errors.As(err, &pastReserve) {
 				// Both wrapped: the sentinel tells the engine the open refused
@@ -409,17 +409,6 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 				// journal.headroom_records against.
 				return nil, fmt.Errorf("%w: %s: %w", ErrOpenRefused, dir, pastReserve)
 			}
-			return nil, err
-		}
-		// The retirement worker starts once the loss pass has landed: its
-		// tick's scan answers a segment holding only corrupt drops, and
-		// starting it ahead of the pass would unlink such a segment while
-		// the mask the pass has not yet made durable is its only gate —
-		// the marker at StartRetiring names the whole rule. A failure here
-		// leaves the core closed, unlinked nothing, for the worker never
-		// started.
-		if err := c.StartRetiring(); err != nil {
-			_ = c.Close()
 			return nil, err
 		}
 		if cfg.SparesReady != nil {

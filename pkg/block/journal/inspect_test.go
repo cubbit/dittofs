@@ -211,14 +211,11 @@ func reopenedJournal(t *testing.T) (*Journal, map[core.SegmentID][]uint32) {
 		Descriptors: core.NewDescriptorBudget(64),
 		Targets:     segment.Targets{Content: 4},
 	})
-	c, err := datapath.New(deps, state)
+	// The seam owes no loss pass, so the hook Continue runs before the
+	// retirement worker starts has nothing to land.
+	c, err := datapath.Continue(deps, state, func(*datapath.Core) error { return nil })
 	if err != nil {
 		t.Fatalf("the core over the rebuilt state: %v", err)
-	}
-	// The public order the seam stands in for: the worker starts once the
-	// open's loss pass would be done.
-	if err := c.StartRetiring(); err != nil {
-		t.Fatalf("starting the retirement worker over the reopened set: %v", err)
 	}
 	j := newJournal(c)
 	t.Cleanup(func() {
