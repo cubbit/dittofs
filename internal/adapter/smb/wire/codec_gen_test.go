@@ -24,7 +24,7 @@ func (x *CloseRequest) EncodeWire(v uint32, out *resources.Buf) error {
 }
 
 func (x *CloseRequest) decodeSMB2(d *wire.Decoder, v uint32) {
-	d.Size(24)
+	d.Size(24, 24)
 	x.Flags = d.Uint16()
 	d.Skip(4)
 	d.Bytes(x.FileID[:])
@@ -50,7 +50,7 @@ func (x *CloseRequest) IsZero() bool {
 func (x *CreateRequest) DecodeWire(b []byte, v uint32) (int, error) {
 	d := wire.Decoder{B: b, Base: wire.HeaderLen}
 	x.decodeSMB2(&d, v)
-	return d.N, d.Err
+	return max(d.N, 57), d.Err
 }
 
 func (x *CreateRequest) EncodeWire(v uint32, out *resources.Buf) error {
@@ -65,7 +65,7 @@ func (x *CreateRequest) EncodeWire(v uint32, out *resources.Buf) error {
 
 func (x *CreateRequest) decodeSMB2(d *wire.Decoder, v uint32) {
 	var lNameOffset, lNameLength, lCreateContextsOffset, lCreateContextsLength int
-	d.Size(57)
+	d.Size(57, 57)
 	x.SecurityFlags = d.Uint8()
 	x.RequestedOplockLevel = d.Uint8()
 	x.ImpersonationLevel = d.Uint32()
@@ -80,10 +80,9 @@ func (x *CreateRequest) decodeSMB2(d *wire.Decoder, v uint32) {
 	lNameLength = int(d.Uint16())
 	lCreateContextsOffset = int(d.Uint32())
 	lCreateContextsLength = int(d.Uint32())
-	fixed := d.N
-	x.Name = d.UTF16(d.At(lNameOffset, lNameLength, 1024, 1, fixed))
+	x.Name = d.UTF16(d.At(lNameOffset, lNameLength, 1024, 1))
 	{
-		region := d.At(lCreateContextsOffset, lCreateContextsLength, 4096, 8, fixed)
+		region := d.At(lCreateContextsOffset, lCreateContextsLength, 4096, 8)
 		for at := 0; at < len(region) && d.Err == nil; {
 			var m []byte
 			m, at = d.Link(region, at)
@@ -98,6 +97,7 @@ func (x *CreateRequest) decodeSMB2(d *wire.Decoder, v uint32) {
 
 func (x *CreateRequest) encodeSMB2(e *wire.Encoder, v uint32) {
 	var pNameOffset, pNameLength, pCreateContextsOffset, pCreateContextsLength int
+	start := e.Pos()
 	e.Uint16(57)
 	e.Uint8(x.SecurityFlags)
 	e.Uint8(x.RequestedOplockLevel)
@@ -131,6 +131,7 @@ func (x *CreateRequest) encodeSMB2(e *wire.Encoder, v uint32) {
 		e.Len(pCreateContextsLength, 4, e.Pos()-at, 4096)
 		e.Off(pCreateContextsOffset, 4, begin, at)
 	}
+	e.Fill(start, 57)
 }
 
 func (*CreateRequest) MaxWire(v uint32) int {
@@ -178,19 +179,18 @@ func (x *CreateContext) decodeSMB2(d *wire.Decoder, v uint32) {
 	d.Skip(2)
 	lDataOffset = int(d.Uint16())
 	lDataLength = int(d.Uint32())
-	fixed := d.N
-	x.Name = d.At(lNameOffset, lNameLength, 16, 1, fixed)
+	x.Name = d.At(lNameOffset, lNameLength, 16, 1)
 	{
-		r := d.At(lDataOffset, lDataLength, 1024, 8, fixed)
+		r := d.At(lDataOffset, lDataLength, 1024, 8)
 		switch string(x.Name) {
 		case "DH2Q":
 			sub := d.Sub(r)
 			x.DurableV2.decodeSMB2(&sub, v)
-			d.Join(&sub)
+			d.Exact(&sub)
 		case "AlSi":
 			sub := d.Sub(r)
 			x.AllocationSize.decodeSMB2(&sub, v)
-			d.Join(&sub)
+			d.Exact(&sub)
 		default:
 			x.Data = r
 		}
@@ -336,7 +336,7 @@ func (x *NegotiateRequest) EncodeWire(v uint32, out *resources.Buf) error {
 
 func (x *NegotiateRequest) decodeSMB2(d *wire.Decoder, v uint32) {
 	var lDialectCount, lNegotiateContextOffset, lNegotiateContextCount int
-	d.Size(36)
+	d.Size(36, 36)
 	lDialectCount = int(d.Uint16())
 	x.SecurityMode = d.Uint16()
 	d.Skip(2)
@@ -345,9 +345,8 @@ func (x *NegotiateRequest) decodeSMB2(d *wire.Decoder, v uint32) {
 	lNegotiateContextOffset = int(d.Uint32())
 	lNegotiateContextCount = int(d.Uint16())
 	d.Skip(2)
-	fixed := d.N
 	x.Dialects = d.Uint16s(lDialectCount, 64)
-	if at := d.Chain(lNegotiateContextOffset, lNegotiateContextCount, 16, 8, fixed); at >= 0 {
+	if at := d.Chain(lNegotiateContextOffset, lNegotiateContextCount, 16, 8); at >= 0 {
 		x.Contexts = make([]NegotiateContext, lNegotiateContextCount)
 		for i := range x.Contexts {
 			sub, start := d.Member(at)
@@ -420,7 +419,7 @@ func (x *NegotiateResponse) EncodeWire(v uint32, out *resources.Buf) error {
 
 func (x *NegotiateResponse) decodeSMB2(d *wire.Decoder, v uint32) {
 	var lSecurityBufferOffset, lSecurityBufferLength, lNegotiateContextOffset, lNegotiateContextCount int
-	d.Size(65)
+	d.Size(65, 64)
 	x.SecurityMode = d.Uint16()
 	x.DialectRevision = d.Uint16()
 	lNegotiateContextCount = int(d.Uint16())
@@ -434,10 +433,9 @@ func (x *NegotiateResponse) decodeSMB2(d *wire.Decoder, v uint32) {
 	lSecurityBufferOffset = int(d.Uint16())
 	lSecurityBufferLength = int(d.Uint16())
 	lNegotiateContextOffset = int(d.Uint32())
-	fixed := d.N
-	x.SecurityBuffer = d.At(lSecurityBufferOffset, lSecurityBufferLength, 4096, 1, fixed)
+	x.SecurityBuffer = d.At(lSecurityBufferOffset, lSecurityBufferLength, 4096, 1)
 	if v >= 0x311 {
-		if at := d.Chain(lNegotiateContextOffset, lNegotiateContextCount, 16, 8, fixed); at >= 0 {
+		if at := d.Chain(lNegotiateContextOffset, lNegotiateContextCount, 16, 8); at >= 0 {
 			x.Contexts = make([]NegotiateContext, lNegotiateContextCount)
 			for i := range x.Contexts {
 				sub, start := d.Member(at)
@@ -696,7 +694,7 @@ func (x *WriteRequest) EncodeWire(v uint32, out *resources.Buf) error {
 
 func (x *WriteRequest) decodeSMB2(d *wire.Decoder, v uint32) {
 	var lDataOffset, lLength, lWriteChannelInfoOffset, lWriteChannelInfoLength int
-	d.Size(49)
+	d.Size(49, 48)
 	lDataOffset = int(d.Uint16())
 	lLength = int(d.Uint32())
 	x.Offset = d.Uint64()
@@ -706,9 +704,8 @@ func (x *WriteRequest) decodeSMB2(d *wire.Decoder, v uint32) {
 	lWriteChannelInfoOffset = int(d.Uint16())
 	lWriteChannelInfoLength = int(d.Uint16())
 	x.Flags = d.Uint32()
-	fixed := d.N
-	x.Data = d.At(lDataOffset, lLength, 8388608, 1, fixed)
-	x.ChannelInfo = d.At(lWriteChannelInfoOffset, lWriteChannelInfoLength, 1024, 1, fixed)
+	x.Data = d.At(lDataOffset, lLength, 8388608, 1)
+	x.ChannelInfo = d.At(lWriteChannelInfoOffset, lWriteChannelInfoLength, 1024, 1)
 }
 
 func (x *WriteRequest) encodeSMB2(e *wire.Encoder, v uint32) {
@@ -771,7 +768,7 @@ func (x *EchoRequest) EncodeWire(v uint32, out *resources.Buf) error {
 }
 
 func (x *EchoRequest) decodeSMB2(d *wire.Decoder, v uint32) {
-	d.Size(4)
+	d.Size(4, 4)
 	d.Skip(2)
 }
 

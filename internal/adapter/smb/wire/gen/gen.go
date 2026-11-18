@@ -38,13 +38,13 @@ var widths = map[string]int{"uint8": 1, "uint16": 2, "uint32": 4, "uint64": 8}
 
 // allowed is the tags each kind of field may carry.
 var allowed = map[kind][]string{
-	kInt:     {"size", "name", "union", "since"},
+	kInt:     {"size", "empty", "name", "union", "since"},
 	kFixed:   {"since"},
 	kBytes:   {"offset", "len", "max", "align", "union", "default", "since"},
 	kString:  {"offset", "len", "max", "align", "utf16", "since"},
 	kUint16s: {"count", "max", "since"},
 	kChain:   {"offset", "len", "count", "max", "align", "chain", "since"},
-	kArm:     {"offset", "len", "align", "case", "since"},
+	kArm:     {"offset", "len", "align", "case", "exact", "since"},
 }
 
 type field struct {
@@ -61,6 +61,8 @@ type field struct {
 	max                   int    // -1 when absent
 	align                 int
 	utf16, chain, union   bool
+	exact                 bool   // an arm whose data is its struct's bytes, none past them
+	empty                 bool   // a StructureSize whose variable part may be empty
 	link                  string // chain=L
 	cas                   string // case=
 	def                   bool
@@ -232,6 +234,8 @@ func (g *gen) field(st string, f *ast.Field) *field {
 			return int(n)
 		}
 		switch k {
+		case "empty":
+			fl.empty = true
 		case "size":
 			fl.size = num(1)
 		case "name":
@@ -256,6 +260,8 @@ func (g *gen) field(st string, f *ast.Field) *field {
 			fl.cas = v
 		case "default":
 			fl.def = true
+		case "exact":
+			fl.exact = true
 		case "since":
 			num(0)
 			fl.since = v
@@ -303,6 +309,8 @@ func (g *gen) check(s *strct) {
 				bad("size and name go on a blank field")
 			case f.size > 0 && f.n != 2:
 				bad("a StructureSize is a uint16")
+			case f.empty && f.size%2 == 0:
+				bad("empty on no odd StructureSize")
 			case f.label != "" && f.n != 2 && f.n != 4:
 				bad("a layout field is a uint16 or a uint32")
 			case f.union && f.name == "_":

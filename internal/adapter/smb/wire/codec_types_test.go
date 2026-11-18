@@ -47,8 +47,8 @@ type CreateContext struct {
 	_              uint16                 `smb2:"name=DataOffset"`
 	_              uint32                 `smb2:"name=DataLength"`
 	Name           []byte                 `smb2:"offset=NameOffset,len=NameLength,max=16,union"`
-	DurableV2      DurableHandleRequestV2 `smb2:"offset=DataOffset,len=DataLength,align=8,case=DH2Q"`
-	AllocationSize AllocationSize         `smb2:"offset=DataOffset,len=DataLength,align=8,case=AlSi"`
+	DurableV2      DurableHandleRequestV2 `smb2:"offset=DataOffset,len=DataLength,align=8,case=DH2Q,exact"`
+	AllocationSize AllocationSize         `smb2:"offset=DataOffset,len=DataLength,align=8,case=AlSi,exact"`
 	Data           []byte                 `smb2:"offset=DataOffset,len=DataLength,align=8,max=1024,default"`
 }
 
@@ -86,7 +86,7 @@ type NegotiateRequest struct {
 // contexts are on the wire at 3.1.1 alone, their count and offset Reserved
 // before it.
 type NegotiateResponse struct {
-	_               uint16 `smb2:"size=65"`
+	_               uint16 `smb2:"size=65,empty"`
 	SecurityMode    uint16
 	DialectRevision uint16
 	_               uint16 `smb2:"name=NegotiateContextCount"`
@@ -133,7 +133,7 @@ type EncryptionCapabilities struct {
 // WriteRequest is MS-SMB2 2.2.21's WRITE request, its channel information
 // after its data, so the data can push that offset past its two bytes.
 type WriteRequest struct {
-	_              uint16 `smb2:"size=49"`
+	_              uint16 `smb2:"size=49,empty"`
 	_              uint16 `smb2:"name=DataOffset"`
 	_              uint32 `smb2:"name=Length"`
 	Offset         uint64

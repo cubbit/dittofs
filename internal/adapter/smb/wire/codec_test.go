@@ -83,6 +83,25 @@ func named(t testing.TB, name []byte) []byte {
 	return append(b, name...)
 }
 
+// overlapped is a CREATE whose 128 create contexts each hold their name and
+// their data in the same 16 bytes, so they would encode apart, past the 4096
+// bytes the chain may take.
+func overlapped(t testing.TB) []byte {
+	b := patched(golden(t, "create-request")[:56], 110, 0, 0)
+	b = patched(b, 112, append(le32(120), le32(128*32)...)...)
+	for i := range 128 {
+		next := uint32(32)
+		if i == 127 {
+			next = 0
+		}
+		b = append(b, le32(next)...)
+		b = append(b, 16, 0, 16, 0, 0, 0, 16, 0) // NameOffset, NameLength, Reserved, DataOffset
+		b = append(b, le32(16)...)               // DataLength
+		b = append(b, "xxxxxxxxxxxxxxxx"...)
+	}
+	return b
+}
+
 // frame6 is the value frame 6's NEGOTIATE response holds.
 func frame6(t testing.TB) NegotiateResponse {
 	b := golden(t, "negotiate-response")
@@ -281,11 +300,11 @@ func TestCodecByteFieldEndsAtItsLength(t *testing.T) {
 }
 
 // What cannot be the struct is refused: a StructureSize or a fixed part wrong,
-// a field located in the fixed part, past the message or past its maximum,
-// an offset off its alignment, a create context's Next off 8 or out of its
-// chain, a chain past the message, and a context's data shorter than its
-// struct (RFC 20 section 5.2, MS-SMB2 2.2). Each input is a vector whole but
-// for the one fault it is named for.
+// a field located in the bytes of a field before it, past the message or past its maximum, an offset off its
+// alignment, a create context's Next off 8 or out of its chain, a chain past
+// the message, and a context's data shorter than its struct (RFC 20 section
+// 5.2, MS-SMB2 2.2, 3.3.5.9). Each input is a vector whole but for the one
+// fault it is named for.
 func TestCodecRefusals(t *testing.T) {
 	closeReq, create := golden(t, "close-request"), golden(t, "create-request")
 	ctxs, neg := golden(t, "create-contexts"), golden(t, "negotiate-request")
@@ -305,6 +324,9 @@ func TestCodecRefusals(t *testing.T) {
 		{"a context's Next off 8", &CreateRequest{}, patched(patched(spliced(ctxs, 192, 192, 0, 0, 0, 0), 136, 60), 116, 124)},
 		{"a context's Next inside it", &CreateRequest{}, patched(ctxs, 136, 8)},
 		{"a context's Next past the contexts", &CreateRequest{}, patched(ctxs, 136, 128)},
+		{"contexts whose names and data share their bytes", &CreateRequest{}, overlapped(t)},
+		{"a context's data before its name", &CreateRequest{}, patched(patched(patched(
+			spliced(ctxs, 240, 256, append(span(ctxs, 248, 256), "MxAc"...)...), 228, 24), 234, 16), 116, 116)},
 		{"contexts past the message", &CreateRequest{}, patched(ctxs, 116, 121)},
 		{"a context's data shorter than its struct", &CreateRequest{}, patched(ctxs, 148, 16)},
 		{"negotiate contexts at an offset off 8", &NegotiateRequest{}, patched(neg, 92, 110)},
@@ -321,6 +343,49 @@ func TestCodecRefusals(t *testing.T) {
 	}
 }
 
+// An odd StructureSize counts the variable part's first byte, which a request
+// carries and a reply, or a WRITE, need not: a CREATE of its fixed part alone
+// is refused and an empty one is written with that byte, while a WRITE of its
+// fixed part alone decodes and an empty NEGOTIATE reply is written without it
+// (MS-SMB2 2.2.13, 3.3.5.9).
+func TestCodecOddStructureSize(t *testing.T) {
+	var c CreateRequest
+	if n, err := c.DecodeWire(patched(golden(t, "create-request")[:56], 110, 0, 0), 0x311); err == nil {
+		t.Errorf("a CREATE of 56 bytes accepted, %d read", n)
+	}
+	var out resources.Buf
+	if err := (&CreateRequest{}).EncodeWire(0x311, &out); err != nil || len(out.B) != 57 || out.B[56] != 0 {
+		t.Errorf("an empty CREATE written as %x (%v), not 57 bytes ending in 0", out.B, err)
+	}
+	var w WriteRequest
+	if n, err := w.DecodeWire(patched(golden(t, "write-request")[:48], 68, le32(0)...), 0x311); err != nil || n != 48 {
+		t.Errorf("a WRITE of 48 bytes: %d read, %v", n, err)
+	}
+	out = resources.Buf{}
+	if err := (&NegotiateResponse{}).EncodeWire(0x210, &out); err != nil || len(out.B) != 64 {
+		t.Errorf("an empty NEGOTIATE reply written as %d bytes (%v), not 64", len(out.B), err)
+	}
+}
+
+// A create context's data is its struct's bytes, none past them, as MS-SMB2
+// 3.3.5.9 has a server refuse any other; a negotiate context's may run past
+// its struct, which reads its fields alone (MS-SMB2 2.2.3.1).
+func TestCodecContextDataLength(t *testing.T) {
+	ctxs := golden(t, "create-contexts")
+	longer := patched(patched(patched(spliced(ctxs, 192, 192, make([]byte, 8)...), 148, 40), 136, 64), 116, 128)
+	var c CreateRequest
+	if n, err := c.DecodeWire(longer, 0x311); err == nil {
+		t.Errorf("a DH2Q context of 40 bytes accepted, %d bytes read", n)
+	}
+	var r NegotiateRequest
+	if _, err := r.DecodeWire(patched(golden(t, "negotiate-request"), 162, 12), 0x311); err != nil {
+		t.Fatalf("an encryption context of 12 bytes refused: %v", err)
+	}
+	if want := []uint16{2, 1, 4, 3}; !reflect.DeepEqual(r.Contexts[1].Encryption.Ciphers, want) {
+		t.Errorf("its ciphers %v, want %v", r.Contexts[1].Encryption.Ciphers, want)
+	}
+}
+
 // A refusal of a claimed length or count costs less than 4 KiB: it is checked
 // against the bytes left before anything is made (RFC 20 section 5.2).
 func TestCodecClaimedLengths(t *testing.T) {
@@ -332,8 +397,8 @@ func TestCodecClaimedLengths(t *testing.T) {
 		into func() codec
 		b    []byte
 	}{
-		{"a WRITE of 1 MiB", func() codec { return &WriteRequest{} }, patched(golden(t, "write-request")[:48], 68, le32(1<<20)...)},
-		{"a name of 1024 bytes", func() codec { return &CreateRequest{} }, patched(golden(t, "create-request")[:56], 110, le16(1024)...)},
+		{"a WRITE of 1 MiB", func() codec { return &WriteRequest{} }, patched(golden(t, "write-request")[:49], 68, le32(1<<20)...)},
+		{"a name of 1024 bytes", func() codec { return &CreateRequest{} }, patched(golden(t, "create-request")[:57], 110, le16(1024)...)},
 		{"4096 bytes of create contexts", func() codec { return &CreateRequest{} }, patched(golden(t, "create-request"), 112, 136, 0, 0, 0, 0, 0x10)},
 		{"16 negotiate contexts", func() codec { return &NegotiateRequest{} }, patched(golden(t, "negotiate-request")[:48], 96, 16)},
 	} {

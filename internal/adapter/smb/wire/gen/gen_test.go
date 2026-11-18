@@ -46,6 +46,7 @@ func TestGenerateRefuses(t *testing.T) {
 		{"type S struct {\n" + layout + "B []byte `smb2:\"len=L,max=4,align=8\"`\n}", "S.B: align without an offset"},
 		{"type S struct { A uint16 `smb2:\"size=4\"` }", "S.A: size and name go on a blank field"},
 		{"type S struct { _ uint32 `smb2:\"size=4\"` }", "S._: a StructureSize is a uint16"},
+		{"type S struct { _ uint16 `smb2:\"size=4,empty\"` }", "S._: empty on no odd StructureSize"},
 		{"type S struct { _ uint8 `smb2:\"name=L\"` }", "S._: a layout field is a uint16 or a uint32"},
 		{"type S struct {\n" + layout + layout + "}", "S._: a second layout field named L"},
 		{"type S struct {\n" + layout + "_ []byte `smb2:\"len=L,max=4\"`\n}", "S._: a variable field that is blank"},
@@ -92,7 +93,7 @@ func TestCountsBoundMembersAtTheirLeast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "d.Chain(lO, lC, 2, 18, fixed)"; !bytes.Contains(out, []byte(want)) {
+	if want := "d.Chain(lO, lC, 2, 18)"; !bytes.Contains(out, []byte(want)) {
 		t.Errorf("no %q in:\n%s", want, out)
 	}
 }

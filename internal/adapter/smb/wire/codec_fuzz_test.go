@@ -50,22 +50,24 @@ func (r *sr) u16() uint16 { return uint16(r.u(2)) }
 func (r *sr) u32() uint32 { return uint32(r.u(4)) }
 func (r *sr) u64() uint64 { return r.u(8) }
 
-// size reads a StructureSize, which must be want.
-func (r *sr) size(want uint16) {
-	if r.u16() != want {
+// size reads a StructureSize, which must be want, the body at least least
+// bytes: an odd size counts the variable part's first byte, which a request
+// carries and a reply need not.
+func (r *sr) size(want uint16, least int) {
+	if r.u16() != want || len(r.b) < least {
 		r.bad = true
 	}
 }
 
 // located is the n bytes an offset and length pair locate: none when n is 0,
 // its offset then unread; else at most limit of them, at an offset a multiple
-// of align, wholly past the fixed part's fixed bytes and inside b.
-func (r *sr) located(off, n, limit, align, fixed int) []byte {
+// of align, past every byte taken before them and inside b.
+func (r *sr) located(off, n, limit, align int) []byte {
 	if r.bad || n == 0 {
 		return nil
 	}
 	p := off - r.base
-	if n > limit || off%align != 0 || p < fixed || p > len(r.b) || n > len(r.b)-p {
+	if n > limit || off%align != 0 || p < r.end || p > len(r.b) || n > len(r.b)-p {
 		r.bad = true
 		return nil
 	}
@@ -112,7 +114,7 @@ func inner[T any](r *sr, b []byte, read func(*sr) T) T {
 
 func readClose(r *sr, _ uint32) CloseRequest { // 2.2.15
 	var c CloseRequest
-	r.size(24)
+	r.size(24, 24)
 	c.Flags = r.u16()
 	r.next(4)
 	copy(c.FileID[:], r.next(16))
@@ -120,14 +122,14 @@ func readClose(r *sr, _ uint32) CloseRequest { // 2.2.15
 }
 
 func readEcho(r *sr, _ uint32) EchoRequest { // 2.2.28
-	r.size(4)
+	r.size(4, 4)
 	r.next(2)
 	return EchoRequest{}
 }
 
 func readWrite(r *sr, _ uint32) WriteRequest { // 2.2.21
 	var w WriteRequest
-	r.size(49)
+	r.size(49, 48) // WRITE's Buffer may be empty
 	dataOff, dataLen := int(r.u16()), int(r.u32())
 	w.Offset = r.u64()
 	copy(w.FileID[:], r.next(16))
@@ -135,8 +137,8 @@ func readWrite(r *sr, _ uint32) WriteRequest { // 2.2.21
 	w.RemainingBytes = r.u32()
 	infoOff, infoLen := int(r.u16()), int(r.u16())
 	w.Flags = r.u32()
-	w.Data = r.located(dataOff, dataLen, 8<<20, 1, 48)
-	w.ChannelInfo = r.located(infoOff, infoLen, 1024, 1, 48)
+	w.Data = r.located(dataOff, dataLen, 8<<20, 1)
+	w.ChannelInfo = r.located(infoOff, infoLen, 1024, 1)
 	return w
 }
 
@@ -146,7 +148,7 @@ func readWrite(r *sr, _ uint32) WriteRequest { // 2.2.21
 // (2.2.13.2).
 func readCreate(r *sr, _ uint32) CreateRequest {
 	var c CreateRequest
-	r.size(57)
+	r.size(57, 57)
 	c.SecurityFlags = r.u8()
 	c.RequestedOplockLevel = r.u8()
 	c.ImpersonationLevel = r.u32()
@@ -159,8 +161,8 @@ func readCreate(r *sr, _ uint32) CreateRequest {
 	c.CreateOptions = r.u32()
 	nameOff, nameLen := int(r.u16()), int(r.u16())
 	chainOff, chainLen := int(r.u32()), int(r.u32())
-	c.Name = r.text(r.located(nameOff, nameLen, 1024, 1, 56))
-	chain := r.located(chainOff, chainLen, 4096, 8, 56)
+	c.Name = r.text(r.located(nameOff, nameLen, 1024, 1))
+	chain := r.located(chainOff, chainLen, 4096, 8)
 	for len(chain) > 0 && !r.bad {
 		if len(chain) < 4 {
 			r.bad = true
@@ -178,22 +180,25 @@ func readCreate(r *sr, _ uint32) CreateRequest {
 		c.Contexts = append(c.Contexts, inner(r, ctx, readCreateContext))
 		chain = chain[len(ctx):]
 	}
+	r.end = max(r.end, 57) // the request takes the Buffer's byte its StructureSize counts
 	return c
 }
 
 // readCreateContext reads 2.2.13.2: its offsets count from its own first
 // byte, its data 8-byte aligned and read by its name, DH2Q's (2.2.13.2.11)
-// and AlSi's (2.2.13.2.6) into their structs, any other's kept as bytes.
+// and AlSi's (2.2.13.2.6) into their structs, each exactly its structure's
+// size (3.3.5.9), any other's kept as bytes.
 func readCreateContext(r *sr) CreateContext {
 	var c CreateContext
 	r.u32() // Next, which the chain reads
 	nameOff, nameLen := int(r.u16()), int(r.u16())
 	r.next(2)
 	dataOff, dataLen := int(r.u16()), int(r.u32())
-	c.Name = r.located(nameOff, nameLen, 16, 1, 16)
-	data := r.located(dataOff, dataLen, 1024, 8, 16)
+	c.Name = r.located(nameOff, nameLen, 16, 1)
+	data := r.located(dataOff, dataLen, 1024, 8)
 	switch string(c.Name) {
 	case "DH2Q":
+		r.bad = r.bad || len(data) != 32
 		c.DurableV2 = inner(r, data, func(d *sr) DurableHandleRequestV2 {
 			v := DurableHandleRequestV2{Timeout: d.u32(), Flags: d.u32()}
 			d.next(8)
@@ -201,6 +206,7 @@ func readCreateContext(r *sr) CreateContext {
 			return v
 		})
 	case "AlSi":
+		r.bad = r.bad || len(data) != 8
 		c.AllocationSize = inner(r, data, func(d *sr) AllocationSize { return AllocationSize{AllocationSize: d.u64()} })
 	default:
 		c.Data = data
@@ -209,14 +215,14 @@ func readCreateContext(r *sr) CreateContext {
 }
 
 // negotiateContexts reads 2.2.3.1's contexts: count of them, at most 16, the
-// first at offset, a multiple of 8, wholly past the fixed part's fixed bytes,
-// each one after at the next position a multiple of 8.
-func negotiateContexts(r *sr, offset, count, fixed int) []NegotiateContext {
+// first at offset, a multiple of 8, past every byte taken before them, each
+// one after at the next position a multiple of 8.
+func negotiateContexts(r *sr, offset, count int) []NegotiateContext {
 	if r.bad || count == 0 {
 		return nil
 	}
 	p := offset - r.base
-	if count > 16 || offset%8 != 0 || p < fixed || p > len(r.b) {
+	if count > 16 || offset%8 != 0 || p < r.end || p > len(r.b) {
 		r.bad = true
 		return nil
 	}
@@ -289,7 +295,7 @@ func u16s(r *sr, n, limit int) []uint16 {
 
 func readNegotiateRequest(r *sr, _ uint32) NegotiateRequest { // 2.2.3
 	var n NegotiateRequest
-	r.size(36)
+	r.size(36, 36)
 	dialects := int(r.u16())
 	n.SecurityMode = r.u16()
 	r.next(2)
@@ -298,7 +304,7 @@ func readNegotiateRequest(r *sr, _ uint32) NegotiateRequest { // 2.2.3
 	offset, count := int(r.u32()), int(r.u16())
 	r.next(2)
 	n.Dialects = u16s(r, dialects, 64)
-	n.Contexts = negotiateContexts(r, offset, count, 36)
+	n.Contexts = negotiateContexts(r, offset, count)
 	return n
 }
 
@@ -306,7 +312,7 @@ func readNegotiateRequest(r *sr, _ uint32) NegotiateRequest { // 2.2.3
 // from 3.1.1, their count and offset Reserved before it.
 func readNegotiateResponse(r *sr, v uint32) NegotiateResponse {
 	var n NegotiateResponse
-	r.size(65)
+	r.size(65, 64) // a reply's Buffer may be empty
 	n.SecurityMode = r.u16()
 	n.DialectRevision = r.u16()
 	count := int(r.u16())
@@ -319,9 +325,9 @@ func readNegotiateResponse(r *sr, v uint32) NegotiateResponse {
 	n.ServerStartTime = r.u64()
 	bufOff, bufLen := int(r.u16()), int(r.u16())
 	offset := int(r.u32())
-	n.SecurityBuffer = r.located(bufOff, bufLen, 4096, 1, 64)
+	n.SecurityBuffer = r.located(bufOff, bufLen, 4096, 1)
 	if v >= 0x311 {
-		n.Contexts = negotiateContexts(r, offset, count, 64)
+		n.Contexts = negotiateContexts(r, offset, count)
 	}
 	return n
 }
@@ -403,8 +409,8 @@ var dialects = []uint32{0x202, 0x210, 0x300, 0x302, 0x311}
 // first names, at the dialect its second names, with the generated decoder
 // and the second decoder, and fails on any disagreement, a panic, an
 // allocation out of proportion to the input, or a decoded value that does not
-// encode back (RFC 20 section 5.4). Seeded with every golden vector and the
-// capture's frames.
+// encode back (RFC 20 section 5.4). Seeded with every golden vector, an empty
+// CREATE and the capture's frames.
 func FuzzCodec(f *testing.F) {
 	kinds := map[reflect.Type]byte{}
 	for i, c := range []any{CloseRequest{}, CreateRequest{}, NegotiateRequest{}, NegotiateResponse{}, WriteRequest{}, EchoRequest{}} {
@@ -414,6 +420,7 @@ func FuzzCodec(f *testing.F) {
 	for _, c := range vectors(f) {
 		f.Add(append([]byte{kinds[reflect.TypeOf(c.want).Elem()], dialect[c.v]}, golden(f, c.name)...))
 	}
+	f.Add(append([]byte{kinds[reflect.TypeFor[CreateRequest]()], 4}, patched(golden(f, "create-request")[:57], 110, 0, 0)...)) // an empty CREATE
 	for _, name := range []string{"negotiate_request", "negotiate_response", "create_request", "create_response"} {
 		body := wire.ReadGolden(f, name)[wire.FrameHeaderLen+wire.HeaderLen:]
 		for i := range targets {

@@ -11,7 +11,10 @@
 // type named over one; [N]byte; a blank (_) for a Reserved field. Its smb2 tag
 // states the rest, in MS-SMB2's field order:
 //
-//   - size=N on a blank uint16: a StructureSize, refused unless N;
+//   - size=N on a blank uint16: a StructureSize, refused unless N; an odd N
+//     counts the variable part's first byte, refused when missing and written
+//     when the variable part is empty, but where empty says that part may be
+//     empty, as a reply's may;
 //   - name=L on a blank uint16 or uint32: a layout field, an offset, length or
 //     count the encoder fills from the field it describes;
 //   - offset=L, len=L, count=L: where a variable field lies and how long it
@@ -27,6 +30,8 @@
 //   - union on a []byte or integer discriminant, case=V on each arm, a struct
 //     whose bytes the discriminant's value V chooses, and default on one
 //     []byte arm, the bytes of any other: the arms share one offset and len;
+//   - exact on an arm: its data is refused unless its struct takes every byte
+//     of it (MS-SMB2 3.3.5.9's create contexts);
 //   - since=D: on the wire from dialect D on.
 //
 // []byte, string, []uint16 (with count), []T and an arm T take tags; a field

@@ -26,11 +26,15 @@ func (g *gen) emit(pkg string, files []string) ([]byte, error) {
 	fmt.Fprintf(&b, "%s%s; DO NOT EDIT.\n\npackage %s\n\nimport (\n\t%q\n\t%q\n)\n",
 		header, strings.Join(files, " "), pkg, wirePath, resourcesPath)
 	for _, s := range g.structs {
+		n := "d.N"
+		if odd := carried(s); odd > 0 {
+			n = fmt.Sprintf("max(d.N, %d)", odd)
+		}
 		fmt.Fprintf(&b, `
 func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {
 	d := wire.Decoder{B: b, Base: wire.HeaderLen}
 	x.decodeSMB2(&d, v)
-	return d.N, d.Err
+	return %[2]s, d.Err
 }
 
 func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
@@ -42,7 +46,7 @@ func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
 	out.B = e.B
 	return nil
 }
-`, s.name)
+`, s.name, n)
 		g.decode(&b, s)
 		g.encode(&b, s)
 		g.maxWire(&b, s)
@@ -86,7 +90,7 @@ func gate(b *bytes.Buffer, f *field) string {
 // region is where a variable field's bytes lie, decoded, refused past limit.
 func region(f *field, limit int) string {
 	if f.offset != "" {
-		return fmt.Sprintf("d.At(l%s, l%s, %d, %d, fixed)", f.offset, f.length, limit, f.align)
+		return fmt.Sprintf("d.At(l%s, l%s, %d, %d)", f.offset, f.length, limit, f.align)
 	}
 	return fmt.Sprintf("d.Next(l%s, %d)", f.length, limit)
 }
@@ -107,21 +111,16 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 		fmt.Fprintf(b, "var l%s int\n", strings.Join(labels, ", l"))
 	}
 	disc, arms := s.disc()
-	fixed := false
 	for _, f := range s.fields {
-		if f.variable() && !fixed {
-			fixed = true
-			if locates(s) {
-				b.WriteString("fixed := d.N\n")
-			}
-		}
 		if (f.kind == kArm || f.def) && f != arms[0] {
 			continue
 		}
 		end := gate(b, f)
 		switch {
+		case f.empty:
+			fmt.Fprintf(b, "d.Size(%d, %d)\n", f.size, f.size-1)
 		case f.size > 0:
-			fmt.Fprintf(b, "d.Size(%d)\n", f.size)
+			fmt.Fprintf(b, "d.Size(%d, %d)\n", f.size, f.size)
 		case slices.Contains(labels, f.label):
 			fmt.Fprintf(b, "l%s = int(d.Uint%d())\n", f.label, 8*f.n)
 		case f.name == "_":
@@ -153,7 +152,7 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 }
 `, region(f, f.max), f.typ, f.name, f.name)
 		case f.kind == kChain:
-			fmt.Fprintf(b, `if at := d.Chain(l%s, l%s, %d, %d, fixed); at >= 0 {
+			fmt.Fprintf(b, `if at := d.Chain(l%s, l%s, %d, %d); at >= 0 {
 	x.%s = make([]%s, l%s)
 	for i := range x.%s {
 		sub, start := d.Member(at)
@@ -167,7 +166,11 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 			expr, lit := discriminant(disc)
 			fmt.Fprintf(b, "{\nr := %s\nswitch %s {\n", region(def, def.max), expr)
 			for _, a := range arms[:len(arms)-1] {
-				fmt.Fprintf(b, "case %s:\nsub := d.Sub(r)\nx.%s.decodeSMB2(&sub, v)\nd.Join(&sub)\n", lit(a.cas), a.name)
+				take := "Join"
+				if a.exact {
+					take = "Exact"
+				}
+				fmt.Fprintf(b, "case %s:\nsub := d.Sub(r)\nx.%s.decodeSMB2(&sub, v)\nd.%s(&sub)\n", lit(a.cas), a.name, take)
 			}
 			fmt.Fprintf(b, "default:\nx.%s = r\n}\n}\n", def.name)
 		}
@@ -176,15 +179,15 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 	b.WriteString("}\n")
 }
 
-// locates reports whether a field of s lies at an offset, which is checked
-// against the fixed part's end.
-func locates(s *strct) bool {
+// carried is s's odd StructureSize when its variable part's first byte, which
+// that size counts, must be there; 0 when it need not.
+func carried(s *strct) int {
 	for _, f := range s.fields {
-		if f.offset != "" {
-			return true
+		if f.size%2 == 1 && !f.empty {
+			return f.size
 		}
 	}
-	return false
+	return 0
 }
 
 // least is the fewest bytes a member of s takes: its fixed part on the wire
@@ -207,6 +210,9 @@ func (g *gen) encode(b *bytes.Buffer, s *strct) {
 	labels := used(s)
 	if len(labels) > 0 {
 		fmt.Fprintf(b, "var p%s int\n", strings.Join(labels, ", p"))
+	}
+	if carried(s) > 0 {
+		b.WriteString("start := e.Pos()\n")
 	}
 	disc, arms := s.disc()
 	for _, f := range s.fields {
@@ -272,6 +278,9 @@ func (g *gen) encode(b *bytes.Buffer, s *strct) {
 			fmt.Fprintf(b, "e.Off(p%s, %d, begin, at)\n", loc.offset, width(s, loc.offset))
 		}
 		b.WriteString("}\n" + end)
+	}
+	if odd := carried(s); odd > 0 {
+		fmt.Fprintf(b, "e.Fill(start, %d)\n", odd)
 	}
 	b.WriteString("}\n")
 }

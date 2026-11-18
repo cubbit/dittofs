@@ -15,9 +15,11 @@ import (
 
 var (
 	errBody   = errors.New("smb: a field past its structure's bytes")
-	errSize   = errors.New("smb: a StructureSize other than its layout's")
+	errSize   = errors.New("smb: a StructureSize other than its layout's, or a body shorter than it")
 	errMax    = errors.New("smb: a length or count past its field's maximum")
-	errOffset = errors.New("smb: a field located in the fixed part or past the message")
+	errOffset = errors.New("smb: a field located past the message")
+	errBefore = errors.New("smb: a field located in the bytes of a field before it")
+	errExact  = errors.New("smb: a context's data longer than its structure")
 	errAlign  = errors.New("smb: an offset off the alignment its layout asks")
 	errStep   = errors.New("smb: a chained structure's step that is not a multiple of 8 inside its chain")
 	errUTF16  = errors.New("smb: a UTF-16 string of an odd byte length")
@@ -89,9 +91,22 @@ func (d *Decoder) Bytes(dst []byte) { copy(dst, d.take(len(dst))) }
 // Skip passes a Reserved field, or a layout field nothing reads.
 func (d *Decoder) Skip(n int) { d.take(n) }
 
-// Size reads a StructureSize, refused unless it is want.
-func (d *Decoder) Size(want uint16) {
-	if d.Uint16() != want {
+// Size reads a StructureSize, refused unless it is want, and refuses a body
+// shorter than least: want, or want less one where the variable part's first
+// byte, which an odd StructureSize counts, may be missing.
+//
+// decision: a request carries that byte and a reply need not, as the
+// reference server and its client have it. The server refuses a request
+// without it, "if (SMBD_SMB2_IN_DYN_LEN(req) < min_dyn_size)", but for
+// IOCTL, QUERY_INFO and WRITE (source3/smbd/smb2_server.c), as MS-SMB2
+// 3.3.5.9 has a CREATE refused; it sends a CREATE reply without it, a body of
+// 0x58 for a StructureSize of 0x59 (source3/smbd/smb2_create.c); its client
+// writes it, "dyn_len = MAX(1, blobs_offset + blob.length)"
+// (libcli/smb/smb2cli_create.c), and reads a reply by "body_size &= 0xfffe"
+// (libcli/smb/smbXcli_base.c). The empty tag marks a struct that may go
+// without it, a reply or one of those three requests.
+func (d *Decoder) Size(want uint16, least int) {
+	if d.Uint16() != want || len(d.B) < least {
 		d.fail(errSize)
 	}
 }
@@ -99,10 +114,17 @@ func (d *Decoder) Size(want uint16) {
 // At returns the n bytes at offset off, a field located by an offset and
 // length pair, as a slice of the record (RFC 20 §5.3). It is refused before
 // any read when n is past limit, when off is not a multiple of align, or when
-// the bytes do not lie between the fixed part's end, fixed, and the
+// the bytes do not lie past every field before it and inside the
 // structure's. A field of no bytes is nil and its offset unread (MS-SMB2
 // 2.2.13.2's DataOffset, ignored when DataLength is 0).
-func (d *Decoder) At(off, n, limit, align, fixed int) []byte {
+//
+// decision: a located field lies past every field before it in the struct's
+// order, not only apart from them, so a decoded value encodes back within
+// its maxima: a create context's data before its name would be written after
+// it, its padding then pushing a chain of them past the chain's maximum. The
+// reference server asks more, a context's name at 16 and its data after it.
+// Withdraw it for an order MS-SMB2 or RFC 22 §16 allows.
+func (d *Decoder) At(off, n, limit, align int) []byte {
 	if d.Err != nil || n == 0 {
 		return nil
 	}
@@ -115,11 +137,15 @@ func (d *Decoder) At(off, n, limit, align, fixed int) []byte {
 		return nil
 	}
 	at := off - d.Base
-	if at < fixed || at > len(d.B) || n > len(d.B)-at {
+	if at < d.N {
+		d.fail(errBefore)
+		return nil
+	}
+	if at > len(d.B) || n > len(d.B)-at {
 		d.fail(errOffset)
 		return nil
 	}
-	d.N = max(d.N, at+n)
+	d.N = at + n
 	return d.B[at : at+n : at+n]
 }
 
@@ -192,15 +218,30 @@ func (d *Decoder) UTF16(b []byte) string {
 // Sub returns a Decoder over b, a structure inside this one whose offsets
 // count from its own first byte: a context's data, a linked chain's member.
 //
-// decision: the structure need not take every byte of b, so a context's data
-// longer than its struct is accepted: MS-SMB2 2.2.13.2 and 2.2.3.1 size it by
-// DataLength, and its struct is what the handler reads. MS-SMB2 3.3.5.9 has a
-// server fail a create context whose data is not its structure's size; withdraw
-// it for that once RFC 22 §16 says whether the codec refuses it.
+// decision: the structure need not take every byte of b, so a negotiate
+// context's data longer than its struct is accepted: MS-SMB2 2.2.3.1 sizes it
+// by DataLength, and its struct is what the handler reads. A create context's
+// is held to its struct's size, by Exact.
 func (d *Decoder) Sub(b []byte) Decoder { return Decoder{B: b, Err: d.Err} }
 
 // Join takes back the refusal of a Decoder Sub returned.
 func (d *Decoder) Join(s *Decoder) { d.Err = s.Err }
+
+// Exact takes back the refusal of a Decoder Sub returned, and refuses a
+// structure that left bytes of it unread.
+//
+// decision: a create context's data decoded into a struct, an arm tagged
+// exact, is its struct's size, as MS-SMB2 3.3.5.9 has it: "If the size of
+// each individual create context is not equal to the DataLength of the create
+// context, the server MUST fail the request with STATUS_INVALID_PARAMETER."
+// Section 3.3.5.4 refuses a negotiate context's data only when shorter than
+// its structure, which a read past the data refuses here too.
+func (d *Decoder) Exact(s *Decoder) {
+	d.Join(s)
+	if s.N != len(s.B) {
+		d.fail(errExact)
+	}
+}
 
 // Link returns the member of a linked chain that begins at at in region, and
 // where the next begins (MS-SMB2 2.2.13.2's Next). A member's first four bytes
@@ -229,9 +270,9 @@ func (d *Decoder) Link(region []byte, at int) ([]byte, int) {
 // Chain returns where a counted chain of n members begins, at offset off,
 // each member at least least bytes (MS-SMB2 2.2.3's negotiate contexts). It is
 // refused before anything is made when n is past limit, when off is not a
-// multiple of 8, or when the bytes from off on, past the fixed part's end,
-// fixed, cannot hold n members; it returns -1 then, and for no members.
-func (d *Decoder) Chain(off, n, limit, least, fixed int) int {
+// multiple of 8, or when the bytes from off on, past every field before it,
+// cannot hold n members; it returns -1 then, and for no members.
+func (d *Decoder) Chain(off, n, limit, least int) int {
 	if d.Err != nil || n == 0 {
 		return -1
 	}
@@ -244,7 +285,11 @@ func (d *Decoder) Chain(off, n, limit, least, fixed int) int {
 		return -1
 	}
 	at := off - d.Base
-	if at < fixed || at > len(d.B) || n*least > len(d.B)-at {
+	if at < d.N {
+		d.fail(errBefore)
+		return -1
+	}
+	if at > len(d.B) || n*least > len(d.B)-at {
 		d.fail(errOffset)
 		return -1
 	}
@@ -272,7 +317,7 @@ func (d *Decoder) Member(at int) (Decoder, int) {
 func (d *Decoder) After(s *Decoder, start int) int {
 	d.Err = s.Err
 	end := start + s.N
-	d.N = max(d.N, end)
+	d.N = end
 	return end
 }
 
@@ -304,6 +349,15 @@ func (e *Encoder) Bytes(b []byte) { e.B = append(e.B, b...) }
 
 // Zero appends n zero bytes: a Reserved field, or padding.
 func (e *Encoder) Zero(n int) { e.B = append(e.B, make([]byte, n)...) }
+
+// Fill pads the structure that began at start with zeros to n bytes: the
+// variable part's first byte an odd StructureSize n counts, when that part
+// is empty.
+func (e *Encoder) Fill(start, n int) {
+	if k := start + n - len(e.B); k > 0 {
+		e.Zero(k)
+	}
+}
 
 // Hole appends a layout field of w bytes and returns its place.
 func (e *Encoder) Hole(w int) int {
