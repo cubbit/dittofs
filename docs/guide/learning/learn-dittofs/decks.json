@@ -1,0 +1,27 @@
+[
+  { "section": "introduction", "decks": [
+    { "path": "intro/", "rfc": 0 }
+  ] },
+  { "section": "filesystem-service", "decks": [
+    { "path": "rfcs/rfc-17-vfs/", "rfc": 17 }
+  ] },
+  { "section": "adapters", "decks": [
+    { "path": "rfcs/rfc-20-adapters/", "rfc": 20 },
+    { "path": "rfcs/rfc-22-smb/", "rfc": 22 }
+  ] },
+  { "section": "open-state", "decks": [
+    { "path": "rfcs/rfc-14-open-state/", "rfc": 14 }
+  ] },
+  { "section": "metadata-store", "decks": [
+    { "path": "rfcs/rfc-16-metadata-store/", "rfc": 16 }
+  ] },
+  { "section": "engine", "decks": [
+    { "path": "rfcs/rfc-8-engine/", "rfc": 8 }
+  ] },
+  { "section": "journal", "decks": [
+    { "path": "rfcs/rfc-1-journal/", "rfc": 1 }
+  ] },
+  { "section": "test-harness", "decks": [
+    { "path": "rfcs/rfc-29-test-harness/", "rfc": 29 }
+  ] }
+]

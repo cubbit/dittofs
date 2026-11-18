@@ -1,0 +1,549 @@
+{
+  "title": "RFC 1 — o journal",
+  "cover": {
+    "kicker": "Aprenda DittoFS · RFC 1",
+    "title": "O [[journal|journal]]",
+    "lead": "O journal é o disco local onde toda escrita chega primeiro. Aqui você vê como ele funciona, e por que responde “[[missing]]” em vez de devolver zeros.",
+    "built": "Construído a partir do RFC 1 no commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-1-journal.md, commit {commit}. O RFC especifica um comportamento, não o código atual. O formato em disco e a recuperação depois de um crash são o RFC 28, não tratado aqui. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique num termo sublinhado para ver a definição."
+  },
+  "intro": {
+    "twoTitle": "O RFC 1 em duas frases",
+    "two": "O [[journal]] é o disco local rápido onde toda escrita chega e de onde sai a confirmação para o cliente: ele anexa cada escrita como um [[record]] no fim de um arquivo [[segment]], a mantém mesmo depois de um crash e atende leituras dos bytes que ainda guarda. Ele não sabe nada de [[chunk|chunks]] nem do bucket, porque é o [[engine]] que envia os dados e depois [[report|informa]] quais bytes passaram por [[offload|offload]], e só esses bytes podem ser descartados para abrir espaço.",
+    "twoNotes": "De 'Start here · In plain words' e §1 Purpose. O journal responde exatamente uma pergunta: tenho estes bytes, em qual offset, e em qual versão?",
+    "knownLead": "Estes termos vêm do glossário do RFC 0 e dos RFCs em que este se apoia (2, 3, 6 e 8). Clique num deles para ver a definição.",
+    "knownNotes": "Cada definição reformula a linha do glossário do RFC 0, que é a definição oficial.",
+    "newNotes": "De 'Start here · The words you need', mais missing (§3.2), change version (§3.2, §3.4), removal marker (§3.6), placement index (§4), headroom (§6), unreclaimed bytes (§3.5, §7.1) e loss event (§3.8). O glossário final acrescenta append stream, share tag e sequence number.",
+    "clashNotes": "Record: o glossário do RFC 0 tem duas linhas, journal e metadados. Offload: a tabela de verbos do RFC 0 diz que não é o flush de um cliente. Sync: o RFC 0 chama o conteúdo que passou por offload de 'synced to the remote tier'. Release: o RFC 0 lista o sentido do journal e o sentido de arquivo do RFC 7. Durable: o RFC 0 o separa da open durable do RFC 14. Handle: o Handle do RFC 1 §3 é o acesso de uma share ao journal."
+  },
+  "problem": {
+    "title": "Uma sobrescrita durante um upload",
+    "notes": "'Start here · The problem, in one example', passos 1–4, e o exemplo do §3.3. Tamanho do segment e versões são os valores de exemplo do próprio RFC. Depois do passo 5, um release de v42 é recusado até uma offer levá-lo."
+  },
+  "promises": {
+    "title2": "O que o RFC promete, continuação",
+    "items": [
+      "Uma escrita confirmada sobrevive à morte do processo desde o momento da confirmação. Ela também sobrevive a um crash do host ou a uma queda de energia depois de [[sync|sincronizada]], o que acontece quando o cliente faz flush ou, no mais tardar, ao fim de um prazo fixo, por exemplo 1 s.",
+      "Uma leitura nunca devolve zeros para bytes que o [[journal|journal]] não tem. Ela lista exatamente esses intervalos como [[missing]] e, para esses bytes, deixa intocado o buffer de quem chamou.",
+      "O journal nunca libera bytes que o engine não informou como [[offload|offloaded]]. Um [[release]] que inclua qualquer um deles é recusado por inteiro, e nada é liberado."
+    ],
+    "footer": "Depois de um crash, o journal reconstrói o que guardava a partir dos próprios arquivos no disco local. Esse passo, feito quando o journal é aberto de novo, se chama recuperação. Ele confere os arquivos com algumas informações que o engine guarda para o journal, como até onde as escritas já estavam sincronizadas.",
+    "notes": "'Start here · What this RFC promises', que cita §3.1, §3.2, §3.4, §3.5, §3.6, §5.2, §6 e RFC 28 §3. A quinta promessa trata de escritas; remoções e releases usam espaço reservado (§6). O prazo de 1 s é uma proposta (§5.2, 'proposal: 1 s'); o slide o dá como exemplo.",
+    "notes2": "As promessas sobre fill e limites de 'Start here · What this RFC promises' (§3.4, §6). A quinta promessa trata de escritas; remoções e releases usam espaço reservado (§6). A nota de rodapé: 'Start here · What this RFC promises' (o journal se reconstrói só a partir dos próprios arquivos) e §4 (o placement index é construído na recuperação). Como a recuperação lê os arquivos é o RFC 28 §3, que este deck não cobre. A recuperação confere os arquivos com o que quem chama passa a Open (§3): o floor das versões e, por stream, o sync mark do seu último sync registrado, com o qual se detecta uma cauda sincronizada que se perdeu (RFC 28 §3.3).",
+    "items2": [
+      "Um [[fill]], que grava no journal bytes buscados no bucket, nunca sobrescreve bytes que o journal já tem. Ele é recusado se o arquivo mudou depois da leitura que encontrou esses bytes faltando.",
+      "Uma escrita que passaria de um limite é recusada na hora, com um erro que diz qual é o limite. Ela nunca fica esperando espaço e nunca passa do limite."
+    ]
+  },
+  "model": {
+    "kicker": "O modelo"
+  },
+  "notebook": {
+    "title": "Um caderno em que só se escreve no fim",
+    "analogyTitle": "Analogia",
+    "analogy": "Toda escrita é acrescentada no fim do caderno, e é dali que o cliente recebe a resposta. Mais tarde o [[engine|engine]] copia esses bytes para o bucket e diz quais chegaram. Só esses podem ser jogados fora para abrir espaço.",
+    "stopsTitle": "Onde a analogia para",
+    "stops": "Não dá para arrancar uma página só. O espaço só volta quando um caderno inteiro — um arquivo [[segment]] — vai para o lixo, depois de copiar as páginas vivas para um novo.",
+    "missing": "Quando lhe pedem bytes que ele não tem mais, o [[journal|journal]] responde “[[missing]]”. Ele nunca devolve zeros no lugar deles.",
+    "notes": "A analogia e seu limite são do próprio RFC: 'Start here · In plain words'. A regra por trás do limite: §2 e §7.1, o espaço só é liberado em segments inteiros."
+  },
+  "extents": {
+    "title": "[[held-extent|Held extents]], com um exemplo",
+    "notes": "§2, 'What an extent is, by example'. Um extent diz quais bytes do arquivo, nunca onde ficam no disco nem que conteúdo têm. Os held extents são disjuntos, não precisam ser adjacentes nem começar em zero. Um record pode virar vários held extents, ou nenhum."
+  },
+  "gaps": {
+    "title": "O journal não sabe explicar uma lacuna",
+    "lead": "Uma lacuna pode ter três causas, mas o [[journal|journal]] vê sempre a mesma coisa: ele não tem esses bytes.",
+    "c1Title": "Nunca escrito",
+    "c1": "O intervalo é um [[hole]] que nunca foi escrito. Só os metadados sabem que ele é lido como zeros.",
+    "c2Title": "Removido ([[evict|evicted]])",
+    "c2": "Os bytes passaram por [[offload|offload]] para o bucket e depois foram [[release|liberados]] do journal para abrir espaço.",
+    "c3Title": "[[lost|Perdido]]",
+    "c3": "Os bytes foram escritos, mas se perderam desde então.",
+    "rule": "O journal informa os três casos do mesmo jeito, como [[missing]], e deixa intocado o buffer de quem chamou. Distinguir um do outro é trabalho do [[engine|engine]].",
+    "exact": "A lista `missing` é exata. Ela nunca é alargada para um [[segment|segment]], um [[record|record]] ou um [[block|bloco]] inteiro, porque quem chama paga uma transferência remota por entrada. Zeros seriam piores: se o arquivo for um disco virtual que o Windows monta, como um perfil `.vhdx`, o Windows receberia um disco corrompido que parece válido.",
+    "notes": "§2 (as lacunas não têm explicação), §3.2 (ReadAt), §1.1 (não objetivos). A observação sobre o Windows vem de 'Start here · The problem': o perfil de alice é `ODFC_alice.vhdx`, um disco virtual de 30 GB, e o passo 5 diz que zeros dariam ao Windows um disco corrompido que parece válido. A regra de que distinguir os três casos cabe ao engine é o RFC 0 §6.1. A regra do slide é o MUST do §2."
+  },
+  "placement": {
+    "title": "Onde os bytes ficam no disco",
+    "items": [
+      "O journal anexa em poucos [[append-stream|streams]], e cada stream recebe ao mesmo tempo as escritas de muitos arquivos. Todo [[record|record]] vai para o fim do seu stream, por isso até um arquivo escrito em ordem acaba guardado fora de ordem, misturado com outros arquivos.",
+      "Nada liga a posição de um [[extent|extent]] no arquivo à sua posição no disco.",
+      "O [[journal|journal]] nunca escreve em espaço liberado dentro de um [[segment|segment]]. Uma escrita que preenche uma lacuna do arquivo também vai para o fim do seu stream, como qualquer outra.",
+      "Há um journal por disco, compartilhado por todas as [[share|shares]] colocadas nesse disco. Cada record leva o [[share-tag|tag]] da share que o escreveu."
+    ],
+    "notes": "§2 (uma lacuna é uma lacuna no arquivo, não no armazenamento; a figura do posicionamento: 'a sequential file is stored out of order, interleaved with other files'), §1, §3 (tags). Poucos streams, muitos arquivos: RFC 28 §2.2 (o número de append streams é configurável, 16 propostos; escritas em FileIDs diferentes podem correr em paralelo)."
+  },
+  "quizGap": {
+    "question": "Ninguém nunca escreveu o primeiro MiB de um arquivo, e um cliente o lê. O que o [[journal]] responde?",
+    "options": [
+      "Zeros no MiB inteiro, porque um intervalo nunca escrito é lido como zeros.",
+      "Um erro dizendo que o intervalo é um hole que ninguém nunca escreveu.",
+      "Ele lista o MiB como missing e deixa intocado o buffer de quem chamou."
+    ],
+    "why": [
+      "Só os metadados sabem que um [[hole]] é lido como zeros. O [[journal]] nunca devolve zeros para bytes que não tem, porque eles podem ser dados removidos ou perdidos.",
+      "Para o [[journal]], um [[hole]], bytes [[evict|removidos]] e bytes [[lost|perdidos]] são a mesma coisa, e ele não sabe distingui-los. Isso é trabalho do [[engine]].",
+      "O [[journal]] informa como [[missing]] todo intervalo que não tem, seja qual for a causa. Depois é o [[engine]] que descobre pelos metadados que se trata de um hole."
+    ],
+    "notes": "§2: as lacunas não têm explicação, e o journal informa do mesmo jeito (MUST) um extent nunca escrito, um removido e um perdido. §3.2 ReadAt: nunca preenche com zeros nem faz leitura curta (MUST NOT), missing é exato e o buffer fica intocado. Quem chama distingue hole, eviction e perda (RFC 0 §6.1)."
+  },
+  "how": {
+    "kicker": "Como funciona"
+  },
+  "life": {
+    "title": "De uma escrita a espaço livre",
+    "notes": "§3.1 Write, §3.3 Offload ('Offload makes content evictable; Release evicts it'), §3.5 Release, §7.1 Releasing storage, §7.2 Repack. Um segment que fica sem nada vivo é aposentado pelo próprio journal, sem esperar o repack (§7.1)."
+  },
+  "offer": {
+    "title": "Uma [[offer|offer]] é congelada",
+    "items": [
+      "`Offload` entrega a offer a um callback do engine. Enquanto o callback roda, a offer devolve os bytes como estavam no momento da oferta, mesmo que um cliente os sobrescreva, porque o [[carver|carver]] calcula o hash deles e o uploader os lê de novo mais tarde.",
+      "O engine chama `report` uma vez para cada [[block|bloco]] que confirma, e o journal marca na hora como offloaded os [[extent|extents]] desse bloco.",
+      "Se o callback devolve um erro, nada é desfeito. Os extents já [[report|informados]] continuam marcados, e os outros continuam [[dirty|dirty]].",
+      "Informar um extent que não fazia parte da offer é um erro, e o journal o recusa."
+    ],
+    "boundsTitle": "Limites",
+    "bounds": [
+      "O engine passa a cada chamada um limite de tamanho, e uma offer nunca contém mais bytes dirty do que isso.",
+      "Todo [[segment|segment]] lido por uma offer fica preso: o [[repack|repack]] não pode movê-lo nem liberá-lo até a callback do engine retornar. Uma offer para em 64 segments presos, ou em 256 somando todas, mas o seu primeiro extent sempre cabe. O resto espera outra offer.",
+      "Todo byte é conferido com o checksum do seu [[record|record]] antes de ser entregue."
+    ],
+    "example": "Por exemplo, uma passada oferece 64 MiB, que o engine corta em 16 blocos de 4 MiB. O bloco 3 é confirmado primeiro, e os seus 4 MiB já podem ser removidos. Depois o bloco 9 falha, e tudo o que já tinha sido informado continua marcado.",
+    "notes": "§3.3 Offload: o que é uma offer, report bloco a bloco, 'limit bounds the dirty bytes one call offers' (o engine o escolhe, RFC 8 §6.2), 'An offer pins a bounded number of segments' (todo segment com um record oferecido fica no disco, parado, até fn retornar; enquanto isso o repack não pode aposentá-lo, §7.2), 'Offered returns no unverified byte'. Os limites 64 e 256 têm um marcador decision: constantes, não medidas. São 'proposals' em §3.3 e na pergunta 4 de §10. Quando o próximo extent passaria de um limite, a offer para de acrescentar extents e oferece o resto numa chamada seguinte; o primeiro extent sempre cabe, então uma offer nunca é vazia (§3.3). Os segments presos ficam então limitados pelo limite global mais um por offer em andamento (§3.3)."
+  },
+  "repack": {
+    "title": "O espaço volta em [[segment|segments]] inteiros",
+    "ponytail": "Liberar espaço um segment inteiro de cada vez obriga a copiar os [[record|records]] vivos que estão no mesmo segment. Quando um segment está 85% vivo, copiam-se cerca de 5,7 bytes para cada byte liberado. Esse custo ainda não foi medido.",
+    "notes": "§3.5 (um release não devolve espaço), §7.1 (o espaço só é liberado em segments inteiros; o marcador ponytail com u ÷ (1 − u)), §7.2 Repack (seleção: primeiro o menor conteúdo vivo; preservação do conteúdo). Os 20% da cena são uma ilustração. O custo 'ainda não medido' é o benchmark J8 (pergunta 1 de §10). O spare: §7.1 (o espaço de um segment volta ao filesystem quando ele é apagado, ou ao pool de spares quando é reciclado como spare) e §6 (um spare vira o próximo segment de um stream)."
+  },
+  "versions": {
+    "title": "Dois números em todo [[record|record]]",
+    "table": [
+      [
+        "",
+        "[[sequence-number|Sequence number]]",
+        "[[content-version|Content version]]"
+      ],
+      [
+        "Responde",
+        "a ordem em que este [[journal|journal]] anexou",
+        "quais bytes são, e qual é mais novo"
+      ],
+      [
+        "Escopo",
+        "este journal",
+        "o arquivo, onde quer que esteja"
+      ],
+      [
+        "Escrita ou remoção",
+        "um novo",
+        "uma nova, atribuída pelo journal"
+      ],
+      [
+        "[[fill|Fill]]",
+        "um novo",
+        "a versão que os metadados registraram com a cópia no bucket"
+      ],
+      [
+        "Cópia de conteúdo feita pelo [[repack|repack]]",
+        "um novo",
+        "a do original, inalterada"
+      ]
+    ],
+    "footer": "Para cada byte de um arquivo, a leitura recebe a content version mais nova que o journal aplicou. Uma leitura nunca usa os sequence numbers para escolher os bytes: só confere se o record que encontra traz o número que o journal espera. Os sequence numbers ordenam os records durante a recuperação. Quando bytes são enviados, os metadados que os registram guardam a content version deles, então os bytes trazidos de volta do bucket chegam com a versão que tinham.",
+    "notes": "§4.3 Versions (a tabela, resumida), §2 (vence a versão mais nova aplicada), §4 (uma busca deve ser inequívoca sem sequence numbers). As versões são atribuídas dentro do append serializado do arquivo (§3.1). A versão de um fill: §3.4, 'v is the content version of the ref the bytes were fetched from: its newest (RFC 6 §2.1)'; o record do fill a carrega. Leitura e sequence numbers: §4, 'The entry carries its record's sequence number only so a read can compare it with the header it finds and so a record that does not verify can be named'. A linha do repack é 'a repack copy of content' do §4.3; um record só de cabeçalho que o repack leva adiante mantém os dois números (§4.3, §7.2), e o slide o omite."
+  },
+  "race": {
+    "kicker": "Operações concorrentes"
+  },
+  "fill": {
+    "title": "Um fetch compete com uma nova escrita",
+    "notes": "'Start here · Scenarios', o fetch que compete com uma escrita; §3.2 (asOf), §3.4 Fill: Fill(ctx, id, off, p, asOf, v), em que asOf é a change version que ReadAt devolveu (a checagem) e v a content version do ref de onde vêm os bytes (gravada no record). Resultado: os bytes antigos do bucket nunca caem sobre a nova escrita, e nunca são marcados offloaded. A checagem é grosseira de propósito: uma recusa desnecessária custa só um cache miss."
+  },
+  "floor": {
+    "title": "Um arquivo do qual o journal não guarda nada",
+    "items": [
+      "Quando um arquivo é apagado, ou tudo o que ele guardava passa por release, o journal deixa de acompanhá-lo e não guarda change version para ele.",
+      "Um [[fill|fill]] para um arquivo assim é conferido com um dos 4.096 [[floor-bucket|floor buckets]], escolhido por um hash do ID do arquivo. Quando o journal deixa de acompanhar um arquivo, ele eleva o bucket do arquivo à última change version dele, então um fill mais antigo continua sendo recusado.",
+      "A tabela tem tamanho fixo, então não cresce com o número de arquivos que o journal já guardou. O preço é que uma mudança num arquivo pode fazer recusar fills dos outros arquivos do mesmo bucket, cerca de um arquivo em 4.096. Uma recusa desnecessária assim custa só um cache miss."
+    ],
+    "notes": "§3.4 Fill, floor buckets: 'The per-file change version is bounded by floor buckets: a fixed table of 4,096 versions, indexed by a hash of the FileID'; a entrada de um arquivo é descartada quando ele não tem extent nem removal marker (depois de um Delete, ou quando tudo passou por release), e descartá-la eleva o bucket do arquivo à versão da entrada; um arquivo sem entrada é comparado com o seu bucket; na abertura todo bucket começa na content version mais alta entre a do disco e o floor. Share eleva todo bucket ao seu floor antes de devolver o handle (§3, §3.4), então o attach de um share pode recusar sem necessidade os fills em andamento de todo arquivo sem entrada; attaches são raros, e uma recusa dessas custa um cache miss. O marcador decision: um bucket limita as recusas desnecessárias de um delete a cerca de um arquivo em 4.096; 'a needless refusal costs only a cache miss'."
+  },
+  "fillwrite": {
+    "title": "[[fill|Fill]] não é uma escrita",
+    "table": [
+      [
+        "",
+        "WriteAt",
+        "Fill"
+      ],
+      [
+        "Bytes vêm de",
+        "um cliente",
+        "o [[remote-tier|remote tier]], para aquele [[extent|extent]] exato"
+      ],
+      [
+        "Sobre bytes presentes",
+        "os substitui",
+        "nunca os toca"
+      ],
+      [
+        "[[content-version|Content version]]",
+        "nova, do [[journal|journal]]",
+        "a registrada com a cópia buscada"
+      ],
+      [
+        "[[offloaded-bit|Offloaded bit]]",
+        "desligado, porque ainda precisa passar por offload",
+        "ligado, porque já passou por offload"
+      ]
+    ],
+    "footer": "As duas operações podem compartilhar o código que anexa records, mas nunca são uma só entrada com um parâmetro que escolhe entre elas. Um valor errado descartaria a escrita de um cliente, ou tornaria removível um conteúdo que não está em bucket nenhum, e nada falharia na hora.",
+    "notes": "§3.4 Fill, e a subseção 'Fill is not a write'. Fill é tão crítico quanto Release: os bytes que recebe viram conteúdo que o journal vai liberar. No RFC: uma implementação SHOULD compartilhar o mecanismo de append e MUST NOT expô-los como uma só entrada escolhida por um parâmetro."
+  },
+  "quizFill": {
+    "question": "Uma leitura encontra um intervalo [[missing]] na v50. Antes de o fetch terminar, um cliente escreve 4 KiB nele. O que `Fill` faz?",
+    "options": [
+      "Não grava nada e devolve um erro, porque o arquivo mudou.",
+      "Grava os bytes buscados só onde os novos 4 KiB não caíram.",
+      "Grava o intervalo inteiro, pondo os bytes do bucket sobre os novos 4 KiB."
+    ],
+    "why": [
+      "A escrita levou a [[change-version|change version]] do arquivo para v51, mais nova que a v50 que a leitura devolveu. Por isso `Fill` não grava nenhum dos bytes buscados.",
+      "Um [[fill]] não mexe nos bytes que o journal já tem, mas, se o arquivo mudou depois da leitura, é recusado por inteiro. Nem os bytes em volta dos novos 4 KiB são gravados.",
+      "Um [[fill]] nunca sobrescreve bytes que o [[journal]] já tem. Pôr os bytes mais antigos do bucket sobre a nova escrita faria o cliente perder os seus dados."
+    ],
+    "notes": "§3.4 Fill: 'A Fill older than the file is refused': se a change version do arquivo é mais nova que asOf, Fill não grava nada e devolve um erro próprio (no RFC, um MUST); Fill nunca sobrescreve nenhuma parte de um held extent (um MUST NOT). 'Start here · Scenarios', o fetch que disputa com uma escrita."
+  },
+  "survive": {
+    "title": "O que sobrevive a quê",
+    "c1Title": "O processo morre",
+    "c1": "Um [[record|record]] já escrito sobrevive, porque o sistema operacional ainda o guarda. `WriteAt` escreve o record antes de retornar.",
+    "c2Title": "Falta energia antes de um [[sync|sync]]",
+    "c2": "Um record ainda não sincronizado não sobrevive à perda do host. Um cliente que nunca faz flush pode perder, no máximo, as escritas que fez dentro do último prazo antes da falha.",
+    "c3Title": "Depois de um flush ou ao fim do prazo",
+    "c3": "Records sincronizados sobrevivem a um crash do host e a uma queda de energia. Um só sync atende todos os escritores que esperam no mesmo stream.",
+    "footer": "Nenhuma configuração pode declarar um [[journal|journal]] não [[durable|durable]]. No reinício, um record escrito pela metade no fim do segment mais novo de um stream é cortado como cauda truncada, e não é informado como dano. Um record já sincronizado nunca é cortado assim: se estiver danificado, o dano é informado.",
+    "notes": "'Start here · Scenarios' (falta energia meio segundo depois de uma escrita sem flush); §5.1 regras de ordem; §5.2 Syncing (prazo de sync, group commit, 'nenhuma configuração declara um journal não durable'); RFC 28 §3.3 (cauda truncada). RFC 28 §3.3: uma cauda truncada só existe no segment mais novo de um stream, o único que podia estar aberto para append no crash; um dano a records cujo sync está provado, pelo synced-through offset de um record posterior ou por um sync mark que o engine registrou, é corrupção e é informado, nunca cortado como cauda truncada."
+  },
+  "failedsync": {
+    "title": "Um [[sync|sync]] que falhou não é um sync lento",
+    "lead": "Depois de um sync que falhou, o sistema operacional pode ter descartado as páginas que não conseguiu gravar e marcado como limpas, então um sync seguinte pode “dar certo” sem gravá-las.",
+    "steps": [
+      "Tudo o que foi escrito no [[segment|segment]] desde o último sync bem-sucedido, o que o RFC chama de janela, conta como não [[durable|durable]].",
+      "Quando um segment fica cheio, o journal o sela anexando um selo (seal marker) no fim. Nada mais é anexado a um segment que falhou, nem mesmo esse selo, e o stream continua num novo segment.",
+      "O [[journal|journal]] anexa de novo no novo segment os [[record|records]] da janela, pegando-os da sua cópia em memória ou relendo-os e conferindo-os com o checksum que guardou. Se não conseguir, ele os declara falhos como [[loss-event|loss events]].",
+      "Nesse caso, o próximo `Sync` de cada arquivo que teve uma escrita na janela devolve o erro, e só ele. `Sync` é a chamada que o engine faz quando um cliente faz flush de um arquivo. O [[write-verifier]] também muda, para que os clientes reenviem as suas escritas."
+    ],
+    "rule": "Um sync que dá certo depois nunca conta como sucesso para escritas feitas antes da falha.",
+    "notes": "§5.3 A failed sync (nada mais é anexado, 'not even a seal marker'); §5.1 (as duas últimas regras de ordem); §5.2 (o stream torna um segment durable quando passa ao seguinte, porque o seal marker precisa ser durable antes que exista um sucessor; 'The journal's part in a client's flush is Sync'); §3.1 (Sync nomeia arquivos); 'Start here · Scenarios' (o disco informa um erro). O 'só ele' é a checagem de conformidade de §5.3 'a failed window is reported once': o próximo Sync(F) falha, o seguinte dá certo. Records só de header são sempre reanexados, nunca declarados falhos, fora de um journal somente leitura."
+  },
+  "readonly": {
+    "title": "Quando o disco para de aceitar escritas",
+    "lead": "O [[journal|journal]] vira **somente leitura**, e fica assim até ser fechado e reaberto, se uma chamada recebe `EROFS`, ou se o novo [[segment|segment]] para onde um stream passou depois de uma falha também falha antes que algum [[sync|sync]] dê certo nele.",
+    "items": [
+      "As leituras continuam, e todo [[held-extent|held extent]] é servido, inclusive os [[dirty|dirty]].",
+      "Toda chamada que anexaria um [[record|record]] falha na hora com `ErrJournalReadOnly`.",
+      "Todo record ainda não sincronizado, em qualquer stream, é declarado falho como os de uma janela que falhou.",
+      "Quando o journal é reaberto, é a recuperação que decide quais records são [[durable|durable]]."
+    ],
+    "notes": "§5.4 A journal that cannot write. Uma exceção ao segundo item: DropOlder, que ainda descarta em memória (§3.3). Sem a regra, um filesystem que recusa toda escrita esgotaria os spares e o headroom uma chamada falha por vez."
+  },
+  "capacity": {
+    "title": "Um [[journal|journal]] cheio recusa na hora",
+    "items": [
+      "Antes de aceitar os bytes de uma escrita, o journal reserva o espaço deles tanto no limite da [[share|share]] quanto no tamanho máximo do journal.",
+      "Se não couberem, `WriteAt` falha **na hora** com `ErrNoSpace`, que indica o limite atingido. Não faz I/O e não espera.",
+      "Ele não espera porque só as chamadas do [[engine|engine]] liberam espaço. Um journal que esperasse estaria esperando quem o chamou.",
+      "Enquanto [[offload|offload]], [[release|release]] e [[repack|repack]] ainda podem liberar espaço, o engine responde [[retry-later|retry-later]] em vez de um erro. Um cliente NFS então reenvia a escrita, e uma requisição SMB fica pendente."
+    ],
+    "headroomTitle": "Headroom",
+    "headroom": "Os [[record|records]] que liberam espaço, como releases, truncates, deletes e selos, usam um [[headroom]] reservado e fora de todo limite, para que um journal cheio ainda possa fazer release. Quando sobra menos da metade do headroom, as escritas de conteúdo são as primeiras a ser recusadas.",
+    "notes": "§6 Capacity: os dois limites, 'a refusal is immediate, and named', records sem bytes, o headroom e a regra da metade. Ler um contador e depois decidir não é conforme: a reserva precisa ser atômica. O RFC 8 §10.2 tem a tabela de respostas do engine."
+  },
+  "limits": {
+    "title": "Os seis limites que uma escrita pode atingir",
+    "items": [
+      "**Share** e **journal**: cada [[share|share]] tem um limite para os bytes dos seus records, e o journal tem um tamanho máximo no disco, contado em [[segment|segments]] inteiros.",
+      "**Índice**: um teto configurado para quantos [[extent|extents]] o [[placement-index|placement index]] pode manter em memória.",
+      "**Headroom**: quando resta menos da metade do [[headroom|headroom]], as escritas de conteúdo são recusadas, para que os records que liberam espaço ainda possam ser anexados.",
+      "**Limite de versão**: um cliente pode ver uma [[content-version|content version]] antes que o seu record seja sincronizado, então depois de um crash o journal nunca pode entregá-la de novo. Ele nunca entrega uma versão igual ou acima do [[version-limit|limite de versão]], que o engine registra com antecedência no metadata store. Uma escrita que o atingiria é recusada até o engine elevá-lo.",
+      "**Pool de spares**: quando o segment de um [[append-stream|stream]] fica cheio, o stream passa para um segment vazio de reserva (spare) que o journal preparou com antecedência. Se nenhum spare estiver pronto, a escrita é recusada."
+    ],
+    "footer": "Uma recusa pelo pool de spares se resolve sozinha assim que um novo spare fica pronto, então basta ao engine tentar de novo. Qualquer outro limite só se resolve quando o engine libera espaço.",
+    "notes": "§6 Capacity: os dois limites (o limite de uma share sobre os bytes dos seus records, o máximo do journal sobre o espaço alocado em segments inteiros), 'a refusal is immediate, and named', a regra da metade do headroom, o pool de spares ('When a stream's segment fills, a spare becomes its next segment and the journal makes a new spare off the write path'; uma escrita de conteúdo que precisa de um segment quando nenhum spare está pronto é recusada indicando o pool; 'spare clears on its own and is retried, every other limit clears only once the engine reclaims space'). §4.2 (ExtentLimit, o teto de entradas do índice). §4.3 (o limite de versão: nenhuma versão emitida igual ou acima dele, elevado pelo chamador com antecedência no tempo; uma escrita que o atingiria falha com ErrNoSpace indicando-o, e o engine responde ErrDelay até a elevação ser gravada, RFC 8 §2.7 e §10.2)."
+  },
+  "full": {
+    "title": "Uma cópia grande encontra um [[journal|journal]] cheio",
+    "steps": [
+      "Uma escrita precisa de mais espaço do que o máximo do journal permite, então `WriteAt` falha na hora com `ErrNoSpace`.",
+      "O [[engine|engine]] não faz a escrita falhar. Ele libera espaço e depois tenta a escrita de novo por conta própria. Se isso demorar, o cliente recebe [[retry-later|retry-later]] (`ErrDelay`) em vez de um erro: um cliente NFS reenvia a escrita, e uma requisição SMB fica pendente.",
+      "O engine libera os [[extent|extents]] já informados como [[offload|offloaded]]. Os records de [[release|release]] que ele anexa usam o [[headroom|headroom]].",
+      "Sozinho, um release não libera espaço em disco. Em seguida o [[repack|repack]] reanexa no fim do stream os records vivos de um [[segment|segment]] e apaga o arquivo do segment.",
+      "A nova tentativa do engine chega dentro do prazo do cliente, e a escrita cabe."
+    ],
+    "outcome": "O limite nunca é ultrapassado, e nenhum byte [[dirty|dirty]] é descartado para abrir espaço.",
+    "notes": "'Start here · Scenarios', o journal está cheio enquanto chega uma cópia grande (passo 2: o engine responde retry-later; passo 5: o engine tenta de novo dentro do prazo do cliente); §3.5, §6, §7.2. Quem tenta de novo: no RFC 8 §10.2 o engine faz repack ou eviction e tenta de novo, respondendo ErrDelay enquanto ainda é recusado; no RFC 0, a linha do glossário de retry-later e a linha 'journal at capacity': o NFS responde NFS4ERR_DELAY / NFS3ERR_JUKEBOX e o cliente tenta de novo, o SMB mantém a requisição pendente com uma resposta interim."
+  },
+  "quizSync": {
+    "question": "Um [[sync]] de um [[segment]] falha com o erro de E/S `EIO`, e depois um segundo sync dele dá certo. O que acontece com as escritas que o primeiro devia cobrir?",
+    "options": [
+      "O segundo sync as cobre, e a partir daí elas contam como durable.",
+      "São anexadas de novo num novo segment, ou declaradas falhas como loss events.",
+      "O journal vira somente leitura, e a recuperação decide quais sobreviveram."
+    ],
+    "why": [
+      "Depois de um [[sync]] que falhou, o sistema operacional pode ter marcado as páginas como limpas sem gravá-las. Então um sync que dá certo depois não prova nada sobre as escritas anteriores.",
+      "Essas escritas contam como não [[durable]]. O [[journal]] anexa de novo os seus [[record|records]] num novo [[segment]], ou os declara falhos como [[loss-event|loss events]].",
+      "Um sync que falha com `EIO` só faz o stream passar para um novo [[segment]]. O [[journal]] vira somente leitura com `EROFS`, ou se o novo segment também falhar antes de algum sync dar certo nele."
+    ],
+    "notes": "§5.3 A failed sync: tudo o que foi escrito desde o último sync bem-sucedido do segment não é durable, e a janela é reanexada no novo segment ou declarada falha como loss events (a menos que o journal tenha virado somente leitura). §5.1: um sync que falhou nunca satisfaz (MUST NOT), com um sucesso posterior, um Sync de escritas feitas antes da falha. §5.4: somente leitura com EROFS, ou quando o spare para onde o stream passou também falha antes que algum sync dê certo nele. A pergunta cita EIO para que não se aplique a passagem para somente leitura do §5.4, que um EROFS provocaria."
+  },
+  "index": {
+    "title": "Dois índices, fáceis de confundir",
+    "table": [
+      [
+        "",
+        "Placement index",
+        "[[segment|Segment]] catalog"
+      ],
+      [
+        "Onde",
+        "em memória",
+        "dentro de cada segment selado"
+      ],
+      [
+        "Descreve",
+        "[[held-extent|held extents]] — conteúdo vivo",
+        "todo [[record|record]] daquele segment, vivo ou não"
+      ],
+      [
+        "Serve leituras",
+        "sim, sempre",
+        "nunca"
+      ],
+      [
+        "Duração",
+        "enquanto o [[journal|journal]] está aberto",
+        "a vida do segment"
+      ],
+      [
+        "Autoritativo",
+        "sim, em execução",
+        "não"
+      ]
+    ],
+    "footer": "Durante a recuperação, o [[placement-index]] é reconstruído a partir dos catalogs, ou lendo os próprios segments onde não há catalog, como num segment que nunca foi selado. Para cada arquivo, é um conjunto ordenado pelo offset inicial, como uma B-tree, de modo que buscar um offset custa O(log n). Percorrer os extents um a um é proibido.",
+    "notes": "§4 (a tabela de comparação, resumida: o catalog fica dentro de cada segment selado, descreve todo record, vivo ou superado, é imutável durante a vida do seu segment e não é autoritativo; o índice é construído a partir dos catalogs ou de uma varredura na recuperação, nunca o contrário; um segment ativo não tem catalog até ser selado), §4.1 (os limites exigidos), 'Representation' (a B-tree é um SHOULD). O layout do catalog é o RFC 28 §2.4.",
+    "catalog": "Quando um [[segment|segment]] é selado, o journal grava dentro dele um catalog que lista todo [[record|record]] do segment. Depois disso o catalog nunca muda, então continua listando records que já não estão vivos, porque uma escrita posterior os substituiu ou um release os descartou. Por isso só o placement index é autoritativo."
+  },
+  "indexsize": {
+    "title": "O índice cresce com [[extent|extents]], não com bytes",
+    "table": [
+      [
+        "1 TiB mantido como",
+        "Extents",
+        "Índice, extents escritos em ordem de offset",
+        "Índice, extents escritos em ordem aleatória"
+      ],
+      [
+        "extents de 1 MiB",
+        "~1,0 milhão",
+        "~56 MB",
+        "~72 MB"
+      ],
+      [
+        "extents de 256 KiB",
+        "~4,2 milhões",
+        "~222 MB",
+        "~289 MB"
+      ],
+      [
+        "extents de 64 KiB",
+        "~16,8 milhões",
+        "~889 MB",
+        "~1,16 GB"
+      ]
+    ],
+    "footer": "Extents escritos em ordem aleatória deixam menos cheios os nós da B-tree do índice, então uma entrada custa cerca de 69 bytes em vez de 53. Acima de um limite configurado (`ExtentLimit`), escritas e [[fill|fills]] são recusados com um erro que aponta o índice, então o journal nunca se degrada em silêncio. Remoções e [[release|releases]] não são recusados no próprio limite, e assim a contagem pode voltar a cair.",
+    "notes": "§4.2: cerca de 53 bytes por entrada em ordem e 69 em ordem aleatória, medidos num arquivo de 10^6 extents; muitos arquivos pequenos custam mais por entrada. Releases, deallocates e clone targets que partem um extent são recusados quando a contagem passa o limite em um oitavo; reports, truncates, deletes e Forget nunca."
+  },
+  "numbers": {
+    "n1": "256 MiB",
+    "w1": "o tamanho de um [[segment|segment]] proposto nos exemplos do RFC",
+    "n2": "1 s",
+    "w2": "o prazo de [[sync|sync]] proposto, que é o máximo que pode perder um cliente que nunca faz flush",
+    "n3": "53–69 B",
+    "w3": "por entrada de índice, então 1 TiB escrito em pedaços de 64 KiB ocupa cerca de 0,9–1,2 GB de índice",
+    "n4": "64 · 256",
+    "w4": "os limites propostos de [[segment|segments]] que uma [[offer|offer]] pode prender, e todas juntas",
+    "n5": "65.536",
+    "w5": "records sem bytes depois do header, como releases e remoções, que o [[headroom|headroom]] proposto comporta, cerca de 14 MiB",
+    "n6": "4.096",
+    "w6": "[[floor-bucket|floor buckets]], com que se confere um [[fill|fill]] quando o journal não guarda nada do arquivo dele",
+    "notes": "256 MiB: 'Start here · The problem' e §7.4. 1 s: §5.2 e 'Start here'. 53–69: §4.2. 64 e 256: §3.3. 65.536 e 14 MiB: §6 (journal.headroom_records). 4.096: §3.4. A pergunta 4 do §10 diz que headroom, reservas e limites de presos não foram medidos. O segment de 256 MiB, o prazo de 1 s, os limites 64 · 256 e os 65.536 records de headroom são todos propostas. Records só de header: §6 (releases, truncates, deletes e os outros records sem bytes usam o headroom)."
+  },
+  "shares": {
+    "title": "Um [[journal|journal]], muitas [[share|shares]]",
+    "items": [
+      "Cada share trabalha pelo seu próprio `Handle` do journal, que é o acesso da share ao journal, não o file handle de um cliente. O [[share-tag|tag]] da share é gravado em todo [[record|record]] que ela anexa.",
+      "Um tag identifica uma única share. Ele vem de um contador que nunca diminui, então um tag nunca é reutilizado.",
+      "Uma chamada sobre um arquivo que pertence a outro tag é recusada com `ErrOtherShare`. Os bytes de uma share nunca são servidos pelo `Handle` do journal de outra.",
+      "Cada share tem um limite, para que nenhuma tome o disco inteiro. A soma dos limites de todas as shares pode passar do máximo do journal."
+    ],
+    "notes": "§3 Interface: 'A tag names one share, once', 'A file is its share's, and the journal checks it'. §6: limites por share. O Handle do journal é o resultado de (*Journal).Share em §3, o acesso de uma share ao journal; o deck não liga o termo 'handle' do glossário, que é o file handle de um cliente. Numa instalação correta ErrOtherShare nunca dispara; protege contra um clone, restore ou move que pulou um passo."
+  },
+  "stranded": {
+    "title": "Um [[share-tag|tag]] que nenhuma share reivindica",
+    "items": [
+      "Um tag pode ficar sem share quando a sua [[share|share]] é apagada, ou quando os metadados da instalação são restaurados de um backup. A restauração recria cada share com um novo tag, para que o journal nunca sirva os bytes guardados sob o tag antigo como se fossem o conteúdo atual da share restaurada.",
+      "Antes de o nó servir os clientes, o engine isola (strand) cada tag assim. A partir daí, os seus bytes nunca são servidos por outra share, nem [[evict|removidos]] nem [[offer|oferecidos]].",
+      "Quando o nó já está servindo, o engine exporta os bytes do tag para **resgate** (salvage): copia todo byte que o journal guarda para esse tag em arquivos num diretório de resgate separado, de onde um operador pode recuperá-los.",
+      "A exportação espera o serviço começar para não deixar o nó fora do ar por horas. Só depois que ela dá certo o tag é esquecido, porque os seus bytes podem ser a única cópia do conteúdo de uma share perdida."
+    ],
+    "notes": "§3 Interface: 'A tag no share claims is stranded before serving and salvaged after' (um recovery import, que dá às shares novas identidades, ou a exclusão de uma share; Strand antes de servir; export de todo held extent sob salvage.path depois que o serviço começa, e então Forget), o marcador decision 'salvage runs after serving, not before' (exportar antes deixaria a instalação fora do ar por horas), 'A share attached as an import holds none of its old extents' (um import recebe um novo tag), e 'The journal offers no shortcut: a tag forgotten unread would drop dirty bytes that may be the only copy'. O lado de quem chama é o RFC 8 §2.5 passo 5 e o RFC 26 §2.3. O export de uma share criptografada é selado com uma salvage data key; um export que falha é uma condição de saúde, tentada de novo, e o tag continua isolado até dar certo. Por que uma restauração recebe um novo tag: §3, 'A share attached as an import holds none of its old extents' (um import recebe um novo tag, então as chamadas sobre arquivos do tag antigo são recusadas e a share nunca serve extents velhos e limpos sobre o que foi escrito depois)."
+  },
+  "concurrency": {
+    "title": "O que não pode bloquear o quê",
+    "items": [
+      "Uma leitura de um arquivo nunca espera uma escrita em outro arquivo, um [[sync|sync]], ou a recuperação de um [[segment|segment]] que ela não lê.",
+      "Uma escrita espera só o append do próprio arquivo e a capacidade.",
+      "Um truncate, deallocate ou delete nunca espera o fim de uma passada de [[offload|offload]]. A passada mantém os bytes que lhe foram oferecidos.",
+      "As content versions são atribuídas enquanto os appends do arquivo acontecem um de cada vez, então as versões de um arquivo são anexadas na ordem em que foram atribuídas."
+    ],
+    "notes": "§8.1 What must not block what; §3.1 (atribuição de versões). 'Espera a capacidade' é a redação do §8.1; o §6 diz que uma recusa por capacidade é imediata e nunca espera — o deck mantém as duas como o RFC as escreve."
+  },
+  "tests": {
+    "kicker": "Como se testa"
+  },
+  "testable": {
+    "title": "Testável sozinho",
+    "items": [
+      "Um teste abre um [[journal|journal]] num diretório temporário, usa a interface e confere o que volta e o que está no disco. Sem metadata store, [[carver|carver]], [[syncer|syncer]] ou block store.",
+      "**O filesystem é real**, nunca simulado, porque caudas truncadas e saber se uma escrita sobreviveu são propriedades do armazenamento real.",
+      "**A perda de armazenamento é simulada abaixo do journal.** Uma camada de teste lembra toda escrita não sincronizada, e um crash simulado decide quais delas sobrevivem.",
+      "**O tempo é virtual.** O timer de [[sync|sync]] e toda espera usam um relógio que o teste faz avançar."
+    ],
+    "kill": "Matar o processo não prova nada sobre durabilidade. As escritas não sincronizadas ficam no page cache do sistema operacional, então o teste provaria uma durabilidade que o journal não tem.",
+    "notes": "§1.3 It is testable on its own. O §9.4 agrupa as checagens: perda silenciosa de dados, travamento e uso ilimitado de recursos, recuperação, observabilidade."
+  },
+  "whom": {
+    "title": "Quem precisa saber o quê",
+    "engTitle": "Quem escreve o [[engine|engine]]",
+    "eng": "O [[journal|journal]] não decide nenhuma política. É você quem escolhe o que passa por [[offload|offload]], quando fazer [[release|release]], quanto [[repack|repack]] fazer e como responder a cada recusa. Passe para `Fill` só bytes buscados no remote tier, senão o journal vai tratá-los como offloaded e poderá liberar um conteúdo que não existe em nenhum outro lugar.",
+    "ops": "Há um journal por disco, dimensionado por um máximo e por limites por share. Um journal cheio faz os clientes tentarem de novo em vez de falharem, enquanto ainda dá para liberar espaço. Tags não reivindicados são informados com os seus bytes e exportados para resgate antes de serem esquecidos.",
+    "testTitle": "Quem escreve testes",
+    "test": "Os testes usam um filesystem real, uma camada que simula falhas abaixo do journal e um tempo virtual. As checagens procuram perda silenciosa de dados, um journal que trava ou consome recursos sem limite, falhas na recuperação depois de um crash, e verificam o que o journal informa sobre si mesmo.",
+    "notes": "Enquadramento do deck, a partir de §3.4 (quem chama Fill), §3.5 e §7.2 (a política é do engine), §6, §3 (strand e salvage), §1.3 e §9.4. Os quatro grupos são os de §9.4: A perda silenciosa de dados, B travamento e uso de recursos sem limite, C recuperação, D observabilidade."
+  },
+  "rules": {
+    "items": [
+      "Uma leitura nunca preenche com zeros nem encurta o que não tem, e a lista `missing` é exata.",
+      "`Release` recusa um [[extent|extent]] não informado como [[offload|offloaded]], e um release recusado não libera nada.",
+      "`Fill` nunca sobrescreve bytes mantidos, e o que ele escreve é marcado offloaded.",
+      "O [[journal|journal]] marca exatamente os extents informados, e nunca uma escrita mais nova feita por cima deles.",
+      "Uma escrita reserva espaço antes de aceitar bytes, e falha em vez de passar de um limite.",
+      "Um [[sync|sync]] que dá certo depois nunca compensa um que falhou. Num [[segment|segment]] que falhou, nada mais é anexado."
+    ],
+    "footer": "O journal depende só da biblioteca padrão e da interface de arquivos do sistema operacional, e um teste de imports garante isso.",
+    "notes": "Cada regra é um MUST ou MUST NOT do RFC: §3.2, §3.5, §3.4, §3.3, §3.1 e §6, §5.1 e §5.3; §1.1 para o teste de imports."
+  },
+  "nongoals": {
+    "title": "O que o [[journal|journal]] nunca faz",
+    "items": [
+      "Ele nunca decide se os bytes que não tem são um [[hole|hole]], se foram [[evict|removidos]] ou se estão [[lost|perdidos]].",
+      "Ele nunca devolve zeros para bytes que não tem.",
+      "Ele não sabe o que é um [[chunk|chunk]] ou um [[block|bloco]]. Um [[record|record]] não é um chunk.",
+      "Ele não sabe qual [[remote-tier|remote tier]] existe, e nunca fala com ele.",
+      "Ele não importa outros componentes, como o metadata store, o [[syncer|syncer]] ou o [[carver|carver]]."
+    ],
+    "footer": "A política, como o que [[evict|remover]] e quando fazer [[repack|repack]], cabe ao [[engine|engine]]. O journal fornece o mecanismo.",
+    "notes": "§1.1 Non-goals (cada um, um MUST NOT), §1.2. A nota de rodapé: §3.5 ('the mechanism of eviction; the policy is the engine's') e §7.2 (o engine chama Repack com um orçamento e um escopo)."
+  },
+  "openQuestions": {
+    "questions": [
+      "Ainda não se mediu quanta escrita a mais o [[repack|repack]] causa sob uma carga com muito eviction.",
+      "Do índice, foram medidos a memória e o custo de busca, mas não o custo de inserção.",
+      "Um [[sync|sync]] cobre um só [[append-stream|stream]], então, quando os escritores se espalham por mais streams, cada sync atende menos deles. Numa medição, uma carga que cria muitos arquivos ficou mais lenta à medida que se acrescentavam streams. Mais streams também significam menos espera entre escritores, e qual efeito vence não foi medido.",
+      "O [[headroom|headroom]], as reservas e os limites de segments presos são propostas que nunca foram medidas num [[journal|journal]] cheio.",
+      "O [[repack|repack]] não pode copiar de um [[segment|segment]] que ainda recebe appends, e um segment só é selado quando está cheio ou ocioso. O RFC ainda deve a regra que deixa o repack selá-lo quando falta espaço.",
+      "O journal mostra o seu espaço segment por segment, com os bytes alocados e os mantidos de cada um, mas esse detalhamento por segment ainda não mostra os [[unreclaimed-bytes|bytes não recuperados]] de cada segment."
+    ],
+    "notes": "§10 Open questions (o RFC 28 §5 tem as do formato). A pergunta 1 é o benchmark J8. Pergunta 3: mais streams espalham os escritores por mais syncs; uma carga cheia de creates ficou mais lenta à medida que se acrescentavam streams, sem medir isso contra a contenção que mais streams removem. Pergunta 5: uma passada restrita a uma share sela ela mesma um segment desses (regra devida no contrato de Repack, §7.2), para que o repack alcance os seus bytes não recuperados. Pergunta 6: a contabilidade por segment de §4.4 (inspeção) informa só os bytes alocados e os mantidos. Repack e segments ativos: pergunta 5 e RFC 8 §10.2 passo 4 (todo segment ativo com bytes não recuperados do escopo precisa ser selado para que o repack os alcance; um segment só é selado cheio ou ocioso, RFC 28 §3.1)."
+  },
+  "scenes": {
+    "cast": {
+      "client": "cliente SMB",
+      "engine": "engine",
+      "journal": "journal",
+      "bucket": "bucket S3"
+    },
+    "careless": {
+      "v41dirty": "v41 · dirty",
+      "v42dirty": "v42 · dirty",
+      "byPosition": "v42 marcado offloaded ✗",
+      "staysDirty": "v42 continua dirty",
+      "steps": [
+        "**09:00** — alice-pc escreve 64 KiB no offset 2 GiB de um arquivo. O journal os anexa como **v41**, e a escrita é confirmada.",
+        "**09:01** — O engine recebe uma **[[offer|offer]]** de v41, uma visão congelada desses bytes, e envia para o bucket `dfs-data` um [[block|bloco]] que os contém.",
+        "Durante o upload, alice-pc sobrescreve os mesmos 64 KiB. Agora o journal serve **v42**, enquanto a offer ainda lê v41.",
+        "O bloco é confirmado e o engine **[[report|informa]]** o [[extent|extent]]. Se o journal o marcasse pela posição no arquivo, v42 pareceria [[offload|offloaded]], e o [[evict|eviction]] poderia descartar a única cópia de v42.",
+        "Com o RFC 1, o journal marca só os bytes que ofereceu. v42 continua [[dirty|dirty]] e vai na próxima offer."
+      ]
+    },
+    "extents": {
+      "notHeld": "no disco, não mais mantido",
+      "steps": [
+        "Uma escrita de 8 KiB no offset 0 recebe a versão 7, e agora o journal mantém o [[extent|extent]] (0, 8K).",
+        "Uma segunda escrita de 8 KiB no offset 4K recebe a versão 8 e cobre a metade de cima da primeira.",
+        "Agora o arquivo tem dois [[extent|extents]]: (0, 4K) em v7 e (4K, 8K) em v8. Os bytes antigos de v7 entre 4K e 8K ainda estão no seu [[record|record]] no disco, mas quem os lê recebe v8."
+      ]
+    },
+    "life": {
+      "dirty": "dirty",
+      "offered": "oferecido",
+      "offloaded": "offloaded",
+      "unreclaimed": "não recuperado",
+      "freed": "liberado",
+      "neverReleased": "release recusado",
+      "frozen": "visão congelada",
+      "evictable": "removível",
+      "stillOnDisk": "ainda no disco",
+      "spaceBack": "espaço de volta",
+      "steps": [
+        "**WriteAt** anexa um [[record|record]]. Agora o extent está presente e **dirty**, ou seja, ainda não está no bucket, então um release dele é recusado.",
+        "**Offload** entrega ao engine uma [[offer|offer]] congelada. O engine corta os bytes em [[block|blocos]], envia-os e os confirma.",
+        "O **[[report|report]]** de cada bloco confirmado marca o [[offloaded-bit|offloaded bit]] exatamente nos extents que ele lista.",
+        "O **Release**, que é o jeito como o engine faz eviction, faz o journal deixar de manter extents offloaded. Ele não libera espaço em disco, e os bytes viram **não recuperados**.",
+        "O **[[repack|Repack]]** reanexa no fim do stream os [[record|records]] vivos do [[segment|segment]] e o apaga. Só agora o espaço volta."
+      ]
+    },
+    "repack": {
+      "sealed": "selado",
+      "active": "ativo",
+      "free": "espaço livre",
+      "fs": "filesystem",
+      "live20": "20% vivo, 80% não recuperado",
+      "copied": "+ records vivos",
+      "back": "+ um segment",
+      "steps": [
+        "Depois de muitos releases, o segment `0041.seg` está quase todo **não recuperado**. A maior parte dos seus bytes não serve a nada, mas o arquivo inteiro continua alocado.",
+        "O **Repack** prefere os segments com menos conteúdo vivo e reanexa no fim do stream seus records vivos, com versões e offloaded bits inalterados.",
+        "Quando as cópias estão [[durable|durable]], `0041.seg` é apagado, ou guardado como segment vazio de reserva (spare) que um stream pode pegar depois como o seu próximo segment. Só agora o espaço volta."
+      ]
+    },
+    "fill": {
+      "missing": "missing · asOf v50",
+      "fetch": "fetch",
+      "changed": "change version v51",
+      "refused": "Fill recusado",
+      "steps": [
+        "O Windows lê o primeiro MiB de um arquivo, `[0, 1 MiB)`. O journal não tem nada disso, então responde **missing** junto com a [[change-version|change version]] do arquivo, v50.",
+        "O engine começa a buscar esses bytes no bucket `dfs-data`.",
+        "Enquanto isso alice-pc escreve 4 KiB no offset 0. Recebe v51, e a change version do arquivo sobe para v51.",
+        "O fetch termina. O engine chama `Fill` com os bytes, a versão registrada com a cópia deles no bucket e v50, a change version que a leitura devolveu. O arquivo mudou depois de v50, então Fill não grava nada e devolve um erro próprio."
+      ]
+    }
+  }
+}

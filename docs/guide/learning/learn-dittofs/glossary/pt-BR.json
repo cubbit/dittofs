@@ -1,0 +1,1118 @@
+{
+  "filesystem-service": {
+    "name": "filesystem service",
+    "short": "A única interface neutra em relação ao protocolo que todo adapter chama. Ela decide e ordena cada operação de arquivo.",
+    "long": "A única interface neutra em relação ao protocolo (`vfs.Service`) que todo adapter chama; ela ordena cada operação de um cliente e a encaminha ao primary que a atende. Definida pelo RFC 17.",
+    "clash": "Não é um [[auxiliary-service]], que é código de protocolo ao lado de um adapter, nem um serviço RPC do Windows como o srvsvc. O pacote se chama `vfs`, mas não é o VFS do kernel Linux."
+  },
+  "share": {
+    "name": "share",
+    "short": "Uma árvore de arquivos que o servidor oferece aos clientes; o NFS a chama de export. Cada share tem suas próprias configurações, snapshots e limites no journal.",
+    "long": "Uma árvore de arquivos que o servidor exporta para os clientes, com configurações, snapshots e limites no journal próprios. O NFS a chama de export; clientes NFS e SMB enxergam as mesmas shares."
+  },
+  "node": {
+    "name": "nó",
+    "short": "Um processo de servidor DittoFS. Todo nó executa todos os componentes.",
+    "long": "Um processo de servidor DittoFS, construído por `node.New`; todo nó executa todos os componentes e pode ser primary ou réplica."
+  },
+  "primary": {
+    "name": "primary",
+    "short": "O único nó que ordena e aceita as escritas de um conjunto de arquivos, o seu [[shard]]. Com um único nó, ele é o primary de todas as shares.",
+    "long": "O único nó que ordena e aceita as escritas de um shard, o indicado pelo shard record. Com um único nó, ele é o primary de todas as shares."
+  },
+  "gateway-node": {
+    "name": "nó gateway",
+    "short": "(cluster) O nó aonde chega a chamada de um cliente. Ele a repassa ao primary e não decide nada por conta própria.",
+    "long": "(cluster) O nó onde chega a chamada de um cliente. O seu `vfs.Gateway` encaminha a chamada ao primary quando ele próprio não é o primary, e não decide nada."
+  },
+  "open-state": {
+    "name": "open state",
+    "short": "O registro de quem mantém um arquivo aberto, travado ou em cache. Abrange opens, deny modes, locks de intervalos de bytes e caching grants.",
+    "long": "Quem mantém um arquivo aberto, travado ou em cache; a única coisa, além de um nome, que mantém um arquivo vivo. Decidido no primary do arquivo (RFC 14)."
+  },
+  "deny-mode": {
+    "name": "deny mode",
+    "short": "O acesso que um open recusa a todos os outros opens enquanto estiver ativo. Ele é verificado quando um open é concedido e em toda [[anonymous-open|leitura ou escrita feita sem um open]], como uma escrita NFSv3.",
+    "long": "O acesso que um open nega a todos os outros enquanto está aberto — o deny-write do SMB, por exemplo. Verificado nos dois sentidos quando um open é concedido, e em toda leitura ou escrita [[anonymous-open|anônima]].",
+    "clash": "O SMB expressa ao contrário: `ShareAccess` lista o que os outros opens podem fazer, e o deny mode é o seu complemento sobre leitura, escrita e exclusão."
+  },
+  "handle": {
+    "name": "handle",
+    "short": "O que um cliente guarda para identificar um arquivo. Contém a share e o ID do arquivo, nunca um caminho, e continua válido depois de um reinício.",
+    "long": "O que um cliente guarda para identificar um arquivo. Contém a share e o ID do arquivo, nunca um caminho, e continua válido depois que o servidor reinicia.",
+    "clash": "Um file handle NFS identifica um arquivo. Um **durable handle** SMB é um open mantido depois de uma desconexão, e um `FileId` SMB identifica um open, não um arquivo. O `Handle` do [[journal]] é outra coisa ainda: o acesso de uma share ao journal, não um file handle."
+  },
+  "caching-grant": {
+    "name": "caching grant",
+    "short": "A promessa do servidor a um cliente de que ninguém mais está usando um arquivo, para que o cliente possa mantê-lo em cache. O NFS a chama de delegation, o SMB de oplock ou lease, e o servidor a retoma com um recall.",
+    "long": "A promessa do servidor de que ninguém mais está usando um arquivo — uma delegation NFS, um oplock SMB ou um lease SMB — retomada por um [[recall]] dentro de um tempo limitado."
+  },
+  "retry-later": {
+    "name": "retry-later (ErrDelay)",
+    "short": "O erro neutro em relação ao protocolo para uma chamada que vai dar certo se for repetida em breve. Ele informa o motivo da espera.",
+    "long": "O erro neutro para uma chamada que vai dar certo em breve; ele traz a causa. O NFS responde `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`; o SMB [[held-request|mantém a requisição]] pendente enquanto a causa permitir, e responde na hora se a causa não admite espera."
+  },
+  "anonymous-open": {
+    "name": "open anônimo",
+    "short": "Aquilo sobre o que roda uma leitura ou escrita NFSv3, ou o I/O NFSv4 com o stateid anônimo, no lugar de um open. Carrega só a identidade de quem chama, sem nenhum estado.",
+    "long": "O que substitui o [[open]] numa leitura ou escrita NFSv3, ou no I/O NFSv4 com o stateid anônimo: a identidade de quem chama e nenhum estado."
+  },
+  "admission": {
+    "name": "admission",
+    "short": "As verificações que toda chamada passa na sua [[share]] antes das permissões do próprio arquivo: se a share está servindo, se quem chama se autenticou de forma forte o bastante e de um endereço permitido, em nome de qual usuário ele age ali e se a share aguenta mais uma requisição.",
+    "long": "As verificações por share que toda chamada precisa passar antes da de permissão: o estado da share, os flavours, as regras de cliente, o squashing e depois o teto da share nos buffers de requisição. Quem as faz é o [[filesystem-service|service]], nunca um adapter.",
+    "clash": "Não é a etapa admit do pipeline do adapter, que só desconta o flow control da conexão (um credit SMB, um slot NFSv4.1 ou um teto de 64 requisições) antes de a requisição ser decodificada. Nem o [[admission-lock|admission lock]] ou a [[fold-admission|fold admission]]."
+  },
+  "adapter": {
+    "name": "adapter",
+    "short": "O código de um protocolo de rede, do socket que escuta até a chamada ao filesystem service. Ele não decide nada sobre os arquivos.",
+    "long": "O código de um protocolo de rede: framing, compounds, replay caches, códigos de erro, e nada mais. Transforma bytes em chamadas ao service e respostas em bytes.",
+    "clash": "A camada dos [[remote-block-store|remote block stores]] também chama cada backend (S3, memória) de adapter, e os [[adapter-bytes|Adapter bytes]] são dados opacos que um adapter de protocolo guarda no [[open-state|open state]]. Sozinha, a palavra adapter quer dizer sempre um adapter de protocolo."
+  },
+  "core": {
+    "name": "core",
+    "short": "O pacote de adapters compartilhado por todos os protocolos. Reúne, escrito uma única vez, o que é igual em todos: listeners, conexões, o pipeline e o drain.",
+    "long": "`internal/adapter/core`: o que é igual para todo protocolo, escrito uma vez — listeners, conexões, a pipeline, o compound runner, as [[held-request|requisições retidas]], o middleware, o tipo da error table. Os buffers em pool não são do core: ficam em `pkg/resources` (RFC 24)."
+  },
+  "pipeline": {
+    "name": "pipeline",
+    "short": "A sequência fixa de etapas por que passa toda requisição. Ela é delimitada, decodificada, admitida, verificada contra replay e resolvida; depois o service é chamado, e a resposta é traduzida, codificada e enviada.",
+    "long": "A sequência fixa de stages por que passa toda requisição, uma única implementação para todos os protocolos. Cada passo é um **stage**; um protocolo fornece o próprio framer, header codec, flow control, replay check e error table."
+  },
+  "codec": {
+    "name": "codec",
+    "short": "Funções puras que transformam bytes nos campos de uma requisição, e os campos de uma resposta de volta em bytes. Um codec não faz I/O e nunca chama o service.",
+    "long": "Funções puras que transformam bytes nos campos de uma requisição e os campos de uma resposta em bytes: sem I/O, sem service, sem relógio, sem configuração. É essa pureza que torna possíveis golden vectors e fuzzing.",
+    "clash": "O [[metadata-store|metadata store]] usa a palavra para a codificação de um valor guardado, o [[value-codec|codec do store]]: a mesma ideia de codificação pura, em outra camada."
+  },
+  "handler": {
+    "name": "handler",
+    "short": "A função de uma operação de rede. Ela recebe os campos da requisição, faz no máximo uma chamada ao service que altera algo e devolve os campos da resposta.",
+    "long": "A função de uma operação de rede: campos de entrada, no máximo uma chamada ao service que muda estado, campos de saída. Não decide nada com base nos atributos, no mode ou na ACL de um arquivo."
+  },
+  "operation-table": {
+    "name": "operation table",
+    "short": "Uma tabela com uma linha por operação de rede. Cada linha indica o handler da operação e as pré-condições que o pipeline verifica antes de executá-la.",
+    "long": "Uma linha por operação de rede: o seu codec e o seu handler, mais as colunas que a pipeline verifica antes — o que ela exige, quais versões a servem, se é cacheable, a sua maior resposta."
+  },
+  "error-table": {
+    "name": "error table",
+    "short": "Uma tabela, uma por protocolo, que associa cada erro neutro do service a um status do protocolo. Um teste comprova que nenhum erro ficou de fora.",
+    "long": "Uma por protocolo: mapeia cada erro neutro do service para o status do protocolo. Todo erro precisa ter uma linha; um sem linha recebe server fault e é registrado no nível error."
+  },
+  "connection-state": {
+    "name": "connection state",
+    "short": "O que um protocolo guarda para cada conexão ou sessão, como slots, credits, caches de respostas, chaves e tabelas de IDs. Fica só na memória.",
+    "long": "O que o protocolo mantém por conexão ou sessão: slot tables, reply caches, credits, contextos de segurança, tabelas de ID. Pertence ao adapter, só em memória, e nunca é gravado nem replicado."
+  },
+  "client-held-name": {
+    "name": "client-held name",
+    "short": "Qualquer coisa que um cliente possa apresentar de novo depois que sua conexão caiu, como um file handle, um stateid ou um durable handle.",
+    "long": "Qualquer coisa que um cliente possa reapresentar depois que a conexão caiu — um file handle, um stateid, um durable handle, um create verifier. O que ele nomeia precisa sobreviver à conexão, então nunca é do adapter."
+  },
+  "compound": {
+    "name": "compound",
+    "short": "Várias operações enviadas numa só requisição, como no COMPOUND do NFSv4 e nas requisições compostas do SMB. O adapter as executa uma depois da outra, cada uma com seu handler.",
+    "long": "Várias operações em uma única requisição — o `COMPOUND` do NFSv4, as requisições compounded do SMB. O compound runner do adapter as executa como sequência de handlers, cada um uma chamada separada ao service, sem lock mantido entre elas."
+  },
+  "held-request": {
+    "name": "held request",
+    "short": "Uma requisição SMB que precisa esperar. O servidor responde STATUS_PENDING e o pipeline executa a chamada de novo mais tarde, porque o SMB não tem como pedir ao cliente que tente outra vez.",
+    "long": "Uma requisição SMB cuja resposta é esperar: recebe o `STATUS_PENDING` provisório e a pipeline reexecuta a chamada depois. Entre uma tentativa e outra ocupa só um timer e a requisição decodificada, não um worker."
+  },
+  "callback": {
+    "name": "callback",
+    "short": "Uma chamada no sentido contrário: o service precisa que um cliente faça algo que ele não pediu, como devolver um lease, e o adapter entrega o pedido.",
+    "long": "O service chamando um cliente: um lease break, uma notificação de mudança, um lock concedido, uma revogação. O adapter registra um valor `Callbacks` no `Connect` e entrega cada mensagem: na conexão do próprio cliente, ou, no NLM, abrindo uma conexão até o host."
+  },
+  "auxiliary-service": {
+    "name": "auxiliary service",
+    "short": "Um protocolo ao lado do principal de um adapter que chama o filesystem service ou guarda estado de clientes, como o MOUNT, o NLM e o NSM do NFS.",
+    "long": "Um serviço ao lado do protocolo principal de um adapter que alcança o filesystem service ou guarda estado de cliente do qual o protocolo depende — hoje MOUNT, NLM e NSM do NFS. Faz parte do seu adapter: mesma pipeline, inicia e para com ele."
+  },
+  "sidecar": {
+    "name": "sidecar",
+    "short": "Algo que roda ao lado dos adapters sem chamar nenhum service nem guardar estado de clientes, como o mDNS ou o port mapper.",
+    "long": "Algo que o nó executa ao lado de um ou mais adapters, que não alcança o service e não guarda estado de cliente — mDNS, WS-Discovery, o port mapper, o registro no rpcbind. Se falhar, falha só ele."
+  },
+  "recording-service": {
+    "name": "recording wrapper",
+    "short": "Um wrapper de teste em volta do [[in-memory-service|in-memory service]] que registra cada chamada e a deixa passar, sem nunca responder no lugar dele. Os testes de handler leem o registro dele para conferir que uma requisição fez uma única chamada que altera.",
+    "long": "Fica em `vfstest`, em volta do `*vfs.Filesystem` real do in-memory service. Guarda cada chamada com sua referência e sua resposta e a deixa passar, então um teste verifica o que chegou ao service: um teste de handler falha quando uma requisição deixa mais de uma chamada que altera. As respostas de erro vêm de um fault wrapper separado."
+  },
+  "null-service": {
+    "name": "null service",
+    "short": "Um filesystem service que responde na hora a toda chamada a partir da memória. Só o allocation gate e os benchmarks o usam, para medir o custo do próprio adapter; ninguém confere as respostas dele.",
+    "long": "Um `vfs.Service` que responde na hora a toda chamada, para que os benchmarks da pipeline e o allocation gate meçam o custo por requisição do próprio adapter, sem armazenamento por baixo. É uma carga, não um test double: ninguém confere as respostas dele. Os testes da camada `core` rodam no [[in-memory-service|in-memory service]]."
+  },
+  "reference-server": {
+    "name": "reference server",
+    "short": "Uma implementação amplamente usada de um protocolo, com cujo comportamento de rede o DittoFS é comparado.",
+    "long": "Uma implementação amplamente usada do protocolo (o Apêndice C do RFC 20 as lista) com cujo comportamento de rede o DittoFS é comparado, campo a campo."
+  },
+  "wire-test": {
+    "name": "wire test",
+    "short": "Uma sequência fixa de requisições enviada a um reference server e ao DittoFS, capturada e comparada campo a campo.",
+    "long": "Um script de requisições executado contra um reference server e contra o DittoFS; as duas capturas são decodificadas, normalizadas e comparadas campo a campo. Uma diferença é um bug ou uma divergência registrada que cita uma regra de um RFC."
+  },
+  "drain": {
+    "name": "drain",
+    "short": "Parar com cuidado. O servidor não aceita novas conexões, deixa terminar as requisições em andamento e depois fecha todas as conexões.",
+    "long": "Enquanto um nó faz drain, ele não aceita conexões novas, mas continua lendo as abertas. As requisições que liberam ou descarregam estado rodam, e também as que já foram entregues ao service. Qualquer outra requisição nova recebe um sinal de mudança só quando o service indica outro nó para a share dela; senão, fica sem resposta (no SMB, um `STATUS_PENDING` provisório que devolve os seus credits), e o cliente a reenvia depois de se reconectar. O drain termina quando não sobra nenhuma requisição, ou no drain deadline."
+  },
+  "identity": {
+    "name": "Identity",
+    "short": "O que o handshake de segurança provou sobre quem chama, em termos neutros em relação ao protocolo: a força da prova, como as mensagens são protegidas, os IDs declarados, o endereço e as evidências.",
+    "long": "O que o handshake provou, e nada mais. `Proof` diz quão forte foi a autenticação de quem chama (None < Claimed < Secret < Ticket) e `Protection`, como as mensagens são protegidas (None < Integrity < Privacy); além disso, leva os IDs declarados, o endereço do cliente e a `Evidence`. É reconstruída a cada requisição."
+  },
+  "flow-control": {
+    "name": "flow control",
+    "short": "O limite de quantas requisições um cliente pode ter em andamento. Usa os slots do NFSv4.1 e os credits do SMB, além de um teto fixo de 64 por conexão.",
+    "long": "O limite de requisições em andamento por conexão: o do próprio protocolo onde existe (slots NFSv4.1, [[credit|credits]] SMB), e um teto fixo de 64 por conexão onde não existe e em toda conexão NFS. Uma conexão no limite simplesmente não é lida."
+  },
+  "session": {
+    "name": "sessão",
+    "short": "O contexto de um cliente que o protocolo mantém dentro do adapter: uma sessão SMB ou uma sessão NFSv4.1. Por projeto, ele se perde a cada reinício.",
+    "long": "O contexto por cliente de um protocolo, mantido pelo adapter em memória: uma sessão SMB (chaves, assinatura, trees) ou uma sessão NFSv4.1 (slots, reply cache). Depois da perda de um nó, o cliente a reconstrói.",
+    "clash": "Uma sessão SMB (login, chaves, trees) e uma sessão NFSv4.1 (slots e reply cache) são coisas diferentes com o mesmo nome; as duas são connection state."
+  },
+  "rpc": {
+    "name": "RPC",
+    "short": "O nome de dois protocolos sem relação entre si. O ONC RPC transporta o NFS e seus serviços auxiliares; o DCE/RPC passa pelo IPC$ do SMB.",
+    "long": "O ONC RPC encapsula NFS, MOUNT, NLM e NSM. O DCE/RPC (MS-RPCE) transporta a listagem de shares e a resolução de nomes do Windows sobre named pipes SMB em `IPC$`.",
+    "clash": "ONC RPC (NFS) e DCE/RPC (`IPC$` do SMB) compartilham só o nome. O DCE/RPC fica sob o adapter SMB, e o seu pacote `dcerpc` não importa código SMB."
+  },
+  "lease": {
+    "name": "lease",
+    "short": "Uma palavra para três coisas diferentes. O lease SMB deixa um cliente manter um arquivo em cache. O [[client-lease|client lease]] é por quanto tempo o servidor guarda o estado de um cliente silencioso, e o [[node-lease|node lease]] é o que um nó renova para continuar servindo.",
+    "long": "Um lease SMB é um caching grant. Um [[client-lease|client lease]] é por quanto tempo o servidor guarda o estado de um cliente silencioso. Um [[node-lease|node lease]] (cluster) é o lease que um nó renova para continuar servindo.",
+    "clash": "Lease SMB ≠ client lease ≠ node lease. Um lease break SMB é o servidor tomando de volta um caching grant."
+  },
+  "engine": {
+    "name": "engine",
+    "short": "A parte de um nó que cuida do conteúdo dos arquivos. Ela conduz o [[journal]], onde as escritas chegam primeiro, e os componentes que as enviam para o [[remote-tier|remote tier]] e as trazem de volta, e decide quando cada uma dessas coisas acontece.",
+    "long": "O caminho de conteúdo de um nó (RFC 8): conduz o [[journal]], o [[carver]], o [[syncer]] e os metadados de blocos e decide sua política; um por nó, com um [[storage-binding]] por share. Em regra é quem chama o journal: decide o que vai para [[offload]], o que remover ([[evict]]) e o que compactar ([[repack]])."
+  },
+  "extent": {
+    "name": "extent",
+    "short": "Uma região contígua dos bytes de um arquivo, dada por um offset e um comprimento. Descreve um intervalo; não é algo armazenado.",
+    "long": "Uma região contígua `(offset, length)` dos bytes de um arquivo, e o único termo para ela. Diz quais bytes do arquivo — nunca onde ficam no disco, nem que conteúdo têm."
+  },
+  "chunk": {
+    "name": "chunk",
+    "short": "Um trecho dos bytes de um arquivo, cerca de 256 KiB, cortado numa fronteira definida pelo conteúdo e nomeado por um hash com chave do conteúdo.",
+    "long": "Um trecho dos bytes de um arquivo, cerca de 256 KiB, cortado numa fronteira definida pelo conteúdo e nomeado pelo seu chunk ID, um hash com chave do conteúdo. O journal não sabe nada de chunks: um [[record]] não é um chunk."
+  },
+  "block": {
+    "name": "block",
+    "short": "O objeto que o remote tier armazena. Ele contém um número inteiro de chunks gravados num único upload, 4 MiB por padrão.",
+    "long": "O objeto que o [[remote-tier]] armazena: um número inteiro de [[chunk|chunks]], gravado por um único put. Tem um tamanho-alvo configurável, 4 MiB por padrão, de 1 a 64 MiB; um chunk nunca fica entre dois blocos."
+  },
+  "remote-tier": {
+    "name": "remote tier",
+    "short": "O object storage por trás dos journals, onde fica o conteúdo que passou por offload — um bucket S3, por exemplo.",
+    "long": "O object storage por trás dos journals, onde fica o conteúdo que passou por [[offload]] — um bucket S3, por exemplo (RFC 4). O journal nunca fala com ele; quem fala é o [[engine]]."
+  },
+  "carver": {
+    "name": "carver",
+    "short": "O componente que corta em [[chunk|chunks]] os bytes de um arquivo que esperam envio, dá a cada um um nome tirado do hash do seu conteúdo e junta os chunks em [[block|blocos]].",
+    "long": "O componente (RFC 2) que corta um trecho de bytes em [[chunk|chunks]] definidos pelo conteúdo, calcula o hash de cada um e os empacota em blocos. Trabalha sobre os extents que o journal [[offer|oferece]]."
+  },
+  "syncer": {
+    "name": "syncer",
+    "short": "O componente que leva [[block|blocos]] para o [[remote-tier|remote tier]] e os traz de volta. O uploader dele envia blocos inteiros, e o fetcher os busca de volta.",
+    "long": "O componente (RFC 3) que move [[block|blocos]] de e para o [[remote-tier]]: o uploader envia blocos inteiros, o fetcher traz chunks ou blocos de volta. Apesar do nome, não é ele que faz o [[sync]] do journal."
+  },
+  "dirty": {
+    "name": "Dirty",
+    "short": "Diz-se de bytes que só o journal tem, porque nenhum chunk atual os cobre ainda. Eles são servidos localmente e nunca sofrem eviction.",
+    "long": "Diz-se de bytes que o journal tem e que nenhum chunk atual cobre ainda, de modo que o journal guarda a única cópia. Eles são servidos localmente e nunca sofrem eviction. No journal, um extent dirty é um [[held-extent|held extent]] com o [[offloaded-bit]] desligado. Toda escrita nasce dirty."
+  },
+  "durable": {
+    "name": "durable",
+    "short": "Guardado onde uma queda não pode perdê-lo. Para o journal, isso significa no seu dispositivo local, depois de um sync.",
+    "long": "Mantido onde um crash não pode perdê-lo: pelo dispositivo de um journal depois de um [[sync]], ou pelo journal de cada réplica (cluster). Não no sentido do remote tier.",
+    "clash": "Não é o **durable handle** do SMB nem um [[smb-durable-open|open durable]], que mantém um open depois de uma desconexão de rede. E não quer dizer “seguro no bucket”: para o journal, durable significa sincronizado no seu dispositivo local."
+  },
+  "evict": {
+    "name": "evict",
+    "short": "Descartar a cópia local de bytes que já passaram por offload. Isso sozinho não libera espaço em disco: o espaço volta quando o [[repack]] copia para outro lugar os records ainda vivos do segment e o apaga.",
+    "long": "Descartar uma cópia local que já passou por offload. Não grava nada nos metadados e nunca toca o remote tier; por si só não libera disco. A política é do [[engine]]; o mecanismo do journal para isso é o [[release]]."
+  },
+  "hole": {
+    "name": "hole",
+    "short": "Um intervalo abaixo do tamanho do arquivo que nunca foi escrito, ou foi desalocado. Ele é lido como zeros sem buscar nada.",
+    "long": "Um extent de um arquivo, dentro do seu tamanho, nunca escrito ou desalocado: é lido como zeros, sem fetch. Os metadados o registram (RFC 6). O journal não distingue um hole de um extent removido ou perdido: para os três responde [[missing]]."
+  },
+  "lost": {
+    "name": "Lost",
+    "short": "Diz-se de bytes que foram escritos mas que nada consegue mais servir. Lê-los dá erro; nunca devolve zeros.",
+    "long": "Diz-se de bytes que foram escritos, que nenhum chunk atual cobre e que o journal não tem mais, ou cujo bloco não pode mais ser decodificado. A leitura falha; nunca devolve zeros."
+  },
+  "write-verifier": {
+    "name": "write verifier",
+    "short": "Um valor que o servidor NFS devolve a cada write e commit. Quando ele muda, o cliente reenvia as escritas que o servidor ainda não tinha tornado estáveis.",
+    "long": "O valor NFS devolvido por um write e um commit (RFC 17 §5.8). Inclui a [[loss-generation|loss generation]] do journal: se o journal faz falhar escritas não sincronizadas, o valor muda e os clientes reenviam essas escritas."
+  },
+  "journal": {
+    "name": "journal",
+    "short": "O armazenamento append-only no disco local de um nó, um por dispositivo, onde toda escrita chega primeiro. Ele guarda os bytes até o [[offload]] copiá-los para o [[remote-tier|remote tier]], e pode mantê-los depois como cópia local.",
+    "long": "O tier local (RFC 1): um armazenamento append-only num disco local rápido, um por dispositivo, compartilhado por todas as shares colocadas nele. As escritas são confirmadas a partir dele. Guarda extents de arquivos e não sabe nada de chunks, blocos ou remote tier."
+  },
+  "record": {
+    "name": "record",
+    "short": "Uma escrita do jeito que o journal a guarda num segment: um cabeçalho com a identidade, o tamanho e o checksum da escrita, seguido dos bytes.",
+    "long": "Um trecho de bytes com seu header dentro de um [[segment]] — uma escrita, ou um pedaço de uma escrita que passou do fim de um segment — com identidade, tamanho e checksum no header (RFC 28 §2.3). Releases, remoções e perdas também são registradas, como records só de header.",
+    "clash": "Não é um [[metadata-record|record dos metadados]], que é uma chave e seu valor no metadata store. E não é um [[chunk]]: um record é o que uma única escrita depositou."
+  },
+  "segment": {
+    "name": "segment",
+    "short": "Um arquivo do journal onde os records só são acrescentados no fim. Tem tamanho fixo, é selado quando enche, e seu espaço em disco só volta quando o segment inteiro é liberado.",
+    "long": "Um arquivo local append-only de [[record|records]], com tamanho máximo fixo (256 MiB nos exemplos do RFC) e selado quando cheio. Seu espaço só volta quando o segment inteiro é apagado ou reciclado como spare: pelo [[repack]], depois de copiar os records vivos para outro lugar, ou pelo próprio journal quando nada nele está vivo."
+  },
+  "held-extent": {
+    "name": "held extent",
+    "short": "Um extent cujos bytes o journal tem e pode devolver, junto com sua content version e a indicação de se já passou por offload.",
+    "long": "Um extent de um arquivo que o journal mantém e sabe produzir, mapeado para um ponto de um record, com sua [[content-version]] e seu [[offloaded-bit]]. Os held extents de um arquivo são disjuntos, e não precisam ser adjacentes nem começar no offset zero."
+  },
+  "offloaded-bit": {
+    "name": "offloaded bit",
+    "short": "Uma marca por extent dizendo que seus bytes já estão no remote tier. O [[report]] do engine a liga depois de um envio, um [[fill]] a liga, porque os bytes buscados vieram do remote tier, e `MarkOffloaded` a liga quando o engine refaz as marcas depois de um reinício. Sem ela o journal não libera nada.",
+    "long": "A marca por extent com que o journal lembra que lhe disseram que os bytes passaram por offload; marcada por um [[report]], um [[fill]] ou `MarkOffloaded`, e necessária antes do [[release]]. Nunca é consultada para responder a uma leitura. Só pode errar na direção segura: pode chamar de dirty bytes que já passaram por offload, nunca o contrário."
+  },
+  "offer": {
+    "name": "offer",
+    "short": "Uma visão congelada dos bytes dirty de um arquivo, que o journal entrega ao engine para enviar. Escritas feitas depois não mudam o que o offer devolve.",
+    "long": "A visão congelada dos bytes dirty que o journal entrega a um [[offload]]. Uma escrita durante a passada muda o que uma leitura serve, não o que a offer devolve: o [[carver]] calcula o hash dos bytes e o uploader os lê de novo, e os dois precisam ver os mesmos."
+  },
+  "report": {
+    "name": "report",
+    "short": "O engine avisando o journal de quais extents [[offer|oferecidos]] já passaram por offload. É a única forma de o journal ficar sabendo disso.",
+    "long": "A declaração do engine de quais extents de uma [[offer]] passaram por offload, o único jeito de o journal saber disso. Feita uma vez por bloco confirmado enquanto a offer roda; marca exatamente o que nomeia, e nunca uma escrita mais recente feita por cima."
+  },
+  "release": {
+    "name": "release",
+    "short": "(journal) Deixar de guardar extents que já passaram por offload; é assim que o eviction é feito. É recusado para qualquer extent que ainda não passou por offload.",
+    "long": "O mecanismo de [[evict|eviction]] do journal; a política é do engine. Recusado por inteiro se algum extent nomeado tiver o [[offloaded-bit]] desmarcado. Não libera espaço: os bytes viram [[unreclaimed-bytes|não recuperados]] até o segment ser aposentado.",
+    "clash": "Descartar o conteúdo e os records de um arquivo inteiro, quando ele não tem mais nome nem open, também se chama release: o [[file-release|release de um arquivo]]. O journal faz isso com o seu `Delete`, nunca com o seu `Release`, que é só o eviction."
+  },
+  "fill": {
+    "name": "fill",
+    "short": "Colocar no journal bytes buscados no remote tier. Um fill nunca escreve por cima de bytes que o journal já tem.",
+    "long": "O único jeito de um extent passar a ser mantido sem uma escrita de cliente. Escreve só onde nada é mantido, marca o [[offloaded-bit]], e é recusado se a [[change-version]] do arquivo mudou desde a leitura que achou a lacuna."
+  },
+  "repack": {
+    "name": "repack",
+    "short": "Copiar os records ainda vivos de um segment quase vazio e depois apagar o segment. É a etapa que libera espaço no journal.",
+    "long": "Copia os records ainda vivos de um segment para outro segment, reaponta o [[placement-index|índice]] e apaga o original. É local, não descarta nada, mantém versões e offloaded bits, e prefere os segments com menos conteúdo vivo. Não tem relação com a coleta de lixo remota (RFC 9)."
+  },
+  "unreclaimed-bytes": {
+    "name": "unreclaimed bytes",
+    "short": "Bytes do journal que ainda ocupam disco embora seus extents tenham sido liberados ou sobrescritos. É o repack que recupera esse espaço.",
+    "long": "Bytes do journal ainda alocados no disco cujos extents foram liberados ou superados, sem servir a nada. O espaço que falta a um journal cheio costuma estar aqui, e só o [[repack]] o devolve."
+  },
+  "loss-event": {
+    "name": "loss event",
+    "short": "Um extent que o journal deixou de guardar sem que ninguém pedisse, por exemplo por estar corrompido ou obsoleto, ou porque o sync dele falhou.",
+    "long": "Um extent que o journal deixou de manter sem que pedissem: descartado por estar corrompido, obsoleto ou superado, reconhecido como ilegível, que falhou junto com uma janela de sync ou por um journal somente leitura. O engine conta e registra em log cada um; quase todos também viram um loss record que nomeia exatamente o record perdido (um journal somente leitura não consegue anexar nenhum)."
+  },
+  "offload": {
+    "name": "offload",
+    "short": "A passada que copia os extents dirty de um journal para o remote tier e os registra nos metadados.",
+    "long": "A passada que copia os extents dirty de um journal para o remote tier e os registra nos metadados. Cabe ao journal oferecer os extents dirty ([[offer]]) e aceitar os [[report|reports]]; ele não envia nada. O offload torna o conteúdo removível; o [[release]] o remove.",
+    "clash": "Não é o flush de um cliente (NFS `COMMIT`, SMB `FLUSH`, `fsync`), que só faz o [[sync]] do journal e nunca espera o bucket."
+  },
+  "sync": {
+    "name": "sync",
+    "short": "Tornar os records duráveis no journal, forçando sua gravação no dispositivo local.",
+    "long": "Tornar durable no journal. Todo record é sincronizado pelo próximo `Sync` que nomeia seu arquivo ou dentro de um prazo fixo após a escrita (proposta: 1 s), o que vier primeiro. O flush de um cliente espera seus records serem sincronizados.",
+    "clash": "Do conteúdo que passou por [[offload]] também se diz que está “synced to the remote tier”, e o [[syncer]] move blocos para o bucket. Para o journal, sync quer dizer só o seu dispositivo local."
+  },
+  "content-version": {
+    "name": "content version",
+    "short": "Um número que ordena as escritas e remoções de um arquivo. Onde duas delas cobrem o mesmo byte, vence a de número mais alto.",
+    "long": "O número que o journal atribui a cada write, truncate, deallocate e delete, dentro do append serializado do arquivo. Ao contrário de um [[sequence-number]], mantém o significado em outro journal e nos metadados. Um fill carrega a versão do [[ref]] de onde veio."
+  },
+  "change-version": {
+    "name": "change version",
+    "short": "A maior content version entre todas as mudanças nos extents de um arquivo. Uma leitura a devolve, e um fill posterior a confere para garantir que o arquivo não mudou nesse meio-tempo.",
+    "long": "A maior content version de qualquer operação que mudou os extents de um arquivo: write, truncate, deallocate, delete, clone target. `ReadAt` a devolve como `asOf`; um `Fill` com `asOf` mais antigo não grava nada. Um arquivo sem entrada é comparado com um de 4.096 [[floor-bucket|floor buckets]]."
+  },
+  "removal-marker": {
+    "name": "removal marker",
+    "short": "O que um truncate, um deallocate ou um delete deixa no journal: o extent removido e a versão da remoção, sem nenhum byte.",
+    "long": "O que um truncate, deallocate ou delete deixa no índice: o extent removido e a versão da remoção, sem bytes; no extent não resta conteúdo de versão inferior. Vive até o engine liquidá-lo (settle), depois que os metadados registram a remoção, para que um crash no meio não a perca."
+  },
+  "headroom": {
+    "name": "headroom",
+    "short": "Espaço reservado, fora de qualquer limite, para os records que liberam espaço, como releases, remoções e selos. Ele permite que até um journal cheio faça limpeza.",
+    "long": "Segments de reserva alocados com antecedência, fora do limite de cada share: espaço para records só de header (65.536 propostos, cerca de 14 MiB) e um selo por stream, para que um journal cheio ainda possa fazer release e remoções. Abaixo da metade, escritas de conteúdo e records que não liberam nada são recusados."
+  },
+  "missing": {
+    "name": "missing",
+    "short": "O que uma leitura do journal informa para cada parte do intervalo que o journal não tem. A lista é exata, e nesses trechos o buffer de quem chamou fica intocado.",
+    "long": "`ReadAt` lista em `missing` cada sub-extent que não tem e deixa esses bytes do buffer de quem chama intocados: nunca zeros, nunca uma leitura curta, nunca alargado para um segment ou bloco. Nunca escrito, removido ou perdido parecem iguais: quem os distingue é o engine."
+  },
+  "placement-index": {
+    "name": "placement index",
+    "short": "O mapa em memória do journal que leva, para cada arquivo, dos offsets aos extents que ele tem. Toda leitura o consulta.",
+    "long": "Só em memória, reconstruído na abertura a partir dos segments. Por arquivo, um conjunto ordenado (uma B-tree, como o RFC recomenda) de held extents disjuntos indexados pelo offset inicial, com versões, offloaded bits e removal markers. Cerca de 53–69 bytes por entrada, sob um limite configurado que recusa escritas."
+  },
+  "append-stream": {
+    "name": "append stream",
+    "short": "Uma sequência de segments à qual os records são acrescentados. Cada stream faz o sync do seu próprio segment ativo.",
+    "long": "Uma sequência de segments onde os records são anexados, um segment ativo por vez; o número de streams é configurável. O timer de sync é por stream, e um só sync cobre todos os escritores esperando no stream (group commit)."
+  },
+  "share-tag": {
+    "name": "share tag",
+    "short": "O número de uma share dentro da instalação. Ele é gravado em cada record que a share acrescenta e nunca é reutilizado.",
+    "long": "Emitido por um contador da [[installation|instalação]] que nunca diminui; nunca é 0, valor reservado aos records do próprio journal. Um arquivo pertence a um só tag por toda a vida; uma chamada pelo handle de uma share sobre um arquivo de outro tag é recusada com `ErrOtherShare`."
+  },
+  "sequence-number": {
+    "name": "sequence number",
+    "short": "A ordem em que este journal acrescentou seus records. Fora deste journal o número não significa nada.",
+    "long": "A ordem em que este journal anexou seus records. Quase todo append recebe um novo, inclusive a cópia de conteúdo feita pelo repack; um record reanexado depois de um sync falho, ou um record só de cabeçalho que o repack leva adiante, mantém o seu. Ordena os records na recuperação; uma leitura só o confere com o record que encontra."
+  },
+  "storage-binding": {
+    "name": "storage binding",
+    "short": "A entrada do engine para uma share. Ela diz para onde vão os dados da share, por meio de um handle em cada journal e de um fluxo até o remote store dela, e guarda suas configurações, saúde e orçamentos.",
+    "long": "A entrada do engine para uma [[share]] (RFC 8 §2.3): o handle dela em cada [[journal]] de dispositivo, o flow do [[syncer]] até o seu [[remote-block-store]], o seu [[namespace]], configurações, saúde e orçamentos. Nunca gravado."
+  },
+  "stability-point": {
+    "name": "stability point",
+    "short": "O momento em que um cliente pede que seus dados estejam seguros: um flush (`COMMIT` do NFS, `FLUSH` do SMB, `fsync`) ou uma escrita estável. O journal então faz o sync do arquivo, e a sobrescrita de conteúdo já commitado também espera até que os metadados a registrem.",
+    "long": "Chega ao [[engine]] como `Commit`. O [[journal]] faz o sync do arquivo; uma sobrescrita de conteúdo commitado também espera o commit da sua [[existence|existência]]. Appends e escritas em buracos são respondidos depois do sync.",
+    "clash": "No [[engine]], “commit” sozinho costuma querer dizer uma transação de metadados que se completa, como um commit de existência ou um commit de offload. O `COMMIT` do NFS é um tipo de stability point, e o método do engine para todos eles também se chama `Commit`."
+  },
+  "existence": {
+    "name": "existência (existence)",
+    "short": "O fato de que uma escrita aconteceu: o tamanho do arquivo, seus buracos, quais intervalos foram sobrescritos e a hora de modificação. Os metadados registram isso separado dos bytes, numa transação chamada existence commit.",
+    "long": "Registrada separada dos bytes: tamanho, [[hole|buracos]], o conjunto de sobrescritas e o `mtime`. Commitada para vários arquivos juntos em um [[group-commit]] dentro de uma idade limitada (`existence_age`, proposta: 1 s). Até ser commitada, a autoridade é o [[journal]], e depois de um crash a recuperação a reaplica a partir do journal antes de servir o arquivo."
+  },
+  "group-commit": {
+    "name": "group commit",
+    "short": "Uma única transação de metadados que registra de uma vez a existence pendente de muitos arquivos de um mesmo journal. Tem um tamanho máximo e é dividida quando um arquivo dela entra em conflito.",
+    "long": "Por [[journal]]: até `G` arquivos (proposta: 256) e o orçamento de chaves `K` por transação. Um conflito atrasa só o arquivo que falha: ele é refeito sozinho na hora se o store indica a chave; senão, o lote é dividido ao meio até isolá-lo.",
+    "clash": "O [[metadata-store|metadata store]] usa o mesmo nome para fazer vários commits dividirem um único sync do dispositivo: veja [[store-group-commit]]."
+  },
+  "residency": {
+    "name": "residency",
+    "short": "Onde estão agora os bytes de um extent: Absent (um buraco, lido como zeros), [[dirty|Dirty]] (só no journal), Resident (no journal e já enviados), Remote (só no bucket) ou [[lost|Lost]]. O engine descobre isso a cada leitura e nunca o armazena.",
+    "long": "Uma de cinco classes (RFC 0 §4.2): **Absent** (um [[hole|buraco]] ou um ref de zeros: zeros, sem fetch), [[dirty|Dirty]] (só o journal tem), **Resident** (mantido e já com offload), **Remote** (baixado e verificado) e [[lost|Lost]] (escrito, e não está em lugar nenhum: a leitura falha). O [[engine]] a calcula a cada requisição e não guarda cópia."
+  },
+  "ref": {
+    "name": "ref",
+    "short": "O uso de um chunk por um arquivo, num certo offset. Ele identifica o chunk pelo chunk ID, nunca pelo bloco que o contém.",
+    "long": "O uso de um [[chunk]] por um arquivo, em um offset, com as versões de onde ele veio; nomeia o chunk pelo seu chunk ID, nunca o [[block|bloco]] (RFC 0, RFC 6 §2.1). No [[metadata-store|metadata store]] cada ref é uma chave própria (RFC 16 §1.2)."
+  },
+  "carved": {
+    "name": "hole / uncarved / carved",
+    "short": "Diz-se de bytes já cortados em chunks. Para um offset abaixo do tamanho do arquivo, os metadados dão uma de três respostas: nunca escrito, escrito mas ainda fora de qualquer chunk atual, ou coberto por um chunk atual.",
+    "long": "Todo offset abaixo do tamanho de um arquivo está em exatamente uma de três classes (RFC 6 §3.2). Um [[hole|buraco]] nunca foi escrito e é lido como zeros. Bytes uncarved foram escritos mas ainda não estão em nenhum chunk atual, então só existem em um [[journal]]; se o journal não os tem mais, eles são [[lost|Lost]]. Bytes carved estão em um [[block|bloco]], então, se não há cópia local, são buscados no remote tier."
+  },
+  "policy-component": {
+    "name": "policy component",
+    "short": "Uma pequena função de decisão do engine, por exemplo quando fazer offload, se fazer um fill ou o que mandar para eviction. Seja qual for a decisão, o mecanismo escolhido é seguro por si só.",
+    "long": "O RFC 8 define cinco: `offloadDue`, `evict`, `repackDue`, `fill` e `admit`, mais uma struct `health`. Cada uma é uma função pura, testada sozinha com tabelas de casos. Nenhuma pode ser a única barreira entre o sistema e a perda de dados."
+  },
+  "work-queue": {
+    "name": "work queue",
+    "short": "Uma fila em memória, uma por journal de dispositivo, que transforma eventos em trabalho: passadas de offload, lotes de remoções e a poda dos records de sobrescrita superados de um arquivo.",
+    "long": "Alimentada por eventos `Dirty`, pelo tick de idade, pela pressão de capacidade e pelas remoções pendentes, e justa entre as [[share|shares]] conforme o orçamento. Enfileirar nunca bloqueia, uma chave está em no máximo uma execução, e nada é gravado: ela é reconstruída a partir do [[journal]], dos [[put-intent|put intents]] e dos registros de metadados sempre que o nó assume um shard."
+  },
+  "offload-pipeline": {
+    "name": "offload pipeline",
+    "short": "A máquina de estados que executa uma passada de offload. Ela captura o offer, corta em chunks, monta os blocos, grava um put intent, envia, faz o commit e marca os bytes como offloaded.",
+    "long": "Cada passo tem um prazo e diz o que acontece quando falha. Toda falha termina com o extent ou [[report|reportado]] como offloaded ou [[dirty|Dirty]] com o arquivo para nova tentativa, e as tentativas nunca param enquanto o nó for o [[primary]] do shard. Não guarda bytes e não grava nada."
+  },
+  "offload-guard": {
+    "name": "offload guard",
+    "short": "Um lock curto sobre um arquivo, mantido só enquanto um offer é capturado e enquanto um commit roda, nunca durante o envio.",
+    "long": "As remoções o mantêm entre o passo delas no journal e a primeira transação de metadados, então nenhuma [[offer]] é capturada no meio. É uma otimização, não um fence: quem ordena os commits é o conflito do [[metadata-store]] nos fence records do arquivo, e a correção não pode depender do guard.",
+    "clash": "Não é o [[guard]] do metadata store, a condição que uma transação põe sobre uma chave que ela não grava, que aborta a própria transação se essa chave mudou."
+  },
+  "put-intent": {
+    "name": "put intent",
+    "short": "Uma anotação durável, gravada antes de cada envio, que indica o bloco que está para ser enviado. O commit que registra o bloco apaga a anotação.",
+    "long": "Carrega o [[block-name]] e as epochs sob as quais a passada roda. Se o commit nunca chega, o objeto enviado fica órfão — espaço desperdiçado, não conteúdo perdido — e o GC o recupera pelo seu intent."
+  },
+  "block-name": {
+    "name": "block name",
+    "short": "A identidade de um bloco, de 32 bytes. Cada tentativa de envio gera uma nova, que um retry dentro dessa tentativa mantém; um nome nunca é usado por uma segunda tentativa.",
+    "long": "Um hash de um domínio, do [[namespace]], de um nonce novo de 16 bytes, do chain ID e dos hashes dos chunks em ordem. Uma repetição na mesma tentativa o reutiliza; uma tentativa nova cunha outro, mesmo sobre chunks idênticos."
+  },
+  "speculator": {
+    "name": "speculator",
+    "short": "O módulo do engine que planeja fetches que ninguém pediu ainda: read-ahead para quem lê em sequência, e pre-warm de arquivos que um operador indica.",
+    "long": "Ele planeja; o fetcher do [[syncer]] executa. Nunca atrasa uma leitura sob demanda, nunca faz uma escrita ser recusada e nunca baixa um bloco que o [[journal]] tem inteiro."
+  },
+  "pacing": {
+    "name": "pacing",
+    "short": "Desacelerar as escritas aos poucos quando os bytes dirty e os [[unreclaimed-bytes|não recuperados]] passam da metade do limite do journal, em vez de pará-las de uma vez no limite.",
+    "long": "O atraso cresce em linha reta, de zero na metade do limite até o tempo que o journal leva para escoar a escrita quando está no limite. Bytes mantidos que já estão limpos não contam. Um atraso além do prazo de quem chamou devolve [[retry-later]] na hora."
+  },
+  "self-fence": {
+    "name": "self-fence",
+    "short": "O que o engine faz quando uma transação de escrita de metadados está pendente ou falhando há 30 s sem que nenhuma tenha sido commitada: responde retry-later a escritas e flushes e continua servindo leituras.",
+    "long": "Os 30 s são medidos no relógio único do nó. Enquanto o fence dura, escritas e [[stability-point|stability points]] recebem [[retry-later]], as leituras continuam e uma condição de saúde aponta o store com problema. O fence termina no próximo commit bem-sucedido, ou quando nenhuma transação de escrita está mais pendente ou falhando."
+  },
+  "loss-generation": {
+    "name": "loss generation",
+    "short": "Um contador em cada journal que só sobe com [[loss-event|loss events]]. Ele entra no cálculo do write verifier do NFS.",
+    "long": "Monotônico durante toda a vida do processo, mesmo entre reaberturas do [[journal]]. Quando sobe, o [[write-verifier]] muda e os clientes reenviam suas escritas instáveis. A perda de conteúdo que o [[remote-tier]] já tem não faz nenhum cliente reenviar nada."
+  },
+  "metadata-store": {
+    "name": "metadata store",
+    "short": "O único banco de dados transacional que guarda todo fato de que o DittoFS se lembra, exceto os bytes dos arquivos.",
+    "long": "O store transacional com todo fato sobre arquivos, conteúdo, identidade e configuração (RFC 0). Fica atrás do [[kv|KV]]: embarcado em um nó, replicado num cluster (RFC 16)."
+  },
+  "namespace": {
+    "name": "namespace",
+    "short": "Um prefixo, como uma pasta, dentro de um bucket do remote tier. Os chunks são nomeados e contados dentro de um só namespace, nunca entre dois.",
+    "long": "Um prefixo, como uma pasta, dentro de um bucket do [[remote-tier|remote tier]]: os [[chunk|chunks]] são nomeados e contados dentro dele, nunca entre dois. Cada [[share]] tem o seu por padrão; um clone ou um restore usa o da origem, e durante um re-home uma share tem dois.",
+    "clash": "A palavra também nomeia outras duas coisas. A [[view]] `Namespace` do metadata store é a sua interface para nomes e diretórios, e os namespace metadata são a própria árvore de arquivos: nomes, diretórios, atributos. O NFSv4 chama de namespace do pseudo-filesystem a árvore que junta todos os exports. Nenhum deles é um prefixo no bucket."
+  },
+  "remote-block-store": {
+    "name": "remote block store",
+    "short": "O adapter de um backend do remote tier, como S3 ou memória. Ele traduz nomes de blocos em chaves de objetos e faz uma única tentativa por chamada.",
+    "long": "Toda [[share]] tem um: o RFC 8 recusa adicionar uma share cuja configuração não nomeia nenhum, então um [[offload]] sempre tem destino. Uma instalação que não quer serviço remoto configura um remote block store próprio."
+  },
+  "shard": {
+    "name": "shard",
+    "short": "Um conjunto de arquivos servido por um só primary de cada vez. Uma share é um shard; só num cluster uma parte de uma share pode ser um shard próprio.",
+    "long": "Um conjunto de arquivos com um único [[primary]] por vez. Uma [[share]] é um shard, e só num cluster uma subárvore, ou cada filho de um diretório marcado, pode ser um shard próprio. Um arquivo nunca é dividido entre shards (RFC 0, RFC 11 §2). Os números de shard valem para a instalação inteira e nunca são reutilizados (RFC 16 §2.3.1)."
+  },
+  "shard-incarnation": {
+    "name": "shard incarnation",
+    "short": "Um número no shard record, aumentado toda vez que um nó ou um journal começa a servir o shard como primary: a cada início do nó e a cada attach de um journal, mas não numa reabertura no lugar.",
+    "long": "Um número no shard record aumentado toda vez que um nó ou um journal começa a servir o shard como [[primary]]: a cada início do nó, numa nova reivindicação e a cada attach de um journal, mas não numa reabertura do journal no lugar. Não serve de fence: entra no [[write-verifier|write verifier]] e dá nome à [[grace-instance]]."
+  },
+  "client-id": {
+    "name": "cliente (client ID)",
+    "short": "Uma máquina ou processo cliente em execução, do jeito que o servidor o conhece. Um cliente que reinicia recebe um novo client ID.",
+    "long": "Uma máquina ou processo cliente em execução, como o servidor o conhece, com seus opens, locks e grants. Reencontrado pelo próprio nome; um reboot gera um novo client ID. Um registro SMB nomeia uma máquina, não um usuário."
+  },
+  "open": {
+    "name": "open",
+    "short": "Uma abertura de um arquivo por um cliente. Registra o acesso concedido ao cliente e o acesso que ele nega aos outros.",
+    "long": "Uma abertura de um arquivo por um cliente: o acesso concedido (leitura, escrita, exclusão) e o que ela nega aos outros opens. O NFSv3 não tem e usa um [[anonymous-open]]. Um open mantém o arquivo vivo."
+  },
+  "lock-owner": {
+    "name": "lock owner",
+    "short": "Quem detém um lock sobre um intervalo de bytes. Dependendo do protocolo, é um processo, um open ou um host inteiro.",
+    "long": "Quem mantém um [[byte-range-lock]]: um nome que o cliente escolhe (um processo) no NFSv4, cada open no SMB, um host no NLM. Dois owners do mesmo cliente conflitam como dois clientes diferentes."
+  },
+  "byte-range-lock": {
+    "name": "byte-range lock",
+    "short": "Um lock sobre um intervalo de um arquivo, mantido por um lock owner. Locks SMB são obrigatórios; locks NFS, consultivos.",
+    "long": "Um lock sobre um intervalo [offset, last] de um arquivo, em 64 bits, mantido por um [[lock-owner]]. Locks SMB são obrigatórios: recusam as leituras e escritas no intervalo que o lock proíbe. Locks NFS são consultivos: recusam só outros locks."
+  },
+  "lock-waiter": {
+    "name": "lock waiter",
+    "short": "Um pedido de lock esperando que um intervalo fique livre. O primary o registra, em vez de deixar um worker ocupado esperando.",
+    "long": "Um pedido de lock que conflitou com um lock existente e pediu para esperar. O [[primary]] o registra e responde na hora. Quando o intervalo fica livre, os waiters são atendidos por ordem de chegada: para um waiter que faz polling, o intervalo liberado fica reservado; a um waiter com callback, o próprio servidor concede o lock."
+  },
+  "state-reference": {
+    "name": "state reference",
+    "short": "O ID que um cliente apresenta para nomear um open, um estado de lock ou um caching grant: um stateid no NFSv4, um FileId no SMB.",
+    "long": "O ID que um cliente apresenta para um open, um estado de lock ou um [[caching-grant]]: um stateid no NFSv4, um `FileId` no SMB. Resolvido só no [[primary]]; carrega bits da sua [[grace-instance]]."
+  },
+  "open-state-step": {
+    "name": "open-state step",
+    "short": "A ordem por arquivo em que rodam, uma de cada vez, as chamadas que usam open state. Cada uma segura o [[admission-lock|admission lock]] do arquivo durante a verificação e o I/O que ela permite.",
+    "long": "A serialização por arquivo de toda chamada ao open state: o [[admission-lock|admission lock]] do service, mantido entre uma verificação e o I/O que ela admite, depois o mutex da entrada. Um step decide, persiste e então aplica."
+  },
+  "client-lease": {
+    "name": "client lease",
+    "short": "Por quanto tempo o servidor guarda o estado de um cliente que parou de dar sinal: 90 s, renovados a cada requisição. Nem todo cliente tem um: um host NLM não tem.",
+    "long": "Por quanto tempo o servidor guarda o estado de um cliente silencioso: 90 s, fixos, renovados por toda requisição. Calado por um período inteiro, o cliente é dado como perdido e tudo o que tinha é liberado. Nem todo cliente tem um: um host NLM não tem, e para um cliente sem lease o `Timeout` de um open SMB-durable faz esse papel. Não é node lease nem [[lease]] SMB."
+  },
+  "lease-owner": {
+    "name": "lease owner",
+    "short": "(cluster) O único nó que renova o [[client-lease|lease]] de um cliente e decide quando ele expirou. Nenhum primary expira um cliente por conta própria.",
+    "long": "(cluster) O único nó que renova um [[client-id|cliente]] e o faz expirar. Os nós que o servem informam a atividade dele no máximo uma vez por intervalo de renovação, 10 s (proposto); nenhum [[primary]] o faz expirar sozinho."
+  },
+  "grace-period": {
+    "name": "grace period",
+    "short": "Uma janela que se abre quando um primary perde seu open state. Nela, só os clientes que já tinham estado podem reivindicá-lo de volta, e os outros pedidos de estado recebem `ErrGrace`.",
+    "long": "Uma janela que se abre depois que um [[primary]] perde seu open state e dura um [[client-lease|período de lease]], 90 s. Nesse tempo o primary recusa open state novo e aceita só reclaims de clientes dos quais tem registro. Termina sozinha, ou antes, se todos esses clientes já terminaram de reivindicar.",
+    "clash": "Não é a lixeira onde a coleta de lixo guarda blocos por um tempo antes de apagá-los, que não é um grace period, nem o grace mais restrito que uma [[namespace-move|movimentação de namespace]] executa."
+  },
+  "grace-instance": {
+    "name": "grace instance",
+    "short": "Um grace period de um shard. Cada perda do open state do shard abre um novo.",
+    "long": "Um grace period de um [[shard]]. Cada perda do seu open state leva a instância à [[shard-incarnation]] atual; um handover que entrega a tabela a mantém."
+  },
+  "open-reclaim": {
+    "name": "reclaim (open state)",
+    "short": "Um cliente que, durante o grace period, retoma os opens, locks e grants que tinha antes da perda, e nunca mais do que isso.",
+    "long": "Durante o [[grace-period|grace]], um cliente retomando o que tinha: só se seu registro durable nomeia o shard, nunca mais que isso, após as verificações de permissão de um open novo. De dois reclaims em conflito, nunca os dois são aceitos.",
+    "clash": "Não é o reclaim do journal, que recupera espaço no disco local sem mudar nenhum conteúdo."
+  },
+  "recall": {
+    "name": "recall",
+    "short": "O servidor retomando um caching grant porque a requisição de outro cliente conflita com ele. O SMB chama de break.",
+    "long": "Retomar um [[caching-grant]] porque a requisição de outro cliente conflita; o SMB chama de break. Quem o detém faz o flush e confirma. Prazo: 35 s para um grant que cobre opens, 90 s para um que não cobre nenhum."
+  },
+  "delegation": {
+    "name": "delegation",
+    "short": "O caching grant do NFSv4, para leitura ou para leitura e escrita. Só é oferecido a um cliente cujo canal de callback funciona.",
+    "long": "O [[caching-grant]] do NFSv4: de leitura, ou de escrita (leitura e escrita). O servidor pode oferecer uma na resposta ao `OPEN` se não vê conflito e o cliente tem canal de callback funcionando. Não cobre open: um [[recall]] sem resposta a revoga em 90 s."
+  },
+  "oplock": {
+    "name": "oplock",
+    "short": "A promessa de caching mais antiga do SMB, ligada a um único open. Tem três níveis: Level II (leitura), exclusive (leitura e escrita) e batch (leitura, escrita e [[handle-caching|handle caching]]).",
+    "long": "Um opportunistic lock: um [[caching-grant]] mantido por um único open. Level II é leitura, exclusive é leitura e escrita, batch é leitura, escrita e handle. Fica preso ao seu open, então dois opens do mesmo cliente se quebram um ao outro, como os oplocks sempre fizeram. Desde o SMB 2.1 o cliente pode pedir um lease no lugar."
+  },
+  "revoked-set": {
+    "name": "revoked set",
+    "short": "Para cada cliente, as referências que um primary revogou. Todo uso de uma delas recebe ErrRevoked até que o cliente a libere.",
+    "long": "Por cliente e por [[primary]], as [[state-reference|referências]] que o servidor revogou. Cada uma recebe `ErrRevoked` até o cliente liberá-la com `FreeState`; enquanto isso as renovações levam um flag. Volátil."
+  },
+  "grant-budget": {
+    "name": "grant budget",
+    "short": "Cada primary concede a um cliente no máximo 4.096 caching grants. Nesse número não se oferece grant novo ao cliente e, onde o protocolo dele permite pedir, pede-se que ele devolva grants até ficar com 2.048.",
+    "long": "Cada [[primary]] mantém os caching grants de um cliente dentro de 4.096. No limite não oferece grant novo e, se o protocolo permitir, pede ao cliente que devolva grants até ficar com 2.048. Volátil."
+  },
+  "delete-pending": {
+    "name": "delete pending",
+    "short": "O delete on close do SMB. O nome continua até que o último open feche, e enquanto isso novos opens são recusados.",
+    "long": "O delete on close do SMB: o nome fica até o último open fechar, e novos opens de qualquer protocolo são recusados. O último fechamento remove o nome com a identidade do [[principal]] que o marcou."
+  },
+  "smb-durable-open": {
+    "name": "open SMB-durable",
+    "short": "Um open SMB mantido durante uma desconexão de rede até o seu timeout. Fica só na memória, então não sobrevive a um reinício do seu primary.",
+    "long": "Um open SMB mantido quando a conexão cai, pelo `Timeout` negociado, com locks, deny mode e lease. Vive só na memória do [[primary]]: um reinício ou failover o perde.",
+    "clash": "O \"durable\" do SMB quer dizer mantido após uma desconexão, em memória. Para o open state, durable quer dizer gravado no [[metadata-store|metadata store]], e para o journal quer dizer sincronizado no dispositivo do journal. Dos opens SMB, só um [[persistent-open]] é gravado no metadata store."
+  },
+  "persistent-open": {
+    "name": "persistent open",
+    "short": "Um open SMB que sobrevive também a um reinício ou failover do primary, porque está gravado no metadata store.",
+    "long": "Um open SMB que sobrevive a uma desconexão pelo seu `Timeout` (até 300 s) e a um reinício ou failover do [[primary]]: tem registro durable e suas escritas são estáveis. Ativado por share, desligado por padrão."
+  },
+  "nlm": {
+    "name": "NLM / NSM",
+    "short": "O protocolo de locks do NFSv3, junto com o protocolo que o acompanha para avisos de reinício. Os locks NLM não têm lease.",
+    "long": "NLM é o protocolo de lock do NFSv3. Não tem lease: os locks de um host duram até ele desbloquear ou reiniciar. O NSM leva os avisos de reinício; um NSM state number durable sobe quando um failover perde locks NLM."
+  },
+  "watch": {
+    "name": "watch",
+    "short": "O pedido de um cliente para ser avisado quando um diretório muda. Fica só na memória, e se o servidor o perder o cliente não pode reivindicá-lo.",
+    "long": "O pedido para ser avisado quando um diretório muda, como o change notify do SMB. No máximo 1.024 por cliente e por [[primary]], 64 mudanças cada antes de virarem 'enumerate directory' (ambos propostos). Volátil, nunca retomado."
+  },
+  "installation": {
+    "name": "instalação",
+    "short": "Todos os nós que compartilham um metadata store e um control plane. Na primeira release, é um nó só.",
+    "long": "Todos os [[node|nós]] que compartilham um [[metadata-store|metadata store]] e um control plane; o escopo mais amplo que uma configuração pode ter. Na primeira release a instalação é um nó só (RFC 0, RFC 13 §3). A sua identidade é um record, escrito uma única vez pelo passo explícito de inicialização (RFC 16 §2.3)."
+  },
+  "snapshot": {
+    "name": "snapshot (de share)",
+    "short": "A share como era em um cut, somente leitura. Um cut é um número que marca um instante da share.",
+    "long": "Um cut é um número que marca um instante de uma [[share]] e sobe de um a cada snapshot; o snapshot k é a share como era quando o seu número de cut virou k, somente leitura (RFC 0, RFC 12 §2.2).",
+    "clash": "Uma transação do [[kv|KV]] também roda “sobre um snapshot”: a visão consistente do store inteiro de onde ela lê. Isso não é um snapshot de share."
+  },
+  "gc": {
+    "name": "GC",
+    "short": "A coleta de lixo. Ela aposenta os blocos que nada mais referencia, guarda-os por um tempo numa lixeira e depois os apaga, e compacta os blocos quase totalmente mortos.",
+    "long": "O componente que aposenta, guarda na lixeira e apaga os [[block|blocos]] que nada referencia, e compacta os quase todos mortos (RFC 0, RFC 9). Do metadata store ele tem uma única [[view]], `Blocks`."
+  },
+  "fence-records": {
+    "name": "fence records",
+    "short": "Dois records por arquivo que guardam o shard e a sua [[epoch|shard epoch]] que os commits do arquivo precisam carregar, um para o caminho da existência e outro para o do offload. Todo commit confere o record do seu caminho; só os commits que precisam se excluir mutuamente o gravam.",
+    "long": "Dois records por arquivo, `F_x` para o caminho da existência e `F_o` para o do offload, cada um com o par (shard, epoch) que os seus commits precisam carregar. Todo commit faz [[guard]] sobre o fence do seu caminho, então falha se a epoch mudou. Só os commits que precisam se excluir mutuamente o gravam: um primary com uma nova epoch, as remoções e os releases e, no caso de `F_o`, todo commit de offload. Em um único nó só a comparação da epoch perde o sentido (RFC 0, RFC 6 §5.4)."
+  },
+  "entity": {
+    "name": "entidade",
+    "short": "Um valor simples que uma leitura devolve, como um File, uma Entry ou uma Share. Uma entidade não é um único record.",
+    "long": "Um valor simples que uma leitura dos metadados devolve, como um File, uma Entry ou uma Share; não é um [[metadata-record|record]] guardado (RFC 0). O que uma escrita toca é decidido pela operação, nunca pela struct (RFC 16 §1.2)."
+  },
+  "metadata-record": {
+    "name": "record (metadados)",
+    "short": "Uma chave e o seu valor no [[kv|KV]]. Toda chave que o metadata store escreve está listada, com seu formato, na tabela única de chaves do store.",
+    "long": "Uma chave e o seu valor no [[kv|KV]]. Toda chave que o store escreve tem uma linha na tabela de chaves do RFC 16, que é exaustiva: um novo tipo de record exige uma mudança de formato (§4.2).",
+    "clash": "Não é um [[record]] do journal, que é uma escrita como fica num segment. E não é uma [[entity|entidade]]: uma entidade pode ser lida de vários records."
+  },
+  "kv": {
+    "name": "KV",
+    "short": "A pequena interface que um backend de metadados implementa. Ela executa uma transação e, dentro dela, lê, percorre, grava, apaga e vigia chaves.",
+    "long": "A pequena interface que um backend de metadados implementa (RFC 0): `Update`, `View`, `Limits` e, numa transação, leituras, scans, escritas, guards e `Now`. A camada de entidades é escrita uma vez só sobre ela (RFC 16 §4.1)."
+  },
+  "guard": {
+    "name": "guard",
+    "short": "A condição que uma transação põe numa chave que ela não escreve: aborta a própria transação se a chave mudou depois do seu snapshot.",
+    "long": "A condição que uma transação põe numa chave que ela não escreve, ou em toda chave sob um prefixo (um range guard). Aborta a própria transação se a chave foi escrita depois do snapshot dessa transação; nunca para quem escreve e nunca conflita com outro guard (RFC 0, RFC 16 §4.1)."
+  },
+  "delta-fold": {
+    "name": "delta e fold",
+    "short": "A forma de atualizar um contador que muitos alteram. Ele nunca é lido e regravado: cada transação acrescenta um record delta à parte, e os deltas são somados ao total depois.",
+    "long": "Um contador que muitos escritores mudam — uso, tempos de um diretório — nunca é lido e reescrito. Cada transação escreve um delta sob uma chave própria; o [[primary]] do [[shard]] os consolida depois: o uso em totais por shard, os tempos no record do diretório (RFC 16 §4.4).",
+    "clash": "Não é o case fold de um nome, que uma [[fold-rule|fold rule]] decide: mesma palavra, mecanismo diferente."
+  },
+  "fold-rule": {
+    "name": "fold rule",
+    "short": "Como uma share transforma um nome na sua chave: igual numa share que diferencia maiúsculas, por uma tabela fixa nas outras.",
+    "long": "Como uma [[share]] transforma o nome de um arquivo na chave da sua entry: igual numa share que diferencia maiúsculas, senão por uma tabela fixa de 16 bits. Registrada por ID no [[format-record|format record]] (RFC 16 §4.6, RFC 7 §3.3).",
+    "clash": "Não é o [[delta-fold|fold]] que consolida os deltas dos contadores nos totais."
+  },
+  "view": {
+    "name": "view",
+    "short": "A interface estreita entregue a um consumidor: engine, GC e filesystem service têm cada um a sua.",
+    "long": "A interface estreita que recebe quem usa o [[metadata-store|metadata store]]. As interfaces seguem os consumidores, não as entidades: não existe interface CRUD por entidade. Os adapters não têm nenhuma, só o `vfs.Service` (RFC 16 §1.2, §3)."
+  },
+  "format-record": {
+    "name": "format record",
+    "short": "O único record que o store lê primeiro. Guarda o formato do store e a fold rule de cada share, e um binário que não os conhece se recusa a abrir o store.",
+    "long": "O record `\\x00format`, lido antes de qualquer outra chave: o formato do store e as [[fold-rule|fold rules]] das shares. Só o gate do control plane sobe a sua versão, nunca a abertura de um store (RFC 16 §4.6)."
+  },
+  "store-group-commit": {
+    "name": "group commit (store)",
+    "short": "Commits prontos ao mesmo tempo dividem um único sync do dispositivo. Nenhum deles é confirmado antes de esse sync terminar.",
+    "long": "Commits prontos no mesmo momento dividem um único sync do dispositivo, e nenhum é confirmado antes. O backend embarcado faz isso porque um sync por commit limitaria o store a algumas centenas de commits por segundo.",
+    "clash": "Não é o [[group-commit]] do [[engine]], que junta a existência de muitos arquivos numa só transação de metadados. Este faz vários commits dividirem um único sync do dispositivo."
+  },
+  "store-time": {
+    "name": "store time (Now)",
+    "short": "A hora que uma transação lê do store. Ela nunca volta para trás de um commit para o seguinte (num store sem timestamp oracle, um serviço que distribui horários de commit ordenados, só dentro de um mesmo nó) e fica dentro de uma margem declarada da hora real.",
+    "long": "A hora que `Now` dá a uma transação, usada para todo tempo guardado e comparado depois. Monotônica entre commits em ordem, afastada da hora real no máximo por um limite declarado; entre nós, num store sem oracle, as leituras podem diferir até σ (RFC 16 §4.1)."
+  },
+  "value-codec": {
+    "name": "codec (store)",
+    "short": "Como um tipo armazenado é codificado: um byte de versão e depois os campos numa ordem fixa. Uma versão que o binário não conhece é recusada, nunca adivinhada.",
+    "long": "Um por tipo persistido: um byte de versão, depois os campos em ordem fixa. Um binário só escreve as versões que o formato ativo nomeia, e recusa uma desconhecida em vez de adivinhar (RFC 16 §4.3).",
+    "clash": "Não é o [[codec]] de um [[adapter]], que transforma os bytes do protocolo nos campos de uma requisição."
+  },
+  "principal": {
+    "name": "principal",
+    "short": "Uma identidade neutra em relação ao protocolo: um usuário, um grupo, uma máquina ou um principal conhecido. O ID dele nunca é reatribuído a mais ninguém.",
+    "long": "Um usuário, grupo, máquina ou principal bem conhecido. O seu ID é gerado na criação e nunca reemitido — um bem conhecido tem ID fixo — então um UID ou SID reutilizado não herda nada. As formas específicas de cada protocolo ficam só no record User ou Group (RFC 16 §2.2, RFC 18)."
+  },
+  "change-sequence": {
+    "name": "change sequence",
+    "short": "A versão que o store atribui a uma escrita quando a commita. Ela ordena as escritas exatamente como os seus commits.",
+    "long": "A versão que o store atribui no commit: ordena as escritas como os seus commits, sem que nenhuma transação escreva um contador. Uma chave escrita pela própria transação ainda não tem uma (RFC 16 §4.1)."
+  },
+  "key-budget": {
+    "name": "key budget (K)",
+    "short": "Quantos itens, incluindo os intervalos de conflito, uma transação pode carregar quando uma operação sobre muitos refs, como uma remoção, é dividida em lotes. É derivado dos limites do backend.",
+    "long": "O máximo de itens de uma transação em lote, definido pelo RFC 6 a partir de `Limits`: maior chave e valor, bytes, entradas e idade — propriedades do backend, nunca configurações (RFC 16 §4.1)."
+  },
+  "inspect": {
+    "name": "Inspect",
+    "short": "Uma view que lê por ID sem checar permissões. É só para consumidores internos confiáveis e nunca é entregue a um adapter.",
+    "long": "Uma [[view]] que lê por ID arquivos, entries, ACLs, refs, chunks e blocks sem autorização, para consumidores internos confiáveis. Entregue a um adapter, contornaria o [[chokepoint]] de permissões (RFC 16 §3.1)."
+  },
+  "vfs-filesystem": {
+    "name": "filesystem (*vfs.Filesystem)",
+    "short": "A implementação do filesystem service que decide cada chamada, no primary do arquivo.",
+    "long": "A implementação do [[filesystem-service]] que decide: executa [[admission]], autorização, a verificação de open state, a quota e a chamada ao [[engine]], sempre na mesma ordem, no [[primary]] do arquivo. Em um único nó os adapters a chamam diretamente; em um cluster chamam um gateway.",
+    "clash": "Não é um sistema de arquivos no sentido do kernel (ext4, XFS), nem a camada VFS do kernel Linux, com que divide só a ideia. No filesystem service, \"filesystem\" sem qualificação quer dizer este tipo."
+  },
+  "chokepoint": {
+    "name": "chokepoint",
+    "short": "A única função do metadata store que decide permissões de arquivo; o service é seu único chamador.",
+    "long": "A única função do metadata store que decide permissões de arquivo (`Files.Authorize`, com `Files.Granted`). O pacote `authz` do service é seu único chamador, e o service nunca avalia uma permissão por conta própria."
+  },
+  "share-grant": {
+    "name": "share grant",
+    "short": "O acesso de um principal a uma share: nenhum, leitura, leitura e escrita, ou admin. É verificado em toda chamada.",
+    "long": "O acesso de um principal a uma share (nenhum, leitura, leitura-escrita, admin), lido na [[admission]] em toda chamada e aplicado como teto antes do mode ou da ACL do arquivo. Não é a export policy. A remoção vale a partir da próxima chamada.",
+    "clash": "Não é um [[caching-grant]] (lease ou delegation), nem o grant de um open, o acesso registrado quando o open foi concedido. Os três se chamam \"grant\"."
+  },
+  "pseudo-filesystem": {
+    "name": "pseudo-filesystem",
+    "short": "A árvore de diretórios somente leitura pela qual um cliente NFSv4 chega à raiz de cada share.",
+    "long": "A árvore de diretórios somente leitura pela qual um cliente NFSv4 chega à raiz de cada share. Construída pelo service a partir da lista de shares, igual em todo nó, e mostrando só caminhos para shares em que o chamador seria admitido."
+  },
+  "route-envelope": {
+    "name": "route envelope",
+    "short": "(cluster) As informações de roteamento que toda chamada repassada carrega: o ID da requisição, o shard e sua [[epoch]], o nó que envia e sua [[node-epoch|node epoch]], e um contador de saltos.",
+    "long": "(cluster) O que toda chamada encaminhada pelo gateway leva: o request ID, o shard e sua epoch, o nó remetente e sua node epoch, e uma contagem de hops. No primary, `Serve` faz o fencing com base nele e responde a um retry pela sua tabela de dedup."
+  },
+  "lock-order": {
+    "name": "lock order",
+    "short": "A única ordem em que toda chamada pega seus locks, para que duas chamadas nunca fiquem esperando uma pela outra para sempre. Primeiro o [[admission-lock|admission lock]] de cada arquivo que toca, depois a [[fold-admission|fold admission]] de cada diretório que altera e por fim o [[accept-lock|accept lock]] de cada arquivo que altera.",
+    "long": "A única ordem em que toda chamada pega o que precisa: o [[admission-lock|admission lock]] de cada arquivo que toca, depois a [[fold-admission|fold admission]] nos diretórios que altera, depois os [[accept-lock|accept locks]] dos arquivos para os quais faz draw — cada um em ordem de file ID. Assim duas chamadas nunca seguram, cada uma, o que a outra espera."
+  },
+  "wcc": {
+    "name": "WCC",
+    "short": "Weak cache consistency: os atributos de um objeto logo antes e logo depois de uma mudança, capturados junto com a própria mudança.",
+    "long": "Um par `{Before, After}`: os atributos de um objeto antes e depois de uma mudança, lidos segurando uma única vez o [[accept-lock|accept lock]] do arquivo. Toda chamada que altera algo o devolve, então nenhum adapter precisa seguir uma mudança com um `GetAttr` separado. `Before` pode faltar onde não dá para lê-lo de forma atômica."
+  },
+  "quota-reservation": {
+    "name": "quota reservation",
+    "short": "Bytes ou inodes que uma chamada reserva em cada cota antes de alterar qualquer coisa. A reserva é liberada quando se completa o commit que registra a sua cobrança, ou quando a chamada falha.",
+    "long": "O que uma write, uma create ou uma copy separa em cada escopo de quota antes de mudar algo: os bytes que acrescenta, ou um inode. Fica na memória do primary e é liberada uma única vez, como quer que terminem seus bytes (com commit, com commit de um loss record ou descartados), ou quando a chamada falha."
+  },
+  "file-release": {
+    "name": "release (de um arquivo)",
+    "short": "Descartar o conteúdo e os records de um arquivo quando ele não tem mais nenhum nome nem nenhum open.",
+    "long": "Descartar os refs de um arquivo, seu conteúdo no journal e seus registros quando ele não tem mais nome nem open. O service executa todos, no primary do arquivo, pelo `Delete` do engine; um registro de pending release garante que um crash no meio não deixe nada órfão.",
+    "clash": "Não é o [[release]] do próprio [[journal]], que só deixa de guardar extents já offloaded e é o mecanismo da eviction."
+  },
+  "dialect": {
+    "name": "dialect",
+    "short": "A versão do SMB que uma conexão combina na negociação. O DittoFS atende 2.1, 3.0, 3.0.2 e 3.1.1.",
+    "long": "A versão do protocolo combinada no `NEGOTIATE`: a mais alta entre 3.1.1, 3.0.2, 3.0 e 2.1 que o cliente oferece. SMB1 e SMB 2.0.2 são recusados."
+  },
+  "credit": {
+    "name": "credit",
+    "short": "O controle de fluxo do SMB. Cada requisição gasta credits e cada resposta devolve alguns; o DittoFS mira em 512 por conexão.",
+    "long": "O [[flow-control]] do SMB: uma requisição custa um credit a cada 64 KiB e cada resposta concede outros, então os credits que um cliente tem limitam o que ele pode ter em andamento. Mantidos por conexão na memória do [[gateway-node|nó gateway]]; uma vez concedidos, nunca são revogados."
+  },
+  "signing": {
+    "name": "signing",
+    "short": "Toda mensagem SMB depois do login leva uma assinatura feita com a chave da sessão. O DittoFS a exige em todas as sessões, menos nas null e guest, que não têm chave.",
+    "long": "Cada mensagem depois do session setup leva uma assinatura feita com a chave da [[session|sessão]]. Toda resposta a `NEGOTIATE` a torna obrigatória; uma requisição nem assinada nem cifrada é recusada. Só as sessões null e guest, sem chave, ficam isentas."
+  },
+  "tree-connect": {
+    "name": "tree connect",
+    "short": "A ligação de uma sessão SMB a uma share. Fica na memória de um nó e nunca é armazenada.",
+    "long": "`TREE_CONNECT` liga uma [[session|sessão]] a uma [[share]]; a resposta traz as flags da share. Como a sessão, vive na memória de um [[gateway-node|nó gateway]] e nunca é gravado."
+  },
+  "ipc": {
+    "name": "IPC$",
+    "short": "Não é uma share de arquivos: é o ponto de acesso RPC do adapter SMB, usado para listar shares e resolver nomes. Não alcança nenhum arquivo.",
+    "long": "Um tree que não alcança arquivo nenhum: named pipes para exatamente três serviços DCE/[[rpc|RPC]] — srvsvc (lista de shares), wkssvc e lsarpc (de security identifier para nome). Qualquer outra chamada é recusada. É tudo o que uma sessão null pode alcançar."
+  },
+  "file-id": {
+    "name": "FileId (SMB)",
+    "short": "O número que identifica um open SMB na rede. A metade persistente vale em qualquer nó; a volátil, só no nó que a emitiu.",
+    "long": "Identifica um open, não um arquivo. A metade persistente vem do ID do open no [[open-state]] e nomeia o seu shard, então qualquer nó consegue rotear uma reconexão até o [[primary]] do open. A metade volátil aponta uma entrada na tabela do nó gateway e não vale em nenhum outro nó.",
+    "clash": "Não é o ID interno que identifica um arquivo dentro do DittoFS, que vai dentro de um [[handle|file handle]] e nunca chega à rede SMB, nem o número de arquivo que o Windows vê. E não é um file handle NFS, que identifica um arquivo, não um open."
+  },
+  "lease-break": {
+    "name": "break",
+    "short": "O servidor retomando um lease ou oplock SMB. Quem o detém grava seus dados e confirma, enquanto a requisição em conflito espera.",
+    "long": "O primary retomando um [[lease]] ou [[oplock]] quando uma requisição conflita com ele. Retirar o caching de escrita ou de handle exige confirmação; a requisição que espera não ocupa worker. No prazo de 35 s o grant é zerado, e nenhum open fecha."
+  },
+  "caching-fence": {
+    "name": "caching fence",
+    "short": "Depois que um lease break estoura o tempo, aquele primary não oferece à máquina cliente nenhum lease ou oplock novo por 90 s.",
+    "long": "Depois que um [[lease-break|break]] expira, a máquina inteira — um [[client-guid|ClientGuid]] — não recebe lease ou oplock novo por 90 s naquele primary; cada nova expiração reinicia o período. Os seus opens continuam abertos."
+  },
+  "durable-handle": {
+    "name": "durable handle",
+    "short": "Um open SMB que sobrevive a uma conexão perdida até um timeout, 60 s por padrão e no máximo 300 s. Não sobrevive à perda do seu primary.",
+    "long": "Um open SMB mantido depois de uma desconexão de rede pelo seu timeout, guardado na memória do [[primary]]: um handover planejado o leva junto; um reinício ou failover do primary não, e a reconexão é então recusada.",
+    "clash": "Não é **durable** no sentido do journal, dado sincronizado no disco do journal: numa share que não é continuously available, as escritas feitas por um durable handle podem ainda não estar sincronizadas."
+  },
+  "persistent-handle": {
+    "name": "persistent handle",
+    "short": "Um durable handle que também é armazenado, por isso sobrevive à perda do seu primary. Só é oferecido em shares continuously available.",
+    "long": "Um open SMB que sobrevive também a um reinício ou failover do seu [[primary]], porque está gravado; toda escrita feita por ele é sincronizada antes da confirmação. Concedido só numa share [[continuously-available|continuamente disponível]]."
+  },
+  "continuously-available": {
+    "name": "continuously available (CA)",
+    "short": "Uma configuração da share que promete que os handles sobrevivam à perda de um servidor. Numa share assim o DittoFS concede persistent handles e torna estável toda escrita, e num cluster também oferece o Witness.",
+    "long": "Uma [[share]] marcada como continuously available avisa os clientes SMB 3.x no tree connect. Nela são concedidos [[persistent-handle|persistent handles]], e toda escrita na share, por qualquer open, é sincronizada antes da confirmação. Num cluster o [[witness|Witness]] também é servido; um nó único não o serve."
+  },
+  "client-guid": {
+    "name": "ClientGuid",
+    "short": "O ID que uma máquina Windows envia em toda conexão. O DittoFS mantém um record de cliente por ClientGuid, sem ligação com nenhum usuário.",
+    "long": "O SMB identifica um cliente pelo seu `ClientGuid`, o mesmo em toda conexão de uma máquina, até de um host com muitos usuários. Então há um client record do [[open-state]] por máquina, e quem pode usar um open é verificado pelo principal do open."
+  },
+  "channel-sequence": {
+    "name": "channel sequence",
+    "short": "Um contador guardado com cada open SMB 3.x, com o qual o primary recusa um WRITE, SET_INFO ou IOCTL antigo ou duplicado.",
+    "long": "Guardado com o open no primary (`Channel.Seq`) junto com a contagem das requisições em andamento, e verificado como diz o MS-SMB2 3.3.5.2.10, para que um replay nunca rode ao lado do seu original. Um persistent open o grava."
+  },
+  "witness": {
+    "name": "Witness",
+    "short": "(cluster) O serviço SMB que informa a um cliente de uma share continuously available quais endereços do servidor estão ativos, e pede que ele mude antes que um nó faça drain.",
+    "long": "(cluster) MS-SWN, servido por todo nó gateway para as shares continuamente disponíveis: lista os endereços flutuantes e envia `RESOURCE_CHANGE`, `CLIENT_MOVE` e `IP_CHANGE`, para o cliente reconectar na hora. Os registros não são gravados."
+  },
+  "private-use-mapping": {
+    "name": "private-use mapping",
+    "short": "Como aparece no SMB um nome com um caractere que o Windows reserva: cada um vira um code point fixo da área de uso privado.",
+    "long": "Numa share `posix`, cada caractere que o Windows reserva num nome — `\" * : < > ? \\ |`, um caractere de controle, um espaço ou ponto no final — aparece como um code point entre U+F001 e U+F029 (`:` é U+F022), e volta ao original na entrada."
+  },
+  "dt": {
+    "name": "dt",
+    "short": "O único comando que roda toda suíte de testes do DittoFS do mesmo jeito, no notebook ou na CI. Escrito em Go.",
+    "long": "O único ponto de entrada, `test/harness/bin/dt`, compilado a partir de `cmd/dt`. Ele lê o [[registry]], planeja as [[cell|cells]], monta cada [[fixture]], chama a ferramenta de teste diretamente, [[grade|avalia]] os resultados e os grava."
+  },
+  "registry": {
+    "name": "registry",
+    "short": "`test/suites.yaml`: o único arquivo que lista toda suíte, com suas opções e grupos.",
+    "long": "`test/suites.yaml`, o único arquivo que lista toda [[suite|suíte]] com suas [[suite-option|opções]] e [[suite-group|grupos]], num formato YAML especificado. O `dt` recusa um arquivo fora do formato. Os testes não são listados: cada suíte encontra os seus."
+  },
+  "suite": {
+    "name": "suíte",
+    "short": "Um comando que roda muitos testes, como o pjdfstest ou os testes unitários em Go. O `test/suites.yaml` lista todas.",
+    "long": "Um comando que roda muitos testes: `go test`, o pjdfstest via `prove`, o pynfs, o smbtorture, os cenários de sistema. A suíte encontra seus próprios testes, então adicionar um teste é adicionar um arquivo, não uma linha no [[registry]]."
+  },
+  "suite-option": {
+    "name": "opção",
+    "short": "Uma variante de uma suíte, rodada como `dt run SUITE --OPTION`, em vez de uma suíte própria.",
+    "long": "Uma variante nomeada de uma [[suite|suíte]], como `integration --kerberos` ou `unit --windows`: uma cópia da suíte em que cada campo que ela define substitui o original por inteiro. Roda como [[cell|cells]] próprias."
+  },
+  "suite-group": {
+    "name": "grupo",
+    "short": "Um nome para um conjunto de suítes rodadas juntas, como `conformance` ou `lint`.",
+    "long": "Um nome para um conjunto de [[suite|suítes]]: `dt run conformance` roda pjdfstest, pynfs, WPTS e smbtorture. Grupos de componentes (`journal`, `syncer`, `engine`) são adicionados à medida que cada um ganha uma suíte própria."
+  },
+  "cell": {
+    "name": "cell",
+    "short": "Uma unidade de uma execução de testes: uma suíte, ou uma opção dela, com uma combinação dos valores da sua [[matrix|matriz]].",
+    "long": "O que o `dt plan` gera a partir de uma [[suite|suíte]]: uma por combinação dos valores da [[matrix|matriz]], e por [[test-shard]], como `pjdfstest/badger-s3/4.1`. Cada uma tem [[fixture]], resultados, exit status e job de CI próprios."
+  },
+  "matrix": {
+    "name": "matriz",
+    "short": "Os eixos em que uma suíte roda, como perfil e versão do NFS: uma cell por combinação.",
+    "long": "Os eixos e valores em que uma [[suite|suíte]] roda. A matriz do pjdfstest, `{ profile: [badger-s3], nfs: [\"3\", \"4\", \"4.1\"] }`, gera três [[cell|cells]]. Um eixo que nenhum comando, fixture ou variável usa é recusado."
+  },
+  "test-shard": {
+    "name": "shard",
+    "short": "Uma fatia dos testes de uma cell, rodada num job de CI próprio para terminar antes.",
+    "long": "Uma fatia dos testes de uma [[cell]] num job de CI próprio; os testes são distribuídos em rodízio, para que longos e curtos se espalhem por igual. O smbtorture roda em dois shards, em todo [[tier]].",
+    "clash": "Não é um [[shard]] do armazenamento, um conjunto de arquivos com um só primary. Aqui um shard é uma fatia de uma execução de testes."
+  },
+  "store-profile": {
+    "name": "store profile",
+    "short": "Os stores em que um servidor de teste roda: `memory`, `badger` ou `badger-s3`, o usado em produção.",
+    "long": "Os stores que o servidor de uma [[fixture]] usa: `memory`, `badger` ou `badger-s3`. A conformance roda só em `badger-s3`, o perfil de produção. Para um perfil S3, o `dt` cria o bucket e confere que ele aceita uma escrita e uma leitura.",
+    "clash": "Não é um perfil de desempenho (pprof), nem o coverage profile que a suíte unit grava: um store profile indica os stores em que um servidor de teste roda."
+  },
+  "fixture": {
+    "name": "fixture",
+    "short": "O servidor DittoFS contra o qual os testes de uma suíte rodam, montado e verificado pelo `dt` antes do primeiro teste.",
+    "long": "O `dfs` compilado a partir do checkout, num [[store-profile|store profile]], com suas [[share|shares]] e usuários, montado quando a suíte precisa. O `dt` o prepara a partir dos campos da suíte (sem script de setup), verifica e o remove depois do último teste.",
+    "clash": "Em Go ou no pytest, uma fixture é um pedaço pequeno de preparação de testes, como um arquivo em `testdata`. No test harness é um servidor inteiro rodando, com stores, shares, usuários e um mount."
+  },
+  "needs": {
+    "name": "needs",
+    "short": "O que uma máquina precisa oferecer para rodar uma suíte: Linux, root, Docker, um serviço, disco livre.",
+    "long": "O que uma [[suite|suíte]] exige: uma plataforma, `root` (sudo sem senha), um container engine, ferramentas, `disk:<GB>`, `port:<n>`, `host:dedicated`, `service:<name>`. O `dt doctor` diz quais são atendidos; se o `dtc` não o atende, um não atendido dá [[not-run|not run]], nunca um pass."
+  },
+  "dedicated-host": {
+    "name": "host dedicado",
+    "short": "`ditto`, um servidor de teste grande que roda as suítes longas e que pedem muito disco. Não é um runner do GitHub.",
+    "long": "`ditto`, um servidor que a Cubbit aluga e que roda via cron as [[cell|cells]] que os runners hospedados não comportam: os cenários de sistema, as execuções longas, a rodada noturna de desempenho. Não é um runner self-hosted, e seu token só escreve issues e commit statuses."
+  },
+  "tier": {
+    "name": "tier",
+    "short": "Quando uma suíte roda: `pr` em todo pull request, `merge` depois de cada merge, `nightly`, ou `manual`.",
+    "long": "O conjunto de [[suite|suítes]] que uma execução inclui, conforme quando ela roda: `pr` (p90 ≤ 20 min), `merge` (≤ 60 min), `nightly` (≤ 4 h), `manual`. Cada um contém o de baixo; uma suíte indica o menor tier que a roda.",
+    "clash": "Não é um tier de armazenamento: o [[remote-tier|remote tier]] do DittoFS é onde fica o conteúdo que passou por [[offload]]. Um tier de teste diz quando os testes rodam, não onde os dados ficam."
+  },
+  "blocking": {
+    "name": "blocking",
+    "short": "Se a falha de uma cell pode reprovar o gate. Uma cell não bloqueante é reportada, mas nunca segura um merge.",
+    "long": "Uma [[suite|suíte]] ou opção com `blocking: false` roda e é reportada, com as falhas novas anotadas, mas nunca reprova o [[gate]], que não espera por ela. Pode variar por [[tier]]: a execução unit no Windows é não bloqueante só nos PRs."
+  },
+  "gate": {
+    "name": "gate",
+    "short": "O único job de CI que decide os merges: falha a menos que toda cell bloqueante tenha saído com 0.",
+    "long": "O job `gate` do `tests.yml`: depende de todo job que roda uma [[cell]] [[blocking|bloqueante]], sempre roda, junta os relatórios e falha a menos que o `plan` tenha passado e cada um deles tenha passado ou sido pulado. A develop o exige.",
+    "clash": "Não é o share gate dos adapters (quem pode entrar numa share), nem os gates de throughput e de alocações: testes Go que falham num limite medido, rodam à noite e nunca fazem um pull request falhar."
+  },
+  "result-format": {
+    "name": "formato",
+    "short": "Como o `dt` lê os resultados de uma ferramenta: `exit`, `go-json`, `junit`, `tap`, `subunit`, `trx` ou `nfstest`.",
+    "long": "Uma forma padrão de uma ferramenta reportar resultados teste a teste, lida por um único leitor no `dt`; são sete. Em todo formato menos `exit`, decidem os resultados que a ferramenta grava, não o exit status dela."
+  },
+  "ctrf": {
+    "name": "CTRF",
+    "short": "Common Test Report Format: o JSON que toda execução grava como `summary.json`, do qual se gera o JUnit.",
+    "long": "Common Test Report Format, um schema JSON que tem como campos os retries, os passes flaky e o status original da ferramenta. O `dt` o grava numa versão fixada, 0.1.0, com suas [[grade|avaliações]] em `extra`, e gera o XML JUnit a partir dele."
+  },
+  "grade": {
+    "name": "avaliação",
+    "short": "O que o `dt` decide sobre um resultado de teste, por exemplo new, known, quarantined, unexpected pass ou expected skip.",
+    "long": "O veredito sobre um resultado, guardado em `extra.grade`: `new`, `known`, `quarantined`, `unexpected_pass`, `expected_skip`, `unexpected_skip`, `ungraded`, `incomplete`, ou nenhum para um pass. `new` e um unexpected pass dão exit 1; um skip inesperado e `incomplete` dão exit 2."
+  },
+  "known-failure": {
+    "name": "known failure",
+    "short": "Um teste listado no `known.yaml` da sua suíte como falhando, com o motivo. Não deixa a execução vermelha.",
+    "long": "Uma entrada no `known.yaml` de uma suíte: o teste, por que falha, uma categoria, e `fix: planned` (com sua issue) ou `wontfix`. `where` a limita a alguns valores da matriz, tiers, opções ou sistemas operacionais. Uma falha que casa com ela é avaliada `known`."
+  },
+  "expected-skip": {
+    "name": "expected skip",
+    "short": "Um teste que tem permissão para ser pulado, com o motivo. Qualquer outro skip é cobertura perdida.",
+    "long": "Uma entrada do `known.yaml` com `status: skip`. Numa suíte com arquivo known, todo teste pulado ou não executado precisa ter uma, senão a [[cell]] fica [[not-run|not run]]. As suítes Go aderem pacote por pacote, começando pelo e2e."
+  },
+  "unexpected-pass": {
+    "name": "unexpected pass",
+    "short": "Uma falha ou um skip listado que passou: a cell falha, porque a lista não diz mais o que o servidor faz.",
+    "long": "Uma [[known-failure|known failure]] ou um [[expected-skip|expected skip]] cujo teste passou em todo resultado com que casou na cell. Dá exit 1, então uma correção remove a própria entrada. Uma entrada com `intermittent: true` reporta o pass em vez de falhar."
+  },
+  "not-run": {
+    "name": "not run",
+    "short": "O status de saída 2, que quer dizer que algo não rodou: por exemplo, faltou um requisito com `--ci`, o fixture falhou ou, numa suíte com uma lista de known failures, um teste foi pulado sem estar na lista. Nunca conta como sucesso.",
+    "long": "O resultado de uma [[cell]] que não testou o que diz: um need não atendido com `--ci`, uma [[fixture]] que falhou na verificação ou estourou o tempo, nenhum teste rodado, testes que um timeout deixou de fora, um resultado incompleto ou, numa suíte com uma lista de known failures, um skip não listado. Exit 2, nunca um pass."
+  },
+  "quarantine": {
+    "name": "quarentena",
+    "short": "Uma lista de testes flaky que continuam rodando, mas nunca reprovam uma execução nem alertam; cada um com issue e validade.",
+    "long": "`test/harness/quarantine.yaml`: entradas com suíte, teste, issue e validade, no máximo 90 dias à frente. O teste continua rodando e é registrado; uma falha é avaliada `quarantined`. Um crash ou travamento continua `new`. Uma entrada vencida não desculpa mais nada."
+  },
+  "flaky": {
+    "name": "flaky",
+    "short": "Um teste que falhou e depois passou no retry. O `dt history` o conta; não dispara alerta.",
+    "long": "Um teste que falhou e depois passou no [[retry]]: avaliado como passed, com `flaky: true`. Na develop não abre a [[develop-red]]; o `dt history` o conta, e flaky duas vezes numa semana vira candidato à [[quarantine|quarentena]]."
+  },
+  "retry": {
+    "name": "retry",
+    "short": "`--retry 1` roda de novo só as falhas novas, depois dos merges e nas execuções agendadas, nunca em pull requests.",
+    "long": "Rodar de novo as falhas novas de uma [[cell]], na mesma [[fixture]]: `--retry 1` depois dos merges e nas execuções agendadas, nunca num pull request ou dispatch, para que um PR não faça merge de um teste [[flaky]] que introduziu. O setup de uma fixture nunca é repetido."
+  },
+  "develop-red": {
+    "name": "issue develop-red",
+    "short": "Uma única issue do GitHub, chamada `develop is red`, reescrita no lugar com os testes que estão falhando no develop naquele momento.",
+    "long": "A issue de status da develop, com o rótulo `develop-red`: aberta ou atualizada quando uma execução merge ou nightly na develop ainda sai com 1 depois do [[retry]]. Fecha quando nada no conjunto falha mais."
+  },
+  "baseline": {
+    "name": "baseline",
+    "short": "Um retrato dos resultados do smbtorture do próprio DittoFS, guardado num arquivo. Um desenvolvedor o atualiza por um pull request; nenhum job noturno o grava.",
+    "long": "`baseline-results.md`, um retrato dos resultados do smbtorture do próprio DittoFS em `badger-s3`, gravado com `dt known baseline` e integrado por um pull request. Substitui um job noturno que o enviava e falhava toda noite.",
+    "clash": "Três coisas dividem a palavra: o arquivo baseline do smbtorture; os mesmos testes NFS rodados no servidor NFS do kernel Linux (knfsd), como referência; e a baseline guardada de um benchmark, que aponta uma mudança mas nunca faz uma execução falhar. Nenhuma é uma lista de known failures."
+  },
+  "control-plane": {
+    "name": "control plane",
+    "short": "Os records que guardam toda configuração, como shares, usuários, stores e adapters. São a única fonte da configuração.",
+    "long": "Os records no [[metadata-store|metadata store]] que guardam toda configuração; a única fonte de configuração (RFC 0, RFC 13 §2.1). Os operadores os alteram pela [[management-api|management API]], e cada [[node|nó]] os lê e ajusta os seus componentes (RFC 23).",
+    "clash": "No código de hoje, o control plane é `pkg/controlplane`: o [[runtime]], a REST API e um banco de dados próprio (SQLite ou PostgreSQL), separado do metadata store."
+  },
+  "management-api": {
+    "name": "management API",
+    "short": "O único ponto de entrada para toda mudança feita por um operador. Ela autentica o operador, verifica a mudança e a grava como records.",
+    "long": "A única porta para toda mudança no que uma instalação serve (RFC 23): autentica o operador, verifica a mudança e a grava como records no [[metadata-store|metadata store]]; nunca mexe num componente em execução. O [[dfsctl]], o operator do Kubernetes e scripts são seus clientes. Hoje é a REST API que o `dfs` serve, em `/api/v1`."
+  },
+  "runtime": {
+    "name": "Runtime",
+    "short": "A camada de composição de hoje dentro do `dfs`: o único ponto de entrada dos adapters e da REST API.",
+    "long": "O único ponto de entrada de hoje para todas as operações (architecture.md): uma composição fina de seis sub-serviços, dona do block store de cada share. Os RFCs o substituem: o [[node|nó]] constrói os componentes, e os adapters chamam o [[filesystem-service|filesystem service]] (RFC 23 Apêndice B)."
+  },
+  "dfsctl": {
+    "name": "dfsctl",
+    "short": "O cliente de linha de comando que gerencia um servidor DittoFS em execução pela sua REST API.",
+    "long": "O cliente de linha de comando da [[management-api|management API]]: usuários, grupos, shares, stores e adapters de um `dfs` em execução. Só chama a API e nunca abre um store nem um journal (RFC 23 §7). Suas credenciais ficam em `~/.config/dfsctl/config.json`."
+  },
+  "epoch": {
+    "name": "epoch (shard epoch)",
+    "short": "Um número no registro de um [[shard]] que sobe sempre que uma mudança precisa impedir um [[primary]] anterior de agir, como quando um novo primary assume. Uma chamada ou um commit que traz uma epoch mais antiga é recusado. Não é a [[node-epoch|node epoch]], que conta os inícios de um nó.",
+    "long": "Um número no shard record, aumentado por toda mudança nele que precisa barrar quem enviava: um takeover, um handover, uma réplica que entra ou é removida, o início de uma movimentação de arquivos. (cluster) Uma mensagem com uma epoch mais antiga é recusada, e um commit só passa se os [[fence-records|fence records]] do arquivo guardam exatamente o seu (shard, epoch). Não é a [[node-epoch|node epoch]] nem a [[shard-incarnation]]."
+  },
+  "node-epoch": {
+    "name": "node epoch",
+    "short": "Um número aumentado para um [[node|nó]] toda vez que ele inicia e, num cluster, toda vez que obtém um novo [[node-lease|node lease]]. É uma das entradas do [[write-verifier|write verifier]].",
+    "long": "Aumentada para um nó a cada início e, num cluster, a cada novo lease. Um nó cujo lease expirou obtém um novo com uma node epoch mais alta e não é primary de nada até assumir um shard. O [[write-verifier]] a usa como entrada, ao lado da [[loss-generation|loss generation]] do journal; não usa a [[epoch]] do shard."
+  },
+  "node-lease": {
+    "name": "node lease",
+    "short": "(cluster) O lease que cada [[node|nó]] renova no metadata store para continuar servindo. Um nó cujo node lease expirou não serve mais nada.",
+    "long": "(cluster) O único lease que cada nó renova no [[metadata-store|metadata store]]. Um nó com o lease expirado não serve nada: um [[handover|takeover]] marca o registro desse nó como expirado, e todo commit nos seus shards confere essa marca. Não é um [[client-lease|client lease]] nem um [[lease]] SMB."
+  },
+  "handover": {
+    "name": "handover",
+    "short": "(cluster) Uma troca planejada do [[primary]] de um [[shard]]. Não há espera pelo fim de um lease nem grace period, porque o primary antigo passa o open state do shard para o novo.",
+    "long": "(cluster) Uma troca de primary planejada, sem esperar o lease e sem grace: o primary antigo envia ao novo a tabela de open state do shard, com suas entradas de [[dedup-table|dedup]]. Se o primary antigo se perde antes que o novo tenha a tabela, vem um grace como depois de um [[takeover]]. Aumenta a [[epoch]] do shard."
+  },
+  "namespace-move": {
+    "name": "movimentação de namespace (move)",
+    "short": "A passagem de um grupo de shares, com seus metadados, para outra instalação do DittoFS (outro conjunto de servidores, com seu próprio metadata store) que usa o mesmo bucket, então os blocos guardados ficam onde estão. Cada share fica congelada enquanto suas últimas mudanças são copiadas, para que nenhuma se perca. Não é uma movimentação entre os nós de um cluster.",
+    "long": "A passagem de um namespace, com os metadados das suas shares, de uma instalação para outra no mesmo bucket; os [[block|blocos]] ficam onde estão. Enquanto as últimas mudanças são transferidas, a share fica congelada, no máximo por `migration.freeze_timeout`, e as chamadas recebem [[retry-later]]. Não é uma movimentação de arquivos entre shards."
+  },
+  "clone": {
+    "name": "clone",
+    "short": "Uma cópia que compartilha o conteúdo em vez de copiá-lo. O clone de uma share é uma nova share gravável criada a partir de um [[snapshot]]; o clone de parte de um arquivo reaproveita seus [[chunk|chunks]] já enviados e copia só os bytes ainda não enviados.",
+    "long": "(share) Uma nova [[share]] gravável criada a partir de um snapshot completo, no namespace do snapshot. (arquivo) Uma cópia de um [[extent]] de um arquivo que adota seus [[ref|refs]] já cortados em chunks e copia só os bytes ainda [[dirty]] no journal; uma cópia no servidor funciona do mesmo jeito. Um [[block|bloco]] só sai do bucket quando nenhum arquivo, snapshot ou clone o usa mais."
+  },
+  "deduplication": {
+    "name": "deduplicação",
+    "short": "Guardar uma única vez um conteúdo idêntico quando vários arquivos o carregam. A primeira release não deduplica entre arquivos: o offload envia todo chunk que corta.",
+    "long": "Guardar uma única vez o conteúdo que vários arquivos carregam. A primeira release não deduplica entre arquivos: o offload nunca pergunta se um [[chunk]] já está armazenado. Os chunks continuam nomeados por um hash com chave do seu conteúdo, e os refcounts continuam, porque [[clone|clones]] e snapshots compartilham chunks.",
+    "clash": "Não é a [[dedup-table|tabela de dedup]] de uma chamada encaminhada, que responde a uma requisição repetida com o seu primeiro resultado."
+  },
+  "dedup-table": {
+    "name": "tabela de dedup (dedup table)",
+    "short": "(cluster) Uma tabela no [[primary]] que guarda o resultado de cada mudança recente pelo seu request ID, para que uma chamada reenviada depois de uma resposta perdida receba o primeiro resultado em vez de rodar duas vezes.",
+    "long": "(cluster) Mantida por `vfs.Serve` no primary: as mudanças recentes, indexadas só pelo request ID, cada uma guardada por pelo menos a retry window, nunca abaixo de 600 s. Um [[handover]] transfere só as entradas das chamadas de open state, junto com a tabela a que se aplicam.",
+    "clash": "Não é a [[deduplication|deduplicação]] de conteúdo, que guarda uma única vez os chunks idênticos."
+  },
+  "sync-mark": {
+    "name": "sync mark",
+    "short": "O que um [[sync]] do journal devolve para cada append stream: até onde seus records comprovadamente estão no dispositivo. Depois de um crash, o journal não consegue distinguir um record sincronizado e depois perdido pelo dispositivo de um que o crash cortou, e o trata como nunca escrito. Uma marca registrada no metadata store resolve isso, e uma sobrescrita perdida de conteúdo commitado é contada como perda.",
+    "long": "Por [[append-stream|append stream]]: o stream, o [[segment]], o offset até onde ele está sincronizado, e o fim e o sequence number do record mais novo nomeado pelo `Sync`. O journal devolve as marcas e quem chama é dono delas, registrando-as no [[metadata-store|metadata store]] com o [[group-commit|group commit]]. Um [[stability-point|stability point]] sobre conteúdo já commitado espera até que uma marca registrada cubra o que o seu `Sync` devolveu."
+  },
+  "adapter-bytes": {
+    "name": "Adapter bytes",
+    "short": "Bytes opacos, no máximo 4 KiB, que um [[adapter]] guarda num record do open state por meio do service, para detalhes do protocolo que precisam sobreviver a uma conexão perdida ou a um reinício. A tabela de open state os guarda e devolve, mas nunca os lê.",
+    "long": "O campo `Adapter` do record de um cliente e de alguns outros records do open state: a resposta guardada de uma chamada de setup a repetir, um endereço de callback, o endereço para avisar um host NLM. É gravado junto com a mudança a que pertence, por meio do [[filesystem-service|service]] e nunca pelo próprio adapter; no máximo 4 KiB, começando pelo byte de versão do adapter. Num cluster, eles viajam opacos dentro da chamada encaminhada."
+  },
+  "floor-bucket": {
+    "name": "floor bucket",
+    "short": "Um dos 4.096 números de versão que o journal mantém, escolhido por um hash do file ID. Um [[fill]] para um arquivo do qual o journal não tem nada é comparado com o bucket desse arquivo, já que ali o arquivo não tem versão própria.",
+    "long": "A [[change-version]] por arquivo é limitada por uma tabela fixa de 4.096 floor buckets, indexada por um hash do `FileID`. Quando a entrada de um arquivo sai do índice, o bucket dele sobe para a versão da entrada. Na abertura todo bucket começa na maior entre a versão mais alta do disco e o floor passado pelo engine, e o attach de uma share eleva todo bucket a esse floor. Um arquivo sem entrada é comparado com o seu bucket, então um fill desatualizado é recusado mesmo depois que a entrada sumiu."
+  },
+  "version-limit": {
+    "name": "version limit",
+    "short": "O teto abaixo do qual o journal pode distribuir [[content-version|versões]]. Uma versão chega aos clientes, como change attribute de um arquivo, antes de o seu record ser sincronizado, então o engine grava o teto de forma durável com antecedência; depois de um crash, o contador recomeça acima dele e nunca distribui a mesma versão duas vezes.",
+    "long": "O menor dos limites duráveis por share que quem chama gravou para as shares que um journal serve (`SetVersionLimit`). Uma versão fica visível antes de o seu record ser sincronizado, então um contador reconstruído depois de um crash poderia emiti-la de novo; o limite impede isso. O engine o aumenta com antecedência, com base no tempo. Uma mudança que o alcançaria é recusada com `ErrNoSpace`, que nomeia o version limit."
+  },
+  "admission-lock": {
+    "name": "admission lock",
+    "short": "O lock por arquivo do service, o primeiro que toda chamada que toca um arquivo pega. A chamada o segura durante uma verificação, como a de open state, e durante a mudança ou o I/O que essa verificação permite.",
+    "long": "O nível externo do [[open-state-step|open-state step]], indexado por file ID, tenha o arquivo open state ou não. O service o segura durante uma operação composta: uma verificação e o I/O ou a mudança que ela admite. Vem primeiro na [[lock-order|lock order]]. Não é a [[admission]] da share."
+  },
+  "fold-admission": {
+    "name": "fold admission",
+    "short": "O portão no [[primary]] de um diretório por onde passam criações, remoções e renomeações nesse diretório. Quando as atualizações pendentes de contagens e horários do diretório precisam ser juntadas ao seu record (um [[delta-fold|fold]]), as novas mudanças esperam o fold ser commitado.",
+    "long": "Um fold reescreve o record do diretório, que todo create, link e rename para dentro dele usa como guard, então o primary os ordena em memória: quando um fold é devido, ele para de admitir mudanças no diretório, espera as que estão em andamento, faz o fold e depois admite a fila. Uma mudança que envolve vários diretórios os pega em ordem de file ID dentro do seu prazo, ou responde [[retry-later]]. Não é a [[admission]] da share."
+  },
+  "accept-lock": {
+    "name": "accept lock",
+    "short": "Um lock por arquivo no [[primary]] do arquivo. Toda escrita, truncate ou mudança de atributos o segura enquanto obtém sua versão e é aplicada, para que os atributos lidos antes e depois ([[wcc|WCC]]) sejam exatos.",
+    "long": "É pego por toda escrita, truncate, mudança de atributos e limpeza de setuid antes de obter sua `Version`: em volta de `WriteAt` numa escrita, em volta do `Draw` do engine em qualquer outra mudança. Nunca é segurado durante um [[sync]] ou um [[group-commit|group commit]], para que uma sobrescrita estável não segure as outras mudanças do arquivo. É o último na [[lock-order|lock order]]; o journal e o engine não pegam nenhum lock desse tipo."
+  },
+  "not-yours": {
+    "name": "NotYours (ErrNotYours)",
+    "short": "A recusa que uma chamada recebe quando usa um open, um lock ou um [[caching-grant]] que pertence a outro usuário ou a outro cliente. Um open só pode ser usado pelo usuário que o abriu.",
+    "long": "Toda chamada que usa um [[open]] (I/O pela sua referência, um lock feito sob ele, um downgrade, um close) é recusada com `ErrNotYours` se o principal de quem chama não for o do open. Um grant que não cobre nenhum open só pode ser usado pelo seu próprio cliente. Também é recusada uma chamada sem [[session]] que apresenta estado criado numa session, seja qual for o seu principal."
+  },
+  "handle-caching": {
+    "name": "handle caching",
+    "short": "A parte de um [[caching-grant]] SMB (um [[oplock]] batch, ou um [[lease]] com H) que deixa um cliente manter um arquivo aberto depois que a aplicação o fechou, para poder reabri-lo sem perguntar ao servidor.",
+    "long": "Um cliente que o tem mantém um open que a aplicação já fechou, com o [[deny-mode|deny mode]] desse open. Por isso, antes de recusar uma requisição por um conflito de deny mode, o servidor quebra o handle caching dos opens que o causam e responde [[retry-later]]. Quem mantinha o arquivo aberto só no cache o fecha, e só é recusado o conflito que sobra."
+  },
+  "quota": {
+    "name": "cota (quota)",
+    "short": "Um limite aos bytes e arquivos que uma share, um projeto (uma árvore de diretórios), um usuário ou um grupo podem usar. Além do hard limit, uma escrita é recusada; além do soft limit, só depois que acaba um tempo de tolerância; um limite advisory não recusa nada.",
+    "long": "Cada cota tem um hard limit, além do qual se recusa; um soft limit, que pode ser passado durante o seu tempo de tolerância e depois vale como hard; e um limite advisory, nunca recusado, cuja passagem só emite um evento de cota. O uso é contado em bytes lógicos por arquivo, sem os buracos, mesmo quando um [[clone]] compartilha o conteúdo. Só o [[filesystem-service|service]] a aplica, por meio de uma [[quota-reservation]]."
+  },
+  "named-stream": {
+    "name": "named stream",
+    "short": "Um segundo conteúdo de um arquivo, com nome próprio, como `report.docx:summary` no SMB. Tem seu próprio file ID, mas nenhuma entrada de diretório, dono ou permissão próprios: segue o seu arquivo.",
+    "long": "Um `File` do tipo `Stream`, cujos bytes passam pelo journal como os de qualquer arquivo. Não tem entrada de diretório e só é alcançado listando os streams do seu arquivo; toda verificação nele é uma verificação no arquivo base, e o file ID informado para ele é o do arquivo base. O [[file-release|release]] do arquivo base o deixa [[pending-release|pendente]], e depois ele é liberado como um arquivo próprio."
+  },
+  "dtc": {
+    "name": "dtc",
+    "short": "Um container Linux com as ferramentas de teste em versões fixadas, onde o `dt` pode rodar. Uma execução passa para ele quando uma suíte precisa de algo que o host não tem, como uma suíte só de Linux no macOS.",
+    "long": "`test/harness/bin/dtc`: um container privilegiado com uma toolchain Linux em versão fixada, que roda o mesmo comando `dt` com `--in host`. Com `--in auto`, o padrão, o `dt` leva uma execução inteira para lá quando há Docker e uma [[cell]] precisa do que falta ao host e o container oferece. Uma necessidade que nenhum dos dois atende é informada como não executada, nunca como aprovada."
+  },
+  "system-scenario": {
+    "name": "system scenario",
+    "short": "Um dos 42 scripts shell em `test/scenarios/`. Cada um sobe um servidor real num container, põe clientes SMB e NFS reais para trabalhar nele e muitas vezes injeta uma falha, como uma queda do S3 ou um crash.",
+    "long": "Rodam como a [[suite|suíte]] `system` por meio de `test/scenarios/setup.sh`, só no [[dedicated-host|host dedicado]]. Cada um se chama `<number>-<what>-<size>.sh` (número, o que faz, duração): o primeiro dígito é o grupo, dos smoke tests 0x às quedas e crashes 7x, e os cenários 9x são execuções longas, como a que faz um arquivo crescer até 30 GB."
+  },
+  "floating-address": {
+    "name": "floating address",
+    "short": "(cluster) Um endereço IP para os clientes que pertence ao cluster, e não a um único nó. Quando o nó que o serve cai, um nó sobrevivente assume o endereço, e os clientes se reconectam ao mesmo endereço.",
+    "long": "(cluster) Um endereço para os clientes que pertence ao cluster e que um nó sobrevivente assume. Os clientes SMB de uma share [[continuously-available|continuously available]] ficam sabendo da mudança pelo [[witness|Witness]]; os clientes NFS com mount hard simplesmente tentam de novo no nó que agora responde nesse endereço."
+  },
+  "pending-release": {
+    "name": "pending release",
+    "short": "Um record que diz que um arquivo perdeu seu último nome e que seu conteúdo ainda precisa ser liberado. Ele não mantém nada vivo, e depois de um reinício o recovery conclui cada release que encontrar.",
+    "long": "Registra que um arquivo perdeu seu último nome e que seu conteúdo ainda precisa ser liberado. Não mantém nada vivo. O [[file-release|release]] depois roda no [[primary]] do arquivo pelo `Delete` do engine, e depois de um reinício o recovery executa cada pending release que encontrar, então um crash no meio do caminho não deixa nada vazando. Um [[named-stream|named stream]] fica pendente depois do release do seu arquivo base."
+  },
+  "takeover": {
+    "name": "takeover (failover)",
+    "short": "(cluster) Uma troca não planejada do [[primary]] de um [[shard]], muitas vezes chamada de failover. O [[node-lease|node lease]] do primary expirou, então outro nó que tem uma cópia das escritas do shard vira primary, e em seguida vem um grace period.",
+    "long": "(cluster) Uma réplica, isto é, um nó diferente do primary cujo journal tem uma cópia de toda escrita do shard, que se torna [[primary]] depois que o [[node-lease|node lease]] do primary expirou. O open state do primary antigo se perde, então vem um [[grace-period]]. Ela aumenta a [[epoch]] do shard, e as chamadas ainda dirigidas ao primary antigo são recusadas. Uma troca planejada é um [[handover]]."
+  },
+  "in-memory-service": {
+    "name": "in-memory service",
+    "short": "O filesystem service real rodando sobre stores em memória (`memory.New`), sujeito à mesma suíte de conformidade do de produção. Os testes de handler rodam contra ele e conferem o estado que ele guarda depois.",
+    "long": "`memory.New`: o `*vfs.Filesystem` real sobre stores em memória, aprovado na suíte de conformidade do service. Um teste de handler confere a resposta codificada e o estado que o service guarda depois: um `CREATE` SMB que perde o deny mode no caminho ainda abre o arquivo, mas um segundo open em conflito que dá certo mostra que o campo falta. As respostas de erro vêm de um fault wrapper em volta dele, que faz falhar um método indicado na hora certa."
+  }
+}
