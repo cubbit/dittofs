@@ -437,8 +437,9 @@ nested groups included, and the groups a directory or a verified PAC reports
 ### 2.6 Components, wiring and lifecycle
 
 One component, the **identity server**, holds the authenticator (§3),
-`Identities` (§4), the directory client and its cache (§5), resolution and the
-caller cache (§6, §7), and the management API's account checks (§8.1).
+`Identities` (§4), the directory client and its cache (§5), resolution (§6),
+and the management API's account checks (§8.1). The caller cache is
+admission's, in `*vfs.Filesystem`, not identity's (§7.1).
 `node.New` ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components))
 builds it once on every node from one `Deps`. It builds no other component and
 closes nothing it was handed. Its consumers get only the interfaces they call:
@@ -510,6 +511,7 @@ type State struct {
 	Keytab     []secrets.Version // the keytab's versions in force, opened, current first (§3.3)
 	Machine    []secrets.Version // the machine password's versions in force, opened, current first, each with its KeyVersion and HandedOver mark (RFC 16 §2.3); empty when not joined (§3.3, §3.5)
 	NTLM       uint64          // the identity.ntlm setting's generation (§3.5)
+	Serial     uint64          // set by Apply, not the node, under Apply's one lock: raised only when the State differs from the current one (§7.2)
 }
 ```
 
@@ -546,7 +548,7 @@ so an operator's own next call sees it.
 | a machine password `Secret` version | its derived keys are added, unless it is marked `HandedOver`, which derives none, and the secure channel signs in with it once the domain controller takes it; the previous version is kept as a keytab's is (§3.3, §3.5); no restart |
 | the directory record | a new client and an empty directory cache; lookups in flight finish on the old client |
 | `identity.ntlm` turned off | as §3.5 says |
-| `identity.id_range` | applies to the next allocation; no existing ID moves |
+| `identity.id_range` | applies to the next allocation, the higher of the range's low end and one past the counter, and `ErrNoSpace` past its high end; no existing ID moves. Since the counters never rewind (§2.3), a write whose `Hi` is at or below the uid or gid counter's high-water mark could never allocate again, so it is refused `ErrInvalid` before it commits, the counters read tracked in its transaction ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)); only a write of `identity.id_range` is checked, so a range used up refuses no other `identity.*` write |
 
 **Restart.** Every table is in memory and is lost: evidence (clients sign in
 again), the replay cache (§3.3), the logon throttle (§3.1) and the caches, which
@@ -554,7 +556,10 @@ start cold.
 
 ### 2.7 Package layout
 
-The contract is `pkg/identity`, a leaf importing metadata types only: the value
+The contract is `pkg/identity`, a leaf: outside the standard library it imports
+only the store's value types (`entity`), the SID codec, `vfserr`, and
+`golang.org/x/crypto`'s `argon2` and `md4`, which `NewHashes` derives with. It
+holds the value
 types (`Identity`, `ProofKind`, `Protection`, `Claims`, `Evidence`, `Keys`,
 `SignInStep`, `SignInResult`, `Caller`, `Spelling`, `Scheme`, `SID`,
 `NTLMAuthenticate`), the interfaces of §3.1, §4.1, §6.1 and §8.1, and
@@ -610,20 +615,16 @@ type SignInResult struct {
 }
 
 // Evidence is what one sign-in established, and nothing more. It holds no key,
-// so it is safe to copy into every request's Identity. Its digest, the
-// evidence part of the proof key (§7.1), is computed once, here.
+// so it is safe to copy into every request's Identity. It keeps no digest of
+// itself: an unexported field set at sign-in is lost when the value crosses a
+// node channel, so Key() digests it on each call (§6.1).
 type Evidence struct {
 	Name      string             // canonical: "alice@CORP.EXAMPLE", "CORP\\alice", a local user name
 	Principal metadata.Principal // what sign-in bound Name to; every call acts as it
 	SIDs      []SID              // from a verified PAC or a pass-through reply: user SID first; else empty
 	DenyOnly  []SID              // marked deny-only by the signer (§3.4)
 	Expires   time.Time          // the ticket's end time; zero for NTLM
-	digest    EvidenceDigest
 }
-
-// EvidenceDigest is the evidence's part of the proof key (§7.1): a hash of the
-// fields sign-in established, derived from identifiers, so it is no key.
-type EvidenceDigest [32]byte
 
 // Keys is what the adapter's mechanism needs for the AP-REP and for signing
 // and encryption. It is never copied into an Identity. Session is the context
@@ -761,7 +762,10 @@ and inside SMB's SPNEGO ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
   lifetime after that, 10 hours plus the clock skew, then removed, a restart
   included: longer than RFC 13 §7 keeps another secret's previous version. So
   tickets under either key are accepted during the rollover, and a retired key
-  is not accepted forever.
+  is not accepted forever. "Every node" is every registered node, as RFC 23
+  §2.4 counts them: one that stopped reporting still counts, as not applied,
+  because it may still be serving on the old key, so it holds the rotation
+  until it reports again or is decommissioned.
 - **Checks.** `SignIn` **MUST** verify the ticket's encryption, its start and end
   times within a clock skew of 5 minutes, as Kerberos implementations use, the
   authenticator's freshness against a replay cache held in the node's memory,
@@ -925,7 +929,7 @@ never forwards one to a domain controller that would accept it.
 
 | The message's domain, compared with ASCII letters folded, since realms and NetBIOS names are ASCII (a simple case fold would match the Kelvin sign U+212A to `k`) | Source | How |
 | --- | --- | --- |
-| empty with a user name that holds no `@`, or the installation's own NetBIOS name, which the CHALLENGE advertises when no pass-through is configured | **local** | the user is found by name; its NT hash, a `Secret` of kind nt-hash, verifies the NTLMv2 response computed with the user and domain as the message names them (MS-NLMP 3.3.2). A directory principal is refused: it has no local NT hash |
+| empty with a user name that holds neither `@` nor `\`, or the installation's own NetBIOS name, which the CHALLENGE advertises when no pass-through is configured | **local** | the user is found by name; its NT hash, a `Secret` of kind nt-hash, verifies the NTLMv2 response computed with the user and domain as the message names them (MS-NLMP 3.3.2). A directory principal is refused: it has no local NT hash |
 | the directory's NetBIOS domain or its realm, or empty with a user name ending `@` and the directory's realm (a UPN sign-in), with pass-through configured | **pass-through** | the response is sent once to a domain controller over the secure channel of the installation's machine account (MS-NRPC `NetrLogonSamLogonEx`), sealed and signed with AES; the reply carries the user's SID and group SIDs with their attributes, used as a PAC's are (§3.4), and the evidence maps by that user SID. The reply's `UserSessionKey` (MS-NRPC 2.2.1.4.11) is the session base key the domain controller computed (MS-APDS 3.1.5.2.1), used as a local sign-in's computed one is (below); a reply whose key is missing, short or all zero fails `ErrLogonFailure`, and so does a guest logon, a reply whose `UserFlags` holds `LOGON_GUEST` or whose user RID is 501, the domain's Guest (§3.6). The reply's `LogonDomainID` **MUST** be the directory's domain SID (§5.1); with none read, pass-through fails `ErrUnavailable` |
 | anything else | — | `ErrLogonFailure`, counted with outcome `unknown_domain` so it is told apart from a wrong password |
 
@@ -934,8 +938,8 @@ the domain controller's server credential (MS-NRPC 3.1.4.1); one that fails
 refuses the channel, so no NTLM response reaches a peer that does not hold the
 machine password.
 
-A local user or group name never holds `@` (§4.6), so a name with one is never
-local. `identity.netbios_name` **MUST NOT** equal the directory record's NetBIOS
+A local user or group name never holds `@` or `\` (§4.6), so a name with
+either is never local. `identity.netbios_name` **MUST NOT** equal the directory record's NetBIOS
 domain, or a domain would route to both sources: a settings change naming the
 record's domain, and a directory record naming the installation's own name as
 its domain, later records included, are each refused at validation, naming the
@@ -1138,7 +1142,9 @@ no password only the controller knows, and a version a later rotation sets
 again is never set twice, which would raise the account's key version number
 past its tag. A rotation **MUST NOT** start until every node reports the previous one
 applied, because a domain controller accepts only the current and the previous
-password, and a second rotation would leave a lagging node with neither. A
+password, and a second rotation would leave a lagging node with neither. Both
+waits count every registered node, as the keytab's does (§3.3), so a node that
+stopped reporting holds them until it reports again or is decommissioned. A
 rotation that cannot start by its schedule is reported failed, so a lagging
 node shows as `machine_password_rotation_failed` before the password ages out. A
 rotation whose pinned controller could not be asked for an hour, to set or to
@@ -1225,7 +1231,10 @@ context's current evidence in `SignInStep.Context`.
   only release state — close, unlock, a break acknowledgement, logoff — so a
   client can release what it holds while it renews
   ([RFC 19 §3.1](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order)).
-  Every other request on it is refused with the expired-credential answer.
+  Every other request on it is refused with the expired-credential answer. The
+  adapter refuses it, where it builds the request's `Identity`
+  ([RFC 20 §4.4](rfc-20-adapters.md#4.4%20Identity)), since only the adapter
+  knows which requests release state; `Resolve` does not check `Expires` (§6.1).
 
 ## 4. Identity mapping
 
@@ -1459,9 +1468,11 @@ and RFC 21 carries it on the wire.
   a UPN's realm suffix (§3.5), a ticket's service name (§3.3), and
   `identity.netbios_name` against the directory's NetBIOS domain. A simple case
   fold would match the Kelvin sign U+212A to `k`.
-- A local user or group name **MUST NOT** hold `@`; a creation or rename naming
-  one is refused `ErrInvalid`, so an NTLM user name with `@` always names a
-  directory user (§3.5).
+- A local user or group name **MUST NOT** hold `@` or `\`; a creation or rename
+  naming one is refused `ErrInvalid`, so an NTLM user name with `@` always names
+  a directory user (§3.5), and no local name is ambiguous with the
+  `<NetBIOS name>\<name>` spelling below, whose domain `APISignIn.Lookup` strips
+  (§8.1): a local `CORP\alice` would be one string naming two principals.
 - A user and a group may share a name
   ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)); a
   name lookup always says which kind it wants.
@@ -1794,8 +1805,8 @@ type Claims struct {
 }
 
 // Key is the proof key (§7.1): a collision-resistant digest of every field but
-// Client, combining the evidence's digest computed at sign-in with the proof
-// kind, the protection and the claims.
+// Client, the evidence's included, computed on each call over an encoding that
+// writes every field, the zero principal of a None identity among them.
 func (id Identity) Key() ProofKey
 
 // Resolver is admission's step 4 (RFC 17 §4.9); *vfs.Filesystem is its only caller.
@@ -1806,6 +1817,10 @@ func (id Identity) Key() ProofKey
 // which step 4 sets itself.
 type Resolver interface {
 	Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, narrowed ReadOnlyCause) (*Caller, error)
+	// Current is the Serial of the State a Resolve starting now reads (§7.2),
+	// one atomic load of that State: admission stores and serves a cached
+	// Caller only while its Built equals it.
+	Current() uint64
 }
 
 // Caller is what one call acts as on one share. Every field any check reads
@@ -1821,8 +1836,8 @@ type Caller struct {
 	Authenticated bool                 // §6.5
 	Admin         bool                 // §6.5
 	Privileged    bool                 // §6.5; a protocol may confine it to an open (RFC 19 §3.5)
-	Built         uint64               // the State it was resolved under (§7.2); no check reads it
-	Fresh         time.Time            // no cache serves it after this (§7.1); no check reads it
+	Built         uint64               // the serial of the State it was resolved under (§7.2); no check reads it
+	Fresh         time.Time            // no cache serves it after this, and none stores it while zero (§7.1); no check reads it
 }
 
 // ReadOnlyCause is why a Caller's Access is read.
@@ -1852,7 +1867,8 @@ const (
   disabled or deleted principal, a deleted `Anonymous`, or a principal over the
   group cap; `ErrUnavailable` for an undecidable lookup or an incomplete
   closure. An expired context never reaches it, because the adapter refuses a
-  request on a context past `Expires` (§3.8).
+  request on a context past `Expires` (§3.8): resolution never reads the clock
+  against `Expires`, which only bounds a cached caller (§7.1).
 - A compound or path that crosses into another share is resolved again there,
   since squashing and grants are per share.
 
@@ -1924,6 +1940,10 @@ the principal before or after the squash depends on what the proof proved:
 | squashed, `None`, a principal with no file spelling | the `Anonymous` principal's closure |
 
 - The closure is computed whole or the call fails (§2.5).
+- **The groups of the evidence's verified SIDs** are, for each SID, the
+  principal it maps to and that principal's store closure, so a deny entry
+  naming a parent group of a PAC's group still matches. Each group is listed
+  once.
 - **Deny-only.** Each of the evidence's `DenyOnly` SIDs maps to a principal in
   `DenyOnly`, never in `Groups`, and adds none of its own groups. A lookup error
   while mapping one fails the resolution, as for a group: dropping a deny fails
@@ -2000,7 +2020,8 @@ and the entries they match are §2.1's.
 
 There is **one cache of resolved callers**: admission's
 ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), which
-holds the `Caller` with the result of steps 1–3. Identity keeps no cache of
+holds the whole `Caller`, the result of all five steps of §6.1, grants and
+flags included. Identity keeps no cache of
 callers of its own, only the directory's (§5.2). This section says what that
 cache's key must hold and how it behaves.
 
@@ -2019,6 +2040,7 @@ thing.
 | the share, `ExportPolicy.Version` and the share's grant-list version | squash, `Anonymous`, the grants and, once RFC 21's plan adds it, `ManageGIDs` (§3.2) are per share |
 | the identity `State` it was built under (§7.2) | a principal, membership or mapping change, a changed directory record and `identity.ntlm` all arrive as a new `State` |
 | the client address, where a client rule or netgroup decided | two hosts of one principal can be ruled differently |
+| the read-only cause admission handed `Resolve` (§6.1) | it is what admission's client rules decided; admission caches resolution alone and runs its client rules on every call (RFC 17 §4.9), so the key needs neither the netgroups' nor the share list's version |
 
 *Example.* alice over Kerberos and an `AUTH_SYS` call sending alice's uid 1500
 have different keys: the proof kind differs, and only one has a name. They never
@@ -2039,6 +2061,15 @@ share an entry, so the second call cannot inherit alice's `Finance` group.
   `Expires` no later than that. Past it, the entry is rebuilt through the
   directory cache, which answers fresh, stale within the grace, or refuses
   (§5.3).
+- **A caller with a zero `Fresh` is not stored.** A local principal's evidence
+  has no `Expires` (§3.1) and used no directory answer, so its only clock would
+  be the `State`; it resolves on every call instead, and a disable reaches its
+  next call whether or not a new `State` has been applied.
+
+> ponytail: a local caller resolves on every call, the cost admission pays
+> without a cache. Store it, bounded by the `State` alone, once every node
+> applies each principals generation (§7.2) and a benchmark of local callers
+> shows per-call resolution in admission's cost.
 
 ### 7.2 Local changes take effect within a second
 
@@ -2052,7 +2083,16 @@ and hands each new value to identity in a new `State` (`Apply`, §2.6); the node
 that wrote the change applies it at once.
 
 - **A resolution reads the `State` once**, before its first store or directory
-  read, and stamps the caller with it (`Caller.Built`). A caller whose stamp is
+  read, and stamps the caller with that `State`'s `Serial` (`Caller.Built`),
+  never with a second load, which an `Apply` between the two would make newer
+  than what the resolution read. `Apply` raises
+  the serial when the `State` it applies differs from the current one, and
+  keeps it for an equal one, so a once-a-second read that changed nothing
+  empties no cache; `Resolver.Current()` answers it (§6.1). `Apply` holds one
+  lock across its load of the current `State`, the compare, the serial and the
+  store, so two `Apply`s, the reconcile's and a writer's, never read one serial
+  and store two different `State`s under it: serials strictly increase, and
+  each differing `State` carries its own. A caller whose stamp is
   older than the current `State` is neither stored nor served. So a resolution
   that read bob's record before a disable, and finished after the `Apply` that
   delivered it, is not cached under the new `State`, and bob's next call misses
@@ -2291,7 +2331,7 @@ alice's still signs in as alice.
 | ID7 | A squashed caller carries nothing of the principal it replaced. | §10 squash drops SIDs |
 | ID8 | A group closure is used whole or not at all, deny-only principals included. | §10 group cap; deny-only lookup error |
 | ID9 | A directory answer is used no longer than the TTL plus the grace after it was given, read directly or through a cached caller. | §10 stale grace; directory deadline |
-| ID10 | A disabled or deleted local principal is refused on every call admitted after the first `State` that follows the change, at most 1 s after it (§7.2), and no caller resolved under an older `State` is cached. | §10 disable takes effect; in-flight disable |
+| ID10 | A disabled or deleted local principal is refused on every call admitted after the first `State` that follows the change, at most 1 s after it (§7.2), and no caller resolved under an older `State` is cached. | §10 disable takes effect; in-flight disable; one serial per `State` |
 | ID11 | Adapters map, squash and grant nothing; every spelling goes through `vfs.Service`'s `Spell` and `Find`. | [RFC 20 §7.1](rfc-20-adapters.md#7.1%20Imports%20and%20call%20sites)'s import test |
 | ID12 | A security context acts as the principal its last successful sign-in bound it to; its name is never mapped again. | §10 binding; re-authentication |
 | ID13 | A deny-only SID matches deny entries only; it never grants, through an ACL or a share grant. | §10 deny-only SIDs |
@@ -2309,7 +2349,7 @@ alice's still signs in as alice.
 | Rotation confirms whose key version number differs from the tag (§3.5) | `identity_machine_key_version_mismatches_total` | counter |
 | Unmapped spellings | `identity_unmapped_total{scheme}`: `uid`, `gid`, `sid`, `owner` | counter |
 | SIDs dropped from a PAC or pass-through reply (§3.4) | `identity_pac_sids_dropped_total{reason}`: `own_domain`, `builtin`, `user`, `other_domain`, `well_known` | counter |
-| Calls refused at resolution | `identity_resolution_refusals_total{reason}`: `disabled`, `group_cap`, `store_unavailable`, `directory_unavailable`, `anonymous_missing`, `ntlm_off`, `lookup_cap` | counter |
+| Calls refused at resolution | `identity_resolution_refusals_total{reason}`: `disabled` (a disabled or deleted principal, §3.7), `group_cap`, `store_unavailable`, `directory_unavailable`, `anonymous_missing`, `ntlm_off`, `lookup_cap` | counter |
 | Directory lookups by result | `identity_directory_lookups_total{question, result}`: `question` = `name`, `sid`, `uid`, `gid`, `groups`, `group`; `result` = `fresh`, `queried`, `not_found`, `stale`, `refused`, `ambiguous` | counter |
 | Directory query latency | `identity_directory_seconds` | histogram (`request`) |
 | ID-token verifications by result | `identity_oidc_verifications_total{result}`: `ok`, `invalid`, `unlinked`, `stale`, `unavailable` | counter |
@@ -2322,8 +2362,11 @@ alice's still signs in as alice.
 | `machine_password_rotation_failed` | installation | unhealthy while the `Installation` record's last rotation is recorded failed (§3.5); cleared only by a rotation completed, never by a channel set up with the previous password or by a restart |
 
 No metric label or span attribute carries an issuer's subject, an address or a
-user name. Caller-cache hits and misses are admission's
-([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
+user name. The caller cache's metrics are admission's
+([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)):
+`vfs_caller_cache_lookups_total{result}`, `result` = `hit`, `miss`, a counter,
+a call whose caller is not stored (§7.1) counted a miss; and
+`vfs_caller_cache_evictions_total`, the counter §7.3's row names.
 
 **Spans.** `identity.authenticate` is a child of the adapter's request span.
 `identity.resolve` is a child of the service-call span, opened only on a cache
@@ -2362,8 +2405,9 @@ RFC 16's conformance suite's, not repeated here.
 | squash order follows the proof | 2 | `Squash = all`, a grant of `read-write` to alice, `none` to bob, and `read` to everyone. Over `AUTH_SYS` claiming alice's uid: assert a write refused (the everyone grant). Over Kerberos as alice: assert the write succeeds and the file is owned by `Anonymous`; as bob: assert refused at the share. | a claimed uid receiving its principal's grant, or a proven principal's grant ignored on a squashed share |
 | admin needs proof | 2 | A grant names uid 1500 `admin`. Over `AUTH_SYS` as uid 1500, read a mode-0600 file of another user: refused. Give the principal a Kerberos name; over `sec=krb5`: granted. `S-1-5-32-544` in a test PAC for a non-admin: not `admin`. | `admin` from a uid or a SID |
 | roles grant nothing | 2 | [RFC 23 §12](rfc-23-control-plane.md#12.%20Conformance)'s §5.1 check, which also asserts that the account holds no spelling. | — |
-| disable takes effect | 2 | bob holds an SMB open and an NFS GSS context; make one call on each, a cache hit. Disable bob; before the `State` is applied, the next call is still served; apply it (fake clock): every call from both is refused. | a cached caller outliving a disable |
-| in-flight disable | 1 | Block bob's record read with a fault wrapper around the store. Disable bob and apply the new `State`. Release the read: nothing cached under the new `State`, and bob's next call misses and is refused. | a stale resolution stamped with the new generation |
+| disable takes effect | 2 | bob holds an SMB open and an NFS GSS context, both over Kerberos; make one call on each, a cache hit. Disable bob; before the `State` is applied, the next call is still served; apply it (fake clock): every call from both is refused. Over a local NTLM session, never cached (§7.1), bob's first call after the disable is refused with no `State` applied. | a cached caller outliving a disable |
+| in-flight disable | 1 | bob signs in over Kerberos, a cacheable caller (§7.1). Block his record read with a fault wrapper around the store. Disable bob and apply the new `State`. Release the read: nothing cached under the new `State`, and bob's next call misses and is refused. Again with `Resolve` paused by a hook just after its `State` load, before its first store read: the same outcome. | a stale resolution stamped with the new generation |
+| one serial per `State` | 1 | Apply two differing `State`s concurrently, many times over: the two stored `State`s carry distinct serials, the later the greater; apply an equal `State`: the serial is kept. With `identity.ntlm` off in the second, a pass-through NTLM caller resolved under the first, with `Resolve` paused by a hook after its `State` load while the second is applied: neither stored nor served once the second is current. | two differing `State`s sharing one serial, so a caller resolved under the superseded one is served |
 | group cap | 1 | A principal in 1 025 groups: refused, never resolved with fewer. A nested group whose read fails mid-closure: the call fails. A membership cycle: resolved. | truncated group lists; a cycle read as a failure |
 | owner strings | 2 | Over `sec=krb5`, `chown` to `alice@corp.example` and to `alice@other.example`: success, then `NFS4ERR_BADOWNER`. Over `AUTH_SYS`, `GETATTR`: numeric owners. A file owned by a deleted user: `nobody@…`, and over SMB `S-1-0-0`. | names mapped by guesswork |
 | PAC | 1 | A ticket whose PAC server signature is corrupted: refused. A PAC changed only in padding between buffers, which the decoder skips: refused. A server signature of an unkeyed type over the same bytes, and one of the AES128 type under an AES256 key: refused. In a keytab realm other than the directory's, a ticket with no PAC, and one with a PAC holding no logon-information buffer, for a user in a store group: accepted, the group applies. In the directory's realm, the same two tickets for a directory user, and for `backup`, a name only a local user holds: each `ErrLogonFailure`, counted `no_pac`, with the record's schema `ad` and again with it `rfc2307`; with `require_pac` false: accepted. There `backup` is reached only through a `krb` row linked to the local `backup`, which stores the directory `backup`'s SID: its ticket with a PAC binds the local `backup`; delete the directory `backup` and create another under the name: its ticket is refused, never bound to the local one. Linking a name the directory does not hold: refused, naming it. A machine minted from a ticket with a PAC signs in again: bound. A PAC carrying a SID of the installation's own domain for a local group with a share grant: that SID dropped, the grant not given. A PAC carrying a universal group's SID from a second domain of the forest: that SID dropped and counted with reason `other_domain`, and the sign-in succeeds. | an unverified or unfiltered PAC trusted; every modern KDC refused; a PAC-less ticket landing on a same-named local user; an operator's link no ticket can reach, or one a reused name inherits |
@@ -2398,7 +2442,7 @@ RFC 16's conformance suite's, not repeated here.
 | NetBIOS name and domain | 1 | A settings change giving `identity.netbios_name` the directory record's NetBIOS domain, and a directory record whose NetBIOS domain is `identity.netbios_name`, in another case: each refused at validation, naming the other. | one domain routing to both sources |
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
 | `ManageGIDs` (deferred, §3.2) | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. Written with RFC 21's plan, which adds the field. | groups capped at the credential's 16 |
-| NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: its write refused, and no `Secret` of kind nt-hash stored. While the deletion runs, after it fails part way through a fault wrapper around the store, and after it is cancelled, turning `identity.ntlm` on is refused as RFC 23 §4.1 rules; once a deletion has completed, it is accepted. | an NTLM context outliving the setting; a stray hash; hashes a failed deletion never reached made valid again |
+| NTLM off | 2 | Make a call on a local NTLM session and a cache hit on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: its write refused, and no `Secret` of kind nt-hash stored. While the deletion runs, after it fails part way through a fault wrapper around the store, and after it is cancelled, turning `identity.ntlm` on is refused as RFC 23 §4.1 rules; once a deletion has completed, it is accepted. | an NTLM context outliving the setting; a stray hash; hashes a failed deletion never reached made valid again |
 | NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed in `Raw` while the `MsvAvFlags` in `NTResponse` marks it present: both `ErrLogonFailure`, locally and through pass-through. A pass-through reply whose `UserSessionKey` is all zero, or whose `LogonDomainID` is another domain's: `ErrLogonFailure`; with the directory's domain SID unread: `ErrUnavailable`. | the drop-the-MIC relay |
 | NTLM domain | 1 | A standalone installation's CHALLENGE advertises its own NetBIOS name; an AUTHENTICATE naming it in another case: verified locally. With pass-through configured, `alice@corp.example.com` with an empty domain, and `corp.example.com\alice`: both passed through. A domain matching nothing, and an installation name holding `K` sent with the Kelvin sign U+212A in its place: `ErrLogonFailure`, outcome `unknown_domain`. | every standalone login refused; UPN and DNS-domain sign-ins refused as a wrong password |
 | no local password for a directory user | 1 | `NewHashes` for a directory principal: `ErrInvalid`, nothing stored; a local NTLM sign-in naming one: refused. | two passwords for one principal |

@@ -1,0 +1,6 @@
+# The test's Sample at minor version 0, by hand from RFC 4506: its since=1 field is not on the
+# wire.
+00000001 00000002 00000003             # words, uint32[3]: no count word (RFC 4506 4.12)
+00000001                               # flag, a bool: TRUE (RFC 4506 4.4)
+00000008 61626364 65666768             # name, string<8>: 8 bytes, at its bound, no padding
+00000003 00000007 00000008 00000009    # mask, uint32<3>: 3 entries, at its bound

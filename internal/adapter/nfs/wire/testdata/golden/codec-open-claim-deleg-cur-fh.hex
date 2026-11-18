@@ -1,0 +1,4 @@
+# open_claim4, by hand: CLAIM_DELEG_CUR_FH's arm, a stateid4, from minor version 1.
+00000005                               # claim: CLAIM_DELEG_CUR_FH
+00000003                               # oc_delegate_stateid.seqid
+01020304 05060708 090a0b0c             # oc_delegate_stateid.other

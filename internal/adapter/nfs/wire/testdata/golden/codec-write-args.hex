@@ -1,0 +1,6 @@
+# WRITE4args (RFC 7530 section 16.36), by hand from RFC 4506.
+00000001                               # stateid.seqid
+00000000 00000000 00000000             # stateid.other
+00000001 00000000                      # offset, an unsigned hyper: 4 GiB, its high word first
+00000002                               # stable, stable_how4: FILE_SYNC4 (RFC 4506 4.3)
+00000005 68656c6c 6f 000000            # data, opaque<>: "hello", 3 bytes of padding

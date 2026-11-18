@@ -13,6 +13,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
+
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
@@ -23,7 +27,8 @@ import (
 type Deps struct {
 	Store   Store
 	Clock   Clock
-	Metrics *metrics.Registry
+	Metrics *metrics.Registry // nil: registers nothing
+	Tracer  trace.Tracer      // the identity.resolve span; nil: the no-op tracer
 	Logger  *slog.Logger
 }
 
@@ -63,8 +68,17 @@ var errNotApplied = errors.New("identity: started before any State was applied")
 // calling identity, leaving the filesystem its only consumer; identity then
 // folds into it.
 type Server struct {
-	deps  Deps
-	state atomic.Pointer[State] // nil until the first Apply, and again after Stop
+	deps     Deps
+	state    atomic.Pointer[State] // nil until the first Apply, and again after Stop
+	tracer   trace.Tracer
+	refusals *prometheus.CounterVec // by reason
+}
+
+// refusalsSpec counts the calls resolution refuses, by the reason refused.
+var refusalsSpec = metrics.Spec{
+	Name:   "identity_resolution_refusals_total",
+	Help:   "Calls refused at resolution, by reason.",
+	Labels: []string{"reason"},
 }
 
 var (
@@ -85,7 +99,16 @@ func New(d Deps) (*Server, error) {
 	if v := reflect.ValueOf(d.Store); v.Kind() == reflect.Pointer && v.IsNil() {
 		return nil, errors.New("identity: Deps.Store is a nil pointer")
 	}
-	return &Server{deps: d}, nil
+	s := &Server{deps: d, tracer: d.Tracer}
+	if s.tracer == nil {
+		s.tracer = noop.NewTracerProvider().Tracer("")
+	}
+	if d.Metrics != nil {
+		s.refusals = d.Metrics.Counter(refusalsSpec)
+	} else {
+		s.refusals = prometheus.NewCounterVec(prometheus.CounterOpts{Name: refusalsSpec.Name, Help: refusalsSpec.Help}, refusalsSpec.Labels)
+	}
+	return s, nil
 }
 
 // Apply makes st the State every later call reads, in one swap.
