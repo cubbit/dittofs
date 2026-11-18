@@ -90,7 +90,7 @@ func TestConcurrentAppliesNeverShareASerial(t *testing.T) {
 // anyway, still stamped with the State that pass loaded.
 func TestResolveStampsTheStateItLoaded(t *testing.T) {
 	r := newResolving(t)
-	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: uid("1000")}
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1000")}
 	gen := r.user(t, alice, 0)
 	apply(t, r.srv, identity.State{Generation: gen})
 	var second uint64
@@ -123,7 +123,7 @@ func TestResolveStampsTheStateItLoaded(t *testing.T) {
 // store reads, or a stale caller answered, serves bob.
 func TestResolveOvertakenByADisableIsRefused(t *testing.T) {
 	r := newResolving(t)
-	bob := entity.User{Principal: entity.NewUser(), Name: "bob", IDs: uid("1001")}
+	bob := entity.User{Principal: entity.NewUser(), Name: "bob", IDs: fileIDs("1001")}
 	gen := r.user(t, bob, 0)
 	apply(t, r.srv, identity.State{Generation: gen})
 

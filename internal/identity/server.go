@@ -87,6 +87,7 @@ type Server struct {
 	serial   uint64                // the last serial Apply handed out, under mu; Stop keeps it
 	loaded   func()                // a test's pause just after Resolve loads the State; nil in production
 	tracer   trace.Tracer
+	logger   *slog.Logger
 	refusals *prometheus.CounterVec // by reason
 }
 
@@ -115,7 +116,10 @@ func New(d Deps) (*Server, error) {
 	if v := reflect.ValueOf(d.Store); v.Kind() == reflect.Pointer && v.IsNil() {
 		return nil, errors.New("identity: Deps.Store is a nil pointer")
 	}
-	s := &Server{deps: d, tracer: d.Tracer}
+	s := &Server{deps: d, tracer: d.Tracer, logger: d.Logger}
+	if s.logger == nil {
+		s.logger = slog.New(slog.DiscardHandler)
+	}
 	if s.tracer == nil {
 		s.tracer = noop.NewTracerProvider().Tracer("")
 	}
