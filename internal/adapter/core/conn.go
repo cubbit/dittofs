@@ -43,6 +43,7 @@ type Conn struct {
 
 	err         atomic.Pointer[error] // the first close's error, which later ones leave
 	closed      atomic.Bool
+	sendFirst   atomic.Bool // the teardown lets the writer send what it holds before stopping it
 	established atomic.Bool
 	done        chan struct{} // closed once the teardown ended
 	kept        atomic.Int32  // the idle pass-over's count, one per Keep, released one apiece
@@ -220,13 +221,24 @@ func (c *Conn) Settings() settings.Settings { return c.snap }
 // a close from a handler or from the reader never waits on itself. The
 // reader's goroutine runs the rest of the teardown once its loop ends.
 // Overturned if the teardown needs its own goroutine.
-func (c *Conn) Close(err error) {
+func (c *Conn) Close(err error) { c.close(err, false) }
+
+// closeAfterSent closes the connection as Close does, but its teardown lets
+// the writer send what it holds first, within the close's grace: a chain's
+// bad step, whose records before it go out before the connection closes (RFC
+// 20 section 4.7). A close that came first keeps its own teardown.
+func (c *Conn) closeAfterSent(err error) { c.close(err, true) }
+
+// close is Close, the teardown sending what the writer holds first where
+// sendFirst; only the first close sets it, as only its error is kept.
+func (c *Conn) close(err error, sendFirst bool) {
 	if err == nil {
 		err = errConnClosed
 	}
 	if !c.closed.CompareAndSwap(false, true) {
 		return
 	}
+	c.sendFirst.Store(sendFirst)
 	c.err.Store(&err)
 	c.closedAt.CompareAndSwap(0, c.sh.clock.Now().UnixNano())
 	c.cancel()
@@ -344,7 +356,7 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, count *resources.
 	f := l.Protocol.Framer()
 	record, _ := f.MaxRecord()
 	c.w = newWriter(nc, f, common.WriteTimeout, func(err error) { c.Close(fmt.Errorf("%w: %w", errAtWrite, err)) }, c.series.out)
-	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, set: snap, record: record, out: c.w.out, close: c.Close, idle: c.idle, turn: func() { c.idleGen.Add(1) }})
+	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, set: snap, record: record, out: c.w.out, close: c.Close, closeAfterSent: c.closeAfterSent, idle: c.idle, turn: func() { c.idleGen.Add(1) }})
 	c.rd = newReader(nc, f, s.recv, c.remote, common.ReadTimeout, c.series.in)
 	// Armed only once the writer, pipeline and reader exist, so a deadline
 	// that fires at once never races their assignment.
@@ -400,6 +412,21 @@ func (c *Conn) teardown() {
 			ctx, cancel := withClockDeadline(context.Background(), c.sh.clock, at)
 			defer cancel()
 			c.p.st.OnClose(ctx)
+		}
+		// decision: past a bad step's close, the writer, which takes nothing
+		// past the close, sends what it holds before it is stopped, as RFC 20
+		// section 4.7 has the records before the bad step go first: after
+		// OnClose, which keeps the grace it shares with the requests' wait, and
+		// within that grace, so the teardown stays bounded by it; a write the
+		// peer does not take fails at write_timeout, if that comes first.
+		// Overturned if a close must wait past the grace for its records.
+		if c.sendFirst.Load() {
+			if sent := c.w.flushed(); sent != nil {
+				select {
+				case <-sent:
+				case <-wait.Done():
+				}
+			}
 		}
 	}
 	if c.w != nil {
