@@ -108,9 +108,9 @@ func TestInitRace(t *testing.T) {
 
 func TestOpenRefusesFormat(t *testing.T) {
 	for name, f := range map[string]format{
-		"too new":      {Version: maxFormat + 1, Folds: knownFolds},
-		"too old":      {Version: minFormat - 1, Folds: knownFolds},
-		"unknown fold": {Version: maxFormat, Folds: []uint32{uint32(entity.FoldIdentity), 99}},
+		"too new":      {Version: MaxFormat + 1, Folds: knownFolds},
+		"too old":      {Version: MinFormat - 1, Folds: knownFolds},
+		"unknown fold": {Version: MaxFormat, Folds: []uint32{uint32(entity.FoldIdentity), 99}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			db := memKV(t)

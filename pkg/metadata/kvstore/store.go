@@ -19,9 +19,10 @@ var (
 	ErrFormat         = errors.New("kvstore: store format not supported")
 )
 
-// The store formats this binary reads and writes. Format n names the codec
-// versions a binary may write in it, so raising the active format is the only
-// way a newer codec version reaches the store.
+// MinFormat and MaxFormat are the store formats this binary reads and
+// writes, the range a node registers for the store format. Format n names
+// the codec versions a binary may write in it, so raising the active format
+// is the only way a newer codec version reaches the store.
 //
 // decision: format 1 is not frozen yet. No release has created a store, so
 // new record kinds join it and the control-plane codecs change in place at
@@ -29,8 +30,8 @@ var (
 // freezes it: from then on a new record kind or codec version raises the
 // format, and the codecs' golden vectors fail any change that does not.
 const (
-	minFormat = 1
-	maxFormat = 1
+	MinFormat = 1
+	MaxFormat = 1
 )
 
 // knownFolds is every fold rule this binary implements, by the ID the
@@ -96,7 +97,7 @@ func Init(ctx context.Context, db kv.KV, install [16]byte) error {
 		}
 		in := entity.Installation{ID: install, Instance: uuid.New()}
 		for _, kvs := range [][2][]byte{
-			{keys.Format, encodeFormat(format{Version: maxFormat, Folds: knownFolds})},
+			{keys.Format, encodeFormat(format{Version: MaxFormat, Folds: knownFolds})},
 			{installationKey, encodeInstallation(in)},
 			{shareListKey, encodeCounter(0)},
 		} {
@@ -128,8 +129,15 @@ func Open(ctx context.Context, db kv.KV) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if f.Version < minFormat || f.Version > maxFormat {
-		return nil, fmt.Errorf("%w: format %d, this binary reads %d to %d", ErrFormat, f.Version, minFormat, maxFormat)
+
+	if f.Version < MinFormat || f.Version > MaxFormat {
+		return nil, fmt.Errorf(
+			"%w: format %d, this binary reads %d to %d",
+			ErrFormat,
+			f.Version,
+			MinFormat,
+			MaxFormat,
+		)
 	}
 	for _, id := range f.Folds {
 		if !slices.Contains(knownFolds, id) {
@@ -141,4 +149,10 @@ func Open(ctx context.Context, db kv.KV) (*Store, error) {
 		return nil, err
 	}
 	return &Store{kv: db, format: f.Version, k: k}, nil
+}
+
+// Format is the store format the store was opened at, read from \x00format
+// by Open: the store format's active version.
+func (s *Store) Format() uint64 {
+	return s.format
 }
