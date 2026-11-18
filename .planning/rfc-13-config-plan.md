@@ -105,7 +105,7 @@ What replaces what:
 | --- | --- | --- |
 | `pkg/config` (full server file, environment overrides, warnings on unknown keys) | `pkg/bootstrap`, the bootstrap only, unknown keys refused (D8) | stripped by RFC 23's plan's epic 1; renamed in epic 1, finished in epic 2 |
 | `pkg/config/renamed_keys.go` (renamed keys refused; other unknown keys only warned) | the refused v1 keys, each naming its replacement (RFC 13 Appendix C's table): `database.*` (dropped: the metadata store is the control plane's database), `metadata.badger.*_cache_mb` (dropped), `controlplane.*` (its `port` and `tls` naming the bootstrap's API listen address and TLS, RFC 13 §2.2), `admin.*`, `kerberos.*`, `ldap.*`, `identity.*` (`machine_sid` included), `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*` but the keys of Appendix C's metadata block, `blockstore.*`, the journal path naming `journals` and its five tunables dropped, `metrics.*` (the bootstrap's metrics listen address), `shutdown_timeout` (`adapters.<protocol>.drain_timeout`), an upper-case `logging.level` (`use debug`), a bare-integer `logging.rotation.max_size` (megabytes today; refused, a size carries its unit), and their `DITTOFS_*` forms | reworked in epic 2 |
-| `pkg/metadata/kvstore/settings.go` (`Settings`, `PutSetting`, `CFGGEN`, `Setting.Schema`) | the same, with a delete, a read across every scope in one scan, and a newer schema refused; `expect` is RFC 23's plan's (its epics 1 and 2) | extended in epic 3 |
+| `pkg/metadata/kvstore/settings.go` (`Settings`, `PutSetting`, `CFGGEN`, `Setting.Schema`) | the same, with a delete, a read across every scope in pages from a `SettingKey` cursor (RFC 23 §2.1), and a newer schema refused; `expect` is RFC 23's plan's (its epics 1 and 2) | extended in epic 3 |
 | `KindSEC` reserved, no code | `Secret` records with versions and sealing | built in epic 4 |
 | `pkg/block/middleware/encryption/keyprovider` | `pkg/keyprovider`, unchanged | moved in epic 1 (D5) |
 
@@ -444,7 +444,9 @@ is reported, not failed (O4). It also runs RFC 13 §9's "§3 scope forms" row.
 
 **D4. A secret is sealed as an envelope.** Each version gets a fresh data key, which seals the value
 with AES-GCM, using the role, the kind, the owner, the reference, the version and a machine
-password's `HandedOver` mark (RFC 16 §2.3) as additional data, each field length-prefixed. The role
+password's `HandedOver` mark (RFC 16 §2.3) as additional data, each field, and each part of the
+owner (`Record.Kind`, `Record.ID`, the scope's tag and ID, `Key`), length-prefixed, so two owners
+whose parts concatenate to the same bytes still differ. The role
 follows from the kind (RFC 13 §7's table): `Seal` refuses a pair that does not match, so an NT hash
 cannot be sealed under `storage`. `keyprovider` wraps that data key under the role's key. A sealed
 value moved onto another record, role, kind, owner or version, or with its mark flipped, fails to
@@ -906,7 +908,7 @@ Reconcile, when `CFGGEN` moved: each change takes its class's path (RFC 23 §2.3
 
 ```go
 func (n *Node) reconcileSettings(ctx context.Context) error {
-	cur, bad, err := settings.Read(ctx, n.cp, node.Settings, n.id) // ponytail: one scan across every scope per move (§4.3)
+	cur, bad, err := settings.Read(ctx, n.nodes, node.Settings, n.id) // n.nodes is the node view Store.Nodes() gives (RFC 23's epic 2, D7), not the API's ControlPlane; ponytail: every scope's settings, read in pages, per move (§4.3)
 	if err != nil {
 		return err // the scan itself failed; nothing is decoded yet
 	}
@@ -972,7 +974,7 @@ func (p *Provider) Seal(ctx context.Context, role Role, kind entity.SecretKind, 
 	if err != nil && !errors.Is(err, metadata.ErrNotFound) {
 		return entity.Secret{}, err
 	}
-	if cur.Version > 0 && (kind != cur.Kind || owner != cur.Owner) {
+	if cur.Version > 0 && (kind != cur.Kind || !owner.Equal(cur.Owner)) {
 		return entity.Secret{}, ErrKindChanged // a reseal never moves a secret to another kind or owner
 	}
 	if cur.Version > 0 && cur.Kind == entity.SecretRemoteCredential { // the stored kind, not the caller's
@@ -1014,7 +1016,7 @@ func (p *Provider) Resolve(ctx context.Context, role Role, kind entity.SecretKin
 	if err != nil {
 		return nil, err
 	}
-	if s.Kind != kind || s.Owner != owner {
+	if s.Kind != kind || !owner.Equal(s.Owner) {
 		return nil, ErrWrongKind
 	}
 	wrapped, sealed := open(s.Value)
@@ -1169,7 +1171,8 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
 
 **Expected content:**
 - The kvstore settings view: a delete, raising `CFGGEN` in its transaction as `PutSetting` does; a
-  read of every scope's rows in one prefix scan of `CFG`, for reconcile, where `Settings` scans one
+  read of every scope's rows in `CFG`'s key order, in pages from a `SettingKey` cursor
+  (`AllSettings`, RFC 23 §2.1), for reconcile, where `Settings` scans one
   scope instance today; a newer `Setting.Schema` refused (the field exists); and the benchmark
   §4.3's reconcile marker names: `Read` and `Diff` at 10⁴ shares' settings, on Badger under `t.TempDir()`, in the `manual` tier with `ReportAllocs`.
 - `settings.Of` and the table: a section from a component's typed settings, defaults and

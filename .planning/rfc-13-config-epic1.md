@@ -237,10 +237,10 @@ bullets describe RFC 26's and RFC 5's records.
   view and the two roles' keys; without a frozen constructor each would reach for the unexported
   struct. `bootstrap.Load` exists already; T1.3 only adds its environment argument. No marker.
 - **D8, the secret kinds are RFC 16's list, and a kind with no role is not declared.**
-  `SecretKind` declares RFC 16 §2.3's kinds whose role RFC 13 §7's table gives. The node credential
-  (RFC 15 §4.4) has no role there and waits with the cluster; the directory's bind credential and
-  the OpenID Connect client secret have no kind in RFC 16 (§9), and take `protocol` and `storage`
-  once they do (RFC 13 §7, RFC 23 §5.5). Adding a constant later breaks no
+  `SecretKind` declares RFC 16 §2.3's kinds whose role RFC 13 §7's table gives, among them the
+  directory's bind credential under `protocol` and the OpenID Connect client secret under
+  `storage` (RFC 23 §5.5). The node credential (RFC 15 §4.4) is not a `Secret` kind: its private
+  half stays on the node's own volume (RFC 30 §4.2). Adding a constant later breaks no
   caller. No marker.
 - **D9, the declaration API: a class is a struct tag.** A component's settings struct carries each
   field's class beside its `json` tag (`class:"restart"`), and `Of` panics on a field without one,
@@ -537,8 +537,8 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
 - **Track:** the team. **Depends on:** T1.4 (`entity.Secret`).
 - **Covers:** R14, R15, R16.
 - **Deliverables:** on kvstore's `ControlPlane`, with stub bodies (D4):
-  `DeleteSetting(ctx, scope, key, expect)`, `AllSettings(ctx) iter.Seq2[entity.Setting, error]`
-  (§9: the name waits on RFC 16), `Secret(ctx, id, version)`, `PutSecret(ctx, s, expect)` and
+  `DeleteSetting(ctx, scope, key, expect)`, `AllSettings(ctx, after SettingKey) iter.Seq2[entity.Setting, error]`
+  (RFC 23 §2.1, on the node's `Records` view), `Secret(ctx, id, version)`, `PutSecret(ctx, s, expect)` and
   `PruneSecret(ctx, id, below)`, each with its transaction form on `ControlPlaneTx` (D2), among them a tracked
   `Secret(id, version)` read, so that `Check` verifies a reference's kind and owner inside the
   write's transaction. `AllSettings` is provisional until E3's §4.3 benchmark.
@@ -668,13 +668,6 @@ so PR 3 starts once PR 2 is there. A suggestion only: one pull request per subta
 
 ## 9. Open points
 
-- **The OpenID Connect client secret and the directory's bind credential have no secret kind.**
-  RFC 16 §2.3's `Secret.Kind` list has neither. RFC 13 §7's table gives the bind credential the
-  `protocol` role and leaves the client secret out, which RFC 23 §5.5 seals under `storage`. Until
-  RFC 13 §7 and RFC 16 §2.3 are amended, D8 declares neither kind. The bind credential's kind is
-  proposed in RFC 18's epic 6 breakdown (#4341, its D3). Pending #4472.
-- **The cross-scope read has no RFC 16 signature.** RFC 16 §3 has `Settings(ctx, scope)` only;
-  T1.5 names the one-scan read `AllSettings` until RFC 16 §3 gains it. Pending #4473.
 - **D10 and D11 quote #4486 as amended, and it is not merged.** Appendix C, §6's shape and
   Appendix B's conventions are read from its branch. This breakdown merges after #4486, or each
   quote is re-read against the merged text. Pending #4486.

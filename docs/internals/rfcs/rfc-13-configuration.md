@@ -97,7 +97,7 @@ Other settings of the same share change differently:
 - the S3 credential is never in configuration at all. The record holds a
   reference to a sealed secret, and rotating the credential changes no record.
 
-![Each host holds only its bootstrap — node identity and roles, how to reach the metadata store, local devices and scratch paths, listen addresses, logging, the memory limit and where its own roles' wrapping keys are — and uses it to reach the control plane in the metadata store, which holds every setting as a record at one of five scopes (installation, node, namespace, remote store, share) with one of four binding classes (live, restart, next write, bound), and secrets only as sealed records referenced by name; an operator writes records through the API or a provisioning file, validated before commit, and each component reads the settings generation every second, runs a live change within 5 s and validates again when built, refusing rather than defaulting an invalid value](img/rfc13-overview.svg)
+![Each host holds only its bootstrap (node identity and roles, how to reach the metadata store, local devices and scratch paths, listen addresses, logging, the memory limit and where its own roles' wrapping keys are) and uses it to reach the control plane in the metadata store, which holds every setting as a record at one of five scopes (installation, node, namespace, remote store, share) with one of four binding classes (live, restart, next write, bound), and secrets only as sealed records referenced by name; an operator writes records through the API or a provisioning file, validated before commit, and each component reads the settings generation every second, runs a live change within 5 s and validates again when built, refusing rather than defaulting an invalid value](img/rfc13-overview.svg)
 
 **The words you need.**
 
@@ -776,13 +776,21 @@ both keys in its bootstrap:
 
 | Wrapping key | Seals | Needed by |
 | --- | --- | --- |
-| `protocol` | NT hashes, keytabs, identity-provider bind credentials, the machine-account password NTLM pass-through signs in with, the node credential ([RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)) | authentication and the node channel |
+| `protocol` | NT hashes, keytabs, identity-provider bind credentials, the machine-account password NTLM pass-through signs in with | authentication |
 | `storage` | password hashes, which only the management API's sign-in verifies (RFC 23 §5.3); remote-tier credentials, references to master keys, the management API's token-signing key (RFC 23 §5.3), OpenID Connect client secrets (RFC 23 §5.5) | the remote tier, the material provider and the management API |
 
-The node credential is sealed under `protocol`: a node that only serves protocols
-still forwards calls on the node channel, so it needs the credential, and it is
-handed the `protocol` key alone. A deployment **MAY** split a
-key further by secret kind.
+A deployment **MAY** split a key further by secret kind.
+
+**A node credential is not a secret of the store.** Its private half is issued
+to the node and kept on its own volume with its identity
+([RFC 30 §4.2](rfc-30-kubernetes.md#4.2%20A%20pod's%20identity%20is%20its%20volume)),
+and never enters the KV, which any node can read
+([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)).
+Sealed under a key every node holds, it would let any node unseal every other
+node's credential and speak on the node channel in its name, which
+[RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)'s bound-to-the-sender rule
+forbids. The store holds only what a peer verifies it with, the issued
+certificate or public key, and its revocation.
 
 > decision: the two keys stay separate although every node holds both, so a
 > later split of the roles ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type))
@@ -967,7 +975,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§6](#6.%20Validation) refused | For every setting, feed one value out of range and one of the wrong type, through the API and directly to the component. Assert both refuse, with the field named; assert no component runs a default in its place. |
 | [§6](#6.%20Validation) one validator | Assert the API and the component return the same error for every invalid record in the fixture set. |
 | [§6](#6.%20Validation) unknown field | Misspell one field of each record. Assert refused. |
-| [§7](#7.%20Secrets) role keys | Seal a remote-tier credential and an NT hash. Assert each unseals under its own wrapping key and fails under the other. |
+| [§7](#7.%20Secrets) role keys | Seal a remote-tier credential and an NT hash. Assert each unseals under its own wrapping key and fails under the other, and that every `SecretKind` maps to exactly one key. |
 | [§7](#7.%20Secrets) no secret out | Configure every secret-bearing record; read every API, export and log produced by a full test run. Assert no secret value appears. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) explicit initialisation | Start a node against an empty metadata store and empty journal directories: assert it refuses, creating nothing. Initialise: assert the store's Installation record and every journal's `format` file carry one installation ID. Assert every journal directory holds one `node-id`, and that a start with two that differ refuses, naming both. Delete every copy with no identity in the host's file: assert the start refuses, generating none. Start with the store volume unmounted: assert it reports the metadata store lost and creates nothing; with the journal directory emptied and the identity named in the host's file, the journal missing; with the node's identity changed in its bootstrap, the start refused, naming the directories, and every copy unchanged. Truncate one copy and flip a byte of another: assert each refuses the start, naming its directory, and neither is written over. Against a committed golden vector of [RFC 28 §2.1](rfc-28-journal-format.md#2.1%20Layout)'s `node-id` layout, assert a `node-id` written by the step is its 24 bytes, and that a 23- or 25-byte copy, another magic and a bad checksum each fail to parse. Replace a recorded device with an empty directory: assert a start writes nothing into it, and that its re-initialisation's `Init` then succeeds, after which the step writes its copy. Delete every copy and name a new identity in the host's file: assert the start writes no copy, and refuses the journals' shares as not recorded, never the store lost, until a recovery import records them under the new identity and writes their copies, after which a start serves them. Only with initialise-if-empty set does a start on empty storage create an installation. |
 | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) location deletion | Delete a location record holding one unexpired backup: refused `ErrLocation`, naming it. Expire it; delete again: accepted. Make a second location unreachable for good with one backup there: deletion refused. State it lost, crashing after the lost mark and after the first batch: assert the statement resumes from the mark, the backup reads `lost` in the store, its folder record's census and block count are empty, the statement is in the audit log, deletion is accepted, and a master key only that backup's export named can be destroyed. Leave a third location unreachable for a day without the statement: still refused. |

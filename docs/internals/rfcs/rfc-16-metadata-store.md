@@ -744,6 +744,13 @@ type Setting struct {
 	Generation uint64       // raised by every change (RFC 13 §2.3)
 	Schema     uint32       // the record's schema version; a reader that does not know it refuses the record (RFC 13 §2.3)
 }
+
+// SettingScope is where a setting is set (RFC 13 §3): the scope's kind and, but
+// for the installation, the ID of the node, namespace, remote store or share.
+type SettingScope struct {
+	Kind uint8    // installation, node, namespace, remote store or share: the tag byte of §4.2's `scope`
+	ID   [16]byte // the scope's ID (§4.2's identifier); zero for the installation
+}
 ```
 
 ```go
@@ -751,10 +758,11 @@ type Setting struct {
 // is envelope-encrypted under a key held outside the KV, so a copy of the
 // store alone reveals nothing. Referenced by SecretRef from User and Setting.
 // Each secret kind is sealed under the wrapping key of the role that needs it
-// (RFC 13 §7); every node holds both keys.
+// (RFC 13 §7); every node holds both keys. A node credential (RFC 15 §4.4) is
+// not a Secret: its private half stays on the node's volume (RFC 30 §4.2).
 type Secret struct {
 	ID    SecretRef
-	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, machine password (RFC 18 §3.5), remote credential, key, node credential (RFC 15 §4.4), directory credential (the directory's bind credential), client secret (an OpenID Connect client's secret)
+	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, machine password (RFC 18 §3.5), remote credential, key, directory credential (the directory's bind credential), client secret (an OpenID Connect client's secret)
 	Version uint64   // raised by every rotation; the previous version stays resolvable until every node reports this one, a keytab's and a machine password's for RFC 18 §3.3's retention, the API signing key's until its last token expires (RFC 13 §7)
 	KeyID string     // which wrapping key sealed it: one per role or secret kind
 	Owner SecretOwner // the record or setting key whose field names it; a new version keeps both Kind and Owner, which PutSecret enforces, and pkg/secrets refuses a read whose reference comes from another owner or expects another kind, so a reference cannot be pointed at another holder's secret (RFC 23 §5.2)
@@ -764,10 +772,12 @@ type Secret struct {
 }
 
 // ResourceRef names one record by its kind and its key. The zero value names
-// none.
+// none. Each kind uses one ID form, minted or natural, never both, and the Kind
+// values are constants that are never renamed: a Secret's additional data
+// seals Kind, so a rename would stop every value naming it from opening.
 type ResourceRef struct {
 	Kind string // the record's kind, as RFC 23 names its resource
-	ID   []byte // the record's key: its minted 16-byte ID (FileID, ShareID, PrincipalID, §2.2), else its natural key: a netgroup's name, a setting's scope and key, a grant's share and principal, a snapshot's share and name, the same variable length as §4.2's OPR and AUX targets carry
+	ID   []byte // the record's key: its minted 16-byte ID (FileID, ShareID, PrincipalID, §2.2), else its natural key, encoded as §4.2 encodes that record's key components (a netgroup's name as a byte string; a setting's tagged scope then its byte-string key, for an `OPR` or `AUX` target only, since a SecretOwner never names a setting through Record; a grant's ShareID then its Principal; a snapshot's ShareID then its Cut, as `S‖id‖snap‖cut` keys it), the variable-length ID §4.2's `OPR` and `AUX` targets carry
 }
 
 // SecretOwner is the one holder a secret belongs to: a record's field (a
@@ -777,12 +787,18 @@ type ResourceRef struct {
 // ID, under the keys "signing_key" and "machine_password") or a setting's key
 // (a keytab, the directory's bind credential, an OpenID Connect client's
 // secret). Encoded with the version, as the Secret's other fields are, and
-// compared byte for byte, ID included.
+// compared through its Equal method, the record ID with bytes.Equal. A setting
+// has one owner form: Record never names a setting, and a setting's owner is
+// always its Scope and Key, so no secret is owned two ways.
 type SecretOwner struct {
 	Record ResourceRef  // the record's kind and ID; zero for a setting
 	Scope  SettingScope // the setting's scope; zero for a record
 	Key    string       // the record's field name, or the setting's key
 }
+
+// Equal reports whether o and x name the same owner, comparing every field;
+// ResourceRef.ID is a slice, so it is compared with bytes.Equal.
+func (o SecretOwner) Equal(x SecretOwner) bool
 ```
 
 Every node holds both wrapping keys; they stay separate so a later split of the
@@ -1392,7 +1408,6 @@ type ControlPlane interface {
 	DeleteNamespace(ctx context.Context, id NamespaceID, expect uint64) error // refused while a share's Namespaces names it; deletes the record and its NSR key together
 	Snapshots(ctx context.Context, share ShareID) iter.Seq2[Snapshot, error]
 	Settings(ctx context.Context, scope SettingScope) iter.Seq2[Setting, error]
-	AllSettings(ctx context.Context) iter.Seq2[Setting, error] // every scope's settings in one scan, for the node's reconcile (RFC 23 §2.3)
 	PutSetting(ctx context.Context, s Setting, expect uint64) error
 	DeleteSetting(ctx context.Context, scope SettingScope, key string, expect uint64) error // removes an override, so the wider scope's value is effective; raises the settings generation as a put does (RFC 13 §3)
 	Secret(ctx context.Context, id SecretRef, version uint64) (Secret, error) // one version, still sealed; version 0 reads the current one; ErrNotFound once pruned
@@ -2001,14 +2016,14 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `IDS‖kind` | ID allocator, one per kind (client, open, lock, shard): the next unreserved ID, reserved in ranges by the process that issues them, so an ID is never issued twice and issuing one writes nothing; a range left unused when the process stops is abandoned. A `ClientID` and an `OpenID` are unique across the installation ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); an `OpenID` is issued only to an SMB, durable or clone source open, never to every NFS open, and below 2⁴⁰: `IDS‖open` refuses to issue past it ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)); a `lockID` need only differ from every other lock under its open and offset, which a server-wide counter more than meets. A shard number is read and raised in the transaction that creates the shard, which writes `S‖id‖shs‖shard` and `SH‖shard` — a share's own at the share's creation ([§2.3.1](#2.3.1%20Share%20names%2C%20paths%20and%20state)), a per-child one at its directory's ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)) —, never reserved in ranges and never reused, so a stateid naming a removed shard never resolves against another share's; `IDS‖shard` refuses with `ErrNoSpace` at 2²⁴, the most shards an installation numbers ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)). Three more kinds, uid, gid and RID, are the allocation counters of principals' spellings (RFC 18 §2.3): each only rises, and is read and raised in the transaction that creates the `User` or `Group` it numbers, as `S‖id‖pjn` is, never reserved in ranges; a uid or gid is drawn from `identity.id_range` and one any principal holds is skipped, which its `PX‖` row shows, so no allocated uid, gid or RID is given twice, even after its principal is deleted |
 | | `N‖node‖st` | NodeStatus (§2.3): what the node has applied, refused and holds restart-pending, and its conditions; written only by that node (RFC 23 §2.4) |
 | | `OP‖opID` | Operation (§2.3), deleted 7 days after it ends (RFC 23 §4.6) |
-| | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` the target's resource kind as one byte, then its ID |
+| | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` the target's resource kind as a byte string, then its ID |
 | | `IK‖account‖key` | IdempotencyRecord (§2.3), written in the request's own transaction (RFC 23 §4.5) |
 | | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`), session (0x03, session ID), source's sign-in failures (0x04, address), API token (0x05, token ID) and an account-and-source pair's sign-in failures (0x06, principal then address), written and deleted with it, so the sweep is one ordered scan |
 | | `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash`, `SSA‖principal‖session` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3); and its reverse, one empty key per hash the session has retained, written with its `SSH` row, so the expiry sweep (`XP`, tag 0x03) deletes the session's `SSH` rows by one range of its own, never a scan of `SSH`; and the per-account index, one empty key per session, for listing an account's sessions and deleting them with it. `DeleteSession` (sign-out, a reused refresh token's revocation, the account's deletion) deletes `SS‖session`, its `SSA` key, and, by the range `SS‖session‖h‖`, every `SSH` row the session ever had, in one transaction, so no refresh hash it issued is found afterwards |
 | | `SF‖tagged` | SignInFailures (§2.3), keyed by the account (tag 0x01, principal; a name that resolves to no account has none), the source address (0x02), or the two together (0x03, principal then address), read and raised in the attempt's own transaction before its password is checked, except an attempt answered `429`, which raises none and commits nothing, and a caller on the API's local socket has no source's or pair's (RFC 23 §5.3, which says how a source address is normalised); a pair's is deleted by the expiry sweep 24 h after its last counted attempt and a source's 15 min after its `Failed`, which only a failure's settle or an attempt that creates the count moves, with its `XP` row (`XP`, tags 0x04 and 0x06); a settle or a takeback does nothing on a source's record that is missing or holds another `Nonce`; an account's and its pair's are deleted by a success; an account's by `:set-password`, the break-glass reset and the account's deletion, which leaves its pairs to the sweep; and every source's by the break-glass reset, in bounded batches |
 | | `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID` | APIToken (§2.3); token index: the hash → token ID; per-account index, for listing and for deleting an account's tokens with it; all three deleted by the expiry sweep once the token expires (`XP`, tag 0x05) |
 | | `AU‖time‖auditID` | AuditRecord (§2.3), in store-time order, so a time-range read and the retention sweep are one range; never rewritten (RFC 23 §6) |
-| | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, the resource kind as one byte, then its ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |
+| | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, the resource kind as a byte string, then its ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |
 | | `AUC‖node` | AuditCursor (§2.3): one per node that takes requests, written first by that node's first export and changed only by conditional writes naming the holder it read; it outlives the node's lease, and is deleted with the node's record once its last audit record within `audit.retention` is exported (RFC 25 §4.3) |
 | **Store** | `\x00format` | store format record (§4.6) |
 

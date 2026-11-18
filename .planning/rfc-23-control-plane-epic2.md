@@ -283,7 +283,8 @@ them.
 - **D7, the node's records and its background calls have their own view.** RFC 16 says
   `NodeStatus` is not `ControlPlane`'s: every node writes its own through the node view, and RFC
   23 §2.1 calls `ControlPlane` the API's write view. So `Store.Nodes()` gives `Nodes`, with
-  `Counters`, `RegisterNode`, `Node`, `PutNodeStatus`, `NodeStatuses`, `List`, and the calls E3
+  `Counters`, `RegisterNode`, `Node`, `PutNodeStatus`, `NodeStatuses`, `List`, `AllSettings`, which
+  pages every scope's settings from a `SettingKey` for the reconcile's settings read (RFC 23 §2.1), and the calls E3
   drives: `Sweep`, `ContinueDelete`, `ContinueRemoval`, `ContinueShardRemoval` and
   `RecordShardRemoval`. This departs from RFC 23 §2.1's `Records` sketch in three ways, each for a
   consumer: `RegisterNode` returns the record it wrote, since the node needs the epoch it raised;
@@ -699,6 +700,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   func (n Nodes) PutNodeStatus(ctx context.Context, s entity.NodeStatus) error
   func (n Nodes) NodeStatuses(ctx context.Context, after entity.NodeID) iter.Seq2[entity.NodeStatus, error]
   func (n Nodes) List(ctx context.Context, kind RecordKind, after []byte) iter.Seq2[Record, error]
+  func (n Nodes) AllSettings(ctx context.Context, after SettingKey) iter.Seq2[entity.Setting, error]
   ```
   `RaiseNodeEpoch` raises `N‖node`'s `Epoch` and `idNodeEpoch` goes, with its `ponytail:` (D15).
   Consumed by E3 (registration at start, the status writer, reconcile's listings), E4 (`applied`,
@@ -711,7 +713,10 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 - **Tests:** at kvstore's conformance suite: the epoch across two starts, read through
   `RaiseNodeEpoch`'s answer and the node record (catches a second epoch, R9, D15); a status round
   trip with every field set, and a listing of two nodes (R10); golden vectors, refusal cases and
-  `FuzzControlPlaneValues` entries for both codecs (R12, R13). R38 is held by the compiler:
+  `FuzzControlPlaneValues` entries for both codecs (R12, R13); `AllSettings` over settings at two scopes in
+  pages of one, every setting once in `CFG`'s key order, a walk resumed after a deleted key still
+  finding the rest, and the zero `SettingKey` starting at the first (catches a cursor that skips or
+  repeats). R38 is held by the compiler:
   `ControlPlane` has no write of a status. No double.
 
 ### T2.9 Sessions, API tokens and sign-in counts
