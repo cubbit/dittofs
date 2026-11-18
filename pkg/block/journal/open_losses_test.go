@@ -510,6 +510,34 @@ func TestDeferredOnlySegmentStandsOnItsDeferral(t *testing.T) {
 	}
 }
 
+// TestDeferredHolderStaysHeldForTheRunningWorker holds the gate the running
+// journal's retirement worker decides on: the liveness tracker's Held answer.
+// The holder of a deferred loss has no live record of its own — it is the
+// deferral alone that keeps it — so the tracker must count the deferral, or
+// the first tick of the worker unlinks the holder and a reopen serves the
+// older bytes over the synced write the crash corrupted.
+func TestDeferredHolderStaysHeldForTheRunningWorker(t *testing.T) {
+	f := seededJournal(t)
+	file := fileOf(7)
+	older := plantRecord(1, ownerTag, file, 10, 10, 0, 32)
+	reserveDrop := plantRecord(1, ownerTag, file, 13, 13, 32, 32)
+	offsA := plantSealedAt(t, f.seam, f.id, 947, older, reserveDrop)
+	f.rotHeader(t, format.SegmentName(947), int64(offsA[1]))
+	newer := plantRecord(1, ownerTag, file, 11, 11, 0, 32)
+	offsB := plantSealedAt(t, f.seam, f.id, 948, newer)
+	f.rotHeader(t, format.SegmentName(948), int64(offsB[0]))
+
+	j := f.publicOpen(t, func(s *Settings) { s.HeadroomRecords = 2 })
+	if defss, derr := durability.DeferredFor(f.dir, f.id); derr != nil || len(defss[948]) != 1 {
+		t.Fatalf("the deferred registry answers %+v (err %v), want the one loss against segment 948", defss, derr)
+	}
+	// The worker's retirement decision reads this answer and nothing beside
+	// it: a holder it answers not held is unlinked within a tick.
+	if !j.core.Liveness().Held(948) {
+		t.Fatalf("the tracker answers segment 948 not held while its deferred loss stands, want held: the running worker would unlink it and a reopen would serve the older bytes over the synced write")
+	}
+}
+
 // TestAlreadyNamedCorruptDropDrawsNoReserve holds the reserve arithmetic of
 // the open's dedup: a corrupt drop a loss record on disk already names draws
 // none of the open reserve — the found record's placement takes its piece —

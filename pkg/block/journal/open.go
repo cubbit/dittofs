@@ -400,8 +400,17 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			recoveryDeps.DrawReserve = func() (core.SegmentID, error) {
 				return c.TakeReserve(ctx)
 			}
-			recoveryDeps.EndDeferral = c.Durability().EndDeferral
-			return recovery.Emptying(ctx, recoveryDeps, &st, expect, floor, marks)
+			recoveryDeps.EndDeferral = func(seg core.SegmentID, l durability.Loss) bool {
+				ended := c.Durability().EndDeferral(seg, l)
+				if ended {
+					c.Liveness().SetDeferred(seg, false)
+				}
+				return ended
+			}
+			if err := recovery.Emptying(ctx, recoveryDeps, &st, expect, floor, marks); err != nil {
+				return err
+			}
+			return holdDeferredHolders(c, dir, expect)
 		})
 		if err != nil {
 			return nil, err
@@ -454,6 +463,33 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		cfg.SparesReady(c)
 	}
 	return newJournal(c), nil
+}
+
+// holdDeferredHolders raises the tracker's deferred count, once per registry
+// entry, on each segment the emptying left standing under a deferral. The
+// retirement worker the core starts next decides on the tracker's Held answer
+// alone, and a holder of a deferred loss may carry no live record of its own:
+// without the count the worker unlinks it within a tick, taking the dropped
+// record the deferral still owes a loss record, and a reopen then serves the
+// older bytes over the synced write. An entry naming a segment the set no
+// longer holds raises nothing: the tracker answers no state for it.
+//
+// ponytail: a deferral held here ends only through EndDeferral, which the
+// emptying calls for an ended holder alone, so a sealed holder stands until a
+// process restart re-detects its drop and the open copies it. Upgrade to a
+// running copy that ends a sealed holder's deferral in place when a holder
+// standing for a whole process lifetime shows up in the disk accounting.
+func holdDeferredHolders(c *datapath.Core, dir string, id core.JournalID) error {
+	deferred, err := durability.DeferredFor(dir, id)
+	if err != nil {
+		return err
+	}
+	for seg, losses := range deferred {
+		for range losses {
+			c.Liveness().SetDeferred(seg, true)
+		}
+	}
+	return nil
 }
 
 // continueFrom is the core an assembled recovery continues as: the deps the
