@@ -412,8 +412,8 @@ func TestSeriesResolvedOncePerServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sh.Table(tables[0].Ops[testproto.OpCompound].Members, 1); err != nil {
-		t.Errorf("a compound row's Members, resolved with their table: %v", err)
+	if sh.Resolved(tables[0].Ops[testproto.OpCompound].Members) == nil {
+		t.Error("a compound row's Members are not resolved with their table")
 	}
 	v2, err := sh.Table(tables[1], 2)
 	if err != nil {
@@ -442,7 +442,8 @@ func TestSeriesResolvedOncePerServer(t *testing.T) {
 // which take their table's Protocol and Versions. A refused server registers
 // no series. It accepts testproto's tables, whose version 1 compound row's
 // Members hold that table's names, one table two listeners list, checked
-// once, and two tables of different Protocols that share a name.
+// once, two tables of different Protocols that share a name, and two
+// compound rows of one table that name one Members table, one table.
 func TestNewServerChecksTheListedTables(t *testing.T) {
 	p := testproto.New(adapter.Deps{})
 	v1, v2 := p.Tables()[0], p.Tables()[1]
@@ -463,6 +464,12 @@ func TestNewServerChecksTheListedTables(t *testing.T) {
 	lists := func(tables ...*core.OpTable) []core.Listener {
 		return []core.Listener{tcp(listing{p, tables}, 0, "a")}
 	}
+	twoCompounds := func(c *core.OpTable) {
+		second := *c.Ops[testproto.OpCompound]
+		second.Code, second.Name = 1<<20, "Compound2"
+		c.Ops = maps.Clone(c.Ops)
+		c.Ops[second.Code] = &second
+	}
 	for _, c := range []struct {
 		name   string
 		ls     []core.Listener
@@ -472,6 +479,7 @@ func TestNewServerChecksTheListedTables(t *testing.T) {
 		{"one table two listeners list", []core.Listener{tcp(p, 0, "a"), tcp(p.Bare(), 0, "b")}, ""},
 		{"two tables of different Protocols", lists(v1, with(v2, every, func(c *core.OpTable) { c.Protocol = "alt" })), ""},
 		{"the later version's table listed first", lists(v2, v1), ""},
+		{"two compound rows naming one Members table", lists(with(v1, twoCompounds)), ""},
 		{"a table with no Protocol", lists(with(v1, only(testproto.OpEcho), func(c *core.OpTable) { c.Protocol = "" })), "the table of Echo has no Protocol"},
 		{"Versions first past last", lists(with(v2, only(testproto.OpEcho), at(2, 1))), "the table of Echo has Versions 2 to 1, first past last"},
 		{"two tables, neither setting Versions", lists(with(v2, every), with(v2, every)), "both hold the row"},
@@ -541,10 +549,7 @@ func TestSeriesPanicsByOperation(t *testing.T) {
 	tb := routed(t)[0]
 	ts := seriesOf(t, sh, tb)
 	members := tb.Ops[testproto.OpCompound].Members
-	ms, err := sh.Table(members, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ms := sh.Resolved(members)
 	member := members.Ops[testproto.OpEcho]
 	ms.Panicked(member)
 	ts.Panicked(&core.Op{Code: 1 << 30, Name: "Absent"})

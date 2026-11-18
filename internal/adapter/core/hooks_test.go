@@ -108,6 +108,10 @@ func StateNames() map[int]string {
 	return m
 }
 
+// Resolved is the series NewServer resolved for t, a compound row's Members
+// included, which Route may not return; nil where none was.
+func (sh *shared) Resolved(t *OpTable) *TableSeries { return sh.tables[t] }
+
 func (s *protocolSeries) Answered()                       { s.answered() }
 func (s *protocolSeries) Refused(st int)                  { s.refused(stage(st)) }
 func (s *protocolSeries) Observe(st int, d time.Duration) { s.observe(stage(st), d) }

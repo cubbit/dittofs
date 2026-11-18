@@ -439,10 +439,7 @@ func newTraced(t *testing.T, tracing bool) traced {
 	tb := routed(t)[0]
 	members := tb.Ops[testproto.OpCompound].Members
 	tr.top = seriesOf(t, tr.sh, tb)
-	var err error
-	if tr.members, err = tr.sh.Table(members, 1); err != nil {
-		t.Fatal(err)
-	}
+	tr.members = tr.sh.Resolved(members)
 	tr.topEcho, tr.mEcho = tb.Ops[testproto.OpEcho], members.Ops[testproto.OpEcho]
 	return tr
 }

@@ -346,12 +346,13 @@ func (t *tableSeries) released(n int64) {
 func (sh *shared) holdPoolCharged(n int64) { sh.holdPool.Add(float64(n)) }
 
 // table is the series NewServer resolved for t, which Route returned for a
-// header of version v. A table no listener's Tables listed, or one whose
-// Versions do not hold v, is a fault of the protocol's wiring (§4.7): the
-// error closes the connection, naming the table.
+// header of version v. A table no listener's Tables listed, a compound row's
+// Members among them, or one whose Versions do not hold v, is a fault of the
+// protocol's wiring (§4.7): the error closes the connection, naming the
+// table.
 func (sh *shared) table(t *OpTable, v Version) (*tableSeries, error) {
 	ts, ok := sh.tables[t]
-	if !ok {
+	if !ok || ts.member {
 		return nil, fmt.Errorf("%w: Route returned the table of %s, which no listener's Tables listed", errWiring, opNames(t))
 	}
 	if r := t.Versions; r != nil && (v < r.First || v > r.Last) {

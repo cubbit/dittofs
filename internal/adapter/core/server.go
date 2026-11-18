@@ -233,7 +233,8 @@ func checkListeners(ls []Listener) error {
 // and two of one Protocol that both hold a row name, lower-cased as the op
 // label is, unless both set Versions and the two do not overlap: a compound
 // row's Members take their table's Protocol and Versions, and may share a
-// name with that table alone (§4.7's Protocol.Tables, §10.1's op).
+// name with that table alone; one Members table several of its rows name is
+// one table, known by its pointer (§4.7's Protocol.Tables, §10.1's op).
 func checkTables(ls []Listener) ([]*OpTable, error) {
 	var tables []*OpTable
 	seen := map[*OpTable]bool{}
@@ -270,8 +271,10 @@ func checkTables(ls []Listener) ([]*OpTable, error) {
 	}
 	for _, t := range tables {
 		all = append(all, named{t, false, lower(t)})
+		seen := map[*OpTable]bool{}
 		for _, op := range t.Ops {
-			if op.Members != nil {
+			if op.Members != nil && !seen[op.Members] {
+				seen[op.Members] = true
 				all = append(all, named{t, true, lower(op.Members)})
 			}
 		}

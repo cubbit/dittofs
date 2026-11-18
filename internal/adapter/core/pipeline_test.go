@@ -748,10 +748,10 @@ func TestABadChecksumIsRefusedBeforeAdmit(t *testing.T) {
 }
 
 // Version 2 on stages with no Hold closes the connection; so does a table
-// Route returns that no listener listed, and version 1's table returned for
-// a version 2 header, outside its Versions, each a wiring fault naming the
-// table (§4.7). In a bubble, so a connection left open fails the test at
-// once.
+// Route returns that no listener listed, a compound row's Members among
+// them, and version 1's table returned for a version 2 header, outside its
+// Versions, each a wiring fault naming the table (§4.7). In a bubble, so a
+// connection left open fails the test at once.
 func TestTablesTheStagesCannotServeCloseTheConnection(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := testproto.New(adapter.Deps{})
@@ -764,6 +764,12 @@ func TestTablesTheStagesCannotServeCloseTheConnection(t *testing.T) {
 		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
 		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "Echo") || !strings.Contains(err.Error(), "no listener's Tables listed") {
 			t.Errorf("a table no listener listed closed with %v, want the fault naming the table", err)
+		}
+		members := p.Tables()[0].Ops[testproto.OpCompound].Members
+		s = newSeam(t, edited{p, func(st *core.Stages) { st.Router = misrouted{st.Router, members} }}, 1<<20)
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "Echo") || !strings.Contains(err.Error(), "no listener's Tables listed") {
+			t.Errorf("a compound row's Members returned by Route closed with %v, want the fault naming the table", err)
 		}
 		s = newSeam(t, edited{p, func(st *core.Stages) { st.Router = misrouted{st.Router, p.Tables()[0]} }}, 1<<20)
 		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 2, ID: 1})
