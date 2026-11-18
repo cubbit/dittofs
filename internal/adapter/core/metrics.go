@@ -160,10 +160,11 @@ const (
 	splitFlow
 	splitReplyPool
 	splitQuarter
+	splitRecord
 	splits
 )
 
-var splitReasons = [splits]string{"unwrap", "decode", "flow", "reply_pool", "quarter"}
+var splitReasons = [splits]string{"unwrap", "decode", "flow", "reply_pool", "quarter", "record"}
 
 // protocolSeries is what a request records under one protocol label: before
 // Route under its connection's Stages.Protocol, from it under its table's.

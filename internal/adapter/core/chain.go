@@ -12,14 +12,22 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// ended is a context whose deadline has passed: Admit under it tries once
-// and, where it would wait, answers its error at once, and Lookup tries its
-// copy's reservation once, answering ErrDelay of DelayResources (§4.7).
-var ended = func() context.Context {
-	ctx, cancel := context.WithDeadline(context.Background(), time.Time{})
-	cancel()
-	return ctx
+// endedCtx is a member's context with its deadline passed: Admit under it
+// tries once and, where it would wait, answers its error at once, and Lookup
+// tries its copy's reservation once, answering ErrDelay of DelayResources
+// (§4.7). It keeps the member's values, its trace ID and span among them.
+type endedCtx struct{ context.Context }
+
+// closedDone is the done channel of every endedCtx.
+var closedDone = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
 }()
+
+func (endedCtx) Deadline() (time.Time, bool) { return time.Time{}, true }
+func (endedCtx) Done() <-chan struct{}       { return closedDone }
+func (endedCtx) Err() error                  { return context.DeadlineExceeded }
 
 // entry is one chain member as the walk reaches it.
 type entry struct {
@@ -58,10 +66,11 @@ type chain struct {
 	prevR    *Request
 	failed   bool // the member before failed, with failS
 	failS    Status
-	cur      entry  // the member running
-	stopped  bool   // a NoReply member ended the chain, or the connection closed
-	slot     bool   // the chain holds the connection's one status wait
-	kept     func() // the place of the last member admitted, until the next is admitted or would wait
+	cur      entry    // the member running
+	stopped  bool     // a NoReply member ended the chain, or the connection closed
+	slot     bool     // the chain holds the connection's one status wait
+	kept     func()   // the place of the last member admitted, until the next is admitted or would wait
+	try      endedCtx // the running member's context, ended, for its first try; reused so a try boxes nothing
 }
 
 // serveChain takes a record whose messages chain (§4.7). On the reader it
@@ -248,6 +257,9 @@ func (c *chain) one(e *entry) {
 	c.prevH = e.u
 	switch {
 	case e.cancel:
+		// The cancel is the member before the next and sets no handle, so a
+		// related member after it starts from no request (§4.7, Related).
+		c.prevR = nil
 		p.end(e.tr, false, 0, 0, nil)
 		return
 	case e.err == nil:
@@ -270,13 +282,14 @@ func (c *chain) one(e *entry) {
 	if related {
 		prev = c.prevR
 	}
-	// decision: a replay hit builds no request, so a related member after it
-	// is handed the request from before the hit, whose state the cached
-	// reply's call had started from. Overturned if a protocol that chains
+	// decision: a replay hit builds no request, so a related member after a
+	// related hit is handed the request from before the hit, whose state the
+	// cached reply's call had started from; after an unrelated hit it starts
+	// from no request, as that call did. Overturned if a protocol that chains
 	// returns cached copies and a hit's own state must carry over.
 	release := e.release
 	keep := func() { c.keep(release) }
-	if r := p.message(e.tr, c.rec, e.u, prev, keep, c); r != nil || !e.tr.cached {
+	if r := p.message(e.tr, c.rec, e.u, prev, keep, c); r != nil || !e.tr.cached || !related {
 		c.prevR = r
 	}
 }
@@ -291,10 +304,11 @@ func (c *chain) one(e *entry) {
 // a place.
 func (c *chain) admit(e *entry) {
 	p := c.p
-	release, err := p.st.Flow.Admit(ended, e.u)
-	if err != nil && errors.Is(err, ended.Err()) {
+	try := c.ended(e.tr.ctx)
+	release, err := p.st.Flow.Admit(try, e.u)
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
 		c.giveBack() // never wait at flow control holding a place
-		if release, err = p.st.Flow.Admit(ended, e.u); err != nil && errors.Is(err, ended.Err()) {
+		if release, err = p.st.Flow.Admit(try, e.u); err != nil && errors.Is(err, context.DeadlineExceeded) {
 			c.flush(splitFlow, e.tr)
 			release, err = p.st.Flow.Admit(e.tr.ctx, e.u)
 		}
@@ -357,15 +371,12 @@ func (c *chain) status1(e *entry, h Header, s Status, cause error) {
 
 // reserve takes a member's reply buffer for the chain: when its charge would
 // take the chain's held reservations past a quarter of the reply pool's
-// ceiling, or it does not fit at once while the chain holds replies, those
-// go out first, so a chain never waits on the reply pool holding it (§4.7).
+// ceiling, its bytes the record join frames past the protocol's cap, or it
+// does not fit at once while the chain holds replies, those go out first, so
+// a chain never waits on the reply pool holding it (§4.7).
 func (c *chain) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	p := c.p
-	c.quarter(n)
-	// ponytail: §4.7's record cap is not split on yet: a member whose
-	// joined record, as encoded, would pass Framer.MaxRecord sends the
-	// replies before it first, counted record, here beside the quarter's
-	// check. Add it once the framer states its cap.
+	c.room(n)
 	// decision: a member that does not fit at once is not refused: the
 	// replies before it go out, and it waits under its deadline, since a
 	// refusal's status would itself need a buffer from the pool its chain
@@ -383,13 +394,27 @@ func (c *chain) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	return p.sh.reserveReply(ctx, p.l.remote, n)
 }
 
-// quarter sends what the chain holds first when a reservation of n bytes
-// would take its held reservations past a quarter of the reply pool's
-// ceiling (§4.7).
-func (c *chain) quarter(n int) {
+// room sends what the chain holds first when a reservation of n bytes would
+// take its held reservations past a quarter of the reply pool's ceiling, or
+// the record join frames past the protocol's record cap, so one Frame header
+// can state it (§4.7). The record is counted as join frames it: the replies
+// held, as encoded, n, Chain's padding between them, and what Wrap adds,
+// which the first member's ReplyLen bounds.
+func (c *chain) room(n int) {
 	p := c.p
-	if len(c.held) > 0 && c.charge+p.sh.reply.Charge(n) > p.sh.reply.Ceiling()/4 {
+	if len(c.held) == 0 {
+		return
+	}
+	if c.charge+p.sh.reply.Charge(n) > p.sh.reply.Ceiling()/4 {
 		c.flush(splitQuarter, c.cur.tr)
+		return
+	}
+	size := n + chainPadding*len(c.held) + p.st.Header.ReplyLen(c.held[0].h)
+	for _, m := range c.held {
+		size += m.n
+	}
+	if size > p.l.record {
+		c.flush(splitRecord, c.cur.tr)
 	}
 }
 
@@ -403,7 +428,7 @@ func (c *chain) quarter(n int) {
 // cap.
 func (c *chain) status(ctx context.Context, n int) *resources.Buf {
 	p := c.p
-	c.quarter(n)
+	c.room(n)
 	if buf, ok := p.sh.reply.TryGet(p.l.remote, n); ok {
 		c.free()
 		return buf
@@ -450,12 +475,20 @@ func (c *chain) free() {
 	}
 }
 
+// ended is ctx ended, for a member's first try: the chain's one endedCtx,
+// repointed at ctx, which a stage, as any call's, keeps no further than its
+// return.
+func (c *chain) ended(ctx context.Context) context.Context {
+	c.try.Context = ctx
+	return &c.try
+}
+
 // lookup asks the replay cache under an ended context first: when its
 // copy's reservation would wait, the replies the chain holds go out, and it
 // is asked again under the member's deadline, so the chain never waits on
 // the reply pool holding it (§4.7).
 func (c *chain) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
-	cached, err := c.p.st.Replay.Lookup(ended, h)
+	cached, err := c.p.st.Replay.Lookup(c.ended(ctx), h)
 	var d *vfs.Delay
 	if errors.As(err, &d) && d.Cause == vfs.DelayResources {
 		c.flush(splitReplyPool, c.cur.tr)
@@ -481,7 +514,7 @@ func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, 
 		// ponytail: only a test protocol both chains and returns copies.
 		// Drop the copy once Lookup is handed the client's key, when a
 		// protocol that chains returns copies.
-		c.quarter(len(reply.B))
+		c.room(len(reply.B))
 		own, ok := c.p.sh.reply.TryGet(c.p.l.remote, len(reply.B))
 		if !ok {
 			c.flush(splitReplyPool, tr)
@@ -612,9 +645,9 @@ func (c *chain) flush(why split, tr *track) {
 }
 
 // chainPadding is the room a joined record keeps for what HeaderCodec.Chain
-// adds before each reply, a capacity hint only: each member's ReplyLen
-// already counts its padding, and a record that grows past its room
-// reallocates.
+// adds before each reply, which the record cap's check counts too: each
+// member's ReplyLen already counts its padding, and a record that grows past
+// its room reallocates.
 const chainPadding = 7
 
 // join makes one record of the held replies: one alone as it is, more

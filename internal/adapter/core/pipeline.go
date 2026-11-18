@@ -194,6 +194,7 @@ type link struct {
 	ctx    context.Context
 	remote netip.Addr
 	set    settings.Settings // nil: none, so no operation is switched off
+	record int               // the protocol's record cap, Framer.MaxRecord's bytes: a chain's record stays within it
 	out    func(msg *resources.Buf, key, before uint64) error
 	close  func(err error)
 }
@@ -643,6 +644,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 			// record, and no protocol chains one (NFSv4 does not chain, and
 			// SMB has no compound row). Overturned if a protocol must.
 			err = fmt.Errorf("%w: a compound row as a chain's member", ErrNotSupported)
+			inv = Invocation{} // refused whole, as compound refuses it: its status alone
 			p.refused(tr, stageRoute)
 		}
 	}
