@@ -388,11 +388,13 @@ func RecordHeld(c *Conn) bool {
 	return c.rd.holding()
 }
 
-// Stopping shows a running Stop's marker, as a Stop on a configured or a
-// serving server sets it under the lock, without running the rest: the
-// Start and Reconfigure gates on the marker are read deterministically.
+// Stopping shows a running Stop's gates, as a Stop on a configured or a
+// serving server sets them under the lock, without running the rest: the
+// stopping state and the marker together, so the gates read on them are
+// deterministic.
 func Stopping(s *Server, done chan struct{}) {
 	s.mu.Lock()
+	s.state = adapter.StateStopping
 	s.stopDone = done
 	s.mu.Unlock()
 }
