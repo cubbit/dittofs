@@ -117,9 +117,7 @@ func (headerStage) Decode(rec *resources.Buf, off int) (core.Header, error) {
 // Encode appends the reply's header for s and, for a status other than
 // success, the ERROR response's body, which a refusal answered with a status
 // alone needs (RFC 22 §16.5, MS-SMB2 3.3.4.4). A success's body is its
-// command's. Every other status gets the error body: no command is served
-// whose encoder writes the body of a status MS-SMB2 3.3.4.4 does not count as
-// a failure.
+// command's.
 func (headerStage) Encode(h core.Header, s core.Status, out *resources.Buf) error {
 	v, ok := h.(view)
 	if !ok {
@@ -138,17 +136,18 @@ func (headerStage) Encode(h core.Header, s core.Status, out *resources.Buf) erro
 	// section 3.3 states, what the client asks, up to the connection's
 	// target, once a stage keeps the connection's credit count.
 	out.B = wire.AppendReply(out.B, v.raw(), uint32(s), 1)
+	// decision: every status but success gets the ERROR body here, though RFC
+	// 22 §16.5 leaves its exceptions to the command's encoder: the (command,
+	// status) pairs MS-SMB2 3.3.4.4 does not count as failures, such as
+	// STATUS_MORE_PROCESSING_REQUIRED on SESSION_SETUP, and an error response
+	// carrying the command's error data, as STATUS_STOPPED_ON_SYMLINK's on
+	// CREATE. No command served here answers one. Overturned by the first that
+	// does: this codec then leaves that pair's body to the command's encoder.
 	if s != 0 {
 		out.B = wire.AppendError(out.B)
 	}
 	return nil
 }
-
-// decision: the ERROR body is written for every status but success, though
-// MS-SMB2 3.3.4.4 counts only the failure severities, since every non-success
-// status any command served here returns is a failure, and RFC 22 section
-// 16.5 leaves the body to the header codec. A command answering a
-// warning-severity status with a body of its own withdraws it.
 
 // Chain pads out to the reply at prev plus a multiple of 8 and points that
 // reply's NextCommand at the one appended after it. core calls it between
