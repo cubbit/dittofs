@@ -18,6 +18,8 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
 // The drain, Stop's serving half (RFC 20 sections 3.1 and 3.4): the listeners
@@ -26,7 +28,9 @@ import (
 // ends the waiting, the earlier of its context's deadline and drain_timeout.
 // The loopback tests move the server's clock to the deadline; the two
 // deadlines test and the slow OnClose run in a synctest bubble on the
-// server's real clock, where both deadlines run on the bubble's time.
+// server's real clock, where both deadlines run on the bubble's time. The
+// move target's tests drain one connection in a bubble too, where a reply
+// never sent shows once the bubble settles.
 
 // drainSnap is testproto's shape with drain_timeout at 200 ms, the deadline
 // every test here reaches: either the test advances the clock to it or the
@@ -813,4 +817,183 @@ func TestStopWaitsOutASlowOnClosePastItsGrace(t *testing.T) {
 			t.Errorf("after Stop the server is %s, want stopped", h.State)
 		}
 	})
+}
+
+// moving is the filesystem over memory with its one share moving to gateway,
+// a fault wrapper: MoveTarget names gateway for every handle the filesystem's
+// StatFS places in share, and passes any other to the filesystem, which
+// names none; every other call passes through.
+type moving struct {
+	vfs.Service
+	share vfs.ShareID
+}
+
+// gateway is the node the moving share moves to.
+var gateway = netip.MustParseAddr("192.0.2.7")
+
+func (m moving) MoveTarget(ctx context.Context, c vfs.Call, h vfs.Handle) (netip.Addr, error) {
+	if info, err := m.StatFS(ctx, c, h); err == nil && info.Share == m.share {
+		return gateway, nil
+	}
+	return m.Service.MoveTarget(ctx, c, h)
+}
+
+// drained is a connection a server on testproto serves over moving, in a
+// synctest bubble, set up to session 7 and tree 1 and then told to drain.
+type drained struct {
+	t            *testing.T
+	svc          *memory.Service
+	root, pseudo vfs.Handle // the share's root; the pseudo-root, in no share
+	c            *testproto.Client
+	peer         net.Conn
+}
+
+func newDrained(t *testing.T) *drained {
+	t.Helper()
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	svc := memory.New(t)
+	ctx, admin := t.Context(), svc.Admin()
+	root, _, err := svc.Root(ctx, admin, vfs.ShareRef{Name: svc.Store.Share.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pseudo, _, err := svc.Root(ctx, admin, vfs.ShareRef{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := adapter.Deps{Budgets: b, VFS: moving{Service: svc, share: svc.Store.Share.ID}}
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(d).WithCall(admin)}
+	srv, err := core.NewServer(d, drainSnap(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	core.Serving(srv)
+	conn, peer := servedConn(t, srv, &l)
+	c := testproto.NewClient(peer)
+	for _, m := range []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
+		{Op: testproto.OpTree, Version: 1, ID: 3, Session: 7, Tree: 1},
+	} {
+		if err := c.Send(m); err != nil {
+			t.Fatal(err)
+		}
+		if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != testproto.StatusOK {
+			t.Fatalf("setting up the connection: %+v (%v)", rs, err)
+		}
+	}
+	core.ConnPipeline(conn).Drain()
+	return &drained{t: t, svc: svc, root: root, pseudo: pseudo, c: c, peer: peer}
+}
+
+// compound sends a version 1 compound of members and lets the bubble settle.
+func (d *drained) compound(members ...testproto.Msg) {
+	d.t.Helper()
+	if err := d.c.Send(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 4, Session: 7, Tree: 1, Members: members}); err != nil {
+		d.t.Fatal(err)
+	}
+	synctest.Wait()
+}
+
+// sentNothing reports whether nothing came back, then closes the client's end.
+func (d *drained) sentNothing() bool {
+	read := start(func() { _, _ = d.c.Recv() })
+	synctest.Wait()
+	sent := read.returned()
+	_ = d.peer.Close()
+	<-read.done
+	return !sent
+}
+
+// made reports whether the share's root holds name.
+func (d *drained) made(name string) bool {
+	_, _, err := d.svc.Lookup(d.t.Context(), d.svc.Admin(), d.root, []byte(name))
+	return err == nil
+}
+
+// While draining, the drain's error a compound's refused members get is
+// decided once, from every filehandle the compound names: ErrMoved, which
+// version 1 answers on Create with its move signal, only when the compound
+// names one at least and the service names a target for the share of each,
+// and ErrDraining, which answers nothing and runs nothing, otherwise (RFC 20
+// sections 3.1 and 4.7). The moved compound runs to its Create, which names
+// no handle of its own, and is answered there, the Create not applied. A
+// drain that answers ErrMoved without asking, asks about one handle alone or
+// moves a compound naming none answers the others; one that decides per
+// member, or refuses every drained compound whole, answers the moved one
+// nothing.
+func TestADrainedCompoundMovesOnlyWhenEveryHandleItNamesHasATarget(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		handles []string // a PutFH of each, before the Create
+		moved   bool
+	}{
+		{"a handle in the moving share", []string{"share"}, true},
+		{"the pseudo-root, in no share", []string{"pseudo"}, false},
+		{"a handle in the share, then the pseudo-root", []string{"share", "pseudo"}, false},
+		{"no handle", nil, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newDrained(t)
+				fh := map[string]vfs.Handle{"share": d.root, "pseudo": d.pseudo}
+				var members []testproto.Msg
+				for _, n := range c.handles {
+					members = append(members, testproto.Msg{Op: testproto.OpPutFH, Handle: fh[n]})
+				}
+				d.compound(append(members, testproto.Msg{Op: testproto.OpCreate, Name: "f"})...)
+				if !c.moved {
+					if !d.sentNothing() {
+						t.Error("the compound was answered, want nothing: the drain's error is ErrDraining")
+					}
+				} else {
+					rs, err := d.c.Recv()
+					if err != nil || len(rs) != 1 || rs[0].Status != testproto.StatusOK {
+						t.Fatalf("the moved compound is answered %+v (%v)", rs, err)
+					}
+					hd, res, err := testproto.Results(rs[0].Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if hd.Status != testproto.StatusMoved || len(res) != 2 || res[0].Status != testproto.StatusOK || res[1].Op != testproto.OpCreate || res[1].Status != testproto.StatusMoved {
+						t.Errorf("the moved compound is answered %d with %+v, want the PutFH run and the Create's move signal", hd.Status, res)
+					}
+				}
+				if d.made("f") {
+					t.Error("the drained Create made its file")
+				}
+			})
+		})
+	}
+}
+
+// While draining, a compound any of whose members would be refused with a
+// NoReply row answers nothing and runs nothing, though every handle it names
+// moves: an Echo the drain refuses after a Create it moves, whose row has no
+// move signal, and a member that does not decode (RFC 20 section 4.7). Run
+// to the first member refused instead, the first is answered the Create's
+// move signal and the second the refusal of an operation its table lacks.
+func TestADrainedCompoundWithANoReplyRefusalAnswersNothing(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		rest []testproto.Msg // after a PutFH of the share's root
+	}{
+		{"an Echo the drain refuses after the Create", []testproto.Msg{{Op: testproto.OpCreate, Name: "f"}, {Op: testproto.OpEcho, Role: core.RoleNone, Payload: []byte("e")}}},
+		{"a member that does not decode", []testproto.Msg{{Op: testproto.OpEcho, Role: core.RoleRelease, Payload: []byte("e")}, {Op: 99}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newDrained(t)
+				d.compound(append([]testproto.Msg{{Op: testproto.OpPutFH, Handle: d.root}}, c.rest...)...)
+				if !d.sentNothing() {
+					t.Error("the compound was answered, want nothing")
+				}
+				if d.made("f") {
+					t.Error("the drained Create made its file")
+				}
+			})
+		})
+	}
 }

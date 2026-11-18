@@ -23,8 +23,8 @@ import (
 )
 
 // shared is what every connection of one server shares: the request path's
-// series, resolved once per server, its reply pool, its clock, its logger
-// and its tracer.
+// series, resolved once per server, its reply pool, its clock, its logger,
+// its tracer and the service a drain asks for a move target.
 //
 // decision: the series are kept here, never in a table: two servers may
 // share a table, and a node's servers share its one registry. A table's are
@@ -46,6 +46,7 @@ type shared struct {
 	tracer   trace.Tracer // nil: no spans
 	sample   uint64       // Deps.SampleRatio as sampled compares it
 	reply    *resources.BufPool
+	shares   vfs.Shares        // Deps.VFS
 	hold     *resources.Budget // the node's hold pool; nil: none, so the floor bounds every connection's holds
 	// The floor each connection's held requests count against before the
 	// hold pool, in requests and in their records' receive charge (§4.6).
@@ -56,10 +57,10 @@ type shared struct {
 // newShared is a server's shared state over reply, the pool every reply
 // buffer is taken from: its vectors registered on d.Metrics, or recording
 // nothing without one, on the runtime's clock, d.Logger, or a logger that
-// discards, and d.Tracer; held requests past a connection's floor of 256
+// discards, d.Tracer and d.VFS; held requests past a connection's floor of 256
 // requests and 32 MiB go to d.Budgets' hold pool (§4.6).
 func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, sample: sampleBound(d.SampleRatio), reply: reply, panics: map[[2]string]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), reply: reply, panics: map[[2]string]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
 	if d.Budgets != nil {
 		sh.hold = d.Budgets.Hold
 	}
@@ -835,7 +836,7 @@ func (p *pipeline) resolve(tr *track, r *Request, op *Op, inv Invocation, draini
 	case expired && !op.Expired && role != RoleRelease:
 		err = ErrExpired
 	case draining && role == RoleNone:
-		err = drainErr(tr.ctx, handlesOf(inv))
+		err = p.drainErr(tr.ctx, r.Call, handlesOf(inv))
 	}
 	if err != nil {
 		p.refused(tr, stageResolveIDs)
@@ -1255,22 +1256,34 @@ func handlesOf(inv Invocation) []vfs.Handle {
 }
 
 // drainErr is what a request the drain does not serve is refused with,
-// decided once from every filehandle it names.
+// decided once from every filehandle hs it names, asked of the service under
+// the request's call c: ErrMoved when it names at least one and the
+// service's MoveTarget names a gateway node for the share of each, and
+// ErrDraining otherwise (§3.1, §4.7).
 //
-// decision: ErrDraining, the service's answer while no topology names a
-// target for the request's share; asking the service for a move target, and
-// answering ErrMoved where it names one, comes with the drain. Withdraw it
-// then.
-func drainErr(context.Context, []vfs.Handle) error { return ErrDraining }
+// decision: a MoveTarget that answers an error names no target, so the
+// request gets ErrDraining: no reply, and its client sends it again once it
+// reconnects. Overturned if the RFC gives that error an answer of its own.
+func (p *pipeline) drainErr(ctx context.Context, c vfs.Call, hs []vfs.Handle) error {
+	if len(hs) == 0 {
+		return ErrDraining
+	}
+	for _, h := range hs {
+		if to, err := p.sh.shares.MoveTarget(ctx, c, h); err != nil || !to.IsValid() {
+			return ErrDraining
+		}
+	}
+	return ErrMoved
+}
 
 // drain begins the connection's drain: from here on a request whose role is
 // none, and a park, is refused with drainErr, and every request parked is
 // cancelled, on a goroutine of its own, since its handler's cancel may call
 // the service, done's error replaced by drainErr's (§3.1, §4.7).
 //
-// decision: a park's drain error is decided with no filehandle, since the
-// arguments that name one went with its record. Overturned when drainErr
-// reads the filehandles it is handed.
+// decision: a park's drain error is decided with no filehandle, so it is
+// ErrDraining, asked of no service: the arguments that name one went with
+// its record. Overturned if a park keeps its filehandles.
 func (p *pipeline) drain() {
 	p.draining.Store(true)
 	t := &p.pend
@@ -1283,7 +1296,7 @@ func (p *pipeline) drain() {
 	}
 	t.mu.Unlock()
 	for _, pd := range parks {
-		go p.cancelPark(pd, drainErr(pd.tr.ctx, nil))
+		go p.cancelPark(pd, p.drainErr(pd.tr.ctx, pd.r.Call, nil))
 	}
 }
 

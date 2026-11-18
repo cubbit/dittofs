@@ -602,7 +602,7 @@ func (p *pipeline) park(pd *pending, cancel func()) (func(error), error) {
 	case !pd.pend && t.n >= p.st.MaxPending:
 		err = ErrTooManyPending
 	case p.draining.Load():
-		err = drainErr(pd.tr.ctx, handlesOf(pd.inv))
+		err = p.drainErr(pd.tr.ctx, pd.r.Call, handlesOf(pd.inv))
 	}
 	own, keep := pd.reply, pd.reply
 	if err == nil && own.Charge() > p.sh.reply.Charge(0) {
