@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/netip"
 	"sync"
@@ -842,7 +843,8 @@ func (m moving) MoveTarget(ctx context.Context, c vfs.Call, h vfs.Handle) (netip
 // drained is a connection a server on testproto serves over faults over
 // moving, in a synctest bubble, set up to session 7 and tree 1 and then told
 // to drain. A non-nil outer replaces the error table of every table the
-// router returns, a compound row's members keeping their own.
+// router returns, a compound row's members keeping their own, and none, where
+// not zero, is an operation of those tables the drain refuses.
 type drained struct {
 	t            *testing.T
 	svc          *memory.Service
@@ -852,7 +854,7 @@ type drained struct {
 	peer         net.Conn
 }
 
-func newDrained(t *testing.T, outer *core.ErrorTable) *drained {
+func newDrained(t *testing.T, outer *core.ErrorTable, none uint32) *drained {
 	t.Helper()
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
@@ -870,7 +872,7 @@ func newDrained(t *testing.T, outer *core.ErrorTable) *drained {
 	d := adapter.Deps{Budgets: b, VFS: faults}
 	var p core.Protocol = testproto.New(d).WithCall(admin)
 	if outer != nil {
-		p = edited{p, func(st *core.Stages) { st.Router = outerRouter{st.Router, outer} }}
+		p = edited{p, func(st *core.Stages) { st.Router = outerRouter{st.Router, outer, none} }}
 	}
 	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: p}
 	srv, err := core.NewServer(d, drainSnap(), l)
@@ -950,7 +952,7 @@ func TestADrainedCompoundMovesOnlyWhenEveryHandleItNamesHasATarget(t *testing.T)
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				d := newDrained(t, nil)
+				d := newDrained(t, nil, 0)
 				if c.fails {
 					d.faults.Fail(vfs.OpMoveTarget, vfs.ErrAccess)
 				}
@@ -1006,7 +1008,7 @@ func TestADrainedCompoundWithANoReplyRefusalAnswersNothing(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				d := newDrained(t, c.outer)
+				d := newDrained(t, c.outer, 0)
 				d.compound(append([]testproto.Msg{{Op: testproto.OpPutFH, Handle: d.root}}, c.rest...)...)
 				if !d.sentNothing() {
 					t.Error("the compound was answered, want nothing")
@@ -1019,11 +1021,50 @@ func TestADrainedCompoundWithANoReplyRefusalAnswersNothing(t *testing.T) {
 	}
 }
 
-// outerRouter is a router whose tables answer their own refusals with errs,
-// each a copy: a compound row's members keep their own table.
+// While draining, a request alone the drain refuses gets ErrMoved, which its
+// table answers with the move signal, when the service names a target for the
+// share of the handle it names, and ErrDraining, which answers nothing,
+// otherwise (RFC 20 section 3.1): a PutFH the drain refuses, its table moving
+// every operation. A drain that never asks answers the first nothing; one
+// that answers ErrMoved without asking answers the second.
+func TestADrainedRequestMovesOnlyWhenItsHandleHasATarget(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		handle string // "share" or "pseudo"
+		moved  bool
+	}{
+		{"a handle in the moving share", "share", true},
+		{"the pseudo-root, in no share", "pseudo", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newDrained(t, movesEverywhere(), testproto.OpPutFH)
+				fh := map[string]vfs.Handle{"share": d.root, "pseudo": d.pseudo}
+				if err := d.c.Send(testproto.Msg{Op: testproto.OpPutFH, Version: 1, ID: 4, Session: 7, Tree: 1, Handle: fh[c.handle]}); err != nil {
+					t.Fatal(err)
+				}
+				synctest.Wait()
+				if !c.moved {
+					if !d.sentNothing() {
+						t.Error("the PutFH was answered, want nothing: the drain's error is ErrDraining")
+					}
+					return
+				}
+				if rs, err := d.c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != testproto.StatusMoved {
+					t.Errorf("the moved PutFH is answered %+v (%v), want the move signal", rs, err)
+				}
+			})
+		})
+	}
+}
+
+// outerRouter is a router whose tables answer their own refusals with errs
+// and give the operation none, where not zero, the role RoleNone, each a
+// copy: a compound row's members keep their own table.
 type outerRouter struct {
 	core.Router
 	errs *core.ErrorTable
+	none uint32
 }
 
 func (o outerRouter) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
@@ -1031,6 +1072,12 @@ func (o outerRouter) Route(h core.Header, prev *core.Request) (*core.OpTable, *c
 	if tb != nil {
 		c := *tb
 		c.Errors = o.errs
+		if op := tb.Ops[o.none]; op != nil {
+			refused := *op
+			refused.Role = core.RoleNone
+			c.Ops = maps.Clone(tb.Ops)
+			c.Ops[o.none] = &refused
+		}
 		tb = &c
 	}
 	return tb, r, err
