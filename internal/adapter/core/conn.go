@@ -30,6 +30,7 @@ type Conn struct {
 	rd         *reader
 	remote     netip.Addr
 	remoteAddr netip.AddrPort         // the client's address as it reached this node
+	accept     *bound                 // the bound socket that accepted it, whose removal closes it; a hook's connection names none
 	since      time.Time              // accepted at
 	charge     *resources.Reservation // the connection-state charge the accept loop took; nil for none
 
@@ -225,13 +226,16 @@ var errIdle = errors.New("core: the idle deadline passed")
 
 // serveConn serves one accepted socket until it closes: the snapshot, the
 // protocol's stages, the writer, the pipeline and the reader, with the teardown
-// on the reader once its loop ends (RFC 20 section 3.2). charge is the
+// on the reader once its loop ends, or here, on the accept loop, for a socket
+// the registry refuses (RFC 20 section 3.2). b is the bound socket
+// that accepted it, whose removal by a Reconfigure closes this connection; nil
+// for a hook's connection, which no removal closes. charge is the
 // connection-state reservation the accept loop took, which the teardown
 // releases; nil for none.
-func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservation) *Conn {
+func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, charge *resources.Reservation) *Conn {
 	snap := *s.settings.Load()
 	remote, port := remoteOf(nc)
-	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, remote: remote, remoteAddr: port, since: time.Now(), charge: charge, done: make(chan struct{})}
+	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, remote: remote, remoteAddr: port, accept: b, since: time.Now(), charge: charge, done: make(chan struct{})}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	st, err := withDefaults(l.Protocol.NewConn(c))
 	if err != nil {
@@ -269,9 +273,10 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservati
 	return c
 }
 
-// teardown is the reader's, once its loop ends: the requests still running, then
-// OnClose under a context of its own, the writer, the charge and the registry
-// (RFC 20 section 3.2's order).
+// teardown runs once on the reader as its loop ends, or on the accept loop for a
+// connection the registry refused: the requests still running, then OnClose
+// under a context of its own, the writer, the charge and the registry (RFC 20
+// section 3.2's order).
 func (c *Conn) teardown() {
 	defer close(c.done)
 	c.stopTimers()
@@ -312,11 +317,8 @@ func (c *Conn) protocol() string {
 	return c.p.st.Protocol
 }
 
-// release returns the connection's charge to the connection-state budget.
-// release gives the connection's charge back once. A register refusal
-// releases it at once, so a Stop it races never returns holding it; the
-// teardown's later release then gives nothing back, and neither waits for
-// the other, the refusal running before the reader starts.
+// release gives the connection's charge back to the connection-state budget
+// once, from the teardown, or from the refusal of a NewConn that failed.
 func (c *Conn) release() {
 	if c.charge != nil {
 		r := c.charge

@@ -79,3 +79,5 @@ type Socket struct {
 
 type State uint8
 
+var ErrPortChanged = errors.New("adapter: port changed")
+

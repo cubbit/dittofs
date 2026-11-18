@@ -108,8 +108,8 @@ func TestValidateRefusesNamingTheField(t *testing.T) {
 		{"nfs cert with TLS off", "TLS.CertFile", nfs(func(s *NFS) { s.TLS.CertFile = "tls.crt" })},
 		{"nfs key with TLS off", "TLS.KeyFile", nfs(func(s *NFS) { s.TLS.KeyFile = "tls.key" })},
 		{"nfs CA with TLS off", "TLS.ClientCA", nfs(func(s *NFS) { s.TLS.ClientCA = "ca.crt" })},
-		{"nfs require without cert", "TLS.CertFile", nfs(func(s *NFS) { s.TLS.Mode = "require" })},
-		{"nfs opportunistic without key", "TLS.KeyFile", nfs(func(s *NFS) { s.TLS.Mode, s.TLS.CertFile = "opportunistic", "tls.crt" })},
+		{"nfs require", "TLS.Mode", nfs(func(s *NFS) { s.TLS.Mode = "require" })},
+		{"nfs opportunistic with a certificate", "TLS.Mode", nfs(func(s *NFS) { s.TLS.Mode, s.TLS.CertFile = "opportunistic", "tls.crt" })},
 		{"smb zero pending", "PendingTimeout", smb(func(s *SMB) { s.PendingTimeout = 0 })},
 		{"smb recall too long", "RecallTimeout", smb(func(s *SMB) { s.RecallTimeout = 35 * time.Second })},
 		{"nfs version 2", "Versions.Min", nfs(func(s *NFS) { s.Versions.Min = "2" })},
@@ -126,15 +126,20 @@ func TestValidateRefusesNamingTheField(t *testing.T) {
 	}
 }
 
-// Validate checks TLS's shape, not its files: opportunistic or require with a
-// certificate and key is accepted, whether or not the files exist.
-func TestTLSModesWithFilesAccepted(t *testing.T) {
+// Validate refuses every TLS mode but off until StartTLS is added, naming
+// TLS.Mode even where a certificate and key would answer, so no node serves
+// NFS in plaintext what its settings ask to carry over TLS and no certificate
+// file is loaded; off with no file is accepted (RFC 20 sections 3.6 and 5.5).
+func TestTLSModesAreRefusedUntilStartTLS(t *testing.T) {
 	for _, mode := range []string{"opportunistic", "require"} {
 		s := validNFS()
 		s.TLS = TLS{Mode: mode, CertFile: "missing.crt", KeyFile: "missing.key", ClientCA: "missing-ca.crt"}
-		if err := s.Validate(); err != nil {
-			t.Errorf("Mode %s with a certificate and key: %v, want accepted", mode, err)
+		if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "settings: TLS.Mode: ") {
+			t.Errorf("Mode %s with a certificate and key: %v, want refused naming TLS.Mode", mode, err)
 		}
+	}
+	if err := validNFS().Validate(); err != nil {
+		t.Errorf("Mode off with no file: %v, want accepted", err)
 	}
 }
 
