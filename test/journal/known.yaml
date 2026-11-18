@@ -568,6 +568,14 @@
   issue: '#3814'
   message: 'segment 3 is not among the journal'
 
+- test: TestRFC28C_NeighboursSurvive
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and the corrupt read drops the record and reports it; the check fails where Inspect does not list the damaged segment. The segment id is an allocation the machine hands the row, so the entry matches the words the failure shares, not the id.'
+  issue: '#3814'
+  message: 'is not among the journal'
+
 - test: TestRFC28C_SyncedDamageIsNotATornTail
   status: fail
   fix: planned
