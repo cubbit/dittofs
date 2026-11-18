@@ -2,9 +2,9 @@
 # A seed that starts to pass fails the run: remove its entry in the change that turned it
 # green, a journal change included. Each entry's message is the failure it is known by.
 - test: TestSoak/seed=2
-  message: 'the crash is refused: Torn needs an unsynced write in a file it may pick from'
+  message: 'the SMB open of f0: vfs: retry shortly: frozen'
   status: fail
   fix: planned
   category: feature
-  reason: 'the seed''s next crash after a restart is refused: the Torn variant finds no unsynced write in any file to tear (soak_test.go), the reopened journal holding none of the seed''s writes unsynced, so the seed stops there. The same run also fails the profiler''s heap check, the live heap growing by about 271 MB over the 16 MB slack, which the heap-growth issue owns.'
+  reason: 'the seed reaches its fourth process and the share does not start: the journal open refuses at recovery with a refused range inside a segment whose catalog did not verify that names no record (pkg/block/journal/internal/recovery/tail.go, refuseRange), the range a silently lost write left below later synced bytes, so every open of the share answers retry shortly. The open refuses whole until the reconcile that recovers such a range is built. Behind it the seed also fails the profiler''s heap check, which the soak could not reach before the Torn crash was made to land on a write the seam holds unsynced.'
   issue: '#4771'
