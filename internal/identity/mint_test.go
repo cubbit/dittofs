@@ -199,6 +199,100 @@ func TestMintReRunUnnamesANameTakenBeforeItsCommit(t *testing.T) {
 	}
 }
 
+// A re-run that binds a principal the run before did not has progressed,
+// though the only record it unnames is one the first run already unnamed.
+// Summing the two steps would fail the call.
+func TestMintReRunBindsBesideAHeldName(t *testing.T) {
+	r := newResolving(t)
+	ctx := context.Background()
+	local := dirGroup("Finance", "3501")
+	if _, err := r.cp.PutGroup(ctx, local, 0, entity.Alloc{}); err != nil {
+		t.Fatal(err)
+	}
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	s, err := sim.NewSchedule(1, clock, sim.Rule{Op: kvtest.OpUpdate, Key: "*", From: 1, Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.fault.SetFault(s)
+
+	x, y := dirGroup("finance", "3502"), dirGroup("y", "3503")
+	var runs atomic.Int32
+	done := make(chan error, 1)
+	go func() { done <- r.srv.Mint(ctx, planOf(r.st, &runs, x, y)) }()
+	backstop := time.After(10 * time.Second)
+	for clock.Pending() == 0 { // the first run's commit waits on the clock
+		select {
+		case err := <-done:
+			t.Fatalf("mint returned %v before its commit was delayed", err)
+		case <-backstop:
+			t.Fatal("the mint's commit never reached the delay")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	other := minted(y)
+	var otherRuns atomic.Int32
+	if err := r.srv.Mint(ctx, planOf(r.st, &otherRuns, other)); err != nil {
+		t.Fatalf("overtaking mint: %v", err)
+	}
+	clock.Advance(time.Second)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("overtaken mint: got %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("overtaken mint never returned")
+	}
+
+	if got := runs.Load(); got != 2 {
+		t.Errorf("plan runs: got %d, want 2", got)
+	}
+	if got := r.holder(t, x.IDs[1]); got != x.Principal {
+		t.Errorf("x's SID: held by %v, want %v", got, x.Principal)
+	}
+	if got := r.holder(t, y.IDs[1]); got != other.Principal {
+		t.Errorf("y's SID: held by %v, want the overtaking mint's %v", got, other.Principal)
+	}
+	if got := r.counter(t, "identity_mints_unnamed_total", "kind", "group"); got != 1 {
+		t.Errorf("identity_mints_unnamed_total{kind=group}: got %v, want 1", got)
+	}
+}
+
+// A re-run whose only step is re-marking a record this call already unnamed
+// has not progressed: it fails ErrUnavailable at the second run, not at the
+// deadline. Counting the mark per run would re-run until the deadline.
+func TestMintFailsARunThatOnlyReMarksARecord(t *testing.T) {
+	r := newResolving(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	local := dirGroup("Finance", "3601")
+	if _, err := r.cp.PutGroup(ctx, local, 0, entity.Alloc{}); err != nil {
+		t.Fatal(err)
+	}
+	// Its name and its SID are both the local group's: unnaming it never
+	// clears the SID's clash.
+	clash := minted(local)
+	clash.Name = "FINANCE"
+
+	// A fresh batch each run, as a lookup builds one, so no record comes
+	// back already marked.
+	var runs atomic.Int32
+	err := r.srv.Mint(ctx, func(context.Context) (entity.MintBatch, int, error) {
+		runs.Add(1)
+		return entity.MintBatch{Groups: []entity.MintGroup{{Group: clash}}}, 0, nil
+	})
+	if !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Fatalf("mint: got %v, want ErrUnavailable", err)
+	}
+	if ctx.Err() != nil {
+		t.Errorf("mint failed at the deadline, want at its second run")
+	}
+	if got := runs.Load(); got != 2 {
+		t.Errorf("plan runs: got %d, want 2", got)
+	}
+}
+
 // A plan that keeps answering a batch whose SID another principal holds
 // binds nothing and unnames nothing, so it fails ErrUnavailable at its
 // second run, writes nothing, and logs both principals. A path with no progress rule would run it until the deadline.

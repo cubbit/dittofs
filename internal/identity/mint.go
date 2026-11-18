@@ -32,23 +32,28 @@ var unnamedSpec = metrics.Spec{
 // of those still missing with the number it found bound. The batch is
 // written in one Create; on ErrExist, another call minted something this one
 // needs, so plan runs again. A record whose name is held is minted without
-// it. A run makes progress when the principals it binds and the records it
-// marks Unnamed outnumber the run before's; one that does not fails the call
-// ErrUnavailable having written nothing.
+// it. A re-run fails the call ErrUnavailable, having written nothing, when it
+// neither binds more principals than the run before nor newly marks a record
+// Unnamed. Newly is per call: a record this call marked in an earlier run,
+// known by its PrincipalID, is not newly marked again, so the plan proposes
+// each missing record under one PrincipalID on every run.
 //
 // decision: the path re-runs the plan, not the batch, and no count bounds
-// the loop. Progress is a principal bound or a record newly marked Unnamed,
-// since the name check runs before the transaction and a name another call
-// takes in between fails the commit ErrExist with nothing to bind: the
-// re-run marks that record Unnamed and mints it. Each record can make one
-// step of each kind, so the progress rule ends the re-runs, and the caller's
-// deadline bounds them in time. A run with no progress means the clash is
+// the loop. Progress is either step, never their sum: a run that binds one
+// more principal progressed whatever it unnamed, and so did one that unnamed
+// a record for the first time, which a name another call takes between the
+// name check and the commit calls for, since that commit fails ErrExist with
+// nothing to bind. Counting a mark per call, not per run, keeps a record whose
+// name stays held from passing for progress on every run. Each record can
+// make each step once, so the rule ends the re-runs, and the caller's
+// deadline bounds them in time. A run with neither step means the clash is
 // with a principal the plan cannot bind, such as another entry holding the
 // same uid, and running it again would answer the same. Overturned if a
 // clash is ever found that a later run resolves without either step.
 func (s *Server) mint(ctx context.Context, plan func(context.Context) (entity.MintBatch, int, error)) error {
 	var failed entity.MintBatch
 	last := -1
+	marked := map[entity.PrincipalID]bool{} // the records this call has unnamed
 	for {
 		// The store may not watch ctx, so the loop does: the caller's
 		// deadline bounds the re-runs whatever answers them.
@@ -62,12 +67,11 @@ func (s *Server) mint(ctx context.Context, plan func(context.Context) (entity.Mi
 		if len(b.Users) == 0 && len(b.Groups) == 0 {
 			return nil
 		}
-		unnamed, err := s.unnameHeld(ctx, &b)
+		newly, err := s.unnameHeld(ctx, &b, marked)
 		if err != nil {
 			return err
 		}
-		progress := bound + unnamed
-		if last >= 0 && progress <= last {
+		if last >= 0 && bound <= last && newly == 0 {
 			s.logClash(ctx, failed)
 			return fmt.Errorf("%w: a mint re-run bound or unnamed nothing the run before did not", vfserr.ErrUnavailable)
 		}
@@ -79,14 +83,15 @@ func (s *Server) mint(ctx context.Context, plan func(context.Context) (entity.Mi
 		if !isExist(err) {
 			return fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
 		}
-		failed, last = b, progress
+		failed, last = b, bound
 	}
 }
 
 // unnameHeld marks Unnamed each record of b whose name another principal of
 // its kind holds under the principal fold: one the name index holds, or an
-// earlier record of its kind in b. It returns how many it marked.
-func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch) (int, error) {
+// earlier record of its kind in b. It returns how many it marked that marked
+// did not hold, and adds them to marked.
+func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch, marked map[entity.PrincipalID]bool) (int, error) {
 	users, groups := map[string]entity.Principal{}, map[string]entity.Principal{}
 	n := 0
 	for i := range b.Users {
@@ -97,7 +102,7 @@ func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch) (int, erro
 		}
 		if held {
 			r.Unnamed = true
-			n++
+			n += mark(marked, r.User.Principal.ID)
 		}
 	}
 	for i := range b.Groups {
@@ -108,10 +113,19 @@ func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch) (int, erro
 		}
 		if held {
 			r.Unnamed = true
-			n++
+			n += mark(marked, r.Group.Principal.ID)
 		}
 	}
 	return n, nil
+}
+
+// mark adds id to marked, and returns 1 if it was not there.
+func mark(marked map[entity.PrincipalID]bool, id entity.PrincipalID) int {
+	if marked[id] {
+		return 0
+	}
+	marked[id] = true
+	return 1
 }
 
 // held reports whether name is held by a principal other than p: in batch,
