@@ -122,6 +122,7 @@ type Server struct {
 	unnamed  *prometheus.CounterVec // by kind
 	unmapped *prometheus.CounterVec // by scheme
 	hashing  chan struct{}          // the password verifications' slots, GOMAXPROCS of them
+	holds    holds                  // the joins' administrator credentials
 }
 
 // refusalsSpec counts the calls resolution refuses, by the reason refused.
@@ -271,9 +272,11 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop drops every in-memory table, the applied State among them, so a
-// restart needs an Apply before its Start. It closes nothing it was handed.
+// Stop drops every in-memory table, the applied State and the held join
+// credentials among them, so a restart needs an Apply before its Start. It
+// closes nothing it was handed.
 func (s *Server) Stop(ctx context.Context) error {
 	s.state.Store(nil)
+	s.dropHolds()
 	return nil
 }

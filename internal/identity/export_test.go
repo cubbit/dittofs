@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
@@ -61,4 +62,9 @@ func (s *Server) HashSlot(ctx context.Context) error {
 		release()
 	}
 	return err
+}
+
+// HeldCredential is the join credential held under id.
+func (s *Server) HeldCredential(id entity.OperationID) (identity.JoinCredential, bool) {
+	return s.heldCredential(id)
 }
