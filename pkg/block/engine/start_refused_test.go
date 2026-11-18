@@ -136,11 +136,8 @@ func TestARefusedReopenIsRetriedToTheSameRefusal(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// No closeAtEnd: a Close of an engine whose journal attached on
-			// a retried open does not return today, so the starter's cleanup
-			// stops the group commits instead, as the unsuitable retry
-			// test's does.
 			s := newStarter(t, withOpens(tc.refusal(), tc.refusal()))
+			s.closeAtEnd(t)
 
 			if err := s.start(t); err != nil {
 				t.Fatalf("Start = %v, want nil", err)
