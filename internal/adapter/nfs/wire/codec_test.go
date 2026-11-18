@@ -348,3 +348,19 @@ func TestCodecIsZero(t *testing.T) {
 		}
 	}
 }
+
+// A nil struct encodes as the empty one: RFC 20 section 4.7's encoder accepts
+// a nil reply, the answer of a request refused before its call, and writes its
+// fail arm whole from an empty one.
+func TestCodecNilEncodesAsEmpty(t *testing.T) {
+	for _, c := range []codec{&SetClientIDArgs{}, &SetattrArgs{}, &ACL{}, &OpenClaim{}, &SetTime{}, &PostOpFH{}, &Write4Args{}, &Void{}, &Sample{}} {
+		var empty, null resources.Buf
+		if err := fresh(c).EncodeWire(1, &empty); err != nil {
+			t.Fatalf("%T: the empty one: %v", c, err)
+		}
+		nilOf := reflect.Zero(reflect.TypeOf(c)).Interface().(codec)
+		if err := nilOf.EncodeWire(1, &null); err != nil || !bytes.Equal(null.B, empty.B) {
+			t.Errorf("%T: nil encoded %x, %v; want the empty one's %x", c, null.B, err, empty.B)
+		}
+	}
+}

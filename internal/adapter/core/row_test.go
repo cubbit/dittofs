@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"maps"
+	"strings"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
@@ -18,7 +19,8 @@ import (
 // The row's codecs, written by hand as the generated codec's stand-in (the
 // generator writes one for every tagged struct): the arguments are a role
 // byte, the payload's length and the payload, with trailing bytes a body may
-// carry; the reply is the payload. A length past the body's end is refused
+// carry; the reply is the payload's length and the payload, so an empty reply
+// and no reply differ on the wire. A length past the body's end is refused
 // before anything allocates.
 
 var (
@@ -47,13 +49,13 @@ func (a *rowArgs) DecodeWire(b []byte, _ core.Version) (int, error) {
 
 type rowReply struct{ payload []byte }
 
-// EncodeWire writes the payload; a nil receiver, the answer of a request
-// refused before its call, writes nothing beside what the header codec wrote.
+// EncodeWire writes the payload's length and the payload; a nil receiver, no
+// reply, writes nothing beside what the header codec wrote.
 func (r *rowReply) EncodeWire(_ core.Version, out *resources.Buf) error {
 	if r == nil {
 		return nil
 	}
-	out.B = append(out.B, r.payload...)
+	out.B = append(binary.BigEndian.AppendUint32(out.B, uint32(len(r.payload))), r.payload...)
 	return nil
 }
 
@@ -66,11 +68,16 @@ func (r *rowReply) MaxWire(v core.Version) int {
 	return 64
 }
 
-func (r *rowReply) IsZero() bool { return r.payload == nil }
+func (r *rowReply) IsZero() bool { return len(r.payload) == 0 }
 
 // rowHandler is the row's handler in the ops file's form, its request and
-// reply by value: it answers the payload.
+// reply by value: it answers the payload, but fails one that starts with '?'
+// with vfs.ErrIO, returning beside its error the payload's rest, a failure's
+// fail arm, empty where there is none.
 func rowHandler(_ context.Context, _ *core.Request, req rowArgs) (rowReply, error) {
+	if rest, ok := bytes.CutPrefix(req.payload, []byte("?")); ok {
+		return rowReply{payload: rest}, vfs.ErrIO
+	}
 	return rowReply{payload: req.payload}, nil
 }
 
@@ -100,20 +107,27 @@ func rowBody(data, trailing []byte) []byte {
 
 // rowCouple is the same row built by hand over Bind, the plain functions of
 // what the codecs' methods do, the room-blind bound a nil Bound means and the
-// handler's lifted form. The row tests compare the row Row builds against it.
+// handler in Bind's form, nil where it fails with no fail arm. The row tests
+// compare the row Row builds against it.
 func rowCouple(hooks core.Hooks[rowArgs]) *core.Op {
 	bound := func(r *core.Request, _ *rowArgs, _ int) (int, bool) {
 		return (&rowReply{}).MaxWire(r.Version), true
 	}
-	h := func(ctx context.Context, r *core.Request, req *rowArgs) (*rowReply, error) {
-		rep, err := rowHandler(ctx, r, *req)
-		return &rep, err
+	h := func(_ context.Context, _ *core.Request, req *rowArgs) (*rowReply, error) {
+		rest, ok := bytes.CutPrefix(req.payload, []byte("?"))
+		switch {
+		case !ok:
+			return &rowReply{payload: req.payload}, nil
+		case len(rest) == 0:
+			return nil, vfs.ErrIO
+		}
+		return &rowReply{payload: rest}, vfs.ErrIO
 	}
 	enc := func(rep *rowReply, _ core.Version, out *resources.Buf) error {
 		if rep == nil {
 			return nil
 		}
-		out.B = append(out.B, rep.payload...)
+		out.B = append(binary.BigEndian.AppendUint32(out.B, uint32(len(rep.payload))), rep.payload...)
 		return nil
 	}
 	return &core.Op{
@@ -251,7 +265,7 @@ func (r *readRep) MaxWire(v core.Version) int {
 	return (&rowReply{}).MaxWire(v) + 1
 }
 
-func (r *readRep) IsZero() bool { return r == nil || len(r.data) == 0 }
+func (r *readRep) IsZero() bool { return !r.eof && len(r.data) == 0 }
 
 func readHandler(_ context.Context, _ *core.Request, req readArgs) (readRep, error) {
 	data := make([]byte, req.count)
@@ -378,6 +392,20 @@ func TestRowHooksAreBinds(t *testing.T) {
 	}
 }
 
+// A row takes at most one Hooks (RFC 20 §4.7): Row panics on more, naming the
+// row, rather than drop the second's Role and fail open while draining.
+func TestRowRefusesTwoHooks(t *testing.T) {
+	p := func() (p any) {
+		defer func() { p = recover() }()
+		core.Row[readArgs, readRep, *readArgs, *readRep](42, "Read", core.NeedsNothing, readHandler,
+			core.Hooks[readArgs]{Bound: readHooks.Bound}, core.Hooks[readArgs]{Role: readHooks.Role})
+		return nil
+	}()
+	if s, _ := p.(string); !strings.Contains(s, "Read") {
+		t.Errorf("Row with two Hooks: panic %v, want one naming the row", p)
+	}
+}
+
 // swappedProto is testproto's stages with one row served in a code's place:
 // the routed table's row for op's code gives way to op, so the row a test
 // builds is served on testproto's own tables, error table and stages.
@@ -423,9 +451,11 @@ func sameReply(a, b testproto.Reply) bool {
 // The row Row builds over codecs written by hand answers as the row Bind
 // builds over the same functions, served on testproto's stages: the same
 // reply bytes, and its statuses - the decode status for a body its DecodeWire
-// refuses, the fault for one its Resolve refuses (catches a Row that encodes
-// through a path of its own, lifts the handler badly, or loses a request the
-// codecs refused).
+// refuses, the fault for one its Resolve refuses. A failure encodes the reply
+// its handler returned beside the error, and an empty one beside an error is
+// no reply, which encodes the status alone, though an empty success encodes
+// (catches a Row that encodes through a path of its own, lifts the handler
+// badly, or loses a request the codecs refused).
 func TestRowAnswersAsBind(t *testing.T) {
 	inner := testproto.New(adapter.Deps{}).Bare()
 	hooks := core.Hooks[rowArgs]{Resolve: rowRefuse}
@@ -441,7 +471,10 @@ func TestRowAnswersAsBind(t *testing.T) {
 		status core.Status
 		body   []byte
 	}{
-		{name: "answered its payload", msg: testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Payload: rowBody([]byte("hi"), []byte("XY"))}, status: testproto.StatusOK, body: []byte("hi")},
+		{name: "answered its payload", msg: testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Payload: rowBody([]byte("hi"), []byte("XY"))}, status: testproto.StatusOK, body: []byte("\x00\x00\x00\x02hi")},
+		{name: "answered an empty payload", msg: testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 11, Payload: rowBody(nil, nil)}, status: testproto.StatusOK, body: []byte("\x00\x00\x00\x00")},
+		{name: "failed beside its reply", msg: testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 12, Payload: rowBody([]byte("?wcc"), nil)}, status: testproto.StatusIO, body: []byte("\x00\x00\x00\x03wcc")},
+		{name: "failed with no reply", msg: testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 13, Payload: rowBody([]byte("?"), nil)}, status: testproto.StatusIO},
 		{name: "no arguments", msg: testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 8}, status: testproto.StatusDecode},
 		{name: "length past the body", msg: testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 9, Payload: binary.BigEndian.AppendUint32(nil, 0xffffff01)}, status: testproto.StatusDecode},
 		{name: "resolved to none", msg: testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 10, Payload: rowBody([]byte("!hi"), nil)}, status: testproto.StatusFault},

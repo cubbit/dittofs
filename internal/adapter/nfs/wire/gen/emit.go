@@ -186,7 +186,9 @@ func since(b *bytes.Buffer, n int, body func()) {
 
 // methods writes s's four methods, and the two its decoder and encoder nest
 // through. The version is a uint32, which RFC 20 section 4.7's core.Version
-// aliases, as section 7.1 keeps core out of a codec_gen.go's imports.
+// aliases, as section 7.1 keeps core out of a codec_gen.go's imports. A nil
+// receiver encodes as the empty struct: section 4.7's encoder accepts a nil
+// reply, writing its fail arm whole from an empty one.
 func (g *gen) methods(b *bytes.Buffer, s *strct) {
 	fmt.Fprintf(b, `
 func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {
@@ -196,6 +198,9 @@ func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(%[1]s)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {

@@ -195,7 +195,10 @@ func Bind[Req, Rep any](
 // and reply struct; Row's constraints, so a struct the generator never saw
 // does not build (§5.1). The generator emits MaxWire on every reply; a reply
 // whose tags do not bound it fails generation unless its row passes its own
-// Bound (§4.7).
+// Bound (§4.7). EncodeWire accepts a nil receiver, the reply of a request
+// refused before its call or of a handler that returned an empty reply beside
+// its error, and writes what its operation's reply carries beside the status
+// the header codec wrote (§4.7's Invocation.Encode).
 type Decoder[T any] interface {
 	*T
 	DecodeWire(b []byte, v Version) (n int, err error)
@@ -205,13 +208,13 @@ type Encoder[T any] interface {
 	*T
 	EncodeWire(v Version, out *resources.Buf) error
 	MaxWire(v Version) int // the reply's largest encoding at v under its tags' maxima
-	IsZero() bool          // needed only while Rep is returned by value (§4.3)
+	IsZero() bool          // an empty reply, which beside an error is no reply (§4.3)
 }
 
 // Hooks are Bind's optional arguments, typed against the row's request; at
-// most one (§4.7). Every nil field is nil to Bind, but Bound, whose nil is
-// the reply's MaxWire at the request's version: the codec's largest encoding,
-// the room ignored and ok true.
+// most one (§4.7), Row panicking on more. Every nil field is nil to Bind, but
+// Bound, whose nil is the reply's MaxWire at the request's version: the
+// codec's largest encoding, the room ignored and ok true.
 type Hooks[Req any] struct {
 	Bound   func(r *Request, req *Req, room int) (n int, ok bool) // a reply sized by the request: a READ's count
 	Resolve func(r *Request, req *Req) error
@@ -229,15 +232,21 @@ type Hooks[Req any] struct {
 // decision: the handler takes the ops file's form, its request and its reply
 // by value, and Row lifts it to Handler (§4.3): a reply returned beside its
 // error is kept and encoded from, as a failure reply carries its protocol's
-// fail arm, and a nil one reaches the encoder as is, the answer of a request
-// refused before its call.
+// fail arm, but an empty one is no reply and reaches the encoder nil, as the
+// answer of a request refused before its call does (Invocation.Encode).
+//
+// decision: more than one Hooks panics, naming the row, as NewOpTable does: a
+// row is program text, and a dropped Role would fail open while draining.
 func Row[Req, Rep any, PReq Decoder[Req], PRep Encoder[Rep]](
 	code uint32, name string, needs Needs,
 	h func(ctx context.Context, r *Request, req Req) (Rep, error),
 	hooks ...Hooks[Req],
 ) *Op {
+	if len(hooks) > 1 {
+		panic(fmt.Sprintf("core: row %s: at most one Hooks, got %d", name, len(hooks)))
+	}
 	var hk Hooks[Req]
-	if len(hooks) > 0 { // at most one (§4.7): the first when a call site hands several
+	if len(hooks) == 1 {
 		hk = hooks[0]
 	}
 	var bound func(r *Request, req *Req, room int) (n int, ok bool)
@@ -263,6 +272,9 @@ func Row[Req, Rep any, PReq Decoder[Req], PRep Encoder[Rep]](
 			hk.Handle,
 			func(ctx context.Context, r *Request, req *Req) (*Rep, error) {
 				rep, err := h(ctx, r, *req)
+				if err != nil && PRep(&rep).IsZero() {
+					return nil, err
+				}
 				return &rep, err
 			},
 			func(rep *Rep, v Version, out *resources.Buf) error {

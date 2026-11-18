@@ -14,6 +14,9 @@ func (x *AccessArgs) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *AccessArgs) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(AccessArgs)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -46,6 +49,9 @@ func (x *AccessRes) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *AccessRes) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(AccessRes)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {

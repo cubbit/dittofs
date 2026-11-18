@@ -14,6 +14,9 @@ func (x *Pair) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *Pair) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(Pair)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {

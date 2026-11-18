@@ -14,6 +14,9 @@ func (x *SetClientIDArgs) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *SetClientIDArgs) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(SetClientIDArgs)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -55,6 +58,9 @@ func (x *ClientID) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *ClientID) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(ClientID)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -90,6 +96,9 @@ func (x *CBClient) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *CBClient) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(CBClient)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -127,6 +136,9 @@ func (x *NetAddr) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *NetAddr) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(NetAddr)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -162,6 +174,9 @@ func (x *SetattrArgs) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *SetattrArgs) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(SetattrArgs)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -200,6 +215,9 @@ func (x *StateID) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *StateID) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(StateID)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -235,6 +253,9 @@ func (x *FAttr) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *FAttr) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(FAttr)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -278,6 +299,9 @@ func (x *ACL) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *ACL) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(ACL)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -320,6 +344,9 @@ func (x *ACE) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *ACE) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(ACE)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -361,6 +388,9 @@ func (x *OpenClaim) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *OpenClaim) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(OpenClaim)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -435,6 +465,9 @@ func (x *DelegateCur) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *DelegateCur) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(DelegateCur)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -472,6 +505,9 @@ func (x *SetTime) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *SetTime) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(SetTime)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -517,6 +553,9 @@ func (x *NFSTime) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *NFSTime) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(NFSTime)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -552,6 +591,9 @@ func (x *PostOpFH) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *PostOpFH) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(PostOpFH)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -592,6 +634,9 @@ func (x *FH3) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *FH3) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(FH3)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -624,6 +669,9 @@ func (x *Write4Args) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *Write4Args) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(Write4Args)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -667,6 +715,9 @@ func (x *Void) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *Void) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(Void)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
@@ -697,6 +748,9 @@ func (x *Sample) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *Sample) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(Sample)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
