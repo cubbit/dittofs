@@ -624,7 +624,9 @@ version (epic 3's D1), so `Of` needs no option for it and a raise is one event f
 format. The price is a wider rollback refusal past the raise: every row the newer binary rewrites
 carries the new version, so an older binary refuses every section it rewrote, not only the one
 that gained the field. That is accepted, since one bad row still stops only its own section and a
-rollback past the raise is already the unsafe case. No format has a second
+rollback past the raise is already the unsafe case. Until `raise-format` lands, no release renames or
+removes a field with rows behind it, since an older row could no longer be read into the current
+struct (epic 3's D1). No format has a second
 version yet, so the rule costs nothing now: a `decision:` note at `Check` states it, and the raise
 call that enforces it is the ledger's (§6.1). A rename of a `SecretRef` field also changes its
 secrets' owner, the setting key naming them (D10), and would strand them; none is reachable before
@@ -896,7 +898,7 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller auth.Role, w Write, holds 
 	// decision: D11. The settings format's newer schema version, one across every section, is
 	// written only once the active version allows it, so a rollback before the raise meets no row
 	// it cannot decode (RFC 13 §1).
-	return t.checkFormatVersion(s) // a namespace's block format past this node's range (RFC 13 §5.4)
+	return sec.checkFormatVersion(w) // a namespace's block format past this node's range (RFC 13 §5.4)
 }
 ```
 
@@ -1201,8 +1203,8 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   ambiguously, `lookup` choosing the longest prefix on a dot boundary.
 - `Check` for the write path, given the caller's role and the write as a put or a delete, a delete
   checked against the effective value it leaves: unknown key, wrong scope, newer schema, the
-  section's write role, `Validate`, the bound refusal (RFC 13 §5.1) on its holds-content input,
-  D10's secret references, D9's refusal of a store location's change but not its first value, and a
+  section's write role, D10's secret references, `Validate`, the bound refusal (RFC 13 §5.1) on its
+  holds-content input, D9's refusal of a store location's change but not its first value, and a
   namespace's block format version past this node's range (RFC 13 §5.4), on the key
   RFC 4's plan declares; until then a unit test declares the key and asserts the refusal.
 - `Diff`, `Keep` and the classes: live, restart, next write, bound.
