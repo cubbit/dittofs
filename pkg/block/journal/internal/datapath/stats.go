@@ -6,13 +6,15 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
 // ShareStats is one share's figures; see the journal package's ShareStats.
 type ShareStats struct {
 	Limit, UsedBytes, ReservedBytes, HeldBytes, DirtyBytes, UnreclaimedBytes int64
 	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
-	// take no further append; zero, like UnreclaimedBytes, until Repack seals.
+	// take no further append.
 	UnreclaimedEndedBytes int64
 }
 
@@ -37,21 +39,24 @@ type Stats struct {
 	ExtentCount                                               int64
 	DropRanges, Segments, Sealed, Spares                      int
 	UnreclaimedBytes, HeadroomBytes, RepackReserveBytes       int64
-	PinnedSegments, OpenDescriptors, DescriptorLimit          int
-	DamagedSegments                                           int
-	LastSyncError                                             *durability.SyncFailure
-	SyncDuration                                              durability.Histogram
-	RemovalMarkers                                            int
-	VersionLimit                                              core.Version
-	VersionsLeft                                              uint64
-	NextVersion                                               core.Version
-	ExtentLimit                                               int64
-	Counters                                                  Counters
-	Losses                                                    []core.LossEvent
-	LossGeneration                                            uint64
-	TagConflicts                                              []index.Conflict
-	Shares                                                    map[core.ShareTag]ShareStats
-	ReadOnly                                                  core.ReadOnlyState
+	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
+	// take no further append; see the journal package's Stats.
+	UnreclaimedEndedBytes                            int64
+	PinnedSegments, OpenDescriptors, DescriptorLimit int
+	DamagedSegments                                  int
+	LastSyncError                                    *durability.SyncFailure
+	SyncDuration                                     durability.Histogram
+	RemovalMarkers                                   int
+	VersionLimit                                     core.Version
+	VersionsLeft                                     uint64
+	NextVersion                                      core.Version
+	ExtentLimit                                      int64
+	Counters                                         Counters
+	Losses                                           []core.LossEvent
+	LossGeneration                                   uint64
+	TagConflicts                                     []index.Conflict
+	Shares                                           map[core.ShareTag]ShareStats
+	ReadOnly                                         core.ReadOnlyState
 }
 
 // Stats reads the maintained counters. It walks neither the index nor the
@@ -139,6 +144,10 @@ func (c *Core) Stats() Stats {
 		SpareRefusals: uint64(pc.SpareRefusals), DoubleRetires: sc.DoubleRetires,
 	}
 
+	// ended holds, per tag, the unreclaimed bytes of the segments that take
+	// no further append, charged the same way the walk below names.
+	ended := map[core.ShareTag]int64{}
+
 	// One entry per tag with an open handle or a record on disk, tag 0 (the
 	// journal's own records) excepted.
 	figs := c.shareFigures()
@@ -155,11 +164,43 @@ func (c *Core) Stats() Stats {
 		}
 	}
 	delete(s.Shares, 0)
+	// The unreclaimed bytes of the segments that take no further append —
+	// the sealed ones and the failed ones, a running repack's selected among
+	// them until they are retired. A share is charged the whole figure of
+	// every such segment holding its record bytes: a share-scoped pass
+	// retires one whole, so the figure names what the pass could free, and
+	// the approximation's cost is the second count a segment holding two
+	// shares' bytes carries in each of their figures.
+	//
+	// decision: this is the one figure Stats walks for. Its honest
+	// maintenance would spread a hook across every release, settle, repoint,
+	// retention, retirement and seal in the index and the set, for a figure
+	// only the engine's capacity refusals read, so it is served exact from
+	// the set's snapshot and the index's per-segment counters — O(segments),
+	// no I/O, no lock held across a read. The walk stands until a poll of a
+	// journal of many segments shows it in a profile.
+	for _, r := range c.set.Snapshot() {
+		if r.State != segment.Sealed && r.State != segment.Ended {
+			continue
+		}
+		b := c.index.SegmentBytes(r.ID)
+		u := reclaim.Unreclaimed(r.Size, b.Held+b.Retained)
+		if u == 0 {
+			continue
+		}
+		s.UnreclaimedEndedBytes += u
+		for tag, rec := range r.Tags {
+			if rec > 0 {
+				ended[tag] += u
+			}
+		}
+	}
 	for t, ss := range s.Shares {
 		ss.UsedBytes = used[t]
 		ss.HeldBytes, ss.DirtyBytes = figs[t].Held, figs[t].Dirty
 		ss.ReservedBytes = reservedBy[t]
 		ss.UnreclaimedBytes = unreclaimed(used[t], over[t], figs[t])
+		ss.UnreclaimedEndedBytes = ended[t]
 		s.UnreclaimedBytes += ss.UnreclaimedBytes
 		s.Shares[t] = ss
 	}

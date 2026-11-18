@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"bytes"
 	"errors"
 	"maps"
 	"reflect"
@@ -221,4 +222,51 @@ func TestStatsFromDistinct(t *testing.T) {
 		t.Errorf("Recovery = %+v, want zero", got.Recovery)
 	}
 
+}
+
+// TestStats_ServesTheEndedUnreclaimedFigure checks that the journal serves the
+// unreclaimed bytes of the segments that take no further append: superseded
+// bytes in a sealed segment count, journal-wide and charged to the share
+// whose segment they sit in, and nothing counts while the segment stays
+// active and takes appends.
+func TestStats_ServesTheEndedUnreclaimedFigure(t *testing.T) {
+	j := newTestJournal(t)
+	withLimit(t, j)
+	h, err := j.Share(1, 256<<10, Version{})
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+	id := NewFileID([16]byte{'f', 'i', 'g', 'u', 'r', 'e'})
+
+	// A synced write, and a smaller one over its head synced beside it:
+	// the first half of the first is superseded, so the segment holds
+	// unreclaimed bytes beside its live ones.
+	first := bytes.Repeat([]byte{'a'}, 32<<10)
+	writeAtReady(t, h, id, 0, first)
+	if _, err := h.Sync(t.Context(), id); err != nil {
+		t.Fatalf("the first sync: %v", err)
+	}
+	over := bytes.Repeat([]byte{'b'}, 16<<10)
+	writeAtReady(t, h, id, 0, over)
+	if _, err := h.Sync(t.Context(), id); err != nil {
+		t.Fatalf("the second sync: %v", err)
+	}
+
+	// While the segment still takes appends, its unreclaimed bytes count in
+	// the share's unreclaimed figure alone: the ended figure reads zero.
+	if st := j.Stats(); st.UnreclaimedEndedBytes != 0 || st.Shares[1].UnreclaimedEndedBytes != 0 {
+		t.Fatalf("after the superseding sync: UnreclaimedEndedBytes = %d (share %d), want 0 for a segment that still takes appends", st.UnreclaimedEndedBytes, st.Shares[1].UnreclaimedEndedBytes)
+	}
+
+	// A write too big for the room the segment has left rolls the stream and
+	// seals it: the segment now takes no further append, and the unreclaimed
+	// bytes it holds enter the ended figure, the share's own included.
+	writeAtReady(t, h, id, 40<<10, bytes.Repeat([]byte{'c'}, 40<<10))
+	st := j.Stats()
+	if st.UnreclaimedEndedBytes < 16<<10 {
+		t.Fatalf("journal-wide UnreclaimedEndedBytes = %d after the roll sealed the superseding segment, want at least the superseded %d bytes", st.UnreclaimedEndedBytes, 16<<10)
+	}
+	if got := st.Shares[1].UnreclaimedEndedBytes; got != st.UnreclaimedEndedBytes {
+		t.Fatalf("the share's UnreclaimedEndedBytes = %d, want the journal-wide %d: the sealed segment holds this share's bytes alone", got, st.UnreclaimedEndedBytes)
+	}
 }

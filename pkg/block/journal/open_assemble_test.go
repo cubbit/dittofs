@@ -777,10 +777,18 @@ func TestReopenAssembled_EqualityOfDirtyFiles(t *testing.T) {
 // the held, dirty and unreclaimed bytes the running journal's own deltas
 // counted. A seed that spells no byte figures fails here, for every byte
 // axis it leaves reads zero.
+//
+// UnreclaimedEndedBytes is outside the equality: it counts only segments
+// that take no further append, and the crash moves a segment across that
+// line — the open's cut-and-seal ends or cuts segments the running journal
+// still took appends in, and a torn tail it cut names fewer accounted bytes —
+// so the two journals rightly disagree over which bytes sit in ended
+// segments, whatever the seed spells.
 func TestReopenAssembled_EqualityOfShareFigures(t *testing.T) {
 	before, after := equalityFixture(t)
 	for _, tag := range []ShareTag{1, 2} {
 		b, a := before.shares[tag], after.shares[tag]
+		b.UnreclaimedEndedBytes, a.UnreclaimedEndedBytes = 0, 0
 		if a != b {
 			t.Fatalf("share %d's figures after the reopen = %+v, want %+v: the seed charged or counted the share differently than the running journal did",
 				tag, a, b)

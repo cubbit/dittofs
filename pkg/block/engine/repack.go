@@ -215,10 +215,12 @@ func (e *Engine) relieve(ctx context.Context, b *binding, r refusal, at *step) e
 	case errors.Is(err, journal.ErrClosed), ctx.Err() != nil:
 		return err
 	case errors.Is(err, journal.ErrNotImplemented):
-		// ponytail: the journal's Repack is not built and it reports no
-		// UnreclaimedEndedBytes yet (RFC 1 §10 questions 5 and 6), so the refusal
-		// keeps the interim retry-later answer instead of ending no space by a
-		// figure of 0. Withdraw once Repack seals and reports the figure.
+		// decision: a journal that answers ErrNotImplemented from Repack —
+		// a zero Journal, or the fake's unmodelled segment free — serves no
+		// UnreclaimedEndedBytes a settled answer could read, so the refusal
+		// keeps the interim retry-later answer instead of ending no space by
+		// a figure of 0. Withdrawn when every journal that can refuse a
+		// write also reports the figure.
 		return err
 	default:
 		e.stepFailed(b, err)

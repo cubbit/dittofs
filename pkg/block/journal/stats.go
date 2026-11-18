@@ -8,8 +8,11 @@ import (
 
 // Stats returns the journal's statistics: journal-wide, with a per-share
 // breakdown. It is served from counters the journal maintains: it neither
-// walks the placement index or the segment set nor blocks a write, and it is
-// safe to call concurrently with every other operation. After Close it
+// walks the placement index nor blocks a write, and it is safe to call
+// concurrently with every other operation — UnreclaimedEndedBytes the one
+// exception, which reads the segment set's snapshot and the index's
+// per-segment counters exactly, O(segments) with no I/O, as its walk's own
+// decision records. After Close it
 // returns the zero Stats, since it has no error to return.
 //
 // decision: fields whose source belongs to a later step (the offload and
@@ -58,7 +61,8 @@ func statsFrom(c datapath.Stats) Stats {
 		Files: c.Files, ExtentCount: c.ExtentCount, DropRanges: c.DropRanges,
 		Segments: c.Segments, Sealed: c.Sealed, Spares: c.Spares, UnreclaimedBytes: c.UnreclaimedBytes,
 		HeadroomBytes: c.HeadroomBytes, RepackReserveBytes: c.RepackReserveBytes,
-		PinnedSegments: c.PinnedSegments, OpenDescriptors: c.OpenDescriptors, DescriptorLimit: c.DescriptorLimit,
+		UnreclaimedEndedBytes: c.UnreclaimedEndedBytes,
+		PinnedSegments:        c.PinnedSegments, OpenDescriptors: c.OpenDescriptors, DescriptorLimit: c.DescriptorLimit,
 		DamagedSegments: c.DamagedSegments,
 		SyncDuration: Histogram{
 			Bounds: c.SyncDuration.Bounds, Counts: c.SyncDuration.Counts, Sum: c.SyncDuration.Sum,
@@ -166,10 +170,6 @@ type Stats struct {
 	// take no further append: sealed ones, and ones a failed sync or append
 	// ended, whether or not their window has resolved; a segment a running
 	// repack has selected counts until it is retired. Kind: gauge.
-	//
-	// ponytail: always 0 until Repack seals and the journal keeps this
-	// figure (RFC 1 §10 questions 5 and 6); the engine reads it as "nothing
-	// left to free". Upgrade to the maintained counter when Repack lands.
 	UnreclaimedEndedBytes int64
 
 	// HeadroomBytes is the reserved headroom for records without bytes, and
@@ -279,8 +279,10 @@ type ShareStats struct {
 	UnreclaimedBytes int64
 
 	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
-	// take no further append, counted to the share as UnreclaimedBytes is. It
-	// is 0 until Repack seals (see Stats.UnreclaimedEndedBytes).
+	// take no further append, counted to the share as UnreclaimedBytes is:
+	// the whole figure of every such segment holding the share's record
+	// bytes, so a share-scoped pass that retires any of them is what the
+	// figure names.
 	UnreclaimedEndedBytes int64
 }
 
