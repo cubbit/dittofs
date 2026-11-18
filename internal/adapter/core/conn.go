@@ -224,9 +224,10 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservati
 		return c
 	}
 	f := l.Protocol.Framer()
+	record, _ := f.MaxRecord()
 	common := snap.Common()
 	c.w = newWriter(nc, f, common.WriteTimeout, c.Close)
-	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, set: snap, out: c.w.out, close: c.Close, idle: c.idle})
+	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, set: snap, record: record, out: c.w.out, close: c.Close, idle: c.idle})
 	c.rd = newReader(nc, f, s.recv, c.remote, common.ReadTimeout)
 	// Armed only once the writer, pipeline and reader exist, so a deadline
 	// that fires at once never races their assignment.

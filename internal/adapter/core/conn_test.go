@@ -100,6 +100,39 @@ func TestAnEchoIsAnswered(t *testing.T) {
 	}
 }
 
+// A compound within the record cap is answered with its members' payloads
+// intact on a connection the server accepted: serveConn hands its pipeline
+// the framer's record cap, which the compound bounds its members' replies
+// within. A pipeline built with the cap zero, which is what omitting the
+// framer's record from the link builds, refuses every compound whole as too
+// big before any member runs.
+func TestACompoundWithinTheRecordCapIsAnsweredOnAConnection(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	srv, l := testServer(t, adapter.Deps{Budgets: b}, settings.DefaultNFS())
+	c := connPair(t, srv, l)
+	err := c.Send(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 1, Tag: tagOf(1), Members: []testproto.Msg{
+		{Op: testproto.OpEcho, Payload: []byte("hi")},
+		{Op: testproto.OpEcho, Payload: []byte("ho")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs, err := c.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 1 || rs[0].Status != testproto.StatusOK {
+		t.Fatalf("a compound within the record cap is answered %+v (%v)", rs, err)
+	}
+	hd, results, err := testproto.Results(rs[0].Body)
+	if err != nil || !headIs(hd, testproto.StatusOK, tagOf(1)) || len(results) != 2 ||
+		results[0].Status != testproto.StatusOK || !bytes.Equal(results[0].Body, []byte("hi")) ||
+		results[1].Status != testproto.StatusOK || !bytes.Equal(results[1].Body, []byte("ho")) {
+		t.Fatalf("the compound's reply is head %+v with %d results (%v), want its head ok echoing its own tag and each Echo's payload intact", hd, len(results), err)
+	}
+}
+
 // An operation the settings switch off is refused not supported on a
 // connection the server accepted: serveConn hands its pipeline the snapshot
 // it accepted with, and the row checks answer the switched-off Echo with
