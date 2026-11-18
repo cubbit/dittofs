@@ -19,11 +19,12 @@ import (
 // TestFailedAppendCarriedOnceResolvedJournalLevel is the journal-level form
 // of the recycled segment's failed-append leg (R68): a failed append into
 // the stream's active segment, with a synced record beside it and an
-// unsynced one left after it, holds the segment from repack while its
-// window stands; once a Sync of the file resolves the window, the next pass
-// carries the records synced into the segment before the failure and
-// retires it, unlinked rather than recycled, and the carried bytes read
-// whole before and after a crash.
+// unsynced one left after it, ends that segment with a window owed; once a
+// Sync of the file resolves the window the next pass carries the records
+// synced into the segment before the failure and retires it, unlinked
+// rather than recycled, and the carried bytes read whole before and after
+// a crash. The window-open leg itself is not this test's — the pointer at
+// the resolution says why.
 //
 // decision: the segment the append fails into is the stream's own active
 // one, whose provenance the test does not reach — driving a retired full
@@ -69,17 +70,13 @@ func TestFailedAppendCarriedOnceResolvedJournalLevel(t *testing.T) {
 		t.Fatalf("the write beside the failed append reads missing %+v or other bytes", missing)
 	}
 
-	// decision: the decline-while-open leg is not pinned here, for the
-	// window the failed append opens is the durability layer's, and the
-	// layer learns of the ended segment only from the end event its own
-	// worker takes after the append failed — a pass that reaches the
-	// segment before the take sees no window and is, by the pass's own
-	// deferred re-read, allowed to reclaim it. The R5 gate the pass owns
-	// is the re-read under the file index it runs at the unit's retirement
-	// gate, not a refusal to race the worker's take. Overturned by a ruled
-	// need for the take to be synchronous with the write's failure — the
-	// executor would have to report the ended segment to the durability
-	// layer before the writer answers, a design change, not a pass change.
+	// No decline-while-open leg runs here: the decision at the pass's R5
+	// gate (internal/reclaim/pass.go) names the ceiling — the window the
+	// failed append opens is the durability layer's, which learns of the
+	// ended segment only from the end event its own worker takes, so a
+	// pass racing the take is, by its deferred re-read, allowed to reclaim
+	// the segment. The pointer replaces the leg the first revision of this
+	// test ran, which raced that take.
 
 	// The file's Sync resolves the failed append's window either way it
 	// goes — re-appending C, or failing it out of the index — and the

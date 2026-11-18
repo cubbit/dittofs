@@ -1326,10 +1326,13 @@ func (d *Durability) marksOf(ws []work) []core.SyncMark {
 // core.ErrClosed once the layer stopped, or, once the journal is read-only
 // and the record is failed, the refusal, which matches
 // core.ErrJournalReadOnly. It takes no context and never returns a
-// *core.SyncError. A header-only record of a segment whose sync failed is
-// re-appended, and the wait follows it to its new place and ends when that
-// is durable. While the journal takes writes, a content record of such a
-// segment is failed and keeps waiting, since it is never durable, until Stop
+// *core.SyncError. A record of a segment whose sync failed is re-appended
+// by the failed window's resolution — a header-only one from the bytes the
+// ledger kept, a content one from the failed segment's own bytes, read
+// again and verified — and the wait follows it to its new place and ends
+// when that is durable. While the journal takes writes, a content record
+// whose re-read does not verify is failed and keeps waiting, since it is
+// never durable, until Stop
 // or until the journal turns read-only, which wakes every such waiter. It
 // consults and clears no marks, which belong to the Sync that names the
 // file. A record with no sync running for it gets one, as a Sync would. The
@@ -1348,14 +1351,16 @@ func (d *Durability) WaitDurable(at segment.Location) error {
 }
 
 // WaitCopy waits for one repack copy's place to become durable, as WaitDurable
-// does, except on a failed window: once the window that failed it has settled
-// and the copy is out of it, the copy is dead — the layer re-appends a
-// header-only record but never a content one, and the copy's bytes live on in
-// its source until a pass repoints them — so the wait answers the window's
-// own error instead of waiting for a durability that will not come. The
-// failure has already been marked to the copy's file, whose next Sync reports
-// it, and the wait takes no mark itself (settle). The caller holds no file's
-// append domain, as for WaitDurable.
+// does, except on a failed window: the window's resolution re-appends a
+// content record too — to a place a pass that waits for it cannot name, for
+// its move names the copy's own place — or fails its re-read and drops it,
+// and either way the copy the pass holds is dead, its bytes living on in its
+// source until a later pass repoints them. The wait answers the window's own
+// error instead of following a re-append the caller cannot reach or waiting
+// for a durability that will not come. The failure has already been marked
+// to the copy's file, whose next Sync reports it, and the wait takes no mark
+// itself (settle). The caller holds no file's append domain, as for
+// WaitDurable.
 func (d *Durability) WaitCopy(at segment.Location) error {
 	var ws []work
 	for _, st := range d.snapshot() {

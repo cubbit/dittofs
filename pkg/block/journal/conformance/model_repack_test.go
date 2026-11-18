@@ -28,11 +28,11 @@ func FuzzModelRepack(f *testing.F) {
 		steps := decodeSteps(data, model.RepackOps)
 		for i := range steps {
 			if steps[i].Op == model.OpCrash {
-				// Every crash decoded here loses the unsynced writes whole.
-				// A torn one is refused by the crash seam when nothing
-				// unsynced stands behind it, and the pass's own torn-crash
-				// shapes are pinned by the damage rows, whose crash points
-				// they hold.
+				// The normalisation lands every decoded crash on the losing
+				// kind, whatever kind the input drew — not only the torn
+				// one, which the crash seam refuses when nothing unsynced
+				// stands behind it; the pass's own torn-crash shapes are
+				// pinned by the damage rows, whose crash points they hold.
 				steps[i].Pick -= steps[i].Pick % 3
 			}
 		}

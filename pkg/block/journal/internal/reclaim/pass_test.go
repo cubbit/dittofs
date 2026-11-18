@@ -746,7 +746,7 @@ func TestPassAbandonsItsUnitOnAFailedCopyWindow(t *testing.T) {
 	// under the re-append that an earlier failure of the durability worker's
 	// own bounded timer resolved — answers the window the pass waits on
 	// with its failure. The pool's refills sync their own temporary names,
-	// and the pass's next run comes after the fault is cleared.
+	// which the fault spares.
 	boom := errors.New("the copies' window fails")
 	if err := p.f.seam.Schedule(kit.Failing(kit.OpSync, "*.seg", 0, boom)); err != nil {
 		t.Fatalf("scheduling the failing sync: %v", err)

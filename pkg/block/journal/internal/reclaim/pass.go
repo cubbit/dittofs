@@ -15,9 +15,11 @@ import (
 // layer's own waiters. WaitDurable starts a sync for a record that has none
 // and follows a re-appended record to its new place, so it serves the carry's
 // header-only records, whose failed window re-appends them. WaitCopy serves
-// a copy instead: a content record's window failure does not re-append it,
+// a copy instead: a failed window re-appends a content record to a place
+// the pass cannot name, for its move names the copy's own place, or fails
+// its re-read and drops it, and either way the copy the pass holds is dead,
 // so the wait answers the failure the window settled with (D8) rather than
-// wait for a durability that will not come.
+// publish the copy at a place a failed window abandoned.
 type Durable interface {
 	WaitDurable(at segment.Location) error
 	WaitCopy(at segment.Location) error
@@ -328,6 +330,18 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 		// the claim the pass holds, as the retirement worker does: a
 		// window that opened since the selection keeps its source for a
 		// pass that runs once its records are carried and resolved.
+		//
+		// decision: this re-read's ceiling is the durability layer's own
+		// take of the failure. A segment a failed append ended answers
+		// Ended at once, but its window opens only when the layer's worker
+		// takes the end event, so a pass that reaches a newly failed
+		// segment before the take sees no window and is free to reclaim
+		// it: the gate the pass owns is this re-read under the claim, not a
+		// refusal to race the worker's take. Overturned by a ruled need
+		// for the take to be synchronous with the write's failure — the
+		// executor would have to report the ended segment to the
+		// durability layer before the writer answers, a design change,
+		// not a pass change.
 		if p.dur != nil && (p.dur.WindowOpen(seg) || p.dur.ReclaimBlocked(seg)) {
 			// The claim stays with the run, as the hold does above: the
 			// ended segment whose window reopened keeps its place out of

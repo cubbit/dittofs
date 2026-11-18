@@ -7,7 +7,6 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
-	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
@@ -103,18 +102,16 @@ func (p *passFixture) plantSealed(t *testing.T, file core.FileID, payload []byte
 // its own, so the stream holds an active segment with room beside the sealed
 // source: a pass's copies then append into it without rolling, and the pool
 // makes nothing behind the pass — the shape a test that holds a seam at a
-// sync needs, so the call it stops can only be the pass's own. It returns the
-// filler record, whose segment is the active target the copies land in. The
-// pool is waited to its settle before the plant — the roll draws the stream's
-// next segment from the pool's own spare, which must stand ready — and
-// settles again behind the roll before the test returns.
-func (p *passFixture) retainActivity(t *testing.T, stream int, file core.FileID) index.RecordAt {
+// sync needs, so the call it stops can only be the pass's own. The pool is
+// waited to its settle before the plant — the roll draws the stream's next
+// segment from the pool's own spare, which must stand ready — and settles
+// again behind the roll before the test returns.
+func (p *passFixture) retainActivity(t *testing.T, stream int, file core.FileID) {
 	t.Helper()
 	other := passFileOnStream(p.f, stream, file)
 	p.f.waitSpares(t)
-	rec, _, _ := p.f.plant(t, copyTag, other, []byte("the write that keeps the stream active beyond the sealed source"), 0)
+	p.f.plant(t, copyTag, other, []byte("the write that keeps the stream active beyond the sealed source"), 0)
 	p.f.waitSpares(t)
-	return rec
 }
 
 // passFileOnStream returns a file that appends on stream, and is not file.

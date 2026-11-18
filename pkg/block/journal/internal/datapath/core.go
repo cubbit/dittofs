@@ -679,12 +679,13 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		// decision: the retired segment reaches the liveness tracker
 		// through this durable-retirement signal alone, not through the
 		// retirer's retired hook or the set's retire observer: on the
-		// unlink's own path those fire before the unlink's directory sync
-		// (a recycle has made its removal durable before its hooks run)
-		// — and a crash that undoes the retirement must find the
-		// tracker's registrations intact — the
-		// surviving file rebuilds its records, and what a rebuild is owed
-		// cannot have been released on an unlink nothing made durable.
+		// unlink's own path those fire after the unlink's directory sync
+		// has returned, whatever it answered — only this signal carries
+		// the sync's success (a recycle has made its removal durable
+		// before its hooks run) — and a crash that undoes the retirement
+		// must find the tracker's registrations intact — the surviving
+		// file rebuilds its records, and what a rebuild is owed cannot
+		// have been released on an unlink nothing made durable.
 		// Both halves of the tracker's own gate ride the signal: the
 		// files the call carries are the index's own, not the tracker's
 		// registry fill — the registry names only files with registered
