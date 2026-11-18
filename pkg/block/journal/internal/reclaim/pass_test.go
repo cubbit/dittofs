@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -882,5 +883,36 @@ func TestPassFreedWaitsForTheRetiresDirSync(t *testing.T) {
 	srcread := p.readAll(t, fa, 0, int64(len(payload)))
 	if !bytes.Equal(srcread, payload) {
 		t.Fatal("the repacked file does not read back whole after the pass")
+	}
+}
+
+// TestPassFreedOmitsANonDurableRetirement runs a pass whose source's
+// retirement meets a failing directory sync: the unlink happened — the
+// segment left the set and the retirer counted its bytes — but the removal is
+// not durable, so the pass's freed answers 0. The freed a pass reports is the
+// sum of the retirements the executor reports durable, never the bytes a
+// failed sync may still be missing: the next open's scan settles what the
+// failed sync left, and no later sync of this process makes it durable.
+func TestPassFreedOmitsANonDurableRetirement(t *testing.T) {
+	p := newPassFixture(t)
+	fa, _ := passFilesOnDistinctStreams(p.f)
+	payload := []byte("the write whose retirement's directory sync failed")
+	src := p.plantSealed(t, fa, payload)
+	p.retainActivity(t, p.f.core.Streams().IndexFor(fa), fa)
+	p.f.waitSpares(t)
+
+	if err := p.f.seam.Schedule(kit.FailingFrom(kit.OpSyncDir, "*", 1, 1, syscall.EIO)); err != nil {
+		t.Fatalf("schedule the failing directory sync: %v", err)
+	}
+	freed, err := p.repack(context.Background(), copySegCap*8, src)
+	p.f.seam.SetFault(nil)
+	if err != nil {
+		t.Fatalf("Repack over the retired source: %v; want the retirement done, its failed directory sync a Warn", err)
+	}
+	if freed != 0 {
+		t.Fatalf("Repack freed %d over a retirement whose directory sync failed, want 0: the removal may not have reached the directory", freed)
+	}
+	if _, serr := p.f.set.State(src); serr == nil {
+		t.Fatalf("segment %d is still in the set, want its retirement done under the failed sync", src)
 	}
 }

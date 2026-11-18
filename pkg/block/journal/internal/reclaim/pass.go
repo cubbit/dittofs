@@ -408,10 +408,16 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 	if terr != nil {
 		return bytes, 0, false, fmt.Errorf("reclaim: the unit over segment %d: %w", seg, terr)
 	}
-	// A retirement whose directory sync failed counts its freed bytes all
-	// the same: the retirement is completed, and no later sync ever makes
-	// it durable in this process (Retirement.Durable's own contract); the
-	// next open's scan settles what the failed sync left.
+	// A retirement whose directory sync failed contributes no freed bytes
+	// to the answer, which is the sum of the retirements the executor
+	// reports durable: the removal may not have reached the directory, no
+	// later sync of this process makes it durable (Retirement.Durable's own
+	// contract), and the next open's scan settles what the failed sync
+	// left, so the caller that waits on freed to retry waits for bytes it
+	// can trust.
+	if !ret.Durable {
+		return bytes, 0, false, nil
+	}
 	return bytes, ret.Freed, false, nil
 }
 
