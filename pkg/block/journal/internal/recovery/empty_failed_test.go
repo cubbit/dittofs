@@ -177,6 +177,16 @@ func TestCrashAtEveryFailedHolderEmptyingStep(t *testing.T) {
 				hold.Release()
 				reach(next, "the directory sync after the unlink")
 				hold = next
+				// Another caller's directory sync may reach the hold before the
+				// released unlink applies, so the cut waits on the unlink itself;
+				// every directory sync stays parked meanwhile.
+				deadline := time.Now().Add(30 * time.Second)
+				for slices.Contains(f.r.listing(), format.SegmentName(5)) {
+					if time.Now().After(deadline) {
+						t.Fatalf("the source is still listed with the directory syncs held, want the unlink applied before the cut")
+					}
+					time.Sleep(time.Millisecond)
+				}
 			}
 			if tc.op == "remove" {
 				// The source's unlink is reached: the copy must already be

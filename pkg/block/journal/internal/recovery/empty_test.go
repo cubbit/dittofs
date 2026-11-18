@@ -1102,8 +1102,16 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 				hold.Release()
 				reach(next, "the directory sync after the unlink")
 				hold = next
-				if slices.Contains(r.listing(), format.SegmentName(2)) {
-					t.Fatalf("the source is still listed at the directory sync, want the unlink applied before the cut")
+				// Another caller's directory sync, the pool refill's, may reach
+				// the hold before the released unlink applies; every directory
+				// sync stays parked, so the test waits on the unlink itself
+				// with nothing made durable meanwhile.
+				deadline := time.Now().Add(30 * time.Second)
+				for slices.Contains(r.listing(), format.SegmentName(2)) {
+					if time.Now().After(deadline) {
+						t.Fatalf("the source is still listed with the directory syncs held, want the unlink applied before the cut")
+					}
+					time.Sleep(time.Millisecond)
 				}
 				wantResurrect = true
 			}
