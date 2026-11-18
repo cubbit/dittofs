@@ -631,6 +631,53 @@ func TestARetryReadsBehindTheSidecarsMutex(t *testing.T) {
 	}
 }
 
+// A sidecar enabled while an adapter's Reconfigure runs ends on the set the
+// call leaves (RFC 20 section 3.5): its enabling sync lands mid-call with the
+// address the call then drops, and the sync after the call corrects it. A
+// sync after the call over the sidecars enabled before it leaves the sidecar
+// advertising the dropped address.
+func TestASidecarEnabledMidReconfigureEndsOnTheSetTheCallLeaves(t *testing.T) {
+	needIPv6Loopback(t)
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	h := newHolder("hold", "nfs")
+	r := sidecar.New(h)
+	t.Cleanup(r.Close)
+	entered, gate := make(chan struct{}), make(chan struct{})
+	open := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(open) // runs before the server's own Stop, so a failure cannot park it
+	srv := buildServer(t, b, "nfs", on("127.0.0.1", "::1"))
+	nfs := hooked{srv, func(call string) {
+		if call == "reconfigure" {
+			close(entered)
+			<-gate
+		}
+	}}
+	if err := r.SetEnabled(t.Context(), "hold", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(t.Context(), "nfs", nfs); err != nil {
+		t.Fatal(err)
+	}
+	reconfigured := make(chan error, 1)
+	go func() { reconfigured <- r.Reconfigure(t.Context(), "nfs", nfs, on("127.0.0.1")) }()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the adapter's Reconfigure never ran")
+	}
+	if err := r.SetEnabled(t.Context(), "hold", true); err != nil {
+		t.Fatal(err)
+	}
+	open()
+	if err := <-reconfigured; err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	if got, want := h.holding(), servingOf("nfs", srv); !sameServs(got, want) {
+		t.Errorf("the sidecar enabled mid-call holds %v, want the set the call left %v", got, want)
+	}
+}
+
 // A Start's set builds behind the sidecar's mutex, where its enabled answer
 // is read, so a disable that flips while the build runs queues its sync
 // behind it and lands its nil last: the disabled sidecar advertises nothing

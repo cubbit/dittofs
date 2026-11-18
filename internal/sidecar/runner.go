@@ -120,7 +120,9 @@ func (r *Runner) Reconfigure(ctx context.Context, name string, a adapter.Adapter
 		}
 	}
 	err := a.Reconfigure(ctx, next)
-	for _, sc := range syncs {
+	// The sidecars are read again: one enabled during the call synced a set
+	// read mid-call, which may still name an address the call dropped.
+	for _, sc := range r.enabledFor(name) {
 		_ = r.sync(ctx, sc, func() []adapter.Serving { return r.servs(sc.Adapters()) })
 	}
 	return err
