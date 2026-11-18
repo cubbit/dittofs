@@ -685,6 +685,16 @@ func (p *Pool) DeviceFull() bool {
 // shortage that owes spares to itself is named `spare` however tight the
 // journal. Overturned by a hold or an ask whose spares can never be served
 // back, which would strand its holders retried on the journal's name.
+//
+// decision: the answer is read at one instant and trades liveness for data
+// the way the caller's fail-whole does. A retirement already queued that
+// would free the bytes the maximum lacks, a short sealed segment the worker
+// is about to unlink rather than a full-size one it would recycle, counts for
+// nothing here, because the caller's recycle test sees only full-size
+// retirees: a window can fail whole at the maximum a moment before that
+// unlink would have let its roll through. Overturned if windows failed at
+// the maximum show up while the retirer's queue holds such a segment, which
+// would ask the check to wait on the queue's unlinks instead.
 func (p *Pool) journalRefuses() *core.NoSpaceError {
 	p.mu.Lock()
 	callable := len(p.ready[Content]) > 0 || p.held > 0 || p.pending > 0
