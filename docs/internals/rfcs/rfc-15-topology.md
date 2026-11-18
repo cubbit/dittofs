@@ -760,8 +760,9 @@ Every message between nodes — a forwarded call, a replication message
 - **Mutually authenticated.** Each node holds a credential the installation
   issues it, bound to its node ID. Its private half is issued to the node and kept on its own volume with
   its identity ([RFC 30 §4.2](rfc-30-kubernetes.md#4.2%20A%20pod's%20identity%20is%20its%20volume)),
-  never in the store, which any node can read; the store holds what a peer
-  verifies it with and its revocation ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). Both ends present theirs, and each **MUST** refuse a
+  never in the store, which any node can read; what a peer
+  verifies it with, and how a revocation reaches the peers, is open
+  ([RFC 13 §11](rfc-13-configuration.md#11.%20Open%20questions)). Both ends present theirs, and each **MUST** refuse a
   peer whose credential the installation did not issue, or whose node record is
   decommissioned.
 - **Encrypted**, with integrity, so nothing on the network reads or alters a

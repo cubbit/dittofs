@@ -284,7 +284,7 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   credential's reference. The record gains `bind_name`, the distinguished name or UPN that binds,
   shown to an operator like the base; the password is a `Secret` of a new kind, `directory
   credential`, sealed under the `protocol` key RFC 13 §7 assigns to identity-provider bind
-  credentials. Needs RFC 13 Appendix B's row and RFC 16's `Secret.Kind` list amended. Prior art:
+  credentials. RFC 16 §2.3's `Secret.Kind` list names it (#4491). Needs RFC 13 Appendix B's row. Prior art:
   sssd's `ldap_default_bind_dn` beside `ldap_default_authtok` (from memory).
 - **D4, TLS is the address's scheme, and nothing turns it off.** `ldaps://host[:port]` dials TLS;
   `ldap://host[:port]` always upgrades with StartTLS before the bind; any other scheme is refused.
@@ -937,8 +937,8 @@ much of v1's client survives D4 and D10, and the swap's ordering inside one tran
   RFC 18 §2.6 amended. Alternative: `Settings` gains a `Directory` field the node fills from the
   other section, which makes E2's struct two sections' shape.
 - **The bind name and the credential's kind (D3).** RFC 13 Appendix B's row has no bind name, and
-  RFC 16's `Secret.Kind` list has no kind for the directory's credential. Recommended: a
-  `bind_name` field and a `directory credential` kind, amending both. Alternative: the sealed
+  RFC 16 §2.3's `Secret.Kind` list names the `directory credential` kind since #4491. Recommended:
+  a `bind_name` field, amending Appendix B's row. Alternative: the sealed
   value holds the name and the password together, which hides from an operator which account
   binds.
 - **The swap's one transaction (D5).** RFC 16 §3's `Rename` takes one principal; RFC 18 §5.1

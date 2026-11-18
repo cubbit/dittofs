@@ -789,8 +789,9 @@ and never enters the KV, which any node can read
 Sealed under a key every node holds, it would let any node unseal every other
 node's credential and speak on the node channel in its name, which
 [RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)'s bound-to-the-sender rule
-forbids. The store holds only what a peer verifies it with, the issued
-certificate or public key, and its revocation.
+forbids. What a peer verifies a node credential with, and who may write it, is
+open ([§11](#11.%20Open%20questions), question 4): no record of the store holds
+it today, and none may be a row a node writes itself.
 
 > decision: the two keys stay separate although every node holds both, so a
 > later split of the roles ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type))
@@ -855,6 +856,11 @@ type Version struct {
 	Meta   Meta
 }
 ```
+
+Whatever provider seals, it **MUST** length-prefix each field of the additional
+data `Seal` binds (see `Meta`) and each part of the owner (the record's kind and ID, the scope's tag and
+ID, the key), so two owners whose parts concatenate to the same bytes bind
+differently and a value moved onto the other's reference fails to open.
 
 - **Read never returns a secret.** No API, export, log line or metric carries
   one. An export that must travel with its secrets, a backup that must be
@@ -1061,6 +1067,19 @@ because the rule stands here alone, or marked not yet applied:
 3. **The settings generation read.** One point read per node per second is
    nothing on one node; whether it stays cheap with many nodes on one replicated
    store, or needs the store's own change feed, is unmeasured **(cluster)**.
+4. **The node credential's verifier.** What a peer verifies a node credential
+   with (the issued certificate or its public key), where that is kept, who may
+   write it and how a revocation reaches the peers are not written down: RFC 16's
+   `Node` holds no such field, §4.2 has no key for one, and
+   [RFC 30 §8](rfc-30-kubernetes.md#8.%20Secrets%20and%20the%20node%20channel)
+   says the operator or a certificate manager issues a certificate bound to the
+   node ID, renews it, and revokes it when the node is decommissioned, but not
+   what a peer verifies it with or how that revocation reaches the peers.
+   Whatever holds it **MUST NOT** be a row any node writes through
+   `RegisterNode`, which would let a node choose the key its own messages verify
+   with, against [RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)'s
+   bound-to-the-sender rule. It is settled with RFC 15's cluster work
+   **(cluster)**.
 
 ---
 

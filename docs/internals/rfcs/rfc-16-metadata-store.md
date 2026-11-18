@@ -748,8 +748,17 @@ type Setting struct {
 // SettingScope is where a setting is set (RFC 13 §3): the scope's kind and, but
 // for the installation, the ID of the node, namespace, remote store or share.
 type SettingScope struct {
-	Kind uint8    // installation, node, namespace, remote store or share: the tag byte of §4.2's `scope`
+	Kind uint8    // installation, node, namespace, remote store or share: the `CFG` scope tag of §4.2's enumerated components, a code never reassigned
 	ID   [16]byte // the scope's ID (§4.2's identifier); zero for the installation
+}
+
+// SettingKey is one setting's place in `CFG`'s key order: its scope, then its
+// key. It resumes a paged read of every scope's settings (RFC 23 §2.1): a page
+// starts strictly after the key it holds, so a key deleted since still resumes,
+// and the zero value starts at the first.
+type SettingKey struct {
+	Scope SettingScope
+	Key   string
 }
 ```
 
@@ -771,12 +780,17 @@ type Secret struct {
 	HandedOver bool   // a machine password an offline join was handed: derives no Kerberos key and backs no previous-version fallback (RFC 18 §3.5); written with the version, bound into its sealed value's additional data, never changed
 }
 
+// ResourceKind is a record's kind, one byte: the codes of §4.2's enumerated
+// components, never reassigned or renumbered, a new kind taking the next. RFC 23
+// names a resource by the kind's name ("share", "netgroup"), which the API maps
+// to the byte and never stores.
+type ResourceKind uint8
+
 // ResourceRef names one record by its kind and its key. The zero value names
-// none. Each kind uses one ID form, minted or natural, never both, and the Kind
-// values are constants that are never renamed: a Secret's additional data
-// seals Kind, so a rename would stop every value naming it from opening.
+// none. Each kind uses one ID form, minted or natural, never both. A Secret's
+// additional data seals Kind, which a code that never changes keeps opening.
 type ResourceRef struct {
-	Kind string // the record's kind, as RFC 23 names its resource
+	Kind ResourceKind // the record's kind, one byte
 	ID   []byte // the record's key: its minted 16-byte ID (FileID, ShareID, PrincipalID, §2.2), else its natural key, encoded as §4.2 encodes that record's key components (a netgroup's name as a byte string; a setting's tagged scope then its byte-string key, for an `OPR` or `AUX` target only, since a SecretOwner never names a setting through Record; a grant's ShareID then its Principal; a snapshot's ShareID then its Cut, as `S‖id‖snap‖cut` keys it), the variable-length ID §4.2's `OPR` and `AUX` targets carry
 }
 
@@ -800,6 +814,12 @@ type SecretOwner struct {
 // ResourceRef.ID is a slice, so it is compared with bytes.Equal.
 func (o SecretOwner) Equal(x SecretOwner) bool
 ```
+
+> decision: a netgroup or a grant recreated under the same natural key has the
+> same `ResourceRef`, so its `AUX` rows join the old one's and a read by target
+> returns both lives, told apart by their times. A minted ID names one life only.
+> The trail follows the name an operator typed. Overturned if a consumer needs one
+> life per target: the `AUX` key then gains the record's creation generation.
 
 Every node holds both wrapping keys; they stay separate so a later split of the
 roles ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)) re-seals
@@ -2016,14 +2036,14 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `IDS‖kind` | ID allocator, one per kind (client, open, lock, shard): the next unreserved ID, reserved in ranges by the process that issues them, so an ID is never issued twice and issuing one writes nothing; a range left unused when the process stops is abandoned. A `ClientID` and an `OpenID` are unique across the installation ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); an `OpenID` is issued only to an SMB, durable or clone source open, never to every NFS open, and below 2⁴⁰: `IDS‖open` refuses to issue past it ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)); a `lockID` need only differ from every other lock under its open and offset, which a server-wide counter more than meets. A shard number is read and raised in the transaction that creates the shard, which writes `S‖id‖shs‖shard` and `SH‖shard` — a share's own at the share's creation ([§2.3.1](#2.3.1%20Share%20names%2C%20paths%20and%20state)), a per-child one at its directory's ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)) —, never reserved in ranges and never reused, so a stateid naming a removed shard never resolves against another share's; `IDS‖shard` refuses with `ErrNoSpace` at 2²⁴, the most shards an installation numbers ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)). Three more kinds, uid, gid and RID, are the allocation counters of principals' spellings (RFC 18 §2.3): each only rises, and is read and raised in the transaction that creates the `User` or `Group` it numbers, as `S‖id‖pjn` is, never reserved in ranges; a uid or gid is drawn from `identity.id_range` and one any principal holds is skipped, which its `PX‖` row shows, so no allocated uid, gid or RID is given twice, even after its principal is deleted |
 | | `N‖node‖st` | NodeStatus (§2.3): what the node has applied, refused and holds restart-pending, and its conditions; written only by that node (RFC 23 §2.4) |
 | | `OP‖opID` | Operation (§2.3), deleted 7 days after it ends (RFC 23 §4.6) |
-| | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` the target's resource kind as a byte string, then its ID |
+| | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` the target's resource kind as one byte, then its ID |
 | | `IK‖account‖key` | IdempotencyRecord (§2.3), written in the request's own transaction (RFC 23 §4.5) |
 | | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`), session (0x03, session ID), source's sign-in failures (0x04, address), API token (0x05, token ID) and an account-and-source pair's sign-in failures (0x06, principal then address), written and deleted with it, so the sweep is one ordered scan |
 | | `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash`, `SSA‖principal‖session` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3); and its reverse, one empty key per hash the session has retained, written with its `SSH` row, so the expiry sweep (`XP`, tag 0x03) deletes the session's `SSH` rows by one range of its own, never a scan of `SSH`; and the per-account index, one empty key per session, for listing an account's sessions and deleting them with it. `DeleteSession` (sign-out, a reused refresh token's revocation, the account's deletion) deletes `SS‖session`, its `SSA` key, and, by the range `SS‖session‖h‖`, every `SSH` row the session ever had, in one transaction, so no refresh hash it issued is found afterwards |
 | | `SF‖tagged` | SignInFailures (§2.3), keyed by the account (tag 0x01, principal; a name that resolves to no account has none), the source address (0x02), or the two together (0x03, principal then address), read and raised in the attempt's own transaction before its password is checked, except an attempt answered `429`, which raises none and commits nothing, and a caller on the API's local socket has no source's or pair's (RFC 23 §5.3, which says how a source address is normalised); a pair's is deleted by the expiry sweep 24 h after its last counted attempt and a source's 15 min after its `Failed`, which only a failure's settle or an attempt that creates the count moves, with its `XP` row (`XP`, tags 0x04 and 0x06); a settle or a takeback does nothing on a source's record that is missing or holds another `Nonce`; an account's and its pair's are deleted by a success; an account's by `:set-password`, the break-glass reset and the account's deletion, which leaves its pairs to the sweep; and every source's by the break-glass reset, in bounded batches |
 | | `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID` | APIToken (§2.3); token index: the hash → token ID; per-account index, for listing and for deleting an account's tokens with it; all three deleted by the expiry sweep once the token expires (`XP`, tag 0x05) |
 | | `AU‖time‖auditID` | AuditRecord (§2.3), in store-time order, so a time-range read and the retention sweep are one range; never rewritten (RFC 23 §6) |
-| | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, the resource kind as a byte string, then its ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |
+| | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, the resource kind as one byte, then its ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |
 | | `AUC‖node` | AuditCursor (§2.3): one per node that takes requests, written first by that node's first export and changed only by conditional writes naming the holder it read; it outlives the node's lease, and is deleted with the node's record once its last audit record within `audit.retention` is exported (RFC 25 §4.3) |
 | **Store** | `\x00format` | store format record (§4.6) |
 
@@ -2137,7 +2157,7 @@ are the prefix's. No separator byte is written.
   block name's first, repeated ahead of the time or bucket, so a contiguous
   range of `b` is one GC partition's keys whatever the partition count
   ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)).
-- **Byte string** — an entry's folded key, an xattr name, an idempotency key (`IK`), an operation or resource kind (`OPR`, `AUX`), a user, group, share
+- **Byte string**: an entry's folded key, an xattr name, an idempotency key (`IK`), an operation kind (`OPR`), a user, group, share
   or netgroup name, a path, a journal directory (`JD`'s `device`), a setting key, a SID, a Kerberos principal, a
   client owner, a backup location's name (`NS‖ns‖bk‖location`, and `NS‖ns‖keyseq‖target`, empty for the namespace's own object), a namespace key ID (up to 255 bytes, [RFC 5](rfc-5-transforms.md)), a master key ID
   (`MKP`'s `masterKeyID`, [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)): each `0x00` byte written as `0x00 0xFF`, then the two-byte
@@ -2178,7 +2198,7 @@ are the prefix's. No separator byte is written.
 | `NS‖ns‖gc‖cursor` | walk: audit 0x01, block walk 0x02, index rebuild 0x03 |
 | `CLO` | `protocol.Kind`'s byte, one per protocol ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): NFSv3 0x01, which holds no client record, NFSv4 0x02, its minor versions one kind, NLM 0x03, SMB 0x04 |
 | `IDS` | kind: client 0x01, open 0x02, lock 0x03, uid 0x04, gid 0x05, RID 0x06, shard 0x07 |
-| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04, `oidc` 0x05; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `XP` tag: idempotency 0x01, operation 0x02, session 0x03, source's sign-in failures 0x04, API token 0x05, pair's sign-in failures 0x06; `SF` tag: account 0x01, source 0x02, account and source 0x03; `AUX` tag: actor 0x01, target 0x02, node 0x03; resource `target` (`OPR`, `AUX`): the resource kind as a string, then its ID as a byte string; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
+| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04, `oidc` 0x05; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `XP` tag: idempotency 0x01, operation 0x02, session 0x03, source's sign-in failures 0x04, API token 0x05, pair's sign-in failures 0x06; `SF` tag: account 0x01, source 0x02, account and source 0x03; `AUX` tag: actor 0x01, target 0x02, node 0x03; resource `target` (`OPR`, `AUX`): its `ResourceKind` byte, installation 0x01, node 0x02, remote store 0x03, namespace 0x04, share 0x05, grant 0x06, quota 0x07, user 0x08, group 0x09, membership 0x0A, netgroup 0x0B, setting 0x0C, secret 0x0D, adapter 0x0E, snapshot 0x0F, snapshot policy 0x10, backup location 0x11, backup 0x12, move 0x13, rehome 0x14, operation 0x15, API token 0x16, session 0x17, then its ID as a byte string; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
 
 This encoding, both tables and every fold rule are part of the store format
 (§4.6): changing any of them is a format bump, and a code once assigned is never

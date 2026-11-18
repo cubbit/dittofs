@@ -479,17 +479,9 @@ type Config struct {
 type Records interface {
 	RegisterNode(ctx context.Context, n NodeRecord) error                      // §2.2 step 3: roles and version ranges, refused in the same transaction if an active version lies outside them (RFC 13 §5.5)
 	List(ctx context.Context, kind Kind, after string) iter.Seq2[Record, error] // paged (RFC 16 §3.1)
-	AllSettings(ctx context.Context, after SettingKey) iter.Seq2[metadata.Setting, error] // every scope's settings in `CFG`'s key order, in pages like the listings (RFC 16 §3.1), for the reconcile (§2.3): on every moved settings generation and on a full run
+	AllSettings(ctx context.Context, after metadata.SettingKey) iter.Seq2[metadata.Setting, error] // every scope's settings in `CFG`'s key order, in pages of 256, one read transaction each, like the listings (RFC 16 §3.1), for the reconcile (§2.3): on every moved settings generation and on a full run
 	Counters(ctx context.Context) (Counters, error)                            // settings, share list, principals, claim generation
 	PutNodeStatus(ctx context.Context, s NodeStatus) error                     // §2.4
-}
-
-// SettingKey resumes an AllSettings page: the last Setting a page returned,
-// its scope and its key. A page resumes strictly after it, so a deleted entry
-// still resumes; the zero SettingKey starts at the first.
-type SettingKey struct {
-	Scope metadata.SettingScope
-	Key   string
 }
 
 // Reconcile's three calls (§2.3). Unexported, so nothing but reconcile makes them.
@@ -696,8 +688,13 @@ after any read of the store that failed, not only on a moved generation: a
 change missed during a store outage is then found at the next read that works.
 A full reconcile lists records by kind in pages
 ([RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them)),
-and reads every scope's settings in pages through `AllSettings` (§2.1), as each
-moved settings or secret generation does too; what bounds its rate is open (§13).
+and reads every scope's settings in pages of 256 through `AllSettings` (§2.1), as
+each moved settings generation does too (every `Setting` or `Secret` change raises
+it); what bounds its rate is open (§13). Each page is its own read transaction, so
+a write can land between two, and a walk could then mix two states of the
+store. The reconcile therefore reads `CFGGEN` before the first page, reports only
+that generation as applied, and reads it again after the last page: if it moved,
+it discards the walk and starts it again at the next poll.
 
 ### 2.4 What a node reports
 
@@ -2056,10 +2053,11 @@ in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi
 5. **The cost of a full reconcile.** A full reconcile after every failed read
    re-lists every record of every kind; during a flapping store, at 10⁴ shares,
    that is once a second. The settings read through `AllSettings` is repeated on
-   every moved settings or secret generation too, not only on a full run, so its
-   cost is part of what is weighed here. Whether it needs a rate bound, and whether reconciling
-   only the records above the reconciled position needs an index by (kind,
-   position) in RFC 16, is unmeasured.
+   every moved settings generation too (a `Secret` change raises it as well),
+   not only on a full run, so its cost is part of what is weighed here. Whether
+   it needs a rate bound, and whether reconciling only the records above the
+   reconciled position needs an index by (kind, position) in RFC 16, is
+   unmeasured.
 
 ## Appendix A — prior art
 

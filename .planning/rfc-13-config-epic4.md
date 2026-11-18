@@ -445,13 +445,11 @@ A suggestion only: one pull request per subtask works as well.
 - **A prune and the settings generation.** RFC 13 §5 and RFC 16's `CFGGEN` row say every `Secret`
   change raises it; RFC 16's `PruneSecret` does not say; RFC 13's plan has a prune raise none. D5
   follows RFC 13's plan until RFC 16 says which.
-- **The secret kinds.** RFC 16 §2.3's `Secret.Kind` has no kind for the directory's bind
-  credential or the OpenID Connect client secret, and RFC 13 §7's table gives the node credential
-  no role and leaves the client secret out, which RFC 23 §5.5 seals under `storage`. #4491 adds
-  `directory credential` and `client secret`, the latter under `storage`, and takes the node
-  credential out of the `Secret` kinds: its private half stays on the node's volume (RFC 30 §4.2),
-  so no wrapping key seals it. This epic seals the kinds E1 declares (its D8, pending #4472);
-  T4.3's role test reads E1's kind table, so a kind #4491 adds is covered without a change here.
+- **The secret kinds.** RFC 16 §2.3's `Secret.Kind` lists the directory's bind credential and the
+  OpenID Connect client secret, the latter sealed under `storage` as RFC 23 §5.5 has it, and the node
+  credential is not a `Secret` kind: its private half stays on the node's volume (RFC 30 §4.2), so no
+  wrapping key seals it. This epic seals the kinds E1 declares (its D8); T4.3's role test reads E1's
+  kind table, so a kind added there is covered without a change here.
 - **A whole-secret delete.** RFC 13 §7's `Delete` and RFC 23 §3's "set, rotate, delete" route have
   no RFC 16 §3 method under them. `Delete` waits (D7).
 - **Pruning through kvstore.** RFC 23's epic 5 and the RFC 18 plan's epic 2 prune a password hash,
