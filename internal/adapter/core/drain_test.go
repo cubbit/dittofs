@@ -442,25 +442,49 @@ func TestWhileDrainingADialIsRefusedAndHealthIsNotReady(t *testing.T) {
 }
 
 // While draining, what a request does to state decides whether it runs: an
-// Echo whose role is none, sent after the drain began, is refused as the
-// table answers the drain's error, which over version 1 is no reply at all,
-// and its connection closes without a byte of it; one whose role is release
-// is answered. The Echo that holds the drain is itself a release, freed
-// once both are in: whichever of the two the room reaches, the none is
-// refused and the release answered, so the race costs the test nothing. A
-// drain told to one pipeline answers the none Echo; a drain told to none
-// answers both.
+// Echo whose role is none, sent once Health names draining and while the
+// accept loops are still waited, is refused as the table answers the drain's
+// error, which over version 1 is no reply at all, and its connection closes
+// without a byte of it; one whose role is release is answered. The Echo that
+// holds the drain is itself a release, freed once both are in: whichever of
+// the two the room reaches, the none is refused and the release answered, so
+// the room's race costs the test nothing. The listener's closed accept holds
+// its loop past the publication, so the none lands strictly inside the window
+// a drain told only past the accept loops' end serves it in: told with the
+// publication, the refusal meets it where it arrives and the none gets no
+// reply; told late, it answers and the none Echo reads its answer back.
 func TestWhileDrainingARequestIsServedByRole(t *testing.T) {
 	b := budgets()
 	// Room enough for the two Echoes the drain holds and answers one of.
 	b.Reply = resources.NewWaitBudget("reply", 2*chargeOfReply(t, 8))
 	adaptertest.CheckLeaks(t, b)
+	// The listener's accept is parked past the publication until the test
+	// lets it go, so the none Echo below arrives while its loop is waited.
+	loop := make(chan struct{})
+	listen := func(ctx context.Context, network, addr string) (net.Listener, error) {
+		ln, err := (&net.ListenConfig{}).Listen(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &parkedAccept{Listener: ln, gate: loop}, nil
+	}
 	// The gate holds each teardown until the answered reply was read, so the
 	// queue the writer holds is flushed and not dropped by its stop.
 	gate := make(chan struct{})
 	var open sync.Once
 	defer open.Do(func() { close(gate) })
-	srv, _, p := drainServer(t, b, drainSnap("127.0.0.1"), func(context.Context) { <-gate })
+	p := newCapturing(testproto.New(adapter.Deps{}).Bare())
+	p.Protocol = withOnClose{p.Protocol, func(context.Context) { <-gate }}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, drainSnap("127.0.0.1"), core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	core.SetServerClock(srv, newManualClock())
+	core.SetServerListen(srv, listen)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	at := testAddr(t, srv)
 	rel, _ := clientAt(t, at)
 	none, _ := clientAt(t, at)
@@ -493,10 +517,13 @@ func TestWhileDrainingARequestIsServedByRole(t *testing.T) {
 	waitsFor(t, "the server to drain", func() bool {
 		return srv.Health().State == adapter.StateDraining
 	})
-	// The none Echo, sent after the drain began, has the drain's refusal
-	// waiting for it; it reaches the pipeline before the room it shares with
-	// the release is freed, so its end is the refusal's, not a record never
-	// read.
+	// The none Echo, sent while the accept loops are still waited, has the
+	// drain's refusal waiting for it; it reaches the pipeline before the room
+	// it shares with the release is freed, so its end is the refusal's, not
+	// a record never read. The rooms are freed and both Echoes end before the
+	// loop's end is let go, so a drain told only past the accept loops' end
+	// cannot refuse the none anymore: its answer sits in the socket, and the
+	// assertion reading it back fails against it.
 	if err := none.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Payload: []byte("n")}); err != nil {
 		t.Fatal(err)
 	}
@@ -507,6 +534,7 @@ func TestWhileDrainingARequestIsServedByRole(t *testing.T) {
 		t.Errorf("the release Echo sent under the drain is answered %+v (%v)", rs, err)
 	}
 	open.Do(func() { close(gate) })
+	close(loop)
 	select {
 	case err := <-stopped:
 		if err != nil {
