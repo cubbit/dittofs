@@ -419,7 +419,10 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			}
 			// The recovered marks, read at the settle the emptying ends the
 			// open's placements at: every copy the open made is written and
-			// sealed, every source unlinked, and the entries name what stands.
+			// sealed, every source unlinked, and an entry names a segment
+			// still in the ledger — a segment the emptying copied out and
+			// unlinked offers none, so a stream whose last record only it
+			// held has no entry.
 			found.marks = st.SyncMarks()
 			return holdDeferredHolders(c, dir, expect)
 		})

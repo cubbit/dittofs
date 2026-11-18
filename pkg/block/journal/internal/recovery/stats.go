@@ -41,7 +41,14 @@ import (
 // is then missing, never wrong, and the caller treats a missing entry as no
 // recorded mark. A source whose records a sealed copy already held is left out
 // and its stream is named only by a mark the caller recorded for the copy.
-// Withdrawn when the open records each copy's stream durably beside it, a
+// A catalogued forget record sets its segment's last sequence number from its
+// catalogue entry, which no read of this open checks against the disk, so a
+// stream's last verifying record may be named by an entry a record never
+// verified; R34's last verifying record is held to what the footer's word
+// buys. The figure is also the open's alone: Stats.SyncMarks holds it fixed
+// until close, though the mark of a stream's last completed sync moves with
+// every later sync, so a caller that writes it back on each commit would
+// overwrite a later sync's mark with this one. Withdrawn when the open records each copy's stream durably beside it, a
 // metadata write per copy, or when a copy header names the source's stream;
 // overturned by a field open that reports a stream's entry missing where its
 // source's header was unverified.
@@ -66,10 +73,7 @@ func (st State) SyncMarks() []core.SyncMark {
 	// device lost or failed: the source's own scan keeps reading the old
 	// bytes, so the sources are left out of the scans below.
 	sources := make(map[core.SegmentID]bool, len(st.Proof.Replaced)+len(st.Proof.Superseded))
-	for _, id := range st.Proof.Superseded {
-		sources[id] = true
-	}
-	for _, r := range st.Proof.Replaced {
+	credit := func(r replacedRecord) {
 		sources[r.Source] = true
 		if stream, ok := steads[r.Source]; ok {
 			keep(stream, r.Seq, core.SyncMark{
@@ -80,6 +84,12 @@ func (st State) SyncMarks() []core.SyncMark {
 				Sequence: uint64(r.Seq),
 			})
 		}
+	}
+	for _, r := range st.Proof.Superseded {
+		credit(r)
+	}
+	for _, r := range st.Proof.Replaced {
+		credit(r)
 	}
 
 	for i := range st.Rebuilt.Scans {

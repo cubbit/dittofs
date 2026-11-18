@@ -454,9 +454,10 @@ func countNonZero(b []byte) int {
 // the second open skipping B's re-append for the sealed copy the first
 // sealed. The source segment's scan still verifies B at its old placement,
 // which the open's emptying unlinks, so no stream's mark may name it: the
-// entry for B's stream names the sealed copy or nothing.
+// entry for B's stream names the sealed copy, at the copy's end and B's own
+// sequence number, though the second open copied nothing.
 func TestSyncMarksAfterASealedCopySkip(t *testing.T) {
-	r, _, _ := deviceLostB(t)
+	r, good, bAt := deviceLostB(t)
 	first := core.SegmentID(9)
 	runReserve(t, r, first)
 
@@ -468,9 +469,15 @@ func TestSyncMarksAfterASealedCopySkip(t *testing.T) {
 		t.Fatalf("Replaced got %+v, want none: the second open skipped the sealed copy", st.Proof.Replaced)
 	}
 
-	for _, m := range st.SyncMarks() {
-		if m.Segment == 2 {
-			t.Errorf("the mark of stream %d names segment 2 at sequence %d, want the sealed copy %d or no entry: the open unlinks segment 2", m.Stream, m.Sequence, first)
-		}
+	b := reappendOf(t, 2, bAt, good)
+	want := []core.SyncMark{{
+		Stream:   0,
+		Segment:  uint64(first),
+		Through:  format.SegmentHeaderSize + b.Header.Size(),
+		Offset:   format.SegmentHeaderSize + b.Header.Size(),
+		Sequence: uint64(b.Header.Seq),
+	}}
+	if got := st.SyncMarks(); !slices.Equal(got, want) {
+		t.Errorf("SyncMarks after the skipped re-append = %+v, want %+v: B's stream is credited with the sealed copy the first open wrote", got, want)
 	}
 }

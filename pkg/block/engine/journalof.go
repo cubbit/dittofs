@@ -35,15 +35,18 @@ func (j journalOf) Share(tag journal.ShareTag, limit int64, floor journal.Versio
 	return journalHandle{h}, nil
 }
 
-// decision: the journal's Sync returns its per-stream marks now, but the
-// journal's Stats.SyncMarks and its own MarksRecorded -- what the group
-// commit reads and hands its recorded marks -- still do not exist, so over
-// the real journal the engine still records none and no stability point
-// waits on one. These two stubs and journalHandle.Sync's drop of the marks
-// stand in for all of it and withdraw together with the journal's own
-// reporting: real marks reaching marksWait (commit.go) while g.marks.recorded
-// comes from this stub would wait on a mark nothing ever records, blocking
-// the stability point forever.
+// decision: the journal's Sync returns its per-stream marks now and
+// Stats.SyncMarks exists, but the figure is the open's recovered marks, fixed
+// until close and not following each completed sync, and the journal's own
+// MarksRecorded -- what the group commit hands its recorded marks -- does not
+// exist, so over the real journal the engine still records none and no
+// stability point waits on one. These two stubs and journalHandle.Sync's drop
+// of the marks stand in for all of it and withdraw together once the journal
+// keeps a per-stream figure that follows every sync: wiring Stats.SyncMarks
+// in before then would have the group commit write the open's mark back over
+// a later sync's on every commit, and real marks reaching marksWait
+// (commit.go) while g.marks.recorded comes from this stub would wait on a
+// mark nothing ever records, blocking the stability point forever.
 func (journalOf) SyncMarks() []entity.SyncMark    { return nil }
 func (journalOf) MarksRecorded([]entity.SyncMark) {}
 

@@ -300,8 +300,10 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	pending := make([]tailRecord, 0, len(st.Proof.Reappends))
 	slot := make(map[recKey]int, len(st.Proof.Reappends))
 	for _, rec := range st.Proof.Reappends {
-		if sealedCopy(st, rec.Header) {
-			st.Proof.Superseded = append(st.Proof.Superseded, rec.Segment)
+		if seg, end, ok := sealedCopy(st, rec.Header); ok {
+			st.Proof.Superseded = append(st.Proof.Superseded, replacedRecord{
+				Source: rec.Segment, Target: seg, End: end, Seq: rec.Header.Seq,
+			})
 			continue
 		}
 		k := recKey{rec.Header.Kind, rec.Header.File, rec.Header.Seq, rec.Header.Extent}
@@ -345,7 +347,7 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	// placement the device lost or the emptying unlinks.
 	for i, rec := range pending {
 		st.Proof.Replaced = append(st.Proof.Replaced, replacedRecord{
-			Source: rec.Segment, Target: target, At: at[i],
+			Source: rec.Segment, Target: target,
 			End: at[i] + rec.Header.Size(), Seq: rec.Header.Seq,
 		})
 	}
@@ -417,20 +419,23 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 // record's own sequence number and version, so only a copy the journal
 // issued this record's numbers may stand in for it — and the sealed fate is
 // the proof's own answer, a segment whose marker verified on the device or
-// whose successor's name proved it, never the walk's marker alone.
-func sealedCopy(st *State, h format.RecordHeader) bool {
+// whose successor's name proved it, never the walk's marker alone. It answers
+// where that copy sits: its segment and the end of its whole record.
+func sealedCopy(st *State, h format.RecordHeader) (core.SegmentID, int64, bool) {
 	switch {
 	case h.Kind == format.KindWrite || h.Kind == format.KindFill:
 		p, ok := st.Rebuilt.Index.Lookup(h.File, h.Extent.Off)
-		return ok && p.Seq == h.Seq && p.Version == h.Version &&
-			sealedFate(st, p.Record.Segment)
+		if ok && p.Seq == h.Seq && p.Version == h.Version && sealedFate(st, p.Record.Segment) {
+			return p.Record.Segment, int64(p.Record.Offset) + h.Size(), true
+		}
+		return 0, 0, false
 	case h.Kind <= format.KindUnmark:
 		for _, rc := range st.Kinds.Records {
 			if rc.Pair.Seq == h.Seq && rc.Pair.Version == h.Version && sealedFate(st, rc.Seg) {
-				return true
+				return rc.Seg, rc.Loc.Off + rc.Loc.Len, true
 			}
 		}
-		return false
+		return 0, 0, false
 	default: // the aside kinds, which never feed: their headers stay on the scans
 		for i := range st.Rebuilt.Scans {
 			if !sealedFate(st, st.Rebuilt.Scans[i].ID) {
@@ -438,11 +443,11 @@ func sealedCopy(st *State, h format.RecordHeader) bool {
 			}
 			for _, a := range st.Rebuilt.Scans[i].Aside {
 				if a.Header.Seq == h.Seq && a.Header.Version == h.Version {
-					return true
+					return st.Rebuilt.Scans[i].ID, a.Header.Offset + a.Header.Size(), true
 				}
 			}
 		}
-		return false
+		return 0, 0, false
 	}
 }
 

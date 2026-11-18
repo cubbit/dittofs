@@ -27,11 +27,10 @@ type tailRecord struct {
 }
 
 // replacedRecord is one record the re-append phase wrote into its target:
-// the copy's placement and numbers, with the source the phase moved it from.
+// the copy's segment, end and sequence number, with the source the phase moved it from.
 type replacedRecord struct {
 	Source core.SegmentID
 	Target core.SegmentID
-	At     int64
 	End    int64
 	Seq    core.Seq
 }
@@ -62,11 +61,13 @@ type proof struct {
 	// its stream has, and where its copy verifies is where the entry names.
 	Replaced []replacedRecord
 
-	// Superseded holds the source segments of the records the re-append
-	// skipped for a sealed copy that already verifies: their own scans keep
-	// naming the old placement the open ends, so the stream marks leave them
-	// out as they do a Replaced source.
-	Superseded []core.SegmentID
+	// Superseded holds, one per record the re-append skipped for a sealed
+	// copy that already verifies, the record's source and where that copy
+	// sits — its segment, the end of its whole record, its sequence number.
+	// The source's own scan keeps naming the old placement the open ends, so
+	// the stream marks leave the source out as they do a Replaced one, and
+	// credit the copy to the source's stream.
+	Superseded []replacedRecord
 
 	// ReappendedBytes is the payload bytes the re-append phase wrote back,
 	// the figure the served journal's own syncs count beside theirs.
