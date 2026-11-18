@@ -1866,12 +1866,11 @@ metadata (`FILE_SYNC`).
   verifier (RFC 1813 §3.3.21, RFC 8881 §18.3.4), which recovers the data, where
   an error would lose it. A `COMMIT` is never answered with a verifier sampled
   before a loss it was told of.
-- **A stable write whose own sync fails is an I/O error.** A `DATA_SYNC` or
-  `FILE_SYNC` `WRITE` whose sync failed (`ErrLost` on the `Write`,
-  [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal))
-  **MUST** be answered `NFS4ERR_IO` / `NFS3ERR_IO`, never success: the client
-  was promised nothing for it, and a verifier cannot carry the loss of a write
-  that was never answered.
+- **A stable write whose sync may have lost it is retried.** A `DATA_SYNC` or
+  `FILE_SYNC` `WRITE` whose `Commit` answers a verifier other than its `Write`'s
+  is `ErrDelay` (`DelayCommit`, [RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)).
+  It is answered `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`, never success, and the
+  client resends the `WRITE`.
 - A write refused for capacity is answered as §11.5 says: "retry"
   (`NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`) for the journal's capacity or the
   share's journal limit while offload or repack can drain it, for as long as
@@ -2114,6 +2113,39 @@ field or status after it, and, where it matters, a column for what is kept in
 left, a result left to right. Each mapping is a pure function of the request
 and, where named, the record's `Adapter` bytes, and each is total: a wire value
 maps to one core value or to a named refusal, never to a default (N26).
+
+**Decoding is not translation.** Every NFS-family program — NFSv3, NFSv4.x,
+MOUNT, NLM, NSM — is decoded and encoded by one XDR codec (RFC 4506),
+generated from tags on each procedure's or operation's request and reply
+structs ([RFC 20 §5.1](rfc-20-adapters.md#5.1%20Codecs%20are%20pure)). A
+procedure is one file, `ops/<table>/<proc>.go`, holding its `*args` and `*res`
+structs and its handler, and one `core.Row` line in its table; it has no codec
+of its own, and the translations of this chapter read decoded fields, never
+bytes. What the tags must carry beyond fixed fields:
+
+- the bounds: file handles at 64 bytes (NFSv3, RFC 1813) and 128 (NFSv4,
+  RFC 8881), `AUTH_SYS` gids and machine name at §11.1's limits, and every
+  other opaque, string and array at the transfer sizes of §2.3;
+- discriminated unions — every result by its status, `createhow3`,
+  `stable_how`, `open_claim4`, `createhow4`, the callback and state-protection
+  arms of `EXCHANGE_ID` and `CREATE_SESSION` — and optional data, `post_op_attr`
+  and `pre_op_attr` and `sattr3`'s `set_*` arms;
+- `fattr4`: its `attrlist4` decoded into one optional field per attribute the
+  `attrmask` bitmap selects, so §11.3's attribute translation reads fields;
+- a `WRITE`'s data as a slice of the receive buffer and a `READ`'s as its own
+  segment of the reply
+  ([RFC 20 §5.3](rfc-20-adapters.md#5.3%20No%20copies%20on%20the%20data%20path)).
+
+A `COMPOUND`'s tag and minor version are read by the header codec, with the
+RPC header (§11.5), and again, with its count, by the compound row's own
+`Decode`, which `Args` hands the arguments from the tag, so its `EncodeHead`
+echoes the tag; its members are decoded one by one, each by its own row's decoder through the compound row's `Op.Members`
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
+A member that does not decode is `NFS4ERR_BADXDR`; a `COMPOUND` whose own
+arguments do not, and a procedure of any other program, `GARBAGE_ARGS` (§11.5). The credential is decoded with the RPC header,
+which means its `opaque_auth` envelope, and
+the `Identity` and `r.Call` of §11.1 are built by the pipeline once per
+member, never by a handler, NFSv4's included.
 
 ### 11.1 Identity
 
@@ -2499,7 +2531,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrAccess`, the read-only marker's refusals included, a delete's `ReadOnly` cause too ([RFC 7 §7.9](rfc-7-namespace-metadata.md#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)) | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrWrongShare` — a handle of another share than the one asked | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrCross` (`CrossShare`) — a `RENAME` or `LINK` between shares | `NFS4ERR_XDEV` | `NFS3ERR_XDEV` |
-| `ErrDelay` — a recall or break in progress, a write held behind a clone past its own deadline or past what its session lets wait (`DelayClone`, §9.3), a share frozen for a move (§7.4), any transient refusal [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes as retry-later, a stability reply waiting on a stalled store (§9.1), or a store conflict still unresolved at the caller's deadline (`DelayConflict`, [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_DELAY`, for as long as the cause lasts | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
+| `ErrDelay`: a recall or break in progress, a write held behind a clone past its own deadline or past what its session lets wait (`DelayClone`, §9.3), a share frozen for a move (§7.4), any transient refusal [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes as retry-later, a stability reply waiting on a stalled store (§9.1), a stable write whose sync may have lost it (`DelayCommit`, §9.1), or a store conflict still unresolved at the caller's deadline (`DelayConflict`, [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_DELAY`, for as long as the cause lasts | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrDelay` with `DelayResources` — a node memory pool spent: the share's cap on the request buffers, open state, or a reply reservation's deadline ([RFC 24 §4.2](rfc-24-resources.md#4.2%20Across%20shares%3A%20the%20share%20cap%20at%20admission)) | `NFS4ERR_DELAY`, at once; never held | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD`, which the Linux lock manager waits on and resends, where `NLM4_DENIED_NOLOCKS` reaches the application as `ENOLCK` with no retry |
 | `ErrBlocked` — a blocking NLM lock left waiting (§6.1) | — | NLM: `NLM4_BLOCKED` |
 | `ErrStale` — a released file's handle | `NFS4ERR_STALE` | `NFS3ERR_STALE` |
@@ -2517,7 +2549,6 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrState` (`ClientInUse`) | `NFS4ERR_CLID_INUSE` | — |
 | `ErrState` (`RecordChanged`) — another node wrote the client record's adapter bytes first | never sent: the adapter rereads the record and decides again (§3.5); a `CREATE_SESSION` it then finds misordered is its own `NFS4ERR_SEQ_MISORDERED` | — |
 | `ErrLost` on `Commit` — a loss of unstable writes the client was answered for | the `COMMIT` reply, with the new verifier (§9.1) | the same |
-| `ErrLost` on a stable `Write` — the sync that write waited on failed (§9.1) | `NFS4ERR_IO` | `NFS3ERR_IO` |
 | `ErrGrace` | `NFS4ERR_GRACE` | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrState` (`NoReclaim`) — one reclaim refused while its client still owes reclaims: a shard the record does not name for it, or state the shard does not hold (§5.4) | `NFS4ERR_RECLAIM_BAD` | NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrState` (`NoGrace`) — a reclaim from a client with nothing left to reclaim (§5.4); the service, which knows the shard's grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)), answers it as its own kind ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), so no handler splits by grace | `NFS4ERR_NO_GRACE` | NLM: `NLM4_DENIED` |
@@ -2570,9 +2601,13 @@ an NFSv4.1 code such as `SEQUENCE` sent under NFSv4.0 included, is routed to
 the `ILLEGAL` row, which answers `NFS4ERR_OP_ILLEGAL`, as develop does; `ErrVersion` to
 `PROG_MISMATCH` for an RPC version, and for an NFSv4 minor version not served
 to `NFS4ERR_MINOR_VERS_MISMATCH`, answered once for the compound before any
-operation runs, with its tag and no results; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrDecode` to
-`GARBAGE_ARGS`, the RPC accept state, in a row naming no operation or version,
-which RFC 20 §4.7's `NewErrorTable` demands of every table; `ErrTooLong` to
+operation runs, with its tag and no results; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrDecode`, in the row naming no
+operation or version that RFC 20 §4.7's `NewErrorTable` demands of every
+table, to `GARBAGE_ARGS`, the RPC accept state, in every table but the NFSv4
+members' table, the stages' table and the one holding `COMPOUND` included, and
+to `NFS4ERR_BADXDR` in the members' table, the compound row's `Members`, so a
+member that does not decode is `NFS4ERR_BADXDR` and a `COMPOUND` whose own
+arguments do not is `GARBAGE_ARGS`; `ErrTooLong` to
 `NFS4ERR_TOO_MANY_OPS` in a row naming no version, which RFC 20 §4.7's
 `NewOpTable` demands of a table with a compound row, and to `NFS4ERR_RESOURCE`
 for NFSv4.0, which has no such status, in a row naming it that wins there; `ErrReplyTooBig`, a
@@ -2668,9 +2703,15 @@ service, before any wire suite runs:
   Start the drain after that compound's `CLOSE` has run and before its
   `READ`: the compound runs whole and is answered
   ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
+- **The XDR codec is tested once, for every program.** One golden-vector
+  suite and one fuzz target cover every procedure and operation of every
+  program, the target checking the generated decoder against a second, written
+  by hand ([RFC 20 §5.4](rfc-20-adapters.md#5.4%20How%20codecs%20are%20tested));
+  no procedure has a codec test of its own. The targets below are the
+  translations'.
 - **Every decoder is fuzzed.** Go native fuzzing (`testing.F`) of the stateid ↔
-  `StateRef` codec, `share_access`/`share_deny` decoding, `LOCK` and NLM
-  lock-request decoding, owner-string parsing and the `Adapter`-bytes decoder,
+  `StateRef` codec, `share_access`/`share_deny` translation, the translation
+  of a decoded `LOCK` or NLM lock request into a `LockReq`, owner-string parsing and the `Adapter`-bytes decoder,
   seeded with truncated, corrupt, older- and newer-version bytes: no panic, and
   either a valid neutral request or a refusal, never a request that decodes to
   other state.
@@ -2703,7 +2744,9 @@ owner, file or principal label.
 | reply-cache hits: genuine retransmissions answered from a session's slot | `adapter_replay_hits_total{protocol="nfs4"}` | counter |
 
 **The request span.** One per RPC, named `adapter.nfs3.<PROCEDURE>` or
-`adapter.nfs4.COMPOUND`, with one child per operation of a compound
+`adapter.nfs4.COMPOUND`, or `adapter.nfs3`, its connection's label, for one
+refused before `Route` or whose procedure its table lacks, an NFSv4 RPC among
+them ([RFC 20 §10.2](rfc-20-adapters.md#10.2%20Spans)), with one child per operation of a compound
 (`adapter.nfs4.<OP>`) and the service's span below it
 ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)). Its attributes are
 closed sets: protocol, minor version, operation, NFS status, the neutral error
@@ -2831,7 +2874,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §5.4 reboot *(1 node)* | pynfs reboot and reclaim tests against a restart of the single node. | reboot recovery tested nowhere in the first release |
 | §5.2, §5.4 lock across a restart *(1 node)* | An NFSv4.0 Linux client holds a byte-range lock on a file and writes under it continuously; restart the node. Assert the first `WRITE` after the restart is `NFS4ERR_STALE_STATEID`, never `NFS4ERR_BAD_STATEID`, `RENEW` is `NFS4ERR_STALE_CLIENTID`, and after `SETCLIENTID` and the confirm the lock's reclaim is granted in grace; a second client's conflicting lock is refused throughout, and the writer's I/O resumes without an error. Repeat over NFSv4.1 with the client's `SEQUENCE` carrying `SEQ4_STATUS_RESTART_RECLAIM_NEEDED`. | a stateid lost in a restart answered bad, so the client skips the lock in its reclaim |
 | §7.2 cookies *(1 node)* | With the share's hash key fixed so two names collide, list with a `maxcount` that ends a page between them; assert the page ends before the pair and the next holds both. | a page ending inside a chain |
-| §9.1 failed stable write *(1 node)* | Fail the journal sync under a `FILE_SYNC` `WRITE`; assert `NFS4ERR_IO` / `NFS3ERR_IO`. | a stable write answered success over a failed sync |
+| §9.1 failed stable write *(1 node)* | Fail the journal sync under a `FILE_SYNC` `WRITE`; assert `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`, then that the resent `WRITE` succeeds and reads back. | a stable write answered success or an I/O error over a failed sync |
 | §9.2 close-to-open and WCC *(1 node)* | Two clients on the one node: one writes and closes, the other opens and reads the new data. Two NFSv3 clients write one file in parallel, 10^4 writes each; for every reply that carries `before`, assert it equals the previous write's `after`. | `change` or `before` read outside the accept-lock hold |
 | §8.1 privilege *(1 node)* | An export with `Squash=root` admitting `AUTH_SYS`, and a share grant naming uid 1500 `admin`: over `AUTH_SYS` as uid 1500, `chown` another user's file and read a mode-0600 file of another user; assert `NFS4ERR_PERM` and `NFS4ERR_ACCESS`. As root: assert squashed. Over Kerberos as the `admin` principal: assert both succeed. On a `sec=krb5` export, a principal the ID mapping maps to uid 0 runs `tar xpf` of an archive with other owners: with `no_root_squash` assert the owners restored; with `root_squash` assert squashed and `NFS4ERR_PERM`. | an `admin` grant honoured on an asserted uid, or root over Kerberos treated otherwise than root over `AUTH_SYS` |
 | §3.5 replay through another node | `CREATE_SESSION` on P1, drop the reply, restart P1, replay the same `csa_sequence` through P2: assert the stored reply from `Adapter` and one session; `csa_sequence` + 2: `NFS4ERR_SEQ_MISORDERED`. Race two `CREATE_SESSION`s of one sequence on P1 and P2: one session, both answered with its reply. | |

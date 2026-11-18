@@ -585,7 +585,8 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   fourth's call. One member's own reservation past the quarter, an 8 MiB SMB `READ`'s, is
   its protocol's to cap (RFC 20 §4.3). Each split is counted in
   `adapter_chain_splits_total{protocol, reason}`, `reason` `unwrap` and `decode` for D6's,
-  `flow`, `reply_pool` and `quarter` for this one's.
+  `flow`, `reply_pool` and `quarter` for this one's, and `record` for RFC 20 §4.7's record
+  cap.
   RFC 20 §4.7's chain paragraph and §10.1, and RFC 24 §2.6, say so,
   as this pull request amends them. `decision:` in `serve`, beside RFC 20 §5.5's
   `ponytail:` for `unwrap` on the reader, and in the runner at the try. `ponytail:` at the
@@ -1018,7 +1019,8 @@ registry. Nothing else is exported.
   the series of R85 as one struct per table, its per-operation and per-error parts indexed,
   each child held through `core`'s own one-method interface, a nil registry giving children
   that record nothing, and one struct per stages label for what a request records before
-  `Route` (D18), `adapter_chain_splits_total` among the table's; `shared`'s copy-on-write map
+  `Route` (D18), `adapter_chain_splits_total` among the label's, since a chain splits before
+  `Route` too; `shared`'s copy-on-write map
   from table to that struct, and from label to the other, loaded with no
   lock and filled under `shared`'s mutex, once per server and table, under its `Protocol`
   (D18), with an

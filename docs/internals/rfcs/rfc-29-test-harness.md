@@ -11,8 +11,10 @@ tags:
 ---
 # RFC 29 — one test harness, with a suite registry, one runner and one result format
 
-**Status:** reviewed: accepted (#2975), revision 5: the questions §9 held are settled. Nothing here is
-implemented yet; §8 orders the work.
+**Status:** reviewed: accepted (#2975), revision 5: the questions §9 held are settled. Built: the
+harness, its registry and its suites follow it, and [`testing.md`](../testing.md) is the guide to them.
+Not built yet: §4.10's comparison against a stored baseline and its two manual suites, and `dt`
+reading `dfsbench-json` (§4.6).
 **Discussion:** #2975, and the pull request that settled §9.
 
 ## Summary
@@ -34,7 +36,7 @@ reliable way to tell what they found.
 **The proposal.**
 
 - **One command, `dt`, written in Go,** runs every suite the same way on a laptop and in CI.
-- **One file, `test/suites.yaml`, lists the 15 suites.** A variant of a suite is an option of it,
+- **One file, `test/suites.yaml`, lists every suite.** A variant of a suite is an option of it,
   and sets of suites are groups.
 - **`dt` builds the DittoFS server each suite needs** (the fixture) and calls each test tool
   directly. The per-suite scripts go.
@@ -43,9 +45,9 @@ reliable way to tell what they found.
   pass.
 - **One result format:** CTRF JSON, with JUnit for CI tools. Results are graded against known
   failures and expected skips kept as YAML, and history answers "is this flaky?".
-- **Three tiers.** A quick run on every PR, on the production storage profile only, aiming at 20
-  minutes or less. The full set after every merge. The long suites nightly. One gate check decides
-  merges.
+- **Four tiers.** A quick run on every PR, on the production storage profile only, aiming at 20
+  minutes or less. The full set after every merge. The long suites nightly. The rest are `manual`,
+  run by hand. One gate check decides merges.
 - **One develop-red issue, updated in place,** plus an issue per failing test with guardrails.
   Red gets noticed, without the floods that got the last alarm removed (#1705).
 
@@ -785,7 +787,7 @@ fixture are filled before the first test, when neither has a value.
 | `{names}` | the tests a run names, on `dt run`'s command line or for a retry, else the suite's `names`, which doesn't count as naming tests. A run that names no tests grades every test the tool reports. A run that names tests, on `dt run`'s command line or for a retry, grades only those: a named test that skipped because of a test it depends on is not run (exit 2), and any other skip is graded against the expected skips. pynfs runs with `--rundeps`, so a named test's dependencies run too, and it lists every other test as OMIT; neither is graded, and a scoped pynfs run that skipped what it named isn't a pass (§3) |
 | `{args}` | the tier's `args` |
 | `{base}` | the ref a change is compared against: in CI, a pull request's base branch, a merge group's base commit, or for a push to develop the commit before it; `origin/develop` locally. `dt run --base REF` names another ref wherever it runs, as a branch stacked on an epic needs. Without it, there is none on the schedule, on `workflow_dispatch`, or for a push without a previous commit, and a command that uses it is then skipped (§4.8) |
-| `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout, as the user; a root suite gets it as `DITTOFS_E2E_BIN` (§3) |
+| `{bin}` | a directory with `dfs` and `dfsctl` built from the checkout, as the user; a root suite gets it as `DITTOFS_E2E_BIN` (§3). A suite that names another program of the checkout as `{bin}/NAME`, as `smb-fuzz` names `{bin}/smbfuzz`, gets it built there too, so a root suite's commands never build one |
 | `{tools}` | the pinned test tools (pjdfstest, pynfs, cthon04, nfstest) at the revisions `flake.lock` pins: built with `nix build .#NAME` on Linux runners and laptops with Nix, as CI does today, or the copies in the `dtc` image (§4.5). Only Linux cells use them. A suite gets the tools it names under `{tools}`, and only those are built and laid out; it names each by its path there, as pynfs does with `{tools}/pynfs/bin/pynfs-4.{minor}`. Each tool is one link, but for cthon04: `{tools}/pjdfstest` is pjdfstest's `share/pjdfstest` tree, its binary beside its `tests`, where pjdfstest's `misc.sh` looks for it, `{tools}/pynfs` is pynfs's tree, with its `bin`, `{tools}/cthon04` is a copy of cthon04's built tree that the user `dt` runs as can write, as the scripts' copy is, since its general tests `cp` their sources to the mount, keeping their modes, and Nix's store holds them read-only, and `{tools}/nfstest` holds a `bin` with a program per module, on Python 3.12, since nfstest's remote execution, which its lock and delegation modules set up first, breaks from 3.13 on |
 | `{out}` | the cell's results directory, as an absolute path: a tool may change directory, as pynfs's wrappers do. Before a command runs, `dt` makes the directories of each path below `{out}` that one of its arguments names, so a test named by its path, as `fio-verify`'s `bench/workloads/seq-write.fio`, can write `{out}/{test}.json`. A `{ sh: "..." }` command makes its own, since its values are quoted |
 | `{packages}` | the package list `packages` gives; with `dt run --changed`, of its patterns only the packages a change touched (§4.4) |
@@ -997,8 +999,8 @@ A failed fixture step is never retried (§9): DittoFS starts inside the fixture,
 hide its flakiness. The cell is reported as not run, and someone re-runs it by hand. A test is
 never retried on a pull request (§4.7).
 
-`dt` stops only the processes it started. Today `teardown-posix.sh` kills every `dfs start` on the
-machine, a developer's own server included. A server started under `sudo` (port 445) outlives a
+`dt` stops only the processes it started. `teardown-posix.sh`, which it replaced, killed every
+`dfs start` on the machine, a developer's own server included. A server started under `sudo` (port 445) outlives a
 `dt` that is killed, since the signal that ends a child with its parent doesn't cross `sudo`; it
 holds the port until it is stopped by hand. Each cell's results go to its `{out}`, the same layout
 for every suite, where today five workflow steps look for the newest directory with `ls -td`, and
@@ -1008,7 +1010,7 @@ its server's output goes beside them, to `{out}/dfs.log` (§4.6).
 
 | Tier | Runs on | Contains | Budget (wall clock) |
 |---|---|---|---|
-| `pr` | every pull request (and `merge_group`, if a merge queue is ever available) | suites and options with `tier: pr`, narrowed by `select.pr` | p90 ≤ 20 min |
+| `pr` | every pull request, and the merge queue's run on the merged result (`merge_group`) | suites and options with `tier: pr`, narrowed by `select.pr` | p90 ≤ 20 min |
 | `merge` | every push to develop, that is, every merge, and to `main` and `feat/storage-v2` | `pr` plus `tier: merge`, every profile | ≤ 60 min |
 | `nightly` | schedule, and the dedicated host | everything except `manual` | ≤ 4 h |
 | `manual` | `dt run NAME`, or `workflow_dispatch` | the benchmarks, comparisons and long simulations run by hand (§4.10) | none |
@@ -1060,6 +1062,8 @@ dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with 
    [--estimate [--ci] [--last N]]              and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
    [--tier T] [--only A,B] [--skip A,B] [--parallel N] [--base REF] [--changed]
+   [--packages P,...]                          overrides both: only these packages, in every cell that takes {packages}
+   [--json] [--no-color]                       the run on stdout as `dt report --format json` prints it; no colors
 dt run --tier T --place P                      the cells of tier T that dt plan gives place P (the dedicated host)
 dt report [RUN] [--format text|md|json]        show a run; CI appends --format md to the job summary
 dt report [RUN...] --failures                  only the new failures; --post CELL,... posts them, given a tier
@@ -1072,6 +1076,7 @@ dt known import FILE.md KNOWN.yaml             convert a Markdown known-failure 
    [--where AXIS=V,...]                        --where sets where its entries apply
 dt known baseline SUITE/CELL [RUN]             write a cell's results as its baseline file (smbtorture's)
 dt docs [--check]                              write the documentation's suite tables, or check them; check the RFCs' suites paragraphs
+dt completion bash|zsh|fish|powershell         cobra's script for the shell, completing dt's arguments and flag values; bash and zsh are tested
 ```
 
 The environment commands stay as they are: `dt services`, `dt stack`, `dt cleanup`, `dt hooks`,
@@ -1150,6 +1155,32 @@ keeps, so `dt run pynfs/badger` runs both of `badger`'s cells. In CI every `dt r
 of the workflow run it belongs to, the fixed-name jobs (§4.8) included, so a push to develop runs
 `unit` without `-short`, as today.
 
+**What a run prints.** Each command's output passes through as it comes, and each cell's result as
+the cell ends, as `[dt] CELL: RESULT NOTE`. Then come a table of the cells, each with its result,
+time and note, the run's directory, as `results: DIR`, and a last line that counts the cells by
+result, and all of them, with the run's time: `cells: 1 failed, 2 passed, 1 skipped, 4 total in 1m12s`.
+On a terminal the results, in the table and in that line, are in color: passed green, failed red,
+not run yellow. `--no-color`, or `NO_COLOR` set to anything but empty, turns the colors off, and
+output that goes anywhere but a terminal, as a CI log, has none. With `--json`, `dt run` prints on
+stdout, once the run ends, what `dt report --format json` prints of the run, and the rest on
+stderr, so stdout holds the JSON alone, as with `dt list --json` and `dt plan --json`; the exit status
+is the run's, and a run whose `summary.json` couldn't be written prints none. A run sent to `dtc`
+passes both flags on, and `dtc` passes `NO_COLOR` into the container; there, on a terminal, stderr
+joins stdout, so pipe stdout to keep it pure JSON.
+
+**Completion.** `dt completion zsh`, `bash`, `fish` or `powershell` prints cobra's script for
+that shell, which completes `dt`'s words in it, from the registry and the results: `dt run`'s
+target (a group, a suite, or a suite's cells by the first segments of their names, at any tier and
+with every matrix value), then the options of the suite it names, as flags, and its `--tier`,
+`--in`, `--only` and `--skip`; the `--tier` of `dt list` and `dt plan`; `dt report`'s runs and
+`--format`; `dt history`'s suite; `dt known prune`'s, one with a known file; and `dt known
+baseline`'s cell and run. A suite's own options come on a bare TAB after its target: a word that
+starts with `-` gets cobra's list of every `dt run` flag, the suite's among them. Bash and zsh are
+the two shells a test covers. Since `dt` runs as `test/harness/bin/dt`, the shell knows it by an
+alias: `alias dt="$PWD/test/harness/bin/dt"`
+from the checkout's root, then `source <(dt completion zsh)`. Bash's script needs the
+bash-completion package.
+
 **Posting failures.** `dt report --failures --post` opens a GitHub issue for each new failure, or
 comments on the one already open for it, and lists them in the develop-status issue (§4.8). It
 takes the cells one tier run planned, and its runs, as in CI each cell's job writes a run of its
@@ -1189,11 +1220,12 @@ workflow's.
 | Flag | Effect |
 |---|---|
 | `--ci` | non-interactive; GitHub annotations for new failures and unexpected passes, each by name, and for a cell that failed or didn't run with no test to name, once, with its note; a suite that can't run here is an error, not a skip. The job summary comes from `dt report` (§4.6) |
-| `--retry N` | re-run failed tests up to N times (default 0; CI passes 1 on develop and the schedule, never on pull requests, §4.7) |
+| `--retry N` | re-run failed tests up to N times (default 0; CI passes 1 on a push and on the schedule, never on pull requests, in the merge queue or on a dispatch, §4.7) |
 | `--in host\|container\|auto` | where the whole run happens: `host` here; `container` in `dtc`, which runs the same command with `--in host`, and whose exit status is the run's, any but 1 to 3 as 2; `auto`, the default, moves to `dtc` when Docker, which `dtc` runs in, is here, a cell needs what the host lacks and the container gives, and no cell needs what the host has and the container lacks, such as macOS. A cell `dtc` can't run, as one whose fixture has `users: self`, which refuses root, counts for neither, unless it runs here, which keeps the run here. With `--ci` the default is `host`: in CI the plan picks the place. Inside `dtc` the run stays there whatever `--in` says |
 | `--results DIR` | where results go (default `test/harness/results/`, gitignored) |
 | `--base REF` | the ref `{base}` stands for in the commands that use it, instead of the base dt finds (`origin/develop` here, the event's in CI); a ref that names no commit in the checkout stops the run before any cell starts |
-| `--changed` | where a cell's `packages` gives patterns and each of its commands takes `{packages}`, `{packages}` holds only the packages they match with a file committed since `{base}` (`git diff BASE...HEAD`; edits not committed don't count): a Go file counts for its own directory's package, and any other file, or one under a directory Go doesn't build (`testdata`, or a name that begins with `.` or `_`), for the nearest package above it, as an embedded file does. A package outside the patterns, one the change deletes or one whose files all need a build tag isn't tested; every package is, with no `{base}`, with `go.mod`, `go.sum` or `go.work` changed, or with a changed file that no package is above, since any test may read it, as `cmd/dt`'s read its scripts and `cmd/gendocs`'s walk `docs/`. With none changed, the commands are skipped and the cell passes, as without `{base}` (§4.8); a diff that fails leaves it not run. A change to a package doesn't test the packages that import it: the full run after the merge does |
+| `--changed` | where a cell's `packages` gives patterns and each of its commands takes `{packages}`, `{packages}` holds only the packages they match with a file committed since `{base}` (`git diff BASE...HEAD`; edits not committed don't count): a Go file counts for its own directory's package, and any other file, or one under a directory Go doesn't build (`testdata`, or a name that begins with `.` or `_`), for the nearest package above it, as an embedded file does. A package outside the patterns, one the change deletes or one whose files all need a build tag isn't tested; every package is, with no `{base}`, with `go.mod`, `go.sum` or `go.work` changed, or with a changed file that no package is above, since any test may read it, as `cmd/dt`'s read its scripts and `cmd/gendocs`'s walk `docs/`. With none changed, the commands are skipped and the cell passes, as without `{base}` (§4.8); a diff that fails leaves it not run. A change to a package doesn't test the packages that import it: the merge queue's full run does, and the push's after it |
+| `--packages` | holds only the packages given, in every cell whose `packages` gives patterns and each of whose commands takes `{packages}`, whatever `--changed` and `{base}` would have picked: a caller that picks its own packages — the pre-push hook — never pays the widening to every package that a changed file in no package brings. A cell that doesn't take `{packages}` keeps its own commands. A package that fails to build fails the cell, as a pattern's does |
 
 | Exit status | Meaning |
 |---|---|
@@ -1647,7 +1679,7 @@ AD-DC failure of 2026-10-06/07 wasn't flaky: `TestSMBNTLMNetlogonPassthrough` fa
 from #2914 on, and is fixed in #2980.
 
 **Retry.** None on pull requests. A test that fails on a PR fails the PR unless it's quarantined,
-so a PR can't merge a flaky test it introduced. On develop and the schedule, `--retry 1` runs only
+so a PR can't merge a flaky test it introduced. On a push and on the schedule, `--retry 1` runs only
 the failed tests again: `go test -run '^(A|B)$'`, the one scenario, the one test file or test code.
 A pass on retry there is flaky: it doesn't open the develop-red issue, and `dt history` counts it.
 An unexpected pass isn't retried, nor is a known failure: only new failures are.
@@ -1708,8 +1740,8 @@ One workflow, `tests.yml`, runs every registered suite:
   - `plan` runs `dt plan --tier T --json`.
   - `run` is a matrix over its cells, each `dt run CELL --tier T --ci` on the runner `dt plan`
     named (`ubuntu-latest` for `ubuntu`), less the cells it places on the dedicated host, which runs
-    them itself (§4.5), with `--retry 1` on develop and the schedule, never on
-    PRs, nor on a dispatch. Each job is named after its cell, and uploads its results as the
+    them itself (§4.5), with `--retry 1` on a push and on the schedule, never on
+    PRs, in the merge queue, nor on a dispatch. Each job is named after its cell, and uploads its results as the
     artifact `dt-run-CELL-ATTEMPT`, the cell's name with `-` for `/`, without `{bin}` and `{tools}`.
     A cell with `tools` gets nix and the shared nix cache; on a push it builds them as
     `.#NAME` and publishes them to the cache, as the old jobs did, and a pull request or a
@@ -1777,27 +1809,28 @@ One workflow, `tests.yml`, runs every registered suite:
   cell whose every command is skipped this way passes.
 - **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes.
 
-**Merging.** Since 2026-10-08:
-- develop requires `Unit Tests (1.26.x)` and `Integration Tests (1.26.x)` beside the lint and
-  security checks, with their path filters moved inside the jobs so they always report (#2972);
+**Merging.**
+- develop requires `gate`, the Tests workflow's job, beside the lint and security checks (`Go Checks`, `Repo Checks`,
+  `ShellCheck`, `gitleaks`, `Analyze (go)`);
 - it requires one approving review and up-to-date branches;
 - auto-merge is enabled for the repository, so a PR that turns it on merges once it's green,
   approved and up to date.
 
-`Tests / gate` replaces the per-workflow test checks as the required one, once the `pr` tier has
-been green for two weeks (§9). The PR that makes it required also drops `Unit Tests (1.26.x)` and
-`Integration Tests (1.26.x)` from the ruleset and their `job` names from the registry, in one
-change, so no PR waits for a check that no longer reports, and `integration`'s Kerberos and portmap
-options go back to being cells of the plan. A single gate that always runs avoids
-GitHub's path-filter trap by construction.
+From 2026-10-08 until the `pr` tier had been green for two weeks (§9), develop required
+`Unit Tests (1.26.x)` and `Integration Tests (1.26.x)` instead, with their path filters moved
+inside the jobs so they always reported (#2972). The change that made `gate` required
+dropped both from the ruleset and their `job` names from the registry, so no PR waited for a check
+that no longer reports, and `integration`'s Kerberos and portmap options became cells of the plan
+again. A single gate that always runs avoids GitHub's path-filter trap by construction.
 
-GitHub's merge queue is "available in any public repository owned by an organization". This
-repository is owned by a user account, so it can't be enabled here; up-to-date branches stand in
-for it. Every merge to develop therefore makes open PRs re-run, which a fast `pr` tier keeps cheap.
-`combined-tree.yml` covers part of what a queue would: every three hours from 07:20 to 19:20 UTC
-it merges combinations of open same-repository PRs and builds, vets and tests them, catching two
-green PRs that break each other. If the repository moves to an organization: enable the queue, add
-`merge_group` to `tests.yml`'s triggers, and drop the up-to-date rule.
+GitHub's merge queue is "available in any public repository owned by an organization", and this
+repository is owned by one, so the queue is enabled on develop and `feat/storage-v2`: it squash-merges
+pull requests in groups of up to five, and `tests.yml` runs on `merge_group`, so a queued pull
+request runs the `pr` tier again on the merged result before it lands. The ruleset still requires
+branches to be up to date as well, so a merge to develop makes open PRs re-run, which a fast `pr`
+tier keeps cheap. `combined-tree.yml` still runs too: every three hours from 07:20 to 19:20 UTC it
+merges combinations of open same-repository PRs and builds, vets and tests them, catching two green
+PRs that break each other before either is queued.
 
 **Baselines.** smbtorture's `baseline-results.md` is a snapshot of DittoFS's own results on
 `badger-s3`, the one profile conformance runs (§4.3), and the pynfs knfsd run compares the same
@@ -1912,6 +1945,14 @@ a percentage.
   (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
   `perf-gates.yml`'s run went red, and fails no PR. The aggregate random-write gate joins once it
   has a baseline: without one it passes whatever it measures.
+- **Comparison against a stored baseline:** after every merge, a step runs each benchmark of the
+  components that name one (RFC 17 §8, RFC 8 §15.4) for the iterations they set, writes the
+  benchmark lines to its `{out}` (§4.6), and compares them with the stored baseline of that
+  benchmark with `benchstat`. It reports a change beyond the noise band `benchstat` computes and
+  gates nothing: a regression is posted, never a failed run, as performance is tracked and not
+  gated. A baseline is replaced only through a pull request, with the commit and the box it was
+  measured on beside it (the RFC index's "Recording results"), and results from another box are
+  compared only with themselves.
 - **Comparisons** run on the dedicated host, as the `perf-night` suite, first in its nightly run:
   `bench/ditto/night.sh` measures DittoFS against Samba over SMB, point by point, and flags a
   point, an area or the night's figure that falls below its 7-day median by more than its noise
@@ -2025,7 +2066,8 @@ in `unit` only as a kind 2, whose conformance suite also runs against the real s
   nightly runs, after two failures in a row, one per test.
 - **A self-hosted runner on the dedicated host.** Rejected in §4.5, on GitHub's own guidance for
   public repositories.
-- **A merge queue now.** Not available, for the owner-type reason in §4.8.
+- **Up-to-date branches without a merge queue.** The stopgap while the repository was owned by a
+  user account, where GitHub offers no queue; the queue is enabled now (§4.8).
 
 ## 7. Risks
 
@@ -2266,8 +2308,8 @@ assumption was wrong, the design follows what was found. It records how the desi
 | Develop-red alerting was removed after floods | True: added in #1170 (e-mail and issue), removed in #1705 after flaky smbtorture subtests | `684f97f4`, `ci-health.yml:3-5` |
 | `ci-health` watches develop | Three workflows only. AD-DC failed on every develop run from #2914 (`77062d90`) to `0d8dbdd8`, 7 runs, with no signal; fixed in #2980 | `ci-health.yml:22-30`, Actions history |
 | The nightly conformance run is green | It has failed every night since at least 2026-09-10: the baseline job's push to develop is refused ("Changes must be made through a pull request"), and the summary job, which doesn't need it, stays green (#2997) | `conformance.yml:521-562` |
-| Only lint and security gate merges | Until 2026-10-08. `Unit Tests` and `Integration Tests` are required since then, with their path filters moved inside the jobs by #2972; develop also needs one approval, and auto-merge is enabled | ruleset `Protect develop` |
-| Enable the merge queue | Not available on a user-owned repository; up-to-date branches are required instead | GitHub docs, ruleset |
+| Only lint and security gate merges | Until 2026-10-08. `Unit Tests` and `Integration Tests` were required from then, with their path filters moved inside the jobs by #2972, until `gate` replaced them (§4.8); develop also needs one approval, and auto-merge is enabled | ruleset `Protect develop` |
+| Enable the merge queue | Enabled on develop and `feat/storage-v2` once the repository moved to an organization; up-to-date branches are still required as well | ruleset `Merge queue`, `tests.yml` `merge_group` |
 | `smb-client-compat` tests the Windows client | Mostly not: its `net use` step skips because port 445 is owned by the runner's kernel, and the job passes, on most runs since mid-September (#2994). Its Linux job mounts SMB 2.1 while its summary says 3.1.1. The hosted Windows runner is Windows Server 2025, whose SMB client supports `net use /TCPPORT` | `smb-client-compat.yml:104, 114, 149-164` |
 | Tool versions are pinned once | Go is pinned four different ways; pjdfstest and pynfs revisions are copied from `flake.lock` | `go.mod:3`, `lint.yml:56`, `dev.Dockerfile:12, 24, 54` |
 | The conformance `-s3` cells exercise S3 | No: the bucket they name is never created. pjdfstest (v3, v4, v4.1) and pynfs (4.0, 4.1) all graded green with localstack answering `NoSuchBucket`, and no upload accepted (#2986, fixed in #3013) | `setup-posix.sh:282`, run 37661151652 and 37661151773 |

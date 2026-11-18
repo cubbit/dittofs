@@ -188,8 +188,8 @@ var (
 	ErrNoHold        = errNoHold
 )
 
-func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, set settings.Settings, out func(*resources.Buf, uint64, uint64) error, close func(error)) *Pipeline {
-	return newPipeline(sh, st, link{ctx: ctx, remote: remote, set: set, out: out, close: close})
+func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, set settings.Settings, record int, out func(*resources.Buf, uint64, uint64) error, close func(error)) *Pipeline {
+	return newPipeline(sh, st, link{ctx: ctx, remote: remote, set: set, record: record, out: out, close: close})
 }
 
 func (p *pipeline) Serve(rec *resources.Buf)       { p.serve(rec) }
@@ -206,6 +206,9 @@ func (p *pipeline) Runs() int {
 
 // WriteBound is the writer's queue's bound, by messages.
 const WriteBound = writeBound
+
+// ChainPadding is the room a chain's joined record keeps between two replies.
+const ChainPadding = chainPadding
 
 // TestWriter is a connection's writer, reached by its tests.
 type TestWriter struct{ w *writer }

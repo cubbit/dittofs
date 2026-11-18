@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
@@ -1119,6 +1121,28 @@ func TestAChainsCancelIsAnsweredNothing(t *testing.T) {
 	}
 }
 
+// A related member after a cancel starts from no request: the cancel is the
+// member before it and sets no handle (§4.7, Related), so in the chain
+// [PutFH, an unrelated Cancel, a related Create] the Create is refused for
+// having no handle and makes no file.
+func TestARelatedMemberAfterACancelStartsFromNoRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		s.serve(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 170, Session: 7, Tree: 1, Handle: s.root},
+			testproto.Msg{Op: testproto.OpCancel, Version: 2, Session: 7, Tree: 1, Target: 9},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 172, Session: inherited, Tree: 1, Name: "after", Related: true},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[1].ID != 172 || rs[1].Status != testproto.StatusNoFH {
+			t.Errorf("the chain is answered %+v, %v: want the related Create after the cancel refused for no handle", rs, err)
+		}
+		if n := s.creates(); n != 0 {
+			t.Errorf("the related Create after the cancel made %d files, want none", n)
+		}
+	})
+}
+
 // A chain admitted after close is not run: no Route, no call, no reply.
 func TestAChainAfterCloseIsNotRun(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -1234,6 +1258,87 @@ func TestAChainJoinsUpToAQuarterOfThePool(t *testing.T) {
 			t.Errorf("%s = %v, want 1", k, got[k])
 		}
 	})
+}
+
+// growsWrap is the stages' Security whose Wrap adds the bytes its header's
+// ReplyLen bounds before sealing: an input standing for a protocol whose
+// Wrap adds a header of its own, as SMB's transform header is.
+type growsWrap struct {
+	core.Security
+	codec core.HeaderCodec
+}
+
+func (g growsWrap) Wrap(h core.Header, reply *resources.Buf) error {
+	reply.B = append(reply.B, make([]byte, g.codec.ReplyLen(h))...)
+	return g.Security.Wrap(h, reply)
+}
+
+// A chain's record, as join frames it, stays within the protocol's record
+// cap (§4.7): its replies as encoded, Chain's padding between them, and
+// what Wrap adds, which the first member's ReplyLen bounds. Two Echo, their
+// replies grown to some half of testproto's 1 MiB cap, join in one record
+// framed at the cap, and go out in two, counted record, framed one byte
+// past it, or with the replies alone at the cap, which Wrap would take past
+// the cap the client reads.
+func TestAChainSplitsAtTheRecordCap(t *testing.T) {
+	const grown = 500 << 10
+	limit, _ := testproto.New(adapter.Deps{}).Framer().MaxRecord()
+	framed := limit - core.ChainPadding - headerLen // two replies' bytes whose record join frames at the cap
+	for _, c := range []struct {
+		name    string
+		encoded int // the two replies' bytes, as encoded
+		records int
+	}{
+		{"framed at the cap", framed, 1},
+		{"framed one byte past the cap", framed + 1, 2},
+		{"encoded at the cap", limit, 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				grow := func(inv core.Invocation) core.Invocation {
+					enc, bound := inv.Encode, inv.Bound
+					inv.Encode = func(out *resources.Buf, v core.Version) error {
+						if err := enc(out, v); err != nil {
+							return err
+						}
+						out.B = append(out.B, make([]byte, grown)...)
+						return nil
+					}
+					inv.Bound = func() int { return bound() + grown }
+					return inv
+				}
+				m := metrics.New("v", "c")
+				d := adapter.Deps{Metrics: m}
+				proto := edited{wrapRows(testproto.New(d), grow, nil), func(st *core.Stages) {
+					st.Security = growsWrap{Security: st.Security, codec: st.Header}
+				}}
+				s := newSeamWith(t, proto, 64<<20, d)
+				payload := make([]byte, c.encoded-2*(headerLen+grown)) // the second Echo's: an Echo's reply is its header and its payload
+				s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Payload: payload})
+				var ids []uint64
+				records := 0
+				for len(ids) < 2 {
+					rs, err := s.client.Recv()
+					if err != nil {
+						t.Fatalf("record %d after replies %v: %v", records+1, ids, err)
+					}
+					records++
+					for _, r := range rs {
+						ids = append(ids, r.ID)
+					}
+				}
+				if records != c.records || !slices.Equal(ids, []uint64{1, 2}) {
+					t.Errorf("the chain is answered in %d records, replies %v: want %d, replies [1 2]", records, ids, c.records)
+				}
+				got, _ := scrape(t, m)
+				for reason, want := range map[string]float64{"record": float64(c.records - 1), "quarter": 0} {
+					if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=" + reason + "}"; got[k] != want {
+						t.Errorf("%s = %v, want %v", k, got[k], want)
+					}
+				}
+			})
+		})
+	}
 }
 
 // wrapsUnder is the stages' Security, recording the operation of the header
@@ -2093,6 +2198,74 @@ func TestARelatedMemberAfterAHitKeepsTheHandle(t *testing.T) {
 	})
 }
 
+// cacheableEcho is the stages' Router with Echo's row marked Cacheable, each
+// table it routes to copied once: an input standing for a protocol whose
+// cacheable row needs no handle, so a hit of one is answered OK.
+type cacheableEcho struct {
+	core.Router
+	mu     sync.Mutex
+	tables map[*core.OpTable]*core.OpTable
+}
+
+func (c *cacheableEcho) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	tb, r, err := c.Router.Route(h, prev)
+	if tb == nil || tb.Ops[testproto.OpEcho] == nil {
+		return tb, r, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cp, ok := c.tables[tb]
+	if !ok {
+		t := *tb
+		t.Ops = make(map[uint32]*core.Op, len(tb.Ops))
+		for code, op := range tb.Ops {
+			t.Ops[code] = op
+		}
+		echo := *tb.Ops[testproto.OpEcho]
+		echo.Cacheable = true
+		t.Ops[testproto.OpEcho] = &echo
+		cp = &t
+		c.tables[tb] = cp
+	}
+	return cp, r, err
+}
+
+// A related member after an unrelated replay hit starts from no request, as
+// the cached call did: sent again, the chain [PutFH, an unrelated sequenced
+// Echo, cacheable here, a related Create] answers the Create as the first
+// send did, with no handle, rather than running it under the PutFH's. The
+// Echo's hit is answered OK, so the Create's answer rests on the request it
+// is routed under alone.
+func TestARelatedMemberAfterAnUnrelatedHitStartsFromNoRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{Budgets: serverBudgets(1 << 20)}, func(st *core.Stages) {
+			st.Router = &cacheableEcho{Router: st.Router, tables: map[*core.OpTable]*core.OpTable{}}
+		})
+		chain := []testproto.Msg{
+			{Op: testproto.OpPutFH, Version: 2, ID: 160, Session: 7, Tree: 1, Handle: s.root},
+			{Op: testproto.OpEcho, Version: 2, ID: 161, Session: 7, Tree: 1, Seq: 9},
+			{Op: testproto.OpCreate, Version: 2, ID: 162, Session: inherited, Tree: 1, Name: "after", Related: true},
+		}
+		var sends [2][]core.Status
+		for i := range sends {
+			s.serve(chain...)
+			rs, err := s.client.Recv()
+			if err != nil || len(rs) != 3 {
+				t.Fatalf("send %d is answered %+v, %v: want three replies", i+1, rs, err)
+			}
+			for _, r := range rs {
+				sends[i] = append(sends[i], r.Status)
+			}
+		}
+		want := []core.Status{testproto.StatusOK, testproto.StatusOK, testproto.StatusNoFH}
+		for i, got := range sends {
+			if !slices.Equal(got, want) {
+				t.Errorf("send %d is answered %v, want %v: the related Create after the unrelated Echo has no handle", i+1, got, want)
+			}
+		}
+	})
+}
+
 // A compound row reached as a chain's member is refused not supported, and
 // none of its members runs.
 func TestACompoundAsAChainMemberIsRefused(t *testing.T) {
@@ -2108,6 +2281,99 @@ func TestACompoundAsAChainMemberIsRefused(t *testing.T) {
 		}
 		if _, results, _ := testproto.Results(rs[1].Body); len(results) != 0 {
 			t.Errorf("the refused compound answered %d results, want none", len(results))
+		}
+	})
+}
+
+// A compound row refused as a chain's member is answered its status alone:
+// its own Invocation's Encode, which here appends a marker, writes nothing
+// into a refusal sized only by its header's ReplyLen.
+func TestACompoundRefusedAsAChainMemberEncodesNothingOfItsOwn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		marker := []byte("compound's own encode")
+		mark := func(inv core.Invocation) core.Invocation {
+			if inv.EncodeHead == nil { // only a compound row sets a head
+				return inv
+			}
+			inv.Encode = func(out *resources.Buf, _ core.Version) error {
+				out.B = append(out.B, marker...)
+				return nil
+			}
+			return inv
+		}
+		s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), mark, nil), 1<<20)
+		s.serve(
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1},
+			testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 2, Members: []testproto.Msg{{Op: testproto.OpEcho, Payload: []byte("m")}}},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[1].Status != testproto.StatusNotSupported {
+			t.Fatalf("the chain is answered %+v, %v: want the compound refused not supported", rs, err)
+		}
+		if bytes.Contains(rs[1].Body, marker) {
+			t.Errorf("the refused compound's reply %q carries its own Encode's bytes", rs[1].Body)
+		}
+	})
+}
+
+// tracingStages is the stages' FlowControl and ReplayCache, each tracing
+// its own work as a protocol's stage may: Admit and Lookup start a span
+// under the context they are handed and end it as they return. An input
+// standing for such a protocol.
+type tracingStages struct {
+	core.FlowControl
+	core.ReplayCache
+	tracer trace.Tracer
+}
+
+func (t tracingStages) Admit(ctx context.Context, h core.Header) (func(), error) {
+	_, span := t.tracer.Start(ctx, "admit")
+	defer span.End()
+	return t.FlowControl.Admit(ctx, h)
+}
+
+func (t tracingStages) Lookup(ctx context.Context, h core.Header) (*resources.Buf, error) {
+	_, span := t.tracer.Start(ctx, "lookup")
+	defer span.End()
+	return t.ReplayCache.Lookup(ctx, h)
+}
+
+// A chain's member is tried at flow control and the replay cache under its
+// own context, ended: a stage that traces its work there has its span in
+// the member's trace, a child of the member's request span, as the first
+// member's admission and a request alone's are.
+func TestAChainMembersTriesAreInItsTrace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		spans := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+		s := newChained(t, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1}, func(st *core.Stages) {
+			tr := tracingStages{FlowControl: st.Flow, ReplayCache: st.Replay, tracer: tracer}
+			st.Flow, st.Replay = tr, tr
+		})
+		s.serve(echoIn(1, 7), echoIn(2, 7))
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
+			t.Fatalf("the chain is answered %+v, %v: want both Echo in one record", rs, err)
+		}
+		s.finish()
+		var members []sdktrace.ReadOnlySpan
+		children := map[trace.SpanID][]string{}
+		for _, sd := range spans.Ended() {
+			switch sd.Name() {
+			case "adapter." + testproto.Name + ".Echo":
+				members = append(members, sd)
+			case "admit", "lookup":
+				children[sd.Parent().SpanID()] = append(children[sd.Parent().SpanID()], sd.Name())
+			}
+		}
+		if len(members) != 2 {
+			t.Fatalf("%d Echo spans ended, want the chain's two", len(members))
+		}
+		for i, sd := range members {
+			got := children[sd.SpanContext().SpanID()]
+			slices.Sort(got)
+			if !slices.Equal(got, []string{"admit", "lookup"}) {
+				t.Errorf("member %d's span has the stage spans %v under it, want its admit and its lookup", i+1, got)
+			}
 		}
 	})
 }

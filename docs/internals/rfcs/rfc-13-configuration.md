@@ -887,7 +887,7 @@ Metric names are shown without the deployment's prefix, which the exporter adds.
 | the position a node has reconciled through per kind — `settings`, `shares`, `principals` — read against the store's current counter per kind | RFC 23's `runtime_applied_generation{kind}` | gauge |
 | how long a node's reconciled position has been behind the store's counter, per kind — `settings` (`CFGGEN`), `shares` (`SL`), `principals` (`PGEN`) | `config_generation_lag_seconds{kind}` | gauge |
 | secrets a node holds at an older version than the current one | `config_secrets_behind` | gauge, a count |
-| each format's active version, and the range each node registers | `format_active_version`, `format_supported_range` | gauges, labelled by format |
+| each format's active version, and the lowest and highest version each node registers | `format_active_version`, `format_supported_min`, `format_supported_max` | gauges, labelled by format |
 | records refused, by component and reason | `config_refused_total` | counter |
 | changes refused because a setting is bound | `config_bound_refusals_total` | counter |
 | the provisioning file hash each node applied, and applies refused by reason | `config_provisioning_applied`, `config_provisioning_refused_total` | gauge, counter |
@@ -1224,8 +1224,8 @@ supplies one before the setting is built.
 | generated first password | RFC 23 §5.4 | — | fixed | 24 random bytes |
 | `metrics.top_shares`: shares exported with a `share` label per per-share gauge, the worst by it | RFC 25 §2.5 | installation | live | 20 |
 | `events.retention`, `events.max_bytes`: the event spool's age and size bounds, past which the oldest file is deleted | RFC 25 §4.6 | node | live | proposed: 7 days; 4 GiB |
-| `tracing.endpoint`: the trace collector; none turns tracing off | RFC 25 §6.3 | node | live | none: tracing off |
-| `tracing.sample_ratio`: the fraction of requests sampled at the adapter | RFC 25 §6.3 | node | live | proposed: 0.01 |
+| `tracing.endpoint`: the trace collector, an `https` or `http` URL (RFC 25 §6.3's decision); none turns tracing off, and any other value is refused at validation ([§6](#6.%20Validation)) | RFC 25 §6.3, §8.1 | node | restart: the root builds the provider and hands each component its tracer once, so a wrong collector is cut off only by a restart (RFC 25 §6.3's decision) | none: tracing off |
+| `tracing.sample_ratio`: the fraction of requests sampled at the adapter, and of every other root span (RFC 25 §8.1) | RFC 25 §6.3, §8.1 | node | restart, as `tracing.endpoint` | proposed: 0.01; settled by: spans exported per second on the reference workload against what the collector ingests, with `health_spans_dropped_total` staying at 0. A value that is not a number, or lies outside 0 to 1, is refused at validation ([§6](#6.%20Validation)), since a ratio that is not a number samples nothing and says so nowhere |
 | metric limits: values per entity label per metric per node; series per node and per metric at the reference profile | RFC 25 §2.4, §2.5 | — | fixed | 64; 50 000 and 10 000 |
 | histogram bucket sets | RFC 25 §2.6 | — | fixed | `request`, `background`, `size`, `count`, as RFC 25 §2.6 lists them |
 | event rings: entries per stream, size per entry | RFC 25 §4.3 | — | fixed | 16 384 for `access`, 4 096 each for `quota` and `logon`; 1 KiB |

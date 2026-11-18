@@ -1,6 +1,8 @@
 package identity
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
@@ -21,7 +24,20 @@ import (
 const (
 	reasonDisabled         = "disabled"
 	reasonStoreUnavailable = "store_unavailable"
+	reasonGroupCap         = "group_cap"
+	reasonAnonymousMissing = "anonymous_missing"
 )
+
+// groupCap is the most groups a caller may hold; one in more is refused.
+//
+// decision: a principal over the group cap is refused, not truncated. A
+// truncated group list is a wrong answer that looks right, and it can drop
+// the group a deny entry names. 1 024 sits at the SID limit of a
+// directory-issued access token, so a real account rarely meets it.
+//
+// ponytail: the cap is a constant. Make it a setting, or per share, when a
+// deployment shows accounts above it.
+const groupCap = 1024
 
 // refusal is a refusal counted under reason. It unwraps to the error the
 // call answers.
@@ -56,15 +72,22 @@ var noSpan = trace.SpanFromContext(context.Background())
 // naming no share stops there, with Mapped set.
 //
 // On a share, a caller the policy squashes, a ProofNone one, or a proven one
-// whose user holds no uid acts as the policy's Anonymous, with its groups and
-// no flag; a policy naming none refuses it, as does a deleted or disabled
-// Anonymous. Otherwise a proven caller acts as itself, authenticated, admin
-// where its share grant names admin, and privileged where it is admin or
-// holds uid 0. A proven caller's share grant is read for the principal it
+// whose user holds no uid acts as the policy's Anonymous, with that
+// principal's closure for its groups, no deny-only principal and no flag; a
+// policy naming none refuses it, as does a deleted or disabled Anonymous.
+// Otherwise a proven caller's groups are its closure unioned with those of
+// its evidence's SIDs, its deny-only SIDs mapped apart. A caller in more than
+// groupCap groups is refused. A proven caller acts as itself, authenticated,
+// admin where its share grant names admin, and privileged where it is admin
+// or holds uid 0. A proven caller's share grant is read for the principal it
 // mapped to, before any squash; no other caller's grant is read, so its
 // Access is none.
 //
 // A store error is ErrUnavailable, never a caller.
+//
+// The caller's Built is the serial of the State the resolution loaded before
+// its first store read. A resolution overtaken by an Apply resolves once
+// more, and answers that second result.
 func (s *Server) Resolve(ctx context.Context, id identity.Identity, p entity.SharePolicy, narrowed identity.ReadOnlyCause) (c *identity.Caller, err error) {
 	// Only a sampled request's resolution opens a span: under an unsampled
 	// parent, Start would still allocate a span nobody records.
@@ -85,6 +108,26 @@ func (s *Server) Resolve(ctx context.Context, id identity.Identity, p entity.Sha
 		return nil, fmt.Errorf("%w: a claimed identity is not resolved", vfserr.ErrAccess)
 	}
 
+	// The State is loaded once per pass, before its first store read, and the
+	// caller stamped with it. A pass overtaken by an Apply runs once more under
+	// the State then current, and that second answer is served whatever was
+	// applied meanwhile, so a steady rate of Applies never starves a call.
+	for range 2 {
+		st := s.state.Load()
+		if s.loaded != nil {
+			s.loaded()
+		}
+		c, err = s.resolve(ctx, span, st.serial(), id, p, narrowed)
+		if st.serial() == s.Current() {
+			break
+		}
+	}
+	return c, err
+}
+
+// resolve is one pass of Resolve's map step, squash and grant under the
+// State whose serial is built, which it stamps on the caller.
+func (s *Server) resolve(ctx context.Context, span trace.Span, built uint64, id identity.Identity, p entity.SharePolicy, narrowed identity.ReadOnlyCause) (c *identity.Caller, err error) {
 	pr := s.deps.Store.Principals()
 	proven := id.Proof >= identity.ProofSecret
 	mapped := p.Anonymous
@@ -105,7 +148,7 @@ func (s *Server) Resolve(ctx context.Context, id identity.Identity, p entity.Sha
 	// with a zero Fresh, so a local principal resolves on every call and its
 	// disable reaches its next call. Overturned once each new State reaches
 	// a running node, which then bounds such a caller instead.
-	c = &identity.Caller{Mapped: mapped, Fresh: id.Evidence.Expires}
+	c = &identity.Caller{Mapped: mapped, Fresh: id.Evidence.Expires, Built: built}
 
 	// decision: a call naming no share, such as a client record's creation,
 	// runs the map step alone, under no share's policy, and acts as Mapped:
@@ -132,27 +175,136 @@ func (s *Server) Resolve(ctx context.Context, id identity.Identity, p entity.Sha
 			return nil, fmt.Errorf("%w: the share grants the caller none", vfserr.ErrAccess)
 		}
 	}
+	// decision: squashing replaces the whole principal. A squashed caller
+	// acts as the policy's Anonymous with that principal's groups alone, no
+	// deny-only principal and every flag false: a squash that kept the
+	// mapped principal's groups or SIDs would leave every ACL entry naming
+	// them matching. It applies to every protocol alike, so a share's policy
+	// means one thing whatever the protocol. Revisit if an operator needs
+	// NFS squashed and SMB not on one share; that is two shares today.
+	//
+	// decision: a claimed identity is squashed before its grant is read, a
+	// proven one after. A grant on a claimed uid has no security value, since
+	// any client can claim an administrator's uid; a proven principal's grant
+	// names who the proof established, so it decides who may reach a
+	// squashed share. Overturned if a proof kind between Claimed and Secret
+	// is added; it then needs its own order.
 	if squashed {
 		if p.Anonymous.IsZero() {
-			return nil, fmt.Errorf("%w: the share names no anonymous principal", vfserr.ErrAccess)
+			return nil, &refusal{reasonAnonymousMissing, fmt.Errorf("%w: the share names no anonymous principal", vfserr.ErrAccess)}
 		}
 		c.Principal = p.Anonymous
-		if _, err := live(ctx, pr, c.Principal, ""); err != nil {
+		if _, err := live(ctx, pr, c.Principal, reasonAnonymousMissing); err != nil {
 			return nil, err
 		}
+		c.Groups, err = closure(ctx, pr, c.Principal)
 	} else {
 		c.Principal, c.Authenticated = mapped, true
 		c.Admin = c.Access == entity.AccessAdmin
 		c.Privileged = c.Admin || root
+		c.Groups, c.DenyOnly, err = collect(ctx, pr, mapped, id.Evidence)
+	}
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(c.Groups, comparePrincipals)
+	// decision: deny-only principals do not count toward the cap. It caps
+	// groups, and a deny-only principal is never one: counting it would
+	// refuse a restricted token for the denies it carries. Both are still
+	// mapped whole or the call fails. Overturned if the cap is read to bound
+	// a token's SIDs, deny-only included.
+	if n := len(c.Groups); n > groupCap {
+		s.logger.WarnContext(ctx, "identity: caller refused over the group cap", "principal", mapped.ID.String(), "groups", n, "cap", groupCap)
+		return nil, &refusal{reasonGroupCap, fmt.Errorf("%w: the caller is in %d groups, over the cap of %d", vfserr.ErrAccess, n, groupCap)}
 	}
 	c.ReadOnly = narrowed
-	for g, err := range pr.Groups(ctx, c.Principal) {
+	return c, nil
+}
+
+// closure is every group p is in, directly or through nested groups, each
+// once. A failed read fails it whole: a partial list can grant access by
+// leaving out the group a deny entry names.
+func closure(ctx context.Context, pr kvstore.Principals, p entity.Principal) ([]entity.Principal, error) {
+	var out []entity.Principal
+	for g, err := range pr.Groups(ctx, p) {
 		if err != nil {
 			return nil, unavailable(err)
 		}
-		c.Groups = append(c.Groups, g)
+		out = append(out, g)
 	}
-	return c, nil
+	return out, nil
+}
+
+// collect is a proven caller's groups and deny-only principals. Its groups
+// are the closure of its store memberships, unioned with each group an
+// evidence SID maps to and that group's closure, so a deny entry naming a
+// parent of a PAC's group still matches; each listed once. Each
+// deny-only SID maps to a principal in deny, never in groups, and adds none
+// of its groups. A SID no principal holds stays unmapped; a lookup error
+// mapping any SID fails the whole collection, since dropping a deny fails
+// open.
+func collect(ctx context.Context, pr kvstore.Principals, of entity.Principal, ev identity.Evidence) (groups, deny []entity.Principal, err error) {
+	seen := map[entity.Principal]bool{}
+	add := func(gs []entity.Principal) {
+		for _, g := range gs {
+			if !seen[g] {
+				seen[g] = true
+				groups = append(groups, g)
+			}
+		}
+	}
+	gs, err := closure(ctx, pr, of)
+	if err != nil {
+		return nil, nil, err
+	}
+	add(gs)
+	for _, sd := range ev.SIDs {
+		g, ok, err := bySID(ctx, pr, sd)
+		if err != nil {
+			return nil, nil, err
+		}
+		// The user's own SID, first in a PAC, maps to a user, not a group:
+		// its closure is the mapped principal's, already collected.
+		if !ok || g.Kind != entity.PrincipalGroup {
+			continue
+		}
+		if gs, err = closure(ctx, pr, g); err != nil {
+			return nil, nil, err
+		}
+		add(append(gs, g))
+	}
+	for _, sd := range ev.DenyOnly {
+		d, ok, err := bySID(ctx, pr, sd)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok && !slices.Contains(deny, d) {
+			deny = append(deny, d)
+		}
+	}
+	slices.SortFunc(deny, comparePrincipals)
+	return groups, deny, nil
+}
+
+// bySID is the principal holding sd's spelling; false when none does.
+func bySID(ctx context.Context, pr kvstore.Principals, sd identity.SID) (entity.Principal, bool, error) {
+	var b bytes.Buffer
+	sid.EncodeSID(&b, &sd)
+	p, err := pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: entity.SchemeSID, Value: b.String()})
+	if merrs.IsNotFoundError(err) {
+		return p, false, nil
+	}
+	if err != nil {
+		return p, false, unavailable(err)
+	}
+	return p, true, nil
+}
+
+func comparePrincipals(a, b entity.Principal) int {
+	if c := cmp.Compare(a.Kind, b.Kind); c != 0 {
+		return c
+	}
+	return bytes.Compare(a.ID[:], b.ID[:])
 }
 
 // forwarded refuses an Identity inconsistent with itself: evidence below

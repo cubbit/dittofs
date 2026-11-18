@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log/slog"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -52,6 +53,18 @@ type State struct {
 	// Generation is the principals generation as of this Apply. Account
 	// never checks a record under it: it reads the generation per call.
 	Generation uint64
+	// Serial is set by Apply, whatever the caller passes: raised only when
+	// the State differs from the current one. A Caller's Built is the Serial
+	// of the State it was resolved under.
+	Serial uint64
+}
+
+// serial is st's Serial, 0 for no State.
+func (st *State) serial() uint64 {
+	if st == nil {
+		return 0
+	}
+	return st.Serial
 }
 
 // errNotApplied is a Start before the first Apply: the server has no State
@@ -70,7 +83,11 @@ var errNotApplied = errors.New("identity: started before any State was applied")
 type Server struct {
 	deps     Deps
 	state    atomic.Pointer[State] // nil until the first Apply, and again after Stop
+	mu       sync.Mutex            // Apply's: held across its load, compare, serial and store
+	serial   uint64                // the last serial Apply handed out, under mu; Stop keeps it
+	loaded   func()                // a test's pause just after Resolve loads the State; nil in production
 	tracer   trace.Tracer
+	logger   *slog.Logger
 	refusals *prometheus.CounterVec // by reason
 }
 
@@ -99,7 +116,10 @@ func New(d Deps) (*Server, error) {
 	if v := reflect.ValueOf(d.Store); v.Kind() == reflect.Pointer && v.IsNil() {
 		return nil, errors.New("identity: Deps.Store is a nil pointer")
 	}
-	s := &Server{deps: d, tracer: d.Tracer}
+	s := &Server{deps: d, tracer: d.Tracer, logger: d.Logger}
+	if s.logger == nil {
+		s.logger = slog.New(slog.DiscardHandler)
+	}
 	if s.tracer == nil {
 		s.tracer = noop.NewTracerProvider().Tracer("")
 	}
@@ -111,11 +131,35 @@ func New(d Deps) (*Server, error) {
 	return s, nil
 }
 
-// Apply makes st the State every later call reads, in one swap.
+// Apply makes st the State every later call reads, in one swap. A State
+// equal to the current one but for its Serial is not swapped in, so the
+// serial stays; any other gets a serial greater than every one before it.
+//
+// decision: the serial is raised per differing State, not per Apply, so a
+// once-a-second reconcile that changed nothing empties no cache, and under
+// one lock across the load, the compare, the serial and the store, so two
+// concurrent Applies never store two differing States under one serial. A
+// serial survives Stop, so a restarted server never repeats one a cache may
+// still hold. Overturned if Apply ever needs to run without that lock.
 func (s *Server) Apply(st State) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.state.Load()
+	if cur != nil {
+		st.Serial = cur.Serial
+		if st == *cur {
+			return nil
+		}
+	}
+	s.serial++
+	st.Serial = s.serial
 	s.state.Store(&st)
 	return nil
 }
+
+// Current is the serial of the State a Resolve starting now reads; 0 before
+// the first Apply and after Stop.
+func (s *Server) Current() uint64 { return s.state.Load().serial() }
 
 // Start starts the server under the State last applied, and refuses
 // errNotApplied when none has been.
