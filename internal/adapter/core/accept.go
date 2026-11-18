@@ -2,8 +2,12 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"net"
+	"os"
 	"time"
+
+	"github.com/cubbit/dittofs/pkg/adapter"
 )
 
 // connCharge is each connection's fixed cost to the connection-state budget,
@@ -32,15 +36,42 @@ const listenerLostAfter = 60 * time.Second
 // RFC 25 section 3.1's name for it.
 const conditionListenerLost = "adapter_listener_lost"
 
+// acceptIdle is how long an accept loop may sit in Accept before it reports
+// itself idle, 10 s, inside RFC 25 section 3.5's 30 s; a loop that reports
+// neither a turn nor an idle within 60 s fails the node's liveness.
+//
+// decision: the deadline wakes the loop by setting the listener's own
+// deadline in the past, so Accept returns os.ErrDeadlineExceeded; the
+// listener carries no deadline of its own while the loop waits (RFC 20
+// section 6.4). The span is armed on the server's clock, the listener's
+// deadline on the runtime's, since the socket's deadlines are its own.
+const acceptIdle = 10 * time.Second
+
 // acceptLoop serves one bound socket until its listener closes, which Stop
-// does: every accepted socket is charged to the connection-state budget,
-// closed at once when the budget refuses it, before any byte is read, and
-// handed to serveConn with the charge when it does not. An Accept error but
-// the listener's own close is retried after the backoff; the first and the
-// last failure of each streak are recorded on the server's clock, so Health
-// derives the lost condition from the evidence.
+// does. It registers itself with Deps.Watch at bind and closes the watch at
+// unbind: a Turn per accepted connection, an Idle at each accept deadline
+// the clock reaches while no client arrives; a nil Watch watches nothing
+// (RFC 20 sections 3.4 and 3.7). Every accepted socket is charged to the
+// connection-state budget, closed at once when the budget refuses it, before
+// any byte is read, and handed to serveConn with the charge when it does not.
+// An Accept error but the listener's own close and the deadline's own wake
+// is retried after the backoff; the first and the last failure of each
+// streak are recorded on the server's clock, so Health derives the lost
+// condition from the evidence.
 func (s *Server) acceptLoop(b *bound) {
 	defer close(b.loopDone)
+	var watch adapter.Loop
+	if s.d.Watch != nil {
+		watch = s.d.Watch(fmt.Sprintf("accept %v on %s", b.l.Services, b.addr))
+		defer watch.Close()
+	}
+	dl, wakeable := b.ln.(interface{ SetDeadline(time.Time) error })
+	var idle timer
+	if wakeable {
+		// A listener with no deadline of its own, a test's, parks as before.
+		idle = s.armIdle(dl)
+		defer func() { idle.Stop() }()
+	}
 	backoff := time.Duration(0)
 	for {
 		nc, err := b.ln.Accept()
@@ -48,6 +79,19 @@ func (s *Server) acceptLoop(b *bound) {
 			if errors.Is(err, net.ErrClosed) {
 				// Stop closed the listener: the loop ends.
 				return
+			}
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				// The accept deadline's own wake: no Accept failure, so no
+				// backoff and no failure recorded. The loop reports Idle,
+				// clears the listener's deadline and arms the next span
+				// counted from now, never from the one that passed, so a
+				// deadline already past cannot spin it (RFC 20 section 6.4).
+				if watch != nil {
+					watch.Idle()
+				}
+				_ = dl.SetDeadline(time.Time{})
+				idle = s.armIdle(dl)
+				continue
 			}
 			if backoff == 0 {
 				backoff = acceptRetryBase
@@ -80,6 +124,9 @@ func (s *Server) acceptLoop(b *bound) {
 		// charge alone, with no per-address cap, so one address can take every
 		// slot. Lift it when connection_limit and the per-address quarter land
 		// (RFC 24 sections 4.4 and 9 R10).
+		if watch != nil {
+			watch.Turn()
+		}
 		charge, cerr := s.d.Budgets.Connection.Reserve(connCharge)
 		if cerr != nil {
 			// The budget is full: the socket closes at once, before any byte
@@ -89,6 +136,13 @@ func (s *Server) acceptLoop(b *bound) {
 		}
 		s.serveConn(nc, b.l, b, &charge)
 	}
+}
+
+// armIdle arms the accept deadline's next span: the wake, firing on the
+// server's clock, sets the listener's deadline a second behind the runtime's
+// now, which ends the Accept the loop sits in.
+func (s *Server) armIdle(dl interface{ SetDeadline(time.Time) error }) timer {
+	return s.sh.clock.AfterFunc(acceptIdle, func() { _ = dl.SetDeadline(time.Now().Add(-time.Second)) })
 }
 
 // lost reports whether b's listener is lost: its Accept has failed from 60 s

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -19,6 +21,170 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
+
+// watchdog is the node's liveness watchdog as RFC 25 section 3.5 states it
+// in miniature: a loop registers itself under Watch, reports its turns and
+// idles in order, and unregisters at its close.
+type watchdog struct {
+	mu    sync.Mutex
+	loops map[string][]string
+}
+
+func newWatchdog() *watchdog { return &watchdog{loops: map[string][]string{}} }
+
+func (w *watchdog) Watch(loop string) adapter.Loop {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.loops[loop] = nil
+	return watched{w, loop}
+}
+
+// names are the loops registered now, a closed one gone from them.
+func (w *watchdog) names() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Sorted(maps.Keys(w.loops))
+}
+
+// reports are one loop's, in order: a turn per connection it accepted, an
+// idle at each accept deadline the clock reached.
+func (w *watchdog) reports(name string) []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.loops[name])
+}
+
+type watched struct {
+	w    *watchdog
+	name string
+}
+
+func (l watched) Turn()  { l.w.report(l.name, "turn") }
+func (l watched) Idle()  { l.w.report(l.name, "idle") }
+func (l watched) Close() { l.w.unregister(l.name) }
+
+func (w *watchdog) report(name, kind string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.loops[name] = append(w.loops[name], kind)
+}
+
+func (w *watchdog) unregister(name string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.loops, name)
+}
+
+// livenessServer is a loopback server started on the settings' addresses
+// under a Watch, its loops' timers armed on the test's clock, which the
+// liveness tests advance.
+func livenessServer(t *testing.T, b *resources.Budgets, w *watchdog, addrs ...string) (*core.Server, *manualClock) {
+	t.Helper()
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{}).Bare()}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b, Watch: w.Watch}, on(addrs...), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return srv, clk
+}
+
+// Each accept loop seen through a Watch the test declares: one loop per
+// bound socket, registered before it serves; a Turn per connection it
+// accepts; an Idle at each accept deadline the clock reaches with no
+// connection waiting; each loop unregistered by Stop. A Watch the loops
+// never reach, a loop that reports nothing, or a watch Stop leaves
+// registered fails here (RFC 20 sections 3.4, 3.7 and 6.4).
+func TestTheAcceptLoopsReportTheirLivenessToTheWatch(t *testing.T) {
+	needIPv6Loopback(t)
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	w := newWatchdog()
+	srv, clk := livenessServer(t, b, w, "127.0.0.1", "::1")
+
+	// One loop per bound socket: two addresses, two loops.
+	waitsFor(t, "the two loops to register", func() bool { return len(w.names()) == 2 })
+
+	// A Turn per accepted connection: one client to each address.
+	for _, at := range srv.Addrs()[key("test")] {
+		c, err := net.Dial("tcp", at.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+	}
+	waitsFor(t, "each loop to report its connection", func() bool {
+		for _, name := range w.names() {
+			if rs := w.reports(name); len(rs) != 1 || rs[0] != "turn" {
+				return false
+			}
+		}
+		return true
+	})
+
+	// An Idle at each 10 s of no connection, both loops at the one advance.
+	waitsFor(t, "the accept deadlines to arm", func() bool { return clk.pending() > 0 })
+	clk.Advance(10 * time.Second)
+	waitsFor(t, "each loop to report its idle wake", func() bool {
+		for _, name := range w.names() {
+			if rs := w.reports(name); len(rs) != 2 || rs[1] != "idle" {
+				return false
+			}
+		}
+		return true
+	})
+
+	// Each loop unregistered by Stop.
+	if err := srv.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	waitsFor(t, "the loops to unregister", func() bool { return len(w.names()) == 0 })
+}
+
+// With no client for 120 s on the server's clock, each loop reports an Idle
+// at each 10 s, never an Accept failure: Health, read after each wake,
+// raises no adapter_listener_lost, and a dial after is accepted at once, a
+// Turn, with the clock not advanced. A loop blocked in Accept with no
+// deadline fails the Idle reports; a wake counted as a failure fails the
+// Health reads or the dial, which waits on a backoff the clock never runs
+// (RFC 20 sections 3.7 and 6.4).
+func TestTheIdleWakesNeverLoseTheListener(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	w := newWatchdog()
+	srv, clk := livenessServer(t, b, w, "127.0.0.1")
+
+	waitsFor(t, "the loop to register", func() bool { return len(w.names()) == 1 })
+	name := w.names()[0]
+	for i := range 12 {
+		// The wake's Idle before the next span: a loop that never re-arms
+		// stalls here, and a wake treated as a failure reports nothing.
+		waitsFor(t, "the accept deadline to arm", func() bool { return clk.pending() > 0 })
+		clk.Advance(10 * time.Second)
+		waitsFor(t, "the wake's idle", func() bool {
+			return len(w.reports(name)) == i+1 && w.reports(name)[i] == "idle"
+		})
+		if h := srv.Health(); len(h.Conditions) != 0 {
+			t.Fatalf("after %d s of idle wakes Health reports %+v, want no condition: a wake counted as an Accept failure", 10*(i+1), h)
+		}
+	}
+	// A dial is accepted with the clock never moved again: the wake left no
+	// deadline past and no backoff behind it.
+	c, err := net.Dial("tcp", srv.Addrs()[key("test")][0].String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	waitsFor(t, "the dial to be accepted and reported", func() bool {
+		rs := w.reports(name)
+		return len(rs) == 13 && rs[12] == "turn"
+	})
+}
 
 // failingListener fails Accept with EMFILE while its cue is set and passes to
 // its inner listener once it is not, refusing a connection already waiting in
