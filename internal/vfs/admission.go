@@ -312,7 +312,9 @@ func (p principals) User(ctx context.Context, of entity.Principal) (entity.User,
 // else everyone's.
 //
 // ponytail: this repeats the identity resolver's grant order over the
-// store's own-grant read. It goes when admission resolves through the
+// store's own-grant read, but not its answers: its groups are the store
+// closure alone, so a group reached only through a PAC SID grants in the
+// resolver and not here. It goes when admission resolves through the
 // identity server.
 func (p principals) Grant(ctx context.Context, share entity.ShareID, of entity.Principal) (entity.ShareAccess, error) {
 	if a, ok, err := p.pr.Grant(ctx, share, of); err != nil || ok {
