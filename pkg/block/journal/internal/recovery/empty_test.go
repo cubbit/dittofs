@@ -808,11 +808,11 @@ func TestReadFoundRotRidesTheLossRecord(t *testing.T) {
 // the directory sync that follows the unlink, held with the removal applied
 // and not yet durable, so the cut resurrects the source.
 //
-// decision: the directory sync cut holds the first sync_dir after the
-// unlink, which the pool's own refill may also issue; either way a power cut
-// lands in a directory sync of the emptying and the same invariants hold,
-// so the row does not tell the retirer's sync from the refill's. Withdrawn
-// if a refill's directory sync must be told apart from the retirer's.
+// The directory-sync hold is made while the unlink is still parked and
+// matches every sync_dir, so no directory sync of any caller, the retirer's
+// or the pool refill's, completes between the unlink and the cut: whichever
+// reaches the hold first, the removal is applied and not durable, and the row
+// asserts that the crash brings the source back.
 //
 // ponytail: the retire step's own recycles are out of this matrix — the
 // fixture holds no dead sealed segments, so each run's retire step retires
@@ -938,6 +938,7 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 				}
 			}
 			hold := r.seam.HoldFirst(t, kitOp(tc.op), key)
+			wantResurrect := false
 			go func() {
 				crashed <- Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil)
 			}()
@@ -955,9 +956,16 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 				hold.Release()
 				reach(next, "the directory sync after the unlink")
 				hold = next
+				if slices.Contains(r.listing(), format.SegmentName(2)) {
+					t.Fatalf("the source is still listed at the directory sync, want the unlink applied before the cut")
+				}
+				wantResurrect = true
 			}
 			if err := r.seam.Crash(); err != nil {
 				t.Fatalf("the power cut at the held step: %v", err)
+			}
+			if wantResurrect && !slices.Contains(r.listing(), format.SegmentName(2)) {
+				t.Errorf("the source is gone after a crash at the directory sync, want it resurrected: the unlink was not yet durable")
 			}
 			hold.Release()
 			select {
