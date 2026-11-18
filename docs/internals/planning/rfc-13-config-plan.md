@@ -104,7 +104,7 @@ What replaces what:
 | v1 | v2 | Fate |
 | --- | --- | --- |
 | `pkg/config` (full server file, environment overrides, warnings on unknown keys) | `pkg/bootstrap`, the bootstrap only, unknown keys refused (D8) | stripped by RFC 23's plan's epic 1; renamed in epic 1, finished in epic 2 |
-| `pkg/config/renamed_keys.go` (renamed keys refused; other unknown keys only warned) | the refused v1 keys, each naming its replacement: `database.*`, `controlplane.*` (its `port` and `tls` naming the bootstrap's API listen address and TLS, RFC 13 §2.2), `admin.*`, `kerberos.*`, `ldap.*`, `identity.machine_sid`, `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*`, `blockstore.*` but the journal path, `metrics.*` (the bootstrap's metrics listen address), `shutdown_timeout` (`adapters.<protocol>.drain_timeout`), and their `DITTOFS_*` forms | reworked in epic 2 |
+| `pkg/config/renamed_keys.go` (renamed keys refused; other unknown keys only warned) | the refused v1 keys, each naming its replacement (RFC 13 Appendix C's table): `database.*` (dropped: the metadata store is the control plane's database), `metadata.badger.*_cache_mb` (dropped), `controlplane.*` (its `port` and `tls` naming the bootstrap's API listen address and TLS, RFC 13 §2.2), `admin.*`, `kerberos.*`, `ldap.*`, `identity.*` (`machine_sid` included), `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*` but the keys of Appendix C's metadata block, `blockstore.*`, the journal path naming `journals` and its five tunables dropped, `metrics.*` (the bootstrap's metrics listen address), `shutdown_timeout` (`adapters.<protocol>.drain_timeout`), an upper-case `logging.level` (`use debug`), a bare-integer `logging.rotation.max_size` (megabytes today; refused, a size carries its unit), and their `DITTOFS_*` forms | reworked in epic 2 |
 | `pkg/metadata/kvstore/settings.go` (`Settings`, `PutSetting`, `CFGGEN`, `Setting.Schema`) | the same, with a delete, a read across every scope in one scan, and a newer schema refused; `expect` is RFC 23's plan's (its epics 1 and 2) | extended in epic 3 |
 | `KindSEC` reserved, no code | `Secret` records with versions and sealing | built in epic 4 |
 | `pkg/block/middleware/encryption/keyprovider` | `pkg/keyprovider`, unchanged | moved in epic 4 (D5) |
@@ -467,7 +467,8 @@ a secret reference imports only it. Neither package imports the other: `pkg/secr
 - **Prior art (from memory).** Kubernetes keeps Secrets apart from ConfigMaps.
 - **Applied by** epic 4.
 
-**D7. The bootstrap file keeps its path,** `~/.config/dittofs/config.yaml`, with `--config`, or
+**D7. The bootstrap file keeps its path,** `$XDG_CONFIG_HOME/dittofs/config.yaml` when that is
+set, else `~/.config/dittofs/config.yaml`, with `--config`, or
 else `DITTOFS_CONFIG`, naming another, through the existing viper loader, renamed into
 `pkg/bootstrap`; `DITTOFS_CONFIG` is new code, since nothing reads it today. An unknown key (the
 decode's `Metadata.Unused`, refused after the v1 keys among them are named, since `ErrorUnused`
@@ -488,6 +489,10 @@ and ignores the rest. The variables read outside viper are allowed, by name or b
   `.githooks/pre-commit`'s eight, `commit-msg`'s `DITTOFS_SKIP_COMMITMSG` and `pre-push`'s
   `DITTOFS_SKIP_PREPUSH`. They are allowed by name, not as a prefix, so a production name such as
   `DITTOFS_SKIP_TLS_VERIFY` cannot hide under one.
+
+A key is matched exactly as RFC 13 Appendix C declares it: viper lowercases the keys it reads, so
+`Logging.Level` would pass it, and the file is read once more as strict YAML (`yaml.v3` with
+`KnownFields(true)`) to refuse a key that differs only in case, naming the declared one.
 
 Kubernetes' service links are allowed by name and value together, since the scan of the repository
 cannot see them. A pod gets, for every Service in its namespace, `<SVC>_SERVICE_HOST`,
@@ -731,7 +736,7 @@ The start: the host file, the node's identity, then the node RFC 23's plan build
 
 ```go
 func start(ctx context.Context, configFlag string) error {
-	b, err := bootstrap.Load(configFlag) // "" is ~/.config/dittofs/config.yaml (D7)
+	b, err := bootstrap.Load(configFlag) // "" is $XDG_CONFIG_HOME/dittofs/config.yaml, else ~/.config/dittofs/config.yaml (D7)
 	if err != nil {
 		return err
 	}
