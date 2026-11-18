@@ -269,6 +269,47 @@ func TestALostListenerIsReportedAtSixtySeconds(t *testing.T) {
 	}
 }
 
+// A lost listener no client ever clears still goes quiet by time alone: the
+// report holds one second past the streak's last failure and leaves at two
+// seconds and a clock tick past it, whether an Accept ever succeeds again
+// (RFC 20 section 6.4).
+func TestALostListenerWithNoClientClearsByTime(t *testing.T) {
+	srv, fl, clk := faultedServer(t)
+	// A minute of failures raises it (the reported-and-cleared test proves the
+	// minute's own edges).
+	for range 60 {
+		waitsFor(t, "the backoff to arm", func() bool { return clk.pending() > 0 })
+		clk.Advance(time.Second)
+	}
+	waitsFor(t, "the next backoff to arm", func() bool { return clk.pending() > 0 })
+	if h := srv.Health(); len(h.Conditions) != 1 || h.Conditions[0] != "adapter_listener_lost" {
+		t.Fatalf("a listener a minute into its fault is reported %+v", h)
+	}
+	// One failure more, the streak's last: it lands at the armed backoff's own
+	// instant, on the minute's shoulder.
+	clk.Advance(clk.nextIn())
+	fails := fl.failures.Load()
+	waitsFor(t, "the last failure to be recorded", func() bool { return fl.failures.Load() > fails })
+	fl.cue.Store(false) // the fault ends, and no client dials
+	// The capped backoff fires and the loop parks in Accept, the last failure
+	// one second behind it: the report holds.
+	clk.Advance(time.Second)
+	if h := srv.Health(); len(h.Conditions) != 1 || h.Conditions[0] != "adapter_listener_lost" {
+		t.Errorf("a listener one second past its last failure is not reported: %+v", h)
+	}
+	// Two seconds less two ticks past the last failure it still holds: the
+	// evidence window is twice the backoff's cap, the RFC's own two seconds.
+	clk.Advance(time.Second - 2*time.Millisecond)
+	if h := srv.Health(); len(h.Conditions) != 1 || h.Conditions[0] != "adapter_listener_lost" {
+		t.Errorf("a listener under two seconds past its last failure is not reported: %+v", h)
+	}
+	// Two seconds and a clock tick past the last failure, the report is gone.
+	clk.Advance(3 * time.Millisecond)
+	if h := srv.Health(); len(h.Conditions) != 0 {
+		t.Errorf("a listener two seconds past its last failure is still reported: %+v", h)
+	}
+}
+
 // A listener that failed once and then went quiet is not lost: its last
 // failure is evidence too, and evidence 60 s old says the fault ended.
 func TestAListenerThatStoppedFailingIsNotLost(t *testing.T) {
