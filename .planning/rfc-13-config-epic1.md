@@ -251,7 +251,8 @@ bullets describe RFC 26's and RFC 5's records.
   // Scope is one of RFC 13 §3's three forms: At(entity.ScopeInstallation),
   // PerThing(entity.ScopeNode, "journal"), or Override(entity.ScopeInstallation, entity.ScopeNode).
   ```
-  The options are `WriteRole`, `Required`, `CheckTx` and `SecretRef(field, kind)`.
+  The options are `WriteRole`, `Required`, `CheckTx`, `SecretRef(field, kind)` and `OverrideOnly(fields ...string)`,
+  which under an `Override` scope gives only the named Go fields the narrower scope's value (the adapters declare `OverrideOnly("Port")`).
   `CheckTx[T](func(entity.ControlPlaneTx, Write, T) error)` is a check the declaring component
   hands `Of`, which reads store state beyond settings, tracked, inside the write's transaction
   ([RFC 13's plan, §4.4](rfc-13-config-plan.md)'s code sketch; the RFC 18 plan's epic 2 is its
@@ -560,8 +561,8 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     themselves on every field of `pkg/adapter/settings`' NFS and SMB structs, so the example test
     below declares real sections;
   - `Scope` and its three constructors, `At`, `PerThing` and `Override`;
-  - `Section`, `Of` and its options `WriteRole`, `Required`, `CheckTx` and `SecretRef(field, kind)`
-  (D9). `Of`'s fifth option, `FormatVersion(field)`, naming the field whose key holds the block
+  - `Section`, `Of` and its options `WriteRole`, `Required`, `CheckTx`, `SecretRef(field, kind)` and
+  `OverrideOnly(fields ...string)` (D9), with `OverrideOnly`'s exact signature frozen as part of `pkg/settings`' surface. `Of`'s sixth option, `FormatVersion(field)`, naming the field whose key holds the block
   format version, so that `Check` refuses a version past this node's range with
   `ErrFormatVersion`, is not this subtask's: E3's T3.6 adds it with its gate and to this pin, the
   one exception to the freeze (E3's D6);
@@ -586,7 +587,8 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     through the `ControlPlaneTx` it is given. Its refusal of a reference to a secret of another kind
     or another owner (R14) needs a real body and the tracked read of T1.5, so it is E3's criterion.
   - A section can be declared for `pkg/adapter/settings`' NFS and SMB structs, in a test, with the
-    adapters' scope form (installation, node override).
+    adapters' scope form: installation scope, one record per adapter, and a node override for the port
+    alone, declared as `OverrideOnly("Port")` on each adapter's section (RFC 13 Appendix B, RFC 23 §3.4).
 - **Decision note:** a secret's rotation never reaches `Check`, since a reference names the
   secret, not a version: the `decision:` note goes at `Check`'s declaration.
 - **Tests:** an `Example` function with no `// Output:` comment declares the adapters' section with
@@ -616,14 +618,16 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     `Validate`.
   - One `arch_test.go` per package, `pkg/bootstrap`, `pkg/settings` and `pkg/secrets`, pinning its
     exported set as `internal/node`'s does: an extra export, an exported field added to a
-    frozen struct, or a changed signature fails it.
+    frozen struct, or a changed signature fails it. `pkg/settings`' pin names `OverrideOnly(fields ...string) Option`
+    among its frozen symbols, so rule 11 counts it as used by the adapters' sections, not as an extra export.
   - The caller list, in the pull request's description: each frozen symbol with its first caller
     (an E2 to E5 subtask, RFC 23's T3.10, T5.3 or T5.4, or the RFC 18 plan's epic 2), and each
     symbol of T1.3 to T1.6's deliverables checked present. `Delete`, pinned here without a transaction, is
     provisional like `AllSettings` and listed as gaining one when E4 fills it, and `Of`'s
     `FormatVersion(field)` option, which E3's D6 adds to `pkg/settings` after the freeze, is
     listed with the section of RFC 4's plan that declares the block format version's key
-    as its first caller.
+    as its first caller. `OverrideOnly(fields ...string)` is listed with the node's table (plan §4.4), which
+    declares the adapters' sections, as its first caller.
 - **Acceptance criteria:**
   - Every symbol T1.3 to T1.6 deliver is exported (they are RFC 13's plan's S1 list), and nothing
     else is but D7's `New` and the `pkg/bootstrap` exports kept above, each with its caller.
