@@ -179,6 +179,13 @@ func counter(reg *metrics.Registry, spec metrics.Spec) *prometheus.CounterVec {
 // serial survives Stop, so a restarted server never repeats one a cache may
 // still hold. Overturned if Apply ever needs to run without that lock.
 func (s *Server) Apply(st State) error {
+	// The State keeps its own copy of the record, so the caller editing its
+	// record later changes nothing applied. A Record holds only values, no
+	// slice or map, so one level copies it whole.
+	if st.Directory != nil {
+		d := *st.Directory
+		st.Directory = &d
+	}
 	if err := st.validate(); err != nil {
 		return err
 	}

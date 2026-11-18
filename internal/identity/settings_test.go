@@ -104,7 +104,7 @@ func TestApplyNetBIOSNameAgainstDirectory(t *testing.T) {
 			if got := s.Applied(); tc.refuse && *got != want {
 				t.Errorf("%s: State after a refused Apply = %+v, want the last applied %+v", tc.name, got, want)
 			}
-			if got := s.Applied(); !tc.refuse && got.Directory != st.Directory {
+			if got := s.Applied(); !tc.refuse && *got.Directory != *st.Directory {
 				t.Errorf("%s: applied Directory = %+v, want %+v", tc.name, got.Directory, st.Directory)
 			}
 		})
@@ -152,5 +152,36 @@ func TestApplyComparesDirectoryByValue(t *testing.T) {
 	}
 	if got := s.Current(); got == first {
 		t.Fatalf("serial after a changed directory record = %d, want above %d", got, first)
+	}
+}
+
+// Apply keeps its own copy of the directory record: editing the caller's
+// record afterwards changes nothing applied, and applying the edited record
+// raises the serial if valid and is refused, the last applied kept, if not.
+func TestApplyCopiesDirectory(t *testing.T) {
+	s := newServer(t)
+	rec := &directory.Record{Address: "ldaps://dc1.corp.example", Realm: "CORP.EXAMPLE", NetBIOSDomain: "CORP"}
+	st := state(1)
+	st.Directory = rec
+	if err := s.Apply(st); err != nil {
+		t.Fatal(err)
+	}
+	first := s.Current()
+	rec.Address = "ldaps://dc2.corp.example"
+	if got := s.Applied().Directory.Address; got != "ldaps://dc1.corp.example" {
+		t.Fatalf("applied address after the caller edited its record = %q, want ldaps://dc1.corp.example", got)
+	}
+	if err := s.Apply(st); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Current(); got == first {
+		t.Fatalf("serial after applying the edited record = %d, want above %d", got, first)
+	}
+	rec.Address = "http://evil.example"
+	if err := s.Apply(st); err == nil {
+		t.Fatal("Apply with directory address http:// = nil, want refused")
+	}
+	if got := s.Applied().Directory.Address; got != "ldaps://dc2.corp.example" {
+		t.Fatalf("applied address after a refused Apply = %q, want the last applied ldaps://dc2.corp.example", got)
 	}
 }
