@@ -1,96 +1,49 @@
 package bootstrap
 
 import (
-	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestCheckRenamedKeys_NamesBothHalves(t *testing.T) {
-	err := checkRenamedKeys([]string{"blockstore.local.max_log_bytes"})
-	if err == nil {
-		t.Fatal("checkRenamedKeys: got nil, want an error for a renamed key")
-	}
-	for _, want := range []string{"blockstore.local.max_log_bytes", "blockstore.journal.max_log_bytes"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not mention %q", err, want)
+// A key under a renamed section names its replacement, whatever its case; a
+// sibling section that only shares the letters, and a key never renamed,
+// are not renamed.
+func TestRenamedKey(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		key  string
+		want string
+		ok   bool
+	}{
+		{"blockstore.local.max_log_bytes", "blockstore.journal.max_log_bytes", true},
+		{"blockstore.local", "blockstore.journal", true},
+		{"Blockstore.Local.Path", "blockstore.journal.path", true},
+		{"blockstore.locality", "", false},
+		{"lock.timeout", "", false},
+	} {
+		if got, ok := renamedKey(tc.key); got != tc.want || ok != tc.ok {
+			t.Errorf("renamedKey(%q): got %q, %v, want %q, %v", tc.key, got, ok, tc.want, tc.ok)
 		}
 	}
 }
 
-func TestCheckRenamedKeys_MatchesTheSectionItself(t *testing.T) {
-	if err := checkRenamedKeys([]string{"blockstore.local"}); err == nil {
-		t.Error("checkRenamedKeys: got nil, want an error for the bare renamed section")
-	}
-}
+// The renamed section in a file is refused naming the new key, and the new
+// key loads.
+func TestLoadRenamedBlockstoreSection(t *testing.T) {
+	t.Parallel()
 
-// Viper lowercases keys, but the decoder reports them as the file spelled
-// them; a config written in mixed case must still be caught.
-func TestCheckRenamedKeys_IsCaseInsensitive(t *testing.T) {
-	if err := checkRenamedKeys([]string{"Blockstore.Local.MaxLogBytes"}); err == nil {
-		t.Error("checkRenamedKeys: got nil, want an error regardless of case")
-	}
-}
+	path, got := loadRefused(t, "blockstore:\n  local:\n    path: /srv/blocks\n", nil)
+	want := path + ": blockstore.local.path: no longer read; write blockstore.journal.path"
 
-// A key from a section that was deleted outright keeps the old warn-and-ignore
-// behaviour, so an upgrade does not hard-fail on it.
-func TestCheckRenamedKeys_IgnoresUnrelatedUnknownKeys(t *testing.T) {
-	err := checkRenamedKeys([]string{"lock.timeout", "syncer.workers", "blockstore.journal.path"})
-	if err != nil {
-		t.Errorf("checkRenamedKeys: got %v, want nil for keys that were not renamed", err)
+	if got != want {
+		t.Errorf("report:\ngot:\n%s\nwant:\n%s", got, want)
 	}
-}
 
-// The prefix must not match a longer sibling section that merely starts with
-// the same letters.
-func TestCheckRenamedKeys_DoesNotMatchSiblingPrefix(t *testing.T) {
-	if err := checkRenamedKeys([]string{"blockstore.locality"}); err != nil {
-		t.Errorf("checkRenamedKeys: got %v, want nil for a sibling section", err)
-	}
-}
+	dir := filepath.Join(t.TempDir(), "blocks")
 
-// End-to-end proof that the old key actually reaches the decoder's unused set:
-// a unit test on checkRenamedKeys alone would still pass if nested unknown keys
-// never got reported, leaving the guard unable to fire.
-func TestLoad_RefusesRenamedBlockstoreLocalSection(t *testing.T) {
-	content := `
-blockstore:
-  local:
-    path: /srv/dittofs/blocks
-`
-
-	_, err := Load(writeConfigFile(t, content), os.Environ())
-	if err == nil {
-		t.Fatal("Load: got nil, want a refusal for the renamed blockstore.local section")
-	}
-	// mapstructure reports the whole unplaced subtree, so the message names the
-	// section rather than the leaf — which is the more useful thing to tell an
-	// operator anyway.
-	for _, want := range []string{"blockstore.local", "blockstore.journal"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Load error %q must name %q", err, want)
-		}
-	}
-}
-
-// The same file under the new name must load cleanly — otherwise the guard is
-// rejecting everything and the test above proves nothing.
-func TestLoad_AcceptsRenamedBlockstoreJournalSection(t *testing.T) {
-	// The path must be absolute on every OS, so it is built, not written.
-	want := filepath.Join(t.TempDir(), "blocks")
-	content := fmt.Sprintf(`
-blockstore:
-  journal:
-    path: '%s'
-`, want)
-
-	cfg, err := Load(writeConfigFile(t, content), os.Environ())
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Blockstore.Journal.Path != want {
-		t.Errorf("Path: got %q, want %q", cfg.Blockstore.Journal.Path, want)
+	b := loads(t, "blockstore:\n  journal:\n    path: '"+dir+"'\n", nil)
+	if b.Blockstore.Journal.Path != dir {
+		t.Errorf("blockstore.journal.path: got %q, want %q", b.Blockstore.Journal.Path, dir)
 	}
 }

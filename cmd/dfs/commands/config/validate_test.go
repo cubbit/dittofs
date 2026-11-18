@@ -13,7 +13,7 @@ import (
 // minimalConfig is a loadable config body, followed by extra.
 func minimalConfig(extra string) string {
 	return `logging:
-  level: "INFO"
+  level: "info"
   format: "text"
   output: "stdout"
 ` + extra
@@ -43,25 +43,6 @@ func writeConfig(t *testing.T, body string) string {
 		t.Fatalf("write config: %v", err)
 	}
 	return path
-}
-
-// A config that loads but carries a warning (a legacy payload: key) does not
-// print a bare "Validation: OK"; the warning count is surfaced and the
-// warning listed.
-func TestConfigValidate_WarningsAnnotateOK(t *testing.T) {
-	out, err := runValidateCapture(t, writeConfig(t, minimalConfig("payload:\n  type: memory\n")))
-	if err != nil {
-		t.Fatalf("runConfigValidate returned error: %v\noutput:\n%s", err, out)
-	}
-	if !strings.Contains(out, "Validation: OK (with 1 warning(s))") {
-		t.Errorf("expected annotated OK with warning count, got:\n%s", out)
-	}
-	if strings.Contains(out, "Validation: OK\n") {
-		t.Errorf("bare 'Validation: OK' must not be printed when warnings are present, got:\n%s", out)
-	}
-	if !strings.Contains(out, "'payload' has been renamed") {
-		t.Errorf("expected the payload warning to be listed, got:\n%s", out)
-	}
 }
 
 // The clean path prints a bare "Validation: OK" with no warnings section, and

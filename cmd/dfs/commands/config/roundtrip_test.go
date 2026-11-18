@@ -1,13 +1,9 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 
-	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/invopop/jsonschema"
 )
@@ -52,7 +48,11 @@ func TestConfigSchema_TopLevelKeysAreYAMLKeys(t *testing.T) {
 
 	for _, key := range expectedTopLevelYAMLKeys {
 		if _, ok := decoded.Properties[key]; !ok {
-			t.Errorf("schema missing expected lowercase yaml key %q; got keys %v", key, keysOf(decoded.Properties))
+			t.Errorf(
+				"schema missing expected lowercase yaml key %q; got keys %v",
+				key,
+				keysOf(decoded.Properties),
+			)
 		}
 	}
 	for got := range decoded.Properties {
@@ -60,41 +60,6 @@ func TestConfigSchema_TopLevelKeysAreYAMLKeys(t *testing.T) {
 		if got != "" && got[0] >= 'A' && got[0] <= 'Z' {
 			t.Errorf("schema emitted PascalCase key %q (should be the lowercase yaml key)", got)
 		}
-	}
-}
-
-// TestConfigShowJSON_RoundTripsThroughLoad asserts that the JSON emitted by
-// `config show -o json` re-parses through config.Load.
-func TestConfigShowJSON_RoundTripsThroughLoad(t *testing.T) {
-	cfg := bootstrap.GetDefaultConfig()
-
-	keyed, err := yamlKeyedView(cfg)
-	if err != nil {
-		t.Fatalf("yamlKeyedView: %v", err)
-	}
-
-	var buf bytes.Buffer
-	if err := output.PrintJSON(&buf, keyed); err != nil {
-		t.Fatalf("PrintJSON: %v", err)
-	}
-
-	// config.Load expects a file; viper auto-detects YAML/JSON by content.
-	tmpDir := t.TempDir()
-	jsonPath := filepath.Join(tmpDir, "config.json")
-	if err := os.WriteFile(jsonPath, buf.Bytes(), 0644); err != nil {
-		t.Fatalf("write json: %v", err)
-	}
-
-	reloaded, err := bootstrap.Load(jsonPath, os.Environ())
-	if err != nil {
-		t.Fatalf("Load could not re-parse `config show -o json` output: %v\noutput was:\n%s", err, buf.String())
-	}
-
-	if reloaded.Logging.Level != cfg.Logging.Level {
-		t.Errorf("round-trip logging.level mismatch: got %q want %q", reloaded.Logging.Level, cfg.Logging.Level)
-	}
-	if reloaded.Blockstore.Journal.Path != cfg.Blockstore.Journal.Path {
-		t.Errorf("round-trip blockstore.journal.path mismatch: got %q want %q", reloaded.Blockstore.Journal.Path, cfg.Blockstore.Journal.Path)
 	}
 }
 

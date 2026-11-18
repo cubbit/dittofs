@@ -28,6 +28,9 @@ var frozenExports = []string{
 	"func GetDefaultConfig() *Bootstrap",
 	"func Load(configPath string, environ []string) (*Bootstrap, error)",
 	"func MustLoad(configPath string, environ []string) (*Bootstrap, error)",
+	"func LoadWithSources(configPath string, environ []string) (*Loaded, error)",
+	"type Loaded struct{Bootstrap Bootstrap; Source map[string]Source}",
+	"type Source string",
 	"type BlockstoreConfig struct{Journal BlockstoreJournalConfig}",
 	"type BlockstoreJournalConfig struct{Path string}",
 	"type Bootstrap struct{Logging LoggingConfig; Blockstore BlockstoreConfig; " +
@@ -137,7 +140,11 @@ func exports(dir string, planted ...string) ([]string, error) {
 		}
 	}
 
-	return got, nil
+	// A method of an embedded type prints once per type that promotes it,
+	// with its own receiver, so the copies are one export.
+	slices.Sort(got)
+
+	return slices.Compact(got), nil
 }
 
 // typeString prints t as types.TypeString does, but a struct with its
