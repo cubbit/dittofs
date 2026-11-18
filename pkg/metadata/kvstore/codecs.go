@@ -481,3 +481,47 @@ func decodeSetting(scope entity.SettingScope, key string, b []byte) (entity.Sett
 	s.Schema, s.Position = r.Uint32(), r.Uint64()
 	return s, r.Done()
 }
+
+// encodeSecret writes every field of s but its ID and version, which its key
+// holds.
+func encodeSecret(s entity.Secret) []byte {
+	o := s.Owner
+	w := codec.NewWriter(v1).Uint8(uint8(s.Kind)).String(s.KeyID)
+	putResource(w, o.Record)
+	w.Uint8(uint8(o.Scope.Kind)).Fixed(o.Scope.ID[:]).String(o.Key)
+
+	return w.Bytes(s.Value).Uint32(s.KeyVersion).Bool(s.HandedOver).Encode()
+}
+
+// decodeSecret refuses a kind this build does not declare rather than read
+// it as some other, and copies the bytes it keeps out of b.
+func decodeSecret(id entity.SecretRef, version uint64, b []byte) (entity.Secret, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.Secret{}, err
+	}
+
+	s := entity.Secret{
+		ID:      id,
+		Version: version,
+		Kind:    entity.SecretKind(r.Uint8()),
+		KeyID:   r.String(),
+	}
+	s.Owner.Record.Kind = entity.ResourceKind(r.Uint8())
+	s.Owner.Record.ID = cloneOrNil(r.Bytes())
+	s.Owner.Scope.Kind = entity.ScopeKind(r.Uint8())
+	copy(s.Owner.Scope.ID[:], r.Fixed(16))
+	s.Owner.Key = r.String()
+	s.Value = cloneOrNil(r.Bytes())
+
+	s.KeyVersion, s.HandedOver = r.Uint32(), r.Bool()
+	if err := r.Done(); err != nil {
+		return s, err
+	}
+
+	if s.Kind.String() == "" {
+		return s, errMalformed
+	}
+
+	return s, nil
+}
