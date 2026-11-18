@@ -8,7 +8,7 @@
   fix: planned
   category: feature
   reason: 'the start''s re-application over the recovered journal: a write synced before its Commit survives the crash whole, its size committed at 24 and its bytes read back; the mtime it read at the write does not — the re-application carries the time of its own replay, not the record''s, so the committed mtime reads the wall clock, want the write''s. The row waits on the start''s replay carrying each record''s staged mtime.'
-  issue: '#4032'
+  issue: '#4210'
 - test: TestRFC8C_DeclaredInterfaces
   message: 'the engine never calls 1 declared methods: [Journal.Draw]'
   status: fail
@@ -29,21 +29,21 @@
   fix: planned
   category: feature
   reason: 'the start''s re-application over the recovered journal: a write, a truncate and a write past it replay in the journal''s order at start. The open recovers the segments, both writes re-apply and read back, but the truncate between them does not re-apply: the hole it leaves is never punched and the committed size reads 4096, want 12288. The row waits on the start''s replay applying the truncate, removals included, in version order.'
-  issue: '#4032'
+  issue: '#4210'
 - test: TestRFC8A_SyncedLossReadsLost
   message: 'committed size 0 and charged 0, want 4096 and 0'
   status: fail
   fix: planned
   category: feature
   reason: 'the open''s loss records reaching the start''s re-application: a synced write the crash corrupted is committed as lost at start, charges nothing and reads ErrLost. The open recovers the segments and finds the loss, but the start''s re-application never commits the file''s existence: the size reads 0, charged 0, and the read answers nil, not ErrLost. The row waits on the open''s loss records landing in the start''s re-application.'
-  issue: '#4032'
+  issue: '#4210'
 - test: TestRFC8A_RecoveryUsage
   message: 'usage after recovery {Bytes:0 Files:2}, <nil>, want 8192 bytes'
   status: fail
   fix: planned
   category: feature
   reason: 'the start''s re-application over the recovered journal: the usage after recovery is the bytes re-applied, exactly, and a second restart leaves it unchanged. The open recovers the segments and both files re-apply, but the re-applied bytes are not charged to the share''s usage: it reads 0 bytes, want the 8192 re-applied. The row waits on the re-application charging its bytes to the usage.'
-  issue: '#4032'
+  issue: '#4210'
 - test: TestRFC8A_VersionLimitRaise
   message: 'the raise halves need a block of 16'
   status: fail
@@ -64,14 +64,14 @@
   fix: planned
   category: feature
   reason: 'the removal''s resume at recovery: a removal crashed between two batches resumes at the restart, the extent reads removed before the loop runs and after, and the record is pruned. The open recovers the segments and the row gets past its writes, their sync and the restart, but the rebuilt removals read done at their far cursors: no unfinished removal holds the mid-batch cursor 12288 the resume starts from. The row waits on the open rebuilding a removal''s progress at its cursor.'
-  issue: '#4032'
+  issue: '#4210'
 - test: TestRFC8A_RemovalDoneNotPrunedIsPrunedAtRestart
   message: 'after the prune, want none'
   status: fail
   fix: planned
   category: feature
   reason: 'the removal''s prune at recovery: a release whose last batch committed and whose prune did not is pruned at the restart, and its index entry goes. The open recovers the segments and the row gets past its writes and the restart, but the release reads unfinished after the prune, wanting none, and the released file still holds its keys. The row waits on the start''s retirement pruning the removals the recovery finds done.'
-  issue: '#4032'
+  issue: '#4210'
 - test: TestV20/journal/a_refusal_repack_can_answer_is_a_delay_until_it_frees
   message: 'the write past the limit answered vfs: retry shortly: capacity before its repack reached the journal'
   status: fail
@@ -162,7 +162,7 @@
   fix: planned
   category: feature
   reason: 'the open''s ended segments, emptied into spares: a clone of a source whose synced run the journal lost reads ErrLost at the destination and the source''s bytes elsewhere. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal the clone''s source reopens ends segment 3 and refuses to serve, and its emptying is not built, until the open empties an ended segment into a spare before it serves.'
-  issue: '#4032'
+  issue: '#4033'
 - test: TestContentSuiteOverTheJournal/ALossChangesTheVerifierAndRaisesTheLossSequence
   message: 'the Content under test cannot be made to lose a write'
   status: skip
@@ -171,26 +171,19 @@
   reason: 'the fixture failing one file''s sync window (internal/vfs/integration/content_journal_test.go:18): a loss changes the verifier and raises only the lost file''s loss sequence. The run supplies no Lose, so the case skips: the fixture fails a whole sync window, every file pending in it, where the case needs one file''s content lost and another''s loss sequence left alone; the engine''s run over the fake journal covers it. It runs once the fixture can fail one file''s window.'
   issue: '#4206'
 - test: TestRFC8A_CloneResumedAtAFullLimit
-  message: 'holds segments; recovering them is not built'
+  message: 'the share''s journal bytes after the restart: 0, want'
   status: fail
   fix: planned
   category: feature
-  reason: 'the journal''s Open recovering segments: a clone crashed after its copies, before its phase 1, on a share at its journal limit is resumed by the restart without copying again, other files are served and the clone finishes. Init and Open work; the row gets past its clone''s hold and the share''s limit, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#4206'
+  reason: 'a clone crashed after its copies, before its phase 1, on a share at its journal limit is resumed by the restart without copying again, other files are served and the clone finishes. The open recovers the segments, but the share''s journal reads 0 bytes after the restart, the copies'' records dropped at the reopen; another file of the share then answers retry shortly: frozen and the resumed clone never finishes.'
+  issue: '#4711'
 - test: TestRFC8A_TheJoin
-  message: 'holds segments; recovering them is not built'
+  message: 'the lost extent reads "oooooooo", <nil>; want ErrLost'
   status: fail
   fix: planned
   category: feature
-  reason: 'the journal''s Open recovering segments: a committed hole reads zeros and a synced record the journal lost reads Lost after the restart. Init and Open work; the row gets past its writes, the committed size and the sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#4206'
-- test: TestRFC8A_SourceRegistrationRebuilt
-  message: 'holds segments; recovering them is not built'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the journal''s Open recovering segments: a process stopped once a clone''s phase 1 committed restarts with the source''s registration rebuilt, a write into the frozen extent answering ErrDelay until the clone is done. Init and Open work; the row gets past the clone''s phase 1 and the frozen write before the stop, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#4206'
+  reason: 'a committed hole reads zeros and a synced record the journal lost reads Lost after the restart. The open recovers the segments and the row gets past the restart, but the lost extent serves the bytes it held before, superseded ones, and answers no error instead of ErrLost.'
+  issue: '#4711'
 - test: TestRFC8B_JournalFullOnAFullDevice
   message: 'answered vfs: retry shortly: capacity, want the device''s ErrNoSpace'
   status: fail
