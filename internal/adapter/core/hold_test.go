@@ -731,6 +731,43 @@ func TestACancelBeforeItsTargetHoldsEndsIt(t *testing.T) {
 	})
 }
 
+// A cancel that comes while a re-drive waits for its reply buffer is
+// remembered, and ends the hold once that attempt, answered ErrDelay again,
+// holds: its final reply is the cancel status, no re-drive is left and no
+// file is made (§4.7).
+func TestACancelDuringAReDriveEndsItWhenItHoldsAgain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newHeld(t, smallCharge, adapter.Deps{}, clk)
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		s.serve(s.heldChain(1, "f")...)
+		s.recvOne() // the reply pool's one buffer splits the PutFH's reply off
+		if r := s.recvOne(); !r.Interim || r.ID != keyOf(2) {
+			t.Fatalf("the Create is answered %+v, want its interim", r)
+		}
+		s.serve(echoIn(3, 7)) // its reply, unread, holds the one buffer
+		redrive := start(func() { clk.Advance(10 * time.Millisecond) })
+		synctest.Wait()
+		s.serve(cancelOf(2, 7))
+		synctest.Wait()
+		if r := s.recvOne(); r.ID != 3 {
+			t.Fatalf("read %+v, want the Echo's reply", r)
+		}
+		final := s.recvLater()
+		if !final.arrived() {
+			t.Fatalf("the hold is not answered once its re-drive holds again, %d timers armed", clk.pending())
+		}
+		<-redrive.done
+		if final.err != nil || len(final.rs) != 1 || final.rs[0].Interim || final.rs[0].ID != keyOf(2) || final.rs[0].Status != testproto.StatusCancelled {
+			t.Errorf("the hold is answered %+v (%v), want its final cancel status", final.rs, final.err)
+		}
+		if n, files := clk.pending(), s.creates(); n != 0 || files != 0 {
+			t.Errorf("%d timers left armed and %d files made, want none", n, files)
+		}
+	})
+}
+
 // A cancel sent clear under its session fails Unwrap and is refused there,
 // never asked of Cancels: the hold it names goes on, and its re-drive's
 // success is its final reply (§4.7, §5.5).
