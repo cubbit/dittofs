@@ -223,3 +223,16 @@ func (c *Core) Shares() []core.ShareTag {
 	}
 	return tags
 }
+
+// isForgetting reports whether tag's Forget path is running: the mark the
+// Forget path sets on the registry before its barrier. Nothing sets it today —
+// the Forget path's own setter is its first owner, landing with that path —
+// so the set reads empty and every copy of every tag appends undisturbed,
+// which is the wiring-complete answer the reclamation pass's copies consult
+// under each file's append domain.
+func (c *Core) isForgetting(tag core.ShareTag) bool {
+	c.forgettingMu.Lock()
+	defer c.forgettingMu.Unlock()
+	_, marked := c.forgetting[tag]
+	return marked
+}

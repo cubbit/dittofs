@@ -107,8 +107,9 @@ type Copier struct {
 // NewCopier builds the pass over one journal's pieces. dom is the append
 // domain table; forgetting answers whether a share is being forgotten,
 // consulted per file under the file's held domain — nil treats no tag as
-// forgetting, the only production wiring while no Forget path writes the
-// mark yet. corrupt is called per corrupt source with the file's domain
+// forgetting, the test wiring's choice, while the core wires the share
+// registry's real mark, whose set reads empty until the Forget path owning
+// its setter lands. corrupt is called per corrupt source with the file's domain
 // held; with a nil corrupt no handler is consulted, nothing is dropped from
 // the index either way — dropping is the handler's own — and the source is
 // still reported in the Result.
@@ -118,8 +119,8 @@ type Copier struct {
 // durable and outlives the record itself, so consulting it would miss a copy
 // racing the barrier and abandon a re-attached tag's copies long after. The
 // mark belongs to the share registry the Forget path writes before its
-// barrier and clears when it returns, which does not exist yet; until it
-// lands, nil is the whole wiring and copies append undisturbed by forgets.
+// barrier and clears when it returns, whose reader the core wires and whose
+// setter does not exist yet, so copies append undisturbed by forgets.
 // Overturned when the Forget path's mark lands elsewhere than a
 // func(core.ShareTag) bool the pass can hold.
 //

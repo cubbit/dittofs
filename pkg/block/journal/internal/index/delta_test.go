@@ -75,7 +75,7 @@ func TestRetainedSetCountersFollowAddAndEdit(t *testing.T) {
 		t.Fatalf("after adds bytes=%d dirty=%d, want 200 and 100", s.bytes, s.dirty)
 	}
 	before := s
-	s.repoint(ext(20, 30), rec(1, 0), rec(9, 0), 0)
+	s.repoint(ext(20, 30), rec(1, 0), rec(9, 0), 0, 0)
 	check("repoint")
 	if s.bytes != before.bytes || s.dirty != before.dirty {
 		t.Fatalf("repoint moved the counters: %d/%d -> %d/%d", before.bytes, before.dirty, s.bytes, s.dirty)
@@ -295,8 +295,8 @@ func TestMutatorDeltas(t *testing.T) {
 		{"failWindow/miss: a record the file does not hold", extendedWindow, through(owner, ok(func(f *file) { f.failWindow([]WindowRecord{failed(rec(9, 0), 9)}, nil) })), zero, nil},
 		{"failWindow/refusal", extendedWindow, through(rival, ok(func(f *file) { f.failWindow([]WindowRecord{failed(rec(3, 0), 3)}, nil) })), zero, isOther},
 
-		{"repoint/held: moves pieces, no bytes", dirty4k, through(owner, ok(func(f *file) { f.held.repoint(ext(0, 4096), rec(1, 0), rec(9, 0), 0) })), zero, nil},
-		{"repoint/retained: moves pieces, no bytes", retainedUnderOffloaded, through(owner, ok(func(f *file) { f.retained.repoint(ext(0, 4096), rec(1, 0), rec(9, 0), 0) })), zero, nil},
+		{"repoint/held: moves pieces, no bytes", dirty4k, through(owner, ok(func(f *file) { f.held.repoint(ext(0, 4096), rec(1, 0), rec(9, 0), 0, 0) })), zero, nil},
+		{"repoint/retained: moves pieces, no bytes", retainedUnderOffloaded, through(owner, ok(func(f *file) { f.retained.repoint(ext(0, 4096), rec(1, 0), rec(9, 0), 0, 0) })), zero, nil},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {

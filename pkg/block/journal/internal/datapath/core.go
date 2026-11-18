@@ -3,6 +3,7 @@ package datapath
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/unread"
 )
 
 // Deps is what a Core is built over: the production wiring only.
@@ -247,6 +249,7 @@ type Core struct {
 	retirer       *segment.Retirer    // the retirement executor
 	liveness      *reclaim.Tracker    // the segment liveness the retirement worker asks
 	retiring      *reclaim.Worker     // the retirement worker that turns liveness into retirements
+	repack        *reclaim.Pass       // the repack pass, over the same pieces the worker serves
 	openPayload   bool                // the set carried the open registration Continue asks the credential of
 	sealer        *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
 
@@ -254,6 +257,7 @@ type Core struct {
 	writtenBytes          atomic.Uint64
 	filledBytes           atomic.Uint64
 	fillRefused           atomic.Uint64
+	repackedBytes         atomic.Uint64
 	tracer                core.Tracer
 	accountSpy            func(index.HeldDelta)
 
@@ -344,6 +348,22 @@ type Core struct {
 	// mutex of the strand set's own.
 	strandMu sync.Mutex
 
+	// forgetting is the set of tags whose Forget path is running — the mark
+	// that path sets on the registry before its barrier and clears when it
+	// returns. Its reader, isForgetting, is what the reclamation pass's
+	// copies consult under a file's append domain; the setter belongs to the
+	// Forget path, which does not exist yet, so the set lands empty and
+	// reads that way. See shares.go.
+	forgetting map[core.ShareTag]struct{}
+	// decision: forgettingMu is a leaf. It guards the mark set's lookups and
+	// replacements alone, holding nothing across them and taking nothing
+	// under them: nothing that consults the mark — a copy reading it under
+	// the file's append domain it already holds, the Forget path's setter —
+	// is waited on by it, and no path of the core takes a ranked lock while
+	// it is held. Withdraw it if a creator of the mark ever calls into the
+	// core with the mutex taken.
+	forgettingMu sync.Mutex
+
 	// closedFlag is set the moment Close begins, so a call that takes no
 	// context can refuse at once; the work itself runs under closeOnce.
 	closedFlag atomic.Bool
@@ -429,7 +449,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, shareHook: o.shareHook, afterSwap: o.afterSwap, rec: o.recorder}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, shareHook: o.shareHook, afterSwap: o.afterSwap, rec: o.recorder, forgetting: make(map[core.ShareTag]struct{})}
 	tbl := newFileLocks()
 	if c.rec != nil {
 		tbl.SetRecorder(c.rec)
@@ -709,6 +729,62 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	})
 	state.Set.OnSeal(tr.SealObserved)
 
+	// The repack pass over the core's own pieces: the selector claims the
+	// candidates a pass runs over, the copier copies and carries under the
+	// same liveness tracker and the same streams the retirement worker
+	// serves, and the retirer is the same executor a worker's hand-over
+	// reaches — a pass's retirements run synchronously in its own
+	// goroutines, one claim at a time. A deferred loss the durability layer
+	// holds against a segment reaches the carry as the registry entry
+	// mapped field by field, and once the pass has the record durable the
+	// deferral ends through the same registry, matched back by its mapped
+	// entry — the registry entry is its own identity, and the map keeps
+	// package reclaim off the layer that owns it. Every repoint's held
+	// delta runs through Account as any other index change does.
+	// The pins hold back, for the length of one run, each source a pass
+	// could not hand over, so the same run cannot select it again: a set
+	// of one journal shared by its selector and its passes.
+	pun := unread.New(deps.Clock)
+	pins := reclaim.NewPins()
+	c.repack = reclaim.NewPass(
+		reclaim.NewSelector(state.Set, state.Index, pun, d, pins),
+		reclaim.NewCopier(state.Index, state.Counters, c.streams, pun, tr, c.domains, c.isForgetting,
+			func(ctx context.Context, bad reclaim.BadSource) (reclaim.CorruptOutcome, error) {
+				out, err := d.Corrupt(ctx, durability.Corruption{
+					Share: bad.Tag, File: bad.File, Record: bad.Record,
+					Seq: bad.Seq, Version: bad.Version, Extent: bad.Extent, DomainHeld: true,
+				})
+				if err != nil {
+					return 0, err
+				}
+				switch out.Kind {
+				case durability.CorruptDropped:
+					return reclaim.CorruptDropped, nil
+				case durability.CorruptUseCopy:
+					return reclaim.CorruptUseCopy, nil
+				}
+				return 0, fmt.Errorf("datapath: the durability layer answered corrupt with an outcome %d no mapping names", out.Kind)
+			},
+			deps.Clock, deps.Log,
+			func(seg core.SegmentID) []reclaim.DeferredLoss {
+				var out []reclaim.DeferredLoss
+				for _, l := range d.DeferredAgainst(seg) {
+					out = append(out, deferredLossOf(l))
+				}
+				return out
+			},
+			c.headroom.Admit, c.headroom.Drawn),
+		tr, state.Index, state.Set, d, d, c.retirer,
+		func(seg core.SegmentID, e reclaim.DeferredLoss) bool {
+			for _, l := range d.DeferredAgainst(seg) {
+				if deferredLossOf(l) == e {
+					return d.EndDeferral(seg, l)
+				}
+			}
+			return false
+		},
+		c.Account, pins)
+
 	// The open's registration: a core continued from a rebuilt state
 	// registers every record the rebuild found still live on disk through
 	// the same call the append paths take, with the set's member answer and
@@ -774,6 +850,13 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		c.retiring.Start()
 	}
 	c.addStop(c.retirer.Stop)
+	// The repack pass's stop registers right after the retirer's, so reverse
+	// order stops it before the retirer: a pass interrupted between its
+	// units hands the source its in-flight unit is retiring to a retirer
+	// still running, and the stop joins the pass before the executor is
+	// stopped — the durability layer, whose own stop runs first and wakes
+	// every durability waiter, is what frees a pass stuck in a wait.
+	c.addStop(c.repack.Stop)
 	// The probe registers between the retirer's stop and the reclaim
 	// worker's, so reverse order runs it once the reclaim worker has stopped
 	// and before the retirer stops — the window the stop-order test reads
@@ -820,6 +903,57 @@ func (c *Core) Liveness() *reclaim.Tracker { return c.liveness }
 // path.
 func (c *Core) Retire(id core.SegmentID, reason segment.Reason) (segment.Retirement, error) {
 	return c.retirer.Retire(id, reason)
+}
+
+// Repack runs one repack pass over the core: units of one source segment
+// each, bounded by a budget of copied bytes, aimed at the scope the caller
+// names. A done context is answered before anything changes; a pass the
+// core's close interrupts between its units returns core.ErrClosed having
+// completed the unit in flight. The bytes the pass's copies moved are added
+// to the repacked_bytes counter, and a tracer sees one repack_pass span
+// carrying the pass's segments, bytes and freed figures. It returns freed,
+// the storage the pass's retirements returned through the executor.
+//
+// decision: the span is opened with the pass's own outcome rather than
+// around its work, because a tracer takes its attributes at the span's start
+// and the pass's segment, byte and freed figures exist only at its end — a
+// span opened beforehand could carry the budget alone. Overturned by a
+// tracer whose ending carries its attributes, which would wrap the work
+// instead.
+func (c *Core) Repack(ctx context.Context, budget int64, scope reclaim.Scope) (int64, error) {
+	if c.closed() {
+		return 0, core.ErrClosed
+	}
+	out, err := c.repack.Run(ctx, budget, scope)
+	if out.Bytes > 0 {
+		c.repackedBytes.Add(uint64(out.Bytes))
+	}
+	if c.tracer != nil {
+		_, end := c.tracer(ctx, core.SpanRepackPass,
+			slog.Int("segments", out.Segments),
+			slog.Uint64("bytes", uint64(out.Bytes)),
+			slog.Int64("freed", out.Freed))
+		end(err)
+	}
+	return out.Freed, err
+}
+
+// deferredLossOf maps one registry entry of the durability layer's deferred
+// losses onto the copy's own shape, field by field. The mapping is the
+// pass's whole contract with the registry: the carry builds its record from
+// it, and the deferral-end wiring matches the entry back by it — one entry
+// per dropped piece, so the mapped fields name one entry exactly.
+func deferredLossOf(l durability.Loss) reclaim.DeferredLoss {
+	return reclaim.DeferredLoss{
+		Share:     l.Share,
+		File:      l.File,
+		Extent:    l.Extent,
+		Version:   l.Version,
+		Seq:       l.Seq,
+		Reason:    l.Reason,
+		Offloaded: l.Offloaded,
+		Synced:    l.Synced,
+	}
 }
 
 // Durability returns the durability layer.

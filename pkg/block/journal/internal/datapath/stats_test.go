@@ -264,7 +264,7 @@ var statsUnserved = map[string]string{
 	"Counters.OfferedBytes":        "offload is not built yet",
 	"Counters.MarkedBytes":         "offload is not built yet",
 	"Counters.ReleasedBytes":       "release is not built yet",
-	"Counters.RepackedBytes":       "repack is not built yet",
+	"Counters.RepackedBytes":       "no core fixture here runs a repack; the pass's tests in internal/reclaim drive it through the core, so this mapping is checked outside these scenarios",
 	"PinnedSegments":               "offload is not built yet",
 	"Recovery":                     "recovery reporting is not in the core's figures",
 	"RejectedSegments":             "recovery reporting is not in the core's figures",

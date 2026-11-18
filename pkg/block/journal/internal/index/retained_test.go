@@ -421,14 +421,14 @@ func TestRepointRetainedKeepsVersionAndBit(t *testing.T) {
 	f.write(write(4, 8, rec(1, 0), 1))
 	f.held.markOffloaded(ext(4, 8), ver(1), ver(1))
 	f.writeRetain(write(0, 12, rec(2, 0), 2))
-	if n := f.retained.repoint(ext(0, 10), rec(1, 0), rec(9, 128), 100); n != 1 {
+	if n := f.retained.repoint(ext(0, 10), rec(1, 0), rec(9, 128), 100, 0); n != 1 {
 		t.Fatalf("repoint moved %d pieces, want 1", n)
 	}
 	assertRetained(t, &f,
 		kept(piece(4, 6, rec(9, 128), 104, 1, true), 2),
 		kept(piece(10, 2, rec(1, 0), 6, 1, true), 2),
 	)
-	if n := f.retained.repoint(ext(0, 12), rec(7, 0), rec(9, 0), 0); n != 0 {
+	if n := f.retained.repoint(ext(0, 12), rec(7, 0), rec(9, 0), 0, 0); n != 0 {
 		t.Fatalf("repoint of a record retaining nothing moved %d pieces", n)
 	}
 }

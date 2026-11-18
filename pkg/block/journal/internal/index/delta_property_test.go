@@ -238,7 +238,13 @@ func (w *deltaWorld) run(f *deltaFile, kind int) {
 			return
 		}
 		to, e := w.place(), w.extent()
-		d, err = w.through(f, f.tag, func(x *file) error { x.held.repoint(e, from, to, 0); x.retained.repoint(e, from, to, 0); return nil })
+		// The move keeps each piece's own number, the re-appended record's
+		// case; a repack copy's fresh number names its new record.
+		d, err = w.through(f, f.tag, func(x *file) error {
+			x.held.repoint(e, from, to, 0, 0)
+			x.retained.repoint(e, from, to, 0, 0)
+			return nil
+		})
 	case opRival:
 		if !w.owned(f) {
 			return

@@ -401,7 +401,7 @@ func TestReappendMovesItsEntry(t *testing.T) {
 	s.insert(write(0, 12, a, 1))
 	s.insert(write(4, 4, b, 2))
 	s.markOffloaded(ext(8, 4), ver(1), ver(1))
-	if n := s.repoint(ext(0, 12), a, moved, 0); n != 2 {
+	if n := s.repoint(ext(0, 12), a, moved, 0, 0); n != 2 {
 		t.Fatalf("repoint moved %d pieces, want 2", n)
 	}
 	assertPieces(t, &s,
@@ -427,7 +427,7 @@ func TestCarriedHeaderOnlyRecordLeavesHeldUntouched(t *testing.T) {
 	}
 	s.fill(Placed{Extent: ext(0, 4), Record: fill, Version: ver(7)})
 	before := s.pieces(nil)
-	if n := s.repoint(ext(0, 4), release, rec(15, 0), 0); n != 0 {
+	if n := s.repoint(ext(0, 4), release, rec(15, 0), 0, 0); n != 0 {
 		t.Fatalf("repoint of a header-only record moved %d pieces", n)
 	}
 	assertPieces(t, &s, before...)
@@ -521,8 +521,8 @@ func TestRepackCopyCoalesces(t *testing.T) {
 	s.insert(seqd(write(0, 8, a, 3), 3))
 	s.insert(seqd(write(8, 8, a, 3), 3))
 	s.markOffloaded(ext(0, 16), ver(3), ver(3))
-	s.repoint(ext(0, 8), a, copied, 0)
-	s.repoint(ext(8, 8), a, copied, 8)
+	s.repoint(ext(0, 8), a, copied, 0, 0)
+	s.repoint(ext(8, 8), a, copied, 8, 0)
 	assertPieces(t, &s,
 		Piece{Extent: ext(0, 16), Record: copied, Version: ver(3), Seq: 3, Offloaded: true},
 	)
@@ -536,8 +536,8 @@ func TestRepointKeepsRecordsApart(t *testing.T) {
 	a, b, copied := rec(1, 0), rec(1, 4096), rec(9, 0)
 	s.insert(seqd(write(0, 8, a, 3), 3))
 	s.insert(seqd(write(8, 8, b, 3), 4))
-	s.repoint(ext(0, 8), a, copied, 0)
-	s.repoint(ext(8, 8), b, copied, 8)
+	s.repoint(ext(0, 8), a, copied, 0, 0)
+	s.repoint(ext(8, 8), b, copied, 8, 0)
 	assertPieces(t, &s,
 		Piece{Extent: ext(0, 8), Record: copied, Version: ver(3), Seq: 3},
 		Piece{Extent: ext(8, 8), Record: copied, Skip: 8, Version: ver(3), Seq: 4},

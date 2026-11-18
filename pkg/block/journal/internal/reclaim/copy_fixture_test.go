@@ -75,9 +75,16 @@ type copyFixture struct {
 	clock    core.Clock
 }
 
-// newCopyFixture builds the core, waits for its spare pool to settle, and
-// closes it when the test ends.
+// newCopyFixture builds the core with no tracer, waits for its spare pool to
+// settle, and closes it when the test ends.
 func newCopyFixture(t *testing.T) *copyFixture {
+	t.Helper()
+	return newCopyFixtureTraced(t, nil)
+}
+
+// newCopyFixtureTraced is newCopyFixture over a core whose tracer is tracer,
+// for a test that reads the spans the core emits; nil traces nothing.
+func newCopyFixtureTraced(t *testing.T, tracer core.Tracer) *copyFixture {
 	t.Helper()
 	dir := t.TempDir()
 	seam, err := kit.NewSeam(dir)
@@ -93,6 +100,7 @@ func newCopyFixture(t *testing.T) *copyFixture {
 	c, err := datapath.New(datapath.Deps{
 		FS:              seam.FS(),
 		Clock:           clock,
+		Tracer:          tracer,
 		Log:             slog.New(slog.DiscardHandler),
 		Dir:             dir,
 		Identity:        copyIdentity,

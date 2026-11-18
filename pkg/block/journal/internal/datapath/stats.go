@@ -129,6 +129,7 @@ func (c *Core) Stats() Stats {
 	s.Counters = Counters{
 		WrittenBytes: c.WrittenBytes(), FilledBytes: c.FilledBytes(), FillRefused: c.FillRefused(),
 		FreedBytes:         c.retirer.Counters().FreedBytes,
+		RepackedBytes:      c.repackedBytes.Load(),
 		ReservationRefused: c.cap.RefusedCount(),
 		Syncs:              d.Syncs, SyncFailures: d.SyncFailures, SyncReappendedBytes: d.ReappendedBytes,
 		HeadroomDraws:          c.headroom.Draws(),

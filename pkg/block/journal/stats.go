@@ -12,8 +12,8 @@ import (
 // safe to call concurrently with every other operation. After Close it
 // returns the zero Stats, since it has no error to return.
 //
-// decision: fields whose source belongs to a later step (the offload, release
-// and repack counters, PinnedSegments) read zero. A zero reads as nothing
+// decision: fields whose source belongs to a later step (the offload and
+// release counters, PinnedSegments) read zero. A zero reads as nothing
 // offered; no caller may rely on those until the sources land. The open's own
 // figures — Recovery, RejectedSegments, TornTails, ScanResyncs — the open
 // serves as it counted them, for the running journal raises none past its
