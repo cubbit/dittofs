@@ -1613,3 +1613,32 @@ func TestACallHeldAcrossARefusedCrashGoesAhead(t *testing.T) {
 	}
 	wantNames(t, s, "a")
 }
+
+// A durable image kept after a lost change holds only the bytes up to the
+// last nonzero one, so a preallocated segment costs its content, not its size.
+func TestDurableImageAfterALossKeepsNoZeroTail(t *testing.T) {
+	const size = 8 << 20
+
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, "\x00", size-1) // the file's size, all zeros
+	syncFile(t, f)
+
+	failNextSync(t, s)
+	write(t, f, "lost", 0)
+	wantEIO(t, OpSync, f.Sync())
+	write(t, f, "data", 0)
+	syncFile(t, f)
+
+	got, err := s.Durable("seg")
+	if err != nil || len(got) != size || string(got[:4]) != "data" {
+		t.Fatalf("Durable: len %d, %v; want %d bytes starting %q", len(got), err, size, "data")
+	}
+
+	s.mu.Lock()
+	kept := cap(s.names["seg"].snap)
+	s.mu.Unlock()
+	if kept > 4096 {
+		t.Fatalf("the kept image holds %d bytes of a %d-byte file whose content is 4, want at most 4096", kept, size)
+	}
+}

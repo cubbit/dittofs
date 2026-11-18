@@ -76,7 +76,8 @@ func (sf *seamFile) sync() error {
 		}
 	}
 
-	n.snap, n.undo = img, nil
+	n.setSnap(img)
+	n.undo = nil
 	return nil
 }
 
@@ -175,7 +176,7 @@ func (sf *seamFile) ReadAtDirect(p []byte, off int64) (int, error) {
 // exist, still has one.
 func (sf *seamFile) durableImage() ([]byte, error) {
 	if sf.node.snap != nil {
-		return slices.Clone(sf.node.snap), nil
+		return sf.node.snapImage(), nil
 	}
 
 	size, err := sf.size()

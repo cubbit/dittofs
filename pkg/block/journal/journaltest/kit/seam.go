@@ -96,6 +96,10 @@ type node struct {
 	// unsynced changes no longer gives the durable image. Nil otherwise.
 	snap []byte
 
+	// snapSize is the image's length: snap keeps the image only up to its
+	// last nonzero byte, so a preallocated zero tail costs nothing to hold.
+	snapSize int64
+
 	// madeDurable is the running total of write bytes its successful Syncs
 	// made durable, whatever name the file carried when they landed: the
 	// counter the mixed-durability check reads through DurableBytes, taken
