@@ -957,8 +957,16 @@ func TestRFC1B_ShareLimit(t *testing.T) {
 	a = limitedShare(t, f, limitedA, limit)
 	after := f.J.Stats().Shares
 	for _, tag := range []journal.ShareTag{limitedA, journaltest.Tag(1)} {
-		if before[tag] != after[tag] {
-			t.Fatalf("share %d's accounting is %+v after a reopen, %+v before", tag, after[tag], before[tag])
+		// UnreclaimedEndedBytes is outside the reopen's equality, as it is
+		// outside the crash's: it counts only segments that take no further
+		// append, and the close and the open move segments over that line —
+		// the close seals, the open adopts and cuts — so the two journals
+		// rightly disagree over which bytes sit in ended segments.
+		b, a := before[tag], after[tag]
+		b.UnreclaimedEndedBytes = 0
+		a.UnreclaimedEndedBytes = 0
+		if a != b {
+			t.Fatalf("share %d's accounting is %+v after a reopen, %+v before", tag, a, b)
 		}
 	}
 
