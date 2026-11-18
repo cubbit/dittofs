@@ -17,8 +17,8 @@ published NTLMv2 vectors.
 **Depends on:** **S1**, epic 1's surface frozen: `SignInStep`, `NTLMAuthenticate`,
 `SignInResult`, `Keys`, `Authenticator`, `*Server` with a stubbed `SignIn`, `vfs.Deps.Auth`.
 **E2, partly**: T4.2 waits for E2's T2.1 (`User.NTHash` and the name fold), T2.4
-(`State.Settings` with its `NTLM` and `NetBIOSName` keys, `Deps.Secrets`), T2.5 (`Find` by user
-name) and T2.6 (`NewHashes`, whose NT hash T4.2's tests sign in against). T2.6 does not wait for
+(`State.Settings` with its `NTLM` and `NetBIOSName` keys, `Deps.Secrets`), and T2.6 (`Lookup` by user
+name, and `NewHashes`, whose NT hash T4.2's tests sign in against). T2.6 does not wait for
 RFC 23's user deletion (#4326's T2.11) once its marked-deleted cases move to E2's T2.8 (#4316),
 which waits for T2.11 and which RFC 23's password write waits for, so S2 does not; RFC 23's
 epic 2 PR table names T2.8 rather than T2.6 in #4336. T4.1 starts at S1.
@@ -29,7 +29,7 @@ Kerberos branch joins the dispatch, the throttle, the logon event and the series
 and T4.5 build. **E7, partly**: pass-through is a row of T4.2's domain table, and it reuses
 T4.1's key exchange and MIC check keyed by the reply's `UserSessionKey`, T4.2's NTLMv1 refusal,
 which sits before routing, and T4.4's throttle for the domain controller's count. **E6, partly**:
-its T6.7 cache keys names with E2's `entity.FoldPrincipalName`, as T4.4's throttle does. RFC 22's plan, whose S6a is this
+its T6.7 cache keys names with E2's `entity.FoldPrincipalName`, which T4.4's throttle reaches through `entity.PrincipalUserPart`. RFC 22's plan, whose S6a is this
 epic's S2.
 
 ---
@@ -93,7 +93,7 @@ the local check against a sealed NT hash; the NTLM-off refusal at sign-in; the t
 
 - **E1**, the contract and the server's surface: `pkg/identity`, `internal/identity`'s
   lifecycle, `vfs.Deps.Auth`, and the import rule that only `internal/node` imports the server.
-- **E2**, principals and accounts: `Find`, `NewHashes`, `User.NTHash`, `State.Settings`,
+- **E2**, principals and accounts: `Lookup`, `NewHashes`, `User.NTHash`, `State.Settings`,
   `Deps.Secrets`, the name fold.
 - **E3**, resolution, whose T3.1 adds `Deps.Tracer`.
 - **E4**, this epic.
@@ -127,7 +127,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no external system: NTLM is checked against published vectors |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.2, T4.4, T4.5 | RFC 18's `decision:` notes of §3.5 (an alternate UPN suffix) at the domain table and §3.6 (no map to guest) at `SignIn`'s error path; its `ponytail:` notes of §3.1 and §7.3 at the throttle; this document's `decision:` markers for D1 and D2 (T4.1), D3, D4 and D10 (T4.2), D5 (T4.4), and D7's `ponytail:` (T4.5); epic 1's stub marker on `SignIn` narrowed to the Kerberos branch |
 | rule 10, a test must be able to fail | all | each R row's test is named with the bug it catches; R10's constant-time compare is held by `hmac.Equal` and R24 by the event's one emit site, each named as such |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T4.5 | `LogonSink`, `LogonEvent` and `LogLines`, which `internal/node` calls to fill `Deps.Logons`; the throttle imports E2's `entity.FoldPrincipalName`, so this epic exports no fold; the cryptography stays unexported |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T4.5 | `LogonSink`, `LogonEvent` and `LogLines`, which `internal/node` calls to fill `Deps.Logons`; the throttle imports E2's `entity.PrincipalUserPart`, so this epic exports no fold; the cryptography stays unexported |
 | rule 12, each subtask creates only what it declares | all | `Deps.Logons` lands with T4.5, its first reader; the pass-through row with E7; no `State` field is added |
 
 ## 3. Requirements and invariants
@@ -148,7 +148,7 @@ tests can cite them. Sources are RFC 18 unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R5 | The message's domain is compared with ASCII letters folded only: empty with a user name that holds no `@`, or `identity.netbios_name`, is local; with no pass-through row, anything else is `ErrLogonFailure` counted `unknown_domain`; E7 adds the pass-through row | MUST | §3.5, §4.6 | T4.2 |
+| R5 | The message's domain is compared with ASCII letters folded only: empty with a user name that holds neither `@` nor `\`, or `identity.netbios_name`, is local; with no pass-through row, anything else, an empty domain with a user name holding `\` among it, is `ErrLogonFailure` counted `unknown_domain`; E7 adds the pass-through row | MUST | §3.5, §4.6 | T4.2 |
 | R6 | A UPN under an alternate suffix, or a domain with a trailing dot, is `unknown_domain`, by §3.5's `decision:` note | invariant | §3.5 | T4.2 |
 
 **NTLMv2 verification**
@@ -204,7 +204,7 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
 
 ## 4. Decisions this epic takes
 
-- **D1, `MsvAvFlags` is read from the verified response, not from `NTLMAuthenticate.AVFlags`.**
+- **D1, `MsvAvFlags` is read from the verified response, and nowhere else.**
   The flags travel in the NTLMv2 response's AV pairs, which `NTProofStr` authenticates; the
   adapter's decoded copy is not. Reading them where the proof covers them is what defeats the
   drop-the-MIC relay, which strips the MIC and the flag that announces it. The plan's A19 drops
@@ -219,17 +219,29 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   `decision:` marker. Prior art: `develop`'s `authMicOffset` (checked); Samba's
   `NTLMSSP_MIC_OFFSET` (from memory).
 - **D3, how a step is classified, pending the user's answer for the first point (§9).**
-  - A step with neither or both of `NTLM` and `Kerberos`, or an AUTHENTICATE with no user name,
-    is `ErrInvalid` before the throttle, with no logon event and no count: it is no attempt of
+  - A step with neither or both of `NTLM` and `Kerberos`, or an AUTHENTICATE with no user name
+    (the unclassified step), is `ErrInvalid` before the throttle, with no logon event and no
+    count: it is no attempt of
     either mechanism, and null and guest sessions are `gss`'s to set up without `SignIn` (RFC 20
     §4.4; RFC 22's plan's S4), so one that reaches identity is a caller's bug, refused, never a
     session.
+  - The throttle is asked next, before every refusal below: NTLM off, NTLMv1 and LM, and the
+    malformed response. So the NTLM-off and NTLMv1 refusals are `ErrLogonFailure` results the
+    throttle counts (D5), and a pair it refuses gets `throttled` whichever of them its attempt
+    would have met: no mechanism the installation refuses lets a client try names uncounted.
   - An `NtChallengeResponse` of 24 bytes (NTLMv1), or empty with a user (LM only), is
-    `ErrLogonFailure` before any check (R7).
+    `ErrLogonFailure` before any credential check (R7).
   - A response that is not a well-formed NTLMv2 response (MS-NLMP 2.2.2.7: its header, or an AV
     pair list without `MsvAvEOL` or overrunning the buffer) is `ErrInvalid`, as `develop`
     answers `smb2.session.ntlmssp_bug14932` with `STATUS_INVALID_PARAMETER`. It is decided
-    before the proof is computed, so `ErrInvalid` never depends on the password.
+    before the proof is computed, so `ErrInvalid` never depends on the password. Unlike the
+    unclassified step it is an NTLM attempt by a named user, so it is recorded: one logon event
+    and one `identity_authentications_total` count, outcome `invalid` (RFC 18 §9.2). Of the
+    refusals after the throttle, it is the one D3 decides that does not count toward it (D5): it
+    is decided before the proof, so it tells nothing of the password. A store or secret fault,
+    `ErrUnavailable` (T4.2), does not count either (D5), so an outage never locks a right
+    password out. From a pair the throttle already refuses, it is answered `throttled` like any
+    other attempt.
   - Every failure once the proof has been computed (the proof, the key exchange, the MIC, a
     disabled user) is `ErrLogonFailure`, counted by the throttle, so no answer tells a right
     password from a wrong one.
@@ -248,18 +260,23 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   on the injected clock; an attempt is refused while the oldest of 10 is under 10 minutes old.
   A throttled attempt is not counted, since counting it would keep a retrying client refused for
   ever, the lockout §3.1 rules out; a success does not reset the count. Every `ErrLogonFailure`
-  result counts, `unknown_domain` and `disabled` included; `ErrInvalid` and `ErrUnavailable` do
-  not. A pair's key is the SHA-256 of the folded user part beside the unmapped client address
+  result counts, NTLM off, NTLMv1, `unknown_domain` and `disabled` included; `ErrInvalid` and
+  `ErrUnavailable` do not. A pair's key is the SHA-256 of the folded user part beside the unmapped client address
   (`netip.Addr.Unmap`), an IPv6 address cut to its /64 as RFC 23 §5.3 keys its sources, so an
   attacker's 64 KiB name costs 32 bytes, `::ffff:a.b.c.d` is `a.b.c.d`, and one host's /64
   cannot spread its failures over 2⁶⁴ pairs; a `decision:` marker at the key says so. The table holds 65 536 pairs, about 5 MiB with their times, a fixed count until RFC
   24's pool can be charged. `decision:` marker for the throttled-attempt rule; RFC 18's §3.1 and
   §7.3 `ponytail:` notes and a `ponytail:` on the fixed count at the table. Prior art: Samba
   counts only checked failures toward `bad password` (from memory).
-- **D6, the throttle folds with the name index's fold.** E2's fold, which keys `NX‖user`, is
-  `entity.FoldPrincipalName`, beside `entity.FoldShareName`, so a spelling the store finds as one user is one pair and no
-  second copy can drift from it; E6's T6.7 folds its cache keys with the same export. The user part is stripped of a `DOMAIN\` prefix and an
-  `@realm` suffix as E2's `Lookup` strips it. Prior art: none found.
+- **D6, the throttle keys on E2's user part.** The pair's name is E2's
+  `entity.PrincipalUserPart` (its D2, T2.1), which strips a `DOMAIN\` prefix and an `@realm`
+  suffix and folds with `entity.FoldPrincipalName`, the fold that keys `NX‖user`; E2's `Lookup`
+  calls the same function, so a spelling the store finds as one user is one pair and no second
+  copy of the stripping or the fold can drift from it. E6's T6.7 folds its cache keys with
+  `entity.FoldPrincipalName`. T4.2's local check finds the user through E2's `Lookup`, so the
+  sign-in, `Lookup` and the throttle key resolve one presented string to one principal, and E2's
+  R8 refuses `\` in a local name as it refuses `@`, so no stored name is split by the strip.
+  Prior art: none found.
 - **D7, logon events go to `Deps.Logons`, written as log lines without the presented name,
   pending the user's answer (§9).** `LogonSink` has RFC 25's method shape, `Logon(ctx,
   *LogonEvent)`, and `LogonEvent` holds RFC 25 §4.2's logon fields this epic has: the outcome,
@@ -368,17 +385,19 @@ internal/vfs/
 
 **Subtask T4.2 estimate: 2.75 man-days.**
 
-- **Track:** B. **Depends on:** T4.1; E2's T2.1, T2.4, T2.5, T2.6.
+- **Track:** B. **Depends on:** T4.1; E2's T2.1, T2.4, T2.6.
 - **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15, R16, R17, R27,
   R28.
 - **Deliverables:** `(*Server).SignIn`'s body, reading one `State` for the call:
   - D3's `ErrInvalid` for a step with neither or both mechanisms, or no user; a Kerberos step
     keeps epic 1's stub until E5;
-  - for NTLM, in order: `State.Settings`' `NTLM` key off, `ErrLogonFailure` (R15); the NTLMv1
+  - for NTLM, in order: T4.4's throttle, asked here once T4.4 lands (D3); `State.Settings`'
+    `NTLM` key off, `ErrLogonFailure` (R15); the NTLMv1
     refusal (R7); the malformed-response refusal (D3); the domain table (D8), ASCII letters
     folded, with RFC 18 §3.5's alternate-suffix `decision:` at it (R5, R6);
-  - the local check: E2's `Find` with the `UserName` scheme; the user's record; a disabled,
-    directory or NT-hash-less user, and a miss (a user marked deleted among them, since `Find`
+  - the local check: E2's `Lookup` (its T2.6), which finds the user by
+    `entity.PrincipalUserPart` as D6's throttle key does; the user's record; a disabled,
+    directory or NT-hash-less user, and a miss (a user marked deleted among them, since `Lookup`
     no longer finds it), verified against D4's dummy hash and
     refused; the NT hash resolved through `Deps.Secrets` as a `Secret` of kind nt-hash, and a
     `nil` `Secrets` answering `ErrUnavailable`; T4.1's `ntowfv2` with the user and domain as the
@@ -390,7 +409,9 @@ internal/vfs/
     markers;
   - an unexported outcome per path, which T4.5 records: `ok`; `logon_failure` for a wrong
     proof, a missing user or hash, NTLM off, NTLMv1 or LM, and a key or MIC failure; `disabled`;
-    `invalid` for a malformed response; `unavailable`; `unknown_domain`;
+    `invalid` for a malformed response, which T4.5 records though it is `ErrInvalid` (D3);
+    `unavailable`; `unknown_domain`; the unclassified step has no outcome and returns before
+    any is recorded;
   - the `export_test.go` hook that delivers the NT hash a proof was computed with;
   - `internal/identity/identitymem` (E3's T3.6) passing #4059's provider over `keyprovider`'s
     local provider, with its key files under the test's `t.TempDir()`, as `Deps.Secrets`, so
@@ -414,7 +435,8 @@ internal/vfs/
     across domains, R8);
   - "NTLM domain", local and refusal: `nas01` against `NAS01` verified; an empty domain and
     `alice` verified; `OTHER`, refused; `alice@corp.example.com` with an empty domain, refused
-    while no pass-through row exists; `KIOSK` sent with U+212A for `K`, refused (catches a
+    while no pass-through row exists; `CORP\bob` with an empty domain, refused `unknown_domain`
+    (catches a `\`-holding name routed local, R5); `KIOSK` sent with U+212A for `K`, refused (catches a
     Unicode fold, R5, R28); the alternate-suffix and trailing-dot forms refused (R6);
   - a 24-byte response for a known user while `kvtest`'s fault wrapper fails every read:
     `ErrLogonFailure`, not `ErrUnavailable` (catches a check after a read, R7); a malformed
@@ -468,9 +490,10 @@ internal/vfs/
 - **Covers:** R18, R19, R20, R21, R30.
 - **Deliverables:** `throttle` in
   `internal/identity`, keyed and sized as D5 says, the oldest pair evicted and counted in
-  `identity_logon_throttle_evictions_total` (the name pending §9); `SignIn` asking it after
-  D3's `ErrInvalid` refusals and before anything reads a credential, and counting each
-  `ErrLogonFailure` but a throttled one, with outcome `throttled`; RFC 18 §3.1's and §7.3's
+  `identity_logon_throttle_evictions_total` (the name pending §9); `SignIn` asking it right after
+  D3's unclassified step and before the NTLM-off, NTLMv1 and malformed-response refusals (D3),
+  and counting each `ErrLogonFailure` but a throttled one, NTLM off and NTLMv1 included, with
+  outcome `throttled`; RFC 18 §3.1's and §7.3's
   `ponytail:` notes and D5's markers. Consumed by T4.5, E5 (whose Kerberos branch asks it once the
   ticket decrypts, E5's D9) and E7.
 - **Acceptance criteria:**
@@ -479,9 +502,22 @@ internal/vfs/
   - "logon throttle", local half: 10 wrong passwords for alice from one address, then the right
     one with `kvtest`'s fault wrapper failing every read: `ErrLogonFailure`, not
     `ErrUnavailable` (catches a throttle that still reads or checks the credential, R18, R21);
+  - 10 24-byte NTLMv1 responses for alice from A, then the right password: refused, and the same
+    with 10 attempts while `identity.ntlm` is off, then the right one once it is on (catches the
+    throttle asked after the NTLMv1 or NTLM-off refusal, which leaves them uncounted, D3, D5);
+    with alice throttled from A, a malformed response from A: `ErrLogonFailure`, not `ErrInvalid`
+    (catches the malformed check run before the throttle, D3);
   - 10 failures spread over `alice`, `ALICE`, `CORP\alice` (refused `unknown_domain` here) and
     `alice@CORP.EXAMPLE`, then the right password as `alice`: refused (catches a spelling that
     resets the count, R21);
+  - `alice` and `ALICE` sent with an empty domain, and `alice` sent with domain `NAS01`, each
+    with the right password: `Lookup` and `SignIn` give alice's principal for each, `Lookup` of
+    `NAS01\alice` gives it too, and the throttle's key, read through an `export_test.go`
+    accessor, is one for all three (catches the sign-in finding the literal name, which makes one
+    string two principals, D6);
+  - 10 sign-ins for alice from A while `kvtest`'s fault wrapper fails the user's read, each
+    `ErrUnavailable`, then the right password with the wrapper off: accepted (catches a store
+    fault counted, D3, D5);
   - with alice throttled from A, alice from B signs in, and from A's IPv4-mapped IPv6 form is
     still refused (catches a per-account lockout, R19, and an unmapped key, D5);
   - the clock advanced so the oldest of 10 is 10 minutes old: the right password accepted;
@@ -530,7 +566,10 @@ internal/vfs/
     and the histogram's count, read from the registry (R25);
   - one `identity.authenticate`, its parent the context's span, its attributes exactly the proof
     kind, outcome and principal ID (catches a name or SID attribute, R26);
-  - D3's `ErrInvalid` rows: no event, no count;
+  - D3's unclassified step (neither or both mechanisms, or no user name): no event, no count;
+  - a malformed response: one event and one count, outcome `invalid`, and after ten of them
+    from one address the right password still signs in (catches a malformed response left
+    unrecorded, or counted toward the throttle, D3, D5);
   - across the whole table, every event, `LogLines`' output, every `Deps.Logger` line at `Debug`,
     every error text and every span attribute, searched for the response, the MIC, the session
     key and the NT hash, and the log for the presented name: none found (catches a credential
@@ -547,7 +586,7 @@ internal/vfs/
 flowchart TD
   S1(["S1 identity surface frozen"]):::sync --> T4_1["T4.1 NTLMv2 cryptography"]
   T4_1 --> T4_2["T4.2 Local NTLMv2 sign-in"]
-  X2(["E2's T2.1, T2.4, T2.5, T2.6"]):::sync --> T4_2
+  X2(["E2's T2.1, T2.4, T2.6"]):::sync --> T4_2
   T4_2 --> T4_3["T4.3 vfs SignIn through Auth"]
   T4_3 --> S2(["S2 sign-in in vfs, with E3"]):::sync
   T4_2 --> T4_4["T4.4 Logon throttle"]
@@ -567,7 +606,7 @@ pass-through row inherit.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T4.1 | 1.5 | — | the cryptography and its vectors, one review of the lifted code; open at S1 |
-| 2 | T4.2, T4.3 | 3 | PR 1, E2's T2.1, T2.4, T2.5, T2.6 | a local user signs in through `vfs.Service`: S2's sign-in half |
+| 2 | T4.2, T4.3 | 3 | PR 1, E2's T2.1, T2.4, T2.6 | a local user signs in through `vfs.Service`: S2's sign-in half |
 | 3 | T4.4, T4.5 | 3 | PR 2, E3's T3.1 | every attempt throttled and recorded |
 
 A suggestion only: one pull request per subtask works as well.
