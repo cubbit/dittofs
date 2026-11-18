@@ -47,6 +47,9 @@ var (
 	ErrIO          = errors.New("vfs: the local device failed a read") // answered at once, the bytes kept
 
 	ErrPastEnd = errors.New("vfs: offset at or past the end of the file")
+
+	ErrLogonFailure     = errors.New("vfs: sign-in credential wrong, or its account cannot sign in")
+	ErrUnknownPrincipal = errors.New("vfs: no principal holds the spelling, or none in the scheme asked")
 )
 
 // ErrFileOpen is a release a holder aborted in its phase 1, reached only by a

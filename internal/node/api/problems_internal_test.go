@@ -35,16 +35,27 @@ var covered = []struct{ dir, alias, prefix string }{
 	{"../../../pkg/metadata/kv", "kv", "Err"},
 }
 
+// answeredAs are the errors whose row answers another code than their own
+// name, each with the code it answers; problems.go's decision: at the row
+// says why.
+var answeredAs = map[string]string{
+	"vfserr.ErrLogonFailure": "unauthenticated",
+}
+
 // Every error and code the covered packages declare, read from their source,
 // has a row in problems.go, and that row answers the error's or the code's
-// own name as its code, written as a literal or as an apiv1 constant: a new
-// error with no row, or a row answering another name, fails here.
+// own name as its code, or the one answeredAs names, written as a literal or
+// as an apiv1 constant: a new error with no row, or a row answering another
+// name, fails here.
 func TestProblemTableNamesEveryDeclaredError(t *testing.T) {
 	named, codes := tableRows(t)
 	for _, c := range covered {
 		for _, name := range declared(t, c.dir, c.prefix) {
 			sel := c.alias + "." + name
 			want := snake(strings.TrimPrefix(name, c.prefix))
+			if code, ok := answeredAs[sel]; ok {
+				want = code
+			}
 			if !named[sel] {
 				t.Errorf("%s has no row in the problem table", sel)
 			} else if code := codes[sel]; code != want {
@@ -101,6 +112,8 @@ func TestProblemCodeIsTheComponentsName(t *testing.T) {
 		{kv.ErrConflict, http.StatusConflict, "conflict"},
 		{errors.Join(context.DeadlineExceeded, kv.ErrConflict), http.StatusConflict, "conflict"},
 		{kv.ErrClosed, http.StatusServiceUnavailable, "closed"},
+		{fmt.Errorf("sign in: %w", vfserr.ErrLogonFailure), http.StatusUnauthorized, "unauthenticated"},
+		{fmt.Errorf("x: %w", vfserr.ErrUnknownPrincipal), http.StatusBadRequest, "unknown_principal"},
 	} {
 		p, _ := problemOf(tc.err)
 		if p.Status != tc.status || string(p.Code) != tc.code {
@@ -176,7 +189,8 @@ func TestProblemStatuses(t *testing.T) {
 func TestProblemAnswers(t *testing.T) {
 	want := map[answerOf][]apiv1.Code{
 		{status: 400}: {"invalid", "invalid_name", "name_too_long", "syntax", "invalid_file", "wrong_share", "not_dir", "is_dir",
-			"past_end", "is_directory", "not_directory", "invalid_argument", "not_supported", "invalid_handle", "cross_share", "too_large"},
+			"past_end", "is_directory", "not_directory", "invalid_argument", "not_supported", "invalid_handle", "cross_share", "too_large",
+			"unknown_principal"},
 		{status: 401}: {"unauthenticated"},
 		{status: 403}: {"forbidden", "password_change_required", "access", "perm", "wrong_security", "access_denied", "auth_required",
 			"permission_denied", "privilege_required"},

@@ -39,6 +39,9 @@ var (
 	ErrIO          = vfserr.ErrIO
 
 	ErrPastEnd = vfserr.ErrPastEnd
+
+	ErrLogonFailure     = vfserr.ErrLogonFailure
+	ErrUnknownPrincipal = vfserr.ErrUnknownPrincipal
 )
 
 // The typed errors and their kinds, and the write verifier and copy extent
@@ -112,6 +115,7 @@ func Errors() []error {
 		ErrReadOnly, ErrNameTooLong, ErrInvalid, ErrNoSpace, ErrQuota, ErrLocked, ErrRangeNotLocked,
 		ErrShareViolation, ErrDeletePending, ErrGrace, ErrDelay, ErrBlocked, ErrWrongSecurity, ErrState,
 		ErrCross, ErrIncomplete, ErrInconsistent, ErrLost, ErrUnavailable, ErrCorrupt, ErrIO, ErrPastEnd,
+		ErrLogonFailure, ErrUnknownPrincipal,
 	}
 	for c := AccessCause(1); c.Valid(); c++ {
 		errs = append(errs, &AccessError{Cause: c})
