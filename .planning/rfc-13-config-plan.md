@@ -841,7 +841,7 @@ The write path: the API's settings route checks inside RFC 16's `Write`, so a re
 reads conflicts with a concurrent change (epic 5).
 
 ```go
-func (h *settingsRoutes) put(ctx context.Context, meta entity.WriteMeta, caller auth.Role, s entity.Setting, expect uint64) error {
+func (h *settingsRoutes) put(ctx context.Context, meta entity.WriteMeta, caller entity.APIRole, s entity.Setting, expect uint64) error {
 	return h.cp.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
 		if err := deps.Settings.Check(tx, caller, settings.Put(s), h.holdsContent(tx)); err != nil {
 			return err // config_refused_total; bound ones also config_bound_refusals_total
@@ -852,7 +852,7 @@ func (h *settingsRoutes) put(ctx context.Context, meta entity.WriteMeta, caller 
 
 // A delete is checked as the change it is: to the effective value it leaves, the wider row or
 // the default, so a bound key or a store location cannot change by removing an override.
-func (h *settingsRoutes) delete(ctx context.Context, meta entity.WriteMeta, caller auth.Role, scope entity.SettingScope, key string, expect uint64) error {
+func (h *settingsRoutes) delete(ctx context.Context, meta entity.WriteMeta, caller entity.APIRole, scope entity.SettingScope, key string, expect uint64) error {
 	return h.cp.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
 		if err := deps.Settings.Check(tx, caller, settings.Delete(scope, key), h.holdsContent(tx)); err != nil {
 			return err
@@ -862,7 +862,7 @@ func (h *settingsRoutes) delete(ctx context.Context, meta entity.WriteMeta, call
 }
 
 // pkg/settings (epic 3), in this order.
-func (t Table) Check(tx entity.ControlPlaneTx, caller auth.Role, w Write, holds HoldsContent) error {
+func (t Table) Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, holds HoldsContent) error {
 	sec, key, err := t.lookup(w.Key, w.Scope) // longest section prefix on a dot boundary; unknown key, wrong scope, newer Schema (RFC 13 §2.3)
 	if err != nil {
 		return err
@@ -873,7 +873,8 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller auth.Role, w Write, holds 
 	s, err := sec.decodeAfter(tx, w) // a put's row, or what a delete leaves
 	if err != nil {
 		// strict decode, keys matched exactly as declared, over the defaults and the wider row,
-		// required keys
+		// required keys; the refusal prints no undeclared key's value and no decoder's own text
+		// (epic 3's R31)
 		return err
 	}
 	if err := sec.checkSecretRefs(tx, s); err != nil {
@@ -882,9 +883,8 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller auth.Role, w Write, holds 
 		return err
 	}
 	if err := sec.validate(s); err != nil {
-		// the section's own Validate, which prints no SecretRef field's value, an undeclared key's
-		// value or a decoder's own text (epic 3's R31); it may print another field's value, as
-		// RFC 13 §6's "got 70000" does
+		// the section's own Validate, which prints no SecretRef field's value (epic 3's R31); it
+		// may print another field's value, as RFC 13 §6's "got 70000" does
 		return err
 	}
 	if err := sec.checkTx(tx, w, s); err != nil { // the section's CheckTx, if any: RFC 18's plan's E2 refuses an id_range here
@@ -1488,7 +1488,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | A remote store's endpoint, bucket, prefix or credential change, refused, the bucket and prefix even with no content, past RFC 13 §5.1's "no content, accepted"; "§5.2 same content" (D9, O1, §1.4) | needs the capability check (RFC 4 §4.11) and the claim (RFC 27 §2.1) | RFC 4 and RFC 27; RFC 23 plan (#4050) for its credential rotation and proven endpoint | both pieces built |
 | "§2.2 explicit initialisation"'s clause recording a new identity by a recovery import (O1, §1.4) | needs RFC 26's recovery import | RFC 26 plan | RFC 26's plan builds the import |
 | The call that raises an active version, `raise-format` (RFC 13 §5.5), and with it D11's write of the settings format's newer schema version (header, §4.3's `ponytail:`, D11, O1) | each format has one version | unowned | a format gains a second version |
-| Refusing a write that sets a field a newer binary added, while it is newer than the active version (D11's caveat; epic 3's D1, T3.4 and T3.6) | the raise call only raises the version, it does not refuse this write | unowned | a release adds a field to a section before `raise-format` lands |
+| Refusing a write that sets a field a newer binary added, while it is newer than the active version (D11's caveat; epic 3's D1, T3.4 and T3.6) | the raise call only raises the version, it does not refuse this write | unowned | a release adds a field to a section |
 | "§7 rotation"'s wrapping-key half and its reseal pass (§4.3's `ponytail:`, O1, §1.4) | a retired role key keeps every secret open | unowned | an operator must remove a role key, or a role key is compromised |
 | The namespace key table; "§5.1 encryption bound", "§7 namespace keys", "§7 chunk-ID key", "§7 key table" (header, O1, §1.4) | RFC 13 §7's material bullets are RFC 5's | RFC 5 plan | RFC 5's plan |
 | "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys |
