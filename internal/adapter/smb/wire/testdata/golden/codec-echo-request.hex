@@ -1,0 +1,5 @@
+# The body of an SMB2 ECHO request (MS-SMB2 2.2.28), written by hand: its
+# StructureSize and Reserved alone. Multi-byte fields are little-endian
+# (MS-SMB2 2.2).
+04 00                       # [64,66) StructureSize 4
+00 00                       # [66,68) Reserved

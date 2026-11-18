@@ -1,6 +1,7 @@
 package adaptertest
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -76,9 +77,10 @@ func adapterOf(dir string) string {
 	return ""
 }
 
-// forbidden says why the file in dir, a test file or not, may not import imp,
-// or "" when it may.
-func forbidden(dir string, test bool, imp string) string {
+// forbidden says why the file named file in dir may not import imp, or ""
+// when it may.
+func forbidden(dir, file, imp string) string {
+	test := strings.HasSuffix(file, "_test.go")
 	p, local := strings.CutPrefix(imp, module)
 	if local && p == dir {
 		return "" // a package's external tests import it
@@ -87,6 +89,9 @@ func forbidden(dir string, test bool, imp string) string {
 		return "adaptertest and its test protocol are imported by test files only"
 	}
 	if name := adapterOf(dir); name != "" {
+		if why := forbiddenToOps(dir, name, file, imp); why != "" {
+			return why
+		}
 		return forbiddenToAnAdapter(dir, name, test, imp)
 	}
 	switch {
@@ -180,11 +185,72 @@ func forbiddenToAnAdapter(dir, name string, test bool, imp string) string {
 	return "an adapter imports, of the module, only pkg/vfs, pkg/adapter, pkg/adapter/settings, pkg/resources, pkg/metrics, internal/tlsconfig, core and its own packages"
 }
 
+// ops reports whether the file named file in dir is an ops file RFC 20 §5.1
+// and §7.1 hold: a command's codec_gen.go, or a file declaring its structs
+// and handler.
+//
+// decision: an ops package's test files are not held: §2.5's ops file is
+// <cmd>.go, and a handler test compares a reply's bytes (§7.2). Withdraw it
+// if a test reads or writes a command's bytes in place of its codec.
+func ops(dir, file string) bool {
+	return adapterOf(dir) != "" && slices.Contains(strings.Split(dir, "/"), "ops") && !strings.HasSuffix(file, "_test.go")
+}
+
+// noBytes is why an ops file other than codec_gen.go may not read or write a
+// byte (RFC 20 §5.1).
+const noBytes = "an ops file reads and writes no bytes: its codec is generated"
+
+// forbiddenToOps says why an ops file of the adapter name may not import imp,
+// beside what an adapter may not: a generated codec_gen.go imports only what
+// its protocol's wire may, and that wire, whose runtime it calls; any other
+// imports no encoding/binary.
+func forbiddenToOps(dir, name, file, imp string) string {
+	if !ops(dir, file) {
+		return ""
+	}
+	wire := "internal/adapter/" + name + "/wire"
+	switch {
+	case file != "codec_gen.go" && imp == "encoding/binary":
+		return noBytes
+	case file == "codec_gen.go" && imp != module+wire && forbiddenToAnAdapter(wire, name, false, imp) != "":
+		return "a generated codec_gen.go imports only what a wire package may, and its protocol's wire"
+	}
+
+	return ""
+}
+
+// usesRuntime names each use in f, an ops file other than codec_gen.go, of
+// its protocol's wire runtime, the Decoder and Encoder the generated code
+// alone calls (RFC 20 §5.1, §7.1).
+func usesRuntime(rel, wire string, f *ast.File) []string {
+	name := ""
+	for _, spec := range f.Imports {
+		if spec.Path.Value == strconv.Quote(module+wire) {
+			name = path.Base(wire)
+			if spec.Name != nil {
+				name = spec.Name.Name
+			}
+		}
+	}
+	var found []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		if s, ok := n.(*ast.SelectorExpr); ok && name != "" {
+			if x, ok := s.X.(*ast.Ident); ok && x.Name == name && (s.Sel.Name == "Decoder" || s.Sel.Name == "Encoder") {
+				found = append(found, rel+": uses "+name+"."+s.Sel.Name+": "+noBytes)
+			}
+		}
+		return true
+	})
+
+	return found
+}
+
 // violations walks every Go file under root, test files and files behind a
 // build tag included, and names each import the adapters' architecture
-// forbids and each package at a retired path. It leaves out what go builds no
-// package of this module from: a directory below root named testdata or
-// beginning with . or _, and another module, a directory holding a go.mod.
+// forbids, each use of a wire runtime in an ops file and each package at a
+// retired path. It leaves out what go builds no package of this module from:
+// a directory below root named testdata or beginning with . or _, and another
+// module, a directory holding a go.mod.
 //
 // ponytail: a package's path is read from its directory under root, so an
 // import a replace directive or a vendored copy redirects would be missed.
@@ -219,7 +285,13 @@ func violations(t *testing.T, root string) []string {
 				found = append(found, rel+": a package at "+old+", a path the first adapters used")
 			}
 		}
-		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.ImportsOnly)
+		name := path.Base(rel)
+		held := ops(dir, name) && name != "codec_gen.go"
+		mode := parser.ImportsOnly
+		if held {
+			mode = parser.SkipObjectResolution
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, mode)
 		if err != nil {
 			found = append(found, rel+": its imports cannot be read: "+err.Error())
 			return nil
@@ -229,9 +301,12 @@ func violations(t *testing.T, root string) []string {
 			if err != nil {
 				return err
 			}
-			if why := forbidden(dir, strings.HasSuffix(rel, "_test.go"), imp); why != "" {
+			if why := forbidden(dir, name, imp); why != "" {
 				found = append(found, rel+": imports "+imp+": "+why)
 			}
+		}
+		if held {
+			found = append(found, usesRuntime(rel, "internal/adapter/"+adapterOf(dir)+"/wire", parsed)...)
 		}
 		return nil
 	})
@@ -270,6 +345,9 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/nfs/errgroup.go: imports golang.org/x/sync/errgroup: an adapter imports, from outside the module, only what its list names",
 		"internal/adapter/nfs/identity.go: imports github.com/cubbit/dittofs/pkg/identity: an adapter imports, of the module, only pkg/vfs, pkg/adapter, pkg/adapter/settings, pkg/resources, pkg/metrics, internal/tlsconfig, core and its own packages",
 		"internal/adapter/nfs/mount/wire/gen/main.go: imports os: a wire package does no file or network I/O",
+		"internal/adapter/nfs/ops/v3/binary.go: imports encoding/binary: an ops file reads and writes no bytes: its codec is generated",
+		"internal/adapter/nfs/ops/v4/codec_gen.go: imports os: a generated codec_gen.go imports only what a wire package may, and its protocol's wire",
+		"internal/adapter/nfs/ops/v4/encoder.go: uses w.Encoder: an ops file reads and writes no bytes: its codec is generated",
 		"internal/adapter/nfs/prof.go: imports github.com/cubbit/dittofs/internal/prof: the service's test components and the profiler reach an adapter through its tests and adaptertest only",
 		"internal/adapter/nfs/rpc/doc.go: a package at internal/adapter/nfs/rpc, a path the first adapters used",
 		"internal/adapter/nfs/service.go: imports github.com/cubbit/dittofs/pkg/vfs/vfstest: the service's test components and the profiler reach an adapter through its tests and adaptertest only",
@@ -285,6 +363,9 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/nfs/wire/service_test.go: imports github.com/cubbit/dittofs/pkg/vfs: a wire package imports only the standard library and pkg/resources",
 		"internal/adapter/pool/doc.go: a package at internal/adapter/pool, a path the first adapters used",
 		"internal/adapter/smb/handlers/doc.go: a package at internal/adapter/smb/handlers, a path the first adapters used",
+		"internal/adapter/smb/ops/binary.go: imports encoding/binary: an ops file reads and writes no bytes: its codec is generated",
+		"internal/adapter/smb/ops/codec_gen.go: imports github.com/cubbit/dittofs/pkg/vfs: a generated codec_gen.go imports only what a wire package may, and its protocol's wire",
+		"internal/adapter/smb/ops/decoder.go: uses wire.Decoder: an ops file reads and writes no bytes: its codec is generated",
 		"internal/adapter/smb/other.go: imports github.com/cubbit/dittofs/internal/adapter/nfs: an adapter never imports another adapter",
 		"internal/adapter/smb/session/sub/doc.go: a package at internal/adapter/smb/session, a path the first adapters used",
 		"internal/adapter/testruntime/doc.go: a package at internal/adapter/testruntime, a path the first adapters used",
