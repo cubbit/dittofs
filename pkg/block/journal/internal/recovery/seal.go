@@ -330,9 +330,11 @@ func corruptLoss(c corruptRecord) durability.Loss {
 // the pass appends and nothing else, and is handed the number of distinct
 // streams the plan's records append on: a fresh core holds no active
 // segment on any stream, so each of them rolls once. A pool that cannot
-// ready that many spares answers its refusal there, before any record is
-// durable, so a short device fails the open whole rather than after part
-// of the plan landed. A pass whose every loss is named asks for no refill,
+// ready that many answers its refusal there, before any record is durable,
+// so a device short of every spare the plan asks for fails the open whole
+// rather than after part of the plan landed; the ask is capped at what the
+// pool ever keeps ready, so a plan wider than that lands what the spares
+// cover and the retry asks again. A pass whose every loss is named asks for no refill,
 // so a clean reopen — and a name-only one over a device that cannot make a
 // spare — blocks on nothing.
 //

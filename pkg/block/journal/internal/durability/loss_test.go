@@ -1706,3 +1706,42 @@ func TestADeferredLossRegistersNothing(t *testing.T) {
 		t.Errorf("Config.Emptied was told of %+v for a deferred loss, want none: no record exists to gate a retirement on", got)
 	}
 }
+
+// TestAFailedRetryOfAnUnsyncedLossKeepsItsPieceHeld covers a reported Lose
+// that takes back a piece a placed but unsynced record holds and is then
+// refused before it places anything: that record is still on disk, so the
+// piece stays held and owed its record, and a later open appends it once.
+func TestAFailedRetryOfAnUnsyncedLossKeepsItsPieceHeld(t *testing.T) {
+	e := newEnv(t)
+	if err := e.seam.Schedule(kit.Failing(kit.OpSync, "*.seg", 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	l := loss(5)
+	if _, err := e.d.Lose(context.Background(), l); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("Lose = %v, want the sync's EIO over the placed record", err)
+	}
+
+	refused := errors.New("read-only")
+	retry := e.newDurability()
+	retry.SetReadOnly(func() error { return refused })
+	again := l
+	again.AtOpen, again.Reported, again.Raised = true, true, true
+	if _, err := retry.Lose(context.Background(), again); !errors.Is(err, refused) {
+		t.Fatalf("the refused retry = %v, want the refusal", err)
+	}
+	if !retry.PlacedUnsynced(l.Seq, l.Extent) {
+		t.Fatalf("PlacedUnsynced(%d) = false after a refused retry, want true: the earlier record is still on disk", l.Seq)
+	}
+
+	before := len(e.registrations())
+	next := e.newDurability()
+	if _, err := next.Lose(context.Background(), again); err != nil {
+		t.Fatalf("the later open's Lose = %v, want nil", err)
+	}
+	if got := len(e.registrations()) - before; got != 1 {
+		t.Errorf("the later open placed %d loss records, want 1: the held piece is owed its record", got)
+	}
+	if got := len(next.Stats().Losses); got != 0 {
+		t.Errorf("the later open's ring holds %d events, want none: the loss was published once", got)
+	}
+}

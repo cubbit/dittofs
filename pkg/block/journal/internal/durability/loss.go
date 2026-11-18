@@ -155,8 +155,12 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// A reported loss takes back a piece a placed but unsynced record holds:
 	// the take stopped its second event, not the record it is still owed.
 	k := piece{l.Seq, l.Extent}
-	if !d.dir.take(k) && (!l.Reported || !d.dir.retakeUnsynced(k)) {
-		return core.LossEvent{}, nil
+	retaken := false
+	if !d.dir.take(k) {
+		if !l.Reported || !d.dir.retakeUnsynced(k) {
+			return core.LossEvent{}, nil
+		}
+		retaken = true
 	}
 
 	var at segment.Location
@@ -286,8 +290,10 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 			// instead of retrying the loss, which would make the taken piece
 			// the dedup that stops a second attempt. A kept piece is marked
 			// unsynced, so the open's pass can tell it from one a durable
-			// record holds and append the record it is still owed.
-			if at == (segment.Location{}) {
+			// record holds and append the record it is still owed. A piece
+			// retaken from an earlier unsynced record stays held too: that
+			// record is still on disk, so a failed retry frees nothing.
+			if at == (segment.Location{}) && !retaken {
 				d.dir.release(k)
 			} else {
 				d.dir.holdUnsynced(k)
