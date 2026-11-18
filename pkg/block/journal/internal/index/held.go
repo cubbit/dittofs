@@ -108,13 +108,15 @@ type held struct {
 
 // toHeld packs p. It panics on a version with a non-zero epoch half, which
 // no record of this format carries: a caller bug, refused rather than stored
-// without it. The side flag alone goes in: the mark the caller's tag names is
-// read on the file the set belongs to, whose rival mark never changes after
-// the piece's record was noted — the rebuilder notes every record before it
-// replays any, and a runtime write of another tag is refused before it could
-// claim — so the flag resolved once at pack time stays the piece's side whole
-// life in the set. A set with no file behind it — a test's bare set — packs
-// every side false, the owner's answer.
+// without it. The side flag alone goes in, against the file's own rival mark:
+// no piece is packed before its record was noted — the rebuilder notes every
+// record before it replays any, and a runtime write of another tag on a file
+// already marked rivalled is refused — so the mark the flag read at pack time
+// named the piece's own tag. The flag stays true to those marks while they
+// stand: the paths that change them, a forget of either side and a
+// whole-marks clear, re-own what remains (ownAll), so a piece's flag never
+// names a rival newer than the piece. A set with no file behind it — a test's
+// bare set — packs every side false, the owner's answer.
 func (s *heldSet) toHeld(p Piece) held {
 	if p.Version.Epoch != 0 {
 		panic(fmt.Sprintf("index: a held piece's version carries epoch %d, which this format never writes", p.Version.Epoch))
@@ -131,12 +133,42 @@ func (s *heldSet) toHeld(p Piece) held {
 	}
 }
 
+// ownAll re-owns every piece of the set: the file's marks changed so that
+// what remains is the owner's — a forget of a rivalled file's owner names its
+// rival the owner's tag, and a marks-clear drops both — and the side flags
+// that pointed at the old marks must say so, or a later rivalry on the same
+// file would resolve the survivor's pieces to the new rival and a forget of
+// it take their content with the rival's own. It runs where those marks
+// change, beside the change itself, under the file's lock; O(pieces) over a
+// file only a fault makes rivalled, and it touches no counter, bytes, dirty
+// or bounds — the flag is none of them.
+func (s *heldSet) ownAll() {
+	var reowned []uint64
+	s.tree.ascend(0, func(k uint64, v held) bool {
+		if v.side {
+			reowned = append(reowned, k)
+		}
+		return true
+	})
+	for _, k := range reowned {
+		// floor over set: the pieces between the reads cannot have moved,
+		// every path here runs under the file's lock, but the read is fresh
+		// anyway so a piece ownAll itself just re-put has the flip stick.
+		if _, v, ok := s.tree.floor(k); ok {
+			v.side = false
+			s.tree.set(k, v)
+		}
+	}
+}
+
 // pieceOf reads the entry at k back with the tag its side resolves to on
 // the file the set belongs to: the flag alone lives in the entry, but the
 // piece it answers carries the share tag it stands for, so callers — the
 // drop, the re-puts, the placements the index hands out — see the tag, never
-// the flag. A bare set, or a file that claims no owner, answers the zero tag;
-// the flag's meaning is the file's marks alone.
+// the flag. The tag answers under the marks standing when the piece is read,
+// and re-ownership keeps the flag truthful across their changes. A bare set,
+// or a file that claims no owner, answers the zero tag; the flag's meaning is
+// the file's marks alone.
 func (s *heldSet) pieceOf(k uint64, h held) Piece {
 	tag := core.ShareTag(0)
 	if s.of != nil && s.of.tagged {

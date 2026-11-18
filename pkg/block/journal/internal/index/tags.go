@@ -115,6 +115,10 @@ func (ix *Index) ClearTag(id core.FileID) error {
 	_, err := ix.fs.update(id, func(f *file) error {
 		f.tagged, f.tag = false, 0
 		f.rivalled, f.rival = false, 0
+		// Both marks drop together, so the pieces' side flags — the rival
+		// mark's alone — re-own with them, keeping a later claim and rivalry
+		// from resolving stale flags to a rival their pieces never had.
+		f.held.ownAll()
 		return nil
 	})
 	return err
@@ -203,8 +207,16 @@ func (ix *Index) ForgetTagMarks(id core.FileID, forgotten core.ShareTag) error {
 		switch {
 		case f.rivalled && f.rival == forgotten:
 			f.rivalled, f.rival = false, 0
+			// What remains is the owner's alone; the pieces the rival's own
+			// forget already dropped never read a flag again, and any flag a
+			// standalone marks-clear leaves would misname the next rivalry.
+			f.held.ownAll()
 		case f.rivalled && f.tag == forgotten:
 			f.tag, f.rivalled, f.rival = f.rival, false, 0
+			// The survivor's pieces are the owner's now: their side flags
+			// must say so before any later rivalry resolves them to its
+			// rival and a forget of it drops them with the rival's own.
+			f.held.ownAll()
 		case f.tag == forgotten:
 			f.tagged, f.tag = false, 0
 		}

@@ -404,3 +404,73 @@ func TestForgetFileDropsTheForgottenSideAlone(t *testing.T) {
 		}
 	}
 }
+
+// TestForgetKeepsTheSurvivorsSideThroughASecondRivalry pins the survivor's
+// flag through the owner-forgotten flip: forgetting a rivalled file's owner
+// re-owns the surviving rival's pieces, so their side flags clear with the
+// marks — a second rivalry on the same file must not resolve them to the new
+// rival, and a forget of the second rival must not take the survivor's
+// content with its own.
+func TestForgetKeepsTheSurvivorsSideThroughASecondRivalry(t *testing.T) {
+	const o, r1, r2 = core.ShareTag(7), core.ShareTag(8), core.ShareTag(9)
+	id := fid(4)
+	ix := New(1 << 20)
+
+	// The first rivalry: O's record claims the file, R1's record marks the
+	// rival side, both pieces held.
+	b1 := newRebuilder(&ix.fs, &Counters{})
+	a1 := recd(RecWrite, id, 1, 1, 1, 0, 0, 4)
+	a1.Tag = o
+	if err := b1.Feed(a1); err != nil {
+		t.Fatal(err)
+	}
+	r1a := recd(RecWrite, id, 2, 2, 1, 8, 8, 4)
+	r1a.Tag = r1
+	if err := b1.Feed(r1a); err != nil {
+		t.Fatal(err)
+	}
+	if err := b1.Finish(ver(3)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The forget of the OWNER: the two steps the datapath forget runs, the
+	// drop then the marks, in that order. The surviving pieces are R1's,
+	// and the flip that makes R1 the owner must re-own their side flags.
+	if _, _, err := ix.ForgetFile(id, 1<<30, o); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.ForgetTagMarks(id, o); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := ix.Lookup(id, 8); !ok || p.Tag != r1 {
+		t.Fatalf("the survivor's piece reads tag %d (held %v) after its rival became the owner, want %d", p.Tag, ok, r1)
+	}
+
+	// The second rivalry, fault-shaped as the first: a record of R2 beside
+	// the survivor's on the same file. The survivor's pieces must resolve
+	// as the owner's still, not as the new rival's.
+	b2 := newRebuilder(&ix.fs, &Counters{})
+	r2a := recd(RecWrite, id, 3, 3, 3, 0, 16, 4)
+	r2a.Tag = r2
+	if err := b2.Feed(r2a); err != nil {
+		t.Fatal(err)
+	}
+	if err := b2.Finish(ver(5)); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := ix.Lookup(id, 8); !ok || p.Tag != r1 {
+		t.Fatalf("the survivor's piece reads tag %d (held %v) under the second rivalry, want its owner's %d", p.Tag, ok, r1)
+	}
+
+	// The forget of the second rival takes R2's piece alone and spares the
+	// survivor's content.
+	if _, _, err := ix.ForgetFile(id, 1<<30, r2); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ix.Lookup(id, 16); ok {
+		t.Fatalf("the second rival's piece survived its own forget")
+	}
+	if p, ok := ix.Lookup(id, 8); !ok || p.Tag != r1 {
+		t.Fatalf("the survivor's piece went with the second rival's forget: held %v, tag %d, want it kept as its owner's %d", ok, p.Tag, r1)
+	}
+}
