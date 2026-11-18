@@ -191,9 +191,10 @@ type Spares struct {
 	// left exactly as it stands — not adopted, not unlinked, no slot of it
 	// touched. Held takes count in two places and stand in the headroom
 	// both times: the fill order spends its headroom slots on them before
-	// the adopted spares draw their classes, and the pool wiring no later
-	// step builds yet — the count it will read here, and the headroom it
-	// must not re-fill — is what keeps a hold from leaking a cap.
+	// the adopted spares draw their classes, and the pool's HoldTaken
+	// count — which nothing hands this list to yet — is what would keep the
+	// refill from making a headroom spare over each: until it is wired, a
+	// hold costs one headroom cap past the targets while it stands.
 	Held []core.SegmentID
 	// Unlinked holds each id the phase unlinked, ascending by id.
 	Unlinked []core.SegmentID
