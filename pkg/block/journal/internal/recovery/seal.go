@@ -416,8 +416,15 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 // failed the record already answered the writer it never landed, the class
 // the failed window's verdict accepts, so nothing re-detects it and nothing
 // serves it. The emptying copies only ended segments out, and a failed
-// window's segment is left standing whole; withdrawn when the emptying
-// writes the failed records' losses into its copies too.
+// window's segment is left standing whole: the journal's design empties each
+// segment still holding a failed record past the reserve, leaving the failed
+// records out of the copy, and that half is not built.
+//
+// ponytail: owed, owner unowned, trigger a read-only reopen whose failed
+// records outnumber the open reserve. Until then such a reopen drops the
+// records past the reserve unrecorded and leaves their segments whole; the
+// upgrade is the emptying of a sealed, non-ended segment — a copy that omits
+// the failed seqs, repointing the rest, then the unlink.
 //
 // decision: the past-the-reserve answer is the deferral itself — the corrupt
 // drops the open reserve cannot hold defer, through the same Lose a running
