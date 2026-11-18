@@ -1,0 +1,19 @@
+{
+  "rfc": {
+    "number": 0,
+    "title": "the data lifecycle",
+    "path": "docs/internals/rfcs/rfc-0-data-lifecycle.md",
+    "commit": "bc7aa998636cd2b1080d934496893911facc7ba2",
+    "status": "draft"
+  },
+  "sources": [
+    "docs/internals/rfcs/rfc-0-data-lifecycle.md",
+    "docs/internals/architecture.md",
+    "README.md"
+  ],
+  "terms": {
+    "known": [],
+    "new": [],
+    "conflicts": []
+  }
+}
