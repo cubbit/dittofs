@@ -46,10 +46,11 @@ type SecretProvider interface {
 var _ SecretProvider = (*secrets.Provider)(nil)
 
 // Store is the store's calls the server makes: the principals and their
-// records, and the one write that mints principals. Declaring it here keeps a
+// records, a group's record, and the one write that mints principals. Declaring it here keeps a
 // change to the store's write calls inside the store.
 type Store interface {
 	Principals() kvstore.Principals
+	Records() kvstore.Records
 	Minter() kvstore.Minter
 }
 
@@ -105,6 +106,7 @@ type Server struct {
 	refusals *prometheus.CounterVec // by reason
 	mints    *prometheus.CounterVec // by kind
 	unnamed  *prometheus.CounterVec // by kind
+	unmapped *prometheus.CounterVec // by scheme
 }
 
 // refusalsSpec counts the calls resolution refuses, by the reason refused.
@@ -142,6 +144,7 @@ func New(d Deps) (*Server, error) {
 	s.refusals = counter(d.Metrics, refusalsSpec)
 	s.mints = counter(d.Metrics, mintsSpec)
 	s.unnamed = counter(d.Metrics, unnamedSpec)
+	s.unmapped = counter(d.Metrics, unmappedSpec)
 	return s, nil
 }
 

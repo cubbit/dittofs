@@ -95,9 +95,10 @@ const (
 	SchemeGID
 	SchemeSID
 	SchemeKerberos
+	SchemeDir // a directory entry's immutable ID
 )
 
-var protocolSchemes = []string{SchemeUID: "uid", SchemeGID: "gid", SchemeSID: "sid", SchemeKerberos: "krb"}
+var protocolSchemes = []string{SchemeUID: "uid", SchemeGID: "gid", SchemeSID: "sid", SchemeKerberos: "krb", SchemeDir: "dir"}
 
 func (s ProtocolScheme) String() string                { return enumString(protocolSchemes, s) }
 func (s ProtocolScheme) MarshalText() ([]byte, error)  { return enumMarshal(protocolSchemes, s) }

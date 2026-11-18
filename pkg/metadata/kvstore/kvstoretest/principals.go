@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -144,6 +145,27 @@ func testMachineReadAndDelete(t *testing.T, kvo Opener) {
 
 // A user or group may have no name: no name row finds it, its protocol IDs
 // do, and a rename to no name frees the old one.
+// Records reads a group's record by ID, and finds neither a user under a
+// group's kind nor a deleted group.
+func testGroupRecord(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp, r := s.ControlPlane(), s.Records()
+	g := group("staff")
+	gen, err := cp.PutGroup(ctx, g, 0, entity.Alloc{})
+	must(t, err)
+	got, err := r.Group(ctx, g.Principal)
+	if err != nil || got.Name != "staff" || !slices.Equal(got.IDs, g.IDs) || got.Generation != gen {
+		t.Fatalf("Group(staff) = %+v, %v; want name staff, IDs %v, generation %d", got, err, g.IDs, gen)
+	}
+	if got, err := r.Group(ctx, entity.Principal{Kind: entity.PrincipalUser, ID: g.Principal.ID}); !merrs.IsNotFoundError(err) {
+		t.Errorf("Group of a user principal with staff's ID = %+v, %v; want not found", got, err)
+	}
+	must(t, cp.DeleteGroup(ctx, g.Principal, gen))
+	if got, err := r.Group(ctx, g.Principal); !merrs.IsNotFoundError(err) {
+		t.Errorf("Group of a deleted group = %+v, %v; want not found", got, err)
+	}
+}
+
 func testUnnamedPrincipals(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp, p := s.ControlPlane(), s.Principals()
