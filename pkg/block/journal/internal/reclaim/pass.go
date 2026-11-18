@@ -184,7 +184,12 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 	// The share seal: only a pass aimed at one share by tag alone closes
 	// its active segments, which no selection offers while they are open. A
 	// zero scope and a segment-set scope name segments or none, and seal
-	// nothing. A budget that runs no unit seals nothing either.
+	// nothing. A budget that runs no unit seals nothing either. The context
+	// is checked before it: the seal writes the marker, and a dead caller's
+	// deadline must not be held by I/O its refusal will never live to use.
+	if err := ctx.Err(); err != nil {
+		return Outcome{}, err
+	}
 	if p.seal != nil && budget > 0 && scope.Share != 0 && len(scope.Segments) == 0 {
 		p.seal.SealShare(scope.Share)
 	}
