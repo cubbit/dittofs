@@ -25,6 +25,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
 // loggedBuf is the tests' own log sink: the debug line a close writes lands
@@ -2430,6 +2433,185 @@ func TestANotifyIsSealedAndGoesAheadOfTheReplyItNames(t *testing.T) {
 		}
 		if got[3].ID != 3 || got[3].Status != testproto.StatusOK {
 			t.Errorf("the fourth record is %+v, want the Notify's own success", got[3])
+		}
+	})
+}
+
+// On a Bare connection with the reply budget full, 64 Echo are admitted and
+// the 65th is read and waits in Admit, so the connection is not read past it:
+// the client's 66th write does not complete until a request has completed,
+// and every Echo is answered once room is freed (RFC 20 sections 6.3 and
+// 6.9).
+func TestAdmissionAtTheCapStopsTheReader(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		// The reply budget holds one small class, which the test takes, so every
+		// Echo admitted waits in its reply reservation.
+		b.Reply = resources.NewWaitBudget("reply", chargeOfReply(t, 8))
+		adaptertest.CheckLeaks(t, b)
+		held, err := resources.NewBufPool(b.Reply).Get(context.Background(), netip.Addr{}, 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv, l := testServer(t, adapter.Deps{Budgets: b}, settings.DefaultNFS())
+		_, peer := servedConn(t, srv, &l)
+		c := testproto.NewClient(peer)
+		const sent = 66
+		var written atomic.Int64
+		sending := make(chan error, 1)
+		go func() {
+			for i := range sent {
+				if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: uint64(i + 1), Payload: []byte("x")}); err != nil {
+					sending <- err
+					return
+				}
+				written.Add(1)
+			}
+			sending <- nil
+		}()
+		synctest.Wait()
+		if n := written.Load(); n != 65 {
+			t.Fatalf("%d of %d writes completed with the reply budget full, want 65: 64 admitted and the 65th read and waiting in Admit", n, sent)
+		}
+		held.Release()
+		answered := make(map[uint64]bool, sent)
+		for i := range sent {
+			rs, err := c.Recv()
+			if err != nil || len(rs) != 1 || rs[0].Status != testproto.StatusOK {
+				t.Fatalf("reply %d: %+v (%v)", i, rs, err)
+			}
+			answered[rs[0].ID] = true
+		}
+		if len(answered) != sent {
+			t.Errorf("%d Echo answered of %d", len(answered), sent)
+		}
+		if err := <-sending; err != nil {
+			t.Fatalf("the client's writes: %v", err)
+		}
+	})
+}
+
+// A client that sends 16 Echo and reads nothing has every request complete:
+// each hands its reply to the writer and ends, giving its record's charge
+// back. The connection's close then drops the replies unsent, and every
+// budget is back at zero (RFC 20 sections 6.1 and 6.5).
+func TestASilentClientsRequestsComplete(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		srv, l := testServer(t, adapter.Deps{Budgets: b}, settings.DefaultNFS())
+		conn, peer := servedConn(t, srv, &l)
+		c := testproto.NewClient(peer)
+		for i := range 16 {
+			if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: uint64(i + 1), Payload: []byte("x")}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		synctest.Wait()
+		if r := b.Receive.Reserved(); r != 0 {
+			t.Fatalf("with the client reading nothing the receive budget holds %d bytes: a request still runs", r)
+		}
+		conn.Close(nil)
+		select {
+		case <-core.ConnDone(conn):
+		case <-time.After(2 * time.Second):
+			t.Fatal("the teardown did not end with the client reading nothing")
+		}
+		if rs, err := c.Recv(); err == nil {
+			t.Errorf("after the close the client read %+v, want the connection's end and no reply", rs)
+		}
+	})
+}
+
+// A message whose Unwrap says close, a related member's session with no
+// member before it, closes the connection from the reader: nothing is
+// answered and the teardown ends (RFC 20 sections 4.7 and 5.5).
+func TestAnUnwrapThatSaysCloseClosesTheConnection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})}
+		srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		core.Serving(srv)
+		conn, peer := servedConn(t, srv, &l)
+		c := testproto.NewClient(peer)
+		if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Session: inherited, Payload: []byte("x")}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-core.ConnDone(conn):
+		case <-time.After(2 * time.Second):
+			t.Fatal("the connection did not close when Unwrap said close")
+		}
+		if rs, err := c.Recv(); err == nil {
+			t.Errorf("a message Unwrap closed on was answered %+v", rs)
+		}
+	})
+}
+
+// A Park whose handler reaches Park after a Violate on its connection closed
+// it has its cancel called at once: no file is made, nothing more is answered,
+// the teardown ends, and every budget is back at zero (RFC 20 sections 4.7
+// and 6.5).
+func TestAParkOnAConnectionAViolateClosedIsDropped(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		svc := memory.New(t)
+		root, _, err := svc.Root(t.Context(), svc.Admin(), vfs.ShareRef{Name: svc.Store.Share.Name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		faults := vfstest.Faults(svc)
+		d := adapter.Deps{VFS: faults, Budgets: b}
+		l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(d).WithCall(svc.Admin())}
+		srv, err := core.NewServer(d, settings.DefaultNFS(), l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		core.Serving(srv)
+		conn, peer := servedConn(t, srv, &l)
+		c := testproto.NewClient(peer)
+		for _, m := range []testproto.Msg{
+			{Op: testproto.OpNegotiate, Version: 2, ID: 1},
+			{Op: testproto.OpSession, Version: 2, ID: 2, Session: 7},
+			{Op: testproto.OpTree, Version: 2, ID: 3, Session: 7, Tree: 1},
+		} {
+			if err := c.Send(m); err != nil {
+				t.Fatal(err)
+			}
+			if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != testproto.StatusOK {
+				t.Fatalf("setting the connection up: %+v (%v)", rs, err)
+			}
+		}
+		// The Park's read before it parks is held in the service while the
+		// Violate closes the connection, so its handler parks on a closed one.
+		read := faults.Hold(vfs.OpGetAttr)
+		defer read.Release()
+		if err := c.Send(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 4, Session: 7, Tree: 1, Handle: root},
+			testproto.Msg{Op: testproto.OpPark, Version: 2, ID: 5, Session: inherited, Tree: 1, Name: "f", Related: true},
+		); err != nil {
+			t.Fatal(err)
+		}
+		<-read.Reached()
+		if err := c.Send(testproto.Msg{Op: testproto.OpViolate, Version: 2, ID: 6, Session: 7}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-core.ConnDone(conn):
+		case <-time.After(2 * time.Second):
+			t.Fatal("the connection did not close after the Violate, a Park still running")
+		}
+		synctest.Wait() // a handler the close did not cancel would make its file now
+		if _, _, err := svc.Lookup(context.Background(), svc.Admin(), root, []byte("f")); err == nil {
+			t.Error("the Park on the closed connection made its file")
+		}
+		if rs, err := c.Recv(); err == nil {
+			t.Errorf("after the Violate the client read %+v, want the connection's end and no reply", rs)
 		}
 	})
 }
