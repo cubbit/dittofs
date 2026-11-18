@@ -1680,13 +1680,13 @@ func TestTheCopyOutranksARottenTwinAcrossTwoOpens(t *testing.T) {
 	}
 }
 
-// TestACarryOverARottenTwinSkipsAnAdoptedReserveSpareBelowIt holds the draw's
+// TestACarryOverARottenTwinRenamesAnAdoptedReserveSpareBelowIt holds the draw's
 // floor over the pool's own reserve: the spare 1 the spares phase re-adopts
 // into the repack reserve keeps its old id, below the twin 7 whose copy of
 // the ended segment 4's record rots before the emptying reads it. A carry
 // into that spare would lose to the twin at the next open, whose walk
 // verifies no payload; the carry lands in that spare renamed above the twin.
-func TestACarryOverARottenTwinSkipsAnAdoptedReserveSpareBelowIt(t *testing.T) {
+func TestACarryOverARottenTwinRenamesAnAdoptedReserveSpareBelowIt(t *testing.T) {
 	file := tailFile()
 	r := newRig(t)
 	r.writeFormat()

@@ -383,8 +383,9 @@ func (p *Pool) Take(c Class) (core.SegmentID, error) {
 // of the reserve.
 //
 // decision: a low spare is renamed, never made anew: the rename to the
-// Maker's next id and the directory sync that makes it durable — the
-// recycle's own first two steps — then the ledger's re-key, so the take
+// Maker's next id, the ledger's re-key so the ledger follows the file's
+// name, then the directory sync that makes the rename durable — the
+// recycle's own rename and sync — so the take
 // needs no byte past the footprint and a journal at its maximum still
 // draws. A spare's header and trailer slots are already zero, so nothing is
 // rewritten. A crash before the sync leaves the file under either name,

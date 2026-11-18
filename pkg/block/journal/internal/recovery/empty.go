@@ -749,8 +749,11 @@ func (e *emptying) finish(ctx context.Context, id core.SegmentID, target core.Se
 // draw answers the
 // pool's spare refusal, which the copier returns as the pool
 // gave it: the open fails, the ended segment stands, and the copy is never
-// placed low. Withdrawn when the rebuild verifies payloads, or the open
-// records a rotten placement so a restart cannot serve it again.
+// placed low. A freed take at or below the floor is only skipped, not renamed
+// above it as the reserve's low spare is, so at the maximum an empty reserve
+// still refuses where the same rename could serve the take. Withdrawn when
+// the rebuild verifies payloads, or the open records a rotten placement so a
+// restart cannot serve it again.
 func (e *emptying) drawAbove(floor core.SegmentID) (core.SegmentID, error) {
 	for i, id := range e.freed {
 		if id > floor {
