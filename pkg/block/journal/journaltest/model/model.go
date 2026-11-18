@@ -169,6 +169,10 @@ type fileState struct {
 	markers []*record      // removals whose marker is live
 	change  version        // the highest version of a record that changed the file
 
+	// painters are the writes and fills the state was painted from: every
+	// held byte is read from one of them.
+	painters []*record
+
 	// inexact reports that the journal may answer with a change version
 	// above change: a reopen raised the file to the floor, and a crash before
 	// it may have dropped a record the model cannot see. The file's next
@@ -196,6 +200,7 @@ func derive(f *file, keep func(*record) bool) *fileState {
 	for _, r := range recs {
 		switch {
 		case r.kind == kindWrite || r.kind == kindFill:
+			st.painters = append(st.painters, r)
 			for i, b := range r.data {
 				st.held[r.ext.Off+int64(i)] = cell{b, r}
 			}
@@ -260,6 +265,34 @@ type run struct {
 	ver       version
 	rec       *record
 	offloaded bool
+}
+
+// heldRun is a maximal stretch of held bytes read from one record.
+type heldRun struct {
+	ext extent
+	rec *record
+}
+
+// heldRuns returns the held bytes of st as runs sorted by offset, found by
+// walking the bytes of the records st was painted from rather than by
+// sorting the bytes themselves.
+func (st *fileState) heldRuns() []heldRun {
+	var out []heldRun
+	for _, r := range st.painters {
+		for i := range r.data {
+			off := r.ext.Off + int64(i)
+			if c, ok := st.held[off]; !ok || c.rec != r {
+				continue
+			}
+			if n := len(out); n > 0 && out[n-1].rec == r && end(out[n-1].ext) == off {
+				out[n-1].ext.Len++
+				continue
+			}
+			out = append(out, heldRun{extent{Off: off, Len: 1}, r})
+		}
+	}
+	slices.SortFunc(out, func(a, b heldRun) int { return cmp.Compare(a.ext.Off, b.ext.Off) })
+	return out
 }
 
 func (st *fileState) runs() []run {

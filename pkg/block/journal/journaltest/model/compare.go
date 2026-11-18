@@ -67,8 +67,72 @@ type observation struct {
 // sinceView is what Since(id, from) yielded.
 type sinceView struct {
 	from    version
-	writes  map[int64]sinceByte // bytes named as held
+	writes  []sinceRun // extents named as held, sorted by offset, disjoint
 	markers []markerKey
+}
+
+// sinceRun is one write Since named: its extent, version and mtime.
+type sinceRun struct {
+	ext extent
+	b   sinceByte
+}
+
+// piece is a stretch of bytes over which a check says one thing: its problem,
+// "" for none.
+type piece struct {
+	ext     extent
+	problem string
+}
+
+// firstPiece is firstRun over pieces sorted by offset that between them hold
+// every byte the check covers: the first piece with a problem, joined with
+// the pieces right after it that adjoin it and say the same.
+func firstPiece(ps []piece) string {
+	for i, p := range ps {
+		if p.problem == "" {
+			continue
+		}
+		e := p.ext
+		for _, q := range ps[i+1:] {
+			if q.ext.Off != end(e) || q.problem != p.problem {
+				break
+			}
+			e.Len += q.ext.Len
+		}
+		return fmt.Sprintf("bytes %s: %s", fmtExtent(e), p.problem)
+	}
+	return ""
+}
+
+// overlay cuts each of the sorted, disjoint extents of base at the edges of
+// the sorted, disjoint runs of top, and returns the pieces with what say
+// makes of each: the index of the run of top covering the piece, -1 where
+// none does.
+func overlay[B, T any](base []B, baseExt func(B) extent, top []T, topExt func(T) extent, say func(B, int) string) []piece {
+	var ps []piece
+	j := 0
+	for _, b := range base {
+		be := baseExt(b)
+		at := be.Off
+		for at < end(be) {
+			for j < len(top) && end(topExt(top[j])) <= at {
+				j++
+			}
+			hi, k := end(be), -1
+			if j < len(top) {
+				te := topExt(top[j])
+				switch {
+				case te.Off <= at:
+					hi, k = min(hi, end(te)), j
+				default:
+					hi = min(hi, te.Off)
+				}
+			}
+			ps = append(ps, piece{extent{Off: at, Len: hi - at}, say(b, k)})
+			at = hi
+		}
+	}
+	return ps
 }
 
 // sinceFroms returns the versions Compare reads Since from for f: the start,
@@ -379,8 +443,9 @@ func observe(ctx context.Context, f *file, v View, froms []version) (*observatio
 
 // readSince reads Since(id, from) through v.
 func readSince(ctx context.Context, id fileID, v View, from version) (sinceView, error) {
-	sv := sinceView{from: from, writes: map[int64]sinceByte{}}
+	sv := sinceView{from: from}
 	var last version
+	var named int64 // bytes the writes so far name, none twice
 	for c, err := range v.Since(ctx, id, from) {
 		if err != nil {
 			return sv, fmt.Errorf("Since from %s: %w", fmtVersion(from), err)
@@ -391,21 +456,28 @@ func readSince(ctx context.Context, id fileID, v View, from version) (sinceView,
 		last = c.Version
 		switch c.Kind {
 		case journal.ChangeWrite:
-			if c.Extent.Len <= 0 || c.Extent.Len > maxObserved || len(sv.writes)+int(c.Extent.Len) > maxObserved {
+			if c.Extent.Len <= 0 || c.Extent.Len > maxObserved || named+c.Extent.Len > maxObserved {
 				return sv, fmt.Errorf("Since from %s names %s", fmtVersion(from), fmtExtent(c.Extent))
 			}
-			for off := c.Extent.Off; off < end(c.Extent); off++ {
-				if _, dup := sv.writes[off]; dup {
-					return sv, fmt.Errorf("Since from %s names byte %d held twice", fmtVersion(from), off)
+			// The first byte of this write an earlier one named, if any.
+			dup := int64(-1)
+			for _, w := range sv.writes {
+				if lo := max(w.ext.Off, c.Extent.Off); lo < min(end(w.ext), end(c.Extent)) && (dup < 0 || lo < dup) {
+					dup = lo
 				}
-				sv.writes[off] = sinceByte{c.Version, c.Mtime}
 			}
+			if dup >= 0 {
+				return sv, fmt.Errorf("Since from %s names byte %d held twice", fmtVersion(from), dup)
+			}
+			named += c.Extent.Len
+			sv.writes = append(sv.writes, sinceRun{c.Extent, sinceByte{c.Version, c.Mtime}})
 		case journal.ChangeTruncate, journal.ChangeDeallocate, journal.ChangeDelete:
 			sv.markers = append(sv.markers, markerKey{c.Kind, c.Extent, c.Version})
 		default:
 			return sv, fmt.Errorf("Since from %s yields a change of kind %d, which the model never makes", fmtVersion(from), c.Kind)
 		}
 	}
+	slices.SortFunc(sv.writes, func(a, b sinceRun) int { return cmp.Compare(a.ext.Off, b.ext.Off) })
 	return sv, nil
 }
 
@@ -483,8 +555,9 @@ func differ(o *observation, st *fileState, ceiling version) string {
 		return fmt.Sprintf("a read reports the file changed at %s, above every version issued and the floor (%s)", fmtVersion(o.asOf), fmtVersion(ceiling))
 	}
 
+	held := st.heldRuns()
 	for _, sv := range o.since {
-		if d := sinceDiffers(sv, st); d != "" {
+		if d := sinceDiffers(sv, held, st); d != "" {
 			return d
 		}
 	}
@@ -530,23 +603,30 @@ func differ(o *observation, st *fileState, ceiling version) string {
 
 // sinceDiffers returns how what Since yielded from sv.from differs from st:
 // every held byte above from as a write, with its version and mtime, and every
-// live marker above from.
-func sinceDiffers(sv sinceView, st *fileState) string {
+// live marker above from. held is st's held bytes as runs. Each byte says
+// the same as every other byte of its run and of the Since write naming it,
+// so the comparison runs over those pieces rather than byte by byte.
+func sinceDiffers(sv sinceView, held []heldRun, st *fileState) string {
 	from := fmtVersion(sv.from)
-	want := func(off int64) (sinceByte, bool) {
-		c := st.held[off]
-		if c.rec.ver.Compare(sv.from) <= 0 {
+	want := func(r *record) (sinceByte, bool) {
+		if r.ver.Compare(sv.from) <= 0 {
 			return sinceByte{}, false
 		}
-		w := sinceByte{ver: c.rec.ver}
-		if c.rec.kind == kindWrite {
-			w.mtime = c.rec.mtime
+		w := sinceByte{ver: r.ver}
+		if r.kind == kindWrite {
+			w.mtime = r.mtime
 		}
 		return w, true
 	}
-	if d := firstRunIn(st.held, func(off int64) string {
-		w, ok := want(off)
-		got, named := sv.writes[off]
+	runExt := func(h heldRun) extent { return h.ext }
+	writeExt := func(w sinceRun) extent { return w.ext }
+	if d := firstPiece(overlay(held, runExt, sv.writes, writeExt, func(h heldRun, k int) string {
+		w, ok := want(h.rec)
+		var got sinceByte
+		named := k >= 0
+		if named {
+			got = sv.writes[k].b
+		}
 		switch {
 		case ok && !named:
 			return fmt.Sprintf("held at %s, but Since from %s omits them", fmtVersion(w.ver), from)
@@ -556,15 +636,15 @@ func sinceDiffers(sv sinceView, st *fileState) string {
 			return fmt.Sprintf("written at %s with mtime %d, but Since from %s names them at %s with mtime %d", fmtVersion(w.ver), w.mtime, from, fmtVersion(got.ver), got.mtime)
 		}
 		return ""
-	}); d != "" {
+	})); d != "" {
 		return d
 	}
-	if d := firstRunIn(sv.writes, func(off int64) string {
-		if _, ok := st.held[off]; !ok {
+	if d := firstPiece(overlay(sv.writes, writeExt, held, runExt, func(_ sinceRun, k int) string {
+		if k < 0 {
 			return fmt.Sprintf("named held by Since from %s, but the model holds nothing there", from)
 		}
 		return ""
-	}); d != "" {
+	})); d != "" {
 		return d
 	}
 
