@@ -359,10 +359,10 @@ func TestACloneRetriedOverAReadOnlyJournalLogsOnce(t *testing.T) {
 	_ = u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
 	count := func() (errs, retries int) {
 		for _, r := range logs.records() {
-			switch {
-			case r.Level == slog.LevelError:
+			if r.Level == slog.LevelError {
 				errs++
-			case strings.Contains(r.Message, "refused by the read-only journal: retried"):
+			}
+			if strings.Contains(r.Message, "refused by the read-only journal: retried") {
 				retries++
 			}
 		}
