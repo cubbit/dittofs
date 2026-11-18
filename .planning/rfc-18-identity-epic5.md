@@ -435,20 +435,17 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
 - **Covers:** none of its own; consumed by T5.6 (the captured PACs) and T5.11 (a ticket the
   fixture's domain controller issues for an AES-only service name), and it holds at the KDC the
   AES-only half of R2 and R6 that T5.11's ticket relies on.
-- **Deliverables:** built, not merged, on the branch `test/ad-dc-kerberos` (321c816bb, 6b541fa1d,
-  b1c51277b), stacked on `test/ad-dc-network-tls` (9207ec946, f86998cd3, 24073d347); E6's T6.1
-  moved both onto `feat/storage-v2`, where they are open as `test/ad-dc-kerberos-v2` (#4421),
-  stacked on `test/ad-dc-network-tls-v2` (#4420). What is left is merging #4421 after #4420,
-  rebased on E7's #4422 if that merges first. The part: the `cifs/` and `nfs/` service names moved
-  off Administrator onto an account of their own, `dittofs-svc`, with
-  `msDS-SupportedEncryptionTypes` `0x18`, so the exported keytab holds no RC4 key (`entrypoint.sh`,
-  `fixture_test.go`'s AES-only subtest); `capture-pacs.sh`, which runs `TestADPACCapture` with
-  `DITTOFS_AD_DC_PAC_OUT` set and writes `tgt.pac` with `krbtgt.keytab` and `service.pac` with
-  `service.keytab`; `docs/guide/identity.md`'s account of the fixture, and its instruction to
-  change the KDC at once when every node reports a new keytab version: RFC 13 §7 starts the
-  old version's retention at the change at the KDC, which the rotation cannot observe (§9), so a
-  KDC changed late can find its key pruned. The fixture's TLS part is
-  E6's and its join part E7's.
+- **Deliverables:** merged on `feat/storage-v2` as #4421 (after #4420), moved there from
+  `test/ad-dc-kerberos` by E6's T6.1; the guide's list of what the suite checks is #4808. The part:
+  the `cifs/` and `nfs/` service names moved off Administrator onto an account of their own,
+  `dittofs-svc`, with `msDS-SupportedEncryptionTypes` `0x18`, so the exported keytab holds no RC4
+  key (`entrypoint.sh`, `fixture_test.go`'s AES-only subtest); `capture-pacs.sh`, which runs
+  `TestADPACCapture` with `DITTOFS_AD_DC_PAC_OUT` set and writes `tgt.pac` with `krbtgt.keytab` and
+  `service.pac` with `service.keytab`; `docs/guide/identity.md`'s account of the fixture, and, once
+  the keytab's rotation exists, its instruction to change the KDC at once when every node reports a
+  new keytab version: RFC 13 §7 starts the old version's retention at the change at the KDC, which
+  the rotation cannot observe (§9), so a KDC changed late can find its key pruned. The fixture's TLS
+  part is E6's and its join part E7's.
 - **Acceptance criteria:**
   - The KDC refuses a service ticket for the imported `cifs/` name under RC4 and issues one under
     AES256; Administrator holds no `cifs/` name.
@@ -866,7 +863,7 @@ domain controller's captured AP-REQ does.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.1 | 2 | #4420 | the fixture's Kerberos part, open on `feat/storage-v2` as #4421 |
+| 1 | T5.1 | 2 | #4420 | the fixture's Kerberos part, merged on `feat/storage-v2` as #4421 |
 | 2 | T5.8a | 0.75 | S1 | the field RFC 23's plan's epic 4's T4.11 writes, ahead of the PAC work |
 | 3 | T5.2, T5.3, T5.4 | 6.25 | E2's T2.4 | the keytab and the AP-REQ's checks, the surface E7 builds on |
 | 4 | T5.5, T5.6, T5.7 | 6.25 | PR 3, PR 1, E4's T4.5, E3's T3.5 | a Kerberos sign-in end to end, with its PAC verified and its SIDs filtered |
@@ -940,10 +937,10 @@ the version this document was written against.
   on the injected clock.
 - The plan's §3.3 has E5 wait on E1 to E4 only. T5.8b also waits on E6's T6.3 (D14) and T5.9 on
   E6's T6.2 (D12).
-- The plan gives E5 the keytab's prune and its revocation report. RFC 23 §3.3's credential
-  rotation keeps and prunes the old version (D13), so T5.10 is removed; the report waits on the
-  RFC 23 §3.3 gap above. E2's D6, merged, still says T5.10 adds `Prune` and `Versions` to
-  `SecretProvider`; E7's T7.12 adds them now, and E2's D6 needs that one-line correction.
+- The plan gives E5 the keytab's prune and its revocation report. RFC 23 §3.3's credential rotation
+  keeps and prunes the old version (D13), so T5.10 is removed; the report waits on the RFC 23 §3.3
+  gap above. E2's D6 now gives `Prune` and `Versions` to E7's T7.12, whose §9 holds the open point
+  on `Prune`'s shape.
 - The plan gives taking `integration/ad-dc` out of the plan job's filter on `feat/storage-v2` to
   whichever of the fixture's three parts lands first. The built part was cut from `develop`,
   where no filter exists, and this epic records the outcome rather than assigning it: E6's T6.1
