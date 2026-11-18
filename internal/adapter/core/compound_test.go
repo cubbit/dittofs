@@ -395,6 +395,103 @@ func TestTheQuarter(t *testing.T) {
 	})
 }
 
+// file writes n bytes, each its offset's low byte, to a new file under the
+// root through the service, and returns its handle and its bytes.
+func (s *served) file(name string, n int) (vfs.Handle, []byte) {
+	s.t.Helper()
+	ctx, c := s.t.Context(), s.svc.Admin()
+	f, err := s.svc.Create(ctx, c, s.root, []byte(name), vfs.CreateArgs{Kind: vfs.CreateRegular})
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	data := make([]byte, n)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	if _, err := s.svc.Write(ctx, c, vfs.Anonymous(f.Handle), 0, data, vfs.FileSync); err != nil {
+		s.t.Fatal(err)
+	}
+	return f.Handle, data
+}
+
+// readOf is a Read result's eof flag and data.
+func readOf(res testproto.Result) (eof bool, data []byte) {
+	if len(res.Body) == 0 {
+		return false, nil
+	}
+	return res.Body[0] == 1, res.Body[1:]
+}
+
+// The record cap a compound's Echo members pass, whose hooks ignore their
+// room, refuses the compound before any member runs, counted reply_too_big;
+// at the cap it runs, its payload intact. The reply pool's quarter holds
+// both, so the cap alone refuses.
+func TestTheRecordCapRefusesACompoundPastIt(t *testing.T) {
+	m := metrics.New("v", "c")
+	s := newServed(t, 64<<20, adapter.Deps{Metrics: m})
+	record, _ := testproto.New(adapter.Deps{}).Framer().MaxRecord()
+	// The compound's ReplyLen, its header, its head with a 4-byte tag and
+	// one result's head, takes 68, and the Echo's result head 12.
+	at := record - 68 - 12
+	s.compound(1, testproto.Msg{Op: testproto.OpEcho, Payload: make([]byte, at+1)})
+	r := s.read()
+	if hd, rs, err := testproto.Results(r.Body); r.Status != testproto.StatusReplyTooBig || err != nil || !headIs(hd, testproto.StatusReplyTooBig, tagOf(1)) || len(rs) != 0 {
+		t.Errorf("a compound one byte past the record cap is answered %d, head %d with %d results (%v); want the too-big status and no results", r.Status, hd.Status, len(rs), err)
+	}
+	if got, _ := scrape(t, m); got["adapter_refusals_total{protocol="+testproto.Name+",stage=reply_too_big}"] != 1 {
+		t.Errorf("the refusal past the record cap counted %v under reply_too_big, want 1", got["adapter_refusals_total{protocol="+testproto.Name+",stage=reply_too_big}"])
+	}
+	payload := bytes.Repeat([]byte("ab"), at/2)
+	s.compound(2, testproto.Msg{Op: testproto.OpEcho, Payload: payload})
+	if st, rs := s.resultsWithOps(); st != testproto.StatusOK || len(rs) != 1 || !bytes.Equal(rs[0].Body, payload) {
+		t.Errorf("a compound at the record cap is answered %d with %d results; want its payload of %d bytes back intact", st, len(rs), len(payload))
+	}
+}
+
+// Before any member runs, each Read is handed its room within the record
+// cap: of two Reads of 768 KiB from a file of 1.5 MiB, the first is answered
+// short, at least one byte and eof false, and the second whole, both of the
+// file's own bytes, the reply within the cap, and one read counted
+// shortened.
+func TestACompoundsReadIsShortenedToItsRoom(t *testing.T) {
+	m := metrics.New("v", "c")
+	s := newServed(t, 64<<20, adapter.Deps{Metrics: m})
+	fh, data := s.file("f", 1536<<10)
+	s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: fh},
+		testproto.Msg{Op: testproto.OpRead, Offset: 0, Count: 768 << 10},
+		testproto.Msg{Op: testproto.OpRead, Offset: 768 << 10, Count: 768 << 10})
+	st, rs := s.resultsWithOps()
+	if st != testproto.StatusOK || len(rs) != 3 {
+		t.Fatalf("the compound is answered %d with %d results, want 3", st, len(rs))
+	}
+	eof1, first := readOf(rs[1])
+	eof2, second := readOf(rs[2])
+	if eof1 || len(first) < 1 || len(first) >= 768<<10 || !bytes.Equal(first, data[:len(first)]) {
+		t.Errorf("the first Read is answered %d bytes, eof %v; want a short read of the file's own bytes, eof false", len(first), eof1)
+	}
+	if !eof2 || !bytes.Equal(second, data[768<<10:]) {
+		t.Errorf("the second Read is answered %d bytes, eof %v; want the file's last 768 KiB whole, eof true", len(second), eof2)
+	}
+	if got, _ := scrape(t, m); got["adapter_reads_shortened_total{protocol="+testproto.Name+"}"] != 1 {
+		t.Errorf("adapter_reads_shortened_total is %v, want the first Read counted", got["adapter_reads_shortened_total{protocol="+testproto.Name+"}"])
+	}
+}
+
+// A Read whose room, the members after it counted at their bounds, holds no
+// byte refuses the compound before any member runs, though the Read after it
+// could be shortened to make room (RFC 20 §4.3).
+func TestAReadLeftNoByteRefusesTheCompound(t *testing.T) {
+	s := newServed(t, 64<<20, adapter.Deps{})
+	fh, _ := s.file("f", 2<<20)
+	s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: fh},
+		testproto.Msg{Op: testproto.OpRead, Offset: 0, Count: 10},
+		testproto.Msg{Op: testproto.OpRead, Offset: 10, Count: 2 << 20})
+	r := s.read()
+	if hd, rs, err := testproto.Results(r.Body); r.Status != testproto.StatusReplyTooBig || err != nil || !headIs(hd, testproto.StatusReplyTooBig, tagOf(1)) || len(rs) != 0 {
+		t.Errorf("a compound whose first Read has no room is answered %d, head %d with %d results (%v); want the too-big status and no results", r.Status, hd.Status, len(rs), err)
+	}
+}
+
 // While draining, a compound with one refused member gets no reply and runs
 // nothing; a compound begun before the drain runs whole.
 func TestADrainedCompound(t *testing.T) {

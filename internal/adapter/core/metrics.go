@@ -50,6 +50,7 @@ const (
 	vHoldPoolBytes
 	vHoldRefusals
 	vChainSplits
+	vShortReads
 	vecs
 )
 
@@ -69,6 +70,7 @@ var specs = [vecs]struct {
 	vHoldPoolBytes: {metrics.Spec{Name: "adapter_hold_pool_bytes", Help: "Bytes charged to the hold pool."}, true},
 	vHoldRefusals:  {metrics.Spec{Name: "adapter_hold_refusals_total", Help: "Requests refused past their connection's floor with the hold pool full.", Labels: []string{"protocol"}}, false},
 	vChainSplits:   {metrics.Spec{Name: "adapter_chain_splits_total", Help: "Chains whose reply went out in more than one record, by reason.", Labels: []string{"protocol", "reason"}}, false},
+	vShortReads:    {metrics.Spec{Name: "adapter_reads_shortened_total", Help: "Reads in a compound whose count was lowered to fit the protocol's record cap.", Labels: []string{"protocol"}}, false},
 }
 
 var wireSpec = metrics.Spec{Name: "adapter_wire_seconds", Help: "Time a request spends in each stage around the service call.", Labels: []string{"protocol", "stage"}, Buckets: metrics.Request}
@@ -191,6 +193,7 @@ type tableSeries struct {
 	member                                bool            // the table is a compound row's Members
 	chains                                map[uint32]Call // by operation code
 	heldRequests, heldBytes, holdRefusals adder
+	shortened                             adder                   // a compound's members whose bound their room lowered
 	panics                                map[uint32]adder        // by operation code
 	panicLines                            map[uint32]*lineLimiter // by operation code
 	names                                 map[uint32]string       // the request span's name, by operation code
@@ -211,6 +214,10 @@ func (t *tableSeries) routed(from *labelSeries) {
 
 func (t *tableSeries) holdRefused()     { t.holdRefusals.Add(1) }
 func (s *protocolSeries) split(r split) { s.splits[r].Add(1) }
+
+// readsShortened counts n members of a compound whose bound their room
+// lowered: its reads answered short (§4.3).
+func (t *tableSeries) readsShortened(n int) { t.shortened.Add(float64(n)) }
 
 // panicked counts op's panic. An op outside the table counts nothing: a
 // recovered panic is never turned into a crash.
@@ -321,6 +328,7 @@ func (sh *shared) newTable(p string, t *OpTable, member bool) *tableSeries {
 		heldRequests:   sh.fam[vHeldRequests](p),
 		heldBytes:      sh.fam[vHeldBytes](p),
 		holdRefusals:   sh.fam[vHoldRefusals](p),
+		shortened:      sh.fam[vShortReads](p),
 		panics:         make(map[uint32]adder, len(t.Ops)),
 		panicLines:     make(map[uint32]*lineLimiter, len(t.Ops)),
 		names:          make(map[uint32]string, len(t.Ops)),

@@ -194,7 +194,7 @@ type link struct {
 	ctx    context.Context
 	remote netip.Addr
 	set    settings.Settings // nil: none, so no operation is switched off
-	record int               // the protocol's record cap, Framer.MaxRecord's bytes: a chain's record stays within it
+	record int               // the protocol's record cap, Framer.MaxRecord's bytes: a chain's record and a compound's reply stay within it
 	out    func(msg *resources.Buf, key, before uint64) error
 	close  func(err error)
 }
@@ -655,7 +655,8 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		// reservation can wait as long as the pool stays full. Wait under the
 		// attempt's deadline once the request context lands.
 		start := p.sh.clock.Now()
-		if reply, err = a.reserve(ctx, inv.Bound()+p.st.Header.ReplyLen(h)); err != nil {
+		n, _ := inv.Bound(r, p.l.record-p.st.Header.ReplyLen(h))
+		if reply, err = a.reserve(ctx, n+p.st.Header.ReplyLen(h)); err != nil {
 			if st, ok := reservationStage(err); ok {
 				p.refused(tr, st)
 			}

@@ -41,7 +41,7 @@ func (t *ErrorTable) Map(err error, op *Op, v Version) (s Status, reply, notFail
 
 func Bind[Req, Rep any](
 	dec func(b []byte, v Version, req *Req) (n int, err error),
-	bound func(req *Req) int,
+	bound func(r *Request, req *Req, room int) (n int, ok bool),
 	resolve func(r *Request, req *Req) error,
 	role func(r *Request, req *Req) Role,
 	handle func(req *Req) (vfs.Handle, bool),
@@ -121,7 +121,7 @@ type HoldCodec interface {
 }
 
 type Invocation struct {
-	Bound   func() int
+	Bound   func(r *Request, room int) (n int, ok bool)
 	Resolve func(r *Request) error
 	Call    func(ctx context.Context, r *Request) error
 

@@ -1338,7 +1338,10 @@ func TestAChainSplitsAtTheRecordCap(t *testing.T) {
 						out.B = append(out.B, make([]byte, grown)...)
 						return nil
 					}
-					inv.Bound = func() int { return bound() + grown }
+					inv.Bound = func(r *core.Request, room int) (int, bool) {
+						n, ok := bound(r, room)
+						return n + grown, ok
+					}
 					return inv
 				}
 				m := metrics.New("v", "c")

@@ -31,6 +31,8 @@ type Msg struct {
 	Name    string     // OpCreate, OpPark
 	Target  uint64     // OpNotify, OpCancel: the message ID of the request it names; a Cancel carries it as its own ID, and its ID is ignored
 	Payload []byte     // OpEcho
+	Offset  int64      // OpRead
+	Count   uint32     // OpRead: the bytes asked
 	Clear   bool       // sent neither sealed nor checksummed under its session
 	Members []Msg      // OpCompound
 	Tag     []byte     // OpCompound: what its reply's head echoes
@@ -127,6 +129,9 @@ func appendArguments(b []byte, m Msg) []byte {
 		b = append(b, m.Name...)
 	case OpNotify:
 		b = binary.BigEndian.AppendUint64(b, m.Target)
+	case OpRead:
+		b = binary.BigEndian.AppendUint64(b, uint64(m.Offset))
+		b = binary.BigEndian.AppendUint32(b, m.Count)
 	case OpCompound:
 		b = binary.BigEndian.AppendUint32(b, uint32(len(m.Members)))
 		b = binary.BigEndian.AppendUint32(b, uint32(len(m.Tag)))

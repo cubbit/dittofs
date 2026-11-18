@@ -218,6 +218,7 @@ func TestSeriesCarryOnlyTheirLabels(t *testing.T) {
 		"adapter_hold_pool_bytes":       nil,
 		"adapter_hold_refusals_total":   {"protocol"},
 		"adapter_chain_splits_total":    {"protocol", "reason"},
+		"adapter_reads_shortened_total": {"protocol"},
 	}
 	for name, labels := range want {
 		if l, ok := got[name]; !ok || !slices.Equal(l, labels) {

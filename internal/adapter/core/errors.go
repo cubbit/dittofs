@@ -244,7 +244,7 @@ var (
 	ErrNoTree         = errors.New("core: no tree")                                // Needs: tree
 	ErrNoFH           = errors.New("core: no current filehandle")                  // Needs: NeedsFH
 	ErrTooLong        = errors.New("core: compound past its cap")                  // the compound cap
-	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool") // a reply's charge past a quarter of the reply pool's ceiling (§4.3)
+	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool") // a reply's charge past a quarter of the reply pool's ceiling, or a compound's reply past the record cap, a READ left less than one byte among them (§4.3)
 	ErrExpired        = errors.New("core: credential expired")                     // an expired credential, Op.Expired false
 	ErrNotLast        = errors.New("core: not the last member of a chain")         // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")              // Stages.MaxPending

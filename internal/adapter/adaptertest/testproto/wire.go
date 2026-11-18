@@ -125,6 +125,7 @@ const (
 	OpViolate                     // Conn.Close
 	OpCancel                      // never routed: HoldCodec.Cancels names the request keyed by Msg.Target
 	OpCompound                    // version 1: the compound row, its members Msg.Members
+	OpRead                        // NeedsTree|NeedsFH; one vfs.Service.Read of Msg.Count bytes at Msg.Offset, its count clamped to its room
 )
 
 // ErrFragmentedReply is a reply whose record mark says more fragments follow:
