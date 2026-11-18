@@ -894,8 +894,9 @@ RFC sections: §6.10's codec and pipeline rows.
 5. **RFC 20 §4.4 as an RFC of its own.** The owner expects `gss` to become a separate RFC.
    Until one exists, `gss` sits with the RFC 22 plan, whose SMB sign-in needs it first, but for
    RFC 4121's `Wrap` and `Unwrap`, which no SMB handler calls (§6.2).
-6. **NFS XDR, generated or by hand.** Epic 6 writes the RPC header's XDR by hand; whether every
-   program's codecs are generated (RFC 20 §5.1) is RFC 21's plan's call.
+6. ~~**NFS XDR, generated or by hand.**~~ Settled: generated (RFC 20 §5.1's decision). Epic 6
+   writes only the RPC header's XDR by hand (T6.2); every program's codecs come from the
+   generator (T6.6).
 7. **`pkg/discovery/mdns` and `wsd` are deleted in epic 1** with the other packages v1 alone
    imported: the cutover's discovery sidecars lift what they need from develop's history (§6.2).
 8. **The skills this plan uses are unmerged** (#3524): `rfc-to-epic-plan` and `epic-breakdown`
