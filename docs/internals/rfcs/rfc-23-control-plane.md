@@ -515,7 +515,8 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    this node and device, and into no other ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap), [RFC 28 §2.1](rfc-28-journal-format.md#2.1%20Layout)).
 2. **Open the listeners.** From here the node's health endpoints answer
    (§2.5): live, not ready. The node's API address and the metrics listener
-   open here. Until step 7, every `/api/v1` route but `/api/v1/health` answers
+   open here, the metrics listener unless `metrics.listen` is `off`
+   ([RFC 13 Appendix C](rfc-13-configuration.md#Appendix%20C%3A%20the%20bootstrap%20file)). Until step 7, every `/api/v1` route but `/api/v1/health` answers
    `503` `starting`.
 3. **Register the node**: its version ranges and roles in its node record
    ([RFC 13 §5.5](rfc-13-configuration.md#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap)), refused in the same transaction if an active version lies
@@ -749,7 +750,8 @@ refusing connections.
 **The metrics listener** ([RFC 25 §2.8](rfc-25-observability.md#2.8%20Export)) has an address of its own, separate
 from the API's, a bootstrap fact of the host
 ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)). It is served without authentication, over the API's TLS on
-every address but loopback, and opens at start step 2.
+every address but loopback, and opens at start step 2, unless `metrics.listen` is `off`,
+which opens none ([RFC 13 Appendix C](rfc-13-configuration.md#Appendix%20C%3A%20the%20bootstrap%20file)).
 
 > decision: the metrics listener asks for no token, because a scraper must
 > reach every node and holds no API account. What it
@@ -1670,9 +1672,18 @@ second store.
 - **Transport.** The API **MUST** be served over TLS on every address but
   loopback (`127.0.0.0/8` and `::1`, an IPv4-mapped address read as its IPv4
   address). Its certificate and key are bootstrap facts of the host. It is
-  also served without TLS on a **local socket**, a Unix socket at a path the
-  host's bootstrap names, readable and writable by the server's user only, so
-  a caller on it is a process of the host that holds that user's rights.
+  also served without TLS on a **local socket**, a Unix socket at the path the
+  bootstrap names, `dfs.sock` in the runtime directory by default (`api.socket`,
+  [RFC 13 Appendix C](rfc-13-configuration.md#Appendix%20C%3A%20the%20bootstrap%20file)),
+  readable and writable by the server's user only, in a directory only that user
+  owns, so a caller on it is a process of the host that holds that user's rights.
+  A start refuses a directory the server's user does not own or that group or
+  others can write. On a volume the user does not own but its group can write
+  (a Kubernetes `fsGroup`), the node creates a `0700` subdirectory for the
+  socket ([RFC 13 Appendix C](rfc-13-configuration.md#Appendix%20C%3A%20the%20bootstrap%20file)).
+  A start probes a socket the path names that is already there: it refuses while
+  one answers, so a second node never takes over a live one's socket, and
+  replaces only one that does not.
 
 ### 5.4 The bootstrap administrator and the first password
 
