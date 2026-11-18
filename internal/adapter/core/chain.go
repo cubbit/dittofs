@@ -257,6 +257,9 @@ func (c *chain) one(e *entry) {
 	c.prevH = e.u
 	switch {
 	case e.cancel:
+		// The cancel is the member before the next and sets no handle, so a
+		// related member after it starts from no request (§4.7, Related).
+		c.prevR = nil
 		p.end(e.tr, false, 0, 0, nil)
 		return
 	case e.err == nil:

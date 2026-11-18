@@ -1121,6 +1121,28 @@ func TestAChainsCancelIsAnsweredNothing(t *testing.T) {
 	}
 }
 
+// A related member after a cancel starts from no request: the cancel is the
+// member before it and sets no handle (§4.7, Related), so in the chain
+// [PutFH, an unrelated Cancel, a related Create] the Create is refused for
+// having no handle and makes no file.
+func TestARelatedMemberAfterACancelStartsFromNoRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		s.serve(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 170, Session: 7, Tree: 1, Handle: s.root},
+			testproto.Msg{Op: testproto.OpCancel, Version: 2, Session: 7, Tree: 1, Target: 9},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 172, Session: inherited, Tree: 1, Name: "after", Related: true},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[1].ID != 172 || rs[1].Status != testproto.StatusNoFH {
+			t.Errorf("the chain is answered %+v, %v: want the related Create after the cancel refused for no handle", rs, err)
+		}
+		if n := s.creates(); n != 0 {
+			t.Errorf("the related Create after the cancel made %d files, want none", n)
+		}
+	})
+}
+
 // A chain admitted after close is not run: no Route, no call, no reply.
 func TestAChainAfterCloseIsNotRun(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
