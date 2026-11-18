@@ -2028,8 +2028,9 @@ cache's key must hold and how it behaves.
 
 Its key starts with the **proof key**, `Identity.Key()`: a digest of
 everything the request proved and claimed — the proof kind, the protection, the
-bound principal, the verified name, each SID with whether it is deny-only, and
-every claimed uid and gid. The protection is in it, though resolution ignores
+bound principal, the verified name, each SID with whether it is deny-only, the
+evidence's expiry, and every claimed uid and gid, the primary gid kept apart
+from the supplementary ones. The protection is in it, though resolution ignores
 it, because admission compares it. Only the client's address is left out, and
 the key carries it separately wherever a client rule decided (RFC 17 §4.9). The
 rule this buys: two requests share an entry only if they proved exactly the same
@@ -2093,7 +2094,10 @@ that wrote the change applies it at once.
   lock across its load of the current `State`, the compare, the serial and the
   store, so two `Apply`s, the reconcile's and a writer's, never read one serial
   and store two different `State`s under it: serials strictly increase, and
-  each differing `State` carries its own. A caller whose stamp is
+  each differing `State` carries its own. The serial outlives a `Stop`, so a
+  server started again in the same process never reissues one, and a
+  resolution before the first `Apply` stamps `Built` 0, which no applied
+  `State` carries. A caller whose stamp is
   older than the current `State` is neither stored nor served. So a resolution
   that read bob's record before a disable, and finished after the `Apply` that
   delivered it, is not cached under the new `State`, and bob's next call misses
@@ -2131,7 +2135,7 @@ connection-state pool, and past its share:
 | --- | --- |
 | caller cache | the least recently used entry is evicted, counted |
 | directory cache | the least recently used entry is evicted; an evicted entry is a miss, never "not found" |
-| replay cache | holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone; a sign-in that would need one more fails `ErrUnavailable` |
+| replay cache | holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone; a sign-in that would need one more fails `ErrUnavailable`. One ticket client, by its client name and realm, holds at most a sixty-fourth of the entries, so a holder of one valid ticket cannot fill the cache for everyone: past its share it alone fails `ErrUnavailable` |
 | logon throttle | the oldest pair is evicted, counted |
 | directory lookups a `Claimed` caller triggers | at most 100 a minute per client address; past it the call is refused with a retryable error, never mapped to anonymous |
 | records a `Claimed` caller's lookup mints (§5.5) | at most 100 a minute per node, whatever the client; past it the call is refused with a retryable error, never mapped to anonymous, and nothing is written |
