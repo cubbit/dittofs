@@ -1,3 +1,10 @@
 # The soak's seeds that fail today over the real journal, one entry per seed, never a pattern.
 # A seed that starts to pass fails the run: remove its entry in the change that turned it
 # green, a journal change included. Each entry's message is the failure it is known by.
+- test: TestSoak/seed=2
+  message: 'the crash is refused: Torn needs an unsynced write in a file it may pick from'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'the seed''s next crash after a restart is refused: the Torn variant finds no unsynced write in any file to tear (soak_test.go), the reopened journal holding none of the seed''s writes unsynced, so the seed stops there. The same run also fails the profiler''s heap check, the live heap growing by about 271 MB over the 16 MB slack, which the heap-growth issue owns.'
+  issue: '#4771'
