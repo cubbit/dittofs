@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
 
@@ -376,19 +377,22 @@ func (p *Pool) Take(c Class) (core.SegmentID, error) {
 // TakeReserveAbove returns a spare of the repack reserve whose id is above
 // floor, into the set as the segment a copy writes: the oldest ready one that
 // clears it, the ready ones below it left in place, else — when the class
-// holds only spares below the floor — one the Maker makes now, whose id is
+// holds only spares below the floor — the oldest of those under a fresh id,
 // above every id the directory held. A class with no ready spare answers the
 // spare refusal Take gives, the caller's to wait on; a floor of zero is Take
 // of the reserve.
 //
-// decision: a spare below the floor is skipped, never taken, and never
-// returned: it stays ready in its class for the next take that needs no
-// floor, so nothing is lost or handed out twice. The spare made in its
-// place costs one cap past the reserve's target until a later take spends
-// the low one — the price of a copy that must outrank the copy it replaces.
-// A make the maximum refuses answers its refusal, so the copy is never
-// placed low. Overturned by a rebuild that verifies payloads, which would
-// let a copy below its twin win.
+// decision: a low spare is renamed, never made anew: the rename to the
+// Maker's next id and the directory sync that makes it durable — the
+// recycle's own first two steps — then the ledger's re-key, so the take
+// needs no byte past the footprint and a journal at its maximum still
+// draws. A spare's header and trailer slots are already zero, so nothing is
+// rewritten. A crash before the sync leaves the file under either name,
+// whole and record-less, which the next open re-adopts as a spare. A failed
+// step leaves the spare accounted under the name the ledger holds and out
+// of every ready list, which the next open re-adopts too: nothing is lost,
+// nor handed out twice. Overturned by a rebuild that verifies payloads,
+// which would let a copy below its twin win and the floor go.
 func (p *Pool) TakeReserveAbove(floor core.SegmentID) (core.SegmentID, error) {
 	defer p.Kick()
 
@@ -409,14 +413,24 @@ func (p *Pool) TakeReserveAbove(floor core.SegmentID) (core.SegmentID, error) {
 			break
 		}
 	}
+	low := core.SegmentID(0)
+	if id == 0 {
+		low = p.popLocked(Reserve)
+	}
 	p.mu.Unlock()
 
-	if id == 0 {
-		made, err := p.m.Make()
-		if err != nil {
-			return 0, err
+	if low != 0 {
+		fresh := p.m.drawID()
+		if err := p.m.fs.Rename(format.SegmentName(low), format.SegmentName(fresh)); err != nil {
+			return 0, fmt.Errorf("segment: renaming spare %d to %d: %w", uint64(low), uint64(fresh), err)
 		}
-		id = made
+		if err := p.m.set.RenameSpare(low, fresh); err != nil {
+			return 0, fmt.Errorf("segment: renaming spare %d to %d: ledger: %w", uint64(low), uint64(fresh), err)
+		}
+		if err := p.m.fs.SyncDir(); err != nil {
+			return 0, fmt.Errorf("segment: renaming spare %d to %d: sync_dir: %w", uint64(low), uint64(fresh), err)
+		}
+		id = fresh
 	}
 	if err := p.m.set.Take(id); err != nil {
 		return 0, fmt.Errorf("segment: the pool took spare %d: %w", uint64(id), err)

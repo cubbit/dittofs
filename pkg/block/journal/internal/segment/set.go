@@ -369,6 +369,28 @@ func (s *Set) AddSpare(id core.SegmentID, max int64) error {
 	return nil
 }
 
+// RenameSpare moves spare old to the id fresh, the name its file was renamed
+// to: the footprint and the spare count do not change, for the file is the
+// same cap under a new name. It refuses an old that is no spare and a fresh
+// the ledger already owns.
+func (s *Set) RenameSpare(old, fresh core.SegmentID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if fresh == 0 {
+		return ErrBadID
+	}
+	if _, ok := s.spares[old]; !ok {
+		return ErrNotInSet
+	}
+	if s.ownsLocked(fresh) {
+		return ErrDuplicateID
+	}
+	delete(s.spares, old)
+	s.spares[fresh] = struct{}{}
+	return nil
+}
+
 // RefusesSpare answers under the ledger's own mutex whether a spare whose
 // making AddSpare has not yet attempted would be refused by the journal
 // maximum max, and the NoSpaceError that refusal owes when it would: the

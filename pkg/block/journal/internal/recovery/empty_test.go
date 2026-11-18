@@ -1685,8 +1685,7 @@ func TestTheCopyOutranksARottenTwinAcrossTwoOpens(t *testing.T) {
 // into the repack reserve keeps its old id, below the twin 7 whose copy of
 // the ended segment 4's record rots before the emptying reads it. A carry
 // into that spare would lose to the twin at the next open, whose walk
-// verifies no payload; the carry lands above the twin, and the low spare
-// stays the pool's, on disk and ready.
+// verifies no payload; the carry lands in that spare renamed above the twin.
 func TestACarryOverARottenTwinSkipsAnAdoptedReserveSpareBelowIt(t *testing.T) {
 	file := tailFile()
 	r := newRig(t)
@@ -1710,11 +1709,8 @@ func TestACarryOverARottenTwinSkipsAnAdoptedReserveSpareBelowIt(t *testing.T) {
 	if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil); err != nil {
 		t.Fatalf("Emptying: %v", err)
 	}
-	if !slices.Contains(r.listing(), format.SegmentName(1)) {
-		t.Errorf("the adopted reserve spare 1 is gone from the directory, want it standing as the pool's spare")
-	}
-	if got := h.pool.Counters().RepackReserveBytes; got < testSegCap {
-		t.Errorf("the pool's ready repack reserve after the emptying got %d bytes, want at least the %d-byte cap: the skipped low spare stays ready", got, testSegCap)
+	if slices.Contains(r.listing(), format.SegmentName(1)) {
+		t.Errorf("the adopted reserve spare 1 still stands under its old name, want it renamed above the twin for the carry")
 	}
 
 	st2, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)

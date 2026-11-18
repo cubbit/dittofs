@@ -79,8 +79,8 @@ type Deps struct {
 
 	// DrawReserve hands back one spare of the pool's repack reserve whose id
 	// is above floor, the one class an open's copies draw on — a ready one
-	// that clears the floor, else one made above every id the directory
-	// held, the ready ones below it left in the pool: the journal the open built
+	// that clears the floor, else a low one renamed above every id the
+	// directory held, which needs no new space: the journal the open built
 	// answers it with its pool's own take of that class, so the emptying
 	// draws on the pool the assembled journal runs rather than a list
 	// recovery keeps for itself. Its error — the pool's refusal when no

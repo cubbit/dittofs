@@ -386,7 +386,7 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			//
 			// The pool's reserve holds the spares an open re-adopts, whose
 			// old ids can sit below the twin; the draw passes the twin as its
-			// floor, so the reserve skips them and hands one above it.
+			// floor, so the reserve hands one above it, renaming a low one.
 			//
 			// Withdrawn when the walk verifies payloads or the open records a
 			// rotten placement, so a restart cannot serve the twin again.
@@ -733,8 +733,8 @@ func (e *emptying) finish(ctx context.Context, id core.SegmentID, target core.Se
 // floor: the first take a durable unlink freed that clears it, the others
 // left for later copies, else the pool's own repack reserve through the
 // closure the open wired, handed the same floor: its ready spares include the
-// ones the open re-adopted under their old ids, so it skips those below the
-// floor and makes one above every id the directory held when none clears it.
+// ones the open re-adopted under their old ids, so when none clears the floor
+// it renames one above every id the directory held, needing no new space.
 // floor is zero for a copy that carries nothing in a twin's place.
 //
 // decision: a copy lands above every copy it replaces. The rule: the rebuild
@@ -743,9 +743,10 @@ func (e *emptying) finish(ctx context.Context, id core.SegmentID, target core.Se
 // above the twin and must stay held until the older copies are gone, or the
 // next open serves the twin again. The hazard: a freed take
 // below the floor would hold the only verifying copy under the twin, which
-// the next open serves rotten; so such a take, or a reserve spare, is skipped,
-// never drawn. When every freed take is below the floor and the pool's
-// reserve is empty, or no spare above it can be made, the draw answers the
+// the next open serves rotten; so such a take is skipped, never drawn, and a
+// low reserve spare is drawn only under a fresh id above the floor. When
+// every freed take is below the floor and the pool's reserve is empty, the
+// draw answers the
 // pool's spare refusal, which the copier returns as the pool
 // gave it: the open fails, the ended segment stands, and the copy is never
 // placed low. Withdrawn when the rebuild verifies payloads, or the open

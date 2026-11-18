@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
@@ -2602,14 +2603,22 @@ func TestPoolWaitReserveSpareAnswersTheReserveAlone(t *testing.T) {
 	}
 }
 
-// TestPoolTakeReserveAboveSkipsALowSpare: a reserve whose one ready spare is
-// an adopted id below the floor answers the take with a spare made above
-// every id the directory held, and leaves the low spare ready in its class
-// for the next take that needs no floor.
-func TestPoolTakeReserveAboveSkipsALowSpare(t *testing.T) {
+// TestPoolTakeReserveAboveRenamesALowSpare: at a maximum of one cap, a
+// reserve whose one ready spare is an adopted id below the floor answers the
+// take with that spare under a fresh id above the seed — its file renamed,
+// the footprint unchanged — where a make would need a cap the maximum
+// refuses.
+func TestPoolTakeReserveAboveRenamesALowSpare(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	_, _, _, p := poolOf(t, segment.Targets{Reserve: 1}, noMax, 10, nil)
+	seam, set, _, p := poolOf(t, segment.Targets{Reserve: 1}, segCap, 10, nil)
+	f, err := seam.Create(format.SegmentName(3))
+	if err != nil {
+		t.Fatalf("create the adopted spare's file: %v", err)
+	}
+	if err := errors.Join(f.Truncate(segCap), f.Sync(), f.Close(), seam.SyncDir()); err != nil {
+		t.Fatalf("write the adopted spare's file: %v", err)
+	}
 	if err := p.Adopt(3, segment.Reserve); err != nil {
 		t.Fatalf("Adopt(3, Reserve): %v", err)
 	}
@@ -2618,9 +2627,18 @@ func TestPoolTakeReserveAboveSkipsALowSpare(t *testing.T) {
 
 	id, err := p.TakeReserveAbove(5)
 	if err != nil || id <= 10 {
-		t.Fatalf("TakeReserveAbove(5) over a reserve holding only spare 3 = %d, %v, want a spare made above the seed 10", id, err)
+		t.Fatalf("TakeReserveAbove(5) over a reserve holding only spare 3 at a one-cap maximum = %d, %v, want the spare renamed above the seed 10", id, err)
 	}
-	if got, err := p.Take(segment.Reserve); err != nil || got != 3 {
-		t.Fatalf("Take(Reserve) after the floored take = %d, %v, want the skipped spare 3 still ready", got, err)
+	if _, err := seam.Durable(format.SegmentName(3)); err == nil {
+		t.Errorf("the low spare's old name %s is still durable, want it renamed", format.SegmentName(3))
+	}
+	if _, err := seam.Durable(format.SegmentName(id)); err != nil {
+		t.Errorf("the renamed spare %s is not durable: %v", format.SegmentName(id), err)
+	}
+	if got := set.Counters().UsedBytes; got != segCap {
+		t.Errorf("the footprint after the floored take = %d, want the one cap %d: a rename allocates nothing", got, segCap)
+	}
+	if st, err := set.State(id); err != nil || st != segment.Active {
+		t.Errorf("the taken spare %d is %v (%v) in the ledger, want Active", id, st, err)
 	}
 }
