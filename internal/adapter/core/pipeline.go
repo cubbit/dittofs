@@ -41,6 +41,7 @@ type shared struct {
 	tables   atomic.Pointer[map[*OpTable]*tableSeries]
 	labels   atomic.Pointer[map[string]*labelSeries]
 	panics   map[[2]string]*lineLimiter // by protocol and operation, under mu
+	closes   map[reason]*lineLimiter    // a close at accept's line, by reason, under mu
 	clock    clock
 	log      *slog.Logger
 	tracer   trace.Tracer // nil: no spans
@@ -60,7 +61,7 @@ type shared struct {
 // discards, d.Tracer and d.VFS; held requests past a connection's floor of 256
 // requests and 32 MiB go to d.Budgets' hold pool (§4.6).
 func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), reply: reply, panics: map[[2]string]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), reply: reply, panics: map[[2]string]*lineLimiter{}, closes: map[reason]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
 	if d.Budgets != nil {
 		sh.hold = d.Budgets.Hold
 	}
@@ -282,10 +283,16 @@ func (noHold) Final(h Header, _ bool) Header                        { return h }
 func (noHold) Cancels(Header) (uint64, bool)                        { return 0, false }
 func (noHold) Pends(Header, error) bool                             { return false }
 
+// errWiring is what every wiring fault wraps, the faults about a protocol's
+// shape core finds at accept or while serving: stages without a required
+// field, a Hold a holding table needs, a stage that fails where its stage
+// list hands it work (§4.7, §10.1's wiring).
+var errWiring = errors.New("core: a wiring fault")
+
 // errNoHold closes a connection whose stages had no Hold when Route returns a
 // table that holds: the protocol's wiring is at fault, and nothing could key
 // the request's hold.
-var errNoHold = errors.New("core: a table that holds, on stages with no Hold")
+var errNoHold = fmt.Errorf("%w: a table that holds, on stages with no Hold", errWiring)
 
 // withDefaults fills st's nil stages: Security passes messages unchanged,
 // Replay checks nothing, Flow is the fixed cap of 64, Hold cancels nothing
@@ -298,7 +305,7 @@ func withDefaults(st Stages) (Stages, error) {
 		nil  bool
 	}{{"Header", st.Header == nil}, {"Router", st.Router == nil}, {"Errors", st.Errors == nil}, {"Protocol", st.Protocol == ""}} {
 		if req.nil {
-			return Stages{}, fmt.Errorf("core: stages without %s", req.name)
+			return Stages{}, fmt.Errorf("%w: stages without %s", errWiring, req.name)
 		}
 	}
 	if st.Security == nil {
@@ -426,6 +433,8 @@ func (p *pipeline) serve(rec *resources.Buf) {
 			// one that breaks that closes the connection as a nil header
 			// does, under core's own error.
 			err = errUnwrapNeither
+		} else {
+			err = fmt.Errorf("%w: %w", errUnwrapClose, err)
 		}
 		p.drop(tr, rec, err)
 		return
@@ -478,9 +487,19 @@ func (p *pipeline) drop(tr *track, rec *resources.Buf, err error) {
 	p.l.close(err)
 }
 
-// errUnwrapNeither closes a connection whose Unwrap returned no header and
-// no error.
-var errUnwrapNeither = errors.New("core: Unwrap returned no header and no error")
+// errUnwrapClose wraps what a connection closed for an Unwrap that returned
+// no header carries, so the close counts under unwrap whatever the protocol's
+// own error is: the error Unwrap returned with it, or core's own for one that
+// returned neither (§10.1).
+var errUnwrapClose = errors.New("core: Unwrap returned no header")
+
+// errUnwrapNeither is the error core closes with where Unwrap returned no
+// header and no error at all.
+var errUnwrapNeither = fmt.Errorf("%w and no error", errUnwrapClose)
+
+// stageFault wraps a stage's own failure where its stage list handed it work,
+// so the connection it closes counts under wiring (§10.1).
+func stageFault(err error) error { return fmt.Errorf("%w: %v", errWiring, err) }
 
 // refuse answers on the reader a refusal at stage st, before Route, as the
 // stages' table maps it, under h, wrapped where wrap, and closes the
@@ -547,7 +566,7 @@ func (p *pipeline) answer(tr *track, rec *resources.Buf, h Header, s Status, buf
 	if err := p.st.Header.Encode(h, s, buf); err != nil {
 		buf.Release()
 		p.end(tr, false, 0, 0, err)
-		p.l.close(err)
+		p.l.close(stageFault(err))
 		return
 	}
 	n := len(buf.B)
@@ -895,7 +914,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 	if encErr := p.encode(eh, s, reply, inv); encErr != nil {
 		reply.Release()
 		release()
-		p.drop(tr, nil, encErr)
+		p.drop(tr, nil, stageFault(encErr))
 		return
 	}
 	release()
@@ -1219,7 +1238,7 @@ func (p *pipeline) encode(h Header, s Status, reply *resources.Buf, inv Invocati
 func (p *pipeline) send(h Header, reply *resources.Buf, key uint64) bool {
 	if err := p.st.Security.Wrap(h, reply); err != nil {
 		reply.Release()
-		p.l.close(err)
+		p.l.close(stageFault(err))
 		return false
 	}
 	return p.out(reply, key)
@@ -1239,7 +1258,7 @@ func (p *pipeline) interim(ctx context.Context, h Header, buf *resources.Buf) {
 	buf.B = buf.B[:0]
 	if err := p.st.Hold.Interim(h, true, nil, buf); err != nil {
 		buf.Release()
-		p.l.close(err)
+		p.l.close(stageFault(err))
 		return
 	}
 	p.send(h, buf, 0)

@@ -63,6 +63,34 @@ func (sh *shared) Table(t *OpTable) (*TableSeries, error) { return sh.table(t) }
 func (sh *shared) Label(p string) *LabelSeries            { return sh.label(p) }
 func (sh *shared) HoldPoolCharged(n int64)                { sh.holdPoolCharged(n) }
 
+// The connection series, reached by the metric tests: a connection's moves
+// and a close's count, and the byte directions, by their index for Closed and
+// RefusedAtAccept into ReasonNames's values.
+func (ls *labelSeries) Accepted()              { ls.accepted() }
+func (ls *labelSeries) Established()           { ls.established() }
+func (ls *labelSeries) Closed(r int, est bool) { ls.closed(reason(r), est) }
+func (ls *labelSeries) RefusedAtAccept(r int)  { ls.refusedAtAccept(reason(r)) }
+func (ls *labelSeries) BytesIn() adder         { return ls.in }
+func (ls *labelSeries) BytesOut() adder        { return ls.out }
+
+// ReasonNames is the values of the reason label of a connection's close, by
+// their index for Closed and RefusedAtAccept; StateNames the state label's.
+func ReasonNames() map[int]string {
+	m := map[int]string{}
+	for r, name := range reasonNames {
+		m[int(r)] = name
+	}
+	return m
+}
+
+func StateNames() map[int]string {
+	m := map[int]string{}
+	for st, name := range stateNames {
+		m[int(st)] = name
+	}
+	return m
+}
+
 func (s *protocolSeries) Answered()                       { s.answered() }
 func (s *protocolSeries) Refused(st int)                  { s.refused(stage(st)) }
 func (s *protocolSeries) Observe(st int, d time.Duration) { s.observe(stage(st), d) }
@@ -178,9 +206,9 @@ func (sh *shared) ReserveStatus(ctx context.Context, key netip.Addr, close func(
 type TestReader struct{ r *reader }
 
 // NewTestReader returns a record cut over nc, its records charged to key from
-// recv, with timeout as read_timeout.
+// recv, with timeout as read_timeout; its bytes count nowhere.
 func NewTestReader(nc net.Conn, f Framer, recv *resources.BufPool, key netip.Addr, timeout time.Duration) *TestReader {
-	return &TestReader{r: newReader(nc, f, recv, key, timeout)}
+	return &TestReader{r: newReader(nc, f, recv, key, timeout, nop{})}
 }
 
 // Read returns the next record.
@@ -234,9 +262,9 @@ const ChainPadding = chainPadding
 type TestWriter struct{ w *writer }
 
 // NewTestWriter starts a writer over nc, its gathered writes bounded by
-// timeout and closeConn its connection's close.
+// timeout and closeConn its connection's close; its bytes count nowhere.
 func NewTestWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(error)) *TestWriter {
-	return &TestWriter{w: newWriter(nc, f, timeout, closeConn)}
+	return &TestWriter{w: newWriter(nc, f, timeout, closeConn, nop{})}
 }
 
 // Out queues a message.
@@ -291,17 +319,15 @@ func SetListen(s *Server, f func(ctx context.Context, network, addr string) (net
 	s.listen = f
 }
 
-// SetAccepted has the server report each accepted socket to f, once its TCP
-// options are set: the socket-option tests read the kernel's answer from it.
-func SetAccepted(s *Server, f func(nc net.Conn)) { s.accepted = f }
-
 // The connection and accept seams: what the connection's and the accept
 // loop's tests reach.
 
 // ServeConn hands the server a socket, which its accept loop does in
 // production, and returns the connection it serves on it. A hook's connection
 // names no bound address, so a Reconfigure that removes an address never
-// closes it.
+// closes it. Label its listener first where the test reads what the
+// connection counts: a listener a test builds carries no accept-close label,
+// the server's own clones carrying theirs from NewServer.
 func ServeConn(s *Server, nc net.Conn, l *Listener) *Conn {
 	return s.serveConn(nc, l, nil, nil)
 }
@@ -311,6 +337,16 @@ func ServeConn(s *Server, nc net.Conn, l *Listener) *Conn {
 func ServeConnCharged(s *Server, nc net.Conn, l *Listener, charge *resources.Reservation) *Conn {
 	return s.serveConn(nc, l, nil, charge)
 }
+
+// Labeled sets on l the label a connection closed at accept counts under,
+// which NewServer reads from its own listeners' nil-Conn stages (§10.1): a
+// listener a test hands to ServeConn carries none, its label being a field
+// the server's clone fills.
+func Labeled(l *Listener, label string) { l.label = label }
+
+// SetAccepted has the server report each accepted socket to f, once its TCP
+// options are set: the socket-option tests read the kernel's answer from it.
+func SetAccepted(s *Server, f func(nc net.Conn)) { s.accepted = f }
 
 // SetServerSettings replaces the server's current snapshot, as Reconfigure
 // does on a serving server, so a test can tell a connection's own from it.

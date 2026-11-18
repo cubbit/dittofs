@@ -30,13 +30,15 @@ var (
 // record returned as a receive Buf of its class whose charge was reserved
 // before its body was read (RFC 24 section 3.2), a fragmented record charged
 // once at the cap and counted, and the frame deadline running from the
-// record's first byte (RFC 20 section 6.4).
+// record's first byte (RFC 20 section 6.4). in counts every byte the socket
+// gave, framing included (§10.1).
 type reader struct {
 	nc      net.Conn
 	framer  Framer
 	recv    *resources.BufPool
 	key     netip.Addr
 	timeout time.Duration
+	in      adder
 	buf     []byte // buf[off:n] is read and not yet consumed
 	off     int
 	n       int
@@ -45,10 +47,11 @@ type reader struct {
 }
 
 // newReader wraps a connection's bytes: f frames them, recv reserves each
-// record's charge for the connection, and timeout, where it is not zero, is
-// read_timeout.
-func newReader(nc net.Conn, f Framer, recv *resources.BufPool, key netip.Addr, timeout time.Duration) *reader {
-	return &reader{nc: nc, framer: f, recv: recv, key: key, timeout: timeout, buf: make([]byte, readBufLen)}
+// record's charge for the connection, timeout, where it is not zero, is
+// read_timeout, and in counts its bytes of the direction the connection's
+// series resolved.
+func newReader(nc net.Conn, f Framer, recv *resources.BufPool, key netip.Addr, timeout time.Duration, in adder) *reader {
+	return &reader{nc: nc, framer: f, recv: recv, key: key, timeout: timeout, in: in, buf: make([]byte, readBufLen)}
 }
 
 // Read returns the next record: its body, in a receive Buf reserved at its
@@ -164,7 +167,9 @@ func (r *reader) body(dst []byte, n int) error {
 	copy(dst, r.buf[r.off:r.off+part])
 	r.off += part
 	if part < n {
-		if _, err := io.ReadFull(r.nc, dst[part:]); err != nil {
+		read, err := io.ReadFull(r.nc, dst[part:])
+		r.in.Add(float64(read))
+		if err != nil {
 			if err == io.EOF {
 				// The body the record's mark promised, cut by the peer's end:
 				// the unexpected end inside a record, told apart from a clean
@@ -190,6 +195,7 @@ func (r *reader) fill(ctx context.Context) error {
 	}
 	m, err := r.nc.Read(r.buf[r.n:])
 	r.n += m
+	r.in.Add(float64(m))
 	r.held.Store(r.n > r.off)
 	if m > 0 && !r.armed {
 		if aerr := r.arm(ctx); aerr != nil {
@@ -243,7 +249,9 @@ func (r *reader) disarm() {
 // readLoop cuts the connection's records and hands each to the pipeline: it
 // waits while the writer is at its bound, holding no record, then cuts one and
 // serves it. Its end runs the connection's teardown (RFC 20 sections 6.1 and
-// 6.2).
+// 6.2). A failed read closes the connection on the reader's side (§10.1):
+// the client's reason for a peer that closed or reset and for any other
+// failed read, read_timeout for its own deadline.
 func (c *Conn) readLoop() {
 	defer c.teardown()
 	for {
@@ -252,7 +260,7 @@ func (c *Conn) readLoop() {
 		}
 		rec, err := c.rd.Read(c.ctx)
 		if err != nil {
-			c.Close(err)
+			c.Close(fmt.Errorf("%w: %w", errAtRead, err))
 			return
 		}
 		c.p.serve(rec)

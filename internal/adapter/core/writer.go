@@ -30,12 +30,14 @@ type queued struct {
 // writer sends a connection's messages: a bounded queue, net.Buffers writes
 // that each gather up to a record cap of bodies with each record framed, a
 // write deadline per gathered write, and a failed or late write that closes
-// the connection (RFC 20 sections 6.2, 6.4 and 6.6).
+// the connection (RFC 20 sections 6.2, 6.4 and 6.6). out counts the bytes its
+// socket took, framing included (§10.1).
 type writer struct {
 	nc       net.Conn
 	framer   Framer
 	capBytes int // the bodies one gathered write carries past its first: the protocol's record cap
 	timeout  time.Duration
+	outBytes adder       // the direction the connection's series resolved; nil to count nowhere
 	close    func(error) // Conn.Close: a failed write calls it on the writer's goroutine once run has ended, so it may stop the writer
 	onBatch  func(n int) // a test's view of what one write gathered; nil otherwise
 
@@ -55,14 +57,17 @@ type writer struct {
 }
 
 // newWriter starts a writer over nc, framing with f and bounding each gathered
-// write by timeout, where it is not zero; closeConn is the connection's close.
-func newWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(error)) *writer {
+// write by timeout, where it is not zero; closeConn is the connection's close,
+// and outBytes counts its bytes of the direction the connection's series
+// resolved, framing included.
+func newWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(error), outBytes adder) *writer {
 	capBytes, _ := f.MaxRecord()
 	w := &writer{
 		nc:       nc,
 		framer:   f,
 		capBytes: capBytes,
 		timeout:  timeout,
+		outBytes: outBytes,
 		close:    closeConn,
 		wake:     make(chan struct{}, 1),
 		room:     make(chan struct{}),
@@ -235,7 +240,8 @@ func (w *writer) flush() error {
 		w.bufs = append(w.bufs, w.hdrs[at:], m.msg.B)
 	}
 	b := w.bufs // WriteTo consumes the slice it is called on
-	_, err := b.WriteTo(w.nc)
+	n, err := b.WriteTo(w.nc)
+	w.outBytes.Add(float64(n))
 	clear(w.bufs)
 	w.written(len(q))
 	for _, m := range q {

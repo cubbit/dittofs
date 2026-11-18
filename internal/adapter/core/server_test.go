@@ -17,6 +17,7 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
@@ -711,5 +712,69 @@ func TestStopWhileConfigured(t *testing.T) {
 	}
 	if got := srv.Addrs(); len(got) != 0 {
 		t.Errorf("Addrs after a refused Start %v, want empty", got)
+	}
+}
+
+// renamed is a protocol whose stages carry another label, both for a nil Conn
+// and a real one: NewConn returns stages of the same shape for each, the
+// protocol's contract, and the close a test drives at accept - the pool's
+// refusal - tells the label NewServer read for its own listener apart from
+// one left empty or read elsewhere (§10.1, R59).
+type renamed struct{ core.Protocol }
+
+func (r renamed) NewConn(c *core.Conn) core.Stages {
+	st := r.Protocol.NewConn(c)
+	st.Protocol = "renamed"
+	return st
+}
+
+// A connection closed at accept counts under its listener's own label, the
+// one its protocol's nil-Conn stages named and NewServer kept: the renamed
+// protocol's refused socket lands under "renamed", whatever label the
+// connection's own would have given - and nothing bound by another name (R52,
+// R59).
+func TestACloseAtAcceptCountsUnderItsListenersLabel(t *testing.T) {
+	m := metrics.New("v", "c")
+	b := resources.Budgets{
+		Receive:    resources.NewWaitBudget("receive", 1<<20),
+		Reply:      resources.NewWaitBudget("reply", 1<<20),
+		Connection: resources.NewBudget("connection", core.ConnCharge()-1),
+		Hold:       resources.NewBudget("hold", 1<<20),
+	}
+	adaptertest.CheckLeaks(t, &b)
+	srv, err := core.NewServer(adapter.Deps{Metrics: m, Budgets: &b}, on("127.0.0.1"), tcp(renamed{testproto.New(adapter.Deps{})}, 0, "test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	c, err := net.Dial("tcp", srv.Addrs()[key("test")][0].String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	waitsFor(t, "the pool to refuse the connection", func() bool {
+		for range srv.Connections() {
+			return false // refused sockets never register: keep waiting for the close
+		}
+		values, _ := scrape(t, m)
+		return values["adapter_connection_closes_total{protocol=renamed,reason=pool}"] > 0
+	})
+	values, _ := scrape(t, m)
+	if n := values["adapter_connection_closes_total{protocol=renamed,reason=pool}"]; n != 1 {
+		t.Errorf("the refused socket counts %v under its listener's label, want 1", n)
+	}
+	if n := values["adapter_connection_closes_total{protocol="+testproto.Name+",reason=pool}"]; n != 0 {
+		t.Errorf("the refused socket counts %v under the connection's own label, want the listener's alone", n)
+	}
+	if n := values["adapter_connection_closes_total{protocol=,reason=pool}"]; n != 0 {
+		t.Errorf("the refused socket counts %v under an empty label, want the listener's own", n)
+	}
+	for _, state := range []string{"handshake", "established"} {
+		if k := "adapter_connections{protocol=renamed,state=" + state + "}"; values[k] != 0 {
+			t.Errorf("a refused socket holds a connection in %s", state)
+		}
 	}
 }
