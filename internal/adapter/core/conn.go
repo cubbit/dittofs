@@ -46,7 +46,7 @@ type Conn struct {
 	timersMu   sync.Mutex    // guards the two deadlines below
 	handshakeT timer         // armed at accept for handshake_timeout, ended by Established
 	idleT      timer         // armed whenever nothing runs, resting under a Keep or a record
-	idleArms   atomic.Uint64 // how many times idle armed the deadline, the count a test waits past for an arm of its own
+	idleArmed  uint64        // the generation the armed deadline carries, so a test can tell an arm from one a later turn superseded
 	idleGen    atomic.Uint64 // the generation an arm carries: each arm, and each request a connection starts or ends, advances it, so a timer the current generation superseded closes nothing
 }
 
@@ -111,7 +111,7 @@ func (c *Conn) idle() {
 	if d := c.snap.Common().IdleTimeout; d > 0 {
 		g := c.idleGen.Add(1)
 		c.idleT = c.sh.clock.AfterFunc(d, func() { c.idleExpired(g) })
-		c.idleArms.Add(1)
+		c.idleArmed = g
 	}
 }
 

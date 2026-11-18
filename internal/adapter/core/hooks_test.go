@@ -349,20 +349,14 @@ func AddBound(s *Server, l *Listener, ln net.Listener) (loopDone <-chan struct{}
 	return b.loopDone
 }
 
-// IdleArmed reports whether the connection's idle deadline is armed: a test
-// advancing the clock waits for the quiet the deadline counts from, not for
-// the reply that made it quiet, so its advance lands after the re-arm.
-func IdleArmed(c *Conn) bool {
+// IdleCurrent reports whether the idle deadline armed last is the current
+// one, armed since the connection's last request started or ended: a test
+// waits on it before advancing, so its advance lands after that arm and no
+// earlier one, however many arms a step makes.
+func IdleCurrent(c *Conn) bool {
 	c.timersMu.Lock()
 	defer c.timersMu.Unlock()
-	return c.idleT != nil
-}
-
-// IdleArms is how many times the connection armed its idle deadline: a test
-// waits past the arms behind the one it wants, so its advance lands after that
-// arm and no earlier one.
-func IdleArms(c *Conn) uint64 {
-	return c.idleArms.Load()
+	return c.idleT != nil && c.idleArmed == c.idleGen.Load()
 }
 
 // RecordHeld reports whether the connection's reader still holds bytes of a
