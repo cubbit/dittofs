@@ -847,7 +847,7 @@ func dial(t *testing.T, fl *failingListener) net.Conn {
 
 // loop1 and loop2 are the two loopback addresses the limit's cases connect
 // from: a case needing a second source skips where the host has only 127.0.0.1
-// aliased, as macOS does by default.
+// aliased.
 var (
 	loop1 = netip.MustParseAddr("127.0.0.1")
 	loop2 = netip.MustParseAddr("127.0.0.2")
