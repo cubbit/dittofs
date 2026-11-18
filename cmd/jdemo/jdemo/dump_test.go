@@ -3,17 +3,17 @@ package jdemo
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/walk"
 )
 
-// scanDemo opens a journal and issues one write, the fixture the scan
-// tests stand on.
+// scanDemo opens a journal and issues one write, the fixture the dump
+// tests stand on. The handle is kept on the demo so tests can read back.
 func scanDemo(t *testing.T) (*Demo, *strings.Builder) {
 	t.Helper()
 	base := t.TempDir()
@@ -27,234 +27,45 @@ func scanDemo(t *testing.T) (*Demo, *strings.Builder) {
 	if err != nil {
 		t.Fatalf("share: %v", err)
 	}
+	d.H[1] = h
 	if _, err := h.WriteAt(context.Background(), StoryFile, 0, []byte("hello world"), 0); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	return d, out
 }
 
-// segFiles is every .seg in the demo's journal dir, ascending.
-func segFiles(t *testing.T, dir string) []string {
+// findWrite walks every segment with the journal's own scanner and returns
+// the segment holding the fixture's 11-byte write, and the record.
+func findWrite(t *testing.T, d *Demo) (string, walk.Record) {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
+	st, err := LoadState(StatePath(d.Dir))
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	entries, err := os.ReadDir(d.Dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out []string
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".seg") {
-			out = append(out, filepath.Join(dir, e.Name()))
+		if !strings.HasSuffix(e.Name(), ".seg") {
+			continue
 		}
-	}
-	if len(out) == 0 {
-		t.Fatalf("no segment found in %s", dir)
-	}
-	return out
-}
-
-// findWriteStep scans all segments for the write record the fixture made.
-func findWriteStep(t *testing.T, dir string) (seg string, recs []dumpRecord) {
-	t.Helper()
-	for _, seg := range segFiles(t, dir) {
-		recs, _, err := scanSegment(seg)
+		path := filepath.Join(d.Dir, e.Name())
+		seg, err := walk.File(path, [16]byte(st.ID))
 		if err != nil {
-			t.Fatalf("scanSegment %s: %v", seg, err)
+			t.Fatalf("walk %s: %v", path, err)
 		}
-		for i := range recs {
-			if recs[i].kindName() == "write" {
-				return seg, recs
+		for _, r := range seg.Records {
+			if r.Kind == "write" && r.Len == 11 {
+				return path, r
 			}
 		}
 	}
-	t.Fatalf("no write record found in any segment of %s", dir)
-	return "", nil
+	t.Fatalf("no 11-byte write record in any segment of %s", d.Dir)
+	return "", walk.Record{}
 }
 
-// craftHeader builds a segment header with the transcribed layout: magic
-// DJH1, version 1, identity, the segment's own id at [24,32), predecessor,
-// stream. The checksum slot is left zero: the scan never verifies it.
-func craftHeader(id uint64) []byte {
-	h := make([]byte, dumpSegmentHeaderSize)
-	copy(h[0:4], "DJH1")
-	binary.LittleEndian.PutUint16(h[4:6], 1)
-	binary.LittleEndian.PutUint64(h[24:32], id)
-	return h
-}
-
-// craftRecord builds one record header with its body, laid out exactly as
-// the transcription reads it back — the kind's own body, a write's 8-byte
-// mtime prefix included. Neither checksum slot is filled: the scan's
-// contract says it never verifies them.
-func craftRecord(kind uint8, segID uint64, ownOff int64, extentOff, extentLen int64, payload []byte) []byte {
-	h := make([]byte, dumpRecordHeaderSize)
-	copy(h[0:4], "DJR1")
-	h[4] = kind
-	binary.LittleEndian.PutUint64(h[8:16], segID)
-	binary.LittleEndian.PutUint64(h[32:40], uint64(extentOff))
-	binary.LittleEndian.PutUint64(h[40:48], uint64(extentLen))
-	binary.LittleEndian.PutUint32(h[88:92], uint32(ownOff))
-
-	var body []byte
-	switch kind {
-	case 1: // write: an 8-byte mtime then the payload
-		body = append(make([]byte, 8), payload...)
-	case 2: // fill: the payload
-		body = payload
-	case 10, 16: // loss, reconciled
-		body = make([]byte, 16)
-	case 7: // clone
-		body = make([]byte, 56)
-	case 11, 12, 13: // hold, unhold, stamp
-		body = make([]byte, 8)
-	}
-	pitch := (dumpRecordHeaderSize + int64(len(body)) + 7) &^ 7
-	out := make([]byte, pitch)
-	copy(out, h)
-	copy(out[dumpRecordHeaderSize:], body)
-	return out
-}
-
-// craftSegment writes a segment file: header, then the given records'
-// bytes, then the tail kind names (untaken zeros, a seal marker, or torn
-// garbage).
-func craftSegment(t *testing.T, path string, id uint64, tail string, recs ...[]byte) {
-	t.Helper()
-	b := craftHeader(id)
-	for _, r := range recs {
-		b = append(b, r...)
-	}
-	switch tail {
-	case "untaken":
-		b = append(b, make([]byte, 64)...)
-	case "sealed":
-		m := make([]byte, 32)
-		copy(m[0:4], "DJS1")
-		binary.LittleEndian.PutUint64(m[8:16], id)
-		binary.LittleEndian.PutUint64(m[16:24], uint64(len(b)))
-		b = append(b, m...)
-		b = append(b, make([]byte, 64)...)
-	case "torn":
-		b = append(b, 0xee, 0xee, 0xee, 0xee)
-		b = append(b, make([]byte, 128)...)
-	}
-	if err := os.WriteFile(path, b, 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestScanWalksEveryFixedBodyKind(t *testing.T) {
-	// reconcile (15) carries no body and the 16-byte one is reconciled
-	// (16), per kinds.go. A walk that swaps them desynchronises and loses
-	// every record after the first.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "00000000000000000007.seg")
-	craftSegment(t, path, 7, "untaken",
-		craftRecord(15, 7, 48, 0, 0, nil),        // reconcile: pitch 96
-		craftRecord(16, 7, 48+96, 0, 0, nil),     // reconciled: 16-byte body, pitch 112
-		craftRecord(10, 7, 48+96+112, 0, 0, nil), // loss: 16-byte body, pitch 112
-	)
-	recs, end, err := scanSegment(path)
-	if err != nil {
-		t.Fatalf("scanSegment: %v", err)
-	}
-	var kinds []string
-	for _, r := range recs {
-		kinds = append(kinds, r.kindName())
-	}
-	want := []string{"reconcile", "reconciled", "loss"}
-	if len(kinds) != len(want) {
-		t.Fatalf("scanned kinds %v, want %v", kinds, want)
-	}
-	for i := range want {
-		if kinds[i] != want[i] {
-			t.Errorf("kind %d: got %s, want %s", i, kinds[i], want[i])
-		}
-	}
-	if end != endUntaken {
-		t.Errorf("scanned tail state: got %v, want endUntaken", end)
-	}
-	if recs[1].recOff != 48+96 || recs[2].recOff != 48+96+112 {
-		t.Errorf("record offsets: got %d and %d, want %d and %d",
-			recs[1].recOff, recs[2].recOff, 48+96, 48+96+112)
-	}
-}
-
-func TestScanHonoursWhoAndWhere(t *testing.T) {
-	// A record naming another segment was written somewhere else, and one
-	// whose own offset disagrees with where the walk read it was too;
-	// both stop the walk rather than showing as this segment's records —
-	// the guard against a recycled segment's stale bytes reading as live.
-	dir := t.TempDir()
-
-	foreign := filepath.Join(dir, "00000000000000000009.seg")
-	craftSegment(t, foreign, 9, "untaken",
-		craftRecord(1, 8, 48, 0, 5, []byte("hello")))
-	recs, end, _ := scanSegment(foreign)
-	if len(recs) != 0 || end != endTorn {
-		t.Errorf("foreign-segment record: got %d records, end %v; want the walk stopped", len(recs), end)
-	}
-
-	wrongPlace := filepath.Join(dir, "00000000000000000010.seg")
-	craftSegment(t, wrongPlace, 10, "untaken",
-		craftRecord(1, 10, 56, 0, 5, []byte("hello"))) // own offset 56, walk reads 48
-	recs, end, _ = scanSegment(wrongPlace)
-	if len(recs) != 0 || end != endTorn {
-		t.Errorf("wrong-place record: got %d records, end %v; want the walk stopped", len(recs), end)
-	}
-
-	// And a header that is not DJH1 at all: the file was never taken as a
-	// segment — a spare — so nothing walks and nothing reads as torn.
-	spare := filepath.Join(dir, "00000000000000000011.seg")
-	if err := os.WriteFile(spare, make([]byte, 4096), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	recs, end, _ = scanSegment(spare)
-	if len(recs) != 0 || end != endUntaken {
-		t.Errorf("never-taken spare: got %d records, end %v; want none and endUntaken", len(recs), end)
-	}
-}
-
-func TestScanTailStates(t *testing.T) {
-	dir := t.TempDir()
-	sealed := filepath.Join(dir, "00000000000000000012.seg")
-	craftSegment(t, sealed, 12, "sealed", craftRecord(1, 12, 48, 0, 5, []byte("hello")))
-	_, end, _ := scanSegment(sealed)
-	if end != endSealed {
-		t.Errorf("sealed segment: got tail %v, want endSealed", end)
-	}
-
-	torn := filepath.Join(dir, "00000000000000000013.seg")
-	craftSegment(t, torn, 13, "torn", craftRecord(1, 13, 48, 0, 5, []byte("hello")))
-	recs, end, _ := scanSegment(torn)
-	if len(recs) != 1 || end != endTorn {
-		t.Errorf("torn segment: got %d records, tail %v, want the one record and endTorn", len(recs), end)
-	}
-}
-
-func TestScanRejectsImpossibleLengths(t *testing.T) {
-	// A record whose length column carries the high bit decodes to a
-	// negative int64: the walk must stop at it, not slice with it and
-	// panic. The write before it still walks.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "00000000000000000014.seg")
-	// The good write's pitch is 112, so the bad record sits at 48+112 with
-	// its own offset agreeing — the length column is the only thing wrong.
-	bad := craftRecord(1, 14, 48+112, 0, 16, make([]byte, 8))
-	binary.LittleEndian.PutUint64(bad[40:48], 0x8000000000000000)
-	craftSegment(t, path, 14, "untaken",
-		craftRecord(1, 14, 48, 0, 5, []byte("hello")),
-		bad,
-	)
-	recs, end, err := scanSegment(path) // must not panic
-	if err != nil {
-		t.Fatalf("scanSegment: %v", err)
-	}
-	if len(recs) != 1 || end != endTorn {
-		t.Errorf("impossible length: got %d records, tail %v; want the good one walked and endTorn", len(recs), end)
-	}
-}
-
-func TestScanSegmentFindsTheWrite(t *testing.T) {
+func TestDumpShowsTheWriteAndItsPayload(t *testing.T) {
 	d, out := scanDemo(t)
 	d.viewDump()
 	screen := out.String()
@@ -269,101 +80,49 @@ func TestScanSegmentFindsTheWrite(t *testing.T) {
 	if !strings.Contains(screen, StoryFileHex[:12]) {
 		t.Errorf("dump: the file's identity missing:\n%s", screen)
 	}
+	if !strings.Contains(screen, "checksums verified") {
+		t.Errorf("dump: the view does not say its records were verified:\n%s", screen)
+	}
 
-	// The decoder itself, not just the screen: one write record with the
-	// exact fields the format table names, in whichever stream's segment
-	// the write landed.
-	_, recs := findWriteStep(t, d.Dir)
-	var w *dumpRecord
-	for i := range recs {
-		if recs[i].kindName() == "write" {
-			w = &recs[i]
-		}
+	_, w := findWrite(t, d)
+	if w.Off != 0 || w.Len != 11 {
+		t.Errorf("scanned write extent: got off=%d len=%d, want 0 and 11", w.Off, w.Len)
 	}
-	if w == nil {
-		t.Fatalf("scanSegment: record set lacks the write:\n%+v", recs)
-	}
-	if w.off != 0 || w.length != 11 {
-		t.Errorf("scanned write extent: got off=%d len=%d, want 0 and 11", w.off, w.length)
-	}
-	if string(w.body[8:]) != "hello world" {
-		t.Errorf("scanned write body after its mtime: got %q, want %q", w.body[8:], "hello world")
-	}
-	if w.recOff%8 != 0 {
-		t.Errorf("scanned record offset %d is not 8-aligned", w.recOff)
+	if w.RecOff%8 != 0 {
+		t.Errorf("scanned record offset %d is not 8-aligned", w.RecOff)
 	}
 }
 
-func TestScanStopsAtTornTail(t *testing.T) {
-	d, _ := scanDemo(t)
-	seg, recs := findWriteStep(t, d.Dir)
-	var w *dumpRecord
-	for i := range recs {
-		if recs[i].kindName() == "write" {
-			w = &recs[i]
-		}
-	}
-	if w == nil {
-		t.Fatal("fixture lost its write")
-	}
-	// Cut inside the write's own body — truncating the preallocated tail
+func TestDumpNamesATornTail(t *testing.T) {
+	d, out := scanDemo(t)
+	seg, w := findWrite(t, d)
+	// Cut inside the write's own body: truncating the preallocated tail
 	// would only remove unwritten zeros and prove nothing.
-	cut := w.recOff + dumpRecordHeaderSize + int64(len(w.body))/2
-	if err := os.Truncate(seg, cut); err != nil {
+	if err := os.Truncate(seg, w.BodyOff+int64(len(w.Body))/2); err != nil {
 		t.Fatal(err)
 	}
-	kept, end, err := scanSegment(seg)
-	if err != nil {
-		t.Fatalf("scanSegment on a torn tail: %v", err)
+	d.viewDump()
+	screen := out.String()
+	if !strings.Contains(screen, "tail torn") {
+		t.Errorf("a segment cut mid-record does not say its tail is torn:\n%s", screen)
 	}
-	if end != endTorn {
-		t.Errorf("scanSegment: torn tail state %v, want endTorn", end)
-	}
-	if len(kept) != 0 {
-		t.Errorf("scanSegment: %d records from a mid-body torn segment, want the incomplete one dropped", len(kept))
+	if strings.Contains(screen, "68 65 6c 6c 6f 20 77 6f") {
+		t.Errorf("the incomplete record's payload was still shown:\n%s", screen)
 	}
 }
 
 func TestDumpAgreesWithTheJournalOwnRead(t *testing.T) {
-	// The record walker is a transcript, not an import: the one check
-	// that can hold it honest is comparing its payload against the bytes
-	// the journal itself serves — a drift in the format would make the
-	// walk decode plausible wrong bytes while ReadAt keeps reading the
-	// true ones, and this is where the two disagree.
-	base := t.TempDir()
-	dir := filepath.Join(base, "journal")
-	d, out := newTestDemo(t, dir, "")
-	if err := d.open(context.Background()); err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = d.J.Close() }()
-	h, _ := d.J.Share(1, 0, journal.Version{})
-	d.H[1] = h
-	if _, err := h.WriteAt(context.Background(), StoryFile, 0, []byte("hello world"), 0); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	// The journal's own read of the bytes:
+	// The dump and a read are two roads to the same bytes: the scanner's
+	// payload for the write must be what the journal serves for the range.
+	d, out := scanDemo(t)
 	p := make([]byte, 11)
-	if _, _, _, _, err := h.ReadAt(context.Background(), StoryFile, 0, p); err != nil {
+	if _, _, _, _, err := d.H[1].ReadAt(context.Background(), StoryFile, 0, p); err != nil {
 		t.Fatalf("read: %v", err)
 	}
-
-	// The walk's read of the same bytes: the write record's body after
-	// its 8-byte mtime prefix must equal the journal's read byte-for-byte.
-	_, recs := findWriteStep(t, d.Dir)
-	var w *dumpRecord
-	for i := range recs {
-		if recs[i].kindName() == "write" && recs[i].length == 11 {
-			w = &recs[i]
-		}
-	}
-	if w == nil {
-		t.Fatalf("no 11-byte write record found in any segment")
-	}
+	_, w := findWrite(t, d)
 	d.viewDump()
-	if !bytes.Equal(w.body[8:], p) {
-		t.Errorf("the walk's payload %q disagrees with the journal's own ReadAt %q — the transcript has drifted", w.body[8:], p)
+	if !bytes.Equal(w.Body[8:], p) {
+		t.Errorf("the scanned payload %q disagrees with the journal's own ReadAt %q", w.Body[8:], p)
 	}
 	if !strings.Contains(out.String(), "hello") {
 		t.Errorf("the dump screen lacks the payload the journal serves:\n%s", out.String())
