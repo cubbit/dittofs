@@ -1,0 +1,287 @@
+package netlogon
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"net"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"unicode/utf16"
+
+	"github.com/oiweiwei/go-msrpc/dcerpc"
+	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
+	"github.com/oiweiwei/go-msrpc/ssp/credential"
+	"github.com/oiweiwei/go-msrpc/ssp/crypto"
+	nlssp "github.com/oiweiwei/go-msrpc/ssp/netlogon"
+)
+
+// offered is the capabilities NetrServerAuthenticate3 asks for: AES, the
+// strong key and secure RPC. go-msrpc's own secure-channel client adds RC4,
+// which is why the channel is built here from ssp/netlogon's parts.
+const offered nlssp.Cap = nlssp.CapAES_SHA2 | nlssp.CapStrongKey | nlssp.CapSecureRPC
+
+// errNoAES is a controller that negotiated the channel without AES.
+var errNoAES = errors.New("netlogon: the domain controller negotiated no AES")
+
+// errServerCredential is a controller whose server credential does not
+// verify: it does not hold the password the client computed the session key
+// from, or something altered its reply.
+var errServerCredential = errors.New("netlogon: the domain controller's server credential does not verify")
+
+// checkNegotiated refuses the flags a NetrServerAuthenticate3 reply
+// negotiated unless they hold AES.
+func checkNegotiated(flags uint32) error {
+	if !nlssp.Cap(flags).IsSet(nlssp.CapAES_SHA2) {
+		return fmt.Errorf("%w: flags 0x%08x", errNoAES, flags)
+	}
+	return nil
+}
+
+// Channel sets up a secure channel as account: the challenge and
+// NetrServerAuthenticate3 on an unauthenticated association, the server
+// credential and the negotiated AES checked before anything else is sent,
+// then a second association bound sealed with the Netlogon credential.
+//
+// ponytail: the channel reaches only the one directory's domain; RFC 18
+// §5.1's ponytail says when to follow trusts.
+func (d *dc) Channel(ctx context.Context, account string, password []byte) (Channel, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil, errClosed
+	}
+	name := strings.ToUpper(account)
+	machine, err := machineCredential(name, d.realm, password)
+	if err != nil {
+		return nil, err
+	}
+	cfg, cred, err := d.authenticate(ctx, name, machine)
+	if err != nil {
+		return nil, err
+	}
+	as, err := d.seal(ctx, cfg, machine)
+	if err != nil {
+		return nil, err
+	}
+	return &channel{dc: d, name: name, cfg: cfg, machine: machine, cred: cred, as: as}, nil
+}
+
+// machineCredential is the computer account name$ keyed by its NT hash, so no
+// string holds the password.
+func machineCredential(name, realm string, password []byte) (credential.Credential, error) {
+	codes := utf16.Encode([]rune(string(password)))
+	b := make([]byte, 0, 2*len(codes))
+	for _, c := range codes {
+		b = append(b, byte(c), byte(c>>8))
+	}
+	hash, err := crypto.MD4(b)
+	clear(b)
+	if err != nil {
+		return nil, err
+	}
+	// The schannel bind carries the domain, which Samba requires.
+	return credential.NewFromNTHashBytes(name+"$", hash, credential.Workstation(name), credential.Domain(realm)), nil
+}
+
+// authenticate runs the challenge and NetrServerAuthenticate3 as name on an
+// association of its own, closed before it returns.
+func (d *dc) authenticate(ctx context.Context, name string, machine credential.Credential) (*nlssp.Config, *nlssp.SecureCredential, error) {
+	cc, err := dcerpc.Dial(ctx, d.binding, dcerpc.WithDialer(d.dial))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = cc.Close(ctx) }()
+	plain, err := logon.NewLogonClient(ctx, cc, dcerpc.WithInsecure())
+	if err != nil {
+		return nil, nil, err
+	}
+	cfg := &nlssp.Config{Capabilities: offered, Credential: machine, ClientChallenge: make([]byte, 8)}
+	if _, err := rand.Read(cfg.ClientChallenge); err != nil {
+		return nil, nil, err
+	}
+	// go-msrpc answers a refused call both as an error and in Return, so
+	// Return is read first.
+	chal, err := plain.RequestChallenge(ctx, &logon.RequestChallengeRequest{
+		PrimaryName: d.server, ComputerName: name,
+		ClientChallenge: &logon.Credential{Data: cfg.ClientChallenge},
+	})
+	if chal != nil && chal.Return != 0 {
+		return nil, nil, Status(uint32(chal.Return))
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if chal.ServerChallenge == nil || len(chal.ServerChallenge.Data) != 8 {
+		return nil, nil, errors.New("netlogon: NetrServerReqChallenge answered no server challenge")
+	}
+	cfg.ServerChallenge = chal.ServerChallenge.Data
+	cred, err := nlssp.NewSecureCredential(ctx, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	clientCred, err := cred.Encrypt(ctx, cfg.ClientChallenge)
+	if err != nil {
+		return nil, nil, err
+	}
+	auth3, err := plain.Authenticate3(ctx, &logon.Authenticate3Request{
+		PrimaryName: d.server, AccountName: name + "$",
+		SecureChannelType: logon.SecureChannelTypeWorkstationSecureChannel,
+		ComputerName:      name,
+		ClientCredential:  &logon.Credential{Data: clientCred},
+		NegotiateFlags:    uint32(offered),
+	})
+	if auth3 != nil && auth3.Return != 0 {
+		return nil, nil, Status(uint32(auth3.Return))
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	want, err := cred.Encrypt(ctx, cfg.ServerChallenge)
+	if err != nil {
+		return nil, nil, err
+	}
+	if auth3.ServerCredential == nil || !hmac.Equal(want, auth3.ServerCredential.Data) {
+		return nil, nil, errServerCredential
+	}
+	if err := checkNegotiated(auth3.NegotiateFlags); err != nil {
+		return nil, nil, err
+	}
+	return cfg, cred, nil
+}
+
+// assoc is one sealed association and every byte written under it, so a
+// failed call can tell whether its request reached the wire.
+type assoc struct {
+	cc      dcerpc.Conn
+	cli     logon.LogonClient
+	written atomic.Int64
+
+	mu      sync.Mutex
+	raw     []net.Conn
+	aborted bool
+}
+
+// countConn counts the bytes written on a connection into its association.
+type countConn struct {
+	net.Conn
+	written *atomic.Int64
+}
+
+func (c countConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	c.written.Add(int64(n))
+	return n, err
+}
+
+// dialer is dial with each connection counted and recorded.
+func (a *assoc) dialer(dial dialFunc) dialFunc {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := dial(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if a.aborted {
+			_ = c.Close()
+			return nil, net.ErrClosed
+		}
+		a.raw = append(a.raw, c)
+		return countConn{Conn: c, written: &a.written}, nil
+	}
+}
+
+// abort closes every connection the association dialed, which fails whatever
+// waits on them.
+func (a *assoc) abort() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.aborted = true
+	for _, c := range a.raw {
+		_ = c.Close()
+	}
+}
+
+func (a *assoc) close() {
+	_ = a.cc.Close(context.Background())
+	a.abort()
+}
+
+// seal binds a new association sealed with the channel's Netlogon credential.
+// go-msrpc ties an association's lifetime to the context it was bound under,
+// so it is bound under one ctx's cancellation does not reach, and ctx bounds
+// the bind by closing the connection.
+func (d *dc) seal(ctx context.Context, cfg *nlssp.Config, machine credential.Credential) (*assoc, error) {
+	a := &assoc{}
+	stop := context.AfterFunc(ctx, a.abort)
+	defer stop()
+	life := context.WithoutCancel(ctx)
+	cc, err := dcerpc.Dial(life, d.binding, dcerpc.WithDialer(a.dialer(d.dial)))
+	if err != nil {
+		a.abort()
+		return nil, err
+	}
+	cli, err := logon.NewLogonClient(life, cc, dcerpc.WithSeal(), dcerpc.WithSecurityConfig(cfg),
+		dcerpc.WithMechanism(nlssp.Mechanism{}), dcerpc.WithCredentials(machine))
+	if err != nil {
+		_ = cc.Close(life)
+		a.abort()
+		return nil, err
+	}
+	a.cc, a.cli = cc, cli
+	if err := ctx.Err(); err != nil {
+		a.close()
+		return nil, err
+	}
+	return a, nil
+}
+
+// channel is a secure channel set up as one computer account. Its calls run
+// one at a time.
+//
+// ponytail: one call in flight per channel, since go-msrpc's connection
+// shares one buffer between concurrent calls. Upgrade to a pool of sealed
+// associations under the channel's session key when logons queue behind each
+// other in a profile.
+type channel struct {
+	dc      *dc
+	name    string
+	cfg     *nlssp.Config
+	machine credential.Credential
+
+	mu   sync.Mutex
+	cred *nlssp.SecureCredential // the authenticator chain NetrServerPasswordSet2 advances
+	as   *assoc                  // nil once torn, until the next call binds another
+}
+
+// association is the channel's sealed association, binding a new one when
+// the last was torn. Nothing of a call is written before it returns.
+func (c *channel) association(ctx context.Context) (*assoc, error) {
+	if c.as == nil {
+		as, err := c.dc.seal(ctx, c.cfg, c.machine)
+		if err != nil {
+			return nil, err
+		}
+		c.as = as
+	}
+	return c.as, nil
+}
+
+// drop closes the channel's association after a failed call.
+func (c *channel) drop() {
+	if c.as != nil {
+		c.as.close()
+		c.as = nil
+	}
+}
+
+func (c *channel) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.drop()
+	return nil
+}

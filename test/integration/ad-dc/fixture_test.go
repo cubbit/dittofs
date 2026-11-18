@@ -22,8 +22,11 @@ import (
 	"github.com/oiweiwei/go-msrpc/msrpc/dtyp"
 	epm "github.com/oiweiwei/go-msrpc/msrpc/epm/epm/v3"
 	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
+	"github.com/oiweiwei/go-msrpc/ssp/credential"
+	"github.com/oiweiwei/go-msrpc/ssp/ntlm"
 
-	"github.com/cubbit/dittofs/internal/auth/netlogon"
+	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/internal/identity/netlogon"
 )
 
 // The DC's dynamic RPC port range, which setupADDC hands entrypoint.sh as
@@ -251,23 +254,28 @@ func TestADFixture(t *testing.T) {
 	})
 }
 
+// machineAccountName is the computer account entrypoint.sh creates with
+// "samba-tool computer create dittofs --computerpassword=MachinePass01!".
+const (
+	machineAccountName = "DITTOFS$"
+	machineAccountPass = "MachinePass01!"
+)
+
+// fixtureRecord is the directory record of the fixture's domain, as the
+// secure channel reads it.
+func fixtureRecord() directory.Record {
+	return directory.Record{Realm: adRealm, NetBIOSDomain: adDomain}
+}
+
 // waitForMachinePassword waits up to a minute for the DC to accept a NETLOGON
 // secure channel for the computer account name$ with password.
 func waitForMachinePassword(t *testing.T, dcIP, name, password string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	a := netlogon.NewAuthenticator(netlogon.NewOfflineProvider(netlogon.MachineCredential{
-		AccountName: strings.ToUpper(name) + "$",
-		Password:    password,
-		Workstation: strings.ToUpper(name),
-		DomainName:  adDomain,
-		Realm:       adRealm,
-		DCAddresses: []string{dcIP},
-	}))
-	defer a.Close(ctx)
+	d := netlogon.NewDialer((&net.Dialer{}).DialContext)
 	for {
-		err := a.Probe(ctx)
+		err := channelOnce(ctx, d, dcIP, name, password)
 		if err == nil {
 			return
 		}
@@ -275,8 +283,54 @@ func waitForMachinePassword(t *testing.T, dcIP, name, password string) {
 			dumpADLogs(t)
 			t.Fatalf("the DC did not accept a secure channel for %s$ within a minute: %v", name, err)
 		}
+		// Polls the DC's own answer; the wait is bounded by ctx.
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+// channelOnce sets up and closes one secure channel as name$.
+func channelOnce(ctx context.Context, d netlogon.Dialer, dcIP, name, password string) error {
+	dc, err := d.Dial(ctx, fixtureRecord(), dcIP)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dc.Close() }()
+	ch, err := dc.Channel(ctx, name, []byte(password))
+	if err != nil {
+		return err
+	}
+	return ch.Close()
+}
+
+// rotateMachinePassword sets DITTOFS$'s password on the DC with samba-tool.
+func rotateMachinePassword(t *testing.T, newPassword string) {
+	t.Helper()
+	out, err := adDockerExec("samba-tool", "user", "setpassword", machineAccountName,
+		"--newpassword="+newPassword)
+	if err != nil {
+		t.Fatalf("samba-tool setpassword %s failed: %v\n%s", machineAccountName, err, out)
+	}
+}
+
+// ntlmResponseFor computes a deterministic NTLMv2 NT/LM response for the
+// AD user against a fixed 8-byte server challenge.
+func ntlmResponseFor(ctx context.Context, t *testing.T, user, pass string, serverChallenge [8]byte) (nt, lm []byte) {
+	t.Helper()
+	clientNonce := []byte{0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA}
+	v2 := &ntlm.V2{Config: &ntlm.Config{}}
+	cm := &ntlm.ChallengeMessage{
+		ServerChallenge: serverChallenge[:],
+		TargetInfo: ntlm.AttrValues{
+			ntlm.AttrNetBIOSDomainName:   &ntlm.Value{NetBIOSDomainName: adDomain},
+			ntlm.AttrNetBIOSComputerName: &ntlm.Value{NetBIOSComputerName: adDomain},
+		},
+	}
+	cred := credential.NewFromPassword(adDomain+"\\"+user, pass)
+	resp, err := v2.ChallengeResponse(ctx, cred, cm, clientNonce)
+	if err != nil {
+		t.Fatalf("compute NTLMv2 ChallengeResponse for %q: %v", user, err)
+	}
+	return resp.NT, resp.LM
 }
 
 // adAttrs reads attributes of a samba-tool user or computer, with "dn" among
