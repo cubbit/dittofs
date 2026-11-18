@@ -177,6 +177,10 @@ type soakRun struct {
 	clockSteps *rand.Rand
 
 	resends int // the resends a Commit acknowledged
+
+	// untorn counts the Torn crashes the seed drew where no write was
+	// unsynced, which the seam cannot tear, so a plain crash ran in its place.
+	untorn int
 }
 
 // listCounts is what a seed list did, counted across its seeds: the sync
@@ -300,7 +304,7 @@ func (r *soakRun) firedBoth() {
 
 	r.t.Logf(
 		"seed %d: %d calls, %d processes, %d store faults, "+
-			"%d journal faults (%d lost records, %d failed sync windows)",
+			"%d journal faults (%d lost records, %d failed sync windows), %d torn crashes found nothing unsynced",
 		r.seed,
 		r.calls,
 		r.proc,
@@ -308,6 +312,7 @@ func (r *soakRun) firedBoth() {
 		sides["journal"],
 		lost,
 		windows,
+		r.untorn,
 	)
 
 	if sides["journal"] == 0 || sides["store"] == 0 {
@@ -389,9 +394,13 @@ func (r *soakRun) restart() {
 		}
 	default:
 		n := 1 + r.rng.IntN(16)
-		if r.fake != nil {
+		switch {
+		case r.fake != nil:
 			r.c.Crash()
-		} else {
+		case r.c.Seam.Unsynced() == 0:
+			r.untorn++
+			r.c.Crash()
+		default:
 			r.c.Crash(kit.Torn(n))
 		}
 	}
