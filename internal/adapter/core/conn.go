@@ -251,13 +251,15 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservati
 	// Armed only once the writer, pipeline and reader exist, so a deadline
 	// that fires at once never races their assignment.
 	c.armHandshake()
-	registered := s.register(c)
-	if !registered {
+	if !s.register(c) {
 		// The server is not serving: the connection closes before its reader
-		// is started, so not one record is cut, and its charge is back at
-		// once, so a Stop this races never returns holding it.
+		// is started, so not one record is cut, and its teardown runs here,
+		// on the accept loop's goroutine, which Stop waits on: a Stop this
+		// races returns only once its OnClose has and its charge is back
+		// (RFC 20 section 3.2).
 		c.Close(errStop)
-		c.release()
+		c.teardown()
+		return c
 	}
 	go c.readLoop()
 	return c

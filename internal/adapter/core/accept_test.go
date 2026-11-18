@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
@@ -418,6 +419,70 @@ func TestStopWaitsAConnectionAcceptedAsItEnds(t *testing.T) {
 		_ = inner.Close()
 	}
 }
+
+// A socket its loop hands over as Stop runs is refused at its registration
+// and torn down on that loop, OnClose included, so Stop, which waits its
+// loops, returns only once that OnClose has (RFC 20 section 3.2). A teardown
+// left to a reader of its own runs OnClose outside every wait Stop makes.
+func TestStopWaitsARefusedConnectionsOnClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		entered, gate := make(chan struct{}), make(chan struct{})
+		open := sync.OnceFunc(func() { close(gate) })
+		defer open() // a failure below still lets the bubble's goroutines end
+		l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: withOnClose{testproto.New(adapter.Deps{}).Bare(), func(context.Context) {
+			close(entered)
+			<-gate
+		}}}
+		srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		core.Serving(srv)
+		nc, peer := net.Pipe()
+		defer func() { _ = peer.Close() }()
+		core.AddBound(srv, &l, &handedAtClose{conn: nc, closed: make(chan struct{})})
+		stopped := make(chan error, 1)
+		go func() { stopped <- srv.Stop(context.Background()) }()
+		<-entered
+		synctest.Wait() // every goroutine blocked: Stop has returned or waits
+		select {
+		case err := <-stopped:
+			t.Fatalf("Stop returned (%v) while a refused connection's OnClose still runs", err)
+		default:
+		}
+		open()
+		if err := <-stopped; err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	})
+}
+
+// handedAtClose is a listener that hands over its one socket only once it is
+// closed: Stop closes it after it publishes draining, so the socket reaches
+// serveConn at a server no longer serving.
+type handedAtClose struct {
+	conn   net.Conn
+	closed chan struct{}
+	once   sync.Once
+	handed atomic.Bool
+}
+
+func (l *handedAtClose) Accept() (net.Conn, error) {
+	<-l.closed
+	if l.handed.CompareAndSwap(false, true) {
+		return l.conn, nil
+	}
+	return nil, net.ErrClosed
+}
+
+func (l *handedAtClose) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *handedAtClose) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
 
 // Stop, entered while a loop sleeps out a backoff it cannot age on the test's
 // clock, returns nil once every socket's loop has ended: the sleep ends with

@@ -342,7 +342,8 @@ func (s *Server) Stop(ctx context.Context) error {
 	// The loops have ended, so not one more socket can be accepted: every
 	// connection the registry will ever hold while this server stops is in
 	// this snapshot, and a socket its loop was handing to serveConn as it
-	// ended registers before that loop does, so it is in the snapshot too.
+	// ended was refused at its registration and torn down on that loop,
+	// OnClose included, before the loop ended.
 	s.mu.Lock()
 	s.state = adapter.StateStopped
 	conns := make([]*Conn, 0, len(s.conns))
