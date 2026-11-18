@@ -161,7 +161,7 @@ type pending struct {
 	ts     *tableSeries
 	op     *Op
 	inv    Invocation
-	a      answerer // where its interim goes
+	a      answerer // where its interim and its answer go
 	key    uint64
 	start  time.Time // the hold's start: its first attempt's
 	callAt time.Time // the runtime's time its first call started, for a sampled request's span
@@ -297,21 +297,26 @@ func (p *pipeline) interimIn(pd *pending, buf *resources.Buf, grant bool) {
 // first such error its interim goes out in reply, unless it already has one,
 // and it is re-driven on the backoff; release, its admission, is released,
 // and after reports true; a cancel remembered for its key ends it there as
-// cancelled. Otherwise it returns err, or the refusal that
-// replaces it, for the request to be answered. A chain's member before the
-// last is answered at once: whether it pends is for Pends to say (§4.7),
-// which is not asked here.
+// cancelled. Otherwise it returns err, or the refusal that replaces it, for
+// the request to be answered. A chain's member before the last with no
+// interim yet holds only where Pends says it goes pending; otherwise
+// ErrNotLast replaces err before its table maps it, since the row's status
+// speaks for a hold that does not happen (§4.7). A member the interim timer
+// found in the service has its interim, so Pends is not asked of it.
 func (p *pipeline) after(pd *pending, err error, reply *resources.Buf, release func()) (bool, error) {
 	pd.mu.Lock()
 	defer pd.mu.Unlock()
 	pd.in = false
 	pd.timer.Stop()
-	if err == nil || p.ctx.Err() != nil || pd.h.Next() != 0 {
+	if err == nil || p.ctx.Err() != nil {
 		return false, err
 	}
 	bound := pd.tb.Errors.hold(err, pd.op, pd.h.Version())
 	if bound == nil {
 		return false, err
+	}
+	if pd.h.Next() != 0 && !pd.pend && !p.st.Hold.Pends(pd.h, err) {
+		return false, ErrNotLast
 	}
 	now := p.sh.clock.Now()
 	at := bound(err, pd.start)
@@ -354,16 +359,16 @@ func (p *pipeline) after(pd *pending, err error, reply *resources.Buf, release f
 	release()
 	switch {
 	case closed:
-		p.end(pd.tr, false, 0, 0, nil)
-		p.unpend(pd)
+		p.dropHeld(pd)
 	case cancelled:
-		p.cancelled(pd)
+		p.answerHeld(pd, nil, ErrCancelled)
 	}
 	return true, nil
 }
 
 // endHold is a client's cancel of the request keyed key: a hold between
-// attempts ends, answered on a goroutine of its own, since its status may
+// attempts ends, answered ErrCancelled, which its table maps to the
+// protocol's cancel status, on a goroutine of its own, since its status may
 // wait for a buffer and a cancel comes on the reader; a running attempt
 // finishes and answers its own result. A cancel that ends nothing is
 // remembered, so a request with its key that holds meanwhile ends as
@@ -384,15 +389,25 @@ func (p *pipeline) endHold(key uint64) {
 		return
 	}
 	t.mu.Unlock()
-	go p.cancelled(pd)
+	go p.answerHeld(pd, nil, ErrCancelled)
 }
 
-// cancelled answers a hold its client's cancel ended between attempts
-// ErrCancelled, which its table maps to the protocol's cancel status, under
-// Final's header (§6.5).
-func (p *pipeline) cancelled(pd *pending) {
-	p.finish(pd.tr, pd.h, pd.tb, pd.tb.Errors, pd.op, pd.inv, nil, ErrCancelled, func() {}, alone{p}, pd)
-	p.unpend(pd)
+// answerHeld answers pd, held between attempts, err, in reply where it has
+// one, under Final's header, through its answerer: a chain's member answers
+// into its chain, whose members after it then run (§4.7).
+func (p *pipeline) answerHeld(pd *pending, reply *resources.Buf, err error) {
+	pd.a.resume(func() {
+		p.finish(pd.tr, pd.h, pd.tb, pd.tb.Errors, pd.op, pd.inv, reply, err, func() {}, pd.a, pd)
+		p.unpend(pd)
+	})
+}
+
+// dropHeld ends pd, held between attempts on a closed connection, unsent.
+func (p *pipeline) dropHeld(pd *pending) {
+	pd.a.resume(func() {
+		p.end(pd.tr, false, 0, 0, nil)
+		p.unpend(pd)
+	})
 }
 
 // redrive is a held request's next attempt, on its timer's goroutine: from
@@ -405,15 +420,13 @@ func (p *pipeline) cancelled(pd *pending) {
 func (p *pipeline) redrive(pd *pending) {
 	tr := pd.tr
 	if p.ctx.Err() != nil {
-		p.end(tr, false, 0, 0, nil)
-		p.unpend(pd)
+		p.dropHeld(pd)
 		return
 	}
 	now := p.sh.clock.Now()
 	at := pd.bound(pd.last, pd.start)
 	if !at.After(now) {
-		p.finish(tr, pd.h, pd.tb, pd.tb.Errors, pd.op, pd.inv, nil, pd.last, func() {}, alone{p}, pd)
-		p.unpend(pd)
+		p.answerHeld(pd, nil, pd.last)
 		return
 	}
 	tr.req.start, tr.req.hold = now, at
@@ -422,6 +435,8 @@ func (p *pipeline) redrive(pd *pending) {
 	if tr.span != nil {
 		ctx, span = p.sh.tracer.Start(ctx, pd.ts.names[pd.op.Code])
 	}
+	// A re-drive reserves as a request alone: its chain, if it has one, holds
+	// nothing between attempts and is not the re-drive's until its answer.
 	reply, err := p.reserve(tr, pd.ts, alone{p}, pd.inv, pd.h, pd.r)
 	if err == nil {
 		err = p.resolve(tr, pd.r, pd.op, pd.inv, false)
@@ -437,8 +452,7 @@ func (p *pipeline) redrive(pd *pending) {
 	if held {
 		return
 	}
-	p.finish(tr, pd.h, pd.tb, pd.tb.Errors, pd.op, pd.inv, reply, err, func() {}, alone{p}, pd)
-	p.unpend(pd)
+	p.answerHeld(pd, reply, err)
 }
 
 // unpend takes pd out of the table and its counts, and, held between
@@ -485,7 +499,6 @@ func (p *pipeline) endHolds() {
 	}
 	t.mu.Unlock()
 	for _, pd := range ended {
-		p.end(pd.tr, false, 0, 0, nil)
-		p.unpend(pd)
+		p.dropHeld(pd)
 	}
 }

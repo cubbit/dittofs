@@ -801,3 +801,105 @@ func TestARememberedCancelIsBounded(t *testing.T) {
 		})
 	}
 }
+
+// pendChain is a version 2 chain of three under session 7 and tree 1: a PutFH
+// of the root's handle, a related Create of "f", message id+1, with the pend
+// flag where pend, and an unrelated Echo, message id+2.
+func (s *served) pendChain(id uint64, pend bool) []testproto.Msg {
+	msgs := append(s.heldChain(id, "f"), echoIn(id+2, 7))
+	msgs[1].Pend = pend
+	return msgs
+}
+
+// A chain's member before the last that the service answers ErrDelay goes
+// pending where Pends says so: the PutFH's reply and its interim go out as
+// one record, the Echo after it runs only once the Create is answered, and
+// the re-drive's success goes out with the Echo's reply (§4.7).
+func TestAPendingMemberRunsTheMembersAfterItOnItsAnswer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newHeld(t, 1<<20, adapter.Deps{}, clk)
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		s.serve(s.pendChain(1, true)...)
+		s.interimOf(2)
+		next := s.recvLater()
+		if next.arrived() {
+			t.Fatalf("the chain sent %+v before its Create was answered", next.rs)
+		}
+		clk.Advance(10 * time.Millisecond)
+		<-next.done
+		if next.err != nil || len(next.rs) != 2 || next.rs[0].Interim || next.rs[0].ID != keyOf(2) || next.rs[0].Status != testproto.StatusOK || next.rs[1].ID != 3 || next.rs[1].Status != testproto.StatusOK {
+			t.Errorf("the re-drive is answered %+v (%v), want the Create's final success and the Echo's reply in one record", next.rs, next.err)
+		}
+		if n := s.creates(); n != 1 {
+			t.Errorf("%d files made, want 1", n)
+		}
+	})
+}
+
+// The credits of the PutFH, answered before the pending Create, are granted
+// in full in its interim's record, which grants the Create's in full too; its
+// final reply then grants none, and the Echo's reply its own (§4.6, §4.7).
+func TestTheCreditsBeforeAPendingMemberRideOnItsInterim(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newHeld(t, 1<<20, adapter.Deps{}, clk)
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		msgs := s.pendChain(1, true)
+		msgs[0].Credits, msgs[1].Credits = 2, 2
+		before := s.client.Balance()
+		s.serve(msgs...)
+		s.interimOf(2)
+		if got := s.client.Balance() - before; got != 4 {
+			t.Errorf("the PutFH's reply and the interim granted %d credits, want two each", got)
+		}
+		clk.Advance(10 * time.Millisecond)
+		if _, err := s.client.Recv(); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.client.Balance() - before; got != 5 {
+			t.Errorf("the chain granted %d credits, want five: none more for the Create, one for the Echo", got)
+		}
+	})
+}
+
+// Without the pend flag, a chain's member before the last that the service
+// answers ErrDelay is answered the not-last status at once, with no interim,
+// since the delay row's status would speak for a hold that does not happen,
+// and the Echo after it runs (§4.7).
+func TestAMemberThatDoesNotPendIsAnsweredNotLast(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		s.serve(s.pendChain(1, false)...)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 3 || rs[1].Interim || rs[1].ID != 2 || rs[1].Status != testproto.StatusNotLast || rs[2].ID != 3 || rs[2].Status != testproto.StatusOK {
+			t.Errorf("the chain is answered %+v (%v), want the Create's not-last status at once and the Echo's success", rs, err)
+		}
+	})
+}
+
+// A chain's member before the last still in the service a second after it
+// reached it goes pending without the pend flag, since its call may still
+// apply: its interim goes out with the PutFH's reply, and its final success
+// with the Echo's (§4.6, §4.7).
+func TestAMemberInTheServicePendsWithoutTheFlag(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newHeld(t, 1<<20, adapter.Deps{}, clk)
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.pendChain(1, false)...)
+		<-hold.Reached()
+		clk.Advance(time.Second)
+		s.interimOf(2)
+		hold.Release()
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[0].Interim || rs[0].ID != keyOf(2) || rs[0].Status != testproto.StatusOK || rs[1].ID != 3 || rs[1].Status != testproto.StatusOK {
+			t.Errorf("the Create's call is answered %+v (%v), want its final success and the Echo's reply in one record", rs, err)
+		}
+		if n := s.creates(); n != 1 {
+			t.Errorf("%d files made, want 1", n)
+		}
+	})
+}

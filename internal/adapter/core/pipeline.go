@@ -555,6 +555,9 @@ type answerer interface {
 	// pended sends the interim of a message that went pending, keyed key,
 	// with the replies answered before it.
 	pended(h Header, interim *resources.Buf, key uint64)
+	// resume runs answer, the end of a message held between attempts, and
+	// what comes after it: for a chain's member, the members after it.
+	resume(answer func())
 }
 
 // alone answers a request that is no chain's member.
@@ -607,12 +610,15 @@ func (a alone) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf
 
 func (a alone) pended(h Header, interim *resources.Buf, key uint64) { a.p.send(h, interim, key) }
 
+func (alone) resume(answer func()) { answer() }
+
 // message runs one admitted message from the replay check to its answer, in
 // §4.7's order, under prev, the request of the member before a related one,
 // and answers it through a. A refusal is mapped by the stages' table until
 // Route returns one, and by that table after. It returns the message's
-// request, for a related member after it.
-func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Request, release func(), a answerer) *Request {
+// request, for a related member after it, and whether it is held between
+// attempts, which its answer then ends.
+func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Request, release func(), a answerer) (*Request, bool) {
 	ctx := tr.ctx
 	cached, err := a.lookup(tr, h)
 	if cached != nil {
@@ -620,13 +626,13 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		tr.cached = true
 		release()
 		a.answered(tr, h, cached, 0, 0, false, nil)
-		return nil
+		return nil, false
 	}
 	if err != nil {
 		if p.endedByClose(err) {
 			release()
 			p.end(tr, false, 0, 0, err)
-			return nil
+			return nil, false
 		}
 		p.refused(tr, stageReplayCheck)
 	}
@@ -653,7 +659,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		if serr != nil {
 			release()
 			p.drop(tr, nil, serr)
-			return nil
+			return nil, false
 		}
 		p.routed(tr, ts, h.Op())
 		errs = tb.Errors
@@ -682,7 +688,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		} else if op.Members != nil {
 			if _, ok := a.(alone); ok {
 				p.compound(tr, h, r, tb, op, inv, args[n:], release)
-				return r
+				return r, false
 			}
 			// decision: a compound row reached as a chain's member is
 			// refused not supported: its one reply cannot join the chain's
@@ -714,7 +720,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		}
 		release()
 		p.end(tr, false, 0, 0, nil)
-		return r
+		return r, false
 	}
 	if err == nil {
 		err = p.resolve(tr, r, op, inv, p.draining.Load())
@@ -731,14 +737,14 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 	if pd != nil {
 		var held bool
 		if held, err = p.after(pd, err, reply, release); held {
-			return r
+			return r, true
 		}
 	}
 	p.finish(tr, h, tb, errs, op, inv, reply, err, release, a, pd)
 	if pd != nil {
 		p.unpend(pd)
 	}
-	return r
+	return r, false
 }
 
 // reserve takes the reply buffer of h's attempt through a, its wait timed
