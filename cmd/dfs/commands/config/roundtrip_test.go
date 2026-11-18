@@ -18,6 +18,13 @@ import (
 var expectedTopLevelYAMLKeys = []string{
 	"logging",
 	"blockstore",
+	"node",
+	"metadata",
+	"journals",
+	"adapters",
+	"api",
+	"metrics",
+	"keys",
 }
 
 // TestConfigSchema_TopLevelKeysAreYAMLKeys asserts the generated JSON schema's
@@ -78,7 +85,7 @@ func TestConfigShowJSON_RoundTripsThroughLoad(t *testing.T) {
 		t.Fatalf("write json: %v", err)
 	}
 
-	reloaded, err := bootstrap.Load(jsonPath)
+	reloaded, err := bootstrap.Load(jsonPath, os.Environ())
 	if err != nil {
 		t.Fatalf("Load could not re-parse `config show -o json` output: %v\noutput was:\n%s", err, buf.String())
 	}

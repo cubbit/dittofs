@@ -245,7 +245,8 @@ func (n *Node) refuse(ctx context.Context) error {
 		return err
 	}
 	opts := append([]journal.Option{journal.WithClock(n.cfg.Clock)}, n.cfg.Journal...)
-	for _, dir := range n.cfg.Bootstrap.Devices {
+	for _, j := range n.cfg.Bootstrap.Journals {
+		dir := j.Path
 		// With no identity expected, Open opens nothing: it names the
 		// journal it found and that journal's installation.
 		_, err := journal.Open(ctx, dir, journal.Version{}, journal.JournalID{}, nil, opts...)
@@ -284,7 +285,7 @@ func (n *Node) openListeners(context.Context) error {
 // once a format nodes share is.
 func (n *Node) register(ctx context.Context) error {
 	_, err := n.meta.Nodes().RegisterNode(ctx, entity.Node{
-		ID:      n.cfg.Bootstrap.Node,
+		ID:      n.cfg.Bootstrap.Node.ID,
 		Address: n.life.api.String(),
 		Roles:   entity.NodeRoleProtocol | entity.NodeRoleStorage,
 	})

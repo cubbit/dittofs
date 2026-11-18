@@ -39,7 +39,7 @@ func TestLoad_EnvOverride_KeyAbsentFromFile(t *testing.T) {
 	t.Setenv("DITTOFS_LOGGING_LEVEL", "ERROR")
 	t.Setenv("DITTOFS_BLOCKSTORE_JOURNAL_PATH", journal)
 
-	cfg, err := Load(path)
+	cfg, err := Load(path, os.Environ())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestLoad_EnvOnly_NoConfigFile(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
 	t.Setenv("DITTOFS_LOGGING_LEVEL", "ERROR")
 
-	cfg, err := Load(missing)
+	cfg, err := Load(missing, os.Environ())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestLoad_EnvOnly_NoConfigFile(t *testing.T) {
 func TestLoad_NoFileNoEnv_StillDefaults(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
 
-	cfg, err := Load(missing)
+	cfg, err := Load(missing, os.Environ())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
@@ -556,7 +557,7 @@ func TestStatusCarriesAnEngineCondition(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
-		cfg.Bootstrap.Devices = []string{lost}
+		cfg.Bootstrap.Journals = []bootstrap.Journal{{Path: lost}}
 		return node.New(cfg)
 	}))
 	if err := h.Store().RecordJournal(t.Context(), [16]byte{'l', 'o', 's', 't'}, h.NodeID(), entity.JournalDir(lost)); err != nil {

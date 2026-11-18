@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -24,7 +25,7 @@ func TestMustLoad_NoConfigFileFallsBackToDefaults(t *testing.T) {
 		t.Skip("a config file exists at the default location; cannot exercise the no-config fallback here")
 	}
 
-	cfg, err := MustLoad("")
+	cfg, err := MustLoad("", os.Environ())
 	if err != nil {
 		t.Fatalf("MustLoad(\"\") with no config file must fall back to defaults, got error: %v", err)
 	}
@@ -43,7 +44,8 @@ func TestMustLoad_NoConfigFileFallsBackToDefaults(t *testing.T) {
 // path should not silently boot on defaults).
 func TestMustLoad_ExplicitMissingPathStillErrors(t *testing.T) {
 	missing := t.TempDir() + "/does-not-exist.yaml"
-	_, err := MustLoad(missing)
+
+	_, err := MustLoad(missing, os.Environ())
 	if err == nil {
 		t.Fatal("MustLoad with an explicit missing config path must return an error, got nil")
 	}

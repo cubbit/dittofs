@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -59,7 +60,8 @@ blockstore:
   local:
     path: /srv/dittofs/blocks
 `
-	_, err := Load(writeConfigFile(t, content))
+
+	_, err := Load(writeConfigFile(t, content), os.Environ())
 	if err == nil {
 		t.Fatal("Load: got nil, want a refusal for the renamed blockstore.local section")
 	}
@@ -83,7 +85,8 @@ blockstore:
   journal:
     path: '%s'
 `, want)
-	cfg, err := Load(writeConfigFile(t, content))
+
+	cfg, err := Load(writeConfigFile(t, content), os.Environ())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

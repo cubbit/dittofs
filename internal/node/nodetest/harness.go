@@ -90,16 +90,16 @@ func New(t testing.TB, opts ...Option) *Harness {
 	if err != nil {
 		t.Fatalf("nodetest: journal init: %v", err)
 	}
+
+	b := bootstrap.Bootstrap{Journals: []bootstrap.Journal{{Path: dev}}}
+	b.Node.ID = nodeID
+	b.API.Listen = []string{"127.0.0.1:0"}
+	b.Metrics.Listen = "127.0.0.1:0"
 	h.cfg = node.Config{
-		Bootstrap: bootstrap.Bootstrap{
-			Node:        nodeID,
-			Devices:     []string{dev},
-			APIAddr:     "127.0.0.1:0",
-			MetricsAddr: "127.0.0.1:0",
-		},
-		Clock:   h.clock,
-		Logger:  slog.New(slog.NewTextHandler(t.Output(), nil)),
-		Journal: []journal.Option{journaltest.SuitableMount()},
+		Bootstrap: b,
+		Clock:     h.clock,
+		Logger:    slog.New(slog.NewTextHandler(t.Output(), nil)),
+		Journal:   []journal.Option{journaltest.SuitableMount()},
 	}
 	h.openKV(t)
 	if err := kvstore.Init(ctx, h.cfg.KV, install); err != nil {

@@ -137,7 +137,7 @@ func (n *Node) nodeStatus() entity.NodeStatus {
 		refused = append(refused, refusedKind(kind))
 	}
 	return entity.NodeStatus{
-		Node:       n.cfg.Bootstrap.Node,
+		Node:       n.cfg.Bootstrap.Node.ID,
 		Settings:   pos.Settings,
 		ShareList:  pos.ShareList,
 		Principals: pos.Principals,
@@ -248,7 +248,10 @@ func (c *nodeConditions) Conditions(dst []health.Condition) []health.Condition {
 
 // subject is the node as a condition's subject.
 func (n *Node) subject() health.Subject {
-	return health.Subject{Scope: health.ScopeNode, ID: fmt.Sprintf("%x", n.cfg.Bootstrap.Node[:])}
+	return health.Subject{
+		Scope: health.ScopeNode,
+		ID:    fmt.Sprintf("%x", n.cfg.Bootstrap.Node.ID[:]),
+	}
 }
 
 // nodeSeries is the node's reconcile as the registry's series, read at each
