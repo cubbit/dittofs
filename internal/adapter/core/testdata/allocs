@@ -1,0 +1,7 @@
+# Allocations per record sent, a chain's or a compound's members together, of
+# TestPipelineAllocs' cases, with tracing off and every log line dropped. A
+# number may only fall (RFC 20 §6.10).
+echo-bare 25
+compound-v1 55
+compound-v1-delay 55
+chain-v2 63
