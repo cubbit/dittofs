@@ -185,12 +185,8 @@ func since(b *bytes.Buffer, n int, body func()) {
 }
 
 // methods writes s's four methods, and the two its decoder and encoder nest
-// through.
-//
-// decision: the version is a uint32 where RFC 20 section 4.7's Decoder and
-// Encoder name core.Version: section 7.1 holds a codec_gen.go to wire's
-// imports, among which core is not. Overturned when the RFC settles which
-// gives way.
+// through. The version is a uint32, which RFC 20 section 4.7's core.Version
+// aliases, as section 7.1 keeps core out of a codec_gen.go's imports.
 func (g *gen) methods(b *bytes.Buffer, s *strct) {
 	fmt.Fprintf(b, `
 func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {

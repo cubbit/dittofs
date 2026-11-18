@@ -2577,8 +2577,10 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 // span of them. For NFSv4 a Version is the minor version, so Range{0, 0} is
 // NFSv4.0 alone: NFS's header codec reads a COMPOUND's tag and minor version
 // with the RPC header, and a procedure of version 4 other than COMPOUND (NULL)
-// carries none and has Version 0.
-type Version uint32
+// carries none and has Version 0. Version is an alias, so a generated codec,
+// which does not import core (§7.1), meets Row's Decoder and Encoder with a
+// uint32.
+type Version = uint32
 type Range struct{ First, Last Version }
 
 // Needs is §4.2's ordered precondition, plus a flag for a current filehandle.

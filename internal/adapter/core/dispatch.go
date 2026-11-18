@@ -377,7 +377,10 @@ func labelName(name string) bool {
 // Version is a protocol's version, minor version or dialect; Range a closed
 // span of them. For NFSv4 a Version is the minor version, so Range{0, 0} is
 // NFSv4.0 alone.
-type Version uint32
+//
+// decision: Version is an alias of uint32 (§4.7), so a generated codec, which
+// may not import core (§7.1), meets Row's Decoder and Encoder with a uint32.
+type Version = uint32
 
 // Range is a closed span of versions.
 type Range struct{ First, Last Version }

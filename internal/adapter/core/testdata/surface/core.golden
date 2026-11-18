@@ -253,7 +253,7 @@ type Stages struct {
 
 type Status uint32
 
-type Version uint32
+type Version = uint32
 
 var (
 	ErrNotSupported   = errors.New("core: operation not supported")
