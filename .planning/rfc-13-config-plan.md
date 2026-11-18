@@ -613,12 +613,20 @@ admin-only, as D9 fails closed on a store's location.
   whatever path a request names.
 - **Applied by** epics 3 (`Check`) and 4 (`Resolve`, the owner).
 
-**D11. A field added, removed or renamed in a section raises its `Schema`, and a release writes the
-new `Schema` only once the installation's active version allows it.** A strict decode refuses an
-unknown field and a newer `Schema` (RFC 13 §2.3), so an older binary would hold a component a newer
-one's row names: a rollback is safe only while no such row exists. Until the operator raises the
-active version (RFC 13 §5.5), a newer binary keeps writing the older `Schema`, without the field,
-which keeps RFC 13 §1's promise that a rollback is safe up to the raise. No format has a second
+**D11. A field added, removed or renamed in any section raises the settings format's schema
+version, one number across every section, and a release writes the new version only once the
+installation's active version allows it.** A strict decode refuses an unknown field and a newer
+`Schema` (RFC 13 §2.3), so an older binary would hold a component a newer one's row names: a
+rollback is safe only while no such row exists. Until the operator raises the active version
+(RFC 13 §5.5), a newer binary keeps writing the older version, without the field, which keeps
+RFC 13 §1's promise that a rollback is safe up to the raise. Every section's rows carry the one
+version (epic 3's D1), so `Of` needs no option for it and a raise is one event for the settings
+format. The price is a wider rollback refusal past the raise: every row the newer binary rewrites
+carries the new version, so an older binary refuses every section it rewrote, not only the one
+that gained the field. That is accepted, since one bad row still stops only its own section and a
+rollback past the raise is already the unsafe case. Until `raise-format` lands, no release renames or
+removes a field with rows behind it, since an older row could no longer be read into the current
+struct (epic 3's D1). No format has a second
 version yet, so the rule costs nothing now: a `decision:` note at `Check` states it, and the raise
 call that enforces it is the ledger's (§6.1). A rename of a `SecretRef` field also changes its
 secrets' owner, the setting key naming them (D10), and would strand them; none is reachable before
@@ -814,10 +822,12 @@ var Settings = settings.Table{
 // entity.ControlPlaneTx, settings.Write, T) error), a check that reads store state beyond settings,
 // tracked, in the write's transaction, handed the write so it can return at once for a key it does
 // not guard (RFC 13 §6; RFC 18's plan's E2 refusing an identity.id_range at or below the ID counters'
-// marks). Of panics on a missing or unknown class, a field with no explicit json name (its key
-// is the field's Go name, not a lower-case setting key), a duplicate field name, or a Required
-// or SecretRef name that is not a field of T, so a typo fails the table's first test instead of
-// making a restart or bound key live.
+// marks); FormatVersion, the field whose key holds the block format version, which Check refuses
+// past this node's range (RFC 13 §5.4; epic 3's D6, the one option added after epic 1's freeze).
+// Of panics on a missing or unknown class, a field with no explicit json name (its key is the
+// field's Go name, not a lower-case setting key), a duplicate field name, or a Required,
+// SecretRef or FormatVersion name that is not a field of T, so a typo fails the table's first
+// test instead of making a restart or bound key live.
 func Of[T interface{ Validate() error }](prefix string, scope Scope, def T, opts ...Option) Section
 ```
 
@@ -854,9 +864,19 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller auth.Role, w Write, holds 
 	if rank(caller) < rank(sec.writeRole) { // an explicit rank, never the names; an empty or unknown role ranks lowest, and Of panics on an unknown WriteRole
 		return ErrForbidden // admin-only sections, identity.directory among them, its first value included (RFC 13 Appendix B, A1)
 	}
-	s, err := sec.effectiveAfter(tx, w) // a put's row, or what a delete leaves
+	s, err := sec.decodeAfter(tx, w) // a put's row, or what a delete leaves
 	if err != nil {
-		return err // strict decode, keys matched exactly as declared, over the defaults and the wider row, required keys, then Validate
+		// strict decode, keys matched exactly as declared, over the defaults and the wider row,
+		// required keys
+		return err
+	}
+	if err := sec.checkSecretRefs(tx, s); err != nil {
+		// D10: a reference to a secret of another kind or owner, or to none. Before Validate, so a
+		// plaintext typed into a reference never reaches a Validate that prints it (epic 3's T3.5).
+		return err
+	}
+	if err := sec.validate(s); err != nil {
+		return err // the section's own Validate, which prints no value
 	}
 	if err := sec.checkTx(tx, w, s); err != nil { // the section's CheckTx, if any: RFC 18's plan's E2 refuses an id_range here
 		return err
@@ -870,17 +890,15 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller auth.Role, w Write, holds 
 			return refuseBound(s) // RFC 13 §5.1
 		}
 	}
-	if err := sec.checkSecretRefs(tx, s); err != nil {
-		return err // D10: a reference to a secret of another kind or owner
-	}
 	if storeLocation(s.Key) && sec.isChange(tx, w) { // endpoint, bucket, prefix and credential reference; a first value is no change
 		// decision: D9. Refused until the capability check finds the claim
 		// (RFC 13 §5.2); withdraw when both are built.
 		return ErrUnproven
 	}
-	// decision: D11. A section's newer Schema is written only once the active version allows it,
-	// so a rollback before the raise meets no row it cannot decode (RFC 13 §1).
-	return t.checkFormatVersion(s) // a namespace's block format past this node's range (RFC 13 §5.4)
+	// decision: D11. The settings format's newer schema version, one across every section, is
+	// written only once the active version allows it, so a rollback before the raise meets no row
+	// it cannot decode (RFC 13 §1).
+	return sec.checkFormatVersion(w) // a namespace's block format past this node's range (RFC 13 §5.4)
 }
 ```
 
@@ -1185,8 +1203,8 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   ambiguously, `lookup` choosing the longest prefix on a dot boundary.
 - `Check` for the write path, given the caller's role and the write as a put or a delete, a delete
   checked against the effective value it leaves: unknown key, wrong scope, newer schema, the
-  section's write role, `Validate`, the bound refusal (RFC 13 §5.1) on its holds-content input,
-  D10's secret references, D9's refusal of a store location's change but not its first value, and a
+  section's write role, D10's secret references, `Validate`, the bound refusal (RFC 13 §5.1) on its
+  holds-content input, D9's refusal of a store location's change but not its first value, and a
   namespace's block format version past this node's range (RFC 13 §5.4), on the key
   RFC 4's plan declares; until then a unit test declares the key and asserts the refusal.
 - `Diff`, `Keep` and the classes: live, restart, next write, bound.
@@ -1447,7 +1465,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | The scratch paths of RFC 13 §2.2; "§2.2 scratch paths" (header, O1, §1.4) | their readers are not built yet | RFC 26, RFC 1 and RFC 25 plans | the first reader: backups' spill, salvage export or the event spool |
 | A remote store's endpoint, bucket, prefix or credential change, refused, the bucket and prefix even with no content, past RFC 13 §5.1's "no content, accepted"; "§5.2 same content" (D9, O1, §1.4) | needs the capability check (RFC 4 §4.11) and the claim (RFC 27 §2.1) | RFC 4 and RFC 27; RFC 23 plan (#4050) for its credential rotation and proven endpoint | both pieces built |
 | "§2.2 explicit initialisation"'s clause recording a new identity by a recovery import (O1, §1.4) | needs RFC 26's recovery import | RFC 26 plan | RFC 26's plan builds the import |
-| The call that raises an active version, `raise-format` (RFC 13 §5.5), and with it D11's write of a section's newer `Schema` (header, §4.3's `ponytail:`, D11, O1) | each format has one version | unowned | a format gains a second version |
+| The call that raises an active version, `raise-format` (RFC 13 §5.5), and with it D11's write of the settings format's newer schema version (header, §4.3's `ponytail:`, D11, O1) | each format has one version | unowned | a format gains a second version |
 | "§7 rotation"'s wrapping-key half and its reseal pass (§4.3's `ponytail:`, O1, §1.4) | a retired role key keeps every secret open | unowned | an operator must remove a role key, or a role key is compromised |
 | The namespace key table; "§5.1 encryption bound", "§7 namespace keys", "§7 chunk-ID key", "§7 key table" (header, O1, §1.4) | RFC 13 §7's material bullets are RFC 5's | RFC 5 plan | RFC 5's plan |
 | "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys |
