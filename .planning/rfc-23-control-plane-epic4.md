@@ -19,7 +19,7 @@ running index, the node view and its statuses, and the namespace record `NS‖ns
 reads `Namespace(id)` and `StoreNamed(store)` on `entity.ControlPlaneTx`. E3: `internal/node/api` with `New(Deps)`, its listener and health rows, `Deps.Ready`,
 `Deps.Live` and the node's `Deps.Applied` (A8), the two architecture rules over the package, the operation runner, and
 `internal/node/nodetest`. T4.11's success paths also wait on the RFC 18 plan's epics 6 and 7 for
-identity's directory and join calls and their in-memory doubles, and on X1's `pkg/secrets`.
+identity's directory and join calls and their in-memory doubles, and on X1's `pkg/secrets`; T4.3 waits on X1's `MakeRuntimeDir`.
 **Blocks:** E5, which fills `Deps.Authenticate` from `internal/node/api/auth`, adds its rights to the
 role table and its routes to the route table on the call and write adapters; E6, which builds the
 commands on `pkg/apiclient` and the wire types; E7, which runs RFC 23 §12's rows through these
@@ -106,8 +106,8 @@ span per call; RFC 23 §4.3's amendment for the pre-write step.
 - **E6**, epic 6, the CLI: `dfsctl`'s commands on `pkg/apiclient`.
 - **E7**, epic 7, **the integration epic**: RFC 23 §12's single-node rows through the API.
 - **S1**, E1 merged: v1 gone and the surface frozen.
-- **X1**, the RFC 13 plan's bootstrap and secrets (`pkg/bootstrap`, `pkg/secrets`), outside RFC 23's
-  plan.
+- **X1**, the RFC 13 plan's bootstrap and secrets (`pkg/bootstrap`, its `MakeRuntimeDir` among it,
+  and `pkg/secrets`), outside RFC 23's plan.
 - **X3**, the RFC 13 plan's epic 5, which hands in the settings table and wires `Check`, `Diff` and
   `Get`, outside RFC 23's plan.
 
@@ -243,7 +243,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R55 | The API is served over TLS on every address but loopback (`127.0.0.0/8` and `::1`, an IPv4-mapped address read as its IPv4 address), its certificate and key bootstrap facts of the host; a listen address with an empty host (`:8080`) is refused as a form, not read as every interface (RFC 13 Appendix C) | MUST | RFC 23 §5.3 | T4.3 |
-| R56 | It is also served without TLS on a local socket at the bootstrap's `api.socket` path, `dfs.sock` in the runtime directory by default, readable and writable by the server's user only, in a directory only that user owns (a start refuses one that is a symlink, RFC 13 Appendix C, or that group or others can write, and on a group-owned volume creates a `0700` subdirectory for it, RFC 13 Appendix C); a start probes a socket left over, refusing while one answers and replacing only one that does not | MUST | RFC 23 §5.3 | T4.3 |
+| R56 | It is also served without TLS on a local socket at the bootstrap's `api.socket` path, `dfs.sock` in the runtime directory by default, readable and writable by the server's user only, in a directory only that user owns (a start refuses one that group or others can write, and on a group-owned volume creates a `0700` subdirectory for it, RFC 13 Appendix C); a start probes a socket left over, refusing while one answers and replacing only one that does not | MUST | RFC 23 §5.3 | T4.3 |
 | R57 | Until epic 5's authentication is in, every route but the public ones (the health rows and `/api/version`) answers `401` | MUST | RFC 23 plan §5 epic 4 | T4.2 |
 | R58 | `GET /api/version` answers the major versions served, with no authentication and nothing else; `GET /api/v1/nodes` gives each node's binary version, for `viewer` | MUST | RFC 23 §9 | T4.2, T4.6 |
 | R59 | The client reaches a server named by a URL or by the local socket's path; resolves names to IDs with the list filters; echoes the `ETag` it read, opaque, in `If-Match`; generates one idempotency key per command and reuses it across that command's retries; stops on `412`; follows an operation with `?wait=`; ignores a response field it does not know; and refuses a server that serves no major version it speaks, naming both | MUST | RFC 23 §7, §9 | T4.8 |
@@ -512,14 +512,14 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 **Subtask T4.3 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** T4.2.
+- **Track:** B. **Depends on:** T4.2, and on X1 (`MakeRuntimeDir`, the RFC 13 plan's T2.4).
 - **Covers:** R23, R31, R55, R56, R60.
 - **Deliverables:** E3's listener extended: TLS through `internal/tlsconfig` on every address but
   loopback, a start refusing a non-loopback address without the bootstrap's certificate and key; the
   metrics listener under the same TLS rule as the API's; a TLS configuration naming a client CA
   refused at start, for both listeners, a `decision:` at `Start` naming its overturn, the API
   reached by client certificate; the
-  local socket, at the bootstrap's `api.socket` path, `dfs.sock` in the runtime directory by default (when neither `RUNTIME_DIRECTORY` nor `XDG_RUNTIME_DIR` names one, the directory made through E2's `MakeRuntimeDir` before the socket binds),
+  local socket, at the bootstrap's `api.socket` path, `dfs.sock` in the runtime directory by default (when neither `RUNTIME_DIRECTORY` nor `XDG_RUNTIME_DIR` names one, the directory made through X1's `MakeRuntimeDir` before the socket binds),
   created `0600` in a directory only the server's user owns (a `0700` subdirectory of a group-owned volume), a socket left over probed before it, refused while one answers and replaced once
   dead, its requests marked local on the context
   for E5 (`auth.Local`, D3); the call
@@ -535,7 +535,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   `::1` and `::ffff:127.0.0.1`, a non-loopback address with no certificate refused,
   `localhost:8080` refused as a host name, not an IP, and `:8080` refused for its empty host
   (R55, RFC 13 Appendix C); the metrics listener on a non-loopback address held to the same rule, and a start with a
-  client CA refused; the socket's mode read back and a call through it marked local, a start with a `0770` runtime directory, one with a directory owned by root and one with a symlink refused, and one on a group-writable volume the node does not own serving from a `0700` subdirectory (R56); 65 calls held by a
+  client CA refused; the socket's mode read back and a call through it marked local, a start with a `0770` runtime directory and one with a directory owned by root refused, and one on a group-writable volume the node does not own serving from a `0700` subdirectory (R56); 65 calls held by a
   handler blocked on a channel, the 65th `503` with `Retry-After`, and a health probe still answered
   (R23, D8); `Ready` returning `starting`, a call `503` `starting` with `Retry-After`, and
   `/api/version` and `/api/v1/health` still answered (R31, D16); an error's `RetryAfter` of 6.5 s
@@ -895,6 +895,7 @@ flowchart TD
   T4_1["T4.1 Problems and decoding"] --> T4_2["T4.2 Route table, rights, adapters"]
   T4_2 --> C1(["after T4.2: every route answers 401, the layering held"]):::sync
   T4_2 --> T4_3["T4.3 Listeners and bound"]
+  X1(["X1: MakeRuntimeDir"]):::sync --> T4_3
   T4_2 --> T4_4["T4.4 Write path"]
   T4_2 --> T4_5["T4.5 Reads and long polls"]
   T4_5 --> T4_6["T4.6 Operations, nodes, audit"]

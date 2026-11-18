@@ -426,7 +426,7 @@ plan (#4058), which estimate it once, in their own epics.
 The skill's estimate for RFC 23's 1,963 lines, as amended, is 5 middle epics (`round(1963 / 400)`), and this plan
 has 5.
 
-**Legend.** ⛔ is a blocker; 🔀 waits on a synchronisation point: E3 and E5 in part (X1, X2), E4's success paths in part (X1), E7 (X3)
+**Legend.** ⛔ is a blocker; 🔀 waits on a synchronisation point: E3 and E5 in part (X1, X2), E4 in part (X1: its T4.3 and its success paths), E7 (X3)
 and E8 (S3). "team" is an epic that belongs to
 no track. "Partly" means the dependent epic starts before the blocker lands and needs it for its
 remaining pieces (§3.3).
@@ -461,7 +461,7 @@ flowchart TD
   X3 --> E7
   E3 & E4 & E5 & E6 --> E7["E7 Integration 🔀"]
   S2 --> S3
-  X1(["X1 the RFC 13 plan's bootstrap and secrets, outside this plan"]):::sync -. "dfs start, dfs init, pkg/secrets" .-> E3 & E4 & E5
+  X1(["X1 the RFC 13 plan's bootstrap and secrets, outside this plan"]):::sync -. "dfs start, dfs init, pkg/secrets, MakeRuntimeDir" .-> E3 & E4 & E5
   X2(["X2 the RFC 18 plan's sign-in interface, outside this plan"]):::sync -. "sign-in, hashes" .-> E5
   S3(["S3 adapters serve through the node, outside this plan"]):::sync --> E8["E8 E2E green 🔀"]:::sync
   E7 -. "server fixture" .-> E8
@@ -486,10 +486,10 @@ flowchart TD
   20's plan's S4 ("`internal/node` exists"), so it unblocks RFC 20's epic 7, which builds the
   adapters through their factories inside this node.
 - **🔀 X1, the RFC 13 plan's bootstrap and secrets.** Outside this plan: #4059's epic 2
-  (`pkg/bootstrap`, the node identity, the version gate) and epic 4 (`pkg/secrets`). Epic 3 builds its composition,
+  (`pkg/bootstrap`, the node identity, the version gate, `MakeRuntimeDir`) and epic 4 (`pkg/secrets`). Epic 3 builds its composition,
   start and stop and reconcile before it, on a `node.Config` its tests fill in; of epic 3, X1
   gates only the node identity and the version gate at start (its T3.10), and `dfs start` reads the bootstrap from the
-  RFC 13 plan's epic 1. Epic 4's T4.11 success paths wait for `pkg/secrets`, and epic 5's `dfs init` and its signing key wait for it.
+  RFC 13 plan's epic 1. Epic 4's T4.3 waits for `MakeRuntimeDir`, its T4.11 success paths for `pkg/secrets`, and epic 5's `dfs init` and its signing key wait for it.
 - **🔀 X2, the RFC 18 plan's sign-in interface.** Outside this plan: #4058's epic 2 (`APISignIn`,
   `NewHashes`), served by identity composed in `node.New` (#4058's epic 8's T8.1). Epic 5 builds
   tokens, sessions, roles and throttling before it, over epic 2's records; sign-in, the first

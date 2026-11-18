@@ -289,9 +289,9 @@ Out of scope, each named in O1:
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 7 | 8.75 | team | every epic |
-| E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 9 | 18.5 | A | E5; partly E3; RFC 23's epics 3 and 5 (its X1) |
+| E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 9 | 18.5 | A | E5; partly E3; RFC 23's epics 3, 4 and 5 (its X1) |
 | E3 | Settings | a delete, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19.5 | B | E5; partly RFC 18's plan's epic 6 |
-| E4 | Secrets | `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
+| E4 | Secrets | `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epics 4 and 5 (its X1) |
 | E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty, off by default; the launchers on `dfs init` and the images' `init` as an explicit step, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
 | | **Total** | | **42** | **81.25** | | |
@@ -333,7 +333,7 @@ flowchart TD
   R2 --> S3
   E2 & E3 & E4 --> E5["E5 Integration"]
   S3 -. "partly" .-> E5
-  E2 -. "X1 in RFC 23's plan: dfs start, dfs init" .-> R35(["RFC 23's epics 3 and 5"]):::sync
+  E2 -. "X1 in RFC 23's plan: dfs start, dfs init, MakeRuntimeDir" .-> R35(["RFC 23's epics 3, 4 and 5"]):::sync
   E4 -. "X1: pkg/secrets, dfs init's first password" .-> R5(["RFC 23's epics 4 and 5"]):::sync
   S4(["S4 RFC 23's dfs init exists"]):::sync --> E6["E6 E2E green"]
   S4 -. "partly: dfsbench on dfs init" .-> E2
@@ -384,7 +384,7 @@ flowchart TD
 | E5 | E6 | E2E green runs the wired server. |
 | RFC 23's epic 2 (outside) | E2 and E4, partly | The version gate adds a node's ranges to RFC 23's `Node` record, `WriteMissingNodeIDs` reads RFC 16's `JournalID`, and `Prune` reads the versions a node holds from its `NodeStatus`. Everything else in both epics starts at S1. |
 | RFC 23's epics 2, 3 and 4 (outside, S3) | E5, partly | Integration wires this library into RFC 23's reconcile and write path, in the slots those epics leave; the table and D3's check start before (§3.4). |
-| E2 | RFC 23's epics 3 and 5 (its X1), partly | `dfs start` reads `pkg/bootstrap` and the node identity, and `dfs init` writes the identity; the rest of both epics starts before. |
+| E2 | RFC 23's epics 3, 4 and 5 (its X1), partly | `dfs start` reads `pkg/bootstrap` and the node identity, epic 4's local socket needs `MakeRuntimeDir`, and `dfs init` writes the identity; the rest of the three epics starts before. |
 | E4 | RFC 23's epics 4 and 5 (its X1), partly | `pkg/secrets` for epic 4's success paths; `dfs init`'s first password and the API's signing key are sealed `Secret` records. |
 | E5 | RFC 23's integration epic (its X3) | RFC 23's §12 rows write and reconcile settings through the wired path. |
 | RFC 23's epic 5 (outside, S4) | E6; E2, partly | The initialisation and upgrade rows run `dfs init`, and so does `dfsbench`'s backend, epic 2's last piece. |
@@ -1148,8 +1148,9 @@ value; D7's drift test passes.
   Its tests are the node-identity clauses of RFC 13 §9's "§2.2 explicit initialisation": two copies
   that differ, no copy and no key, a torn and a flipped copy, the golden vector, and a replaced
   device left empty; and the `node-id` parser's fuzz target, seeded with those.
-- The version gate (§4.3 above), over the installation's active versions, the store format's
-  active version in `\x00format` (RFC 13 §5.5), with
+- The version gate (§4.3 above), over the installation's active versions; the store format's
+  active version in `\x00format` is refused by `kvstore.Open`, in `node.New`, before the gate
+  runs (RFC 13 §5.5); with
   `format_active_version`, `format_supported_min` and `format_supported_max`.
 - Last, once RFC 23's plan has `dfs init` (S4): `dfsbench`'s backend initialises the installation,
   with its first password, through `dfs init`, and starts it with `dfs start` (D7), so v2 is

@@ -725,7 +725,7 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Deliverables:** `runStart`: the bootstrap loaded; one `os.Stat` for `controlplane.db` in the
   bootstrap file's directory and at the operator's default `/data/controlplane/controlplane.db`,
   refusing naming the path, before the store opens (R3); `badgerkv.Open` at the bootstrap's store
-  with the node's ID; `node.New` with `systemClock` (D2); `Start`; a wait for `SIGINT` or
+  with the node's ID, read from the bootstrap's `node.id`, which this subtask's tests set, until T3.10 reads it through X1's `NodeID`; `node.New` with `systemClock` (D2); `Start`; a wait for `SIGINT` or
   `SIGTERM`; `Stop`; each error printed naming its step, exit codes as R1 says; E1's `ponytail:`
   at the immediate `Stop` deleted; the bound addresses logged; an architecture rule that
   `cmd/dfs/commands/start.go` imports, of this module, only `internal/node`, `pkg/bootstrap`,
@@ -743,18 +743,19 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   (R1); a `controlplane.db` beside the bootstrap, refused naming it with no store directory created
   (R3); the exit code and message as a function of `Stop`'s error, in process, a step-bound error
   giving non-zero and the step's name (R23; the bound itself is T3.3's, on the injected clock); the
-  architecture rule over a planted violation (R2).
+  architecture rule over a planted violation (R2); two journal directories whose `node-id` copies differ, `dfs start` exits non-zero naming the directories before the store opens (RFC 13 §2.2; T3.10 adds this case, with the `NodeID` call).
 
 ### T3.10 The node identity and the version gate at start
 
 **Subtask T3.10 estimate: 1 man-days.**
 
-- **Track:** A. **Depends on:** T3.3, and on X1.
+- **Track:** A. **Depends on:** T3.3, T3.9, and on X1.
 - **Covers:** R12, R14, R46.
 - **Deliverables:** `dfs start` reading the node's identity through X1's `NodeID` before the store
   opens, its one caller; step 1 calling X1's `WriteMissingNodeIDs` with the store's `JournalID`, its one
-  caller; step 3 registering through X1's version gate, its one caller, which writes the binary's
-  ranges and refuses, in the registration's transaction, an active version outside them; `format.NameNodeID` and `NameNodeIDTmp` in the journal's name classification, so attach
+  caller; step 3 registering through X1's version gate, `Register(ctx, store)` over the store `New`
+  opened, its one caller, which writes the binary's ranges and refuses, in the registration's
+  transaction, an active version outside them; `format.NameNodeID` and `NameNodeIDTmp` in the journal's name classification, so attach
   neither logs nor refuses them. Consumed by E5's `dfs init`, which writes the copies.
 - **Acceptance criteria:**
   - A journal directory whose copy was removed gets it back at the next start; one whose journal
@@ -764,11 +765,13 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   - A start over an installation whose active journal format lies past the binary's range stops at
     step 3, naming the format and both versions, with no component started and the node record as
     it was.
-- **Tests:** in `node_test`, on disk: two copies that differ, a start refused before the store opens, naming the directories (RFC 13 §2.2); a copy removed, a restart, the copy back (R12); a replaced
+  - A store whose `\x00format` lies past `MaxFormat` is refused by `node.New`, naming both versions,
+    before step 3.
+- **Tests:** in `node_test`, on disk: a copy removed, a restart, the copy back (R12); a replaced
   device's empty directory left without one (R12); the journal's attach over a directory holding
   both files, its log captured through an injected `slog.Handler` (R46); the active journal format
   raised past the binary's range through kvstore, a start refused at step 3, no engine series and the
-  node record unchanged (catches a start that skips the gate or commits the registration first, R14).
+  node record unchanged (catches a start that skips the gate or commits the registration first, R14); the store format raised past `MaxFormat` through kvstore, `node.New` refusing naming both versions before step 3, the node record as it was (R14). T3.10 also adds the case of two copies that differ to T3.9's child process tests of `dfs start`, which `node_test` cannot reach.
 
 ### T3.11 The reconcile benchmark
 
@@ -801,7 +804,7 @@ flowchart TD
   T3_5 --> T3_7["T3.7 Node status"]
   T3_3 --> T3_8["T3.8 Sweep"]
   T3_3 --> T3_9["T3.9 dfs start"]
-  T3_3 --> T3_10["T3.10 Node identity and version gate at start"]
+  T3_3 & T3_9 --> T3_10["T3.10 Node identity and version gate at start"]
   X1(["X1, outside RFC 23's plan"]):::sync --> T3_10
   T3_5 --> T3_11["T3.11 Reconcile benchmark"]
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
