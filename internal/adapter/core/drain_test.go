@@ -19,6 +19,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
@@ -838,11 +839,13 @@ func (m moving) MoveTarget(ctx context.Context, c vfs.Call, h vfs.Handle) (netip
 	return m.Service.MoveTarget(ctx, c, h)
 }
 
-// drained is a connection a server on testproto serves over moving, in a
-// synctest bubble, set up to session 7 and tree 1 and then told to drain.
+// drained is a connection a server on testproto serves over faults over
+// moving, in a synctest bubble, set up to session 7 and tree 1 and then told
+// to drain.
 type drained struct {
 	t            *testing.T
 	svc          *memory.Service
+	faults       *vfstest.FaultService
 	root, pseudo vfs.Handle // the share's root; the pseudo-root, in no share
 	c            *testproto.Client
 	peer         net.Conn
@@ -862,7 +865,8 @@ func newDrained(t *testing.T) *drained {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := adapter.Deps{Budgets: b, VFS: moving{Service: svc, share: svc.Store.Share.ID}}
+	faults := vfstest.Faults(moving{Service: svc, share: svc.Store.Share.ID})
+	d := adapter.Deps{Budgets: b, VFS: faults}
 	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(d).WithCall(admin)}
 	srv, err := core.NewServer(d, drainSnap(), l)
 	if err != nil {
@@ -885,7 +889,7 @@ func newDrained(t *testing.T) *drained {
 		}
 	}
 	core.ConnPipeline(conn).Drain()
-	return &drained{t: t, svc: svc, root: root, pseudo: pseudo, c: c, peer: peer}
+	return &drained{t: t, svc: svc, faults: faults, root: root, pseudo: pseudo, c: c, peer: peer}
 }
 
 // compound sends a version 1 compound of members and lets the bubble settle.
@@ -917,27 +921,34 @@ func (d *drained) made(name string) bool {
 // decided once, from every filehandle the compound names: ErrMoved, which
 // version 1 answers on Create with its move signal, only when the compound
 // names one at least and the service names a target for the share of each,
-// and ErrDraining, which answers nothing and runs nothing, otherwise (RFC 20
-// sections 3.1 and 4.7). The moved compound runs to its Create, which names
-// no handle of its own, and is answered there, the Create not applied. A
-// drain that answers ErrMoved without asking, asks about one handle alone or
-// moves a compound naming none answers the others; one that decides per
-// member, or refuses every drained compound whole, answers the moved one
-// nothing.
+// and ErrDraining, which answers nothing and runs nothing, otherwise, a
+// MoveTarget that fails included (RFC 20 sections 3.1 and 4.7). The moved
+// compound runs to its Create, which names no handle of its own, and is
+// answered there, the Create not applied. A drain that answers ErrMoved
+// without asking, asks about its first or last handle alone, or moves a
+// compound naming none answers one of the others, and one that answers
+// MoveTarget's error answers the failing one; one that decides per member,
+// or refuses every drained compound whole, answers the moved one nothing.
 func TestADrainedCompoundMovesOnlyWhenEveryHandleItNamesHasATarget(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		handles []string // a PutFH of each, before the Create
+		fails   bool     // the service's MoveTarget answers an error
 		moved   bool
 	}{
-		{"a handle in the moving share", []string{"share"}, true},
-		{"the pseudo-root, in no share", []string{"pseudo"}, false},
-		{"a handle in the share, then the pseudo-root", []string{"share", "pseudo"}, false},
-		{"no handle", nil, false},
+		{"a handle in the moving share", []string{"share"}, false, true},
+		{"the pseudo-root, in no share", []string{"pseudo"}, false, false},
+		{"a handle in the share, then the pseudo-root", []string{"share", "pseudo"}, false, false},
+		{"the pseudo-root, then a handle in the share", []string{"pseudo", "share"}, false, false},
+		{"a handle in the moving share, its MoveTarget failing", []string{"share"}, true, false},
+		{"no handle", nil, false, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				d := newDrained(t)
+				if c.fails {
+					d.faults.Fail(vfs.OpMoveTarget, vfs.ErrAccess)
+				}
 				fh := map[string]vfs.Handle{"share": d.root, "pseudo": d.pseudo}
 				var members []testproto.Msg
 				for _, n := range c.handles {

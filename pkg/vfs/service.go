@@ -187,7 +187,9 @@ type Shares interface {
 	// MoveTarget is, while this node drains, another gateway node serving
 	// h's share at the same path, for an adapter's ErrMoved and NFSv4's
 	// fs_locations; the zero Addr when none, which is every answer until
-	// RFC 15's topology exists.
+	// RFC 15's topology exists. h is admitted under c, and a handle
+	// admission refuses answers admission's error, so no caller learns
+	// whether a share that refuses it has a target.
 	MoveTarget(ctx context.Context, c Call, h Handle) (netip.Addr, error)
 }
 

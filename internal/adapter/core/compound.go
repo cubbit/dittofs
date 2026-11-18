@@ -212,6 +212,11 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 			silent := err != nil
 			drained = ErrDraining
 			if !silent {
+				// decision: asked before any member resolves, under r.Call,
+				// which the Router builds once for the compound and every
+				// member passes to the service: Resolve maps wire IDs alone,
+				// and MoveTarget's admission resolves the identity on each
+				// share. Overturned if a member's Resolve may change the call.
 				drained = p.drainErr(ctx, r.Call, handles)
 			}
 			for _, m := range ms {
