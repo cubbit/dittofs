@@ -65,6 +65,10 @@ var noSpan = trace.SpanFromContext(context.Background())
 // Access is none.
 //
 // A store error is ErrUnavailable, never a caller.
+//
+// The caller's Built is the serial of the State the resolution loaded before
+// its first store read. A resolution overtaken by an Apply resolves once
+// more, and answers that second result.
 func (s *Server) Resolve(ctx context.Context, id identity.Identity, p entity.SharePolicy, narrowed identity.ReadOnlyCause) (c *identity.Caller, err error) {
 	// Only a sampled request's resolution opens a span: under an unsampled
 	// parent, Start would still allocate a span nobody records.
@@ -85,6 +89,26 @@ func (s *Server) Resolve(ctx context.Context, id identity.Identity, p entity.Sha
 		return nil, fmt.Errorf("%w: a claimed identity is not resolved", vfserr.ErrAccess)
 	}
 
+	// The State is loaded once per pass, before its first store read, and the
+	// caller stamped with it. A pass overtaken by an Apply runs once more under
+	// the State then current, and that second answer is served whatever was
+	// applied meanwhile, so a steady rate of Applies never starves a call.
+	for range 2 {
+		st := s.state.Load()
+		if s.loaded != nil {
+			s.loaded()
+		}
+		c, err = s.resolve(ctx, span, st.serial(), id, p, narrowed)
+		if st.serial() == s.Current() {
+			break
+		}
+	}
+	return c, err
+}
+
+// resolve is one pass of Resolve's map step, squash and grant under the
+// State whose serial is built, which it stamps on the caller.
+func (s *Server) resolve(ctx context.Context, span trace.Span, built uint64, id identity.Identity, p entity.SharePolicy, narrowed identity.ReadOnlyCause) (c *identity.Caller, err error) {
 	pr := s.deps.Store.Principals()
 	proven := id.Proof >= identity.ProofSecret
 	mapped := p.Anonymous
@@ -105,7 +129,7 @@ func (s *Server) Resolve(ctx context.Context, id identity.Identity, p entity.Sha
 	// with a zero Fresh, so a local principal resolves on every call and its
 	// disable reaches its next call. Overturned once each new State reaches
 	// a running node, which then bounds such a caller instead.
-	c = &identity.Caller{Mapped: mapped, Fresh: id.Evidence.Expires}
+	c = &identity.Caller{Mapped: mapped, Fresh: id.Evidence.Expires, Built: built}
 
 	// decision: a call naming no share, such as a client record's creation,
 	// runs the map step alone, under no share's policy, and acts as Mapped:
