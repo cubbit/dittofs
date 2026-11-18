@@ -515,7 +515,8 @@ the reverse:
    no buffer at once, before it waits for its buffer: a refusal before or at
    admission, on the reader, or a chain's member, which waits for it in the
    place its chain holds, if any, and takes it only once the replies its chain
-   holds have gone out
+   holds have gone out; the reader takes it for a chain's first member it
+   refuses, whether or not a buffer is free
    ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60));
    a request admitted outside a chain waits for its status's buffer in its own
    place instead (§3.3);
