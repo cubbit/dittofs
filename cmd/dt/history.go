@@ -304,6 +304,9 @@ func newHistoryDiff() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := bothRan(a, b); err != nil {
+				return err
+			}
 			out := cmd.OutOrStdout()
 			if _, err := fmt.Fprintf(out, "A: %s\nB: %s\n\n", runName(a), runName(b)); err != nil {
 				return err
@@ -318,13 +321,24 @@ func newHistoryDiff() *cobra.Command {
 	return cmd
 }
 
-// runName is the name of the workflow run runs belong to, its first job's.
-func runName(runs []report.Run) string {
-	if len(runs) == 0 {
-		return "(no results)"
+// bothRan is an error when a side has no runs, as when its artifacts expired
+// or the run isn't one of the tests workflow's: compared with nothing, every
+// result of the other side would read as new.
+func bothRan(a, b []report.Run) error {
+	for _, side := range []struct {
+		name string
+		runs []report.Run
+	}{{"A", a}, {"B", b}} {
+		if len(side.runs) == 0 {
+			return fmt.Errorf("run %s has no results to read: its artifacts are expired, or it isn't a run of tests.yml", side.name)
+		}
 	}
-	return runs[0].Name
+	return nil
 }
+
+// runName is the name of the workflow run runs belong to, its first job's;
+// runs holds one, which bothRan has checked.
+func runName(runs []report.Run) string { return runs[0].Name }
 
 // ends splits runs, oldest first, which are each workflow run's jobs one
 // after another, into the first workflow run's and the last's, by name. Fewer

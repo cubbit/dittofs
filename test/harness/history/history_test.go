@@ -129,12 +129,14 @@ func TestCI(t *testing.T) {
 		"1": {artifact("11", "dt-non-blocking-pjdfstest-badger-s3-3-1", false)},
 	}
 	run := func(id int, event, conclusion, sha, created string) map[string]any {
-		return map[string]any{"id": id, "event": event, "conclusion": conclusion, "head_sha": strings.Repeat(sha, 40), "created_at": created}
+		return map[string]any{"id": id, "event": event, "status": "completed", "conclusion": conclusion, "head_sha": strings.Repeat(sha, 40), "created_at": created}
 	}
 	byID := map[string]map[string]any{
 		"3": run(3, "push", "failure", "3", "2026-10-21T12:00:00Z"),
 		"2": run(2, "pull_request", "success", "2", "2026-10-21T11:00:00Z"),
+		"5": run(5, "push", "", "5", "2026-10-21T14:00:00Z"),
 	}
+	byID["5"]["status"] = "in_progress"
 	var fetched, listed []string
 	// decision: this server answers canned JSON in GitHub's place, so the test
 	// proves what the code asks for and does with those answers, not that
@@ -149,7 +151,7 @@ func TestCI(t *testing.T) {
 		var body any
 		switch p := strings.TrimPrefix(r.URL.Path, "/repos/o/r/actions/"); {
 		case p == "workflows/tests.yml/runs" && q.Get("status") == "completed":
-			listed = append(listed, q.Get("branch"))
+			listed = append(listed, r.URL.RawQuery)
 			pages := [][]any{
 				{run(4, "push", "cancelled", "4", "2026-10-21T12:30:00Z"), byID["3"], byID["2"]},
 				{map[string]any{"id": 1, "event": "schedule", "conclusion": "success", "head_sha": "111", "created_at": "2026-10-20T22:13:00Z"}},
@@ -193,16 +195,16 @@ func TestCI(t *testing.T) {
 		n        int
 		want     []string
 		fetched  string
-		warnings int // of the artifact gone and the one cut short
+		warnings int // of the artifact gone, the one cut short and the expired one
 	}{
 		{"pjdfstest", 2, []string{
 			"20261020T221300Z-111 on linux pjdfstest/badger-s3/3=not run",
 			"20261021T120000Z-33333333 on linux pjdfstest/badger-s3/4.1=failed",
-		}, "11 32 31 41 42", 2},
+		}, "11 32 31 41 42", 3},
 		{"", 1, []string{
 			"20261021T120000Z-33333333 on windows pynfs/badger-s3/0=passed",
 			"20261021T120000Z-33333333 on linux pjdfstest/badger-s3/4.1=failed",
-		}, "33 32 31 41 42", 2},
+		}, "33 32 31 41 42", 3},
 		{"pynfs", 5, []string{"20261021T120000Z-33333333 on windows pynfs/badger-s3/0=passed"}, "33", 0},
 	} {
 		fetched = nil
@@ -227,8 +229,9 @@ func TestCI(t *testing.T) {
 			t.Fatalf("branch %q: %v", branch, err)
 		}
 	}
-	if want := []string{"feat/x", "develop"}; !slices.Equal(listed, want) {
-		t.Errorf("listed branches: got %q, want %q", listed, want)
+	// What goes on the wire, not what the server decodes: a / in a branch is escaped.
+	if len(listed) != 2 || !strings.HasPrefix(listed[0], "branch=feat%2Fx&") || !strings.HasPrefix(listed[1], "branch=develop&") {
+		t.Errorf("listing queries: got %q, want branch=feat%%2Fx& then branch=develop&", listed)
 	}
 
 	// One run by its ID, a pull request's too, named as CI names it.
@@ -246,6 +249,9 @@ func TestCI(t *testing.T) {
 	}
 	if _, err := Workflow(context.Background(), "", 99, io.Discard); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("Workflow of a run that isn't there: got %v, want an error naming 404", err)
+	}
+	if _, err := Workflow(context.Background(), "", 5, io.Discard); err == nil || !strings.Contains(err.Error(), "in_progress") {
+		t.Errorf("Workflow of a run still going: got %v, want an error naming in_progress", err)
 	}
 
 	t.Setenv("GITHUB_TOKEN", "")

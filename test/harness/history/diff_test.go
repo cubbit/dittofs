@@ -79,6 +79,13 @@ func TestDiff(t *testing.T) {
 			},
 		},
 		{
+			// A cell one side lacks (its artifact was skipped) would list every
+			// test of it as new or gone and bury the real changes.
+			name: "tests of a cell in one side only are left to its cell row",
+			a:    run(cell("old", 0, tst("T", 9*s))),
+			b:    run(cell("new", 0, tst("T", 9*s))),
+		},
+		{
 			name: "same run twice",
 			a:    run(cell("unit", 10*s, tst("TestX", 1*s))),
 			b:    run(cell("unit", 10*s, tst("TestX", 1*s))),

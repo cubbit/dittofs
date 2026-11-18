@@ -105,7 +105,7 @@ func CI(ctx context.Context, suite string, n int, branch string, warn io.Writer)
 
 // Workflow returns the runs of one run of the tests workflow, by its ID, as
 // CI returns a listed one's, whatever its branch and its event. A run that
-// isn't there is an error.
+// isn't there, or is still going, is an error.
 func Workflow(ctx context.Context, suite string, id int64, warn io.Writer) ([]report.Run, error) {
 	c, err := newClient(ctx)
 	if err != nil {
@@ -114,6 +114,9 @@ func Workflow(ctx context.Context, suite string, id int64, warn io.Writer) ([]re
 	var w workflowRun
 	if err := c.getJSON(fmt.Sprintf("%s/actions/runs/%d", c.base, id), &w); err != nil {
 		return nil, err
+	}
+	if w.Status != "completed" {
+		return nil, fmt.Errorf("run %d is %s, and its results are partial until it completes", id, w.Status)
 	}
 	return c.readRun(w, suite, warn)
 }
@@ -162,6 +165,7 @@ func (c *client) getJSON(url string, v any) error {
 type workflowRun struct {
 	ID         int64     `json:"id"`
 	Event      string    `json:"event"`
+	Status     string    `json:"status"`
 	Conclusion string    `json:"conclusion"`
 	HeadSHA    string    `json:"head_sha"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -197,7 +201,11 @@ func (c *client) readRun(w workflowRun, suite string, warn io.Writer) ([]report.
 	}
 	var runs []report.Run
 	for _, a := range artifacts {
-		if a.Expired || !strings.HasPrefix(a.Name, "dt-run-"+prefix) && !strings.HasPrefix(a.Name, "dt-non-blocking-"+prefix) {
+		if !strings.HasPrefix(a.Name, "dt-run-"+prefix) && !strings.HasPrefix(a.Name, "dt-non-blocking-"+prefix) {
+			continue
+		}
+		if a.Expired {
+			_, _ = fmt.Fprintf(warn, "skipped the artifact %s of run %s: expired\n", a.Name, name)
 			continue
 		}
 		data, err := c.get(a.URL)

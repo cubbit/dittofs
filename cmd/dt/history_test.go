@@ -262,6 +262,23 @@ func TestWriteDiff(t *testing.T) {
 	}
 }
 
+// A side with no runs is an error that says which, not an empty run every
+// result of the other side is new against.
+func TestBothRan(t *testing.T) {
+	some := []report.Run{{Name: "r"}}
+	for _, c := range []struct {
+		a, b []report.Run
+		want string
+	}{{nil, some, "run A"}, {some, nil, "run B"}, {nil, nil, "run A"}} {
+		if err := bothRan(c.a, c.b); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("a %d runs, b %d runs: got %v, want an error naming %q", len(c.a), len(c.b), err, c.want)
+		}
+	}
+	if err := bothRan(some, some); err != nil {
+		t.Errorf("both sides ran: got %v, want nil", err)
+	}
+}
+
 // dt history diff takes two run IDs or --last, not both, and not one ID. Each
 // is refused for its own reason before anything is read: with no token set, a
 // call that got past the arguments would fail on the token instead.

@@ -29,11 +29,19 @@ type Delta struct{ Cells, Tests []Change }
 // that took at least floor longer or shorter, and those in one side only that
 // took at least floor there, at most top of them, the largest increase first;
 // top <= 0 keeps them all. Cells holds every cell either side ran, which one
-// skipped for needs its machine didn't meet didn't.
+// skipped for needs its machine didn't meet didn't. A test is compared only
+// in a cell both sides ran; a cell in one side only is one row of Cells, not a
+// row for each of its tests, which would fill the list when an artifact was
+// skipped.
 func Diff(a, b []report.Run, floor time.Duration, top int) Delta {
 	ca, ta := times(a)
 	cb, tb := times(b)
-	d := Delta{Cells: changes(ca, cb, 0), Tests: changes(ta, tb, floor)}
+	both := func(k key) bool {
+		_, inA := ca[key{cell: k.cell}]
+		_, inB := cb[key{cell: k.cell}]
+		return inA && inB
+	}
+	d := Delta{Cells: changes(ca, cb, 0, func(key) bool { return true }), Tests: changes(ta, tb, floor, both)}
 	if top > 0 && len(d.Tests) > top {
 		d.Tests = d.Tests[:top]
 	}
@@ -60,7 +68,7 @@ func times(runs []report.Run) (cells, tests map[key]time.Duration) {
 }
 
 // changes are the keys of a and b that moved by at least floor, sorted by Delta, largest first.
-func changes(a, b map[key]time.Duration, floor time.Duration) []Change {
+func changes(a, b map[key]time.Duration, floor time.Duration, keep func(key) bool) []Change {
 	var out []Change
 	add := func(k key) {
 		ta, inA := a[k]
@@ -68,7 +76,7 @@ func changes(a, b map[key]time.Duration, floor time.Duration) []Change {
 		c := Change{Cell: k.cell, Test: k.test, A: ta, B: tb, InA: inA, InB: inB}
 		// A side the change isn't in counts 0, so a row in one side only is
 		// held to the floor by the time it took there.
-		if abs(c.Delta()) >= floor {
+		if keep(k) && abs(c.Delta()) >= floor {
 			out = append(out, c)
 		}
 	}
