@@ -387,7 +387,8 @@ rfc28 / 4.2 / C / "an ended segment is emptied once":
   pending: 2.13b
 rfc28 / 4.2 / C / "an open at an exhausted headroom":
   tests: [TestRFC28C_AnOpenAtAnExhaustedHeadroom]
-  reason: 'the open''s headroom reserve serves the corrupt record''s one synced loss, and the superseded content under it is never served; the past-the-reserve losses defer now [#4033]''s emptying makes their holders stand, so the in-place reopen answers them at the next open'
+  owner: epic 7
+  reason: 'the test asserts only part of the row, and the row stays uncertified until the rest is added. Asserted: an open at an exhausted headroom succeeds, one synced loss record on the open reserve names the corrupt record of a sealed segment, the superseded content is never served, and a second open appends no second loss record. Built and asserted only by the journal''s package tests: the corrupt records past the reserve deferred, an ended holder''s emptying writing the deferred loss record into its target, and a sealed segment holding failed records past the reserve emptied without them. Not built, by owner. Epic 7: a sealed holder''s deferral ended in the process that deferred it, which instead stands held until a restart re-detects and re-defers it; the emptying of an unsealed segment holding failed records past the reserve. Epic 9: the repack of the segments holding deferred records, whose targets carry their loss records, since the copier has no production caller. Not checked: Files and Since listing a deferred loss before Settle'
 rfc1 / 9.4 / B / "a closed writer forgets its error":
   owner: epic 5
   reason: 'the descriptor cache does not keep a writer''s error past its close yet'
