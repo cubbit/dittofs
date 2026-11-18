@@ -146,7 +146,9 @@ func TestDamage_OpenUnlinksAfterItsCopiesAreDurable(t *testing.T) {
 // the journal refuses over a directory as it stands, that the refusal names
 // what it refused, serves no journal and writes nothing to the directory: a
 // lost synced tail, a range that names no record, and a read that no bounded attempt completes. Each leg asserts
-// the class through the error's identity and what it names, never its text.
+// the class through the error's identity. The unreadable read also asserts the
+// typed ranges; the other two refusals carry no typed value, so those legs
+// match the whole phrase naming the segment and the range or mark.
 func TestDamage_RefusedOpenNamesAndServesNothing(t *testing.T) {
 	nothingServed := func(t *testing.T, f *journaltest.Fixture, writes int) {
 		t.Helper()
@@ -162,7 +164,8 @@ func TestDamage_RefusedOpenNamesAndServesNothing(t *testing.T) {
 	t.Run("lost_synced_tail", func(t *testing.T) {
 		f := journaltest.NewUnwatched(t)
 		a := writeRec(t, f, 0, 0, 0, 64<<10)
-		seg := entryAt(t, f, a.id, 0).Location.Segment
+		loc := entryAt(t, f, a.id, 0).Location
+		seg := loc.Segment
 		f.Drop(kit.OpSync, "*.seg")
 		syncs := f.Seam.CallsFor(kit.OpSync, segmentName(seg))
 		marks, err := f.Share(0).Sync(t.Context(), a.id)
@@ -189,8 +192,9 @@ func TestDamage_RefusedOpenNamesAndServesNothing(t *testing.T) {
 			t.Fatalf("the open over a synced tail the device lost returned %v, want ErrOpenRefused", err)
 		}
 
-		if !strings.Contains(err.Error(), fmt.Sprint(uint64(seg))) {
-			t.Fatalf("the refusal does not name the segment %d whose synced tail was lost", seg)
+		// The segment's scan refuses the range below the acknowledged mark.
+		if want := fmt.Sprintf("segment %d: a refused range at [%d,", seg, loc.Offset); !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "below a mark's Through") {
+			t.Fatalf("the refusal is %q, want it to name segment %d and a range below the mark's Through", err, seg)
 		}
 
 		nothingServed(t, f, writes)
@@ -206,6 +210,9 @@ func TestDamage_RefusedOpenNamesAndServesNothing(t *testing.T) {
 		f.Shutdown()
 		// A sealed segment scanned for want of a readable trailer, whose only
 		// record's header does not verify: the range names no record.
+		// The refused range is the one record: its header, the 8-byte write
+		// time and the payload, from where the scan starts.
+		end := loc.Offset + raw.RecordHeaderSize + 8 + size
 		flipBit(t, f, name, loc.Offset+92, 0)
 		flipBit(t, f, name, int64(len(durable(t, f, name)))-raw.TrailerSize, 0)
 		writes := changingCalls(f)
@@ -215,8 +222,8 @@ func TestDamage_RefusedOpenNamesAndServesNothing(t *testing.T) {
 			t.Fatalf("the open over a range that names no record returned %v, want ErrOpenRefused", err)
 		}
 
-		if want := fmt.Sprint(uint64(loc.Segment)); !strings.Contains(err.Error(), want) {
-			t.Fatalf("the refusal does not name the segment %s holding the range", want)
+		if want := fmt.Sprintf("segment %d: a refused range at [%d,%d) that names no record", loc.Segment, loc.Offset, end); !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal is %q, want it to contain %q", err, want)
 		}
 
 		nothingServed(t, f, writes)
