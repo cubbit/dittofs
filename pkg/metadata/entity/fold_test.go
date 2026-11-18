@@ -27,9 +27,9 @@ func TestUpcaseTablePinned(t *testing.T) {
 const upcaseTableHash = "ef3afc2ef80306f33ab22613219fa1ad074ce73db455a448775bf471139f5a9a"
 
 // The principal fold is part of the store format too, keying every user and
-// group name row, and it follows the toolchain's Unicode tables: this hash of
-// every rune it changes pins it, so a Go release whose folds differ fails
-// here instead of moving stored name keys.
+// group name row: this hash of every rune it changes pins it, so a
+// regenerated table, or a fold that reads the toolchain's Unicode tables
+// again, fails here instead of moving stored name keys.
 func TestPrincipalFoldPinned(t *testing.T) {
 	h := sha256.New()
 	for r := rune(0); r <= unicode.MaxRune; r++ {
