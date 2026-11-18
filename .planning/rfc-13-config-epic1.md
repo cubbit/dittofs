@@ -154,7 +154,7 @@ declaration is another epic's, the row says which.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R17 | Four binding classes, declared with each setting: live, restart, next write and bound | MUST | RFC 13 §5 (its table) | T1.6 |
-| R18 | A section is declared from its component's typed settings, its defaults and its validator, with its scope in one of RFC 13 §3's three forms, its required keys, its write role, its secret references and the tracked check its component hands `Of` (`CheckTx`, D9); `Check` takes the caller's role, a put or a delete, and whether the scope holds content, read by its caller in the write's transaction; `pkg/settings` declares no store interface | invariant | RFC 13 §3 ("How a scope is written"), §4.2, §5.1; RFC 13 plan, §1.3 and D2, and its §4.4 code sketch | T1.6 |
+| R18 | A section is declared from its component's typed settings, its defaults and its validator, with its scope in one of RFC 13 §3's three forms, the fields its override may replace (`OverrideOnly`), its required keys, its write role, its secret references and the tracked check its component hands `Of` (`CheckTx`, D9); `Check` takes the caller's role, a put or a delete, and whether the scope holds content, read by its caller in the write's transaction; `pkg/settings` declares no store interface | invariant | RFC 13 §3 ("How a scope is written"), §4.2, §5.1, Appendix B (the adapters' port); RFC 13 plan, §1.3 and D2, and its §4.4 code sketch | T1.6 |
 
 **The freeze**
 
@@ -252,12 +252,13 @@ bullets describe RFC 26's and RFC 5's records.
   // PerThing(entity.ScopeNode, "journal"), or Override(entity.ScopeInstallation, entity.ScopeNode).
   ```
   The options are `WriteRole`, `Required`, `CheckTx`, `SecretRef(field, kind)` and `OverrideOnly(fields ...string)`,
-  which under an `Override` scope gives only the named Go fields the narrower scope's value (the adapters declare `OverrideOnly("Port")`).
+  which under an `Override` scope gives only the named Go fields the narrower scope's value (the adapters declare `OverrideOnly("Port")`); without it, every field may be overridden.
   `CheckTx[T](func(entity.ControlPlaneTx, Write, T) error)` is a check the declaring component
   hands `Of`, which reads store state beyond settings, tracked, inside the write's transaction
   ([RFC 13's plan, §4.4](rfc-13-config-plan.md)'s code sketch; the RFC 18 plan's epic 2 is its
-  first caller, an `identity.id_range`). `Of` panics on a `Required`
-  or `SecretRef` field name that `T` does not have, on a class missing from a field, on a field
+  first caller, an `identity.id_range`). `Of` panics on a `Required`,
+  `SecretRef` or `OverrideOnly` field name that `T` does not have (`OverrideOnly("port")`, the json key,
+  names no field), on `OverrideOnly` outside an `Override` scope, on a class missing from a field, on a field
   with no explicit `json` name (its key is the field's Go name, which is not the lower-case key
   the conventions T1.1 settles allow; refusing a mixed-case one is the decode's, which E3 matches
   exactly as declared, so the unnamed field never reaches a record), on a class that is not one of the four (`class:"Restart"`, `class:"restar"`), and on two fields that share a name after the flattening

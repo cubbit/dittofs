@@ -1180,8 +1180,8 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   `identity.directory`, A1, and the others RFC 23 §5.2 lists), compared by `entity.APIRole`'s order; its `PerThing` scope for Appendix B's
   "per journal" rows; its `SecretRef` fields with their kinds (D10); and `Of` refusing a class,
   a field with no explicit `json` name (whose key would be the field's Go name), a
-  duplicate name after the flattening, or a `Required` or `SecretRef` name that is not a field
-  of `T`.
+  duplicate name after the flattening, a `Required`, `SecretRef` or `OverrideOnly` name that is not
+  a field of `T`, or `OverrideOnly` outside an `Override` scope.
 - The snapshot, `Read` and `Get`: `Read` decodes each section on its own, takes the installation
   value, then the narrower override, per thing where the scope is per thing, decoded strictly over
   the defaults with keys matched exactly as declared (Go's JSON decode matches field names
@@ -1203,7 +1203,8 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   or bound field never runs live; `Table` panicking on two sections whose prefixes overlap
   ambiguously, `lookup` choosing the longest prefix on a dot boundary.
 - `Check` for the write path, given the caller's role and the write as a put or a delete, a delete
-  checked against the effective value it leaves: unknown key, wrong scope, newer schema, the
+  checked against the effective value it leaves: unknown key, wrong scope (a node record setting an
+  adapter field `OverrideOnly` does not name, any but the port), newer schema, the
   section's write role, D10's secret references, `Validate`, the bound refusal (RFC 13 §5.1) on its
   holds-content input, D9's refusal of a store location's change but not its first value, and a
   namespace's block format version past this node's range (RFC 13 §5.4), on the key

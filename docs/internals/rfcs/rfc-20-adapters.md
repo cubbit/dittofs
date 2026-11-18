@@ -1321,7 +1321,7 @@ type Settings interface {
 }
 ```
 
-- **Every field names its key** with a `json:"…"` tag, and every setting field
+- **Every field names its key** with a `json:"…"` tag, and every field
   of `Adapter`, `NFS` and `SMB` except `Addrs` names its binding class with a
   `class:"…"` tag, `restart` or `live`, as RFC 13 Appendix B's class column
   gives it. Every adapter key is
