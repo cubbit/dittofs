@@ -35,8 +35,9 @@ blockstore:
 	if cfg.Logging.Format != "text" {
 		t.Errorf("Expected default format 'text', got %q", cfg.Logging.Format)
 	}
-	if cfg.Logging.Output != GetDefaultLogPath() {
-		t.Errorf("Expected default output %q, got %q", GetDefaultLogPath(), cfg.Logging.Output)
+
+	if cfg.Logging.Output != getDefaultLogPath() {
+		t.Errorf("Expected default output %q, got %q", getDefaultLogPath(), cfg.Logging.Output)
 	}
 	if cfg.Blockstore.Journal.Path != "/var/lib/dittofs/blocks" {
 		t.Errorf("Expected journal path /var/lib/dittofs/blocks, got %q", cfg.Blockstore.Journal.Path)
@@ -150,8 +151,9 @@ func TestGetDefaultConfig(t *testing.T) {
 	if cfg.Logging.Format != "text" {
 		t.Errorf("Expected default log format 'text', got %q", cfg.Logging.Format)
 	}
-	if cfg.Logging.Output != GetDefaultLogPath() {
-		t.Errorf("Expected default log output %q, got %q", GetDefaultLogPath(), cfg.Logging.Output)
+
+	if cfg.Logging.Output != getDefaultLogPath() {
+		t.Errorf("Expected default log output %q, got %q", getDefaultLogPath(), cfg.Logging.Output)
 	}
 	if !filepath.IsAbs(cfg.Blockstore.Journal.Path) {
 		t.Errorf("Expected an absolute default journal path, got %q", cfg.Blockstore.Journal.Path)

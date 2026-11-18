@@ -166,7 +166,7 @@ func Load(configPath string, environ []string) (*Bootstrap, error) {
 	// path would silently drop every env override (e.g.
 	// DITTOFS_LOGGING_LEVEL) for container/CI deployments that ship no config file, violating the
 	// documented "env > file > defaults" precedence. Unmarshalling into a zero
-	// struct then ApplyDefaults yields defaults for every field the env doesn't
+	// struct then applyDefaults yields defaults for every field the env doesn't
 	// set, identical to the file path.
 	//
 	// Capture unknown keys via decoder Metadata and log them as a warning
@@ -195,10 +195,10 @@ func Load(configPath string, environ []string) (*Bootstrap, error) {
 	}
 
 	// Apply defaults for any missing values
-	ApplyDefaults(&cfg)
+	applyDefaults(&cfg)
 
 	// Validate configuration
-	if err := Validate(&cfg); err != nil {
+	if err := validateBootstrap(&cfg); err != nil {
 		return nil, fmt.Errorf("configuration validation failed: %w", err)
 	}
 
@@ -219,7 +219,7 @@ func Load(configPath string, environ []string) (*Bootstrap, error) {
 func MustLoad(configPath string, environ []string) (*Bootstrap, error) {
 	// Determine config path
 	if configPath == "" {
-		if !DefaultConfigExists() {
+		if !defaultConfigExists() {
 			// No config file at the default location. Rather than hard-fail
 			// (which makes a systemd unit crash-loop), fall back to built-in
 			// defaults + DITTOFS_* env overrides and warn clearly. Load("")
@@ -420,18 +420,18 @@ func GetDefaultConfigPath() string {
 	return filepath.Join(getConfigDir(), "config.yaml")
 }
 
-// DefaultConfigExists checks if a config file exists at the default location.
-func DefaultConfigExists() bool {
+// defaultConfigExists checks if a config file exists at the default location.
+func defaultConfigExists() bool {
 	path := GetDefaultConfigPath()
 	_, err := os.Stat(path)
 	return err == nil
 }
 
-// GetStateDir returns the state directory path for runtime data (logs, PID files).
+// getStateDir returns the state directory path for runtime data (logs, PID files).
 //
 // On Windows, uses %LOCALAPPDATA%\dittofs.
 // On Unix, uses XDG_STATE_HOME/dittofs or ~/.local/state/dittofs.
-func GetStateDir() string {
+func getStateDir() string {
 	if runtime.GOOS == "windows" {
 		localAppData := os.Getenv("LOCALAPPDATA")
 		if localAppData != "" {
@@ -455,9 +455,9 @@ func GetStateDir() string {
 	return filepath.Join(stateDir, "dittofs")
 }
 
-// GetDefaultLogPath returns the default log file path.
-func GetDefaultLogPath() string {
-	return filepath.Join(GetStateDir(), "dittofs.log")
+// getDefaultLogPath returns the default log file path.
+func getDefaultLogPath() string {
+	return filepath.Join(getStateDir(), "dittofs.log")
 }
 
 // InitLogger initializes the structured logger from a LoggingConfig,

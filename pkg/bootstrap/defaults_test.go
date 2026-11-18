@@ -6,7 +6,7 @@ import (
 
 func TestApplyDefaults_Logging(t *testing.T) {
 	cfg := &Bootstrap{}
-	ApplyDefaults(cfg)
+	applyDefaults(cfg)
 
 	if cfg.Logging.Level != "INFO" {
 		t.Errorf("Expected default log level 'INFO', got %q", cfg.Logging.Level)
@@ -14,14 +14,15 @@ func TestApplyDefaults_Logging(t *testing.T) {
 	if cfg.Logging.Format != "text" {
 		t.Errorf("Expected default log format 'text', got %q", cfg.Logging.Format)
 	}
-	if cfg.Logging.Output != GetDefaultLogPath() {
-		t.Errorf("Expected default log output %q, got %q", GetDefaultLogPath(), cfg.Logging.Output)
+
+	if cfg.Logging.Output != getDefaultLogPath() {
+		t.Errorf("Expected default log output %q, got %q", getDefaultLogPath(), cfg.Logging.Output)
 	}
 }
 
 func TestApplyDefaults_RotationDefaults(t *testing.T) {
 	cfg := &Bootstrap{}
-	ApplyDefaults(cfg)
+	applyDefaults(cfg)
 
 	if cfg.Logging.Rotation.MaxSize != 100 {
 		t.Errorf("Expected default MaxSize 100, got %d", cfg.Logging.Rotation.MaxSize)
@@ -46,7 +47,7 @@ func TestApplyDefaults_PreservesZeroRotationValues(t *testing.T) {
 			},
 		},
 	}
-	ApplyDefaults(cfg)
+	applyDefaults(cfg)
 
 	if cfg.Logging.Rotation.MaxSize != 50 {
 		t.Errorf("Expected explicit MaxSize 50 to be preserved, got %d", cfg.Logging.Rotation.MaxSize)
@@ -68,7 +69,7 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 		},
 	}
 
-	ApplyDefaults(cfg)
+	applyDefaults(cfg)
 
 	// Verify explicit values were preserved
 	if cfg.Logging.Level != "DEBUG" {
@@ -86,7 +87,7 @@ func TestGetDefaultConfig_IsValid(t *testing.T) {
 	cfg := GetDefaultConfig()
 
 	// The default config should pass validation
-	err := Validate(cfg)
+	err := validateBootstrap(cfg)
 	if err != nil {
 		t.Errorf("Default config should be valid, got error: %v", err)
 	}
