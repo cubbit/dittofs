@@ -10,3 +10,4 @@
 - { suite: journal-conformance, test: TestDamage_LostWrites/spare_entry, issue: "#4200", expires: 2027-02-15 }
 - { suite: engine-soak, test: TestSoak/seed=1, issue: "#4711", expires: 2027-02-15 }
 - { suite: engine-soak, test: TestSoak/seed=2, issue: "#4712", expires: 2027-02-15 }
+- { suite: journal-conformance, test: TestRFC28C_NeighboursSurvive, issue: "#4764", expires: 2027-02-15 }

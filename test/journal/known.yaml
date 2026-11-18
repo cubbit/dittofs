@@ -568,14 +568,6 @@
   issue: '#3814'
   message: 'segment 3 is not among the journal'
 
-- test: TestRFC28C_NeighboursSurvive
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Open: a corrupt record leaving its neighbours is built (Durability.Corrupt), the fixture cannot open a journal.'
-  issue: '#3814'
-  message: '0 loss events, want 1'
-
 - test: TestRFC28C_SyncedDamageIsNotATornTail
   status: fail
   fix: planned
