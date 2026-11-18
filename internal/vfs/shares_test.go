@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/vfs/admit"
 	"github.com/cubbit/dittofs/internal/vfs/authz"
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -688,6 +689,48 @@ func TestAProvenPrincipalWithNoUIDIsAnonymous(t *testing.T) {
 	release()
 	if c := a.caller; c.Principal != nobody.Principal || c.Authenticated || c.Admin || c.Privileged || c.Mapped != host.Principal {
 		t.Errorf("a proven principal with no uid: %+v, mapped %v", c.Identity, c.Mapped)
+	}
+}
+
+// A machine principal deleted or disabled is refused as a user is: admission
+// does not admit it as the share's anonymous principal, and Mapped, which a
+// call naming no share acts through, refuses it too.
+func TestADeletedOrDisabledMachineIsRefused(t *testing.T) {
+	s := newShares(t, nil, nil)
+	ctx := t.Context()
+	nobody := s.user(t, "nobody", "", s.share, entity.AccessRead)
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashNone, Anonymous: nobody.Principal}, 0)))
+	for i, c := range []struct {
+		name   string
+		revoke func(m entity.User)
+	}{
+		{"deleted", func(m entity.User) {
+			s.must(t, s.cp.DeleteUser(ctx, m.Principal, userGeneration(t, s.fs.Store, m.Principal)))
+		}},
+		{"disabled", func(m entity.User) {
+			m.Disabled = true
+			s.must(t, errOf(s.cp.PutUser(ctx, m, userGeneration(t, s.fs.Store, m.Principal), entity.Alloc{})))
+		}},
+	} {
+		m := entity.User{Principal: entity.Principal{Kind: entity.PrincipalMachine, ID: entity.NewPrincipalID()},
+			IDs: entity.ProtocolIDs{{Scheme: entity.SchemeKerberos, Value: "host/build0" + strconv.Itoa(i) + ".corp.example@CORP.EXAMPLE"}}}
+		s.must(t, errOf(s.cp.PutUser(ctx, m, 0, entity.Alloc{})))
+		id := proven(m.Principal, inLab)
+		a, release, err := s.admit(ctx, id, s.share, true, false)
+		if err != nil {
+			t.Fatalf("%s: a live machine before: %v", c.name, err)
+		}
+		release()
+		if a.caller.Principal != nobody.Principal {
+			t.Fatalf("%s: a live machine acts as %v, want the anonymous %v", c.name, a.caller.Principal, nobody.Principal)
+		}
+		c.revoke(m)
+		if _, _, err := s.admit(ctx, id, s.share, true, false); !errors.Is(err, vfs.ErrAccess) {
+			t.Errorf("%s machine: admission on a share with an anonymous principal answered %v, want ErrAccess", c.name, err)
+		}
+		if p, err := admit.Mapped(ctx, principals{s.meta.Principals()}, id.Identity); !errors.Is(err, vfs.ErrAccess) {
+			t.Errorf("%s machine: Mapped = %v, %v; want ErrAccess", c.name, p, err)
+		}
 	}
 }
 

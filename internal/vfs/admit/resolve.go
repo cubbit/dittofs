@@ -26,8 +26,9 @@ type Principals interface {
 // under policy p, narrowed to read-only by ro, and the principal it mapped
 // to before any squash. A proven caller maps to the principal its sign-in
 // bound, a claimed one to the user holding its claimed uid, and anyone else
-// to none; a disabled or deleted user is refused. A caller is root when it
-// claims uid 0, which no user holds, and a root squash squashes it. A caller
+// to none; a disabled or deleted user or machine is refused. A caller is
+// root when it claims uid 0, which no user holds, and a root squash squashes
+// it. A caller
 // the policy squashes, one mapped to no principal, or one proving a user that
 // holds no uid, such as a machine principal, acts as the policy's anonymous
 // principal, with its groups and no flag; a policy naming none refuses it, as
@@ -113,10 +114,10 @@ func Resolve(ctx context.Context, pr Principals, id vfs.Identity, share entity.S
 	return c, mapped, err
 }
 
-// live is p's user record, refusing a user disabled or deleted; any other
-// principal passes, with the zero record.
+// live is p's user or machine record, refusing one disabled or deleted; any
+// other principal passes, with the zero record.
 func live(ctx context.Context, pr Principals, p entity.Principal) (entity.User, error) {
-	if p.Kind != entity.PrincipalUser {
+	if p.Kind != entity.PrincipalUser && p.Kind != entity.PrincipalMachine {
 		return entity.User{}, nil
 	}
 	u, found, err := pr.User(ctx, p)
@@ -132,7 +133,7 @@ func live(ctx context.Context, pr Principals, p entity.Principal) (entity.User, 
 // Mapped is the principal id maps to under no share's policy, never
 // squashed: the one a call naming no share acts as, and a client record's
 // Owner. A caller mapped to none answers the zero principal; a disabled or
-// deleted user is refused.
+// deleted user or machine is refused.
 func Mapped(ctx context.Context, pr Principals, id vfs.Identity) (entity.Principal, error) {
 	p, _, _, err := mapID(ctx, pr, id)
 	return p, err
@@ -140,7 +141,7 @@ func Mapped(ctx context.Context, pr Principals, id vfs.Identity) (entity.Princip
 
 // mapID is the principal id maps to before any squash, the group a claimed
 // caller's gid names, and the mapped principal's user record; a disabled or
-// deleted user is refused.
+// deleted user or machine is refused.
 func mapID(ctx context.Context, pr Principals, id vfs.Identity) (mapped, group entity.Principal, u entity.User, err error) {
 	switch {
 	case id.Proof >= vfs.ProofSecret:
