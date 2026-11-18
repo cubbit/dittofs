@@ -89,6 +89,9 @@ func shareTwice(t *testing.T, j engine.Journal) {
 	if v.Counter != floor+1 {
 		t.Errorf("a write after the second Share is at %d, want %d", v.Counter, floor+1)
 	}
+	if got, want := j.NextVersion(), (journal.Version{Counter: floor + 2}); got != want {
+		t.Errorf("NextVersion after the write = %v, want %v", got, want)
+	}
 
 	if err := again.Close(); err != nil {
 		t.Fatal(err)
@@ -106,6 +109,12 @@ func shareTwice(t *testing.T, j engine.Journal) {
 	}
 	if err := fresh.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatalf("close the journal: %v", err)
+	}
+	if got := j.NextVersion(); got != (journal.Version{}) {
+		t.Errorf("NextVersion after the journal closed = %v, want zero", got)
 	}
 }
 

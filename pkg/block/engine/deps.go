@@ -42,6 +42,7 @@ type Journal interface {
 	// MarksRecorded hands the journal the marks a committed metadata
 	// transaction recorded.
 	MarksRecorded(marks []entity.SyncMark)
+	NextVersion() journal.Version
 	Draw() (journal.Version, error)
 	SetVersionLimit(mark journal.Version) error
 	Repack(ctx context.Context, budget int64, scope journal.RepackScope) (freed int64, err error)

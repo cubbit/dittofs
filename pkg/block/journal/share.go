@@ -112,6 +112,16 @@ func (j *Journal) Draw() (Version, error) {
 	return j.core.Draw()
 }
 
+// NextVersion returns the version the counter would issue next if the limit
+// allows it. It is safe to call concurrently with other operations and
+// returns the zero Version after Close or on a zero Journal.
+func (j *Journal) NextVersion() Version {
+	if j.closed.Load() || j.core == nil {
+		return Version{}
+	}
+	return j.core.NextVersion()
+}
+
 // SetVersionLimit sets the version limit: no version is issued at or above
 // mark. mark is the smallest of the durable per-share limits the caller has
 // recorded for every share the journal serves, raised by the caller ahead of
