@@ -22,7 +22,7 @@ import (
 // open's loss records, which the loss pass appends and syncs only after the
 // assembled journal exists — no phase of the recovery itself can run that
 // pass — so the work runs here, where the open stands past it, before the
-// journal serves and before the retirement worker starts (RFC 28 §3.3: the
+// journal serves and before the retirement worker starts (the
 // loss records first, then every attached segment that is not held is
 // retired, then the ended segments are emptied).
 //
@@ -45,6 +45,10 @@ func Emptying(ctx context.Context, deps Deps, st *State, expect core.JournalID, 
 	if err := runRetire(ctx, deps, rd, st, expect, floor, marks, empty); err != nil {
 		return err
 	}
+	// ponytail: a freed take no copy drew by the end of the emptying is not
+	// handed back to the pool: it stays a record-less cap-sized file the next
+	// open's spares phase re-adopts. Upgrade to returning it to the pool when
+	// the pool wiring can adopt a take mid-run.
 	return runEmptying(ctx, deps, rd, st, expect, floor, marks, empty)
 }
 
@@ -73,7 +77,7 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 	// list: a segment the registry answers as holding a deferred loss's
 	// dropped record is never retired here, for its copy has not been made,
 	// and retiring it would take the record the copy the deferral owes its
-	// own record to would read (RFC 28 §3.3).
+	// own record to would read.
 	deferred, err := durability.DeferredFor(deps.Dir, expect)
 	if err != nil {
 		return err
@@ -136,7 +140,7 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 			// A retirement the directory sync proved durable frees the takes
 			// naming the retired segment, the same relief the emptying's own
 			// unlinks give: the emptying step below draws them before the
-			// pool's reserve (R53).
+			// pool's reserve.
 			empty.freed = append(empty.freed, empty.freedTakes(row.ID)...)
 		}
 	}
@@ -249,8 +253,7 @@ type lossWrite struct {
 // carries. A record whose copy already verifies in a segment the open
 // neither ends nor saw fail is skipped and its served pieces repointed
 // there: that segment stays held. A second refusal from the copier, or no
-// spare, fails the open with that error, leaving the segment as it stands
-// (R53).
+// spare, fails the open with that error, leaving the segment as it stands.
 func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred []durability.Loss) error {
 	st, deps := e.st, e.deps
 	// The segment's own walk, read once more: the rebuild's scan keeps what
@@ -415,9 +418,10 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 	// ponytail: in a copy a loss record takes its real bytes, 184 — a
 	// 96-byte header, a 16-byte payload and a 72-byte footer entry — against
 	// at least 168 for the header-only record it replaces, so a segment of
-	// nothing but losses needs a tenth more than one segment's cap of
-	// repack reserve. Upgrade to sizing the reserve at 11/10 of a cap when a
-	// copy heavy in loss records is seen in the field.
+	// nothing but losses can need a tenth more than one spare's cap, and the
+	// copy's one-cap fit refuses it as a wedge of the open. Upgrade to the
+	// packing loop that seals a full target and draws another when a copy
+	// heavy in loss records is seen in the field.
 	for i := range losses {
 		if losses[i].at == nil {
 			continue
@@ -512,7 +516,7 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 // record on disk already named — and the retirement itself unlinks the
 // segment, its directory sync making the removal durable. A durable unlink
 // frees the takes naming the segment, which the next ended segment's copy
-// draws on first (R53). target names the copy that landed, zero when nothing
+// draws on first. target names the copy that landed, zero when nothing
 // was carried.
 func (e *emptying) finish(ctx context.Context, id core.SegmentID, target core.SegmentID, losses []lossWrite) error {
 	for _, lo := range losses {
@@ -571,7 +575,7 @@ func (e *emptying) draw() (core.SegmentID, error) {
 // its marks raise computed, its header the one that names the predecessor —
 // that still answers the record-less test passes as a spare again, its file
 // cap-sized with no verifying record and no seal, and no mark naming it
-// (R53's relief; the verdict the raise computed decides which takes were
+// (the relief; the verdict the raise computed decides which takes were
 // held). The take is adopted as the emptying's own spare, copies overwriting
 // the header, the trailer and the record slots its records would take, so
 // none of the old life's bytes outlives a copy into it.

@@ -324,7 +324,7 @@ func (r *rig) deferLossAgainst(t *testing.T, id core.JournalID, seg core.Segment
 	RegistryPlant(t, r.registryDurability(t, id), l)
 }
 
-// TestEndedSegmentEmptiedOnce holds R77's row at the emptying's own caller:
+// TestEndedSegmentEmptiedOnce holds the row at the emptying's own caller:
 // every record an ended segment held reads back after the open exactly once,
 // with its numbers kept, the segment's file gone with a synced unlink, and
 // the second run of the recovery plus the emptying over the same directory —
@@ -441,7 +441,7 @@ func TestEndedSegmentEmptiedOnce(t *testing.T) {
 	}
 }
 
-// TestDeferredLossWrittenIntoTheCopy holds RFC 28 §4.2 C's deferred-loss leg:
+// TestDeferredLossWrittenIntoTheCopy holds the deferred-loss leg:
 // a deferred loss whose dropped record sits in an ended segment is written
 // into the copy the emptying makes, the deferral ends — the registry gives
 // the entry up on the record's durability — and the next open finds the
@@ -552,7 +552,7 @@ func TestDeferredLossWrittenIntoTheCopy(t *testing.T) {
 // spare of the pool's repack reserve — the closure the open wires, never a
 // list recovery keeps — and a draw that answers the pool's shortage fails
 // the open with that error, leaving the ended segment exactly as it
-// stands, its bytes the next open's to copy (R53).
+// stands, its bytes the next open's to copy.
 func TestEmptyingWithoutASpareLeavesTheSegment(t *testing.T) {
 	file := tailFile()
 	r := newRig(t)
@@ -588,7 +588,7 @@ func TestEmptyingWithoutASpareLeavesTheSegment(t *testing.T) {
 	}
 }
 
-// TestFreedTakeAfterDurableUnlink holds R53's relief: a record-less take
+// TestFreedTakeAfterDurableUnlink holds the relief: a record-less take
 // withheld by the spares phase over a predecessor the open ends is freed
 // once that predecessor's unlink is durable, and it is the first spare the
 // next ended segment's copy draws. The crash leg of the relief is the

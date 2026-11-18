@@ -479,9 +479,9 @@ var ErrBadRoll = errors.New("segment: the roll options do not fit the record")
 // journal's own maximum or for lack of device space, with no full-size
 // retired segment queued to recycle into the take. Such a shortage clears
 // only by the caller's own reclamation — or an operator's, at a full device —
-// never on the pool's own (R21), so anything that waited for it would wait
-// on its caller, which the journal must not (RFC 1 §6): a failed window
-// takes its resolution at once instead, the failed one §5.3 owes it. The
+// never on the pool's own, so anything that waited for it would wait
+// on its caller, which the journal must not: a failed window
+// takes its resolution at once instead, the failed one the journal owes it. The
 // answer carries the NoSpaceError the maximum owes, or syscall.ENOSPC for a
 // full device.
 var ErrNoSegmentForTheRoll = errors.New("segment: no segment can be had for the roll")
@@ -523,7 +523,7 @@ func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 	// maximum the maker cannot afford a single spare — the same reservation
 	// call AddSpare makes, read in AddSpare's own critical section, so two
 	// callers near the maximum cannot both pass it either — nothing clears
-	// it but the caller's own reclamation (R21), and a header-only record
+	// it but the caller's own reclamation, and a header-only record
 	// still falls back to the headroom inside drawSpare, never refused by
 	// the journal's limit. A full-size retired segment to hand is the
 	// recycle that clears it, so its answer stays the pool's. Neither this

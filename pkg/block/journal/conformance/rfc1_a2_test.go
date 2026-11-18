@@ -2113,7 +2113,7 @@ func TestRFC1A_ReappendKeepsItsNumbers(t *testing.T) {
 		// the file's own bytes say whether the original came through it — and
 		// the open reading the directory retires the failed segment, for the
 		// truncate superseded its one record and nothing holds it, so the
-		// file its bytes sat in does not outlive the open (RFC 28 §3.3).
+		// file its bytes sat in does not outlive the open.
 		if err := f.Seam.Crash(kit.Reordered(404)); err != nil {
 			t.Fatalf("share %d: the reorder crash: %v", k, err)
 		}

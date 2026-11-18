@@ -676,7 +676,7 @@ func (p *Pool) DeviceFull() bool {
 // spare the maker has not yet drawn, or nil when making one is affordable:
 // the maker's reservation read in its own critical section, so the roll that
 // finds no spare ready names the limit that cannot be refilled rather than
-// the pool's own `spare` (R21), which clears on the pool's own.
+// the pool's own `spare`, which clears on the pool's own.
 //
 // decision: the answer is given only while the content class holds nothing
 // the pool can still serve or refill on its own — a spare owed to an open

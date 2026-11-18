@@ -447,10 +447,10 @@ func TestRFC28C_Rebuild(t *testing.T) {
 // TestRFC28C_AFailedWindowAtTheMaximumIsFailedWhole checks the running
 // journal's failed window at the journal's exact maximum: a re-append there
 // needs a spare, the pool can make none at the maximum and a roll takes no
-// spare of the headroom or reserve classes (RFC 1 §6), and the read-only
-// transition of §5.4 cannot fire without a spare a stream took to leave the
-// failed segment. §5.3 settles a failed window by one of two resolutions and
-// §6 forbids waiting for space — the engine's own Release, Offload and Repack
+// spare of the headroom or reserve classes, and the
+// read-only transition cannot fire without a spare a stream took to leave the
+// failed segment. A failed window settles by one of two resolutions and
+// the journal must not wait for space — the engine's own Release, Offload and Repack
 // are what free it — so the window is failed whole: its records are lost with
 // the generation raised, the file is told once by its Sync, and the file is
 // not wedged, a later Sync of it reporting nothing.
@@ -500,7 +500,7 @@ func TestRFC28C_AFailedWindowAtTheMaximumIsFailedWhole(t *testing.T) {
 	}
 
 	// The window ended: a Sync of the file names nothing pending and
-	// returns, so the failure did not wedge the file (RFC 1 §5.3).
+	// returns, so the failure did not wedge the file.
 	syncFiles(t, g.Share(0), r.id)
 }
 

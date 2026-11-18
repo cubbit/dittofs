@@ -54,7 +54,7 @@ func (d *Durability) resolveWindows(st *stream) {
 // re-append drew ErrNoSegmentForTheRoll — no spare is or can be made for
 // them, so keeping them for a later pass would be waiting for the engine's
 // own reclamation, which the journal must not do, and the window takes its
-// second resolution, the failed one (RFC 1 §5.3). Both failures drop the
+// second resolution, the failed one. Both failures drop the
 // records once, with the generation raised for the window unless an earlier
 // pass or a Corrupt already raised it. It reports whether the stream
 // refused a record.
@@ -79,8 +79,8 @@ func (d *Durability) reappendWindow(st *stream, w *window) (refused bool) {
 			// is the engine's to drain, and a window parked on it would park
 			// every Sync that waits on it. A header-only record never reaches
 			// this answer — it draws the headroom, never the journal's limit
-			// — so it keeps its rule of being re-appended, never failed
-			// (RFC 1 §5.3), and stays for the passes a spare can serve again.
+			// — so it keeps its rule of being re-appended, never failed,
+			// and stays for the passes a spare can serve again.
 			d.log.Error("journal failed a failed window's record: no segment can be had for its re-append", "stream", st.no, "window", w.id, "seq", e.w.Seq, "kind", e.w.Kind, "err", err)
 			noSegment = append(noSegment, e)
 			continue

@@ -389,7 +389,7 @@ func TestRollARecordThatExactlyFillsTheRoomIsWrittenInPlace(t *testing.T) {
 }
 
 // TestRollRefusedWithAnEmptyPoolMakesNoSeamCall checks the refusal over an
-// unrefillable pool (R15, R20, R21): a pool whose only ready spare was taken
+// unrefillable pool: a pool whose only ready spare was taken
 // by hand, under a maximum the taken spare and the headroom's whole spend —
 // answers a content roll at once with the journal's own limit, the shortage
 // nothing but the caller's reclamation can drain, changes nothing of the

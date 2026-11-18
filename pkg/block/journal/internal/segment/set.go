@@ -375,7 +375,7 @@ func (s *Set) AddSpare(id core.SegmentID, max int64) error {
 // same critical section and the same figures as AddSpare's own, read with no
 // id drawn, no counter moved and no spare added. A roll the pool cannot
 // serve reads it to answer the journal's maximum rather than the pool's own
-// `spare`, which names a shortage the pool clears on its own (R21).
+// `spare`, which names a shortage the pool clears on its own.
 func (s *Set) RefusesSpare(max int64) (*core.NoSpaceError, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
