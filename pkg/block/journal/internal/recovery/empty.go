@@ -186,6 +186,13 @@ func runEmptying(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	if len(ended) == 0 {
 		return nil
 	}
+	// The ended segments nothing holds go first: the retire step leaves them
+	// here only so their served duplicates are read whole, and one with
+	// nothing to carry retires and refills the reserve before a held one's
+	// copy draws from it, the order the retire step itself keeps.
+	slices.SortStableFunc(ended, func(a, b core.SegmentID) int {
+		return cmp.Compare(boolRank(deps.Liveness.Held(a)), boolRank(deps.Liveness.Held(b)))
+	})
 	if deps.DrawReserve == nil {
 		return errors.New("recovery: the emptying's deps carry no reserve draw: the open hands the pool's own take of the repack reserve")
 	}
@@ -208,6 +215,14 @@ func runEmptying(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 		}
 	}
 	return nil
+}
+
+// boolRank orders false before true.
+func boolRank(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // emptying carries the state one run of the emptying step shares across the
