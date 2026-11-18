@@ -6,9 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
@@ -221,6 +224,11 @@ func TestForgetRefusesSharesWhileItRuns(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
+	// The spare pool is settled before the hold: a background spare write
+	// taking the held storage first would reach the choreography before the
+	// forget's own record does.
+	awaitSpares(t, c, 0)
+
 	hold := seam.Hold(t, kit.OpWrite, "*.seg")
 	done := make(chan error, 1)
 	go func() { done <- c.Forget(context.Background(), forgetTag) }()
@@ -382,5 +390,180 @@ func TestForgetRetiresTheTagsSegments(t *testing.T) {
 	}
 	if !c.liveness.Held(rec) {
 		t.Fatalf("the forget record is not live while the active segment holding the tag's records below it remains")
+	}
+}
+
+// The forget ends the tag's deferred losses: a loss whose record the copy of
+// the tag's segment owes would otherwise be written by a later pass at a
+// sequence number above the forget record, claiming the file again and
+// escaping the recovery withhold. The forget's own drop ends them, leaving
+// the pass nothing to write.
+func TestForgetEndsTheTagsDeferredLosses(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, forgetTag)
+	f := testFile(1)
+	x := core.Extent{Off: 0, Len: 32}
+	v := publishUnder(t, c, forgetTag, f, 0, make([]byte, x.Len))
+	p, ok := c.index.Lookup(f, 0)
+	if !ok {
+		t.Fatalf("the planted write left no placement to read its segment from")
+	}
+	seg := p.Record.Segment
+
+	// A deferred loss of the tag, raised through the durability layer the
+	// way a failed window does, owing its loss record to whatever copy
+	// retires seg.
+	if _, err := c.Durability().Lose(context.Background(), durability.Loss{
+		Share: forgetTag, File: f, Extent: x, Version: v,
+		Seq: 1 << 30, Reason: core.LossStale, Deferred: true, Seg: seg,
+	}); err != nil {
+		t.Fatalf("the planted deferred loss: %v", err)
+	}
+	if got := c.Durability().DeferredAgainst(seg); len(got) != 1 {
+		t.Fatalf("the planted deferred loss did not register against segment %d: %d entries", seg, len(got))
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := c.Forget(context.Background(), forgetTag); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+	if got := c.Durability().DeferredAgainst(seg); len(got) != 0 {
+		t.Fatalf("the forget left %d deferred losses of the tag for a later pass to write: %+v", len(got), got)
+	}
+}
+
+// The forget re-tests the tag's registered removal records: the drop clears
+// each marker without the settle a removal waits for, so without the re-test
+// a deleted file's removal record stays counted live and keeps its segment
+// held — the offer the drop made is skipped and the segment never retires.
+func TestForgetRetiresTheDeletedTagsSegments(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, forgetTag)
+	f := testFile(1)
+
+	// One piece and the delete beside it in the segment a later whole piece
+	// rolls past, so the sealed segment holds only T's records, the delete
+	// record among them: the retirement the re-test owes is the R13 gate.
+	// A near-full piece, the delete beside it, then a whole piece that rolls
+	// the segment closed: one sealed segment holds the piece and the delete
+	// record together, and the retirement the re-test owes is its gate.
+	publishUnder(t, c, forgetTag, f, 0, make([]byte, testSegmentCap-4096))
+	p, ok := c.index.Lookup(f, 0)
+	if !ok {
+		t.Fatalf("the tagged file's piece left no placement")
+	}
+	seg := p.Record.Segment
+	if _, err := c.Delete(context.Background(), s, f); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	syncFiles(t, c, f)
+	publishUnder(t, c, forgetTag, f, testSegmentCap-4096, make([]byte, testSegmentCap-2048))
+	syncFiles(t, c, f)
+	if state, serr := c.set.State(seg); serr != nil || state == segment.Active {
+		t.Fatalf("the segment holding the tag's delete record is in state %d (%v), want it sealed by the roll", state, serr)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := c.index.RemovalMarkers(); got == 0 {
+		t.Fatalf("the delete left no marker to clear")
+	}
+
+	if err := c.Forget(context.Background(), forgetTag); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+	if got := c.index.RemovalMarkers(); got != 0 {
+		t.Fatalf("the forget left %d removal markers of the tag", got)
+	}
+	// The segment holding the delete record retires — bounded, as the other
+	// retirement waits are: the worker's own hand-over is a background the
+	// test cannot join.
+	if !settledWithin(func() bool {
+		_, err := c.set.State(seg)
+		return err != nil
+	}) {
+		state, _ := c.set.State(seg)
+		t.Fatalf("the segment holding the tag's delete record did not retire within %v (state %d)", forgetDeadline, state)
+	}
+}
+
+// The forget record's liveness ends once the last segment of its snapshot
+// leaves the set, and a pass then drops the record's own segment with it:
+// nothing of the tag keeps a segment held.
+func TestForgetConnectionDropsOnceNoneRemains(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, forgetTag)
+	f := testFile(1)
+	segs := rollingPieces(t, c, forgetTag, f)
+
+	// Roll the last T-byte segment closed: a whole piece of another tag on
+	// another file of the same stream leaves no room for it, so the stream
+	// rolls and seals the segment that holds T's third piece — every segment
+	// of the tag's records is sealed now, and the snapshot the forget takes
+	// names only segments a retirement can take.
+	fstream := c.Streams().For(f)
+	var u core.FileID
+	for i := byte(2); ; i++ {
+		u = testFile(i)
+		if c.Streams().For(u) == fstream {
+			break
+		}
+	}
+	publishUnder(t, c, otherTag, u, 0, make([]byte, testSegmentCap-2048))
+	syncFiles(t, c, u)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// the whole pieces rolled: T's segments all sealed
+	if state, serr := c.set.State(segs[len(segs)-1]); serr == nil && state == segment.Active {
+		t.Fatalf("the stream's active segment still holds the tag's third piece")
+	}
+	if err := c.Forget(context.Background(), forgetTag); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+
+	// Every snapshot segment retires; the bounded wait is the worker's own
+	// hand-over again.
+	if !settledWithin(func() bool {
+		for _, seg := range segs {
+			if _, err := c.set.State(seg); err == nil {
+				return false
+			}
+		}
+		return true
+	}) {
+		state, _ := c.set.State(segs[0])
+		t.Fatalf("the tag's segments did not retire within %v (first in state %d)", forgetDeadline, state)
+	}
+
+	// The record itself is no longer held once the last of them left: the
+	// zero file's stream's segment answers not held, the record droppable
+	// the rule R13 names. It stays the stream's active segment until a pass
+	// takes it: seal it closed and run one, and the unit finds nothing held
+	// or registered and retires it with the record's bytes gone.
+	st := c.Streams().For(core.FileID{})
+	zero, ok := st.OpenSegment()
+	if !ok {
+		t.Fatalf("the zero file's stream has no open segment for the forget record")
+	}
+	if !settledWithin(func() bool { return !c.liveness.Held(zero) }) {
+		t.Fatalf("the forget record is still live once every segment of its snapshot retired")
+	}
+	draw, err := c.headroom.Admit(capacity.Seal)
+	if err != nil || !draw.Append {
+		t.Fatalf("the seal marker's admission: draw %+v, err %v", draw, err)
+	}
+	if _, err := st.SealOpen(zero, true); err != nil {
+		c.headroom.Refund(draw)
+		t.Fatalf("seal the forget record's segment: %v", err)
+	}
+	c.headroom.Drawn(draw)
+	if _, err := c.Repack(context.Background(), testSegmentCap, reclaim.Scope{Segments: []core.SegmentID{zero}}); err != nil {
+		t.Fatalf("the pass over the forget record's segment: %v", err)
+	}
+	if _, err := c.set.State(zero); err == nil {
+		t.Fatalf("the forget record's segment stayed in the set after the pass that dropped it")
 	}
 }

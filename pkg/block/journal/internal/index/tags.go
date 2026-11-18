@@ -120,6 +120,22 @@ func (ix *Index) ClearTag(id core.FileID) error {
 	return err
 }
 
+// FilesClaimedBy returns every file tag claims, whether as its owner or as
+// the rival of one: the enumeration the Forget of the tag drops by. Unlike
+// Files, a file nothing holds — every extent settled away, its records still
+// riding their segments — is named by its tag alone, and a rivalled file is
+// named by its rival's tag too, whichever side the Forget has to clear. It
+// takes no file's lock; the answer is in no order and a snapshot.
+func (ix *Index) FilesClaimedBy(tag core.ShareTag) []core.FileID {
+	var out []core.FileID
+	ix.fs.walk(func(id core.FileID, f *file) {
+		if !f.gone && ((f.tagged && f.tag == tag) || (f.rivalled && f.rival == tag)) {
+			out = append(out, id)
+		}
+	})
+	return out
+}
+
 // ForgetFile drops the file whole from the running index, the half a durable
 // forget record of the file's tag does at its drop: every held and retained
 // extent, every removal marker, and the drop ranges of the records below
@@ -134,14 +150,31 @@ func (ix *Index) ClearTag(id core.FileID) error {
 // names the tag as the update ended, so the drop must run first, while the
 // entry still owns its tag, and the marks are cleared once the drop is
 // accounted.
-func (ix *Index) ForgetFile(id core.FileID, below core.Seq) (HeldDelta, []core.SegmentID, error) {
+//
+// decision: the markers and the drop ranges are cleared whole, the survivor's
+// with the forgotten tag's. They are kept per file — the index cannot tell a
+// marker's tag — while the pieces it can tell, so the residue a rivalled
+// file's survivor carries is its marker yielding to the forget's settle-free
+// clear and the drop ranges of its records below the forget record: its
+// removals can settle sooner over the lost ranges, and its own removal
+// records release at the liveness re-test the forget runs. Safe everywhere a
+// rivalled file grows — only a fault plants one — and cheaper per piece than
+// a third attribution the held set would have to keep. Overturned by a rival
+// whose unsettled markers must survive a forget of its co-tenant exact.
+func (ix *Index) ForgetFile(id core.FileID, below core.Seq, tag core.ShareTag) (HeldDelta, []core.SegmentID, error) {
 	var m touched
 	hd, err := ix.fs.update(id, func(f *file) error {
 		f.held.touched = &m
 		defer func() { f.held.touched = nil }()
+		// The drop takes the tag's records alone, by the piece tags the entry
+		// points stamp: the other tag of a rivalled file keeps its held
+		// pieces — and with them the segment its records ride, held by the
+		// same bytes the drop still names — so nothing of the surviving tag's
+		// content is reclaimed under it. A piece no entry point stamped stays,
+		// the safe direction Placed.Tag names.
+		f.held.dropTagged(tag)
 		all := toEnd(0)
-		f.held.cut(all)
-		f.retained.drop(all, func(Retained) bool { return true }, nil)
+		f.retained.drop(all, func(r Retained) bool { return r.Tag == tag }, nil)
 		f.markers = nil
 		f.forgetRanges(below)
 		return nil

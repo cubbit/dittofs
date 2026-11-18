@@ -85,13 +85,15 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 	c.registryMu.Unlock()
 	defer c.clearForgetting(tag)
 
-	// The files the index still lists for the tag are the ones it drops: a
-	// file whose every extent was already released holds no piece a copy
-	// could resurrect, and its records on disk ride their segments out with
-	// the liveness snapshot alone.
+	// Every file the tag claims is dropped: the file it owns with no piece
+	// and no marker left — every extent settled away, its records still
+	// riding their segments — is claimed no less than a held one, and a
+	// rivalled file is claimed by whichever side the forget must clear; both
+	// enter the barrier and the drop, so the running journal leaves the same
+	// file claimed as a reopen would.
 	//
 	// decision: a tag nothing holds anywhere — no record byte in any
-	// segment, no file in the index — is answered nil with no record
+	// segment, no file it claims — is answered nil with no record
 	// appended, because a forget record of a tag that holds nothing can
 	// change nothing recovery would serve, and a start that names every
 	// forgotten tag again would make one record per tag of no effect. Its
@@ -99,7 +101,7 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 	// takes the tag out of the stranded set, which needs no record, since
 	// the set is memory the caller's next start re-makes. Overturned by a
 	// caller the journal owes a durable receipt of the forget to.
-	files := c.index.Files(tag)
+	files := c.index.FilesClaimedBy(tag)
 	if len(files) == 0 && c.set.ShareBytes(tag) == 0 {
 		c.unstrand(tag)
 		return nil
@@ -171,15 +173,14 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 
 	// The drop, per file under its append domain, the index held for the
 	// write: the delta runs through Account as any index change does, and
-	// the segments whose held bytes the drop emptied are offered to the
-	// retirement worker under the same domain, with the forget record as the
-	// causality record the offer's gate reads — the record is durable
-	// already, so the gate passes at once. One domain at a time, like the
-	// barrier: R46's rule keeps the two halves of the forget from holding
-	// what a repack copy of another file could be waiting on.
+	// the segments whose held bytes fell are collected for the offers after
+	// the loop. One domain at a time, like the barrier: R46's rule keeps the
+	// two halves of the forget from holding what a repack copy of another
+	// file could be waiting on.
+	var named []core.SegmentID
 	for _, f := range files {
 		unlock := c.domains.Lock(f)
-		hd, named, derr := c.index.ForgetFile(f, seq)
+		hd, nm, derr := c.index.ForgetFile(f, seq, tag)
 		if derr != nil {
 			unlock()
 			return fmt.Errorf("datapath: forgetting file %v: %w", f, derr)
@@ -189,12 +190,44 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 			return fmt.Errorf("datapath: forgetting the marks of file %v: %w", f, terr)
 		}
 		c.Account(hd)
-		for _, seg := range named {
-			if !c.liveness.Held(seg) {
-				c.retiring.Emptied(seg, pl.Loc)
+		named = append(named, nm...)
+		unlock()
+	}
+
+	// The tag's deferred losses end here: a loss whose record the copy of
+	// one of its segments owed would be written by a later pass, at a
+	// sequence number above the forget record, claimed for the tag again —
+	// and a reopen would withold nothing of it. The forget discards the
+	// content the loss was owed for, so the registry entry goes without its
+	// record, and the pass over the tag's segments finds nothing to write.
+	for _, seg := range below {
+		for _, l := range c.dur.DeferredAgainst(seg) {
+			if l.Share != tag {
+				continue
+			}
+			if c.dur.EndDeferral(seg, l) {
+				c.liveness.SetDeferred(seg, false)
 			}
 		}
-		unlock()
+	}
+
+	// The re-test the marker clear owes: the drop removed every marker of
+	// the tag's files without the settle a removal waits for, so their
+	// registered removal records — live while their markers stand — release
+	// here as Settle's relay releases them. It runs after every file's own
+	// drop, holding no append domain, which no file of the tag is waiting
+	// on. Before the re-test the offers below would read the segments still
+	// held and skip them.
+	c.liveness.Retest(files...)
+
+	// The emptied segments are offered to the retirement worker with the
+	// forget record as the causality record the offer's gate reads — the
+	// record is durable already, so the gate passes at once, and the
+	// deferrals, the re-test and the drops above have all let go.
+	for _, seg := range named {
+		if !c.liveness.Held(seg) {
+			c.retiring.Emptied(seg, pl.Loc)
+		}
 	}
 
 	// The forget record's liveness: registered against the snapshot taken at

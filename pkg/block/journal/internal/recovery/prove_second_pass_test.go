@@ -25,6 +25,11 @@ func wantPlacement(t *testing.T, st State, off int64, want index.Placed) {
 	if !ok {
 		t.Fatalf("Lookup of the tail's file at %d answered nothing, want the placement %+v: the torn record's exclusion restored nothing", off, want)
 	}
+	// The legs name the placement the record restored — where its bytes sit,
+	// the extent, the version — and not the share tag its record carried,
+	// which the placement index now answers too: the fixtures all feed the
+	// records under one tag, and the forge rows pin the tagged drop itself.
+	got.Tag, want.Tag = 0, 0
 	if got != want {
 		t.Errorf("Lookup of the tail's file at %d got %+v, want %+v: excluding the torn record restores the placement of the record it overwrote", off, got, want)
 	}

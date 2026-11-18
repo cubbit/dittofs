@@ -24,9 +24,11 @@ func writeRetained(t *testing.T, ix *Index, p Placed) HeldDelta {
 }
 
 // written is p as writeRetained holds it: under the sequence number it gives
-// a write, its version's counter.
+// a write, its version's counter, and named for the tag the write was
+// published through — the tag the fixture's writes all share.
 func written(p Piece) Piece {
 	p.Seq = core.Seq(p.Version.Counter)
+	p.Tag = testTag
 	return p
 }
 

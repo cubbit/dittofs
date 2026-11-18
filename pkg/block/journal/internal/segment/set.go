@@ -925,6 +925,17 @@ func (s *Set) TagFigures() (bytes, overhead map[core.ShareTag]int64) {
 //
 // The call runs after the forget's liveness snapshot was taken, which reads
 // the per-segment figures this clears.
+//
+// decision: the released figures are what a share-scope repack reads to name
+// its segments, so one aimed at a re-attached tag can no longer seal or
+// select the segments that hold only its forgotten, dead records — matching
+// the reopen, whose rebuilt set never counts the withheld records at all.
+// Those segments are still reclaimed: the worker's tick takes them once
+// nothing holds them, and a zero-scope pass selects them by their own bytes.
+// The ceiling: in a journal with no idle sealer and no zero-scope pass, an
+// active segment holding only forgotten records is sealed only by a later
+// roll. Overturned by a ruled rule that dead records still bind a share's
+// scope, which would need the figures kept and a reopen that counts them.
 func (s *Set) ForgetTag(tag core.ShareTag) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

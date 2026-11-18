@@ -421,6 +421,34 @@ func (f *file) read(fn func(*file)) {
 	fn(f)
 }
 
+// note is update over no creation: fn runs on id's entry only when the map
+// holds one, and a file no entry names — one a forget's drop removed whole,
+// one never built — answers nil having noted nothing and claimed no tag. The
+// existence check is one step with the update, both inside this call's own
+// take of the shard's lock, so a drop that removes the entry between the
+// shard's reads cannot be handed a fresh empty entry to claim by a note that
+// raced it. fn runs holding the file's lock exclusively, and the unlock is
+// apply's, whatever fn returns.
+func (fs *files) note(id core.FileID, fn func(*file) error) error {
+	s := fs.shard(id)
+	for {
+		s.mu.Lock()
+		f := s.m[id]
+		s.mu.Unlock()
+		if f == nil {
+			return nil
+		}
+		f.mu.Lock()
+		if f.gone {
+			f.mu.Unlock()
+			continue
+		}
+		before := f.entries()
+		_, err := f.apply(fs, s, id, before, 0, fn)
+		return err
+	}
+}
+
 // update runs fn on id's entry holding the file's lock exclusively, creating
 // the entry when the file has none. Once fn returns, whatever it returned,
 // the entry's lifetimes are applied under the same lock: a file holding

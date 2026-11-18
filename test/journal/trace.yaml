@@ -175,6 +175,11 @@ rfc1 / 9.4 / C / "a cancelled call changes nothing or completes":
 rfc1 / 9.4 / C / "restamp after a lost store":
   tests: [TestRFC1C_RestampAfterLostStore]
 rfc1 / 9.4 / C / "forget leaves nothing to settle":
+  # Forget's row of the 8.4 atomicity table pairs it with fills of the tag; that
+  # half has no leg here: a Fill needs a handle of the tag, and Forget refuses
+  # while one is open, so the pair cannot be driven through the journal's own
+  # API. The barrier the same table names is covered by the pass legs of
+  # TestRFC1C_ForgetRules.
   tests: [TestRFC1C_ForgetLeavesNothingToSettle, TestRFC1C_ForgetRules]
 rfc1 / 9.4 / C / "unclaimed tag reported":
   tests: [TestRFC1C_UnclaimedTagReported]

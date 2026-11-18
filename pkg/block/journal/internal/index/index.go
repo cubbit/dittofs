@@ -42,6 +42,7 @@ func (ix *Index) WriteRetain(tag core.ShareTag, id core.FileID, p Placed, seq co
 // before the admission, or a commit after it — reserves nothing the caller can
 // hand over and answers no entry.
 func (ix *Index) WriteRetainClaim(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq) (HeldDelta, int64, error) {
+	p.Tag = tag
 	var err error
 	if ix.fs.view(id, func(f *file) { err = f.check(tag, id) }) && err != nil {
 		return HeldDelta{}, 0, err
@@ -133,6 +134,7 @@ func (ix *Index) CheckFill(tag core.ShareTag, id core.FileID, asOf core.Version)
 // count above it; a refusal reserves nothing. It takes the file's lock
 // exclusively.
 func (ix *Index) Fill(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq, asOf core.Version) (HeldDelta, error) {
+	p.Tag = tag
 	return ix.fs.fill(tag, id, p, seq, asOf)
 }
 
@@ -349,15 +351,13 @@ func (ix *Index) SegmentGone(id core.FileID, seg core.SegmentID) {
 // appended; nothing is admitted and no extent is held. A file the index has
 // no entry for is a no-op, claiming nothing and noting no range — a caller
 // carrying a record of a file nothing holds publishes only the placement,
-// which no drop query reads.
+// which no drop query reads. The no-op is one step with the update, so a
+// drop that removes the entry between the two is not handed a fresh empty
+// entry to claim: a forget file stays forgotten whatever a racing note did.
 func (ix *Index) NotePlaced(tag core.ShareTag, id core.FileID, seg core.SegmentID, e core.Extent, n Numbers) error {
-	if !ix.fs.view(id, func(*file) {}) {
-		return nil
-	}
-	_, err := ix.fs.update(id, func(f *file) error {
+	return ix.fs.note(id, func(f *file) error {
 		return f.recorded(seg, e, n, tag, id)
 	})
-	return err
 }
 
 // RetireSegment withdraws seg's per-segment byte counters, so a segment

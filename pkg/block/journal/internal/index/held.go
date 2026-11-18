@@ -3,6 +3,7 @@ package index
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -31,6 +32,13 @@ type Placed struct {
 	Version core.Version
 	// Seq is the sequence number of the record holding the bytes.
 	Seq core.Seq
+	// Tag is the share the placed record belongs to, stamped by the index
+	// entry points from the tag they were called with: holds never name a
+	// tag themselves, so a forget that drops one side of a rivalled file
+	// tells its own records by this alone. Zero on a placement no entry
+	// point stamped — an index a test built by hand — and such a piece
+	// stays held through any tagged drop, the safe direction.
+	Tag core.ShareTag
 	// At is the time the write was made, the clock's reading when it was
 	// published. It is read only by a client write; reads and fills leave it zero.
 	At time.Time
@@ -45,6 +53,10 @@ type Piece struct {
 	Version   core.Version
 	Seq       core.Seq
 	Offloaded bool
+	// Tag is the share the piece's record belongs to, as Placed's own doc
+	// names. Kept beside the placement the write paths already carry, so a
+	// tagged drop of a rivalled file reads it per piece.
+	Tag core.ShareTag
 }
 
 // The record offset, skip and length of a piece are kept in 32 bits, which
@@ -53,10 +65,14 @@ type Piece struct {
 const _ = uint32(core.SegmentCap)
 
 // held is the tree value of one piece; the piece's start offset is its key.
-// It is 40 bytes. It keeps the version's counter half only: the epoch half is
-// zero on every record of this format, and its eight bytes hold the record's
-// sequence number instead, so the entry names its record exactly at no cost
-// over an entry that carried the whole version.
+// It is 48 bytes: the four the record's share tag takes beside the four of
+// padding the counter alignment already spent came with the tagged drop a
+// forget owes a rivalled file, whose own records it must part from the file's
+// other tag's without any caller but the entry points naming tags. It keeps
+// the version's counter half only: the epoch half is zero on every record of
+// this format, and its eight bytes hold the record's sequence number instead,
+// so the entry names its record exactly at no cost over an entry that carried
+// the whole version.
 //
 // ponytail: one entry per contiguous held piece of one record, which with the
 // tree around it costs about 53 bytes for extents written front to back and
@@ -79,6 +95,7 @@ type held struct {
 	skip      uint32
 	len       uint32
 	offloaded bool
+	tag       uint32
 }
 
 // toHeld packs p. It panics on a version with a non-zero epoch half, which
@@ -96,6 +113,7 @@ func toHeld(p Piece) held {
 		skip:      p.Skip,
 		len:       uint32(p.Extent.Len),
 		offloaded: p.Offloaded,
+		tag:       uint32(p.Tag),
 	}
 }
 
@@ -107,6 +125,7 @@ func (h held) piece(k uint64) Piece {
 		Version:   core.Version{Counter: h.counter},
 		Seq:       h.seq,
 		Offloaded: h.offloaded,
+		Tag:       core.ShareTag(h.tag),
 	}
 }
 
@@ -180,7 +199,7 @@ type heldSet struct {
 	// cleared by the move's own closure, under the file's exclusive lock.
 	touched *touched
 	// over are the runs where one write superseded another, kept beside the
-	// tree rather than in its entries so an entry stays 40 bytes, and so a run
+	// tree rather than in its entries so an entry stays at its own size, and so a run
 	// outlives the superseded piece, which is gone from the tree by then. They
 	// are in no order.
 	//
@@ -283,7 +302,7 @@ func (s *heldSet) lookup(off int64) (Placed, bool) {
 		return Placed{}, false
 	}
 	p := v.piece(k)
-	return Placed{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq}, true
+	return Placed{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq, Tag: p.Tag}, true
 }
 
 // span appends to placed the pieces held inside e, clipped to it, and to
@@ -311,7 +330,7 @@ func (s *heldSet) span(e core.Extent, placed []Placed, missing []core.Extent) ([
 				return true
 			}
 		}
-		placed = append(placed, Placed{Extent: q.Extent, Record: q.Record, Skip: q.Skip, Version: q.Version, Seq: q.Seq})
+		placed = append(placed, Placed{Extent: q.Extent, Record: q.Record, Skip: q.Skip, Version: q.Version, Seq: q.Seq, Tag: q.Tag})
 		return true
 	})
 	if end := e.Off + e.Len; end > cursor {
@@ -365,7 +384,7 @@ func (s *heldSet) insert(p Placed) {
 	}
 	s.noteOver(p.Extent, p.Version)
 	s.times.note(p.Version.Counter, p.At)
-	s.put(Piece{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq})
+	s.put(Piece{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq, Tag: p.Tag})
 }
 
 // fill holds p, marked offloaded, only where nothing is held: a held piece
@@ -388,6 +407,7 @@ func (s *heldSet) fill(p Placed) {
 			Version:   p.Version,
 			Seq:       p.Seq,
 			Offloaded: true,
+			Tag:       p.Tag,
 		})
 	}
 	s.visit(p.Extent, func(q Piece) bool {
@@ -661,6 +681,38 @@ func (s *heldSet) cut(e core.Extent) {
 			}
 			s.tree.set(uint64(end), toHeld(tail))
 		}
+	}
+}
+
+// dropTagged removes every piece of the set whose record belongs to tag,
+// whole: the subtractive accounting cut keeps per piece, and no head or tail
+// splitting is needed — the removal covers the file's whole span, so a
+// removed piece never stops inside one. Pieces of other tags pass untouched,
+// keeping their bytes, their bounds and their places: the forget of one side
+// of a rivalled file takes its own records alone. A piece no entry point
+// stamped a tag on stays, the safe direction Placed.Tag names.
+func (s *heldSet) dropTagged(tag core.ShareTag) {
+	s.scratch = s.scratch[:0]
+	s.visit(core.Extent{Off: 0, Len: math.MaxInt64}, func(p Piece) bool {
+		if p.Tag == tag {
+			s.scratch = append(s.scratch, p)
+		}
+		return true
+	})
+	for _, p := range s.scratch {
+		n := p.Extent.Len
+		s.bytes -= n
+		if !p.Offloaded {
+			s.dirty -= n
+			s.times.add(p.Version.Counter, -n)
+		}
+		if s.acct != nil {
+			s.acct.add(p.Record.Segment, -n, 0)
+			if s.touched != nil {
+				s.touched.note(p.Record.Segment)
+			}
+		}
+		s.tree.delete(uint64(p.Extent.Off))
 	}
 }
 

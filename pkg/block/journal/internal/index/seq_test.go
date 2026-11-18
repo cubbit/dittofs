@@ -173,19 +173,22 @@ func TestRebuildCarriesTheRecordsSeq(t *testing.T) {
 	}
 }
 
-// TestHeldEntryStaysFortyBytes pins the entry's size: the sequence number
-// fits in what the version's epoch half took, so the index memory bound
-// holds as before.
-func TestHeldEntryStaysFortyBytes(t *testing.T) {
-	if n := unsafe.Sizeof(held{}); n != 40 {
-		t.Fatalf("held is %d bytes, want 40", n)
+// TestHeldEntryStaysFortyEightBytes pins the entry's size: the sequence
+// number fits in what the version's epoch half took and the share tag the
+// tagged drop of a forget needs fills the alignment the entry already
+// carried, so the index memory bound holds within one word of as before.
+func TestHeldEntryStaysFortyEightBytes(t *testing.T) {
+	if n := unsafe.Sizeof(held{}); n != 48 {
+		t.Fatalf("held is %d bytes, want 48", n)
 	}
 }
 
-// TestRetainedStaysEightyEightBytes pins the retained piece's size. A retained
-// extent counts toward the extent bound at its own size, so the next field
-// added to Piece or Retained must show up here rather than silently grow what
-// every retained extent costs.
+// TestRetainedStaysEightyEightBytes pins the retained piece's size. A
+// retained extent counts toward the extent bound at its own size, so the
+// next field added to Piece or Retained must show up here rather than
+// silently grow what every retained extent costs. The share tag a piece
+// carries for the forget's tagged drop sits in the slack the entry's
+// alignment already held, so the size did not move.
 func TestRetainedStaysEightyEightBytes(t *testing.T) {
 	if n := unsafe.Sizeof(Retained{}); n != 88 {
 		t.Fatalf("Retained is %d bytes, want 88", n)

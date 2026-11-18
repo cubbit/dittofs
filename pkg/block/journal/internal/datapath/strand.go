@@ -38,12 +38,12 @@ func (c *Core) Strand(tag core.ShareTag) error {
 
 // unstrand removes tag from the stranded set: the Forget path calls it once
 // the forget record is durable, since only the caller that names a tag to
-// Forget can say when it stops being stranded. The Forget path holds no
-// other lock of the core when it reaches this — the mark was cleared under
-// its own mutex, the registry's mutex is down — and strandMu is a leaf that
-// takes nothing, so the removal nests inside whatever the caller holds; its
-// place in the Forget path's lock order is innermost. A tag nothing stranded
-// runs through unharmed.
+// Forget can say when it stops being stranded. The Forget path holds no other
+// lock of the core when it reaches this — the registry's mutex is down and
+// the forgetting mark's own release is the deferred call that runs after —
+// and strandMu is a leaf that takes nothing, so the removal nests inside
+// whatever the caller holds; its place in the Forget path's lock order is
+// innermost. A tag nothing stranded runs through unharmed.
 func (c *Core) unstrand(tag core.ShareTag) {
 	c.strandMu.Lock()
 	defer c.strandMu.Unlock()
