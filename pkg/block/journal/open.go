@@ -384,11 +384,11 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		}
 		// The open's own loss records: appended and synced before the open
 		// returns, so the loss records the crash left half-told are durable
-		// the moment the journal is served. An appended record needs a
-		// spare to land in, so the pass waits for the pool's settle before
-		// the first record it appends — never for a pass the disk answers
-		// whole with found records — keeping every clean reopen off the
-		// pool's refill entirely. A pass whose corrupt drops would run past
+		// the moment the journal is served. An appended record may need a
+		// spare to roll onto, so the pass waits for one spare, not the
+		// pool's whole goal, before the first record it appends, and never
+		// for a pass the disk answers whole with found records, keeping
+		// every clean reopen off the pool's refill entirely. A pass whose corrupt drops would run past
 		// the open reserve refuses here, before any of its records appends
 		// (the refusal and its reasoning live with the pass itself), so a
 		// retry over a journal whose reserve holds the drops answers whole.
@@ -398,7 +398,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// failure the answer costs is on the directory's failed list.
 		c, err := datapath.Continue(deps, state, func(c *datapath.Core) error {
 			return recovery.OpenLosses(ctx, st, c.Durability(), s.HeadroomRecords, func() error {
-				return c.WaitSpares(ctx)
+				return c.WaitRecordSpare(ctx)
 			})
 		})
 		if err != nil {

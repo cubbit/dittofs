@@ -568,6 +568,34 @@ func TestANamedOnlyOpenWaitsOnNoSpareRefill(t *testing.T) {
 	}
 }
 
+// TestAnOpenOwingOneRecordServesOnOneSpare holds the loss pass's wait at a
+// device near full: an open owing one loss record waits for one spare a
+// header-only record can roll onto, not for the pool's whole goal, so once
+// the device has made one spare and refuses every other, the open serves
+// with the record durable rather than refusing for a goal the record never
+// needed.
+func TestAnOpenOwingOneRecordServesOnOneSpare(t *testing.T) {
+	f := seededJournal(t)
+	file := fileOf(7)
+	older := plantRecord(1, ownerTag, file, 10, 10, 0, 32)
+	newer := plantRecord(1, ownerTag, file, 11, 11, 0, 32)
+	offs := plantSealedAt(t, f.seam, f.id, 947, older, newer)
+	f.rotHeader(t, format.SegmentName(947), int64(offs[1]))
+
+	// The device makes one spare and then runs out of space for any other.
+	if err := f.seam.Schedule(kit.FailingFrom(kit.OpCreate, "*.spare.tmp", 2, 0, syscall.ENOSPC)); err != nil {
+		t.Fatalf("schedule the one-spare device: %v", err)
+	}
+	j := f.publicOpen(t, nil)
+	events := lossEvents(t, j, core.LossCorrupt)
+	if len(events) != 1 || !events[0].Synced || events[0].Deferred {
+		t.Fatalf("the open's corrupt losses = %+v, want the one loss synced and not deferred", events)
+	}
+	if n := len(f.lossRecords(t)); n != 1 {
+		t.Fatalf("%d loss records on disk after the open, want the one durable record", n)
+	}
+}
+
 // TestFailedRecordsTakeTheReserveFirst holds the ordering of the open's loss
 // records: the records a read-only journal failed earlier in this process —
 // found on disk whole, in a segment whose sync failed — take the open
