@@ -37,6 +37,12 @@ type proof struct {
 	Reappends     []tailRecord
 	FailedWindows []core.SegmentID
 	HeldEnd       map[core.SegmentID]int64
+
+	// ReappendTarget is the segment the copier sealed the re-appended
+	// records into — the one whose stale, all-zero rebuild scan seeds it an
+	// active row the continuation must seal. Zero when nothing re-appended
+	// or the copy failed; a failed target the fates name, ended whole.
+	ReappendTarget core.SegmentID
 }
 
 // markerSync is the marker flow's answer for the one sync it made for a

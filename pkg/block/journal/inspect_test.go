@@ -211,7 +211,9 @@ func reopenedJournal(t *testing.T) (*Journal, map[core.SegmentID][]uint32) {
 		Descriptors: core.NewDescriptorBudget(64),
 		Targets:     segment.Targets{Content: 4},
 	})
-	c, err := datapath.New(deps, state)
+	// The seam owes no loss pass, so the hook Continue runs before the
+	// retirement worker starts has nothing to land.
+	c, err := datapath.Continue(deps, state, func(*datapath.Core) error { return nil })
 	if err != nil {
 		t.Fatalf("the core over the rebuilt state: %v", err)
 	}

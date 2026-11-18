@@ -50,11 +50,19 @@ const backgroundWait = 2 * time.Second
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 
+	if !settles(cond) {
+		t.Fatalf("%s within %v", what, backgroundWait)
+	}
+}
+
+// settles reports whether cond holds within backgroundWait, polling it.
+func settles(cond func() bool) bool {
 	for deadline := time.Now().Add(backgroundWait); !cond(); time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("%s within %v", what, backgroundWait)
+			return false
 		}
 	}
+	return true
 }
 
 // writeRecordBytes is the bytes a write record of n payload bytes takes in a
@@ -1123,7 +1131,7 @@ func TestRFC1B_HeadroomIsAllocated(t *testing.T) {
 	hs := []*journal.Handle{f.Share(0), f.Share(1)}
 	refused := false
 	for i := range int64(2 * journaltest.FixtureMaxBytes / (256 << 10)) {
-		_, err := tryWrite(t, hs[i%2], journaltest.File(5+int(i%2)), i/2*256<<10, pattern(fmt.Sprint("new", i), 256<<10))
+		_, err := tryWriteIn(t, f, hs[i%2], journaltest.File(5+int(i%2)), i/2*256<<10, pattern(fmt.Sprint("new", i), 256<<10))
 		if err != nil {
 			wantENOSPC(t, err, "a content write on a full device")
 			refused = true

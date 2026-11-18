@@ -397,12 +397,13 @@ func TestRunAssemblesACapSizedEarlySealAsNotFull(t *testing.T) {
 	}
 }
 
-// TestRunAssemblesATornTailActiveAtItsCap holds the torn tail's seed: a
-// segment the classing gave a torn-tail fate stays Active — the one state a
-// seal takes, the state the later phase that cuts its torn end and seals it
-// needs — accounted at its cap until the cut, for a seed that classed it
-// Ended would leave the later seal a state it refuses to move and the
-// emptying a segment to unlink instead.
+// TestRunAssemblesATornTailActiveAtItsCap holds the torn tail's seam: a
+// segment the classing gave a torn-tail fate seeds Active — the one state a
+// seal takes, the state the cut-and-seal phase that cuts its torn end and
+// seals it needs, for a seed that classed it Ended would leave the later seal
+// a state it refuses to move and the emptying a segment to unlink instead —
+// and the phase then takes that state in the same set: the one row the open
+// continues from is the seal's, at the early seal's size.
 func TestRunAssemblesATornTailActiveAtItsCap(t *testing.T) {
 	endA := endAfter(tailRec(200, 0x4100))
 	torn := buildSeg(2, tailRec(200, 0x4100), tailRec(201, 0x8100))
@@ -412,8 +413,13 @@ func TestRunAssemblesATornTailActiveAtItsCap(t *testing.T) {
 	st := assembleRun(t, r, nil)
 
 	wantFate(t, st, 2, fateTornTail, endA)
-	if rows := st.Assembled.Set.Snapshot(); len(rows) != 1 || rows[0].State != segment.Active || rows[0].Size != testSegCap {
-		t.Errorf("the torn-tailed segment's seeded row got %+v, want the one segment Active at its %d cap until the cut the seal phase takes", rows, testSegCap)
+	if st.Tails.TornTails != 1 {
+		t.Errorf("the torn tail counted %d cuts, want 1", st.Tails.TornTails)
+	}
+	if rows := st.Assembled.Set.Snapshot(); len(rows) != 1 || rows[0].State != segment.Sealed ||
+		rows[0].Size != earlySealSize(endA, 1) {
+		t.Errorf("the torn-tailed segment's row got %+v, want the one segment Sealed by the cut at its early-seal size %d",
+			rows, earlySealSize(endA, 1))
 	}
 }
 

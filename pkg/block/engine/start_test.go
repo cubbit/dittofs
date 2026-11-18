@@ -37,14 +37,15 @@ const startDevice = "dev"
 // fake journal that logs every call the engine makes on it, the real store on
 // an in-memory kv.KV holding two shares, and a Deps.Open the test answers.
 type starter struct {
-	e    *engine.Engine
-	fs   *kvstoretest.FS
-	j    *logJournal
-	lc   *startLifecycle
-	logs logRecorder
-	one  engine.Share // the store's first share
-	two  engine.Share // a second share of the store
-	id   journal.JournalID
+	granted map[entity.ShareID]bool // shares the admin holds a grant on, for write
+	e       *engine.Engine
+	fs      *kvstoretest.FS
+	j       *logJournal
+	lc      *startLifecycle
+	logs    logRecorder
+	one     engine.Share // the store's first share
+	two     engine.Share // a second share of the store
+	id      journal.JournalID
 
 	deps  engine.Deps    // what the engine was built from, for a restart over the same store
 	more  []engine.Share // the shares withShares adds, started with one and two
@@ -286,15 +287,39 @@ func (s *starter) start(t *testing.T) error {
 	return s.e.Start(t.Context(), append([]engine.Share{s.one, s.two}, s.more...))
 }
 
-// write writes one byte to a new file of share id.
+// write writes one byte to a file the store holds a record of, so the
+// existence commit of the write succeeds and a later Close can drain it.
 func (s *starter) write(t *testing.T, id entity.ShareID) error {
 	t.Helper()
+
+	sh, _, err := s.fs.Store.ShareIndex().Share(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.mu.Lock()
+	if !s.granted[id] && id != s.fs.Share.ID {
+		g := entity.ShareGrant{Share: id, Principal: s.fs.Admin.Principal, Access: entity.AccessAdmin}
+		if _, err := s.fs.Store.ControlPlane().SetGrant(t.Context(), g, 0); err != nil {
+			s.mu.Unlock()
+			t.Fatal(err)
+		}
+	}
+
+	if s.granted == nil {
+		s.granted = make(map[entity.ShareID]bool)
+	}
+
+	s.granted[id] = true
+	s.mu.Unlock()
+
+	_, made := s.fs.Create(t, s.fs.Admin, entity.NewHandle(id, sh.Root), entity.NewFileID().String(), kvstore.Regular(0o644))
 
 	opts := engine.WriteOpts{
 		Done: func() {
 		},
 	}
-	_, err := s.e.Write(t.Context(), id, entity.NewFileID(), 0, []byte("x"), opts)
+	_, err = s.e.Write(t.Context(), id, made.ID, 0, []byte("x"), opts)
 
 	return err
 }

@@ -106,8 +106,8 @@ func FuzzOpen(f *testing.F) {
 
 		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
 		if err != nil {
-			if !errors.Is(err, core.ErrUnknownFormat) && !errors.Is(err, core.ErrNotImplemented) && !errors.Is(err, core.ErrUnreadable) {
-				t.Fatalf("Run: got unnamed error %v, want ErrUnknownFormat, ErrNotImplemented or ErrUnreadable", err)
+			if !errors.Is(err, core.ErrUnknownFormat) && !errors.Is(err, core.ErrOpenRefused) && !errors.Is(err, core.ErrNotImplemented) && !errors.Is(err, core.ErrUnreadable) {
+				t.Fatalf("Run: got unnamed error %v, want ErrUnknownFormat, ErrOpenRefused, ErrNotImplemented or ErrUnreadable", err)
 			}
 			return
 		}

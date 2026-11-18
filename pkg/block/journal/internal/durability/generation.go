@@ -46,9 +46,11 @@ var registry = struct {
 }{dirs: map[dirKey]*dirState{}}
 
 // dirState is one journal's generation, the sequence numbers whose loss
-// record could not be appended, and the pieces a Lose or a Place has taken
-// — one journal being one identity at one directory, the registry's key.
-// Its mutex is a leaf: nothing is called while it is held.
+// record could not be appended, the pieces a Lose or a Place has taken, and
+// the losses whose record a deferred Lose owes to the copy that retires the
+// segment holding the dropped record — one journal being one identity at one
+// directory, the registry's key. Its mutex is a leaf: nothing is called
+// while it is held.
 //
 // ponytail: an entry is one small struct per journal ever opened — one
 // identity at one directory, so a path emptied and Init'd many times holds
@@ -73,6 +75,23 @@ type dirState struct {
 	// copy of its dropped record remains to be reported again, when a
 	// directory with a long loss history shows up in a heap profile.
 	pieces map[piece]struct{}
+
+	// unsynced holds the taken pieces whose loss record placed but never
+	// synced: the take stops a second event, but no durable record names
+	// the loss, so a reopen's pass appends the record again. A piece leaves
+	// once a later Lose of it takes it back to append.
+	unsynced map[piece]struct{}
+
+	// deferred holds, per segment, the losses a Lose deferred against it —
+	// one entry per deferred piece taken, the entry the copy that retires
+	// the segment builds its loss record from. It lives here and not on a
+	// Durability because the piece a deferral took is the directory's own,
+	// taken once for whichever instance deferred it: a reopen in this
+	// process builds a fresh Durability, and the copy that retires the
+	// segment reaches the entry through whichever instance — or through the
+	// registry reader below, before any instance is built. An entry leaves
+	// on EndDeferral alone.
+	deferred map[core.SegmentID][]Loss
 }
 
 // stateFor returns the state of dir, made on first use, keyed by its cleaned
@@ -124,6 +143,60 @@ func (s *dirState) take(k piece) bool {
 // piece was named before, and never that its record is on disk.
 func (s *dirState) takePiece(dropped core.Seq, ext core.Extent) bool {
 	return s.take(piece{dropped, ext})
+}
+
+// named reports whether a Lose or a Place of this journal identity already
+// took the piece k: a loss whose record landed or was deferred, or a loss
+// record found on disk. The open's pass consults it apart from its own take,
+// to know which losses no record is owed for.
+func (s *dirState) named(k piece) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.pieces[k]
+	return ok
+}
+
+// release hands back a piece a take claimed: the loss record it names never
+// landed, and the next open owes that record — the failed list the same
+// failure appended holds the claim it retries under. Pieces of losses whose
+// record is on disk are never released: the take is what stops a second
+// record for them.
+func (s *dirState) release(k piece) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pieces, k)
+}
+
+// holdUnsynced marks the taken piece k as held by a loss record that placed
+// but never synced.
+func (s *dirState) holdUnsynced(k piece) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.unsynced == nil {
+		s.unsynced = map[piece]struct{}{}
+	}
+	s.unsynced[k] = struct{}{}
+}
+
+// isUnsynced reports whether a placed but unsynced loss record holds k.
+func (s *dirState) isUnsynced(k piece) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.unsynced[k]
+	return ok
+}
+
+// retakeUnsynced takes back the piece k a placed but unsynced record holds,
+// for the caller to append the record it is owed, reporting false when no
+// such record holds it. The piece stays taken.
+func (s *dirState) retakeUnsynced(k piece) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.unsynced[k]; !ok {
+		return false
+	}
+	delete(s.unsynced, k)
+	return true
 }
 
 // raise raises the generation by one and returns it.
@@ -179,4 +252,75 @@ func (s *dirState) failedSeqs() []core.Seq {
 	out := slices.Clone(s.failed)
 	slices.Sort(out)
 	return out
+}
+
+// deferAgainst stores one deferred loss against seg, the segment holding the
+// dropped record its loss record is owed to the copy that retires.
+func (s *dirState) deferAgainst(seg core.SegmentID, l Loss) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deferred == nil {
+		s.deferred = map[core.SegmentID][]Loss{}
+	}
+	s.deferred[seg] = append(s.deferred[seg], l)
+}
+
+// deferredAgainst returns a copy of the losses stored against seg, in the
+// order they deferred.
+func (s *dirState) deferredAgainst(seg core.SegmentID) []Loss {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Loss(nil), s.deferred[seg]...)
+}
+
+// endDeferral ends one deferred loss of seg: the copy that retires it has the
+// loss record durable, so the registry gives the entry up. l names the entry
+// as deferredAgainst returned it. The call is idempotent: a second one, or a
+// call whose entry already left, answers false and changes nothing; true says
+// an entry left.
+func (s *dirState) endDeferral(seg core.SegmentID, l Loss) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	es := s.deferred[seg]
+	for i, e := range es {
+		if e != l {
+			continue
+		}
+		es = append(es[:i], es[i+1:]...)
+		if len(es) == 0 {
+			delete(s.deferred, seg)
+		} else {
+			s.deferred[seg] = es
+		}
+		return true
+	}
+	return false
+}
+
+// DeferredFor returns the deferred losses of the journal the open names by
+// dir and id: each loss a Lose — of whichever Durability this process built
+// on the directory — deferred against the segment holding its dropped record,
+// keyed by that segment, for the copy that retires one to read before any
+// layer of the open is built. A journal nothing deferred answers nil.
+//
+// decision: the read lives here and not on a Durability for the same reason
+// FailedFor's does: the open asks for the losses before it builds the layer
+// that would own them — the emptying runs inside the recovery, ahead of every
+// layer — and the registry entry the question reads is the same one the
+// layer the open wires in will take, so a loss one instance of the journal
+// deferred reaches the copy the next instance retires, through whichever
+// path reads it. Overturned by an open that regrows the losses it serves an
+// instance it built rather than the registry.
+func DeferredFor(dir string, id core.JournalID) (map[core.SegmentID][]Loss, error) {
+	st, err := stateFor(dir, id)
+	if err != nil {
+		return nil, err
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := make(map[core.SegmentID][]Loss, len(st.deferred))
+	for seg, ls := range st.deferred {
+		out[seg] = append([]Loss(nil), ls...)
+	}
+	return out, nil
 }

@@ -1,6 +1,7 @@
 package kit
 
 import (
+	"bytes"
 	"cmp"
 	"errors"
 	"fmt"
@@ -380,7 +381,7 @@ func (s *Seam) undoDir() error {
 // undone.
 func (n *node) durableImage() ([]byte, error) {
 	if n.snap != nil {
-		return slices.Clone(n.snap), nil
+		return n.snapImage(), nil
 	}
 
 	img, err := os.ReadFile(n.path)
@@ -388,6 +389,22 @@ func (n *node) durableImage() ([]byte, error) {
 		return nil, err
 	}
 	return n.undone(img), nil
+}
+
+// setSnap keeps img as the durable image, without its trailing zeros.
+func (n *node) setSnap(img []byte) {
+	n.snapSize = int64(len(img))
+	n.snap = bytes.TrimRight(img, "\x00")
+	if n.snap == nil {
+		n.snap = []byte{} // set, though every byte is zero
+	} else {
+		n.snap = slices.Clone(n.snap) // drop the tail's capacity too
+	}
+}
+
+// snapImage returns a copy of the durable image setSnap kept.
+func (n *node) snapImage() []byte {
+	return resize(slices.Clone(n.snap), n.snapSize)
 }
 
 // undone returns img, the file's current bytes, with every unsynced change

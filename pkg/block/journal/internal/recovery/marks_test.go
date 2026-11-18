@@ -43,7 +43,7 @@ func marksSlotSeg(id core.SegmentID) (seg []byte, slotAt, slotEnd, endR int64) {
 // TestMarksThroughProvesBelowIt plants the torn slot a mark's Through covers,
 // in a segment whose catalog does not verify: nothing on the segment names
 // the record that sat in the slot, so the open refuses on the range whole,
-// with ErrNotImplemented naming the segment and the range — a mark is the
+// with ErrOpenRefused naming the segment and the range — a mark is the
 // caller's durable record that its stream synced through it, and cutting the
 // range as a torn tail would cut a record the sync acknowledged.
 func TestMarksThroughProvesBelowIt(t *testing.T) {
@@ -58,8 +58,8 @@ func TestMarksThroughProvesBelowIt(t *testing.T) {
 	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID,
 		[]core.SyncMark{{Stream: 1, Segment: uint64(id), Through: endR, Offset: endR, Sequence: 200}})
 
-	if !errors.Is(err, core.ErrNotImplemented) {
-		t.Fatalf("marks: the slot below a mark's Through answered err %v, want ErrNotImplemented refusing the range", err)
+	if !errors.Is(err, core.ErrOpenRefused) {
+		t.Fatalf("marks: the slot below a mark's Through answered err %v, want ErrOpenRefused refusing the range", err)
 	}
 	name := fmt.Sprintf("segment %d", id)
 	if !strings.Contains(err.Error(), name) {
@@ -402,7 +402,7 @@ func lostTailMark(id core.SegmentID, seq uint64, endC int64) []core.SyncMark {
 // file ends at A, the record the sync proved, while the mark — the caller's
 // durable record of the sync — names C past A's end, with C's number and its
 // end. No copy of C verifies anywhere, so the open refuses with
-// ErrNotImplemented naming the mark's segment, its Offset and its Sequence —
+// ErrOpenRefused naming the mark's segment, its Offset and its Sequence —
 // a lost tail must never be read as a torn tail — and the refusal writes
 // nothing: the bytes the directory held are the bytes it keeps, and the run
 // answers no state at all.
@@ -425,8 +425,8 @@ func TestLostTailRefusesTheOpen(t *testing.T) {
 
 	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
 
-	if !errors.Is(err, core.ErrNotImplemented) {
-		t.Fatalf("the lost tail answered err %v, want ErrNotImplemented refusing the open", err)
+	if !errors.Is(err, core.ErrOpenRefused) {
+		t.Fatalf("the lost tail answered err %v, want ErrOpenRefused refusing the open", err)
 	}
 	for _, want := range [3]string{
 		fmt.Sprintf("segment %d", id),
@@ -520,8 +520,8 @@ func TestLostTailRefusedRetriesBurnNothing(t *testing.T) {
 	for open := 1; open <= 3; open++ {
 		_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, marks)
 
-		if !errors.Is(err, core.ErrNotImplemented) {
-			t.Fatalf("refused open %d answered err %v, want ErrNotImplemented: every retry meets the same loss", open, err)
+		if !errors.Is(err, core.ErrOpenRefused) {
+			t.Fatalf("refused open %d answered err %v, want ErrOpenRefused: every retry meets the same loss", open, err)
 		}
 		got := r.snapshot()
 		if !maps.EqualFunc(got, before, bytes.Equal) {
@@ -622,8 +622,8 @@ func TestLostTailOverAConfinedCopyRefuses(t *testing.T) {
 
 		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
 
-		if !errors.Is(err, core.ErrNotImplemented) {
-			t.Fatalf("the lost tail over a confined copy answered err %v, want ErrNotImplemented: a record the open itself read and found rotten verifies nowhere", err)
+		if !errors.Is(err, core.ErrOpenRefused) {
+			t.Fatalf("the lost tail over a confined copy answered err %v, want ErrOpenRefused: a record the open itself read and found rotten verifies nowhere", err)
 		}
 		for _, want := range [3]string{
 			fmt.Sprintf("segment %d", id),
@@ -703,8 +703,8 @@ func TestASyncedRecordTheDeviceRotBelowThrough(t *testing.T) {
 
 		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
 
-		if !errors.Is(err, core.ErrNotImplemented) {
-			t.Fatalf("the synced record the device rotted answered err %v, want ErrNotImplemented refusing the open: a synced record is never a torn tail", err)
+		if !errors.Is(err, core.ErrOpenRefused) {
+			t.Fatalf("the synced record the device rotted answered err %v, want ErrOpenRefused refusing the open: a synced record is never a torn tail", err)
 		}
 		for _, want := range [3]string{
 			fmt.Sprintf("segment %d", id),
@@ -845,8 +845,8 @@ func TestASyncedCorruptCopyStaysUnraisedAcrossTheSecondPass(t *testing.T) {
 
 		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
 
-		if !errors.Is(err, core.ErrNotImplemented) {
-			t.Fatalf("the synced record the device rotted beside a torn tail answered err %v, want ErrNotImplemented refusing the open: a rotted copy re-fed by the second pass verifies nowhere", err)
+		if !errors.Is(err, core.ErrOpenRefused) {
+			t.Fatalf("the synced record the device rotted beside a torn tail answered err %v, want ErrOpenRefused refusing the open: a rotted copy re-fed by the second pass verifies nowhere", err)
 		}
 		if !reflect.DeepEqual(st, State{}) {
 			t.Errorf("the refused open returned state %+v, want the zero State: a refusal serves nothing", st)

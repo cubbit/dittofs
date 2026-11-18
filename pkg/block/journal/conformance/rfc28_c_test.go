@@ -37,7 +37,7 @@ func fillSegment(t *testing.T, f *journaltest.Fixture, s, i int, size int) ([]re
 	for n := 0; n <= 2*journaltest.FixtureSegmentCap/size; n++ {
 		off := int64(n) * int64(size)
 		p := pattern(fmtTag("r", s, i, off), size)
-		v := write(t, f.Share(s), id, off, p)
+		v := writeIn(t, f, s, id, off, p)
 		seg := entryAt(t, f, id, off).Location.Segment
 		if n == 0 {
 			first = seg
@@ -356,7 +356,7 @@ func writeRec(t *testing.T, f *journaltest.Fixture, s, i int, off int64, size in
 
 	id := journaltest.File(i)
 	p := pattern(fmtTag("u", s, i, off), size)
-	v := write(t, f.Share(s), id, off, p)
+	v := writeIn(t, f, s, id, off, p)
 
 	return rec{s, id, journal.Extent{Off: off, Len: int64(size)}, v, p}
 }
@@ -2940,4 +2940,228 @@ func TestRFC28C_FormatFile(t *testing.T) {
 		wantBytes(t, f.Share(0), a.id, 0, a.p)
 		wantBytes(t, f.Share(1), b.id, 0, b.p)
 	}
+}
+
+// TestRFC28C_AnOpenAtAnExhaustedHeadroom checks the open reserve's row at an
+// exhausted headroom: a journal whose headroom records keep an open reserve
+// of one still opens (RFC 1 section 6), records the corrupt synced record
+// its sealed segment holds as one loss event on that reserve, never serves
+// the older content the corrupted record superseded — masked by the loss
+// record's marker until the caller settles it — and a second open finds the
+// record on disk and appends no second loss record: one the disk already
+// named is never appended twice, and the corrupt drop that name covers
+// hands its piece to no second record. The deferral past
+// the reserve has its row in the journal's own suite, where the planted
+// sealed segment makes its shape cheap.
+func TestRFC28C_AnOpenAtAnExhaustedHeadroom(t *testing.T) {
+	// Two headroom records leave an open reserve of one; the check's single
+	// corrupt drop takes it and nothing defers, an exhausted headroom
+	// refusing nothing at the open (RFC 1 section 6).
+	f := journaltest.NewWithOptions(t, func(s *journal.Settings) { s.HeadroomRecords = 2 })
+	// The shut journal plants a sealed segment beside its own: the implant
+	// reads at the reopen, whose rotted record the open confines as the
+	// corrupt drop its loss record names.
+	f.Shutdown()
+	const share = 4 // the planted records' journal tag 5: the fixture's shares number from tag 1
+	file := journaltest.File(7)
+	const seg journal.SegmentID = 9001
+	offs := plantSealedSegment(t, f, f.ID(), seg, journaltest.Tag(share), file)
+	locOf := int64(offs[len(offs)-1])
+	flipAt(t, f, segmentName(seg), locOf+92)
+
+	f.Reopen()
+	losses := f.J.Stats().Losses
+	if len(losses) != 1 {
+		t.Fatalf("the open published %d losses, want the one corrupt loss on the open reserve: %+v", len(losses), losses)
+	}
+	ev := losses[0]
+	if !ev.AtOpen || ev.Deferred || !ev.Synced {
+		t.Fatalf("the corrupt loss on the open reserve = %+v, want it synced, found at open and not deferred: the sealed segment's rotted record carried the newer write of the extent, whose loss masks the older", ev)
+	}
+
+	// The corrupted record's extent never serves: the loss record's marker
+	// masks the older content the corrupted record superseded, never
+	// serving stale bytes for a write the caller was told was stored — and
+	// Since yields the lost write until the caller settles it.
+	wantExtentMissing(t, f.Share(share), file, journal.Extent{Off: 0, Len: 32})
+	var yielded int
+	for ch, err := range f.Share(share).Since(t.Context(), file, journal.Version{}) {
+		if err != nil {
+			t.Fatalf("Since over the corrupted record's extent: %v", err)
+		}
+		if ch.Kind == journal.ChangeLoss {
+			yielded++
+		}
+	}
+	if yielded != 1 {
+		t.Fatalf("Since yielded %d lost-write changes over the corrupted extent, want the one", yielded)
+	}
+	f.Share(share).Settle(file, journal.Version{Counter: 11})
+	for ch, err := range f.Share(share).Since(t.Context(), file, journal.Version{}) {
+		if err != nil {
+			t.Fatalf("Since after the settle: %v", err)
+		}
+		if ch.Kind == journal.ChangeLoss {
+			t.Fatalf("Since yielded the settled lost-write change %+v, want it settled away", ch)
+		}
+	}
+
+	// A second open finds the loss record on disk and answers nothing new
+	// with it: the piece it names was taken by the open that appended it, so
+	// the reopen places it back into no ring, raises no generation and
+	// appends no second record — the loss the caller still owes is settled
+	// through the marker the rebuild replays, not a fresh event.
+	gen := f.J.Stats().LossGeneration
+	f.Reopen()
+	if got := f.J.Stats().LossGeneration; got != gen {
+		t.Fatalf("the generation after the second open = %d, want the %d the first raised: the found loss record raises nothing", got, gen)
+	}
+	if got := len(f.J.Stats().Losses); got != 0 {
+		t.Fatalf("the second open's ring holds %d losses, want none: the piece the loss record names was taken by the open that appended it", got)
+	}
+	yielded = 0
+	for ch, err := range f.Share(share).Since(t.Context(), file, journal.Version{}) {
+		if err != nil {
+			t.Fatalf("Since at the second open: %v", err)
+		}
+		if ch.Kind == journal.ChangeLoss {
+			yielded++
+		}
+	}
+	if yielded != 1 {
+		t.Fatalf("Since at the second open yielded %d lost-write changes, want the marker the rebuilt loss record replays", yielded)
+	}
+}
+
+// TestRFC28C_AMarkProvesOnlyUpToThrough checks §3.3's passable halves of the
+// mark's proof: a mark proves only up to its Through, so a record the last
+// synced mark does not cover is never held to its bytes — the crash's cut of
+// the unsynced record's payload is the torn tail the open cuts and seals,
+// with nothing reported, no loss record naming it and the older committed
+// content the unsynced record would have overwritten still reading — and a
+// tear of the record's header counts no refused range either: the tail
+// starts at the last record that verified. The reconcile the rotted halves
+// owe is another step's and sits outside this row.
+func TestRFC28C_AMarkProvesOnlyUpToThrough(t *testing.T) {
+	t.Run("a cut payload past the mark", func(t *testing.T) {
+		f := journaltest.New(t)
+		id := journaltest.File(0)
+		const size = 64 << 10
+
+		older := writeSynced(t, f, 0, 0, 0, size)
+		seg := entryAt(t, f, id, 0).Location.Segment
+		// The window the cut assumes, pinned: from here to the crash nothing
+		// syncs seg, so the pending overwrite stays the one unsynced write
+		// past the mark. A sync the stream's commit still owed seg — one a
+		// loaded machine can land between the pending write and the crash,
+		// covering the payload the tear is about to cut — parks at the seam
+		// and dies with the crash, unsynced like the write it served. The
+		// tear lands at the seam while the hold is still armed, for it needs
+		// the pending write unsynced; the parked sync releases after it, and
+		// the fixture's crash then reopens over the tore image alone.
+		held := f.Seam.Hold(t, kit.OpSync, segmentName(seg))
+		pending := writeRec(t, f, 0, 0, 0, size) // the unsynced overwrite of the older content
+		later := writeSynced(t, f, 1, 1, 0, size)
+		_ = later
+
+		// The last mark of the stream stops at the older record's end: the
+		// pending overwrite sits past it, and the crash cuts its payload in
+		// half, a torn tail no report names.
+		if err := f.Seam.Crash(kit.TornIn(segmentName(seg), 32<<10)); err != nil {
+			t.Fatalf("the torn crash with the segment's sync held: %v", err)
+		}
+		held.Release()
+		f.Crash()
+
+		// The crash tears every file's last unsynced write, so an unsynced
+		// spare beside the record's own tail counts too: the figure is a
+		// floor. (The cut and the seal of the record's own segment are
+		// pinned by the recovery suite's seal rows and by TornTailCutOff.)
+		if got := f.J.Stats().Counters.TornTails; got < 1 {
+			t.Fatalf("TornTails = %d after one cut past the mark, want at least the one", got)
+		}
+		if got := f.J.Stats().Losses; len(got) != 0 {
+			t.Fatalf("a write no mark covered was reported lost: %+v", got)
+		}
+		wantBytes(t, f.Share(0), id, 0, older.p)
+		entries, err := f.J.Inspect().File(id)
+		if err != nil {
+			t.Fatalf("inspect the cut file: %v", err)
+		}
+		for _, e := range entries {
+			if e.Kind == journal.EntryHeld && e.Extent.Off == 0 && e.Version.Compare(pending.version) == 0 {
+				t.Fatalf("the unsynced overwrite of version %v survived the cut as a held entry", pending.version)
+			}
+		}
+	})
+	t.Run("a torn header past the mark counts no range", func(t *testing.T) {
+		f := journaltest.New(t)
+		id := journaltest.File(0)
+		const size = 64 << 10
+
+		older := writeSynced(t, f, 0, 0, 0, size)
+		seg := entryAt(t, f, id, 0).Location.Segment
+		writeRec(t, f, 0, 0, 0, size) // its header the crash tears
+		writeSynced(t, f, 1, 1, 0, size)
+
+		// The tear lands inside the unsynced record's header: no byte of the
+		// record verifies, so the tail starts at the older record's end and
+		// the open counts no refused range over it.
+		f.Crash(kit.TornIn(segmentName(seg), 48+40))
+
+		if got := f.J.Stats().Counters.TornTails; got < 1 {
+			t.Fatalf("TornTails = %d after one torn header past the mark, want at least the one", got)
+		}
+		if got := f.J.Stats().Losses; len(got) != 0 {
+			t.Fatalf("a write whose header the crash tore was reported: %+v", got)
+		}
+		wantBytes(t, f.Share(0), id, 0, older.p)
+	})
+}
+
+// plantSealedSegment writes one planted segment sealed, with two writes of
+// one extent — an older one under and a newer one over it — a catalogue
+// entry per record, the seal marker and the trailer, as the journal's seal
+// writer leaves them, under the identity and id the caller names. It
+// returns the offsets the records landed at, older first.
+func plantSealedSegment(t *testing.T, f *journaltest.Fixture, identity journal.JournalID, id journal.SegmentID, tag journal.ShareTag, file journal.FileID) []uint32 {
+	t.Helper()
+
+	mk := func(seq, counter uint64) raw.Record {
+		return raw.Record{
+			Kind: 1, FileID: file.Bytes(), Seq: seq, Version: raw.Version{Counter: counter},
+			Tag: uint32(tag), Offset: 0, Length: 32,
+			Write: &raw.WriteBody{MTime: 1, Payload: make([]byte, 32)},
+		}
+	}
+	b := raw.SegmentHeader{Identity: identity, ID: uint64(id)}.Bytes()
+	var entries [][raw.CatalogEntrySize]byte
+	offs := make([]uint32, 0, 2)
+	for _, r := range []raw.Record{mk(10, 10), mk(11, 11)} {
+		r.Identity, r.Segment, r.RecordOffset = identity, uint64(id), uint32(len(b))
+		offs = append(offs, r.RecordOffset)
+		entries = append(entries, raw.Entry{
+			FileID: r.FileID, Offset: r.Offset, RecordOffset: r.RecordOffset,
+			Length: r.Length, Seq: r.Seq, Version: r.Version, Kind: r.Kind, Tag: r.Tag,
+		}.Bytes())
+		b = append(b, r.Bytes()...)
+	}
+	markerOff := len(b)
+	b = append(b, raw.SealMarker{Identity: identity, Segment: uint64(id), Offset: uint64(markerOff)}.Bytes()...)
+	for _, e := range entries {
+		b = append(b, e[:]...)
+	}
+	b = append(b, raw.Trailer(1, uint64(markerOff+raw.SealMarkerSize), entries...)...)
+	name := segmentName(id)
+	written, err := f.Seam.Create(name)
+	if err != nil {
+		t.Fatalf("create %s: %v", name, err)
+	}
+	if _, err := written.WriteAt(b, 0); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	if err := errors.Join(written.Sync(), written.Close(), f.Seam.SyncDir()); err != nil {
+		t.Fatalf("sync %s whole: %v", name, err)
+	}
+	return offs
 }

@@ -1470,9 +1470,9 @@ func TestRunCollectsForgetsByTheirGreatestSeq(t *testing.T) {
 	}
 }
 
-// TestRunRefusesAVerifiedHoldKindRecord holds the D6 refusal: a hold, unhold
+// TestRunRefusesAVerifiedHoldKindRecord holds the refusal: a hold, unhold
 // or stamp record that verifies — its header on the scan and its body read
-// whole here — and that no drop covers refuses the open with
+// whole here — and that no drop covers fails the open with
 // ErrNotImplemented naming its kind and its segment, whatever the failed
 // list the deps carry would have withheld. The boundary row plants the hold
 // at the seq just past a forget of its own tag — the first seq the forget

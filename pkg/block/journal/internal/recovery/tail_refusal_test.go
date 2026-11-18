@@ -18,15 +18,15 @@ import (
 )
 
 // wantRefused runs the open over r and holds the three things every refusal
-// answers: an error that is core.ErrNotImplemented, text naming the segment
+// answers: an error that is core.ErrOpenRefused, text naming the segment
 // and the range's exact offsets, and a directory of the same files and bytes,
 // a spare's temporary name apart (assertOnlySpareUnlinks).
 func wantRefused(t *testing.T, r *rig, id core.SegmentID, off, end int64) {
 	t.Helper()
 	before := r.snapshot()
 	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
-	if !errors.Is(err, core.ErrNotImplemented) {
-		t.Fatalf("Run got err %v, want one wrapping core.ErrNotImplemented", err)
+	if !errors.Is(err, core.ErrOpenRefused) {
+		t.Fatalf("Run got err %v, want one wrapping core.ErrOpenRefused", err)
 	}
 	for _, want := range []string{fmt.Sprintf("segment %d", id), fmt.Sprintf("[%d,%d)", off, end)} {
 		if !strings.Contains(err.Error(), want) {
@@ -248,8 +248,8 @@ func TestAReadErrorOnTheExemptionProbeRefusesTheOpenOnTheRange(t *testing.T) {
 	if !slices.Contains(ure.Ranges, want) {
 		t.Errorf("the refusal names ranges %v, want one to be the trailer %+v", ure.Ranges, want)
 	}
-	if errors.Is(err, core.ErrNotImplemented) {
-		t.Errorf("Run's refusal %v also answers ErrNotImplemented, want the read's range alone", err)
+	if errors.Is(err, core.ErrOpenRefused) {
+		t.Errorf("Run's refusal %v also answers ErrOpenRefused, want the read's range alone", err)
 	}
 	// The catalog phase's read of the trailer is the only one served, so the
 	// failing read is the exemption probe's own.
@@ -323,8 +323,8 @@ func TestARottedRecordHeaderInAnUnnamedSealedSegmentIsConfinedByItsFooter(t *tes
 		}
 	})
 	t.Run("an entry in the range names a reconciled record", func(t *testing.T) {
-		// Every other path refuses a reconcile kind, so the footer entry the
-		// classing would confine refuses the open too, never a corrupt drop.
+		// Every other path fails on a reconcile kind as unbuilt, so the footer
+		// entry the classing would confine fails the open too, never a corrupt drop.
 		reconciled := rec(16, func(r *raw.Record) {
 			r.Offset, r.Length = 0, 0
 			r.Reconciled = &raw.ReconciledBody{Segment: 1, Start: 48, End: 96}

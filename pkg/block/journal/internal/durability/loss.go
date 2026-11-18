@@ -46,6 +46,16 @@ type Loss struct {
 	// Lose leaves none.
 	Marked bool
 
+	// Reported says the failure this loss names was already published to the
+	// ring by the caller's own report — a record a read-only journal failed
+	// reported it when its window failed, so the open that appends the
+	// record the failed append owed publishes no new event for it. Lose
+	// appends the record and keeps the causality registration its placement
+	// files, but the ring holds nothing and the zero event answers. A
+	// reported loss also takes back a piece a placed but unsynced record of
+	// an earlier Lose holds, to append the record that one never synced.
+	Reported bool
+
 	// Deferred appends no record: the copy that retires the dropped
 	// record's segment writes it.
 	Deferred bool
@@ -85,6 +95,18 @@ func toFormat(r core.LossReason) format.LossReason {
 // other piece, of a Seq already reported or not, goes through all of it, so
 // no event precedes its own record.
 //
+// StreamIndex returns the number of the stream a loss record of file appends
+// on, the stream Lose draws through streams.For, so a caller counting the
+// rolls a set of losses needs counts the streams the records land on. It
+// answers -1 before Start, when the layer has no streams.
+func (d *Durability) StreamIndex(file core.FileID) int {
+	streams := d.streams.Load()
+	if streams == nil {
+		return -1
+	}
+	return streams.IndexFor(file)
+}
+
 // decision: Lose applies no admission of its own and does not look at
 // Loss.AtOpen when it appends, so a loss found on a read can draw on the
 // headroom an open reserves for its own records (RFC 1 section 6, "An open
@@ -129,8 +151,16 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// The piece is taken in the directory's state, shared with every other
 	// Durability on it: one already named by an earlier open's Lose or Place
 	// is reported by whichever call took it, never again.
-	if !d.dir.take(piece{l.Seq, l.Extent}) {
-		return core.LossEvent{}, nil
+	//
+	// A reported loss takes back a piece a placed but unsynced record holds:
+	// the take stopped its second event, not the record it is still owed.
+	k := piece{l.Seq, l.Extent}
+	retaken := false
+	if !d.dir.take(k) {
+		if !l.Reported || !d.dir.retakeUnsynced(k) {
+			return core.LossEvent{}, nil
+		}
+		retaken = true
 	}
 
 	var at segment.Location
@@ -149,9 +179,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 		// The registry entry the copy that retires l.Seg builds its loss
 		// record from, stored once the piece is taken: the deferral ends on
 		// EndDeferral alone.
-		d.lmu.Lock()
-		d.deferredLosses[l.Seg] = append(d.deferredLosses[l.Seg], l)
-		d.lmu.Unlock()
+		d.dir.deferAgainst(l.Seg, l)
 	}
 
 	firstErr := recErr
@@ -210,23 +238,35 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	case l.Reason == core.LossSuperseded:
 		d.superseded++
 	}
-	ev := d.pushRingLocked(core.LossEvent{
-		Share:     l.Share,
-		File:      l.File,
-		Extent:    l.Extent,
-		Version:   l.Version,
-		Reason:    l.Reason,
-		Offloaded: l.Offloaded,
-		Synced:    l.Synced,
-		AtOpen:    l.AtOpen,
-		Deferred:  l.Deferred,
-	})
+	ev := core.LossEvent{}
+	if l.Reported {
+		// The failure was already published when the caller first told it:
+		// the open's own leg for a record a read-only journal failed, whose
+		// window reported it then and whose record this call now appends.
+		// The counters and the raise above are the one rule's still, and
+		// the causality registration the append filed answers a retirement
+		// of the failed segment's own; no event exists to answer with.
+	} else {
+		ev = d.pushRingLocked(core.LossEvent{
+			Share:     l.Share,
+			File:      l.File,
+			Extent:    l.Extent,
+			Version:   l.Version,
+			Reason:    l.Reason,
+			Offloaded: l.Offloaded,
+			Synced:    l.Synced,
+			AtOpen:    l.AtOpen,
+			Deferred:  l.Deferred,
+		})
+	}
 	d.lmu.Unlock()
 
 	// decision: a drop whose record could not be appended is never undone.
 	// The journal stops holding what it cannot produce, and a loss only errs
 	// toward fetching the extent again, so the caller's drop stands, the
-	// event is published and the sequence number joins the directory's
+	// event is published — unless the caller already reported the failure,
+	// when the suppression above holds no event for the ring and the zero
+	// event answers — and the sequence number joins the directory's
 	// failed list for the next open to name. A deferred loss is not on that
 	// list: its record is owed to the copy that retires the segment.
 	//
@@ -239,6 +279,25 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	if recErr != nil {
 		if l.Reason != core.LossSuperseded {
 			d.dir.addFailed(l.Seq)
+			// decision: the piece a failure took is handed back with it, but
+			// only when the record never placed: the registry's pieces name
+			// losses whose record may be on disk — a record placed but not
+			// synced sits in its segment, a crash may keep it, and a reopen's
+			// Place of it publishes no second event only while the piece
+			// stays taken — so releasing it here would let the next open
+			// report the same loss record as new (see the release doc's own
+			// rule). Overturned by a caller that appends the record itself
+			// instead of retrying the loss, which would make the taken piece
+			// the dedup that stops a second attempt. A kept piece is marked
+			// unsynced, so the open's pass can tell it from one a durable
+			// record holds and append the record it is still owed. A piece
+			// retaken from an earlier unsynced record stays held too: that
+			// record is still on disk, so a failed retry frees nothing.
+			if at == (segment.Location{}) && !retaken {
+				d.dir.release(k)
+			} else {
+				d.dir.holdUnsynced(k)
+			}
 		}
 		if refused || errors.Is(recErr, core.ErrNoSpace) || errors.Is(recErr, core.ErrClosed) ||
 			errors.Is(recErr, segment.ErrStreamStopped) || errors.Is(recErr, segment.ErrStreamClosed) {
@@ -336,14 +395,30 @@ func (d *Durability) RaiseWindow() uint64 { return d.dir.raise() }
 // the directory sees them too.
 func (d *Durability) Failed() []core.Seq { return d.dir.failedSeqs() }
 
+// Named reports whether a Lose or a Place already took the piece of the
+// dropped record seq over ext: a loss record that landed, one that deferred,
+// or one an earlier open found on disk. The open's loss pass asks it before
+// its own takes, so it draws no open reserve and waits on no spare pool for
+// a record the disk already names.
+func (d *Durability) Named(seq core.Seq, ext core.Extent) bool {
+	return d.dir.named(piece{seq, ext})
+}
+
+// PlacedUnsynced reports whether the piece of the dropped record seq over ext
+// is held by a loss record that placed but never synced: Named answers it
+// true, yet nothing durable names the loss, so the open's pass appends the
+// record again, reported, as a Lose that takes the piece back.
+func (d *Durability) PlacedUnsynced(seq core.Seq, ext core.Extent) bool {
+	return d.dir.isUnsynced(piece{seq, ext})
+}
+
 // DeferredAgainst returns the losses whose record the copy that retires seg
 // owes, the entries Lose deferred against it, in the order they deferred.
 // Each entry names its Seg; the caller hands the entry back on EndDeferral
-// once the copy has the record durable.
+// once the copy has the record durable. The entries are the directory's own,
+// so they reach this instance through whichever one deferred them.
 func (d *Durability) DeferredAgainst(seg core.SegmentID) []Loss {
-	d.lmu.Lock()
-	defer d.lmu.Unlock()
-	return append([]Loss(nil), d.deferredLosses[seg]...)
+	return d.dir.deferredAgainst(seg)
 }
 
 // EndDeferral ends one deferred loss of seg: the copy that retires it has
@@ -352,22 +427,7 @@ func (d *Durability) DeferredAgainst(seg core.SegmentID) []Loss {
 // so the call is idempotent: a second one, or a call whose entry already
 // left, answers false and changes nothing; true says an entry left.
 func (d *Durability) EndDeferral(seg core.SegmentID, l Loss) bool {
-	d.lmu.Lock()
-	defer d.lmu.Unlock()
-	es := d.deferredLosses[seg]
-	for i, e := range es {
-		if e != l {
-			continue
-		}
-		es = append(es[:i], es[i+1:]...)
-		if len(es) == 0 {
-			delete(d.deferredLosses, seg)
-		} else {
-			d.deferredLosses[seg] = es
-		}
-		return true
-	}
-	return false
+	return d.dir.endDeferral(seg, l)
 }
 
 // Place publishes ev, a loss record found at open, for the dropped record

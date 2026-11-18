@@ -183,6 +183,9 @@ func TestRFC8A_CloneResumedAtAFullLimit(t *testing.T) {
 	f.Crash()
 	release()
 
+	// The restart's Start binds only the fixture's first share.
+	limitedSecond(t, f, 1<<20)
+
 	if got := f.E.Stats().Journals[f.Dir].Shares[f.Second.ID].UsedBytes; got != used {
 		t.Errorf(
 			"the share's journal bytes after the restart: %d, want %d (no copy made again)",

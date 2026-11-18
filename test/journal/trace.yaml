@@ -386,8 +386,9 @@ rfc1 / 9.4 / B / "read-only stops the drain":
 rfc28 / 4.2 / C / "an ended segment is emptied once":
   pending: 2.13b
 rfc28 / 4.2 / C / "an open at an exhausted headroom":
+  tests: [TestRFC28C_AnOpenAtAnExhaustedHeadroom]
   owner: epic 7
-  reason: 'the open''s headroom reserve and the deferred loss records are not built yet'
+  reason: 'the test checks the sealed-segment half. The ended-segment half is owed by the emptying of ended segments: the deferral of losses past the reserve, the repack of deferred segments and the read-only reopen of the failed list'
 rfc1 / 9.4 / B / "a closed writer forgets its error":
   owner: epic 5
   reason: 'the descriptor cache does not keep a writer''s error past its close yet'
@@ -491,7 +492,7 @@ rfc28 / 4.2 / C / "a recovery seal holds no catalog of a range":
   owner: epic 7
   reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
 rfc28 / 4.2 / C / "a mark proves only up to `Through`":
-  tests: [TestRFC1A_SyncMarksNameTheRecordsTheyProve]
+  tests: [TestRFC1A_SyncMarksNameTheRecordsTheyProve, TestRFC28C_AMarkProvesOnlyUpToThrough]
   owner: '#4173'
   reason: 'Sync names its marks now, and the test checks what each one claims: the stream, the segment, the record''s end and its sequence, read against the placed record''s own header. The rest of the row needs the journal-level Stats.SyncMarks and MarksRecorded the marks work still owes [#4173], so a group commit can record one, and the open''s use of a recorded mark -- cutting a scanned tail at `Through`, counting a lost tail, running the reconcile -- which is epic 7''s recovery.'
 rfc28 / 4.2 / C / "a counted range is not counted again":

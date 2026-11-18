@@ -37,6 +37,7 @@ var allowed = map[string][]string{
 	// profiler.
 	module + "pkg/block/journal/journaltest":     {"enginetest", internalTests, wireTests},
 	module + "pkg/block/journal/journaltest/kit": {"enginetest"},
+	module + "pkg/block/journal/journaltest/raw": {wireTests},
 	module + "internal/prof":                     {"enginetest", unitTests, wireTests},
 	module + "pkg/metadata/kv":                   {"enginetest", unitTests, wireTests},
 	module + "pkg/metadata/kv/badgerkv":          {"enginetest", unitTests, wireTests},

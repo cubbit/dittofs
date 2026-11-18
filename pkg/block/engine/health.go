@@ -24,6 +24,20 @@ const conditionJournalLost = "journal_lost"
 // stay unattached until an open succeeds (RFC 8 §2.5).
 const conditionJournalUnsuitable = "journal_unsuitable"
 
+// conditionJournalOpenRefused is the condition RFC 25 §3.9 registers as
+// journal_open_refused: unhealthy, scoped to the journal, paged at 15 min. It
+// is raised for a journal whose open the journal itself refuses at recovery
+// for a cause a retry can clear, a lost synced tail or a range that names no
+// record. Its shares stay unattached and the open is retried every 30 s
+// (RFC 8 §2.5); a record kind the journal cannot build fails Start instead
+// and raises no condition.
+const conditionJournalOpenRefused = "journal_open_refused"
+
+// conditionJournalRangeUnreadable is RFC 25 §3.9's condition for a journal
+// some of whose bytes no bounded read completed: its shares stay unattached
+// and the open is retried (RFC 8 §2.5).
+const conditionJournalRangeUnreadable = "journal_range_unreadable"
+
 // conditionJournalReadOnly is RFC 8 §11.1's condition for a journal turned
 // read-only: it refuses writes and serves reads.
 const conditionJournalReadOnly = "journal_read_only"

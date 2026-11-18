@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +42,10 @@ var (
 // unsuitable storage.
 const unsuitableRetry = 30 * time.Second
 
+// unreadableRetry is the interval of the retried open of a journal refused on
+// an unread range, which waits on a device rather than a probe (RFC 8 §2.5).
+const unreadableRetry = 60 * time.Second
+
 // opened is what start steps 1 and 2 leave for Start to publish: the
 // journal with its version limit, nil when its device was refused; the share
 // table; the shares refused and the conditions raised; and the shards step 2
@@ -52,8 +57,10 @@ type opened struct {
 	stats   Stats
 	raised  []entity.ShardID
 
-	// unsuitable is set when the device's Open refused the directory as
-	// unsuitable: the shares stay unattached and the open is to be retried.
+	// unsuitable is set when the device's Open refused the journal — a
+	// directory the platform profile refuses, or a refusal the journal makes
+	// itself at recovery: the shares stay unattached and the open is to be
+	// retried.
 	unsuitable bool
 
 	// tags is what the store records for each share's tag, read at step 1.
@@ -164,8 +171,9 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 	return o, nil
 }
 
-// retryUnsuitable is the retried open of a journal Start refused as
-// unsuitable, one goroutine for the journal: every unsuitableRetry it runs
+// retryUnsuitable is the retried open of a journal Start refused — as
+// unsuitable, or with the journal's own refusal at recovery — one goroutine
+// for the journal: every retryInterval it runs
 // the start steps again over shares, until the journal attaches or Close
 // cancels it (RFC 8 §2.5). It runs only once Start has published, so a Start
 // that fails leaves none.
@@ -174,7 +182,7 @@ func (e *Engine) retryUnsuitable(shares []Share) {
 
 	for {
 		select {
-		case <-e.d.Clock.After(unsuitableRetry):
+		case <-e.d.Clock.After(e.retryInterval()):
 		case <-e.retrying.ctx.Done():
 			return
 		}
@@ -183,6 +191,22 @@ func (e *Engine) retryUnsuitable(shares []Share) {
 			return
 		}
 	}
+}
+
+// retryInterval is the wait before the next retried open: that of the
+// condition the latest open published, so each retry follows its cause. Any
+// other cause retries at the unsuitable interval.
+func (e *Engine) retryInterval() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for _, c := range e.health.Journals[e.d.Devices[0]].Conditions {
+		if c.Name == conditionJournalRangeUnreadable {
+			return unreadableRetry
+		}
+	}
+
+	return unsuitableRetry
 }
 
 // attachLate is one retried open and, when it succeeds, the late attach: the
@@ -273,6 +297,12 @@ func (e *Engine) retryRefused(o *opened) bool {
 // retryFailed records err, which stopped a retried open or its late attach,
 // as the cause Stats names for the unattached shares and journal_unsuitable
 // carries, and logs it. An error of a context Close cancelled is no cause.
+//
+// decision: only journal_unsuitable's cause is refreshed when a retried open
+// fails at a step rather than a refusal, so journal_open_refused and
+// journal_range_unreadable keep the refusal that armed the retry while each
+// share's Refused names the newer error; refresh them too once anything
+// reads their cause across a failed retry.
 func (e *Engine) retryFailed(ctx context.Context, err error) {
 	if ctx.Err() != nil {
 		return
@@ -355,26 +385,34 @@ func (e *Engine) raiseAtStart(ctx context.Context, o *opened) error {
 
 // refuseDevice answers an Open that failed. A refusal it makes leaves every
 // share on the device unattached and named, with the device and the cause,
-// and Start goes on; a lost journal raises journal_lost, and a directory the
-// platform profile refuses raises journal_unsuitable and is to be retried
-// (RFC 8 §2.5, RFC 1 §3). Any other error fails Start.
+// and Start goes on; a lost journal raises journal_lost, a directory the
+// platform profile refuses raises journal_unsuitable, and a refusal the
+// journal makes itself at recovery — a lost synced tail, a range that names
+// no record, an unreadable range — raises journal_open_refused or
+// journal_range_unreadable, each left to the retried open (RFC 8 §2.5,
+// RFC 1 §3, RFC 28 §4.4). Any other error fails Start.
 //
-// decision: an error a check meets, rather than a refusal it makes, fails
-// Start as any other failing step does, and stops every share of the node.
-// Open returns it as itself (RFC 1 §3), so the engine cannot tell it from an
-// error of recovery, and it gets the answer an I/O error at recovery gets
-// (RFC 8 §2.5). Overturned with the rule for every error at open, once a
-// journal that fails to open at start for any cause but a missing or
-// foreign journal is left closed and retried, as a refused reopen is.
+// decision: an error a check meets, rather than a refusal it makes, still
+// fails Start as any other failing step does, and stops every share of the
+// node. The journal declares its own open refusals — ErrOpenRefused for the
+// recovery rules, ErrUnreadable for bytes no bounded read completed — and
+// those are refused below and retried, told from a check's error by the
+// sentinel they carry; ErrNotImplemented, which an unbuilt operation answers
+// and which is never retried, is no refusal of the open and fails Start as
+// any other error does. Every other error Open returns as itself (RFC 1 §3),
+// the engine cannot tell it from an error of recovery, and it gets the answer
+// an I/O error at recovery gets (RFC 8 §2.5). Overturned with the rule for every
+// error at open, once a journal that fails to open at start for any cause
+// but a missing or foreign journal is left closed and retried, as a refused
+// reopen is.
 //
-// ponytail: an Open that fails on a range of the journal it cannot read
-// fails Start here, where RFC 8 §2.5 leaves only that journal's shares
-// unattached and retries the open every 60 s. The journal names no error for
-// it yet, so it cannot be told from a check's error; the ceiling is one
-// unreadable sector stopping the node. Refuse it, raise
-// journal_range_unreadable and retry the open, as the retried open of an
-// unsuitable journal does, once the journal declares its own error for a
-// range it cannot read.
+// ponytail: withdrawn — the journal declares ErrUnreadable for a range it
+// cannot read, and the open refuses on it below, raising
+// journal_range_unreadable and retried as this marker asked, so the ceiling
+// it named, one unreadable sector stopping the node, is gone. What stays
+// narrow is the condition's detail: the ranges are named in one Detail
+// string, not in a field of their own, until a consumer needs them as
+// values.
 //
 // ponytail: with no journal recorded for the device, an empty directory fails
 // Start as uninitialised and a directory of segments with no format file is
@@ -391,6 +429,26 @@ func (e *Engine) refuseDevice(
 ) (opened, error) {
 	if errors.Is(err, journal.ErrUnsuitableStorage) {
 		o := e.refuse(dir, shares, tags, err, unsuitableCondition(dir, expect, err))
+		o.unsuitable = true
+
+		return o, nil
+	}
+
+	// decision: the refusal branch keys on ErrOpenRefused, the sentinel the
+	// journal declares for the refusals its recovery makes and leaves the
+	// directory standing for, so a retry meets the same answer until the
+	// recovery stops making it. ErrNotImplemented is left to fail Start: an
+	// unbuilt operation is never retried, and retrying it every interval
+	// would claim an answer the journal says no retry changes.
+	if errors.Is(err, journal.ErrOpenRefused) {
+		o := e.refuse(dir, shares, tags, err, openRefusedCondition(dir, expect, err))
+		o.unsuitable = true
+
+		return o, nil
+	}
+
+	if errors.Is(err, journal.ErrUnreadable) {
+		o := e.refuse(dir, shares, tags, err, unreadableCondition(dir, expect, err))
 		o.unsuitable = true
 
 		return o, nil
@@ -437,6 +495,65 @@ func unsuitableCondition(dir string, id journal.JournalID, cause error) *Conditi
 		},
 		Cause:  cause,
 		Detail: fmt.Sprintf("the device's shares are not attached; the open is retried every %v", unsuitableRetry),
+	}
+}
+
+// openRefusedCondition is journal_open_refused for the device dir, whose
+// open the journal itself refused with cause: a recovery rule the open
+// cannot satisfy, retried with the open. A refusal for corrupt losses past
+// the open reserve names the losses and the setting that sizes the reserve,
+// the operator's remedy, read from the error's value.
+func openRefusedCondition(dir string, id journal.JournalID, cause error) *Condition {
+	detail := "the journal refuses its own open at recovery; "
+
+	var past *journal.LostPastReserveError
+	if errors.As(cause, &past) {
+		detail = fmt.Sprintf("the open would defer %d corrupt losses past its reserve, the first against segment %d; "+
+			"raise journal.headroom_records to hold them; ", past.N, past.Seg)
+	}
+
+	return &Condition{
+		Name: conditionJournalOpenRefused,
+		Subject: Subject{
+			Scope: ScopeJournal,
+			ID:    hex.EncodeToString(id[:]),
+			Name:  dir,
+		},
+		Cause:  cause,
+		Detail: detail + "the device's shares are not attached; the open is retried every " + unsuitableRetry.String(),
+	}
+}
+
+// unreadableCondition is journal_range_unreadable for the device dir, whose
+// open the journal refused on bytes no bounded read completed. The ranges
+// are read from the error's value, never from its text.
+func unreadableCondition(dir string, id journal.JournalID, cause error) *Condition {
+	ranges := "no segment ranges the value names"
+
+	var ure *journal.UnreadableRangesError
+	switch {
+	case errors.As(cause, &ure) && ure.Format:
+		// The format file carries no segment ranges: the value names the file.
+		ranges = "the format file is unreadable"
+	case ure != nil && len(ure.Ranges) > 0:
+		parts := make([]string, len(ure.Ranges))
+
+		for i, r := range ure.Ranges {
+			parts[i] = fmt.Sprintf("segment %d at %d for %d bytes", r.Segment, r.Off, r.Len)
+		}
+
+		ranges = strings.Join(parts, ", ")
+	}
+
+	return &Condition{
+		Name: conditionJournalRangeUnreadable,
+		Subject: Subject{
+			Scope: ScopeJournal,
+			ID:    hex.EncodeToString(id[:]),
+			Name:  dir,
+		},
+		Cause:  cause,
+		Detail: fmt.Sprintf("%s; the device's shares are not attached; the open is retried every %v", ranges, unreadableRetry),
 	}
 }
 

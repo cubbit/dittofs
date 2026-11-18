@@ -208,7 +208,7 @@ type fixtureTarget struct {
 	indexed bool
 }
 
-func (x *fixtureTarget) Share(i int) model.Handle { return spareRetry{x.f.Share(i), i, x.rec} }
+func (x *fixtureTarget) Share(i int) model.Handle { return spareRetry{x.f.Share(i), x.f, i, x.rec} }
 
 func (x *fixtureTarget) View(i int) model.View {
 	v := model.HandleView{Handle: x.f.Share(i), Journal: x.f.J}
@@ -310,6 +310,7 @@ type noIndex struct{ model.View }
 // share — passing the call through unchanged.
 type spareRetry struct {
 	*journal.Handle
+	f     *Fixture
 	share int
 	rec   *recorder
 }
@@ -324,7 +325,7 @@ func (h spareRetry) saw(id ...journal.FileID) {
 
 func (h spareRetry) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (v journal.Version, err error) {
 	h.saw(id)
-	err = RetrySpare(func() error { v, err = h.Handle.WriteAt(ctx, id, off, p, mtime); return err })
+	err = h.f.RetrySpare(func() error { v, err = h.Handle.WriteAt(ctx, id, off, p, mtime); return err })
 	return v, err
 }
 
@@ -340,7 +341,7 @@ func (h spareRetry) ReadAt(ctx context.Context, id journal.FileID, off int64, p 
 
 func (h spareRetry) Fill(ctx context.Context, id journal.FileID, off int64, p []byte, asOf, v journal.Version) error {
 	h.saw(id)
-	return RetrySpare(func() error { return h.Handle.Fill(ctx, id, off, p, asOf, v) })
+	return h.f.RetrySpare(func() error { return h.Handle.Fill(ctx, id, off, p, asOf, v) })
 }
 
 func (h spareRetry) Offload(ctx context.Context, id journal.FileID, through journal.Version, limit, widen int64, fn func(ctx context.Context, o journal.Offer, report func(offloaded []journal.Extent) error) error) error {
@@ -350,24 +351,24 @@ func (h spareRetry) Offload(ctx context.Context, id journal.FileID, through jour
 
 func (h spareRetry) Release(ctx context.Context, id journal.FileID, extents []journal.Extent) error {
 	h.saw(id)
-	return RetrySpare(func() error { return h.Handle.Release(ctx, id, extents) })
+	return h.f.RetrySpare(func() error { return h.Handle.Release(ctx, id, extents) })
 }
 
 func (h spareRetry) Truncate(ctx context.Context, id journal.FileID, size int64) (v journal.Version, err error) {
 	h.saw(id)
-	err = RetrySpare(func() error { v, err = h.Handle.Truncate(ctx, id, size); return err })
+	err = h.f.RetrySpare(func() error { v, err = h.Handle.Truncate(ctx, id, size); return err })
 	return v, err
 }
 
 func (h spareRetry) Deallocate(ctx context.Context, id journal.FileID, e journal.Extent) (v journal.Version, err error) {
 	h.saw(id)
-	err = RetrySpare(func() error { v, err = h.Handle.Deallocate(ctx, id, e); return err })
+	err = h.f.RetrySpare(func() error { v, err = h.Handle.Deallocate(ctx, id, e); return err })
 	return v, err
 }
 
 func (h spareRetry) Delete(ctx context.Context, id journal.FileID) (v journal.Version, err error) {
 	h.saw(id)
-	err = RetrySpare(func() error { v, err = h.Handle.Delete(ctx, id); return err })
+	err = h.f.RetrySpare(func() error { v, err = h.Handle.Delete(ctx, id); return err })
 	return v, err
 }
 

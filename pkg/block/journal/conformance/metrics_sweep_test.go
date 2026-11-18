@@ -187,6 +187,10 @@ func TestMetrics_ConditionsMoveTheirMetric(t *testing.T) {
 		f := journaltest.New(t)
 		before, losses, gen := f.J.Stats().Counters, f.J.Stats().Losses, f.J.Stats().LossGeneration
 		loseDirty(t, f, 3)
+		// The stream worker counts the drop with its loss event, after the
+		// read that found it returns, so the counter is read once the event
+		// is out.
+		ev := lastLoss(t, f, journal.Stats{Losses: losses})
 		after := f.J.Stats().Counters
 		if after.CorruptExtentsDataLoss <= before.CorruptExtentsDataLoss {
 			t.Fatalf("a corrupt dirty extent moved CorruptExtentsDataLoss from %d to %d, want it risen", before.CorruptExtentsDataLoss, after.CorruptExtentsDataLoss)
@@ -194,7 +198,6 @@ func TestMetrics_ConditionsMoveTheirMetric(t *testing.T) {
 		if now := f.J.Stats().LossGeneration; now <= gen {
 			t.Fatalf("a corrupt dirty extent left the loss generation at %d, want it above %d: content not yet offloaded was lost", now, gen)
 		}
-		ev := lastLoss(t, f, journal.Stats{Losses: losses})
 		if ev.Reason != journal.LossCorrupt || ev.File != journaltest.File(3) || ev.Extent != ext(0, 4096) {
 			t.Fatalf("the corrupt drop published %+v, want a LossCorrupt event of file %v at %+v", ev, journaltest.File(3), ext(0, 4096))
 		}
@@ -247,9 +250,12 @@ func corruptOutcome(t *testing.T, offloaded bool) (before, after journal.Counter
 		mark(t, h, id, e, v)
 	}
 	syncNow(t, h, id)
-	before = f.J.Stats().Counters
+	stats := f.J.Stats()
 	corrupt(t, f, id, p)
 	_, _, _, _, err := h.ReadAt(t.Context(), id, 0, make([]byte, len(p)))
 	stub(t, "ReadAt", err)
-	return before, f.J.Stats().Counters
+	// The stream worker counts the drop with its loss event, after the read
+	// returns, so the counters are read once the event is out.
+	lastLoss(t, f, stats)
+	return stats.Counters, f.J.Stats().Counters
 }

@@ -35,7 +35,7 @@ func (v modelView) ReadAt(_ context.Context, id journal.FileID, off int64, p []b
 	var held []journal.Held
 	for i := range p {
 		at := off + int64(i)
-		c, ok := st.held[at]
+		c, ok := st.cells()[at]
 		if !ok {
 			if n := len(missing); n > 0 && end(missing[n-1]) == at {
 				missing[n-1].Len++
@@ -85,7 +85,7 @@ func (v modelView) Files() iter.Seq[journal.FileID] {
 	return func(yield func(journal.FileID) bool) {
 		for id, f := range v.m.files {
 			st := v.state(id)
-			if f.tag == v.tag && (len(st.held) > 0 || len(st.markers) > 0) && !yield(id) {
+			if f.tag == v.tag && (st.holds() || len(st.markers) > 0) && !yield(id) {
 				return
 			}
 		}
@@ -96,7 +96,7 @@ func (v modelView) DirtyFiles() iter.Seq2[journal.FileID, time.Time] {
 	return func(yield func(journal.FileID, time.Time) bool) {
 		for id := range v.Files() {
 			st := v.state(id)
-			if slices.ContainsFunc(slices.Collect(maps.Keys(st.held)), func(off int64) bool { return !st.bit[off] }) && !yield(id, time.Time{}) {
+			if slices.ContainsFunc(slices.Collect(maps.Keys(st.cells())), func(off int64) bool { return !st.bits()[off] }) && !yield(id, time.Time{}) {
 				return
 			}
 		}

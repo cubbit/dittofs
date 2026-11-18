@@ -305,6 +305,7 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	if err != nil {
 		return err
 	}
+	st.Proof.ReappendTarget = target
 	// The drawn spares are segments now — sealed targets and failed ones —
 	// so the adoptions they came from answer to no pool wiring later.
 	st.Spares.Adopted = slices.DeleteFunc(st.Spares.Adopted, func(a AdoptedSpare) bool {

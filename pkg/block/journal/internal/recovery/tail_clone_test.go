@@ -163,8 +163,8 @@ func TestClassifyTailsVisitsTheScansByAscendingID(t *testing.T) {
 			Header: format.SegmentHeader{Predecessor: pred}})
 	}
 	_, err := classifyTails(nil, journalID, successorSet(named.Own), nil, []segmentScan{scan(9), scan(4), scan(7)})
-	if !errors.Is(err, core.ErrNotImplemented) {
-		t.Fatalf("classifyTails got err %v, want one wrapping core.ErrNotImplemented", err)
+	if !errors.Is(err, core.ErrOpenRefused) {
+		t.Fatalf("classifyTails got err %v, want one wrapping core.ErrOpenRefused", err)
 	}
 	if want := "segment 4:"; !contains(err.Error(), want) {
 		t.Errorf("classifyTails refused with %q, want it to name the lowest segment (%q)", err.Error(), want)

@@ -99,14 +99,16 @@ func slotRig(t *testing.T, rSync func(slot int64) int64) State {
 	return runUnchanged(t, r, 2)
 }
 
-// runUnchanged runs and checks the segment's bytes are as planted.
+// runUnchanged runs the open and checks what its cut-and-seal phase left of
+// the segment's bytes against the fate it answers with: a segment no cut
+// names stays exactly as planted, and a cut one keeps every byte below its
+// cut and takes after the cut what the fate says — a torn tail's early seal,
+// an ended segment's bare truncation.
 func runUnchanged(t *testing.T, r *rig, id core.SegmentID) State {
 	t.Helper()
 	before := bytes.Clone(r.fileBytes(format.SegmentName(id)))
 	st := runTails(t, r)
-	if !bytes.Equal(before, r.fileBytes(format.SegmentName(id))) {
-		t.Errorf("Run changed segment %d, want the directory unchanged", id)
-	}
+	wantCutLeft(t, r, st, id, before)
 	return st
 }
 
@@ -516,15 +518,23 @@ func TestTheOpenAfterAZeroedNamingSuccessorNamesThePredecessorTruthfully(t *test
 	// record that verified ends, so no acknowledged record is in it.
 	wantFate(t, st2, 1, fateTornTail, cOff+int64(len(c.Bytes())))
 	// W is a zero-header spare again — a candidate that re-adopts clean —
-	// and nothing wrote: the directory is the one the first open left.
+	// and nothing but the predecessor's cut wrote: the rest of the
+	// directory is the one the first open left.
 	if got, want := st2.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}}; !slices.Equal(got, want) {
 		t.Errorf("spares: the re-open's adoptions got %v, want %v", got, want)
 	}
 	for name, was := range before {
+		if name == format.SegmentName(1) {
+			continue // P's own file: its rotted marker cut and sealed below
+		}
 		if got := r.fileBytes(name); !bytes.Equal(got, was) {
 			t.Errorf("the second open changed %s's bytes, want the directory as it stood", name)
 		}
 	}
+	// The re-read of P goes whole: its rotted marker was the tail's first
+	// byte, and the second open cut and sealed there, past the synced
+	// target whose end the floor holds, the catalog its left bytes answer.
+	wantCutLeft(t, r, st2, 1, before[format.SegmentName(1)])
 }
 
 // TestATrailerProvenPredecessorReleasesItsTake plants P with one synced
@@ -579,8 +589,15 @@ func TestATrailerProvenPredecessorReleasesItsTake(t *testing.T) {
 		t.Errorf("spares: the re-open's adoptions got %v, want %v: W is a zero-header spare again, adopting clean", got, want)
 	}
 	for name, was := range before {
+		if name == format.SegmentName(1) {
+			continue // P's own file: its rotted marker cut and sealed below
+		}
 		if got := r.fileBytes(name); !bytes.Equal(got, was) {
 			t.Errorf("the second open changed %s's bytes, want the directory the first open left", name)
 		}
 	}
+	// The re-read of P closes it: the rotted marker its trailer alone stood
+	// behind was the tail's first byte, and the second open cut and sealed
+	// there, the early seal of the record the segment whole held.
+	wantCutLeft(t, r, st2, 1, before[format.SegmentName(1)])
 }

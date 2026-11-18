@@ -205,22 +205,22 @@ func (f *assembledJournal) tryReopen(t *testing.T, floor Version, set func(*Sett
 		MaxBytes:      s.MaxBytes,
 		IdleSealBytes: s.IdleSealBytes,
 	})
-	c, err := datapath.New(deps, state)
-	if err != nil {
-		return nil, err
-	}
-	j := newJournal(c)
 	// A backstop only, the same bound mustWaitSpares takes: the wait itself
 	// is the pool's settle, and a seam that drops what a row's fill needs
 	// must fail the row's own assertion rather than hang it to the runner's
 	// timeout.
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	if err := c.WaitSpares(ctx); err != nil {
-		_ = j.Close()
+	// The seam skips the loss pass — its directories hold no loss records
+	// an open owes — and keeps the rest of the public order: the hook
+	// Continue runs before the retirement worker starts settles the pool.
+	c, err := datapath.Continue(deps, state, func(c *datapath.Core) error {
+		return c.WaitSpares(ctx)
+	})
+	if err != nil {
 		return nil, err
 	}
-	return j, nil
+	return newJournal(c), nil
 }
 
 // crash ends the seam's view under a power loss, so the bytes no sync made
@@ -582,6 +582,13 @@ type reopenFigures struct {
 	// fresh spares its own pool made above every name the crash left, the
 	// storage the reopen allocated itself.
 	freshSegBytes int64
+	// cutFreed is what the reopen's cut-and-seal phase took off the
+	// segment files the crash kept: each torn tail it truncated shrank on
+	// disk, and the reopened ledger accounts the segment at what the file
+	// holds, so the equality of the footprint is the crash's own bytes
+	// less this. An ended cut frees disk while the row keeps its cap, the
+	// set's own contract, and changes nothing the figure reads.
+	cutFreed int64
 }
 
 // figuresOf captures the figures of j for tags, reading each share's file
@@ -662,6 +669,14 @@ func equalityFixture(t *testing.T) (before, after reopenFigures) {
 	mustWaitSpares(t, j)
 	before = figuresOf(t, j, []ShareTag{tagA, tagB})
 	crashFiles := f.segmentFileNames(t)
+	crashSizes := make(map[string]int64, len(crashFiles))
+	for _, name := range crashFiles {
+		fi, err := os.Stat(filepath.Join(f.dir, name))
+		if err != nil {
+			t.Fatalf("stat the crashed segment %s: %v", name, err)
+		}
+		crashSizes[name] = fi.Size()
+	}
 	before.segFiles = len(crashFiles)
 
 	f.crash(t, j)
@@ -669,6 +684,13 @@ func equalityFixture(t *testing.T) (before, after reopenFigures) {
 	after = figuresOf(t, j2, []ShareTag{tagA, tagB})
 	after.segFiles = len(f.segmentFileNames(t))
 	after.freshSegBytes = freshSegBytes(t, f, crashFiles)
+	for name, was := range crashSizes {
+		fi, err := os.Stat(filepath.Join(f.dir, name))
+		if err != nil {
+			t.Fatalf("stat the kept segment %s: %v", name, err)
+		}
+		after.cutFreed += was - fi.Size()
+	}
 	return before, after
 }
 
@@ -769,34 +791,43 @@ func TestReopenAssembled_EqualityOfShareFigures(t *testing.T) {
 // equality: the reopened journal accounts the crash's whole footprint — the
 // same bytes the running journal's own figure named, its pool's spare files
 // and the sealed segments alike, every empty spare-origin segment among the
-// set's entries at the cap it takes on disk — and the only storage its
-// figure names over that is what its own spare pool allocated after the
+// set's entries at the cap it takes on disk — less what its open's
+// cut-and-seal phase freed of the crash's torn tails, and the only storage
+// its figure names over that is what its own spare pool allocated after the
 // reopen: whole fresh spares, made above every file the crash kept, both
 // pools settled.
 func TestReopenAssembled_EqualityOfUsedBytes(t *testing.T) {
 	before, after := equalityFixture(t)
-	want := before.usedBytes + after.freshSegBytes
+	want := before.usedBytes + after.freshSegBytes - after.cutFreed
 	if after.usedBytes != want {
-		t.Fatalf("Stats().UsedBytes after the reopen = %d, want %d: the crash's whole footprint (%d, the running journal's own figure) plus the fresh spares its own pool made (%d): a segment the first journal accounted is not the second's or the seed changed its size",
-			after.usedBytes, want, before.usedBytes, after.freshSegBytes)
+		t.Fatalf("Stats().UsedBytes after the reopen = %d, want %d: the crash's whole footprint (%d, the running journal's own figure) less the cut-and-seal's freed bytes (%d), plus the fresh spares its own pool made (%d): a segment the first journal accounted is not the second's or the seed changed its size",
+			after.usedBytes, want, before.usedBytes, after.cutFreed, after.freshSegBytes)
 	}
 	if after.segments != before.segFiles {
 		t.Fatalf("Stats().Segments after the reopen = %d, want %d: one ledger entry per segment file the crash left, empty spare-origin ones among the loaded segments", after.segments, before.segFiles)
 	}
 }
 
-// plantSealed bytes writes one planted segment sealed, with a write's own
+// plantSealedBytes writes one planted segment sealed, with a write's own
 // records, one catalogue entry per record, the seal marker and the trailer,
-// as the journal's seal writer leaves them. It returns the segment's whole
-// length, the post-seal size the ledger accounts it at.
-func plantSealed(t *testing.T, seam *kit.Seam, id core.SegmentID, recs ...raw.Record) int64 {
+// as the journal's seal writer leaves them, under the identity the caller
+// names. It returns the offsets the records landed at, in the order the
+// records were given.
+func plantSealedAt(t *testing.T, seam *kit.Seam, identity core.JournalID, id core.SegmentID, recs ...raw.Record) []uint32 {
 	t.Helper()
-	b := raw.SegmentHeader{Identity: inspectIdentity, ID: uint64(id)}.Bytes()
-	var entries [][raw.CatalogEntrySize]byte
+	b := raw.SegmentHeader{Identity: identity, ID: uint64(id)}.Bytes()
+	offs := make([]uint32, len(recs))
 	for i := range recs {
-		recs[i].Identity = inspectIdentity
+		recs[i].Identity = identity
 		recs[i].Segment = uint64(id)
 		recs[i].RecordOffset = uint32(len(b))
+		offs[i] = recs[i].RecordOffset
+		b = append(b, recs[i].Bytes()...)
+	}
+	markerOff := len(b)
+	b = append(b, raw.SealMarker{Identity: identity, Segment: uint64(id), Offset: uint64(markerOff)}.Bytes()...)
+	entries := make([][raw.CatalogEntrySize]byte, 0, len(recs))
+	for i := range recs {
 		entries = append(entries, raw.Entry{
 			FileID:       recs[i].FileID,
 			Offset:       recs[i].Offset,
@@ -807,10 +838,7 @@ func plantSealed(t *testing.T, seam *kit.Seam, id core.SegmentID, recs ...raw.Re
 			Kind:         recs[i].Kind,
 			Tag:          recs[i].Tag,
 		}.Bytes())
-		b = append(b, recs[i].Bytes()...)
 	}
-	markerOff := len(b)
-	b = append(b, raw.SealMarker{Identity: inspectIdentity, Segment: uint64(id), Offset: uint64(markerOff)}.Bytes()...)
 	for _, e := range entries {
 		b = append(b, e[:]...)
 	}
@@ -831,6 +859,19 @@ func plantSealed(t *testing.T, seam *kit.Seam, id core.SegmentID, recs ...raw.Re
 	}
 	if err := seam.SyncDir(); err != nil {
 		t.Fatalf("sync the directory after %s: %v", name, err)
+	}
+	return offs
+}
+
+// plantSealed is plantSealedAt over the planted fixture's own identity; it
+// returns the segment's whole length, the post-seal size the ledger
+// accounts it at.
+func plantSealed(t *testing.T, seam *kit.Seam, id core.SegmentID, recs ...raw.Record) int64 {
+	t.Helper()
+	plantSealedAt(t, seam, inspectIdentity, id, recs...)
+	b, err := seam.Durable(format.SegmentName(id))
+	if err != nil {
+		t.Fatalf("read %s back: %v", format.SegmentName(id), err)
 	}
 	return int64(len(b))
 }

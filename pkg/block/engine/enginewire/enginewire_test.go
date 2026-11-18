@@ -3,8 +3,11 @@ package enginewire_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
@@ -90,6 +94,7 @@ type wiring struct {
 	deps  engine.Deps
 	e     *engine.Engine
 	id    journal.JournalID // the journal initialised in the one device
+	dir   string            // the device's journal directory
 }
 
 // composed is Compose over a real store and an initialised journal, its
@@ -124,7 +129,7 @@ func composed(t *testing.T) wiring {
 	if err != nil {
 		t.Fatalf("engine: %v", err)
 	}
-	return wiring{fs: fs, table: table, deps: d, e: e, id: id}
+	return wiring{fs: fs, table: table, deps: d, e: e, id: id, dir: dir}
 }
 
 // node is the node composed builds for.
@@ -210,5 +215,92 @@ func TestStartAndStop(t *testing.T) {
 	}
 	if err := w.table.Recovery().ServeShard(t.Context(), w.fs.Share.ID, w.fs.Share.Shard, 1); !errors.Is(err, openstate.ErrStopped) {
 		t.Errorf("serve a shard after a Start the engine refused: got %v, want ErrStopped", err)
+	}
+}
+
+// plant writes the bytes of segment id into the device's journal directory.
+func (w wiring) plant(t *testing.T, id uint64, b []byte) {
+	t.Helper()
+
+	if err := os.WriteFile(filepath.Join(w.dir, fmt.Sprintf("%020d.seg", id)), b, 0o600); err != nil {
+		t.Fatalf("plant segment %d: %v", id, err)
+	}
+}
+
+// An open that meets a record this journal cannot build, a verifying
+// reconcile record, fails Start: no retry of the open can clear it, so the
+// engine raises no journal_open_refused and arms no retry. An open the
+// journal refuses for a cause a retry can clear, a named predecessor cut
+// short, leaves Start succeeding with journal_open_refused raised and the
+// retry armed.
+func TestStartOverARecoveryRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		plant   func(t *testing.T, w wiring)
+		failed  error // what Start's error must wrap, nil when Start succeeds
+		refused bool  // journal_open_refused is raised, its open retried
+	}{
+		{
+			name: "a verifying reconcile record",
+			plant: func(t *testing.T, w wiring) {
+				b := raw.SegmentHeader{Identity: w.id, ID: 1}.Bytes()
+				b = append(b, raw.Record{
+					Identity: w.id, Segment: 1, Kind: 15, Seq: 100,
+					RecordOffset: uint32(len(b)),
+				}.Bytes()...)
+				w.plant(t, 1, b)
+			},
+			failed: journal.ErrNotImplemented,
+		},
+		{
+			name: "a named predecessor cut short",
+			plant: func(t *testing.T, w wiring) {
+				w.plant(t, 1, make([]byte, 20))
+				w.plant(t, 2, raw.SegmentHeader{Identity: w.id, ID: 2, Predecessor: 1}.Bytes())
+			},
+			refused: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := composed(t)
+			tc.plant(t, w)
+
+			if err := w.fs.Store.RecordJournal(t.Context(), w.id, node, entity.JournalDir(w.dir)); err != nil {
+				t.Fatalf("record the journal: %v", err)
+			}
+
+			share := enginetest.ShareOf(t, w.fs.Store, w.fs.Share.ID, 1<<20)
+			noOrder := func(entity.FileID) func() { return func() {} }
+			err := enginewire.Start(t.Context(), w.table, w.e, &enginetest.Sink{}, noOrder, []engine.Share{share})
+
+			if tc.failed != nil {
+				if !errors.Is(err, tc.failed) {
+					t.Fatalf("Start = %v, want it failed with %v", err, tc.failed)
+				}
+
+				if cs := w.e.Stats().Journals[w.dir].Conditions; len(cs) != 0 {
+					t.Errorf("conditions after a failed Start = %+v, want none: no journal_open_refused, no retry", cs)
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Start = %v, want nil: a refusal a retry can clear does not stop the node", err)
+			}
+
+			t.Cleanup(func() { _ = enginewire.Stop(context.Background(), w.table, w.e) })
+
+			found := false
+
+			for _, c := range w.e.Stats().Journals[w.dir].Conditions {
+				found = found || c.Name == "journal_open_refused"
+			}
+
+			if !found {
+				t.Errorf("journal_open_refused was not raised")
+			}
+
+		})
 	}
 }

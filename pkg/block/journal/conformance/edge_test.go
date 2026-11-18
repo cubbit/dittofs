@@ -1841,7 +1841,10 @@ func TestEdge_WriteLargerThanSegmentRest(t *testing.T) {
 // fixture's 1 MiB segment cap.
 func TestEdge_WriteLargerThanSegment(t *testing.T) {
 	const size = 5 << 19 // 2.5 MiB, above two 1 MiB caps
-	f := journaltest.New(t)
+	// Unwatched: the parent's fixture rides its crash cycles alone, and the
+	// subtest below holds its own watch, which a second one here would
+	// answer dishonestly.
+	f := journaltest.NewUnwatched(t)
 
 	for k := range 2 {
 		h, id := f.Share(k), journaltest.File(k)
@@ -2145,8 +2148,10 @@ func TestEdge_OpenFormatOnly(t *testing.T) {
 	}
 
 	// A lone format.tmp does not block an Init: an interrupted one leaves
-	// nothing acknowledged, and a fresh Init clears it.
-	g := journaltest.New(t)
+	// nothing acknowledged, and a fresh Init clears it. Unwatched: the
+	// fixture serves the refusal shape alone, and a second watch beside the
+	// row's own would answer neither honestly.
+	g := journaltest.NewUnwatched(t)
 	g.Shutdown()
 	emptyDir(t, g)
 	plant(t, g, "format.tmp", (&raw.Format{Version: 1, Identity: g.ID(), Installation: journaltest.FixtureInstall}).Bytes())
@@ -2157,7 +2162,7 @@ func TestEdge_OpenFormatOnly(t *testing.T) {
 
 	// Init on a directory holding one segment file: refused, the directory
 	// untouched, and opening it reports the directory unidentified.
-	third := journaltest.New(t)
+	third := journaltest.NewUnwatched(t)
 	third.Shutdown()
 	emptyDir(t, third)
 	plant(t, third, segmentName(seg), segmentBytes)

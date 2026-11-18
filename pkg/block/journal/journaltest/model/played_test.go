@@ -40,7 +40,7 @@ func offerAll(j *Model, id journal.FileID, through journal.Version) journal.Offe
 		}
 		o.Newest = maxVersion(o.Newest, r.ver)
 		for off := r.ext.Off; off < end(r.ext); off++ {
-			bytes[off] = st.held[off].b
+			bytes[off] = st.cells()[off].b
 		}
 	}
 	o.Offered = bytes
@@ -292,8 +292,8 @@ func (h playedHandle) Release(_ context.Context, id journal.FileID, es []journal
 	err := h.p.refuse(id, h.tag)
 	if err == nil {
 		st := h.p.j.current(id)
-		for off := range st.held {
-			if !st.bit[off] && slices.ContainsFunc(es, func(e journal.Extent) bool { return covers(e, off) }) {
+		for off := range st.cells() {
+			if !st.bits()[off] && slices.ContainsFunc(es, func(e journal.Extent) bool { return covers(e, off) }) {
 				err = journal.ErrNotOffloaded
 				break
 			}

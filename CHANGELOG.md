@@ -102,14 +102,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whole, and is unlinked when it does not. A segment a sync mark names is left
   as it stands, and so is a record-less take whose header names a
   predecessor still on disk, until that predecessor's end is proven.
-  Opening a journal that holds segments still fails with
-  `ErrNotImplemented`, so these spares are not yet handed to the pool.
+  These spares are not yet handed to the pool.
 - **User and group names in the v2 metadata store are case-insensitive.**
   `Alice` and `aLICE` are one name under Unicode simple case folding, found
   under any case and read back as written; a user and a group may still share
   a name. A local name holding `@` is refused, as are uid and gid 0 and 65534,
   which belong to root and anonymous. Deleting a user deletes its NT hash
   along with its password hash.
+
+- **The journal's open cuts and seals a crash's torn tail on the device.**
+  A segment the tear reached is truncated at the offset its last verifying
+  record ends, the truncation is made durable, and the segment is sealed
+  with a catalogue its own surviving bytes answer, so the next open reads
+  no tear and appends behind none. The open also records what the crash
+  corrupted: every corrupt drop and every record a failed window left
+  unrecorded gets a loss record, drawn on a reserve the headroom keeps for
+  the open. An open whose corrupt losses would run past that reserve is
+  refused before any record is appended, for their deferral needs the
+  segment-emptying that is not built; an open whose recovery ends a segment
+  is refused the same way. These refusals answer `ErrOpenRefused`: the
+  engine leaves the device's shares unattached under `journal_open_refused`
+  and retries the open, and a refusal past the reserve names
+  `journal.headroom_records` as the setting to raise.
 
 ## [0.36.0] — 2026-10-19
 

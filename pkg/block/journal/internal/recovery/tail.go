@@ -78,6 +78,11 @@ type tails struct {
 	// Corrupt holds the corrupt drops, ascending by segment, then by the
 	// offset of the record the drop names.
 	Corrupt []corruptRecord
+
+	// TornTails counts the torn tails the cut-and-seal phase truncated, one
+	// per torn-tail fate whose cut it made durable. It is the count the
+	// journal's torn_tails counter reads: set by the seal phase alone.
+	TornTails int
 }
 
 // successorSet is every own segment another own segment names as its
@@ -182,7 +187,7 @@ func classifyTails(rd *reader, identity core.JournalID, named, unverified map[co
 					if nerr := checkNumbers(headerFromEntry(id, e)); nerr != nil {
 						return tails{}, nerr
 					}
-					// A reconcile kind refuses the open on every other path
+					// A reconcile kind fails the open as unbuilt on every other path
 					// too: this journal cannot yet feed one, so a footer
 					// entry naming one is never confined as a corrupt drop.
 					if e.Kind > format.KindForget {
@@ -384,7 +389,7 @@ func unsealByProof(tl *tails, fate *segmentFate, sc *segmentScan, unverified map
 // the reconcile work lands, which withdraws this marker.
 func refuseRange(id core.SegmentID, r format.ScanRange) error {
 	return fmt.Errorf("%w: segment %d: a refused range at [%d,%d) that names no record",
-		core.ErrNotImplemented, id, r.Off, r.End)
+		core.ErrOpenRefused, id, r.Off, r.End)
 }
 
 // refuseMissingEnd is the same refusal for a named predecessor that ends
@@ -412,7 +417,7 @@ func refuseMissingEnd(sc segmentScan) error {
 		start = 0
 	}
 	return fmt.Errorf("%w: segment %d: a named predecessor's missing end at [%d,%d) that names no record",
-		core.ErrNotImplemented, sc.ID, start, sc.Size)
+		core.ErrOpenRefused, sc.ID, start, sc.Size)
 }
 
 // markerAloneRotted reports whether a named predecessor's missing seal marker

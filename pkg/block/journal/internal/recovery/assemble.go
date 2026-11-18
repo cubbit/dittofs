@@ -62,9 +62,11 @@ type Assembled struct {
 // The fates decide a segment's classed state: a torn tail seeds it Active —
 // the one state a seal takes, for the later phase cuts the segment's torn end
 // and seals it, the segment accounted at its cap until the cut — a fate the
-// classing ended seeds it Ended, a scan the seal marker closed seeds it
-// Sealed, and every other scanned segment — fate or no fate — seeds it
-// Active, an empty own segment accounted at its cap beside the loaded ones.
+// open ended seeds it Ended whatever the scan's own seal bit says, for the
+// proof settles fates the scan's bits predate, a scan the seal marker closed
+// and no fate unsettled seeds it Sealed, and every other scanned segment —
+// fate or no fate — seeds it Active, an empty own segment accounted at its
+// cap beside the loaded ones.
 //
 // A read-only journal's failed list is raised above whatever else the disk
 // holds: a number the feed already saw keeps its counter where it was, and
@@ -104,9 +106,9 @@ func runAssemble(_ context.Context, deps Deps, _ *reader, st *State, _ core.Jour
 	// scanned segment is a segment of the journal, records or not, and its
 	// bytes are accounted until it is unlinked. The ids ascend, so a
 	// refusal names the lowest segment the scan could not adopt.
-	ended := make(map[core.SegmentID]bool, len(st.Tails.Fates))
+	kinds := make(map[core.SegmentID]fateKind, len(st.Tails.Fates))
 	for _, f := range st.Tails.Fates {
-		ended[f.ID] = f.Kind == fateEnded
+		kinds[f.ID] = f.Kind
 	}
 	set := segment.NewSet(deps.SegmentCap, deps.Log)
 	scans := slices.Clone(st.Rebuilt.Scans)
@@ -115,6 +117,18 @@ func runAssemble(_ context.Context, deps Deps, _ *reader, st *State, _ core.Jour
 		sc := &scans[i]
 		state, size, full := segment.Active, deps.SegmentCap, false
 		switch {
+		case kinds[sc.ID] == fateEnded, kinds[sc.ID] == fateTornTail:
+			// The fates were amended after the classing built them: the tail's
+			// proof settles each one the scan's own bits predate — a marker that
+			// verified in the cache but not on the device unsealed the segment,
+			// and a failed marker window ended it — so an ended fate seeds its
+			// Ended row and a torn tail its Active one whatever the walk's seal
+			// bit says, for the cut-and-seal phase the seal writer runs for
+			// answers the Active rows alone and the row of an ended segment is
+			// failed, never sealed.
+			if kinds[sc.ID] == fateEnded {
+				state = segment.Ended
+			}
 		case sc.Sealed:
 			state, size = segment.Sealed, sc.Size
 			// A full seal puts its trailer in the cap's last 32 bytes, and
@@ -135,8 +149,6 @@ func runAssemble(_ context.Context, deps Deps, _ *reader, st *State, _ core.Jour
 			// shape a recycle reuses as it stands. Overturned by a fact that
 			// separates the two shapes on the scan's own answer.
 			full = sc.Size == deps.SegmentCap && sc.SealedByCatalog
-		case ended[sc.ID]:
-			state = segment.Ended
 		}
 		tags, over := tagCharges(st.Kinds.Charging[sc.ID])
 		if err := set.AdoptRebuilt(sc.ID, size, state, full, tags, over); err != nil {

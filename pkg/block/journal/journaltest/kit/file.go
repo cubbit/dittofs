@@ -76,7 +76,8 @@ func (sf *seamFile) sync() error {
 		}
 	}
 
-	n.snap, n.undo = img, nil
+	n.setSnap(img)
+	n.undo = nil
 	return nil
 }
 
@@ -147,6 +148,7 @@ func (sf *seamFile) closedErr(op string) error {
 func (sf *seamFile) Name() string { return sf.name }
 
 func (sf *seamFile) ReadAt(p []byte, off int64) (int, error) {
+	defer sf.seam.call()()
 	if _, err := sf.enter(OpRead); err != nil {
 		return 0, err
 	}
@@ -163,6 +165,7 @@ func (sf *seamFile) ReadAt(p []byte, off int64) (int, error) {
 // what is known to have reached it is what a Sync covered. A device may hold
 // more, but a test cannot rely on that, so the seam returns the durable image.
 func (sf *seamFile) ReadAtDirect(p []byte, off int64) (int, error) {
+	defer sf.seam.call()()
 	if _, err := sf.enter(OpReadDirect); err != nil {
 		return 0, err
 	}
@@ -175,7 +178,7 @@ func (sf *seamFile) ReadAtDirect(p []byte, off int64) (int, error) {
 // exist, still has one.
 func (sf *seamFile) durableImage() ([]byte, error) {
 	if sf.node.snap != nil {
-		return slices.Clone(sf.node.snap), nil
+		return sf.node.snapImage(), nil
 	}
 
 	size, err := sf.size()
@@ -216,6 +219,7 @@ func (sf *seamFile) readDurable(p []byte, off int64) (int, error) {
 }
 
 func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
+	defer sf.seam.call()()
 	a, err := sf.enter(OpWrite)
 	if err != nil {
 		return 0, err
@@ -324,6 +328,7 @@ func (sf *seamFile) WriteAt(p []byte, off int64) (int, error) {
 // test components may use the standard library only. A full device is a
 // fault the test injects, not something this call reaches.
 func (sf *seamFile) Allocate(off, n int64) error {
+	defer sf.seam.call()()
 	if _, err := sf.enter(OpAllocate); err != nil {
 		return err
 	}
@@ -350,6 +355,7 @@ func (sf *seamFile) Allocate(off, n int64) error {
 // rule, sim.Lose on the query — is the answer not whole, the shape a
 // cap-sized file whose body a punch holed gives.
 func (sf *seamFile) Allocated() (bool, error) {
+	defer sf.seam.call()()
 	a, err := sf.enter(OpAllocated)
 	if err != nil {
 		return false, err
@@ -363,6 +369,7 @@ func (sf *seamFile) Allocated() (bool, error) {
 }
 
 func (sf *seamFile) Truncate(size int64) error {
+	defer sf.seam.call()()
 	if _, err := sf.enter(OpTruncate); err != nil {
 		return err
 	}
@@ -396,6 +403,7 @@ func (sf *seamFile) Truncate(size int64) error {
 }
 
 func (sf *seamFile) Sync() error {
+	defer sf.seam.call()()
 	a, err := sf.enter(OpSync)
 	if err != nil {
 		return err
@@ -410,6 +418,7 @@ func (sf *seamFile) Sync() error {
 }
 
 func (sf *seamFile) Size() (int64, error) {
+	defer sf.seam.call()()
 	sf.seam.mu.Lock()
 	defer sf.seam.mu.Unlock()
 
@@ -426,6 +435,7 @@ func (sf *seamFile) Size() (int64, error) {
 // frees the descriptor whatever it returns. Keeping the handle would show
 // up as a descriptor leak in the code under test that the seam caused.
 func (sf *seamFile) Close() error {
+	defer sf.seam.call()()
 	_, err := sf.enter(OpClose)
 	if err == nil {
 		defer sf.seam.mu.Unlock()

@@ -735,10 +735,56 @@ func (p *Pool) Counters() PoolCounters {
 //
 // decision: the wait is a test-facing surface only. The journal whose writes
 // are refused for want of a spare answers retry, never waits (RFC 1 §3), so
-// nothing production reaches this. Withdrawn together with a both-ends
-// answer — a Stats that reports the ready spares, or a WriteAt that waits —
-// by whoever needs one; the other end then carries it.
+// no production write reaches this; the open's loss pass waits on
+// WaitRecordSpares instead, for its streams' spares and not this goal. Withdrawn
+// together with a both-ends answer — a Stats that reports the ready spares,
+// or a WriteAt that waits — by whoever needs one; the other end then
+// carries it.
 func (p *Pool) WaitSpares(ctx context.Context) error {
+	return p.wait(ctx, p.readyShortLocked, p.shortAtLocked)
+}
+
+// WaitRecordSpares blocks until the pool holds n spares a header-only
+// record's roll can take — unreserved content spares and headroom ones, the
+// two classes drawSpare tries — and answers as WaitSpares does otherwise: the
+// spare refusal naming LimitSpare and the segments still missing, once the
+// pool stands idle short of n, ErrClosed once it stopped, the context's error
+// once it is done. A count above what the pool ever keeps ready waits for
+// that many instead, so a plan over more streams than spares lands what the
+// spares cover and the next open finds those records named.
+//
+// decision: the open's loss pass waits here rather than for the pool's
+// whole goal, for the records it owes are few header-only ones and one
+// spare per stream they append on holds them: a device near full that
+// makes those spares and no more still opens, where a wait for the goal
+// refused it on every retry. The wait promises the spares are ready when it
+// returns, not that each roll lands — a take racing it can claim one, and
+// the roll's own refusal answers then. Overturned by an open that must
+// append more than a segment of records on one stream before it serves.
+func (p *Pool) WaitRecordSpares(ctx context.Context, n int) error {
+	n = min(n, p.t.Content+p.t.Headroom) // the most the pool ever keeps ready
+	return p.wait(ctx, func() bool { return p.recordShortLocked(n) }, func() int64 {
+		return int64(n - p.recordReadyLocked())
+	})
+}
+
+// recordReadyLocked is the spares a header-only roll can take: the content
+// spares past those the open holds keep for their reservations, and the
+// headroom spares. The caller holds mu.
+func (p *Pool) recordReadyLocked() int {
+	return max(len(p.ready[Content])-p.held, 0) + len(p.ready[Headroom])
+}
+
+// recordShortLocked reports whether the pool holds fewer than n spares a
+// header-only roll can take. The caller holds mu.
+func (p *Pool) recordShortLocked(n int) bool {
+	return p.recordReadyLocked() < n
+}
+
+// wait is the settle-driven wait both public waits run: it parks until short
+// reads false, answering the spare refusal with missing segments once the
+// pool stands idle and short. The caller does not hold mu.
+func (p *Pool) wait(ctx context.Context, short func() bool, missing func() int64) error {
 	p.mu.Lock()
 	switch {
 	case p.stopped:
@@ -784,7 +830,7 @@ func (p *Pool) WaitSpares(ctx context.Context) error {
 			close(answered)
 			return core.ErrClosed
 		}
-		if !p.readyShortLocked() {
+		if !short() {
 			p.mu.Unlock()
 			// A pass that filled while the caller was arriving still counts:
 			// the wait answer is the pool's word, not the caller's timing.
@@ -801,7 +847,7 @@ func (p *Pool) WaitSpares(ctx context.Context) error {
 			// a caller that cannot wait for a refill nothing queued will
 			// run. The next kick refills, and a caller that wants to ride it
 			// calls again.
-			refusal := &core.NoSpaceError{Limit: core.LimitSpare, Missing: max(p.shortAtLocked(), 1), Unit: core.UnitSegments}
+			refusal := &core.NoSpaceError{Limit: core.LimitSpare, Missing: max(missing(), 1), Unit: core.UnitSegments}
 			p.mu.Unlock()
 			close(answered)
 			return refusal

@@ -317,12 +317,13 @@ func TestOpen_SegmentNoFormat_ErrUnidentified_Untouched(t *testing.T) {
 	}
 }
 
-// TestOpen_SecondOpenAfterClose_ErrNotImplemented fails an Open that recovers
-// a journal this implementation cannot yet: a reopen of a directory whose
-// journal has run — even one whose only segments are the spares the spare pool
-// made — is refused with ErrNotImplemented, and the directory is left as it
-// is, since rebuilding its state is a later step.
-func TestOpen_SecondOpenAfterClose_ErrNotImplemented(t *testing.T) {
+// TestOpen_SecondOpenAfterCloseOpens is the journal-level row of the open
+// turned on over a directory holding segments: a journal that has run, closed
+// cleanly, opens again and serves, with every name the run left standing
+// where it left it. The open-losses file holds the readback, version and
+// Sync half over the crash seam; this row pins the same open through the
+// plain operating-system directory the init fixture uses.
+func TestOpen_SecondOpenAfterCloseOpens(t *testing.T) {
 	j, seam, id := initAndOpen(t)
 	if err := j.SetVersionLimit(openLimit); err != nil {
 		t.Fatalf("SetVersionLimit: %v", err)
@@ -331,7 +332,8 @@ func TestOpen_SecondOpenAfterClose_ErrNotImplemented(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Share: %v", err)
 	}
-	writeReady(t, h, fileOf(1), "run")
+	file := fileOf(1)
+	writeReady(t, h, file, "run")
 
 	// Close the handle and the journal, so every file the run touched is
 	// closed and the directory's names are all there is to see. initAndOpen's
@@ -344,28 +346,42 @@ func TestOpen_SecondOpenAfterClose_ErrNotImplemented(t *testing.T) {
 	if err := j.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-
 	names := listOS(t, dirOfSeam(seam))
 	segmentsBefore := countSegments(names)
 	if segmentsBefore == 0 {
 		t.Fatalf("the run left no segment: %v", names)
 	}
 
-	_, err = Open(context.Background(), dirOfSeam(seam), Version{}, id, nil, openOptsDir(seam, kit.NewStopwatchClock())...)
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("a second Open of a journal that has run returned %v, want ErrNotImplemented", err)
+	j2, err := Open(context.Background(), dirOfSeam(seam), Version{}, id, nil, openOptsDir(seam, kit.NewStopwatchClock())...)
+	if err != nil {
+		t.Fatalf("a second Open of a journal that has run: %v, want the open recovered and served", err)
 	}
-	if got := countSegments(listOS(t, dirOfSeam(seam))); got != segmentsBefore {
-		t.Errorf("after the refusal the directory holds %d segment names, want the %d it held", got, segmentsBefore)
+	t.Cleanup(func() {
+		if err := j2.Close(); err != nil && !errors.Is(err, ErrClosed) {
+			t.Errorf("close the reopened journal: %v", err)
+		}
+	})
+	if got := countSegments(listOS(t, dirOfSeam(seam))); got < segmentsBefore {
+		t.Errorf("after the reopen the directory holds %d segment names, want at least the %d it held", got, segmentsBefore)
+	}
+	if err := j2.SetVersionLimit(openLimit); err != nil {
+		t.Fatalf("SetVersionLimit after the reopen: %v", err)
+	}
+	h2, err := j2.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share after the reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = h2.Close() })
+	p := make([]byte, len("run"))
+	n, missing, _, _, err := h2.ReadAt(context.Background(), file, 0, p)
+	if err != nil || n != len(p) || len(missing) != 0 {
+		t.Fatalf("reading the write back after the clean close: n %d, missing %+v, err %v", n, missing, err)
+	}
+	if string(p) != "run" {
+		t.Fatalf("the write read back %q after the reopen, want %q", p, "run")
 	}
 }
 
-// TestOpen_UnsuitableChecksBeforeWrite fails an Open that builds the journal
-// before the platform checks run, or not at all: the check runs before
-// anything is written, and an unsuitable directory is refused with
-// ErrUnsuitableStorage, matching no other refusal, with the directory left as
-// it is. The mount the verdict reads is fed to the real one through the
-// option as an input, so no answer depends on the host's platform.
 func TestOpen_UnsuitableChecksBeforeWrite(t *testing.T) {
 	s := newSeam(t)
 	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
@@ -381,7 +397,7 @@ func TestOpen_UnsuitableChecksBeforeWrite(t *testing.T) {
 	if !strings.Contains(err.Error(), platformtest.ProbeDir(s.dir)) || !strings.Contains(err.Error(), "remount with barriers") {
 		t.Errorf("the refusal %q names neither the directory nor the rule", err)
 	}
-	for _, target := range []error{ErrNoJournal, ErrNotImplemented, ErrIdentityMismatch} {
+	for _, target := range []error{ErrNoJournal, ErrOpenRefused, ErrIdentityMismatch} {
 		if errors.Is(err, target) {
 			t.Errorf("the unsuitable refusal also matches %v, want it matching no other refusal", target)
 		}
@@ -412,7 +428,7 @@ func TestOpen_CheckError_ReturnedAsItself(t *testing.T) {
 	if !errors.Is(err, probe) {
 		t.Fatalf("Open returned %v, want the probe's error as itself", err)
 	}
-	for _, target := range []error{ErrUnsuitableStorage, ErrNoJournal, ErrNotImplemented} {
+	for _, target := range []error{ErrUnsuitableStorage, ErrNoJournal, ErrOpenRefused} {
 		if errors.Is(err, target) {
 			t.Errorf("the probe's error matches %v, want it matching no refusal", target)
 		}

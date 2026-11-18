@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"fmt"
@@ -52,23 +53,159 @@ func (k markerKey) String() string {
 }
 
 // observation is what the journal shows of one file, read once and compared
-// with every state the model allows.
+// with every state the model allows. Each answer is kept as the runs the
+// journal gave, sorted by offset, never one entry per byte.
 type observation struct {
-	held     map[int64]heldByte // held bytes inside the read windows
-	missing  map[int64]bool     // missing bytes inside the read windows
-	extents  map[int64]bool     // bytes Extents names
+	held     []heldSpan // held bytes inside the read windows, disjoint
+	missing  []extent   // missing bytes inside the read windows, disjoint
+	extents  []extent   // bytes Extents names, joined
 	asOf     version
-	since    []sinceView         // what Since yields, from each version read
-	hasIndex bool                // whether the view served the index at all
-	bits     map[int64]indexByte // the index's held bytes
-	idxMark  []markerKey         // the index's markers, with no kind
+	since    []sinceView // what Since yields, from each version read
+	hasIndex bool        // whether the view served the index at all
+	bits     []indexRun  // the index's held bytes, disjoint
+	idxMark  []markerKey // the index's markers, with no kind
+}
+
+// heldSpan is a stretch of held bytes a read served at one version: data
+// holds the bytes, data[i] the one at ext.Off+i.
+type heldSpan struct {
+	ext  extent
+	ver  version
+	data []byte
+}
+
+// indexRun is a held entry of the index.
+type indexRun struct {
+	ext extent
+	b   indexByte
+}
+
+// heldAt returns the byte the reads served at off, and whether they held it.
+func (o *observation) heldAt(off int64) (heldByte, bool) {
+	i, found := slices.BinarySearchFunc(o.held, off, func(h heldSpan, off int64) int {
+		if end(h.ext) <= off {
+			return -1
+		}
+		if h.ext.Off > off {
+			return 1
+		}
+		return 0
+	})
+	if !found {
+		return heldByte{}, false
+	}
+	h := o.held[i]
+	return heldByte{h.data[off-h.ext.Off], h.ver}, true
+}
+
+// missingAt reports whether the reads reported off missing.
+func (o *observation) missingAt(off int64) bool {
+	_, found := slices.BinarySearchFunc(o.missing, off, func(e extent, off int64) int {
+		if end(e) <= off {
+			return -1
+		}
+		if e.Off > off {
+			return 1
+		}
+		return 0
+	})
+	return found
+}
+
+// firstOverlap returns the lowest byte of e that one of es already holds,
+// -1 when none does.
+func firstOverlap(es []extent, e extent) int64 {
+	at := int64(-1)
+	for _, x := range es {
+		if lo := max(x.Off, e.Off); lo < min(end(x), end(e)) && (at < 0 || lo < at) {
+			at = lo
+		}
+	}
+	return at
 }
 
 // sinceView is what Since(id, from) yielded.
 type sinceView struct {
 	from    version
-	writes  map[int64]sinceByte // bytes named as held
+	writes  []sinceRun // extents named as held, sorted by offset, disjoint
 	markers []markerKey
+}
+
+// sinceRun is one write Since named: its extent, version and mtime.
+type sinceRun struct {
+	ext extent
+	b   sinceByte
+}
+
+// piece is a stretch of bytes over which a check says one thing: its problem,
+// "" for none.
+type piece struct {
+	ext     extent
+	problem string
+}
+
+// firstPiece is firstRun over pieces sorted by offset that between them hold
+// every byte the check covers: the first piece with a problem, joined with
+// the pieces right after it that adjoin it and say the same.
+func firstPiece(ps []piece) string {
+	for i, p := range ps {
+		if p.problem == "" {
+			continue
+		}
+		e := p.ext
+		for _, q := range ps[i+1:] {
+			if q.ext.Off != end(e) || q.problem != p.problem {
+				break
+			}
+			e.Len += q.ext.Len
+		}
+		return fmt.Sprintf("bytes %s: %s", fmtExtent(e), p.problem)
+	}
+	return ""
+}
+
+// split cuts each of the sorted, disjoint extents of base at every edge of
+// the sorted, disjoint extents of each layer, and returns the pieces with
+// what say makes of each: the index of the base extent it is cut from and,
+// for each layer, the index of the extent covering it, -1 where none does.
+func split(base []extent, layers [][]extent, say func(p extent, b int, at []int) []piece) []piece {
+	var ps []piece
+	js := make([]int, len(layers))
+	at := make([]int, len(layers))
+	for b, be := range base {
+		for off := be.Off; off < end(be); {
+			hi := end(be)
+			for l, layer := range layers {
+				for js[l] < len(layer) && end(layer[js[l]]) <= off {
+					js[l]++
+				}
+				at[l] = -1
+				if j := js[l]; j < len(layer) {
+					if layer[j].Off <= off {
+						at[l], hi = j, min(hi, end(layer[j]))
+					} else {
+						hi = min(hi, layer[j].Off)
+					}
+				}
+			}
+			ps = append(ps, say(extent{Off: off, Len: hi - off}, b, at)...)
+			off = hi
+		}
+	}
+	return ps
+}
+
+// one is a single piece saying problem over p, for a say that says one thing
+// over all of it.
+func one(p extent, problem string) []piece { return []piece{{p, problem}} }
+
+// extentsOf returns the extents of xs.
+func extentsOf[T any](xs []T, ext func(T) extent) []extent {
+	out := make([]extent, len(xs))
+	for i, x := range xs {
+		out[i] = ext(x)
+	}
+	return out
 }
 
 // sinceFroms returns the versions Compare reads Since from for f: the start,
@@ -142,14 +279,11 @@ func (m *Model) Compare(ctx context.Context, tag shareTag, v View) error {
 			continue
 		}
 		st := derive(f, all)
-		if len(st.held) > 0 || len(st.markers) > 0 {
+		if st.holds() || len(st.markers) > 0 {
 			wantFiles[id] = true
 		}
-		for off := range st.held {
-			if !st.bit[off] {
-				wantDirty[id] = true
-				break
-			}
+		if st.dirty() {
+			wantDirty[id] = true
 		}
 	}
 	gotFiles, gotDirty := map[fileID]bool{}, map[fileID]bool{}
@@ -264,25 +398,16 @@ func (m *Model) issuedAbove(f *file, c candidate) string {
 // wider on each side, so a held byte, a missing byte and a widened missing
 // extent are all seen. It fails on answers that no state could explain.
 func observe(ctx context.Context, f *file, v View, froms []version) (*observation, error) {
-	o := &observation{
-		held: map[int64]heldByte{}, missing: map[int64]bool{}, extents: map[int64]bool{},
-		bits: map[int64]indexByte{},
-	}
+	o := &observation{}
 
 	es, err := v.Extents(f.id)
 	if err != nil {
 		return nil, fmt.Errorf("Extents: %w", err)
 	}
-	var windows []extent
-	for _, e := range es {
-		if e.Len <= 0 || e.Len > maxObserved || len(o.extents)+int(e.Len) > maxObserved {
-			return nil, fmt.Errorf("Extents names %s", fmtExtent(e))
-		}
-		for off := e.Off; off < end(e); off++ {
-			o.extents[off] = true
-		}
-		windows = append(windows, e)
+	if err := o.addExtents(es); err != nil {
+		return nil, err
 	}
+	windows := slices.Clone(es)
 	for _, r := range f.recs {
 		if r.data != nil {
 			windows = append(windows, r.ext)
@@ -307,36 +432,12 @@ func observe(ctx context.Context, f *file, v View, froms []version) (*observatio
 		if !read {
 			o.asOf, read = asOf, true
 		}
-		for _, h := range held {
-			piece, ok := intersect(h.Extent, w)
-			if !ok || piece != h.Extent {
-				return nil, fmt.Errorf("ReadAt %s reports %s held, outside the read", fmtExtent(w), fmtExtent(h.Extent))
-			}
-			for off := piece.Off; off < end(piece); off++ {
-				if _, dup := o.held[off]; dup {
-					return nil, fmt.Errorf("ReadAt %s reports byte %d held twice", fmtExtent(w), off)
-				}
-				o.held[off] = heldByte{p[off-w.Off], h.Version}
-			}
-		}
-		for _, e := range missing {
-			piece, ok := intersect(e, w)
-			if !ok || piece != e {
-				return nil, fmt.Errorf("ReadAt %s reports %s missing, outside the read", fmtExtent(w), fmtExtent(e))
-			}
-			for off := piece.Off; off < end(piece); off++ {
-				if _, dup := o.held[off]; dup || o.missing[off] {
-					return nil, fmt.Errorf("ReadAt %s reports byte %d both held and missing, or missing twice", fmtExtent(w), off)
-				}
-				o.missing[off] = true
-			}
-		}
-		for off := w.Off; off < end(w); off++ {
-			if _, ok := o.held[off]; !ok && !o.missing[off] {
-				return nil, fmt.Errorf("ReadAt %s reports byte %d neither held nor missing: missing must be exact", fmtExtent(w), off)
-			}
+		if err := o.addRead(w, p, missing, held); err != nil {
+			return nil, err
 		}
 	}
+	slices.SortFunc(o.held, func(a, b heldSpan) int { return cmp.Compare(a.ext.Off, b.ext.Off) })
+	slices.SortFunc(o.missing, func(a, b extent) int { return cmp.Compare(a.Off, b.Off) })
 
 	for _, from := range froms {
 		sv, err := readSince(ctx, f.id, v, from)
@@ -358,29 +459,105 @@ func observe(ctx context.Context, f *file, v View, froms []version) (*observatio
 		return nil, fmt.Errorf("Index: %w", err)
 	}
 	o.hasIndex = true
-	for _, e := range entries {
-		switch e.Kind {
-		case journal.EntryHeld:
-			if e.Extent.Len <= 0 || e.Extent.Len > maxObserved || len(o.bits)+int(e.Extent.Len) > maxObserved {
-				return nil, fmt.Errorf("Index names %s held", fmtExtent(e.Extent))
-			}
-			for off := e.Extent.Off; off < end(e.Extent); off++ {
-				if _, dup := o.bits[off]; dup {
-					return nil, fmt.Errorf("Index holds byte %d twice", off)
-				}
-				o.bits[off] = indexByte{e.Version, e.Offloaded}
-			}
-		case journal.EntryMarker:
-			o.idxMark = append(o.idxMark, markerKey{0, e.Extent, e.Version})
-		}
+	if err := o.addIndex(entries); err != nil {
+		return nil, err
 	}
 	return o, nil
 }
 
+// addExtents takes what Extents answered, failing on an extent that is empty
+// or would take the bytes named past maxObserved.
+func (o *observation) addExtents(es []extent) error {
+	var named int64 // the bytes the extents so far name, counted once each
+	for _, e := range es {
+		if e.Len <= 0 || e.Len > maxObserved || named+e.Len > maxObserved {
+			return fmt.Errorf("Extents names %s", fmtExtent(e))
+		}
+		o.extents = merge(append(o.extents, e))
+		named = 0
+		for _, x := range o.extents {
+			named += x.Len
+		}
+	}
+	return nil
+}
+
+// addRead takes what a read of window w answered: p the bytes, missing and
+// held the extents it named. It fails on an extent outside w, a byte named
+// twice, and a byte of w named neither held nor missing.
+func (o *observation) addRead(w extent, p []byte, missing []extent, held []journal.Held) error {
+	heldExts := extentsOf(o.held, func(h heldSpan) extent { return h.ext })
+	for _, h := range held {
+		piece, ok := intersect(h.Extent, w)
+		if !ok || piece != h.Extent {
+			return fmt.Errorf("ReadAt %s reports %s held, outside the read", fmtExtent(w), fmtExtent(h.Extent))
+		}
+		if dup := firstOverlap(heldExts, piece); dup >= 0 {
+			return fmt.Errorf("ReadAt %s reports byte %d held twice", fmtExtent(w), dup)
+		}
+		heldExts = append(heldExts, piece)
+		o.held = append(o.held, heldSpan{piece, h.Version, p[piece.Off-w.Off : end(piece)-w.Off]})
+	}
+	for _, e := range missing {
+		piece, ok := intersect(e, w)
+		if !ok || piece != e {
+			return fmt.Errorf("ReadAt %s reports %s missing, outside the read", fmtExtent(w), fmtExtent(e))
+		}
+		dup := firstOverlap(heldExts, piece)
+		if m := firstOverlap(o.missing, piece); m >= 0 && (dup < 0 || m < dup) {
+			dup = m
+		}
+		if dup >= 0 {
+			return fmt.Errorf("ReadAt %s reports byte %d both held and missing, or missing twice", fmtExtent(w), dup)
+		}
+		o.missing = append(o.missing, piece)
+	}
+	at := w.Off
+	for _, e := range merge(append(heldExts, o.missing...)) {
+		if end(e) <= at {
+			continue
+		}
+		if e.Off > at {
+			break
+		}
+		at = end(e)
+	}
+	if at < end(w) {
+		return fmt.Errorf("ReadAt %s reports byte %d neither held nor missing: missing must be exact", fmtExtent(w), at)
+	}
+	return nil
+}
+
+// addIndex takes the index's entries, failing on a held entry that is empty,
+// would take the bytes named past maxObserved, or names a byte twice.
+func (o *observation) addIndex(entries []journal.IndexEntry) error {
+	var named int64
+	var exts []extent
+	for _, e := range entries {
+		switch e.Kind {
+		case journal.EntryHeld:
+			if e.Extent.Len <= 0 || e.Extent.Len > maxObserved || named+e.Extent.Len > maxObserved {
+				return fmt.Errorf("Index names %s held", fmtExtent(e.Extent))
+			}
+			if dup := firstOverlap(exts, e.Extent); dup >= 0 {
+				return fmt.Errorf("Index holds byte %d twice", dup)
+			}
+			named += e.Extent.Len
+			exts = append(exts, e.Extent)
+			o.bits = append(o.bits, indexRun{e.Extent, indexByte{e.Version, e.Offloaded}})
+		case journal.EntryMarker:
+			o.idxMark = append(o.idxMark, markerKey{0, e.Extent, e.Version})
+		}
+	}
+	slices.SortFunc(o.bits, func(a, b indexRun) int { return cmp.Compare(a.ext.Off, b.ext.Off) })
+	return nil
+}
+
 // readSince reads Since(id, from) through v.
 func readSince(ctx context.Context, id fileID, v View, from version) (sinceView, error) {
-	sv := sinceView{from: from, writes: map[int64]sinceByte{}}
+	sv := sinceView{from: from}
 	var last version
+	var named int64 // bytes the writes so far name, none twice
 	for c, err := range v.Since(ctx, id, from) {
 		if err != nil {
 			return sv, fmt.Errorf("Since from %s: %w", fmtVersion(from), err)
@@ -391,21 +568,28 @@ func readSince(ctx context.Context, id fileID, v View, from version) (sinceView,
 		last = c.Version
 		switch c.Kind {
 		case journal.ChangeWrite:
-			if c.Extent.Len <= 0 || c.Extent.Len > maxObserved || len(sv.writes)+int(c.Extent.Len) > maxObserved {
+			if c.Extent.Len <= 0 || c.Extent.Len > maxObserved || named+c.Extent.Len > maxObserved {
 				return sv, fmt.Errorf("Since from %s names %s", fmtVersion(from), fmtExtent(c.Extent))
 			}
-			for off := c.Extent.Off; off < end(c.Extent); off++ {
-				if _, dup := sv.writes[off]; dup {
-					return sv, fmt.Errorf("Since from %s names byte %d held twice", fmtVersion(from), off)
+			// The first byte of this write an earlier one named, if any.
+			dup := int64(-1)
+			for _, w := range sv.writes {
+				if lo := max(w.ext.Off, c.Extent.Off); lo < min(end(w.ext), end(c.Extent)) && (dup < 0 || lo < dup) {
+					dup = lo
 				}
-				sv.writes[off] = sinceByte{c.Version, c.Mtime}
 			}
+			if dup >= 0 {
+				return sv, fmt.Errorf("Since from %s names byte %d held twice", fmtVersion(from), dup)
+			}
+			named += c.Extent.Len
+			sv.writes = append(sv.writes, sinceRun{c.Extent, sinceByte{c.Version, c.Mtime}})
 		case journal.ChangeTruncate, journal.ChangeDeallocate, journal.ChangeDelete:
 			sv.markers = append(sv.markers, markerKey{c.Kind, c.Extent, c.Version})
 		default:
 			return sv, fmt.Errorf("Since from %s yields a change of kind %d, which the model never makes", fmtVersion(from), c.Kind)
 		}
 	}
+	slices.SortFunc(sv.writes, func(a, b sinceRun) int { return cmp.Compare(a.ext.Off, b.ext.Off) })
 	return sv, nil
 }
 
@@ -431,39 +615,65 @@ func merge(es []extent) []extent {
 // names the bytes, as the run of them that differ the same way, and the rule
 // the journal broke where one is.
 func differ(o *observation, st *fileState, ceiling version) string {
-	offs := slices.Sorted(maps.Keys(st.held))
-	if d := firstRun(offs, func(off int64) string {
-		c := st.held[off]
-		switch got, ok := o.held[off]; {
-		case !ok && c.rec.durable && c.rec.kind == kindWrite:
-			return fmt.Sprintf("held by %s, but the journal reports them missing: a synced write was lost", heldBy(c))
-		case !ok:
-			return fmt.Sprintf("held by %s, but the journal reports them missing", heldBy(c))
-		case got.ver != c.rec.ver:
-			return fmt.Sprintf("held by %s, but the journal serves them at %s", heldBy(c), fmtVersion(got.ver))
-		case got.b != c.b:
-			return fmt.Sprintf("held by %s, but the journal serves other bytes there", heldBy(c))
-		case !o.extents[off]:
-			return "held, but Extents omits them"
+	spans := extentsOf(st.spans, func(h heldRun) extent { return h.ext })
+	served := extentsOf(o.held, func(h heldSpan) extent { return h.ext })
+	indexed := extentsOf(o.bits, func(r indexRun) extent { return r.ext })
+
+	if d := firstPiece(split(spans, [][]extent{served, o.extents}, func(p extent, b int, at []int) []piece {
+		c := st.spans[b].rec
+		cl := cell{rec: c}
+		switch {
+		case at[0] < 0 && c.durable && c.kind == kindWrite:
+			return one(p, fmt.Sprintf("held by %s, but the journal reports them missing: a synced write was lost", heldBy(cl)))
+		case at[0] < 0:
+			return one(p, fmt.Sprintf("held by %s, but the journal reports them missing", heldBy(cl)))
+		case o.held[at[0]].ver != c.ver:
+			return one(p, fmt.Sprintf("held by %s, but the journal serves them at %s", heldBy(cl), fmtVersion(o.held[at[0]].ver)))
 		}
-		return ""
-	}); d != "" {
+		rest := ""
+		if at[1] < 0 {
+			rest = "held, but Extents omits them"
+		}
+		h := o.held[at[0]]
+		got := h.data[p.Off-h.ext.Off : end(p)-h.ext.Off]
+		want := c.data[p.Off-c.ext.Off : end(p)-c.ext.Off]
+		if bytes.Equal(got, want) {
+			return one(p, rest)
+		}
+		// The bytes differ only here and there: each stretch of them says
+		// one thing, other bytes or what the extents say.
+		other := fmt.Sprintf("held by %s, but the journal serves other bytes there", heldBy(cl))
+		var ps []piece
+		for i := 0; i < len(got); {
+			j, differs := i+1, got[i] != want[i]
+			for j < len(got) && (got[j] != want[j]) == differs {
+				j++
+			}
+			say := rest
+			if differs {
+				say = other
+			}
+			ps = append(ps, piece{extent{Off: p.Off + int64(i), Len: int64(j - i)}, say})
+			i = j
+		}
+		return ps
+	})); d != "" {
 		return d
 	}
-	if d := firstRun(slices.Sorted(maps.Keys(o.held)), func(off int64) string {
-		if _, ok := st.held[off]; !ok {
-			return fmt.Sprintf("served at %s, but the model holds nothing there: removed, released or never written", fmtVersion(o.held[off].ver))
+	if d := firstPiece(split(served, [][]extent{spans}, func(p extent, b int, at []int) []piece {
+		if at[0] < 0 {
+			return one(p, fmt.Sprintf("served at %s, but the model holds nothing there: removed, released or never written", fmtVersion(o.held[b].ver)))
 		}
-		return ""
-	}); d != "" {
+		return one(p, "")
+	})); d != "" {
 		return d
 	}
-	if d := firstRun(slices.Sorted(maps.Keys(o.extents)), func(off int64) string {
-		if _, ok := st.held[off]; !ok {
-			return "named by Extents, but the model holds nothing there"
+	if d := firstPiece(split(o.extents, [][]extent{spans}, func(p extent, _ int, at []int) []piece {
+		if at[0] < 0 {
+			return one(p, "named by Extents, but the model holds nothing there")
 		}
-		return ""
-	}); d != "" {
+		return one(p, "")
+	})); d != "" {
 		return d
 	}
 
@@ -474,7 +684,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 	// up to its bucket until it next changes, so that no read begun before
 	// the reopen can still fill. Require equality after a reopen if the RFC
 	// ever rebuilds an entry from its records alone.
-	entry := len(st.held) > 0 || len(st.markers) > 0
+	entry := st.holds() || len(st.markers) > 0
 	switch {
 	case entry && st.change != (version{}) && !st.inexact && o.asOf != st.change:
 		return fmt.Sprintf("a read reports the file changed at %s, but its newest change is %s: a file with an index entry reports its change version", fmtVersion(o.asOf), fmtVersion(st.change))
@@ -485,7 +695,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 	}
 
 	for _, sv := range o.since {
-		if d := sinceDiffers(sv, st, offs); d != "" {
+		if d := sinceDiffers(sv, spans, st); d != "" {
 			return d
 		}
 	}
@@ -504,68 +714,73 @@ func differ(o *observation, st *fileState, ceiling version) string {
 		return d
 	}
 
-	if d := firstRun(offs, func(off int64) string {
-		got, ok := o.bits[off]
-		want := st.held[off]
-		switch {
-		case !ok:
-			return "held, but the index has no held entry for them"
-		case got.ver != want.rec.ver:
-			return fmt.Sprintf("held at %s, but the index names %s", fmtVersion(want.rec.ver), fmtVersion(got.ver))
-		case got.offloaded && !st.bit[off]:
-			return fmt.Sprintf("dirty at %s, but the index marks them offloaded: a release would evict the only copy", fmtVersion(want.rec.ver))
-		case !got.offloaded && st.bit[off]:
-			return fmt.Sprintf("offloaded at %s, but the index marks them dirty", fmtVersion(want.rec.ver))
+	if d := firstPiece(split(spans, [][]extent{indexed, st.offloaded}, func(p extent, b int, at []int) []piece {
+		want, bit := st.spans[b].rec.ver, at[1] >= 0
+		if at[0] < 0 {
+			return one(p, "held, but the index has no held entry for them")
 		}
-		return ""
-	}); d != "" {
+		switch got := o.bits[at[0]].b; {
+		case got.ver != want:
+			return one(p, fmt.Sprintf("held at %s, but the index names %s", fmtVersion(want), fmtVersion(got.ver)))
+		case got.offloaded && !bit:
+			return one(p, fmt.Sprintf("dirty at %s, but the index marks them offloaded: a release would evict the only copy", fmtVersion(want)))
+		case !got.offloaded && bit:
+			return one(p, fmt.Sprintf("offloaded at %s, but the index marks them dirty", fmtVersion(want)))
+		}
+		return one(p, "")
+	})); d != "" {
 		return d
 	}
-	return firstRun(slices.Sorted(maps.Keys(o.bits)), func(off int64) string {
-		if _, ok := st.held[off]; !ok {
-			return "named held by the index, but the model holds nothing there"
+	return firstPiece(split(indexed, [][]extent{spans}, func(p extent, _ int, at []int) []piece {
+		if at[0] < 0 {
+			return one(p, "named held by the index, but the model holds nothing there")
 		}
-		return ""
-	})
+		return one(p, "")
+	}))
 }
 
 // sinceDiffers returns how what Since yielded from sv.from differs from st:
 // every held byte above from as a write, with its version and mtime, and every
-// live marker above from.
-func sinceDiffers(sv sinceView, st *fileState, offs []int64) string {
+// live marker above from. held is the extents of st's runs. Each byte says
+// the same as every other byte of its run and of the Since write naming it,
+// so the comparison runs over those pieces rather than byte by byte.
+func sinceDiffers(sv sinceView, held []extent, st *fileState) string {
 	from := fmtVersion(sv.from)
-	want := func(off int64) (sinceByte, bool) {
-		c := st.held[off]
-		if c.rec.ver.Compare(sv.from) <= 0 {
+	want := func(r *record) (sinceByte, bool) {
+		if r.ver.Compare(sv.from) <= 0 {
 			return sinceByte{}, false
 		}
-		w := sinceByte{ver: c.rec.ver}
-		if c.rec.kind == kindWrite {
-			w.mtime = c.rec.mtime
+		w := sinceByte{ver: r.ver}
+		if r.kind == kindWrite {
+			w.mtime = r.mtime
 		}
 		return w, true
 	}
-	if d := firstRun(offs, func(off int64) string {
-		w, ok := want(off)
-		got, named := sv.writes[off]
-		switch {
-		case ok && !named:
-			return fmt.Sprintf("held at %s, but Since from %s omits them", fmtVersion(w.ver), from)
-		case !ok && named:
-			return fmt.Sprintf("held at or below %s, but Since from %s names them at %s", from, from, fmtVersion(got.ver))
-		case ok && got != w:
-			return fmt.Sprintf("written at %s with mtime %d, but Since from %s names them at %s with mtime %d", fmtVersion(w.ver), w.mtime, from, fmtVersion(got.ver), got.mtime)
+	named := extentsOf(sv.writes, func(w sinceRun) extent { return w.ext })
+	if d := firstPiece(split(held, [][]extent{named}, func(p extent, b int, at []int) []piece {
+		w, ok := want(st.spans[b].rec)
+		var got sinceByte
+		if at[0] >= 0 {
+			got = sv.writes[at[0]].b
 		}
-		return ""
-	}); d != "" {
+		switch {
+		case ok && at[0] < 0:
+			return one(p, fmt.Sprintf("held at %s, but Since from %s omits them", fmtVersion(w.ver), from))
+		case !ok && at[0] >= 0:
+			return one(p, fmt.Sprintf("held at or below %s, but Since from %s names them at %s", from, from, fmtVersion(got.ver)))
+		case ok && got != w:
+			return one(p, fmt.Sprintf("written at %s with mtime %d, but Since from %s names them at %s with mtime %d", fmtVersion(w.ver), w.mtime, from, fmtVersion(got.ver), got.mtime))
+		}
+		return one(p, "")
+	})); d != "" {
 		return d
 	}
-	if d := firstRun(slices.Sorted(maps.Keys(sv.writes)), func(off int64) string {
-		if _, ok := st.held[off]; !ok {
-			return fmt.Sprintf("named held by Since from %s, but the model holds nothing there", from)
+	if d := firstPiece(split(named, [][]extent{held}, func(p extent, _ int, at []int) []piece {
+		if at[0] < 0 {
+			return one(p, fmt.Sprintf("named held by Since from %s, but the model holds nothing there", from))
 		}
-		return ""
-	}); d != "" {
+		return one(p, "")
+	})); d != "" {
 		return d
 	}
 
@@ -576,6 +791,25 @@ func sinceDiffers(sv sinceView, st *fileState, offs []int64) string {
 		}
 	}
 	return markersDiffer("Since from "+from, sv.markers, markers)
+}
+
+// firstRunIn is firstRun over the keys of m in order. It sorts the keys only
+// once a first pass over them in any order finds a problem, so the common
+// answer, no problem anywhere, costs no sort of a byte-keyed map.
+func firstRunIn[V any](m map[int64]V, problem func(int64) string) string {
+	clean := true
+	for off := range m {
+		if problem(off) != "" {
+			clean = false
+			break
+		}
+	}
+
+	if clean {
+		return ""
+	}
+
+	return firstRun(slices.Sorted(maps.Keys(m)), problem)
 }
 
 // firstRun returns the first of offs for which problem says something, with

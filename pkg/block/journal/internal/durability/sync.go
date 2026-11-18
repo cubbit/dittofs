@@ -364,12 +364,6 @@ type Durability struct {
 	// no lock held after each pass's step over the held segments.
 	afterHolds func()
 
-	// deferredLosses holds, per segment, the losses Lose deferred against
-	// it — one entry per deferred piece it took, the entry the copy that
-	// retires the segment builds its loss record from. An entry leaves on
-	// EndDeferral alone. Guarded by lmu.
-	deferredLosses map[core.SegmentID][]Loss
-
 	// resolved is Config.Resolved: the announcement of a resolved window.
 	resolved func(stream uint32, seg core.SegmentID)
 
@@ -497,7 +491,6 @@ func New(cfg Config) (*Durability, error) {
 		account:        cfg.Account,
 		lossRegistered: cfg.LossRegistered,
 		emptied:        cfg.Emptied,
-		deferredLosses: map[core.SegmentID][]Loss{},
 	}
 	d.refuse = d.Admit
 	d.readOnly = d.Enter

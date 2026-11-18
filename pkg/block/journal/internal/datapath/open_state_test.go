@@ -2,6 +2,7 @@ package datapath
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,7 +210,9 @@ func openedCore(t *testing.T) *Core {
 		t.Fatalf("open fixture: the rebuild collected %d release records into the open's live list, want the one planted in %d", releases, openReleaseSeg)
 	}
 
-	c, err := New(Deps{
+	// This fixture's rebuild owes no loss records, so the hook Continue runs
+	// before the retirement worker starts has nothing to land.
+	c, err := Continue(Deps{
 		FS:          seam.FS(),
 		Clock:       kit.NewStopwatchClock(),
 		Dir:         dir,
@@ -237,9 +240,9 @@ func openedCore(t *testing.T) *Core {
 				Dirty: index.BecameDirty,
 			}},
 		},
-	})
+	}, func(*Core) error { return nil })
 	if err != nil {
-		t.Fatalf("New over the rebuilt state: %v", err)
+		t.Fatalf("Continue over the rebuilt state: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := c.Close(); err != nil {
@@ -309,5 +312,76 @@ func TestTheOpenStartsTheRetirementWorkerOfAContinuedSet(t *testing.T) {
 	}
 	if got := c.set.Counters().DoubleRetires; got != 0 {
 		t.Errorf("DoubleRetires after the open's retirements = %d, want 0: one claim per rebuilt segment", got)
+	}
+}
+
+// TestContinueRefusesASetWithNoOpenPayload holds Continue's credential: a set
+// that carried no open payload registered nothing with the liveness tracker,
+// so Continue refuses it before the hook runs and returns no core.
+func TestContinueRefusesASetWithNoOpenPayload(t *testing.T) {
+	dir := t.TempDir()
+	seam, err := kit.NewSeam(dir)
+	if err != nil {
+		t.Fatalf("the seam could not be made: %v", err)
+	}
+	ran := false
+	c, err := Continue(Deps{
+		FS:          seam.FS(),
+		Clock:       kit.NewStopwatchClock(),
+		Dir:         dir,
+		Identity:    testIdentity,
+		Streams:     testStreams,
+		SegmentCap:  testSegmentCap,
+		ExtentLimit: 1 << 20,
+		Descriptors: core.NewDescriptorBudget(64),
+		Targets:     segment.Targets{Content: 2 * testStreams},
+	}, State{}, func(*Core) error { ran = true; return nil })
+	if err == nil || c != nil {
+		if c != nil {
+			_ = c.Close()
+		}
+		t.Fatalf("Continue over a fresh set returned a core %t, err %v; want no core and the refusal", c != nil, err)
+	}
+	if ran {
+		t.Errorf("Continue ran the hook over a set it refused, want it refused before the hook")
+	}
+}
+
+// TestNewRefusesACallerSuppliedSet holds New's half of the one-door rule: a
+// State carrying a set or an open payload is refused with an error naming
+// Continue, so no core New returns runs over a set without its retirement
+// worker.
+func TestNewRefusesACallerSuppliedSet(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state State
+	}{
+		{name: "a caller's set", state: State{Set: segment.NewSet(testSegmentCap, nil)}},
+		{name: "an open payload", state: State{Open: &OpenState{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			seam, err := kit.NewSeam(dir)
+			if err != nil {
+				t.Fatalf("the seam could not be made: %v", err)
+			}
+			c, err := New(Deps{
+				FS:          seam.FS(),
+				Clock:       kit.NewStopwatchClock(),
+				Dir:         dir,
+				Identity:    testIdentity,
+				Streams:     testStreams,
+				SegmentCap:  testSegmentCap,
+				ExtentLimit: 1 << 20,
+				Descriptors: core.NewDescriptorBudget(64),
+				Targets:     segment.Targets{Content: 2 * testStreams},
+			}, tc.state)
+			if c != nil {
+				_ = c.Close()
+			}
+			if err == nil || c != nil || !strings.Contains(err.Error(), "Continue") {
+				t.Fatalf("New over %s returned a core %t, err %v; want no core and a refusal naming Continue", tc.name, c != nil, err)
+			}
+		})
 	}
 }

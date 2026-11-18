@@ -46,7 +46,7 @@ func heldBytes(t *testing.T, m *Model, id journal.FileID, off, n int64) []byte {
 	st := m.current(id)
 	out := make([]byte, n)
 	for i := range n {
-		c, ok := st.held[off+i]
+		c, ok := st.cells()[off+i]
 		if !ok {
 			t.Fatalf("byte %d is not held", off+i)
 		}

@@ -279,9 +279,9 @@ func TestSpareCandidatesNeverHasASuccessorsPredecessor(t *testing.T) {
 // sync proof covers — so the tail's classing judges it, corrupt — and whose
 // body failed while its header did verify. A record header verifies in the
 // segment, so it is no spare whatever the body did: re-adopting it would zero
-// the header evidence of a synced record. It is not a candidate and Run
-// leaves its bytes exactly as planted, on disk and reported as the classing's
-// corrupt drop.
+// the header evidence of a synced record. It is not a candidate, the spares
+// phase touches nothing of it, and Run reports it as the classing's corrupt
+// drop — the cut-and-seal phase takes its tail past the synced drop's end.
 func TestSpareCandidatesNeverHasASyncedCloneTargetWithAFailedBody(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
@@ -299,9 +299,11 @@ func TestSpareCandidatesNeverHasASyncedCloneTargetWithAFailedBody(t *testing.T) 
 	if len(st.Spares.Adopted) != 0 || len(st.Spares.Unlinked) != 0 {
 		t.Errorf("spares: the segment whose record header verified got adopted %v and unlinked %v, want neither", st.Spares.Adopted, st.Spares.Unlinked)
 	}
-	if after := r.fileBytes(format.SegmentName(id)); !slices.Equal(after, seg) {
-		t.Errorf("spares: the segment whose record header verified was touched, got %x, want the bytes it arrived with", after[:format.SegmentHeaderSize])
-	}
+	// The spares phase touched no byte of it — no slot zeroed, one sync-less
+	// stall — but the cut-and-seal phase did: the synced drop's own end is
+	// the cut, for the tail the zeros past the rotted record made, so the
+	// clone target's header evidence the classing judged stays below it.
+	wantCutLeft(t, r, st, id, seg)
 	if len(st.Tails.Corrupt) != 1 || st.Tails.Corrupt[0].Segment != id {
 		t.Errorf("spares: the clone target was not classed the corrupt drop it is, got %+v, want exactly one in segment %d", st.Tails.Corrupt, id)
 	}

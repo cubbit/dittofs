@@ -1,17 +1,10 @@
 # The soak's seeds that fail today over the real journal, one entry per seed, never a pattern.
 # A seed that starts to pass fails the run: remove its entry in the change that turned it
 # green, a journal change included. Each entry's message is the failure it is known by.
-- test: TestSoak/seed=1
-  message: 'holds segments; recovering them is not built'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 10: the soak over the real journal. Its first round of writes, stable writes, Commits, truncates and deallocates runs under the seed''s faults, and the seed stops at its first crash: the restart''s journal Open finds the segments the crash left and answers not implemented, until the journal''s Open recovers them.'
-  issue: '#4206'
 - test: TestSoak/seed=2
-  message: 'holds segments; recovering them is not built'
+  message: 'a refused range at'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 10: the soak over the real journal. Its first round of writes, stable writes, Commits, truncates and deallocates runs under the seed''s faults, and the seed stops at its first crash: the restart''s journal Open finds the segments the crash left and answers not implemented, until the journal''s Open recovers them.'
-  issue: '#4206'
+  reason: 'the seed reaches its fourth process and the share does not start: the journal open refuses at recovery with a refused range inside a segment whose catalog did not verify that names no record (pkg/block/journal/internal/recovery/tail.go, refuseRange), the range a silently lost write left below later synced bytes, so every open of the share answers retry shortly. The open refuses whole until the reconcile that recovers such a range is built. Behind it the seed also fails the profiler''s heap check (tracked by #4712), which the soak could not reach before the Torn crash was made to land on a write the seam holds unsynced.'
+  issue: '#4711'

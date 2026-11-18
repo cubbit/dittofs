@@ -44,9 +44,36 @@ func write(t *testing.T, h *journal.Handle, id journal.FileID, off int64, p []by
 	t.Helper()
 
 	v, err := tryWrite(t, h, id, off, p)
+	return checkedWrite(t, len(p), off, v, err)
+}
+
+// tryWriteIn is tryWrite through h, a handle of f, retrying a refusal for
+// want of a spare as f.RetrySpare does: no longer than f's seam stands quiet.
+func tryWriteIn(t *testing.T, f *journaltest.Fixture, h *journal.Handle, id journal.FileID, off int64, p []byte) (journal.Version, error) {
+	var v journal.Version
+	err := f.RetrySpare(func() (err error) {
+		v, err = h.WriteAt(t.Context(), id, off, p, 0)
+		return err
+	})
+	return v, err
+}
+
+// writeIn is write through share s of f, retrying as tryWriteIn does.
+func writeIn(t *testing.T, f *journaltest.Fixture, s int, id journal.FileID, off int64, p []byte) journal.Version {
+	t.Helper()
+
+	v, err := tryWriteIn(t, f, f.Share(s), id, off, p)
+	return checkedWrite(t, len(p), off, v, err)
+}
+
+// checkedWrite fails the test on a write of n bytes at off that returned err, and
+// returns the write's version otherwise.
+func checkedWrite(t *testing.T, n int, off int64, v journal.Version, err error) journal.Version {
+	t.Helper()
+
 	stub(t, "WriteAt", err)
 	if err != nil {
-		t.Fatalf("write %d bytes at %d: %v", len(p), off, err)
+		t.Fatalf("write %d bytes at %d: %v", n, off, err)
 	}
 	return v
 }
@@ -385,12 +412,18 @@ func wantRelease(t *testing.T, h *journal.Handle, id journal.FileID, e journal.E
 	}
 }
 
-// lastLoss fails the test unless Stats holds exactly one loss event more than
-// before, and returns it.
+// lastLoss fails the test unless Stats comes to hold exactly one loss event
+// more than before, and returns it. A read that drops a corrupt record hands
+// its loss to the stream's worker, which appends the loss record before it
+// publishes the event, so the event can land after the read returns.
 func lastLoss(t *testing.T, f *journaltest.Fixture, before journal.Stats) journal.LossEvent {
 	t.Helper()
 
-	losses := f.J.Stats().Losses
+	var losses []journal.LossEvent
+	settles(func() bool {
+		losses = f.J.Stats().Losses
+		return len(losses) > len(before.Losses)
+	})
 	if len(losses) != len(before.Losses)+1 {
 		t.Fatalf("%d loss events, want %d: %+v", len(losses), len(before.Losses)+1, losses)
 	}
