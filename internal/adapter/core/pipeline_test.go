@@ -1431,6 +1431,193 @@ func TestAReplyWaitIsTimed(t *testing.T) {
 	})
 }
 
+// wireSeconds is got's adapter_wire_seconds by stage, under any protocol
+// label: how many times each stage was observed, and the seconds observed.
+func wireSeconds(got map[string]float64) (counts, sums map[string]float64) {
+	counts, sums = map[string]float64{}, map[string]float64{}
+	for k, v := range got {
+		into := counts
+		labels, ok := strings.CutPrefix(k, "adapter_wire_seconds{")
+		if !ok {
+			if labels, ok = strings.CutPrefix(k, "adapter_wire_seconds_sum{"); !ok {
+				continue
+			}
+			into = sums
+		}
+		for _, pair := range strings.Split(strings.TrimSuffix(labels, "}"), ",") {
+			if st, ok := strings.CutPrefix(pair, "stage="); ok {
+				into[st] += v
+			}
+		}
+	}
+	return counts, sums
+}
+
+// A request observes once each stage it runs and its connection times, read
+// from the list of timed stages so a stage added there is checked too, and
+// nothing under frame or call_service: an Echo over the full protocol, every
+// stage; over Bare, every stage but unwrap, admit and replay_check, which
+// Bare's stages leave nil; a request refused before its call, the stages up
+// to the one that refused it, then those from map_error to send, but wrap for
+// a header the codec refuses, which Wrap never sees (RFC 20 §5.5, §10.1).
+func TestEachStageARequestRunsIsObservedOnce(t *testing.T) {
+	_, wire := core.StageNames()
+	order := orderedValues(wire)
+	upTo := func(st string) []string { return order[:slices.Index(order, st)+1] }
+	answer := order[slices.Index(order, "map_error"):]
+	p := testproto.New(adapter.Deps{})
+	echo := testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}
+	for _, c := range []struct {
+		name  string
+		proto core.Protocol
+		msg   testproto.Msg
+		want  []string
+	}{
+		{"an Echo", p, echo, order},
+		{"an Echo over Bare", p.Bare(), echo, slices.DeleteFunc(slices.Clone(order), func(st string) bool {
+			return st == "unwrap" || st == "admit" || st == "replay_check"
+		})},
+		{"a header the codec refuses", edited{p, func(st *core.Stages) { st.Header = faultyHeader{st.Header, errors.New("a bad field")} }}, echo,
+			slices.Concat(upTo("decode_header"), slices.DeleteFunc(slices.Clone(answer), func(st string) bool { return st == "wrap" }))},
+		{"refused at admit", p, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Credits: 5}, slices.Concat(upTo("admit"), answer)},
+		{"refused at route", p, testproto.Msg{Op: 99, Version: 1, ID: 1}, slices.Concat(upTo("route"), answer)},
+		{"refused at resolve_ids", wrapRows(p, func(inv core.Invocation) core.Invocation {
+			inv.Resolve = func(*core.Request) error { return vfs.ErrStale }
+			return inv
+		}), echo, slices.Concat(upTo("resolve_ids"), answer)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m := metrics.New("v", "c")
+			s := newSeamWith(t, c.proto, 1<<20, adapter.Deps{Metrics: m})
+			s.serve(c.msg)
+			s.read()
+			if err := s.p.Wait(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := scrape(t, m)
+			counts, _ := wireSeconds(got)
+			for _, st := range order {
+				want := 0.0
+				if slices.Contains(c.want, st) {
+					want = 1
+				}
+				if counts[st] != want {
+					t.Errorf("%s observed %v times, want %v", st, counts[st], want)
+				}
+			}
+			for _, st := range []string{"frame", "call_service"} {
+				if _, ok := counts[st]; ok {
+					t.Errorf("adapter_wire_seconds has a %s series, want none", st)
+				}
+			}
+		})
+	}
+}
+
+// heldFlow is a FlowControl declared in the test: the protocol's own, its
+// Admit held until open is closed, a delay injected on cue.
+type heldFlow struct {
+	core.FlowControl
+	open chan struct{}
+}
+
+func (f heldFlow) Admit(ctx context.Context, h core.Header) (func(), error) {
+	<-f.open
+	return f.FlowControl.Admit(ctx, h)
+}
+
+// heldRouter is a Router declared in the test whose Route is held until
+// open is closed.
+type heldRouter struct {
+	core.Router
+	open chan struct{}
+}
+
+func (r heldRouter) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	<-r.open
+	return r.Router.Route(h, prev)
+}
+
+// The test moves the server's clock while an Echo is held in one step, and
+// the time lands under that step's stage alone, every other stage the Echo
+// runs observing 0: 1 s held in Admit, under admit; in a Route that then
+// refuses, under route; in the call, under none, since the call is the
+// service's to time; and 30 s in its reply reservation, the reply budget
+// full, under reply_wait, where its deadline refuses it. map_error is timed
+// from the refusal or the call's end, so it observes 0 too. A stage timed
+// from the request's start, or on the runtime's clock, which the test cannot
+// move, observes otherwise (RFC 20 §10.1).
+func TestAStageIsTimedFromTheStepBeforeIt(t *testing.T) {
+	p := testproto.New(adapter.Deps{})
+	for _, c := range []struct {
+		name  string
+		proto func(open chan struct{}) core.Protocol
+		full  bool          // the reply budget held full, so the Echo waits in its reservation
+		moved time.Duration // how far the clock moves while the Echo is held
+		stage string        // where that time lands; none in the call
+	}{
+		{"held in Admit", func(open chan struct{}) core.Protocol {
+			return edited{p, func(st *core.Stages) { st.Flow = heldFlow{st.Flow, open} }}
+		}, false, time.Second, "admit"},
+		{"held in a Route that refuses", func(open chan struct{}) core.Protocol {
+			return edited{p, func(st *core.Stages) { st.Router = heldRouter{routesWith{st.Router, core.ErrNoSession}, open} }}
+		}, false, time.Second, "route"},
+		{"held in the call", func(open chan struct{}) core.Protocol {
+			return wrapRows(p, func(inv core.Invocation) core.Invocation {
+				call := inv.Call
+				inv.Call = func(ctx context.Context, r *core.Request) error {
+					<-open
+					return call(ctx, r)
+				}
+				return inv
+			})
+		}, false, time.Second, ""},
+		{"held in its reply reservation past its deadline", func(chan struct{}) core.Protocol { return p.Bare() }, true, 30 * time.Second, "reply_wait"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				open, clk, m := make(chan struct{}), newManualClock(), metrics.New("v", "c")
+				reply := int64(1 << 20)
+				if c.full {
+					reply = smallCharge
+				}
+				s := newSeamWith(t, c.proto(open), reply, adapter.Deps{Metrics: m})
+				core.SetClock(s.sh, clk)
+				release := func() { close(open) }
+				if c.full {
+					release = s.full()
+				}
+				served := start(func() { s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}) })
+				synctest.Wait()
+				clk.Advance(c.moved)
+				synctest.Wait()
+				release()
+				s.read()
+				<-served.done
+				if err := s.p.Wait(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				got, _ := scrape(t, m)
+				counts, sums := wireSeconds(got)
+				for _, st := range []string{c.stage, "map_error"} {
+					if st != "" && counts[st] != 1 {
+						t.Errorf("%s observed %v times, want once", st, counts[st])
+					}
+				}
+				for st, n := range counts {
+					want := 0.0
+					if st == c.stage {
+						want = c.moved.Seconds()
+					}
+					if n > 0 && sums[st] != want {
+						t.Errorf("%s observed %v s, want %v", st, sums[st], want)
+					}
+				}
+			})
+		})
+	}
+}
+
 // A refusal before the service carries no result, even where its error is one
 // the service's closed set names: the pipeline raised it, the service did not
 // (RFC 20 §10.2).

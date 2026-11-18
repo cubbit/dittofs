@@ -413,6 +413,7 @@ func (p *pipeline) endHold(key uint64) {
 		t.mu.Unlock()
 		return
 	}
+	pd.tr.mark = p.sh.clock.Now()
 	t.mu.Unlock()
 	go p.answerHeld(pd, nil, ErrCancelled)
 }
@@ -448,7 +449,10 @@ func (p *pipeline) redrive(pd *pending) {
 		p.dropHeld(pd)
 		return
 	}
+	// The attempt's stages, or the answer given in its place, are timed from
+	// here: the wait between attempts is the hold's, never a stage's (§10.1).
 	now := p.sh.clock.Now()
+	tr.mark = now
 	at := pd.bound(pd.last, pd.start)
 	if !at.After(now) {
 		p.answerHeld(pd, nil, pd.last)
@@ -462,7 +466,7 @@ func (p *pipeline) redrive(pd *pending) {
 	}
 	// A re-drive reserves as a request alone: its chain, if it has one, holds
 	// nothing between attempts and is not the re-drive's until its answer.
-	reply, err := p.reserve(tr, pd.ts, alone{p}, pd.inv, pd.h, pd.r)
+	reply, err := p.reserve(tr, alone{p}, pd.inv, pd.h, pd.r)
 	if err == nil {
 		err = p.resolve(tr, pd.r, pd.op, pd.inv, false)
 	}
@@ -470,6 +474,7 @@ func (p *pipeline) redrive(pd *pending) {
 		pd.r.invoke = pd.inv.Call
 		pd.reply = reply
 		err = pd.ts.chains[pd.op.Code](ctx, pd.r)
+		tr.mark = pd.r.callEnd
 	}
 	if span != nil {
 		span.End()
@@ -789,7 +794,7 @@ func (p *pipeline) answerPark(pd *pending, err error) {
 		}
 	}
 	n := len(buf.B)
-	p.end(tr, p.send(h, buf, pd.key), s, n, err)
+	p.end(tr, p.send(nil, h, buf, pd.key), s, n, err)
 }
 
 // cancelPark is a cancel of pd, parked: its client's, why ErrCancelled, or
