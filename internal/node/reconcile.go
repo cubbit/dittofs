@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"sync"
@@ -459,6 +460,7 @@ func (n *Node) reconcileShares(ctx context.Context) error {
 // rather than adding to the backoff before them.
 func (n *Node) reconcileLoop(ctx context.Context, loop *health.Loop) {
 	r := &n.rec
+	var fault storeFault
 	var wait time.Duration // the backoff's last wait, zero while no pass needs one
 	for {
 		wait = backoff(wait, r.again)
@@ -469,9 +471,7 @@ func (n *Node) reconcileLoop(ctx context.Context, loop *health.Loop) {
 		case <-r.wake:
 		}
 		loop.Idle()
-		if err := n.pass(ctx); err != nil && ctx.Err() == nil {
-			n.cfg.Logger.Warn("reconcile: read the records", "error", err)
-		}
+		fault.observed(ctx, n, stepReconcile, n.pass(ctx), slog.Attr{})
 		loop.Turn()
 	}
 }

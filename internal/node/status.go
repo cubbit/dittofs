@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"time"
@@ -45,6 +46,7 @@ func countersOf(c kvstore.Counters) [len(counterKinds)]uint64 {
 
 // statusWriter is the status writer's state, which only its loop touches.
 type statusWriter struct {
+	fault storeFault
 	// last is the canonical bytes of the status last committed.
 	last []byte
 	// running, when set, answers a write a turn stopped waiting on past
@@ -102,12 +104,12 @@ func (n *Node) statusTurn(ctx context.Context) {
 	if w.running == nil && !bytes.Equal(b, w.last) {
 		running, err := n.bounded(ctx, func(ctx context.Context) error { return n.meta.Nodes().PutNodeStatus(ctx, s) })
 		w.running = running
-		switch {
-		case err == nil:
+		if err == nil {
 			w.last, wrote = b, true
-		case ctx.Err() == nil:
-			n.cfg.Logger.Warn("node status: write", "error", err)
 		}
+		w.fault.observed(ctx, n, stepStatus, err, slog.Attr{})
+	} else {
+		w.fault.summarize(ctx, n, stepStatus)
 	}
 	if w.turned != nil {
 		w.turned(s, wrote)
