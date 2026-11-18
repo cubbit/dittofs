@@ -121,7 +121,7 @@ it, numbered so that subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | A `Secret` holds its ID, kind, version, key ID, owner, sealed value, `KeyVersion` and `HandedOver`, encoded with the version; an owner is compared whole | MUST | RFC 16 §2.3 | T4.1 |
+| R1 | A `Secret` holds its ID, kind, version, key ID, owner, sealed value, `KeyVersion` and `HandedOver`, encoded with the version; an owner is compared through `SecretOwner.Equal` | MUST | RFC 16 §2.3 | T4.1 |
 | R2 | One key per version, `SEC‖id‖version`; `Secret(id, 0)` reads the current version, still sealed, and a pruned version reads `ErrNotFound` | MUST | RFC 16 §3, §4.2 | T4.1, T4.5 |
 | R3 | `PutSecret(s, expect)` writes a new version, `expect` naming the current one and 0 for the first; a stale `expect` is `ErrGenerationMismatch` | MUST | RFC 16 §3 | T4.1 |
 | R4 | A new version keeps its kind and owner: `PutSecret` refuses another with `ErrInvalid`, and `Seal` refuses one naming others | MUST | RFC 13 §7 (`Seal`); RFC 16 §2.3, §3 | T4.1, T4.3 |
@@ -134,7 +134,7 @@ it, numbered so that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R7 | A value is envelope-encrypted under a wrapping key held outside the KV, so a copy of the store alone reveals no secret | MUST | RFC 13 §7 | T4.2, T4.3 |
 | R8 | Each kind is sealed under the key of the role RFC 13 §7's table gives it; a seal or a resolve naming the other role is refused | MUST | RFC 13 §7 ("Two wrapping keys, one per role"); RFC 13 plan, D4 | T4.3, T4.4 |
-| R9 | The sealed value's additional data binds the role, kind, owner, reference, version and `HandedOver`, each field length-prefixed, so a value moved onto another of any of them, or with its mark flipped, fails to open | MUST | RFC 13 §7 (`Meta`); RFC 16 §2.3 (`HandedOver`); RFC 13 plan, D4 | T4.2, T4.4 |
+| R9 | The sealed value's additional data binds the role, kind, owner, reference, version and `HandedOver`, each field, and each part of the owner (`Record.Kind`, `Record.ID`, the scope's tag and ID, `Key`), length-prefixed, so a value moved onto another of any of them, or with its mark flipped, fails to open | MUST | RFC 13 §7 (`Meta`); RFC 16 §2.3 (`HandedOver`); RFC 13 plan, D4 | T4.2, T4.4 |
 | R10 | Each version gets a fresh data key, wrapped under the role's key | invariant | RFC 13 plan, D4 | T4.2, T4.3 |
 | R11 | Each record names the key ID it is sealed under | MUST | RFC 13 §7 ("A wrapping key rotates the same way"); RFC 16 §2.3 (`KeyID`) | T4.3 |
 | R12 | `Seal` returns the next version unwritten; its caller commits it with `PutSecret(s, s.Version-1)` inside its own `Write`, beside the record naming it and its audit record, so a version commits with its change or not at all; wrapping runs before that `Write` | MUST | RFC 13 §7 (`Seal`); RFC 23 §6 | T4.3 |
@@ -279,7 +279,7 @@ pkg/secrets/bench_test.go                T4.8  the settings generation's cost
 - **Tests:** a table that changes one additional-data field at a time, the role, the kind, each
   owner field, the reference, the version and `HandedOver`, and asserts the open fails (catches a
   field left out); two fields whose concatenation is equal but whose split differs (`"ab"`,`"c"`
-  against `"a"`,`"bc"`), refused (catches a missing length prefix); the fuzz target, seeded with
+  against `"a"`,`"bc"`), refused (catches a missing length prefix); two owners that concatenate to the same bytes, `Record.Kind` `"ab"` with an ID `X` and `"a"` with `"b"‖X`, each failing to open the other's value (catches an owner's parts joined without prefixes); the fuzz target, seeded with
   each refusal.
 
 ### T4.3 `Seal`
@@ -445,13 +445,11 @@ A suggestion only: one pull request per subtask works as well.
 - **A prune and the settings generation.** RFC 13 §5 and RFC 16's `CFGGEN` row say every `Secret`
   change raises it; RFC 16's `PruneSecret` does not say; RFC 13's plan has a prune raise none. D5
   follows RFC 13's plan until RFC 16 says which.
-- **The secret kinds.** RFC 16 §2.3's `Secret.Kind` has no kind for the directory's bind
-  credential or the OpenID Connect client secret, and RFC 13 §7's table gives the node credential
-  no role and leaves the client secret out, which RFC 23 §5.5 seals under `storage`. #4491 adds
-  `directory credential` and `client secret`, the latter under `storage`, and seals the node
-  credential under `protocol`. This epic seals the kinds E1 declares (its D8, pending #4472); T4.3's
-  role test reads E1's kind table, so a kind #4491 adds is covered without a change here. Pending
-  #4491.
+- **The secret kinds.** RFC 16 §2.3's `Secret.Kind` lists the directory's bind credential and the
+  OpenID Connect client secret, the latter sealed under `storage` as RFC 23 §5.5 has it, and the node
+  credential is not a `Secret` kind: its private half stays on the node's volume (RFC 30 §4.2), so no
+  wrapping key seals it. This epic seals the kinds E1 declares (its D8); T4.3's role test reads E1's
+  kind table, so a kind added there is covered without a change here.
 - **A whole-secret delete.** RFC 13 §7's `Delete` and RFC 23 §3's "set, rotate, delete" route have
   no RFC 16 §3 method under them. `Delete` waits (D7).
 - **Pruning through kvstore.** RFC 23's epic 5 and the RFC 18 plan's epic 2 prune a password hash,

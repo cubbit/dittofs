@@ -53,7 +53,7 @@ its drift test; the architecture tests that need no package this epic does not c
   `Resource[Spec, Status]` with its core.
 - Each resource's spec and status types in `pkg/node/apiv1`: E4 for the resources its routes
   serve, E5 for API tokens, sessions and sign-in.
-- The kvstore settings view's delete and cross-scope read and the secrets view (`DeleteSetting`,
+- The kvstore settings view's delete and the secrets view (`DeleteSetting`,
   `Secret`, `PutSecret`, `PruneSecret`), on the view and on `ControlPlaneTx` alike, since the RFC
   13 plan's A2 and RFC 18's password write commit a sealed secret through `ControlPlaneTx.PutSecret`
   inside a `Write`: the RFC 13 plan's epic 1 declares them.
@@ -521,7 +521,7 @@ its own (D1).
 
 ## 9. Open points
 
-- The RFC 13 plan's epic 1 declares the settings view's delete and cross-scope read and the secrets
+- The RFC 13 plan's epic 1 declares the settings view's delete and the secrets
   view at its S0, which is now this epic's deletion; it builds on kvstore's view before E2 has put
   `expect` on it (D3), so the two plans' view changes meet in E2, whose D4 settles their order: whichever
   lands second adds the other's transaction forms.

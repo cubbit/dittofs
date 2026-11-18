@@ -105,7 +105,7 @@ What replaces what:
 | --- | --- | --- |
 | `pkg/config` (full server file, environment overrides, warnings on unknown keys) | `pkg/bootstrap`, the bootstrap only, unknown keys refused (D8) | stripped by RFC 23's plan's epic 1; renamed in epic 1, finished in epic 2 |
 | `pkg/config/renamed_keys.go` (renamed keys refused; other unknown keys only warned) | the refused v1 keys, each naming its replacement (RFC 13 Appendix C's table): `database.*` (dropped: the metadata store is the control plane's database), `metadata.badger.*_cache_mb` (dropped), `controlplane.*` (its `port` and `tls` naming the bootstrap's API listen address and TLS, RFC 13 §2.2), `admin.*`, `kerberos.*`, `ldap.*`, `identity.*` (`machine_sid` included), `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*` but the keys of Appendix C's metadata block, `blockstore.*`, the journal path naming `journals` and its five tunables dropped, `metrics.*` (the bootstrap's metrics listen address), `shutdown_timeout` (`adapters.<protocol>.drain_timeout`), an upper-case `logging.level` (`use debug`), a bare-integer `logging.rotation.max_size` (megabytes today; refused, a size carries its unit), and their `DITTOFS_*` forms | reworked in epic 2 |
-| `pkg/metadata/kvstore/settings.go` (`Settings`, `PutSetting`, `CFGGEN`, `Setting.Schema`) | the same, with a delete, a read across every scope in one scan, and a newer schema refused; `expect` is RFC 23's plan's (its epics 1 and 2) | extended in epic 3 |
+| `pkg/metadata/kvstore/settings.go` (`Settings`, `PutSetting`, `CFGGEN`, `Setting.Schema`) | the same, with a delete and a newer schema refused; `expect` is RFC 23's plan's (its epics 1 and 2). The read across every scope, in pages from a `SettingKey` (RFC 23 §2.1), is `Nodes.AllSettings`, built by RFC 23's plan's epic 2 (D7) and nowhere else | extended in epic 3 |
 | `KindSEC` reserved, no code | `Secret` records with versions and sealing | built in epic 4 |
 | `pkg/block/middleware/encryption/keyprovider` | `pkg/keyprovider`, unchanged | moved in epic 1 (D5) |
 
@@ -148,7 +148,7 @@ green with the epic that makes it pass.
   owner its caller expects, `Versions`, which opens every version still held as a `Version` with its
   number and `Meta`, `Prune` and `Delete` with the kind and owner they check, and the package's own errors. These are what the RFC 18
   plan's O9 asks for.
-- **The kvstore views' signatures:** the settings delete, the cross-scope read, and secrets.
+- **The kvstore views' signatures:** the settings delete and secrets, and the `SettingKey` and `SettingsReader` types `settings.Read` takes (the read itself is RFC 23's epic 2's `Nodes.AllSettings`).
 
 It declares no internal interface. `keyprovider.KeyProvider` already exists.
 
@@ -290,7 +290,7 @@ Out of scope, each named in O1:
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 7 | 8.75 | team | every epic |
 | E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 8 | 14.5 | A | E5; partly E3; RFC 23's epics 3 and 5 (its X1) |
-| E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19.5 | B | E5; partly RFC 18's plan's epic 6 |
+| E3 | Settings | a delete, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19.5 | B | E5; partly RFC 18's plan's epic 6 |
 | E4 | Secrets | `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
 | E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty, off by default; the launchers on `dfs init` and the images' `init` as an explicit step, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
@@ -353,7 +353,7 @@ flowchart TD
   `Delete` writes; `Seal` with its kind, role, owner and `Meta`, returning the `Secret` unwritten,
   `Resolve` with the expected kind, role and owner, `Versions`, and `Prune` and `Delete` with the
   expected kind and owner; the kvstore views'
-  delete, cross-scope read and secrets. `Check` is frozen at S1 too: it takes the `ControlPlaneTx`
+  delete and secrets, and `SettingsReader`. `Check` is frozen at S1 too: it takes the `ControlPlaneTx`
   that RFC 16 §3 declares, which RFC 23's T2.4 (#4362) built on `feat/storage-v2` (#4494).
   Unblocks epics 2, 3 and 4; with S2, the RFC 18 plan's epic 2, which
   adds `pkg/secrets` to identity's `Deps`.
@@ -411,7 +411,7 @@ pkg/settings/               sections, table, snapshot, Get, Check, Diff, version
 pkg/secrets/                Provider: Seal, Resolve, Prune, Delete; envelope                 E1, E4
 pkg/keyprovider/            moved from pkg/block/middleware/encryption/keyprovider           E1
 pkg/metadata/entity/        + Secret; Installation's active versions; ranges on RFC 23's Node E2, E4
-pkg/metadata/kvstore/       settings: delete, cross-scope read, newer schema refused;        E3, E4
+pkg/metadata/kvstore/       settings: delete, newer schema refused;                         E3, E4
                             secrets (SEC)
 internal/node/settings.go   the one settings table, naming every declared section           E5
 ```
@@ -444,7 +444,9 @@ is reported, not failed (O4). It also runs RFC 13 §9's "§3 scope forms" row.
 
 **D4. A secret is sealed as an envelope.** Each version gets a fresh data key, which seals the value
 with AES-GCM, using the role, the kind, the owner, the reference, the version and a machine
-password's `HandedOver` mark (RFC 16 §2.3) as additional data, each field length-prefixed. The role
+password's `HandedOver` mark (RFC 16 §2.3) as additional data, each field, and each part of the
+owner (`Record.Kind`, `Record.ID`, the scope's tag and ID, `Key`), length-prefixed, so two owners
+whose parts concatenate to the same bytes still differ. The role
 follows from the kind (RFC 13 §7's table): `Seal` refuses a pair that does not match, so an NT hash
 cannot be sealed under `storage`. `keyprovider` wraps that data key under the role's key. A sealed
 value moved onto another record, role, kind, owner or version, or with its mark flipped, fails to
@@ -638,13 +640,14 @@ the raise, which carries such a rename as a reseal under the new owner.
 
 Each carries a `ponytail:` marker at the code site:
 
-- **Reconcile re-reads every setting when the generation moves.** One scan of `CFG` across every
-  scope per move, through epic 3's cross-scope read.
-  - *Ceiling:* the scan and the diff at the settings count of 10⁴ shares, once per one-second poll
+- **Reconcile re-reads every setting when the generation moves.** A walk of `CFG` across every
+  scope in pages of 256 per move, through `Nodes.AllSettings` (RFC 23's epic 2, D7), restarted if
+  `CFGGEN` moved during it (RFC 23 §2.3).
+  - *Ceiling:* the walk and the diff at the settings count of 10⁴ shares, once per one-second poll
     while writes keep the generation moving; the trigger is their time passing a tenth of that
     poll period, 100 ms, measured in epic 3's benchmark; epic 5 grows RFC 23's `BenchmarkReconcile`
     (#4688) with the settings rows and the secrets pass and judges the full figure. Every `Secret`
-    write raises the generation too, so a password change costs every node one such scan.
+    write raises the generation too, so a password change costs every node one such walk.
   - *Upgrade path:* read only the records above the reconciled position, with an index by position
     (RFC 23 §13 item 5).
   - *Epic:* 3.
@@ -719,11 +722,11 @@ Each carries a `ponytail:` marker at the code site:
     stops verifying the old password.
   - *Epic:* 4.
 - **One `CFGGEN` key for every setting and secret write.** Each write raises it in its
-  transaction, so writes contend on one key, and each costs every node one reconcile scan.
+  transaction, so writes contend on one key, and each costs every node one reconcile walk.
   - *Ceiling:* the commit rate of epic 4's benchmark, eight concurrent `Seal` and `tx.PutSecret`
     writers on Badger under `t.TempDir()`, in the `manual` tier, run with the `CFGGEN` raise and
     again without it as a baseline, compared by `benchstat` over `-count=10`; reconcile, polling once a second, folds every write of that
-    second into one scan. Bulk provisioning of users reaches it first. The trigger is the run with
+    second into one walk. Bulk provisioning of users reaches it first. The trigger is the run with
     the raise committing under half the baseline's rate.
   - *Upgrade path:* a generation per section, or secrets off `CFGGEN` with their own counter, when
     the trigger fires.
@@ -906,9 +909,16 @@ Reconcile, when `CFGGEN` moved: each change takes its class's path (RFC 23 §2.3
 
 ```go
 func (n *Node) reconcileSettings(ctx context.Context) error {
-	cur, bad, err := settings.Read(ctx, n.cp, node.Settings, n.id) // ponytail: one scan across every scope per move (§4.3)
+	gen, err := n.settingsGeneration(ctx) // CFGGEN before the first page (RFC 23 §2.3): the one generation this walk may report as applied
 	if err != nil {
-		return err // the scan itself failed; nothing is decoded yet
+		return err
+	}
+	cur, bad, err := settings.Read(ctx, n.nodes, node.Settings, n.id) // n.nodes is the node view Store.Nodes() gives (RFC 23's epic 2, D7), not the API's ControlPlane; ponytail: every scope's settings, read in pages, per move (§4.3)
+	if err != nil {
+		return err // the walk itself failed; nothing is decoded yet
+	}
+	if again, err := n.settingsGeneration(ctx); err != nil || again != gen {
+		return err // each page is its own transaction: a write between two moved CFGGEN, so the walk is discarded and nothing reported; the next poll sees the counter ahead and walks again
 	}
 	prev := n.settings.Load() // *settings.Snapshot; nil before the first reconcile
 	for section, err := range bad { // decoded per section: an undecodable or newer-schema row stops only its own
@@ -919,6 +929,7 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 		}
 		cur = cur.Keep(section, prev) // prev is non-nil once the section has started
 	}
+	// decision: a secret resolved here is read after the second CFGGEN read, so it can be newer than gen, the generation reported; the next poll walks again and the position only lags. Overturned if a consumer needs the secret version applied to equal the reported generation.
 	for section, err := range n.resolveSecrets(ctx, cur) { // before any section applies: a moved or deleted
 		n.refused(section, err) // secret resolved again; one that fails (wrong kind, unwrap, a retired key gone)
 		cur = n.holdOrKeep(section, cur) // fails closed: held at start, else keeps its last snapshot
@@ -938,7 +949,7 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 		}
 	}
 	n.settings.Store(cur) // *Snapshot into the atomic.Pointer[settings.Snapshot]: Read decoded and validated each value once; Get only looks one up
-	return n.reportGeneration(ctx, cur.Generation) // NodeStatus.Settings (RFC 16 §2.4)
+	return n.reportGeneration(ctx, gen) // NodeStatus.Settings (RFC 16 §2.4)
 }
 
 func (n *Node) reconfigure(section string, cur *settings.Snapshot) error {
@@ -972,7 +983,7 @@ func (p *Provider) Seal(ctx context.Context, role Role, kind entity.SecretKind, 
 	if err != nil && !errors.Is(err, metadata.ErrNotFound) {
 		return entity.Secret{}, err
 	}
-	if cur.Version > 0 && (kind != cur.Kind || owner != cur.Owner) {
+	if cur.Version > 0 && (kind != cur.Kind || !owner.Equal(cur.Owner)) {
 		return entity.Secret{}, ErrKindChanged // a reseal never moves a secret to another kind or owner
 	}
 	if cur.Version > 0 && cur.Kind == entity.SecretRemoteCredential { // the stored kind, not the caller's
@@ -1014,7 +1025,7 @@ func (p *Provider) Resolve(ctx context.Context, role Role, kind entity.SecretKin
 	if err != nil {
 		return nil, err
 	}
-	if s.Kind != kind || s.Owner != owner {
+	if s.Kind != kind || !owner.Equal(s.Owner) {
 		return nil, ErrWrongKind
 	}
 	wrapped, sealed := open(s.Value)
@@ -1074,7 +1085,7 @@ the three packages and the views compile with stub bodies.
 - `pkg/secrets`' provider (RFC 13 §7): `Seal` with its `Meta`, returning the `Secret` its caller's
   `Write` commits with `tx.PutSecret`, `Resolve`, `Versions`, `Prune` and `Delete` with the kind and
   owner they check, and their errors.
-- The kvstore settings view's delete and cross-scope read, and the secrets view.
+- The kvstore settings view's delete, the secrets view, and `SettingKey` and `SettingsReader`.
 - The freeze review: the surface is S1, so every symbol S1 lists is checked against its first
   caller.
 - The user surface settled first, as RFC 13 text: Appendix C, the refusal's §6 shape and
@@ -1169,9 +1180,9 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
 
 **Expected content:**
 - The kvstore settings view: a delete, raising `CFGGEN` in its transaction as `PutSetting` does; a
-  read of every scope's rows in one prefix scan of `CFG`, for reconcile, where `Settings` scans one
-  scope instance today; a newer `Setting.Schema` refused (the field exists); and the benchmark
-  §4.3's reconcile marker names: `Read` and `Diff` at 10⁴ shares' settings, on Badger under `t.TempDir()`, in the `manual` tier with `ReportAllocs`.
+  newer `Setting.Schema` refused (the field exists); and the benchmark
+  §4.3's reconcile marker names, over RFC 23's epic 2's `Nodes.AllSettings` (every scope's rows in
+  `CFG`'s key order, in pages from a `SettingKey`, where `Settings` scans one scope instance today): `Read` and `Diff` at 10⁴ shares' settings, on Badger under `t.TempDir()`, in the `manual` tier with `ReportAllocs`.
 - `settings.Of` and the table: a section from a component's typed settings, defaults and
   `Validate` (D2); its required keys, the ones with no default (RFC 13 §4.2), since a strict decode
   over a full `def T` cannot tell an omitted field from its zero value; its write role, `admin`
@@ -1297,7 +1308,10 @@ adapter port" (§6.1).
   by reconcile, so a next-write consumer loads it with no decode and no race; a section refused at the first
   reconcile, with no snapshot to keep, holds its component unstarted rather than starting it on
   its defaults, tested by a start with one undecodable row: that component is not serving and is
-  reported refused. What reconcile
+  reported refused; the settings walk's consistency (RFC 23 §2.3), tested with more settings than one
+  page of 256: a write landing between two pages leaves the reported settings generation where it was
+  and the next poll walks again, so the node never reports a generation it did not read through.
+  What reconcile
   does with an adapter's change, `Reconfigure` or the rebuild a changed `port` takes, is RFC 20's
   plan's epic 7 (#4050's D12, O7).
 - RFC 23's write path on `Check`, a setting's put and delete with the caller's role, in the slot
@@ -1471,7 +1485,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys |
 | The cluster rules: §5's two-step restart value, §5.4 and §5.5 across nodes, the two-node §9 rows; a lagging node refusing the raise (header, §4.3's `ponytail:`, O1, §1.4) | single node only | RFC 15 | a second node |
 | Pruning an old secret version once every node's status reports the new one (§4.3's `ponytail:`) | a node that is down keeps its last report and holds the prune back | RFC 15 | a second node |
-| Reconcile reading only records above its position, with an index by position (§4.3's `ponytail:`) | one prefix scan per generation move | unowned | the scan shows at the settings count of 10⁴ shares |
+| Reconcile reading only records above its position, with an index by position (§4.3's `ponytail:`) | one paged walk of `CFG` per generation move | unowned | the walk shows at the settings count of 10⁴ shares |
 | The cross-component rule, RFC 13 §6's example (§4.3's `ponytail:`) | its second setting, `migration.freeze_timeout`, does not exist | unowned | that setting is declared |
 | A per-role passphrase variable for key files (§4.3's `ponytail:`) | `keyprovider` reads one variable | unowned | two roles need distinct passphrases |
 | The replacement of `kmip_fake_test.go`'s canned KMIP server, a fake that passes a conformance suite; the canned server itself moves with `keyprovider` (D5, E1's D3) | the move changes no line of it, so the "no canned stub" rule does not fire on it | unowned | the fake's first change, or its first new caller |

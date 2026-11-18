@@ -34,8 +34,8 @@ is a stub, behind a signature that is final.
   `pkg/bootstrap` exports the node identity's three entry points (T1.3);
 - `pkg/secrets` exports the provider of RFC 13 §7, and `pkg/metadata/entity` the `Secret` record
   and its kind and owner (T1.4);
-- kvstore's control-plane view has the settings delete, the cross-scope read and the secrets
-  methods (T1.5);
+- kvstore's control-plane view has the settings delete and the secrets methods, and `pkg/metadata/entity`
+  the `SettingKey` cursor and the `SettingsReader` that `settings.Read` takes (T1.5);
 - `pkg/settings` exports the classes, the section and its options, the table, the snapshot,
   `Read`, `Get`, `Diff`, `Keep`, `Check` with its `Put` and `Delete` writes, and their errors
   (T1.6);
@@ -139,7 +139,7 @@ declaration is another epic's, the row says which.
 | R10 | `pkg/secrets` exports RFC 13 §7's provider: `Resolve`, `Seal` returning the `Secret` unwritten for its caller's `Write`, `Versions`, `Prune` and `Delete`, each with the kind and owner it checks, `Seal` with its `Meta`, and `Meta` and `Version` | invariant | RFC 13 §7 ("One interface, two providers") | T1.4 |
 | R11 | Two roles, `protocol` and `storage`; each secret kind is sealed under the key of the role §7's table gives it, so a kind's role is fixed data, not a caller's choice | MUST | RFC 13 §7 ("Two wrapping keys, one per role") | T1.4 |
 | R12 | No log line, metric, `%v` or `dfs config show` carries a secret: an opened `Version` never prints its value, and a `Bootstrap` field that holds a credential is a type that redacts itself | MUST NOT | RFC 13 §7 ("Read never returns a secret") | T1.3, T1.4 |
-| R13 | `entity.Secret`, `SecretKind` and `SecretOwner` are RFC 16 §2.3's: ID, kind, version, key ID, owner, sealed value, `KeyVersion` and `HandedOver`; an owner compared whole | MUST | RFC 16 §2.3 | T1.4 |
+| R13 | `entity.Secret`, `SecretKind` and `SecretOwner` are RFC 16 §2.3's: ID, kind, version, key ID, owner, sealed value, `KeyVersion` and `HandedOver`; an owner compared through `SecretOwner.Equal` | MUST | RFC 16 §2.3 | T1.4 |
 | R14 | Configuration holds no secret value, only a reference: a section declares each field that holds one, with the kind it must name, and a reference names a secret of that kind and that owner. T1.6 only declares the fields and the option, T1.5 the tracked read of a secret, and E3 checks the reference | MUST NOT | RFC 13 §7 (first paragraph); RFC 13 plan, D10 | T1.5, T1.6 |
 
 **The views**
@@ -147,7 +147,7 @@ declaration is another epic's, the row says which.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R15 | kvstore's control-plane view has `DeleteSetting(ctx, scope, key, expect)`, `Secret(ctx, id, version)`, `PutSecret(ctx, s, expect)` and `PruneSecret(ctx, id, below)`, as RFC 16 §3 gives them | MUST | RFC 16 §3 | T1.5 |
-| R16 | The view reads every scope's settings in one scan, for reconcile | invariant | RFC 13 plan, §1.1 and the reconcile marker of §4.3 | T1.5 |
+| R16 | Reconcile reads every scope's settings in pages from a `SettingKey`, through `SettingsReader`, which RFC 23's epic 2 (D7, T2.8) satisfies with `Nodes.AllSettings` and no `ControlPlane` method repeats | invariant | RFC 13 plan, §1.1 and the reconcile marker of §4.3; RFC 23 §2.1 | T1.5, T1.6 |
 
 **Settings**
 
@@ -237,10 +237,10 @@ bullets describe RFC 26's and RFC 5's records.
   view and the two roles' keys; without a frozen constructor each would reach for the unexported
   struct. `bootstrap.Load` exists already; T1.3 only adds its environment argument. No marker.
 - **D8, the secret kinds are RFC 16's list, and a kind with no role is not declared.**
-  `SecretKind` declares RFC 16 §2.3's kinds whose role RFC 13 §7's table gives. The node credential
-  (RFC 15 §4.4) has no role there and waits with the cluster; the directory's bind credential and
-  the OpenID Connect client secret have no kind in RFC 16 (§9), and take `protocol` and `storage`
-  once they do (RFC 13 §7, RFC 23 §5.5). Adding a constant later breaks no
+  `SecretKind` declares RFC 16 §2.3's kinds whose role RFC 13 §7's table gives, among them the
+  directory's bind credential under `protocol` and the OpenID Connect client secret under
+  `storage` (RFC 23 §5.5). The node credential (RFC 15 §4.4) is not a `Secret` kind: its private
+  half stays on the node's own volume (RFC 30 §4.2). Adding a constant later breaks no
   caller. No marker.
 - **D9, the declaration API: a class is a struct tag.** A component's settings struct carries each
   field's class beside its `json` tag (`class:"restart"`), and `Of` panics on a field without one,
@@ -318,7 +318,8 @@ pkg/metadata/entity/secret.go                   T1.4  Secret, SecretKind, Secret
 pkg/secrets/                                    T1.4  Role, Meta, Version, Provider, New, its methods and errors
 pkg/secrets/redact_test.go                      T1.4  a Version never prints its value
 pkg/secrets/roles_test.go                       T1.4  the kind table against RFC 13 §7
-pkg/metadata/kvstore/settings.go                T1.5  DeleteSetting, AllSettings (stubs)
+pkg/metadata/entity/control.go                  T1.5  SettingKey, SettingsReader, beside SettingScope
+pkg/metadata/kvstore/settings.go                T1.5  DeleteSetting (stub)
 pkg/metadata/kvstore/secrets.go                 T1.5  Secret, PutSecret, PruneSecret (stubs)
 pkg/settings/                                   T1.6  Class, Scope, Section, Of and its options, Table, Snapshot,
                                                       Read, Get, Diff, Change, Keep, Write, Put, Delete,
@@ -509,7 +510,7 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     table giving each kind its role; `Meta`; `Version`, whose `String`, `Format`, `LogValue`, `MarshalJSON` and `MarshalYAML`
     print its number and `Meta` and never its value (`Value` is an exported `[]byte`, which
     `json.Marshal` and `yaml.Marshal` would otherwise print base64-encoded); `Provider`, `New` (D7), and RFC 13 §7's five
-    methods with stub bodies (D4), `Delete` provisional, as `AllSettings` is, since it gains a
+    methods with stub bodies (D4), `Delete` provisional, since it gains a
     transaction when E4 fills it; the errors `ErrWrongRole`, `ErrWrongKind`, `ErrKindChanged` and
     `ErrUnproven` with RFC 13's plan's D9 `decision:` note.
     ```go
@@ -530,22 +531,36 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
   failing on zero rows (catches a kind sealed under
   the other role, which would let a protocol-only node open a storage secret).
 
-### T1.5 The kvstore view's settings delete, cross-scope read and secrets
+### T1.5 The kvstore view's settings delete and secrets, and the settings read's types
 
 **Subtask T1.5 estimate: 0.5 man-days.**
 
 - **Track:** the team. **Depends on:** T1.4 (`entity.Secret`).
 - **Covers:** R14, R15, R16.
 - **Deliverables:** on kvstore's `ControlPlane`, with stub bodies (D4):
-  `DeleteSetting(ctx, scope, key, expect)`, `AllSettings(ctx) iter.Seq2[entity.Setting, error]`
-  (§9: the name waits on RFC 16), `Secret(ctx, id, version)`, `PutSecret(ctx, s, expect)` and
+  `DeleteSetting(ctx, scope, key, expect)`, `Secret(ctx, id, version)`, `PutSecret(ctx, s, expect)` and
   `PruneSecret(ctx, id, below)`, each with its transaction form on `ControlPlaneTx` (D2), among them a tracked
   `Secret(id, version)` read, so that `Check` verifies a reference's kind and owner inside the
-  write's transaction. `AllSettings` is provisional until E3's §4.3 benchmark.
+  write's transaction. The cross-scope read is not on `ControlPlane`: RFC 23's epic 2 alone builds it,
+  as `Nodes.AllSettings` (D7, T2.8). This subtask declares, in `pkg/metadata/entity` beside
+  `SettingScope`, the cursor RFC 16 §2.3 gives it and the narrow interface both views could satisfy,
+  so `pkg/settings` imports no store package:
+  ```go
+  type SettingKey struct {
+      Scope SettingScope
+      Key   string
+  }
+
+  // SettingsReader is the one read settings.Read makes of the store.
+  type SettingsReader interface {
+      AllSettings(ctx context.Context, after SettingKey) iter.Seq2[Setting, error]
+  }
+  ```
+  `AllSettings` is provisional until E3's §4.3 benchmark, on `Nodes`.
 - **Acceptance criteria:**
   - The four RFC 16 §3 methods have RFC 16's signatures.
   - `ControlPlaneTx` has a tracked read of a secret version, which `Check` calls.
-  - E3 and E4 fill them without changing a signature, `AllSettings` aside.
+  - E3 and E4 fill them without changing a signature.
 - **Tests:** none of its own: the signatures are pinned by T1.7, and E3's and E4's tests run them.
 
 ### T1.6 `pkg/settings`' types
@@ -553,8 +568,9 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
 **Subtask T1.6 estimate: 1.5 man-days.**
 
 - **Track:** the team. **Depends on:** T1.1 (the review of D9), T1.4 (`entity.SecretKind`), T1.5
-  (`ControlPlaneTx`'s tracked `Secret` read, which `Check`'s signature takes through its transaction).
-- **Covers:** R14, R17, R18.
+  (`ControlPlaneTx`'s tracked `Secret` read, which `Check`'s signature takes through its transaction,
+  and `entity.SettingsReader`, which `Read` takes).
+- **Covers:** R14, R16, R17, R18.
 - **Deliverables:** with stub bodies (D4):
   - `Class` (`Live`, `Restart`, `NextWrite`, `Bound`) and the `class` struct tag (D9), and the tags
     themselves on every field of `pkg/adapter/settings`' NFS and SMB structs, so the example test
@@ -565,8 +581,8 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
   format version, so that `Check` refuses a version past this node's range with
   `ErrFormatVersion`, is not this subtask's: E3's T3.6 adds it with its gate and to this pin, the
   one exception to the freeze (E3's D6);
-  - `Table`, `Snapshot`, `Read(ctx, cp, table, node)` returning the snapshot and the sections it
-    refused, `Change`, and
+  - `Table`, `Snapshot`, `Read(ctx, r entity.SettingsReader, table, node)` returning the snapshot and
+    the sections it refused, `Change`, and
     `Get[T any](snap *Snapshot, section string, node entity.NodeID) (T, error)` (an error for a
     section the snapshot holds no value of, such as one held at start),
     `Diff(prev, cur *Snapshot) []Change` (a nil `prev` makes every key a change) and
@@ -620,7 +636,7 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
   - The caller list, in the pull request's description: each frozen symbol with its first caller
     (an E2 to E5 subtask, RFC 23's T3.10, T5.3 or T5.4, or the RFC 18 plan's epic 2), and each
     symbol of T1.3 to T1.6's deliverables checked present. `Delete`, pinned here without a transaction, is
-    provisional like `AllSettings` and listed as gaining one when E4 fills it, and `Of`'s
+    provisional and listed as gaining one when E4 fills it, and `Of`'s
     `FormatVersion(field)` option, which E3's D6 adds to `pkg/settings` after the freeze, is
     listed with the section of RFC 4's plan that declares the block format version's key
     as its first caller.
@@ -668,13 +684,6 @@ so PR 3 starts once PR 2 is there. A suggestion only: one pull request per subta
 
 ## 9. Open points
 
-- **The OpenID Connect client secret and the directory's bind credential have no secret kind.**
-  RFC 16 §2.3's `Secret.Kind` list has neither. RFC 13 §7's table gives the bind credential the
-  `protocol` role and leaves the client secret out, which RFC 23 §5.5 seals under `storage`. Until
-  RFC 13 §7 and RFC 16 §2.3 are amended, D8 declares neither kind. The bind credential's kind is
-  proposed in RFC 18's epic 6 breakdown (#4341, its D3). Pending #4472.
-- **The cross-scope read has no RFC 16 signature.** RFC 16 §3 has `Settings(ctx, scope)` only;
-  T1.5 names the one-scan read `AllSettings` until RFC 16 §3 gains it. Pending #4473.
 - **D10 and D11 quote #4486 as amended, and it is not merged.** Appendix C, §6's shape and
   Appendix B's conventions are read from its branch. This breakdown merges after #4486, or each
   quote is re-read against the merged text. Pending #4486.
