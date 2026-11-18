@@ -2578,3 +2578,26 @@ func TestPoolWaitRecordSparesAsksNoMoreThanThePoolKeeps(t *testing.T) {
 	}
 	p.Stop()
 }
+
+// TestPoolWaitReserveSpareAnswersTheReserveAlone: a pool whose maximum lets
+// it make its headroom and reserve spares and no content spare settles short
+// of its whole goal, yet the wait for one reserve spare answers nil, for the
+// spare the open's copy draws is ready. A wait for the whole goal refuses
+// here with the content class short.
+func TestPoolWaitReserveSpareAnswersTheReserveAlone(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, _, _, p := poolOf(t, segment.Targets{Headroom: 1, Reserve: 1, Content: 1}, 2*segCap, 0, nil)
+	p.Start()
+	defer p.Stop()
+
+	if err := p.WaitReserveSpare(t.Context()); err != nil {
+		t.Fatalf("the wait for one reserve spare over a pool whose maximum holds the headroom and the reserve returned %v, want nil", err)
+	}
+	if c := p.Counters(); c.Spares != 0 {
+		t.Fatalf("the pool made %d content spares past a maximum of two caps, want 0: the case needs the content class short", c.Spares)
+	}
+	if _, err := p.Take(segment.Reserve); err != nil {
+		t.Fatalf("Take(Reserve) after the wait answered: %v, want the ready reserve spare", err)
+	}
+}

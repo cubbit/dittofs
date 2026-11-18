@@ -805,6 +805,23 @@ func (p *Pool) WaitRecordSpares(ctx context.Context, n int) error {
 	})
 }
 
+// WaitReserveSpare blocks until the pool holds a ready spare of the repack
+// reserve, and answers as WaitSpares does otherwise: the spare refusal naming
+// LimitSpare and one segment missing once the pool stands idle with none,
+// ErrClosed once it stopped, the context's error once it is done.
+//
+// decision: the open's copies wait here rather than for the pool's whole
+// goal, for each draws one reserve spare and no other class: a device whose
+// maximum leaves the content class short after the headroom and the reserve
+// are made still opens, where a wait for the goal refused the copy over a
+// reserve spare already ready. The wait promises the spare is ready when it
+// returns, not that the take lands — a take racing it can claim the spare,
+// and the take's own refusal answers then. Overturned by a copy that draws
+// from a class other than the reserve.
+func (p *Pool) WaitReserveSpare(ctx context.Context) error {
+	return p.wait(ctx, func() bool { return len(p.ready[Reserve]) < 1 }, func() int64 { return 1 })
+}
+
 // recordReadyLocked is the spares a header-only roll can take: the content
 // spares past those the open holds keep for their reservations, and the
 // headroom spares. The caller holds mu.

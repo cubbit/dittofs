@@ -911,10 +911,12 @@ func (c *Core) WaitRecordSpares(ctx context.Context, n int) error {
 }
 
 // TakeReserve draws one spare of the pool's repack reserve for the open's own
-// copy, waiting for the pool's settle when the class is short — the wait the
-// open's loss records already take before their first append, and the same
-// one here, so an open whose emptying draws first past a refill that has not
-// landed blocks on the pool rather than failing — and returning the pool's
+// copy, waiting for the pool's settle when the class is short — a wait for
+// the reserve class alone, as the open's loss records wait for their own
+// spares and not the pool's whole goal, so an open whose emptying draws first
+// past a refill that has not landed blocks on the pool rather than failing,
+// and a maximum that leaves the content class short does not refuse a copy
+// whose reserve spare is ready — and returning the pool's
 // error when none can be made and the refill stopped. It is the one shape the
 // open hands the emptying step's copies: the drawn spare enters the set as
 // the segment the copy makes of it, sealed by the step that took it.
@@ -923,7 +925,7 @@ func (c *Core) TakeReserve(ctx context.Context) (core.SegmentID, error) {
 	if err == nil || !errors.Is(err, core.ErrNoSpace) {
 		return id, err
 	}
-	if werr := c.pool.WaitSpares(ctx); werr != nil {
+	if werr := c.pool.WaitReserveSpare(ctx); werr != nil {
 		return 0, werr
 	}
 	return c.pool.Take(segment.Reserve)
