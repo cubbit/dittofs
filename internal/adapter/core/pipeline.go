@@ -865,11 +865,11 @@ func (p *pipeline) reserve(tr *track, a answerer, inv Invocation, h Header, r *R
 	if err != nil {
 		if st, ok := reservationStage(err); ok {
 			p.refused(tr, st)
-			p.lap(tr, st)
+			p.lapAttempt(tr, st)
 		}
 		return nil, err
 	}
-	p.lap(tr, stageReplyWait)
+	p.lapAttempt(tr, stageReplyWait)
 	r.resolveStart = tr.mark
 	return reply, nil
 }
@@ -896,7 +896,7 @@ func (p *pipeline) resolve(tr *track, r *Request, op *Op, inv Invocation, draini
 	}
 	if err != nil {
 		p.refused(tr, stageResolveIDs)
-		p.lap(tr, stageResolveIDs)
+		p.lapAttempt(tr, stageResolveIDs)
 	}
 	return err
 }
@@ -1040,6 +1040,43 @@ func (p *pipeline) lap(tr *track, st stage) {
 	tr.mark = now
 }
 
+// lapAttempt is lap for reply_wait and resolve_ids, the stages each attempt
+// of a request runs: in a table that holds, where a re-drive runs them again,
+// the run is added to the request's sums, which end observes once (§4.6,
+// §10.1).
+func (p *pipeline) lapAttempt(tr *track, st stage) {
+	if !tr.req.holds {
+		p.lap(tr, st)
+		return
+	}
+	now := p.sh.clock.Now()
+	if p.times[st] {
+		tr.req.runs.add(st, now.Sub(tr.mark))
+	}
+	tr.mark = now
+}
+
+// sums is a request's time in each stage it runs more than once, its runs
+// summed, so each is observed once (§10.1).
+type sums struct {
+	d   [stages]time.Duration
+	ran [stages]bool
+}
+
+func (s *sums) add(st stage, d time.Duration) {
+	s.d[st] += d
+	s.ran[st] = true
+}
+
+// observe observes each stage s holds once, under tr's series.
+func (s *sums) observe(tr *track) {
+	for st, ran := range s.ran {
+		if ran {
+			tr.series().observe(stage(st), s.d[st])
+		}
+	}
+}
+
 // requestCtx is a request's one context: its connection's, through the
 // request span where it has one, so the connection's close cancels the
 // request (§6.5, §6.9). It keeps what each attempt reads, and answers
@@ -1051,6 +1088,7 @@ type requestCtx struct {
 	hold  time.Time // a re-drive's hold deadline; zero for none
 	holds bool      // its table holds
 	clone time.Time // in a table that holds, the clone wait's deadline its row returned at arrival; zero for none
+	runs  sums      // with holds, its attempts' runs of reply_wait and resolve_ids, observed once as it ends
 }
 
 func (c *requestCtx) Value(key any) any {
@@ -1156,6 +1194,7 @@ func (p *pipeline) end(tr *track, sent bool, s Status, reply int, err error) {
 		// The interim of a request still pending: its request goes on.
 		return
 	}
+	tr.req.runs.observe(tr)
 	if tr.flight {
 		tr.series().answered()
 		tr.flight = false

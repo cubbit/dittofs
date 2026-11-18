@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"net/netip"
 	"runtime"
 	"slices"
@@ -684,6 +685,41 @@ func TestASecondChainIsAnsweredWhileTheFirstIsInTheService(t *testing.T) {
 // cancelOf is a version 2 Cancel, sealed under session, naming message id.
 func cancelOf(id uint64, session uint32) testproto.Msg {
 	return testproto.Msg{Op: testproto.OpCancel, Version: 2, Session: session, Target: id}
+}
+
+// A held request observes reply_wait and resolve_ids once, however many
+// attempts run them, its runs summed: a PutFH and a Create the service
+// answers ErrDelay twice, on a clock that steps 1 ms a read, observe each
+// twice, once per request, summing 4 ms, the PutFH's 1 ms and the Create's
+// three attempts' 1 ms each (RFC 20 §10.1).
+func TestAHeldRequestObservesEachStageOnceItsAttemptsSummed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk, m := newManualClock(), metrics.New("v", "c")
+		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, clk)
+		before, _ := scrape(t, m)
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		clk.step = time.Millisecond
+		s.serve(s.heldChain(1, "f")...)
+		s.interimOf(2)
+		clk.Advance(100 * time.Millisecond)
+		synctest.Wait()
+		clk.Advance(100 * time.Millisecond)
+		if r := s.finalOf(2); r.Status != testproto.StatusOK {
+			t.Fatalf("the held Create's third attempt is answered %+v, want success", r)
+		}
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := scrape(t, m)
+		c0, s0 := wireSeconds(before)
+		c1, s1 := wireSeconds(after)
+		for _, st := range []string{"reply_wait", "resolve_ids"} {
+			if n, sum := c1[st]-c0[st], s1[st]-s0[st]; n != 2 || math.Abs(sum-0.004) > 1e-9 {
+				t.Errorf("%s observed %v times, %v s; want 2, 0.004 s", st, n, sum)
+			}
+		}
+	})
 }
 
 // A cancel ends a hold between attempts at once, alone or as a chain's

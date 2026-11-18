@@ -87,13 +87,19 @@ func (sh *shared) trace(op *Op, ts *tableSeries) Middleware {
 }
 
 // metrics is the stage clock's hinge (§10.1): as the call starts it
-// observes resolve_ids, from the start the request keeps; as the call
+// observes resolve_ids, from the start the request keeps, or, in a table that
+// holds, adds it to the request's sums, as lapAttempt does; as the call
 // returns or panics it marks the call's end, from which the pipeline times
 // map_error. The call itself is the service's to time.
 func (sh *shared) metrics(ts *tableSeries) Middleware {
 	return func(next Call) Call {
 		return func(ctx context.Context, r *Request) error {
-			ts.observe(stageResolveIDs, sh.clock.Now().Sub(r.resolveStart))
+			d := sh.clock.Now().Sub(r.resolveStart)
+			if rc, ok := ctx.Value(attemptKey{}).(*requestCtx); ok && rc.holds {
+				rc.runs.add(stageResolveIDs, d)
+			} else {
+				ts.observe(stageResolveIDs, d)
+			}
 			defer func() { r.callEnd = sh.clock.Now() }()
 			return next(ctx, r)
 		}
