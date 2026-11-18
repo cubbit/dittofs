@@ -51,7 +51,7 @@ func TestNotHeldSegmentsRetireBeforeEmptying(t *testing.T) {
 	// follows.
 	rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
 	empty := &emptying{deps: h.deps, rd: rd, st: &st, identity: journalID}
-	if err := runRetire(context.Background(), h.deps, rd, &st, journalID, core.Version{}, nil, empty); err != nil {
+	if err := empty.runRetire(context.Background()); err != nil {
 		t.Fatalf("the retire step: %v", err)
 	}
 	if slices.Contains(r.listing(), format.SegmentName(1)) {
@@ -74,7 +74,7 @@ func TestNotHeldSegmentsRetireBeforeEmptying(t *testing.T) {
 	// a sealed spare of the reserve the retire step refilled, its numbers
 	// kept, and the segment's file leaves the directory with a synced
 	// unlink.
-	if err := runEmptying(context.Background(), h.deps, rd, &st, journalID, core.Version{}, nil, empty); err != nil {
+	if err := empty.runEmptying(context.Background()); err != nil {
 		t.Fatalf("the emptying step: %v", err)
 	}
 	if slices.Contains(r.listing(), format.SegmentName(2)) {

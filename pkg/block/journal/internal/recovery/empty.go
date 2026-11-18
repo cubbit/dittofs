@@ -42,14 +42,14 @@ func Emptying(ctx context.Context, deps Deps, st *State, expect core.JournalID, 
 	defer func() { end(err) }()
 	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
 	empty := &emptying{deps: deps, rd: rd, st: st, identity: expect, marks: marks}
-	if err := runRetire(ctx, deps, rd, st, expect, floor, marks, empty); err != nil {
+	if err := empty.runRetire(ctx); err != nil {
 		return err
 	}
 	// ponytail: a freed take no copy drew by the end of the emptying is not
 	// handed back to the pool: it stays a record-less cap-sized file the next
 	// open's spares phase re-adopts. Upgrade to returning it to the pool when
 	// the pool wiring can adopt a take mid-run.
-	return runEmptying(ctx, deps, rd, st, expect, floor, marks, empty)
+	return empty.runEmptying(ctx)
 }
 
 // runRetire is the emptying's first step: every sealed segment the liveness
@@ -63,14 +63,14 @@ func Emptying(ctx context.Context, deps Deps, st *State, expect core.JournalID, 
 // corrupted, and the mask its loss record makes is on disk before the
 // segment's unlink takes the record with it. Nothing is asserted of that
 // order here: the caller hands the state the loss pass already gated on.
-func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, _ core.Version, _ []core.SyncMark, empty *emptying) error {
+func (e *emptying) runRetire(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if st.Assembled.Set == nil {
+	if e.st.Assembled.Set == nil {
 		return errors.New("recovery: the emptying's state carries no assembled ledger, so nothing is a retirement's to take")
 	}
-	if deps.Liveness == nil || deps.Retire == nil {
+	if e.deps.Liveness == nil || e.deps.Retire == nil {
 		return errors.New("recovery: the emptying's deps carry no liveness tracker or retirement path: the open hands the ones the journal it assembled runs")
 	}
 	// The deferred-loss registry, read the way the open reads the failed
@@ -78,11 +78,11 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 	// dropped record is never retired here, for its copy has not been made,
 	// and retiring it would take the record the copy the deferral owes its
 	// own record to would read.
-	deferred, err := durability.DeferredFor(deps.Dir, expect)
+	deferred, err := durability.DeferredFor(e.deps.Dir, e.identity)
 	if err != nil {
 		return err
 	}
-	for _, row := range st.Assembled.Set.Snapshot() {
+	for _, row := range e.st.Assembled.Set.Snapshot() {
 		var reason segment.Reason
 		switch row.State {
 		case segment.Sealed:
@@ -110,7 +110,7 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 			// reserve's refill, is not taken either.
 			continue
 		}
-		if deps.Liveness.Held(row.ID) {
+		if e.deps.Liveness.Held(row.ID) {
 			continue // the tracker's answer is the whole candidate test: no superset beside it
 		}
 		if len(deferred[row.ID]) > 0 {
@@ -133,7 +133,7 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		ret, err := deps.Retire(row.ID, reason)
+		ret, err := e.deps.Retire(row.ID, reason)
 		if err != nil {
 			return err
 		}
@@ -142,7 +142,7 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 			// naming the retired segment, the same relief the emptying's own
 			// unlinks give: the emptying step below draws them before the
 			// pool's reserve.
-			empty.freed = append(empty.freed, empty.freedTakes(row.ID)...)
+			e.freed = append(e.freed, e.freedTakes(row.ID)...)
 		}
 	}
 	return nil
@@ -162,9 +162,9 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 // out and unlinking it here is what makes that one open's word final.
 // Withdrawn if an ended segment is ever ruled to stand past the open that
 // ended it.
-func runEmptying(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, _ core.Version, _ []core.SyncMark, empty *emptying) error {
+func (e *emptying) runEmptying(ctx context.Context) error {
 	var ended []core.SegmentID
-	for _, row := range st.Assembled.Set.Snapshot() {
+	for _, row := range e.st.Assembled.Set.Snapshot() {
 		if row.State == segment.Ended {
 			ended = append(ended, row.ID) // rows ascend, so ended does too
 		}
@@ -174,9 +174,9 @@ func runEmptying(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	// records left out of the copy because the index serves none of them.
 	// An ended segment already goes through its own leg, so none is listed
 	// twice.
-	for _, drop := range st.Kinds.PastReserve {
+	for _, drop := range e.st.Kinds.PastReserve {
 		for _, id := range drop.Segments {
-			if state, err := st.Assembled.Set.State(id); err == nil && state == segment.Sealed {
+			if state, err := e.st.Assembled.Set.State(id); err == nil && state == segment.Sealed {
 				ended = append(ended, id)
 			}
 		}
@@ -191,9 +191,9 @@ func runEmptying(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	// nothing to carry retires and refills the reserve before a held one's
 	// copy draws from it, the order the retire step itself keeps.
 	slices.SortStableFunc(ended, func(a, b core.SegmentID) int {
-		return cmp.Compare(boolRank(deps.Liveness.Held(a)), boolRank(deps.Liveness.Held(b)))
+		return cmp.Compare(boolRank(e.deps.Liveness.Held(a)), boolRank(e.deps.Liveness.Held(b)))
 	})
-	if deps.DrawReserve == nil {
+	if e.deps.DrawReserve == nil {
 		return errors.New("recovery: the emptying's deps carry no reserve draw: the open hands the pool's own take of the repack reserve")
 	}
 	// The deferred-loss registry, read the way the retire step read it: each
@@ -201,7 +201,7 @@ func runEmptying(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	// below writes and this step ends. The read is a snapshot, exactly as
 	// the retire step's is; nothing defers between the two, for no Lose of
 	// the journal the open built runs inside the open.
-	deferred, err := durability.DeferredFor(deps.Dir, expect)
+	deferred, err := durability.DeferredFor(e.deps.Dir, e.identity)
 	if err != nil {
 		return err
 	}
@@ -210,7 +210,7 @@ func runEmptying(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := empty.oneSegment(ctx, id, deferred[id]); err != nil {
+		if err := e.oneSegment(ctx, id, deferred[id]); err != nil {
 			return err
 		}
 	}
@@ -405,7 +405,7 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 				continue
 			}
 		}
-		bytes, refused := e.readPayload(id, rec)
+		bytes, refused := e.readWhole(id, int64(rec.At))
 		synced := sc.Sealed || named[id] || int64(rec.At) < sc.SyncedThrough || int64(rec.At) < through[id]
 		if refused != nil {
 			return refused
@@ -511,7 +511,7 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 		if e.carried[asideKey{rec.Kind, rec.Seq, rec.File, rec.Ext}] || e.asideCopyVerifies(rec, id) {
 			continue // another copy verifies in a standing segment or this run's own target: nothing is carried
 		}
-		bytes, refused := e.readAside(rec)
+		bytes, refused := e.readWhole(rec.Loc.Segment, rec.Loc.Off)
 		if refused != nil {
 			return refused
 		}
@@ -542,7 +542,8 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 		if lerr != nil {
 			return lerr
 		}
-		losses = append(losses, e.deferralOf(lw))
+		lw.deferral = true // the record the deferral owes: it ends once the copy holds it durable
+		losses = append(losses, lw)
 	}
 
 	// One spare for the whole segment: the copy is one batch or none, so a
@@ -909,29 +910,14 @@ func (e *emptying) asideCopyVerifies(rec reclaim.Rec, id core.SegmentID) bool {
 	return false
 }
 
-// readPayload reads the payload record rec of segment id whole — its header
-// and the body its header sizes — through the open's reader, answering the
-// bytes a verifying read kept. A read no bounded attempt completed refuses the
-// open on the ranges the reader collected. A record whose bytes do not decode
-// or verify answers nil with a nil error: the record failed only on this
-// read, the caller's loss leg owns it.
-func (e *emptying) readPayload(id core.SegmentID, rec index.Record) (bytes []byte, refused error) {
-	b, _, rot, rerr := readRecordWhole(e.rd, e.identity, id, int64(rec.At))
-	if rerr != nil {
-		return nil, rerr
-	}
-	if rot {
-		return nil, nil
-	}
-	return b, nil
-}
-
-// readAside reads the aside record rec whole at the placement its
-// registration names. A read no bounded attempt completed refuses the open;
-// a record whose bytes do not decode or verify answers nil with a nil error,
-// the caller's refusal owns it.
-func (e *emptying) readAside(rec reclaim.Rec) (bytes []byte, refused error) {
-	b, _, rot, rerr := readRecordWhole(e.rd, e.identity, rec.Loc.Segment, rec.Loc.Off)
+// readWhole reads the record at off of segment id whole — its header and the
+// body its header sizes — through the open's reader, answering the bytes a
+// verifying read kept. A read no bounded attempt completed refuses the open
+// on the ranges the reader collected. A record whose bytes do not decode or
+// verify answers nil with a nil error: the record failed only on this read,
+// and the caller's loss leg or refusal owns it.
+func (e *emptying) readWhole(id core.SegmentID, off int64) (bytes []byte, refused error) {
+	b, _, rot, rerr := readRecordWhole(e.rd, e.identity, id, off)
 	if rerr != nil {
 		return nil, rerr
 	}
@@ -1021,13 +1007,6 @@ func (e *emptying) newLossWrite(l durability.Loss) (lossWrite, error) {
 		Loc:        segment.Location{Segment: l.Seg, Off: 0, Len: int64(len(at))},
 	}
 	return lossWrite{l: l, at: at, seq: seq, rec: reg}, nil
-}
-
-// deferralOf marks one loss write as the record a deferred entry owes, so
-// the deferral ends once the copy holds it durable.
-func (e *emptying) deferralOf(lw lossWrite) lossWrite {
-	lw.deferral = true
-	return lw
 }
 
 // lossOnDisk answers whether a loss record naming the loss l already
