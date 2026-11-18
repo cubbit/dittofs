@@ -193,7 +193,7 @@ func TestTornTailOnlyOpens(t *testing.T) {
 // TestOpenEndingASegmentIsRefusedNamingIt holds the checkpoint's refusal at
 // its own caller: an open whose recovery ends a segment — here over a torn
 // slot below a record that verifies, the ending whole with no cut — answers
-// ErrNotImplemented naming the segment, serves nothing and changes nothing
+// ErrOpenRefused naming the segment, serves nothing and changes nothing
 // on disk, until the emptying that unlinks such a segment is built.
 func TestOpenEndingASegmentIsRefusedNamingIt(t *testing.T) {
 	f := seededJournal(t)
@@ -217,8 +217,8 @@ func TestOpenEndingASegmentIsRefusedNamingIt(t *testing.T) {
 		t.Fatalf("read the planted segment: %v", err)
 	}
 	_, err = Open(context.Background(), f.dir, Version{}, f.id, nil, f.opts(nil)...)
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("the open of a directory whose recovery ends a segment returned %v, want ErrNotImplemented", err)
+	if !errors.Is(err, ErrOpenRefused) {
+		t.Fatalf("the open of a directory whose recovery ends a segment returned %v, want ErrOpenRefused", err)
 	}
 	if !strings.Contains(err.Error(), fmt.Sprintf("segment %d", seg)) {
 		t.Fatalf("the refusal %q names no ended segment, want it naming segment %d", err, seg)
@@ -370,8 +370,12 @@ func TestPastReserveLossRefusesTheOpen(t *testing.T) {
 	// every append, so no retry burns a record the reserve could have held.
 	refuse := func(nth string) {
 		_, err := Open(context.Background(), f.dir, Version{}, f.id, nil, f.opts(func(s *Settings) { s.HeadroomRecords = 2 })...)
-		if !errors.Is(err, ErrNotImplemented) {
-			t.Fatalf("the %s open of two corrupt drops past the reserve returned %v, want the ErrNotImplemented refusal", nth, err)
+		if !errors.Is(err, ErrOpenRefused) {
+			t.Fatalf("the %s open of two corrupt drops past the reserve returned %v, want the ErrOpenRefused refusal", nth, err)
+		}
+		var past *LostPastReserveError
+		if !errors.As(err, &past) || past.N != 1 || past.Seg != 944 {
+			t.Fatalf("the %s refusal %v carries past-reserve value %+v, want N 1 against segment 944 typed through Open's wrapping", nth, err, past)
 		}
 		if !strings.Contains(err.Error(), "the first against segment 944") {
 			t.Fatalf("the %s refusal %q names no segment the losses past the reserve defer against, want it naming segment 944", nth, err)
@@ -453,10 +457,10 @@ func TestDeferredOnlySegmentStandsBehindTheRefusal(t *testing.T) {
 		if rerr != nil || n != 0 || len(missing) != 1 || missing[0] != (Extent{Off: 0, Len: 32}) {
 			t.Fatalf("the served open answered the dropped extent n %d, missing %+v, err %v — the older record served over the synced write, want the whole extent lost", n, missing, rerr)
 		}
-		t.Fatalf("the open of two corrupt drops past the reserve served, want the ErrNotImplemented refusal")
+		t.Fatalf("the open of two corrupt drops past the reserve served, want the ErrOpenRefused refusal")
 	}
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("the open of a deferred-only corrupt segment returned %v, want the ErrNotImplemented refusal", err)
+	if !errors.Is(err, ErrOpenRefused) {
+		t.Fatalf("the open of a deferred-only corrupt segment returned %v, want the ErrOpenRefused refusal", err)
 	}
 	if !strings.Contains(err.Error(), "the first against segment 948") {
 		t.Fatalf("the refusal %q names no segment the past-reserve loss defers against, want it naming the deferred-only segment 948", err)
@@ -470,7 +474,7 @@ func TestDeferredOnlySegmentStandsBehindTheRefusal(t *testing.T) {
 		t.Fatalf("%d loss records on disk after the refusal, want none", n)
 	}
 	// The refusal answers every retry the same way.
-	if _, err := open(); !errors.Is(err, ErrNotImplemented) {
+	if _, err := open(); !errors.Is(err, ErrOpenRefused) {
 		t.Fatalf("the second open returned %v, want the same refusal", err)
 	}
 	if _, aerr := f.seam.Durable(nameB); aerr != nil {
@@ -742,8 +746,8 @@ func TestASharedPieceIsCountedOnceAcrossTheLegs(t *testing.T) {
 	// piece's 951, and burns no record the reserve could have held.
 	refuse := func(nth string) {
 		_, err := Open(context.Background(), f.dir, Version{}, f.id, nil, f.opts(func(s *Settings) { s.HeadroomRecords = 2 })...)
-		if !errors.Is(err, ErrNotImplemented) {
-			t.Fatalf("the %s open past the open reserve returned %v, want the ErrNotImplemented refusal", nth, err)
+		if !errors.Is(err, ErrOpenRefused) {
+			t.Fatalf("the %s open past the open reserve returned %v, want the ErrOpenRefused refusal", nth, err)
 		}
 		if !strings.Contains(err.Error(), "1 of them, the first against segment 952") {
 			t.Fatalf("the %s refusal %q answers a short count the shared piece burns, want the one overlapping drop against segment 952 alone", nth, err)
@@ -954,7 +958,7 @@ func TestAFailedOpenUnlinksNothing(t *testing.T) {
 	if err == nil {
 		t.Fatalf("the open over a device refusing the loss record's sync served, want the refusal")
 	}
-	if errors.Is(err, ErrNotImplemented) || !strings.Contains(err.Error(), "input/output error") {
+	if errors.Is(err, ErrOpenRefused) || !strings.Contains(err.Error(), "input/output error") {
 		t.Fatalf("the failed open answered %v, want the device's own sync failure of the loss record", err)
 	}
 	if _, aerr := f.seam.Durable(name); aerr != nil {
@@ -970,7 +974,7 @@ func TestAFailedOpenUnlinksNothing(t *testing.T) {
 		t.Cleanup(func() { _ = again.Close() })
 		t.Fatalf("the open after the failed one served the directory, want the ended-segment refusal")
 	}
-	if !errors.Is(aerr, ErrNotImplemented) || !strings.Contains(aerr.Error(), "the open ends segment") {
+	if !errors.Is(aerr, ErrOpenRefused) || !strings.Contains(aerr.Error(), "the open ends segment") {
 		t.Fatalf("the open after the failed one answered %v, want the refusal naming the ended empty spare", aerr)
 	}
 	if _, derr := f.seam.Durable(name); derr != nil {

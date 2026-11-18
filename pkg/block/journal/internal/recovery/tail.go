@@ -191,7 +191,7 @@ func classifyTails(rd *reader, identity core.JournalID, named, unverified map[co
 					// too: this journal cannot yet feed one, so a footer
 					// entry naming one is never confined as a corrupt drop.
 					if e.Kind > format.KindForget {
-						return tails{}, fmt.Errorf("%w: a %s record in segment %d", core.ErrNotImplemented, e.Kind, id)
+						return tails{}, fmt.Errorf("%w: a %s record in segment %d", core.ErrOpenRefused, e.Kind, id)
 					}
 					sc.Dropped = append(sc.Dropped, droppedRecord{
 						Entry: e, Header: headerFromEntry(id, e), Synced: true,
@@ -389,7 +389,7 @@ func unsealByProof(tl *tails, fate *segmentFate, sc *segmentScan, unverified map
 // the reconcile work lands, which withdraws this marker.
 func refuseRange(id core.SegmentID, r format.ScanRange) error {
 	return fmt.Errorf("%w: segment %d: a refused range at [%d,%d) that names no record",
-		core.ErrNotImplemented, id, r.Off, r.End)
+		core.ErrOpenRefused, id, r.Off, r.End)
 }
 
 // refuseMissingEnd is the same refusal for a named predecessor that ends
@@ -417,7 +417,7 @@ func refuseMissingEnd(sc segmentScan) error {
 		start = 0
 	}
 	return fmt.Errorf("%w: segment %d: a named predecessor's missing end at [%d,%d) that names no record",
-		core.ErrNotImplemented, sc.ID, start, sc.Size)
+		core.ErrOpenRefused, sc.ID, start, sc.Size)
 }
 
 // markerAloneRotted reports whether a named predecessor's missing seal marker

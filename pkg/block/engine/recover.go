@@ -374,12 +374,14 @@ func (e *Engine) raiseAtStart(ctx context.Context, o *opened) error {
 //
 // decision: an error a check meets, rather than a refusal it makes, still
 // fails Start as any other failing step does, and stops every share of the
-// node. The journal now declares its own open refusals — ErrNotImplemented
-// for the recovery rules, ErrUnreadable for bytes no bounded read completed —
-// and those are refused below, told from a check's error by the sentinel
-// they carry; every other error Open returns as itself (RFC 1 §3), the engine
-// cannot tell it from an error of recovery, and it gets the answer an I/O
-// error at recovery gets (RFC 8 §2.5). Overturned with the rule for every
+// node. The journal declares its own open refusals — ErrOpenRefused for the
+// recovery rules, ErrUnreadable for bytes no bounded read completed — and
+// those are refused below and retried, told from a check's error by the
+// sentinel they carry; ErrNotImplemented, which an unbuilt operation answers
+// and which is never retried, is no refusal of the open and fails Start as
+// any other error does. Every other error Open returns as itself (RFC 1 §3),
+// the engine cannot tell it from an error of recovery, and it gets the answer
+// an I/O error at recovery gets (RFC 8 §2.5). Overturned with the rule for every
 // error at open, once a journal that fails to open at start for any cause
 // but a missing or foreign journal is left closed and retried, as a refused
 // reopen is.
@@ -412,11 +414,13 @@ func (e *Engine) refuseDevice(
 		return o, nil
 	}
 
-	// decision: the ErrNotImplemented branch keys on the error of the Open
-	// call alone — refuseDevice is reached only from it — because other
-	// journal surfaces return ErrNotImplemented for unbuilt operations that
-	// are no refusal of the open, and this mapping must not claim them.
-	if errors.Is(err, journal.ErrNotImplemented) {
+	// decision: the refusal branch keys on ErrOpenRefused, the sentinel the
+	// journal declares for the refusals its recovery makes and leaves the
+	// directory standing for, so a retry meets the same answer until the
+	// recovery stops making it. ErrNotImplemented is left to fail Start: an
+	// unbuilt operation is never retried, and retrying it every interval
+	// would claim an answer the journal says no retry changes.
+	if errors.Is(err, journal.ErrOpenRefused) {
 		o := e.refuse(dir, shares, tags, err, openRefusedCondition(dir, expect, err))
 		o.unsuitable = true
 
@@ -476,8 +480,18 @@ func unsuitableCondition(dir string, id journal.JournalID, cause error) *Conditi
 
 // openRefusedCondition is journal_open_refused for the device dir, whose
 // open the journal itself refused with cause: a recovery rule the open
-// cannot satisfy, retried with the open.
+// cannot satisfy, retried with the open. A refusal for corrupt losses past
+// the open reserve names the losses and the setting that sizes the reserve,
+// the operator's remedy, read from the error's value.
 func openRefusedCondition(dir string, id journal.JournalID, cause error) *Condition {
+	detail := "the journal refuses its own open at recovery; "
+
+	var past *journal.LostPastReserveError
+	if errors.As(cause, &past) {
+		detail = fmt.Sprintf("the open would defer %d corrupt losses past its reserve, the first against segment %d; "+
+			"raise journal.headroom_records to hold them; ", past.N, past.Seg)
+	}
+
 	return &Condition{
 		Name: conditionJournalOpenRefused,
 		Subject: Subject{
@@ -486,7 +500,7 @@ func openRefusedCondition(dir string, id journal.JournalID, cause error) *Condit
 			Name:  dir,
 		},
 		Cause:  cause,
-		Detail: "the journal refuses its own open at recovery; the device's shares are not attached; the open is retried every " + unsuitableRetry.String(),
+		Detail: detail + "the device's shares are not attached; the open is retried every " + unsuitableRetry.String(),
 	}
 }
 
@@ -497,7 +511,11 @@ func unreadableCondition(dir string, id journal.JournalID, cause error) *Conditi
 	ranges := "no segment ranges the value names"
 
 	var ure *journal.UnreadableRangesError
-	if errors.As(cause, &ure) {
+	switch {
+	case errors.As(cause, &ure) && ure.Format:
+		// The format file carries no segment ranges: the value names the file.
+		ranges = "the format file is unreadable"
+	case ure != nil && len(ure.Ranges) > 0:
 		parts := make([]string, len(ure.Ranges))
 
 		for i, r := range ure.Ranges {

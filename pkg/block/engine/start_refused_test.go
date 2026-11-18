@@ -13,16 +13,16 @@ import (
 )
 
 // A lost tail is one of the refusals the journal's own Open answers at
-// recovery, wrapped around core.ErrNotImplemented as the D13 rule names it.
+// recovery, wrapped around ErrOpenRefused as RFC 1 §3's refused open is.
 func lostTailRefusal() error {
 	return fmt.Errorf(
 		"journal: the mark below segment 3 names a lost synced tail: %w",
-		journal.ErrNotImplemented,
+		journal.ErrOpenRefused,
 	)
 }
 
-// An unbounded read that never finished is the D15 refusal, whose value
-// carries the ranges the device never read.
+// A read the device never completed is the unreadable-range refusal, whose
+// value carries the ranges the device never read.
 func unreadableRefusal() error {
 	return &journal.UnreadableRangesError{
 		Ranges: []journal.SegmentRange{{Segment: 4, Off: 4096, Len: 16}},
@@ -42,7 +42,7 @@ func TestStartLeavesARefusedReopensSharesUnattached(t *testing.T) {
 		{
 			name:      "a lost synced tail",
 			refusal:   lostTailRefusal,
-			cause:     journal.ErrNotImplemented,
+			cause:     journal.ErrOpenRefused,
 			condition: "journal_open_refused",
 		},
 		{
@@ -125,7 +125,7 @@ func TestARefusedReopenIsRetriedToTheSameRefusal(t *testing.T) {
 		{
 			name:      "a lost synced tail",
 			refusal:   lostTailRefusal,
-			cause:     journal.ErrNotImplemented,
+			cause:     journal.ErrOpenRefused,
 			condition: "journal_open_refused",
 		},
 		{
@@ -182,5 +182,65 @@ func TestARefusedReopenIsRetriedToTheSameRefusal(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The other details the refusal conditions name from the error's value: the
+// past-reserve refusal wrapped as Open wraps it names the setting that sizes
+// the reserve, and an unreadable format file, which carries no ranges, names
+// the file rather than an empty list.
+func TestRefusalConditionsNameTheirRemedy(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		refusal   error
+		condition string
+		want      string
+	}{
+		{
+			name: "corrupt losses past the open reserve",
+			refusal: fmt.Errorf("%w: %s: %w", journal.ErrOpenRefused, startDevice,
+				&journal.LostPastReserveError{N: 2, Seg: 944}),
+			condition: "journal_open_refused",
+			want: "the open would defer 2 corrupt losses past its reserve, the first against segment 944; " +
+				"raise journal.headroom_records to hold them; " +
+				"the device's shares are not attached; the open is retried every 30s",
+		},
+		{
+			name:      "an unreadable format file",
+			refusal:   &journal.UnreadableRangesError{Format: true},
+			condition: "journal_range_unreadable",
+			want:      "the format file is unreadable; the device's shares are not attached; the open is retried every 30s",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStarter(t)
+			s.openErr = tc.refusal
+			s.closeAtEnd(t)
+
+			if err := s.start(t); err != nil {
+				t.Fatalf("Start = %v, want nil", err)
+			}
+
+			c, ok := conditionOf(s.e.Stats(), tc.condition)
+			if !ok {
+				t.Fatalf("%s was not raised", tc.condition)
+			}
+
+			if c.Detail != tc.want {
+				t.Errorf("the %s detail = %q, want %q", tc.condition, c.Detail, tc.want)
+			}
+		})
+	}
+}
+
+// An unbuilt operation's ErrNotImplemented is no refusal of the open: it is
+// never retried, so it fails Start as any other error at open does.
+func TestABareNotImplementedAtOpenFailsStart(t *testing.T) {
+	s := newStarter(t)
+	s.openErr = fmt.Errorf("journal: an unbuilt step: %w", journal.ErrNotImplemented)
+
+	err := s.start(t)
+	if !errors.Is(err, journal.ErrNotImplemented) {
+		t.Fatalf("Start = %v, want it failed with the open's ErrNotImplemented", err)
 	}
 }

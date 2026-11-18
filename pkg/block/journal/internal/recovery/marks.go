@@ -242,7 +242,7 @@ func runMarksRaise(ctx context.Context, _ Deps, _ *reader, st *State, _ core.Jou
 // the records the tail's proof handed to the re-append from first reads
 // that verified — and each of the three is checked, for a record about to be
 // re-appended is not lost whatever the device holds. A lost tail refuses the
-// open with ErrNotImplemented naming the mark's segment, its Offset and its
+// open with ErrOpenRefused naming the mark's segment, its Offset and its
 // Sequence. A mark whose segment is absent is decided first, and decided by
 // nothing here: the retirement reading below owns it.
 func runMarksLostTail(ctx context.Context, _ Deps, _ *reader, st *State, _ core.JournalID, _ core.Version, marks []core.SyncMark) error {
@@ -328,7 +328,7 @@ func seqVerifies(st *State, seq core.Seq) bool {
 // reconcile's journal half lands.
 func refuseLostTail(m core.SyncMark) error {
 	return fmt.Errorf("%w: segment %d: the sync's acknowledged record, sequence %d ending at %d, verifies nowhere",
-		core.ErrNotImplemented, m.Segment, m.Sequence, m.Offset)
+		core.ErrOpenRefused, m.Segment, m.Sequence, m.Offset)
 }
 
 // markedSeqs seeds the map the feed raises: one entry per sequence number a
@@ -432,5 +432,5 @@ func markDamaged(st *State, id core.SegmentID) {
 // marker.
 func refuseMarkedRange(id core.SegmentID, r format.ScanRange) error {
 	return fmt.Errorf("%w: segment %d: a refused range at [%d,%d) below a mark's Through that names no record",
-		core.ErrNotImplemented, id, r.Off, r.End)
+		core.ErrOpenRefused, id, r.Off, r.End)
 }

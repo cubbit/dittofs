@@ -235,7 +235,7 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 			// reads the forget record back for its own rules.
 			sc.Aside = append(sc.Aside, asideRecord{Header: headerFromEntry(info.ID, e)})
 		default: // the reconcile kinds, 15 and 16
-			return sc, false, fmt.Errorf("%w: a %s record in segment %d", core.ErrNotImplemented, e.Kind, info.ID)
+			return sc, false, fmt.Errorf("%w: a %s record in segment %d", core.ErrOpenRefused, e.Kind, info.ID)
 		}
 	}
 	return sc, true, nil

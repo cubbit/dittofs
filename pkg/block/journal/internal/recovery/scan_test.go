@@ -219,7 +219,7 @@ func TestScanSegmentSetsAsideTheT75Kinds(t *testing.T) {
 
 // TestScanSegmentRefusesReconcileKinds holds the reconcile ceiling: a
 // verifying reconcile or reconciled record fails the scan with
-// ErrNotImplemented, naming the kind and the segment, rather than being
+// ErrOpenRefused, naming the kind and the segment, rather than being
 // skipped or set aside — an open that quietly dropped it would serve without
 // the reconcile metadata it owes.
 func TestScanSegmentRefusesReconcileKinds(t *testing.T) {
@@ -248,8 +248,8 @@ func TestScanSegmentRefusesReconcileKinds(t *testing.T) {
 			r.plantSeg(id, buildSeg(id, tc.rec))
 
 			_, err := r.scan(id, journalID)
-			if !errors.Is(err, core.ErrNotImplemented) {
-				t.Fatalf("scanSegment over a %s record got err %v, want ErrNotImplemented", tc.kind, err)
+			if !errors.Is(err, core.ErrOpenRefused) {
+				t.Fatalf("scanSegment over a %s record got err %v, want ErrOpenRefused", tc.kind, err)
 			}
 			if got := err.Error(); !contains(got, tc.kind) || !contains(got, "6") {
 				t.Errorf("scanSegment: the refusal %q names neither the kind %q nor the segment 6", got, tc.kind)
@@ -260,7 +260,7 @@ func TestScanSegmentRefusesReconcileKinds(t *testing.T) {
 
 // TestScanSegmentRefusesKind17AndKind128 holds the unknown-kind stop: a
 // header of a kind this format does not define, verifying by its checksum,
-// fails the scan naming the segment — never ErrNotImplemented, and never
+// fails the scan naming the segment — never ErrOpenRefused, and never
 // stepped over by any length.
 func TestScanSegmentRefusesKind17AndKind128(t *testing.T) {
 	for _, tc := range []struct {
@@ -279,8 +279,8 @@ func TestScanSegmentRefusesKind17AndKind128(t *testing.T) {
 			if err == nil {
 				t.Fatalf("scanSegment over a kind %d record returned no error, want the open to fail", tc.kind)
 			}
-			if errors.Is(err, core.ErrNotImplemented) {
-				t.Errorf("scanSegment: a kind %d record got ErrNotImplemented, want the unknown-kind refusal", tc.kind)
+			if errors.Is(err, core.ErrOpenRefused) {
+				t.Errorf("scanSegment: a kind %d record got ErrOpenRefused, want the unknown-kind refusal", tc.kind)
 			}
 			if !errors.Is(err, core.ErrUnknownFormat) {
 				t.Errorf("scanSegment: a kind %d record got err %v, want ErrUnknownFormat", tc.kind, err)

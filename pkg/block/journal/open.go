@@ -326,7 +326,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		found := openedFigures{reporting: st.Reporting(), took: cfg.Clock.Elapsed() - started}
 		// decision: an open that ends a segment — a torn slot, a torn header
 		// or a failed marker window the classing gave an ending — is refused
-		// with ErrNotImplemented naming the lowest segment it ends, not yet
+		// with ErrOpenRefused naming the lowest segment it ends, not yet
 		// recovered: the ended rows take no append and no seal, and the
 		// emptying that unlinks their files and copies out their survivors
 		// is the phase this checkpoint draws the line at. The phases before
@@ -337,7 +337,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// the ended-whole fate alone is refused with the directory exactly
 		// as the attach pass read it. Withdrawn by the emptying.
 		if ended := st.EndedSegments(); len(ended) > 0 {
-			return nil, fmt.Errorf("%w: %s: the open ends segment %d, and its emptying is not built", ErrNotImplemented, dir, ended[0])
+			return nil, fmt.Errorf("%w: %s: the open ends segment %d, and its emptying is not built", ErrOpenRefused, dir, ended[0])
 		}
 		deps, state := continueFrom(st, datapath.Deps{
 			FS:            cfg.Storage,
@@ -404,7 +404,10 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			_ = c.Close()
 			var pastReserve *recovery.LostPastReserveError
 			if errors.As(err, &pastReserve) {
-				return nil, fmt.Errorf("%w: %s: %v", ErrNotImplemented, dir, pastReserve)
+				// Both wrapped: the sentinel tells the engine the open refused
+				// itself, the value carries the count an operator sizes
+				// journal.headroom_records against.
+				return nil, fmt.Errorf("%w: %s: %w", ErrOpenRefused, dir, pastReserve)
 			}
 			return nil, err
 		}

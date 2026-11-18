@@ -477,8 +477,8 @@ func TestCatalogDemotesEveryNoFooterToAScan(t *testing.T) {
 		name := format.SegmentName(segs[0])
 		r.rewrite(name, r.fileBytes(name)[:20]) // neither a whole header nor a trailer
 		_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
-		if !errors.Is(err, core.ErrNotImplemented) {
-			t.Fatalf("Run over a named predecessor cut to 20 bytes got err %v, want one wrapping core.ErrNotImplemented", err)
+		if !errors.Is(err, core.ErrOpenRefused) {
+			t.Fatalf("Run over a named predecessor cut to 20 bytes got err %v, want one wrapping core.ErrOpenRefused", err)
 		}
 		for _, want := range []string{fmt.Sprintf("segment %d", segs[0]), "[0,20)"} {
 			if !strings.Contains(err.Error(), want) {

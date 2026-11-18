@@ -397,7 +397,7 @@ func TestOpen_UnsuitableChecksBeforeWrite(t *testing.T) {
 	if !strings.Contains(err.Error(), platformtest.ProbeDir(s.dir)) || !strings.Contains(err.Error(), "remount with barriers") {
 		t.Errorf("the refusal %q names neither the directory nor the rule", err)
 	}
-	for _, target := range []error{ErrNoJournal, ErrNotImplemented, ErrIdentityMismatch} {
+	for _, target := range []error{ErrNoJournal, ErrOpenRefused, ErrIdentityMismatch} {
 		if errors.Is(err, target) {
 			t.Errorf("the unsuitable refusal also matches %v, want it matching no other refusal", target)
 		}
@@ -428,7 +428,7 @@ func TestOpen_CheckError_ReturnedAsItself(t *testing.T) {
 	if !errors.Is(err, probe) {
 		t.Fatalf("Open returned %v, want the probe's error as itself", err)
 	}
-	for _, target := range []error{ErrUnsuitableStorage, ErrNoJournal, ErrNotImplemented} {
+	for _, target := range []error{ErrUnsuitableStorage, ErrNoJournal, ErrOpenRefused} {
 		if errors.Is(err, target) {
 			t.Errorf("the probe's error matches %v, want it matching no refusal", target)
 		}

@@ -17,6 +17,17 @@ var (
 	// yet implemented. It is never retried.
 	ErrNotImplemented = errors.New("journal: not implemented")
 
+	// ErrOpenRefused is matched by every refusal Open itself makes at
+	// recovery: a reconcile record or a hold it cannot feed, a range or a
+	// named predecessor's end that names no surviving record, a mark's lost
+	// synced tail, corrupt losses that would run past the open reserve, and a
+	// recovery that ends a segment. The directory is left as it stands, so
+	// the refusal comes back the same on every retry; withdrawing one is the
+	// recovery change that stops answering it. ErrNotImplemented, which an
+	// unbuilt operation answers, is never a refusal of the open, and a bare
+	// one fails the start as any error at open does.
+	ErrOpenRefused = errors.New("journal: open refused at recovery")
+
 	// ErrClosed is returned by any call that reaches a journal or a handle
 	// after its Close began. The journal's state is unchanged; the call is not
 	// retried on the same journal or handle.
