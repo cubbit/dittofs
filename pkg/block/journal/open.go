@@ -376,7 +376,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// landed is durable, and every failure the answer costs is on the
 		// directory's failed list.
 		c, err := datapath.Continue(deps, state, func(c *datapath.Core) error {
-			if err := recovery.OpenLosses(ctx, st, c.Durability(), s.HeadroomRecords, func(n int) error {
+			if err := recovery.OpenLosses(ctx, &st, c.Durability(), s.HeadroomRecords, func(n int) error {
 				return c.WaitRecordSpares(ctx, n)
 			}); err != nil {
 				return err
@@ -475,9 +475,9 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 // longer holds raises nothing: the tracker answers no state for it.
 //
 // ponytail: a deferral held here ends only through EndDeferral, which the
-// emptying calls for an ended holder alone, and the emptying copies ended
-// segments only. A sealed holder's deferral therefore never ends in this
-// process, its loss is never recorded, and the next open re-defers it, so it
+// emptying calls for an ended holder, or a sealed one holding a failed record
+// past the open reserve, alone. Any other sealed holder's deferral therefore
+// never ends in this process, its loss is never recorded, and the next open re-defers it, so it
 // stands across restarts too. Upgrade to an emptying that copies sealed
 // holders, ending the deferral in the copy, when a holder standing this way
 // shows up in the disk accounting.

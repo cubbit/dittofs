@@ -345,7 +345,7 @@ func corruptLoss(c corruptRecord) durability.Loss {
 // directory's failed list for the next open to answer. The generational
 // raise, the marker and the counters are Lose's own, whichever call they
 // came from: extension of the one rule, not a second one.
-func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroomRecords int, waitForSpares func(streams int) error) error {
+func OpenLosses(ctx context.Context, st *State, d *durability.Durability, headroomRecords int, waitForSpares func(streams int) error) error {
 	for _, lo := range st.Kinds.Losses {
 		d.Place(lo.Ev, lo.Dropped)
 	}
@@ -360,7 +360,8 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 	// before the crash still opens and still records what the crash
 	// corrupted. Withdrawn when the open draws these records through the
 	// capacity ledger instead of counting its own reserve.
-	plan := planOpenLosses(st, d.Named, d.PlacedUnsynced, capacity.OpenReserveRecords(headroomRecords))
+	plan, past := planOpenLosses(*st, d.Named, d.PlacedUnsynced, capacity.OpenReserveRecords(headroomRecords))
+	st.Kinds.PastReserve = past
 
 	// appends wait for the pool's settle before the first record: asked here
 	// rather than ahead of the pass, for the placement above is what names
@@ -410,21 +411,18 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 // failed leg's accounting when the reserve held it and by no leg when it did
 // not: the corrupt leg skips it as the failed leg's own.
 //
-// The failed leg's records past the reserve plan no append: this process's
-// failed list keeps each for the next open of the process to answer, and a
-// crash takes the unsupported record's own bytes with it — the window that
-// failed the record already answered the writer it never landed, the class
-// the failed window's verdict accepts, so nothing re-detects it and nothing
-// serves it. The emptying copies only ended segments out, and a failed
-// window's segment is left standing whole: the journal's design empties each
-// segment still holding a failed record past the reserve, leaving the failed
-// records out of the copy, and that half is not built.
+// The failed leg's records past the reserve plan no append and are returned as the
+// planner's second result: the emptying (empty.go) copies each segment still
+// holding one out without it and unlinks the segment, so no record on disk
+// remains for a later process, whose failed list is gone, to serve — the
+// window that failed the record already answered the writer it never landed.
 //
-// ponytail: owed, owner unowned, trigger a read-only reopen whose failed
-// records outnumber the open reserve. Until then such a reopen drops the
-// records past the reserve unrecorded and leaves their segments whole; the
-// upgrade is the emptying of a sealed, non-ended segment — a copy that omits
-// the failed seqs, repointing the rest, then the unlink.
+// decision: only a sealed segment holding a past-reserve failed record is
+// emptied. A segment the open leaves unsealed (an intact tail still taking a
+// stream's records) or leaves failed stands whole, its failed records still
+// on disk, for a later open to settle; the one-open answer for those needs
+// the open to seal first. Withdrawn when the emptying seals such a segment
+// before it copies.
 //
 // decision: the past-the-reserve answer is the deferral itself — the corrupt
 // drops the open reserve cannot hold defer, through the same Lose a running
@@ -463,13 +461,12 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 // over one piece, which the next open's placement answers once. Withdrawn
 // when the open learns which found loss records are durable, or when an
 // acknowledged loss's record reaches the pass.
-func planOpenLosses(st State, named, unsynced func(seq core.Seq, ext core.Extent) bool, reserve int) []durability.Loss {
+func planOpenLosses(st State, named, unsynced func(seq core.Seq, ext core.Extent) bool, reserve int) (plan []durability.Loss, past []ReadOnlyDrop) {
 	type pieceKey struct {
 		seq core.Seq
 		ext core.Extent
 	}
 	seen := make(map[pieceKey]bool)
-	var plan []durability.Loss
 	for _, rd := range st.Kinds.ReadOnlyDrops {
 		k := pieceKey{seq: rd.Dropped, ext: rd.Ev.Extent}
 		if seen[k] || named(rd.Dropped, rd.Ev.Extent) {
@@ -477,7 +474,8 @@ func planOpenLosses(st State, named, unsynced func(seq core.Seq, ext core.Extent
 		}
 		seen[k] = true
 		if reserve <= 0 {
-			continue // past the reserve nothing appends: the failed list keeps the rest
+			past = append(past, rd) // past the reserve nothing appends: the emptying leaves it out of a copy
+			continue
 		}
 		reserve--
 		plan = append(plan, durability.Loss{
@@ -517,5 +515,5 @@ func planOpenLosses(st State, named, unsynced func(seq core.Seq, ext core.Extent
 		l.Deferred, l.Seg = true, c.Segment
 		plan = append(plan, l)
 	}
-	return plan
+	return plan, past
 }

@@ -168,6 +168,20 @@ func runEmptying(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 			ended = append(ended, row.ID) // rows ascend, so ended does too
 		}
 	}
+	// The sealed segments holding a failed record the open reserve could not
+	// take join the ended ones: each is emptied the same way, the failed
+	// records left out of the copy because the index serves none of them.
+	// An ended segment already goes through its own leg, so none is listed
+	// twice.
+	for _, rd := range st.Kinds.PastReserve {
+		for _, id := range rd.Segments {
+			if state, err := st.Assembled.Set.State(id); err == nil && state == segment.Sealed {
+				ended = append(ended, id)
+			}
+		}
+	}
+	slices.Sort(ended)
+	ended = slices.Compact(ended)
 	if len(ended) == 0 {
 		return nil
 	}
@@ -541,7 +555,11 @@ func (e *emptying) finish(ctx context.Context, id core.SegmentID, target core.Se
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	ret, err := e.deps.Retire(id, segment.ReasonEnded)
+	reason := segment.ReasonEnded
+	if state, serr := e.st.Assembled.Set.State(id); serr == nil && state == segment.Sealed {
+		reason = segment.NotHeld // a sealed holder of a failed record, emptied before it is unheld
+	}
+	ret, err := e.deps.Retire(id, reason)
 	if err != nil {
 		return err
 	}

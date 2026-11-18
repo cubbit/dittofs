@@ -117,7 +117,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no tear and appends behind none. The open also records what the crash
   corrupted: every corrupt drop and every record a failed window left
   unrecorded gets a loss record, drawn on a reserve the headroom keeps for
-  the open. Corrupt losses past that reserve defer: the open serves, the
+  the open. A sealed segment holding more failed records than that reserve
+  takes is copied out without them and unlinked instead, so no record is owed
+  for them. Corrupt losses past that reserve defer: the open serves, the
   segment holding each deferred drop stays in place, and the loss record is
   written into the copy the emptying makes while the same process
   runs; the deferral registry is process-local, so a restart does not carry it. A segment the

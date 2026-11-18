@@ -74,6 +74,11 @@ type kindResults struct {
 	// the feed that withholds them.
 	ReadOnlyDrops []ReadOnlyDrop
 
+	// PastReserve holds the failed records the open reserve could not take,
+	// each a record the loss pass appends nothing for: the loss pass fills
+	// it, and the emptying empties the sealed segments that hold them.
+	PastReserve []ReadOnlyDrop
+
 	// Withheld is the numbers of the records the feed withholds whole — a
 	// failed-list, whole-loss-named, forgotten or confined record, the ruler
 	// of Rule 6 and the location rule — folded by their two axes, the

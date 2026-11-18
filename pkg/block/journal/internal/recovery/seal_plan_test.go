@@ -183,7 +183,7 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 				return slices.Contains(c.unsynced, seq) && ext == planExtent(uint64(seq))
 			}
 
-			plan := planOpenLosses(st, named, unsynced, c.reserve)
+			plan, _ := planOpenLosses(st, named, unsynced, c.reserve)
 
 			if len(plan) != len(c.want) {
 				t.Fatalf("the plan holds %d losses (%+v), want the %d of the reserve's arithmetic", len(plan), plan, len(c.want))
