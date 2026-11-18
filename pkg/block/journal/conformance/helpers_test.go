@@ -385,12 +385,18 @@ func wantRelease(t *testing.T, h *journal.Handle, id journal.FileID, e journal.E
 	}
 }
 
-// lastLoss fails the test unless Stats holds exactly one loss event more than
-// before, and returns it.
+// lastLoss fails the test unless Stats comes to hold exactly one loss event
+// more than before, and returns it. A read that drops a corrupt record hands
+// its loss to the stream's worker, which appends the loss record before it
+// publishes the event, so the event can land after the read returns.
 func lastLoss(t *testing.T, f *journaltest.Fixture, before journal.Stats) journal.LossEvent {
 	t.Helper()
 
-	losses := f.J.Stats().Losses
+	var losses []journal.LossEvent
+	settles(func() bool {
+		losses = f.J.Stats().Losses
+		return len(losses) > len(before.Losses)
+	})
 	if len(losses) != len(before.Losses)+1 {
 		t.Fatalf("%d loss events, want %d: %+v", len(losses), len(before.Losses)+1, losses)
 	}

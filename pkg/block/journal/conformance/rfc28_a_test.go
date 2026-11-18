@@ -673,16 +673,20 @@ func wantMtime(t *testing.T, h *journal.Handle, r rec, mtime int64) {
 	t.Fatalf("Since yields no write for extent %+v", r.extent)
 }
 
-// wantLost fails the test unless Stats holds a loss event for r's extent,
-// dropped as corrupt.
+// wantLost fails the test unless Stats comes to hold a loss event for r's
+// extent, dropped as corrupt; the event can land after the dropping read
+// returns (lastLoss says why).
 func wantLost(t *testing.T, f *journaltest.Fixture, r rec) {
 	t.Helper()
 
-	losses := f.J.Stats().Losses
-	for _, ev := range losses {
-		if ev.File == r.id && ev.Extent == r.extent && ev.Reason == journal.LossCorrupt {
-			return
-		}
+	var losses []journal.LossEvent
+	if settles(func() bool {
+		losses = f.J.Stats().Losses
+		return slices.ContainsFunc(losses, func(ev journal.LossEvent) bool {
+			return ev.File == r.id && ev.Extent == r.extent && ev.Reason == journal.LossCorrupt
+		})
+	}) {
+		return
 	}
 	t.Fatalf("no loss event names extent %+v of file %v as corrupt: %+v", r.extent, r.id, losses)
 }

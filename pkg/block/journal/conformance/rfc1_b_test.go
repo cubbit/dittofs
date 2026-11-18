@@ -50,11 +50,19 @@ const backgroundWait = 2 * time.Second
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 
+	if !settles(cond) {
+		t.Fatalf("%s within %v", what, backgroundWait)
+	}
+}
+
+// settles reports whether cond holds within backgroundWait, polling it.
+func settles(cond func() bool) bool {
 	for deadline := time.Now().Add(backgroundWait); !cond(); time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("%s within %v", what, backgroundWait)
+			return false
 		}
 	}
+	return true
 }
 
 // writeRecordBytes is the bytes a write record of n payload bytes takes in a
