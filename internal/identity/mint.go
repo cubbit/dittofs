@@ -31,8 +31,10 @@ var unnamedSpec = metrics.Spec{
 // principals one sign-in, lookup or resolution needs, and returns the batch
 // of those still missing with the number it found bound. The batch is
 // written in one Create; on ErrExist, another call minted something this one
-// needs, so plan runs again. A record whose name is held is minted without
-// it. A re-run fails the call ErrUnavailable, having written nothing, when it
+// needs, so plan runs again. Any other failure ends the call: a refusal no
+// retry clears, such as an exhausted ID range, with its own class, and the
+// store's own failure ErrUnavailable. A record whose name is held is minted
+// without it. A re-run fails the call ErrUnavailable, having written nothing, when it
 // neither binds more principals than the run before nor newly marks a record
 // Unnamed. Newly is per call: a record this call marked in an earlier run,
 // known by its SID, is not newly marked again, whatever PrincipalID the plan
@@ -90,10 +92,27 @@ func (s *Server) mint(ctx context.Context, plan func(context.Context) (entity.Mi
 			return nil
 		}
 		if !isExist(err) {
-			return fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
+			return createErr(err)
 		}
 		failed, last = b, bound
 	}
+}
+
+// createCodes is the class of each refusal of Create's that no retry clears.
+var createCodes = map[merrs.ErrorCode]error{
+	merrs.ErrNoSpace:         vfserr.ErrNoSpace,
+	merrs.ErrInvalidArgument: vfserr.ErrInvalid,
+}
+
+// createErr is the class of a Create failure other than ErrExist: a refusal
+// in createCodes keeps its own, and any other failure is the store's, so
+// ErrUnavailable.
+func createErr(err error) error {
+	var se *merrs.StoreError
+	if errors.As(err, &se) && createCodes[se.Code] != nil {
+		return fmt.Errorf("%w: %w", createCodes[se.Code], err)
+	}
+	return fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
 }
 
 // unnameHeld marks Unnamed each record of b whose name another principal of

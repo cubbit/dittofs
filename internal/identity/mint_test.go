@@ -415,3 +415,50 @@ func TestMintCountsEachRecordByKind(t *testing.T) {
 		}
 	}
 }
+
+// A refusal of the store's that no retry clears keeps its own class, so a
+// sign-in is not retried against a state only an operator or the caller can
+// change. Wrapping it ErrUnavailable sends every caller back to retry.
+func TestMintKeepsTheClassOfARefusalNoRetryClears(t *testing.T) {
+	one := entity.IDRange{Lo: 5000, Hi: 5000}
+	for _, c := range []struct {
+		name  string
+		setup func(t *testing.T, r *resolving)
+		b     entity.MintBatch
+		want  error
+	}{
+		{"an exhausted ID range", func(t *testing.T, r *resolving) {
+			g := entity.Group{Principal: entity.NewGroup(), Name: "first"}
+			if _, err := r.cp.PutGroup(context.Background(), g, 0, entity.Alloc{GID: true, RID: true, Range: one}); err != nil {
+				t.Fatal(err)
+			}
+		}, entity.MintBatch{Groups: []entity.MintGroup{{Group: entity.Group{Principal: entity.NewGroup(), Name: "second"}, Alloc: entity.Alloc{GID: true, RID: true, Range: one}}}}, vfserr.ErrNoSpace},
+		{"a user holding an API role", func(*testing.T, *resolving) {},
+			entity.MintBatch{Users: []entity.MintUser{{User: entity.User{Principal: entity.NewUser(), Name: "alice", Role: entity.RoleAdmin, IDs: fileIDs("4101")}}}}, vfserr.ErrInvalid},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newResolving(t)
+			c.setup(t, r)
+			var runs atomic.Int32
+			err := r.srv.Mint(context.Background(), fixed(&runs, c.b))
+			if !errors.Is(err, c.want) || errors.Is(err, vfserr.ErrUnavailable) {
+				t.Fatalf("mint: got %v, want %v and not ErrUnavailable", err, c.want)
+			}
+			if got := runs.Load(); got != 1 {
+				t.Errorf("plan runs: got %d, want 1", got)
+			}
+		})
+	}
+}
+
+// A commit the store fails is the store's failure, which a retry may clear:
+// ErrUnavailable.
+func TestMintAnswersAStoreFailureUnavailable(t *testing.T) {
+	r := newResolving(t)
+	r.fail(t, kvtest.OpUpdate, "*")
+	var runs atomic.Int32
+	err := r.srv.Mint(context.Background(), fixed(&runs, entity.MintBatch{Groups: []entity.MintGroup{{Group: dirGroup("g", "4201")}}}))
+	if !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Fatalf("mint: got %v, want ErrUnavailable", err)
+	}
+}
