@@ -345,7 +345,7 @@ rfc1 / 9.7 / "report cost":
 rfc28 / 4.4 / "Bit corruption":
   tests: [TestDamage_BitFlip]
 rfc28 / 4.4 / "Crashes":
-  tests: [TestDamage_LostWrites, TestDamage_TornWrites, TestDamage_ReorderedWrites]
+  tests: [TestDamage_LostWrites, TestDamage_TornWrites, TestDamage_ReorderedWrites, TestDamage_SuccessorTakenAfterSealSync, TestDamage_OpenUnlinksAfterItsCopiesAreDurable, TestDamage_RefusedOpenNamesAndServesNothing, TestModel_DataPathCrashes]
 rfc28 / 4.4 / "Edits from outside":
   tests: [TestRFC28C_NeighboursSurvive, TestDamage_SegmentDeleted, TestRFC28C_FormatFile, TestRFC28C_UnidentifiedDirectory, TestRFC28C_JournalGone, TestDamage_UnnamedFileLeftAlone, TestRFC28C_TruncatedSealedSegment, TestRFC28C_ForeignSegment, TestDamage_DirectoryRestored, TestRFC28C_StaleExtent]
 rfc28 / 4.4 / edit / "bytes of a record changed":
