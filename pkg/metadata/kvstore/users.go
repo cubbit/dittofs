@@ -250,8 +250,9 @@ func expected(stored, expect uint64) error {
 
 // validIDs refuses a scheme the principal's kind may not carry, an empty
 // spelling, a UID or GID not in canonical decimal or reserved to root (0) or
-// anonymous (65534), and a repeated ID: each spelling has one index row, so
-// it must have one form.
+// anonymous (65534), and a second ID of one scheme: a principal has at most
+// one spelling per scheme, so fileSpellings' check that a scheme is held and
+// keepSID's that the old SID is kept each pin the one spelling.
 func validIDs(ids entity.ProtocolIDs, schemes ...entity.ProtocolScheme) error {
 	for i, id := range ids {
 		if !slices.Contains(schemes, id.Scheme) || id.Value == "" {
@@ -266,8 +267,8 @@ func validIDs(ids entity.ProtocolIDs, schemes ...entity.ProtocolScheme) error {
 				return merrs.NewInvalidArgumentError(id.Scheme.String() + " " + id.Value + " is root's or anonymous's, held by rule")
 			}
 		}
-		if slices.Contains(ids[:i], id) {
-			return merrs.NewInvalidArgumentError("protocol ID repeated")
+		if slices.ContainsFunc(ids[:i], func(o entity.ProtocolID) bool { return o.Scheme == id.Scheme }) {
+			return merrs.NewInvalidArgumentError("one " + id.Scheme.String() + " per principal")
 		}
 	}
 	return nil

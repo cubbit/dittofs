@@ -412,8 +412,8 @@ func testAllocInsideTheWrite(t *testing.T, kvo Opener) {
 
 // A user's uid and SID, and a group's gid and SID, are held together; a
 // principal with no file spelling holds none, so an API-only account and a
-// machine are written as they are. An allocation is a create's alone, and a
-// SID never changes.
+// machine are written as they are. An allocation is a create's alone, a SID
+// never changes, and no principal holds two spellings of one scheme.
 func testFileSpellingsTogether(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
@@ -445,10 +445,11 @@ func testFileSpellingsTogether(t *testing.T, kvo Opener) {
 		t.Errorf("an update allocating a uid and a RID: %v, want invalid argument", err)
 	}
 	u := user("alice", uid("1500"))
-	gen, err = cp.PutUser(ctx, u, 0, entity.Alloc{})
+	aliceGen, err := cp.PutUser(ctx, u, 0, entity.Alloc{})
 	must(t, err)
-	u.IDs = entity.ProtocolIDs{uid("1500"), sidOf("sid-other")}
-	if _, err := cp.PutUser(ctx, u, gen, entity.Alloc{}); !isCode(err, merrs.ErrInvalidArgument) {
+	changed := u
+	changed.IDs = entity.ProtocolIDs{uid("1500"), sidOf("sid-other")}
+	if _, err := cp.PutUser(ctx, changed, aliceGen, entity.Alloc{}); !isCode(err, merrs.ErrInvalidArgument) {
 		t.Errorf("an update changing the SID: %v, want invalid argument", err)
 	}
 	g := group("staff")
@@ -457,6 +458,36 @@ func testFileSpellingsTogether(t *testing.T, kvo Opener) {
 	g.IDs[1] = freshSID()
 	if _, err := cp.PutGroup(ctx, g, gen, entity.Alloc{}); !isCode(err, merrs.ErrInvalidArgument) {
 		t.Errorf("a group update changing the SID: %v, want invalid argument", err)
+	}
+
+	// At most one spelling per scheme: a second uid, gid or SID is refused,
+	// and the refused write files no row for it.
+	// bob takes the second uid, so each update meets a record no other case
+	// has changed.
+	bob := user("bob", uid("1510"))
+	bobGen, err := cp.PutUser(ctx, bob, 0, entity.Alloc{})
+	must(t, err)
+	withExtra := func(name string, extra entity.ProtocolID) entity.Group {
+		g := group(name)
+		g.IDs = append(g.IDs, extra)
+		return g
+	}
+	for _, c := range []struct {
+		what  string
+		err   error
+		added entity.ProtocolID
+	}{
+		{"an update adding a second SID to alice", errOf(cp.PutUser(ctx, entity.User{Principal: u.Principal, Name: u.Name, IDs: entity.ProtocolIDs{uid("1500"), u.IDs[1], sidOf("sid-extra")}}, aliceGen, entity.Alloc{})), sidOf("sid-extra")},
+		{"an update adding a second uid to bob", errOf(cp.PutUser(ctx, entity.User{Principal: bob.Principal, Name: bob.Name, IDs: entity.ProtocolIDs{uid("1510"), uid("1511"), bob.IDs[1]}}, bobGen, entity.Alloc{})), uid("1511")},
+		{"a group created with two gids", errOf(cp.PutGroup(ctx, withExtra("twogids", gid("1600")), 0, entity.Alloc{})), gid("1600")},
+		{"a group created with two SIDs", errOf(cp.PutGroup(ctx, withExtra("twosids", sidOf("sid-second")), 0, entity.Alloc{})), sidOf("sid-second")},
+	} {
+		if !isCode(c.err, merrs.ErrInvalidArgument) {
+			t.Errorf("%s: %v, want invalid argument", c.what, c.err)
+		}
+		if got, err := s.Principals().ByProtocolID(ctx, c.added); !merrs.IsNotFoundError(err) {
+			t.Errorf("%s: ByProtocolID(%s %s) = %v, %v; want not found", c.what, c.added.Scheme, c.added.Value, got, err)
+		}
 	}
 }
 
