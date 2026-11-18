@@ -141,9 +141,67 @@ func TestMintReRunsAPlanAnotherMintOvertook(t *testing.T) {
 	}
 }
 
+// A name another mint takes between the check and the commit fails the
+// commit ErrExist with nothing to bind: the re-run marks the record Unnamed,
+// which is progress, and mints it. A rule counting only bound principals
+// fails the call.
+func TestMintReRunUnnamesANameTakenBeforeItsCommit(t *testing.T) {
+	r := newResolving(t)
+	ctx := context.Background()
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	s, err := sim.NewSchedule(1, clock, sim.Rule{Op: kvtest.OpUpdate, Key: "*", From: 1, Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.fault.SetFault(s)
+
+	ours := dirGroup("finance", "3401")
+	var runs atomic.Int32
+	done := make(chan error, 1)
+	go func() { done <- r.srv.Mint(ctx, planOf(r.st, &runs, ours)) }()
+	backstop := time.After(10 * time.Second)
+	for clock.Pending() == 0 { // our commit waits on the clock, its name check passed
+		select {
+		case err := <-done:
+			t.Fatalf("mint returned %v before its commit was delayed", err)
+		case <-backstop:
+			t.Fatal("the mint's commit never reached the delay")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	theirs := dirGroup("Finance", "3402")
+	var otherRuns atomic.Int32
+	if err := r.srv.Mint(ctx, planOf(r.st, &otherRuns, theirs)); err != nil {
+		t.Fatalf("mint taking the name: %v", err)
+	}
+	clock.Advance(time.Second)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("mint whose name was taken: got %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("mint whose name was taken never returned")
+	}
+
+	if got := runs.Load(); got != 2 {
+		t.Errorf("plan runs: got %d, want 2", got)
+	}
+	if got := r.holder(t, ours.IDs[1]); got != ours.Principal {
+		t.Errorf("our SID: held by %v, want %v", got, ours.Principal)
+	}
+	if got, err := r.st.Principals().ByName(ctx, entity.PrincipalGroup, "finance"); err != nil || got != theirs.Principal {
+		t.Errorf("ByName finance: got %v, %v, want the group that took it %v", got, err, theirs.Principal)
+	}
+	if got := r.counter(t, "identity_mints_unnamed_total", "kind", "group"); got != 1 {
+		t.Errorf("identity_mints_unnamed_total{kind=group}: got %v, want 1", got)
+	}
+}
+
 // A plan that keeps answering a batch whose SID another principal holds
-// fails ErrUnavailable at its second run, writes nothing, and logs both
-// principals. A path with no progress rule would run it until the deadline.
+// binds nothing and unnames nothing, so it fails ErrUnavailable at its
+// second run, writes nothing, and logs both principals. A path with no progress rule would run it until the deadline.
 func TestMintFailsARunThatBindsNothingNew(t *testing.T) {
 	r := newResolving(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

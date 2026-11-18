@@ -31,17 +31,21 @@ var unnamedSpec = metrics.Spec{
 // principals one sign-in, lookup or resolution needs, and returns the batch
 // of those still missing with the number it found bound. The batch is
 // written in one Create; on ErrExist, another call minted something this one
-// needs, so plan runs again, and its run must bind more than the one before,
-// or the call fails ErrUnavailable having written nothing. A record whose
-// name is held is minted without it.
+// needs, so plan runs again. A record whose name is held is minted without
+// it. A run makes progress when the principals it binds and the records it
+// marks Unnamed outnumber the run before's; one that does not fails the call
+// ErrUnavailable having written nothing.
 //
 // decision: the path re-runs the plan, not the batch, and no count bounds
-// the loop: each ErrExist that leads to progress shrinks the batch, so the
-// progress rule ends the re-runs, and the caller's deadline bounds them in
-// time. A run that binds nothing new means the clash is with a principal the
-// plan cannot bind, such as another entry holding the same uid, and running
-// it again would answer the same. Overturned if a clash is ever found that
-// a later run resolves without binding more.
+// the loop. Progress is a principal bound or a record newly marked Unnamed,
+// since the name check runs before the transaction and a name another call
+// takes in between fails the commit ErrExist with nothing to bind: the
+// re-run marks that record Unnamed and mints it. Each record can make one
+// step of each kind, so the progress rule ends the re-runs, and the caller's
+// deadline bounds them in time. A run with no progress means the clash is
+// with a principal the plan cannot bind, such as another entry holding the
+// same uid, and running it again would answer the same. Overturned if a
+// clash is ever found that a later run resolves without either step.
 func (s *Server) mint(ctx context.Context, plan func(context.Context) (entity.MintBatch, int, error)) error {
 	var failed entity.MintBatch
 	last := -1
@@ -55,15 +59,17 @@ func (s *Server) mint(ctx context.Context, plan func(context.Context) (entity.Mi
 		if err != nil {
 			return err
 		}
-		if last >= 0 && bound <= last {
-			s.logClash(ctx, failed)
-			return fmt.Errorf("%w: a mint re-run bound no principal the run before did not", vfserr.ErrUnavailable)
-		}
 		if len(b.Users) == 0 && len(b.Groups) == 0 {
 			return nil
 		}
-		if err := s.unnameHeld(ctx, &b); err != nil {
+		unnamed, err := s.unnameHeld(ctx, &b)
+		if err != nil {
 			return err
+		}
+		progress := bound + unnamed
+		if last >= 0 && progress <= last {
+			s.logClash(ctx, failed)
+			return fmt.Errorf("%w: a mint re-run bound or unnamed nothing the run before did not", vfserr.ErrUnavailable)
 		}
 		err = s.deps.Store.Minter().Create(ctx, b)
 		if err == nil {
@@ -73,32 +79,39 @@ func (s *Server) mint(ctx context.Context, plan func(context.Context) (entity.Mi
 		if !isExist(err) {
 			return fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
 		}
-		failed, last = b, bound
+		failed, last = b, progress
 	}
 }
 
 // unnameHeld marks Unnamed each record of b whose name another principal of
 // its kind holds under the principal fold: one the name index holds, or an
-// earlier record of its kind in b.
-func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch) error {
+// earlier record of its kind in b. It returns how many it marked.
+func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch) (int, error) {
 	users, groups := map[string]entity.Principal{}, map[string]entity.Principal{}
+	n := 0
 	for i := range b.Users {
 		r := &b.Users[i]
 		held, err := s.held(ctx, entity.PrincipalUser, r.User.Principal, r.User.Name, r.Unnamed, users)
 		if err != nil {
-			return err
+			return 0, err
 		}
-		r.Unnamed = r.Unnamed || held
+		if held {
+			r.Unnamed = true
+			n++
+		}
 	}
 	for i := range b.Groups {
 		r := &b.Groups[i]
 		held, err := s.held(ctx, entity.PrincipalGroup, r.Group.Principal, r.Group.Name, r.Unnamed, groups)
 		if err != nil {
-			return err
+			return 0, err
 		}
-		r.Unnamed = r.Unnamed || held
+		if held {
+			r.Unnamed = true
+			n++
+		}
 	}
-	return nil
+	return n, nil
 }
 
 // held reports whether name is held by a principal other than p: in batch,
