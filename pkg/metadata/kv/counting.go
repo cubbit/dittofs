@@ -35,6 +35,16 @@ type UpdateCounts struct {
 	MostWrites int
 }
 
+// tally is one transaction's Counts and its reads: each Get, GetMany,
+// Versions, Before and Scan call is one, however many keys it names, so a
+// remote store pays one round trip for it.
+type tally struct {
+	Counts
+	reads int
+}
+
+func (t *tally) read() { t.reads++ }
+
 // Counting wraps a KV and counts the keys each transaction touches, so a test
 // can assert an operation's cost. Only an Update's final attempt counts:
 // retries are the store's cost, not the operation's.
@@ -42,13 +52,14 @@ type Counting struct {
 	KV
 	mu      sync.Mutex
 	total   Counts
+	reads   int
 	updates UpdateCounts
 }
 
 func (c *Counting) Update(ctx context.Context, fn func(Txn) error) error {
-	var last Counts
+	var last tally
 	err := c.KV.Update(ctx, func(t Txn) error {
-		last = Counts{}
+		last = tally{}
 		return fn(&countingTxn{Txn: t, c: &last})
 	})
 	if last.Guards+last.RangeGuards > 0 && last.Sets+last.Deletes == 0 {
@@ -65,7 +76,7 @@ func (c *Counting) Update(ctx context.Context, fn func(Txn) error) error {
 }
 
 func (c *Counting) View(ctx context.Context, fn func(Reader) error) error {
-	var last Counts
+	var last tally
 	err := c.KV.View(ctx, func(r Reader) error {
 		return fn(&countingReader{Reader: r, c: &last})
 	})
@@ -95,19 +106,30 @@ func (c *Counting) Take() Counts {
 	return t
 }
 
-func (c *Counting) record(n Counts) {
+// TakeReads returns the read calls since the last TakeReads and resets them.
+func (c *Counting) TakeReads() int {
 	c.mu.Lock()
-	c.total.add(n)
+	defer c.mu.Unlock()
+	n := c.reads
+	c.reads = 0
+	return n
+}
+
+func (c *Counting) record(n tally) {
+	c.mu.Lock()
+	c.total.add(n.Counts)
+	c.reads += n.reads
 	c.mu.Unlock()
 }
 
 type countingReader struct {
 	Reader
-	c *Counts
+	c *tally
 }
 
 func (r *countingReader) Get(key []byte) ([]byte, error) {
 	r.c.Gets++
+	r.c.read()
 	return r.Reader.Get(key)
 }
 
@@ -115,49 +137,58 @@ func (r *countingReader) Get(key []byte) ([]byte, error) {
 // the same whichever way the store reads.
 func (r *countingReader) GetMany(keys [][]byte) ([][]byte, error) {
 	r.c.Gets += len(keys)
+	r.c.read()
 	return r.Reader.GetMany(keys)
 }
 
 func (r *countingReader) Versions(keys [][]byte) ([]uint64, error) {
 	r.c.Versions += len(keys)
+	r.c.read()
 	return r.Reader.Versions(keys)
 }
 
 func (r *countingReader) Scan(prefix, after []byte) iter.Seq2[KeyValue, error] {
+	r.c.read()
 	return countScan(r.Reader.Scan(prefix, after), r.c)
 }
 
 func (r *countingReader) Before(prefix, key []byte) (KeyValue, bool, error) {
 	r.c.Befores++
+	r.c.read()
 	return r.Reader.Before(prefix, key)
 }
 
 type countingTxn struct {
 	Txn
-	c *Counts
+	c *tally
 }
 
 func (t *countingTxn) Get(key []byte) ([]byte, error) {
 	t.c.Gets++
+	t.c.read()
 	return t.Txn.Get(key)
 }
 
 func (t *countingTxn) GetMany(keys [][]byte) ([][]byte, error) {
 	t.c.Gets += len(keys)
+	t.c.read()
 	return t.Txn.GetMany(keys)
 }
 
 func (t *countingTxn) Scan(prefix, after []byte) iter.Seq2[KeyValue, error] {
+	t.c.read()
 	return countScan(t.Txn.Scan(prefix, after), t.c)
 }
 
 func (t *countingTxn) Before(prefix, key []byte) (KeyValue, bool, error) {
 	t.c.Befores++
+	t.c.read()
 	return t.Txn.Before(prefix, key)
 }
 
 func (t *countingTxn) Versions(keys [][]byte) ([]uint64, error) {
 	t.c.Versions += len(keys)
+	t.c.read()
 	return t.Txn.Versions(keys)
 }
 
@@ -181,7 +212,7 @@ func (t *countingTxn) Delete(key []byte) error {
 	return t.Txn.Delete(key)
 }
 
-func countScan(s iter.Seq2[KeyValue, error], c *Counts) iter.Seq2[KeyValue, error] {
+func countScan(s iter.Seq2[KeyValue, error], c *tally) iter.Seq2[KeyValue, error] {
 	return func(yield func(KeyValue, error) bool) {
 		for kv, err := range s {
 			if err == nil {

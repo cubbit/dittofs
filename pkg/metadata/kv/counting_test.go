@@ -100,3 +100,35 @@ func TestCountingCountsUpdatesAndTheMostKeysOneWrote(t *testing.T) {
 		t.Errorf("TakeUpdates() after a take = %+v, want zero", got)
 	}
 }
+
+// TakeReads counts each read call once, however many keys a GetMany names,
+// and resets.
+func TestCountingCountsReadCalls(t *testing.T) {
+	s, err := badgerkv.Open(badgerkv.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	c := &kv.Counting{KV: s}
+	if err := c.Update(context.Background(), func(tx kv.Txn) error {
+		if _, err := tx.GetMany([][]byte{[]byte("a"), []byte("b"), []byte("c")}); err != nil {
+			return err
+		}
+		if _, err := tx.Get([]byte("a")); err != nil && err != kv.ErrNotFound {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.TakeReads(); got != 2 {
+		t.Errorf("read calls for a GetMany of three keys and a Get: %d, want 2", got)
+	}
+	if got := c.TakeReads(); got != 0 {
+		t.Errorf("read calls after TakeReads: %d, want 0", got)
+	}
+}

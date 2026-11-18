@@ -53,6 +53,7 @@ func Run(t *testing.T, open Opener) {
 		{"PrincipalNameCase", testPrincipalNameCase},
 		{"AllocNeverRepeats", testAllocNeverRepeats},
 		{"AllocSkipsHeldIDs", testAllocSkipsHeldIDs},
+		{"AllocPastHeldBlock", testAllocPastHeldBlock},
 		{"AllocRange", testAllocRange},
 		{"AllocInsideTheWrite", testAllocInsideTheWrite},
 		{"FileSpellingsTogether", testFileSpellingsTogether},
