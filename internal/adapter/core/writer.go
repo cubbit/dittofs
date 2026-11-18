@@ -37,7 +37,7 @@ type writer struct {
 	framer   Framer
 	capBytes int // the bodies one gathered write carries past its first: the protocol's record cap
 	timeout  time.Duration
-	outBytes adder       // the direction the connection's series resolved; nil to count nowhere
+	outBytes adder       // the direction the connection's series resolved; never nil, nop{} counts nowhere
 	close    func(error) // Conn.Close: a failed write calls it on the writer's goroutine once run has ended, so it may stop the writer
 	onBatch  func(n int) // a test's view of what one write gathered; nil otherwise
 
