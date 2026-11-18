@@ -47,25 +47,14 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 	}
 	s.mu.Lock()
 	st := s.state
-	if st == adapter.StateServing && s.stopDone != nil {
-		// A Stop is running: it set its marker under this lock before it
-		// closed a listener, so a Reconfigure reaching it here is refused
-		// as draining, though the state still reads serving until the
-		// loops end their hand-overs (RFC 20 sections 3.4 and 3.6).
-		st = adapter.StateDraining
-	}
 	switch st {
-	case adapter.StateDraining, adapter.StateStopped:
+	case adapter.StateStopping, adapter.StateDraining, adapter.StateStopped:
+		// A Stop is running, draining or done, its marker and its stopping
+		// state set under this lock together: a Reconfigure reaching one is
+		// refused, naming the state (RFC 20 sections 3.4 and 3.6).
 		s.mu.Unlock()
 		return fmt.Errorf("core: reconfigure: the server is %s", st)
 	case adapter.StateConfigured:
-		if s.stopDone != nil {
-			// A Stop runs the configured path with nothing bound, its marker
-			// set: refusing the call keeps the description's word that a
-			// stopping server accepts no Reconfigure.
-			s.mu.Unlock()
-			return errors.New("core: reconfigure: the server is stopping")
-		}
 		// Nothing is bound, and only Start binds: the settings are what it
 		// will bind.
 		s.settings.Store(&next)
@@ -95,8 +84,11 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 	// moved address is never unserved between the two (RFC 20 section 3.6).
 	off := make([]*bound, 0, len(drop))
 	kept := s.bound[:0]
+	// The match unmaps both sides: drop carries the addresses diffAddrs
+	// unmapped, the bound the spelling the settings named, so a respelled
+	// address closes with the address it unmaps to.
 	for _, b := range s.bound {
-		if slices.Contains(drop, b.addr.Addr()) {
+		if slices.ContainsFunc(drop, func(d netip.Addr) bool { return d.Unmap() == b.addr.Addr().Unmap() }) {
 			off = append(off, b)
 			continue
 		}

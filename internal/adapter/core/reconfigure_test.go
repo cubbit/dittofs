@@ -485,15 +485,14 @@ func (p gatedHandover) NewConn(c *core.Conn) core.Stages {
 }
 
 // A Reconfigure arriving while a Stop is ending its accept loops is refused
-// as draining, and the server ends stopped with no socket left and no
-// address: a Stop sets its marker under the server's lock before it closes
+// as stopping, and the server ends stopped with no socket left and no
+// address: a Stop moves the state under the server's lock before it closes
 // a listener, so a Reconfigure that reaches the server across one meets
-// the refusal, although the state still reads serving until the loops have
-// ended their hand-overs. A Stop a Reconfigure can run alongside takes this
-// test's Reconfigure in its window: it binds what it names, and the
-// refusal's absence, the address left listening and the dial completing
-// each fail it.
-func TestAReconfigureUnderAStopIsRefusedAsDraining(t *testing.T) {
+// the refusal naming the state the whole Stop window carries. A Stop a
+// Reconfigure can run alongside takes this test's Reconfigure in its
+// window: it binds what it names, and the refusal's absence, the address
+// left listening and the dial completing each fail it.
+func TestAReconfigureUnderAStopIsRefusedAsStopping(t *testing.T) {
 	needIPv6Loopback(t)
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
@@ -528,8 +527,8 @@ func TestAReconfigureUnderAStopIsRefusedAsDraining(t *testing.T) {
 		return false
 	})
 	err = srv.Reconfigure(context.Background(), drainOn("127.0.0.1", "::1"))
-	if err == nil || !strings.Contains(err.Error(), "draining") {
-		t.Fatalf("Reconfigure under a Stop: %v, want refused naming draining", err)
+	if err == nil || !strings.Contains(err.Error(), "stopping") {
+		t.Fatalf("Reconfigure under a Stop: %v, want refused naming stopping", err)
 	}
 	release()
 	if err := <-stopped; err != nil {
@@ -608,6 +607,27 @@ func TestAMappedSpellingOfOneAddressReconfiguresAsItself(t *testing.T) {
 	if got := srv.Addrs(); !sameAddrs(got, before) {
 		t.Errorf("a Reconfigure between spellings of one address moved it: %v -> %v", before, got)
 	}
+}
+
+// An address spelt mapped closes when the settings drop it spelt plainly:
+// the sweep matches what the address unmaps to, not the spelling the bound
+// kept, so a respelled address cannot keep its socket serving past its
+// removal, where the raw match leaves the listener accepting.
+func TestARespelledAddressClosesWhenTheSettingsDropIt(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	srv := servingOn(t, b, drainOn("::ffff:127.0.0.1"))
+	before := srv.Addrs()
+	if err := srv.Reconfigure(context.Background(), drainOn("127.0.0.1")); err != nil {
+		t.Fatalf("Reconfigure with the plain spelling: %v", err)
+	}
+	if err := srv.Reconfigure(context.Background(), drainOn()); err != nil {
+		t.Fatalf("Reconfigure to no address: %v", err)
+	}
+	if got := srv.Addrs(); len(got) != 0 {
+		t.Errorf("after dropping the address, Addrs = %v, want none", got)
+	}
+	dialRefused(t, before[key("test")][0])
 }
 
 // While a Stop runs, even over a configured server, its marker refuses a
