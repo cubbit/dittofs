@@ -9,7 +9,7 @@ func (h Health) Ready() bool
 
 func (s State) String() string
 
-func ContextWithTraceID(ctx context.Context, id trace.TraceID) context.Context
+func StartRequestSpan(ctx context.Context, t trace.Tracer, id trace.TraceID, name string) (context.Context, trace.Span)
 
 func TraceIDFromContext(ctx context.Context) (trace.TraceID, bool)
 
@@ -42,7 +42,9 @@ type Deps struct {
 	Tracer  trace.Tracer
 
 	SampleRatio float64
-	Logger      *slog.Logger
+
+	TraceIDs func() trace.TraceID
+	Logger   *slog.Logger
 
 	Watch func(loop string) Loop
 

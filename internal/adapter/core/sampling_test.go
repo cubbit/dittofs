@@ -87,6 +87,70 @@ func (g *rootIDs) NewSpanID(context.Context, trace.TraceID) (id trace.SpanID) {
 	return id
 }
 
+// seeded is a Deps.TraceIDs drawing from a ChaCha8 seeded with seed, safe
+// for concurrent use: two built on one seed draw the same IDs in turn.
+func seeded(seed byte) func() trace.TraceID {
+	var mu sync.Mutex
+	src := rand.NewChaCha8([32]byte{seed})
+	return func() (id trace.TraceID) {
+		mu.Lock()
+		defer mu.Unlock()
+		binary.BigEndian.PutUint64(id[:8], src.Uint64())
+		binary.BigEndian.PutUint64(id[8:], src.Uint64())
+		return id
+	}
+}
+
+// Each request's trace ID is the one Deps.TraceIDs draws for it: the IDs its
+// lines log are, in turn, those a source on the same seed draws.
+func TestEachRequestDrawsItsTraceIDFromTraceIDs(t *testing.T) {
+	logs := &logSink{}
+	s := newSeamWith(t, testproto.New(adapter.Deps{}), 1<<20, adapter.Deps{TraceIDs: seeded(3), Logger: logs.logger()})
+	for id := range uint64(8) {
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 3, ID: id + 1}) // refused at route, logged at debug
+		s.read()
+	}
+	s.finish()
+	lines, want := logs.at(t, "DEBUG"), seeded(3)
+	if len(lines) != 8 {
+		t.Fatalf("8 requests refused at route logged %d debug lines", len(lines))
+	}
+	for i, rec := range lines {
+		if id := want().String(); rec["trace_id"] != id {
+			t.Errorf("request %d logs trace ID %v, want %s, the one Deps.TraceIDs drew", i+1, rec["trace_id"], id)
+		}
+	}
+}
+
+// StartRequestSpan gives the span it opens the ID it is handed, through the
+// root's ID generator, even under a context already carrying a span.
+func TestStartRequestSpanOpensARootWithItsID(t *testing.T) {
+	provider := sdktrace.NewTracerProvider(sdktrace.WithIDGenerator(&rootIDs{src: rand.NewChaCha8([32]byte{4})}))
+	tracer := provider.Tracer("test")
+	ctx, parent := tracer.Start(context.Background(), "parent")
+	defer parent.End()
+	id := seeded(5)()
+	_, span := adapter.StartRequestSpan(ctx, tracer, id, "adapter.test")
+	defer span.End()
+	if got := span.SpanContext().TraceID(); got != id {
+		t.Errorf("the span opened under another's context has trace ID %s, want %s, the one handed in (the parent's is %s)", got, id, parent.SpanContext().TraceID())
+	}
+}
+
+// The context StartRequestSpan returns carries its span and not the ID, so
+// a root opened under it draws an ID of its own.
+func TestStartRequestSpanHandsOnTheSpanAlone(t *testing.T) {
+	tracer := sdktrace.NewTracerProvider().Tracer("test")
+	ctx, span := adapter.StartRequestSpan(context.Background(), tracer, seeded(6)(), "adapter.test")
+	defer span.End()
+	if trace.SpanFromContext(ctx) != span {
+		t.Error("the context StartRequestSpan returns does not carry its span")
+	}
+	if id, ok := adapter.TraceIDFromContext(ctx); ok {
+		t.Errorf("the context StartRequestSpan returns gives TraceIDFromContext %s, want none", id)
+	}
+}
+
 // Under a provider built as the root builds it, sampling at the same ratio,
 // only the requests whose logged trace ID the ratio rule samples call the
 // tracer, each handing it that ID, and each has a span carrying it.
