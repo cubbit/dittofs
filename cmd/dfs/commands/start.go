@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
@@ -35,7 +36,7 @@ Examples:
 func runStart(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 
-	cfg, err := bootstrap.MustLoad(configPath)
+	cfg, err := bootstrap.MustLoad(configPath, os.Environ())
 	if err != nil {
 		return err
 	}

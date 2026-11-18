@@ -38,7 +38,7 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 
 	// Load configuration
-	cfg, err := bootstrap.MustLoad(configPath)
+	cfg, err := bootstrap.MustLoad(configPath, os.Environ())
 	if err != nil {
 		return err
 	}

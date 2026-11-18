@@ -28,7 +28,7 @@ blockstore:
 	}
 
 	// Load config
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, os.Environ())
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestLoad_NoConfigFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	nonExistentPath := filepath.Join(tmpDir, "nonexistent.yaml")
 
-	cfg, err := Load(nonExistentPath)
+	cfg, err := Load(nonExistentPath, os.Environ())
 	if err != nil {
 		t.Fatalf("Expected no error when loading default config, got: %v", err)
 	}
@@ -81,7 +81,7 @@ logging:
 	}
 
 	// Should return error
-	_, err := Load(configPath)
+	_, err := Load(configPath, os.Environ())
 	if err == nil {
 		t.Fatal("Expected error with invalid YAML, got nil")
 	}
@@ -100,7 +100,7 @@ format = "json"
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, os.Environ())
 	if err != nil {
 		t.Fatalf("Failed to load TOML config: %v", err)
 	}
@@ -134,7 +134,8 @@ func TestLoad_IgnoresUnknownKey(t *testing.T) {
 			if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 				t.Fatalf("write config: %v", err)
 			}
-			if _, err := Load(configPath); err != nil {
+
+			if _, err := Load(configPath, os.Environ()); err != nil {
 				t.Fatalf("Load must tolerate unknown key %q (warn, not fail), got %v", name, err)
 			}
 		})
@@ -251,7 +252,7 @@ blockstore:
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, os.Environ())
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestLoad_LeavesNodeAndDevicesToTheHost(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, os.Environ())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

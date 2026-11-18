@@ -96,11 +96,16 @@ type LogRotationConfig struct {
 //
 // Parameters:
 //   - configPath: Path to config file (empty string uses default location)
+//   - environ: the process environment, as os.Environ returns it
 //
 // Returns:
 //   - *Bootstrap: Loaded and validated configuration
 //   - error: Configuration loading or validation error
-func Load(configPath string) (*Bootstrap, error) {
+//
+// environ is not read yet: the environment still reaches the keys through
+// viper's AutomaticEnv. The argument is there so that the loader replacing
+// this one reads no process state, only what its caller passes.
+func Load(configPath string, environ []string) (*Bootstrap, error) {
 	v := viper.New()
 
 	// Configure viper
@@ -164,11 +169,12 @@ func Load(configPath string) (*Bootstrap, error) {
 //
 // Parameters:
 //   - configPath: Path to config file (empty string uses default location)
+//   - environ: the process environment, passed on to Load
 //
 // Returns:
 //   - *Bootstrap: Loaded and validated configuration
 //   - error: User-friendly error if the named config file is missing
-func MustLoad(configPath string) (*Bootstrap, error) {
+func MustLoad(configPath string, environ []string) (*Bootstrap, error) {
 	// Determine config path
 	if configPath == "" {
 		if !DefaultConfigExists() {
@@ -181,7 +187,8 @@ func MustLoad(configPath string) (*Bootstrap, error) {
 				"WARNING: no configuration file found at default location: %s\n"+
 					"         starting with built-in defaults (override via DITTOFS_* env vars).\n",
 				GetDefaultConfigPath())
-			cfg, err := Load("")
+
+			cfg, err := Load("", environ)
 			if err != nil {
 				return nil, fmt.Errorf("failed to load default configuration: %w", err)
 			}
@@ -195,7 +202,7 @@ func MustLoad(configPath string) (*Bootstrap, error) {
 	}
 
 	// Load configuration
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, environ)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load configuration: %w", err)
 	}
