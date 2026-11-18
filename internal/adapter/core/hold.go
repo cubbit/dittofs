@@ -574,10 +574,10 @@ type parked struct {
 //
 // decision: the interim of a park whose own reply buffer is the one it keeps
 // goes out in a status's buffer, taken at once where the pool has room, and
-// otherwise waiting as an admitted request's status waits, at most 30 s, in
-// its place (RFC 24 §3.3), since RFC 20 §4.7 names no buffer for it and the
-// park keeps its own for its final reply. Overturned if the RFC gives the
-// interim another buffer.
+// otherwise waiting as any status of that request waits, alone or as its
+// chain's last member, at most 30 s, in its place (RFC 24 §3.3), since RFC 20
+// §4.7 names no buffer for it and the park keeps its own for its final reply.
+// Overturned if the RFC gives the interim another buffer.
 //
 // decision: Final's header is taken here, before the record goes, since a
 // header may lie in it, and done's reply goes out under it. Overturned if a
