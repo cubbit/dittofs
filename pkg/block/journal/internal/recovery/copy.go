@@ -122,7 +122,7 @@ func (c *copier) copy(ctx context.Context, recs []copyInput) (target core.Segmen
 	// loop that seals a full target and draws another.
 	need := end + format.SealMarkerSize + int64(len(recs))*format.CatalogEntrySize + format.TrailerSize
 	if need > c.deps.SegmentCap {
-		return 0, nil, fmt.Errorf("the copy of %d records needing %d bytes cannot fit one spare of the %d-byte cap", len(recs), need, c.deps.SegmentCap)
+		return 0, nil, fmt.Errorf("%w: the copy of %d records needing %d bytes cannot fit one spare of the %d-byte cap", core.ErrOpenRefused, len(recs), need, c.deps.SegmentCap)
 	}
 
 	var refused error
@@ -133,6 +133,11 @@ func (c *copier) copy(ctx context.Context, recs []copyInput) (target core.Segmen
 		if err := ctx.Err(); err != nil {
 			return 0, nil, err
 		}
+		// decision: a draw's error is returned as the pool answered it and
+		// never as an open refusal: a spare the reserve lacks is a state of
+		// the pool a retry may find changed, where the refusals of this open
+		// are the ones that repeat identically on the same directory. Withdrawn
+		// if a reserve that can never refill is ruled a refusal of the open.
 		id, derr := c.draw()
 		if derr != nil {
 			if refused != nil {

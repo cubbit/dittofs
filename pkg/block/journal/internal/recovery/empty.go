@@ -385,7 +385,7 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 		// loss record for a rotten removal record, which the leg above would
 		// then write in place of the refusal.
 		if bytes == nil {
-			return fmt.Errorf("the record of seq %d at %d of segment %d does not decode or verify on the emptying's read", rec.Seq, rec.Loc.Off, id)
+			return fmt.Errorf("%w: the record of seq %d at %d of segment %d does not decode or verify on the emptying's read", core.ErrOpenRefused, rec.Seq, rec.Loc.Off, id)
 		}
 		ins = append(ins, carriedCopy{in: copyInput{
 			Bytes: bytes, Segment: id, At: rec.Loc.Off,

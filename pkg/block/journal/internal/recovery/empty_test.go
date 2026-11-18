@@ -1001,3 +1001,18 @@ func kitOp(op string) string {
 	t := op
 	panic("the crash table named an op the seam does not hold: " + t)
 }
+
+// TestCopyPastOneCapIsAnOpenRefusal holds the class of a refusal that recurs
+// on every retry: a batch needing more than one spare's cap cannot be copied
+// whatever the pool holds, so the engine must see the open's own refusal and
+// not a generic open failure.
+func TestCopyPastOneCapIsAnOpenRefusal(t *testing.T) {
+	h := format.RecordHeader{Kind: format.KindLoss, File: tailFile(), Extent: core.Extent{Off: 0, Len: 16}, Seq: 1, Version: core.Version{Counter: 1}, Segment: 2}
+	body := format.RecordBody{Loss: format.Loss{Dropped: 1, Reason: format.LossCorrupt}}
+	rec := format.AppendRecord(nil, journalID, h, body)
+	c := &copier{deps: Deps{SegmentCap: 1}, identity: journalID}
+	_, _, err := c.copy(context.Background(), []copyInput{{Bytes: rec, Segment: 2, At: 0, Seq: 1, Version: core.Version{Counter: 1}}})
+	if !errors.Is(err, core.ErrOpenRefused) {
+		t.Fatalf("a copy needing more than one cap answered %v, want an error matching core.ErrOpenRefused", err)
+	}
+}
