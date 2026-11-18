@@ -767,11 +767,15 @@ var errOutgrown = errors.New("core: a parked reply grew past its small buffer")
 func (p *pipeline) answerPark(pd *pending, err error) {
 	defer p.unpark(pd)
 	tr, h, buf := pd.tr, pd.park.final, pd.reply
+	// map_error is timed from here, done, or the handler's return where done
+	// came first, so the park's wait is no stage's (§10.1).
+	tr.mark = p.sh.clock.Now()
 	var s Status
 	send := true
 	if err != nil {
 		s, send, _ = p.mapped(tr, pd.tb.Errors, err, pd.op, h.Version(), true)
 	}
+	p.lap(tr, stageMapError)
 	if !send || p.ctx.Err() != nil {
 		buf.Release()
 		p.end(tr, false, 0, 0, err)
@@ -793,6 +797,7 @@ func (p *pipeline) answerPark(pd *pending, err error) {
 			return
 		}
 	}
+	p.lap(tr, stageEncode)
 	n := len(buf.B)
 	p.end(tr, p.send(nil, h, buf, pd.key), s, n, err)
 }

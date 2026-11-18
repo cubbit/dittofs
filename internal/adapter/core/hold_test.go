@@ -1162,6 +1162,45 @@ func TestAParkOutlivesTheDeadlineAndTheHoldsBound(t *testing.T) {
 	})
 }
 
+// A parked request's map_error and encode are timed from done: the 30 s it
+// waits parked lands in no stage, and its answer observes map_error and
+// encode once each (RFC 20 §10.1).
+func TestAParksWaitIsNoStages(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk, m := newManualClock(), metrics.New("v", "c")
+		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, clk)
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		next := s.recvLater()
+		synctest.Wait()
+		before, _ := scrape(t, m)
+		wasN, wasS := wireSeconds(before)
+		clk.Advance(30 * time.Second)
+		hold.Release()
+		<-next.done
+		if next.err != nil || len(next.rs) != 1 || next.rs[0].Status != testproto.StatusOK {
+			t.Fatalf("the park is answered %+v (%v), want its final success", next.rs, next.err)
+		}
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := scrape(t, m)
+		counts, sums := wireSeconds(after)
+		for _, st := range []string{"map_error", "encode"} {
+			if got := counts[st] - wasN[st]; got != 1 {
+				t.Errorf("%s observed %v times at the park's answer, want once", st, got)
+			}
+		}
+		for st, v := range sums {
+			if got := v - wasS[st]; got != 0 {
+				t.Errorf("%s gained %v s over the park's wait, want none", st, got)
+			}
+		}
+	})
+}
+
 // A park whose name does not fit the small class keeps a small buffer, not
 // its own, while it waits, and is answered the overflow status alone (§4.7;
 // RFC 24 §3.3).

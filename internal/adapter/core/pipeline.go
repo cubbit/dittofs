@@ -1024,6 +1024,11 @@ func (p *pipeline) begin(rec *resources.Buf) *track {
 // ended is observed under st where the connection times st, and the next
 // stage is timed from here. An interim, which answers no request alone, has
 // no track and is timed under no stage.
+//
+// ponytail: each lap is a clock read and an Observe on a histogram every
+// connection of the protocol shares, about 11 per request. Upgrade to
+// per-connection sums flushed periodically, or sharded series, when Observe
+// contention shows in a profile.
 func (p *pipeline) lap(tr *track, st stage) {
 	if tr == nil {
 		return
