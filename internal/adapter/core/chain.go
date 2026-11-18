@@ -127,10 +127,11 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 	// records waiting for a status stay one per connection, and the wait
 	// falls into encode, as every status's does (§10.1). The status's 30 s,
 	// where this wait blocks, runs on into its wait for its buffer on the
-	// chain's goroutine.
+	// chain's goroutine. One whose admission the close ended is no refusal:
+	// the closed context below ends it, as it ends a later member.
 	slot := false
 	var at time.Time
-	if e.err != nil {
+	if e.err != nil && !p.endedByClose(e.err) {
 		mh := e.u // as a refusal alone maps: under Unwrap's header, or Decode's where it refused
 		if e.st == stageDecodeHeader {
 			mh = h
