@@ -46,15 +46,10 @@ func (l *loggedBuf) String() string {
 	return l.b.String()
 }
 
-// budgets is a fresh set of the four budgets, wide enough for the tests.
-func budgets() *resources.Budgets {
-	return &resources.Budgets{
-		Receive:    resources.NewWaitBudget("receive", 4<<20),
-		Reply:      resources.NewWaitBudget("reply", 4<<20),
-		Connection: resources.NewBudget("connection", 4<<20),
-		Hold:       resources.NewBudget("hold", 4<<20),
-	}
-}
+// budgets is a fresh set of the budgets a server's tests need: the four on
+// the request path and the node's connection count, through adaptertest, so
+// every test-built server runs with a limit (R60).
+func budgets() *resources.Budgets { return adaptertest.Budgets() }
 
 // testServer is a server serving testproto's bare protocol under snap, its
 // hand-over listener carrying the label accept counts under (§10.1): the

@@ -328,17 +328,19 @@ func SetListen(s *Server, f func(ctx context.Context, network, addr string) (net
 // ServeConn hands the server a socket, which its accept loop does in
 // production, and returns the connection it serves on it. A hook's connection
 // names no bound address, so a Reconfigure that removes an address never
-// closes it. Label its listener first where the test reads what the
+// closes it, and admission gave it no count and no charge, so its teardown
+// gives neither back. Label its listener first where the test reads what the
 // connection counts: a listener a test builds carries no accept-close label,
 // the server's own clones carrying theirs from NewServer.
 func ServeConn(s *Server, nc net.Conn, l *Listener) *Conn {
-	return s.serveConn(nc, l, nil, nil)
+	return s.serveConn(nc, l, nil, nil, nil)
 }
 
 // ServeConnCharged hands the server a socket with the connection-state charge
-// its accept loop would take, and returns the connection.
+// its accept loop would take, and returns the connection; its count stays
+// untaken, as a hook that did not admit the socket.
 func ServeConnCharged(s *Server, nc net.Conn, l *Listener, charge *resources.Reservation) *Conn {
-	return s.serveConn(nc, l, nil, charge)
+	return s.serveConn(nc, l, nil, nil, charge)
 }
 
 // Labeled sets on l the label a connection closed at accept counts under,

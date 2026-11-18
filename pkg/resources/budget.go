@@ -3,8 +3,9 @@
 // and the metrics registry, and every component that charges memory imports
 // it, never the reverse.
 //
-// Nothing here has a lifecycle: NewBudget, NewWaitBudget and NewBufPool start
-// no goroutine and open nothing, and there is no Start or Close.
+// Nothing here has a lifecycle: NewBudget, NewWaitBudget, NewConnLimit and
+// NewBufPool start no goroutine and open nothing, and there is no Start or
+// Close.
 //
 // ponytail: RFC 24's Detect, Split, ShareCap, Reclaim and §4.1's turns are
 // absent; each lands with its first caller.
@@ -320,8 +321,82 @@ func (r *Reservation) Release() {
 	}
 }
 
-// Budgets is what an adapter is handed: the four budgets on the request path.
+// Budgets is what an adapter is handed (RFC 20 section 3.4): the four budgets
+// on the request path, and the node's connection count.
 type Budgets struct {
 	Receive, Reply   *WaitBudget
 	Connection, Hold *Budget
+	Conns            *ConnLimit // section 4.4: one count per node, shared by every adapter
 }
+
+// ConnLimit counts a node's open connections against connection_limit and
+// each address's quarter of it (RFC 24 section 4.4), across every adapter. It
+// counts connections, not bytes: their memory is the connection-state
+// budget's.
+type ConnLimit struct {
+	mu    sync.Mutex
+	limit int
+	open  int                // the node's connections open now
+	addrs map[netip.Addr]int // one address's connections open now, its entry dropped at zero
+}
+
+// quarter is the most connections one address may hold of l's limit now: a
+// quarter of it, rounded down and at least one (RFC 24 section 4.4).
+func (l *ConnLimit) quarter() int { return max(l.limit/4, 1) }
+
+// NewConnLimit builds a count of limit connections for the node, its
+// addresses each held to a quarter of it.
+func NewConnLimit(limit int) *ConnLimit {
+	return &ConnLimit{limit: limit, addrs: map[netip.Addr]int{}}
+}
+
+// Take counts one connection from addr at accept, or refuses at once:
+// ErrConnLimit at the limit, ErrConnQuarter at addr's quarter. The node's
+// limit is read before the address's quarter, the order RFC 24 section 4.4
+// names them in, which decides the reason a socket both bounds would count
+// its close under.
+func (l *ConnLimit) Take(addr netip.Addr) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.open >= l.limit {
+		return ErrConnLimit
+	}
+	if l.addrs[addr] >= l.quarter() {
+		return ErrConnQuarter
+	}
+	l.open++
+	l.addrs[addr]++
+	return nil
+}
+
+// Release returns one connection of addr, at the connection's teardown, its
+// address's entry dropped at zero.
+func (l *ConnLimit) Release(addr netip.Addr) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.open--
+	if l.addrs[addr] <= 1 {
+		delete(l.addrs, addr)
+		return
+	}
+	l.addrs[addr]--
+}
+
+// SetLimit applies a changed connection_limit to connections accepted
+// afterwards; those open stay. An address's quarter is limit / 4, at least 1.
+// It changes nothing else: the connections open stay counted, per address
+// too, so a Take after it tells the new limit from the count as it was.
+func (l *ConnLimit) SetLimit(limit int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.limit = limit
+}
+
+var (
+	// ErrConnLimit is what Take refuses a connection at the node's
+	// connection_limit with.
+	ErrConnLimit = errors.New("resources: at the connection limit")
+	// ErrConnQuarter is what Take refuses a connection from an address
+	// already holding a quarter of the limit with.
+	ErrConnQuarter = errors.New("resources: address at its quarter of the connection limit")
+)

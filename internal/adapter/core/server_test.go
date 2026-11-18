@@ -22,15 +22,11 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
 
-// newDeps is a server's dependencies, with the four budgets the leak check
-// reads.
+// newDeps is a server's dependencies, with the budgets the leak check reads:
+// the four on the request path and the node's connection count, through
+// adaptertest, so every test-built server runs with a limit (R60).
 func newDeps() adapter.Deps {
-	return adapter.Deps{VFS: vfstest.Null{}, Budgets: &resources.Budgets{
-		Receive:    resources.NewWaitBudget("receive", 8<<20),
-		Reply:      resources.NewWaitBudget("reply", 8<<20),
-		Connection: resources.NewBudget("connection", 1<<20),
-		Hold:       resources.NewBudget("hold", 1<<20),
-	}}
+	return adapter.Deps{VFS: vfstest.Null{}, Budgets: adaptertest.Budgets()}
 }
 
 // on is testproto's settings, binding each of addrs.
@@ -105,6 +101,19 @@ func dialRefused(t *testing.T, a netip.AddrPort) {
 	if err == nil {
 		_ = c.Close()
 		t.Fatalf("a dial to %s connects; want it refused", a)
+	}
+}
+
+// NewServer refuses a Budgets whose Conns is nil, naming Budgets.Conns: a
+// missing count would drop the node's connection limit silently, every accept
+// taking no count (R60). A check dropped fails here.
+func TestNewServerRefusesABudgetsWithoutTheConnectionCount(t *testing.T) {
+	b := adaptertest.Budgets()
+	adaptertest.CheckLeaks(t, b)
+	b.Conns = nil
+	_, err := core.NewServer(adapter.Deps{VFS: vfstest.Null{}, Budgets: b}, on("127.0.0.1"), tcp(testproto.New(adapter.Deps{}).Bare(), 0, "test"))
+	if err == nil || !strings.Contains(err.Error(), "Budgets.Conns") {
+		t.Fatalf("NewServer over a Budgets without Conns: %v, want a refusal naming Budgets.Conns", err)
 	}
 }
 
@@ -735,13 +744,9 @@ func (r renamed) NewConn(c *core.Conn) core.Stages {
 // (§10.1).
 func TestACloseAtAcceptCountsUnderItsListenersLabel(t *testing.T) {
 	m := metrics.New("v", "c")
-	b := resources.Budgets{
-		Receive:    resources.NewWaitBudget("receive", 1<<20),
-		Reply:      resources.NewWaitBudget("reply", 1<<20),
-		Connection: resources.NewBudget("connection", core.ConnCharge()-1),
-		Hold:       resources.NewBudget("hold", 1<<20),
-	}
+	b := *budgets()
 	adaptertest.CheckLeaks(t, &b)
+	b.Connection = resources.NewBudget("connection", core.ConnCharge()-1)
 	srv, err := core.NewServer(adapter.Deps{Metrics: m, Budgets: &b}, on("127.0.0.1"), tcp(renamed{testproto.New(adapter.Deps{})}, 0, "test"))
 	if err != nil {
 		t.Fatal(err)

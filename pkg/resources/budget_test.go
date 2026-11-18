@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -560,5 +561,186 @@ func TestReserveAndReleaseAllocateNothing(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Errorf("a reserve and release on each kind allocate %v times, want 0", allocs)
+	}
+}
+
+// addrs is n distinct addresses the connection count is taken for.
+func addrs(n int) []netip.Addr {
+	as := make([]netip.Addr, n)
+	for i := range as {
+		as[i] = netip.AddrFrom4([4]byte{192, 0, 2, byte(i + 1)})
+	}
+	return as
+}
+
+// mustTake takes one connection for addr, or fails the test at the count's
+// refusal.
+func mustTake(t *testing.T, l *ConnLimit, addr netip.Addr) {
+	t.Helper()
+	if err := l.Take(addr); err != nil {
+		t.Fatalf("take from %s: %v", addr, err)
+	}
+}
+
+// The node's limit holds eight connections, one from each of eight
+// addresses, and a ninth is refused with ErrConnLimit: a Release lets the
+// next Take in (RFC 24 section 4.4).
+func TestTheConnectionLimitHoldsEightAndRefusesTheNinth(t *testing.T) {
+	l := NewConnLimit(8)
+	a := addrs(9)
+	for _, addr := range a[:8] {
+		mustTake(t, l, addr)
+	}
+	if err := l.Take(a[8]); !errors.Is(err, ErrConnLimit) {
+		t.Fatalf("a ninth Take of the limit = %v, want ErrConnLimit", err)
+	}
+	l.Release(a[3])
+	if err := l.Take(a[8]); err != nil {
+		t.Errorf("after a Release the next Take = %v, want it admitted", err)
+	}
+}
+
+// An address is held at a quarter of the limit, rounded down: at 8 its third
+// connection is refused with ErrConnQuarter, and once one of its two is
+// released its next is admitted (RFC 24 section 4.4).
+func TestAnAddressIsHeldAtAQuarterOfTheConnectionLimit(t *testing.T) {
+	l := NewConnLimit(8)
+	mustTake(t, l, client)
+	mustTake(t, l, client)
+	if err := l.Take(client); !errors.Is(err, ErrConnQuarter) {
+		t.Fatalf("an address's third Take of a quarter of 8 = %v, want ErrConnQuarter", err)
+	}
+	l.Release(client)
+	if err := l.Take(client); err != nil {
+		t.Errorf("after the Release the same address's Take = %v, want it admitted", err)
+	}
+}
+
+// A limit whose quarter would round to 0 still holds each address at one:
+// limits 1 to 3 give each address a quarter of 1, without which maximum a
+// quarter of 0 would refuse every Take. At 2 and 3 the address's second Take
+// is the quarter's refusal alone; at 1 the address holds the whole node's
+// limit too, which Take names first, the order RFC 24 section 4.4 lists the
+// bounds in (RFC 24 section 4.4).
+func TestALimitOfThreeGivesEachAddressAQuarterOfOne(t *testing.T) {
+	for limit := 1; limit <= 3; limit++ {
+		t.Run(strconv.Itoa(limit), func(t *testing.T) {
+			l := NewConnLimit(limit)
+			mustTake(t, l, client)
+			err := l.Take(client)
+			if limit == 1 {
+				if !errors.Is(err, ErrConnLimit) {
+					t.Fatalf("at limit 1 an address's second Take = %v, want ErrConnLimit, whose bound it holds with its quarter's", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrConnQuarter) {
+				t.Fatalf("at limit %d an address's second Take = %v, want ErrConnQuarter", limit, err)
+			}
+		})
+	}
+}
+
+// SetLimit is read by the next Take while the connections open stay counted:
+// with 6 open a limit of 4 refuses every Take, an address's own included,
+// until fewer than 4 are open, and makes the quarter 1; a limit of 8 then
+// admits again, the quarter with it. It recounts nothing: an address's count
+// survives the change, and the open count with it (RFC 24 sections 2.5 and
+// 4.4).
+func TestSetLimitRefusesUntilFewerThanTheLimitAreOpen(t *testing.T) {
+	l := NewConnLimit(8)
+	a := addrs(5)
+	for _, addr := range a[:3] {
+		mustTake(t, l, addr)
+		mustTake(t, l, addr) // 6 open, each of the three at its quarter of 8
+	}
+	l.SetLimit(4)
+	if err := l.Take(a[0]); !errors.Is(err, ErrConnLimit) {
+		t.Fatalf("with 6 open at a limit of 4 an address's Take = %v, want ErrConnLimit", err)
+	}
+	if err := l.Take(a[3]); !errors.Is(err, ErrConnLimit) {
+		t.Fatalf("with 6 open at a limit of 4 a fresh address's Take = %v, want ErrConnLimit", err)
+	}
+	for _, addr := range a[:3] {
+		l.Release(addr) // 3 open, each of the three at 1
+	}
+	if err := l.Take(a[0]); !errors.Is(err, ErrConnQuarter) {
+		t.Fatalf("at the new quarter of 1 an address holding one = %v, want ErrConnQuarter", err)
+	}
+	mustTake(t, l, a[3]) // 4 open: the limit exactly
+	if err := l.Take(a[4]); !errors.Is(err, ErrConnLimit) {
+		t.Fatalf("at a limit of 4 with 4 open a Take = %v, want ErrConnLimit", err)
+	}
+	l.SetLimit(8)
+	mustTake(t, l, a[0]) // its count 1 under the quarter of 2
+	if err := l.Take(a[0]); !errors.Is(err, ErrConnQuarter) {
+		t.Fatalf("with a count of 2 at the quarter of 8 = %v, want ErrConnQuarter", err)
+	}
+}
+
+// Many goroutines taking and releasing against a small limit, one address
+// each, a live SetLimit running among them, never pass the limit in play;
+// once they end the full limit can be taken, and one Take past it is
+// refused: nothing they took leaked and nothing went below zero (RFC 24
+// sections 2.5 and 4.4). A field of the count changed outside its mutex
+// fails here on the race detector.
+func TestConcurrentTakesNeverPassTheLimit(t *testing.T) {
+	l := NewConnLimit(32)
+	const goroutines = 64
+	var held atomic.Int64
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Go(func() {
+			addr := netip.AddrFrom4([4]byte{198, 51, 100, byte(i + 1)})
+			for round := range 200 {
+				switch round % 50 {
+				case 0:
+					l.SetLimit(64)
+				case 25:
+					l.SetLimit(32)
+				}
+				if err := l.Take(addr); err != nil {
+					if !errors.Is(err, ErrConnLimit) {
+						t.Errorf("take = %v, want a grant or ErrConnLimit", err)
+					}
+					continue
+				}
+				if now := held.Add(1); now > 64 {
+					t.Errorf("%d connections held at once, over the limit", now)
+				}
+				held.Add(-1)
+				l.Release(addr)
+			}
+		})
+	}
+	wg.Wait()
+	if n := held.Load(); n != 0 {
+		t.Fatalf("%d connections still held after the rounds, want 0", n)
+	}
+	l.SetLimit(64)
+	for _, addr := range addrs(64) {
+		if err := l.Take(addr); err != nil {
+			t.Fatalf("the full limit cannot be taken after the rounds: %v", err)
+		}
+	}
+	if err := l.Take(netip.MustParseAddr("192.0.2.200")); !errors.Is(err, ErrConnLimit) {
+		t.Fatalf("a Take past the full limit = %v, want ErrConnLimit", err)
+	}
+}
+
+// An address's entry is dropped at zero: the count keeps one entry per
+// address holding connections, never one per address that ever did.
+func TestAnAddressEntryIsDroppedAtZero(t *testing.T) {
+	l := NewConnLimit(8)
+	peer := netip.MustParseAddr("192.0.2.2")
+	mustTake(t, l, client)
+	mustTake(t, l, peer)
+	l.Release(client)
+	if n := len(l.addrs); n != 1 {
+		t.Errorf("after one of two addresses released the count keeps %d entries, want 1", n)
+	}
+	l.Release(peer)
+	if n := len(l.addrs); n != 0 {
+		t.Errorf("after both addresses released the count keeps %d entries, want 0", n)
 	}
 }

@@ -24,8 +24,10 @@ type Deps struct {
 	// sign-in and principal spellings. It is the filesystem or the gateway,
 	// and the adapter cannot tell which.
 	VFS vfs.Service
-	// Budgets are the four on the request path: receive, reply, connection
-	// state and hold.
+	// Budgets are the four on the request path, receive, reply, connection
+	// state and hold, and the node's connection count, Conns: the limit and
+	// each address's quarter of it span every adapter of the node, each accept
+	// taking from the one count.
 	Budgets *resources.Budgets
 	Metrics *metrics.Registry // nil: registers nothing
 	Tracer  trace.Tracer      // spans; nil: the no-op tracer

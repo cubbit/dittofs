@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -276,6 +277,24 @@ func (sh *shared) acceptLine(r reason) *lineLimiter {
 	return l
 }
 
+// addressLine is the limiter of the per_address close at accept's line, one
+// per address per server, resolved under sh.mu.
+//
+// decision: the per_address line's minute is held per address, where every
+// other close-at-accept reason holds its minute per reason (RFC 20
+// section 10.3), so one noisy client cannot spend the reason's minute for
+// every other address.
+func (sh *shared) addressLine(addr netip.Addr) *lineLimiter {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if l, ok := sh.addressLines[addr]; ok {
+		return l
+	}
+	l := &lineLimiter{}
+	sh.addressLines[addr] = l
+	return l
+}
+
 // closeLine writes a connection's close, at its reason's level (§10.3), under
 // the label whose series ls holds: one line per close, and for one closed at
 // accept, a noisy subject (RFC 20 §10.3), at most one a minute per reason
@@ -295,6 +314,22 @@ func (sh *shared) closeLine(ls *labelSeries, r reason, err error, atAccept bool)
 	sh.log.LogAttrs(context.Background(), r.level(), "a connection closed",
 		slog.String("reason", reasonNames[r]), slog.String("protocol", ls.protocol),
 		slog.Any("error", err))
+}
+
+// closeAddressLine writes the per_address close at accept's line, naming the
+// address its quarter held back (R8): warning, at most once a minute per
+// address, the next line carrying the count held back since the last
+// (RFC 25 section 5.2), on the server's clock, which decides the minute
+// (D3). The line names the address because no metric may carry a client
+// label (R55), so the log is where the noisy client is found.
+func (sh *shared) closeAddressLine(ls *labelSeries, addr netip.Addr, err error) {
+	ok, held := sh.addressLine(addr).take(sh.clock.Now())
+	if !ok {
+		return
+	}
+	sh.log.LogAttrs(context.Background(), rsnPerAddress.level(), "a connection closed at accept",
+		slog.String("reason", reasonNames[rsnPerAddress]), slog.String("protocol", ls.protocol),
+		slog.String("client", addr.String()), slog.Any("error", err), slog.Int64("suppressed", held))
 }
 
 // clockCtx is a context whose deadline is on a clock: its Deadline, Done and
