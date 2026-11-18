@@ -865,6 +865,31 @@ func TestAStatusWaitsOnItsOwnGoroutine(t *testing.T) {
 	})
 }
 
+// A refusal whose wait for its status meets the connection's close ends its
+// span: with the reply pool full and the connection closed, the refusal
+// takes the status slot or sees the close, at random, and either way every
+// refused request's span ends (§10.2).
+func TestARefusalTheCloseMeetsEndsItsSpan(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		spans := tracetest.NewSpanRecorder()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
+		spent := &vfs.Delay{Cause: vfs.DelayResources}
+		s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Flow = refusingFlow{spent} }}, smallCharge, adapter.Deps{Tracer: provider.Tracer("test"), SampleRatio: 1})
+		free := s.full()
+		defer free()
+		s.p.Close()
+		for id := range uint64(200) {
+			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: id + 1})
+		}
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if started, ended := len(spans.Started()), len(spans.Ended()); started == 0 || ended != started {
+			t.Errorf("%d spans started and %d ended, want every refused request's span ended", started, ended)
+		}
+	})
+}
+
 // With the reply budget full a second refused header waits on the reader
 // until the first one's status goes out; a close during a wait releases the
 // record, and wait returns only after.

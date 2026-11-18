@@ -476,6 +476,7 @@ func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err
 	p.add()
 	if p.ctx.Err() != nil {
 		<-p.status
+		p.end(tr, false, 0, 0, err)
 		p.done()
 		rec.Release()
 		return
