@@ -37,11 +37,11 @@ func (s *Server) Start(ctx context.Context) error
 
 func (s *Server) Stop(ctx context.Context) error
 
-func (t *ErrorTable) Map(err error, op *Op, v Version) (s Status, reply bool)
+func (t *ErrorTable) Map(err error, op *Op, v Version) (s Status, reply, notFailure bool)
 
 func Bind[Req, Rep any](
 	dec func(b []byte, v Version, req *Req) (n int, err error),
-	bound func(req *Req) int,
+	bound func(r *Request, req *Req, room int) (n int, ok bool),
 	resolve func(r *Request, req *Req) error,
 	role func(r *Request, req *Req) Role,
 	handle func(req *Req) (vfs.Handle, bool),
@@ -67,6 +67,8 @@ type ErrorRow struct {
 	Versions *Range
 
 	NoReply bool
+
+	NotFailure bool
 
 	Hold   func(err error, start time.Time) time.Time
 	Status Status
@@ -118,7 +120,7 @@ type HoldCodec interface {
 }
 
 type Invocation struct {
-	Bound   func() int
+	Bound   func(r *Request, room int) (n int, ok bool)
 	Resolve func(r *Request) error
 	Call    func(ctx context.Context, r *Request) error
 

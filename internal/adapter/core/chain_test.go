@@ -109,6 +109,23 @@ func TestARelatedMemberAfterAFailureIsAnsweredItsStatus(t *testing.T) {
 	})
 }
 
+// A related member after one answered a NotFailure row's status runs: a
+// PutFH, a related Echo answered it and a related Create make the file.
+func TestARelatedMemberRunsPastANotFailureStatus(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		s.serve(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 30, Session: 7, Tree: 1, Handle: s.root},
+			testproto.Msg{Op: testproto.OpEcho, Version: 2, ID: 31, Session: inherited, Tree: 1, Payload: []byte(testproto.NotFailure), Related: true},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 32, Session: inherited, Tree: 1, Name: "c", Related: true},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 3 || rs[0].Status != testproto.StatusOK || rs[1].Status != testproto.StatusNotFailure || rs[2].Status != testproto.StatusOK || s.creates() != 1 {
+			t.Errorf("the chain is answered %+v, %v, with %d files made; want the NotFailure status, then the Create run and its file", rs, err, s.creates())
+		}
+	})
+}
+
 // chainOf is the body of a record chaining msgs, as the seam serves it, and
 // the offset of each member's header in it.
 func chainOf(f core.Framer, msgs ...testproto.Msg) ([]byte, []int) {
@@ -1143,6 +1160,23 @@ func TestARelatedMemberAfterACancelStartsFromNoRequest(t *testing.T) {
 	})
 }
 
+// A cancel is the member before the next, so a related member after it is
+// not answered the failure of the member before the cancel (§4.3).
+func TestARelatedMemberAfterACancelIsNotFailedByTheMemberBeforeIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		s.serve(
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 180, Session: 7, Tree: 1, Name: "nohandle"},
+			testproto.Msg{Op: testproto.OpCancel, Version: 2, Session: 7, Tree: 1, Target: 9},
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 182, Session: inherited, Tree: 1, Handle: s.root, Related: true},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[0].Status != testproto.StatusNoFH || rs[1].ID != 182 || rs[1].Status != 0 {
+			t.Errorf("the chain is answered %+v, %v: want the Create refused for no handle and the related PutFH after the cancel answered success", rs, err)
+		}
+	})
+}
+
 // A chain admitted after close is not run: no Route, no call, no reply.
 func TestAChainAfterCloseIsNotRun(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -1304,7 +1338,10 @@ func TestAChainSplitsAtTheRecordCap(t *testing.T) {
 						out.B = append(out.B, make([]byte, grown)...)
 						return nil
 					}
-					inv.Bound = func() int { return bound() + grown }
+					inv.Bound = func(r *core.Request, room int) (int, bool) {
+						n, ok := bound(r, room)
+						return n + grown, ok
+					}
 					return inv
 				}
 				m := metrics.New("v", "c")

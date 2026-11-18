@@ -289,6 +289,35 @@ func TestACompoundRunsItsMembersInTurn(t *testing.T) {
 	}
 }
 
+// A compound runs on past a member answered a NotFailure row's status: a
+// PutFH, an Echo answered it and a Create make the file. A member after it
+// that does not decode is answered its error.
+func TestACompoundRunsPastANotFailureStatus(t *testing.T) {
+	s := newServed(t, 1<<20, adapter.Deps{})
+	warn := testproto.Msg{Op: testproto.OpEcho, Payload: []byte(testproto.NotFailure)}
+	s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, warn, testproto.Msg{Op: testproto.OpCreate, Name: "a"})
+	if st, rs := s.results(); st != testproto.StatusOK || !slices.Equal(rs, []core.Status{testproto.StatusOK, testproto.StatusNotFailure, testproto.StatusOK}) || s.creates() != 1 {
+		t.Errorf("a compound past a NotFailure status is answered %d with results %v, %d files made; want the Create run and its file", st, rs, s.creates())
+	}
+	s.compound(2, warn, testproto.Msg{Op: 99})
+	if st, rs := s.results(); st != testproto.StatusNotSupported || !slices.Equal(rs, []core.Status{testproto.StatusNotFailure, testproto.StatusNotSupported}) {
+		t.Errorf("a member the table lacks after a NotFailure status: answered %d with results %v; want its error after the NotFailure status", st, rs)
+	}
+}
+
+// A member whose error joins a NotFailure row's error to one a failure's row
+// maps is answered that failure, and the members after it do not run: a
+// PutFH, an Echo answered its NotFailure error joined to ErrIO, and a Create
+// end at the Echo's StatusIO with no file made (RFC 20 §4.7's Map).
+func TestAJoinedFailureEndsTheCompound(t *testing.T) {
+	s := newServed(t, 1<<20, adapter.Deps{})
+	joined := testproto.Msg{Op: testproto.OpEcho, Payload: []byte(testproto.JoinedIO)}
+	s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, joined, testproto.Msg{Op: testproto.OpCreate, Name: "a"})
+	if st, rs := s.results(); st != testproto.StatusIO || !slices.Equal(rs, []core.Status{testproto.StatusOK, testproto.StatusIO}) || s.creates() != 0 {
+		t.Errorf("a compound past a joined failure is answered %d with results %v, %d files made; want it ended at the Echo's StatusIO and no file", st, rs, s.creates())
+	}
+}
+
 // A compound of 9 members is answered the too-long status with no member
 // read or run; one of 8 runs.
 func TestTheCapAtNineAndEight(t *testing.T) {
@@ -377,6 +406,112 @@ func TestTheQuarter(t *testing.T) {
 			t.Errorf("once room was freed the compound is answered %d with %d files made", st, s.creates())
 		}
 	})
+}
+
+// file writes n bytes, each its offset's low byte, to a new file under the
+// root through the service, and returns its handle and its bytes.
+func (s *served) file(name string, n int) (vfs.Handle, []byte) {
+	s.t.Helper()
+	ctx, c := s.t.Context(), s.svc.Admin()
+	f, err := s.svc.Create(ctx, c, s.root, []byte(name), vfs.CreateArgs{Kind: vfs.CreateRegular})
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	data := make([]byte, n)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	if _, err := s.svc.Write(ctx, c, vfs.Anonymous(f.Handle), 0, data, vfs.FileSync); err != nil {
+		s.t.Fatal(err)
+	}
+	return f.Handle, data
+}
+
+// readOf is a Read result's eof flag and data.
+func readOf(res testproto.Result) (eof bool, data []byte) {
+	if len(res.Body) == 0 {
+		return false, nil
+	}
+	return res.Body[0] == 1, res.Body[1:]
+}
+
+// The record cap a compound's members pass, the Echo's hook ignoring its
+// room, refuses the compound before any member runs, counted reply_too_big:
+// the Create after the Echo makes no file. At the cap it runs, its payload
+// intact and the file made. The reply pool's quarter holds both, so the cap
+// alone refuses.
+func TestTheRecordCapRefusesACompoundPastIt(t *testing.T) {
+	m := metrics.New("v", "c")
+	s := newServed(t, 64<<20, adapter.Deps{Metrics: m})
+	record, _ := testproto.New(adapter.Deps{}).Framer().MaxRecord()
+	// Each empty Echo adds a 12-byte result head to the reply and fewer bytes
+	// to the request, which the record cap also bounds, so the reply passes
+	// the cap while the request, the root's handle in it, does not.
+	of := func(payload []byte, name string) []testproto.Msg {
+		empty := testproto.Msg{Op: testproto.OpEcho}
+		return []testproto.Msg{{Op: testproto.OpPutFH, Handle: s.root}, {Op: testproto.OpEcho, Payload: payload},
+			empty, empty, empty, empty, {Op: testproto.OpCreate, Name: name}}
+	}
+	// The compound's ReplyLen, its header, its head with a 4-byte tag and
+	// one result's head, takes 68, and the seven results' heads 12 each.
+	at := record - 68 - 7*12
+	s.compound(1, of(make([]byte, at+1), "a")...)
+	r := s.read()
+	if hd, rs, err := testproto.Results(r.Body); r.Status != testproto.StatusReplyTooBig || err != nil || !headIs(hd, testproto.StatusReplyTooBig, tagOf(1)) || len(rs) != 0 || s.creates() != 0 {
+		t.Errorf("a compound one byte past the record cap is answered %d, head %d with %d results (%v), %d files made; want the too-big status, no results and no file", r.Status, hd.Status, len(rs), err, s.creates())
+	}
+	if got, _ := scrape(t, m); got["adapter_refusals_total{protocol="+testproto.Name+",stage=reply_too_big}"] != 1 {
+		t.Errorf("the refusal past the record cap counted %v under reply_too_big, want 1", got["adapter_refusals_total{protocol="+testproto.Name+",stage=reply_too_big}"])
+	}
+	payload := bytes.Repeat([]byte("ab"), at/2)
+	s.compound(2, of(payload, "b")...)
+	if st, rs := s.resultsWithOps(); st != testproto.StatusOK || len(rs) != 7 || !bytes.Equal(rs[1].Body, payload) || s.creates() != 1 {
+		t.Errorf("a compound at the record cap is answered %d with %d results, %d files made; want its payload of %d bytes back intact and one file", st, len(rs), s.creates(), len(payload))
+	}
+}
+
+// Before any member runs, each Read is handed its room within the record
+// cap: of two Reads of 768 KiB from a file of 1.5 MiB, the first is answered
+// short, at least one byte and eof false, and the second whole, both of the
+// file's own bytes, the reply within the cap, and one read counted
+// shortened.
+func TestACompoundsReadIsShortenedToItsRoom(t *testing.T) {
+	m := metrics.New("v", "c")
+	s := newServed(t, 64<<20, adapter.Deps{Metrics: m})
+	fh, data := s.file("f", 1536<<10)
+	s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: fh},
+		testproto.Msg{Op: testproto.OpRead, Offset: 0, Count: 768 << 10},
+		testproto.Msg{Op: testproto.OpRead, Offset: 768 << 10, Count: 768 << 10})
+	st, rs := s.resultsWithOps()
+	if st != testproto.StatusOK || len(rs) != 3 {
+		t.Fatalf("the compound is answered %d with %d results, want 3", st, len(rs))
+	}
+	eof1, first := readOf(rs[1])
+	eof2, second := readOf(rs[2])
+	if eof1 || len(first) < 1 || len(first) >= 768<<10 || !bytes.Equal(first, data[:len(first)]) {
+		t.Errorf("the first Read is answered %d bytes, eof %v; want a short read of the file's own bytes, eof false", len(first), eof1)
+	}
+	if !eof2 || !bytes.Equal(second, data[768<<10:]) {
+		t.Errorf("the second Read is answered %d bytes, eof %v; want the file's last 768 KiB whole, eof true", len(second), eof2)
+	}
+	if got, _ := scrape(t, m); got["adapter_reads_shortened_total{protocol="+testproto.Name+"}"] != 1 {
+		t.Errorf("adapter_reads_shortened_total is %v, want the first Read counted", got["adapter_reads_shortened_total{protocol="+testproto.Name+"}"])
+	}
+}
+
+// A Read whose room, the members after it counted at their bounds, holds no
+// byte refuses the compound before any member runs, though the Read after it
+// could be shortened to make room: the Create before it makes no file (RFC 20
+// §4.3).
+func TestAReadLeftNoByteRefusesTheCompound(t *testing.T) {
+	s := newServed(t, 64<<20, adapter.Deps{})
+	s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, testproto.Msg{Op: testproto.OpCreate, Name: "f"},
+		testproto.Msg{Op: testproto.OpRead, Offset: 0, Count: 10},
+		testproto.Msg{Op: testproto.OpRead, Offset: 10, Count: 2 << 20})
+	r := s.read()
+	if hd, rs, err := testproto.Results(r.Body); r.Status != testproto.StatusReplyTooBig || err != nil || !headIs(hd, testproto.StatusReplyTooBig, tagOf(1)) || len(rs) != 0 || s.creates() != 0 {
+		t.Errorf("a compound whose first Read has no room is answered %d, head %d with %d results (%v), %d files made; want the too-big status, no results and no file", r.Status, hd.Status, len(rs), err, s.creates())
+	}
 }
 
 // While draining, a compound with one refused member gets no reply and runs

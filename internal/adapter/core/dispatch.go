@@ -75,7 +75,14 @@ type Op struct {
 // Invocation directly, setting Count and EncodeHead from the arguments it
 // decoded.
 type Invocation struct {
-	Bound   func() int                                  // the reply bound
+	// Bound is the reply bound for room: the operation's own reply, without
+	// ReplyLen(h). A READ's row clamps its count in its hook so the bound
+	// fits room, never lowered below one byte, and reports ok false where
+	// room cannot hold one byte, which refuses the compound (RFC 20 §4.3).
+	// Every other row ignores room and reports ok. core first calls it with
+	// the record cap less ReplyLen(h), and a compound's runner again with
+	// each member's room, so a count is only ever lowered.
+	Bound   func(r *Request, room int) (n int, ok bool)
 	Resolve func(r *Request) error                      // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
 	// Encode runs on every request that gets a final reply, so its reply may
@@ -133,7 +140,7 @@ type Handler[Req, Rep any] func(ctx context.Context, r *Request, req *Req) (*Rep
 // version Encode is given; a decode error builds no Invocation.
 func Bind[Req, Rep any](
 	dec func(b []byte, v Version, req *Req) (n int, err error), // n: the bytes of b it consumed, which Decode returns
-	bound func(req *Req) int,
+	bound func(r *Request, req *Req, room int) (n int, ok bool), // Invocation.Bound: a READ's clamps its count in req to room, never below one byte, ok false where room cannot hold one; any other ignores room
 	resolve func(r *Request, req *Req) error, // nil: the operation names no wire ID
 	role func(r *Request, req *Req) Role, // nil: Op.Role decides alone
 	handle func(req *Req) (vfs.Handle, bool), // nil: the arguments name no filehandle
@@ -148,7 +155,7 @@ func Bind[Req, Rep any](
 		}
 		var rep *Rep
 		inv := Invocation{
-			Bound: func() int { return bound(req) },
+			Bound: func(r *Request, room int) (int, bool) { return bound(r, req, room) },
 			Resolve: func(r *Request) error {
 				if resolve == nil {
 					return nil

@@ -194,7 +194,7 @@ type link struct {
 	ctx    context.Context
 	remote netip.Addr
 	set    settings.Settings // nil: none, so no operation is switched off
-	record int               // the protocol's record cap, Framer.MaxRecord's bytes: a chain's record stays within it
+	record int               // the protocol's record cap, Framer.MaxRecord's bytes: a chain's record and a compound's reply stay within it
 	out    func(msg *resources.Buf, key, before uint64) error
 	close  func(err error)
 }
@@ -427,7 +427,7 @@ var errUnwrapNeither = errors.New("core: Unwrap returned no header and no error"
 // the reader, for the first to end.
 func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err error, wrap, closeAfter bool) {
 	p.refused(tr, st)
-	s, send := p.mapped(tr, p.st.Errors, err, nil, h.Version(), st != stageUnwrap)
+	s, send, _ := p.mapped(tr, p.st.Errors, err, nil, h.Version(), st != stageUnwrap)
 	if st == stageUnwrap && p.misbehaved.CompareAndSwap(false, true) {
 		// A client that sends what Unwrap refuses is logged once per
 		// connection, not once per request (§10.3).
@@ -529,8 +529,9 @@ type answerer interface {
 	// halted says the message is to run no further: its chain stopped, its
 	// connection closed by a split, while it looked up or reserved.
 	halted() bool
-	// answered takes the message's encoded reply, its key and its status.
-	answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, err error)
+	// answered takes the message's encoded reply, its key, its status and
+	// whether that status is a failure (RFC 20 §4.3).
+	answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, failed bool, err error)
 	// unanswered ends a message a NoReply row answered.
 	unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func())
 }
@@ -552,7 +553,7 @@ func (a alone) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
 
 func (alone) halted() bool { return false }
 
-func (a alone) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, err error) {
+func (a alone) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, _ bool, err error) {
 	n := len(reply.B)
 	a.p.send(h, reply, key)
 	a.p.end(tr, true, s, n, err)
@@ -574,7 +575,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		tr.label.replayHit()
 		tr.cached = true
 		release()
-		a.answered(tr, h, cached, 0, 0, nil)
+		a.answered(tr, h, cached, 0, 0, false, nil)
 		return nil
 	}
 	if err != nil {
@@ -654,7 +655,8 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		// reservation can wait as long as the pool stays full. Wait under the
 		// attempt's deadline once the request context lands.
 		start := p.sh.clock.Now()
-		if reply, err = a.reserve(ctx, inv.Bound()+p.st.Header.ReplyLen(h)); err != nil {
+		n, _ := inv.Bound(r, p.l.record-p.st.Header.ReplyLen(h))
+		if reply, err = a.reserve(ctx, n+p.st.Header.ReplyLen(h)); err != nil {
 			if st, ok := reservationStage(err); ok {
 				p.refused(tr, st)
 			}
@@ -720,7 +722,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 		return
 	}
 	var s Status
-	send := true
+	send, notFailure := true, false
 	switch {
 	case errors.Is(err, errPanicked):
 		// decision: a recovered panic is answered the fault status without
@@ -728,7 +730,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 		// no row maps. Overturned if a protocol must answer a panic otherwise.
 		s = errs.fault
 	case err != nil:
-		s, send = p.mapped(tr, errs, err, op, h.Version(), true)
+		s, send, notFailure = p.mapped(tr, errs, err, op, h.Version(), true)
 	}
 	if !send {
 		a.unanswered(tr, h, tb, reply, err, release)
@@ -756,7 +758,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 	if tb != nil && tb.Holds {
 		key = p.st.Hold.Key(h)
 	}
-	a.answered(tr, h, reply, key, s, err)
+	a.answered(tr, h, reply, key, s, s != 0 && !notFailure, err)
 }
 
 // track is what the pipeline keeps of one request for its span, its log
@@ -829,24 +831,25 @@ func (p *pipeline) routed(tr *track, ts *tableSeries, code uint32) {
 
 // mapped is err's status in errs, counted and logged: an error no row maps at
 // error, as a bug; one a row answers at debug, where log, and counted under
-// its sentinel when it is the service's.
+// its sentinel when it is the service's. send and notFailure are Map's reply
+// and notFailure.
 //
 // decision: error level is for what no row maps and for a panic; a refusal
 // or a service error a row answers is expected, and the service logs its own
 // faults. RFC 20 §4.5 gives examples of each level, not a closed set.
 // Overturned if an operator needs a mapped error at a level that pages.
-func (p *pipeline) mapped(tr *track, errs *ErrorTable, err error, op *Op, v Version, log bool) (Status, bool) {
-	s, reply, matched := errs.mapped(err, op, v)
+func (p *pipeline) mapped(tr *track, errs *ErrorTable, err error, op *Op, v Version, log bool) (s Status, send, notFailure bool) {
+	r, matched := errs.row(err, op, v)
 	if !matched {
 		tr.series().unmappedErr()
 		p.sh.log.LogAttrs(tr.ctx, slog.LevelError, "an error no row maps", tr.attrs(err)...)
-		return s, reply
+		return r.Status, true, false
 	}
 	tr.series().statusMapped(err)
 	if log && p.sh.log.Enabled(tr.ctx, slog.LevelDebug) {
 		p.sh.log.LogAttrs(tr.ctx, slog.LevelDebug, "an error its row answers", tr.attrs(err)...)
 	}
-	return s, reply
+	return r.Status, !r.NoReply, r.NotFailure
 }
 
 // unanswered ends a request refused with a NoReply row, err: no final

@@ -8,10 +8,12 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// member is one decoded member of a compound: its row and its invocation.
+// member is one decoded member of a compound: its row, its invocation, and
+// its reply bound, as its room in the compound's record left it.
 type member struct {
-	op  *Op
-	inv Invocation
+	op    *Op
+	inv   Invocation
+	bound int
 }
 
 // members decodes the members of the compound row's request inv from rest,
@@ -57,7 +59,7 @@ func members(row *Op, inv Invocation, rest []byte, v Version) (ms []member, at i
 			return ms, i, c, fmt.Errorf("%w: member %d: %v", ErrDecode, i, err)
 		}
 		rest = rest[m:]
-		ms = append(ms, member{op, minv})
+		ms = append(ms, member{op: op, inv: minv})
 	}
 	if len(rest) > 0 {
 		return nil, -1, 0, fmt.Errorf("%w: %d bytes after the last member", ErrDecode, len(rest))
@@ -96,11 +98,13 @@ func judge(ms []member, decoded bool, r *Request) (whole bool, handles []vfs.Han
 
 // compound runs a compound row's request from its members' walk to out:
 // every member decoded first; while draining, the compound judged whole, the
-// drain read once, before any member runs; one reply buffer of the members'
-// bounds and the compound's header and head, refused past a quarter of the
-// reply pool's ceiling; then each member in turn, through the row's checks,
-// Resolve and its chain, carrying r between them, the first failure ending
-// the reply, and one a NoReply row maps leaving it unanswered. The head, which
+// drain read once, before any member runs; each member's bound handed its
+// room within the protocol's record cap; one reply buffer of the members'
+// bounds and the compound's header and head, refused past the record cap or
+// a quarter of the reply pool's ceiling; then each member in turn, through
+// the row's checks, Resolve and its chain, carrying r between them, the first
+// failure ending the reply, a NotFailure row's status being none (RFC 20
+// §4.3), and one a NoReply row maps leaving it unanswered. The head, which
 // the compound's own Invocation encodes, goes first and again, in place, with
 // the final status and count. A compound refused whole is answered its
 // status alone, whose head, with no results, its header's codec writes.
@@ -131,25 +135,61 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 			return
 		}
 	}
-	n := p.st.Header.ReplyLen(h)
-	for _, m := range ms {
-		n += m.inv.Bound()
+	// Each member's bound is first taken for the record cap less the
+	// compound's ReplyLen, as a request's is, then handed its room: what the
+	// cap leaves after ReplyLen, the members before it at their bounds and
+	// those after it. A READ's hook lowers its count to fit, one the room
+	// leaves no byte refuses the compound, and so do bounds no hook lowers
+	// that pass the cap, all before any member runs (RFC 20 §4.3).
+	//
+	// ponytail: each hook is asked its room before any member runs, and not
+	// again before its member runs, so no hook can yet cap a READ at a budget
+	// a member before it resolves, as an NFSv4.1 session's SEQUENCE does
+	// (§4.3). Ask a READ's hook again before it runs once a row reads such a
+	// budget.
+	rl, after := p.st.Header.ReplyLen(h), 0
+	for i := range ms {
+		ms[i].bound, _ = ms[i].inv.Bound(r, p.l.record-rl)
+		after += ms[i].bound
 	}
+	n, shortened := rl, 0
+	var big error
+	for i := range ms {
+		m := &ms[i]
+		after -= m.bound
+		b, ok := m.inv.Bound(r, p.l.record-n-after)
+		if !ok {
+			big = fmt.Errorf("%w: member %d has no byte of room within the record cap of %d", ErrReplyTooBig, i, p.l.record)
+			break
+		}
+		if b < m.bound {
+			shortened++
+		}
+		m.bound, n = b, n+b
+	}
+	switch {
+	case big != nil:
+	case n > p.l.record:
+		big = fmt.Errorf("%w: a compound's reply of %d bytes past the record cap of %d", ErrReplyTooBig, n, p.l.record)
 	// decision: one reply buffer for the whole compound, its charge refused
 	// past a quarter of the reply pool's ceiling: held across every member's
 	// call, a charge the whole ceiling could hold would let one compound
 	// stall every reply on the node until it ends. The ceiling: a compound
-	// whose bounds pass the transfer class at the 16 MiB floor, a GETATTR of
-	// ACLs beside a 1 MiB READ, is refused. Charge the exact size past the
-	// transfer class when such a compound is seen refused.
+	// within the record cap whose charge passes a quarter is refused, not
+	// shortened; at the 16 MiB floor an NFS compound, within its transfer
+	// class, never is. Charge the exact size past the transfer class when
+	// such a compound is seen refused.
 	//
 	// ponytail: one reservation of the summed bounds, held whole while the
 	// compound runs, as §4.3 has it, so four such compounds still fill the
 	// pool until each client's turns bound its share. Check what is left of
 	// the session's reply size when the slots bring that limit.
-	if p.sh.reply.Charge(n) > p.sh.reply.Ceiling()/4 {
+	case p.sh.reply.Charge(n) > p.sh.reply.Ceiling()/4:
+		big = fmt.Errorf("%w: a compound's reply of %d bytes", ErrReplyTooBig, n)
+	}
+	if big != nil {
 		p.refused(tr, stageReplyTooBig)
-		p.finish(tr, h, tb, errs, row, Invocation{}, nil, fmt.Errorf("%w: a compound's reply of %d bytes", ErrReplyTooBig, n), release, alone{p})
+		p.finish(tr, h, tb, errs, row, Invocation{}, nil, big, release, alone{p})
 		return
 	}
 	mts, serr := p.sh.table(row.Members)
@@ -168,6 +208,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		return
 	}
 	mts.observe(stageReplyWait, p.sh.clock.Now().Sub(start))
+	mts.readsShortened(shortened)
 	reply.B = reply.B[:0]
 	mt := row.Members
 	if encErr := p.st.Header.Encode(h, 0, reply); encErr != nil {
@@ -189,9 +230,10 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		status Status
 		count  int
 		last   error
+		failed bool
 	)
 	for _, m := range ms {
-		s, send, merr := p.member(tr, mts, mt.Errors, m, r, v)
+		s, send, notFailure, merr := p.member(tr, mts, mt.Errors, m, r, v)
 		if !send {
 			p.unanswered(tr, h, tb, reply, merr, release)
 			return
@@ -203,11 +245,11 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 			return
 		}
 		status, last, count = s, merr, count+1
-		if s != 0 {
+		if failed = s != 0 && !notFailure; failed {
 			break
 		}
 	}
-	if err != nil && status == 0 {
+	if err != nil && !failed {
 		// The member that did not decode, or names a code the table lacks,
 		// once the members before it have run, counted where a request
 		// alone's would be: a code the table lacks at route, the rest at
@@ -218,7 +260,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 			mts.refused(stageDecodeArgs)
 		}
 		var send bool
-		if status, send = p.mapped(tr, mt.Errors, err, nil, v, true); !send {
+		if status, send, _ = p.mapped(tr, mt.Errors, err, nil, v, true); !send {
 			p.unanswered(tr, h, tb, reply, err, release)
 			return
 		}
@@ -256,8 +298,9 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 // members' table's series. send is false for an error a NoReply row maps,
 // which leaves the whole compound unanswered (RFC 20 §4.3): a results array
 // cut short under a success is malformed; and for a call the connection's
-// close ended, which is mapped as no error.
-func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version) (s Status, send bool, err error) {
+// close ended, which is mapped as no error. notFailure is a NotFailure row's
+// status, past which the compound runs its next member.
+func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version) (s Status, send, notFailure bool, err error) {
 	err = p.check(m.op, r)
 	if err != nil {
 		mts.refused(stageRoute)
@@ -281,16 +324,16 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 	}
 	switch {
 	case err == nil:
-		return 0, true, nil
+		return 0, true, false, nil
 	case errors.Is(err, errPanicked):
-		return errs.fault, true, err
+		return errs.fault, true, false, err
 	case p.endedByClose(err):
 		// A call the close ended is no error: the compound ends unsent, as
 		// unanswered ends it.
-		return 0, false, err
+		return 0, false, false, err
 	}
-	s, send = p.mapped(tr, errs, err, m.op, v, true)
-	return s, send, err
+	s, send, notFailure = p.mapped(tr, errs, err, m.op, v, true)
+	return s, send, notFailure, err
 }
 
 // result encodes one member's result into reply: its head, then, where the

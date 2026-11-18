@@ -96,7 +96,7 @@ func decode(t *testing.T, s *stage, body []byte) (core.Header, error) {
 
 // status maps an error through the stages' table, as the pipeline does.
 func status(s *stage, err error) core.Status {
-	st, _ := s.errs.Map(err, nil, 0)
+	st, _, _ := s.errs.Map(err, nil, 0)
 	return st
 }
 
@@ -466,7 +466,7 @@ func TestTheNonCalls(t *testing.T) {
 	if table != nil || !errors.Is(err, errNotCall) {
 		t.Fatalf("a reply is routed: %p, %v", table, err)
 	}
-	if st, answer := s.errs.Map(err, nil, h.Version()); answer {
+	if st, answer, _ := s.errs.Map(err, nil, h.Version()); answer {
 		t.Errorf("a reply is answered with %#x, want a NoReply row", uint32(st))
 	}
 	if h, err := s.Decode(&resources.Buf{B: make([]byte, 7)}, 0); h != nil || !errors.Is(err, wire.ErrUnaddressable) || errors.Is(err, core.ErrDecode) {

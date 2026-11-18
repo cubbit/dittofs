@@ -153,15 +153,16 @@ var errPanicked = errors.New("core: handler panicked")
 
 // recovery turns op's panic into errPanicked, counted under op in ts and
 // logged at error with the operation, the panic value's type and the stack,
-// at most once a minute per operation with the count suppressed since the
-// last line. The value is the handler's own text and may hold a name a user
-// chose, which RFC 25 §5.4 keeps below Info, so it is logged at debug.
+// a noisy subject's line: at most once a minute, with the count suppressed
+// since the last line, so a client that can make a handler panic gets no
+// stack line per request (RFC 20 §4.2, RFC 25 §5.2). The panic counter
+// counts every one. The value is the handler's own text and may hold a name a
+// user chose, which RFC 25 §5.4 keeps below Info, so it is logged at debug.
 //
-// decision: an operation's panic writes its error line once a minute, as
-// RFC 25 §5.2 writes a noisy subject, where RFC 20 §4.2 asks a line per
-// panic: a client that can make a handler panic would otherwise make it
-// write a stack per request. The panic counter counts every one. Overturned
-// if an incident needs every panic's stack.
+// ponytail: the line is keyed by operation alone, where §4.2 also keys it by
+// the frame that panicked, so one frame's panic holds back another's line
+// within the minute. Add the frame to the key, read with a bounded
+// runtime.Callers.
 func (sh *shared) recovery(op *Op, ts *tableSeries) Middleware {
 	line := ts.panicLines[op.Code]
 	return func(next Call) Call {

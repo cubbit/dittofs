@@ -304,7 +304,7 @@ func decodeCompound(b []byte, _ core.Version) (core.Invocation, int, error) {
 
 	return core.Invocation{
 		Count:   int(count),
-		Bound:   func() int { return 0 },
+		Bound:   func(*core.Request, int) (int, bool) { return 0, true },
 		Resolve: func(*core.Request) error { return nil },
 		Call:    func(context.Context, *core.Request) error { return nil },
 		Encode:  func(*resources.Buf, core.Version) error { return nil },
@@ -374,10 +374,13 @@ func appendHead(b []byte, s core.Status, tag []byte, n int) []byte {
 
 // asResult is a member's invocation as a compound's result: its body follows
 // the result head encodeResult wrote, whose length it sets, so a reader finds
-// the next result; and its bound counts that head.
+// the next result; and its bound counts that head, which its room holds.
 func asResult(inv core.Invocation) core.Invocation {
 	bound, enc := inv.Bound, inv.Encode
-	inv.Bound = func() int { return resultHead + bound() }
+	inv.Bound = func(r *core.Request, room int) (int, bool) {
+		n, ok := bound(r, room-resultHead)
+		return resultHead + n, ok
+	}
 	inv.Encode = func(out *resources.Buf, v core.Version) error {
 		at := len(out.B)
 		if at < 4 {

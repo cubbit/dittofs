@@ -317,8 +317,8 @@ func TestTheCompoundRowAndItsMembers(t *testing.T) {
 		case OpEcho:
 			// A member's bound is its payload's 3 bytes, with its result head
 			// and its body's length, which its reply in the compound carries.
-			if m.Role(nil) != core.RoleFlush || m.Bound() != 3+resultHead {
-				t.Errorf("the Echo member's role is %d and its bound %d", m.Role(nil), m.Bound())
+			if b, _ := m.Bound(nil, 1<<20); m.Role(nil) != core.RoleFlush || b != 3+resultHead {
+				t.Errorf("the Echo member's role is %d and its bound %d", m.Role(nil), b)
 			}
 		}
 		codes = append(codes, code)

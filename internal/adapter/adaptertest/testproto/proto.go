@@ -2,6 +2,7 @@ package testproto
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -32,10 +33,25 @@ const (
 	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2; of DelayResources, at once in both
 	StatusCancelled                  // core.ErrCancelled: a parked or held request its client cancelled
 	StatusDecode                     // core.ErrDecode: a record or arguments it cannot decode
-	StatusReplyTooBig                // core.ErrReplyTooBig: a reply's charge past a quarter of the reply pool's ceiling
+	StatusReplyTooBig                // core.ErrReplyTooBig: a reply's charge past a quarter of the reply pool's ceiling, or a compound past the record cap
 	StatusChecksum                   // a checksum that does not match, or a message sent clear under a session: the stages' table
 	StatusOverdraw                   // a message that charges more credits than the connection holds: the stages' table
+	StatusNotFailure                 // an Echo whose payload is NotFailure: a NotFailure row's, so a compound runs on past it and a chain's related members run
+	StatusIO                         // vfs.ErrIO: an Echo whose payload is JoinedIO, its NotFailure error joined to ErrIO
 )
+
+// NotFailure is the Echo payload that asks for StatusNotFailure, a status
+// its table marks as no failure (RFC 20 §4.7's ErrorRow.NotFailure).
+const NotFailure = "not a failure"
+
+// errNotFailure is what Echo returns for a NotFailure payload: an error of
+// its own, which no other operation returns, as a NotFailure row's must be.
+var errNotFailure = errors.New("testproto: an Echo answered no failure")
+
+// JoinedIO is the Echo payload whose call returns errNotFailure joined to
+// vfs.ErrIO, which maps to StatusIO, a failure, never to StatusNotFailure
+// (RFC 20 §4.7's Map).
+const JoinedIO = "not a failure, joined to an I/O error"
 
 // Name is the protocol label testproto's tables and stages record under.
 const Name = "testproto"
@@ -267,11 +283,12 @@ func (p *Protocol) build() [2]*core.OpTable {
 // holds.
 //
 // decision: the tables are not total. They map core's refusals, the service's
-// ErrDelay and its DelayResources delay, a cancel and the two drain errors,
-// and nothing else, so a service error no row maps is reachable and answered
-// StatusFault. Totality is a real protocol's property, checked on NFS's and
-// SMB's tables. Withdraw it if a core test needs a service error this table
-// leaves unmapped to have a status of its own.
+// ErrDelay and its DelayResources delay, a cancel, the two drain errors,
+// Echo's NotFailure pair and ErrIO, which Echo's JoinedIO joins to that
+// pair's error, and nothing else, so a service error no row maps is
+// reachable and answered StatusFault. Totality is a real protocol's property,
+// checked on NFS's and SMB's tables. Withdraw it if a core test needs a
+// service error this table leaves unmapped to have a status of its own.
 func errorRows(holds bool) []core.ErrorRow {
 	// decision: this row is testproto's only hold. A request is held because
 	// the service a test supplied answered ErrDelay, never because an
@@ -302,6 +319,8 @@ func errorRows(holds bool) []core.ErrorRow {
 		{Err: core.ErrCancelled, Status: StatusCancelled},
 		{Err: core.ErrDraining, NoReply: true},
 		{Err: core.ErrMoved, NoReply: true},
+		{Err: errNotFailure, Ops: []uint32{OpEcho}, NotFailure: true, Status: StatusNotFailure},
+		{Err: vfs.ErrIO, Status: StatusIO},
 	}
 }
 
@@ -348,6 +367,8 @@ func (p *Protocol) ops() []*core.Op {
 			decodeName, noBound[nameReq], nil, nil, nil, p.create, encodeNothing[empty])},
 		{Code: OpPanic, Name: "Panic", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
 			noArguments[empty], noBound[empty], nil, nil, nil, panics, encodeNothing[empty])},
+		{Code: OpRead, Name: "Read", Versions: both, Needs: core.NeedsTree | core.NeedsFH, Decode: core.Bind(
+			decodeRead, readBound, nil, nil, nil, p.read, encodeRead)},
 	}
 }
 
@@ -356,7 +377,7 @@ type empty struct{}
 
 func noArguments[Req any](b []byte, _ core.Version, _ *Req) (int, error) { return len(b), nil }
 
-func noBound[Req any](*Req) int { return 0 }
+func noBound[Req any](*core.Request, *Req, int) (int, bool) { return 0, true }
 
 // encodeNothing encodes a reply with no body, a nil one included.
 func encodeNothing[Rep any](*Rep, core.Version, *resources.Buf) error { return nil }
@@ -433,12 +454,20 @@ func decodeEcho(b []byte, _ core.Version, req *echoReq) (int, error) {
 	return len(b), nil
 }
 
-func echoBound(req *echoReq) int { return len(req.payload) }
+func echoBound(_ *core.Request, req *echoReq, _ int) (int, bool) { return len(req.payload), true }
 
 func echoRole(_ *core.Request, req *echoReq) core.Role { return req.role }
 
-// echo answers the payload.
+// echo answers the payload, errNotFailure where the payload is NotFailure,
+// and errNotFailure joined to vfs.ErrIO where it is JoinedIO.
 func echo(_ context.Context, _ *core.Request, req *echoReq) (*[]byte, error) {
+	switch string(req.payload) {
+	case NotFailure:
+		return nil, errNotFailure
+	case JoinedIO:
+		return nil, errors.Join(errNotFailure, vfs.ErrIO)
+	}
+
 	return &req.payload, nil
 }
 
@@ -471,6 +500,72 @@ func (p *Protocol) create(ctx context.Context, r *core.Request, req *nameReq) (*
 	}
 
 	return &empty{}, nil
+}
+
+// readReq is Read's arguments: the offset and the count of bytes asked.
+type readReq struct {
+	off   int64
+	count int
+}
+
+func decodeRead(b []byte, _ core.Version, req *readReq) (int, error) {
+	if len(b) < 12 {
+		return 0, errors.New("testproto: a Read with short arguments")
+	}
+	req.off, req.count = int64(binary.BigEndian.Uint64(b)), int(binary.BigEndian.Uint32(b[8:]))
+
+	return 12, nil
+}
+
+// readBound is Read's reply, its eof byte and its data. It clamps the count
+// to room, never below one byte, and reports ok false where room cannot hold
+// one, as every READ's row does (RFC 20 §4.3).
+func readBound(_ *core.Request, req *readReq, room int) (int, bool) {
+	if 1+req.count > room {
+		if room < 2 {
+			return 1 + req.count, false
+		}
+		req.count = room - 1
+	}
+
+	return 1 + req.count, true
+}
+
+// readRep is Read's reply: whether the file ends at its data, and the data.
+type readRep struct {
+	eof  bool
+	data []byte
+}
+
+// read makes one service call: a Read of the count at the offset, from the
+// current filehandle.
+func (p *Protocol) read(ctx context.Context, r *core.Request, req *readReq) (*readRep, error) {
+	s, err := stateOf(r)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]byte, req.count)
+	n, eof, err := p.d.VFS.Read(ctx, r.Call, vfs.Anonymous(s.fh), req.off, data)
+	if err != nil {
+		return nil, err
+	}
+
+	return &readRep{eof: eof, data: data[:n]}, nil
+}
+
+// encodeRead appends the eof byte, 1 where the file ends at the data, then
+// the data; a nil reply has no body.
+func encodeRead(rep *readRep, _ core.Version, out *resources.Buf) error {
+	if rep == nil {
+		return nil
+	}
+	var eof uint8
+	if rep.eof {
+		eof = 1
+	}
+	out.B = append(append(out.B, eof), rep.data...)
+
+	return nil
 }
 
 // panics is Panic's handler.

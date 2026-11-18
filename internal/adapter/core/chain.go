@@ -258,8 +258,10 @@ func (c *chain) one(e *entry) {
 	switch {
 	case e.cancel:
 		// The cancel is the member before the next and sets no handle, so a
-		// related member after it starts from no request (§4.7, Related).
+		// related member after it starts from no request (§4.7, Related)
+		// and is not answered a failure from before the cancel (§4.3).
 		c.prevR = nil
+		c.failed, c.failS = false, 0
 		p.end(e.tr, false, 0, 0, nil)
 		return
 	case e.err == nil:
@@ -329,7 +331,7 @@ func (c *chain) admit(e *entry) {
 func (c *chain) refusal(e *entry, h Header) {
 	p := c.p
 	p.refused(e.tr, e.st)
-	s, send := p.mapped(e.tr, p.st.Errors, e.err, nil, h.Version(), e.st != stageUnwrap)
+	s, send, _ := p.mapped(e.tr, p.st.Errors, e.err, nil, h.Version(), e.st != stageUnwrap)
 	if e.st == stageUnwrap && p.misbehaved.CompareAndSwap(false, true) {
 		// A client that sends what Unwrap refuses is logged once per
 		// connection, not once per request (§10.3).
@@ -497,13 +499,8 @@ func (c *chain) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
 	return cached, err
 }
 
-func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, err error) {
-	// decision: every status but success fails the member, and a related one
-	// after it is answered it (§4.3), though a protocol may answer a warning
-	// with a non-zero status. The ceiling: a related member after a warning
-	// makes no call. Overturned once a protocol's table can mark its warning
-	// statuses.
-	c.failed, c.failS = s != 0, s
+func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, failed bool, err error) {
+	c.failed, c.failS = failed, s
 	if tr.cached {
 		// A hit's copy is reserved under no client's key, which Join refuses
 		// beside the chain's buffers: it is copied into a buffer of the

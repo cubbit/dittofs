@@ -55,7 +55,7 @@ func TestTablesBuild(t *testing.T) {
 	if c == nil || c.Members == nil || c.Members.ReadOp == nil || v2.Ops[OpCompound] != nil {
 		t.Fatalf("the compound row is %+v in version 1 and %+v in version 2; want it in version 1 alone, with its members' table", c, v2.Ops[OpCompound])
 	}
-	if got, reply := v2.Errors.Map(vfs.ErrDelay, v2.Ops[OpCreate], 2); got != StatusDelay || !reply {
+	if got, reply, _ := v2.Errors.Map(vfs.ErrDelay, v2.Ops[OpCreate], 2); got != StatusDelay || !reply {
 		t.Errorf("version 2 maps ErrDelay to %d, reply %v; want %d", got, reply, StatusDelay)
 	}
 	if v1.Protocol != Name || v2.Protocol != Name {
@@ -82,8 +82,8 @@ func TestEchoAnswersItsPayloadUnderItsOwnRole(t *testing.T) {
 	if got := inv.Role(nil); got != core.RoleRelease {
 		t.Errorf("Role = %d, want the role its arguments carry, %d", got, core.RoleRelease)
 	}
-	if got := inv.Bound(); got != 5 {
-		t.Errorf("Bound = %d, want the payload's 5 bytes", got)
+	if got, ok := inv.Bound(nil, 1); got != 5 || !ok {
+		t.Errorf("Bound in a room of 1 = %d, %v; want the payload's 5 bytes, ok, since Echo ignores its room", got, ok)
 	}
 	r, _ := request(1)
 	if err := inv.Call(t.Context(), r); err != nil {
@@ -102,11 +102,31 @@ func TestEchoAnswersItsPayloadUnderItsOwnRole(t *testing.T) {
 	}
 }
 
+// Read's bound is its eof byte and its count, the count clamped to the room
+// it is handed, never below one byte, and ok false where the room cannot
+// hold one; a count the room holds is left as asked.
+func TestReadsBoundIsClampedToItsRoom(t *testing.T) {
+	for _, c := range []struct {
+		count, room, want int
+		ok                bool
+	}{
+		{1000, 100, 100, true},
+		{1000, 2, 2, true},
+		{1000, 1, 1001, false},
+		{10, 100, 11, true},
+	} {
+		req := &readReq{count: c.count}
+		if got, ok := readBound(nil, req, c.room); got != c.want || ok != c.ok || (ok && req.count != got-1) {
+			t.Errorf("a Read of %d bytes in a room of %d: bound %d, ok %v, count %d; want %d, %v", c.count, c.room, got, ok, req.count, c.want, c.ok)
+		}
+	}
+}
+
 // A request refused before its handler ran still encodes: every row's encoder
-// takes a nil reply.
+// takes a nil reply. Twelve bytes decode as every row's arguments.
 func TestEveryRowEncodesWithNoReply(t *testing.T) {
 	for _, op := range New(adapter.Deps{}).ops() {
-		inv, _, err := op.Decode(make([]byte, 9), 2)
+		inv, _, err := op.Decode(make([]byte, 12), 2)
 		if err != nil {
 			t.Fatalf("%s: %v", op.Name, err)
 		}
@@ -193,6 +213,7 @@ func TestRows(t *testing.T) {
 		OpPark:      {second, core.NeedsTree | core.NeedsFH, core.RoleNone, false, false},
 		OpNotify:    {both, core.NeedsNothing, core.RoleNone, false, false},
 		OpViolate:   {both, core.NeedsNothing, core.RoleNone, false, false},
+		OpRead:      {both, core.NeedsTree | core.NeedsFH, core.RoleNone, false, false},
 	}
 	seen := map[uint32]bool{}
 	for _, op := range New(adapter.Deps{}).ops() {
@@ -369,7 +390,7 @@ func TestStagesMapTheirRefusals(t *testing.T) {
 			core.ErrVersion:                       StatusVersion,
 			&vfs.Delay{Cause: vfs.DelayResources}: StatusDelay,
 		} {
-			if got, reply := errs.Map(err, nil, 1); got != want || !reply {
+			if got, reply, _ := errs.Map(err, nil, 1); got != want || !reply {
 				t.Errorf("the %s protocol's stages map %v to %d (reply %v), want %d", name, err, got, reply, want)
 			}
 		}

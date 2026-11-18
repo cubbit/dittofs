@@ -35,7 +35,7 @@ func bind(withHooks bool, herr error) func([]byte, core.Version) (core.Invocatio
 		a.n, a.v = b[0], v
 		return 1, nil
 	}
-	bound := func(a *args) int { return int(a.n) }
+	bound := func(_ *core.Request, a *args, _ int) (int, bool) { return int(a.n), true }
 	var calls byte
 	h := func(_ context.Context, _ *core.Request, a *args) (*reply, error) {
 		calls++
@@ -73,13 +73,13 @@ func TestBindHandsEveryClosureTheDecodedRequest(t *testing.T) {
 	if inv.Count != 0 {
 		t.Errorf("Count %d on a row that is no compound, want 0", inv.Count)
 	}
-	if got := inv.Bound(); got != 42 {
+	if got, _ := inv.Bound(r, 1<<20); got != 42 {
 		t.Errorf("Bound before Resolve %d, want the decoded 42", got)
 	}
 	if err := inv.Resolve(r); err != nil {
 		t.Errorf("Resolve: %v", err)
 	}
-	if got := inv.Bound(); got != 99 {
+	if got, _ := inv.Bound(r, 1<<20); got != 99 {
 		t.Errorf("Bound after Resolve %d, want Resolve's 99", got)
 	}
 	if inv.Role == nil || inv.Role(r) != core.RoleFlush {
