@@ -263,39 +263,53 @@ func TestMintReRunBindsBesideAHeldName(t *testing.T) {
 // has not progressed: it fails ErrUnavailable at the second run, not at the
 // deadline. Counting the mark per run would re-run until the deadline.
 func TestMintFailsARunThatOnlyReMarksARecord(t *testing.T) {
-	r := newResolving(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	local := dirGroup("Finance", "3601")
-	if _, err := r.cp.PutGroup(ctx, local, 0, entity.Alloc{}); err != nil {
-		t.Fatal(err)
-	}
-	// Its name and its SID are both the local group's: unnaming it never
-	// clears the SID's clash.
-	clash := minted(local)
-	clash.Name = "FINANCE"
+	for _, c := range []struct {
+		name  string
+		alloc entity.Alloc
+		ids   func(local entity.Group) entity.ProtocolIDs
+	}{
+		// Its name and its SID are both the local group's: unnaming it
+		// never clears the SID's clash.
+		{"known by its SID", entity.Alloc{}, func(local entity.Group) entity.ProtocolIDs { return local.IDs }},
+		// With no SID, its RID still to allocate, the local group's gid
+		// clashes instead, and its mark is known by its name.
+		{"known by its name", entity.Alloc{RID: true}, func(local entity.Group) entity.ProtocolIDs { return local.IDs[:1] }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newResolving(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			local := dirGroup("Finance", "3601")
+			if _, err := r.cp.PutGroup(ctx, local, 0, entity.Alloc{}); err != nil {
+				t.Fatal(err)
+			}
+			clash := entity.Group{Name: "FINANCE", IDs: c.ids(local)}
 
-	// A fresh batch each run, as a lookup builds one, so no record comes
-	// back already marked.
-	var runs atomic.Int32
-	err := r.srv.Mint(ctx, func(context.Context) (entity.MintBatch, int, error) {
-		runs.Add(1)
-		return entity.MintBatch{Groups: []entity.MintGroup{{Group: clash}}}, 0, nil
-	})
-	if !errors.Is(err, vfserr.ErrUnavailable) {
-		t.Fatalf("mint: got %v, want ErrUnavailable", err)
-	}
-	if ctx.Err() != nil {
-		t.Errorf("mint failed at the deadline, want at its second run")
-	}
-	if got := runs.Load(); got != 2 {
-		t.Errorf("plan runs: got %d, want 2", got)
+			// A fresh batch each run, as a lookup builds one, so no record
+			// comes back already marked, and a fresh PrincipalID for it each
+			// run, so the PrincipalID never tells a re-mark from a new one.
+			var runs atomic.Int32
+			err := r.srv.Mint(ctx, func(context.Context) (entity.MintBatch, int, error) {
+				runs.Add(1)
+				return entity.MintBatch{Groups: []entity.MintGroup{{Group: minted(clash), Alloc: c.alloc}}}, 0, nil
+			})
+			if !errors.Is(err, vfserr.ErrUnavailable) {
+				t.Fatalf("mint: got %v, want ErrUnavailable", err)
+			}
+			if ctx.Err() != nil {
+				t.Errorf("mint failed at the deadline, want at its second run")
+			}
+			if got := runs.Load(); got != 2 {
+				t.Errorf("plan runs: got %d, want 2", got)
+			}
+		})
 	}
 }
 
 // A plan that keeps answering a batch whose SID another principal holds
 // binds nothing and unnames nothing, so it fails ErrUnavailable at its
-// second run, writes nothing, and logs both principals. A path with no progress rule would run it until the deadline.
+// second run, writes nothing, and logs both principals. A path with no
+// progress rule would run it until the deadline.
 func TestMintFailsARunThatBindsNothingNew(t *testing.T) {
 	r := newResolving(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

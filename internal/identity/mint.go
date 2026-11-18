@@ -35,8 +35,8 @@ var unnamedSpec = metrics.Spec{
 // it. A re-run fails the call ErrUnavailable, having written nothing, when it
 // neither binds more principals than the run before nor newly marks a record
 // Unnamed. Newly is per call: a record this call marked in an earlier run,
-// known by its PrincipalID, is not newly marked again, so the plan proposes
-// each missing record under one PrincipalID on every run.
+// known by its SID, is not newly marked again, whatever PrincipalID the plan
+// proposes it under this run.
 //
 // decision: the path re-runs the plan, not the batch, and no count bounds
 // the loop. Progress is either step, never their sum: a run that binds one
@@ -50,10 +50,19 @@ var unnamedSpec = metrics.Spec{
 // with a principal the plan cannot bind, such as another entry holding the
 // same uid, and running it again would answer the same. Overturned if a
 // clash is ever found that a later run resolves without either step.
+//
+// decision: a mark is known by the record's SID, which every directory
+// principal carries, so a plan free to build a fresh PrincipalID each run
+// cannot pass a re-mark for progress. A record with no SID, one whose SID the
+// mint allocates, is known by its kind and folded name instead: never by
+// its PrincipalID, which may change per run and would let the call re-run to
+// its deadline. The name may merge two records' marks into one, which can
+// only end the call ErrUnavailable sooner, never loop it. Overturned if a
+// record can be minted unnamed with neither a SID nor a name.
 func (s *Server) mint(ctx context.Context, plan func(context.Context) (entity.MintBatch, int, error)) error {
 	var failed entity.MintBatch
 	last := -1
-	marked := map[entity.PrincipalID]bool{} // the records this call has unnamed
+	marked := map[string]bool{} // the records this call has unnamed, by markKey
 	for {
 		// The store may not watch ctx, so the loop does: the caller's
 		// deadline bounds the re-runs whatever answers them.
@@ -91,7 +100,7 @@ func (s *Server) mint(ctx context.Context, plan func(context.Context) (entity.Mi
 // its kind holds under the principal fold: one the name index holds, or an
 // earlier record of its kind in b. It returns how many it marked that marked
 // did not hold, and adds them to marked.
-func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch, marked map[entity.PrincipalID]bool) (int, error) {
+func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch, marked map[string]bool) (int, error) {
 	users, groups := map[string]entity.Principal{}, map[string]entity.Principal{}
 	n := 0
 	for i := range b.Users {
@@ -102,7 +111,7 @@ func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch, marked map
 		}
 		if held {
 			r.Unnamed = true
-			n += mark(marked, r.User.Principal.ID)
+			n += mark(marked, markKey(entity.PrincipalUser, r.User.IDs, r.User.Name))
 		}
 	}
 	for i := range b.Groups {
@@ -113,14 +122,25 @@ func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch, marked map
 		}
 		if held {
 			r.Unnamed = true
-			n += mark(marked, r.Group.Principal.ID)
+			n += mark(marked, markKey(entity.PrincipalGroup, r.Group.IDs, r.Group.Name))
 		}
 	}
 	return n, nil
 }
 
+// markKey is what a record's mark is known by: its SID, or with none its kind
+// and folded name.
+func markKey(kind entity.PrincipalKind, ids entity.ProtocolIDs, name string) string {
+	for _, id := range ids {
+		if id.Scheme == entity.SchemeSID {
+			return "sid\x00" + id.Value
+		}
+	}
+	return "name\x00" + kind.String() + "\x00" + entity.FoldPrincipalName(name)
+}
+
 // mark adds id to marked, and returns 1 if it was not there.
-func mark(marked map[entity.PrincipalID]bool, id entity.PrincipalID) int {
+func mark(marked map[string]bool, id string) int {
 	if marked[id] {
 		return 0
 	}
