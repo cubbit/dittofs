@@ -64,6 +64,9 @@ type Pass struct {
 	// may be nil: the pass ends no deferral, accounts no delta.
 	end  func(core.SegmentID, DeferredLoss) bool
 	acct func(index.HeldDelta)
+	// res bounds the pass's copying by the repack reserve and counts each
+	// copy to it while its source remains.
+	res Reserve
 
 	// decision: mu is a leaf. It guards the stop flag and the run count's
 	// admission alone — spent once to refuse a Run begun after Stop and to
@@ -80,14 +83,15 @@ type Pass struct {
 // same tracker the retirement worker serves, dur is the durability service the
 // ended segments re-read, wait the durability waiter the copies publish
 // through, ret the retirements' executor, end the deferral-end wiring and acct
-// the held-delta consumer. dur, end and acct may be nil — a pass over a journal
+// the held-delta consumer, res the repack reserve's bound and accounting. dur,
+// end and acct may be nil — a pass over a journal
 // that carries no deferral needs none of them, and the tests that drive the
 // pieces alone pass nil. The rest are a caller bug and panic here.
-func NewPass(sel *Selector, cop *Copier, tr *Tracker, ix *index.Index, set *segment.Set, dur Durability, wait Durable, ret Retirer, end func(core.SegmentID, DeferredLoss) bool, acct func(index.HeldDelta)) *Pass {
+func NewPass(sel *Selector, cop *Copier, tr *Tracker, ix *index.Index, set *segment.Set, dur Durability, wait Durable, ret Retirer, end func(core.SegmentID, DeferredLoss) bool, acct func(index.HeldDelta), res Reserve) *Pass {
 	if sel == nil || cop == nil || tr == nil || ix == nil || set == nil || wait == nil || ret == nil {
 		panic("reclaim: NewPass needs its selector, copier, tracker, index, segment set, durability waiter and retirer")
 	}
-	return &Pass{sel: sel, cop: cop, tr: tr, ix: ix, set: set, dur: dur, wait: wait, ret: ret, end: end, acct: acct}
+	return &Pass{sel: sel, cop: cop, tr: tr, ix: ix, set: set, dur: dur, wait: wait, ret: ret, end: end, acct: acct, res: res}
 }
 
 // Stop interrupts every running pass between its units and joins it. What the
@@ -123,11 +127,16 @@ func (p *Pass) stoppedNow() bool {
 	return p.stopped
 }
 
-// Run runs one pass of units inside scope, copying at most budget bytes: the
-// budget clamps the pass's selection, never a unit in flight — the check runs
+// Run runs one pass of units inside scope, copying at most budget bytes and
+// no more than the repack reserve held when the pass began, whichever is
+// smaller: the budget and the reserve clamp the pass's selection, never a unit in flight — the check runs
 // before the next unit starts, and a unit whose copies exceed the budget
 // started completes (RFC 1 §3), so a caller's budget smaller than one segment
 // gets one unit's worth of copies and one retirement, never half a unit. A
+// unit whose expected copies do not fit what is left of the reserve is not
+// started: the pass returns what it did, and the next call, once the
+// retirements have returned the reserve whole, runs it. The pass never waits
+// for the reserve itself. A
 // budget of zero or less runs no unit. The context is checked before any
 // state change — a refused pass selects nothing, appends nothing, releases
 // nothing — and between units: a pass cancelled there returns after the unit
@@ -158,6 +167,7 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 	p.mu.Unlock()
 	defer p.wg.Done()
 	var out Outcome
+	allowed := p.res.held()
 	// reheld are the sources whose unit stayed: their claims — the run's,
 	// not the unit's, from the moment they stay — keep every later Select
 	// of the run from offering them again, and release when the run ends.
@@ -187,6 +197,10 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 			return out, nil
 		}
 		seg := cands[0].ID
+		if !admits(allowed, out.Bytes, cands[0].Live) {
+			p.sel.Done(seg)
+			return out, nil
+		}
 		bytes, freed, stayedNow, err := p.unit(ctx, seg)
 		out.Bytes += bytes
 		out.Freed += freed
@@ -218,6 +232,19 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 	if err != nil {
 		p.sel.Done(seg)
 		return 0, 0, false, fmt.Errorf("reclaim: the unit over segment %d: %w", seg, err)
+	}
+	// The copies are the journal's reserve's until the source goes: counted
+	// here, handed to their shares when it is retired.
+	if p.res.Count != nil {
+		for _, cp := range res.Copies {
+			p.res.Count(seg, cp.Tag, cp.Loc.Len)
+		}
+		for _, cr := range carry.Carried {
+			p.res.Count(seg, cr.Rec.Tag, cr.Rec.Loc.Len)
+		}
+		for _, dc := range carry.Deferred {
+			p.res.Count(seg, dc.Loss.Share, dc.Loc.Len)
+		}
 	}
 	// Durability before any publish: every place this unit wrote — its
 	// copies, its carried records and the deferred loss records its carry
@@ -383,6 +410,12 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 // ledger can tell a never-published copy from a published record: then the
 // copy is re-appended, or dropped silently, and the unit continues.
 func (p *Pass) abandon(seg core.SegmentID, err error) error {
+	// The unpublished copies stay on disk as records of their shares, whose
+	// segments' retirement lowers the shares' figures by them, so they are
+	// handed over now rather than at a source that stays.
+	if p.res.Transfer != nil {
+		p.res.Transfer(seg)
+	}
 	p.sel.Done(seg)
 	return fmt.Errorf("reclaim: the unit over segment %d: %w", seg, err)
 }

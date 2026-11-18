@@ -785,7 +785,12 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 			}
 			return false
 		},
-		c.Account)
+		c.Account,
+		reclaim.Reserve{
+			Held:     func() int64 { return c.pool.Counters().RepackReserveBytes },
+			Count:    c.cap.CopyLanded,
+			Transfer: c.cap.CopiesTransfer,
+		})
 
 	// The open's registration: a core continued from a rebuilt state
 	// registers every record the rebuild found still live on disk through
@@ -1048,8 +1053,13 @@ func (c *Core) Retirer() *segment.Retirer { return c.retirer }
 // retirement already moved, so it is missed by nothing. Overturned by an
 // executor whose hook carries the tag, which would name the one share
 // directly.
+//
+// The copies a pass counted against the segment move to their shares' figures
+// first, in the same step, and before the figures drop by the segment's own
+// bytes: a tally between the two stands above the truth, never below it.
 func (c *Core) retiredSegment(id core.SegmentID) {
 	c.dur.Retired(id)
+	c.cap.CopiesTransfer(id)
 	c.cap.RetiredEverySeeded()
 }
 
