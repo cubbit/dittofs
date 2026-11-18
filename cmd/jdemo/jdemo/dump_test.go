@@ -34,9 +34,9 @@ func scanDemo(t *testing.T) (*Demo, *strings.Builder) {
 	return d, out
 }
 
-// findWrite walks every segment with the journal's own scanner and returns
-// the segment holding the fixture's 11-byte write, and the record.
-func findWrite(t *testing.T, d *Demo) (string, walk.Record) {
+// findWrite reads every segment with the journal's own scanner and returns
+// the segment holding the fixture's 11-byte write, its header and its body.
+func findWrite(t *testing.T, d *Demo) (string, walk.RecordHeader, []byte) {
 	t.Helper()
 	st, err := LoadState(StatePath(d.Dir))
 	if err != nil {
@@ -51,18 +51,18 @@ func findWrite(t *testing.T, d *Demo) (string, walk.Record) {
 			continue
 		}
 		path := filepath.Join(d.Dir, e.Name())
-		seg, err := walk.File(path, [16]byte(st.ID))
+		seg, err := readSegment(path, st.ID)
 		if err != nil {
-			t.Fatalf("walk %s: %v", path, err)
+			t.Fatalf("read %s: %v", path, err)
 		}
-		for _, r := range seg.Records {
-			if r.Kind == "write" && r.Len == 11 {
-				return path, r
+		for i, r := range seg.Scan.Records {
+			if r.Header.Kind.String() == "write" && r.Header.Extent.Len == 11 {
+				return path, r.Header, seg.Bodies[i]
 			}
 		}
 	}
 	t.Fatalf("no 11-byte write record in any segment of %s", d.Dir)
-	return "", walk.Record{}
+	return "", walk.RecordHeader{}, nil
 }
 
 func TestDumpShowsTheWriteAndItsPayload(t *testing.T) {
@@ -84,21 +84,21 @@ func TestDumpShowsTheWriteAndItsPayload(t *testing.T) {
 		t.Errorf("dump: the view does not say its records were verified:\n%s", screen)
 	}
 
-	_, w := findWrite(t, d)
-	if w.Off != 0 || w.Len != 11 {
-		t.Errorf("scanned write extent: got off=%d len=%d, want 0 and 11", w.Off, w.Len)
+	_, h, _ := findWrite(t, d)
+	if h.Extent.Off != 0 || h.Extent.Len != 11 {
+		t.Errorf("scanned write extent: got off=%d len=%d, want 0 and 11", h.Extent.Off, h.Extent.Len)
 	}
-	if w.RecOff%8 != 0 {
-		t.Errorf("scanned record offset %d is not 8-aligned", w.RecOff)
+	if h.Offset%8 != 0 {
+		t.Errorf("scanned record offset %d is not 8-aligned", h.Offset)
 	}
 }
 
 func TestDumpNamesATornTail(t *testing.T) {
 	d, out := scanDemo(t)
-	seg, w := findWrite(t, d)
+	seg, h, body := findWrite(t, d)
 	// Cut inside the write's own body: truncating the preallocated tail
 	// would only remove unwritten zeros and prove nothing.
-	if err := os.Truncate(seg, w.BodyOff+int64(len(w.Body))/2); err != nil {
+	if err := os.Truncate(seg, h.Offset+walk.RecordHeaderSize+int64(len(body))/2); err != nil {
 		t.Fatal(err)
 	}
 	d.viewDump()
@@ -119,10 +119,10 @@ func TestDumpAgreesWithTheJournalOwnRead(t *testing.T) {
 	if _, _, _, _, err := d.H[1].ReadAt(context.Background(), StoryFile, 0, p); err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	_, w := findWrite(t, d)
+	_, _, body := findWrite(t, d)
 	d.viewDump()
-	if !bytes.Equal(w.Body[8:], p) {
-		t.Errorf("the scanned payload %q disagrees with the journal's own ReadAt %q", w.Body[8:], p)
+	if !bytes.Equal(body[8:], p) {
+		t.Errorf("the scanned payload %q disagrees with the journal's own ReadAt %q", body[8:], p)
 	}
 	if !strings.Contains(out.String(), "hello") {
 		t.Errorf("the dump screen lacks the payload the journal serves:\n%s", out.String())
