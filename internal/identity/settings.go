@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/settings"
 )
@@ -45,6 +46,16 @@ func defaultSettings() Settings {
 func Section() settings.Section {
 	return settings.Of("identity", settings.At(entity.ScopeInstallation), defaultSettings(),
 		settings.SecretRef("Keytab", entity.SecretKeytab))
+}
+
+// DirectorySection declares the identity.directory section, the directory
+// record, which only an admin writes, whole, its bind password a Secret named
+// by reference.
+func DirectorySection() settings.Section {
+	return settings.Of("identity.directory", settings.At(entity.ScopeInstallation),
+		directory.Record{Schema: directory.SchemaAD},
+		settings.WriteRole(entity.RoleAdmin),
+		settings.SecretRef("BindCredential", entity.SecretDirectoryCredential))
 }
 
 // Validate refuses a range whose low end is above its high end, and a NetBIOS

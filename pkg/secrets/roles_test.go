@@ -21,8 +21,9 @@ var sealsPhrase = map[entity.SecretKind]string{
 	entity.SecretMachinePassword: "the machine-account password NTLM pass-through signs in with",
 	entity.SecretPassword: "password hashes, which only the management API's " +
 		"sign-in verifies",
-	entity.SecretRemoteCredential: "remote-tier credentials",
-	entity.SecretKey:              "the management API's token-signing key",
+	entity.SecretRemoteCredential:    "remote-tier credentials",
+	entity.SecretKey:                 "the management API's token-signing key",
+	entity.SecretDirectoryCredential: "identity-provider bind credentials",
 }
 
 // TestKindRolesMatchRFC checks every declared kind's role against RFC 13

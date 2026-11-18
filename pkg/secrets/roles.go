@@ -33,12 +33,13 @@ func (r Role) String() string {
 // kindRoles gives each secret kind the role whose key seals it, from RFC 13
 // §7's table, so a kind's role is fixed data and never a caller's choice.
 var kindRoles = map[entity.SecretKind]Role{
-	entity.SecretNTHash:           Protocol,
-	entity.SecretKeytab:           Protocol,
-	entity.SecretMachinePassword:  Protocol,
-	entity.SecretPassword:         Storage,
-	entity.SecretRemoteCredential: Storage,
-	entity.SecretKey:              Storage,
+	entity.SecretNTHash:              Protocol,
+	entity.SecretKeytab:              Protocol,
+	entity.SecretMachinePassword:     Protocol,
+	entity.SecretDirectoryCredential: Protocol,
+	entity.SecretPassword:            Storage,
+	entity.SecretRemoteCredential:    Storage,
+	entity.SecretKey:                 Storage,
 }
 
 // roleOf is the role that seals kind; false for a kind with none.
