@@ -396,6 +396,9 @@ test/integration/ad-dc/
   - a keytab of E5's test realm sealed as version 1 of `identity.keytab`: alice's ticket signs in
     through `Service()`; version 2 written and the clock advanced a second: a ticket under version 2
     signs in and node status reports version 2 (catches a keytab read at start only, R5, R10);
+    `State.Keytab`, read through `export_test.go`, holds version 2 before version 1 (catches
+    `Versions` handed on oldest first, which E5's T5.2 ring would resolve to the retired key on a
+    key-version tie, since it takes the first version holding a key);
   - the `identity.directory` record written: `Find` of an unminted directory SID with `Mint`
     mints it (catches `State.Directory` never filled, R5);
   - bob signed in by NTLM, then `identity.ntlm` written off and the clock advanced a second: bob's
