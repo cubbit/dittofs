@@ -84,10 +84,10 @@
         <div class="d">${escapeHtml(t(`sections.${sec.section}.blurb`))}</div>`;
       if (sec.decks.length === 1) {
         const d = sec.decks[0];
-        return `<li><a class="card" href="${d.path}?lang=${mine}">${head}<div class="s">${source(d, sec.section)}</div></a></li>`;
+        return `<li><a class="card" href="${d.path}index.html?lang=${mine}">${head}<div class="s">${source(d, sec.section)}</div></a></li>`;
       }
       const names = ui.get(`sections.${sec.section}.parts`).value || [];
-      const parts = await Promise.all(sec.decks.map(async (d, i) => `<a class="part" href="${d.path}?lang=${mine}">
+      const parts = await Promise.all(sec.decks.map(async (d, i) => `<a class="part" href="${d.path}index.html?lang=${mine}">
         <div class="pt">${i + 1} · ${escapeHtml(names[i] ?? await deckTitle(d, mine))}</div><div class="s">${source(d, sec.section)}</div></a>`));
       return `<li><div class="card">${head}<div class="parts">${parts.join('')}</div></div></li>`;
     }));

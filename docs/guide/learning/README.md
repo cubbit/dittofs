@@ -27,6 +27,15 @@ machines, opt in with `BIND=0.0.0.0 docs/guide/learning/serve.sh`. A server is
 required rather than opening the file: decks load their strings and glossary
 with `fetch`, which browsers refuse over `file://`.
 
+## Publishing
+
+`.github/workflows/learning-pages.yml` mirrors `learn-dittofs/` to the
+`dittofs-learning` bucket on Cubbit DS3 whenever a push to `develop` changes it,
+and the site is then at <https://dittofs-learning.s3.cubbit.eu/index.html>. The
+bucket serves objects, not directories: `intro/` is not resolved to
+`intro/index.html` as `serve.sh` resolves it. So a link to a page names its
+file, `rfcs/rfc-8-engine/index.html`, never just its directory.
+
 ## Layout
 
 ```text
