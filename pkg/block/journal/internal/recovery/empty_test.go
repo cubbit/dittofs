@@ -1127,11 +1127,13 @@ func rotByte(t *testing.T, r *rig, name string, off int64) {
 // the directory sync that follows the unlink, held with the removal applied
 // and not yet durable, so the cut resurrects the source.
 //
-// The directory-sync hold is made while the unlink is still parked and
-// matches every sync_dir, so no directory sync of any caller, the retirer's
-// or the pool refill's, completes between the unlink and the cut: whichever
-// reaches the hold first, the removal is applied and not durable, and the row
-// asserts that the crash brings the source back.
+// The directory-sync hold matches every sync_dir and is made before the
+// emptying starts, with the prewarmed pool idle, so no directory sync of any
+// caller, the retirer's or the pool refill's, completes between the unlink
+// and the cut: a hold made only once the unlink parked would miss a refill
+// sync already past the seam's hold check, which then commits the removal.
+// Whichever reaches the hold first, the removal is applied and not durable,
+// and the row asserts that the crash brings the source back.
 //
 // ponytail: the retire step's own recycles are out of this matrix — the
 // fixture holds no dead sealed segments, so each run's retire step retires
@@ -1295,6 +1297,10 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 					t.Fatalf("the emptying returned (%v) before the held step %s", err, what)
 				}
 			}
+			var dirSyncs *kit.Hold
+			if tc.afterRemove {
+				dirSyncs = r.seam.Hold(t, kit.OpSyncDir, "*")
+			}
 			hold := r.seam.HoldFirst(t, kitOp(tc.op), key)
 			wantResurrect := false
 			go func() {
@@ -1310,10 +1316,9 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 				reach(next, "the second "+tc.op+" on "+key)
 				hold = next
 			case tc.afterRemove:
-				next := r.seam.Hold(t, kit.OpSyncDir, "*")
 				hold.Release()
-				reach(next, "the directory sync after the unlink")
-				hold = next
+				reach(dirSyncs, "the directory sync after the unlink")
+				hold = dirSyncs
 				// Another caller's directory sync, the pool refill's, may reach
 				// the hold before the released unlink applies; every directory
 				// sync stays parked, so the test waits on the unlink itself

@@ -166,6 +166,14 @@ func TestCrashAtEveryFailedHolderEmptyingStep(t *testing.T) {
 					t.Fatalf("the emptying returned (%v) before the held step %s", err, what)
 				}
 			}
+			// The directory syncs are held from before the emptying starts, with
+			// the prewarmed pool idle: a hold made once the unlink parked would
+			// miss a refill sync already past the seam's hold check, which then
+			// commits the removal before the cut.
+			var dirSyncs *kit.Hold
+			if tc.afterRemove {
+				dirSyncs = f.r.seam.Hold(t, kit.OpSyncDir, "*")
+			}
 			hold := f.r.seam.HoldFirst(t, kitOp(tc.op), key)
 			go func() { done <- Emptying(context.Background(), h.deps, st, journalID, core.Version{}, nil) }()
 			reach(hold, tc.op+" on "+key)
@@ -176,10 +184,9 @@ func TestCrashAtEveryFailedHolderEmptyingStep(t *testing.T) {
 				reach(next, "the second "+tc.op+" on "+key)
 				hold = next
 			case tc.afterRemove:
-				next := f.r.seam.Hold(t, kit.OpSyncDir, "*")
 				hold.Release()
-				reach(next, "the directory sync after the unlink")
-				hold = next
+				reach(dirSyncs, "the directory sync after the unlink")
+				hold = dirSyncs
 				// Another caller's directory sync may reach the hold before the
 				// released unlink applies, so the cut waits on the unlink itself;
 				// every directory sync stays parked meanwhile.
