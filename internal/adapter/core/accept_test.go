@@ -216,13 +216,15 @@ func TestTheBackoffCapsAtOneSecond(t *testing.T) {
 	defer func() { _ = queued.Close() }()
 
 	// The loop fails through 8 s of steps, past 5 s of them: after them a
-	// fresh failure arms one more backoff, the cap's width exactly.
+	// fresh failure arms one more backoff, the cap's width exactly. Every
+	// step is one second: a longer jump would end the run, two cap-widths
+	// without a failure reading as failures that stopped.
 	for range 8 {
 		waitsFor(t, "the backoff to arm", func() bool { return clk.pending() > 0 })
 		clk.Advance(time.Second)
 	}
 	waitsFor(t, "the backoff to arm", func() bool { return clk.pending() > 0 })
-	clk.Advance(3 * time.Second) // past whatever the streak has grown to
+	clk.Advance(time.Second) // another step at the cap, the streak still one
 	waitsFor(t, "the fresh backoff to arm", func() bool { return clk.pending() > 0 })
 	if d := clk.nextIn(); d != time.Second {
 		t.Errorf("the backoff of a long streak is %v, want the 1 s cap", d)
@@ -322,6 +324,24 @@ func TestAListenerThatStoppedFailingIsNotLost(t *testing.T) {
 	clk.Advance(60 * time.Second)
 	if h := srv.Health(); len(h.Conditions) != 0 {
 		t.Errorf("a listener that stopped failing is reported %+v", h)
+	}
+
+	// One stray failure long after the quiet period starts a NEW run, not
+	// the minute-old one: the report that would have joined it stays down,
+	// and the backoff runs from its base again.
+	fl.cue.Store(true)
+	fails := fl.failures.Load()
+	waitsFor(t, "the stray failure to be recorded", func() bool { return fl.failures.Load() > fails })
+	fl.cue.Store(false)
+	waitsFor(t, "the backoff to arm", func() bool { return clk.pending() > 0 })
+	// The new run's backoff runs from its base again, not the capped value
+	// the old run ended on.
+	if got := clk.nextIn(); got > 20*time.Millisecond {
+		t.Errorf("the stray failure resumed at its old backoff %v", got)
+	}
+	clk.Advance(time.Second)
+	if h := srv.Health(); len(h.Conditions) != 0 {
+		t.Errorf("a stray failure after a quiet run is reported: %+v", h)
 	}
 }
 

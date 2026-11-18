@@ -117,7 +117,13 @@ func (c *Conn) idle() {
 // while that no longer holds leaves the connection alone: the next moment
 // nothing runs arms it afresh.
 func (c *Conn) idleExpired() {
-	if !c.established.Load() || c.closed.Load() || c.kept.Load() != 0 || c.rd.holding() || !c.p.quiet() {
+	if !c.established.Load() || c.closed.Load() || c.kept.Load() != 0 || !c.p.quiet() {
+		return
+	}
+	if c.rd.holding() {
+		// A record in hand may run nothing, and so call no done(): the
+		// deadline looks again a deadline later instead of resting on one.
+		c.idle()
 		return
 	}
 	c.Close(errIdle)
@@ -144,7 +150,7 @@ func (c *Conn) Settings() settings.Settings { return c.snap }
 // SMB message that fails decryption, a second NEGOTIATE, a moved continuously
 // available share's trees. The reader stops, every hold and park ends as on a
 // closed connection (cancel called, replies dropped), and OnClose runs. err is
-// logged and counted.
+// logged at the debug level, named with the connection's remote address.
 //
 // decision: Close records the error, cancels the connection's context and then
 // stops the reader's read, in that order, so a reader re-arming its deadline
@@ -227,6 +233,9 @@ func (c *Conn) teardown() {
 		c.idleT = nil
 	}
 	c.timersMu.Unlock()
+	if ep := c.err.Load(); ep != nil {
+		c.sh.log.Debug("core: connection closed", "remote", c.remoteAddr, "err", *ep)
+	}
 	// OnClose's context is the server's clock's, not the connection's: the
 	// close has cancelled that one (RFC 20 section 4.7).
 	// The wait and OnClose share one grace, counted from the close: the teardown

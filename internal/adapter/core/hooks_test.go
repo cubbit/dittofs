@@ -348,3 +348,12 @@ func AddBound(s *Server, l *Listener, ln net.Listener) (loopDone <-chan struct{}
 	go s.acceptLoop(b)
 	return b.loopDone
 }
+
+// IdleArmed reports whether the connection's idle deadline is armed: a test
+// advancing the clock waits for the quiet the deadline counts from, not for
+// the reply that made it quiet, so its advance lands after the re-arm.
+func IdleArmed(c *Conn) bool {
+	c.timersMu.Lock()
+	defer c.timersMu.Unlock()
+	return c.idleT != nil
+}

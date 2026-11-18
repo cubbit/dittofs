@@ -56,6 +56,13 @@ func (s *Server) acceptLoop(b *bound) {
 				backoff = min(2*backoff, acceptRetryMax)
 			}
 			f := s.sh.clock.Now().UnixNano()
+			if last := b.lastFailure.Load(); last != 0 && f-last > int64(2*acceptRetryMax) {
+				// The last run stopped failing: this failure starts a new
+				// one, its backoff over (RFC 20 section 6.4 clears the
+				// condition once the failures stop).
+				b.firstFailure.Store(f)
+				backoff = acceptRetryBase
+			}
 			b.firstFailure.CompareAndSwap(0, f)
 			b.lastFailure.Store(f)
 			s.sh.log.Debug("core: accept failed", "err", err, "services", b.l.Services, "retry_in", backoff)

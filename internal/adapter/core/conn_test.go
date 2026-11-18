@@ -1,11 +1,14 @@
 package core_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -18,6 +21,25 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
+
+// loggedBuf is the tests' own log sink: the debug line a close writes lands
+// here, so a test can assert what closed the connection reached the log.
+type loggedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *loggedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *loggedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
 
 // budgets is a fresh set of the four budgets, wide enough for the tests.
 func budgets() *resources.Budgets {
@@ -486,8 +508,9 @@ func deadlines(c *core.Conn) (handshake, idle time.Duration) {
 func TestABareConnectionIsClosedAtTheHandshakeTimeout(t *testing.T) {
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
+	logged := &loggedBuf{}
 	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{}).Bare()}
-	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	srv, err := core.NewServer(adapter.Deps{Budgets: b, Logger: slog.New(slog.NewJSONHandler(logged, &slog.HandlerOptions{Level: slog.LevelDebug}))}, settings.DefaultNFS(), l)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,6 +532,11 @@ func TestABareConnectionIsClosedAtTheHandshakeTimeout(t *testing.T) {
 	case <-core.ConnDone(conn):
 	case <-time.After(2 * time.Second):
 		t.Fatal("a connection past the handshake deadline stayed open")
+	}
+	// The close's own error reached the log, at the debug level, beside the
+	// remote address: a deadline closing healthy clients is seen.
+	if got := logged.String(); !strings.Contains(got, "the handshake deadline passed") {
+		t.Errorf("the close's error reached no log line: %q", got)
 	}
 }
 
@@ -811,6 +839,9 @@ func TestAPartlyReadRecordIsNotIdle(t *testing.T) {
 			t.Fatalf("over the full protocol: %+v (%v)", rs, err)
 		}
 	}
+	waitsFor(t, "the idle deadline to re-arm", func() bool {
+		return core.IdleArmed(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+	})
 	// Half an Echo: the record's length and the first bytes of its body, the
 	// rest withheld.
 	echo := testproto.Append(nil, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Session: 7, Payload: []byte("hi")})
@@ -880,6 +911,9 @@ func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
 		t.Fatalf("a session with keep set holds %d keeps, want one", kept)
 	}
 
+	waitsFor(t, "the idle deadline to re-arm", func() bool {
+		return core.IdleArmed(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+	})
 	clk.Advance(2 * idle)
 	select {
 	case <-core.ConnDone(conn):
@@ -893,6 +927,9 @@ func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
 		t.Fatalf("the logoff is answered %+v (%v)", rs, err)
 	}
 	waitsFor(t, "the keep's release", func() bool { return core.Kept(conn) == 0 })
+	waitsFor(t, "the idle deadline to re-arm", func() bool {
+		return core.IdleArmed(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+	})
 	clk.Advance(idle - time.Millisecond)
 	select {
 	case <-core.ConnDone(conn):
@@ -904,6 +941,71 @@ func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
 	case <-core.ConnDone(conn):
 	case <-time.After(2 * time.Second):
 		t.Fatal("a released connection stayed open past its idle deadline")
+	}
+}
+
+// A record that runs nothing still ends at the idle deadline: the deadline
+// that expired while the reader held it looks again a deadline later, so the
+// paths that end a record without the pipeline running it - a cancel, a
+// refusal sent without running - cannot hold the connection open and keep its
+// charge (section 6.4).
+func TestARecordThatRunsNothingStillClosesAtIdle(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b, Logger: slog.New(slog.NewJSONHandler(&loggedBuf{}, nil))}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	conn, client := servedConn(t, srv, &l)
+	defer func() { _ = client.Close() }()
+	_, idle := deadlines(conn)
+	c := testproto.NewClient(client)
+	for _, m := range []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
+	} {
+		if err := c.Send(m); err != nil {
+			t.Fatal(err)
+		}
+		if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+			t.Fatalf("over the full protocol: %+v (%v)", rs, err)
+		}
+	}
+	waitsFor(t, "the idle deadline to re-arm", func() bool {
+		return core.IdleArmed(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+	})
+	// Half a cancel, the rest withheld: the deadline expires while the reader
+	// holds it.
+	cancel := testproto.Append(nil, testproto.Msg{Op: testproto.OpCancel, Version: 1, ID: 3, Session: 7, Target: 2})
+	if _, err := client.Write(cancel[:8]); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "the half record to be held", func() bool {
+		return b.Receive.Reserved() > 0
+	})
+	clk.Advance(2 * idle)
+	select {
+	case <-core.ConnDone(conn):
+		t.Fatal("a connection mid-record closed past its idle deadline")
+	default:
+	}
+	// The record completes as one that runs nothing: a cancel ends without
+	// the pipeline running it, so no done() re-arms the deadline for it.
+	if _, err := client.Write(cancel[8:]); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "the cancel to end without running", func() bool {
+		return b.Receive.Reserved() == 0
+	})
+	clk.Advance(2 * idle)
+	select {
+	case <-core.ConnDone(conn):
+	case <-time.After(2 * time.Second):
+		t.Fatal("a connection whose record ran nothing stayed open past its idle deadline")
 	}
 }
 
