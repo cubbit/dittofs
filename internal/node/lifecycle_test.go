@@ -197,7 +197,7 @@ func TestStartAndStopInOrder(t *testing.T) {
 	if err := h.Node().Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	stops := []string{"stop reconcile", "stop runner", "stop filesystem", "stop engine", "stop listeners", "stop store"}
+	stops := []string{"stop reconcile", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners", "stop store"}
 	if got := s.reported()[len(steps):]; !slices.Equal(got, stops) {
 		t.Fatalf("stop steps: got %v, want %v", got, stops)
 	}
@@ -289,7 +289,7 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 		{step: "apply", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 1) }, registered: true},
 		{step: "engine", fault: func(k string) sim.Rule { return failOn(kvtest.OpSet, k, 2) }, registered: true},
 		{step: "filesystem", fault: func(string) sim.Rule { return failOn(kvtest.OpSet, "SH‖*", 2) }, registered: true, epoch: 1, undone: []string{"stop engine"}},
-		{step: "reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 2) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop engine"}},
+		{step: "reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 2) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop budgets", "stop engine"}},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			var h *nodetest.Harness
@@ -408,7 +408,7 @@ func TestStopWithAnEndedContext(t *testing.T) {
 	if err := h.Node().Stop(ctx); err != nil {
 		t.Errorf("Stop with an ended context: got %v, want nil", err)
 	}
-	stops := []string{"stop reconcile", "stop runner", "stop filesystem", "stop engine", "stop listeners", "stop store"}
+	stops := []string{"stop reconcile", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners", "stop store"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with an ended context: got %v, want %v", got, stops)
 	}
@@ -670,7 +670,7 @@ func TestStopStepPastItsBound(t *testing.T) {
 	if stopErr == nil || !strings.Contains(stopErr.Error(), "stop runner: not stopped within") || !strings.Contains(stopErr.Error(), "stop store: left open") {
 		t.Errorf("Stop with the runner held: got %v, want the runner named past its bound and the store left open", stopErr)
 	}
-	stops := []string{"stop reconcile", "stop filesystem", "stop engine", "stop listeners"}
+	stops := []string{"stop reconcile", "stop filesystem", "stop budgets", "stop engine", "stop listeners"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with the runner held: got %v, want %v", got, stops)
 	}
@@ -688,10 +688,10 @@ func TestStopStepPastItsBound(t *testing.T) {
 	}
 }
 
-// The filesystem uses the engine: a filesystem whose Drain misses its bound,
-// as a call it admitted is held on a read, leaves the engine open under it,
-// and the store, while the runner and the listeners stop; a later Stop, once
-// the call answered, stops the rest.
+// The filesystem uses the engine and the zero check's part: a filesystem
+// whose Drain misses its bound, as a call it admitted is held on a read,
+// leaves both open under it, and the store, while the runner and the
+// listeners stop; a later Stop, once the call answered, stops the rest.
 func TestStopLeavesTheEngineUnderAHeldFilesystem(t *testing.T) {
 	var h *nodetest.Harness
 	s := newSteps(t, &h)
@@ -726,7 +726,7 @@ func TestStopLeavesTheEngineUnderAHeldFilesystem(t *testing.T) {
 	waitFor(t, s.waits, "filesystem")
 	h.Clock().Advance(30 * time.Second)
 	stopErr := answered(t, stopped)
-	for _, want := range []string{"stop filesystem: not stopped within", "stop engine: left open", "stop store: left open"} {
+	for _, want := range []string{"stop filesystem: not stopped within", "stop budgets: left open", "stop engine: left open", "stop store: left open"} {
 		if stopErr == nil || !strings.Contains(stopErr.Error(), want) {
 			t.Errorf("Stop with the filesystem's call held: got %v, want it to say %q", stopErr, want)
 		}
@@ -746,7 +746,7 @@ func TestStopLeavesTheEngineUnderAHeldFilesystem(t *testing.T) {
 	if err := answered(t, stopped); err != nil {
 		t.Errorf("Stop once the filesystem's call answered: got %v, want nil", err)
 	}
-	if got, want := stopsIn(s.reported())[len(stops):], []string{"stop filesystem", "stop engine", "stop store"}; !slices.Equal(got, want) {
+	if got, want := stopsIn(s.reported())[len(stops):], []string{"stop filesystem", "stop budgets", "stop engine", "stop store"}; !slices.Equal(got, want) {
 		t.Errorf("parts the second Stop stopped: got %v, want %v", got, want)
 	}
 }
