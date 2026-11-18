@@ -955,3 +955,41 @@ func TestAMemberInTheServicePendsWithoutTheFlag(t *testing.T) {
 		}
 	})
 }
+
+// A chain whose members hold in turn, past a floor of none, moves its record's
+// charge to the hold pool for each: the Create the interim timer finds in the
+// service pends and is answered, and the related Create after it holds on
+// ErrDelay. Once the chain ends, the hold pool's gauge and its budget read as
+// before the chain (§4.6, §4.7; RFC 24 §4.3).
+func TestAChainWhoseMembersHoldInTurnGivesTheHoldPoolBack(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		budgets, m := holdBudgets(64<<20), metrics.New("v", "c")
+		s := newHeld(t, 0, adapter.Deps{Budgets: budgets, Metrics: m}, clk)
+		core.SetFloor(s.sh, 0, 0)
+		gauge, reserved := gauges(t, m)[2], budgets.Hold.Reserved()
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		s.serve(append(s.heldChain(1, "f"), testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 3, Session: inherited, Tree: 1, Name: "g", Related: true})...)
+		<-hold.Reached()
+		clk.Advance(time.Second)
+		s.interimOf(2)
+		hold.Release()
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[0].Interim || rs[0].ID != keyOf(2) || rs[0].Status != testproto.StatusOK || !rs[1].Interim || rs[1].ID != keyOf(3) {
+			t.Fatalf("the first Create is answered %+v (%v), want its final success and the second's interim", rs, err)
+		}
+		if got := budgets.Hold.Reserved(); got <= reserved {
+			t.Fatalf("the second Create holds with %d bytes in the hold pool, want its record's charge there", got)
+		}
+		clk.Advance(10 * time.Millisecond)
+		if r := s.finalOf(3); r.Status != testproto.StatusOK {
+			t.Fatalf("the second Create's final reply is %+v, want success", r)
+		}
+		synctest.Wait()
+		if got, rsv := gauges(t, m)[2], budgets.Hold.Reserved(); got != gauge || rsv != reserved {
+			t.Errorf("once the chain ends the hold pool's gauge reads %v and its budget %d, want %v and %d as before it", got, rsv, gauge, reserved)
+		}
+	})
+}
