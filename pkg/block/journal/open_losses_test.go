@@ -1062,8 +1062,8 @@ func TestAFailedOpenUnlinksNothing(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = again.Close() })
 	losses := f.lossRecords(t)
-	if len(losses) == 0 || len(losses) > 2 {
-		t.Fatalf("%d loss records on disk after the serving open, want one or two, all naming the dropped record", len(losses))
+	if len(losses) != 2 {
+		t.Fatalf("%d loss records on disk after the serving open, want two, both naming the dropped record: the pass's own and the emptying's carried copy", len(losses))
 	}
 	for _, seq := range losses {
 		if seq != 20 {
