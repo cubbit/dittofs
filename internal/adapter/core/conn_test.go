@@ -724,7 +724,11 @@ func TestAnUnestablishedConnectionRunsToItsHandshakeDeadline(t *testing.T) {
 		t.Fatalf("the Session is answered %+v (%v)", rs, err)
 	}
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
+		// The reader clears its held record only after serve() handed the
+		// request to its own goroutine, so held can still read true once
+		// nothing runs; a deadline firing there rests on it and re-arms
+		// instead of closing, so every re-arm gate demands a quiet reader.
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0 && !core.RecordHeld(conn)
 	})
 	_, idle := deadlines(conn)
 	clk.Advance(idle + time.Second)
@@ -834,7 +838,7 @@ func TestAnIdleDeadlineWaitsOutAReplyReservation(t *testing.T) {
 		t.Fatalf("the waiting Echo is answered %+v (%v)", rs, err)
 	}
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0 && !core.RecordHeld(conn)
 	})
 	clk.Advance(idle - time.Millisecond)
 	select {
@@ -880,7 +884,7 @@ func TestAPartlyReadRecordIsNotIdle(t *testing.T) {
 		}
 	}
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0 && !core.RecordHeld(conn)
 	})
 	// Half an Echo: the record's length and the first bytes of its body, the
 	// rest withheld.
@@ -905,7 +909,7 @@ func TestAPartlyReadRecordIsNotIdle(t *testing.T) {
 		t.Fatalf("the finished Echo is answered %+v (%v)", rs, err)
 	}
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0 && !core.RecordHeld(conn)
 	})
 	clk.Advance(idle - time.Millisecond)
 	select {
@@ -956,7 +960,7 @@ func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
 	}
 
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0 && !core.RecordHeld(conn)
 	})
 	clk.Advance(2 * idle)
 	select {
@@ -972,7 +976,7 @@ func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
 	}
 	waitsFor(t, "the keep's release", func() bool { return core.Kept(conn) == 0 })
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0 && !core.RecordHeld(conn)
 	})
 	clk.Advance(idle - time.Millisecond)
 	select {
@@ -1021,7 +1025,7 @@ func TestARecordThatRunsNothingStillClosesAtIdle(t *testing.T) {
 		}
 	}
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0 && !core.RecordHeld(conn)
 	})
 	// Half a cancel, the rest withheld: the deadline expires while the reader
 	// holds it.
