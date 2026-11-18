@@ -337,7 +337,8 @@ the API returns it as [RFC 23 §5.2](rfc-23-control-plane.md#5.2%20Roles) says.
    value no current principal holds. 0 is root's and 65534 anonymous's
    (§2.1): neither is ever allocated, and either is refused for any other
    principal — a directory entry whose `uidNumber` or `gidNumber` is one of them
-   gets an allocated one instead, and the mint is counted. Assigning a deleted
+   gets an allocated one instead, and the mint is counted
+   (`identity_mints_remapped_total`, §9.2). Assigning a deleted
    principal's uid to a new one gives the new principal no file of the old
    one's, because files name principals, never uids.
 4. A missing uid or gid **MUST NOT** be filled with a default. A user created
@@ -2345,6 +2346,7 @@ alice's still signs in as alice.
 | Sign-in latency | `identity_authentication_seconds{mechanism}` | histogram (`request`) |
 | Records identity minted | `identity_mints_total{kind}`: `machine`, `user`, `group` | counter |
 | Mints whose name another principal held (§4.1) | `identity_mints_unnamed_total{kind}`: `user`, `group` | counter |
+| Directory mints whose `uidNumber` or `gidNumber` was 0 or 65534 and got an allocated ID (§2.3) | `identity_mints_remapped_total{kind}`: `user`, `group` | counter |
 | Directory principals left without a name by a rename (§5.1) | `identity_renames_unnamed_total{kind}`: `user`, `group` | counter |
 | Rotation confirms whose key version number differs from the tag (§3.5) | `identity_machine_key_version_mismatches_total` | counter |
 | Unmapped spellings | `identity_unmapped_total{scheme}`: `uid`, `gid`, `sid`, `owner` | counter |
