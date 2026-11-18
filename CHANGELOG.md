@@ -119,10 +119,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unrecorded gets a loss record, drawn on a reserve the headroom keeps for
   the open. A sealed segment holding more failed records than that reserve
   takes is copied out without them and unlinked instead, so no record is owed
-  for them. Corrupt losses past that reserve defer: the open serves, the
-  segment holding each deferred drop stays in place, and the loss record is
-  written into the copy the emptying makes while the same process
-  runs; the deferral registry is process-local, so a restart does not carry it. A segment the
+  for them. Corrupt losses past that reserve defer: the open serves and the
+  segment holding each deferred drop stays in place. When the open ends that
+  segment, or empties it for its failed records, the loss record is written
+  into the copy the emptying makes; any other sealed segment holding a
+  deferred drop stays held until a restart, whose open finds the drop again
+  and defers it again, since the deferral registry is process-local. A segment the
   recovery ends is copied out whole into a sealed spare and unlinked before
   the journal serves, its served pieces repointed to the copy. An open still
   refuses what it cannot settle, such as a copy that needs more than one
