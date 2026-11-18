@@ -10,6 +10,10 @@ const (
 	// HeaderLen is the SMB2 header's length, which its StructureSize states
 	// (MS-SMB2 2.2.1).
 	HeaderLen = 64
+	// ErrorLen is the length of the ERROR response's body AppendError
+	// writes: its StructureSize of 9 counts one byte of ErrorData (MS-SMB2
+	// 2.2.2).
+	ErrorLen = 9
 )
 
 // ProtocolSMB2 is the protocol ID that opens a server's own SMB2 message on
@@ -19,6 +23,10 @@ const (
 // server answers (RFC 22 section 3.1) are told apart upstream, and their IDs
 // arrive with the reader that reads them.
 const ProtocolSMB2 = 0x424D53FE
+
+// CommandCancel is CANCEL, which is answered nothing (MS-SMB2 2.2.1.2,
+// 3.3.5.16): the protocol's router refuses it, ErrCancel in hand.
+const CommandCancel = 0x000C
 
 // lastCommand is OPLOCK_BREAK, the highest of the command codes MS-SMB2
 // 2.2.1.2 defines, all those from 0 to it. MS-SMB2 2.2.1.1 adds 0x0013,
