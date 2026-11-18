@@ -37,6 +37,7 @@ const (
 	kString
 	kArray    // []T, T of a basic kind or a struct: a variable-length array
 	kOptional // *T, T a struct: optional data
+	kOk       // *T, T a struct, tagged ok: what only a success carries
 	kStruct
 	kVoid // struct{}: a void arm
 )
@@ -135,9 +136,9 @@ func generate(dir string, files []string) ([]byte, error) {
 
 // tag is a field's xdr tag, read.
 type tag struct {
-	max, since int
-	union, def bool
-	arm        string
+	max, since     int
+	union, def, ok bool
+	arm            string
 }
 
 func readTag(lit *ast.BasicLit) (tag, error) {
@@ -167,6 +168,8 @@ func readTag(lit *ast.BasicLit) (tag, error) {
 			t.union = true
 		case "default":
 			t.def = true
+		case "ok":
+			t.ok = true
 		case "case":
 			// decision: an arm names one value. XDR lets several cases share
 			// an arm (RFC 4506 section 6.3); each is an arm of its own until a
@@ -203,6 +206,13 @@ func (g *gen) parse(s *strct, st *ast.StructType) {
 			}
 			if tg.max > 0 && !took {
 				g.errorf(id.Pos(), "%s: max on a type of fixed length", at)
+			}
+			if tg.ok {
+				if t.kind != kOptional {
+					g.errorf(id.Pos(), "%s: ok on a type other than a pointer to a struct", at)
+					continue
+				}
+				t.kind = kOk
 			}
 			fd := field{name: id.Name, t: t, since: tg.since, arm: tg.arm, pos: id.Pos()}
 			if tg.def {

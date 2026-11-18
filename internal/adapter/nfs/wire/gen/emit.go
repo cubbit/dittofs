@@ -58,6 +58,8 @@ func (g *gen) size(t *xtype) (int, string) {
 	case kOptional:
 		_, expr := g.size(t.elem)
 		return 0, "4 + " + expr
+	case kOk:
+		return g.size(t.elem)
 	case kStruct:
 		return 0, fmt.Sprintf("(*%s)(nil).MaxWire(v)", t.name)
 	}
@@ -120,6 +122,11 @@ func (g *gen) decode(b *bytes.Buffer, lv string, t *xtype, depth int) {
 		b.WriteString("}\n}\n")
 	case kOptional:
 		fmt.Fprintf(b, "if d.Bool() {\n%[1]s = new(%[2]s)\n%[1]s.decodeXDR(d, v)\n}\n", lv, t.elem.name)
+	case kOk:
+		// decision: a reply decodes as a success, its ok part read whole: the
+		// status that says which arm follows is the header's, and only a test
+		// decodes a reply. Overturned when something decodes a failure's.
+		fmt.Fprintf(b, "%[1]s = new(%[2]s)\n%[1]s.decodeXDR(d, v)\n", lv, t.elem.name)
 	case kStruct:
 		fmt.Fprintf(b, "%s.decodeXDR(d, v)\n", lv)
 	}
@@ -149,6 +156,9 @@ func (g *gen) encode(b *bytes.Buffer, lv string, t *xtype, depth int) {
 		b.WriteString("}\n")
 	case kOptional:
 		fmt.Fprintf(b, "e.Bool(%[1]s != nil)\nif %[1]s != nil {\n%[1]s.encodeXDR(e, v)\n}\n", lv)
+	case kOk:
+		// No discriminant: the status before the reply is its arm's.
+		fmt.Fprintf(b, "if %[1]s != nil {\n%[1]s.encodeXDR(e, v)\n}\n", lv)
 	case kStruct:
 		fmt.Fprintf(b, "%s.encodeXDR(e, v)\n", lv)
 	}
@@ -164,7 +174,7 @@ func zero(lv string, t *xtype) string {
 		return "len(" + lv + ") == 0"
 	case kFixed, kVector:
 		return lv + " == " + goType(t) + "{}"
-	case kOptional:
+	case kOptional, kOk:
 		return lv + " == nil"
 	case kStruct:
 		return lv + ".IsZero()"
@@ -188,7 +198,8 @@ func since(b *bytes.Buffer, n int, body func()) {
 // through. The version is a uint32, which RFC 20 section 4.7's core.Version
 // aliases, as section 7.1 keeps core out of a codec_gen.go's imports. A nil
 // receiver encodes as the empty struct: section 4.7's encoder accepts a nil
-// reply, writing its fail arm whole from an empty one.
+// reply, writing its fail arm whole from an empty one, since a reply's zero
+// value is its fail arm, what only a success carries an ok field left nil.
 func (g *gen) methods(b *bytes.Buffer, s *strct) {
 	fmt.Fprintf(b, `
 func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {

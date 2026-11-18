@@ -361,7 +361,10 @@ func TestRowHooksAreBinds(t *testing.T) {
 	if (rInv.Role == nil) != (bInv.Role == nil) {
 		t.Fatalf("Role: the hook reached one row and not the other (Row nil %v, Bind nil %v)", rInv.Role == nil, bInv.Role == nil)
 	}
-	if rInv.Role == nil || rInv.Role(rB) != bInv.Role(bB) {
+	if rInv.Role == nil {
+		t.Fatal("Role: the hook reached neither row")
+	}
+	if rInv.Role(rB) != bInv.Role(bB) {
 		t.Errorf("Role: Row's %v, Bind's %v", rInv.Role(rB), bInv.Role(bB))
 	}
 	for _, room := range []int{1 << 20, 155, 5, 3, 1} {

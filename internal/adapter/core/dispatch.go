@@ -198,7 +198,10 @@ func Bind[Req, Rep any](
 // Bound (§4.7). EncodeWire accepts a nil receiver, the reply of a request
 // refused before its call or of a handler that returned an empty reply beside
 // its error, and writes what its operation's reply carries beside the status
-// the header codec wrote (§4.7's Invocation.Encode).
+// the header codec wrote (§4.7's Invocation.Encode). A reply is its
+// operation's result past the status, and its zero value is its fail arm:
+// what only a success carries is an ok field, nil until the handler sets it,
+// so a nil or empty reply writes the fail arm whole.
 type Decoder[T any] interface {
 	*T
 	DecodeWire(b []byte, v Version) (n int, err error)
@@ -234,6 +237,12 @@ type Hooks[Req any] struct {
 // error is kept and encoded from, as a failure reply carries its protocol's
 // fail arm, but an empty one is no reply and reaches the encoder nil, as the
 // answer of a request refused before its call does (Invocation.Encode).
+//
+// decision: Rep is the operation's result past the status, its zero value its
+// fail arm (§4.7), and a handler returns only fail-arm content beside its
+// error, as an NFSv3 failure returns its WCC data: a reply filled for a
+// success and then failed would go out after the error status, which the
+// encoder, never seeing the status, cannot tell.
 //
 // decision: more than one Hooks panics, naming the row, as NewOpTable does: a
 // row is program text, and a dropped Role would fail open while draining.
