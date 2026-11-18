@@ -109,6 +109,19 @@ func TestTheAcceptLoopsReportTheirLivenessToTheWatch(t *testing.T) {
 
 	// One loop per bound socket: two addresses, two loops.
 	waitsFor(t, "the two loops to register", func() bool { return len(w.names()) == 2 })
+	// Each loop's name follows RFC 20: accept <services> on <address>, the
+	// services spaced, never bracketed.
+	want := map[string]bool{}
+	for _, at := range srv.Addrs()[key("test")] {
+		want["accept test on "+at.String()] = true
+	}
+	got := map[string]bool{}
+	for _, name := range w.names() {
+		got[name] = true
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("the loops' names are %q, want the services joined by spaces: %q", w.names(), slices.Sorted(maps.Keys(want)))
+	}
 
 	// A Turn per accepted connection: one client to each address.
 	for _, at := range srv.Addrs()[key("test")] {

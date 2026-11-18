@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/adapter"
@@ -62,7 +63,7 @@ func (s *Server) acceptLoop(b *bound) {
 	defer close(b.loopDone)
 	var watch adapter.Loop
 	if s.d.Watch != nil {
-		watch = s.d.Watch(fmt.Sprintf("accept %v on %s", b.l.Services, b.addr))
+		watch = s.d.Watch(fmt.Sprintf("accept %s on %s", strings.Join(b.l.Services, " "), b.addr))
 		defer watch.Close()
 	}
 	dl, wakeable := b.ln.(interface{ SetDeadline(time.Time) error })

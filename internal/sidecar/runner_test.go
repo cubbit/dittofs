@@ -188,6 +188,43 @@ func (f *faulting) Sync(ctx context.Context, serving []adapter.Serving) error {
 	return f.Sidecar.Sync(ctx, serving)
 }
 
+// gating is a holder that parks one driven set's build on demand: its Adapters
+// read counts down from armN, and the read that reaches zero parks on the
+// gate, entered telling the test the build it wanted held is held, with the
+// runner free to move whatever else the test moves in the meantime.
+type gating struct {
+	*holder
+	armN    atomic.Int32
+	syncs   atomic.Int32
+	entered chan struct{}
+	gate    chan struct{}
+	// staleArmed arms once the driven set's build parks: a lone smb set
+	// Synced after that is the retry's stale read spoken, and it parks on
+	// the stale gate to be caught before it can pass as the answer.
+	staleArmed atomic.Bool
+	staleOnce  sync.Once
+	stale      chan struct{}
+	staled     chan struct{}
+}
+
+func (g *gating) Adapters() []string {
+	if g.armN.Add(-1) == 0 {
+		g.staleArmed.Store(true)
+		g.entered <- struct{}{}
+		<-g.gate
+	}
+	return g.holder.Adapters()
+}
+
+func (g *gating) Sync(ctx context.Context, serving []adapter.Serving) error {
+	g.syncs.Add(1)
+	if g.staleArmed.Load() && len(serving) == 1 && serving[0].Adapter == "smb" {
+		g.staleOnce.Do(func() { g.stale <- struct{}{} })
+		<-g.staled
+	}
+	return g.holder.Sync(ctx, serving)
+}
+
 // hooked is a real adapter with one reading folded in: each lifecycle call
 // the runner drives reads what the sidecar holds, and what the adapter it
 // serves has bound, before it carries the call. RFC 20 section 3.5's order
@@ -573,43 +610,132 @@ func TestAFailedSyncIsRetriedUntilItSucceeds(t *testing.T) {
 	}
 }
 
-// A retry that slept through a driven sync keeps the newer set: whether the
-// sidecar is still failed, and the set to carry, read behind the same lock
-// the driven sync took, so a Stop that syncs the empty set, or a disable
-// that syncs none, is what the sidecar holds after the retry wakes (RFC 20
-// section 3.5).
-func TestARetrySleepingThroughADrivenSyncKeepsItsSet(t *testing.T) {
-	needIPv6Loopback(t)
+// A retry waking against a driven set in flight reads behind the driven
+// sync's own mutex or not at all: whether the sidecar is still failed and
+// the set to carry were read under the lock that ordered the driven write,
+// so a build the retry's wake raced cannot be spoken over by the stale set
+// the retry read ahead of it (RFC 20 section 3.5). Read ahead of the mutex,
+// the retry's stale set lands over the driven one after it lets go. One
+// round races the retry's read against the build's release, and the rounds
+// together give the race every ordering.
+func TestARetryWakingAgainstADrivenSyncKeepsTheDrivenSet(t *testing.T) {
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
-	gone := &faulting{Sidecar: newHolder("gone", "smb")}
-	r := sidecar.New(gone)
-	t.Cleanup(r.Close)
-	clk := newManualClock()
-	sidecar.SetClock(r, clk)
-	smb := buildServer(t, b, "smb", on("127.0.0.1"))
+	for round := range 25 {
+		gate := &gating{holder: newHolder("gone", "smb", "nfs"), entered: make(chan struct{}, 1), gate: make(chan struct{}), stale: make(chan struct{}, 1), staled: make(chan struct{})}
+		gone := &faulting{Sidecar: gate}
+		r := sidecar.New(gone)
+		t.Cleanup(r.Close)
+		t.Cleanup(func() {
+			select {
+			case <-gate.gate:
+			default:
+				close(gate.gate)
+			}
+		})
+		clk := newManualClock()
+		sidecar.SetClock(r, clk)
+		smb := buildServer(t, b, "smb", on("127.0.0.1"))
+		nfs := buildServer(t, b, "nfs", on("127.0.0.1"))
 
-	gone.cue.Store(true)
+		// The serving sync fails, and the retry arms behind it.
+		gone.cue.Store(true)
+		if err := r.Start(t.Context(), "smb", smb); err != nil {
+			t.Fatal(err)
+		}
+		waitsFor(t, "the failed sync's retry to arm", func() bool { return clk.pending() > 0 })
+		gone.cue.Store(false)
+
+		// The driven sync builds its second adapter's set behind the park,
+		// so the retry's wake lands against a build in flight, holding the
+		// mutex the driven write is still ahead of.
+		gate.armN.Store(2)
+		started := make(chan error, 1)
+		go func() { started <- r.Start(t.Context(), "nfs", nfs) }()
+		select {
+		case <-gate.entered:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("round %d: the driven set's build never parked", round)
+		}
+
+		// The retry wakes while the build parks: its read runs in the
+		// parked window, which the wait holds open, so a read ahead of the
+		// mutex carries the stale lone smb set and a read behind it waits
+		// the mutex out. The build then lets go, the driven set lands, and
+		// whatever the retry read either stands aside or speaks: the double
+		// parks a stale spoke one for the test to catch.
+		advanced := make(chan struct{})
+		go func() { clk.Advance(time.Second); close(advanced) }()
+		time.Sleep(100 * time.Millisecond)
+		close(gate.gate)
+		if err := <-started; err != nil {
+			t.Fatalf("round %d: the driven Start: %v", round, err)
+		}
+		<-advanced
+		select {
+		case <-gate.stale:
+			close(gate.staled)
+			t.Fatalf("round %d: the retry read a lone smb set ahead of the mutex and Synced it over the driven one", round)
+		case <-time.After(100 * time.Millisecond):
+		}
+		full := append(servingOf("smb", smb), servingOf("nfs", nfs)...)
+		if got := gate.holding(); !sameServs(got, full) {
+			t.Fatalf("round %d: the sidecar holds %v after the retry woke past a driven sync, want the driven set %v", round, got, full)
+		}
+		close(gate.staled)
+	}
+}
+
+// A Start's set, built while the sidecar turns disabled behind the build,
+// lands none: the enabled answer is part of the sync's critical section,
+// front to back with the set, so the disable's own nil can never be spoken
+// over by a set that built before it knew (RFC 20 section 3.5). Built
+// ahead of the mutex, the Start's full set lands over the disable's nil,
+// and the disabled sidecar keeps advertising.
+func TestAStartSyncBuildingPastADisableLandsNone(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	gate := &gating{holder: newHolder("hold", "smb", "nfs"), entered: make(chan struct{}, 1), gate: make(chan struct{})}
+	r := sidecar.New(gate)
+	t.Cleanup(r.Close)
+	t.Cleanup(func() {
+		select {
+		case <-gate.gate:
+		default:
+			close(gate.gate)
+		}
+	})
+	smb := buildServer(t, b, "smb", on("127.0.0.1"))
+	nfs := buildServer(t, b, "nfs", on("127.0.0.1"))
 	if err := r.Start(t.Context(), "smb", smb); err != nil {
 		t.Fatal(err)
 	}
-	waitsFor(t, "the retry behind the failed Sync to arm", func() bool { return clk.pending() > 0 })
-	// The driven sync while the retry waits: Stop's, which succeeds and
-	// syncs the empty set.
-	gone.cue.Store(false)
-	if err := r.Stop(t.Context(), "smb", smb); err != nil {
+	// The next Start's set builds behind the park: the disable lands its
+	// nil while the build holds.
+	gate.armN.Store(2)
+	started := make(chan error, 1)
+	go func() { started <- r.Start(t.Context(), "nfs", nfs) }()
+	select {
+	case <-gate.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the driven set's build never parked")
+	}
+	disabled := make(chan error, 1)
+	go func() { disabled <- r.SetEnabled(t.Context(), "hold", false) }()
+	// The disable's nil lands while the build parks when the build ran
+	// ahead of the mutex; behind it the disable's sync waits the build out.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for gate.syncs.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(gate.gate)
+	if err := <-started; err != nil {
 		t.Fatal(err)
 	}
-	if h := gone.Sidecar.(*holder); len(h.holding()) != 0 {
-		t.Fatalf("the driven Stop left the sidecar holding %v, want the empty set", h.holding())
+	if err := <-disabled; err != nil {
+		t.Fatal(err)
 	}
-	// The retry wakes after the driven sync: it is no longer failed, so it
-	// leaves the driven set alone and carries nothing over it.
-	clk.Advance(2 * time.Second)
-	waitsFor(t, "the driven set to stand", func() bool {
-		return clk.pending() == 0
-	})
-	if h := gone.Sidecar.(*holder); len(h.holding()) != 0 {
-		t.Errorf("the sleeping retry overwrote the driven set with a stale one: %v", h.holding())
+	if got := gate.holding(); len(got) != 0 {
+		t.Errorf("a Start whose set built past the disable landed %v over the disable's nil, want the enabled answer the sync itself rereads", got)
 	}
 }

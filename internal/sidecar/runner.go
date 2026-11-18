@@ -54,6 +54,7 @@ type Runner struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	clock  clock
+	wg     sync.WaitGroup // the retry goroutines, joined at Close
 
 	mu       sync.Mutex
 	serving  map[string]adapter.Adapter // by the name Start was called with
@@ -94,7 +95,7 @@ func (r *Runner) Start(ctx context.Context, name string, a adapter.Adapter) erro
 	r.serving[name] = a
 	r.mu.Unlock()
 	for _, sc := range r.enabledFor(name) {
-		_ = r.sync(ctx, sc, r.servs(sc.Adapters()))
+		_ = r.sync(ctx, sc, func() []adapter.Serving { return r.servs(sc.Adapters()) })
 	}
 	return nil
 }
@@ -110,12 +111,12 @@ func (r *Runner) Reconfigure(ctx context.Context, name string, a adapter.Adapter
 	syncs := r.enabledFor(name)
 	if len(drop) > 0 {
 		for _, sc := range syncs {
-			_ = r.sync(ctx, sc, without(r.servs(sc.Adapters()), name, drop))
+			_ = r.sync(ctx, sc, func() []adapter.Serving { return without(r.servs(sc.Adapters()), name, drop) })
 		}
 	}
 	err := a.Reconfigure(ctx, next)
 	for _, sc := range syncs {
-		_ = r.sync(ctx, sc, r.servs(sc.Adapters()))
+		_ = r.sync(ctx, sc, func() []adapter.Serving { return r.servs(sc.Adapters()) })
 	}
 	return err
 }
@@ -129,7 +130,7 @@ func (r *Runner) Stop(ctx context.Context, name string, a adapter.Adapter) error
 	delete(r.serving, name)
 	r.mu.Unlock()
 	for _, sc := range r.enabledFor(name) {
-		_ = r.sync(ctx, sc, r.servs(sc.Adapters()))
+		_ = r.sync(ctx, sc, func() []adapter.Serving { return r.servs(sc.Adapters()) })
 	}
 	return a.Stop(ctx)
 }
@@ -158,10 +159,10 @@ func (r *Runner) SetEnabled(ctx context.Context, name string, on bool) error {
 		return nil
 	}
 	if on {
-		_ = r.sync(ctx, sc, r.servs(sc.Adapters()))
+		_ = r.sync(ctx, sc, func() []adapter.Serving { return r.servs(sc.Adapters()) })
 		return nil
 	}
-	_ = r.sync(ctx, sc, nil)
+	_ = r.sync(ctx, sc, func() []adapter.Serving { return nil })
 	return nil
 }
 
@@ -181,15 +182,28 @@ func (r *Runner) Failed() []string {
 }
 
 // Close ends the Runner: the retries stop, and a failing sidecar's Sync is
-// called no more.
-func (r *Runner) Close() { r.cancel() }
+// called no more. It waits any retry still inside its Sync out, so none is
+// left running once it returns.
+func (r *Runner) Close() {
+	r.cancel()
+	r.wg.Wait()
+}
 
-// sync calls sc's Sync with set under ctx and records the outcome: a
-// success clears the sidecar's failure, a failure names it in Failed and
-// arms the retry with the last set, already this one.
-func (r *Runner) sync(ctx context.Context, sc *sidecar, set []adapter.Serving) error {
+// sync builds the set it syncs under sc's own mutex, so the sidecar's
+// enabled answer and the runner's serving set are read at the mutex's
+// front: the last Sync to land cannot carry a set built before one that
+// landed before it, and a disabled sidecar is synced with none (RFC 20
+// section 3.5).
+func (r *Runner) sync(ctx context.Context, sc *sidecar, build func() []adapter.Serving) error {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+	r.mu.Lock()
+	on := sc.enabled
+	r.mu.Unlock()
+	var set []adapter.Serving
+	if on {
+		set = build()
+	}
 	return r.syncLocked(ctx, sc, set)
 }
 
@@ -206,7 +220,11 @@ func (r *Runner) syncLocked(ctx context.Context, sc *sidecar, set []adapter.Serv
 	sc.failed = err != nil
 	if err != nil && !sc.retrying {
 		sc.retrying = true
-		go r.retry(sc)
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			r.retry(sc)
+		}()
 	}
 	r.mu.Unlock()
 	return err
