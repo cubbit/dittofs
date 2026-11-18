@@ -291,6 +291,53 @@ func TestOpenAtItsMaximumEndingASegmentOpens(t *testing.T) {
 	if got := j2.Stats().UsedBytes; got > maxBytes {
 		t.Fatalf("the reopened journal's UsedBytes = %d, want at most the maximum %d", got, maxBytes)
 	}
+	// The ledger counts only what it holds: a re-adopted spare dropped from
+	// it would stay on disk beside the refill's own, so the files count too.
+	if got := int64(len(f.segmentFileNames(t))) * openSegmentCap; got > maxBytes {
+		t.Fatalf("the reopened journal's files hold %d bytes, want at most the maximum %d", got, maxBytes)
+	}
+}
+
+// TestOpenWhoseReserveIsEmptyAtTheCopyWaitsForTheReserveAlone holds the
+// open's draw at a maximum that leaves the content class short: the
+// directory holds no spare when the reopen starts, so the copy draws before
+// the refill has readied the repack reserve, and the maximum has room for the
+// headroom and the reserve spares but never the content ones. The draw waits
+// for the reserve class alone, so the open serves; a wait for the pool's whole
+// goal would never end.
+func TestOpenWhoseReserveIsEmptyAtTheCopyWaitsForTheReserveAlone(t *testing.T) {
+	f := newAssembledJournal(t)
+	j := f.open(t)
+	mustWaitSpares(t, j)
+	if err := j.Close(); err != nil {
+		t.Fatalf("close the settled journal: %v", err)
+	}
+	for _, name := range f.segmentFileNames(t) {
+		if err := f.seam.Remove(name); err != nil {
+			t.Fatalf("remove the spare %s: %v", name, err)
+		}
+	}
+	plantEndedSegment(t, f, 941)
+	maxBytes := int64(6 * openSegmentCap) // the ended segment, five spares: the headroom's and the reserve's, no content spare
+
+	// The backstop only: the wait the open takes is the pool's reserve event.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	j2, err := Open(ctx, f.dir, Version{}, f.id, nil, f.opts(func(s *Settings) { s.MaxBytes = maxBytes })...)
+	if err != nil {
+		t.Fatalf("the reopen with no spare on disk under the maximum %d answered %v, want it open: the copy waits for the reserve spare alone", maxBytes, err)
+	}
+	t.Cleanup(func() {
+		if err := j2.Close(); err != nil && !errors.Is(err, ErrClosed) {
+			t.Errorf("close the reopened journal: %v", err)
+		}
+	})
+	h := shareOf(t, j2, ownerTag)
+	p := make([]byte, 64)
+	n, missing, _, _, err := h.ReadAt(t.Context(), fileOf(2), 0, p)
+	if err != nil || n != 64 || len(missing) != 0 {
+		t.Fatalf("reading the records the ended segment held: n %d, missing %+v, err %v, want both served whole from the copy", n, missing, err)
+	}
 }
 
 // TestOpenAtItsMaximumCarryingOverARottenTwinOpens holds the draw's floor at
@@ -331,6 +378,11 @@ func TestOpenAtItsMaximumCarryingOverARottenTwinOpens(t *testing.T) {
 	}
 	if got := j2.Stats().UsedBytes; got > maxBytes {
 		t.Fatalf("the reopened journal's UsedBytes = %d, want at most the maximum %d", got, maxBytes)
+	}
+	// The ledger counts only what it holds: a re-adopted spare dropped from
+	// it would stay on disk beside the refill's own, so the files count too.
+	if got := int64(len(f.segmentFileNames(t))) * openSegmentCap; got > maxBytes {
+		t.Fatalf("the reopened journal's files hold %d bytes, want at most the maximum %d", got, maxBytes)
 	}
 
 	// The next open serves the greatest placement and verifies no payload:
@@ -655,6 +707,16 @@ func TestDeferredHolderStaysHeldForTheRunningWorker(t *testing.T) {
 	// it: a holder it answers not held is unlinked within a tick.
 	if !j.core.Liveness().Held(948) {
 		t.Fatalf("the tracker answers segment 948 not held while its deferred loss stands, want held: the running worker would unlink it and a reopen would serve the older bytes over the synced write")
+	}
+	// The worker's own decision: its tick scan offers a not-held segment and
+	// the next tick retires it, so a holder the worker would take is gone
+	// within about two ticks. No clock reaches the worker, so the bounded
+	// wait is the assertion: it runs past those ticks and the segment must
+	// still be listed.
+	for deadline := time.Now().Add(3500 * time.Millisecond); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if !slices.Contains(f.segmentFileNames(t), format.SegmentName(948)) {
+			t.Fatalf("the running worker unlinked the deferred holder 948, want it standing while its deferral does")
+		}
 	}
 }
 
