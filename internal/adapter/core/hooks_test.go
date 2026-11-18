@@ -160,14 +160,17 @@ func NewCapped() FlowControl { return newCapped() }
 // NewCappedN is that FlowControl with n places.
 func NewCappedN(n int) FlowControl { return make(capped, n) }
 
-var ErrReplyWait = errReplyWait
+var (
+	ErrReplyWait  = errReplyWait
+	ErrStatusWait = errStatusWait
+)
 
 func (sh *shared) ReserveReply(ctx context.Context, key netip.Addr, bound int) (*resources.Buf, error) {
 	return sh.reserveReply(ctx, key, bound)
 }
 
 func (sh *shared) ReserveStatus(ctx context.Context, key netip.Addr, close func(error)) *resources.Buf {
-	return sh.reserveStatus(ctx, key, 0, close)
+	return sh.reserveStatus(ctx, key, 0, time.Time{}, close)
 }
 
 // TestReader is one connection's record cut, reached by the reader's tests.
@@ -204,6 +207,14 @@ func (p *pipeline) Serve(rec *resources.Buf)       { p.serve(rec) }
 func (p *pipeline) Drain()                         { p.drain() }
 func (p *pipeline) Wait(ctx context.Context) error { return p.wait(ctx) }
 func (p *pipeline) Close()                         { p.close() }
+
+// HoldStatusWait takes the connection's one status wait, as a status waiting
+// for its buffer holds it, and returns what gives it back: a holder that
+// outlasts the statuses waiting behind it.
+func (p *pipeline) HoldStatusWait() (give func()) {
+	p.status <- struct{}{}
+	return func() { <-p.status }
+}
 
 // Runs is how many requests and refusals the pipeline counts as running.
 func (p *pipeline) Runs() int {

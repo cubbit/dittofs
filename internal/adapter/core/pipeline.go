@@ -153,23 +153,63 @@ func (sh *shared) reserveReply(ctx context.Context, key netip.Addr, bound int) (
 }
 
 // statusWait bounds how long a reply carrying a status alone, which holds no
-// reply reservation yet, waits for its buffer (RFC 20 §6.4).
+// reply reservation yet, waits for the connection's one status wait, where it
+// takes it, and then for its buffer: one 30 s from when it starts waiting
+// (RFC 20 §6.4; RFC 24 §2.6).
 const statusWait = 30 * time.Second
+
+// errStatusWait is what a connection is closed with when a status still
+// waited for the connection's one status wait at statusWait; its close is
+// counted as status_wait (RFC 20 §10.1).
+var errStatusWait = errors.New("core: no status wait for a status within " + statusWait.String())
 
 // errReplyWait is what a connection is closed with when a status found no
 // reply buffer within statusWait; its close is counted as reply_wait
 // (RFC 20 §10.1).
 var errReplyWait = errors.New("core: no reply buffer for a status within " + statusWait.String())
 
+// takeStatus takes the connection's one status wait for a status: at once
+// when it is free, otherwise waiting within ctx, the connection's, for at
+// most statusWait. Past that, still waiting, it calls close with
+// errStatusWait. It reports whether it took the wait, and the deadline the
+// status's wait for its buffer keeps: statusWait from when this wait
+// started, or zero where it took the wait at once.
+//
+// decision: a status that finds the status wait free reads no clock and
+// arms no timer, so its 30 s starts at its wait for its buffer, which for a
+// refusal alone or a chain's first member is a goroutine's start after it
+// found the pool full. Overturned if that start is seen to matter: read the
+// clock where the status finds no room.
+func (p *pipeline) takeStatus(ctx context.Context) (at time.Time, ok bool) {
+	select {
+	case p.status <- struct{}{}:
+		return time.Time{}, true
+	default:
+	}
+	at = time.Now().Add(statusWait)
+	wait, cancel := context.WithDeadline(ctx, at)
+	defer cancel()
+	select {
+	case p.status <- struct{}{}:
+		return at, true
+	case <-wait.Done():
+		if ctx.Err() == nil {
+			p.l.close(errStatusWait)
+		}
+		return time.Time{}, false
+	}
+}
+
 // reserveStatus takes the reply buffer a status alone goes out in, of n
 // bytes, its header's ReplyLen, for key: at once when the pool has room with
 // no waiter ahead, otherwise
 // waiting within ctx, the connection's, so that a close ends the wait at
-// once, for at most statusWait from when it starts. Past that it calls close
+// once, until at, the deadline takeStatus returned, or for at most
+// statusWait from when it starts where at is zero. Past that it calls close
 // with errReplyWait. It returns nil, with nothing reserved, when the wait
 // ended. Its caller keeps the request's record, and so its receive charge,
 // until the status goes out or the wait ends (RFC 24 §6.1).
-func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, n int, close func(error)) *resources.Buf {
+func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, n int, at time.Time, close func(error)) *resources.Buf {
 	// A status is encoded by appending to B[:0], within n's class.
 	if buf, ok := sh.reply.TryGet(key, n); ok {
 		return buf
@@ -187,7 +227,10 @@ func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, n int, clos
 	// status can arrive up to 30 s past its own deadline. Withdraw it when
 	// RFC 24 §4.1's turns bound each client's share of the pool, or when
 	// parks' reply reservations are capped per client.
-	wait, cancel := context.WithTimeout(ctx, statusWait)
+	if at.IsZero() {
+		at = time.Now().Add(statusWait)
+	}
+	wait, cancel := context.WithDeadline(ctx, at)
 	defer cancel()
 	buf, err := sh.reply.Get(wait, key, n)
 	if err != nil {
@@ -442,7 +485,8 @@ var errUnwrapNeither = errors.New("core: Unwrap returned no header and no error"
 // when the pool has no room it waits on a goroutine of its own, which keeps
 // rec, and so its receive charge, until the status goes out, and a
 // connection has one such wait at a time: a second refusal waits here, on
-// the reader, for the first to end.
+// the reader, for the first to end, its statusWait running from there on
+// through its wait for its buffer.
 func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err error, wrap, closeAfter bool) {
 	p.refused(tr, st)
 	s, send, _ := p.mapped(tr, p.st.Errors, err, nil, h.Version(), st != stageUnwrap)
@@ -463,16 +507,15 @@ func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err
 		p.answer(tr, rec, h, s, buf, wrap, closeAfter, err)
 		return
 	}
-	select {
-	case p.status <- struct{}{}:
-	case <-p.ctx.Done():
+	at, ok := p.takeStatus(p.ctx)
+	if !ok {
 		p.end(tr, false, 0, 0, err)
 		rec.Release()
 		return
 	}
-	// A close can make both cases ready, and the select picks one at random:
-	// the refusal counts as running before close is checked, as serve's
-	// request does, so a wait entered after the close never sees it start.
+	// The status wait can be taken after a close: the refusal counts as
+	// running before close is checked, as serve's request does, so a wait
+	// entered after the close never sees it start.
 	p.add()
 	if p.ctx.Err() != nil {
 		<-p.status
@@ -484,7 +527,7 @@ func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err
 	go func() {
 		defer p.done()
 		defer func() { <-p.status }()
-		if buf := p.sh.reserveStatus(p.ctx, p.l.remote, p.st.Header.ReplyLen(h), p.l.close); buf != nil {
+		if buf := p.sh.reserveStatus(p.ctx, p.l.remote, p.st.Header.ReplyLen(h), at, p.l.close); buf != nil {
 			p.answer(tr, rec, h, s, buf, wrap, closeAfter, err)
 			return
 		}
@@ -572,7 +615,7 @@ func (a alone) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 }
 
 func (a alone) status(ctx context.Context, n int) *resources.Buf {
-	return a.p.sh.reserveStatus(ctx, a.p.l.remote, n, a.p.l.close)
+	return a.p.sh.reserveStatus(ctx, a.p.l.remote, n, time.Time{}, a.p.l.close)
 }
 
 // lookup asks the replay cache under an ended context first, which tries its
@@ -1186,7 +1229,7 @@ func (p *pipeline) send(h Header, reply *resources.Buf, key uint64) bool {
 // on the pool and leave the interim, and so the client's credits, behind it.
 func (p *pipeline) interim(ctx context.Context, h Header, buf *resources.Buf) {
 	if buf == nil {
-		if buf = p.sh.reserveStatus(ctx, p.l.remote, p.st.Header.ReplyLen(h), p.l.close); buf == nil {
+		if buf = p.sh.reserveStatus(ctx, p.l.remote, p.st.Header.ReplyLen(h), time.Time{}, p.l.close); buf == nil {
 			return
 		}
 	}

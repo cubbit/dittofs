@@ -2218,6 +2218,115 @@ func TestAChainsLaterStatusHoldsTheOneStatusWait(t *testing.T) {
 	})
 }
 
+// statusWaiters is each place a status waits for the connection's one
+// status wait: on the reader, for a refusal alone and for a chain's first
+// member, and on its chain's goroutine for a later member, whose chain's
+// first reply, unread, takes the room the test leaves.
+var statusWaiters = []struct {
+	name   string
+	room   bool // the test leaves the room of one reply, the chain's first
+	record func(f core.Framer) []byte
+}{
+	{"a refusal alone", false, func(f core.Framer) []byte {
+		b := body(f, echoIn(1, 7))
+		b[len(b)-1] ^= 0x01 // it fails Unwrap
+		return b
+	}},
+	{"a chain's first member", false, func(f core.Framer) []byte {
+		b, _ := chainOf(f, echoIn(1, 7), echoIn(2, 7))
+		b[headerLen+1] ^= 1 // the first member fails Unwrap
+		return b
+	}},
+	{"a chain's later member", true, func(f core.Framer) []byte {
+		b, offs := chainOf(f, echoIn(1, 7), echoIn(2, 7))
+		b[offs[1]+headerLen+1] ^= 1 // the second member fails Unwrap
+		return b
+	}},
+}
+
+// fillBut fills s's reply pool but for the room of one small reply where
+// room, and returns what frees it.
+func fillBut(t *testing.T, s *served, room bool) func() {
+	t.Helper()
+	synctest.Wait() // the setup's last reply released, so the pool is filled exactly
+	left := int64(0)
+	if room {
+		left = s.reply.Charge(0)
+	}
+	held, err := s.budgets.Reply.Reserve(context.Background(), peer, (1<<20)-s.budgets.Reply.Reserved()-left)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return held.Release
+}
+
+// A status still waiting for the connection's one status wait 30 s after it
+// began to wait closes the connection with the status-wait error, at 30 s
+// and not before, wherever it waits. The test holds the status wait: a
+// holder that outlasts the status (RFC 20 §6.4, §10.1).
+func TestAStatusWaitingForTheStatusWaitClosesAt30s(t *testing.T) {
+	for _, w := range statusWaiters {
+		t.Run(w.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := newChained(t, 1<<20, adapter.Deps{})
+				give := s.p.HoldStatusWait()
+				defer give()
+				defer fillBut(t, s, w.room)()
+				begin := time.Now()
+				served := start(func() { s.serveBody(w.record(s.f)) })
+				select {
+				case err := <-s.closed:
+					if !errors.Is(err, core.ErrStatusWait) {
+						t.Errorf("the connection was closed with %v, want the status-wait error", err)
+					}
+				case <-time.After(time.Minute):
+					t.Fatal("the status still waits a minute on, want its connection closed at 30 s")
+				}
+				if waited := time.Since(begin); waited != 30*time.Second {
+					t.Errorf("the connection was closed %v after the status began to wait, want 30s", waited)
+				}
+				<-served.done
+			})
+		})
+	}
+}
+
+// A status that took the connection's one status wait after waiting 10 s
+// for it, and finds no buffer, closes the connection with the reply-wait
+// error 30 s after it began to wait for the status wait, not 30 s after it
+// took it, wherever it waits (RFC 20 §6.4; RFC 24 §2.6).
+func TestAStatusWaitsOne30sForTheStatusWaitAndItsBuffer(t *testing.T) {
+	for _, w := range statusWaiters {
+		t.Run(w.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := newChained(t, 1<<20, adapter.Deps{})
+				give := s.p.HoldStatusWait()
+				defer fillBut(t, s, w.room)()
+				begin := time.Now()
+				served := start(func() { s.serveBody(w.record(s.f)) })
+				select {
+				case err := <-s.closed:
+					t.Fatalf("the connection was closed with %v while the status waited for the status wait, want it open 10 s on", err)
+				case <-time.After(10 * time.Second):
+				}
+				give()
+				select {
+				case err := <-s.closed:
+					if !errors.Is(err, core.ErrReplyWait) {
+						t.Errorf("the connection was closed with %v, want the reply-wait error", err)
+					}
+				case <-time.After(time.Minute):
+					t.Fatal("the status still waits a minute on, want its connection closed at 30 s")
+				}
+				if waited := time.Since(begin); waited != 30*time.Second {
+					t.Errorf("the connection was closed %v after the status began to wait for the status wait, want 30s", waited)
+				}
+				<-served.done
+			})
+		})
+	}
+}
+
 // A related member after a replay hit is routed under the request from
 // before the hit: sent again, a sequenced chain's Create is a hit, and the
 // related Create after it still finds the PutFH's handle.

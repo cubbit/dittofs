@@ -66,10 +66,11 @@ type chain struct {
 	prevR    *Request
 	failed   bool // the member before failed, with failS
 	failS    Status
-	cur      entry  // the member running
-	stopped  bool   // a NoReply member ended the chain, or the connection closed
-	slot     bool   // the chain holds the connection's one status wait
-	kept     func() // the place of the last member admitted, until the next is admitted or would wait
+	cur      entry     // the member running
+	stopped  bool      // a NoReply member ended the chain, or the connection closed
+	slot     bool      // the chain holds the connection's one status wait
+	slotAt   time.Time // with slot, the deadline takeStatus returned for it
+	kept     func()    // the place of the last member admitted, until the next is admitted or would wait
 
 	// The hand-over of a member held between attempts, whose answer runs the
 	// rest of the chain: one goroutine runs the chain at a time.
@@ -115,14 +116,13 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 	// A first member refused takes the connection's one status wait here,
 	// on the reader, as a refusal alone does: the next such chain then holds
 	// the reader until this one's status is reserved, so the records waiting
-	// for a status stay one per connection.
+	// for a status stay one per connection. The status's 30 s, where this
+	// wait blocks, runs on into its wait for its buffer on the chain's
+	// goroutine.
 	slot := false
+	var at time.Time
 	if e.err != nil {
-		select {
-		case p.status <- struct{}{}:
-			slot = true
-		case <-p.ctx.Done():
-		}
+		at, slot = p.takeStatus(p.ctx)
 	}
 	p.add()
 	if p.ctx.Err() != nil {
@@ -137,7 +137,7 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 		rec.Release()
 		return
 	}
-	c := &chain{p: p, rec: rec, slot: slot}
+	c := &chain{p: p, rec: rec, slot: slot, slotAt: at}
 	go c.run(e)
 }
 
@@ -492,7 +492,8 @@ func (c *chain) room(n int) {
 
 // status takes a status's buffer for the chain, as reserve takes a reply's,
 // and waits for it only holding the connection's one status wait, the slot
-// a refusal alone holds too.
+// a refusal alone holds too, both waits within one statusWait from the
+// start of the first.
 //
 // A later member's status takes the slot on the chain's own goroutine, not
 // the reader's, while the chain holds the place of the last member it
@@ -507,15 +508,12 @@ func (c *chain) status(ctx context.Context, n int) *resources.Buf {
 	}
 	c.flush(splitReplyPool, c.cur.tr)
 	if !c.slot {
-		select {
-		case p.status <- struct{}{}:
-			c.slot = true
-		case <-ctx.Done():
+		if c.slotAt, c.slot = p.takeStatus(ctx); !c.slot {
 			return nil
 		}
 	}
 	defer c.free()
-	return p.sh.reserveStatus(ctx, p.l.remote, n, p.l.close)
+	return p.sh.reserveStatus(ctx, p.l.remote, n, c.slotAt, p.l.close)
 }
 
 // keep holds the place of a member just answered, where message would give
