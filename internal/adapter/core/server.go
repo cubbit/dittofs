@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
@@ -201,14 +202,11 @@ func (s *Server) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state != adapter.StateConfigured {
+		// A Stop's stopping state refuses the Start with this check alone:
+		// the state moves under the lock the marker does, and a Start that
+		// reached past here would bind loops Stop's snapshot never closes
+		// (RFC 20 section 3.1).
 		return fmt.Errorf("core: start: the server is %s", s.state)
-	}
-	if s.stopDone != nil {
-		// A Stop runs even on a configured server, its marker set before it
-		// moves the server to stopped: a Start in that window would bind
-		// loops that Stop's empty snapshot never closes. Refused as
-		// stopping (RFC 20 section 3.1).
-		return errors.New("core: start: the server is stopping")
 	}
 	if s.settings.Load() == nil {
 		// A Server is what NewServer builds: a zero value carries no snapshot
@@ -386,9 +384,13 @@ func (s *Server) Stop(ctx context.Context) error {
 		for _, c := range conns {
 			c.p.drain()
 		}
+		// The deadline is taken under the same lock, before the state names
+		// it, so a clock the state's reader advances cannot run past the
+		// deadline before the drain holds it.
+		at := s.sh.clock.Now().Add((*s.settings.Load()).Common().DrainTimeout)
 		s.state = adapter.StateDraining
 		s.mu.Unlock()
-		s.drainConns(ctx, conns)
+		s.drainConns(ctx, conns, at)
 	} else {
 		s.mu.Unlock()
 	}
@@ -407,16 +409,17 @@ func (s *Server) Stop(ctx context.Context) error {
 
 // drainConns waits until nothing runs on any connection, or until the drain
 // deadline, the earlier of ctx's deadline and drain_timeout from the
-// snapshot, on the server's clock; what still runs at it is left for the
-// close that follows (RFC 20 sections 3.1 and 3.4).
-func (s *Server) drainConns(ctx context.Context, conns []*Conn) {
+// snapshot, on the server's clock, taken under the lock that published
+// draining so a clock its reader advances cannot run past it first; what
+// still runs at it is left for the close that follows (RFC 20 sections 3.1
+// and 3.4).
+func (s *Server) drainConns(ctx context.Context, conns []*Conn, at time.Time) {
 	if len(conns) == 0 {
 		return
 	}
 	// drain_timeout runs from the accept loops' end, which is where the
 	// drain starts, not from Stop's call, which the loops' hand-overs
 	// precede.
-	at := s.sh.clock.Now().Add((*s.settings.Load()).Common().DrainTimeout)
 	wait, cancel := withClockDeadline(ctx, s.sh.clock, at)
 	defer cancel()
 	// decision: the sweep repeats, never one wait per connection, since a
