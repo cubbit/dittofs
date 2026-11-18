@@ -171,9 +171,16 @@ func TestStatsSyncMarksAfterOpen(t *testing.T) {
 		}
 	}
 
-	entry.Sequence = 0
-	if got := j2.Stats().SyncMarks[uint32(recorded.Stream)]; got.Sequence != tailSeq {
+	// The returned map is the caller's: changing and deleting in it reaches
+	// no later Stats.
+	stream := uint32(recorded.Stream)
+	m[stream] = SyncMark{}
+	if got := j2.Stats().SyncMarks[stream]; got.Sequence != tailSeq {
 		t.Fatalf("a changed SyncMarks entry reached the next Stats: got %+v, want the stream's entry with sequence %d", got, tailSeq)
+	}
+	delete(m, stream)
+	if got, ok := j2.Stats().SyncMarks[stream]; !ok || got.Sequence != tailSeq {
+		t.Fatalf("a deleted SyncMarks entry reached the next Stats: got %+v (present %v), want the stream's entry with sequence %d", got, ok, tailSeq)
 	}
 }
 
@@ -376,20 +383,27 @@ func TestTheOpenSpanCountsItsSegments(t *testing.T) {
 		}
 	}
 
-	// The emptying's work span — the second the op opens, over the work
-	// the phases list names a no-op for — carries the counts.
-	empties := rt.of(core.SpanOpenEmptying)
-	if len(empties) < 2 {
-		t.Fatalf("the open opened %d spans of op %s, want the recovery's no-op and the emptying's work span", len(empties), core.SpanOpenEmptying)
-	}
-	work := empties[len(empties)-1]
-	attrs := map[string]int64{}
-	for _, a := range work.attrs {
-		if a.Value.Kind() == slog.KindInt64 {
-			attrs[a.Key] = a.Value.Int64()
+	// The emptying's work span is the one that carries the counts; the
+	// recovery's no-op span beside it carries none.
+	var attrs map[string]int64
+	for _, sp := range rt.of(core.SpanOpenEmptying) {
+		m := map[string]int64{}
+		for _, a := range sp.attrs {
+			if a.Value.Kind() == slog.KindInt64 {
+				m[a.Key] = a.Value.Int64()
+			}
+		}
+		if _, ok := m["catalog_segments"]; ok {
+			attrs = m
 		}
 	}
+	if attrs == nil {
+		t.Fatalf("no span of op %s carries catalog_segments, want the emptying's work span to", core.SpanOpenEmptying)
+	}
 	rec := j.Stats().Recovery
+	if rec.ScannedSegments == 0 {
+		t.Errorf("Recovery.ScannedSegments = 0, want the two planted segments read by scan")
+	}
 	if got, ok := attrs["catalog_segments"]; !ok || got != int64(rec.CatalogSegments) {
 		t.Errorf("the emptying's work span carries catalog_segments %d (present %v), want %d as the Stats reports", got, ok, rec.CatalogSegments)
 	}

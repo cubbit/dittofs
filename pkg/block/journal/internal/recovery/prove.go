@@ -62,6 +62,12 @@ type proof struct {
 	// its stream has, and where its copy verifies is where the entry names.
 	Replaced []replacedRecord
 
+	// Superseded holds the source segments of the records the re-append
+	// skipped for a sealed copy that already verifies: their own scans keep
+	// naming the old placement the open ends, so the stream marks leave them
+	// out as they do a Replaced source.
+	Superseded []core.SegmentID
+
 	// ReappendedBytes is the payload bytes the re-append phase wrote back,
 	// the figure the served journal's own syncs count beside theirs.
 	ReappendedBytes int64

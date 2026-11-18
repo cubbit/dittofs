@@ -449,3 +449,28 @@ func countNonZero(b []byte) int {
 	}
 	return n
 }
+
+// TestSyncMarksAfterASealedCopySkip opens the device-lost directory twice,
+// the second open skipping B's re-append for the sealed copy the first
+// sealed. The source segment's scan still verifies B at its old placement,
+// which the open's emptying unlinks, so no stream's mark may name it: the
+// entry for B's stream names the sealed copy or nothing.
+func TestSyncMarksAfterASealedCopySkip(t *testing.T) {
+	r, _, _ := deviceLostB(t)
+	first := core.SegmentID(9)
+	runReserve(t, r, first)
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	if err != nil {
+		t.Fatalf("the second open: %v", err)
+	}
+	if len(st.Proof.Replaced) != 0 {
+		t.Fatalf("Replaced got %+v, want none: the second open skipped the sealed copy", st.Proof.Replaced)
+	}
+
+	for _, m := range st.SyncMarks() {
+		if m.Segment == 2 {
+			t.Errorf("the mark of stream %d names segment 2 at sequence %d, want the sealed copy %d or no entry: the open unlinks segment 2", m.Stream, m.Sequence, first)
+		}
+	}
+}

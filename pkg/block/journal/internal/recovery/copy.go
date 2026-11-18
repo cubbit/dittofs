@@ -301,6 +301,7 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	slot := make(map[recKey]int, len(st.Proof.Reappends))
 	for _, rec := range st.Proof.Reappends {
 		if sealedCopy(st, rec.Header) {
+			st.Proof.Superseded = append(st.Proof.Superseded, rec.Segment)
 			continue
 		}
 		k := recKey{rec.Header.Kind, rec.Header.File, rec.Header.Seq, rec.Header.Extent}

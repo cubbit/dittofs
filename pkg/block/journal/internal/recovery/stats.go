@@ -25,15 +25,18 @@ import (
 // open assembled keeps its entry until the group commit records whatever the
 // next sync answers.
 //
-// decision: a segment a caller's mark names is attributed to the mark's
-// stream over its own header's word — the only stream a copy target has at
-// all, for the copier writes its header with no stream number and the
-// recorded mark is what a crash between the copy and its record leaves
-// behind. A copy target no mark was recorded for yet, or a copy batch holding
-// several streams' records, reports under the number its header names: the
-// open cannot name a stream the directory's own bytes do not. Withdrawn when
-// the open records each copy's stream durably beside it, a metadata write per
-// copy, or by a copy header that names the source's stream.
+// decision: a Replaced entry is attributed by its source segment's stream, and
+// the copy target's own rebuild scan, whose last sequence number is zero, is
+// skipped, for the copier writes the target's header with no stream number. A
+// source the caller recorded no mark for and whose own header did not verify
+// names no stream, so its stream gets no entry from the re-append — the entry
+// is then missing, never wrong, and the caller treats a missing entry as no
+// recorded mark. A source whose records a sealed copy already held is left out
+// and its stream is named only by a mark the caller recorded for the copy.
+// Withdrawn when the open records each copy's stream durably beside it, a
+// metadata write per copy, or when a copy header names the source's stream;
+// overturned by a field open that reports a stream's entry missing where its
+// source's header was unverified.
 func (st State) SyncMarks() []core.SyncMark {
 	steads := st.streamSteads()
 
@@ -54,7 +57,10 @@ func (st State) SyncMarks() []core.SyncMark {
 	// A record the re-append replaced names the copy, not the placement the
 	// device lost or failed: the source's own scan keeps reading the old
 	// bytes, so the sources are left out of the scans below.
-	sources := make(map[core.SegmentID]bool, len(st.Proof.Replaced))
+	sources := make(map[core.SegmentID]bool, len(st.Proof.Replaced)+len(st.Proof.Superseded))
+	for _, id := range st.Proof.Superseded {
+		sources[id] = true
+	}
 	for _, r := range st.Proof.Replaced {
 		sources[r.Source] = true
 		if stream, ok := steads[r.Source]; ok {
