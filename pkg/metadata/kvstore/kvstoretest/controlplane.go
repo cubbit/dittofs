@@ -862,10 +862,12 @@ func testProjects(t *testing.T, kvo Opener) {
 	}
 }
 
-// A krb spelling's linked SID is kept in the user's record and its index
-// row: put, changed and cleared on the same spelling, the row still
-// resolves and the record reads back what was put. On a spelling of any
-// other scheme, or not a well-formed SID, it is refused.
+// A krb spelling's linked SID is kept in the user's record: put, changed
+// and cleared on the same spelling, the spelling's row still resolves and
+// the record reads back what was put. No lookup returns the row's own copy
+// of the SID, so this cannot see it; the package's TestKrbRowHoldsLinked
+// reads the row. On a spelling of any other scheme, or a SID that is not a
+// domain account's, the put is refused.
 func testKrbLinkedSID(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp, p := s.ControlPlane(), s.Principals()
@@ -885,24 +887,35 @@ func testKrbLinkedSID(t *testing.T, kvo Opener) {
 		}
 	}
 
-	// A spelling no user holds, so each refusal is the put's validation.
-	bad := krbAs("bob@AD.EXAMPLE", "S-1-5-21-1-2-3-1104")
-	bad.Linked = bad.Linked[:len(bad.Linked)-1] // a sub-authority cut short
+	// Each user is otherwise valid and holds spellings no user holds, as its
+	// put with every link cleared shows, so each refusal is the linked SID's.
+	domain := krbAs("", "S-1-5-21-1-2-3-1104").Linked
+	cut := krbAs("bob@AD.EXAMPLE", "S-1-5-21-1-2-3-1104")
+	cut.Linked = cut.Linked[:len(cut.Linked)-1] // a sub-authority cut short
 	linkedUID := uid("1001")
-	linkedUID.Linked = krbAs("", "S-1-5-21-1-2-3-1104").Linked
-	linkedSID := entity.ProtocolID{Scheme: entity.SchemeSID, Value: "\x01", Linked: linkedUID.Linked}
+	linkedUID.Linked = domain
+	linkedSID := freshSID()
+	linkedSID.Linked = domain
 	for _, c := range []struct {
 		name string
 		ids  entity.ProtocolIDs
 	}{
-		{"a uid spelling linked for a SID", entity.ProtocolIDs{linkedUID}},
-		{"a sid spelling linked for a SID", entity.ProtocolIDs{linkedSID}},
-		{"a krb spelling linked for a malformed SID", entity.ProtocolIDs{bad}},
-		{"one krb spelling twice, linked apart", entity.ProtocolIDs{krbAs("bob@AD.EXAMPLE", "S-1-5-21-1-2-3-1104"), krbAs("bob@AD.EXAMPLE", "S-1-5-21-1-2-3-1105")}},
+		{"a uid spelling linked for a SID", entity.ProtocolIDs{linkedUID, freshSID()}},
+		{"a sid spelling linked for a SID", entity.ProtocolIDs{uid("1002"), linkedSID}},
+		{"a krb spelling linked for a malformed SID", entity.ProtocolIDs{cut}},
+		{"a krb spelling linked for Everyone", entity.ProtocolIDs{krbAs("carol@AD.EXAMPLE", "S-1-1-0")}},
+		{"a krb spelling linked for a builtin group", entity.ProtocolIDs{krbAs("dave@AD.EXAMPLE", "S-1-5-32-544")}},
 	} {
 		v := user("bob-"+strings.ReplaceAll(c.name, " ", "-"), c.ids...)
 		if _, err := cp.PutUser(ctx, v, 0, entity.Alloc{}); !isCode(err, merrs.ErrInvalidArgument) {
 			t.Errorf("%s: PutUser = %v, want %v", c.name, err, merrs.ErrInvalidArgument)
+		}
+		v.IDs = slices.Clone(c.ids)
+		for i := range v.IDs {
+			v.IDs[i].Linked = ""
+		}
+		if _, err := cp.PutUser(ctx, v, 0, entity.Alloc{}); err != nil {
+			t.Errorf("%s, unlinked: PutUser = %v, want it put", c.name, err)
 		}
 	}
 }

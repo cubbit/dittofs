@@ -33,11 +33,11 @@ func sidBytes(s string) string {
 	return b.String()
 }
 
-// krbRow is a decoded protocol-ID row: its principal and its spelling,
-// Linked as the row holds it.
+// krbRow is a decoded protocol-ID row: its principal and the SID it is
+// linked for.
 type krbRow struct {
-	P  entity.Principal
-	ID entity.ProtocolID
+	P      entity.Principal
+	Linked string
 }
 
 // codecCase is one entity, its encoding pinned, and a decoder of it.
@@ -67,7 +67,7 @@ func codecCases() []codecCase {
 		Deleted:    true,
 	}
 	gidID := entity.ProtocolID{Scheme: entity.SchemeGID, Value: "100"}
-	linkedKrb := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "a@R", Linked: sidBytes("S-1-5-21-1104")}
+	linkedKrb := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "a@R", Linked: sidBytes("S-1-5-21-1-2-3-1104")}
 	unlinkedKrb := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "a@R"}
 	linkedUser := entity.User{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: pid}, Name: "b", IDs: entity.ProtocolIDs{linkedKrb}}
 	grp := entity.Group{Principal: group, Name: "staff", Generation: 2, Position: 12, Deleted: true}
@@ -132,24 +132,24 @@ func codecCases() []codecCase {
 		{"id", [16]byte(sid), encodeID(sid), "01" + "cc000000000000000000000000000003",
 			func(b []byte) (any, error) { return decodeID(b) }},
 		{"principal", group, encodeProtocolRow(group, gidID), "01" + "02" + "bb000000000000000000000000000002",
-			func(b []byte) (any, error) { p, _, err := decodeProtocolRow(gidID, b); return p, err }},
+			func(b []byte) (any, error) { p, _, err := decodeProtocolRow(gidID.Scheme, b); return p, err }},
 		{"user linked", linkedUser, encodeUser(linkedUser),
-			"01" + "01" + "0162" + "01" + "04" + "03614052" + "10" + "0102000000000005" + "15000000" + "50040000" +
+			"01" + "01" + "0162" + "01" + "04" + "03614052" + "1c" + "0105000000000005" + "15000000" + "01000000" + "02000000" + "03000000" + "50040000" +
 				"00" + "00000000000000000000000000000000" + "00" + "00000000000000000000000000000000" +
 				"00000000000000000000000000000000" + "00" + "00" +
 				"0000000000000000" + "00" + "0000000000000000" + "0000000000000000" + "00",
 			func(b []byte) (any, error) { return decodeUser(pid, b) }},
-		{"krb row", krbRow{alice, linkedKrb}, encodeProtocolRow(alice, linkedKrb),
-			"01" + "01" + "aa000000000000000000000000000001" + "10" + "0102000000000005" + "15000000" + "50040000",
+		{"krb row", krbRow{alice, linkedKrb.Linked}, encodeProtocolRow(alice, linkedKrb),
+			"01" + "01" + "aa000000000000000000000000000001" + "1c" + "0105000000000005" + "15000000" + "01000000" + "02000000" + "03000000" + "50040000",
 			func(b []byte) (any, error) {
-				p, id, err := decodeProtocolRow(entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "a@R"}, b)
-				return krbRow{p, id}, err
+				p, linked, err := decodeProtocolRow(entity.SchemeKerberos, b)
+				return krbRow{p, linked}, err
 			}},
-		{"krb row unlinked", krbRow{alice, unlinkedKrb}, encodeProtocolRow(alice, unlinkedKrb),
+		{"krb row unlinked", krbRow{alice, ""}, encodeProtocolRow(alice, unlinkedKrb),
 			"01" + "01" + "aa000000000000000000000000000001" + "00",
 			func(b []byte) (any, error) {
-				p, id, err := decodeProtocolRow(unlinkedKrb, b)
-				return krbRow{p, id}, err
+				p, linked, err := decodeProtocolRow(unlinkedKrb.Scheme, b)
+				return krbRow{p, linked}, err
 			}},
 		{"share", share, encodeShareInfo(share),
 			"01" + "0650686f746f73" + "072f70686f746f73" + "00000000000000000000000000000007" +
@@ -280,16 +280,31 @@ func TestUserUnknownRole(t *testing.T) {
 	}
 }
 
-// A krb spelling stored with a SID cut short, or of a revision no SID has,
-// is refused in the record and in the row, never read as some other link.
-func TestKrbLinkedMalformed(t *testing.T) {
-	good := sidBytes("S-1-5-21-1104")
-	for name, linked := range map[string]string{"cut short": good[:len(good)-1], "revision 0": "\x00" + good[1:]} {
+// A krb spelling stored with a SID that is not a domain account's, malformed
+// or well formed, is refused in the record and in the row, never read as
+// some other link.
+func TestKrbLinkedRefused(t *testing.T) {
+	good := sidBytes("S-1-5-21-1-2-3-1104")
+	var sixteen bytes.Buffer // S-1-5-21-1-2-3-1104 and eleven more sub-authorities, past the fifteen a SID holds
+	s := authsid.ParseSIDMust("S-1-5-21-1-2-3-1104-1-2-3-4-5-6-7-8-9-10-11")
+	authsid.EncodeSID(&sixteen, s)
+	for name, linked := range map[string]string{
+		"cut short":               good[:len(good)-1],
+		"a byte past it":          good + "\x00",
+		"revision 0":              "\x00" + good[1:],
+		"16 sub-authorities":      sixteen.String(),
+		"4 sub-authorities":       sidBytes("S-1-5-21-1-2-3"),
+		"6 sub-authorities":       sidBytes("S-1-5-21-1-2-3-4-1104"),
+		"authority 1":             sidBytes("S-1-1-21-1-2-3-1104"),
+		"not 21":                  sidBytes("S-1-5-22-1-2-3-1104"),
+		"Everyone":                sidBytes("S-1-1-0"),
+		"BUILTIN\\Administrators": sidBytes("S-1-5-32-544"),
+	} {
 		id := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "a@R", Linked: linked}
 		if _, err := decodeUser(pid, encodeUser(entity.User{Name: "b", IDs: entity.ProtocolIDs{id}})); !errors.Is(err, errMalformed) {
 			t.Errorf("%s: user record decode = %v, want %v", name, err, errMalformed)
 		}
-		if _, _, err := decodeProtocolRow(id, encodeProtocolRow(group, id)); !errors.Is(err, errMalformed) {
+		if _, _, err := decodeProtocolRow(id.Scheme, encodeProtocolRow(group, id)); !errors.Is(err, errMalformed) {
 			t.Errorf("%s: krb row decode = %v, want %v", name, err, errMalformed)
 		}
 	}

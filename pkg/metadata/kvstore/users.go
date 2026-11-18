@@ -250,8 +250,8 @@ func expected(stored, expect uint64) error {
 
 // validIDs refuses a scheme the principal's kind may not carry, an empty
 // spelling, a UID or GID not in canonical decimal or reserved to root (0) or
-// anonymous (65534), a linked SID on any spelling but krb or one not well
-// formed, and a second ID of one scheme: a principal has at most one
+// anonymous (65534), a linked SID on any spelling but krb or one that is
+// not a domain account's, and a second ID of one scheme: a principal has at most one
 // spelling per scheme, so fileSpellings' check that a scheme is held and
 // keepSID's that the old SID is kept each pin the one spelling.
 func validIDs(ids entity.ProtocolIDs, schemes ...entity.ProtocolScheme) error {
@@ -259,8 +259,8 @@ func validIDs(ids entity.ProtocolIDs, schemes ...entity.ProtocolScheme) error {
 		if !slices.Contains(schemes, id.Scheme) || id.Value == "" {
 			return merrs.NewInvalidArgumentError("protocol ID " + id.Scheme.String() + " not valid here")
 		}
-		if id.Linked != "" && (id.Scheme != entity.SchemeKerberos || !wellFormedSID(id.Linked)) {
-			return merrs.NewInvalidArgumentError("protocol ID " + id.Scheme.String() + " " + id.Value + ": a linked SID is a well-formed SID on a krb spelling")
+		if id.Linked != "" && (id.Scheme != entity.SchemeKerberos || !linkedSID(id.Linked)) {
+			return merrs.NewInvalidArgumentError("protocol ID " + id.Scheme.String() + ": a linked SID is a domain account SID on a krb spelling")
 		}
 		if id.Scheme == entity.SchemeUID || id.Scheme == entity.SchemeGID {
 			n, err := strconv.ParseUint(id.Value, 10, 32)
@@ -310,7 +310,7 @@ func reindex(tx kv.Txn, p entity.Principal, existed bool, oldName, newName strin
 		switch {
 		case i < 0:
 			decode := func(b []byte) (entity.Principal, error) {
-				holder, _, err := decodeProtocolRow(id, b)
+				holder, _, err := decodeProtocolRow(id.Scheme, b)
 				return holder, err
 			}
 			if err := claim(tx, protocolKey(id), id.Scheme.String()+" "+id.Value, p, encodeProtocolRow(p, id), decode); err != nil {
