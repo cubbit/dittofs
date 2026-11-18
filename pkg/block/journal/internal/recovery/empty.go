@@ -100,14 +100,14 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 		default:
 			// decision: an Active row is never a retirement's candidate,
 			// whatever its bytes hold — the retirement path itself refuses
-			// the pair, and this step widens it by nothing: a re-adopted
-			// spare the spares phase took stands in the headroom until the
-			// pool wiring reads it; a take withheld over a predecessor the
-			// open ends stands until that predecessor is unlinked with a
-			// synced unlink; a live row holds the records a stream still
-			// appends beside. The pool's own spares are not among the
-			// ledger's rows at all, so a spare the retirer recycled during
-			// this very step — the reserve's refill — is not taken either.
+			// the pair, and this step widens it by nothing: a take withheld
+			// over a predecessor the open ends stands until that predecessor
+			// is unlinked with a synced unlink; a live row holds the records
+			// a stream still appends beside. The pool's own spares are not
+			// among the ledger's rows at all — the spares the spares phase
+			// re-adopted among them, which the pool adopts before it starts
+			// — so a spare the retirer recycled during this very step, the
+			// reserve's refill, is not taken either.
 			continue
 		}
 		if deps.Liveness.Held(row.ID) {

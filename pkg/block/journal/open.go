@@ -512,10 +512,14 @@ func holdDeferredHolders(c *datapath.Core, dir string, id core.JournalID) error 
 // the one mapping.
 func continueFrom(st recovery.State, deps datapath.Deps) (datapath.Deps, datapath.State) {
 	deps.LastSegment = st.Attached.MaxID
+	spares := make([]datapath.AdoptedSpare, len(st.Spares.Adopted))
+	for i, a := range st.Spares.Adopted {
+		spares[i] = datapath.AdoptedSpare{ID: a.ID, Class: a.Class}
+	}
 	return deps, datapath.State{
 		Index: st.Rebuilt.Index, Counters: st.Rebuilt.Counters, Set: st.Assembled.Set,
 		Open: &datapath.OpenState{Live: st.Assembled.Live, Forgets: st.Assembled.Forgets,
-			Unsynced: st.Assembled.Unsynced, Dirty: dirtySeed(st.Rebuilt.Index)},
+			Unsynced: st.Assembled.Unsynced, Dirty: dirtySeed(st.Rebuilt.Index), Spares: spares},
 	}
 }
 

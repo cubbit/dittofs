@@ -190,8 +190,8 @@ func TestRetirementNeverTakesSparesOrDeferred(t *testing.T) {
 	if !slices.Contains(r.listing(), format.SegmentName(3)) {
 		t.Errorf("the re-adopted spare's file is gone from the directory, want a spare never a retirement's")
 	}
-	if got, err := st.Assembled.Set.State(3); err != nil || got != segment.Active {
-		t.Errorf("the re-adopted spare's row got %v (%v), want Active and standing", got, err)
+	if _, err := st.Assembled.Set.State(3); !errors.Is(err, segment.ErrNotInSet) {
+		t.Errorf("the re-adopted spare's row answered %v, want ErrNotInSet: a re-adopted spare is the pool's, never a ledger row a retirement reads", err)
 	}
 	if !slices.Contains(r.listing(), format.SegmentName(4)) {
 		t.Errorf("the segment holding the deferred loss's dropped record is gone from the directory, want it standing until the copy that retires it lands")

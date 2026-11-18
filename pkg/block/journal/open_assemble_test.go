@@ -792,7 +792,7 @@ func TestReopenAssembled_EqualityOfShareFigures(t *testing.T) {
 // equality: the reopened journal accounts the crash's whole footprint — the
 // same bytes the running journal's own figure named, its pool's spare files
 // and the sealed segments alike, every empty spare-origin segment among the
-// set's entries at the cap it takes on disk — less what its open's
+// pool's spares at the cap it takes on disk — less what its open's
 // cut-and-seal phase freed of the crash's torn tails, and the only storage
 // its figure names over that is what its own spare pool allocated after the
 // reopen: whole fresh spares, made above every file the crash kept, both
@@ -804,8 +804,8 @@ func TestReopenAssembled_EqualityOfUsedBytes(t *testing.T) {
 		t.Fatalf("Stats().UsedBytes after the reopen = %d, want %d: the crash's whole footprint (%d, the running journal's own figure) less the cut-and-seal's freed bytes (%d), plus the fresh spares its own pool made (%d): a segment the first journal accounted is not the second's or the seed changed its size",
 			after.usedBytes, want, before.usedBytes, after.cutFreed, after.freshSegBytes)
 	}
-	if after.segments != before.segFiles {
-		t.Fatalf("Stats().Segments after the reopen = %d, want %d: one ledger entry per segment file the crash left, empty spare-origin ones among the loaded segments", after.segments, before.segFiles)
+	if after.segments != before.segments {
+		t.Fatalf("Stats().Segments after the reopen = %d, want the running journal's %d: the pool's files the crash left are re-adopted as spares, not loaded as segments", after.segments, before.segments)
 	}
 }
 

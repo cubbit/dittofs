@@ -104,8 +104,10 @@ func runAssemble(_ context.Context, deps Deps, _ *reader, st *State, _ core.Jour
 
 	// The seed: every segment the rebuild scanned owns an entry, for every
 	// scanned segment is a segment of the journal, records or not, and its
-	// bytes are accounted until it is unlinked. The ids ascend, so a
-	// refusal names the lowest segment the scan could not adopt.
+	// bytes are accounted until it is unlinked — except a spare the spares
+	// phase re-adopted, which the pool adopts into its class and accounts
+	// there. The ids ascend, so a refusal names the lowest segment the scan
+	// could not adopt.
 	kinds := make(map[core.SegmentID]fateKind, len(st.Tails.Fates))
 	for _, f := range st.Tails.Fates {
 		kinds[f.ID] = f.Kind
@@ -113,8 +115,15 @@ func runAssemble(_ context.Context, deps Deps, _ *reader, st *State, _ core.Jour
 	set := segment.NewSet(deps.SegmentCap, deps.Log)
 	scans := slices.Clone(st.Rebuilt.Scans)
 	slices.SortFunc(scans, func(a, b segmentScan) int { return cmp.Compare(a.ID, b.ID) })
+	adopted := make(map[core.SegmentID]bool, len(st.Spares.Adopted))
+	for _, a := range st.Spares.Adopted {
+		adopted[a.ID] = true
+	}
 	for i := range scans {
 		sc := &scans[i]
+		if adopted[sc.ID] {
+			continue // a re-adopted spare is the pool's, accounted when the pool adopts it
+		}
 		state, size, full := segment.Active, deps.SegmentCap, false
 		switch {
 		case kinds[sc.ID] == fateEnded, kinds[sc.ID] == fateTornTail:

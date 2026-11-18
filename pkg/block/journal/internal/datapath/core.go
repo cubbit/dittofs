@@ -107,6 +107,16 @@ type OpenState struct {
 	// from, so a file nothing seeded answers unlisted until a write of its
 	// own lands.
 	Dirty []index.HeldDelta
+	// Spares holds the spares the open re-adopted, each with the class the
+	// pool draws it from: the pool adopts them before it starts, so its
+	// refill counts them and makes no spare in their place.
+	Spares []AdoptedSpare
+}
+
+// AdoptedSpare is one spare the open re-adopted and the class it fills.
+type AdoptedSpare struct {
+	ID    core.SegmentID
+	Class segment.Class
 }
 
 // coreOptions are the test-only adjustments newCore applies before the layers
@@ -564,6 +574,18 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	if c.rec != nil {
 		c.pool.SetRecorder(c.rec)
 		c.cache.SetRecorder(c.rec)
+	}
+	// The re-adopted spares reach the pool before Start, the order Adopt
+	// holds every spare to: the open's directory sync has already proven
+	// their names. A refusal is an id the set already owns, which no open
+	// hands over; nothing has started yet, so the open fails with no worker
+	// to stop.
+	if state.Open != nil {
+		for _, a := range state.Open.Spares {
+			if err := c.pool.Adopt(a.ID, a.Class); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// The admission every appending call asks once: its injected facts are
