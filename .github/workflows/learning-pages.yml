@@ -1,0 +1,46 @@
+# Publishes the learning decks (docs/guide/learning/learn-dittofs) to the
+# dittofs-learning bucket on Cubbit DS3 on every push to develop that changes
+# them, or by hand. The bucket mirrors the directory: cubbit-pages deletes
+# objects the directory no longer has. Every object is uploaded public-read,
+# since Cubbit has no bucket policies; pages are reached at
+# https://dittofs-learning.s3.cubbit.eu/index.html.
+name: Learning pages
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'docs/guide/learning/learn-dittofs/**'
+      - '.github/workflows/learning-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A deploy is a mirror, so one that is cut short leaves the bucket half
+# updated: let a running deploy finish and queue the next one behind it.
+concurrency:
+  group: learning-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Deploy to Cubbit DS3
+        id: deploy
+        uses: marcodellemarche/cubbit-pages@6f0f9959634459e02115835c2b465d03d2f75202 # v1.1.0
+        with:
+          source-dir: docs/guide/learning/learn-dittofs
+          bucket: dittofs-learning
+          access-key: ${{ secrets.DITTOFSLEARNING_ACCESS_KEY_ID }}
+          secret-key: ${{ secrets.DITTOFSLEARNING_SECRET_ACCESS_KEY }}
+          version: v1.1.0
+
+      - name: Summary
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: echo "Published to ${URL}" >> "$GITHUB_STEP_SUMMARY"
