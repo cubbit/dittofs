@@ -45,10 +45,13 @@ type Deps struct {
 	// Identity resolves each admitted call's Identity to its Caller, Auth
 	// verifies SignIn's rounds, and Names answers Spell and Find.
 	//
-	// decision: nothing reads the three yet: admission still resolves on its
-	// own, and SignIn, Spell and Find answer as they did. They are declared
-	// now so the identity server's consumers are fixed before its bodies are
-	// written; each is read once the call it serves is routed through it.
+	// decision: Names alone is read; Identity and Auth are not yet: admission
+	// still resolves on its own, and SignIn answers as it did. They are
+	// declared now so the identity server's consumers are fixed before its
+	// bodies are written; each is read once the call it serves is routed
+	// through it. A nil Names leaves Spell and Find refused, failing closed,
+	// until the node composes identity; withdraw that once New refuses a Deps
+	// without it.
 	Identity identity.Resolver
 	Auth     identity.Authenticator
 	Names    identity.Identities
@@ -144,6 +147,7 @@ type Filesystem struct {
 	log    *slog.Logger
 	authz  authz.Authz
 	events vfs.Events
+	names  identity.Identities // nil: Spell and Find answer errUnsigned
 	quota  *quota.Quotas
 	locks  lockorder.Locks
 	pseudo atomic.Pointer[pseudofs.Tree] // the pseudo-filesystem last built
@@ -205,6 +209,7 @@ func New(d Deps) (*Filesystem, error) {
 		served:    map[entity.ShareID]bool{},
 		events:    d.Events,
 		running:   d.Running,
+		names:     d.Names,
 		marks:     openMark{d.Open.Opens()},
 		inflight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "dittofs", Name: "vfs_inflight_calls",
