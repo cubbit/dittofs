@@ -404,8 +404,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs version and sequence watermarks rebuilt above every one on disk, and recovery run in a shuffled listing order.'
-  issue: '#3379'
+  reason: 'The journal opens and the row gets to its first idle seal, then stops: it waits for a segment to be sealed once idle, and the journal reports no segment, because Inspect().Segments() answers nil until the per-segment accounting lands. Every caller of the row helpers sealNow and segmentInfo waits on the same accounting.'
+  issue: '#4044'
   message: 'segment 77 was not sealed once idle within 2s'
 
 - test: TestRFC1C_ReleaseRecordLost
