@@ -26,7 +26,8 @@ func (protoCancel) Is(target error) bool { return target == core.ErrCancelled }
 
 // NewOpTable refuses a table with two rows under one code, a row whose
 // versions run backwards, or a row of its error table that holds when the
-// table does not, each naming the row; a table that holds takes the row.
+// table does not or that holds and sends no reply, each naming the row; a
+// table that holds takes a row that holds and replies.
 // A table that holds also answers ErrCancelled for every operation and
 // version: one with no row for it naming neither operations nor versions is
 // refused, and so is one with a row for it, whatever it names, that holds,
@@ -63,6 +64,7 @@ func TestNewOpTableChecksItsRows(t *testing.T) {
 		{"versions backwards", plain, false, []*core.Op{{Code: 7, Name: "Read", Versions: core.Range{First: 2, Last: 1}}}, "Read"},
 		{"a hold where the table does not hold", holding, false, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, vfs.ErrDelay.Error()},
 		{"a hold where the table holds, an ErrDelay row beside the typed DelayResources row", holding, true, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, ""},
+		{"a table that holds whose row holds and sends no reply", table(delay, cancel, spent, core.ErrorRow{Err: core.ErrDraining, NoReply: true, Hold: hold}), true, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, "holds and sends no reply"},
 		{"a table that holds with no ErrCancelled row", table(delay, spent), true, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, missing},
 		{"a table that holds whose ErrCancelled row names an operation", table(core.ErrorRow{Err: core.ErrCancelled, Ops: []uint32{7}, Status: cancelled}, spent), true, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, missing},
 		{"a table that holds whose ErrCancelled row names versions", table(core.ErrorRow{Err: core.ErrCancelled, Versions: &one, Status: cancelled}, spent), true, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, missing},
