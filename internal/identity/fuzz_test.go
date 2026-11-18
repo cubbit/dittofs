@@ -37,7 +37,9 @@ func apReqSeeds() [][]byte {
 // FuzzAPReq holds the AP-REQ decode to its invariants: it never panics; it
 // allocates at most a constant times its input's length; a refusal is
 // ErrInvalid; and what it decodes, marshalled again with gokrb5, decodes to
-// the same value.
+// the same value. It reaches only the outer AP-REQ decode: the ticket's
+// encrypted part and the authenticator decode after decryption, which fuzzed
+// bytes do not pass.
 func FuzzAPReq(f *testing.F) {
 	for _, s := range apReqSeeds() {
 		f.Add(s)

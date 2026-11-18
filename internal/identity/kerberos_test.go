@@ -10,6 +10,7 @@ import (
 
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
+	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/iana/keyusage"
 	"github.com/jcmturner/gokrb5/v8/messages"
 
@@ -45,6 +46,10 @@ func testRealmAndState(t *testing.T) (*identitytest.Realm, *State) {
 	}
 	return r, st
 }
+
+// zeroTransport stands, in TestVerifyAPReq's rows, for the zero Transport an
+// adapter that forgets to set it passes, since a row's own zero means SMB.
+const zeroTransport identity.Transport = 255
 
 // Every check refuses its own case, and the ticket each one refuses passes
 // once its one field is moved back within bounds.
@@ -86,7 +91,10 @@ func TestVerifyAPReq(t *testing.T) {
 		{name: "addresses: none", opts: cifs(identitytest.TicketOpts{}), client: addr2},
 		{name: "host/ over SMB from another address", opts: identitytest.TicketOpts{Service: "host/nas.test", Now: t0, Addresses: []netip.Addr{addr1}}, svc: identity.ServiceHost, client: addr2, want: vfserr.ErrLogonFailure},
 		{name: "host/ over NFS from another address", opts: identitytest.TicketOpts{Service: "host/nas.test", Now: t0, Addresses: []netip.Addr{addr1}}, svc: identity.ServiceHost, tr: identity.TransportNFS, client: addr2},
-		{name: "no transport", opts: cifs(identitytest.TicketOpts{Addresses: []netip.Addr{addr1}}), tr: 255, client: addr2, want: vfserr.ErrInvalid},
+		{name: "marked invalid", opts: cifs(identitytest.TicketOpts{Flags: []int{flags.Invalid}}), want: vfserr.ErrLogonFailure},
+		{name: "postdated, not marked invalid", opts: cifs(identitytest.TicketOpts{Flags: []int{flags.PostDated}})},
+		{name: "no transport", opts: cifs(identitytest.TicketOpts{Addresses: []netip.Addr{addr1}}), tr: zeroTransport, client: addr2, want: vfserr.ErrInvalid},
+		{name: "an unknown transport", opts: cifs(identitytest.TicketOpts{Addresses: []netip.Addr{addr1}}), tr: identity.TransportSMB + 1, client: addr2, want: vfserr.ErrInvalid},
 		{name: "ticket under RC4", opts: cifs(identitytest.TicketOpts{Etype: etypeID.RC4_HMAC}), want: vfserr.ErrLogonFailure},
 		{name: "ticket under DES", opts: cifs(identitytest.TicketOpts{Etype: etypeID.DES3_CBC_SHA1_KD}), want: vfserr.ErrLogonFailure},
 		{name: "RC4 session key", opts: cifs(identitytest.TicketOpts{Session: identitytest.NewKey(etypeID.RC4_HMAC)}), want: vfserr.ErrLogonFailure},
@@ -106,7 +114,7 @@ func TestVerifyAPReq(t *testing.T) {
 			switch tr {
 			case 0:
 				tr = identity.TransportSMB
-			case 255:
+			case zeroTransport:
 				tr = 0
 			}
 			if !client.IsValid() {

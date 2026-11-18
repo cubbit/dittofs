@@ -100,6 +100,7 @@ type TicketOpts struct {
 	Cusec      int       // the authenticator's microseconds
 	Addresses  []netip.Addr
 	NetBIOS    string // a NetBIOS address the ticket lists after Addresses; none
+	Flags      []int  // the ticket flags set, as gokrb5's iana/flags numbers them; none
 }
 
 // Ticket is an AP-REQ carrying a ticket under o, its authenticator encrypted
@@ -133,8 +134,12 @@ func (r *Realm) Ticket(o TicketOpts) []byte {
 	if o.NetBIOS != "" {
 		caddr = append(caddr, types.HostAddress{AddrType: addrtype.NetBios, Address: []byte(o.NetBIOS)})
 	}
+	tf := types.NewKrbFlags()
+	for _, f := range o.Flags {
+		types.SetFlag(&tf, f)
+	}
 	etp := messages.EncTicketPart{
-		Flags:     types.NewKrbFlags(),
+		Flags:     tf,
 		Key:       o.Session,
 		CRealm:    r.Name,
 		CName:     principal(o.Client),

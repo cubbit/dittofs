@@ -7,6 +7,7 @@ import (
 
 	"github.com/jcmturner/gokrb5/v8/iana/addrtype"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
+	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/types"
 
@@ -115,6 +116,11 @@ func verifyAPReq(st *State, b []byte, svc identity.Service, tr identity.Transpor
 	}
 	if auth.CRealm != enc.CRealm || !auth.CName.Equal(enc.CName) {
 		return ticket{}, logonFailure("authenticator for another client")
+	}
+	// RFC 4120 §2.2.4: a ticket marked invalid, a postdated one not yet
+	// validated at the KDC, must not be accepted.
+	if types.IsFlagSet(&enc.Flags, flags.Invalid) {
+		return ticket{}, logonFailure("ticket marked invalid")
 	}
 	start := enc.StartTime
 	if start.IsZero() {
