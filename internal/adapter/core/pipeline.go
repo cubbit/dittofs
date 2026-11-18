@@ -36,9 +36,9 @@ import (
 type shared struct {
 	fam          [vecs]family
 	wire         histFamily
-	holdPool     adder                      // no protocol label
-	tables       map[*OpTable]*tableSeries  // filled at NewServer, then only read
-	panics       map[[2]string]*lineLimiter // by protocol and operation, filled with tables
+	holdPool     adder                     // no protocol label
+	tables       map[*OpTable]*tableSeries // filled at NewServer, then only read
+	panics       map[[2]string]*frameLines // by protocol and operation, filled with tables
 	mu           sync.Mutex
 	labels       atomic.Pointer[map[string]*labelSeries]
 	closes       map[reason]*lineLimiter     // a close at accept's line, by reason, under mu
@@ -63,7 +63,7 @@ type shared struct {
 // discards, d.Tracer, d.TraceIDs and d.VFS; held requests past a connection's
 // floor of 256 requests and 32 MiB go to d.Budgets' hold pool (§4.6).
 func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), traceIDs: d.TraceIDs, reply: reply, tables: map[*OpTable]*tableSeries{}, panics: map[[2]string]*lineLimiter{}, closes: map[reason]*lineLimiter{}, addressLines: map[netip.Addr]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), traceIDs: d.TraceIDs, reply: reply, tables: map[*OpTable]*tableSeries{}, panics: map[[2]string]*frameLines{}, closes: map[reason]*lineLimiter{}, addressLines: map[netip.Addr]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
 	if d.Budgets != nil {
 		sh.hold = d.Budgets.Hold
 	}
@@ -850,7 +850,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 			pd.reply = reply
 		}
 		err = ts.chains[op.Code](ctx, r)
-		tr.mark = r.callEnd
+		p.called(tr, r)
 	}
 	if pd != nil {
 		if p.parked(pd, release) {
@@ -881,7 +881,6 @@ func (p *pipeline) reserve(tr *track, a answerer, inv Invocation, h Header, r *R
 		return nil, err
 	}
 	p.lapAttempt(tr, stageReplyWait)
-	r.resolveStart = tr.mark
 	return reply, nil
 }
 
@@ -1047,6 +1046,19 @@ func (p *pipeline) lap(tr *track, st stage) {
 	if d := p.since(tr); p.times[st] {
 		tr.series().observe(st, d)
 	}
+}
+
+// called takes the marks the metrics hinge left on r once a request alone's
+// call returns: resolve_ids ends at the call's start, added to the request's
+// sums in a table that holds, as lapAttempt does, and map_error is timed from
+// the call's end (§10.1).
+func (p *pipeline) called(tr *track, r *Request) {
+	if d := r.callStart.Sub(tr.mark); tr.req.holds {
+		tr.req.runs.add(stageResolveIDs, d)
+	} else {
+		tr.series().observe(stageResolveIDs, d)
+	}
+	tr.mark = r.callEnd
 }
 
 // since ends the request's run of the stage running now: the time since its

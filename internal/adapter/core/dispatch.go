@@ -327,16 +327,14 @@ type Request struct {
 	State any
 
 	// What the pipeline keeps with the request for its row's chain: the
-	// handler the chain ends in, and the stage clock's times around the
-	// call, resolve_ids' start, a compound member's call's start, which ends
-	// its resolve_ids, and the call's end, from which map_error is timed
-	// (§10.1).
-	invoke       Call
-	resolveStart time.Time
-	callStart    time.Time
-	callEnd      time.Time
-	trace        trace.TraceID // every log line for the request carries it
-	pd           *pending      // its record in a table that holds, which Park parks; nil elsewhere
+	// handler the chain ends in, and the call's start, which ends
+	// resolve_ids, and its end, from which map_error is timed, both marked
+	// by the chain's metrics hinge (§10.1).
+	invoke    Call
+	callStart time.Time
+	callEnd   time.Time
+	trace     trace.TraceID // every log line for the request carries it
+	pd        *pending      // its record in a table that holds, which Park parks; nil elsewhere
 }
 
 // Park holds the request until done: core sends the interim, and answers

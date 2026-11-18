@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -31,7 +32,7 @@ type Middleware func(next Call) Call
 // the metrics hinge, and the deadline, which the handler's context derives
 // from.
 func (sh *shared) chain(op *Op, ts *tableSeries) Call {
-	order := []Middleware{sh.recovery(op, ts), sh.trace(op, ts), sh.metrics(ts), sh.deadline}
+	order := []Middleware{sh.recovery(op, ts), sh.trace(op, ts), sh.metrics, sh.deadline}
 	call := Call(invoke)
 	for i := len(order) - 1; i >= 0; i-- {
 		call = order[i](call)
@@ -86,26 +87,16 @@ func (sh *shared) trace(op *Op, ts *tableSeries) Middleware {
 	}
 }
 
-// metrics is the stage clock's hinge (§10.1): as the call starts it
-// observes resolve_ids, from the start the request keeps, or, in a table that
-// holds, adds it to the request's sums, as lapAttempt does, or, for a
-// compound's member, whose runner adds resolve_ids to the compound's sum,
-// marks the call's start; as the call returns or panics it marks the call's
-// end, from which the pipeline times map_error. The call itself is the
-// service's to time.
-func (sh *shared) metrics(ts *tableSeries) Middleware {
-	return func(next Call) Call {
-		return func(ctx context.Context, r *Request) error {
-			if now := sh.clock.Now(); ts.member {
-				r.callStart = now
-			} else if rc, ok := ctx.Value(attemptKey{}).(*requestCtx); ok && rc.holds {
-				rc.runs.add(stageResolveIDs, now.Sub(r.resolveStart))
-			} else {
-				ts.observe(stageResolveIDs, now.Sub(r.resolveStart))
-			}
-			defer func() { r.callEnd = sh.clock.Now() }()
-			return next(ctx, r)
-		}
+// metrics is the stage clock's hinge (§10.1): it marks the call's start,
+// which ends resolve_ids, and, as the call returns or panics, the call's
+// end, from which map_error is timed. It observes nothing: the pipeline
+// times and observes every stage, and the call itself is the service's to
+// time.
+func (sh *shared) metrics(next Call) Call {
+	return func(ctx context.Context, r *Request) error {
+		r.callStart = sh.clock.Now()
+		defer func() { r.callEnd = sh.clock.Now() }()
+		return next(ctx, r)
 	}
 }
 
@@ -199,18 +190,15 @@ var errPanicked = errors.New("core: handler panicked")
 
 // recovery turns op's panic into errPanicked, counted under op in ts and
 // logged at error with the operation, the panic value's type and the stack,
-// a noisy subject's line: at most once a minute, with the count suppressed
-// since the last line, so a client that can make a handler panic gets no
-// stack line per request (RFC 20 §4.2, RFC 25 §5.2). The panic counter
+// a noisy subject's line: at most once a minute per operation and the frame
+// that panicked, with the count suppressed since that frame's last line, so
+// a client that can make a handler panic gets no stack line per request, and
+// one frame's panic does not hide another's (RFC 20 §4.2, RFC 25 §5.2). The
+// stack is captured only for a line that is written. The panic counter
 // counts every one. The value is the handler's own text and may hold a name a
 // user chose, which RFC 25 §5.4 keeps below Info, so it is logged at debug.
-//
-// ponytail: the line is keyed by operation alone, where §4.2 also keys it by
-// the frame that panicked, so one frame's panic holds back another's line
-// within the minute. Add the frame to the key, read with a bounded
-// runtime.Callers.
 func (sh *shared) recovery(op *Op, ts *tableSeries) Middleware {
-	line := ts.panicLines[op.Code]
+	lines := ts.panicLines[op.Code]
 	return func(next Call) Call {
 		return func(ctx context.Context, r *Request) (err error) {
 			defer func() {
@@ -220,7 +208,7 @@ func (sh *shared) recovery(op *Op, ts *tableSeries) Middleware {
 						keys = append(keys, "span_id", id)
 					}
 					keys = slices.Clip(keys) // each line appends its own to a copy
-					if ok, suppressed := line.take(sh.clock.Now()); ok {
+					if ok, suppressed := lines.at(panicFrame()).take(sh.clock.Now()); ok {
 						sh.log.ErrorContext(ctx, "handler panicked", append(keys, "panic_type", fmt.Sprintf("%T", p), "suppressed", suppressed, "stack", string(debug.Stack()))...)
 					}
 					sh.log.DebugContext(ctx, "handler panicked", append(keys, "panic", p)...)
@@ -236,6 +224,52 @@ func (sh *shared) recovery(op *Op, ts *tableSeries) Middleware {
 // panicLineEvery is how often an operation's panic writes its error line
 // (RFC 25 §5.2).
 const panicLineEvery = time.Minute
+
+// frame is where a panic was raised: its function and line.
+//
+// decision: a frame is its function and line, as a stack names it, so a
+// panic raised at one place in the code is one frame wherever the compiler
+// inlined that place; a program counter would make each inlined copy a frame
+// of its own. Overturned if two panics on one line must write apart.
+type frame struct {
+	function string
+	line     int
+}
+
+// panicFrames bounds the frames panicFrame reads past recovery's deferred
+// call: runtime.gopanic and the runtime's own frames between it and the
+// frame that panicked, three in all for a nil dereference or an index out of
+// range, and a library call's own, with room to spare.
+const panicFrames = 8
+
+// panicFrame is the frame that panicked, read from recovery's deferred call:
+// the first past it outside the standard library, the runtime included, so a
+// panic the runtime raises, for a nil dereference, an index out of range or
+// a nil map's write, or a library call raises, for a short buffer's read, is
+// keyed by the frame whose code raised it. It reads panicFrames frames
+// whatever the stack's depth; with none outside the standard library among
+// them it is the zero frame.
+//
+// decision: a standard-library frame is passed over, as the runtime's are,
+// since two handlers that panic in one library call, a short buffer's
+// binary.LittleEndian read above all, would otherwise share its frame, and
+// one FSCTL's panic would hide another's (RFC 20 §4.2). The standard library
+// is the import paths whose first element has no dot. Overturned if a
+// library's own frame must be the line's subject.
+func panicFrame() frame {
+	var pcs [panicFrames]uintptr
+	// Skips runtime.Callers, panicFrame and recovery's deferred call.
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(3, pcs[:])])
+	for {
+		f, more := frames.Next()
+		if path, _, ok := strings.Cut(f.Function, "/"); ok && strings.Contains(path, ".") {
+			return frame{f.Function, f.Line}
+		}
+		if !more {
+			return frame{}
+		}
+	}
+}
 
 // lineLimiter decides when a noisy subject's line is written: the first,
 // then the first a minute or more after the last, with the count of those
@@ -260,16 +294,28 @@ func (l *lineLimiter) take(now time.Time) (bool, int64) {
 	return true, n
 }
 
-// panicLine is the limiter of op's panic line under protocol p, one per
-// operation across a protocol's tables and a compound row's members, taken
-// as NewServer resolves its tables.
-func (sh *shared) panicLine(p, op string) *lineLimiter {
-	k := [2]string{p, op}
-	if l, ok := sh.panics[k]; ok {
-		return l
+// frameLines is an operation's panic lines: a lineLimiter per frame that
+// panicked, each frame a noisy subject of its own.
+//
+// decision: one per protocol label and operation, keyed as
+// adapter_handler_panics_total{protocol, op} counts a panic, so it is shared
+// across a protocol's tables and a compound row's Members; within it each
+// frame keeps its own minute and count. Overturned if a line must be keyed
+// apart from the counter.
+type frameLines struct {
+	mu     sync.Mutex
+	frames map[frame]*lineLimiter
+}
+
+// at is f's limiter, made at f's first panic.
+func (fl *frameLines) at(f frame) *lineLimiter {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	l, ok := fl.frames[f]
+	if !ok {
+		l = &lineLimiter{}
+		fl.frames[f] = l
 	}
-	l := &lineLimiter{}
-	sh.panics[k] = l
 	return l
 }
 
@@ -355,6 +401,18 @@ func (sh *shared) closeAddressLine(ls *labelSeries, addr netip.Addr, err error) 
 	sh.log.LogAttrs(context.Background(), rsnPerAddress.level(), "a connection closed at accept",
 		slog.String("reason", reasonNames[rsnPerAddress]), slog.String("protocol", ls.protocol),
 		slog.String("client", addr.String()), slog.Any("error", err), slog.Int64("suppressed", held))
+}
+
+// panicLine is op's panic lines under protocol p, taken as NewServer
+// resolves its tables.
+func (sh *shared) panicLine(p, op string) *frameLines {
+	k := [2]string{p, op}
+	if fl, ok := sh.panics[k]; ok {
+		return fl
+	}
+	fl := &frameLines{frames: map[frame]*lineLimiter{}}
+	sh.panics[k] = fl
+	return fl
 }
 
 // clockCtx is a context whose deadline is on a clock: its Deadline, Done and
