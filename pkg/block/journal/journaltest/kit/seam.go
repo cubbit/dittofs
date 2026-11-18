@@ -29,6 +29,7 @@ const (
 	OpTruncate   = "truncate"
 	OpClose      = "close"
 	OpRename     = "rename"
+	OpLink       = "link"
 	OpRemove     = "remove"
 	OpList       = "list"
 	OpSyncDir    = "sync_dir"
@@ -501,6 +502,57 @@ func (s *Seam) renameFrom(epoch uint64, oldName, newName string) error {
 		oldName:  oldName,
 		replaced: replaced},
 	)
+
+	return nil
+}
+
+// Link gives the file oldName a second name, newName, as link(2) does: it
+// fails with an error matching fs.ErrExist if newName exists, and never
+// replaces it. Like a Create, the new name is undone by a crash before the
+// next SyncDir. It is the seam's own call, outside storage.FS, for code that
+// publishes a file without replacing one.
+//
+// From the link on, the seam follows newName as a file of its own, carrying
+// the changes no Sync of oldName had covered when the link was made. A later
+// write or Sync through either name does not reach the other's record, so a
+// crash keeps the new name's data only as far as the old name was synced
+// before the link: stricter than a filesystem, where both names share the
+// file.
+func (s *Seam) Link(oldName, newName string) error {
+	s.mu.Lock()
+	epoch := s.crashes
+	s.mu.Unlock()
+
+	return s.linkFrom(epoch, oldName, newName)
+}
+
+func (s *Seam) linkFrom(epoch uint64, oldName, newName string) error {
+	defer s.call()()
+
+	if _, err := s.enter(OpLink, oldName, epoch); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+
+	n, ok := s.names[oldName]
+	if !ok {
+		return &fs.PathError{Op: "link", Path: oldName, Err: fs.ErrNotExist}
+	}
+
+	path := filepath.Join(s.dir, newName)
+	if err := os.Link(n.path, path); err != nil {
+		return err
+	}
+
+	linked := &node{
+		path:     path,
+		undo:     slices.Clone(n.undo),
+		stale:    n.stale,
+		snap:     slices.Clone(n.snap),
+		snapSize: n.snapSize,
+	}
+	s.names[newName] = linked
+	s.dirLog = append(s.dirLog, dirOp{kind: dirCreate, node: linked, name: newName})
 
 	return nil
 }

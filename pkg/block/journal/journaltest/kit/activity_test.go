@@ -59,3 +59,44 @@ func TestActivityTellsParkedCallsFromActingOnes(t *testing.T) {
 		t.Fatalf("Activity once the delayed call ended: acting = true, want false")
 	}
 }
+
+func TestActivityCountsAParkedLink(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "a")
+	syncFile(t, f)
+
+	idle, _ := s.Activity()
+
+	held := s.Hold(t, OpLink, "a")
+	linked := make(chan error, 1)
+
+	go func() {
+		linked <- s.Link("a", "b")
+	}()
+
+	<-held.Reached()
+
+	parked, acting := s.Activity()
+	if acting {
+		t.Fatalf("Activity with a Link parked at a hold: acting = true, want false")
+	}
+
+	if parked == idle {
+		t.Fatalf("Activity after a Link started: moves = %d, unchanged, want a move", parked)
+	}
+
+	held.Release()
+
+	if err := <-linked; err != nil {
+		t.Fatal(err)
+	}
+
+	if ended, acting := s.Activity(); ended == parked || acting {
+		t.Fatalf(
+			"Activity after the held Link: moves %d (was %d), acting %v; want a move, not acting",
+			ended,
+			parked,
+			acting,
+		)
+	}
+}
