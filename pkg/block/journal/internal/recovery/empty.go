@@ -237,10 +237,6 @@ type emptying struct {
 	identity core.JournalID
 	marks    []core.SyncMark
 
-	// walked holds the content records of each sealed row the standing-copy
-	// test walked, read once: the rebuild's scans keep none after their feed.
-	walked map[core.SegmentID][]index.Record
-
 	// freed holds the takes a durable unlink released, drawn front-first for
 	// the copies that follow. A freed take is the emptying's own spare alone,
 	// exactly the shape a freed successor would reach the running pool
@@ -416,23 +412,34 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 		}
 		if bytes == nil {
 			// The record failed only on this read — its header verified at
-			// the open's walk, and the whole the copy leg reads does not —
-			// with no other verifying copy: its loss record rides the copy,
-			// and the pieces it served read lost, never older bytes and
-			// never a placement the unlink takes away.
+			// the open's walk, and the whole the copy leg reads does not. A
+			// loss record is written only while no other copy verifies, so
+			// every other fed copy is read first, an ended segment's this run
+			// has not emptied yet included: the first that verifies is
+			// carried into this segment's target in the rotten one's place,
+			// and the served pieces move to the carry.
 			//
-			// decision: "no other verifying copy" rests on an ordering, not a
-			// search: the standing copy looks at sealed rows only, never at a
-			// duplicate in another ended segment or in a holder this run also
-			// empties. It holds because the index serves the greater segment
-			// of two equal-numbered copies and this run goes unheld segments
-			// first, then ascending ids, so the copy the index does not serve
-			// is handled first and the twin read reads the served one before
-			// this leg runs. Withdrawn if the index keeps another copy or the
-			// run's order changes. The ceiling beside it: when the target's id
-			// is below a rotten twin that stays held, the next open serves the
-			// twin's rotten copy again and retires the target, for the walk
-			// verifies no payload.
+			// decision: the verifying copy is carried rather than the served
+			// piece repointed to it where it sits. A sealed copy can sit
+			// below a rotten twin the index serves, and the next open would
+			// serve the twin again over a repoint, its walk verifying no
+			// payload; an ended copy carried here is one its own leg then
+			// finds served from the carry and skips. The duplicate left
+			// behind is the next open's to retire as unheld. Withdrawn when
+			// the walk verifies payloads, which makes a repoint survive a
+			// restart.
+			if other, b, found, derr := e.verifyingDuplicate(rec, id, true); derr != nil {
+				return derr
+			} else if found {
+				ins = append(ins, carriedCopy{in: copyInput{
+					Bytes: b, Segment: other.Segment, At: int64(other.Offset),
+					Seq: rec.Numbers.Seq, Version: rec.Numbers.Version,
+				}, file: rec.File, repoint: true, from: from})
+				continue
+			}
+			// No other copy verifies: the loss record rides the copy, and the
+			// pieces the record served read lost, never older bytes and never
+			// a placement the unlink takes away.
 			//
 			// decision: the record's served extents leave the index here,
 			// the same cut the data path's corrupt drop makes, for the
@@ -766,76 +773,54 @@ func (e *emptying) freedTakes(pred core.SegmentID) []core.SegmentID {
 // standingCopy answers the placement a verifying copy of rec already holds in
 // a segment the open neither ends nor saw fail: its own Ended rows are
 // excluded — each is emptied or was, and its records carry through its own
-// leg — and so is every unsealed row, whose bytes nothing proved. The copy is
-// read whole, payload included, and one that does not verify is no standing
-// copy. Such a segment stays held. A read no bounded attempt completed
-// refuses the open.
+// leg — and so is every unsealed row, whose bytes nothing proved. Such a
+// segment stays held. A read no bounded attempt completed refuses the open.
 func (e *emptying) standingCopy(rec index.Record, id core.SegmentID) (index.RecordAt, bool, error) {
-	scans := slices.Clone(e.st.Rebuilt.Scans)
-	slices.SortFunc(scans, func(a, b segmentScan) int { return cmp.Compare(a.ID, b.ID) })
-	for i := range scans {
-		sc := &scans[i]
-		if sc.ID == id {
-			continue // the ended segment's own copy is no skip: it goes with the segment
+	at, _, found, err := e.verifyingDuplicate(rec, id, false)
+	return at, found, err
+}
+
+// verifyingDuplicate answers another fed copy of rec — same file and seq,
+// outside segment id — whose whole record verifies, with its bytes, looked
+// up in the duplicates the feed collected rather than by walking the
+// segments again. A copy counts only in a Sealed row, or with endedToo in an
+// Ended row this run has not emptied yet; a row already emptied or retired
+// is out of the ledger. A failed-list record never fed, so it is never a
+// duplicate. A read no bounded attempt completed refuses the open.
+func (e *emptying) verifyingDuplicate(rec index.Record, id core.SegmentID, endedToo bool) (index.RecordAt, []byte, bool, error) {
+	for _, at := range e.st.Kinds.Duplicates[copyKey{file: rec.File, seq: rec.Numbers.Seq}] {
+		if at.Segment == id {
+			continue // the record's own copy is no other copy: it goes with the segment
 		}
 		// decision: a content duplicate in a sealed row this run also empties
 		// is a standing copy all the same: the skip repoints the served piece
 		// there, so that row's own emptying finds the record named and carries
-		// it, and one emptied first never named it and leaves the ended
+		// it, and one emptied first is out of the ledger and leaves the ended
 		// segment's copy to carry. Withdrawn if the index stops serving the
 		// repointed placement.
-		state, err := e.st.Assembled.Set.State(sc.ID)
-		if err != nil || state != segment.Sealed {
+		state, err := e.st.Assembled.Set.State(at.Segment)
+		if standing := state == segment.Sealed || endedToo && state == segment.Ended; err != nil || !standing {
 			// decision: only a sealed row's duplicate stands. An unsealed row's
 			// bytes are the cache's word until a sync the open can read proves
 			// them, and the copy this skip stands in for goes to a sealed,
 			// synced spare. Withdrawn if an active row's synced-through is
 			// read here and proves the duplicate's whole extent.
 			//
-			// decision: no test reaches this narrowing, because the index serves
-			// a verified duplicate over an ended segment's copy, so the ended
-			// record is never named and the skip is never asked for it; the
-			// aside skip below is covered.
+			// decision: no test reaches this narrowing for an active row,
+			// for no fixture holds a fed duplicate in an unsealed row the
+			// open keeps beside an emptied one; the aside skip's is covered.
 			continue
 		}
-		others, werr := e.recordsOf(sc.ID)
-		if werr != nil {
-			return index.RecordAt{}, false, werr
+		b, h, rot, rerr := readRecordWhole(e.rd, e.identity, at.Segment, int64(at.Offset))
+		if rerr != nil {
+			return index.RecordAt{}, nil, false, rerr
 		}
-		for _, other := range others {
-			if other.Numbers == rec.Numbers && other.File == rec.File && other.Kind == rec.Kind &&
-				other.Off == rec.Off && other.Len == rec.Len {
-				_, _, rot, rerr := readRecordWhole(e.rd, e.identity, sc.ID, int64(other.At))
-				if rerr != nil {
-					return index.RecordAt{}, false, rerr
-				}
-				if rot {
-					continue
-				}
-				return index.RecordAt{Segment: sc.ID, Offset: other.At}, true, nil
-			}
+		if rot || h.Version != rec.Numbers.Version || h.Extent != (core.Extent{Off: rec.Off, Len: rec.Len}) {
+			continue
 		}
+		return at, b, true, nil
 	}
-	return index.RecordAt{}, false, nil
-}
-
-// recordsOf answers the content records of segment id, walked once per run.
-func (e *emptying) recordsOf(id core.SegmentID) ([]index.Record, error) {
-	if recs, ok := e.walked[id]; ok {
-		return recs, nil
-	}
-	sc, err := scanSegment(e.rd, e.identity, SegmentInfo{ID: id})
-	if err != nil {
-		if ranges := e.rd.Unreadable(); len(ranges) > 0 && !isContextErr(err) {
-			return nil, &core.UnreadableRangesError{Ranges: ranges}
-		}
-		return nil, err
-	}
-	if e.walked == nil {
-		e.walked = make(map[core.SegmentID][]index.Record)
-	}
-	e.walked[id] = sc.Records
-	return sc.Records, nil
+	return index.RecordAt{}, nil, false, nil
 }
 
 // rottenTwin answers the placement of a duplicate of rec — same sequence

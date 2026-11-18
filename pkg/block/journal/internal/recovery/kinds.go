@@ -150,6 +150,13 @@ type kindResults struct {
 	// check answers from the scans themselves. Nil until the rebuild is
 	// run under marks.
 	MarkedOnDisk map[core.Seq]int
+
+	// Duplicates holds, per record the feed fed in two or more copies — its
+	// file and its seq — every placement a fed copy sits at, ascending. The
+	// emptying looks a record's other copies up here instead of walking the
+	// segments again; a record fed once is not listed, so the map is as
+	// small as the duplicates on disk.
+	Duplicates map[copyKey][]index.RecordAt
 }
 
 // Charge is one share tag's record bytes on one segment: the whole sizes of
@@ -827,6 +834,26 @@ func (ks *kindState) repointCopies(ix *index.Index, tl tails) {
 		// read, and refusing the open would drop a journal that serves.
 		// Overturned by a failure that leaves the piece unreachable instead.
 		_, _, _ = ix.RepointRecord(k.file, cps[keep], cps[best])
+	}
+}
+
+// keepDuplicates hands the records fed in two or more copies to the results,
+// each one's placements ascending, so the emptying reads a record's other
+// copies without a second walk; the rest of the copies map goes with the
+// kinds state.
+func (ks *kindState) keepDuplicates() {
+	for k, cps := range ks.copies {
+		if len(cps) < 2 {
+			continue
+		}
+		if ks.Duplicates == nil {
+			ks.Duplicates = map[copyKey][]index.RecordAt{}
+		}
+		cps = slices.Clone(cps)
+		slices.SortFunc(cps, func(a, b index.RecordAt) int {
+			return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.Offset, b.Offset))
+		})
+		ks.Duplicates[k] = cps
 	}
 }
 

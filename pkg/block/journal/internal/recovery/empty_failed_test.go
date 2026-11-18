@@ -13,6 +13,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
+// noPiece names no piece: the planner sees no record on disk naming a drop.
+func noPiece(core.Seq, core.Extent) bool { return false }
+
 // failedFixture plants one sealed segment 5 holding a survivor and two
 // records the directory's failed list names, and answers the deps that carry
 // the list.
@@ -308,5 +311,64 @@ func TestAnAsideDuplicateInASealedHolderThisRunEmptiesStillSurvives(t *testing.T
 	}
 }
 
-// noPiece names no piece: the planner sees no record on disk naming a drop.
-func noPiece(core.Seq, core.Extent) bool { return false }
+// TestAHolderNamedRecordWithASealedDuplicateRepointsWithoutACarry holds the
+// standing copy for a record the index serves from a sealed holder this run
+// empties: a sealed segment below it holds a verifying duplicate and a
+// record of its own, so the holder's survivor is not copied, its served
+// piece moves to the duplicate before the holder is unlinked, and the
+// holder carries nothing at all. It fails if the duplicate is not found,
+// for the survivor is then carried into a spare, and if the repoint of a
+// run that carries nothing is dropped, for the extent then serves from the
+// unlinked holder.
+func TestAHolderNamedRecordWithASealedDuplicateRepointsWithoutACarry(t *testing.T) {
+	f := newFailedFixture(t)
+	dup, _ := buildSealed(3,
+		collectWrite(7, f.file, uint64(f.survSeq), uint64(f.survSeq), f.survOff, 32),
+		collectWrite(7, f.file, 12, 12, 0x8100, 32))
+	f.r.plantSeg(3, dup)
+	st, h := f.open(t)
+	if placed, ok := st.Rebuilt.Index.Lookup(f.file, f.survOff); !ok || placed.Record.Segment != 5 {
+		t.Fatalf("the survivor serves %+v (%v) at the open, want the holder 5's copy, the greater one", placed, ok)
+	}
+	if err := Emptying(context.Background(), h.deps, st, journalID, core.Version{}, nil); err != nil {
+		t.Fatalf("Emptying: %v", err)
+	}
+	f.settled(t, st)
+	if placed, ok := st.Rebuilt.Index.Lookup(f.file, f.survOff); !ok || placed.Record.Segment != 3 {
+		t.Errorf("the survivor serves %+v (%v), want the standing duplicate in 3, nothing carried", placed, ok)
+	}
+}
+
+// TestARottenHolderCopyIsNotLostWhileAnEndedCopyVerifies holds the read-found
+// loss leg to its rule, a loss record only while no other copy verifies: the
+// sealed holder 5 serves the survivor over an equal copy in the ended
+// segment 6, both are held, so the holder's leg runs first, and its copy
+// rots before the emptying reads it. The ended copy verifies, so it is
+// carried and no loss is written, rather than the ended segment's good copy
+// going with its unlink.
+func TestARottenHolderCopyIsNotLostWhileAnEndedCopyVerifies(t *testing.T) {
+	f := newFailedFixture(t)
+	f.r.plantSeg(6, damageHeader(buildSeg(6,
+		collectWrite(7, f.file, uint64(f.survSeq), uint64(f.survSeq), f.survOff, 32),
+		collectWrite(7, f.file, 13, 13, 0x9100, 32))))
+	st, h := f.open(t)
+	if got, err := st.Assembled.Set.State(6); err != nil || got != segment.Ended {
+		t.Fatalf("segment 6's row got %v (%v), want Ended by its damaged header", got, err)
+	}
+	if placed, ok := st.Rebuilt.Index.Lookup(f.file, f.survOff); !ok || placed.Record.Segment != 5 {
+		t.Fatalf("the survivor serves %+v (%v) at the open, want the holder 5's copy over the ended one", placed, ok)
+	}
+	if !h.deps.Liveness.Held(5) || !h.deps.Liveness.Held(6) {
+		t.Fatalf("held 5 %v, held 6 %v, want both held so the holder's leg runs first", h.deps.Liveness.Held(5), h.deps.Liveness.Held(6))
+	}
+	rotByte(t, f.r, format.SegmentName(5), format.SegmentHeaderSize+format.RecordHeaderSize)
+	if err := Emptying(context.Background(), h.deps, st, journalID, core.Version{}, nil); err != nil {
+		t.Fatalf("Emptying: %v", err)
+	}
+	if n := verifyingCopies(t, f.r, uint64(f.survSeq)); n != 1 {
+		t.Errorf("the survivor of seq %d verifies in %d placements, want 1: the ended segment's good copy carried", f.survSeq, n)
+	}
+	if placed, ok := st.Rebuilt.Index.Lookup(f.file, f.survOff); !ok || placed.Seq != f.survSeq {
+		t.Errorf("the survivor's extent serves %+v (%v), want seq %d, no loss", placed, ok, f.survSeq)
+	}
+}
