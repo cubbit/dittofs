@@ -1352,12 +1352,14 @@ func TestAParkDrainedAsItsCallCompletesIsAnsweredSuccess(t *testing.T) {
 
 // close ends a park at once: close returns while the park waits, its
 // handler's cancel is called, nothing is sent, its request span ends unsent,
-// and every budget is back at zero once wait returns (§4.7, §6.5).
+// no error is counted as one no row maps, and every budget is back at zero
+// once wait returns (§4.7, §6.5, §10.1).
 func TestCloseEndsAPark(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
 		spans := tracetest.NewSpanRecorder()
 		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
-		s := newHeld(t, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1}, newManualClock())
+		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m, Tracer: tracer, SampleRatio: 1}, newManualClock())
 		wait := s.parkWait()
 		defer wait.Release()
 		s.serve(s.parkChain(1, "f")...)
@@ -1379,8 +1381,46 @@ func TestCloseEndsAPark(t *testing.T) {
 		if sd := requestSpan(t, spans, "Park"); slices.ContainsFunc(sd.Attributes(), func(kv attribute.KeyValue) bool { return kv.Key == "reply_bytes" }) {
 			t.Errorf("the closed park's span ended as sent: %v", sd.Attributes())
 		}
+		got, _ := scrape(t, m)
+		if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 0 {
+			t.Errorf("%s = %v, want 0", k, got[k])
+		}
 		if s.exists("f") || !s.sentNothing() {
 			t.Errorf("the closed park made its file (%v) or was answered", s.exists("f"))
+		}
+	})
+}
+
+// A request whose read before Park is in the service as its connection closes
+// parks on the closed connection and is dropped as a close drops a park:
+// Park calls its cancel at once, so no file is made, nothing is sent, no error
+// is counted as one no row maps, and every budget is back at zero once wait
+// returns (§4.7, §10.1).
+func TestAParkOnAClosedConnectionIsDropped(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, newManualClock())
+		read := s.faults.Hold(vfs.OpGetAttr)
+		defer read.Release()
+		s.serve(s.parkChain(1, "f")...)
+		<-read.Reached()
+		s.p.Close()
+		read.Release()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := s.p.Wait(ctx); err != nil {
+			t.Fatalf("the park outlived its connection: %v", err)
+		}
+		synctest.Wait()
+		got, _ := scrape(t, m)
+		if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 0 {
+			t.Errorf("%s = %v, want 0", k, got[k])
+		}
+		if recv, reply := s.budgets.Receive.Reserved(), s.budgets.Reply.Reserved(); recv != 0 || reply != 0 {
+			t.Errorf("after the close the receive budget holds %d and the reply budget %d, want 0", recv, reply)
+		}
+		if s.exists("f") || !s.sentNothing() {
+			t.Errorf("the park on a closed connection made its file (%v) or was answered", s.exists("f"))
 		}
 	})
 }

@@ -565,7 +565,8 @@ type parked struct {
 // interim sent, unless it already has one, and a small reply buffer kept,
 // its own where it is of the small class, else one taken before its own goes,
 // carrying the interim where one is sent. On a connection already closed it
-// calls cancel at once, and done does nothing.
+// calls cancel at once, done does nothing, and the handler's ErrParked ends
+// the request unsent, as the close's cancel would (endedByClose).
 //
 // decision: the interim of a park whose own reply buffer is the one it keeps
 // goes out in a status's buffer, taken at once where the pool has room, and

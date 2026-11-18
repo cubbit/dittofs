@@ -1070,11 +1070,12 @@ func (p *pipeline) end(tr *track, sent bool, s Status, reply int, err error) {
 }
 
 // endedByClose reports whether err is the connection's close ending a wait
-// or a call under its context. That is no error: nothing can be sent, and the
-// request is neither counted as a refusal or an error no row maps nor logged
-// at error (§10.1).
+// or a call under its context, or a handler's ErrParked on a closed
+// connection, whose reply Park drops as a close would (§4.7). That is
+// no error: nothing can be sent, and the request is neither counted as a
+// refusal or an error no row maps nor logged at error (§10.1).
 func (p *pipeline) endedByClose(err error) bool {
-	return p.ctx.Err() != nil && errors.Is(err, context.Canceled)
+	return p.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, ErrParked))
 }
 
 // reservationStage is the stage the request's reply reservation's refusal
