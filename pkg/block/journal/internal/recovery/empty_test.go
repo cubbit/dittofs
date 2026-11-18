@@ -421,7 +421,7 @@ func TestEndedSegmentEmptiedOnce(t *testing.T) {
 		if !ok {
 			t.Fatalf("the index answers no record at %d of the file ending %v, want the copy of the record the ended segment held", look.off, look.file)
 		}
-		if placed.Record.Segment == 5 || placed.Record.Segment == 6 {
+		if placed.Record.Segment == 5 || placed.Record.Segment == 4 {
 			t.Errorf("the record at %d still serves from the unlinked segment %d, want it repointed to the copy", look.off, placed.Record.Segment)
 		}
 		if placed.Seq != look.want {
@@ -446,11 +446,74 @@ func TestEndedSegmentEmptiedOnce(t *testing.T) {
 		t.Fatalf("the second Emptying: %v", err)
 	}
 	placed2, ok := st2.Rebuilt.Index.Lookup(file, 0x8100)
-	if !ok || placed2.Record.Segment == 5 || placed2.Record.Segment == 6 {
+	if !ok || placed2.Record.Segment == 5 || placed2.Record.Segment == 4 {
 		t.Fatalf("the second open does not serve the shared record from the sealed copy: %+v (%v)", placed2, ok)
 	}
 	if got, err := st2.Assembled.Set.State(placed2.Record.Segment); err != nil || got != segment.Sealed {
 		t.Errorf("the copy the first open sealed reads back as %v (%v), want Sealed", got, err)
+	}
+}
+
+// TestAnUnsealedRowsAsideDuplicateIsNoStandingCopy holds the narrowing of the
+// aside skip to sealed rows: an Active segment with no seal holds a duplicate
+// of a live loss record in an ended segment, and the emptying still carries
+// the loss into a sealed spare, for an unsealed row's bytes are no proven
+// word. The row catches a skip that trusted the Active row: the ended
+// source would be unlinked with its only sealed copy of the loss gone.
+//
+// The content-record skip has no row of its own: the index serves a record's
+// verified duplicate over the ended segment's copy, so the ended record is
+// never named and no skip is asked.
+func TestAnUnsealedRowsAsideDuplicateIsNoStandingCopy(t *testing.T) {
+	const tag = core.ShareTag(7)
+	file := tailFile()
+	r := newRig(t)
+	r.writeFormat()
+	loss := collectLoss(tag, file, 40, 41, 941, 0x200, 64, 1<<8)
+	// The record the unsynced loss names, held by a sealed segment, keeps
+	// the loss from answering droppable.
+	older, _ := buildSealed(6, collectWrite(tag, file, 40, 40, 0x200, 64))
+	r.plantSeg(6, older)
+	r.plantSeg(5, damageHeader(buildSeg(5, loss)))
+	r.plantSeg(4, buildSeg(4, loss))
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, err := st.Assembled.Set.State(4); err != nil || got != segment.Active {
+		t.Fatalf("the unsealed duplicate's row got %v (%v), want Active: the fixture no longer plants the case", got, err)
+	}
+	h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 2})
+	if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil); err != nil {
+		t.Fatalf("Emptying: %v", err)
+	}
+
+	if slices.Contains(r.listing(), format.SegmentName(5)) {
+		t.Errorf("the ended source is still on disk, want it unlinked once its loss record is carried")
+	}
+	var sealedCopies int
+	for _, name := range r.listing() {
+		kind, id := format.ClassifyName(name)
+		if kind != format.NameSegment || id == 4 || id == 6 {
+			continue
+		}
+		bs, err := r.seam.Durable(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		walk, werr := format.ScanSegmentHeaders(bytes.NewReader(bs), int64(len(bs)), journalID, id)
+		if werr != nil {
+			continue
+		}
+		for _, rec := range walk.Records {
+			if rec.Header.Kind == format.KindLoss && rec.Header.Seq == 41 {
+				sealedCopies++
+			}
+		}
+	}
+	if sealedCopies != 1 {
+		t.Errorf("%d copies of the loss record of seq 41 sit in the emptying's spare, want the one it carries: an unsealed row's duplicate is no standing copy", sealedCopies)
 	}
 }
 

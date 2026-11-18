@@ -627,6 +627,11 @@ func (e *emptying) standingCopy(rec index.Record, id core.SegmentID) (index.Reco
 			// them, and the copy this skip stands in for goes to a sealed,
 			// synced spare. Withdrawn if an active row's synced-through is
 			// read here and proves the duplicate's whole extent.
+			//
+			// decision: no test reaches this narrowing, because the index serves
+			// a verified duplicate over an ended segment's copy, so the ended
+			// record is never named and the skip is never asked for it; the
+			// aside skip below is covered.
 			continue
 		}
 		for _, other := range sc.Records {
