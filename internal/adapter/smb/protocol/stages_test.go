@@ -425,7 +425,7 @@ func TestAForeignHeader(t *testing.T) {
 }
 
 // The reply to an async-form request is granted as any synchronous one, one
-// credit and the sync form (D4): no request is put off here, so the reply
+// credit and the sync form: no request is put off here, so the reply
 // falls under 3.3.4.4's Otherwise, not its CreditResponse 0 branch, which
 // keys on Request.AsyncId, the server's own, rather than on the form the
 // request arrives with; ASYNC_COMMAND is not a bit a reply echoes, the

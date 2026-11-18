@@ -127,7 +127,7 @@ func (headerStage) Encode(h core.Header, s core.Status, out *resources.Buf) erro
 	}
 	// ponytail: every reply grants one credit, which never takes a client
 	// past any credit target and keeps its balance above zero, an async-form
-	// request's reply included (D4): this stage puts no request off, so that
+	// request's reply included: this stage puts no request off, so that
 	// reply takes no async form - the form belongs to the stage that puts a
 	// request off, with the AsyncId it chose (MS-SMB2 3.3.4.2) - and falls
 	// under 3.3.4.4's Otherwise, which grants per 3.3.1.2 at least 1 (RFC 22
@@ -152,9 +152,13 @@ func (headerStage) Encode(h core.Header, s core.Status, out *resources.Buf) erro
 
 // Chain pads out to the reply at prev plus a multiple of 8 and points that
 // reply's NextCommand at the one appended after it. core calls it between
-// the members of a chain only, so a member always follows; the last
-// member's pad, which nothing between members asks for, comes with core's
-// runner (MS-SMB2 3.3.4.1.3, RFC 20 section 4.7).
+// the members of a chain only, so a member always follows. The last
+// member's pad (MS-SMB2 3.3.4.1.3, a SHOULD) is this stage's own once the
+// record is complete, written by SMB's Wrap before it signs, as RFC 20
+// section 4.7 calls Wrap once on the joined record.
+//
+// ponytail: a chain's last reply goes out unpadded, since no Wrap is served
+// yet. The Wrap that signs pads it first, with wire.Chain's more false.
 func (headerStage) Chain(out *resources.Buf, prev int) error {
 	var err error
 	out.B, err = wire.Chain(out.B, prev, true)
@@ -178,7 +182,7 @@ func (headerStage) Args(rec *resources.Buf, h core.Header) []byte {
 // replyLen is the most Encode writes, with Chain's padding: the reply's
 // 64-byte header, the ERROR response's 9-byte body (MS-SMB2 2.2.2), and at
 // most 7 bytes of padding to 8.
-const replyLen = wire.HeaderLen + 9 + 7
+const replyLen = wire.HeaderLen + wire.ErrorLen + 7
 
 // ReplyLen is the most Encode writes for any header, with Chain's padding
 // (RFC 20 §4.7). No transform is added in place: none is served yet.
