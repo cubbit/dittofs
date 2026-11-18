@@ -183,28 +183,39 @@ func TestADFixture(t *testing.T) {
 	})
 
 	// The computer accounts the joins start from exist with the passwords
-	// handed over, and with the encryption types an offline join decides on.
+	// handed over, the names, the encryption types an offline join decides on,
+	// and the owner and delegation a join reports. offjoinowned$ alone is owned
+	// by the user who created it, not Domain Admins, and alone lets another
+	// account act on its behalf.
 	t.Run("pre-staged join accounts", func(t *testing.T) {
+		joinerSID := adAttrs(t, "user", "joiner", "objectSid")["objectSid"]
+		if joinerSID == "" {
+			t.Fatal("joiner has no objectSid")
+		}
 		for _, acct := range []struct {
-			name, password, enctypes string
+			name, password, enctypes, owner string
+			delegated                       bool
 		}{
-			{"dittofs", machineAccountPass, ""},
-			{"offjoinaes", "OffJoinAES01!", "24"},
-			{"offjoinlegacy", "OffJoinLegacy01!", ""},
+			{"dittofs", machineAccountPass, "", "DA", false},
+			{"offjoinaes", "OffJoinAES01!", "24", "DA", false},
+			{"offjoinlegacy", "OffJoinLegacy01!", "", "DA", false},
+			{"offjoinowned", "OffJoinOwned01!", "24", joinerSID, true},
+			{"BUILD01", "Build01Pass01!", "", "DA", false},
 		} {
-			out, err := adDockerExec("samba-tool", "computer", "show", acct.name,
-				"--attributes=msDS-SupportedEncryptionTypes")
-			if err != nil {
-				t.Fatalf("samba-tool computer show %s: %v\n%s", acct.name, err, out)
+			const delegation = "msDS-AllowedToActOnBehalfOfOtherIdentity"
+			attrs := adAttrs(t, "computer", acct.name,
+				"sAMAccountName", "msDS-SupportedEncryptionTypes", delegation)
+			if got, want := attrs["sAMAccountName"], acct.name+"$"; got != want {
+				t.Errorf("%s$ sAMAccountName = %q, want %q", acct.name, got, want)
 			}
-			got := ""
-			for _, line := range strings.Split(string(out), "\n") {
-				if v, ok := strings.CutPrefix(line, "msDS-SupportedEncryptionTypes: "); ok {
-					got = strings.TrimSpace(v)
-				}
-			}
-			if got != acct.enctypes {
+			if got := attrs["msDS-SupportedEncryptionTypes"]; got != acct.enctypes {
 				t.Errorf("%s$ msDS-SupportedEncryptionTypes = %q, want %q", acct.name, got, acct.enctypes)
+			}
+			if got := attrs[delegation] != ""; got != acct.delegated {
+				t.Errorf("%s$ %s set = %v (%q), want %v", acct.name, delegation, got, attrs[delegation], acct.delegated)
+			}
+			if got := adOwner(t, attrs["dn"]); got != acct.owner {
+				t.Errorf("%s$ owner = %q, want %q", acct.name, got, acct.owner)
 			}
 			waitForMachinePassword(t, dcIP, acct.name, acct.password)
 		}
@@ -259,4 +270,45 @@ func waitForMachinePassword(t *testing.T, dcIP, name, password string) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+// adAttrs reads attributes of a samba-tool user or computer, with "dn" among
+// them, joining the LDIF's folded lines. An attribute the object lacks is "".
+func adAttrs(t *testing.T, kind, name string, attrs ...string) map[string]string {
+	t.Helper()
+	out, err := adDockerExec("samba-tool", kind, "show", name, "--attributes="+strings.Join(attrs, ","))
+	if err != nil {
+		t.Fatalf("samba-tool %s show %s: %v\n%s", kind, name, err, out)
+	}
+	got := map[string]string{}
+	last := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		if v, ok := strings.CutPrefix(line, " "); ok && last != "" {
+			got[last] += v
+			continue
+		}
+		if k, v, ok := strings.Cut(line, ": "); ok {
+			last = k
+			got[k] = strings.TrimSpace(v)
+		}
+	}
+	return got
+}
+
+// adOwner returns the owner of the object at dn as its descriptor's SDDL
+// names it: an alias such as DA for a well-known group, a SID otherwise.
+func adOwner(t *testing.T, dn string) string {
+	t.Helper()
+	out, err := adDockerExec("samba-tool", "dsacl", "get", "--objectdn="+dn)
+	if err != nil {
+		t.Fatalf("samba-tool dsacl get %s: %v\n%s", dn, err, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if rest, ok := strings.CutPrefix(line, "O:"); ok {
+			owner, _, _ := strings.Cut(rest, "G:")
+			return owner
+		}
+	}
+	t.Fatalf("samba-tool dsacl get %s printed no owner:\n%s", dn, out)
+	return ""
 }
