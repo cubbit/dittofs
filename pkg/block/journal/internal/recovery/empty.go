@@ -237,6 +237,10 @@ type emptying struct {
 	identity core.JournalID
 	marks    []core.SyncMark
 
+	// walked holds the content records of each sealed row the standing-copy
+	// test walked, read once: the rebuild's scans keep none after their feed.
+	walked map[core.SegmentID][]index.Record
+
 	// freed holds the takes a durable unlink released, drawn front-first for
 	// the copies that follow. A freed take is the emptying's own spare alone,
 	// exactly the shape a freed successor would reach the running pool
@@ -340,7 +344,8 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 	named := successorSet(st.Attached.Own)
 	through := make(map[core.SegmentID]int64, len(e.marks))
 	for _, m := range e.marks {
-		through[core.SegmentID(m.Segment)] = m.Through
+		// The greatest Through proves the most, as the marks raise tests each mark.
+		through[core.SegmentID(m.Segment)] = max(through[core.SegmentID(m.Segment)], m.Through)
 	}
 
 	var ins []carriedCopy
@@ -370,6 +375,18 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 				continue
 			}
 			from = twin
+			// A copy that already verifies stands in the twin's place: a
+			// crash between an earlier open's copy and its unlink leaves
+			// that copy beside the ended segment, and carrying this one
+			// again would hold the record twice.
+			other, found, serr := e.standingCopy(rec, id)
+			if serr != nil {
+				return serr
+			}
+			if found {
+				moves = append(moves, moveAt{file: rec.File, from: twin, to: other})
+				continue
+			}
 		} else {
 			other, found, serr := e.standingCopy(rec, id)
 			if serr != nil {
@@ -396,6 +413,19 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			// and the pieces it served read lost, never older bytes and
 			// never a placement the unlink takes away.
 			//
+			// decision: "no other verifying copy" rests on an ordering, not a
+			// search: the standing copy looks at sealed rows only, never at a
+			// duplicate in another ended segment or in a holder this run also
+			// empties. It holds because the index serves the greater segment
+			// of two equal-numbered copies and this run goes unheld segments
+			// first, then ascending ids, so the copy the index does not serve
+			// is handled first and the twin read reads the served one before
+			// this leg runs. Withdrawn if the index keeps another copy or the
+			// run's order changes. The ceiling beside it: when the target's id
+			// is below a rotten twin that stays held, the next open serves the
+			// twin's rotten copy again and retires the target, for the walk
+			// verifies no payload.
+			//
 			// decision: the record's served extents leave the index here,
 			// the same cut the data path's corrupt drop makes, for the
 			// segment is about to go and a served piece pointing into an
@@ -405,10 +435,13 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			// which the reveal of an unsynced read-found loss would need
 			// its own rule to unmask. The generation, the counters and the
 			// event are the next open's found record's own, published when
-			// its kinds pass places it; this open's ring holds no event for
-			// a loss nobody could have read. Withdrawn if a ruled loss record
-			// of the running window must raise them at the open that found
-			// the rot.
+			// its kinds pass places it. For a record no sync proved, this
+			// open's ring holds no event and the extent reads missing, for
+			// nobody could have read it. For a synced one the extent reads
+			// Lost and Since reports it in this process, but the ring event
+			// and the generation come at the next open, where the placement
+			// publishes them. Withdrawn if a ruled loss record of the
+			// running window must raise them at the open that found the rot.
 			if _, _, lerr := st.Rebuilt.Index.LoseSuperseded(rec.File,
 				core.Extent{Off: rec.Off, Len: rec.Len}, rec.Numbers.Version, rec.Numbers.Seq); lerr != nil {
 				return lerr
@@ -518,7 +551,21 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 		}, file: losses[i].l.File, reg: losses[i].rec})
 	}
 
+	repoint := func() error {
+		for _, mv := range moves {
+			if _, _, rerr := st.Rebuilt.Index.RepointRecord(mv.file, mv.from, mv.to); rerr != nil {
+				return fmt.Errorf("repointing the copy of the record of file %v from segment %d: %w", mv.file, id, rerr)
+			}
+		}
+		return nil
+	}
 	if len(ins) == 0 {
+		// The skipped records' served pieces move to their standing copies
+		// even when nothing is carried, or the unlink would take the
+		// placement they serve.
+		if err := repoint(); err != nil {
+			return err
+		}
 		// Nothing is carried: the segment holds nothing the index and the
 		// tracker answer live, so the unlink takes dead weight and the
 		// deferrals below end on the records already durable.
@@ -568,10 +615,8 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			to:   index.RecordAt{Segment: target, Offset: uint32(at[i])},
 		})
 	}
-	for _, mv := range moves {
-		if _, _, rerr := st.Rebuilt.Index.RepointRecord(mv.file, mv.from, mv.to); rerr != nil {
-			return fmt.Errorf("repointing the copy of the record of file %v from segment %d: %w", mv.file, id, rerr)
-		}
+	if err := repoint(); err != nil {
+		return err
 	}
 	// The carried registrations, notes and loss records: each copy registers
 	// at the placement the copier answered — the journal's own carry's
@@ -745,7 +790,11 @@ func (e *emptying) standingCopy(rec index.Record, id core.SegmentID) (index.Reco
 			// aside skip below is covered.
 			continue
 		}
-		for _, other := range sc.Records {
+		others, werr := e.recordsOf(sc.ID)
+		if werr != nil {
+			return index.RecordAt{}, false, werr
+		}
+		for _, other := range others {
 			if other.Numbers == rec.Numbers && other.File == rec.File && other.Kind == rec.Kind &&
 				other.Off == rec.Off && other.Len == rec.Len {
 				_, _, rot, rerr := readRecordWhole(e.rd, e.identity, sc.ID, int64(other.At))
@@ -760,6 +809,25 @@ func (e *emptying) standingCopy(rec index.Record, id core.SegmentID) (index.Reco
 		}
 	}
 	return index.RecordAt{}, false, nil
+}
+
+// recordsOf answers the content records of segment id, walked once per run.
+func (e *emptying) recordsOf(id core.SegmentID) ([]index.Record, error) {
+	if recs, ok := e.walked[id]; ok {
+		return recs, nil
+	}
+	sc, err := scanSegment(e.rd, e.identity, SegmentInfo{ID: id})
+	if err != nil {
+		if ranges := e.rd.Unreadable(); len(ranges) > 0 && !isContextErr(err) {
+			return nil, &core.UnreadableRangesError{Ranges: ranges}
+		}
+		return nil, err
+	}
+	if e.walked == nil {
+		e.walked = make(map[core.SegmentID][]index.Record)
+	}
+	e.walked[id] = sc.Records
+	return sc.Records, nil
 }
 
 // rottenTwin answers the placement of a duplicate of rec — same sequence
