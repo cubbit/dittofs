@@ -62,6 +62,7 @@ func (x *AccessRes) EncodeWire(v uint32, out *resources.Buf) error {
 }
 
 func (x *AccessRes) decodeXDR(d *wire.Decoder, v uint32) {
+	d.StatusArm()
 }
 
 func (x *AccessRes) encodeXDR(e *wire.Encoder, v uint32) {
@@ -186,6 +187,7 @@ func (x *Write3Res) EncodeWire(v uint32, out *resources.Buf) error {
 
 func (x *Write3Res) decodeXDR(d *wire.Decoder, v uint32) {
 	x.FileWcc.decodeXDR(d, v)
+	d.StatusArm()
 }
 
 func (x *Write3Res) encodeXDR(e *wire.Encoder, v uint32) {
@@ -306,6 +308,7 @@ func (x *Lookup3Res) EncodeWire(v uint32, out *resources.Buf) error {
 }
 
 func (x *Lookup3Res) decodeXDR(d *wire.Decoder, v uint32) {
+	d.StatusArm()
 	if d.Bool() {
 		x.DirAttributes = new(Fattr3)
 		x.DirAttributes.decodeXDR(d, v)

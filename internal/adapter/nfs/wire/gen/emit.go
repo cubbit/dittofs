@@ -122,6 +122,8 @@ func (g *gen) decode(b *bytes.Buffer, lv string, t *xtype, depth int) {
 		b.WriteString("}\n}\n")
 	case kOptional:
 		fmt.Fprintf(b, "if d.Bool() {\n%[1]s = new(%[2]s)\n%[1]s.decodeXDR(d, v)\n}\n", lv, t.elem.name)
+	case kArm:
+		b.WriteString("d.StatusArm()\n")
 	case kStruct:
 		fmt.Fprintf(b, "%s.decodeXDR(d, v)\n", lv)
 	}
@@ -198,9 +200,10 @@ func since(b *bytes.Buffer, n int, body func()) {
 // A handler sets exactly the arm its status selects, at most one; MaxWire
 // counts every arm, a bound over the one written.
 //
-// decision: a reply decodes with no arm set, since the status that selects
-// one is the header's and core decodes no reply. Overturned when something
-// decodes a reply beside its status.
+// decision: a struct with an arm field refuses its decode at the arm, since
+// the status that selects the arm is the header's and core decodes no reply;
+// skipped, the arm's bytes would be read as the fields after it. Overturned
+// when something decodes a reply beside its status.
 func (g *gen) methods(b *bytes.Buffer, s *strct) {
 	fmt.Fprintf(b, `
 func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {

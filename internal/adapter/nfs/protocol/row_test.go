@@ -90,3 +90,18 @@ func TestRowOverTheGeneratedCodec(t *testing.T) {
 		})
 	}
 }
+
+// A reply with an arm field refuses its decode, since only the status before
+// it selects the arm: an ACCESS success would otherwise decode with no error,
+// none of its bytes read and its arm left nil (RFC 20 section 4.7).
+func TestAnArmFieldRefusesItsDecode(t *testing.T) {
+	var out resources.Buf
+	ok := &AccessRes{Ok: &AccessResOk{Supported: 1, Access: 2}}
+	if err := ok.EncodeWire(0, &out); err != nil {
+		t.Fatal(err)
+	}
+	var got AccessRes
+	if n, err := got.DecodeWire(out.B, 0); err == nil {
+		t.Errorf("an ACCESS success decoded %d of its %d bytes as %+v with no error, want its arm refused", n, len(out.B), got)
+	}
+}
