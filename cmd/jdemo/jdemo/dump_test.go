@@ -128,3 +128,27 @@ func TestDumpAgreesWithTheJournalOwnRead(t *testing.T) {
 		t.Errorf("the dump screen lacks the payload the journal serves:\n%s", out.String())
 	}
 }
+
+func TestDumpRefusesARecordWhoseBodyDoesNotVerify(t *testing.T) {
+	// A flipped payload byte leaves the header verifying and the body not:
+	// the scan steps over it as a bad range, not as an error, so this is the
+	// path the torn-tail classification takes for damage inside a segment.
+	d, out := scanDemo(t)
+	seg, h, _ := findWrite(t, d)
+	b, err := os.ReadFile(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b[h.Offset+walk.RecordHeaderSize+8+2] ^= 0xFF // inside the payload, past the mtime
+	if err := os.WriteFile(seg, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.viewDump()
+	screen := out.String()
+	if strings.Contains(screen, "68 65 6c 6c 6f 20 77 6f") || strings.Contains(screen, "hello") {
+		t.Errorf("a record whose body does not verify was shown:\n%s", screen)
+	}
+	if !strings.Contains(screen, "tail torn") {
+		t.Errorf("bad bytes inside a segment are not named as a torn tail:\n%s", screen)
+	}
+}
