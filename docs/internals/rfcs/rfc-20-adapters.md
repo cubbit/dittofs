@@ -1256,14 +1256,14 @@ package settings // pkg/adapter/settings: a leaf
 // Adapter is what every adapter reads; core reads only this. Each adapter
 // record carries its own copy, under adapters.<protocol>.
 type Adapter struct {
-	Addrs              []netip.Addr  `json:"-"`                   // supplied by the node, live (below); a record naming it is refused as an unknown field
-	Port               uint16        `json:"port"`                // restart-class (above); 12049 for NFS and 12445 for SMB (RFC 13 Appendix B), and 0 lets the system pick, for tests
-	DrainTimeout       time.Duration `json:"drain_timeout"`       // 90 s; at least the break deadline plus the request deadline, 65 s
-	IdleTimeout        time.Duration `json:"idle_timeout"`        // 15 min
-	WriteTimeout       time.Duration `json:"write_timeout"`       // 60 s
-	HandshakeTimeout   time.Duration `json:"handshake_timeout"`   // 30 s
-	ReadTimeout        time.Duration `json:"read_timeout"`        // 30 s: the rest of a request once its first byte arrived
-	DisabledOperations []string      `json:"disabled_operations"` // none
+	Addrs              []netip.Addr  `json:"-"`                                // supplied by the node, live (below); a record naming it is refused as an unknown field
+	Port               uint16        `json:"port" class:"restart"`             // restart-class (above); 12049 for NFS and 12445 for SMB (RFC 13 Appendix B), and 0 lets the system pick, for tests
+	DrainTimeout       time.Duration `json:"drain_timeout"       class:"live"` // 90 s; at least the break deadline plus the request deadline, 65 s
+	IdleTimeout        time.Duration `json:"idle_timeout"        class:"live"` // 15 min
+	WriteTimeout       time.Duration `json:"write_timeout"       class:"live"` // 60 s
+	HandshakeTimeout   time.Duration `json:"handshake_timeout"   class:"live"` // 30 s
+	ReadTimeout        time.Duration `json:"read_timeout"        class:"live"` // 30 s: the rest of a request once its first byte arrived
+	DisabledOperations []string      `json:"disabled_operations" class:"live"` // none
 }
 
 // Common returns the Adapter, promoted into NFS and SMB.
@@ -1289,15 +1289,15 @@ type VersionRange struct {
 
 type NFS struct {
 	Adapter
-	TLS      TLS          `json:"tls"`
-	Versions VersionRange `json:"versions"` // "3", "4.0", "4.1", "4.2"; 3 to 4.2. "3" is NFSv3 with MOUNT v3, NLM v4 and NSM v1
+	TLS      TLS          `json:"tls"      class:"live"`
+	Versions VersionRange `json:"versions" class:"live"` // "3", "4.0", "4.1", "4.2"; 3 to 4.2. "3" is NFSv3 with MOUNT v3, NLM v4 and NSM v1
 }
 
 type SMB struct {
 	Adapter
-	Dialects       VersionRange  `json:"dialects"`        // "2.1", "3.0", "3.0.2", "3.1.1"; 2.1 to 3.1.1
-	PendingTimeout time.Duration `json:"pending_timeout"` // 10 min: longest a request refused for a transient cause is held
-	RecallTimeout  time.Duration `json:"recall_timeout"`  // 60 s: longest a request held on a recall; must exceed the 35 s break deadline
+	Dialects       VersionRange  `json:"dialects" class:"live"`        // "2.1", "3.0", "3.0.2", "3.1.1"; 2.1 to 3.1.1
+	PendingTimeout time.Duration `json:"pending_timeout" class:"live"` // 10 min: longest a request refused for a transient cause is held
+	RecallTimeout  time.Duration `json:"recall_timeout"  class:"live"` // 60 s: longest a request held on a recall; must exceed the 35 s break deadline
 }
 
 // DefaultNFS and DefaultSMB hold every default in one reviewed function; the
@@ -1321,7 +1321,10 @@ type Settings interface {
 }
 ```
 
-- **Every field names its key** with a `json:"…"` tag. Every adapter key is
+- **Every field names its key** with a `json:"…"` tag, and every field
+  of `Adapter`, `NFS` and `SMB` except `Addrs` names its binding class with a
+  `class:"…"` tag, `restart` or `live`, as RFC 13 Appendix B's class column
+  gives it. Every adapter key is
   `adapters.<protocol>.<field>` — `adapters.smb.idle_timeout`,
   `adapters.nfs.tls.mode`, `adapters.smb.pending_timeout` — and the least
   configuration is `adapters: {nfs: {enabled: true}, smb: {enabled: true}}`.

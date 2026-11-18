@@ -810,8 +810,8 @@ A section, declared by its component and listed once in the node's table (D2):
 // internal/node/settings.go: the one table, read by Check and by reconcile.
 var Settings = settings.Table{
 	settings.Of[adaptersettings.SMB]("adapters.smb",
-		settings.Override(entity.ScopeInstallation, entity.ScopeNode), // installation, with a node override for port (RFC 13 Appendix B)
-		adaptersettings.DefaultSMB()), // each field's class is its `class` tag (epic 1's D9); Of panics on an unclassified field
+		settings.Override(entity.ScopeInstallation, entity.ScopeNode), // installation, one record per adapter, with a node override for the port alone (RFC 13 Appendix B, RFC 23 §3.4)
+		adaptersettings.DefaultSMB(), settings.OverrideOnly("Port")), // each field's class is its `class` tag (epic 1's D9); Of panics on an unclassified field
 	settings.Of[adaptersettings.NFS]("adapters.nfs", /* the same */),
 	settings.Of[apisettings.OIDC]("api.oidc_role_map", /* ... */,
 		settings.WriteRole(auth.Admin)), // Appendix B: written by admin only
@@ -821,7 +821,8 @@ var Settings = settings.Table{
 // pkg/settings. Scope is At, PerThing (the thing a "scope, per thing" form is per, RFC 13 §3: "node,
 // per journal") or Override. Options: WriteRole, the lowest role that may write the section (operator
 // by default); Required, the keys with no default, which a snapshot missing one refuses (RFC 13 §4.2);
-// SecretRef, a field holding a reference, with the kind it must name (D10); CheckTx[T](func(
+// SecretRef, a field holding a reference, with the kind it must name (D10); OverrideOnly(fields ...string),
+// under an Override scope, only the named Go fields take the narrower scope's value (the adapters' Port); CheckTx[T](func(
 // entity.ControlPlaneTx, settings.Write, T) error), a check that reads store state beyond settings,
 // tracked, in the write's transaction, handed the write so it can return at once for a key it does
 // not guard (RFC 13 §6; RFC 18's plan's E2 refusing an identity.id_range at or below the ID counters'
@@ -1190,8 +1191,8 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   `identity.directory`, A1, and the others RFC 23 §5.2 lists), compared by `entity.APIRole`'s order; its `PerThing` scope for Appendix B's
   "per journal" rows; its `SecretRef` fields with their kinds (D10); and `Of` refusing a class,
   a field with no explicit `json` name (whose key would be the field's Go name), a
-  duplicate name after the flattening, or a `Required` or `SecretRef` name that is not a field
-  of `T`.
+  duplicate name after the flattening, a `Required`, `SecretRef` or `OverrideOnly` name that is not
+  a field of `T`, or `OverrideOnly` outside an `Override` scope.
 - The snapshot, `Read` and `Get`: `Read` decodes each section on its own, takes the installation
   value, then the narrower override, per thing where the scope is per thing, decoded strictly over
   the defaults with keys matched exactly as declared (Go's JSON decode matches field names
@@ -1213,7 +1214,8 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   or bound field never runs live; `Table` panicking on two sections whose prefixes overlap
   ambiguously, `lookup` choosing the longest prefix on a dot boundary.
 - `Check` for the write path, given the caller's role and the write as a put or a delete, a delete
-  checked against the effective value it leaves: unknown key, wrong scope, newer schema, the
+  checked against the effective value it leaves: unknown key, wrong scope (a node record setting an
+  adapter field `OverrideOnly` does not name, any but the port), newer schema, the
   section's write role, D10's secret references, `Validate`, the bound refusal (RFC 13 §5.1) on its
   holds-content input, D9's refusal of a store location's change but not its first value, and a
   namespace's block format version past this node's range (RFC 13 §5.4), on the key
