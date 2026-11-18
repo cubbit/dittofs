@@ -719,7 +719,7 @@ func TestStopWhileConfigured(t *testing.T) {
 // and a real one: NewConn returns stages of the same shape for each, the
 // protocol's contract, and the close a test drives at accept - the pool's
 // refusal - tells the label NewServer read for its own listener apart from
-// one left empty or read elsewhere (§10.1, R59).
+// one left empty or read elsewhere (§10.1).
 type renamed struct{ core.Protocol }
 
 func (r renamed) NewConn(c *core.Conn) core.Stages {
@@ -731,8 +731,8 @@ func (r renamed) NewConn(c *core.Conn) core.Stages {
 // A connection closed at accept counts under its listener's own label, the
 // one its protocol's nil-Conn stages named and NewServer kept: the renamed
 // protocol's refused socket lands under "renamed", whatever label the
-// connection's own would have given - and nothing bound by another name (R52,
-// R59).
+// connection's own would have given - and nothing bound by another name
+// (§10.1).
 func TestACloseAtAcceptCountsUnderItsListenersLabel(t *testing.T) {
 	m := metrics.New("v", "c")
 	b := resources.Budgets{

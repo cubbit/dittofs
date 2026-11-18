@@ -73,6 +73,9 @@ func (ls *labelSeries) RefusedAtAccept(r int)  { ls.refusedAtAccept(reason(r)) }
 func (ls *labelSeries) BytesIn() adder         { return ls.in }
 func (ls *labelSeries) BytesOut() adder        { return ls.out }
 
+// CloseReason names the reason a close with err counts under (§10.1).
+func CloseReason(err error) string { return reasonNames[closeReason(err)] }
+
 // ReasonNames is the values of the reason label of a connection's close, by
 // their index for Closed and RefusedAtAccept; StateNames the state label's.
 func ReasonNames() map[int]string {

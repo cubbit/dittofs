@@ -165,6 +165,10 @@ func (c *chain) run(e entry) {
 	}
 }
 
+// errWalk is a chain closed at a step that is not a valid one: a member's
+// next behind it or past its record (RFC 20 section 10.1's walk).
+var errWalk = errors.New("core: a chain's step is not a valid step")
+
 // next moves e on to the member at its next, or reports false: once the
 // chain has stopped, and after the last member, once what the chain holds
 // has gone out. A step that does not lead forward to a header inside the
@@ -182,7 +186,7 @@ func (c *chain) next(e *entry) bool {
 	if next <= e.off || next >= len(c.rec.B) {
 		c.flush(splits, nil)
 		if !c.stopped {
-			c.p.l.close(fmt.Errorf("%w: a chain's step from %d to %d, in a record of %d bytes", ErrDecode, e.off, next, len(c.rec.B)))
+			c.p.l.close(fmt.Errorf("%w: %w: a chain's step from %d to %d, in a record of %d bytes", errWalk, ErrDecode, e.off, next, len(c.rec.B)))
 		}
 		return false
 	}

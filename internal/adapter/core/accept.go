@@ -136,8 +136,10 @@ func (s *Server) acceptLoop(b *bound) {
 			// (§10.1, §10.3).
 			_ = nc.Close()
 			ls := s.sh.label(b.l.label)
-			ls.refusedAtAccept(rsnPool)
+			// The line's minute is read before the close counts, so a reader
+			// of the count finds that read done.
 			s.sh.closeLine(ls, rsnPool, cerr, true)
+			ls.refusedAtAccept(rsnPool)
 			continue
 		}
 		s.serveConn(nc, b.l, b, &charge)

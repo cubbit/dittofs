@@ -280,7 +280,7 @@ func (sh *shared) acceptLine(r reason) *lineLimiter {
 // the label whose series ls holds: one line per close, and for one closed at
 // accept, a noisy subject (RFC 20 §10.3), at most one a minute per reason
 // carrying the count held back since the last (RFC 25 §5.2), on the server's
-// clock, which decides the minute (D3).
+// clock, which decides the minute.
 func (sh *shared) closeLine(ls *labelSeries, r reason, err error, atAccept bool) {
 	if atAccept {
 		ok, held := sh.acceptLine(r).take(sh.clock.Now())

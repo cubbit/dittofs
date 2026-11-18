@@ -1635,7 +1635,7 @@ func waitClosed(t *testing.T, c *core.Conn) {
 // reason's at all, and the connections gauge fell back with it: handshake and
 // established both at zero, whatever state the close found (§10.1). A close
 // counted under another reason, not at all, or leaving the gauge raised,
-// fails here (R52, R53).
+// fails here.
 func counted(t *testing.T, m *metrics.Registry, reason string) {
 	t.Helper()
 	values, _ := scrape(t, m)
@@ -1677,6 +1677,9 @@ func (s *syncLog) reset() {
 func (s *syncLog) lines() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.buf.Len() == 0 {
+		return nil
+	}
 	return strings.Split(strings.TrimSpace(s.buf.String()), "\n")
 }
 
@@ -1725,7 +1728,7 @@ func (c *countingConn) Write(b []byte) (int, error) {
 
 // A client that closes between records is counted under client: the peer
 // closed the connection (§10.1). A close counted under another reason, or not
-// at all, fails here (R52, R53).
+// at all, fails here.
 func TestTheClientsCloseCountsUnderClient(t *testing.T) {
 	m := metrics.New("v", "c")
 	b := budgets()
@@ -1895,6 +1898,63 @@ func TestAShortHeaderCountsUnderDecode(t *testing.T) {
 	counted(t, m, "decode")
 }
 
+// A connection's series are its own Stages.Protocol's once NewConn names
+// them, the listener's only before (§10.1): a protocol whose connections name
+// another label than its listener's raises that label's handshake gauge, and
+// the listener's stays level.
+func TestAConnectionCountsUnderItsOwnProtocol(t *testing.T) {
+	m := metrics.New("v", "c")
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: relabeled{testproto.New(adapter.Deps{})}}
+	srv, err := core.NewServer(adapter.Deps{Metrics: m, Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	_, peer := servedConn(t, srv, &l)
+	defer func() { _ = peer.Close() }()
+	values, _ := scrape(t, m)
+	for label, want := range map[string]float64{"renamed": 1, testproto.Name: 0} {
+		if k := "adapter_connections{protocol=" + label + ",state=handshake}"; values[k] != want {
+			t.Errorf("%s = %v, want %v", k, values[k], want)
+		}
+	}
+}
+
+// relabeled is testproto whose connections' stages name another protocol
+// label than the stages NewServer reads with a nil connection.
+type relabeled struct{ core.Protocol }
+
+func (p relabeled) NewConn(c *core.Conn) core.Stages {
+	st := p.Protocol.NewConn(c)
+	if c != nil {
+		st.Protocol = "renamed"
+	}
+	return st
+}
+
+// A chain whose second member's next points behind it closes under walk, a
+// step that is not a valid one, and not under decode (§10.1).
+func TestABadChainStepCountsUnderWalk(t *testing.T) {
+	m := metrics.New("v", "c")
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	p := testproto.New(adapter.Deps{})
+	srv, l := protoServer(t, adapter.Deps{Metrics: m, Budgets: b}, settings.DefaultNFS(), p)
+	core.Serving(srv)
+	conn, peer := servedConn(t, srv, &l)
+	go func() { _, _ = io.Copy(io.Discard, peer) }() // the replies before the close
+	f := p.Framer()
+	body, offs := chainOf(f, echoIn(50, 7), echoIn(51, 7))
+	binary.BigEndian.PutUint32(body[offs[1]:], 3) // the second's next, behind it
+	if _, err := peer.Write(append(f.Frame(nil, len(body)), body...)); err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, conn)
+	counted(t, m, "walk")
+}
+
 // A message sealed under the session of the member before it, with none
 // before it, has no header to answer under: the close counts under unwrap
 // (§10.1), whatever testproto's own error for it is.
@@ -1919,7 +1979,7 @@ func TestAnUnwrapWithoutAHeaderCountsUnderUnwrap(t *testing.T) {
 // A connection whose stages withDefaults refuses at accept never reads: its
 // close counts under wiring, the gauge the accept raised is lowered, and its
 // line goes at the error level, one a minute for two closes of one reason
-// (§10.1, §10.3; D2: nothing but the teardown counts a close). A tear-down
+// (§10.1, §10.3: nothing but the teardown counts a close). A tear-down
 // path that counts nothing, or outside the teardown, leaves the gauge raised
 // and the reason unmoved and fails here.
 func TestTheStagesRefusalAtAcceptCountsUnderWiring(t *testing.T) {
@@ -2154,13 +2214,13 @@ func TestThePoolsCloseAtAcceptCountsAndItsLineHoldsTheMinute(t *testing.T) {
 	for range 2 {
 		refused()
 	}
-	// Wait on the line, not the counter: the second close holds its line
-	// back, which the count alone cannot see, and the line is written by the
-	// server's own goroutine, in flight past the count.
-	waitsFor(t, "the refused sockets' close lines to land", func() bool { return len(logged.lines()) == 1 })
-	if values, _ := scrape(t, m); values["adapter_connection_closes_total{protocol="+testproto.Name+",reason=pool}"] != 2 {
-		t.Fatalf("two refused sockets did not both close within the minute")
-	}
+	// Wait on the line and the counter both: the second close holds its line
+	// back, which the count alone cannot see, and the socket closes before
+	// its close is counted, so the client's end cannot see the count.
+	waitsFor(t, "the refused sockets' two closes and one line to land", func() bool {
+		values, _ := scrape(t, m)
+		return values["adapter_connection_closes_total{protocol="+testproto.Name+",reason=pool}"] == 2 && len(logged.lines()) == 1
+	})
 	logged.reset()
 	clk.Advance(61 * time.Second)
 	refused()
@@ -2197,7 +2257,7 @@ func TestThePoolsCloseAtAcceptCountsAndItsLineHoldsTheMinute(t *testing.T) {
 // A full-protocol connection that sends its Session moves the connections
 // gauge to established, once for two Sessions, and its close lowers both
 // states again (§10.1). An Established that leaves the gauge at handshake
-// fails here (R52).
+// fails here.
 func TestASessionMovesTheConnectionsGauge(t *testing.T) {
 	m := metrics.New("v", "c")
 	b := budgets()

@@ -81,7 +81,7 @@ func sockOpt(t *testing.T, nc net.Conn, level, opt int) int {
 // the idle time also Go's default, the rest not what a listener that set
 // nothing would read, Go's own keepalive waiting 15 s between probes and
 // sending 9 of them. No buffer size is set: the kernel's autotuning owns the
-// window (R47 to R50).
+// window.
 func TestTheAcceptedSocketCarriesItsOptions(t *testing.T) {
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)

@@ -255,6 +255,8 @@ func closeReason(err error) reason {
 		return rsnWrite
 	case errors.Is(err, errFrame):
 		return rsnFrame
+	case errors.Is(err, errWalk):
+		return rsnWalk
 	case errors.Is(err, ErrDecode):
 		return rsnDecode
 	case errors.Is(err, errUnwrapClose):
@@ -312,6 +314,13 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, charge *resources
 		c.teardown()
 		return c
 	}
+	// The connection's series are its own Stages.Protocol's from here, the
+	// listener's only while its stages were unbuilt (RFC 20 section 10.1).
+	if ls := s.sh.label(st.Protocol); ls != c.series {
+		c.series.states[stHandshake].Add(-1)
+		ls.accepted()
+		c.series = ls
+	}
 	f := l.Protocol.Framer()
 	record, _ := f.MaxRecord()
 	c.w = newWriter(nc, f, common.WriteTimeout, func(err error) { c.Close(fmt.Errorf("%w: %w", errAtWrite, err)) }, c.series.out)
@@ -336,7 +345,7 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, charge *resources
 
 // teardown runs once, on the reader as its loop ends, or on the accept loop for
 // a connection the registry or its stages refused: the close counted and its
-// gauge lowered, here alone (D2), then the requests still running, OnClose
+// gauge lowered, here alone, then the requests still running, OnClose
 // under a context of its own, the writer, the charge and the registry
 // (RFC 20 section 3.2's order). A teardown with no pipeline is a close at
 // accept: the stages' refusal, whose line the minute rate-limits (§10.3).

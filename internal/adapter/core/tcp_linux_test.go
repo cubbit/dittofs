@@ -18,7 +18,7 @@ const tcpUserTimeout = 18
 // An accepted socket's TCP_USER_TIMEOUT is its connection's write_timeout, in
 // milliseconds, read from the snapshot the connection loaded at accept: a
 // Reconfigure that changes write_timeout moves the next acceptance's, and the
-// first keeps its own (R49).
+// first keeps its own.
 func TestTCPUserTimeoutIsTheConnectionsWriteTimeout(t *testing.T) {
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
