@@ -557,11 +557,13 @@ type parked struct {
 
 // park is Request.Park's body, on the goroutine of pd's call, which the
 // service has registered a waiter for (§4.7). It refuses a member before the
-// last of a chain with ErrNotLast, a connection at MaxPending with
-// ErrTooManyPending, a draining one with the drain's error, and, where the
-// request's own reply buffer is larger than the small class, a reply pool
-// that cannot take a small one at once with ErrDelay of DelayResources,
-// answered in the buffer the request still holds; it sends nothing then.
+// last of a chain with ErrNotLast; a request not yet pending, on a connection
+// at MaxPending, with ErrTooManyPending, one already pending keeping its
+// slot; a request on a draining connection with the drain's error; and,
+// where the request's own reply buffer is larger than the small class, a
+// reply pool that cannot take a small one at once with ErrDelay of
+// DelayResources, answered in the buffer the request still holds; it sends
+// nothing then.
 // Otherwise the request is parked: off the hold floor and the held gauges,
 // counted toward MaxPending and in runs, its interim timer stopped, its
 // interim sent, unless it already has one, and a small reply buffer kept,
@@ -595,13 +597,9 @@ func (p *pipeline) park(pd *pending, cancel func()) (func(error), error) {
 		cancel()
 		return dropped, nil
 	}
-	n := t.n
-	if !pd.pend {
-		n++
-	}
 	var err error
 	switch {
-	case n > p.st.MaxPending:
+	case !pd.pend && t.n >= p.st.MaxPending:
 		err = ErrTooManyPending
 	case p.draining.Load():
 		err = drainErr(pd.tr.ctx, handlesOf(pd.inv))

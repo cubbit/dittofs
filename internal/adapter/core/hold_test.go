@@ -1489,6 +1489,37 @@ func TestARequestHeldThenParkedHasOneInterim(t *testing.T) {
 	})
 }
 
+// A request held at MaxPending of one, re-driven while a call the interim
+// timer found takes the connection past it, parks: its slot moves from held
+// to parked, so it is not refused, and it is answered when its wait ends
+// (§4.6, §4.7).
+func TestAHeldRequestParksPastMaxPending(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newHeld(t, 1<<20, adapter.Deps{}, clk, func(st *core.Stages) { st.MaxPending = 1 })
+		s.faults.Fail(vfs.OpGetAttr, vfs.ErrDelay)
+		read := s.faults.Hold(vfs.OpGetAttr)
+		defer read.Release()
+		create := s.faults.Hold(vfs.OpCreate)
+		defer create.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		redrive := start(func() { clk.Advance(10 * time.Millisecond) })
+		<-read.Reached()
+		s.serve(s.heldChain(11, "g")...)
+		<-create.Reached()
+		clk.Advance(time.Second)
+		s.interimOf(12)
+		read.Release()
+		<-redrive.done
+		if r := s.finalOf(2); r.Status != testproto.StatusOK || string(r.Body) != "f" {
+			t.Errorf("the held request that parked is answered %+v, want its final success with its name", r)
+		}
+		create.Release()
+		s.finalOf(12)
+	})
+}
+
 // A park whose own reply buffer is of the small class keeps it, and is not
 // refused while another request waits on the reply pool: its interim waits
 // for a status's buffer behind that request, and its final reply goes out in
