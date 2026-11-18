@@ -2537,3 +2537,18 @@ func TestPoolAWaitReadsTheHeadroomTheHoldsFill(t *testing.T) {
 		t.Fatalf("WaitSpares: %v, want nil over a pool whose held take fills the headroom the refill leaves empty", err)
 	}
 }
+
+// TestPoolWaitRecordSparesAsksNoMoreThanThePoolKeeps: a wait for more spares
+// than the pool ever holds ready answers once the pool is full, not the spare
+// refusal an idle pool short of the count would give, so a plan spanning more
+// streams than the kept spares still opens and lands what they cover.
+func TestPoolWaitRecordSparesAsksNoMoreThanThePoolKeeps(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, _, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 1}, noMax, 0, nil)
+	p.Start()
+	if err := p.WaitRecordSpares(t.Context(), 4); err != nil {
+		t.Fatalf("the wait for 4 spares over a pool keeping 2 returned %v, want the filled pool", err)
+	}
+	p.Stop()
+}

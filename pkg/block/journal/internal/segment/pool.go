@@ -749,7 +749,9 @@ func (p *Pool) WaitSpares(ctx context.Context) error {
 // two classes drawSpare tries — and answers as WaitSpares does otherwise: the
 // spare refusal naming LimitSpare and the segments still missing, once the
 // pool stands idle short of n, ErrClosed once it stopped, the context's error
-// once it is done.
+// once it is done. A count above what the pool ever keeps ready waits for
+// that many instead, so a plan over more streams than spares lands what the
+// spares cover and the next open finds those records named.
 //
 // decision: the open's loss pass waits here rather than for the pool's
 // whole goal, for the records it owes are few header-only ones and one
@@ -760,6 +762,7 @@ func (p *Pool) WaitSpares(ctx context.Context) error {
 // the roll's own refusal answers then. Overturned by an open that must
 // append more than a segment of records on one stream before it serves.
 func (p *Pool) WaitRecordSpares(ctx context.Context, n int) error {
+	n = min(n, p.t.Content+p.t.Headroom) // the most the pool ever keeps ready
 	return p.wait(ctx, func() bool { return p.recordShortLocked(n) }, func() int64 {
 		return int64(n - p.recordReadyLocked())
 	})
