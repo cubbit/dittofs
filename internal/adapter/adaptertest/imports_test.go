@@ -127,11 +127,17 @@ func forbidden(dir string, test bool, imp string) string {
 func forbiddenToAnAdapter(dir, name string, test bool, imp string) string {
 	p, local := strings.CutPrefix(imp, module)
 	wire := slices.Contains(strings.Split(dir, "/"), "wire")
+	// decision: a protocol's generator, <protocol>/wire/gen, may import os:
+	// RFC 20 §2.5 places it in wire/, and it reads and writes source files when
+	// go generate runs it, never a peer's bytes; a main package, it is in no
+	// adapter's build. It stays held to the standard library and to no network.
+	// Withdraw it if wire/gen stops being a main package.
+	generator := dir == "internal/adapter/"+name+"/wire/gen" && imp == "os"
 	switch {
 	// decision: a wire package's test files may import fileIO, since a codec's
 	// test reads its vectors from files and the rule keeps the codec pure, not
 	// its test. Withdraw it if a wire test opens a connection.
-	case wire && !test && imp != "net/netip" && slices.ContainsFunc(fileIO, func(r string) bool { return under(imp, r) }):
+	case wire && !test && !generator && imp != "net/netip" && slices.ContainsFunc(fileIO, func(r string) bool { return under(imp, r) }):
 		return "a wire package does no file or network I/O"
 	case standard(imp):
 		return ""
@@ -263,6 +269,7 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/nfs/difflib.go: imports github.com/pmezard/go-difflib/difflib: an adapter imports, from outside the module, only what its list names",
 		"internal/adapter/nfs/errgroup.go: imports golang.org/x/sync/errgroup: an adapter imports, from outside the module, only what its list names",
 		"internal/adapter/nfs/identity.go: imports github.com/cubbit/dittofs/pkg/identity: an adapter imports, of the module, only pkg/vfs, pkg/adapter, pkg/adapter/settings, pkg/resources, pkg/metrics, internal/tlsconfig, core and its own packages",
+		"internal/adapter/nfs/mount/wire/gen/main.go: imports os: a wire package does no file or network I/O",
 		"internal/adapter/nfs/prof.go: imports github.com/cubbit/dittofs/internal/prof: the service's test components and the profiler reach an adapter through its tests and adaptertest only",
 		"internal/adapter/nfs/rpc/doc.go: a package at internal/adapter/nfs/rpc, a path the first adapters used",
 		"internal/adapter/nfs/service.go: imports github.com/cubbit/dittofs/pkg/vfs/vfstest: the service's test components and the profiler reach an adapter through its tests and adaptertest only",
@@ -270,6 +277,8 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/nfs/vfsx.go: imports github.com/cubbit/dittofs/pkg/vfsx: an adapter imports, of the module, only pkg/vfs, pkg/adapter, pkg/adapter/settings, pkg/resources, pkg/metrics, internal/tlsconfig, core and its own packages",
 		"internal/adapter/nfs/wire/errgroup.go: imports golang.org/x/sync/errgroup: a wire package imports only the standard library and pkg/resources",
 		"internal/adapter/nfs/wire/file.go: imports os: a wire package does no file or network I/O",
+		"internal/adapter/nfs/wire/gen/net.go: imports net: a wire package does no file or network I/O",
+		"internal/adapter/nfs/wire/gen/tools.go: imports golang.org/x/tools/go/packages: a wire package imports only the standard library and pkg/resources",
 		"internal/adapter/nfs/wire/http.go: imports net/http: a wire package does no file or network I/O",
 		"internal/adapter/nfs/wire/net.go: imports net: a wire package does no file or network I/O",
 		"internal/adapter/nfs/wire/service.go: imports github.com/cubbit/dittofs/pkg/vfs: a wire package imports only the standard library and pkg/resources",
