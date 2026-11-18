@@ -84,7 +84,8 @@ func readIDs(r *codec.Reader) (entity.ProtocolIDs, error) {
 	ids := make(entity.ProtocolIDs, n)
 	for i := range ids {
 		ids[i] = entity.ProtocolID{Scheme: entity.ProtocolScheme(r.Uint8()), Value: r.String()}
-		if err := readLinked(r, &ids[i]); err != nil {
+		var err error
+		if ids[i].Linked, err = readLinked(r, ids[i].Scheme); err != nil {
 			return nil, err
 		}
 	}
@@ -93,6 +94,13 @@ func readIDs(r *codec.Reader) (entity.ProtocolIDs, error) {
 
 // putLinked writes a krb spelling's linked SID, empty for none. No other
 // scheme carries the field, so their encodings are unchanged.
+//
+// decision: the field changes the krb spellings' layout in the user record
+// and the PX krb row in place, at codec version 1, so a value written before
+// it fails to decode, closed, as truncated. That holds while store format 1
+// is not frozen (store.go): no release has created a store. The release
+// that first creates one freezes the format, and from then on a layout
+// change takes a new codec version that decodes the old one.
 func putLinked(w *codec.Writer, id entity.ProtocolID) *codec.Writer {
 	if id.Scheme != entity.SchemeKerberos {
 		return w
@@ -100,24 +108,27 @@ func putLinked(w *codec.Writer, id entity.ProtocolID) *codec.Writer {
 	return w.String(id.Linked)
 }
 
-// readLinked reads what putLinked wrote into id, refusing a SID that is not
-// well formed.
-func readLinked(r *codec.Reader, id *entity.ProtocolID) error {
-	if id.Scheme != entity.SchemeKerberos {
-		return nil
+// readLinked reads what putLinked wrote for a spelling of scheme, refusing
+// a SID linkedSID refuses.
+func readLinked(r *codec.Reader, scheme entity.ProtocolScheme) (string, error) {
+	if scheme != entity.SchemeKerberos {
+		return "", nil
 	}
-	if id.Linked = r.String(); id.Linked != "" && !wellFormedSID(id.Linked) {
-		return errMalformed
+	linked := r.String()
+	if linked != "" && !linkedSID(linked) {
+		return "", errMalformed
 	}
-	return nil
+	return linked, nil
 }
 
-// wellFormedSID reports a binary SID of revision 1 that is exactly as long
-// as its count of sub-authorities says, at most the fifteen a SID may have:
-// the only form a spelling is linked for.
-func wellFormedSID(b string) bool {
+// linkedSID reports the binary form of a domain account SID,
+// S-1-5-21-a-b-c-rid, exactly as long as its five sub-authorities: the
+// directory user SID, or a machine's from its PAC, the only SID a krb
+// spelling is linked for. A well-known or builtin SID never is.
+func linkedSID(b string) bool {
 	s, n, err := authsid.DecodeSID([]byte(b))
-	return err == nil && n == len(b) && s.Revision == 1 && s.SubAuthorityCount <= 15
+	return err == nil && n == len(b) && s.Revision == 1 && s.IdentifierAuthority == [6]byte{5: 5} &&
+		s.SubAuthorityCount == 5 && s.SubAuthorities[0] == 21
 }
 
 // encodeUser writes the record's kind, a user or a machine, which its key
@@ -237,23 +248,29 @@ func decodeID(b []byte) ([16]byte, error) {
 // encodeProtocolRow is id's protocol-ID row's value: a SID names a user or
 // a group, so the row carries the kind as well as the ID, and a krb row
 // also the SID it is linked for.
+//
+// decision: the krb row's linked SID is written but not read back: lookups
+// return only the row's principal. RFC 18 §4.2 keeps the SID beside the
+// principal in the row, and the record holds the same field, which is what
+// sign-in reads, since it reads the user's record anyway. Return the row's
+// copy from the lookup if a reader ever needs the SID without the record.
 func encodeProtocolRow(p entity.Principal, id entity.ProtocolID) []byte {
 	return putLinked(putPrincipal(codec.NewWriter(v1), p), id).Encode()
 }
 
-// decodeProtocolRow reads the row of id's scheme and value, returning its
-// principal and id with the row's Linked.
-func decodeProtocolRow(id entity.ProtocolID, b []byte) (entity.Principal, entity.ProtocolID, error) {
-	id.Linked = ""
+// decodeProtocolRow reads a protocol-ID row of scheme: its principal, and
+// the SID a krb row is linked for.
+func decodeProtocolRow(scheme entity.ProtocolScheme, b []byte) (entity.Principal, string, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.Principal{}, id, err
+		return entity.Principal{}, "", err
 	}
 	p := readPrincipal(r)
-	if err := readLinked(r, &id); err != nil {
-		return p, id, err
+	linked, err := readLinked(r, scheme)
+	if err != nil {
+		return p, "", err
 	}
-	return p, id, r.Done()
+	return p, linked, r.Done()
 }
 
 // encodeShareInfo writes the fields a share put owns; State is its own record.

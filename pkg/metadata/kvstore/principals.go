@@ -48,7 +48,7 @@ func (p Principals) ByProtocolID(ctx context.Context, id entity.ProtocolID) (ent
 		if err != nil {
 			return err
 		}
-		out, _, err = decodeProtocolRow(id, b)
+		out, _, err = decodeProtocolRow(id.Scheme, b) // the row's linked SID unread: see encodeProtocolRow
 		return err
 	})
 	return out, err

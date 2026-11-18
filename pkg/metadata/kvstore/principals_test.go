@@ -160,20 +160,20 @@ func TestKrbRowHoldsLinked(t *testing.T) {
 		if gen, err = cp.PutUser(ctx, u, gen, entity.Alloc{}); err != nil {
 			t.Fatalf("put linked %q: %v", linked, err)
 		}
-		var got entity.ProtocolID
 		var holder entity.Principal
+		var got string
 		if err := s.kv.View(ctx, func(r kv.Reader) error {
 			b, err := r.Get(protocolKey(krb))
 			if err != nil {
 				return err
 			}
-			holder, got, err = decodeProtocolRow(krb, b)
+			holder, got, err = decodeProtocolRow(krb.Scheme, b)
 			return err
 		}); err != nil {
 			t.Fatalf("linked %q: reading the krb row: %v", linked, err)
 		}
-		if holder != u.Principal || got != krb {
-			t.Errorf("krb row = %v %q, want %v %q (linked for %q)", holder, got, u.Principal, krb, linked)
+		if holder != u.Principal || got != krb.Linked {
+			t.Errorf("krb row = %v linked %q, want %v linked %q (put linked for %q)", holder, got, u.Principal, krb.Linked, linked)
 		}
 	}
 }
