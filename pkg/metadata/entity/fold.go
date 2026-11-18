@@ -85,8 +85,10 @@ func FoldShareName(name string) string { return string(FoldUpcase.Fold([]byte(na
 // are kept as they are.
 //
 // ponytail: the fold follows the Unicode tables of the Go release that built
-// the binary, so a stored key could drift when a release changes a fold.
-// Re-key every user and group name row when a toolchain upgrade changes one.
+// the binary, so a stored key could drift when a release changes a fold;
+// TestPrincipalFoldPinned fails when one does. Freeze the fold into a
+// generated table, as the upcase rule is, when a toolchain upgrade first
+// changes it, or else re-key every user and group name row on that upgrade.
 func FoldPrincipalName(name string) string {
 	out := make([]byte, 0, len(name))
 	for len(name) > 0 {
