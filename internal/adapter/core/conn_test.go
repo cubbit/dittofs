@@ -98,6 +98,11 @@ func TestStagesWithoutErrorsClose(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a connection without an error table was not closed")
 	}
+	// No registry entry is left of it: a connection refused before its reader
+	// starts is never registered.
+	for range srv.Connections() {
+		t.Error("a connection refused before it read is still registered")
+	}
 	buf := make([]byte, 1)
 	if _, err := peer.Read(buf); !errors.Is(err, io.EOF) {
 		t.Fatalf("the peer's read returns %v, want the connection's end", err)
@@ -1217,6 +1222,75 @@ func TestKeepsAreHeldOneEach(t *testing.T) {
 	}
 	_ = client.Close()
 	<-core.ConnDone(conn)
+}
+
+// heldDeadline is a pipe end whose read-deadline writes hold: each one enters,
+// telling the test, and leaves on its release. A deadline in the past, the
+// close's own stop, passes through: the close is what the test races.
+type heldDeadline struct {
+	net.Conn
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h *heldDeadline) SetReadDeadline(t time.Time) error {
+	if !t.IsZero() && t.Before(time.Now()) {
+		return h.Conn.SetReadDeadline(t)
+	}
+	h.entered <- struct{}{}
+	<-h.release
+	return h.Conn.SetReadDeadline(t)
+}
+
+// A close racing the reader's deadline writes still stops it. Held mid-write
+// at each of the three - the arming at the record's first bytes, the arming
+// the receive grant starts, and the disarm at the record's end - the close
+// runs to its end first, its stop set under the held write and overwritten by
+// it once released; the reader stops all the same, before a backstop shorter
+// than read_timeout, each time (RFC 20 section 6.4, as the amendment states
+// the check after each deadline write).
+func TestACloseRacingEachDeadlineWriteStillStopsTheReader(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		snap := settings.DefaultNFS()
+		snap.ReadTimeout = 3 * time.Second
+		srv, l := testServer(t, adapter.Deps{Budgets: b}, snap)
+		for write := 1; write <= 3; write++ {
+			nc, peer := net.Pipe()
+			held := &heldDeadline{Conn: nc, entered: make(chan struct{}), release: make(chan struct{})}
+			conn := core.ServeConn(srv, held, &l)
+			t.Cleanup(func() { _ = peer.Close() })
+			c := testproto.NewClient(peer)
+			sent := make(chan error, 1)
+			go func() {
+				sent <- c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("hi")})
+			}()
+			for i := 1; i <= write; i++ {
+				<-held.entered
+				if i == write {
+					// The close runs to its end while the reader is held
+					// mid-write: past the cancel, its stop lands.
+					conn.Close(nil)
+				}
+				held.release <- struct{}{}
+			}
+			select {
+			case <-core.ConnDone(conn):
+			case <-held.entered: // the reader read on past a stopped connection
+				t.Fatalf("held at write %d: the reader went on to the next deadline write after the close", write)
+			case <-time.After(2 * time.Second):
+				t.Fatalf("held at write %d: the reader did not stop once its deadline overwrote the close's stop", write)
+			}
+			select {
+			case err := <-sent:
+				if err != nil {
+					t.Fatalf("held at write %d: the client's send: %v", write, err)
+				}
+			default:
+			}
+		}
+	})
 }
 
 // The connection-state charge the accept loop took is released by the
