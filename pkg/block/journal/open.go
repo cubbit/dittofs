@@ -475,10 +475,12 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 // longer holds raises nothing: the tracker answers no state for it.
 //
 // ponytail: a deferral held here ends only through EndDeferral, which the
-// emptying calls for an ended holder alone, so a sealed holder stands until a
-// process restart re-detects its drop and the open copies it. Upgrade to a
-// running copy that ends a sealed holder's deferral in place when a holder
-// standing for a whole process lifetime shows up in the disk accounting.
+// emptying calls for an ended holder alone, and the emptying copies ended
+// segments only. A sealed holder's deferral therefore never ends in this
+// process, its loss is never recorded, and the next open re-defers it, so it
+// stands across restarts too. Upgrade to an emptying that copies sealed
+// holders, ending the deferral in the copy, when a holder standing this way
+// shows up in the disk accounting.
 func holdDeferredHolders(c *datapath.Core, dir string, id core.JournalID) error {
 	deferred, err := durability.DeferredFor(dir, id)
 	if err != nil {
