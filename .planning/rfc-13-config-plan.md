@@ -1359,7 +1359,7 @@ and its §6.1 row naming this epic). No `dt` suite builds the image, so it is ch
   never initialise on their own: their entrypoint stays `dfs` and their `CMD` stays `dfs start`, so
   a store volume that is unbound, mistyped or mounted late refuses the start rather than minting a
   new installation (RFC 13 §2.2). Initialisation is an explicit step for them, as it is for
-  `packaging/dfs.service`, which keeps `dfs start`: `docker run … init`, with the first password
+  `scripts/packaging/dfs.service`, which keeps `dfs start`: `docker run … init`, with the first password
   given by reference to a file the operator mounts (RFC 23 §5.4), since D7 refuses
   `DITTOFS_ADMIN_INITIAL_PASSWORD`, then `docker run … start`, both mounting the same volumes, the
   five the images declare (`Dockerfile`'s `VOLUME`), since an `init` without them writes anonymous

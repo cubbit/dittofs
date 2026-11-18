@@ -62,10 +62,7 @@ benchmark_results/
 # cmd/bench pprof output (per-area subdir: _profiles/<area>/<workload>-<ts>/)
 _profiles/
 
-# POSIX test results
-test/posix/results/*.txt
-test/posix/results/*.log
-test/posix/results/*.json
+# POSIX test config (the results/ dir is covered by the results/ rule below)
 test/posix/test-config.yaml
 
 # OS
@@ -106,8 +103,10 @@ bench-results-*/
 # local artifacts / caches (never committed)
 graphify-out/
 .tokensave/
+# any results/ directory at any depth: conformance and harness runs drop logs
+# there, some credential-bearing (test/smb-conformance/results). Tracked files
+# under test/posix/results/ stay tracked; new ones need git add -f.
 results/
-bench/results/
 # Upstream NFS suites fetched by test/nfs-mount/fetch.sh
 test/nfs-mount/.cache/
 infra/infra
