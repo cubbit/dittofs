@@ -88,14 +88,15 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 		case segment.Sealed:
 			reason = segment.NotHeld
 		case segment.Ended:
-			// decision: the ended window and the damaged-segment block a
-			// running journal's retirement re-reads are not consulted here,
-			// for neither can answer true before this step runs: a window
-			// opens only when a stream appends, and the journal the open
-			// holds has served no operation; a segment turns damaged only on
-			// a serving read's corrupt find. The first re-reads a segment
-			// facing either are the worker's own, past the open.
-			reason = segment.ReasonEnded
+			// decision: an ended segment is never retired here, held or not:
+			// the emptying step owns every one. An unheld ended segment may
+			// hold the one good copy of a record whose duplicate the index
+			// serves in its place, and only the emptying reads that duplicate
+			// whole before the segment goes; with nothing to carry, the
+			// emptying retires the segment through the same call this step
+			// would. Withdrawn if the walk ever verifies every payload, so a
+			// served duplicate is proven whole before the open reaches here.
+			continue
 		default:
 			// decision: an Active row is never a retirement's candidate,
 			// whatever its bytes hold — the retirement path itself refuses
@@ -240,7 +241,10 @@ type carriedCopy struct {
 	in      copyInput
 	file    core.FileID
 	repoint bool
-	reg     reclaim.Rec
+	// from is the placement whose served pieces move to the copy: the
+	// record's own, or a rotten twin's the index served in its place.
+	from index.RecordAt
+	reg  reclaim.Rec
 }
 
 // lossWrite is one loss record the emptying of one ended segment owes: the
@@ -319,19 +323,37 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			continue // header-only: the registrations below carry those, never payloads
 		}
 		at := index.RecordAt{Segment: id, Offset: rec.At}
+		from := at
 		if !st.Rebuilt.Index.Names(rec.File, at) {
 			// Repack carries nothing the index answers for from this
 			// placement — no held piece and no retained one, the limit's
 			// own kept extents included — so the record answers droppable by
-			// every rule the index keeps, and it goes with the segment.
-			continue
-		}
-		if other, found := e.standingCopy(rec, id); found {
-			// The copy already verifies in a segment the open neither ends
-			// nor saw fail, so the bytes live on there: nothing is copied and
-			// the served pieces move to the placement that stays.
-			moves = append(moves, moveAt{file: rec.File, from: at, to: other})
-			continue
+			// every rule the index keeps, and it goes with the segment. The
+			// one exception is a duplicate the index serves in its place
+			// whose payload does not verify: a skip stands only on a copy
+			// that verifies whole, so this copy is carried and the served
+			// pieces move from the rotten twin to it.
+			twin, rots, terr := e.rottenTwin(rec, id)
+			if terr != nil {
+				return terr
+			}
+			if !rots {
+				continue
+			}
+			from = twin
+		} else {
+			other, found, serr := e.standingCopy(rec, id)
+			if serr != nil {
+				return serr
+			}
+			if found {
+				// The copy already verifies whole in a segment the open
+				// neither ends nor saw fail, so the bytes live on there:
+				// nothing is copied and the served pieces move to the
+				// placement that stays.
+				moves = append(moves, moveAt{file: rec.File, from: at, to: other})
+				continue
+			}
 		}
 		bytes, refused := e.readPayload(id, rec)
 		synced := sc.Sealed || named[id] || int64(rec.At) < sc.SyncedThrough || int64(rec.At) < through[id]
@@ -396,7 +418,7 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 		ins = append(ins, carriedCopy{in: copyInput{
 			Bytes: bytes, Segment: id, At: int64(rec.At),
 			Seq: rec.Numbers.Seq, Version: rec.Numbers.Version,
-		}, file: rec.File, repoint: true})
+		}, file: rec.File, repoint: true, from: from})
 	}
 	// The aside records the tracker registered live: judged by the tracker's
 	// own drop test, a record that answers droppable is dead weight the
@@ -511,7 +533,7 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 		}
 		moves = append(moves, moveAt{
 			file: ins[i].file,
-			from: index.RecordAt{Segment: id, Offset: uint32(ins[i].in.At)},
+			from: ins[i].from,
 			to:   index.RecordAt{Segment: target, Offset: uint32(at[i])},
 		})
 	}
@@ -656,9 +678,11 @@ func (e *emptying) freedTakes(pred core.SegmentID) []core.SegmentID {
 // standingCopy answers the placement a verifying copy of rec already holds in
 // a segment the open neither ends nor saw fail: its own Ended rows are
 // excluded — each is emptied or was, and its records carry through its own
-// leg — and so is every unsealed row, whose bytes nothing proved. Such a
-// segment stays held.
-func (e *emptying) standingCopy(rec index.Record, id core.SegmentID) (index.RecordAt, bool) {
+// leg — and so is every unsealed row, whose bytes nothing proved. The copy is
+// read whole, payload included, and one that does not verify is no standing
+// copy. Such a segment stays held. A read no bounded attempt completed
+// refuses the open.
+func (e *emptying) standingCopy(rec index.Record, id core.SegmentID) (index.RecordAt, bool, error) {
 	scans := slices.Clone(e.st.Rebuilt.Scans)
 	slices.SortFunc(scans, func(a, b segmentScan) int { return cmp.Compare(a.ID, b.ID) })
 	for i := range scans {
@@ -689,11 +713,42 @@ func (e *emptying) standingCopy(rec index.Record, id core.SegmentID) (index.Reco
 		for _, other := range sc.Records {
 			if other.Numbers == rec.Numbers && other.File == rec.File && other.Kind == rec.Kind &&
 				other.Off == rec.Off && other.Len == rec.Len {
-				return index.RecordAt{Segment: sc.ID, Offset: other.At}, true
+				_, _, rot, rerr := readRecordWhole(e.rd, e.identity, sc.ID, int64(other.At))
+				if rerr != nil {
+					return index.RecordAt{}, false, rerr
+				}
+				if rot {
+					continue
+				}
+				return index.RecordAt{Segment: sc.ID, Offset: other.At}, true, nil
 			}
 		}
 	}
-	return index.RecordAt{}, false
+	return index.RecordAt{}, false, nil
+}
+
+// rottenTwin answers the placement of a duplicate of rec — same sequence
+// number, in a segment other than id — the index serves over rec's extent in
+// its place, when that duplicate's payload does not verify on a whole read.
+// rots is false when the index serves no such duplicate or it verifies. A read
+// no bounded attempt completed refuses the open.
+func (e *emptying) rottenTwin(rec index.Record, id core.SegmentID) (index.RecordAt, bool, error) {
+	placed, _ := e.st.Rebuilt.Index.Span(rec.File, core.Extent{Off: rec.Off, Len: rec.Len})
+	var read []index.RecordAt
+	for _, p := range placed {
+		if p.Seq != rec.Numbers.Seq || p.Record.Segment == id || slices.Contains(read, p.Record) {
+			continue
+		}
+		read = append(read, p.Record)
+		_, _, rot, rerr := readRecordWhole(e.rd, e.identity, p.Record.Segment, int64(p.Record.Offset))
+		if rerr != nil {
+			return index.RecordAt{}, false, rerr
+		}
+		if rot {
+			return p.Record, true, nil
+		}
+	}
+	return index.RecordAt{}, false, nil
 }
 
 // asideCopyVerifies answers whether a copy of the aside record rec verifies

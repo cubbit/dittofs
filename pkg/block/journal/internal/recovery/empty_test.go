@@ -1306,3 +1306,48 @@ func TestEmptyingTargetSyncFailure(t *testing.T) {
 		}
 	})
 }
+
+// TestAGoodEndedCopyOutlivesARottenStandingTwin holds the skip's payload rule:
+// an ended segment holds a write whose duplicate, same numbers and same
+// extent, sits in a sealed segment the open keeps, and the duplicate's body
+// rots before the emptying reads it. The standing copy does not verify, so
+// the ended segment's good copy is carried into a sealed spare rather than
+// unlinked in its favour, and the extent serves a copy that verifies whole.
+func TestAGoodEndedCopyOutlivesARottenStandingTwin(t *testing.T) {
+	file := tailFile()
+	const off, n = 0x4100, 16
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, damageHeader(buildSeg(2, collectWrite(7, file, 5, 5, off, n))))
+	twin, _ := buildSealed(3, collectWrite(7, file, 5, 5, off, n))
+	r.plantSeg(3, twin)
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, err := st.Assembled.Set.State(2); err != nil || got != segment.Ended {
+		t.Fatalf("segment 2's row got %v (%v), want Ended by its damaged header", got, err)
+	}
+	if got, err := st.Assembled.Set.State(3); err != nil || got != segment.Sealed {
+		t.Fatalf("segment 3's row got %v (%v), want Sealed and standing", got, err)
+	}
+	// The twin's body rots between the open's walk and the emptying's read.
+	rotByte(t, r, format.SegmentName(3), format.SegmentHeaderSize+format.RecordHeaderSize)
+
+	h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 1})
+	if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil); err != nil {
+		t.Fatalf("Emptying: %v", err)
+	}
+	placed, ok := st.Rebuilt.Index.Lookup(file, off)
+	if !ok || placed.Seq != 5 {
+		t.Fatalf("the extent at %#x serves %+v (%v), want the write of seq 5", off, placed, ok)
+	}
+	if placed.Record.Segment == 2 || placed.Record.Segment == 3 {
+		t.Fatalf("the extent serves from segment %d, want the sealed copy of the ended segment's good record", placed.Record.Segment)
+	}
+	rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
+	if _, _, rot, rerr := readRecordWhole(rd, journalID, placed.Record.Segment, int64(placed.Record.Offset)); rerr != nil || rot {
+		t.Errorf("the served copy in segment %d does not verify whole (rot %v, err %v), want the good copy carried", placed.Record.Segment, rot, rerr)
+	}
+}
