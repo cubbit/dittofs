@@ -25,6 +25,7 @@ var (
 	_ = func(j *Journal) error { return j.Forget(context.Context(nil), ShareTag(0)) }
 	_ = func(j *Journal) error { return j.Strand(ShareTag(0)) }
 	_ = func(j *Journal) (Version, error) { return j.Draw() }
+	_ = func(j *Journal) Version { return j.NextVersion() }
 	_ = func(j *Journal) error { return j.SetVersionLimit(Version{}) }
 
 	_ = func(h *Handle) error { return h.Close() }

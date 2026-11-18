@@ -14,6 +14,37 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 )
 
+func TestNextVersionFollowsTheJournalCounter(t *testing.T) {
+	j := newTestJournal(t)
+	withLimit(t, j)
+
+	floor := Version{Counter: 100}
+	if _, err := j.Share(1, 0, floor); err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+
+	next := Version{Counter: floor.Counter + 1}
+	if got := j.NextVersion(); got != next {
+		t.Fatalf("NextVersion after attaching a share = %v, want %v", got, next)
+	}
+
+	if got, err := j.Draw(); err != nil || got != next {
+		t.Fatalf("Draw = %v, %v, want %v, nil", got, err, next)
+	}
+
+	next.Counter++
+	if got := j.NextVersion(); got != next {
+		t.Errorf("NextVersion after Draw = %v, want %v", got, next)
+	}
+
+	if err := j.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := j.NextVersion(); got != (Version{}) {
+		t.Errorf("NextVersion after Close = %v, want zero", got)
+	}
+}
+
 // TestStats_ListsTagsHoldingRecordsWithoutAHandle checks a journal whose share
 // handle is closed still lists the tag that holds records, with no limit, and
 // the share's figures are the ones its records make.

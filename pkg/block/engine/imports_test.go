@@ -35,7 +35,7 @@ var allowed = map[string][]string{
 	// put the fault-injecting kv.KV under that store. enginewire's test runs
 	// its calls over the same real store, journal and clock, under the
 	// profiler.
-	module + "pkg/block/journal/journaltest":     {"enginetest", wireTests},
+	module + "pkg/block/journal/journaltest":     {"enginetest", internalTests, wireTests},
 	module + "pkg/block/journal/journaltest/kit": {"enginetest"},
 	module + "internal/prof":                     {"enginetest", unitTests, wireTests},
 	module + "pkg/metadata/kv":                   {"enginetest", unitTests, wireTests},
@@ -56,9 +56,8 @@ const unitTests = "._test"
 // wireTests names enginewire's external test package.
 const wireTests = "enginewire_test"
 
-// internalTests names the engine's test files in its own package, which may
-// import pkg/sim, the test clock's package, and nothing else of the unit
-// composition.
+// internalTests names the engine's test files in its own package, which use
+// the test clock and a real journal fixture to check the version-limit probe.
 const internalTests = "._internal"
 
 // TestImportRule walks every package under this directory, test packages

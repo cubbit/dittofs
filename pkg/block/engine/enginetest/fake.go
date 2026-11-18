@@ -197,6 +197,16 @@ func (j *FakeJournal) Share(tag journal.ShareTag, limit int64, floor journal.Ver
 	return h, nil
 }
 
+// NextVersion reports the version the next successful Draw would issue.
+func (j *FakeJournal) NextVersion() journal.Version {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.closed {
+		return journal.Version{}
+	}
+	return journal.Version{Counter: j.last + 1}
+}
+
 // Draw issues the next version.
 func (j *FakeJournal) Draw() (journal.Version, error) {
 	j.mu.Lock()

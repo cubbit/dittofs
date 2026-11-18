@@ -120,7 +120,7 @@ func (c *Core) Stats() Stats {
 	ds := c.cache.Stats()
 	s.OpenDescriptors, s.DescriptorLimit = ds.Open, ds.Limit
 
-	s.VersionLimit, s.VersionsLeft, s.NextVersion = c.counters.Limit(), c.counters.VersionsLeft(), c.counters.NextVersion()
+	s.VersionLimit, s.VersionsLeft, s.NextVersion = c.counters.Limit(), c.counters.VersionsLeft(), c.NextVersion()
 
 	d := c.dur.Stats()
 	s.DamagedSegments, s.LastSyncError, s.SyncDuration = int(d.DamagedSegments), d.LastSyncError, d.SyncDuration

@@ -538,7 +538,7 @@ func (e *Engine) writeLimits(
 	j Journal,
 	served []Share,
 ) (journal.Version, error) {
-	limit := startLimit(j.Stats().NextVersion, e.block)
+	limit := startLimit(j.NextVersion(), e.block)
 	to := make(map[entity.ShareID]entity.JournalVersion, len(served))
 
 	for _, s := range served {
@@ -1061,7 +1061,7 @@ func (e *Engine) raiseLoop(vl *versionLimit) {
 // stillDue reports whether vl's journal is still within the trigger, read
 // from the limit last passed, the counter and the settings now.
 func (e *Engine) stillDue(vl *versionLimit) bool {
-	next := vl.j.Stats().NextVersion.Counter
+	next := vl.j.NextVersion().Counter
 	left := headroom(vl.last.Load(), max(next, 1)-1)
 
 	return due(left, vl.rate.peak(e.second()), e.margin(), e.block)
@@ -1111,7 +1111,7 @@ func (e *Engine) raiseOnce(ctx context.Context, vl *versionLimit) error {
 // has committed (RFC 8 §2.7, RFC 1 §4.3). The limit keeps a zero epoch. The
 // caller holds the raise lock.
 func (e *Engine) raiseLocked(ctx context.Context, vl *versionLimit, also []entity.ShareID) error {
-	next := vl.j.Stats().NextVersion
+	next := vl.j.NextVersion()
 	mark := journal.Version{
 		Counter: limitTarget(vl.last.Load(), next.Counter, e.block),
 	}

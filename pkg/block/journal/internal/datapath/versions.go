@@ -6,6 +6,11 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
+// NextVersion reads the counter without collecting journal statistics.
+func (c *Core) NextVersion() core.Version {
+	return c.counters.NextVersion()
+}
+
 // Draw issues the next content version and appends nothing: no record is
 // written, no segment byte is spent and no index entry is published, so a
 // drawn version is recorded nowhere on disk. It is how a change stored
