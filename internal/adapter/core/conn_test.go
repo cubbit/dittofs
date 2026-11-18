@@ -78,6 +78,30 @@ func TestAnEchoIsAnswered(t *testing.T) {
 	}
 }
 
+// An operation the settings switch off is refused not supported on a
+// connection the server accepted: serveConn hands its pipeline the snapshot
+// it accepted with, and the row checks answer the switched-off Echo with
+// not supported. A pipeline built without its settings answers it, which is
+// what dropping the snapshot from the link builds.
+func TestASwitchedOffOperationIsRefusedOnAConnection(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	snap := settings.DefaultNFS()
+	snap.DisabledOperations = []string{"Echo"}
+	srv, l := testServer(t, adapter.Deps{Budgets: b}, snap)
+	c := connPair(t, srv, l)
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("hi")}); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := c.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 1 || rs[0].Status != testproto.StatusNotSupported {
+		t.Fatalf("a switched-off Echo is answered %+v, want not supported", rs)
+	}
+}
+
 // A connection whose stages name no error table closes before it reads.
 func TestStagesWithoutErrorsClose(t *testing.T) {
 	b := budgets()

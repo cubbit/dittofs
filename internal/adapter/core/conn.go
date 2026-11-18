@@ -200,7 +200,7 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservati
 	f := l.Protocol.Framer()
 	common := snap.Common()
 	c.w = newWriter(nc, f, common.WriteTimeout, c.Close)
-	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, out: c.w.out, close: c.Close, idle: c.idle})
+	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, set: snap, out: c.w.out, close: c.Close, idle: c.idle})
 	c.rd = newReader(nc, f, s.recv, c.remote, common.ReadTimeout)
 	registered := s.register(c)
 	if !registered {
