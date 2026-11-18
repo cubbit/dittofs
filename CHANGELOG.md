@@ -111,6 +111,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which belong to root and anonymous. Deleting a user deletes its NT hash
   along with its password hash.
 
+- **The journal's open cuts and seals a crash's torn tail on the device.**
+  A segment the tear reached is truncated at the offset its last verifying
+  record ends, the truncation is made durable, and the segment is sealed
+  with a catalogue its own surviving bytes answer, so the next open reads
+  no tear and appends behind none. The open also records what the crash
+  corrupted: every corrupt drop and every record a failed window left
+  unrecorded gets a loss record, drawn on a reserve the headroom keeps for
+  the open. An open whose corrupt losses would run past that reserve is
+  refused before any record is appended, for their deferral needs the
+  segment-emptying that is not built; an open whose recovery ends a segment
+  is refused the same way.
+
 ## [0.36.0] — 2026-10-19
 
 0.36.0 is a fix release, mostly for SMB. Before upgrading, check any SMB

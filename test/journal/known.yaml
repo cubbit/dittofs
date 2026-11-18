@@ -588,9 +588,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path and recovery that cuts and seals a torn tail.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path and recovery that cuts and seals a torn tail. The segment the stub names is an allocation the machine hands the row: the open-grading machines answer 3 or 4 with the same failure, so the entry matches the words the failure shares, not the id.'
   issue: '#3814'
-  message: 'segment 3 is not among the journal'
+  message: 'is not among the journal'
 
 - test: TestRFC28A_AZeroSlotIsNotTheEnd
   status: fail
@@ -670,7 +670,7 @@
   category: feature
   reason: 'The journal opens over the directory holding segments; the reopen seals the segment the cache-only marker names, and the mark the probe reads back names the open''s emptying as its next wall: the row stops there, and the assemble the emptying''s fate reads reaches the emptying last.'
   issue: '#4033'
-  message: 'segment 3 is not among the journal's'
+  message: "segment 3 is not among the journal's"
 
 - test: TestRFC28A_FooterIsNotAuthoritative
   status: fail

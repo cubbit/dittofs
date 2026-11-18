@@ -3050,6 +3050,16 @@ func TestRFC28C_AMarkProvesOnlyUpToThrough(t *testing.T) {
 
 		older := writeSynced(t, f, 0, 0, 0, size)
 		seg := entryAt(t, f, id, 0).Location.Segment
+		// The window the cut assumes, pinned: from here to the crash nothing
+		// syncs seg, so the pending overwrite stays the one unsynced write
+		// past the mark. A sync the stream's commit still owed seg — one a
+		// loaded machine can land between the pending write and the crash,
+		// covering the payload the tear is about to cut — parks at the seam
+		// and dies with the crash, unsynced like the write it served. The
+		// tear lands at the seam while the hold is still armed, for it needs
+		// the pending write unsynced; the parked sync releases after it, and
+		// the fixture's crash then reopens over the tore image alone.
+		held := f.Seam.Hold(t, kit.OpSync, segmentName(seg))
 		pending := writeRec(t, f, 0, 0, 0, size) // the unsynced overwrite of the older content
 		later := writeSynced(t, f, 1, 1, 0, size)
 		_ = later
@@ -3057,7 +3067,11 @@ func TestRFC28C_AMarkProvesOnlyUpToThrough(t *testing.T) {
 		// The last mark of the stream stops at the older record's end: the
 		// pending overwrite sits past it, and the crash cuts its payload in
 		// half, a torn tail no report names.
-		f.Crash(kit.TornIn(segmentName(seg), 32<<10))
+		if err := f.Seam.Crash(kit.TornIn(segmentName(seg), 32<<10)); err != nil {
+			t.Fatalf("the torn crash with the segment's sync held: %v", err)
+		}
+		held.Release()
+		f.Crash()
 
 		// The crash tears every file's last unsynced write, so an unsynced
 		// spare beside the record's own tail counts too: the figure is a
