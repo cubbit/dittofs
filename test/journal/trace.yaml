@@ -114,7 +114,7 @@ rfc1 / 9.4 / B / "headroom is allocated":
 rfc1 / 9.4 / B / "pinned segments bounded":
   tests: [TestRFC1B_PinnedSegmentsBounded]
 rfc1 / 9.4 / B / "a failed window does not wedge":
-  tests: [TestRFC1B_FailedWindowDoesNotWedge]
+  tests: [TestRFC1B_FailedWindowDoesNotWedge, TestRFC28C_AFailedWindowAtTheMaximumIsFailedWhole]
 rfc1 / 9.4 / B / "floor buckets":
   tests: [TestRFC1B_FloorBuckets]
 rfc1 / 9.4 / B / "bounds":
