@@ -1586,3 +1586,84 @@ func TestACarryOverARottenTwinSkipsAFreedTakeBelowIt(t *testing.T) {
 		})
 	}
 }
+
+// TestTheCopyOutranksARottenTwinAcrossTwoOpens permutes the ids of the
+// emptied predecessor, the take its durable unlink frees, the ended segment
+// and the sealed twin whose copy of the ended record rots before the
+// emptying reads it. The rebuild serves the greatest placement and verifies
+// no payload, so after a second open the record the index serves must still
+// verify, wherever the ids fall. With every freed take below the twin and the
+// reserve empty, the open fails on the pool's spare refusal rather than place
+// the copy low, and the ended segment stands.
+func TestTheCopyOutranksARottenTwinAcrossTwoOpens(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		pred, take, ended, twin core.SegmentID
+		reserve                 int
+		refused                 bool
+	}{
+		{name: "take_below_twin", pred: 2, take: 3, ended: 4, twin: 7, reserve: 1},
+		{name: "take_above_twin", pred: 2, take: 9, ended: 4, twin: 7, reserve: 1},
+		{name: "take_above_twin_reserve_empty", pred: 2, take: 9, ended: 4, twin: 7},
+		{name: "take_below_twin_reserve_empty", pred: 2, take: 3, ended: 4, twin: 7, refused: true},
+		{name: "twin_below_ended_take_below_twin", pred: 1, take: 2, ended: 4, twin: 3, reserve: 1},
+		{name: "twin_below_ended_take_above_all", pred: 1, take: 9, ended: 4, twin: 3, reserve: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := tailFile()
+			r := newRig(t)
+			r.writeFormat()
+			r.plantSeg(tc.ended, damageHeader(buildSeg(tc.ended, collectWrite(7, file, 5, 5, 0, 16))))
+			pred, _ := buildSealed(tc.pred)
+			r.write(format.SegmentName(tc.pred), append(pred, make([]byte, testSegCap-int64(len(pred)))...))
+			take := raw.SegmentHeader{Identity: journalID, ID: uint64(tc.take), Predecessor: uint64(tc.pred)}.Bytes()
+			r.write(format.SegmentName(tc.take), append(take, make([]byte, testSegCap-int64(len(take)))...))
+			twin, _ := buildSealed(tc.twin, collectWrite(7, file, 5, 5, 0, 16), collectWrite(7, file, 6, 6, 0x5100, 16))
+			r.plantSeg(tc.twin, twin)
+
+			d := r.runDeps()
+			d.SegmentCap = testSegCap
+			mark := core.SyncMark{Segment: uint64(tc.pred), Sequence: 9, Offset: format.SegmentHeaderSize, Through: format.SegmentHeaderSize}
+			st, err := Run(context.Background(), d, core.Version{}, journalID, []core.SyncMark{mark})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !slices.Contains(st.Spares.Held, tc.take) {
+				t.Fatalf("the spares phase did not withhold the take %d naming the predecessor %d", tc.take, tc.pred)
+			}
+			rotByte(t, r, format.SegmentName(tc.twin), format.SegmentHeaderSize+format.RecordHeaderSize)
+			h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: tc.reserve})
+			err = Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, []core.SyncMark{mark})
+			if tc.refused {
+				if !errors.Is(err, core.ErrNoSpace) {
+					t.Fatalf("Emptying with every freed take below the twin and no reserve answered %v, want the pool's spare refusal", err)
+				}
+				if !slices.Contains(r.listing(), format.SegmentName(tc.ended)) {
+					t.Fatalf("the refused emptying unlinked the ended segment %d, want it standing for the next open", tc.ended)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Emptying: %v", err)
+			}
+
+			d2 := r.runDeps()
+			d2.SegmentCap = testSegCap
+			st2, err := Run(context.Background(), d2, core.Version{}, journalID, nil)
+			if err != nil {
+				t.Fatalf("the second Run: %v", err)
+			}
+			if n := verifyingCopies(t, r, 5); n < 1 {
+				t.Fatalf("seq 5 verifies in %d placements after the second open (listing %v), want at least 1", n, r.listing())
+			}
+			p, ok := st2.Rebuilt.Index.Lookup(file, 0)
+			if !ok {
+				t.Fatalf("the second open serves nothing at seq 5's extent, want a verifying copy")
+			}
+			rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
+			if _, _, rot, rerr := readRecordWhole(rd, journalID, p.Record.Segment, int64(p.Record.Offset)); rerr != nil || rot {
+				t.Errorf("the second open serves seq %d from segment %d at %d, which does not verify (rot %v, err %v), want the copy above the rotten twin %d", p.Seq, p.Record.Segment, p.Record.Offset, rot, rerr, tc.twin)
+			}
+		})
+	}
+}
