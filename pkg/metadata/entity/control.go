@@ -1,6 +1,8 @@
 package entity
 
 import (
+	"context"
+	"iter"
 	"net/netip"
 	"time"
 )
@@ -457,6 +459,18 @@ type Setting struct {
 type SettingScope struct {
 	Kind ScopeKind
 	ID   [16]byte // zero at installation scope
+}
+
+// SettingKey is the cursor of a cross-scope settings read: the scope and key
+// of the last setting a page returned.
+type SettingKey struct {
+	Scope SettingScope
+	Key   string
+}
+
+// SettingsReader is the one read settings.Read makes of the store.
+type SettingsReader interface {
+	AllSettings(ctx context.Context, after SettingKey) iter.Seq2[Setting, error]
 }
 
 type ScopeKind uint8

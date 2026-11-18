@@ -2,7 +2,7 @@ package bootstrap
 
 import "strings"
 
-// ApplyDefaults sets default values for any unspecified configuration fields.
+// applyDefaults sets default values for any unspecified configuration fields.
 //
 // Called after loading configuration from file and environment
 // variables to fill in any missing values with sensible defaults.
@@ -10,9 +10,9 @@ import "strings"
 // Default Strategy:
 //   - Zero values (0, "", false, nil) are replaced with defaults
 //   - Explicit values are preserved
-func ApplyDefaults(cfg *Bootstrap) {
+func applyDefaults(cfg *Bootstrap) {
 	applyLoggingDefaults(&cfg.Logging)
-	cfg.Blockstore.ApplyDefaults()
+	cfg.Blockstore.applyDefaults()
 }
 
 // applyLoggingDefaults sets logging defaults and normalizes values.
@@ -27,7 +27,7 @@ func applyLoggingDefaults(cfg *LoggingConfig) {
 		cfg.Format = "text"
 	}
 	if cfg.Output == "" {
-		cfg.Output = GetDefaultLogPath()
+		cfg.Output = getDefaultLogPath()
 	}
 
 	// Log rotation defaults (only meaningful when output is a file path).
@@ -56,6 +56,6 @@ func GetDefaultConfig() *Bootstrap {
 		},
 	}
 
-	ApplyDefaults(cfg)
+	applyDefaults(cfg)
 	return cfg
 }

@@ -142,15 +142,6 @@ func (c controlTx) DeleteSetting(scope entity.SettingScope, key string, expect u
 	return unbuilt("DeleteSetting", 3)
 }
 
-// AllSettings lists every scope's settings in one scan, for reconcile.
-func (c ControlPlane) AllSettings(ctx context.Context) iter.Seq2[entity.Setting, error] {
-	return unbuiltSeq[entity.Setting]("AllSettings", 3)
-}
-
-func (c controlTx) AllSettings() iter.Seq2[entity.Setting, error] {
-	return unbuiltSeq[entity.Setting]("AllSettings", 3)
-}
-
 // unbuilt is the error of a method whose body is not built yet; the message
 // names the work that fills it.
 func unbuilt(method string, epic int) error {
@@ -160,13 +151,4 @@ func unbuilt(method string, epic int) error {
 		epic,
 		errors.ErrUnsupported,
 	)
-}
-
-// unbuiltSeq yields unbuilt's error once.
-func unbuiltSeq[T any](method string, epic int) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		var zero T
-
-		yield(zero, unbuilt(method, epic))
-	}
 }

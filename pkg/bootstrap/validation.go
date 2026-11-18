@@ -13,16 +13,17 @@ func init() {
 	validate = validator.New()
 }
 
-// Validate validates the configuration using struct tags and custom rules.
+// validateBootstrap validates the configuration using struct tags and custom rules.
 //
 // Uses go-playground/validator for declarative validation via struct tags,
 // with additional custom rules that cannot be expressed in tags.
-// Log level normalization is handled in ApplyDefaults, not here.
-func Validate(cfg *Bootstrap) error {
+// Log level normalization is handled in applyDefaults, not here.
+func validateBootstrap(cfg *Bootstrap) error {
 	if err := validate.Struct(cfg); err != nil {
 		return formatValidationError(err)
 	}
-	return cfg.Blockstore.Validate()
+
+	return cfg.Blockstore.validate()
 }
 
 // formatValidationError converts validator errors into user-friendly messages.

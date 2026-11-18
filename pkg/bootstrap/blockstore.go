@@ -29,37 +29,37 @@ type BlockstoreJournalConfig struct {
 	Path string `mapstructure:"path" yaml:"path"`
 }
 
-// ApplyDefaults fills any zero-valued field with the defaults.
-func (c *BlockstoreJournalConfig) ApplyDefaults() {
+// applyDefaults fills any zero-valued field with the defaults.
+func (c *BlockstoreJournalConfig) applyDefaults() {
 	if c.Path == "" {
-		c.Path = filepath.Join(GetStateDir(), defaultBlockDirName)
+		c.Path = filepath.Join(getStateDir(), defaultBlockDirName)
 	}
 	// A ~ that cannot be expanded (no home directory) is left as-is and
-	// fails Validate's absolute-path check rather than being silently
+	// fails validate's absolute-path check rather than being silently
 	// resolved against the working directory.
 	if expanded, err := pathutil.ExpandPath(c.Path); err == nil {
 		c.Path = expanded
 	}
 }
 
-// Validate returns an error if the BlockstoreJournalConfig has invalid
+// validate returns an error if the BlockstoreJournalConfig has invalid
 // values. The error message includes the canonical dotted config path so
 // operators can pinpoint the offending key in their config file.
-func (c *BlockstoreJournalConfig) Validate() error {
+func (c *BlockstoreJournalConfig) validate() error {
 	// Empty means "apply the default" and is only reachable before
-	// ApplyDefaults; a value the operator did set must be absolute.
+	// applyDefaults; a value the operator did set must be absolute.
 	if c.Path != "" && !filepath.IsAbs(c.Path) {
 		return fmt.Errorf("blockstore.journal.path must be an absolute directory (got %q)", c.Path)
 	}
 	return nil
 }
 
-// ApplyDefaults fans out defaults to every sub-tier.
-func (c *BlockstoreConfig) ApplyDefaults() {
-	c.Journal.ApplyDefaults()
+// applyDefaults fans out defaults to every sub-tier.
+func (c *BlockstoreConfig) applyDefaults() {
+	c.Journal.applyDefaults()
 }
 
-// Validate fans out validation to every sub-tier.
-func (c *BlockstoreConfig) Validate() error {
-	return c.Journal.Validate()
+// validate fans out validation to every sub-tier.
+func (c *BlockstoreConfig) validate() error {
+	return c.Journal.validate()
 }

@@ -10,7 +10,7 @@ import (
 // config file exists at the default location, MustLoad with an empty path must
 // NOT hard-fail (which made systemd crash-loop). Instead it falls back to
 // built-in defaults so the server boots. The empty XDG_CONFIG_HOME tmp dir
-// guarantees DefaultConfigExists() is false.
+// guarantees defaultConfigExists() is false.
 func TestMustLoad_NoConfigFileFallsBackToDefaults(t *testing.T) {
 	// Point the default config location at an empty temp dir (no config.yaml)
 	// on every OS (XDG_CONFIG_HOME on Unix, %AppData% on Windows). This keeps
@@ -18,7 +18,7 @@ func TestMustLoad_NoConfigFileFallsBackToDefaults(t *testing.T) {
 	// config installed at the default location (#1333).
 	setConfigDirEnv(t, t.TempDir())
 
-	if DefaultConfigExists() {
+	if defaultConfigExists() {
 		// The redirect didn't take (unusual env), so a config still exists at
 		// the default location. This host can't exercise the no-config path —
 		// skip rather than fail; an unhostable environment is not a product bug.
