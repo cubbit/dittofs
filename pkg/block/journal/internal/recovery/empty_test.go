@@ -1016,7 +1016,13 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 		// afterRemove lands the crash in the directory sync that follows
 		// the source's unlink instead, the removal not yet durable.
 		afterRemove bool
+		// bothFail makes both reserve spares' syncs fail, so the emptying
+		// fails with the device's error and leaves two unsealed copies of
+		// its records behind; no cut lands inside it, the retry opens
+		// over them in the same process and a power cut follows.
+		bothFail bool
 	}{
+		{name: "both_spares_fail", op: "sync", bothFail: true},
 		{name: "target_append", op: "write", nth: 1},
 		{name: "target_seal_first_sync", op: "sync", nth: 1},
 		{name: "target_seal_second_sync", op: "sync", nth: 2},
@@ -1064,6 +1070,32 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 			}
 			if tc.op == "remove" {
 				key = format.SegmentName(2)
+			}
+			if tc.bothFail {
+				r.failSyncs(spare1, 0)
+				r.failSyncs(spare2, 0)
+				if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil); !errors.Is(err, syscall.EIO) {
+					t.Fatalf("the emptying over two failing targets answered %v, want the sync's EIO", err)
+				}
+				r.faults = nil
+				r.scheduleFaults() // the retry runs on a device that syncs again
+				// The refill behind the two failed takes settles first, so the
+				// retry's re-append finds reserve spares on the directory.
+				if err := h.pool.WaitSpares(context.Background()); err != nil {
+					t.Fatalf("the pool's refill: %v", err)
+				}
+				retry := d
+				retry.SpareTargets = segment.Targets{Reserve: 2} // the re-append draws a reserve spare
+				settle(t, r, retry, dur)
+				if err := r.seam.Crash(); err != nil {
+					t.Fatalf("the power cut after the retry: %v", err)
+				}
+				settle(t, r, d, dur)
+				if err := r.seam.Crash(); err != nil {
+					t.Fatalf("the second power loss: %v", err)
+				}
+				settle(t, r, d, dur)
+				return
 			}
 
 			crashed := make(chan error, 1)

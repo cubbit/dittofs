@@ -286,11 +286,31 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	// trusting the duplicate where it sits, and to a placement answer that
 	// finds the collapsed-away copies, when a warm-cache duplicate ever
 	// burns spares in the field.
+	//
+	// A record handed over more than once — the source's own and the unsealed
+	// copies a failed earlier attempt left in targets that never sealed — is
+	// written once, from its greatest placement, so a retry never seals a
+	// record twice into one segment.
+	type recKey struct {
+		kind   format.Kind
+		file   core.FileID
+		seq    core.Seq
+		extent core.Extent
+	}
 	pending := make([]tailRecord, 0, len(st.Proof.Reappends))
+	slot := make(map[recKey]int, len(st.Proof.Reappends))
 	for _, rec := range st.Proof.Reappends {
 		if sealedCopy(st, rec.Header) {
 			continue
 		}
+		k := recKey{rec.Header.Kind, rec.Header.File, rec.Header.Seq, rec.Header.Extent}
+		if i, dup := slot[k]; dup {
+			if rec.Segment > pending[i].Segment || (rec.Segment == pending[i].Segment && rec.At > pending[i].At) {
+				pending[i] = rec
+			}
+			continue
+		}
+		slot[k] = len(pending)
 		pending = append(pending, rec)
 	}
 	if len(pending) == 0 {
