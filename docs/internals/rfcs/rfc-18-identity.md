@@ -337,7 +337,8 @@ the API returns it as [RFC 23 §5.2](rfc-23-control-plane.md#5.2%20Roles) says.
    value no current principal holds. 0 is root's and 65534 anonymous's
    (§2.1): neither is ever allocated, and either is refused for any other
    principal — a directory entry whose `uidNumber` or `gidNumber` is one of them
-   gets an allocated one instead, and the mint is counted. Assigning a deleted
+   gets an allocated one instead, and the mint is counted
+   (`identity_mints_remapped_total`, §9.2). Assigning a deleted
    principal's uid to a new one gives the new principal no file of the old
    one's, because files name principals, never uids.
 4. A missing uid or gid **MUST NOT** be filled with a default. A user created
@@ -1284,12 +1285,15 @@ batch**: one transaction, which allocates what each record lacks, with one
 principals-generation raise (§7.2), however many groups the batch holds. On
 `ErrExist` the whole batch writes nothing and the lookups that led to it are
 re-run: a principal they now find is bound, and the rest are minted in a new
-batch, for as long as each re-run binds a principal the one before did not.
-Each `ErrExist` means another call minted something this one needs, so the
-batch shrinks every round and the re-runs end, inside §5.1's bound. A re-run
-that binds none fails the call `ErrUnavailable`; it writes nothing and logs
-both `PrincipalID`s. Two nodes minting alice find alice by name or SID on the
-re-run; bob claiming alice's `uidNumber` finds no bob, and fails.
+batch, for as long as each re-run binds a principal the one before did not or
+newly marks a record `Unnamed` (below); a record this call already marked
+`Unnamed` in an earlier run is not newly marked again. Each `ErrExist` means
+another call minted something this one needs, or took a name it was about to
+write, so the batch shrinks or loses a name every round and the re-runs end,
+inside §5.1's bound. A re-run that does neither fails the call
+`ErrUnavailable`; it writes nothing and logs both `PrincipalID`s. Two nodes
+minting alice find alice by name or SID on the re-run; bob claiming alice's
+`uidNumber` finds no bob, and fails.
 
 **A name never fails a mint.** A directory principal whose name another
 principal of its kind holds under §4.6's comparison — a local group `finance`
@@ -2027,8 +2031,9 @@ cache's key must hold and how it behaves.
 
 Its key starts with the **proof key**, `Identity.Key()`: a digest of
 everything the request proved and claimed — the proof kind, the protection, the
-bound principal, the verified name, each SID with whether it is deny-only, and
-every claimed uid and gid. The protection is in it, though resolution ignores
+bound principal, the verified name, each SID with whether it is deny-only, the
+evidence's expiry, and every claimed uid and gid, the primary gid kept apart
+from the supplementary ones. The protection is in it, though resolution ignores
 it, because admission compares it. Only the client's address is left out, and
 the key carries it separately wherever a client rule decided (RFC 17 §4.9). The
 rule this buys: two requests share an entry only if they proved exactly the same
@@ -2092,7 +2097,10 @@ that wrote the change applies it at once.
   lock across its load of the current `State`, the compare, the serial and the
   store, so two `Apply`s, the reconcile's and a writer's, never read one serial
   and store two different `State`s under it: serials strictly increase, and
-  each differing `State` carries its own. A caller whose stamp is
+  each differing `State` carries its own. The serial outlives a `Stop`, so a
+  server started again in the same process never reissues one, and a
+  resolution before the first `Apply` stamps `Built` 0, which no applied
+  `State` carries. A caller whose stamp is
   older than the current `State` is neither stored nor served. So a resolution
   that read bob's record before a disable, and finished after the `Apply` that
   delivered it, is not cached under the new `State`, and bob's next call misses
@@ -2130,7 +2138,7 @@ connection-state pool, and past its share:
 | --- | --- |
 | caller cache | the least recently used entry is evicted, counted |
 | directory cache | the least recently used entry is evicted; an evicted entry is a miss, never "not found" |
-| replay cache | holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone; a sign-in that would need one more fails `ErrUnavailable` |
+| replay cache | holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone; a sign-in that would need one more fails `ErrUnavailable`. One ticket client, by its client name and realm, holds at most a sixty-fourth of the entries, so a holder of one valid ticket cannot fill the cache for everyone: past its share it alone fails `ErrUnavailable` |
 | logon throttle | the oldest pair is evicted, counted |
 | directory lookups a `Claimed` caller triggers | at most 100 a minute per client address; past it the call is refused with a retryable error, never mapped to anonymous |
 | records a `Claimed` caller's lookup mints (§5.5) | at most 100 a minute per node, whatever the client; past it the call is refused with a retryable error, never mapped to anonymous, and nothing is written |
@@ -2345,6 +2353,7 @@ alice's still signs in as alice.
 | Sign-in latency | `identity_authentication_seconds{mechanism}` | histogram (`request`) |
 | Records identity minted | `identity_mints_total{kind}`: `machine`, `user`, `group` | counter |
 | Mints whose name another principal held (§4.1) | `identity_mints_unnamed_total{kind}`: `user`, `group` | counter |
+| Directory mints whose `uidNumber` or `gidNumber` was 0 or 65534 and got an allocated ID (§2.3) | `identity_mints_remapped_total{kind}`: `user`, `group` | counter |
 | Directory principals left without a name by a rename (§5.1) | `identity_renames_unnamed_total{kind}`: `user`, `group` | counter |
 | Rotation confirms whose key version number differs from the tag (§3.5) | `identity_machine_key_version_mismatches_total` | counter |
 | Unmapped spellings | `identity_unmapped_total{scheme}`: `uid`, `gid`, `sid`, `owner` | counter |

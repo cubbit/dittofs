@@ -488,9 +488,13 @@ test/integration/ad-dc/
   - "mint conflict": alice minted, bob's entry given another SID and alice's `uidNumber`: his
     sign-in fails, bob bound to nothing, alice's record byte-equal; two concurrent sign-ins of one
     unminted entry, the first's mint commit held by a `FaultKV` delay until the second has read
-    the entry: one principal (catches a lost mint bound to whoever holds the row, R22).
-  - Doubles: the in-memory directory (kind 2), `kvtest`'s `FaultKV` (kind 3), the injected clock
-    (kind 1); logon outcomes at E4's recording sink, a sink of outputs.
+    the entry: one principal (catches a lost mint bound to whoever holds the row, R22);
+  - the acceptance criterion: a local principal with a `krb` link signs in through E5's test
+    realm, over the in-memory directory wrapped in E6's `identitytest.FaultyDirectory` with no
+    fault scheduled: accepted, and the wrapper's pass-through record of queries (E6's T6.4) holds
+    none (catches the Kerberos branch querying the directory for every principal, R19).
+  - Doubles: the in-memory directory (kind 2), `kvtest`'s `FaultKV` and `identitytest`'s
+    `FaultyDirectory` (kind 3), the injected clock (kind 1); logon outcomes at E4's recording sink, a sink of outputs.
 - **Rules:** rule 9 (D6's `decision:`).
 
 ### T8.6 The machine account in the node

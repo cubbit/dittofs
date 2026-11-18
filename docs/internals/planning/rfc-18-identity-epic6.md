@@ -144,7 +144,7 @@ number and title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | identity's tests run over the memory KV store and `identitytest`'s in-memory directory, which passes the directory's conformance suite (kind 2); outages, delays and timeouts come from `identitytest`'s fault wrapper around it (kind 3) and store errors from `kvtest`'s; the clock is injected (kind 1), `pkg/sim`'s test clock; the TLS rows dial real listeners on `127.0.0.1:0` |
 | rule 2, fuzz every decoder of untrusted bytes | T6.6 | `go-ldap` decodes BER and SIDs go through `sid.DecodeSID` (E2's `FuzzSID`); the one decoder the client owns, T6.6's range-attribute parser, gets `FuzzRangeAttr`: no panic, a parsed range has `lo ≤ hi` or `hi` = `*`, and it re-formats to text that parses to the same bounds; the client refuses a range whose next `lo` does not advance; the in-memory directory's filter parser reads only what the client builds, and the suite holds it to Samba |
-| rule 3, observability follows RFC 25 | T6.2, T6.7, T6.8, T6.10, T6.11 | `identity_mints_total` and `identity_mints_unnamed_total` (T6.2), `identity_directory_lookups_total` and `identity_directory_seconds` and a span per query (T6.7), `directory_unreachable` (T6.8), `identity_renames_unnamed_total` (T6.10), the `directory_unavailable` refusal (T6.11); no label or attribute carries a name, SID, entry ID or address |
+| rule 3, observability follows RFC 25 | T6.2, T6.7, T6.8, T6.9, T6.10, T6.11 | `identity_mints_total` and `identity_mints_unnamed_total` (T6.2), `identity_mints_remapped_total` (T6.9), `identity_directory_lookups_total` and `identity_directory_seconds` and a span per query (T6.7), `directory_unreachable` (T6.8), `identity_renames_unnamed_total` (T6.10), the `directory_unavailable` refusal (T6.11); no label or attribute carries a name, SID, entry ID or address |
 | rule 4, profiling | all | every test runs under the leak check; T6.7's single flight and T6.8's outage leave no waiter behind |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T6.7, T6.10, T6.11 | a stale entry is proven by a sign-in admitted or refused at `Resolve`, a rename by `Find` of each name, a gone entry by the next call refused, not by the cache's contents |
 | rule 6, known failures shrink | none | no suite this epic touches keeps a `known.yaml`; every test lands green |
@@ -227,18 +227,18 @@ tests can cite them. Sources are RFC 18 unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R39 | Every record identity writes goes through one mint path: one sign-in, lookup or resolution mints every principal it needs in one batch; on `ErrExist` the lookups are re-run, a principal now found is bound, the rest minted in a new batch, for as long as each re-run binds a principal the one before did not; a re-run that binds none fails `ErrUnavailable`, writes nothing and logs both `PrincipalID`s | invariant | §4.1 | T6.2 |
+| R39 | Every record identity writes goes through one mint path: one sign-in, lookup or resolution mints every principal it needs in one batch; on `ErrExist` the lookups are re-run, a principal now found is bound, the rest minted in a new batch, for as long as each re-run binds a principal the one before did not or newly marks a record `Unnamed`; a re-run that does neither fails `ErrUnavailable`, writes nothing and logs both `PrincipalID`s | invariant | §4.1 | T6.2 |
 | R40 | A name never fails a mint: a principal whose name another of its kind holds under §4.6's comparison is minted without a name, counted in `identity_mints_unnamed_total` and logged naming both | invariant | §4.1, §9.2 | T6.2 |
 | R41 | Every record minted is counted in `identity_mints_total{kind}` | invariant | §9.2 | T6.2 |
 | R42 | A directory record is minted once, from the first answer, and holds its `PrincipalID`, `dir` entry ID, SID, uid and gid from then on; a later answer renames it (R51) | invariant | §5.1 | T6.9 |
-| R43 | A directory principal's uid and gid are the entry's `uidNumber` and `gidNumber` when it has them, else allocated, written once and never recomputed; an entry whose `uidNumber` or `gidNumber` is 0 or 65534 gets an allocated one, and the mint is counted | invariant | §2.3 item 3, §4.3 | T6.9 |
+| R43 | A directory principal's uid and gid are the entry's `uidNumber` and `gidNumber` when it has them, else allocated, written once and never recomputed; an entry whose `uidNumber` or `gidNumber` is 0 or 65534 gets an allocated one, and the mint is counted in `identity_mints_remapped_total{kind}`, `user` or `group` | invariant | §2.3 item 3, §4.3, §9.2 | T6.9 |
 | R44 | A directory principal's SID is its entry's; an entry with none is given a local SID from the RID counter when minted, and keeps it whatever the directory later says | invariant | §4.4, §5.1, §9.1 ID3, ID4 | T6.9, T6.10 |
 | R45 | A SID of the directory's domain with no principal is asked of the directory, and minted only when `FindOpts.Mint` is set; otherwise `Find` answers `ErrUnknownPrincipal` and writes nothing | invariant | §4.4 | T6.9 |
 | R46 | §4.2 step 3: a Kerberos name in the directory's realm maps to the entry the directory holds under its user part, by the record's name attribute, and then to the principal holding that entry's `dir` spelling, never one found by name alone; a name with a service part never matches it | invariant | §4.2 | T6.9 |
 | R47 | The `qualified` scheme spells a directory principal `<directory domain>\<name>` | invariant | §4.6 | T6.9 |
 | R48 | §10's "SID-less directory" row | test row | §10 | T6.9, T6.10 |
 | R49 | §10's "name held at mint" row, but its owner-string clause (§1.2) | test row | §10 | T6.9, T6.10 |
-| R50 | §10's "root" row, its directory clause: an entry with `uidNumber` 0 minted with an allocated uid | test row | §10 | T6.9 |
+| R50 | §10's "root" row, its directory clause: an entry with `uidNumber` 0 minted with an allocated uid, counted in `identity_mints_remapped_total{kind="user"}` | test row | §10, §9.2 | T6.9 |
 | R62 | A directory principal holds no local NT hash and no local password: a local NTLMv2 check refuses it, and giving it a local password is refused; this epic writes the `dir` spelling both refusals read | invariant | §3.5, §5.5 | T6.9 |
 | R63 | The SID a `krb` link is written for is asked of the directory fresh only: a name the directory cannot answer freshly fails `ErrUnavailable`, one with no entry `ErrUnknownPrincipal`, and a name in another realm links no SID | MUST | §4.2; RFC 23 §3.5 | T6.9 |
 
@@ -298,13 +298,15 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   `Rename(ctx, []Renaming{P, Name})` applies its list in order in one transaction: each `""`
   first, then the takes, refusing the whole list with `ErrExist` when a take finds its name held
   by a principal outside the list. Needs an RFC 16 §3 amendment. Prior art: none found.
-- **D6, the mint path re-runs a plan, not a batch.** The caller hands the path a function that
-  looks its principals up and returns the batch of those still missing with the ones bound; on
-  `ErrExist` the path calls it again, and stops with `ErrUnavailable` when a run binds no
-  principal the one before did not. A held name is found before the write, by the name index, and
-  the record marked `Unnamed` (R40). No count bounds the loop: R39's progress rule and §5.1's
-  20 seconds do. Prior art: optimistic concurrency's re-read and retry, bounded by progress
-  (from memory).
+- **D6, the mint path re-runs a plan, not a batch.** The caller hands the path a function that looks
+  its principals up and returns the batch of those still missing with the ones bound; on `ErrExist`
+  the path calls it again, and stops with `ErrUnavailable` when a run neither binds a principal the
+  one before did not nor newly marks a record `Unnamed`: a name another call took between the name
+  check and the commit is progress, never a failure (R40). A record this mint call already marked
+  `Unnamed` in an earlier run is not newly marked again, so a name an unrelated principal keeps
+  holding counts once. A held name is found before the write, by the name index, and the record
+  marked `Unnamed` (R40). No count bounds the loop: R39's progress rule and §5.1's 20 seconds do.
+  Prior art: optimistic concurrency's re-read and retry, bounded by progress (from memory).
 - **D7, the 20-second bound is one deadline on the injected clock.** `Find` with a directory
   question and resolution's directory step each open the bound once, through a context the
   injected clock cancels at 20 seconds, which every query, mint and wait below it inherits; E5's
@@ -430,27 +432,32 @@ pkg/settings/
 - **Covers:** R39, R40, R41.
 - **Deliverables:** `internal/identity`'s `mint(ctx, plan func(context.Context) (entity.MintBatch,
   int, error)) error`, the `int` the number of principals the run bound, with D6's re-run loop:
-  `ErrExist` re-runs the plan, a run that binds no more than the one before fails `ErrUnavailable`
-  and logs both `PrincipalID`s; before the write, a record whose name the name index shows held by
-  another principal of its kind, or which folds to the name of an earlier record of its kind in the
-  same batch, is marked `Unnamed` and logged naming both;
-  `identity_mints_total{kind}` and `identity_mints_unnamed_total{kind}` counted after the commit.
-  Consumed by T6.9, T6.11 and E5's machine mints.
+  `ErrExist` re-runs the plan; a run that neither binds a principal the one before did not nor newly
+  marks a record `Unnamed` fails `ErrUnavailable` and logs both `PrincipalID`s; before the write, a
+  record whose name the name index shows held by another principal of its kind, or which folds to
+  the name of an earlier record of its kind in the same batch, is marked `Unnamed` and logged naming
+  both; `identity_mints_total{kind}` and `identity_mints_unnamed_total{kind}` counted after the
+  commit. Consumed by T6.9, T6.11 and E5's machine mints.
 - **Acceptance criteria:**
   - Every write of a new principal in `internal/identity` goes through `mint`:
     `rg -g '!*_test.go' 'Minter\(\)\.Create|\.Create\(ctx, ' internal/identity` shows it alone.
 - **Tests:** at `mint`, over the memory KV store wrapped in `kvtest`'s `FaultKV`, a `sim.Fault`
   delaying the first `Create`'s commit on the test clock while a concurrent `mint` commits two of
-  its three groups: the first re-runs, binds those two
-  and mints the third, the generation raised once per commit (catches a re-run bounded at one,
-  R39); a plan that keeps answering the same batch while another writer holds a row it needs:
-  `ErrUnavailable` after the second run, nothing written (catches an unbounded loop, R39); a group
-  named `finance` beside a local `Finance`: minted, found by SID, not by name, and
-  `identity_mints_unnamed_total{kind="group"}` 1 (R40); one batch holding directory groups
-  `Finance` and `FINANCE`: both minted, the second unnamed, never `ErrUnavailable` (catches a clash
-  inside one batch failing every run, R40); `identity_mints_total` read from the
-  registry after a batch of one user and two groups: `user` 1, `group` 2 (R41). Doubles: `kvtest`'s
-  `FaultKV` (kind 3), the injected clock (kind 1).
+  its three groups: the first re-runs, binds those two and mints the third, the generation raised
+  once per commit (catches a re-run bounded at one, R39); a plan that keeps answering the same batch
+  while another writer holds a row it needs: `ErrUnavailable` after the second run, nothing written
+  (catches an unbounded loop, R39); a `sim.Fault` delaying the first `Create`'s commit while a
+  concurrent `mint` takes a name the batch writes: the re-run binds nothing but commits the record
+  `Unnamed`, counted in `identity_mints_unnamed_total` (catches a progress rule that counts only
+  bindings, R39, R40); a re-run that binds a new principal beside a name an unrelated principal
+  keeps holding: committed (catches a progress rule that sums bindings and unnamings, R39); a re-run
+  that only re-marks a record the mint already unnamed: `ErrUnavailable` on the second run, not at
+  §5.1's deadline (catches "newly" read per run, R39); a group named `finance` beside a local
+  `Finance`: minted, found by SID, not by name, and `identity_mints_unnamed_total{kind="group"}` 1
+  (R40); one batch holding directory groups `Finance` and `FINANCE`: both minted, the second
+  unnamed, never `ErrUnavailable` (catches a clash inside one batch failing every run, R40);
+  `identity_mints_total` read from the registry after a batch of one user and two groups: `user` 1,
+  `group` 2 (R41). Doubles: `kvtest`'s `FaultKV` (kind 3), the injected clock (kind 1).
 - **Rules:** rule 9 (D6's marker).
 
 ### T6.3 The `identity.directory` record
@@ -698,7 +705,8 @@ pkg/settings/
 - **Covers:** R17, R42, R43, R44, R45, R46, R47, R48, R49, R50, R62, R63.
 - **Deliverables:** a directory principal's mint through T6.2, the user and every directory group
   of its closure in one plan: the entry's `uidNumber` and `gidNumber`, or `Alloc` for a missing
-  one, 0 or 65534 replaced by `Alloc` and logged; the entry's SID, or `Alloc.RID` for none; the
+  one, 0 or 65534 replaced by `Alloc`, logged and counted in
+  `identity_mints_remapped_total{kind}` after the commit; the entry's SID, or `Alloc.RID` for none; the
   `dir` spelling and the name. `Find` gaining the directory: a SID of the directory's domain with
   no principal asked of the directory and minted only with `FindOpts.Mint`, §4.4's `decision:` at
   that branch; `qualified` `<directory domain>\name` both ways, the domain compared with ASCII
@@ -718,8 +726,11 @@ pkg/settings/
 - **Tests:** at `Find`, over the memory KV store and the in-memory directory: a directory SID
   without `Mint`: `ErrUnknownPrincipal`, nothing written; with it: the user and its three groups
   minted in one commit (R42, R45); an entry with `uidNumber` 2000 minted with uid 2000, and
-  §10's "root" directory clause, `uidNumber` 0 minted with an allocated uid and counted (catches a
-  directory supplying root, R43, R50); §10's "SID-less directory" row's mint, an `rfc2307` entry
+  §10's "root" directory clause, `uidNumber` 0 minted with an allocated uid, and an entry with
+  `uidNumber` 65534 and one whose group has `gidNumber` 65534, each minted with an allocated ID:
+  `identity_mints_remapped_total` read from the registry `user` 2, `group` 1, and 0 after the
+  2000 mint (catches a directory supplying root or anonymous, and the remap left uncounted, R43,
+  R50); §10's "SID-less directory" row's mint, an `rfc2307` entry
   with no SID minted with `S-1-5-21-a-b-c-RID` (R44, R48); §10's "name held at mint" row's mint,
   a local group `finance` and a directory group `Finance` alice is in: alice's lookup mints it
   unnamed, found by SID, its `qualified` spelling `ErrUnknownPrincipal` (R49); `Find` of
@@ -955,8 +966,8 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
 
 - RFC 18 §2.6's `Deps` sketch has no field for the directory's dialer (D1), and its `State` no
   place for a record that is its own section (D2).
-- RFC 18 §2.3 item 3 counts a mint whose `uidNumber` is 0 or 65534 without naming the counter;
-  T6.9 logs it and counts it in `identity_mints_total`, the only mint counter.
+- RFC 18 §2.3 item 3 counted a mint whose `uidNumber` is 0 or 65534 without naming the counter;
+  §9.2 now names `identity_mints_remapped_total{kind}`, which T6.9 counts (R43).
 - RFC 18 §5.1's question table lists `uidNumber` and `gidNumber` among "who holds this", and §9.2
   their `uid` and `gid` labels; both serve only §4.3's claimed uid, deferred, so the client builds
   neither (§1.2).
