@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -81,6 +82,11 @@ type Seam struct {
 	stashed  int
 	holds    []*Hold
 	crashes  uint64 // Crash and Abandon calls so far; a call that waited across one fails
+
+	// moves counts every call's start and end, and inFlight the calls
+	// started and not ended, held ones included: what Activity reads.
+	moves    atomic.Uint64
+	inFlight atomic.Int64
 
 	mu sync.Mutex
 }
@@ -344,6 +350,43 @@ func (s *Seam) count(op, name string) {
 	s.callsFor[[2]string{op, name}]++
 }
 
+// call marks a call started, and returns what marks it ended.
+func (s *Seam) call() func() {
+	s.moves.Add(1)
+	s.inFlight.Add(1)
+	return func() {
+		s.inFlight.Add(-1)
+		s.moves.Add(1)
+	}
+}
+
+// Activity reports what the code under test is doing through the seam, for
+// a check that waits on it: moves, which every call's start and its end
+// advance, and acting, whether a call is in flight that no hold has
+// stopped. Two reports with the same moves and acting false bracket a
+// stretch in which no call started or ended and every call in flight sat
+// parked at a hold, which only the test releases.
+//
+// decision: a call stalled by a fault's delay is in flight and stopped by no
+// hold, so it reads as acting: the delay ends on the fault's own clock,
+// which the code under test may yet reach.
+func (s *Seam) Activity() (moves uint64, acting bool) {
+	s.mu.Lock()
+	holds := slices.Clone(s.holds)
+	s.mu.Unlock()
+
+	var parked int64
+	for _, h := range holds {
+		parked += int64(h.Waiting())
+	}
+
+	// Read after the holds, so a call that parks between the two reads
+	// counts as acting rather than as parked; moves last, so a call that
+	// ends meanwhile shows as a move.
+	acting = s.inFlight.Load() > parked
+	return s.moves.Load(), acting
+}
+
 // Calls returns how many times op was called, on any file.
 func (s *Seam) Calls(op string) int {
 	s.mu.Lock()
@@ -361,6 +404,7 @@ func (s *Seam) CallsFor(op, name string) int {
 func (s *Seam) Create(name string) (storage.File, error) { return s.FS().Create(name) }
 
 func (s *Seam) createFrom(epoch uint64, name string) (storage.File, error) {
+	defer s.call()()
 	if _, err := s.enter(OpCreate, name, epoch); err != nil {
 		return nil, err
 	}
@@ -382,6 +426,7 @@ func (s *Seam) createFrom(epoch uint64, name string) (storage.File, error) {
 func (s *Seam) Open(name string) (storage.File, error) { return s.FS().Open(name) }
 
 func (s *Seam) openFrom(epoch uint64, name string) (storage.File, error) {
+	defer s.call()()
 	if _, err := s.enter(OpOpen, name, epoch); err != nil {
 		return nil, err
 	}
@@ -409,6 +454,7 @@ func (s *Seam) track(f *os.File, n *node, name string) *seamFile {
 func (s *Seam) Rename(oldName, newName string) error { return s.FS().Rename(oldName, newName) }
 
 func (s *Seam) renameFrom(epoch uint64, oldName, newName string) error {
+	defer s.call()()
 	if _, err := s.enter(OpRename, oldName, epoch); err != nil {
 		return err
 	}
@@ -462,6 +508,7 @@ func (s *Seam) renameFrom(epoch uint64, oldName, newName string) error {
 func (s *Seam) Remove(name string) error { return s.FS().Remove(name) }
 
 func (s *Seam) removeFrom(epoch uint64, name string) error {
+	defer s.call()()
 	if _, err := s.enter(OpRemove, name, epoch); err != nil {
 		return err
 	}
@@ -494,6 +541,7 @@ func (s *Seam) toStash(n *node) error {
 func (s *Seam) List() ([]string, error) { return s.FS().List() }
 
 func (s *Seam) listFrom(epoch uint64) ([]string, error) {
+	defer s.call()()
 	if _, err := s.enter(OpList, "", epoch); err != nil {
 		return nil, err
 	}
@@ -535,6 +583,7 @@ func (s *Seam) ShuffleList(seed uint64) {
 func (s *Seam) SyncDir() error { return s.FS().SyncDir() }
 
 func (s *Seam) syncDirFrom(epoch uint64) error {
+	defer s.call()()
 	a, err := s.enter(OpSyncDir, "", epoch)
 	if err != nil {
 		return err
