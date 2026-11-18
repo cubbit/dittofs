@@ -1575,7 +1575,8 @@ Identity runs inside the node, and the rows that need several middle epics toget
 
 **Expected content:**
 - Identity composed in `node.New` (RFC 23 §2.1), with the keytab, the machine password's versions,
-  the directory record and `identity.ntlm` in each `State`.
+  the directory record and `identity.ntlm` in each `State`; the keytab's versions current first, as
+  E5's key ring assumes, which a test asserts.
 - The `identity.*` section listed in the node's settings table; each setting is declared through
   #4059's `pkg/settings`, with its default and validator, by the first epic that reads it:
   `identity.id_range`, `identity.ntlm` and `identity.netbios_name` in epic 2,

@@ -417,7 +417,8 @@ internal/identity/netlogon/               (git mv of internal/auth/netlogon)
   logon.go              T7.6   NetrLogonSamLogonEx, the retry rule
   password.go           T7.6   NetrServerPasswordSet2, the trust password (moved)
   reply.go              T7.6   SamInfo4 → Reply; FuzzSamInfo4 in reply_test.go
-  discovery.go          T7.7   Lookup: SRV records, through the record's DNS server when set (moved)
+  discovery.go          T7.7   Lookup: SRV records, through the record's DNS server when set
+                               (v1's, from history)
   dc.go                 T7.6   NewDialer, its Dial, and DC.Channel over the secure channel
                         T7.7   DC's account calls over directory's, Lookup
 internal/identity/directory/
@@ -446,7 +447,8 @@ pkg/identity/identitytest/
 pkg/identity/arch_test.go T7.6 internal/auth/netlogon's LDAP exemption removed
 test/integration/ad-dc/
   netlogon_tcp_schannel_test.go  T7.1  NETLOGON on ncacn_ip_tcp with schannel (the spike's check)
-  dc_test.go            T7.7   the suite against Samba
+  dc_test.go            T7.3   the suite against Samba over a test-built DC
+                        T7.7   over the production DC
   netlogon_wire_test.go T7.8   the fault wrapper around net.Conn; the two wire rows
   join_scenario_test.go T7.16  both joins, a rotation, Kerberos and pass-through against Samba
   netlogon_passthrough_test.go, netlogon_reload_test.go, online_join_test.go   T7.6  deleted (v1)
@@ -537,7 +539,8 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
     	SetPassword(ctx context.Context, password []byte) error
     	Close() error
     }
-    type Account struct { KeyVersion, EncTypes uint32; Names []string; Owner sid.SID; Delegation []byte }
+    type Account struct { DN string; KeyVersion, EncTypes uint32; Names []string; Owner sid.SID;
+    	Delegation []byte }
     type Reply struct { User sid.SID; UserFlags uint32; Groups []SIDAttr; SessionKey []byte;
     	LogonDomain sid.SID }
     ```
@@ -558,10 +561,14 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
     sent to what it wraps and then failed, delayed on the test clock, answered "could not be asked",
     or held until the test releases it, or a dial is refused before anything is sent, on cue;
   - `identitytest.DomainControllerConformance(t, open func(*testing.T) (netlogon.DC, DCSeeder))`,
-    `DCSeeder{AddUser, BadPwdCount, StageComputer, SetComputerPassword, MoveComputersContainer, Reset}`,
-    `Reset` putting every staged account's password back, deleting created ones and putting the
-    `Computers` container back; run in `unit` over the in-memory
-    controller.
+    `DCSeeder`, an interface of `Domain`, `Admin`, `AddUser`, `BadPwdCount`, `StageComputer`,
+    `SetComputerPassword`, `MoveComputersContainer` and `Reset`, `Reset` deleting every computer
+    account the suite staged or created and putting the `Computers` container back; run in `unit`
+    over the in-memory controller, and in `integration/ad-dc` over a `netlogon.DC` the test builds
+    from the spike's NETLOGON calls and LDAP, with a seeder adding entries over LDAP as the
+    domain administrator, until T7.7's production `DC` replaces it on the same suite. Samba counts
+    `badPwdCount` only under a lockout threshold, which the fixture's domain leaves at 0, so that
+    run sets one, 100, through `samba-tool` before the suite (§9).
 - **Acceptance criteria:**
   - `identitytest` imports `internal/identity/netlogon` and never `internal/identity`.
 - **Tests:** the suite's rows over the in-memory controller: a pass-through of the right password
@@ -632,12 +639,15 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   verified before anything else is sent by this code, since `go-msrpc`'s helper forces `CapRC4`
   (D1); the binding sealed; `NetrLogonSamLogonEx` at `NetlogonNetworkTransitiveInformation` and
   SamInfo4, without `MSV1_0_ALLOW_WORKSTATION_TRUST_ACCOUNT`, retried once on a new connection only for a failure
-  before its request was written; set-up serialised, logons concurrent; `NetrServerPasswordSet2`
-  with v1's trust-password layout (MS-NRPC 3.4.5.2.6); the reply decoder from `go-msrpc`'s SamInfo4
-  to `Reply`, and `FuzzSamInfo4`; v1's Kerberos-signed named pipe, `SecretStore`, providers,
-  `RotationManager`, `Controller` and `Status` deleted (rule 7); RFC 18 §3.5's `ponytail:` (one
-  domain) and D1's `decision:`; `dc.go`'s `NewDialer(dial func(ctx context.Context, network, addr
-  string) (net.Conn, error)) Dialer`, production passing `(&net.Dialer{}).DialContext`, its `Dial`
+  before its request was written; set-up serialised, and logons one at a time per channel, since
+  `go-msrpc`'s connection shares one buffer between concurrent calls, with a `ponytail:` naming a
+  pool of sealed associations as the upgrade; `NetrServerPasswordSet2` with v1's trust-password
+  layout (MS-NRPC 3.4.5.2.6), held by the suite's password set against Samba rather than by a unit
+  test; the reply decoder from `go-msrpc`'s SamInfo4 to `Reply`, and `FuzzSamInfo4`; v1's
+  Kerberos-signed named pipe, `SecretStore`, providers, `RotationManager`, `Controller`, `Status`
+  and `discovery.go` deleted (rule 7), T7.7 taking `discovery.go` back from history; RFC 18
+  §3.5's `ponytail:` (one domain) and D1's `decision:`; `dc.go`'s `NewDialer(dial func(ctx
+  context.Context, network, addr string) (net.Conn, error)) Dialer`, production passing `(&net.Dialer{}).DialContext`, its `Dial`
   and the `DC`'s `Channel` and `Close`, its `Lookup`, `Account`, `Create` and `Reset` answering
   `errors.ErrUnsupported` until T7.7, in the same pull request (§8), as E1's stubs behind final
   signatures do; `fixture_test.go`'s `waitForMachinePassword`, into which #4422 folded
@@ -669,9 +679,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   descriptor's owner, the delegation attribute), each over E6's `DialTLS` to the pinned controller's
   address; `discovery.go` from v1 as `NewDialer`'s `Lookup`: `_ldap._tcp.dc._msdcs.<realm>`
   through the DNS server it is given, when set; `NewDialer`'s `DC` answering `Account`, `Create`
-  and `Reset` through these, replacing T7.6's `errors.ErrUnsupported`; `DCSeeder` over
-  `samba-tool`, its `MoveComputersContainer` rewriting the domain object's `wellKnownObjects`
-  `Computers` entry as `redircmp` does, and `Reset` putting it back. Consumed by E8's T8.6 (the production dialer) and T7.16.
+  and `Reset` through these, replacing T7.6's `errors.ErrUnsupported` and the test-built `DC` of
+  T7.3's Samba run; `DCSeeder` over LDAP as T7.3 builds it, its `MoveComputersContainer`
+  rewriting the domain object's `wellKnownObjects` `Computers` entry as `redircmp` does, and `Reset` putting it back. Consumed by E8's T8.6 (the production dialer) and T7.16.
 - **Acceptance criteria:**
   - `pkg/identity/arch_test.go` passes with the `internal/auth/netlogon` exemption gone (E1's R6),
     and no `errors.ErrUnsupported` is left in `dc.go`.
@@ -1121,6 +1131,12 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
   (b) v1's add-then-set, the first version sealed under 2. Recommended: (a), which T7.7's
   `computer.go` and T7.3's in-memory controller already assume. Written in place in D7, T7.7 and
   T7.14.
+- **§3.5's previous password and the lockout threshold, for Marco on #4625.** T7.3 found that Samba
+  refuses a workstation's previous password at `NetrServerAuthenticate3`, after an administrator's
+  reset and after a set over the channel alike, and its in-memory controller follows Samba with a
+  `decision:` at `Channel`; and that Samba counts `badPwdCount` only under a lockout threshold,
+  which the fixture's domain leaves unset. Open; nothing in §3.5's reasoning, D7 or D14 changes
+  here until it is answered. `Prune`'s shape stays open as the gap below states.
 
 **What T7.1 found** (#4759, run against the fixture's Samba 4.17 with `go-msrpc` v1.6.4):
 

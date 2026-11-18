@@ -469,10 +469,13 @@ pkg/settings/
 - **Deliverables:** `directory.Record{Schema, Address, Base, BindName string; BindCredential
   entity.SecretRef; TrustRoots string; Realm, NetBIOSDomain, UserNameAttr, GroupNameAttr string;
   DCAddress, DNSServer string}` with RFC 13 Appendix B's defaults and `Validate`:
-  the address scheme of D4, the trust roots parsed as PEM, an `ad` realm with a lower-case ASCII
-  letter refused, an unknown schema refused, D4's `decision:` marker; the section declared through
-  `settings.Of("identity.directory", installation, …, settings.WriteRole(auth.Admin),
-  settings.SecretRef("bind_credential", "directory credential"))` (D3);
+  the address scheme of D4, the trust roots parsed as PEM (empty trusts the host's roots), an `ad`
+  realm with a lower-case ASCII letter refused, an unknown schema refused, D4's `decision:` marker;
+  the section declared through `settings.Of("identity.directory",
+  settings.At(entity.ScopeInstallation), …, settings.WriteRole(entity.RoleAdmin),
+  settings.SecretRef("BindCredential", entity.SecretDirectoryCredential))` (D3), the reference
+  named by its field; the kind `entity.SecretDirectoryCredential`, added here and sealed under the
+  `protocol` key in `pkg/secrets`' roles;
   `State.Directory *directory.Record` (D2); `Apply` refusing a `State` whose
   `Settings.NetBIOSName` equals `Directory.NetBIOSDomain` with ASCII letters folded, and keeping
   the last applied; `require_pac`, whose first reader is E5's T5.8, is added there. Consumed by
@@ -507,11 +510,14 @@ pkg/settings/
     and the package's own types, so `identitytest` imports `internal/identity/directory` and never
     `internal/identity`; `DialTLS`, lifted
     from v1's `dialAndBind` from history: TLS verified against the record's trust roots, or the
-    system's when it names none, `ServerName` the address's host, StartTLS for `ldap://`, no
-    `InsecureSkipVerify` anywhere;
+    system's when it names none, `ServerName` the address's host, the host resolved through the
+    record's `DNSServer` when it names one, StartTLS for `ldap://`, no `InsecureSkipVerify`
+    anywhere;
   - `identitytest.Directory`, the in-memory directory (kind 2): entries by DN, a simple bind
-    checked against a stored password, a referral for a search based outside its naming context
-    as a directory answers one, a search over base, one-level or subtree scope with
+    checked against a stored password, no such object (LDAP result 32) for a search based outside
+    its naming context, as Samba answers one, and continuation references to the configuration
+    and DNS partitions for a subtree search of the naming context itself, a search over base,
+    one-level or subtree scope with
     RFC 4515 filters parsed and evaluated by its own parser (equality, presence, substrings, and,
     or, not, `\xx` escapes), so a bad escape matches what a directory would;
   - `identitytest.FaultyDirectory` (kind 3), built on `pkg/sim`'s `Fault` and `Schedule`, around a
@@ -522,12 +528,17 @@ pkg/settings/
     a pass-through record of the queries it sent, for a test whose requirement is a query count;
   - `identitytest.DirectoryConformance(t, open func(t *testing.T) (directory.Conn, Seeder))`, its
     first rows: a value holding `*`, `(`, `)`, `\` and NUL matches only the entry that holds it
-    literally; two entries answering one name both returned; a search based outside the naming
-    context answered by a referral; `userAccountControl`'s disable bit
+    literally, by equality; substrings matched by initial, any and final pieces, on values holding
+    no NUL, since Samba matches a substring only up to a value's first NUL; two entries answering
+    one name both returned; a search based outside the naming context refused, never an empty
+    answer (Active Directory answers a referral, Samba noSuchObject); a subtree search of the
+    naming context handing back the partitions' continuation references; `userAccountControl`'s
+    disable bit
     and a past `accountExpires` read back; `objectSid` and `objectGUID` as binary; the root DSE's
     `defaultNamingContext`;
   - the suite run in `unit` over the in-memory directory and in `integration/ad-dc` over `DialTLS`
-    to the fixture, its `Seeder` through `samba-tool` there; the cell's LDAP tests, which RFC 23's
+    to the fixture, its `Seeder` adding entries over LDAP as the domain administrator there, not
+    through `samba-tool`; the cell's LDAP tests, which RFC 23's
     plan's epic 1 deletes, written afresh on it.
   Consumed by T6.5 to T6.11, E7's online join (`DialTLS`) and E8; the fault wrapper first by
   T6.6.
@@ -539,9 +550,9 @@ pkg/settings/
   each refused at the handshake, the listener's `Handshake` returning an error and reading no
   application byte, so no bind was sent (catches verification skipped or the host name unchecked,
   R9, R14); a server signed by the record's trust roots accepted. The suite's rows above, run on
-  both implementations, the referral row among them, so `DialTLS` is shown to hand a referral
-  back rather than follow it (R10, R23). No test double but the in-memory directory, held by the
-  suite.
+  both implementations, the continuation-reference row among them, so `DialTLS` is shown to hand
+  a reference back rather than follow it (R10, R23). No test double but the in-memory directory,
+  held by the suite.
 - **Rules:** rule 7 (v1's dialer lifted, its plaintext branch dropped),
   rule 8 (the suite against Samba).
 
@@ -990,6 +1001,12 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
 
 **Other:**
 
+- **T6.5's referral rule is open.** T6.4 found that Samba, like Active Directory, returns
+  continuation references to the configuration and DNS partitions on every subtree search of the
+  naming context, and answers a search outside it with noSuchObject rather than a referral, so
+  T6.5's "a referral in any result refused `ErrUnavailable`" would refuse every subtree lookup. How
+  T6.5 tells a continuation reference from a referral is asked on #4734; T6.5's text stands until
+  that is answered.
 - `identitytest` imports `internal/identity/directory` for `Conn`, `Request` and `Entry`. E1's
   import rule forbids importing `internal/identity` outside `internal/node` and its own packages;
   it names the server's package, not the directory's, so the rule needs no change, but T6.4
