@@ -69,10 +69,11 @@ type Demo struct {
 	LimitsReservation *journal.Reservation
 	LimitsRefused     bool
 
-	// lastView holds each view's last-shown rows: the diff layer's
-	// snapshots. They survive beats on purpose — a look after a mutating
-	// beat is where the diff is the point.
-	lastView map[string]map[string]string
+	// base holds each diffed view's rows as they stood just before the
+	// current beat ran: what the diff layer compares a look against.
+	// recording is set while snapshotViews fills it, and mutes the output.
+	base      map[string]map[string]string
+	recording bool
 }
 
 // story is the registered scenario this demo walks; the default is basic,
@@ -284,6 +285,7 @@ func (d *Demo) beat(n, total int, b Beat) {
 		return
 	}
 	before := d.J.Stats()
+	d.snapshotViews()
 	b.Run(d)
 	if len(b.Watch) > 0 {
 		after := d.J.Stats()
@@ -367,6 +369,9 @@ func (d *Demo) readLine() (string, bool) {
 // printf is the one writer every screen line goes through; a pane that
 // fails to write has nowhere to report it.
 func (d *Demo) Printf(format string, args ...any) {
+	if d.recording {
+		return
+	}
 	_, _ = fmt.Fprintf(d.out, format, args...)
 }
 
