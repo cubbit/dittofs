@@ -695,6 +695,7 @@ func TestAnUnestablishedConnectionRunsToItsHandshakeDeadline(t *testing.T) {
 	clk := newManualClock()
 	core.SetServerClock(srv, clk)
 	conn, client := servedConn(t, srv, &l)
+	idleCurrent := core.WatchIdleArms(conn)
 	defer func() { _ = client.Close() }()
 	c := testproto.NewClient(client)
 	if err := c.Send(testproto.Msg{Op: testproto.OpNegotiate, Version: 1, ID: 1}); err != nil {
@@ -720,7 +721,7 @@ func TestAnUnestablishedConnectionRunsToItsHandshakeDeadline(t *testing.T) {
 		t.Fatalf("the Session is answered %+v (%v)", rs, err)
 	}
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return core.IdleCurrent(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
 	})
 	_, idle := deadlines(conn)
 	clk.Advance(idle + time.Second)
@@ -793,6 +794,7 @@ func TestAnIdleDeadlineWaitsOutAReplyReservation(t *testing.T) {
 	clk := newManualClock()
 	core.SetServerClock(srv, clk)
 	conn, client := servedConn(t, srv, &l)
+	idleCurrent := core.WatchIdleArms(conn)
 	defer func() { _ = client.Close() }()
 	_, idle := deadlines(conn)
 	c := testproto.NewClient(client)
@@ -829,7 +831,7 @@ func TestAnIdleDeadlineWaitsOutAReplyReservation(t *testing.T) {
 		t.Fatalf("the waiting Echo is answered %+v (%v)", rs, err)
 	}
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return core.IdleCurrent(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
 	})
 	clk.Advance(idle - time.Millisecond)
 	select {
@@ -859,6 +861,7 @@ func TestAPartlyReadRecordIsNotIdle(t *testing.T) {
 	clk := newManualClock()
 	core.SetServerClock(srv, clk)
 	conn, client := servedConn(t, srv, &l)
+	idleCurrent := core.WatchIdleArms(conn)
 	defer func() { _ = client.Close() }()
 	_, idle := deadlines(conn)
 	c := testproto.NewClient(client)
@@ -874,7 +877,7 @@ func TestAPartlyReadRecordIsNotIdle(t *testing.T) {
 		}
 	}
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return core.IdleCurrent(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
 	})
 	// Half an Echo: the record's length and the first bytes of its body, the
 	// rest withheld.
@@ -899,7 +902,7 @@ func TestAPartlyReadRecordIsNotIdle(t *testing.T) {
 		t.Fatalf("the finished Echo is answered %+v (%v)", rs, err)
 	}
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return core.IdleCurrent(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
 	})
 	clk.Advance(idle - time.Millisecond)
 	select {
@@ -930,6 +933,7 @@ func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
 	clk := newManualClock()
 	core.SetServerClock(srv, clk)
 	conn, client := servedConn(t, srv, &l)
+	idleCurrent := core.WatchIdleArms(conn)
 	defer func() { _ = client.Close() }()
 	_, idle := deadlines(conn)
 	c := testproto.NewClient(client)
@@ -949,7 +953,7 @@ func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
 	}
 
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return core.IdleCurrent(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
 	})
 	clk.Advance(2 * idle)
 	select {
@@ -965,7 +969,7 @@ func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
 	}
 	waitsFor(t, "the keep's release", func() bool { return core.Kept(conn) == 0 })
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return core.IdleCurrent(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
 	})
 	clk.Advance(idle - time.Millisecond)
 	select {
@@ -998,6 +1002,7 @@ func TestARecordThatRunsNothingStillClosesAtIdle(t *testing.T) {
 	clk := newManualClock()
 	core.SetServerClock(srv, clk)
 	conn, client := servedConn(t, srv, &l)
+	idleCurrent := core.WatchIdleArms(conn)
 	defer func() { _ = client.Close() }()
 	_, idle := deadlines(conn)
 	c := testproto.NewClient(client)
@@ -1013,7 +1018,7 @@ func TestARecordThatRunsNothingStillClosesAtIdle(t *testing.T) {
 		}
 	}
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return core.IdleCurrent(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0
 	})
 	// Half a cancel, the rest withheld: the deadline expires while the reader
 	// holds it.

@@ -23,10 +23,10 @@ const (
 
 // listenerLostAfter is how long a bound socket's Accept may keep failing from
 // its first failure with no connection accepted since before the server
-// reports the listener lost (RFC 20 section 6.4, as the gap review settles
-// it). The evidence runs both ways: the first failure 60 s back, and the last
-// one within twice the backoff's cap, since a listener that stopped failing
-// is not lost however long it has not accepted.
+// reports the listener lost (RFC 20 section 6.4). The evidence runs both
+// ways: the first failure 60 s back, and the last one within twice the
+// backoff's cap, since a listener that stopped failing is not lost however
+// long it has not accepted.
 const listenerLostAfter = 60 * time.Second
 
 // conditionListenerLost is the condition Health reports for a lost listener,
@@ -78,10 +78,9 @@ func (s *Server) acceptLoop(b *bound) {
 		b.firstFailure.Store(0)
 		b.lastFailure.Store(0)
 		// ponytail: the gate here is the connection-state budget's one global
-		// charge alone; connection_limit and the per-address quarter (RFC 24
-		// sections 4.4 and 9 R10) arrive with the limit step that follows
-		// this stack, and lift it, so one address can take every slot only
-		// until then.
+		// charge alone, with no per-address cap, so one address can take every
+		// slot. Lift it when connection_limit and the per-address quarter land
+		// (RFC 24 sections 4.4 and 9 R10).
 		charge, cerr := s.d.Budgets.Connection.Reserve(connCharge)
 		if cerr != nil {
 			// The budget is full: the socket closes at once, before any byte

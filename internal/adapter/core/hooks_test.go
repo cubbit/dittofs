@@ -349,14 +349,21 @@ func AddBound(s *Server, l *Listener, ln net.Listener) (loopDone <-chan struct{}
 	return b.loopDone
 }
 
-// IdleCurrent reports whether the idle deadline armed last is the current
-// one, armed since the connection's last request started or ended: a test
-// waits on it before advancing, so its advance lands after that arm and no
-// earlier one, however many arms a step makes.
-func IdleCurrent(c *Conn) bool {
+// WatchIdleArms hands c's idle arms to the test from now on, and returns
+// what reports whether the deadline armed last is the current one, armed
+// since the connection's last request started or ended: a test waits on it
+// before advancing, so its advance lands after that arm and no earlier one,
+// however many arms a step makes.
+func WatchIdleArms(c *Conn) (current func() bool) {
+	var last uint64 // under timersMu, as the hook runs
 	c.timersMu.Lock()
-	defer c.timersMu.Unlock()
-	return c.idleT != nil && c.idleArmed == c.idleGen.Load()
+	c.onIdleArm = func(g uint64) { last = g }
+	c.timersMu.Unlock()
+	return func() bool {
+		c.timersMu.Lock()
+		defer c.timersMu.Unlock()
+		return c.idleT != nil && last == c.idleGen.Load()
+	}
 }
 
 // RecordHeld reports whether the connection's reader still holds bytes of a

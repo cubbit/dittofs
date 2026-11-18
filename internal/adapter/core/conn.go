@@ -46,7 +46,7 @@ type Conn struct {
 	timersMu   sync.Mutex    // guards the two deadlines below
 	handshakeT timer         // armed at accept for handshake_timeout, ended by Established
 	idleT      timer         // armed whenever nothing runs, resting under a Keep or a record
-	idleArmed  uint64        // the generation the armed deadline carries, so a test can tell an arm from one a later turn superseded
+	onIdleArm  func(uint64)  // a test's hook, set from hooks_test.go: each arm's generation, under timersMu; nil in production
 	idleGen    atomic.Uint64 // the generation an arm carries: each arm, and each request a connection starts or ends, advances it, so a timer the current generation superseded closes nothing
 }
 
@@ -97,11 +97,13 @@ func (c *Conn) Keep() (release func()) {
 // deadline runs on the server's clock from this call, so a connection whose
 // last reply went out is closed idle_timeout after it.
 func (c *Conn) idle() {
+	// closed is read under timersMu, which the teardown's stopTimers takes
+	// after the close sets it, so no arm lands past that stop.
+	c.timersMu.Lock()
+	defer c.timersMu.Unlock()
 	if c.closed.Load() {
 		return
 	}
-	c.timersMu.Lock()
-	defer c.timersMu.Unlock()
 	if c.idleT != nil {
 		c.idleT.Stop()
 		c.idleT = nil
@@ -111,7 +113,9 @@ func (c *Conn) idle() {
 	if d := c.snap.Common().IdleTimeout; d > 0 {
 		g := c.idleGen.Add(1)
 		c.idleT = c.sh.clock.AfterFunc(d, func() { c.idleExpired(g) })
-		c.idleArmed = g
+		if c.onIdleArm != nil {
+			c.onIdleArm(g)
+		}
 	}
 }
 
