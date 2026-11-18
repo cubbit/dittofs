@@ -640,6 +640,50 @@ func TestTwoConcurrentStopsReturnOnceEveryOnCloseHasRun(t *testing.T) {
 	}
 }
 
+// The server is not stopped while a connection's OnClose still runs (RFC 20
+// section 3.1): with the OnClose held, Health reads draining, and stopped once
+// it returns and Stop with it. A Stop that names the server stopped before it
+// closes its connections reads stopped while the OnClose is held.
+func TestTheServerIsNotStoppedWhileAnOnCloseStillRuns(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	entered := make(chan struct{})
+	gate := make(chan struct{})
+	srv, _, p := drainServer(t, b, drainSnap("127.0.0.1"), func(context.Context) {
+		close(entered)
+		<-gate
+	})
+	// Opened before the cleanup's Stop runs, so a failure below cannot park
+	// it on the held OnClose.
+	open := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(open)
+	clientAt(t, testAddr(t, srv))
+	theConn(t, p)
+	registered(t, srv, p)
+	stopped := make(chan error, 1)
+	go func() { stopped <- srv.Stop(context.Background()) }()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop never ran the connection's OnClose")
+	}
+	if h := srv.Health(); h.State != adapter.StateDraining {
+		t.Fatalf("while an OnClose runs the server is %s, want draining", h.State)
+	}
+	open()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop never returned after the OnClose did")
+	}
+	if h := srv.Health(); h.State != adapter.StateStopped {
+		t.Errorf("after Stop the server is %s, want stopped", h.State)
+	}
+}
+
 // In a pipe-test bubble on the server's real clock, both deadlines run on the
 // bubble's time: with drain_timeout at 200 ms and Stop's context ending at
 // 100 ms, the drain ends at the earlier one and the echo parked on its reply
