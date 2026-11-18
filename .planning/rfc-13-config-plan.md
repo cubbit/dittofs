@@ -104,7 +104,7 @@ What replaces what:
 | v1 | v2 | Fate |
 | --- | --- | --- |
 | `pkg/config` (full server file, environment overrides, warnings on unknown keys) | `pkg/bootstrap`, the bootstrap only, unknown keys refused (D8) | stripped by RFC 23's plan's epic 1; renamed in epic 1, finished in epic 2 |
-| `pkg/config/renamed_keys.go` (renamed keys refused; other unknown keys only warned) | the refused v1 keys, each naming its replacement (RFC 13 Appendix C's table): `database.*` (dropped: the metadata store is the control plane's database), `metadata.badger.*_cache_mb` (dropped), `controlplane.*` (its `port` and `tls` naming the bootstrap's API listen address and TLS, RFC 13 §2.2), `admin.*`, `kerberos.*`, `ldap.*`, `identity.*` (`machine_sid` included), `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*` but the keys of Appendix C's metadata block, `blockstore.*`, the journal path naming `journals` and its five tunables dropped, `metrics.*` (the bootstrap's metrics listen address), `shutdown_timeout` (`adapters.<protocol>.drain_timeout`), an upper-case `logging.level` (`use debug`), a bare-integer `logging.rotation.max_size` (megabytes today; refused, a size carries its unit), and their `DITTOFS_*` forms | reworked in epic 2 |
+| `pkg/config/renamed_keys.go` (renamed keys refused; other unknown keys only warned) | the refused v1 keys, each naming its replacement (RFC 13 Appendix C's table): `database.*` (dropped: the metadata store is the control plane's database), `metadata.badger.*_cache_mb` (dropped), `controlplane.*` (its `port` and `tls` naming the bootstrap's API listen address and TLS, RFC 13 §2.2), `admin.*`, `kerberos.*`, `ldap.*`, `identity.*` (`machine_sid` included), `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*` but the keys of Appendix C's metadata block, `blockstore.*`, the journal path naming `journals` and its five tunables dropped, `metrics.*` (the bootstrap's metrics listen address), `shutdown_timeout` (`adapters.<protocol>.drain_timeout`), and their `DITTOFS_*` forms; an upper-case `logging.level` (`use debug`) and a bare-integer `logging.rotation.max_size` (a size carries its unit) are values of keys v2 keeps, refused by the typed decode, not table rows | reworked in epic 2 |
 | `pkg/metadata/kvstore/settings.go` (`Settings`, `PutSetting`, `CFGGEN`, `Setting.Schema`) | the same, with a delete and a newer schema refused; `expect` is RFC 23's plan's (its epics 1 and 2). The read across every scope, in pages from a `SettingKey` (RFC 23 §2.1), is `Nodes.AllSettings`, built by RFC 23's plan's epic 2 (D7) and nowhere else | extended in epic 3 |
 | `KindSEC` reserved, no code | `Secret` records with versions and sealing | built in epic 4 |
 | `pkg/block/middleware/encryption/keyprovider` | `pkg/keyprovider`, unchanged | moved in epic 1 (D5) |
@@ -289,14 +289,14 @@ Out of scope, each named in O1:
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 7 | 8.75 | team | every epic |
-| E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 8 | 14.5 | A | E5; partly E3; RFC 23's epics 3 and 5 (its X1) |
+| E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 9 | 18.5 | A | E5; partly E3; RFC 23's epics 3 and 5 (its X1) |
 | E3 | Settings | a delete, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19.5 | B | E5; partly RFC 18's plan's epic 6 |
 | E4 | Secrets | `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
 | E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty, off by default; the launchers on `dfs init` and the images' `init` as an explicit step, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
-| | **Total** | | **41** | **77.25** | | |
+| | **Total** | | **42** | **81.25** | | |
 
-**Plan estimate: 41 subtasks, 77.25 man-days.**
+**Plan estimate: 42 subtasks, 81.25 man-days.**
 
 The skill's estimate for RFC 13's 1,221 lines is 3 middle epics (`round(1221 / 400)`), and this plan
 has 3.
@@ -1097,7 +1097,7 @@ the three packages and the views compile with stub bodies.
 
 ### Epic 2 — Bootstrap, node identity and versions
 
-**Epic 2 estimate: 8 subtasks, 14.5 man-days.**
+**Epic 2 estimate: 9 subtasks, 18.5 man-days.**
 
 A host's file loads, refuses what is not bootstrap, and gives the node its identity. A node starts
 only where its versions overlap the installation's.
@@ -1497,7 +1497,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | `Delete`'s body: RFC 16 §3's whole-secret delete, asked for on `ControlPlaneTx` only, run inside the caller's audited `Write` with D9's tracked read that no store record names the credential, and its kind and owner check, `Delete` then taking the caller's `ControlPlaneTx` in place of RFC 13 §7's frozen signature (epic 4, D9) | RFC 16 §3, as #4050 amends it, carries `Secret`, `PutSecret` and `PruneSecret` only; no caller deletes a secret but a user's, which kvstore's `DeleteUser` deletes itself | RFC 16 | a caller must delete a secret other than a user's, such as a remote store's or a directory's removal |
 | `DITTOFS_ENCRYPTION_PASSPHRASE` in the process environment, readable in `/proc/<pid>/environ`, and no check of the bootstrap's and key files' mode or owner (§4.3's `ponytail:`) | `keyprovider`'s local provider reads it today; neither is new here | unowned | a deployment needs the passphrase out of the environment, or a key file is found readable by another user |
 | The image's `HEALTHCHECK` on its first start after `init`, in a `dt` suite (epic 6's **Done when:**), `http` until RFC 23's plan's epic 4 adds TLS, unverified `https` after | no suite builds the image | unowned | a suite builds the image |
-| The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate checks the active versions only and gains the namespace comparison when the key exists, and epic 3's unit test declares one of its own until then | RFC 4 plan | that plan declares the key |
+| The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate checks the active versions only and gains the namespace comparison when the key exists, and epic 3's unit test declares one of its own until then | RFC 4 | a plan of RFC 4 declares the key |
 
 ## 7. RFC coverage
 
