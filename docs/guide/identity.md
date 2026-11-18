@@ -458,7 +458,8 @@ Operator behavior to know:
 ## Part E: Verify
 
 The proven end-to-end fixture is the `ad_dc` integration suite, which provisions
-the realm + alice/bob + nested groups and asserts identity unification:
+the domain above and checks the fixture's promises and the NETLOGON paths
+against it:
 
 ```bash
 go test -tags=ad_dc -v -timeout 20m ./test/integration/ad-dc/
@@ -475,15 +476,34 @@ labelled with it, once they are more than an hour old: what an earlier run
 under the same prefix left behind when it was killed. A killed run's image tag
 stays.
 
-It verifies, among other things:
+It verifies:
 
-- **RFC2307 idmap:** `alice@DITTOFS.AD` resolves to `uid 10001`, `gid 10000`
-  (the `uidNumber`/`gidNumber` stamped by the fixture).
-- **Nested groups:** alice ∈ `devs`, and `devs` ⊂ `engineering`, so both groups'
-  GIDs resolve for alice.
-- **RID fallback:** bob has no RFC2307 attrs (the `idmap_rid` path).
-- **Kerberos accept:** alice's `cifs/` service ticket is accepted via SMB SPNEGO
-  using the exported combined keytab.
+- **The fixture's promises** (`TestADFixture`): LDAPS verifies against the
+  exported CA by the DC's host name; Administrator holds no `cifs/` or `nfs/`
+  name, the KDC refuses alice a ticket for either under RC4 and issues one under
+  AES256, and the exported keytab holds AES keys only; NETLOGON is served from
+  the pinned port range; the pre-staged join accounts carry their passwords,
+  encryption types, owner and delegation; a restart keeps a machine password.
+- **The captured PACs** (`TestADPACCapture`): the PACs of alice's TGT and of her
+  `cifs/` service ticket each verify under the key that decrypts their ticket;
+  the TGT's carries `PAC_ATTRIBUTES_INFO` and `PAC_REQUESTOR`, the service
+  ticket's does not.
+- **NETLOGON pass-through** (`TestNetlogonPassthroughAlice`,
+  `TestNetlogonHotReload*`, `TestOnlineJoinAndMemberLogon`): a secure channel
+  as `DITTOFS$`, or as an account an online join just created, validates alice's
+  NTLMv2 logon and returns her SID and groups, across a credential reload and a
+  machine password rotation.
+
+The PAC tests replay PACs captured from this fixture. To regenerate them, with
+the keys that verify them, run
+
+```bash
+test/integration/ad-dc/capture-pacs.sh <output dir>
+```
+
+which starts a fixture DC and writes `tgt.pac` with `krbtgt.keytab`, and
+`service.pac` with `service.keytab`. Every run provisions a new domain, so its
+keys, SIDs and PACs all change.
 
 ### Manual verification (Linux client)
 
