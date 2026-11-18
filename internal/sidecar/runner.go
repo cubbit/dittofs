@@ -56,6 +56,11 @@ type Runner struct {
 	clock  clock
 	wg     sync.WaitGroup // the retry goroutines, joined at Close
 
+	// retryRead runs once a retry has read the failed answer and the set it
+	// carries, before it syncs them: a test's hook, set from export_test.go,
+	// nil in production.
+	retryRead func()
+
 	mu       sync.Mutex
 	serving  map[string]adapter.Adapter // by the name Start was called with
 	sidecars []*sidecar                 // New's order
@@ -158,11 +163,12 @@ func (r *Runner) SetEnabled(ctx context.Context, name string, on bool) error {
 	if !changed {
 		return nil
 	}
-	if on {
-		_ = r.sync(ctx, sc, func() []adapter.Serving { return r.servs(sc.Adapters()) })
-		return nil
-	}
-	_ = r.sync(ctx, sc, func() []adapter.Serving { return nil })
+	// The set is built under sc's mutex, where sync re-reads the flag: a
+	// disable whose sync lands past a concurrent enable re-reads enabled and
+	// advertises, instead of landing a nil built ahead of the flag's last
+	// answer, and a disable that is still the last answer lands its nil (RFC
+	// 20 section 3.5).
+	_ = r.sync(ctx, sc, func() []adapter.Serving { return r.servs(sc.Adapters()) })
 	return nil
 }
 
@@ -271,6 +277,9 @@ func (r *Runner) retryOnce(sc *sidecar) (done bool) {
 	}
 	set := sc.last
 	r.mu.Unlock()
+	if r.retryRead != nil {
+		r.retryRead()
+	}
 	if err := r.syncLocked(r.ctx, sc, set); err == nil {
 		r.mu.Lock()
 		sc.retrying = false
