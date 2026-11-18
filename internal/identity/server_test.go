@@ -3,6 +3,7 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -46,6 +47,11 @@ func newServer(t *testing.T) *identity.Server {
 	return s
 }
 
+// state is a State of generation gen under the default settings.
+func state(gen uint64) identity.State {
+	return identity.State{Generation: gen, Settings: identity.DefaultSettings()}
+}
+
 func TestNewRefusesNoStore(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -77,7 +83,7 @@ func TestStartNeedsAnApply(t *testing.T) {
 	if err := s.Start(ctx); !errors.Is(err, identity.ErrNotApplied) {
 		t.Fatalf("Start before Apply = %v, want ErrNotApplied", err)
 	}
-	if err := s.Apply(identity.State{Generation: 1}); err != nil {
+	if err := s.Apply(state(1)); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if err := s.Start(ctx); err != nil {
@@ -92,7 +98,7 @@ func TestStartNeedsAnApply(t *testing.T) {
 func TestStopDropsItsState(t *testing.T) {
 	ctx := context.Background()
 	s := newServer(t)
-	if err := s.Apply(identity.State{Generation: 1}); err != nil {
+	if err := s.Apply(state(1)); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if err := s.Start(ctx); err != nil {
@@ -106,34 +112,50 @@ func TestStopDropsItsState(t *testing.T) {
 	}
 }
 
-// Apply swaps a State in whole: concurrent Applies and a reader of the
-// current State never race, which only the race detector checks. With one
-// field a reader cannot see part of one Apply and part of another; the test
-// that pairs fields across Applies lands with State's second field.
+// Apply swaps a State in whole: concurrent Applies of matched Generation and
+// Settings pairs, each naming its Generation in NetBIOSName, and a reader that
+// sees only matched pairs. A State written field by field shows the reader one
+// Apply's Generation beside another's Settings, with or without -race.
 func TestApplySwapsTheStateWhole(t *testing.T) {
 	s := newServer(t)
-	if err := s.Apply(identity.State{Generation: 1}); err != nil {
+	pair := func(g uint64) identity.State {
+		st := state(g)
+		st.Settings.NetBIOSName = fmt.Sprintf("G%d", g)
+		return st
+	}
+	if err := s.Apply(pair(1)); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	var wg sync.WaitGroup
-	for g := range uint64(4) {
-		wg.Go(func() {
-			for i := range uint64(200) {
-				if err := s.Apply(identity.State{Generation: g*1000 + i}); err != nil {
+	done := make(chan struct{})
+	var appliers, reader sync.WaitGroup
+	for w := range uint64(4) {
+		appliers.Go(func() {
+			for i := range uint64(2000) {
+				if err := s.Apply(pair(w*10000 + i)); err != nil {
 					t.Errorf("Apply: %v", err)
 				}
 			}
 		})
 	}
-	wg.Go(func() {
-		for range 800 {
+	reader.Go(func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
 			st := s.Applied()
 			if st == nil {
 				t.Error("no State applied while Applies run")
 				return
 			}
-			_ = st.Generation
+			if want := fmt.Sprintf("G%d", st.Generation); st.Settings.NetBIOSName != want {
+				t.Errorf("read State with Generation %d and NetBIOSName %q, want %q: two Applies mixed", st.Generation, st.Settings.NetBIOSName, want)
+				return
+			}
 		}
 	})
-	wg.Wait()
+	appliers.Wait()
+	close(done)
+	reader.Wait()
 }

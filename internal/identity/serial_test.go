@@ -32,24 +32,24 @@ func TestApplyRaisesTheSerialOnlyForADifferingState(t *testing.T) {
 	if got := s.Current(); got != 0 {
 		t.Fatalf("Current before any Apply = %d, want 0", got)
 	}
-	first := apply(t, s, identity.State{Generation: 1})
+	first := apply(t, s, state(1))
 	if first == 0 {
 		t.Fatalf("Current after the first Apply = 0, want a serial")
 	}
-	if got := apply(t, s, identity.State{Generation: 1}); got != first {
+	if got := apply(t, s, state(1)); got != first {
 		t.Errorf("Current after an equal Apply = %d, want %d kept", got, first)
 	}
-	if got := apply(t, s, identity.State{Generation: 1, Serial: first + 7}); got != first {
+	if got := apply(t, s, identity.State{Generation: 1, Settings: identity.DefaultSettings(), Serial: first + 7}); got != first {
 		t.Errorf("Current after an equal Apply passing its own Serial = %d, want %d kept", got, first)
 	}
-	raised := apply(t, s, identity.State{Generation: 2})
+	raised := apply(t, s, state(2))
 	if raised <= first {
 		t.Errorf("Current after a raised generation = %d, want above %d", raised, first)
 	}
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if got := apply(t, s, identity.State{Generation: 2}); got <= raised {
+	if got := apply(t, s, state(2)); got <= raised {
 		t.Errorf("Current after Stop and an Apply = %d, want above %d: a restarted server repeated a serial", got, raised)
 	}
 }
@@ -62,13 +62,13 @@ func TestConcurrentAppliesNeverShareASerial(t *testing.T) {
 	s := newServer(t)
 	for round := range uint64(10000) {
 		base := 3 * round
-		before := apply(t, s, identity.State{Generation: base})
+		before := apply(t, s, state(base))
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 		for _, g := range []uint64{base + 1, base + 2} {
 			wg.Go(func() {
 				<-start
-				if err := s.Apply(identity.State{Generation: g}); err != nil {
+				if err := s.Apply(state(g)); err != nil {
 					t.Errorf("Apply: %v", err)
 				}
 			})
@@ -92,16 +92,16 @@ func TestResolveStampsTheStateItLoaded(t *testing.T) {
 	r := newResolving(t)
 	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1000")}
 	gen := r.user(t, alice, 0)
-	apply(t, r.srv, identity.State{Generation: gen})
+	apply(t, r.srv, state(gen))
 	var second uint64
 	passes := 0
 	r.srv.OnStateLoaded(func() {
 		passes++
 		switch passes {
 		case 1:
-			second = apply(t, r.srv, identity.State{Generation: gen + 1})
+			second = apply(t, r.srv, state(gen+1))
 		case 2:
-			apply(t, r.srv, identity.State{Generation: gen + 2})
+			apply(t, r.srv, state(gen+2))
 		}
 	})
 	c, err := r.srv.Resolve(context.Background(), ticket(alice.Principal, alice.Name), entity.SharePolicy{}, pid.ReadOnlyNotNarrowed)
@@ -125,7 +125,7 @@ func TestResolveOvertakenByADisableIsRefused(t *testing.T) {
 	r := newResolving(t)
 	bob := entity.User{Principal: entity.NewUser(), Name: "bob", IDs: fileIDs("1001")}
 	gen := r.user(t, bob, 0)
-	apply(t, r.srv, identity.State{Generation: gen})
+	apply(t, r.srv, state(gen))
 
 	clock := sim.NewTestClock(time.Unix(0, 0))
 	hold, err := sim.NewSchedule(1, clock, sim.Rule{Op: kvtest.OpGet, Key: "U‖*", Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
@@ -152,7 +152,7 @@ func TestResolveOvertakenByADisableIsRefused(t *testing.T) {
 	}
 
 	bob.Disabled = true
-	apply(t, r.srv, identity.State{Generation: r.user(t, bob, gen)})
+	apply(t, r.srv, state(r.user(t, bob, gen)))
 	clock.Advance(time.Hour)
 
 	var got result
