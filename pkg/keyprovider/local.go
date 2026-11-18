@@ -78,6 +78,7 @@ func newLocalProvider(cfg Config) (*localProvider, error) {
 	if cfg.File == "" {
 		return nil, fmt.Errorf("%w: local provider requires a file path", ErrInvalidConfig)
 	}
+	// ponytail: one passphrase for every role's key file; upgrade: a per-role variable in Config.
 	passphrase := os.Getenv(localPassphraseEnv)
 	if passphrase == "" {
 		return nil, ErrPassphraseMissing

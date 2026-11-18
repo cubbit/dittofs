@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 )
 
 // AEAD identifies an authenticated-encryption algorithm. The wire byte

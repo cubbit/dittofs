@@ -2,6 +2,7 @@ package entity
 
 import (
 	"errors"
+	"iter"
 	"time"
 )
 
@@ -140,4 +141,22 @@ type ControlPlaneTx interface {
 	// does not expire.
 	PutSignInFailures(key SignInKey, f SignInFailures) error
 	DeleteSignInFailures(key SignInKey) error
+
+	// DeleteSetting removes an override, so the wider scope's value is
+	// effective, and raises the settings generation as a put does.
+	DeleteSetting(scope SettingScope, key string, expect uint64) error
+	// AllSettings reads every scope's settings in one scan, tracked.
+	AllSettings() iter.Seq2[Setting, error]
+	// Secret is one version of a secret, still sealed; version 0 reads the
+	// current one. A tracked read, so a write that checks a reference's kind
+	// and owner conflicts with a concurrent change of the secret. False when
+	// no such version is held: it was pruned, or never written.
+	Secret(id SecretRef, version uint64) (Secret, bool, error)
+	// PutSecret writes a new version, expect naming the current one (0 for
+	// the first), and raises the settings generation; refused if its Kind or
+	// Owner differs from the current one's.
+	PutSecret(s Secret, expect uint64) error
+	// PruneSecret deletes every version below the one named, never the
+	// current one.
+	PruneSecret(id SecretRef, below uint64) error
 }

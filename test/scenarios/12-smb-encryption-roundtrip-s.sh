@@ -17,7 +17,7 @@ package main
 import (
 	"os"
 
-	"github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 )
 
 func main() {
