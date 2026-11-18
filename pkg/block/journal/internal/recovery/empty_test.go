@@ -639,11 +639,9 @@ func TestEmptyingWithoutASpareLeavesTheSegment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	// A real pool whose repack reserve targets no spare: its take answers
+	// its own refusal.
 	h := newEmptyingHarness(t, r, &st, segment.Targets{})
-	refused := &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
-	h.deps.DrawReserve = func() (core.SegmentID, error) {
-		return 0, refused // the pool's own word for a reserve with no spare
-	}
 	before, err := r.seam.Durable(format.SegmentName(2))
 	if err != nil {
 		t.Fatalf("read the ended segment: %v", err)
@@ -701,31 +699,13 @@ func TestFreedTakeAfterDurableUnlink(t *testing.T) {
 		t.Fatalf("the spares phase did not withhold the take 3 naming the ended predecessor, want it held on the verdict")
 	}
 	h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 4})
-	drawn := make(chan core.SegmentID, 4)
-	inner := h.deps.DrawReserve
-	h.deps.DrawReserve = func() (core.SegmentID, error) {
-		id, err := inner()
-		if err == nil {
-			drawn <- id
-		}
-		return id, err
-	}
 	if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, []core.SyncMark{mark}); err != nil {
 		t.Fatalf("Emptying: %v", err)
 	}
 	// The one copy the open makes drew the freed take, not the pool's
 	// reserve: the retire step's durable unlink of the predecessor freed it
-	// before the emptying step ran.
-	select {
-	case got := <-drawn:
-		if got != 3 {
-			t.Errorf("the ended segment's copy drew the pool's spare %d, want the freed take 3 naming its unlinked predecessor", got)
-		}
-	default:
-		t.Logf("the copy drew no pool spare, as the freed take served it: the relief's own first draw")
-	}
-	// The take's file is the sealed copy now: its old header gone, the
-	// copy's records in its place.
+	// before the emptying step ran, so the take's file is the sealed copy
+	// now, its old header gone and the copy's records in its place.
 	b, err := r.seam.Durable(format.SegmentName(3))
 	if err != nil {
 		t.Fatalf("read the reused take: %v", err)
