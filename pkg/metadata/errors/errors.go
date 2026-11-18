@@ -370,6 +370,12 @@ func IsNotFoundError(err error) bool {
 	return hasCode(err, ErrNotFound, ErrLockNotFound)
 }
 
+// IsAlreadyExistsError returns true if the error is, or wraps, an
+// AlreadyExists error.
+func IsAlreadyExistsError(err error) bool {
+	return hasCode(err, ErrAlreadyExists)
+}
+
 // IsLockConflictError returns true if the error is a lock conflict.
 func IsLockConflictError(err error) bool {
 	return hasCode(err, ErrLocked, ErrLockConflict)

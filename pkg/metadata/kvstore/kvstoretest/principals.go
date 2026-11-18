@@ -223,10 +223,10 @@ func testSpellingUniqueAcrossKinds(t *testing.T, kvo Opener) {
 	must(t, errOf(cp.PutUser(ctx, user("alice", uid("1500"), sidOf("sid-a"), krb("alice@CORP.EXAMPLE")), 0, entity.Alloc{})))
 	g := group("staff")
 	g.IDs[1] = sidOf("sid-a")
-	if _, err := cp.PutGroup(ctx, g, 0, entity.Alloc{}); !isExist(err) {
+	if _, err := cp.PutGroup(ctx, g, 0, entity.Alloc{}); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("group holding alice's SID: %v, want already exists", err)
 	}
-	if _, err := cp.PutUser(ctx, user("bob", krb("alice@CORP.EXAMPLE")), 0, entity.Alloc{}); !isExist(err) {
+	if _, err := cp.PutUser(ctx, user("bob", krb("alice@CORP.EXAMPLE")), 0, entity.Alloc{}); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("bob holding alice's krb name: %v, want already exists", err)
 	}
 	g.IDs[0], g.IDs[1] = gid("1500"), freshSID()
@@ -243,7 +243,7 @@ func testPrincipalNameCase(t *testing.T, kvo Opener) {
 	alice := user("Alice")
 	gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
 	must(t, err)
-	if _, err := cp.PutUser(ctx, user("aLICE"), 0, entity.Alloc{}); !isExist(err) {
+	if _, err := cp.PutUser(ctx, user("aLICE"), 0, entity.Alloc{}); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("aLICE beside Alice: %v, want already exists", err)
 	}
 	if got, err := p.ByName(ctx, entity.PrincipalUser, "ALICE"); err != nil || got != alice.Principal {
@@ -277,7 +277,7 @@ func testPrincipalNameCase(t *testing.T, kvo Opener) {
 	// long s with s, which a lower-casing fold misses.
 	for _, c := range []struct{ held, other string }{{"kelvin", "\u212Aelvin"}, {"sam", "\u017Fam"}} {
 		must(t, errOf(cp.PutUser(ctx, user(c.held), 0, entity.Alloc{})))
-		if _, err := cp.PutUser(ctx, user(c.other), 0, entity.Alloc{}); !isExist(err) {
+		if _, err := cp.PutUser(ctx, user(c.other), 0, entity.Alloc{}); !merrs.IsAlreadyExistsError(err) {
 			t.Errorf("%+q beside %s: %v, want already exists", c.other, c.held, err)
 		}
 	}
@@ -426,7 +426,7 @@ func testAllocRange(t *testing.T, kvo Opener) {
 func testAllocInsideTheWrite(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	uid1, _ := allocUser(t, s, "alice", fileRange)
-	if _, err := s.ControlPlane().PutUser(ctx, user("alice"), 0, entity.Alloc{UID: true, RID: true, Range: fileRange}); !isExist(err) {
+	if _, err := s.ControlPlane().PutUser(ctx, user("alice"), 0, entity.Alloc{UID: true, RID: true, Range: fileRange}); !merrs.IsAlreadyExistsError(err) {
 		t.Fatalf("a second alice: %v, want already exists", err)
 	}
 	if uid2, _ := allocUser(t, s, "bob", fileRange); uid1 != "1000000" || uid2 != "1000001" {

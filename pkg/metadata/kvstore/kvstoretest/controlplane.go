@@ -154,10 +154,10 @@ func testPrincipalUniqueness(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	must(t, errOf(cp.PutUser(ctx, user("alice", uid("1000")), 0, entity.Alloc{})))
-	if _, err := cp.PutUser(ctx, user("alice"), 0, entity.Alloc{}); !isExist(err) {
+	if _, err := cp.PutUser(ctx, user("alice"), 0, entity.Alloc{}); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("second alice: %v", err)
 	}
-	if _, err := cp.PutUser(ctx, user("bob", uid("1000")), 0, entity.Alloc{}); !isExist(err) {
+	if _, err := cp.PutUser(ctx, user("bob", uid("1000")), 0, entity.Alloc{}); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("uid 1000 twice: %v", err)
 	}
 	// A user and a group may share a name.
@@ -187,11 +187,6 @@ func deleted(s *kvstore.Store, err error, p entity.Principal) error {
 		}
 	}
 	return fmt.Errorf("the deletion of %v not done after 1000 batches", p)
-}
-
-func isExist(err error) bool {
-	var se *merrs.StoreError
-	return errors.As(err, &se) && se.Code == merrs.ErrAlreadyExists
 }
 
 func testDeleteRemovesMembershipsAndGrants(t *testing.T, kvo Opener) {
@@ -258,7 +253,7 @@ func testShares(t *testing.T, kvo Opener) {
 		if name == "ancestor path" {
 			must(t, errOf(CreateShare(ctx, cp, share("deep", "/srv/a/b"))))
 			v := list()
-			if _, err := CreateShare(ctx, cp, sh); !isExist(err) {
+			if _, err := CreateShare(ctx, cp, sh); !merrs.IsAlreadyExistsError(err) {
 				t.Errorf("%s: %v", name, err)
 			}
 			if list() != v {
@@ -266,11 +261,11 @@ func testShares(t *testing.T, kvo Opener) {
 			}
 			continue
 		}
-		if _, err := CreateShare(ctx, cp, sh); !isExist(err) {
+		if _, err := CreateShare(ctx, cp, sh); !merrs.IsAlreadyExistsError(err) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := CreateShare(ctx, cp, share("deeper", "/srv/a/b/c")); !isExist(err) {
+	if _, err := CreateShare(ctx, cp, share("deeper", "/srv/a/b/c")); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("below a share: %v", err)
 	}
 	// /homes is not below /home.

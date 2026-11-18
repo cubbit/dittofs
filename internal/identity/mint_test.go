@@ -277,7 +277,7 @@ func TestMintFailsARunThatOnlyReMarksARecord(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newResolving(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			local := dirGroup("Finance", "3601")
 			if _, err := r.cp.PutGroup(ctx, local, 0, entity.Alloc{}); err != nil {
@@ -301,6 +301,10 @@ func TestMintFailsARunThatOnlyReMarksARecord(t *testing.T) {
 			}
 			if got := runs.Load(); got != 2 {
 				t.Errorf("plan runs: got %d, want 2", got)
+			}
+			// Nothing was minted, so nothing was minted without its name.
+			if strings.Contains(r.logs.String(), "minted without its name") {
+				t.Errorf("a mint that committed nothing logged an unnamed mint: %s", r.logs)
 			}
 		})
 	}
@@ -401,17 +405,125 @@ func TestMintUnnamesAClashInsideOneBatch(t *testing.T) {
 func TestMintCountsEachRecordByKind(t *testing.T) {
 	r := newResolving(t)
 	u := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("4001")}
+	m := entity.User{Principal: entity.Principal{Kind: entity.PrincipalMachine, ID: entity.NewPrincipalID()},
+		IDs: entity.ProtocolIDs{{Scheme: entity.SchemeKerberos, Value: "host/a.corp.example@CORP.EXAMPLE"}}}
 	b := entity.MintBatch{
-		Users:  []entity.MintUser{{User: u}},
+		Users:  []entity.MintUser{{User: u}, {User: m}},
 		Groups: []entity.MintGroup{{Group: dirGroup("g1", "4002")}, {Group: dirGroup("g2", "4003")}},
 	}
 	var runs atomic.Int32
 	if err := r.srv.Mint(context.Background(), fixed(&runs, b)); err != nil {
 		t.Fatalf("mint: got %v, want nil", err)
 	}
-	for kind, want := range map[string]float64{"user": 1, "group": 2} {
+	for kind, want := range map[string]float64{"user": 1, "machine": 1, "group": 2} {
 		if got := r.counter(t, "identity_mints_total", "kind", kind); got != want {
 			t.Errorf("identity_mints_total{kind=%s}: got %v, want %v", kind, got, want)
 		}
+	}
+}
+
+// A refusal of the store's that no retry clears keeps its own class, so a
+// sign-in is not retried against a state only an operator or the caller can
+// change. Wrapping it ErrUnavailable sends every caller back to retry.
+func TestMintKeepsTheClassOfARefusalNoRetryClears(t *testing.T) {
+	one := entity.IDRange{Lo: 5000, Hi: 5000}
+	for _, c := range []struct {
+		name  string
+		setup func(t *testing.T, r *resolving)
+		b     entity.MintBatch
+		want  error
+	}{
+		{"an exhausted ID range", func(t *testing.T, r *resolving) {
+			g := entity.Group{Principal: entity.NewGroup(), Name: "first"}
+			if _, err := r.cp.PutGroup(context.Background(), g, 0, entity.Alloc{GID: true, RID: true, Range: one}); err != nil {
+				t.Fatal(err)
+			}
+		}, entity.MintBatch{Groups: []entity.MintGroup{{Group: entity.Group{Principal: entity.NewGroup(), Name: "second"}, Alloc: entity.Alloc{GID: true, RID: true, Range: one}}}}, vfserr.ErrNoSpace},
+		{"a user holding an API role", func(*testing.T, *resolving) {},
+			entity.MintBatch{Users: []entity.MintUser{{User: entity.User{Principal: entity.NewUser(), Name: "alice", Role: entity.RoleAdmin, IDs: fileIDs("4101")}}}}, vfserr.ErrInvalid},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newResolving(t)
+			c.setup(t, r)
+			var runs atomic.Int32
+			err := r.srv.Mint(context.Background(), fixed(&runs, c.b))
+			if !errors.Is(err, c.want) || errors.Is(err, vfserr.ErrUnavailable) {
+				t.Fatalf("mint: got %v, want %v and not ErrUnavailable", err, c.want)
+			}
+			if got := runs.Load(); got != 1 {
+				t.Errorf("plan runs: got %d, want 1", got)
+			}
+		})
+	}
+}
+
+// A commit the store fails is the store's failure, which a retry may clear:
+// ErrUnavailable.
+func TestMintAnswersAStoreFailureUnavailable(t *testing.T) {
+	r := newResolving(t)
+	r.fail(t, kvtest.OpUpdate, "*")
+	var runs atomic.Int32
+	err := r.srv.Mint(context.Background(), fixed(&runs, entity.MintBatch{Groups: []entity.MintGroup{{Group: dirGroup("g", "4201")}}}))
+	if !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Fatalf("mint: got %v, want ErrUnavailable", err)
+	}
+}
+
+// A plan that progresses on every run, binding one more principal each time,
+// is stopped by the caller's context, not by the progress rule, since the
+// store's commit does not watch the context. A loop that never checked it
+// would run the plan again after the cancel.
+func TestMintStopsAtACancelledContext(t *testing.T) {
+	r := newResolving(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	held := dirGroup("local", "4301")
+	if _, err := r.cp.PutGroup(ctx, held, 0, entity.Alloc{}); err != nil {
+		t.Fatal(err)
+	}
+	clash := minted(held) // its SID held, so every commit fails ErrExist
+	clash.Name = "dir"
+
+	var runs atomic.Int32
+	err := r.srv.Mint(ctx, func(context.Context) (entity.MintBatch, int, error) {
+		n := runs.Add(1)
+		switch {
+		case n == 2:
+			cancel()
+		case n > 4: // a loop ignoring the cancel ends here, not at a hang
+			return entity.MintBatch{}, 0, errors.New("plan ran on after the cancel")
+		}
+		return entity.MintBatch{Groups: []entity.MintGroup{{Group: clash}}}, int(n), nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("mint: got %v, want context.Canceled", err)
+	}
+	if got := runs.Load(); got != 2 {
+		t.Errorf("plan runs: got %d, want 2", got)
+	}
+}
+
+// A record whose name the index holds under the record's own ID is not
+// unnamed: the record exists, and marking it would pass for progress. The
+// first run proposes it already Unnamed, so the second run is the first to
+// check its name; counting that check as a new mark would run the plan a
+// third time.
+func TestMintDoesNotUnnameARecordHoldingItsOwnName(t *testing.T) {
+	r := newResolving(t)
+	ctx := context.Background()
+	own := dirGroup("Finance", "4401")
+	if _, err := r.cp.PutGroup(ctx, own, 0, entity.Alloc{}); err != nil {
+		t.Fatal(err)
+	}
+	var runs atomic.Int32
+	err := r.srv.Mint(ctx, func(context.Context) (entity.MintBatch, int, error) {
+		n := runs.Add(1)
+		return entity.MintBatch{Groups: []entity.MintGroup{{Group: own, Unnamed: n == 1}}}, 0, nil
+	})
+	if !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Fatalf("mint: got %v, want ErrUnavailable", err)
+	}
+	if got := runs.Load(); got != 2 {
+		t.Errorf("plan runs: got %d, want 2", got)
 	}
 }

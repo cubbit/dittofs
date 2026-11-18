@@ -227,7 +227,7 @@ func testSetAttrsClearsVerifier(t *testing.T, kvo Opener) {
 	excl := kvstore.NewFile{Type: entity.Regular, Mode: 0o644, Verifier: []byte("v1")}
 	h, _ := f.create(f.admin, f.root, "lock", excl)
 	must(t, errOf(files.SetAttrs(ctx, f.admin, h, entity.Attrs{}.WithMode(0o640))))
-	if _, _, e := ns.Create(ctx, f.admin, f.root, []byte("lock"), excl); !isExist(e) {
+	if _, _, e := ns.Create(ctx, f.admin, f.root, []byte("lock"), excl); !merrs.IsAlreadyExistsError(e) {
 		t.Errorf("retry after SETATTR: %v", e)
 	}
 }

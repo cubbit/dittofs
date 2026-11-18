@@ -52,10 +52,10 @@ func testClients(t *testing.T, kvo Opener) {
 		t.Errorf("a name under another protocol: %v", err)
 	}
 
-	if err := cs.Create(ctx, entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("host-a")}); !isExist(err) {
+	if err := cs.Create(ctx, entity.ClientRecord{ID: clientID(t, s), Protocol: entity.ProtocolNFSv4, Name: []byte("host-a")}); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("a second client under one name: %v", err)
 	}
-	if err := cs.Create(ctx, entity.ClientRecord{ID: nfs.ID, Protocol: entity.ProtocolNFSv4, Name: []byte("host-z")}); !isExist(err) {
+	if err := cs.Create(ctx, entity.ClientRecord{ID: nfs.ID, Protocol: entity.ProtocolNFSv4, Name: []byte("host-z")}); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("a second record under one ID: %v", err)
 	}
 	if got, err := cs.Get(ctx, nfs.ID); err != nil || !bytes.Equal(got.Name, nfs.Name) {
@@ -330,7 +330,7 @@ func testClientNameRace(t *testing.T, kvo Opener) {
 			return cs.Create(ctx, entity.ClientRecord{ID: b, Protocol: entity.ProtocolSMB, Name: []byte("g")})
 		})
 	must(t, inner)
-	if !isExist(outer) {
+	if !merrs.IsAlreadyExistsError(outer) {
 		t.Fatalf("the second claim: %v", outer)
 	}
 	if got, err := cs.ByName(ctx, entity.ProtocolSMB, []byte("g")); err != nil || got.ID != b {
