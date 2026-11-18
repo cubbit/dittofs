@@ -260,8 +260,8 @@ Out of scope, each named in O1:
    whose known failure passes.
 7. **v2 ignores v1.** Nothing imports v1's server configuration, which RFC 23's plan's epic 1 strips
    first. What stays is kept in place and named:
-   - `pkg/config`'s viper loading, its path search, its decode hooks and its `mapstructure` decoder
-     configuration, renamed into `pkg/bootstrap`;
+   - `pkg/config`'s viper loading and its path search, renamed into `pkg/bootstrap`; epic 2 replaces
+     its decoder with one strict value codec (epic 1's rule 7, epic 2's D10);
    - `renamed_keys.go`'s `checkRenamedKeys` and its table, extended with the refused keys. It sees
      only the file's keys, so refusing their `DITTOFS_*` forms is new code: a scan of the
      environment;
@@ -334,7 +334,7 @@ flowchart TD
   E2 & E3 & E4 --> E5["E5 Integration"]
   S3 -. "partly" .-> E5
   E2 -. "X1 in RFC 23's plan: dfs start, dfs init" .-> R35(["RFC 23's epics 3 and 5"]):::sync
-  E4 -. "X1: dfs init's first password" .-> R5(["RFC 23's epic 5"]):::sync
+  E4 -. "X1: pkg/secrets, dfs init's first password" .-> R5(["RFC 23's epics 4 and 5"]):::sync
   S4(["S4 RFC 23's dfs init exists"]):::sync --> E6["E6 E2E green"]
   S4 -. "partly: dfsbench on dfs init" .-> E2
   E5 -. "X3 in RFC 23's plan" .-> R7(["RFC 23's integration epic"]):::sync
@@ -385,7 +385,7 @@ flowchart TD
 | RFC 23's epic 2 (outside) | E2 and E4, partly | The version gate adds a node's ranges to RFC 23's `Node` record, `WriteMissingNodeIDs` reads RFC 16's `JournalID`, and `Prune` reads the versions a node holds from its `NodeStatus`. Everything else in both epics starts at S1. |
 | RFC 23's epics 2, 3 and 4 (outside, S3) | E5, partly | Integration wires this library into RFC 23's reconcile and write path, in the slots those epics leave; the table and D3's check start before (§3.4). |
 | E2 | RFC 23's epics 3 and 5 (its X1), partly | `dfs start` reads `pkg/bootstrap` and the node identity, and `dfs init` writes the identity; the rest of both epics starts before. |
-| E4 | RFC 23's epic 5 (its X1), partly | `dfs init`'s first password and the API's signing key are sealed `Secret` records. |
+| E4 | RFC 23's epics 4 and 5 (its X1), partly | `pkg/secrets` for epic 4's success paths; `dfs init`'s first password and the API's signing key are sealed `Secret` records. |
 | E5 | RFC 23's integration epic (its X3) | RFC 23's §12 rows write and reconcile settings through the wired path. |
 | RFC 23's epic 5 (outside, S4) | E6; E2, partly | The initialisation and upgrade rows run `dfs init`, and so does `dfsbench`'s backend, epic 2's last piece. |
 
@@ -527,7 +527,7 @@ level (RFC 13 §2.2), so it stays a bootstrap key.
 
 The list cannot drift. An epic 2 test scans the repository by content, not by extension, every file
 outside `_test.go` that holds a `DITTOFS_` name (Go, shell with or without a `.sh`, Compose,
-`docker/`, and Markdown but `docs/internals/` and `CHANGELOG.md`, which name v1's variables on
+`docker/`, and Markdown but `docs/internals/`, `.planning/` and `CHANGELOG.md`, which name v1's variables on
 purpose), and fails on a name that is neither a bootstrap key nor allowed, so a guide such as
 `README.md` or `docs/guide/` that still tells a user to set a refused variable fails it and epic 2
 corrects it. It exempts a bare
@@ -788,8 +788,8 @@ func Load(path string, environ []string) (*Bootstrap, error) {
 	}
 	var md mapstructure.Metadata
 	var b Bootstrap
-	if err := v.Unmarshal(&b, viper.DecodeHook(decodeHooks()),
-		func(dc *mapstructure.DecoderConfig) { dc.Metadata = &md }); err != nil {
+	if err := v.Unmarshal(&b, viper.DecodeHook(valueCodec), // epic 2's strict value codec (D10)
+		func(dc *mapstructure.DecoderConfig) { dc.WeaklyTypedInput = false; dc.Metadata = &md }); err != nil {
 		return nil, err
 	}
 	if err := checkRenamedKeys(md.Unused); err != nil {

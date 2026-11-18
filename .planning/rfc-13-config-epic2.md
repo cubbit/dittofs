@@ -7,7 +7,7 @@ node, §6's refusal shape for the host's file, §8's format series, and Appendix
 §4.6's store format and §2.3's `Installation.Active` and `Node.Formats`.
 **Rests on #4486, merged:** RFC 13's "One file, one name per fact" paragraph, §6's refusal shape,
 Appendix B's "How a key and a value are written" and Appendix C, with its "The file's commands",
-come from #4486. R1 to R7, R13, R14, R27 and R31 to R35 cite them as "(#4486)",
+come from #4486. R1 to R7, R13, R14, R27 and R31 to R36 cite them as "(#4486)",
 and D3 reads its matching rule.
 **Track:** A.
 **Epic 2 estimate: 9 subtasks, 18.5 man-days.**
@@ -15,10 +15,11 @@ and D3 reads its matching rule.
 under Appendix C's keys, each role's wrapping key a `keyprovider.Config`, and the node identity's
 three entry points, and `pkg/keyprovider` moved there by E1 (its D3), since `Bootstrap` names the
 type. RFC 23's epic 2 (T2.8, the `Node` record with `Formats` and its
-`Format` and `VersionRange` types) for T2.8 here; S4, RFC 23's `dfs init`, for T2.9.
+`Format` and `VersionRange` types) for T2.8 here; RFC 23's epic 1, which deletes the v1 fixture server
+and the e2e helpers, for T2.6; S4, RFC 23's `dfs init`, for T2.9.
 **Blocks:** E5, which builds the node's table on a loaded bootstrap; partly E3, whose T3.1 and
 T3.6 read the binary's registered ranges T2.8 adds; RFC 23's epic 3 (`dfs start`
-reads `Load` and `NodeID`, its T3.10 calls `WriteMissingNodeIDs` and the version gate) and epic 5 (`dfs init` calls
+reads `Load`, its T3.10 calls `NodeID`, `WriteMissingNodeIDs` and the version gate) and epic 5 (`dfs init` calls
 `InitNodeID`): its X1.
 
 ---
@@ -72,8 +73,8 @@ The loader and its refusals; the environment scan and its allowed names; the nod
   RFC 13's commands name only `show`, `validate` and `schema` (#4486).
 - The control plane's refusal to advance a namespace's block format version (RFC 13 §5.4): E3.
 - The other launchers on `dfs init` (Compose, `docker/`, the bench and demo scripts): E6.
-- The start steps that call `WriteMissingNodeIDs` (step 1) and the version gate (step 3), and `dfs
-  init` itself: RFC 23's T3.10 and T5.4.
+- The start steps that call `NodeID`, `WriteMissingNodeIDs` (step 1) and the version gate (step 3), and `dfs
+  init` itself: RFC 23's T3.10 and T5.4; the call of `MakeRuntimeDir`: RFC 23's T4.3.
 - The Kubernetes operator, a module of its own that still sets v1's names: RFC 23's O4.
 
 ### 1.3 Names used here
@@ -88,7 +89,7 @@ The loader and its refusals; the environment scan and its allowed names; the nod
   `dfs init`.
 - **S1**, the configuration surface frozen: E1 has merged.
 - **S4**, RFC 23's `dfs init` exists (its epic 5), outside this epic.
-- **X1**, RFC 23's name for what its epics 3 and 5 take from the RFC 13 plan: from this epic `Load` and the node identity, and from epic 4 `pkg/secrets`.
+- **X1**, RFC 23's name for what its epics 3, 4 and 5 take from the RFC 13 plan: from this epic `Load` and the node identity, and from epic 4 `pkg/secrets`.
 
 ## 2. How the general rules apply
 
@@ -103,12 +104,12 @@ title and not copied.
 | rule 3, observability follows RFC 25 | T2.8 | `format_active_version`, `format_supported_min` and `format_supported_max`, gauges labelled by format, set at start; no label carries a record or a secret |
 | rule 4, profiling | all | every test runs under the leak check |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T2.1, T2.7, T2.8 | refusals are asserted on the text the operator reads, through `dfs config validate`'s output; the version gate through a start that refuses, not through the comparison |
-| rule 6, known failures shrink | T2.6 | the launchers it edits run suites with a `known.yaml` (`pjdfstest`); none of their entries changes |
-| rule 7, v2 ignores v1 | T2.1, T2.3 | the loader, its path search and its decode hooks are kept, its decode made strict (D10); `checkRenamedKeys` and its table are kept and extended; nothing reads a v1 key's value |
+| rule 6, known failures shrink | T2.6 | the launchers it edits run suites with a `known.yaml` (`pjdfstest`); none of their entries changes, though until E6 moves them they start no server ([RFC 13's plan, §4.2's D7](rfc-13-config-plan.md#42-decisions)) |
+| rule 7, v2 ignores v1 | T2.1, T2.3 | the loader and its path search are kept, and its decoder, with the hooks epic 1 wires in, is replaced by the one strict value codec epic 1 names for E2 (D10); `checkRenamedKeys` and its table are kept and extended; nothing reads a v1 key's value |
 | rule 8, real dependencies for properties of those dependencies | T2.2, T2.8 | the `node-id` copies are real files in real journal directories, and their writes' crashes are simulated beneath the code by `journaltest/kit`'s seam; the store format is refused from a real Badger store |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.3, T2.5, T2.8 | a `decision:` note at the allowed names (why each launcher name passes), at the service-link exemption (a value's shape, not its name), and the `ponytail:` marker of the version gate (D5) |
 | rule 10, a test must be able to fail | all | each refusal has a test that feeds the refused input and asserts its line; each allowed name a test that it passes; the drift test runs over a planted file |
-| rule 11, a symbol is exported only if RFC 13's interfaces use it | all | nothing beyond E1's frozen surface is exported, but things it does not cover, each declared by the subtask that needs it: `Format`'s values and `Installation.Active`, and `kvstore`'s format bounds, which the node record's range reads (T2.8); a format read in the journal package, which the node identity reads (T2.2, D4); a constructor of `keyprovider`'s local provider that takes the passphrase (T2.4, D9); and the loader's result with each value's source (T2.1, D13) |
+| rule 11, a symbol is exported only if RFC 13's interfaces use it | all | nothing beyond E1's frozen surface is exported, but things it does not cover, each declared by the subtask that needs it: `Format`'s values and `Installation.Active`, and `kvstore`'s format bounds, which the node record's range reads (T2.8); a format read in the journal package, which the node identity reads (T2.2, D4); a constructor of `keyprovider`'s local provider that takes the passphrase (T2.4, D9), and the call that makes the runtime directory's fallback (T2.4); and the loader's result with each value's source (T2.1, D13) |
 | rule 12, each subtask creates only what it declares | all | the `node-id` codec lands with `NodeID`, the series with the gate, the allowed list with the scan |
 
 ## 3. Requirements and invariants
@@ -129,7 +130,8 @@ set for it.
 | R30 | A value of the wrong type or out of range is refused, naming the key and the type, and never coerced or replaced: a quoted boolean, a scalar where a list is declared, a number where a string is | MUST, MUST NOT | RFC 13 §6 ("Refused, never replaced") | T2.1 |
 | R31 | The `journals` list names each directory once: a path listed twice, or two paths that name one directory, is refused | MUST | RFC 13 Appendix C (journals, #4486) | T2.1 |
 | R32 | Only the metadata block `metadata.backend` names is read, and only the block `keys.<role>.kind` names: a key of the other block is refused, the second naming `kind` | MUST | RFC 13 Appendix C (metadata.backend and keys.<role>.kind, #4486) | T2.1 |
-| R35 | A value Appendix C bounds beyond its type is refused, each naming its key: an empty `journals` entry, a trailing or doubled comma of `DITTOFS_JOURNALS` included; the three `metadata.foundationdb.tls.*` files unless named together or not at all; an `api.socket` path past the socket-address limit; a `logging.rotation.max_size` that is not a whole number of MiB of at least `1MiB`, and a `max_age` that is not whole days; an empty host such as `:8080` in a listen value, while `metrics.listen: off` loads with no certificate | MUST | RFC 13 Appendix C (journals, metadata.foundationdb.tls, api.listen, api.socket, metrics.listen, logging.rotation, #4486) | T2.1 |
+| R35 | A value Appendix C bounds beyond its type is refused, each naming its key: an empty `journals` entry, a trailing or doubled comma or an empty value of `DITTOFS_JOURNALS` included; the three `metadata.foundationdb.tls.*` files unless named together or not at all; an `api.socket` path past the socket-address limit; a `logging.rotation.max_size` that is not a whole number of MiB of at least `1MiB`, and a `max_age` that is not whole days; an empty host such as `:8080` in a listen value, while `metrics.listen: off` loads with no certificate | MUST | RFC 13 Appendix C (journals, metadata.foundationdb.tls, api.listen, api.socket, metrics.listen, logging.rotation, #4486) | T2.1 |
+| R36 | A rule that relates two keys runs only over keys that passed their own: a bad `metadata.backend` is refused once, and the keys of the block it would name are not refused as well | MUST | RFC 13 §6 ("A refusal says where, what and why", #4486) | T2.1 |
 
 **The environment and the v1 names**
 
@@ -149,7 +151,7 @@ set for it.
 | R13 | Both roles' wrapping keys are named, and their key IDs differ; a copied key file or a link to one is the same key and refuses | MUST | RFC 13 §2.2 (wrapping-key row), §7 ("Two wrapping keys": both named), Appendix C ("the two roles name two different keys", #4486); what different means is D9's | T2.4 |
 | R14 | An `api.listen` or `metrics.listen` address off loopback (an IP outside `127.0.0.0/8` and `::1`, so a host name and `0.0.0.0` are off loopback, though a name is refused first as not an IP literal) needs `api.tls.cert_file` and `api.tls.key_file` | MUST | RFC 23 §5.3; RFC 13 Appendix C (#4486) | T2.4 |
 | R33 | A repeated role in `node.roles` is refused, not deduplicated | MUST | RFC 13 Appendix C (node.roles, #4486) | T2.4 |
-| R34 | The state directory is `$STATE_DIRECTORY`, else `$XDG_STATE_HOME/dittofs`, else `$HOME/.local/state/dittofs`, and the runtime directory `$RUNTIME_DIRECTORY`, else `$XDG_RUNTIME_DIR/dittofs`, else a directory under the state directory that only the node's user owns, mode `0700`, all read from `environ` (D2), a colon-separated value read for its first entry, and the defaults of `metadata.badger.path`, `logging.output` and `api.socket` follow them; a state directory that exists and is a symlink, owned by neither the node's user nor root, or writable by others refuses the start. The runtime directory's own check is RFC 23's epic 4 | MUST | RFC 13 Appendix C ("The state and runtime directories", #4486); RFC 13 epic 1's R22 | T2.4 |
+| R34 | The state directory is `$STATE_DIRECTORY`, else `$XDG_STATE_HOME/dittofs`, else `$HOME/.local/state/dittofs`, and the runtime directory `$RUNTIME_DIRECTORY`, else `$XDG_RUNTIME_DIR/dittofs`, else a directory under the state directory that only the node's user owns, mode `0700`, all read from `environ` (D2), a colon-separated value read for its first entry, and the defaults of `metadata.badger.path`, `logging.output` and `api.socket` follow them; a state directory that exists and is a symlink, owned by neither the node's user nor root, or writable by others refuses the start, and so does a runtime directory that exists and is a symlink, since it holds `dfs.sock`. The rest of the runtime directory's check, its owner and who can write it, is RFC 23's epic 4 | MUST | RFC 13 Appendix C ("The state and runtime directories", #4486); RFC 13 epic 1's R22 (E2 makes the fallback directory) | T2.4 |
 
 **The node identity**
 
@@ -193,7 +195,7 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
   environment and the facts' checks, then returns them as one error whose lines are RFC 13 §6's
   shape, sorted by where and key. A user fixes a file in one pass. A key that differs from a declared one only in case names that declared key (Appendix C), compared case-folded
   before any edit distance. Another unknown key's "did you mean"
-  names the declared key at the smallest edit distance, at most two edits, else nothing. No marker.
+  names the closest declared key, by the smallest edit distance, however far (RFC 13 §6, Appendix C). No marker.
 - **D2, the environment is an argument.** `Load(path string, environ []string)` takes the
   environment as `os.Environ()`'s slice, so a test passes its own and nothing reads the process's
   environment but `dfs`'s commands. Viper's `AutomaticEnv` is not used: the scan binds each
@@ -270,8 +272,8 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
   its own that still sets v1's names and moves in RFC 23's O4. Markers: a `decision:` note at the
   allowed names and at the service-link exemption.
 - **D8, `pkg/bootstrap` is the host's file, and what is not bootstrap is refused, not warned.**
-  `pkg/config`'s loader keeps its path search and decode hooks under the new name, so "config"
-  names one thing. An unknown key and a v1 key refuse the start; the v1 table (T2.3) names each
+  `pkg/config`'s loader keeps its path search under the new name, so "config"
+  names one thing, and its decoder is D10's. An unknown key and a v1 key refuse the start; the v1 table (T2.3) names each
   replacement. No marker.
 - **D9, two different keys means two different key IDs.** RFC 13's Appendix C has both roles name
   two different keys (the `keys.<role>.kind` row) and `dfs config validate` check the rule (#4486),
@@ -287,7 +289,7 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
 - **D10, the decode is strict.** RFC 13 §6 refuses a value of the wrong type and never replaces
   it, but viper's decoder runs with `WeaklyTypedInput` on (viper v1.21.0, `viper.go:988`), which
   turns a scalar into a one-element list, `"1"` or `"t"` into `true` and a number into a string,
-  silently. `Load` sets it off. The environment is all strings, so the scan parses each bound
+  silently. `Load` replaces viper's default hooks with the strict value codec epic 1 names for E2, and runs the decode with weak typing off. The environment is all strings, so the scan parses each bound
   key's variable by the key's declared type (a boolean is `true` or `false`, an integer, a list
   comma-separated: Appendix B's "How a key and a value are written", #4486) and hands the decode a
   typed value. Weak typing off does not by itself refuse a number where a size or a duration is
@@ -346,7 +348,7 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
 **Subtask T2.1 estimate: 3.5 man-days.**
 
 - **Track:** A. **Depends on:** S1.
-- **Covers:** R1, R2, R3, R4, R5, R6, R30, R31, R32, R35.
+- **Covers:** R1, R2, R3, R4, R5, R6, R30, R31, R32, R35, R36.
 - **Deliverables:** `Load(path, environ)` (D2) on the renamed loader: `--config`, else
   `DITTOFS_CONFIG`, else `$XDG_CONFIG_HOME`'s path, else `~/.config`'s, both read from `environ`; the environment over the file over the defaults; the
   decode with `mapstructure.Metadata`, its `Unused` keys refused as unknown, with D1's "did you
@@ -354,7 +356,7 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
   (D3); the decode strict (D10): `WeaklyTypedInput` off, and the environment's strings parsed by each
   key's declared type before it; every path checked absolute and clean, the `journals` list checked
   for a path listed twice or two naming one directory, and a metadata key checked against the block
-  `metadata.backend` names and a role's key against the block `kind` names; the bounds of R35; the report of D1; `LoadWithSources` and `Loaded` (D13), which `Load` wraps. `MustLoad`'s fallback to defaults
+  `metadata.backend` names and a role's key against the block `kind` names; the bounds of R35; a rule that relates two keys run over the keys that passed their own (R36); the report of D1; `LoadWithSources` and `Loaded` (D13), which `Load` wraps. `MustLoad`'s fallback to defaults
   with a warning goes: a missing named file refuses, a missing default file loads the defaults
   silently, since a start then refuses for its required keys anyway. `FuzzLoad`.
 - **Acceptance criteria:**
@@ -366,7 +368,7 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
   - A quoted boolean and a scalar where a list is declared are refused, naming the key and the
     type, and no key takes a default in place of a refused value.
 - **Tests:** table tests over files under `t.TempDir()`, one row per refusal, asserting the exact
-  line (catches a refusal that drops its rule or its hint); a key in another case refused naming the declared key, `LOGGING.LEVEL` giving `logging.level` (D3, D1; catches a hint taken by edit distance alone, which that key is past);
+  line (catches a refusal that drops its rule or its hint); a key in another case refused naming the declared key, `LOGGING.LEVEL` giving `logging.level` (D3, D1; catches a hint taken by edit distance alone, which that key is past); an unknown key more than two edits from every declared one still names the closest (D1; catches a cap on the distance);
   `/data/j1/` refused and `/data/j1` accepted (catches a loader that cleans silently); the
   precedence of `--config` over `DITTOFS_CONFIG` over the default, and of a variable over the
   file; the default path found through `XDG_CONFIG_HOME`, and then through `HOME` alone, each passed
@@ -377,9 +379,9 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
   which is a string); `journals` holding one path twice, and one holding two entries that name one
   directory, each refuse (catches a dedup by string, which two paths to one directory slip past);
   `metadata.badger.path` beside `metadata.backend: foundationdb` refuses (catches a decode that
-  reads both metadata blocks); `keys.protocol.local.file` beside `keys.protocol.kind: kmip` refuses naming `kind`; R35's rows, one each, with `DITTOFS_JOURNALS=/data/j1,` and `api.listen: :8080` among them and `metrics.listen: off` loading with no certificate (catches a bound left to the type, and a certificate check that reads `off` as a host); one key from the file, one from a variable and one defaulted each carry their source in
+  reads both metadata blocks); `keys.protocol.local.file` beside `keys.protocol.kind: kmip` refuses naming `kind`; R35's rows, one each, with `DITTOFS_JOURNALS=/data/j1,`, `DITTOFS_JOURNALS=` and `api.listen: :8080` among them and `metrics.listen: off` loading with no certificate (catches a bound left to the type, and a certificate check that reads `off` as a host); `metadata.backend: sqlite` beside a `metadata.badger.path` refuses once, on `metadata.backend`, and not also for the block's key (R36; catches a relation rule run over a key that failed its own, which cascades); one key from the file, one from a variable and one defaulted each carry their source in
   `Loaded` (catches a source copied from a second precedence walk, which drifts from the decode);
-  R4's rows: `pasword: s3cr3t` and `controlplane.jwt.secret: s3cr3t` in the file (RFC 13 §6's own keys, with a value) each refuse, and `s3cr3t` appears nowhere in the report (catches a decoder's error printed as it comes); `logging.rotation.max_age: 7` and `logging.rotation.max_size: 1.5` each refuse naming the key (catches a number decoded into a duration or a size, which turning weak typing off does not stop, D10); `FuzzLoad` seeded with each row.
+  R4's rows: `logging.rotation.max_backups: s3cr3t` in the file (a string where an integer goes) refuses naming the key, and `s3cr3t` is not in the report (the decoder's own error, which R4 rewords, since the environment's strings are parsed by the scan before the decode, D10); a PEM block pasted into `api.tls.key_file` refuses naming the key and the PEM is not in the report (epic 1 R2's credential canary, through the path check, not the decoder); `pasword: s3cr3t` and `controlplane.jwt.secret: s3cr3t` in the file (RFC 13 §6's own keys, with a value) each refuse, and `s3cr3t` appears nowhere in the report (catches a decoder's error printed as it comes); `logging.rotation.max_age: 7` and `logging.rotation.max_size: 1.5` each refuse naming the key (catches a number decoded into a duration or a size, which turning weak typing off does not stop, D10); `FuzzLoad` seeded with each row.
 
 ### T2.2 The node identity
 
@@ -458,8 +460,8 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
   named, loaded through `keyprovider.NewProviderWithPassphrase`, which takes the passphrase from
   `Load`'s `environ` and not from the process (D9), and their current key IDs compared; certificate and key when
   an `api.listen` or `metrics.listen` address is not loopback; the two directories resolved from
-  `environ` and the existing state directory checked (R34), the runtime fallback made by the start, never by `Validate`, with
-  mode `0700`.
+  `environ`, the existing state directory checked and the existing runtime directory refused when a symlink (R34); `MakeRuntimeDir`, which makes the runtime fallback with
+  mode `0700` and which the start calls, RFC 23's T4.3 where it binds `dfs.sock`, never `Validate`.
 - **Acceptance criteria:** each refusal is a line of T2.1's report, not a separate error.
 - **Tests:** `roles: [storage]` and `roles: [protocol, protocol]` each refuse (the second catches a
   comparison that dedups a repeated role); one role's key missing refuses; two roles naming one key
@@ -473,7 +475,7 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
   with no passphrase in `environ` refuses whatever the host's variable holds (catches a provider
   that reads the process's environment); a state directory that is a symlink, one writable by
   others and one owned by another user each refuse, `STATE_DIRECTORY`, `XDG_STATE_HOME` and `HOME` given in `environ` choose the directory (catches a
-  lookup that reads the process's environment), `STATE_DIRECTORY=/s1:/s2` chooses `/s1` (catches a lookup that takes the whole value, a directory that does not exist), a state directory owned by root loads (catches a check that accepts the node's user alone), and the fallback runtime directory comes out mode
+  lookup that reads the process's environment), `STATE_DIRECTORY=/s1:/s2` resolves to `/s1`, asserted on the resolved path since neither directory need exist (catches a lookup that takes the whole value), and so does `RUNTIME_DIRECTORY=/r1:/r2` to `/r1`, a state directory owned by root loads (catches a check that accepts the node's user alone), a symlink planted at the fallback runtime path refuses (R34), and `MakeRuntimeDir` makes the fallback mode
   `0700`.
 
 ### T2.5 Kubernetes' service links
@@ -499,17 +501,17 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
 
 **Subtask T2.6 estimate: 2 man-days.**
 
-- **Track:** A. **Depends on:** T2.3, T2.5.
+- **Track:** A. **Depends on:** T2.3, T2.5. Uses RFC 23's T1.1, which deletes `test/e2e/helpers`, so no refused name is left in it.
 - **Covers:** R11.
 - **Deliverables:** a test scanning the repository by content, every tracked text file outside `_test.go` that
   holds a `DITTOFS_` name, so a built `dfs` in a checkout is not read (Go, shell with or without `.sh`, Compose, `docker/`, Markdown but
-  `docs/internals/` and `CHANGELOG.md`), failing on a name the scan refuses, with D7's
+  `docs/internals/`, `.planning/` and `CHANGELOG.md`, which name refused names to say they are refused), failing on a name the scan refuses, with D7's
   exemptions; every launcher and guide it finds corrected, an upper-case `DITTOFS_LOGGING_LEVEL` example (the guides', the README's, `CLAUDE.md`'s and `dfs start`'s help text, from which `docs/guide/cli.md` is generated) moved to lower case, which the scan, checking names, does not catch; `DITTOFS_ADMIN_INITIAL_PASSWORD`,
   `DITTOFS_CONTROLPLANE_SECRET`, v1's `DITTOFS_GC_*` and the others it lists dropped.
 - **Acceptance criteria:** the test passes on the repository, and the launchers it edits still
   start what they started, or start nothing until E6 moves them to `dfs init` (D7).
 - **Tests:** the scan over a planted `testdata` tree holding one refused name in a shell file
-  without an extension fails, naming the file and the line (catches a scan by extension).
+  without an extension fails, naming the file and the line (catches a scan by extension); a refused name planted in a Markdown file under `.planning/` passes (catches an exemption missing, which fails on the plans themselves).
 
 ### T2.7 `dfs config` and the configuration guide
 
@@ -589,6 +591,7 @@ flowchart TD
   T2_1 --> T2_4["T2.4 The facts' checks"]
   T2_3 --> T2_5["T2.5 Service links"]
   T2_3 & T2_5 --> T2_6["T2.6 Drift test, launchers"]
+  N231(["RFC 23's T1.1: e2e helpers deleted"]):::sync --> T2_6
   T2_6 --> C6(["after T2.6: no file sets a refused name"]):::sync
   T2_1 & T2_3 & T2_4 --> T2_7["T2.7 dfs config, guide"]
   N23(["RFC 23's T2.8: Node.Formats"]):::sync --> T2_8["T2.8 The version gate"]
@@ -601,7 +604,7 @@ flowchart TD
 
 T2.1 and T2.2 come first and in parallel: they are this epic's part of RFC 23's X1 (epic 4's `pkg/secrets` is the rest), on its critical path. The checkpoint
 after T2.6 is that no file of the repository sets a refused name. T2.8 waits on RFC 23's node
-record and T2.9 on its `dfs init`.
+record, T2.6 on RFC 23's T1.1 and T2.9 on its `dfs init`.
 
 ## 8. Suggested pull requests
 
@@ -613,6 +616,8 @@ record and T2.9 on its `dfs init`.
 | 4 | T2.9 | 0.75 | PR 2, S4 | `dfsbench` on `dfs init`, once it exists |
 
 A suggestion only: one pull request per subtask works as well.
+
+The least certain estimates are T2.6, whose launchers and guides are known only when the scan runs; T2.7, which rewrites `docs/guide/configuration.md` (1,840 lines on `feat/storage-v2`); and T2.1, which rewrites `pkg/bootstrap`'s tests (791 lines there) written for today's loader. None is resized here.
 
 ## 9. Open points
 

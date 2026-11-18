@@ -15,7 +15,7 @@ its export pin, and `dfs start` over the stub. E2 provides what the node reads a
 counters, the node and node-status records through its node view, the operation record, its
 running index and `Write`, the expiry sweep, and the user's, group's and share's removal past the
 mark. The RFC 13 plan's epic 1 provides `pkg/bootstrap` with RFC 13 §2.2's facts, which only
-T3.9 reads; X1 (that plan's epic 2) provides `WriteMissingNodeIDs` and the version gate, which only T3.10 calls.
+T3.9 reads; X1 (that plan's epic 2) provides `NodeID`, `WriteMissingNodeIDs` and the version gate, which only T3.10 calls.
 **Blocks:** E4, which adds its routes, TLS and the local socket to the `internal/node/api` this
 epic creates; E5, partly, whose signed-in callers extend the harness; E6, partly, whose tests run
 against the harness's node; E7, which runs every row on the node `New` builds; RFC 20's plan's epic
@@ -751,7 +751,8 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 
 - **Track:** A. **Depends on:** T3.3, and on X1.
 - **Covers:** R12, R14, R46.
-- **Deliverables:** step 1 calling X1's `WriteMissingNodeIDs` with the store's `JournalID`, its one
+- **Deliverables:** `dfs start` reading the node's identity through X1's `NodeID` before the store
+  opens, its one caller; step 1 calling X1's `WriteMissingNodeIDs` with the store's `JournalID`, its one
   caller; step 3 registering through X1's version gate, its one caller, which writes the binary's
   ranges and refuses, in the registration's transaction, an active version outside them; `format.NameNodeID` and `NameNodeIDTmp` in the journal's name classification, so attach
   neither logs nor refuses them. Consumed by E5's `dfs init`, which writes the copies.
@@ -763,7 +764,7 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   - A start over an installation whose active journal format lies past the binary's range stops at
     step 3, naming the format and both versions, with no component started and the node record as
     it was.
-- **Tests:** in `node_test`, on disk: a copy removed, a restart, the copy back (R12); a replaced
+- **Tests:** in `node_test`, on disk: two copies that differ, a start refused before the store opens, naming the directories (RFC 13 §2.2); a copy removed, a restart, the copy back (R12); a replaced
   device's empty directory left without one (R12); the journal's attach over a directory holding
   both files, its log captured through an injected `slog.Handler` (R46); the active journal format
   raised past the binary's range through kvstore, a start refused at step 3, no engine series and the
