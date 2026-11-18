@@ -11,35 +11,35 @@ func DefaultSMB() SMB
 type Adapter struct {
 	Addrs []netip.Addr `json:"-"`
 
-	Port uint16 `json:"port"`
+	Port uint16 `json:"port" class:"restart"`
 
-	DrainTimeout time.Duration `json:"drain_timeout"`
+	DrainTimeout time.Duration `json:"drain_timeout"       class:"live"`
 
-	IdleTimeout time.Duration `json:"idle_timeout"`
+	IdleTimeout time.Duration `json:"idle_timeout"        class:"live"`
 
-	WriteTimeout time.Duration `json:"write_timeout"`
+	WriteTimeout time.Duration `json:"write_timeout"       class:"live"`
 
-	HandshakeTimeout time.Duration `json:"handshake_timeout"`
+	HandshakeTimeout time.Duration `json:"handshake_timeout"   class:"live"`
 
-	ReadTimeout time.Duration `json:"read_timeout"`
+	ReadTimeout time.Duration `json:"read_timeout"        class:"live"`
 
-	DisabledOperations []string `json:"disabled_operations"`
+	DisabledOperations []string `json:"disabled_operations" class:"live"`
 }
 
 type NFS struct {
 	Adapter
-	TLS TLS `json:"tls"`
+	TLS TLS `json:"tls"      class:"live"`
 
-	Versions VersionRange `json:"versions"`
+	Versions VersionRange `json:"versions" class:"live"`
 }
 
 type SMB struct {
 	Adapter
-	Dialects VersionRange `json:"dialects"`
+	Dialects VersionRange `json:"dialects" class:"live"`
 
-	PendingTimeout time.Duration `json:"pending_timeout"`
+	PendingTimeout time.Duration `json:"pending_timeout" class:"live"`
 
-	RecallTimeout time.Duration `json:"recall_timeout"`
+	RecallTimeout time.Duration `json:"recall_timeout"  class:"live"`
 }
 
 type Settings interface {

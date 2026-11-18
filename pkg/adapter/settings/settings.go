@@ -45,24 +45,24 @@ type Adapter struct {
 	// Port is what each listener that would bind the protocol's well-known
 	// port binds instead, on every address; 0 lets the system pick, for tests. It
 	// is restart-class: the node applies a change by building a new adapter.
-	Port uint16 `json:"port"`
+	Port uint16 `json:"port" class:"restart"`
 
 	// DrainTimeout is the longest a draining adapter waits for requests
 	// already handed to the service; at least the break deadline plus the
 	// request deadline, so a request held on a break can finish.
-	DrainTimeout time.Duration `json:"drain_timeout"`
+	DrainTimeout time.Duration `json:"drain_timeout"       class:"live"`
 	// IdleTimeout closes a connection with no request and no held state.
-	IdleTimeout time.Duration `json:"idle_timeout"`
+	IdleTimeout time.Duration `json:"idle_timeout"        class:"live"`
 	// WriteTimeout is the longest one message may wait to be written before
 	// its connection is closed.
-	WriteTimeout time.Duration `json:"write_timeout"`
+	WriteTimeout time.Duration `json:"write_timeout"       class:"live"`
 	// HandshakeTimeout bounds negotiate and authenticate, from accept.
-	HandshakeTimeout time.Duration `json:"handshake_timeout"`
+	HandshakeTimeout time.Duration `json:"handshake_timeout"   class:"live"`
 	// ReadTimeout bounds the rest of a request once its first byte arrived.
-	ReadTimeout time.Duration `json:"read_timeout"`
+	ReadTimeout time.Duration `json:"read_timeout"        class:"live"`
 	// DisabledOperations are switched off by name; the pipeline answers one as
 	// an operation its table lacks.
-	DisabledOperations []string `json:"disabled_operations"`
+	DisabledOperations []string `json:"disabled_operations" class:"live"`
 }
 
 // Common returns the Adapter; NFS and SMB promote it.
@@ -89,23 +89,23 @@ type VersionRange struct {
 // versions served.
 type NFS struct {
 	Adapter
-	TLS TLS `json:"tls"`
+	TLS TLS `json:"tls"      class:"live"`
 	// Versions are among "3", "4.0", "4.1" and "4.2"; "3" includes its
 	// auxiliary programs MOUNT, NLM and NSM.
-	Versions VersionRange `json:"versions"`
+	Versions VersionRange `json:"versions" class:"live"`
 }
 
 // SMB is the SMB adapter's whole shape: the common part, the dialect range
 // and how long a request is held pending.
 type SMB struct {
 	Adapter
-	Dialects VersionRange `json:"dialects"` // among "2.1", "3.0", "3.0.2" and "3.1.1"
+	Dialects VersionRange `json:"dialects" class:"live"` // among "2.1", "3.0", "3.0.2" and "3.1.1"
 	// PendingTimeout is the longest a request refused for a transient cause
 	// is held pending before it is answered.
-	PendingTimeout time.Duration `json:"pending_timeout"`
+	PendingTimeout time.Duration `json:"pending_timeout" class:"live"`
 	// RecallTimeout is the longest a request held on a recall may wait; it
 	// exceeds the break deadline.
-	RecallTimeout time.Duration `json:"recall_timeout"`
+	RecallTimeout time.Duration `json:"recall_timeout"  class:"live"`
 }
 
 // Settings is what Reconfigure takes, so that a protocol's own live settings
