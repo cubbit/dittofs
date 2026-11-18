@@ -485,14 +485,14 @@ func (p gatedHandover) NewConn(c *core.Conn) core.Stages {
 }
 
 // A Reconfigure arriving while a Stop is ending its accept loops is refused
-// as stopping, and the server ends stopped with no socket left and no
+// as draining, and the server ends stopped with no socket left and no
 // address: a Stop moves the state under the server's lock before it closes
 // a listener, so a Reconfigure that reaches the server across one meets
 // the refusal naming the state the whole Stop window carries. A Stop a
 // Reconfigure can run alongside takes this test's Reconfigure in its
 // window: it binds what it names, and the refusal's absence, the address
 // left listening and the dial completing each fail it.
-func TestAReconfigureUnderAStopIsRefusedAsStopping(t *testing.T) {
+func TestAReconfigureUnderAStopIsRefusedAsDraining(t *testing.T) {
 	needIPv6Loopback(t)
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
@@ -527,8 +527,8 @@ func TestAReconfigureUnderAStopIsRefusedAsStopping(t *testing.T) {
 		return false
 	})
 	err = srv.Reconfigure(context.Background(), drainOn("127.0.0.1", "::1"))
-	if err == nil || !strings.Contains(err.Error(), "stopping") {
-		t.Fatalf("Reconfigure under a Stop: %v, want refused naming stopping", err)
+	if err == nil || !strings.Contains(err.Error(), "draining") {
+		t.Fatalf("Reconfigure under a Stop: %v, want refused naming draining", err)
 	}
 	release()
 	if err := <-stopped; err != nil {

@@ -390,11 +390,11 @@ func RecordHeld(c *Conn) bool {
 
 // Stopping shows a running Stop's gates, as a Stop on a configured or a
 // serving server sets them under the lock, without running the rest: the
-// stopping state and the marker together, so the gates read on them are
+// draining state and the marker together, so the gates read on them are
 // deterministic.
 func Stopping(s *Server, done chan struct{}) {
 	s.mu.Lock()
-	s.state = adapter.StateStopping
+	s.state = adapter.StateDraining
 	s.stopDone = done
 	s.mu.Unlock()
 }

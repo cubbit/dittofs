@@ -48,10 +48,10 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 	s.mu.Lock()
 	st := s.state
 	switch st {
-	case adapter.StateStopping, adapter.StateDraining, adapter.StateStopped:
-		// A Stop is running, draining or done, its marker and its stopping
-		// state set under this lock together: a Reconfigure reaching one is
-		// refused, naming the state (RFC 20 sections 3.4 and 3.6).
+	case adapter.StateDraining, adapter.StateStopped:
+		// A Stop is running or done, its draining state and its marker set
+		// under this lock together: a Reconfigure reaching one is refused,
+		// naming the state (RFC 20 sections 3.4 and 3.6).
 		s.mu.Unlock()
 		return fmt.Errorf("core: reconfigure: the server is %s", st)
 	case adapter.StateConfigured:
