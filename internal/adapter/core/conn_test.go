@@ -713,12 +713,16 @@ func TestAnUnestablishedConnectionRunsToItsHandshakeDeadline(t *testing.T) {
 	default:
 	}
 	// Once it establishes, the idle deadline governs it: it closes there.
+	arms := core.IdleArms(conn)
 	if err := c.Send(testproto.Msg{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7}); err != nil {
 		t.Fatal(err)
 	}
 	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
 		t.Fatalf("the Session is answered %+v (%v)", rs, err)
 	}
+	waitsFor(t, "the idle deadline to re-arm", func() bool {
+		return core.IdleArms(conn) > arms && core.Runs(core.ConnPipeline(conn)) == 0
+	})
 	_, idle := deadlines(conn)
 	clk.Advance(idle + time.Second)
 	select {
@@ -814,6 +818,7 @@ func TestAnIdleDeadlineWaitsOutAReplyReservation(t *testing.T) {
 	waitsFor(t, "the Echo to wait for its reply room", func() bool {
 		return core.Runs(core.ConnPipeline(conn)) == 1
 	})
+	arms := core.IdleArms(conn)
 
 	clk.Advance(2 * idle) // the armed deadline fires while the Echo still runs
 	select {
@@ -825,6 +830,9 @@ func TestAnIdleDeadlineWaitsOutAReplyReservation(t *testing.T) {
 	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].ID != 3 {
 		t.Fatalf("the waiting Echo is answered %+v (%v)", rs, err)
 	}
+	waitsFor(t, "the idle deadline to re-arm", func() bool {
+		return core.IdleArms(conn) > arms && core.Runs(core.ConnPipeline(conn)) == 0
+	})
 	clk.Advance(idle - time.Millisecond)
 	select {
 	case <-core.ConnDone(conn):
@@ -856,6 +864,7 @@ func TestAPartlyReadRecordIsNotIdle(t *testing.T) {
 	defer func() { _ = client.Close() }()
 	_, idle := deadlines(conn)
 	c := testproto.NewClient(client)
+	arms := core.IdleArms(conn)
 	for _, m := range []testproto.Msg{
 		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
 		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
@@ -868,7 +877,7 @@ func TestAPartlyReadRecordIsNotIdle(t *testing.T) {
 		}
 	}
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return core.IdleArmed(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+		return core.IdleArms(conn) > arms && core.Runs(core.ConnPipeline(conn)) == 0
 	})
 	// Half an Echo: the record's length and the first bytes of its body, the
 	// rest withheld.
@@ -892,6 +901,9 @@ func TestAPartlyReadRecordIsNotIdle(t *testing.T) {
 	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].ID != 3 {
 		t.Fatalf("the finished Echo is answered %+v (%v)", rs, err)
 	}
+	waitsFor(t, "the idle deadline to re-arm", func() bool {
+		return core.IdleArms(conn) > arms && core.Runs(core.ConnPipeline(conn)) == 0
+	})
 	clk.Advance(idle - time.Millisecond)
 	select {
 	case <-core.ConnDone(conn):
@@ -924,6 +936,7 @@ func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
 	defer func() { _ = client.Close() }()
 	_, idle := deadlines(conn)
 	c := testproto.NewClient(client)
+	arms := core.IdleArms(conn)
 	for _, m := range []testproto.Msg{
 		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
 		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7, Keep: true},
@@ -940,7 +953,7 @@ func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
 	}
 
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return core.IdleArmed(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+		return core.IdleArms(conn) > arms && core.Runs(core.ConnPipeline(conn)) == 0
 	})
 	clk.Advance(2 * idle)
 	select {
@@ -956,7 +969,7 @@ func TestASessionsKeepHoldsTheIdleDeadline(t *testing.T) {
 	}
 	waitsFor(t, "the keep's release", func() bool { return core.Kept(conn) == 0 })
 	waitsFor(t, "the idle deadline to re-arm", func() bool {
-		return core.IdleArmed(conn) && core.Runs(core.ConnPipeline(conn)) == 0
+		return core.IdleArms(conn) > arms && core.Runs(core.ConnPipeline(conn)) == 0
 	})
 	clk.Advance(idle - time.Millisecond)
 	select {
@@ -1026,8 +1039,11 @@ func TestARecordThatRunsNothingStillClosesAtIdle(t *testing.T) {
 	if _, err := client.Write(cancel[8:]); err != nil {
 		t.Fatal(err)
 	}
+	// The buffer's release lands before the reader clears its held tail, so
+	// the wait demands both: a deadline firing into the tail would re-arm,
+	// where the record is done and it must close.
 	waitsFor(t, "the cancel to end without running", func() bool {
-		return b.Receive.Reserved() == 0
+		return b.Receive.Reserved() == 0 && !core.RecordHeld(conn)
 	})
 	clk.Advance(2 * idle)
 	select {

@@ -43,9 +43,11 @@ type Conn struct {
 	kept        atomic.Int32  // the idle pass-over's count, one per Keep, released one apiece
 	closedAt    atomic.Int64  // the close's time, in Unix nanoseconds; 0 before one
 
-	timersMu   sync.Mutex // guards the two deadlines below
-	handshakeT timer      // armed at accept for handshake_timeout, ended by Established
-	idleT      timer      // armed whenever nothing runs, resting under a Keep or a record
+	timersMu   sync.Mutex    // guards the two deadlines below
+	handshakeT timer         // armed at accept for handshake_timeout, ended by Established
+	idleT      timer         // armed whenever nothing runs, resting under a Keep or a record
+	idleArms   atomic.Uint64 // how many times idle armed the deadline, the count a test waits past for an arm of its own
+	idleGen    atomic.Uint64 // the generation an arm carries: each arm, and each request a connection starts or ends, advances it, so a timer the current generation superseded closes nothing
 }
 
 // Send queues a message on the writer: a callback, or an interim reply. core
@@ -107,23 +109,40 @@ func (c *Conn) idle() {
 	// A zero idle_timeout disarms it, as it disarms read_timeout and
 	// write_timeout (RFC 13 Appendix B's zero value).
 	if d := c.snap.Common().IdleTimeout; d > 0 {
-		c.idleT = c.sh.clock.AfterFunc(d, c.idleExpired)
+		g := c.idleGen.Add(1)
+		c.idleT = c.sh.clock.AfterFunc(d, func() { c.idleExpired(g) })
+		c.idleArms.Add(1)
 	}
 }
 
 // idleExpired closes the connection at its idle deadline, once everything the
 // deadline waits on still rests: the connection is established, nothing runs,
-// no record is partly read and no Keep is held. A deadline that expired
-// while that no longer holds leaves the connection alone: the next moment
-// nothing runs arms it afresh.
-func (c *Conn) idleExpired() {
-	if !c.established.Load() || c.closed.Load() || c.kept.Load() != 0 || !c.p.quiet() {
+// no record is partly read and no Keep is held. A record in hand is checked
+// before the quiet, so one the reader serves between the two reads - the
+// quiet it read numbering no request yet, the record no longer held, its
+// request now running - cannot close a connection that is serving: the
+// deadline looks again a deadline later instead. A deadline that expired while
+// that no longer holds leaves the connection alone: the next moment nothing
+// runs arms it afresh. The arm's generation is checked under timersMu: a
+// timer a later arm, or a request a connection started or ended since,
+// superseded closes nothing.
+func (c *Conn) idleExpired(g uint64) {
+	if !c.established.Load() || c.closed.Load() || c.kept.Load() != 0 {
 		return
 	}
 	if c.rd.holding() {
 		// A record in hand may run nothing, and so call no done(): the
 		// deadline looks again a deadline later instead of resting on one.
 		c.idle()
+		return
+	}
+	if !c.p.quiet() {
+		return
+	}
+	c.timersMu.Lock()
+	stale := g != c.idleGen.Load()
+	c.timersMu.Unlock()
+	if stale {
 		return
 	}
 	c.Close(errIdle)
@@ -227,7 +246,7 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, charge *resources.Reservati
 	record, _ := f.MaxRecord()
 	common := snap.Common()
 	c.w = newWriter(nc, f, common.WriteTimeout, c.Close)
-	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, set: snap, record: record, out: c.w.out, close: c.Close, idle: c.idle})
+	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, set: snap, record: record, out: c.w.out, close: c.Close, idle: c.idle, turn: func() { c.idleGen.Add(1) }})
 	c.rd = newReader(nc, f, s.recv, c.remote, common.ReadTimeout)
 	// Armed only once the writer, pipeline and reader exist, so a deadline
 	// that fires at once never races their assignment.

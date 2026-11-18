@@ -357,3 +357,17 @@ func IdleArmed(c *Conn) bool {
 	defer c.timersMu.Unlock()
 	return c.idleT != nil
 }
+
+// IdleArms is how many times the connection armed its idle deadline: a test
+// waits past the arms behind the one it wants, so its advance lands after that
+// arm and no earlier one.
+func IdleArms(c *Conn) uint64 {
+	return c.idleArms.Load()
+}
+
+// RecordHeld reports whether the connection's reader still holds bytes of a
+// record: a test waits it out before advancing, so a deadline firing into the
+// record's tail closes instead of re-arming.
+func RecordHeld(c *Conn) bool {
+	return c.rd.holding()
+}

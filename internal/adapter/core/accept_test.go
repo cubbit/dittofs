@@ -20,9 +20,11 @@ import (
 )
 
 // failingListener fails Accept with EMFILE while its cue is set and passes to
-// its inner listener once it is not: a listener at its file-descriptor limit,
-// on cue. The real socket stays bound the whole time, so a client's connection
-// waits in its backlog and is accepted once the fault lifts.
+// its inner listener once it is not, refusing a connection already waiting in
+// its backlog the same way once the cue is back: a listener at its
+// file-descriptor limit, on cue. The real socket stays bound the whole time,
+// so a client's connection waits in its backlog and is accepted once the fault
+// lifts.
 type failingListener struct {
 	net.Listener
 	cue      atomic.Bool
@@ -36,6 +38,14 @@ func (l *failingListener) Accept() (net.Conn, error) {
 		return nil, syscall.EMFILE
 	}
 	c, err := l.Listener.Accept()
+	if err == nil && l.cue.Load() {
+		// A connection the backlog held while the loop sat in Accept fails
+		// it too, so a fault that starts while the loop waits records its
+		// first failure rather than hanging on the next dial.
+		_ = c.Close()
+		l.failures.Add(1)
+		return nil, syscall.EMFILE
+	}
 	if err == nil {
 		l.accepted.Add(1)
 	}
@@ -288,9 +298,11 @@ func TestALostListenerWithNoClientClearsByTime(t *testing.T) {
 		t.Fatalf("a listener a minute into its fault is reported %+v", h)
 	}
 	// One failure more, the streak's last: it lands at the armed backoff's own
-	// instant, on the minute's shoulder.
-	clk.Advance(clk.nextIn())
+	// instant, on the minute's shoulder. The count is read before the
+	// advance: it releases the backoff, and the failure it records may land
+	// before a later read, which would then wait for one that never comes.
 	fails := fl.failures.Load()
+	clk.Advance(clk.nextIn())
 	waitsFor(t, "the last failure to be recorded", func() bool { return fl.failures.Load() > fails })
 	fl.cue.Store(false) // the fault ends, and no client dials
 	// The capped backoff fires and the loop parks in Accept, the last failure
@@ -331,6 +343,11 @@ func TestAListenerThatStoppedFailingIsNotLost(t *testing.T) {
 	// and the backoff runs from its base again.
 	fl.cue.Store(true)
 	fails := fl.failures.Load()
+	// A client dials, so the Accept the loop waits in returns a connection the
+	// cue refuses: the stray failure records, rather than waiting for a dial
+	// the test never makes.
+	stray := dial(t, fl)
+	defer func() { _ = stray.Close() }()
 	waitsFor(t, "the stray failure to be recorded", func() bool { return fl.failures.Load() > fails })
 	fl.cue.Store(false)
 	waitsFor(t, "the backoff to arm", func() bool { return clk.pending() > 0 })
