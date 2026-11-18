@@ -509,6 +509,13 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 				Pair:  index.Numbers{Version: l.Version, Seq: seq},
 				Seq:   seq,
 				Named: l.Seq,
+				// The share whose content the loss names, part of the key of
+				// every registry the registration enters, and the place its
+				// append reported: a carry reaches the record through the
+				// registry, and one registered without either fails the unit
+				// over it, for it can neither read nor move the record.
+				Tag: l.Share,
+				Loc: at,
 				// The flags that pick the loss's own drop rule.
 				Synced:     l.Synced,
 				Superseded: l.Reason == core.LossSuperseded,

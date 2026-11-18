@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
@@ -15,6 +16,83 @@ import (
 // Journal-level checks of the failed append's shape: the rows the offloading
 // epic owns carry their offload-driven legs, so this file drives the same
 // rules through the data path alone.
+
+// TestALossRecordCarriedFromItsSegmentJournalLevel is the journal-level row of
+// the registration a corrupt record's loss files: the loss record it appends
+// is registered live where it landed, a pass over that segment carries the
+// record forward rather than failing over a registration that names no place
+// and no share, and once the caller's Settle has covered the marker the loss
+// left, the segments holding the record and its copy retire with no error.
+// The record it lost was a synced one, so its loss record is live while the
+// marker it left is unsettled, which nothing does here until the Settle: the
+// liveness has a record it reaches without any other segment standing.
+func TestALossRecordCarriedFromItsSegmentJournalLevel(t *testing.T) {
+	f := journaltest.New(t)
+	id := journaltest.File(0)
+	const size = 64 << 10
+	e := ext(0, size)
+	h := f.Share(0)
+
+	// A synced record, corrupted on disk past its checksum: the read that
+	// finds the corruption drops it and appends the synced loss record
+	// naming it, registered live into the stream's active segment beside the
+	// record it lost.
+	p := distinct(0, size)
+	v := write(t, h, id, 0, p)
+	syncFile(t, h, id)
+	loc := entryAt(t, f, id, 0).Location
+	name := segmentName(loc.Segment)
+	data := liveBytes(t, f, name)
+	start := bytes.Index(data[loc.Offset:], p)
+	if start < 0 {
+		t.Fatalf("the payload is not in segment %d past offset %d", loc.Segment, loc.Offset)
+	}
+	flipAt(t, f, name, loc.Offset+int64(start)+int64(len(p)/2))
+
+	// The read that finds the corruption is the one that publishes the loss
+	// record and its registration; the loss event follows the record, so
+	// waiting for it waits for both.
+	wantExtentMissing(t, h, id, e, "the corrupted read")
+	deadline := time.Now().Add(backgroundWait)
+	for len(f.J.Stats().Losses) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(f.J.Stats().Losses) == 0 {
+		t.Fatal("the corrupted read published no loss event, want the one for the record it dropped")
+	}
+
+	// The first pass runs over the segment the loss record holds, sealed
+	// idle, and carries it into the segment the stream rolled to. A
+	// registration that names neither the record's place nor its share
+	// makes this pass fail over the segment for ever: the carry is the
+	// proof the registration names both.
+	f.WaitSpares()
+	f.Advance(2 * journaltest.IdleSealAge)
+	for time.Now().Before(deadline) {
+		if s, ok := segmentInfo(f, loc.Segment); ok && s.Sealed {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if s, ok := segmentInfo(f, loc.Segment); !ok || !s.Sealed {
+		t.Fatalf("the segment %d the loss record holds is %v, want it sealed idle for a pass to take", loc.Segment, s)
+	}
+	if _, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{}); err != nil {
+		t.Fatalf("the pass over the loss record's segment: %v", err)
+	}
+
+	// The caller's Settle, covering the marker the loss record left, ends
+	// the record's own liveness: the segments holding it and its copy are
+	// free to go, and they retire with no error and their storage back.
+	h.Settle(id, v)
+	if freed := repackAll(t, f, journal.RepackScope{}); freed <= 0 {
+		t.Fatalf("the repack after the settle freed %d bytes, want the storage of the segments holding the loss record and its copy", freed)
+	}
+
+	// What the loss record names stays lost after the passes: nothing of
+	// the corrupted record came back with the copy that carried its loss.
+	wantExtentMissing(t, f.Share(0), id, e, "after the passes")
+}
 
 // TestFailedAppendCarriedOnceResolvedJournalLevel is the journal-level form
 // of the recycled segment's failed-append leg (R68): a failed append into
