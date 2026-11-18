@@ -793,7 +793,7 @@ that component's surface:
 | netgroup | `Netgroup` | put, delete | `ControlPlane` |
 | setting | `Setting` at a scope | put; a default is the absence of a record | RFC 13 |
 | secret | `Secret` | write-only: set, rotate, delete, each authorized as its owning resource's write (§5.2); never read | [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets) |
-| adapter | adapter settings, installation scope with node override | §3.4 | RFC 13, [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states) |
+| adapter | adapter settings, installation scope per adapter, with a node override for the port alone | §3.4 | RFC 13, [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states) |
 | snapshot, snapshot policy | `Snapshot`, policy settings | [RFC 12](rfc-12-snapshots.md#3.1%20Interfaces) | `Snapshots` |
 | backup location, backup | its record, backup records | [RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record), [RFC 26](rfc-26-catalog-backups.md#4.1%20Interfaces) | `Backups` |
 | move, re-home | their records | [RFC 27](rfc-27-namespace-migration.md#3.1%20Interfaces) | `Migration`, `Rehome` |
