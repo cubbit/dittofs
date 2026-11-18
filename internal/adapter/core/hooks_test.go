@@ -315,6 +315,12 @@ func SetServerSettings(s *Server, snap settings.Settings) { s.settings.Store(&sn
 // SetServerClock replaces the server's shared clock with a test's.
 func SetServerClock(s *Server, c Clock) { s.sh.clock = c }
 
+// SetServerListen replaces the opener every listener is bound on, so a test
+// can park an accept loop's end in its listener's own accept.
+func SetServerListen(s *Server, l func(context.Context, string, string) (net.Listener, error)) {
+	s.listen = l
+}
+
 // Serving moves a server to serving, as Start does once its listeners are
 // bound: a test hands the server sockets itself and needs no listener.
 func Serving(s *Server) {

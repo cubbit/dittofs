@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"testing/synctest"
@@ -271,6 +272,103 @@ func TestTheDrainDeadlineAbandonsAnEchoStillWaiting(t *testing.T) {
 		return srv.Health().State == adapter.StateDraining
 	})
 	clk.Advance(201 * time.Millisecond)
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop at the drain deadline: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop never returned: the drain held no deadline")
+	}
+	var buf [64]byte
+	if h := srv.Health(); h.State != adapter.StateStopped {
+		t.Errorf("after Stop the server is %s, want stopped", h.State)
+	}
+	if n, rerr := nc.Read(buf[:]); n > 0 {
+		t.Fatalf("the abandoned Echo was answered with %d bytes at the deadline", n)
+	} else if rerr == nil || (!errors.Is(rerr, io.EOF) && !errors.Is(rerr, syscall.ECONNRESET)) {
+		t.Fatalf("the closed connection's read answers %d, %v; want its end, no reply of it", n, rerr)
+	}
+	free() // the test's held room, kept to the end and given back after
+	if r := b.Receive.Reserved(); r != 0 {
+		t.Errorf("the closed connection's receive charge is still %d bytes", r)
+	}
+	if r := b.Connection.Reserved(); r != 0 {
+		t.Errorf("the closed connection's state charge is still %d bytes", r)
+	}
+}
+
+// parkedAccept is a listener whose accept, once Stop closes the listener,
+// parks until the test lets it go, holding the accept loop's end - and with
+// it Stop's second lock - open past the moment a reader of draining lands in.
+type parkedAccept struct {
+	net.Listener
+	gate   chan struct{}
+	closed atomic.Bool
+}
+
+func (a *parkedAccept) Accept() (net.Conn, error) {
+	nc, err := a.Listener.Accept()
+	if a.closed.Load() {
+		<-a.gate
+	}
+	return nc, err
+}
+
+func (a *parkedAccept) Close() error {
+	a.closed.Store(true)
+	return a.Listener.Close()
+}
+
+// The accept loop's end is parked in its closed listener's accept until the
+// test lets it go, so the span between draining's publication and the loop's
+// end is held open: a reader that observes draining the moment the state
+// publishes, advances the server's clock past the drain deadline, and only
+// then lets the loop go, still sees Stop return at the deadline. A deadline
+// taken only past the loop's end reads the advanced clock, arms one that
+// never moves again, and Stop never returns (RFC 20 sections 3.1 and 3.4).
+func TestTheDrainDeadlineIsTakenWhereDrainingIsPublished(t *testing.T) {
+	b := budgets()
+	b.Reply = resources.NewWaitBudget("reply", chargeOfReply(t, 8))
+	adaptertest.CheckLeaks(t, b)
+	gate := make(chan struct{})
+	listen := func(ctx context.Context, network, addr string) (net.Listener, error) {
+		ln, err := (&net.ListenConfig{}).Listen(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &parkedAccept{Listener: ln, gate: gate}, nil
+	}
+	p := newCapturing(testproto.New(adapter.Deps{}).Bare())
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, drainSnap("127.0.0.1"), core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	core.SetServerListen(srv, listen)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	at := testAddr(t, srv)
+	c, nc := clientAt(t, at)
+	conn := theConn(t, p)
+	registered(t, srv, p)
+	free := holdsRoom(t, b, 1)
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Payload: []byte("hi")}); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "the Echo to wait for its reply room", func() bool {
+		return pipelineRuns(conn) == 1
+	})
+	stopped := make(chan error, 1)
+	go func() { stopped <- srv.Stop(context.Background()) }()
+	waitsFor(t, "the server to drain", func() bool {
+		return srv.Health().State == adapter.StateDraining
+	})
+	clk.Advance(201 * time.Millisecond)
+	close(gate)
 	select {
 	case err := <-stopped:
 		if err != nil {

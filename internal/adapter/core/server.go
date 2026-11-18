@@ -363,6 +363,14 @@ func (s *Server) Stop(ctx context.Context) error {
 	// OnClose that ignores its context, parks Stop and every Stop behind it
 	// until the protocol gives their mounts their end.
 	wasServing := s.state == adapter.StateServing
+	var at time.Time
+	if wasServing {
+		// The deadline is taken beside the state's publication, before any
+		// reader can see it, so a clock a reader of the state advances once
+		// it reads draining cannot move the take past the deadline the
+		// drain holds.
+		at = s.sh.clock.Now().Add((*s.settings.Load()).Common().DrainTimeout)
+	}
 	s.state = adapter.StateDraining
 	looped := slices.Clone(s.bound)
 	s.closeBound()
@@ -379,16 +387,11 @@ func (s *Server) Stop(ctx context.Context) error {
 		conns = append(conns, c)
 	}
 	if wasServing {
-		// Every pipeline is told before Health names the state, so a request
-		// that meets draining meets the refusal too (RFC 20 section 3.1).
+		// Every pipeline is told before the drain waits, so a request that
+		// meets the drain meets the refusal too (RFC 20 section 3.1).
 		for _, c := range conns {
 			c.p.drain()
 		}
-		// The deadline is taken under the same lock, before the state names
-		// it, so a clock the state's reader advances cannot run past the
-		// deadline before the drain holds it.
-		at := s.sh.clock.Now().Add((*s.settings.Load()).Common().DrainTimeout)
-		s.state = adapter.StateDraining
 		s.mu.Unlock()
 		s.drainConns(ctx, conns, at)
 	} else {
@@ -409,17 +412,15 @@ func (s *Server) Stop(ctx context.Context) error {
 
 // drainConns waits until nothing runs on any connection, or until the drain
 // deadline, the earlier of ctx's deadline and drain_timeout from the
-// snapshot, on the server's clock, taken under the lock that published
-// draining so a clock its reader advances cannot run past it first; what
-// still runs at it is left for the close that follows (RFC 20 sections 3.1
-// and 3.4).
+// snapshot, on the server's clock, taken beside draining's publication under
+// Stop's first lock so a clock a reader of the state advances cannot move
+// the take past it; the wait itself runs from the accept loops' end, inside
+// the timeout the loops' teardown ate its share of. What still runs at it is
+// left for the close that follows (RFC 20 sections 3.1 and 3.4).
 func (s *Server) drainConns(ctx context.Context, conns []*Conn, at time.Time) {
 	if len(conns) == 0 {
 		return
 	}
-	// drain_timeout runs from the accept loops' end, which is where the
-	// drain starts, not from Stop's call, which the loops' hand-overs
-	// precede.
 	wait, cancel := withClockDeadline(ctx, s.sh.clock, at)
 	defer cancel()
 	// decision: the sweep repeats, never one wait per connection, since a
