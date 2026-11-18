@@ -23,8 +23,8 @@ import (
 // assembled journal exists — no phase of the recovery itself can run that
 // pass — so the work runs here, where the open stands past it, before the
 // journal serves and before the retirement worker starts (the
-// loss records first, then every attached segment that is not held is
-// retired, then the ended segments are emptied).
+// loss records first, then every sealed segment that is not held is
+// retired, then the ended segments are emptied, the unheld ones first).
 //
 // The span the phases list opens covers the recovery's own end; the work of
 // the phase opens it once more here, so the trace of an open shows both: the
@@ -52,8 +52,8 @@ func Emptying(ctx context.Context, deps Deps, st *State, expect core.JournalID, 
 	return runEmptying(ctx, deps, rd, st, expect, floor, marks, empty)
 }
 
-// runRetire is the emptying's first step: every attached segment the
-// liveness tracker answers not held is retired, through the retirement path
+// runRetire is the emptying's first step: every sealed segment the liveness
+// tracker answers not held is retired, through the retirement path
 // the assembled journal runs — recycle or unlink, the pool's refill after
 // each included — before any ended segment is emptied.
 //
