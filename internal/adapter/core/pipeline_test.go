@@ -18,6 +18,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -2271,4 +2272,107 @@ func TestALaterMemberStartsAtItsOwnAdmission(t *testing.T) {
 			t.Fatal("the chain's third member is not answered at its deadline, 30 s from its admission")
 		}
 	})
+}
+
+// faultyWrap runs fault as it wraps a reply, after the reply is encoded and
+// before it goes out, and refuses the reply with fault's error.
+type faultyWrap struct {
+	core.Security
+	fault func() error
+}
+
+func (f faultyWrap) Wrap(h core.Header, reply *resources.Buf) error {
+	if err := f.fault(); err != nil {
+		return err
+	}
+	return f.Security.Wrap(h, reply)
+}
+
+// A reply that does not go out, dropped by the close after it was encoded or
+// refused by Wrap, is not recorded as sent: its request's span carries no
+// status and no reply bytes (§10.2).
+func TestAReplyThatDoesNotGoOutIsNotRecordedAsSent(t *testing.T) {
+	echo := testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}
+	for _, tc := range []struct {
+		name    string
+		flow    core.FlowControl
+		msgs    []testproto.Msg
+		wrapErr error // Wrap refuses the reply; else the close drops it
+	}{
+		{"a refusal", refusingFlow{&vfs.Delay{Cause: vfs.DelayResources}}, []testproto.Msg{echo}, nil},
+		{"a served request", nil, []testproto.Msg{echo}, nil},
+		{"a compound", nil, []testproto.Msg{{Op: testproto.OpCompound, Version: 1, ID: 1, Members: []testproto.Msg{echo}}}, nil},
+		{"a chain", nil, []testproto.Msg{echo, {Op: testproto.OpEcho, Version: 1, ID: 2}}, nil},
+		{"a reply Wrap refuses", nil, []testproto.Msg{echo}, errors.New("a reply that does not sign")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				spans := tracetest.NewSpanRecorder()
+				provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
+				var s *seam
+				closing := edited{testproto.New(adapter.Deps{}), func(st *core.Stages) {
+					st.Security = faultyWrap{Security: st.Security, fault: func() error {
+						if tc.wrapErr == nil {
+							s.p.Close()
+						}
+						return tc.wrapErr
+					}}
+					if tc.flow != nil {
+						st.Flow = tc.flow
+					}
+				}}
+				s = newSeamWith(t, closing, 1<<20, adapter.Deps{Tracer: provider.Tracer("test"), SampleRatio: 1})
+				s.serve(tc.msgs...)
+				if err := s.p.Wait(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				droppedUnsent(t, s, spans)
+			})
+		})
+	}
+	t.Run("a park", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			spans := tracetest.NewSpanRecorder()
+			provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
+			var s *served
+			var armed atomic.Bool
+			s = newHeld(t, 1<<20, adapter.Deps{Tracer: provider.Tracer("test"), SampleRatio: 1}, newManualClock(), func(st *core.Stages) {
+				st.Security = faultyWrap{Security: st.Security, fault: func() error {
+					if armed.Load() {
+						s.p.Close()
+					}
+					return nil
+				}}
+			})
+			hold := s.faults.Hold(vfs.OpCreate)
+			defer hold.Release()
+			s.serve(s.parkChain(1, "f")...)
+			s.interimOf(2)
+			spans.Reset()
+			armed.Store(true)
+			hold.Release()
+			if err := s.p.Wait(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			droppedUnsent(t, s.seam, spans)
+		})
+	})
+}
+
+// droppedUnsent fails t if a reply went out, or if a request span ended with
+// a status or reply bytes.
+func droppedUnsent(t *testing.T, s *seam, spans *tracetest.SpanRecorder) {
+	t.Helper()
+	if !s.sentNothing() {
+		t.Fatal("a reply went out")
+	}
+	ended := spans.Ended()
+	if len(ended) == 0 {
+		t.Fatal("no span ended")
+	}
+	for _, sd := range ended {
+		if a := sd.Attributes(); !sd.Parent().IsValid() && slices.ContainsFunc(a, func(kv attribute.KeyValue) bool { return kv.Key == "reply_bytes" || kv.Key == "status" }) {
+			t.Errorf("the span %s of a dropped reply ended as sent: %v", sd.Name(), a)
+		}
+	}
 }

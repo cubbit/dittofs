@@ -715,9 +715,9 @@ func (c *chain) flush(why split, tr *track) {
 	// record is queued, finds none to go before. Queue it under every
 	// member's key once Conn.Send, the only caller that hands out a before,
 	// is implemented.
-	p.out(rec, c.held[len(c.held)-1].key)
+	sent := p.out(rec, c.held[len(c.held)-1].key)
 	for _, m := range c.held {
-		p.end(m.tr, m.final, m.s, m.n, m.err)
+		p.end(m.tr, sent && m.final, m.s, m.n, m.err)
 	}
 }
 

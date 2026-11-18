@@ -505,12 +505,13 @@ func (p *pipeline) answer(tr *track, rec *resources.Buf, h Header, s Status, buf
 		return
 	}
 	n := len(buf.B)
+	var sent bool
 	if !wrap {
-		p.out(buf, 0)
+		sent = p.out(buf, 0)
 	} else {
-		p.send(h, buf, 0)
+		sent = p.send(h, buf, 0)
 	}
-	p.end(tr, true, s, n, cause)
+	p.end(tr, sent, s, n, cause)
 	if closeAfter {
 		p.l.close(cause)
 	}
@@ -518,12 +519,14 @@ func (p *pipeline) answer(tr *track, rec *resources.Buf, h Header, s Status, buf
 
 // out hands a message to the writer, which takes its reference, or, once the
 // pipeline is closed, drops it: a closed connection's replies are not sent.
-func (p *pipeline) out(msg *resources.Buf, key uint64) {
+// It reports whether the writer took it, so a dropped reply's span is not
+// ended as sent (§10.2).
+func (p *pipeline) out(msg *resources.Buf, key uint64) bool {
 	if p.ctx.Err() != nil {
 		msg.Release()
-		return
+		return false
 	}
-	_ = p.l.out(msg, key, 0)
+	return p.l.out(msg, key, 0) == nil
 }
 
 // run is one admitted request alone, on its own goroutine, from the replay
@@ -601,8 +604,7 @@ func (alone) halted() bool { return false }
 
 func (a alone) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, _ bool, err error) {
 	n := len(reply.B)
-	a.p.send(h, reply, key)
-	a.p.end(tr, true, s, n, err)
+	a.p.end(tr, a.p.send(h, reply, key), s, n, err)
 }
 
 func (a alone) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
@@ -1166,14 +1168,15 @@ func (p *pipeline) encode(h Header, s Status, reply *resources.Buf, inv Invocati
 	return nil
 }
 
-// send wraps reply under h and hands it to out.
-func (p *pipeline) send(h Header, reply *resources.Buf, key uint64) {
+// send wraps reply under h and hands it to out, and reports whether the
+// writer took it.
+func (p *pipeline) send(h Header, reply *resources.Buf, key uint64) bool {
 	if err := p.st.Security.Wrap(h, reply); err != nil {
 		reply.Release()
 		p.l.close(err)
-		return
+		return false
 	}
-	p.out(reply, key)
+	return p.out(reply, key)
 }
 
 // interim sends the interim a NoReply row gets in a table that holds, which
