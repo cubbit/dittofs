@@ -311,15 +311,14 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		}
 		started := cfg.Clock.Elapsed()
 		st, err := recovery.Run(ctx, recovery.Deps{
-			FS:              cfg.Storage,
-			Clock:           cfg.Clock,
-			Tracer:          cfg.Tracer,
-			Log:             cfg.Logger,
-			Failed:          failed,
-			ExtentLimit:     s.ExtentLimit,
-			SegmentCap:      core.SegmentCapOf(s),
-			SpareTargets:    buildTargets(s),
-			HeadroomRecords: s.HeadroomRecords,
+			FS:           cfg.Storage,
+			Clock:        cfg.Clock,
+			Tracer:       cfg.Tracer,
+			Log:          cfg.Logger,
+			Failed:       failed,
+			ExtentLimit:  s.ExtentLimit,
+			SegmentCap:   core.SegmentCapOf(s),
+			SpareTargets: buildTargets(s),
 		}, floor, expect, marks)
 		if err != nil {
 			return nil, err

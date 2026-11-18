@@ -257,14 +257,19 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	if recErr != nil {
 		if l.Reason != core.LossSuperseded {
 			d.dir.addFailed(l.Seq)
-			// decision: the piece a failure took is handed back with it: the
-			// registry's pieces name losses whose record is on disk, and the
-			// next open of the directory owes this one its record, retrying
-			// through the failed list the line above built. Overturned by a
-			// caller that appends the record itself instead of retrying the
-			// loss, which would make the taken piece the dedup that stops a
-			// second attempt.
-			d.dir.release(piece{l.Seq, l.Extent})
+			// decision: the piece a failure took is handed back with it, but
+			// only when the record never placed: the registry's pieces name
+			// losses whose record may be on disk — a record placed but not
+			// synced sits in its segment, a crash may keep it, and a reopen's
+			// Place of it publishes no second event only while the piece
+			// stays taken — so releasing it here would let the next open
+			// report the same loss record as new (see the release doc's own
+			// rule). Overturned by a caller that appends the record itself
+			// instead of retrying the loss, which would make the taken piece
+			// the dedup that stops a second attempt.
+			if at == (segment.Location{}) {
+				d.dir.release(piece{l.Seq, l.Extent})
+			}
 		}
 		if refused || errors.Is(recErr, core.ErrNoSpace) || errors.Is(recErr, core.ErrClosed) ||
 			errors.Is(recErr, segment.ErrStreamStopped) || errors.Is(recErr, segment.ErrStreamClosed) {

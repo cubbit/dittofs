@@ -618,7 +618,7 @@ func TestFailedRecordsTakeTheReserveFirst(t *testing.T) {
 	// left behind, is a synced corrupt drop beside the failed records.
 	f.rotHeader(t, format.SegmentName(corruptSeg), int64(offs[1]))
 
-	j2 := f.publicOpen(t, func(s *Settings) { s.HeadroomRecords = 10 })
+	j2 := f.publicOpen(t, func(s *Settings) { s.HeadroomRecords = 8 })
 	// The failure was already published when the read-only window failed each
 	// record, so the loss records the open now appends publish nothing: the
 	// ring holds none of the failed-window reason (RFC 1 section 5.4).
@@ -633,23 +633,26 @@ func TestFailedRecordsTakeTheReserveFirst(t *testing.T) {
 
 	// The records on disk carry only the failed records' and the corrupt
 	// drop's losses — none deferred — and the failed three of them are the
-	// first three the open drew on the reserve: each loss record names its
-	// dropped seq, and the corrupt drop's record names its own.
+	// first three the open drew on the reserve, in the failed list's own
+	// order: each loss record names its dropped seq, and the corrupt drop's
+	// record names its own.
+	//
+	// Eight headroom records keep an open reserve of four — exactly the
+	// three failed records plus the one the corrupt drop takes — so an
+	// open that drew the corrupt drop first would starve a failed record
+	// of the reserve, and one that appended the record out of the failed
+	// list's order shows here as the wrong order on disk.
 	records := f.lossRecords(t)
 	if len(records) != 4 {
 		t.Fatalf("%d loss records on disk, want the three failed records' and the corrupt drop's", len(records))
 	}
 	failedSorted := slices.Clone(failed)
 	slices.Sort(failedSorted)
-	var got []core.Seq
-	for _, dropped := range records {
-		if slices.Contains(failedSorted, dropped) {
-			got = append(got, dropped)
-		}
+	if first := records[:len(failedSorted)]; !slices.Equal(first, failedSorted) {
+		t.Fatalf("the loss records on disk = %v, want the failed list's %v first and in its order, then the corrupt drop's", records, failedSorted)
 	}
-	slices.Sort(got)
-	if !slices.Equal(got, failedSorted) {
-		t.Fatalf("the loss records on disk name the failed list's %v among them, got %v of %v", failedSorted, got, records)
+	if dropped := records[len(failedSorted)]; dropped != 11 || slices.Contains(failedSorted, dropped) {
+		t.Fatalf("the loss record after the failed list's names the seq %d, want the corrupt drop's own 11: the failed records took the reserve first", dropped)
 	}
 }
 
@@ -786,6 +789,84 @@ func TestASharedPieceIsCountedOnceAcrossTheLegs(t *testing.T) {
 		if !slices.Contains(records, want) {
 			t.Fatalf("the loss records on disk name %v, want the seq %d among them, each piece taken once", records, want)
 		}
+	}
+}
+
+// TestAPastReserveFailedPieceItsCorruptTwinRepeats holds the pass's one
+// accounting of the open reserve: a failed record that runs past the
+// reserve — kept by this process's failed list for the next open to answer —
+// whose corrupt twin reaches the corrupt leg with the same (seq, extent)
+// piece. The plan spends the piece once, by the failed leg's own rule that
+// nothing past the reserve appends, and the corrupt leg answers it as the
+// failed leg's own piece, never as a refusal the reserve could have refused
+// before it appended: the open behind a reserve of one serves on the one
+// failed record that fits it, and the corrupt twin of the one past it
+// strands no record behind a refusal.
+func TestAPastReserveFailedPieceItsCorruptTwinRepeats(t *testing.T) {
+	f := newAssembledJournal(t)
+	j := f.open(t)
+	withLimit(t, j)
+	h := shareOf(t, j, 1)
+	fa := fileOf(1)
+	writeReady(t, h, fa, "the synced record the crash keeps")
+	if _, err := h.Sync(t.Context(), fa); err != nil {
+		t.Fatalf("Sync the record the crash keeps: %v", err)
+	}
+	writeAtReady(t, h, fa, 0, payload(20)) // the failed record A over [0,20)
+	writeAtReady(t, h, fa, 0, payload(34)) // the failed record B over [0,34)
+
+	writingOps := []string{kit.OpOpen, kit.OpWrite, kit.OpSync, kit.OpCreate,
+		kit.OpAllocate, kit.OpRename, kit.OpRemove, kit.OpTruncate, kit.OpSyncDir}
+	rules := make([]kit.Rule, 0, len(writingOps))
+	for _, op := range writingOps {
+		rules = append(rules, kit.Failing(op, "*", 0, syscall.EROFS))
+	}
+	if err := f.seam.Schedule(rules...); err != nil {
+		t.Fatalf("schedule the read-only device: %v", err)
+	}
+	if _, err := h.Sync(t.Context(), fa); !errors.Is(err, ErrJournalReadOnly) {
+		t.Fatalf("the Sync on the read-only device returned %v, want ErrJournalReadOnly", err)
+	}
+	var failed []core.Seq
+	waitFor(t, "the failed list to hold the two failed records", 30*time.Second, func() bool {
+		seqs, err := durability.FailedFor(f.dir, f.id)
+		if err != nil {
+			t.Fatalf("read the directory's failed list: %v", err)
+		}
+		failed = seqs
+		return len(failed) == 2
+	})
+	f.seam.SetFault(nil)
+	// The crash rids the directory of the failed records' own bytes, their
+	// window's sync never having made them durable.
+	f.crash(t, j)
+	a, b := failed[0], failed[1] // the failed list answers sorted: A before B
+
+	// The failed records' whole twins, found on disk, feed the failed leg;
+	// the second one's rotted twin feeds the corrupt leg with the same
+	// (seq, extent) piece the failed leg's whole record named.
+	file := fileOf(9)
+	wholeA := plantRecord(1, ownerTag, file, uint64(a), uint64(a), 0, 20)
+	wholeB := plantRecord(1, ownerTag, file, uint64(b), uint64(b), 0, 34)
+	twin := plantRecord(1, ownerTag, file, uint64(b), uint64(b), 0, 34)
+	offs := plantSealedAt(t, f.seam, f.id, 951, wholeA, wholeB, twin)
+	f.rotHeader(t, format.SegmentName(951), int64(offs[2]))
+
+	// Two headroom records keep an open reserve of one: the first failed
+	// record takes it whole, the second runs past it, and the corrupt twin
+	// of the second — the failed leg's own piece — answers from the plan
+	// alone, appended by no leg and refused by none.
+	j2, err := Open(context.Background(), f.dir, Version{}, f.id, nil, f.opts(func(s *Settings) { s.HeadroomRecords = 2 })...)
+	if err != nil {
+		t.Fatalf("the open returned %v, want it to serve: the corrupt twin of the failed record past the reserve is the failed leg's own piece, a refusal no record landed in front of", err)
+	}
+	t.Cleanup(func() { _ = j2.Close() })
+	records := f.lossRecords(t)
+	if len(records) != 1 || records[0] != a {
+		t.Fatalf("the loss records on disk = %v, want the one the reserve held, the failed seq %d alone: the record past it appends nothing and its corrupt twin defers no further", records, a)
+	}
+	if events := lossEvents(t, j2, core.LossCorrupt); len(events) != 0 {
+		t.Fatalf("the open published the corrupt losses %+v, want none: the twin's piece is the failed leg's own, appended by no leg", events)
 	}
 }
 

@@ -58,14 +58,6 @@ type Deps struct {
 	// would have made it in.
 	SpareTargets segment.Targets
 
-	// HeadroomRecords is the journal's configured headroom, in records
-	// without bytes, its defaults resolved: the open's loss records draw on
-	// the open reserve the headroom keeps — its last records, past every
-	// other class — through capacity.OpenReserveRecords. Zero reserves
-	// nothing, the shape of a caller that names no setting; the production
-	// open resolves the default and passes the figure here.
-	HeadroomRecords int
-
 	// rebuildOrder reorders the segments the rebuild dispatches before it
 	// starts a reader; nil keeps the listing's order, the one the open runs
 	// in. It is unexported and set only by tests that need an order the

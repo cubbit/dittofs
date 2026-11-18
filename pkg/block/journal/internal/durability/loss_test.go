@@ -970,6 +970,75 @@ func TestLoseOfARecordWhoseSyncFailsEndsItsSegment(t *testing.T) {
 	}
 }
 
+// TestAPieceFollowsItsRecord holds the release's own rule: the piece a
+// failed Lose took is handed back only when its record never placed, so the
+// next open's failed-list retry draws it again — while a record that placed
+// but could not sync keeps its piece, for it sits in its segment, a crash
+// may keep it, and a reopen's Place of it publishes no second event only
+// while the piece stays taken.
+func TestAPieceFollowsItsRecord(t *testing.T) {
+	t.Run("a refused write leaves the piece unnamed", func(t *testing.T) {
+		e := newEnv(t)
+		e.d.SetReadOnly(func() error { return errReadOnly })
+		l := loss(5)
+		if _, err := e.d.Lose(context.Background(), l); !errors.Is(err, errReadOnly) {
+			t.Fatalf("Lose = %v, want the read-only refusal", err)
+		}
+		if e.d.Named(l.Seq, l.Extent) {
+			t.Fatalf("the refused loss's piece is named, want it handed back: no record placed, so the next open's failed-list retry takes it again")
+		}
+		// The retry, once the journal answers again, takes the piece and
+		// appends the record it is owed — nothing holds it behind a take the
+		// release gave back.
+		e.d.SetReadOnly(func() error { return nil })
+		ev, err := e.d.Lose(context.Background(), l)
+		if err != nil || ev == (core.LossEvent{}) {
+			t.Fatalf("the retry Lose = %+v, %v, want its record appended and its event published", ev, err)
+		}
+	})
+
+	t.Run("a failed write leaves the piece unnamed", func(t *testing.T) {
+		e := newEnv(t)
+		if err := e.seam.Schedule(kit.Failing(kit.OpWrite, "*.seg", 1, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		l := loss(5)
+		if _, err := e.d.Lose(context.Background(), l); !errors.Is(err, syscall.EIO) {
+			t.Fatalf("Lose = %v, want the write's EIO", err)
+		}
+		if e.d.Named(l.Seq, l.Extent) {
+			t.Fatalf("the failed write's piece is named, want it handed back: no record placed, so the next open's failed-list retry takes it again")
+		}
+	})
+
+	t.Run("a placed-but-unsynced record keeps the piece named", func(t *testing.T) {
+		e := newEnv(t)
+		if err := e.seam.Schedule(kit.Failing(kit.OpSync, "*.seg", 1, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		l := loss(5)
+		if _, err := e.d.Lose(context.Background(), l); !errors.Is(err, syscall.EIO) {
+			t.Fatalf("Lose = %v, want the sync's EIO over the placed record", err)
+		}
+		if !e.d.Named(l.Seq, l.Extent) {
+			t.Fatalf("the placed-but-unsynced record's piece is unnamed, want it kept: the record sits in its segment, a crash may keep it, and the release doc's own rule never gives up the piece of a record that may be on disk")
+		}
+
+		// The reopen in this process re-places the loss record it finds, as
+		// the open's placement of a found record does: the piece the failed
+		// sync's take already holds answers it named, so no second event goes
+		// out for a loss this process reported already.
+		reopen := e.newDurability()
+		reopen.Place(core.LossEvent{File: l.File, Extent: l.Extent, Reason: core.LossCorrupt}, l.Seq)
+		if got := reopen.Stats().Losses; len(got) != 0 {
+			t.Fatalf("the reopen's ring holds %+v, want nothing: the placed record's piece was taken once and never released", got)
+		}
+		if got := len(e.d.Stats().Losses); got != 1 {
+			t.Errorf("the first instance's ring holds %d events, want its own one: a reopened piece publishes through no instance", got)
+		}
+	})
+}
+
 // TestLoseOfAReasonThatNamesNoneIsRefusedOnEveryPath catches a deferred loss
 // publishing an event with no reason, where the appending path panics.
 func TestLoseOfAReasonThatNamesNoneIsRefusedOnEveryPath(t *testing.T) {
