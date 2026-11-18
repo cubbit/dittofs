@@ -1854,3 +1854,45 @@ func TestANotifyGoesAheadOfTheRecordHoldingTheReplyItNames(t *testing.T) {
 		}
 	})
 }
+
+// A message sent once its connection is closed is never written, though the
+// teardown has yet to stop the writer: Send drops it and returns
+// net.ErrClosed, the client reads nothing before the connection's end, and
+// every budget is back at zero (RFC 20 sections 4.7 and 6.5).
+func TestASendAfterCloseIsNeverWritten(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		// OnClose holds the teardown, before it stops the writer, until the
+		// Send has returned and the client has read what was written.
+		sent := make(chan struct{})
+		l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: withOnClose{testproto.New(adapter.Deps{}).Bare(), func(context.Context) { <-sent }}}
+		srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		core.Serving(srv)
+		conn, peer := servedConn(t, srv, &l)
+		conn.Close(nil)
+		synctest.Wait() // the teardown waits in OnClose
+		msg, err := resources.NewBufPool(b.Reply).Get(context.Background(), netip.Addr{}, 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg.B = append(msg.B[:0], "late"...)
+		// Bare's Security passes a message unchanged, whatever its header.
+		if err := conn.Send(nil, msg, 0); !errors.Is(err, net.ErrClosed) {
+			t.Errorf("Send after the close = %v, want net.ErrClosed", err)
+		}
+		read := make(chan []byte, 1)
+		go func() {
+			got, _ := io.ReadAll(peer)
+			read <- got
+		}()
+		synctest.Wait() // a message written reaches the client now
+		close(sent)
+		if got := <-read; len(got) != 0 {
+			t.Errorf("after the close the client read %q, want the connection's end alone", got)
+		}
+	})
+}
