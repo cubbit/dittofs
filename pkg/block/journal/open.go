@@ -300,33 +300,42 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 	}
 	s := resolveDefaults(cfg.Settings)
 	if hasSegment {
-		// The attach pass runs over the directory: its bounded reads, the
-		// .spare.tmp unlinks and the classes it sorts the segments into. A
-		// read the device never completed refuses the open on its ranges;
-		// a pass that ran answers ErrNotImplemented below.
+		// The recovery runs over the directory: the attach pass's bounded
+		// reads and .spare.tmp unlinks, the rebuild, and the spares phase's
+		// refusals, zeroings, unlinks and re-adoptions. A read the device
+		// never completed refuses the open on its ranges; the phases after
+		// the spares one answer ErrNotImplemented below.
 		failed, err := durability.FailedFor(dir, ff.Identity)
 		if err != nil {
 			return nil, err
 		}
 		if _, err := recovery.Run(ctx, recovery.Deps{
-			FS:          cfg.Storage,
-			Clock:       cfg.Clock,
-			Tracer:      cfg.Tracer,
-			Log:         cfg.Logger,
-			Failed:      failed,
-			ExtentLimit: s.ExtentLimit,
+			FS:           cfg.Storage,
+			Clock:        cfg.Clock,
+			Tracer:       cfg.Tracer,
+			Log:          cfg.Logger,
+			Failed:       failed,
+			ExtentLimit:  s.ExtentLimit,
+			SegmentCap:   core.SegmentCapOf(s),
+			SpareTargets: buildTargets(s),
 		}, floor, expect, marks); err != nil {
 			return nil, err
 		}
 		// decision: a directory holding a segment is refused with
-		// ErrNotImplemented, not recovered: the attach pass and the rebuild
-		// above have run, and the recovery after them — the marks, the
-		// tail's proof, the spares and the emptying — is not built. Every
-		// reopen of a journal that has run meets this, because the spare
-		// pool leaves its finished spares as segment files, so no journal
-		// that has served can be opened again here. The refusal keeps the
-		// directory as the attach and rebuild passes left it, so the
-		// recovery that exists later takes it whole.
+		// ErrNotImplemented, not recovered: the attach pass, the rebuild
+		// and the spares phase above have run — refusing on unreadable
+		// ranges, zeroing the dirty slots of each re-adopted spare,
+		// unlinking the wrongly-sized ones, syncing the directory once
+		// before the re-adoptions are recorded with their classes — and
+		// the recovery after them — the marks, the tail's proof, the
+		// re-append, the assembly and the emptying — is not built, which
+		// is the refusal's reason, not the directory's shape: the spares
+		// phase may have moved the directory by its own rules, and every
+		// change it made is one a later open re-reads and re-decides, so
+		// the recovery that exists later takes the directory as it
+		// stands. Every reopen of a journal that has run meets this,
+		// because the spare pool leaves its finished spares as segment
+		// files, so no journal that has served can be opened again here.
 		return nil, fmt.Errorf("%w: %s holds segments; recovering them is not built", ErrNotImplemented, dir)
 	}
 
@@ -372,6 +381,32 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		cfg.SparesReady(c)
 	}
 	return newJournal(c), nil
+}
+
+// continueFrom is the core an assembled recovery continues as: the deps the
+// core is made from, with LastSegment raised to the highest segment id the
+// directory holds — so the spare maker draws its first spare above every
+// segment the recovery rebuilt, and a fresh spare never meets a rebuilt
+// segment's id — and, in the state, the rebuilt index and its counters, the
+// assembled set, the open state the assembly ended with, and the dirty seed
+// the rebuilt index spells. It is the mapping the journal's open step calls
+// once it has run the recovery over a directory that holds segments.
+//
+// decision: at this stage only tests call it — the reopen seam's rows and the
+// inspector's planted fixture, each building the deps of its own journal. The
+// journal's own open, which today refuses a directory holding segments with
+// ErrNotImplemented rather than continuing the core, is the wiring that calls
+// it in production and is not built yet. A copy of the mapping there that
+// dropped LastSegment would leave its spares colliding with the rebuilt ids,
+// and no row would name it, so this function is the one mapping: withdrawn
+// here only by the open step replacing its two callers.
+func continueFrom(st recovery.State, deps datapath.Deps) (datapath.Deps, datapath.State) {
+	deps.LastSegment = st.Attached.MaxID
+	return deps, datapath.State{
+		Index: st.Rebuilt.Index, Counters: st.Rebuilt.Counters, Set: st.Assembled.Set,
+		Open: &datapath.OpenState{Live: st.Assembled.Live, Forgets: st.Assembled.Forgets,
+			Unsynced: st.Assembled.Unsynced, Dirty: dirtySeed(st.Rebuilt.Index)},
+	}
 }
 
 // classifyListing says whether the names a directory holds include a format

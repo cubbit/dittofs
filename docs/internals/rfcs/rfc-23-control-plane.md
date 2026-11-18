@@ -601,6 +601,10 @@ before `vfs.Serve` stops (step 4), while other nodes can still reach it:
 2. The sidecars are synced with the empty set, so nothing is advertised that is
    about to stop; then every adapter is `Stop`ped, which drains it
    ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)), all of them concurrently, under one drain deadline.
+   The step's bound is that deadline plus 30 s, the longest a `Stop` waits for
+   its connections' `OnClose`. Then the retrier the adapters hand a failing
+   `Disconnect` to, `Deps.Retry`, stops, dropping what it still holds
+   ([RFC 20 §3.2](rfc-20-adapters.md#3.2%20A%20connection%27s%20lifecycle)).
 3. The management API stops accepting calls, and calls in flight run to their
    answer within the drain deadline; then the operation runner stops, leaving
    each operation it drives at its last durable step and releasing its claim
@@ -662,7 +666,17 @@ engine, GC, the adapters and the sidecars — the values it reads.
 The node learns of changes the way RFC 13 and RFC 18 already require — by
 reading the four counters (the settings generation, the share list version,
 the principals generation and the claim generation) once a second — and never from the API request that
-made them. A record that does not
+made them: a request hands the node no change. The node that wrote a setting
+or a principal **MUST** still apply it at once, so that an operator's own next
+call sees it ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)): once the write commits, the node
+reads the counters, wakes its reconcile, and answers once its reconciled-through
+positions (§2.4) cover the values it read. Only a pass that read the counters
+after the commit can raise them that far, so the write **MUST NOT** answer on a
+pass already running when it woke reconcile. It waits no longer than the call
+lasts and at most one second, the bound
+[RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)
+sets for every node; a write whose wait ends first answers as every committed
+write does (§4.3), and its resource's status (§2.4) says where it is applied. A record that does not
 validate when the component is built stops only what it configures
 ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)), and the node reports it refused.
 
@@ -681,7 +695,8 @@ when a value changed:
 - the **settings generation**, **share list version** and **principals
   generation** it has reconciled through: the highest value of each counter
   such that it has acted on every change up to it — applied it, refused it, or
-  marked it restart-pending;
+  marked it restart-pending; the node's own write waits on these positions as
+  the node holds them, not on this record (§2.3);
 - the records it refused, each with the generation and the error;
 - the records whose restart-class field has changed since it started — its
   restart-pending set;
@@ -945,7 +960,7 @@ them and decides nothing about identity:
   access ([RFC 18 §8.2](rfc-18-identity.md#8.2%20OpenID%20Connect%20sign-in)),
   and audited as a change of the user (§6);
 - **a password is write-only**. It is set by `POST /users/{id}:set-password`,
-  its hashes derived by identity's `APISignIn.Hashes`
+  its hashes derived by identity's `NewHashes`
   ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)) and sealed as RFC 13 §7
   requires, and never returned. It is refused for a directory principal, which
   signs in only through the directory's own paths
@@ -1165,8 +1180,26 @@ transaction, or none of them. The one transaction is `ControlPlane.Write`'s
 ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)): the handler's writes run in it, and
 `Write` adds the audit and idempotency records before it commits. A write that starts long work commits its first
 step that way and returns an operation (§4.6). A write **MUST NOT** answer
-success before its transaction commits, and **MUST NOT** depend on any call to
-a running component.
+success before its transaction commits, and its transaction **MUST NOT** call a
+running component.
+
+**What a running component must answer comes before the transaction.** A write
+that needs one — the directory's SID for a Kerberos name (§3.5), the proof of a
+new endpoint or credential (§3.3), the sealing of a secret (§3.5, RFC 13 §7),
+and later an OpenID Connect issuer's keys (§5.5) — runs that step first, outside
+the store's transaction, and hands its result to the transaction as an input.
+The transaction then checks and commits it with the rest, so a store conflict
+retries only the transaction, never the call. A step that fails refuses the
+write before anything is written, with the component's error (`ErrUnavailable`
+for one that cannot answer).
+
+> decision: the component's answer is an input, not a call from inside the
+> transaction. Inside, a conflict retry would repeat a directory query or a
+> credential probe for every attempt, and the transaction would hold its reads
+> open across a network round trip. The cost is that the answer can be stale by
+> the time the transaction commits; each such step names what it re-checks in
+> the transaction (the record it read). Revisit if a step's answer must be
+> fresher than one request.
 
 **Validators are pure and handed in.** Each component exports, from its
 settings package, one function per record kind it reads. The function takes the
@@ -1313,7 +1346,7 @@ type Operation struct {
 	ID       OperationID
 	Kind     OpKind     // closed set (§4.1): "share.delete", "user.delete", "share.rehome", "namespace.rebuild-index", "namespace.accept-copy", ...
 	Target   ResourceRef
-	Account  Principal  // who started it
+	Account  Principal  // who started it; zero for an operation no call started, read as the schedule
 	State    OpState    // pending, running, succeeded, failed, cancelling, cancelled
 	Progress Progress   // read from the owner's cursor, never estimated by the API
 	Started  time.Time  // store time
@@ -1342,6 +1375,12 @@ type Progress struct {
   **(cluster)** A claim that lapses is taken by any node, which resumes from the
   record's last step. Each such kind **MUST** record its steps durably and make
   each idempotent, or it is not an operation.
+- **Scheduled work.** An operation no `202` call started, the scheduled
+  `rotate-machine-password` that identity's own loop schedules
+  ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)), carries the zero `Account`,
+  read as "the schedule". The `Write` that creates it carries its audit record,
+  whose actor is the schedule (§6), so a rotation nobody asked for is still
+  found in the audit.
 - **Reading.** `GET /operations/{id}` on any node answers from the store.
   `?wait=30s` returns when the state or phase changes, or after the wait
   (at most 60 s), whichever is first, so a client polls without a loop of its own.
@@ -1654,7 +1693,7 @@ protocol can carry the token
   `storage` wrapping key ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)),
   sent only to the issuer's token endpoint, over TLS.
 - **Verification is identity's.** The API passes the ID token the issuer
-  returned to `APISignIn.VerifyToken` and gets back the linked principal and
+  returned to `TokenVerifier.VerifyToken` and gets back the linked principal and
   its claims ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)). It then
   checks the account as for a password sign-in and issues **its own** access
   and refresh tokens (§5.3). Revocation, hash-only storage and the per-call
@@ -1697,7 +1736,7 @@ Every management action leaves an **audit record**:
 | Field | Holds |
 | --- | --- |
 | time | store time of the commit |
-| actor | the account's principal and name, the session or token ID; for the break-glass reset, the host |
+| actor | the account's principal and name, the session or token ID; for the break-glass reset, the host; for an operation no call started, the schedule (§4.6) |
 | node, source | the node that took the request; the client's address |
 | request | method, path, the request ID, the idempotency key |
 | target | the resource's kind and ID, and the generation before and after |
@@ -2019,6 +2058,6 @@ in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi
 | §5.3, CP11 | no secret is read | store configurations are redacted, identity-provider secrets are write-only, but the settings routes return raw values, and the NETLOGON machine secret is kept as a setting |
 | §5.4 | first password printed once by initialisation; current password always required | the admin is seeded at start from an environment variable, a configured hash, or a random 24-character password printed only when standard output is a terminal; while must-change is set, the password change does not ask for the current password |
 | §6 | an audit record per action, in its transaction | none; nine adapter-settings handlers write an informational log line naming the user |
-| §7 | the CLI only calls the API | `dfsctl` is a REST client over `pkg/apiclient`, with contexts in `~/.config/dfsctl/config.json` (mode 0600, access and refresh tokens); `share mount` and `unmount` run the host's mount tools, which is client-side and allowed; `docs/guide/cli.md` is generated by `cmd/gendocs` from both command trees |
+| §7 | the CLI only calls the API | `dfsctl` is a REST client over `pkg/node/apiv1/client`, with contexts in `~/.config/dfsctl/config.json` (mode 0600, access and refresh tokens); `share mount` and `unmount` run the host's mount tools, which is client-side and allowed; `docs/guide/cli.md` is generated by `cmd/gendocs` from both command trees |
 | §9 | version discovery and schema gate | only the `/api/v1` prefix; no version endpoint, header or client check; `dfsctl version` is local |
 | RFC 13 §2.4 | provisioning file | none; the start seeds the admin, default groups and adapters, and seeds identity providers from the host file when no row exists |

@@ -3,7 +3,6 @@ package enginetest
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
@@ -29,7 +29,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/sim"
-	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // Settings are the engine settings the fixture applies. The existence age is
@@ -60,7 +59,7 @@ const sparesBackstop = 10 * time.Second
 // needs one before it lands is refused for want of a spare. It polls the real
 // condition, since the pool works in real time and no clock can be injected
 // there, and fails once the backstop passes.
-func awaitSpares(ctx context.Context, j *journal.Journal, settings journal.Settings) error {
+func awaitSpares(ctx context.Context, j engine.Journal, settings journal.Settings) error {
 	ctx, cancel := context.WithTimeout(ctx, sparesBackstop)
 	defer cancel()
 
@@ -149,6 +148,8 @@ type Fixture struct {
 type batchHold struct {
 	release chan struct{}
 	once    sync.Once
+	held    chan struct{} // closed once a batch reached the hold
+	heldOne sync.Once
 }
 
 // Stall makes the store commit no existence from now on: each commit waits
@@ -196,8 +197,11 @@ func (f *Fixture) holdNext(p *atomic.Pointer[gate]) (entered <-chan struct{}, re
 type gate struct{ entered, release chan struct{} }
 
 // pass takes the gate set at p, if one is, and waits for its release or for
-// ctx to end.
+// ctx to end. A nil p is a fence with no gate: it passes at once.
 func pass(ctx context.Context, p *atomic.Pointer[gate]) error {
+	if p == nil {
+		return nil
+	}
 	g := p.Swap(nil)
 	if g == nil {
 		return nil
@@ -277,7 +281,19 @@ func (f *Fixture) HoldFirstRepack() (reached <-chan struct{}, release func()) {
 // engines started after it, starts at its span, until ReleaseBatches. Call it
 // before the Crash or Restart whose start posts the removals.
 func (f *Fixture) HoldBatches() {
-	f.batches.Store(&batchHold{release: make(chan struct{})})
+	f.batches.Store(&batchHold{release: make(chan struct{}), held: make(chan struct{})})
+}
+
+// WaitHeldBatch returns once a removal batch is held at its span by the hold
+// HoldBatches set: the loop is running it, rather than having it queued.
+func (f *Fixture) WaitHeldBatch() {
+	f.t.Helper()
+
+	select {
+	case <-f.batches.Load().held:
+	case <-f.t.Context().Done():
+		f.t.Fatal("fixture: no removal batch reached the hold")
+	}
 }
 
 // ReleaseBatches lets the held removal batches run, and every later one.
@@ -375,6 +391,7 @@ func (f *Fixture) Trace(
 	sp := &Span{Name: name, Attrs: attrs, Parent: parent}
 	batch := name == "engine.removal_batch"
 	if h := f.batches.Load(); batch && h != nil {
+		h.heldOne.Do(func() { close(h.held) })
 		select {
 		case <-h.release:
 		case <-ctx.Done():
@@ -440,6 +457,13 @@ func WithFakeJournal() Option {
 	}
 }
 
+// Fake is the in-memory journal WithFakeJournal put under every process
+// start, nil without it, for a check that loses its records or fails its sync
+// windows with the fake's own calls.
+func (f *Fixture) Fake() *FakeJournal {
+	return f.fake
+}
+
 // The fake journal's segment model under WithFakeJournal: 1 MiB segments
 // under a maximum well above the share's limit. The rows need the model on,
 // so repack has segments to free, not these sizes: a capacity pass seals the
@@ -457,6 +481,21 @@ const (
 // asks for a spare per concurrent writer, plus one per stream's first roll.
 func WithSpares(n int) Option {
 	return func(f *Fixture) { f.settings.SpareTarget = n }
+}
+
+// WithSegmentCap has every open of the journal in Dir give its segments a
+// cap of n bytes instead of the format's own, so the preallocated tail a
+// row reopens over is as small as the row chooses. A row whose writes stay
+// far below the cap pays nothing for it; a row that would roll under it
+// names none. The idle sealer's threshold scales with the cap - a sixteenth
+// of it, the same ratio the journal's own fixture gives its own - for the
+// default would otherwise ask for more payload than a segment under the
+// cap can hold, and a sixteenth never outranks the cap it scales from.
+func WithSegmentCap(n int64) Option {
+	return func(f *Fixture) {
+		journaltest.SetSegmentCap(&f.settings, n)
+		f.settings.IdleSealBytes = n / 16
+	}
 }
 
 // journalOnly fails a control that acts on the journal in Dir, which
@@ -528,7 +567,7 @@ func (f *Fixture) stopService(clean bool) {
 
 // NewWithSmallBatches is New over a store whose transactions hold at most
 // entries keys, so a removal of several holes takes several batches.
-func NewWithSmallBatches(t *testing.T, entries int) *Fixture {
+func NewWithSmallBatches(t *testing.T, entries int, opts ...Option) *Fixture {
 	t.Helper()
 
 	return newFixture(t, func(db kv.KV) kv.KV {
@@ -536,7 +575,7 @@ func NewWithSmallBatches(t *testing.T, entries int) *Fixture {
 			KV:      db,
 			entries: entries,
 		}
-	})
+	}, opts...)
 }
 
 // failingKV is a kv.KV that lets left Updates through and then fails each
@@ -628,8 +667,7 @@ func newFixture(t *testing.T, wrap func(kv.KV) kv.KV, opts ...Option) *Fixture {
 		o(f)
 	}
 
-	if f.Journal, err = journal.Init(t.Context(), dir, fixtureInstall,
-		journal.WithClock(clock), journaltest.SuitableMount(), journal.WithStorage(seam.FS())); err != nil {
+	if f.Journal, err = journal.Init(t.Context(), dir, fixtureInstall, f.journalOptions()...); err != nil {
 		t.Fatalf("fixture: journal init: %v", err)
 	}
 
@@ -709,14 +747,7 @@ func (f *Fixture) Reinit() journal.JournalID {
 		f.t.Fatalf("fixture: make the journal directory: %v", err)
 	}
 
-	id, err := journal.Init(
-		f.t.Context(),
-		f.Dir,
-		fixtureInstall,
-		journal.WithClock(f.Clock),
-		journaltest.SuitableMount(),
-		journal.WithStorage(f.Seam.FS()),
-	)
+	id, err := journal.Init(f.t.Context(), f.Dir, fixtureInstall, f.journalOptions()...)
 	if err != nil {
 		f.t.Fatalf("fixture: journal init: %v", err)
 	}
@@ -761,17 +792,19 @@ func (f *Fixture) Handle() engine.Handle {
 }
 
 // addSecond creates the second share, with the fixture's administrator
-// granted on it.
+// granted on it, bound in the first share's namespace so a clone between the
+// two is admitted.
 func (f *Fixture) addSecond() {
 	ctx := f.t.Context()
 	f.Second = AddShare(f.t, f.FS.Store, "second", 0)
+	f.Second.Namespace = f.Share.Namespace
 	grant := entity.ShareGrant{
 		Share:     f.Second.ID,
 		Principal: f.FS.Admin.Principal,
 		Access:    entity.AccessAdmin,
 	}
 
-	if err := f.FS.Store.ControlPlane().SetGrant(ctx, grant); err != nil {
+	if _, err := f.FS.Store.ControlPlane().SetGrant(ctx, grant, 0); err != nil {
 		f.t.Fatalf("fixture: grant on the second share: %v", err)
 	}
 
@@ -807,53 +840,62 @@ func (f *Fixture) Committed(h entity.Handle) entity.File {
 
 // start builds the open-state table and the engine over the fixture's
 // journal directory and store, and the composed service over both when one
-// is asked for, then starts them in that order.
+// is asked for, then starts them in that order. It wraps a composed Deps
+// field, never replaces it, so what production composes runs in every row.
 func (f *Fixture) start() {
 	t := f.t
 	t.Helper()
 	ctx := t.Context()
 
 	f.crashed = new(atomic.Bool)
-	var err error
-	f.Opens, err = openstate.New(openstate.Deps{Records: f.FS.Store, Clock: f.Clock, Rand: rand.Reader, Logger: f.logger})
+	opens, d, err := enginewire.Compose(enginewire.Params{
+		Node:    f.Node,
+		Devices: []string{f.Dir},
+		Store:   f.FS.Store,
+		Clock:   f.Clock,
+		Logger:  f.logger,
+		Journal: append(f.journalOptions(), journal.WithSettings(f.settings)),
+	})
 	if err != nil {
 		t.Fatalf("fixture: open state: %v", err)
 	}
+	f.Opens = opens
+	open := d.Open
+	// decision: the refuse and fake-journal branches answer without the
+	// composed opener, as fault injection: rows that run them test the fake,
+	// not the shipped opener. Every other open goes through it.
+	d.Open = func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
+		if f.refuse.Load() {
+			return nil, fmt.Errorf(
+				"journal: directory %s refused: mount has no barriers: %w",
+				dir, journal.ErrUnsuitableStorage,
+			)
+		}
+		if f.fake != nil {
+			f.fake.Reopen()
+			return f.fake, nil
+		}
+		j, err := open(ctx, dir, floor, expect)
+		if err != nil {
+			return nil, err
+		}
+		if err := awaitSpares(ctx, j, f.settings); err != nil {
+			_ = j.Close()
+			return nil, err
+		}
+		return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
+	}
+	d.Existence = fencedExistence{Existence: d.Existence, crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate, commitGate: &f.commitGate}
+	d.Content = fencedContent{Content: d.Content, crashed: f.crashed}
+	d.Lifecycle = gatedLifecycle{Lifecycle: d.Lifecycle, startGate: &f.startGate}
+	trace := d.Tracer
+	d.Tracer = func(ctx context.Context, name string, attrs ...slog.Attr) (context.Context, func(error)) {
+		ctx, end := trace(ctx, name, attrs...)
+		ctx, mine := f.Trace(ctx, name, attrs...)
+		return ctx, func(err error) { mine(err); end(err) }
+	}
 
-	e, err := engine.New(engine.Deps{
-		Node:    f.Node,
-		Devices: []string{f.Dir},
-		Open: func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
-			if f.refuse.Load() {
-				return nil, fmt.Errorf(
-					"journal: directory %s refused: mount has no barriers: %w",
-					dir, journal.ErrUnsuitableStorage,
-				)
-			}
-			if f.fake != nil {
-				f.fake.Reopen()
-				return f.fake, nil
-			}
-			j, err := journal.Open(ctx, dir, floor, expect, nil,
-				journal.WithClock(f.Clock), journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()),
-				journal.WithSettings(f.settings))
-			if err != nil {
-				return nil, err
-			}
-			if err := awaitSpares(ctx, j, f.settings); err != nil {
-				_ = j.Close()
-				return nil, err
-			}
-			return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
-		},
-		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate, commitGate: &f.commitGate},
-		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
-		Lifecycle: gatedLifecycle{Lifecycle: f.FS.Store.Lifecycle(), startGate: &f.startGate},
-		Holds:     Holds(f.Opens, f.FS.Store.Opens()),
-		Clock:     f.Clock,
-		Logger:    f.logger,
-		Tracer:    f.Trace,
-	})
+	e, err := engine.New(d)
 	if err != nil {
 		t.Fatalf("fixture: engine: %v", err)
 	}
@@ -864,9 +906,13 @@ func (f *Fixture) start() {
 		f.svc = f.compose(f, e)
 		sink, order = f.svc, f.svc.Admission
 	}
-	if err := f.Opens.Start(ctx, sink, order); err != nil {
-		t.Fatalf("fixture: open state start: %v", err)
+	if err := e.Apply(Settings); err != nil {
+		t.Fatalf("fixture: engine settings: %v", err)
 	}
+	if err := enginewire.Start(ctx, f.Opens, e, sink, order, []engine.Share{f.Share}); err != nil {
+		t.Fatalf("fixture: start: %v", err)
+	}
+	f.E = e
 	if f.svc == nil {
 		f.starts++
 		if err := f.Opens.Recovery().ServeShard(ctx, f.Share.ID, f.Share.Shard, f.starts); err != nil {
@@ -874,20 +920,19 @@ func (f *Fixture) start() {
 		}
 	}
 
-	if err := e.Apply(Settings); err != nil {
-		t.Fatalf("fixture: engine settings: %v", err)
-	}
-	if err := e.Start(ctx, []engine.Share{f.Share}); err != nil {
-		t.Fatalf("fixture: engine start: %v", err)
-	}
-	f.E = e
-
 	if f.svc != nil {
 		if err := f.svc.Start(ctx); err != nil {
 			t.Fatalf("fixture: service start: %v", err)
 		}
 		f.serving = true
 	}
+}
+
+// journalOptions are the options every journal of the fixture's directory
+// opens or initialises with: a mount taken as suitable, reached through the
+// crash-simulating seam, reading the fixture's clock.
+func (f *Fixture) journalOptions() []journal.Option {
+	return []journal.Option{journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()), journal.WithClock(f.Clock)}
 }
 
 // closeDeadline bounds the fixture's engine close. The fixture closes over a
@@ -916,15 +961,18 @@ func (f *Fixture) stop(clean bool) {
 		}
 		ctx, cancel := context.WithTimeout(parent, closeDeadline)
 		defer cancel()
-		if err := f.E.Close(ctx); err != nil {
+		if err := enginewire.Stop(ctx, f.Opens, f.E); err != nil {
 			if clean {
-				f.t.Errorf("fixture: engine close: %v", err)
+				f.t.Errorf("fixture: stop: %v", err)
 			} else {
-				f.t.Logf("fixture: closing the crashed engine: %v", err)
+				f.t.Logf("fixture: stopping the crashed engine: %v", err)
 			}
 		}
 		f.E = nil
 	}
+	// Open state is stopped here too, as a stop whose engine close failed
+	// leaves it running, and a test leaves no timer behind; a second Stop
+	// does nothing.
 	if f.Opens != nil {
 		f.Opens.Stop()
 		f.Opens = nil
@@ -984,68 +1032,6 @@ func (s *Sink) ClosedCalls() []Closed {
 // noOrder takes no admission lock: the fixture has no service holding one.
 func noOrder(entity.FileID) func() { return func() {} }
 
-// Holds adapts t, over the store's durable opens, to the engine's
-// CloneHold, as the composition root does. An orphan CloneClose leaves
-// reaches t's Sink.Closed.
-func Holds(t *openstate.Table, records OpenRecords) engine.CloneHold {
-	return cloneHold{opens: t.Opens(), recovery: t.Recovery(), records: records}
-}
-
-// OpenRecords reads a file's durable opens: the store's Opens.
-type OpenRecords interface {
-	Of(ctx context.Context, share entity.ShareID, file entity.FileID) ([]entity.OpenRecord, error)
-}
-
-// cloneHold is the open-state table as the engine's CloneHold.
-type cloneHold struct {
-	opens    openstate.Opens
-	recovery openstate.Recovery
-	records  OpenRecords
-}
-
-// Hold answers ErrStale only for a source holding no open of the clone's.
-// CloneOpen answers ErrBadState for that and for a share whose open state
-// was dropped, so the record is read again to tell them apart; the dropped
-// share's answer crosses as itself, which the engine retries.
-func (h cloneHold) Hold(ctx context.Context, src engine.CloneSrc) (entity.OpenID, error) {
-	id, err := h.opens.CloneOpen(ctx, openstate.FileKey{Share: src.Share, Shard: src.Shard, ID: src.File}, openstate.CloneSource{Dst: src.Dst, Version: src.AsOf})
-	if !errors.Is(err, openstate.ErrBadState) {
-		return id, holdErr(err)
-	}
-	recs, rerr := h.records.Of(ctx, src.Share, src.File)
-	if rerr != nil {
-		return 0, rerr
-	}
-	if !slices.ContainsFunc(recs, func(r entity.OpenRecord) bool {
-		return r.Kind == entity.OpenCloneSource && r.CloneDst == src.Dst && r.CloneVersion == src.AsOf
-	}) {
-		return 0, entity.ErrStale
-	}
-	return 0, err
-}
-
-func (h cloneHold) Release(ctx context.Context, o entity.OpenID) error {
-	err := h.opens.CloneClose(ctx, o)
-	if errors.Is(err, openstate.ErrBadState) {
-		return nil // the hold is already gone
-	}
-	return holdErr(err)
-}
-
-// holdErr is open state's answer to a clone's hold in the engine's types: a
-// shard not yet served or a table not running holds the clone for a retry.
-func holdErr(err error) error {
-	var delay *openstate.DelayError
-	if errors.As(err, &delay) && delay.Cause == openstate.DelayFrozen || errors.Is(err, openstate.ErrStopped) {
-		return &vfserr.Delay{Cause: vfserr.DelayFrozen}
-	}
-	return err
-}
-
-func (h cloneHold) Served(ctx context.Context, s entity.ShardID) error {
-	return holdErr(h.recovery.Served(ctx, s))
-}
-
 // errCrashed answers a store change the crashed process's engine makes.
 var errCrashed = errors.New("fixture: the process crashed: its engine commits nothing")
 
@@ -1090,11 +1076,13 @@ func (x fencedExistence) Remove(ctx context.Context, share entity.ShareID, file 
 }
 
 func (x fencedExistence) Clone(ctx context.Context, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
-	if x.crashed.Load() {
-		return errCrashed
-	}
+	// The crash check follows the gate: a clone held across a crash and then
+	// released must not commit its phase 1 into the restarted process.
 	if err := pass(ctx, x.cloneGate); err != nil {
 		return err
+	}
+	if x.crashed.Load() {
+		return errCrashed
 	}
 	return x.Existence.Clone(ctx, op, pending)
 }

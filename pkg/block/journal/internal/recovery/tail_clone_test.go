@@ -128,6 +128,12 @@ func TestACloneTargetBodyIsClassedTheSameWhereverItIsRead(t *testing.T) {
 			t.Fatalf("Run (forced scan %v) rebuilt %d segments by catalog, want %d: the leg must use the source it names",
 				forceScan, st.Rebuilt.ByCatalog, wantCatalog)
 		}
+		// The source leg by leg: the named segment answers from the
+		// catalogue only in the catalogue leg, from the walk in the walk leg.
+		if sc, ok := scanOf(st, 1); !ok || sc.SealedByCatalog != !forceScan {
+			t.Fatalf("Run (forced scan %v): segment 1's scan got SealedByCatalog %v (found %v), want %v",
+				forceScan, sc.SealedByCatalog, ok, !forceScan)
+		}
 		if len(st.Tails.Corrupt) != 1 || !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
 			t.Fatalf("Run (forced scan %v): Corrupt %+v Damaged %v, want one drop and segment 1 damaged", forceScan, st.Tails.Corrupt, st.Tails.Damaged)
 		}
@@ -316,7 +322,9 @@ func TestARottedCloneTargetInASealedSegmentNothingNamesIsCorrupt(t *testing.T) {
 	if len(st.Tails.Corrupt) != 1 || st.Tails.Corrupt[0].Drop.Header.Offset != format.SegmentHeaderSize {
 		t.Fatalf("Corrupt got %+v, want the clone target at %d", st.Tails.Corrupt, format.SegmentHeaderSize)
 	}
-	wantFate(t, st, 1, fateSealToProve, 0)
+	// The marker is durable and verifies on the device, so the proof seals
+	// the segment; the seal proves the drop corrupt before it.
+	wantFate(t, st, 1, fateSealed, 0)
 }
 
 // TestACloneTargetDropAtTheSyncedThroughIsNotCorrupt holds the proof's edge:
@@ -365,6 +373,12 @@ func TestARottedLossBodyIsDroppedWhereverItIsRead(t *testing.T) {
 			}
 			if (st.Rebuilt.ByCatalog == 1) == forceScan {
 				t.Fatalf("ByCatalog got %d with forceScan %v, want the source the row names", st.Rebuilt.ByCatalog, forceScan)
+			}
+			// The source leg by leg: the named segment answers from the
+			// catalogue only in the catalogue leg, from the walk in the walk leg.
+			if sc, ok := scanOf(st, 1); !ok || sc.SealedByCatalog != !forceScan {
+				t.Fatalf("the %s leg: segment 1's scan got SealedByCatalog %v (found %v), want %v",
+					name, sc.SealedByCatalog, ok, !forceScan)
 			}
 			if len(st.Tails.Corrupt) != 1 {
 				t.Fatalf("Corrupt got %+v, want exactly the loss", st.Tails.Corrupt)

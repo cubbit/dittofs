@@ -10,12 +10,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var schemaOutput string
-
-var schemaCmd = &cobra.Command{
-	Use:   "schema",
-	Short: "Generate JSON schema for configuration",
-	Long: `Generate a JSON schema for the DittoFS configuration file.
+func newSchemaCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "schema",
+		Short: "Generate JSON schema for configuration",
+		Long: `Generate a JSON schema for the DittoFS configuration file.
 
 The schema can be used for:
   - IDE autocompletion (VS Code, IntelliJ, etc.)
@@ -28,11 +27,10 @@ Examples:
 
   # Save schema to file
   dfs config schema --output config.schema.json`,
-	RunE: runSchema,
-}
-
-func init() {
-	schemaCmd.Flags().StringVarP(&schemaOutput, "output", "o", "", "Output file (default: stdout)")
+		RunE: runSchema,
+	}
+	cmd.Flags().StringP("output", "o", "", "Output file (default: stdout)")
+	return cmd
 }
 
 func runSchema(cmd *cobra.Command, args []string) error {
@@ -57,11 +55,11 @@ func runSchema(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to generate schema: %w", err)
 	}
 
-	if schemaOutput != "" {
-		if err := os.WriteFile(schemaOutput, schemaJSON, 0644); err != nil {
+	if path, _ := cmd.Flags().GetString("output"); path != "" {
+		if err := os.WriteFile(path, schemaJSON, 0644); err != nil {
 			return fmt.Errorf("failed to write schema file: %w", err)
 		}
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "JSON schema written to %s\n", schemaOutput)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "JSON schema written to %s\n", path)
 		return nil
 	}
 

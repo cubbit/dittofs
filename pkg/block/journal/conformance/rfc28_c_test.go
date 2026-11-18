@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
@@ -824,6 +825,102 @@ func TestRFC28C_TrailerTorn(t *testing.T) {
 	wantBadFooter(t, g, s.seg)
 }
 
+// TestRFC28C_ASealMarkerOnlyTheCacheHolds checks the reopen-in-place half of
+// the row: a segment's idle seal reaches the seam with its marker's write and
+// has its second sync fail, and the first sync in the spare the stream takes
+// to leave the failed segment fails too, so the journal turns read-only and is
+// reopened in place, by the same process over the same cache. The reopen must
+// re-read the marker from the device, not through that cache, and a segment
+// whose marker did not prove there is not taken as sealed until its own seal
+// of it is durable. A crash that drops every write the seam never saw synced
+// then takes the marker the cache held, and the open on what is left reports
+// no damage with the record synced before it reading back: the marker carried
+// no data, and no record was lost.
+//
+// decision: the row's other half, the same check with the process killed
+// after the marker's write and before the seal's second sync, reopened in a
+// new process with the cache kept, is not built here; it asserts the same
+// through the killed-process open, which waits with this one on the open of
+// a directory holding segments.
+func TestRFC28C_ASealMarkerOnlyTheCacheHolds(t *testing.T) {
+	f := journaltest.New(t)
+	a := writeSynced(t, f, 0, 0, 0, 64<<10)
+	seg := entryAt(t, f, a.id, 0).Location.Segment
+	name := segmentName(seg)
+
+	// The seal is parked at its first sync, the one that makes the records
+	// durable, and at its second, the one that would make the marker, footer
+	// and trailer durable. Both are stopped before they run.
+	first := f.Seam.Hold(t, kit.OpSync, name)
+	f.Advance(journaltest.IdleSealAge)
+	<-first.Reached()
+	second := f.Seam.Hold(t, kit.OpSync, name)
+	first.Release()
+	<-second.Reached()
+
+	// The marker's write reached the seam's cache; only a sync past this
+	// point, the seal's second, would make it durable.
+	if !bytes.Contains(liveBytes(t, f, name), []byte("DJS1")) {
+		t.Fatalf("the seal wrote no marker into %s before its second sync", name)
+	}
+
+	// The seal's second sync fails, and so does the first sync in the spare
+	// the stream takes to leave the failed segment: the journal turns
+	// read-only (RFC 1 section 5.4). A stream takes a spare only to append,
+	// and the failed seal alone leaves the stream resting on its ended
+	// segment, so a second record on another file of the share drives the
+	// take: its write rolls into the spare, and its sync's failure there is
+	// the second segment in a row. The 8 is a bound chosen generously
+	// enough to cover the syncs of the seg files until the journal turns
+	// read-only, not a count anyone measured; the eventually below is the
+	// backstop that fails clean if the journal ever needs more syncs to
+	// reach its read-only state.
+	f.FailNext(kit.OpSync, "*.seg", 8)
+	second.Release()
+	b := pattern("b", 4096)
+	_, werr := f.Share(0).WriteAt(t.Context(), journaltest.File(1), 0, b, 0)
+	stub(t, "WriteAt", werr)
+	_, serr := f.Share(0).Sync(t.Context(), journaltest.File(1))
+	stub(t, "Sync", serr)
+	eventually(t, "the journal to turn read-only", func() bool { return f.J.Stats().ReadOnly.ReadOnly })
+
+	// Precondition kept since the seal: the marker is cache-only, a read
+	// through the cache serves it and the device does not.
+	if bytes.Contains(durable(t, f, name), []byte("DJS1")) {
+		t.Fatalf("the marker of segment %d reached the device though its seal's second sync was failed", seg)
+	}
+
+	// The reopen in place, over the same cache, with the reopen's own sync of
+	// the segment reporting success and writing nothing: only a read past
+	// the cache can prove or fail the seal.
+	f.Drop(kit.OpSync, name)
+	f.Reopen()
+
+	if got := f.Seam.CallsFor(kit.OpReadDirect, name); got < 1 {
+		t.Fatalf("the reopen read %s past the cache %d times, want at least once: a seal marker no successor names is proven on the device", name, got)
+	}
+	if ownedSegment(t, f, seg).Sealed {
+		t.Fatalf("segment %d is sealed after a reopen whose marker did not verify on the device; a segment is not taken as sealed until its own seal of it is durable", seg)
+	}
+	if bytes.Contains(durable(t, f, name), []byte("DJS1")) {
+		t.Fatalf("the reopen made the marker of segment %d durable through a sync that wrote nothing", seg)
+	}
+	wantBytes(t, f.Share(0), a.id, 0, a.p)
+
+	// Every write the seam never saw synced is dropped, the marker the cache
+	// held among them, and the open on what the crash left finds a segment
+	// that lost no record: nothing is reported as damage, and A reads back.
+	if err := f.Seam.Crash(); err != nil {
+		t.Fatalf("crash: %v", err)
+	}
+	f.Seam.SetFault(nil)
+	f.Crash()
+	if got := f.J.Stats().DamagedSegments; got != 0 {
+		t.Fatalf("DamagedSegments = %d after the crash took the marker the cache held, want 0: no record was lost", got)
+	}
+	wantBytes(t, f.Share(0), a.id, 0, a.p)
+}
+
 // TestRFC28C_UnknownVersion checks that a trailer carrying a catalog layout
 // version the journal does not know is only no footer: the open succeeds,
 // the segment is scanned, and nothing is reported as damage.
@@ -1100,12 +1197,20 @@ func retire(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID) retired
 	return retirement(t, f, segmentName(seg), files)
 }
 
-// awaitSpare runs roll, a write whose roll takes a spare, and returns once
-// the journal has made the spare that replaces it: it waits at the directory
-// sync that follows the new spare's rename into place, the one directory
-// sync a take leads to, and checks that the directory gained a segment file
-// by then. The hold is released however it returns, a failure included, so
-// a fixture whose lifetime ends before the test's never closes on it.
+// awaitSpare runs roll and returns once the journal has made the spare that
+// replaces the take roll makes: it waits at the directory sync that follows
+// the new spare's rename into place, the one directory sync a take leads
+// to, and checks that the directory gained a segment file by then. The hold
+// is released however it returns, a failure included, so a fixture whose
+// lifetime ends before the test's never closes on it.
+//
+// The helper settles no pool. A caller can hold, while it runs, the very
+// spare-making call its roll releases — the crossing shape, whose roll is
+// the release of a hold the pool's refill parks on — and a settle first
+// would park on that held call until the roll it waits for released it: the
+// row would hang to its timeout. A roll that writes takes its spare after
+// the hold is up, so its caller awaits through awaitSettledSpare, which
+// closes the take-and-refill window the write would otherwise race.
 func awaitSpare(t *testing.T, f *journaltest.Fixture, roll func()) {
 	t.Helper()
 
@@ -1118,6 +1223,46 @@ func awaitSpare(t *testing.T, f *journaltest.Fixture, roll func()) {
 
 	if after := segmentFiles(t, f); len(after) != len(before)+1 {
 		t.Fatalf("the directory sync was reached with %d segment files, want one more than %d: not the sync after a spare's rename", len(after), len(before))
+	}
+}
+
+// awaitSettledSpare awaits a roll that writes: the roll's take happens after
+// the helper's hold is up, so every spare the take needs must be ready
+// before it — settled — or the take waits on the refill of a take between
+// the fixture's own open-time wait and this one, whose directory sync rides
+// the hold: a row's earlier write starting a stream takes, for the first
+// segment of a stream is a roll, and the write is refused over yields the
+// held refill cannot rescue. The settle parks on no seam call and takes no
+// clock, for it waits on the pool's own settle event.
+func awaitSettledSpare(t *testing.T, f *journaltest.Fixture, roll func()) {
+	t.Helper()
+
+	f.WaitSpares()
+	awaitSpare(t, f, roll)
+}
+
+// TestAwaitSpareWhoseRollReleasesAHeldCreate pins the helper's settle-free
+// contract at its one caller built around the shape: a row whose roll
+// releases the hold a parked refill waits on — the crossing leg's release as
+// roll. The pool is a spare short with its refill parked at the held create
+// when the helper runs, so a helper that settled first would park on the
+// very create the roll it waits for releases, and the row would hang to the
+// run's own timeout. The bounded wait below is the assertion, for the park
+// sits in a goroutine no clock can reach and only the roll releases.
+func TestAwaitSpareWhoseRollReleasesAHeldCreate(t *testing.T) {
+	f := journaltest.New(t)
+	held := f.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
+	writeSynced(t, f, 0, 0, 0, journaltest.FixtureSegmentCap) // the roll parks the refill's create
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		awaitSpare(t, f, held.Release)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("awaitSpare never returned: a settle would park on the held create its roll releases, want the release free of any settle")
 	}
 }
 
@@ -1212,7 +1357,7 @@ func TestRFC28C_SparesAreReAdopted(t *testing.T) {
 	// at its target as the open counts it and no spare-making is in flight
 	// when the pool is read.
 	f := journaltest.New(t)
-	awaitSpare(t, f, func() { writeSynced(t, f, 0, 2, 0, journaltest.FixtureSegmentCap) })
+	awaitSettledSpare(t, f, func() { writeSynced(t, f, 0, 2, 0, journaltest.FixtureSegmentCap) })
 	f.Reopen()
 	before := poolNow(t, f)
 	f.Crash()
@@ -1557,7 +1702,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	// At target: the roll's spare is replaced before the retirement, which
 	// then unlinks.
 	g := journaltest.NewUnwatched(t)
-	awaitSpare(t, g, func() { recs, seg = fillSegment(t, g, 0, 0, size) })
+	awaitSettledSpare(t, g, func() { recs, seg = fillSegment(t, g, 0, 0, size) })
 	syncFiles(t, g.Share(0), recs[0].id)
 	g.Reopen()
 	releaseRecs(t, g, recs)

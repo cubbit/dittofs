@@ -70,7 +70,7 @@ alone, or both together (the full AD-joined deployment).
 > Windows Server license. **It is not a file server, is not a DittoFS component,
 > and is not managed by the dittofs-operator.** In production you install **no**
 > Samba — you point DittoFS at your existing enterprise AD. Port 445 (SMB) is
-> deliberately not exposed by the fixture; DittoFS owns 445.
+> deliberately not published on the host; DittoFS owns 445.
 
 The provisioning logic below lives in `test/integration/ad-dc/entrypoint.sh`. It
 provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
@@ -79,8 +79,19 @@ provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
   (which is nested under `engineering`).
 - user `bob` — no RFC2307 attrs (the RID-fallback case), member of `engineering`.
 - groups `engineering` and `devs` (with `devs` nested under `engineering`).
-- a combined keytab at `/keytabs/dittofs.keytab` holding the `cifs/` and `nfs/`
-  SPNs.
+- a service account `dittofs-svc` holding the `cifs/` and `nfs/` SPNs, AES only,
+  and a combined keytab of their keys at `/keytabs/dittofs.keytab`.
+- a CA, exported as `/keytabs/ca.pem`, that issues the DC's TLS certificate for
+  its host name (`dc1.dittofs.ad` when the container runs with `--hostname dc1`)
+  and its IPs.
+- computer accounts for the joins: `dittofs$` (password `MachinePass01!`), and
+  `offjoinaes$` (password `OffJoinAES01!`, `msDS-SupportedEncryptionTypes`
+  `0x18`) and `offjoinlegacy$` (password `OffJoinLegacy01!`, none), pre-staged
+  for an offline join. `MACHINE_PASSWORD`, `OFFJOIN_AES_PASSWORD` and
+  `OFFJOIN_LEGACY_PASSWORD` override the three passwords.
+
+NETLOGON's dynamic RPC port comes from the pinned range `50000-50019`, beside
+135 for the endpoint mapper.
 
 ### What the provisioning does
 
@@ -93,7 +104,8 @@ samba-tool domain provision \
     --domain=DITTOFS \
     --server-role=dc \
     --dns-backend=SAMBA_INTERNAL \
-    --adminpass="$ADMIN_PASSWORD"
+    --adminpass="$ADMIN_PASSWORD" \
+    --option="rpc server dynamic port range = 50000-50019"
 ```
 
 `--use-rfc2307` enables the POSIX (`uidNumber`/`gidNumber`) schema so those
@@ -117,42 +129,24 @@ samba-tool user create bob "$USER_PASSWORD"
 samba-tool group addmembers engineering bob
 ```
 
-### The AES-keytab requirement (issue #1318)
+### The AES-only service keytab
 
-The DittoFS SPNs are registered on the Administrator account and exported to a
-combined keytab:
+The DittoFS SPNs are registered on a service account of their own, whose
+`msDS-SupportedEncryptionTypes` is `24` (`0x18` = AES128-CTS + AES256-CTS), so
+the KDC refuses a ticket for them under RC4 or DES, and `exportkeytab` writes
+their AES keys only:
 
 ```bash
-samba-tool spn add cifs/dittofs.dittofs.ad 'DITTOFS\Administrator'
-samba-tool spn add nfs/dittofs.dittofs.ad  'DITTOFS\Administrator'
+samba-tool user create dittofs-svc --random-password
+samba-tool spn add cifs/dittofs.dittofs.ad dittofs-svc
+samba-tool spn add nfs/dittofs.dittofs.ad  dittofs-svc
+ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF
+dn: CN=dittofs-svc,CN=Users,DC=dittofs,DC=ad
+changetype: modify
+replace: msDS-SupportedEncryptionTypes
+msDS-SupportedEncryptionTypes: 24
+EOF
 ```
-
-By default the account may carry only an **RC4 (arcfour-hmac)** Kerberos key, so
-`exportkeytab` would emit an RC4-only keytab. **Windows 11 refuses RC4
-(arcfour-hmac) service tickets**, so the keytab must carry AES256/AES128 keys.
-Two steps are required, in order:
-
-1. **Advertise AES** on the SPN-holding account by setting
-   `msDS-SupportedEncryptionTypes` to `31` (`0x1F` = DES-CBC-CRC + DES-CBC-MD5 +
-   RC4-HMAC + AES128-CTS + AES256-CTS; the legacy bits are kept so RC4/DES
-   clients still work):
-
-   ```bash
-   ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF
-   dn: <Administrator-DN>
-   changetype: modify
-   replace: msDS-SupportedEncryptionTypes
-   msDS-SupportedEncryptionTypes: 31
-   EOF
-   ```
-
-2. **Regenerate the Kerberos keys.** AES keys derive from the account password +
-   salt, so they only materialise on a password change. Reset the password to
-   itself to force regeneration without changing the credential:
-
-   ```bash
-   samba-tool user setpassword Administrator --newpassword="$ADMIN_PASSWORD"
-   ```
 
 Then export both principals into one keytab (a second `exportkeytab` into the
 same path **appends**):
@@ -215,31 +209,8 @@ restart) or seeded from the config file / environment on first boot.
 
 ### Over the API (recommended; hot-reloads)
 
-```bash
-dfsctl identity-provider set ldap --config '{
-  "enabled": true,
-  "url": "ldaps://dc.example.com:636",
-  "base_dn": "DC=example,DC=com",
-  "bind_dn": "CN=svc-dittofs,CN=Users,DC=example,DC=com",
-  "bind_password": "s3cret",
-  "idmap": "rfc2307",
-  "nested_groups": true,
-  "user_attr": "sAMAccountName"
-}'
-```
-
-Validate reachability without persisting:
-
-```bash
-dfsctl identity-provider test ldap --config '{ ... same JSON ... }'
-```
-
-Inspect and list (the bind password is redacted to `********`):
-
-```bash
-dfsctl identity-provider get ldap
-dfsctl identity-provider list
-```
+The CLI no longer configures identity providers, and the v2 CLI does not
+rebuild that command.
 
 **Config field names** (the JSON shape matches the API schema, source
 `pkg/apiclient/identity_providers.go` / the handler DTO in
@@ -354,26 +325,8 @@ config at startup.
 
 ### Over the API
 
-```bash
-dfsctl identity-provider set kerberos --config '{
-  "enabled": true,
-  "keytab_path": "/etc/dittofs/dittofs.keytab",
-  "service_principal": "nfs/server.example.com@EXAMPLE.COM",
-  "realm": "EXAMPLE.COM",
-  "netbios_domain": "EXAMPLE",
-  "dns_domain": "example.com",
-  "krb5_conf": "/etc/krb5.conf"
-}'
-```
-
-The `--config` argument also accepts `@/path/to/krb.json` to read from a file.
-On success, `dfsctl` reminds you the change applies on the next restart. Validate
-the keytab/krb5.conf without persisting:
-
-```bash
-dfsctl identity-provider test kerberos --config '{ ... }'
-dfsctl identity-provider get kerberos
-```
+The CLI no longer configures identity providers, and the v2 CLI does not
+rebuild that command.
 
 **Config field names** (source `pkg/apiclient/identity_providers.go`
 `KerberosProviderConfig` / the handler `KerberosConfigDTO`):
@@ -503,6 +456,17 @@ the realm + alice/bob + nested groups and asserts identity unification:
 ```bash
 go test -tags=ad_dc -v -timeout 20m ./test/integration/ad-dc/
 ```
+
+The suite needs a Linux Docker host. The tests reach the DC on its container
+IP, with no port published on the host, and Docker Desktop (macOS, Windows)
+does not route the host to container IPs, so there the tests fail rather than
+skip. Every image, container and network the fixture makes is named and
+labelled with the prefix `dittofs-ad-dc-test`; set `DITTOFS_AD_DC_NAME_PREFIX`
+to use another on a Docker host shared between users. A run force-removes any
+container whose name starts with the prefix and a dash, and prunes the networks
+labelled with it, once they are more than an hour old: what an earlier run
+under the same prefix left behind when it was killed. A killed run's image tag
+stays.
 
 It verifies, among other things:
 

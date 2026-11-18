@@ -5,11 +5,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Cmd is the parent command for share permission management.
-var Cmd = &cobra.Command{
-	Use:   "permission",
-	Short: "Manage share permissions",
-	Long: `Manage permissions on shares.
+// New returns the parent command for share permission management.
+func New() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "permission",
+		Short: "Manage share permissions",
+		Long: `Manage permissions on shares.
 
 Permission commands allow you to grant, revoke, and list permissions
 for users and groups on shares.
@@ -26,10 +27,9 @@ Examples:
 
   # List permissions on a share
   dfsctl share permission list /archive`,
-}
-
-func init() {
-	Cmd.AddCommand(grantCmd)
-	Cmd.AddCommand(revokeCmd)
-	Cmd.AddCommand(listCmd)
+	}
+	cmd.AddCommand(newGrantCmd())
+	cmd.AddCommand(newRevokeCmd())
+	cmd.AddCommand(newListCmd())
+	return cmd
 }

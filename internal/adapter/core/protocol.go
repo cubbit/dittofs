@@ -21,10 +21,23 @@ type Protocol interface {
 	NewConn(c *Conn) Stages // at accept; c is what the stages send on (callbacks)
 }
 
-// Framer finds a record's length from its header.
+// Framer finds a record's length from its header, and writes a reply
+// record's: the writer frames each record after Wrap, so reply buffers hold
+// the body alone.
 type Framer interface {
 	HeaderLen() int
-	BodyLen(hdr []byte) (int, error) // past the protocol's cap: an error, and the connection closes
+	// BodyLen reads a record's header: the length of the body that follows it,
+	// and whether that body ends the record. A header may say it does not, and
+	// the reader then reads the next fragment's header and body into the same
+	// record; SMB's header always ends it. Past the protocol's cap: an error,
+	// and the connection closes.
+	BodyLen(hdr []byte) (n int, last bool, err error)
+	// MaxRecord is the protocol's record cap and the most fragments a record
+	// may come in, 1 where every header ends its record.
+	MaxRecord() (bytes, fragments int)
+	// Frame appends to dst the HeaderLen-byte header of a record whose body is
+	// body bytes.
+	Frame(dst []byte, body int) []byte
 }
 
 // Stages are a protocol's implementations of the pipeline's stages for one
@@ -34,19 +47,28 @@ type Framer interface {
 type Stages struct {
 	Header     HeaderCodec               // required: decode the request header, encode the reply's
 	Router     Router                    // required: the version's table and the Request
+	Errors     *ErrorTable               // required: maps, with no operation, a refusal before Route returns a table: Unwrap's, Admit's, Lookup's, a header's
 	Security   Security                  // nil: messages pass unchanged
 	Flow       FlowControl               // nil: the fixed cap of 64
 	Replay     ReplayCache               // nil: no replay check
 	Hold       HoldCodec                 // required where a table Holds, nil elsewhere
 	MaxPending int                       // requests pending per connection, held and parked together; 0: none pend
 	OnClose    func(ctx context.Context) // drop the connection's state; nil: nothing
+	Protocol   string                    // required: the label of what a request records before Route returns its table
 }
 
 // HeaderCodec decodes a request's header and encodes a reply's.
 type HeaderCodec interface {
 	Decode(rec *resources.Buf, off int) (Header, error) // the header at off in the record: 0, then each member's Next
+	// Encode writes the reply's header for s and, where s is a failure
+	// answered with a status alone, what such a reply needs: the whole reply
+	// of a request answered its status alone, before its arguments decoded or
+	// refused whole after, such as an NFSv4 COMPOUND's status, tag and empty
+	// results, the tag read with the header.
 	Encode(h Header, s Status, out *resources.Buf) error
 	Chain(out *resources.Buf, prev int) error // points the reply at prev to the one appended after it (SMB2's NextCommand, padded to 8); nil-op where nothing chains
+	Args(rec *resources.Buf, h Header) []byte // the arguments of the message h in rec, as Decode and Unwrap left it
+	ReplyLen(h Header) int                    // the most Encode writes for h, a status-alone body included, with Chain's padding and the transform Wrap adds in place: the pipeline reserves Bound() + ReplyLen(h); for a compound row's message it also covers the compound's head and one result's head
 }
 
 // Router chooses the version's table and builds the Request.
@@ -66,7 +88,11 @@ type Security interface {
 
 // FlowControl admits a request against the connection's slots, credits or cap.
 type FlowControl interface {
-	Admit(ctx context.Context, h Header) (release func(), err error) // slot, credit or cap; the reader waits here
+	// Admit takes a slot, a credit or a place under the cap; the reader waits
+	// here. Under a context already ended it tries once, and where it would
+	// wait answers an error wrapping that context's error, which a chain's
+	// split reads (§4.7).
+	Admit(ctx context.Context, h Header) (release func(), err error)
 }
 
 // ReplayCache answers a retransmission from the reply it cached.
@@ -75,7 +101,9 @@ type ReplayCache interface {
 	// reservation of its size that waits under ctx, as the pipeline's own
 	// reservation does; the pipeline wraps the copy in place and sends it. Or
 	// a sequence error, or the reservation's ErrDelay of DelayResources past
-	// ctx's deadline, either mapped by the table; or nil, nil to run.
+	// ctx's deadline, either mapped by the table; or nil, nil to run. Under a
+	// context whose deadline has passed it tries the reservation once, which
+	// a chain asks first (§4.7).
 	Lookup(ctx context.Context, h Header) (*resources.Buf, error)
 	// Store keeps its own clear copy of a cacheable row's encoded reply, taken
 	// before Wrap; the caller's reply is then wrapped in place.

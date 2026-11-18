@@ -5,10 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var statusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Show server status",
-	Long: `Display the status of the connected DittoFS server.
+func newStatusCmd() *cobra.Command {
+	statusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show server status",
+		Long: `Display the status of the connected DittoFS server.
 
 Calls the /health endpoint on the server configured in the current context and
 reports whether the server is running, how long it has been up, and whether the
@@ -25,8 +26,6 @@ Examples:
 
   # Check a specific server without logging in (token fetched from stored context)
   dfsctl status --server http://dfs.example.com:8080`, RunE: cmdutil.Unavailable,
-}
-
-func init() {
-	rootCmd.AddCommand(statusCmd)
+	}
+	return statusCmd
 }

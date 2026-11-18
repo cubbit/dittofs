@@ -14,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -39,18 +40,18 @@ func FuzzHandles(f *testing.F) {
 	open := entity.Share{ID: entity.NewShareID(), Name: "open", Path: "/a/open", Root: entity.NewFileID()}
 	closed := entity.Share{ID: entity.NewShareID(), Name: "closed", Path: "/closed", Root: entity.NewFileID()}
 	for _, err := range []error{
-		cp.PutUser(ctx, admin), cp.PutShare(ctx, open), cp.PutShare(ctx, closed),
-		cp.SetGrant(ctx, entity.ShareGrant{Share: open.ID, Principal: admin.Principal, Access: entity.AccessAdmin}),
-		cp.SetGrant(ctx, entity.ShareGrant{Share: closed.ID, Principal: admin.Principal, Access: entity.AccessAdmin}),
-		cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: closed.ID, Clients: []entity.ClientRule{
-			{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("0.0.0.0/0")}, Access: entity.AccessNone}}}),
+		errOf(cp.PutUser(ctx, admin, 0, entity.Alloc{})), errOf(kvstoretest.CreateShare(ctx, cp, open)), errOf(kvstoretest.CreateShare(ctx, cp, closed)),
+		errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: open.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0)),
+		errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: closed.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0)),
+		errOf(cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: closed.ID, Clients: []entity.ClientRule{
+			{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("0.0.0.0/0")}, Access: entity.AccessNone}}}, 0)),
 	} {
 		if err != nil {
 			f.Fatal(err)
 		}
 	}
 	clock := sim.NewTestClock(time.Unix(0, 0))
-	tab, err := openstate.New(openstate.Deps{Records: st, Clock: clock, Rand: rand.Reader})
+	tab, err := openstate.New(openstate.Deps{Records: st, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
 	if err != nil {
 		f.Fatal(err)
 	}

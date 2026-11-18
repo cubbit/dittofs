@@ -5,12 +5,13 @@ rules, §2.5's `GET /api/v1/health`, §5.3's local socket and refresh, §5.4's p
 e-mail and directory grants, §4.4–§4.6 as the CLI applies them, §10's CP14, and §12's "§7 CLI" row in
 the part a unit test can check.
 **Track:** A.
-**Epic 6 estimate: 6 subtasks, 12 man-days.**
+**Epic 6 estimate: 6 subtasks, 11.5 man-days.**
 **Depends on:** E1, whose `dfsctl` tree refuses every v1 command until this epic; E3's harness
-`internal/node/nodetest`; E4's client (`pkg/apiclient`) and routes, `GET /api/v1/health` among them;
-E5's sign-in, refresh, sign-out, password change, API tokens and signing-key rotation; the RFC 18
-plan's verified in-memory directory (its epics 6 and 7), for the grant by directory name and the
-domain commands.
+`internal/node/nodetest`; E4's client (`pkg/node/apiv1/client`) and routes, `GET /api/v1/health` among them;
+E5's sign-in, refresh, sign-out, password change, API tokens and signing-key rotation. The grant by
+directory name and the domain commands need no directory here: `nodetest` reaches none (its seam is
+`internal/node`'s `export_test.go`), so this epic tests their arguments and refusal, and E7's T7.6
+their success through the API.
 **Blocks:** E7, whose "§7 CLI" row runs this epic's shared suite against `dfsctl` in a child
 process; E8, whose e2e setup drives the rebuilt CLI.
 
@@ -19,7 +20,7 @@ process; E8, whose e2e setup drives the rebuilt CLI.
 ## 1. Goal
 
 `dfsctl` becomes a client of the management API and of nothing else: every command is one or more
-calls through `pkg/apiclient`, the commands no API serves are gone, and the reference is generated
+calls through `pkg/node/apiv1/client`, the commands no API serves are gone, and the reference is generated
 from the tree.
 
 **At the end of the epic:**
@@ -50,6 +51,10 @@ regenerated reference.
 
 - `login --oidc` and its device grant: a row of
   [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger) (OpenID Connect sign-in).
+- A command importing a keytab as a `Secret` version of `identity.keytab`, and a `user update` flag
+  writing a user's Kerberos name: RFC 23 §7 names neither, and the routes they would call are E4's
+  T4.9 keytab step and T4.11 `krb` link, settled with the RFC 18 plan's epic 5; a row of
+  [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger) (the keytab import command).
 - The client's transport, its version check, its idempotency key, its retry on `401` and its
   credential calls: E4's client, with the edits §9 lists.
 - The success paths of every settings-backed write (settings, adapters, remote stores,
@@ -67,7 +72,7 @@ regenerated reference.
   CLI-closure rule and the reference test.
 - **E3**, epic 3, the node: the harness `internal/node/nodetest`, a node over Badger with the API
   on `127.0.0.1:0` and an injected clock.
-- **E4**, epic 4, the management API: the routes and `pkg/apiclient`.
+- **E4**, epic 4, the management API: the routes and `pkg/node/apiv1/client`.
 - **E5**, epic 5, accounts and sign-in.
 - **E6**, this epic.
 - **E7**, epic 7, **the integration epic**: RFC 23 §12's single-node rows, "§7 CLI" among them.
@@ -153,8 +158,10 @@ this epic's part is that every command reaches the API through that client and n
   `cmdutil.Env{In io.Reader; Out, Err io.Writer; ConfigPath string; Interactive bool}`, beside the
   client builder and the lock, in `cmdutil`, because `commands` imports every noun package and a
   noun cannot import it back; each noun package exports `New(env cmdutil.Env)`. No package under
-  `cmd/dfsctl` declares a package-level variable but the build's `Version`, `Commit` and `Date`,
-  which `-ldflags` set; `cmdutil.Flags` goes. `credentials.NewStoreAt(path)` replaces the store's
+  `cmd/dfsctl` declares a package-level variable but the build's version, which `-ldflags` set:
+  lower-case `version`, `commit` and `date` in `cmd/dfsctl` (main), where the linker writes them,
+  and exported `Version`, `Commit` and `Date` in `cmd/dfsctl/commands`, which main copies them
+  into; each set is allowed only in its own directory. `cmdutil.Flags` goes. `credentials.NewStoreAt(path)` replaces the store's
   fixed path, for `ConfigPath`. `internal/cli/prompt` takes its reader from `Env.In` in place of
   `promptui`'s `os.Stdin`; with `Interactive` false a command that would prompt refuses, naming the
   `--…-file` flag to use, which also suits a later MCP subcommand. These exports cross only packages
@@ -277,11 +284,12 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   regenerated. The nouns kept move to `New(env)` in the subtask that rebuilds each. Consumed by
   every later subtask.
 - **Acceptance criteria:**
-  - No package under `cmd/dfsctl` declares a package-level variable but `Version`, `Commit` and
-    `Date`.
+  - No package under `cmd/dfsctl` declares a package-level variable but `version`, `commit` and
+    `date` in `cmd/dfsctl` and `Version`, `Commit` and `Date` in `cmd/dfsctl/commands`.
   - The removed commands appear nowhere in `cli.md`, and `cmd/gendocs`' four tests pass.
-- **Tests:** an AST walk of `cmd/dfsctl`'s files refusing any package-level `var` but the three
-  (a new one fails it, D1); a walk of `NewRoot`'s tree asserting each deleted command absent (R1);
+- **Tests:** an AST walk of `cmd/dfsctl`'s files refusing any package-level `var` but the two
+  version sets, each in its own directory (a new one fails it, and so does a version name in
+  another directory, D1); a walk of `NewRoot`'s tree asserting each deleted command absent (R1);
   E1's reference test and closure rule, unchanged (R3, R19, R2).
 
 ### T6.2 Contexts, `login`, `logout`, the refresh and the password change
@@ -295,9 +303,15 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   `tls_skip_verify: true` refused on load (D7), `ExpiresAt` gone (D4); `cmdutil`'s lock file, the
   save by rename, and the token source over the locked file (D4, D6); contexts holding a URL or the
   local socket's path, the account and `--cacert` (R5); `login` (a password from a prompt or
-  `--password-file`, or `--token-file` for an API token), `logout`, `password change`, each a
-  credential call with no idempotency key (R8, R12); the file `0600` in a `0700` directory (R6).
-  Consumed by every later subtask.
+  `--password-file`, or `--token-file` for an API token) and `password change`, each a credential
+  call with no idempotency key, and `logout`, which sends one (R8, R12); `login`'s
+  `-p`/`--password` flag deleted (D5): T6.1 deleted only `login`'s `--client-cert`, `--client-key`
+  and `--tls-skip-verify` flags, leaving `-p` to this subtask; the file `0600` in a `0700` directory (R6).
+  `internal/cli/prompt/password.go` is kept for this subtask and takes a writer, but it still runs
+  on promptui: chaining two prompts on one reader (`PasswordWithConfirmation`) loses input to
+  readline's read-ahead, and promptui races under `-race`. `login` and `password change` read the
+  password through one `bufio.Reader` per invocation, or `golang.org/x/term.ReadPassword` on a
+  terminal. Consumed by every later subtask.
 - **Acceptance criteria:**
   - Two commands refreshing one context at once both succeed and the session survives.
   - A command after the access token's expiry succeeds and leaves the file holding the new pair.
@@ -310,8 +324,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   refused (R5); the file's mode `0600` and its directory's `0700` read back, and on Windows the
   file's ACL granting only the user (R6); a stored `tls_skip_verify: true` refused naming the field
   (D7); a must-change account refused `password_change_required`, `password change`, then the
-  command succeeding (R8); `login`, `logout` and `password change` each succeeding, which the server
-  refuses `400` had a key been sent (R12).
+  command succeeding (R8); `login` and `password change` each succeeding, which the server refuses
+  `400` had a key been sent, and `logout` succeeding with one (R12).
 
 ### T6.3 Name resolution, read-modify-write, operations and the shared suite
 
@@ -339,10 +353,9 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 
 ### T6.4 Shares, export policies, grants, quotas and `share mount`
 
-**Subtask T6.4 estimate: 2 man-days.**
+**Subtask T6.4 estimate: 1.75 man-days.**
 
-- **Track:** A. **Depends on:** T6.3; E4 (shares, export policies, grants, quotas); the RFC 18
-  plan's in-memory directory.
+- **Track:** A. **Depends on:** T6.3; E4 (shares, export policies, grants, quotas).
 - **Covers:** R3, R16, R18.
 - **Deliverables:** `share create|list|get|update|delete|quiesce|resume`, `share export-policy
   get|set|update`; `grant set|remove|list` by user, group or directory name, the last through
@@ -350,10 +363,12 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   `If-None-Match: *`; `quota set|remove|list`; `share mount` (D11), its command line a pure function
   of host, port, share and options; their `clisuite` rows; `cli.md` regenerated. Consumed by E7, E8.
 - **Acceptance criteria:**
-  - A grant to `CORP\bob` runs `resolve-principal`, waits for it, and grants the ID it returned.
+  - A grant to `CORP\bob` starts `resolve-principal` with that name; with no directory wired it
+    prints the operation's failure and exits non-zero, granting nothing. Its success is E7's T7.6.
   - `share mount` with an adapter record naming port 1445 builds a command line with 1445.
 - **Tests:** the `clisuite` rows over the harness, each record read back through the API; a grant by
-  directory name against the in-memory directory, the operation and the grant read back (R16); a
+  directory name sending `resolve-principal` with the name, and, with no directory wired, printing
+  its failure, exiting non-zero and leaving no grant (R16); a
   first grant created through `If-None-Match: *` and a second refused `412`; the mount line from an
   adapter record the test writes through the store (R18), the line itself a table test per platform;
   the reference matching (R3).
@@ -381,10 +396,10 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 
 ### T6.6 Stores, namespaces, adapters, settings, nodes, the audit, the domain and `status`
 
-**Subtask T6.6 estimate: 2.25 man-days.**
+**Subtask T6.6 estimate: 2 man-days.**
 
 - **Track:** A. **Depends on:** T6.3; E4 (stores, namespaces, secrets, adapters, settings, nodes, the
-  audit, the domain's routes, `GET /api/v1/health`); the RFC 18 plan's in-memory directory.
+  audit, the domain's routes, `GET /api/v1/health`).
 - **Covers:** R3, R17.
 - **Deliverables:** `store create|list|get|update|delete|set-credential` (the credential from a
   prompt or a file); `namespace create|list|get|delete`; `adapter list|get|set`;
@@ -399,8 +414,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 - **Tests:** the `clisuite` rows over the harness; one table over the settings-backed writes, each
   printing the problem's code and detail and exiting non-zero (D9); `setting get` of a record the
   test writes through the store, at two scopes (R17); `audit list --actor` after a share create;
-  `domain resolve` and `domain test` against the in-memory directory, and `join` refused while the
-  directory is not wired; `status` naming the harness's readiness; `node list` naming the harness's
+  `domain resolve`, `domain test` and `join` sending their arguments and, with no directory wired,
+  printing the refusal and exiting non-zero (their success is E7's T7.6); `status` naming the harness's readiness; `node list` naming the harness's
   node; the reference matching (R3).
 
 ## 7. Order of work
@@ -425,8 +440,8 @@ suite, whose child-safe rows E7 runs.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T6.1, T6.2, T6.3 | 6 | — | the root, sign-in and the machinery every command builds on |
-| 2 | T6.4, T6.5 | 3.75 | PR 1 | shares and principals, the commands E7's rows use most |
-| 3 | T6.6 | 2.25 | PR 1 | the settings-backed resources, the domain and `status` |
+| 2 | T6.4, T6.5 | 3.5 | PR 1 | shares and principals, the commands E7's rows use most |
+| 3 | T6.6 | 2 | PR 1 | the settings-backed resources, the domain and `status` |
 
 A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can be open at once.
 
@@ -434,8 +449,8 @@ A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can
 
 - **E4's client needs three edits** (#4337), which this document is written against:
   `WithTokenSource` and the retry on `401` replaying body and key, `Wait` included (D6);
-  `SignIn`, `Refresh`, `SignOut` and `ChangePassword`, credential calls sent with no idempotency key
-  and never retried by the transport, since a retried refresh revokes the session; a `CallOption` on
+  `SignIn`, `Refresh`, `SignOut` and `ChangePassword`, never retried by the transport and sent with
+  no idempotency key but `SignOut`, which carries one, since a retried refresh revokes the session; a `CallOption` on
   `Create` sending no key, for `token create`, and the same on `Action` for `:set-password`.
   Recommended: E4 adds the first and third, E5 the credential calls beside its routes.
 - **Ledger rows proposed** for the commands D7 deletes with no RFC 23 route: uploads draining and GC

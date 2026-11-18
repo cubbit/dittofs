@@ -3,6 +3,7 @@ package resources
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -374,5 +375,228 @@ func TestGetAndReleaseAllocateNothing(t *testing.T) {
 		if allocs != 0 {
 			t.Errorf("class %d: a Get and Release allocate %v times, want 0", class, allocs)
 		}
+	}
+}
+
+// TryGet takes Get's charge when it fits with no waiter ahead, and refuses at
+// once, charging nothing, a charge past what is left or one behind a waiter;
+// Ceiling reads the budget's ceiling.
+func TestTryGetTakesOnlyWhatFitsWithNoWaiter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const ceiling = 100 * kib
+		budget := NewWaitBudget("reply", ceiling)
+		p := NewBufPool(budget)
+		if got := p.Ceiling(); got != ceiling {
+			t.Fatalf("Ceiling() = %d, want the budget's %d", got, ceiling)
+		}
+		const n = 4*kib + 1
+		got := mustGet(t, p, n)
+		charge := budget.Reserved()
+		got.Release()
+
+		b, ok := p.TryGet(client, n)
+		if !ok || len(b.B) != n || budget.Reserved() != charge {
+			t.Fatalf("TryGet(%d) on an empty budget: ok %v, %d reserved; want a buffer of %d bytes charged %d as Get charges it",
+				n, ok, budget.Reserved(), n, charge)
+		}
+		// 76 KiB of 100 are reserved: a second directory-class charge does not fit.
+		if _, ok := p.TryGet(client, n); ok || budget.Reserved() != charge {
+			t.Errorf("TryGet past what is left: ok %v, %d reserved; want a refusal and %d", ok, budget.Reserved(), charge)
+		}
+		// 24 KiB are left, and a small charge of 12 KiB fits, but not behind
+		// a waiter.
+		w := startWaiting(t, t.Context(), budget, 76*kib)
+		if _, ok := p.TryGet(client, 3); ok || budget.Reserved() != charge {
+			t.Errorf("TryGet behind a waiter: ok %v, %d reserved; want a refusal and %d", ok, budget.Reserved(), charge)
+		}
+		b.Release()
+		synctest.Wait()
+		if !w.returned() || budget.Reserved() != 76*kib {
+			t.Fatalf("after the release the waiter returned %v with %d reserved; want it granted at %d", w.returned(), budget.Reserved(), 76*kib)
+		}
+		w.res.Release()
+		if _, ok := p.TryGet(client, -1); ok || budget.Reserved() != 0 {
+			t.Errorf("TryGet(-1): ok %v with %d reserved, want a refusal and 0", ok, budget.Reserved())
+		}
+	})
+}
+
+// A refused TryGet allocates nothing: it builds no error.
+func TestTryGetRefusalAllocatesNothing(t *testing.T) {
+	if prof.RaceEnabled {
+		t.Skip("the race detector changes allocation counts")
+	}
+	p := NewBufPool(NewWaitBudget("reply", 12*kib))
+	held := mustGet(t, p, 3)
+	defer held.Release()
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, ok := p.TryGet(client, 3); ok {
+			t.Fatal("TryGet on a full budget took a buffer")
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("a refused TryGet allocates %v times, want 0", allocs)
+	}
+}
+
+// A Recharge that fits moves the buffer's whole charge, class and overhead,
+// from the receive budget to the hold budget, where the last Release returns
+// it; one that does not fit returns an error and leaves both budgets as they
+// were.
+func TestRechargeMovesTheWholeCharge(t *testing.T) {
+	const n, charge = 4*kib + 1, 76 * kib
+	for _, c := range []struct {
+		name                     string
+		hold                     int64
+		fits                     bool
+		wantReceive, wantHolding int64
+	}{
+		{"fits", charge, true, 0, charge},
+		{"refused", charge - 1, false, charge, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			receive, hold := NewWaitBudget("receive", mib), NewBudget("hold", c.hold)
+			b := mustGet(t, NewBufPool(receive), n)
+			err := b.Recharge(hold)
+			if (err == nil) != c.fits {
+				t.Fatalf("Recharge into a hold budget of %d = %v, want fits %v", c.hold, err, c.fits)
+			}
+			if receive.Reserved() != c.wantReceive || hold.Reserved() != c.wantHolding || b.Charge() != charge {
+				t.Errorf("after Recharge: receive %d, hold %d, Charge %d; want %d, %d, %d",
+					receive.Reserved(), hold.Reserved(), b.Charge(), c.wantReceive, c.wantHolding, charge)
+			}
+			b.Release()
+			if receive.Reserved() != 0 || hold.Reserved() != 0 {
+				t.Errorf("after the last Release: receive %d, hold %d; want 0 and 0", receive.Reserved(), hold.Reserved())
+			}
+		})
+	}
+}
+
+// Recharge reserves from the new budget before it releases the old: refused
+// by a full hold budget, it never lets the receive charge go, so a waiter
+// queued behind it on the receive budget is not granted.
+func TestRechargeReservesBeforeItReleases(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const charge = 12 * kib
+		receive, hold := NewWaitBudget("receive", charge), NewBudget("hold", charge)
+		b := mustGet(t, NewBufPool(receive), 3)
+		full, err := hold.Reserve(charge)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := startWaiting(t, t.Context(), receive, charge)
+		if err := b.Recharge(hold); err == nil {
+			t.Fatal("Recharge into a full hold budget succeeded")
+		}
+		synctest.Wait()
+		if w.returned() || receive.Reserved() != charge || b.Charge() != charge {
+			t.Fatalf("after the refused Recharge: the receive waiter returned %v, receive %d, Charge %d; want it waiting, %d and %d",
+				w.returned(), receive.Reserved(), b.Charge(), charge, charge)
+		}
+		b.Release()
+		synctest.Wait()
+		w.res.Release()
+		full.Release()
+		if receive.Reserved() != 0 || hold.Reserved() != 0 {
+			t.Errorf("at the end: receive %d, hold %d; want 0 and 0", receive.Reserved(), hold.Reserved())
+		}
+	})
+}
+
+// Charge is what Get reserves for a buffer of n bytes: its class's capacity
+// and the overhead, or n and the overhead past the largest class.
+func TestChargeIsWhatGetReserves(t *testing.T) {
+	for _, n := range []int{0, 4 << 10, 1 << 20, 9 << 20} {
+		b := NewWaitBudget("t", 1<<30)
+		p := NewBufPool(b)
+		buf, err := p.Get(context.Background(), netip.Addr{}, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := p.Charge(n), b.Reserved(); got != want {
+			t.Errorf("Charge(%d) = %d, Get reserved %d", n, got, want)
+		}
+		buf.Release()
+	}
+}
+
+// Join takes over its members' reservations: the budget reads the same
+// through the join and through each member's release, the record's charge
+// is theirs summed, and its last Release returns them all. It reserves
+// nothing, so it joins on a budget held full.
+func TestJoinTakesOverItsMembersCharges(t *testing.T) {
+	small := NewBufPool(NewWaitBudget("probe", 1<<30)).Charge(0)
+	b := NewWaitBudget("reply", 3*small)
+	p := NewBufPool(b)
+	key := netip.MustParseAddr("192.0.2.1")
+	x, okx := p.TryGet(key, 10)
+	y, oky := p.TryGet(key, 20)
+	full, okf := p.TryGet(key, 0)
+	if !okx || !oky || !okf {
+		t.Fatal("three small buffers do not fit a budget of three")
+	}
+	x.B = append(x.B[:0], "0123456789"...)
+	y.B = append(y.B[:0], "abcdefghijklmnopqrst"...)
+	rec := Join(30, x, y)
+	if got := b.Reserved(); got != 3*small {
+		t.Errorf("after the join the budget reads %d, want the %d it held", got, 3*small)
+	}
+	if rec.Charge() != 2*small || x.Charge() != 0 || y.Charge() != 0 {
+		t.Errorf("the record is charged %d and its members %d and %d, want %d and none", rec.Charge(), x.Charge(), y.Charge(), 2*small)
+	}
+	rec.B = append(rec.B, x.B...)
+	x.Release()
+	rec.B = append(rec.B, y.B...)
+	y.Release()
+	if got := b.Reserved(); got != 3*small {
+		t.Errorf("with the members released the budget reads %d, want %d", got, 3*small)
+	}
+	if string(rec.B) != "0123456789abcdefghijklmnopqrst" {
+		t.Errorf("the record holds %q", rec.B)
+	}
+	rec.Release()
+	if got := b.Reserved(); got != small {
+		t.Errorf("with the record released the budget reads %d, want the one buffer still held, %d", got, small)
+	}
+	full.Release()
+}
+
+// A Join of one buffer returns it unchanged, and one with room equal to its
+// members' charges is taken; one past its members' charges, one buffer's
+// included, or over two budgets or two keys, panics.
+func TestJoinOfOneAndItsRefusals(t *testing.T) {
+	p := NewBufPool(NewWaitBudget("reply", 1<<30))
+	q := NewBufPool(NewWaitBudget("other", 1<<30))
+	a, b := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")
+	one, _ := p.TryGet(a, 0)
+	if Join(10, one) != one || one.Charge() != p.Charge(0) {
+		t.Error("a Join of one buffer changed it")
+	}
+	one.Release()
+	x, _ := p.TryGet(a, 0)
+	y, _ := p.TryGet(a, 0)
+	Join(int(2*p.Charge(0)), x, y).Release()
+	x.Release()
+	y.Release()
+	for _, c := range []struct {
+		name string
+		n    int
+		bufs func() []*Buf
+	}{
+		{"room past the charges", int(2*p.Charge(0)) + 1, func() []*Buf { x, _ := p.TryGet(a, 0); y, _ := p.TryGet(a, 0); return []*Buf{x, y} }},
+		{"room past one buffer's charge", int(p.Charge(0)) + 1, func() []*Buf { x, _ := p.TryGet(a, 0); return []*Buf{x} }},
+		{"two budgets", 1, func() []*Buf { x, _ := p.TryGet(a, 0); y, _ := q.TryGet(a, 0); return []*Buf{x, y} }},
+		{"two keys", 1, func() []*Buf { x, _ := p.TryGet(a, 0); y, _ := p.TryGet(b, 0); return []*Buf{x, y} }},
+	} {
+		bufs := c.bufs()
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: Join did not panic", c.name)
+				}
+			}()
+			Join(c.n, bufs...)
+		}()
 	}
 }

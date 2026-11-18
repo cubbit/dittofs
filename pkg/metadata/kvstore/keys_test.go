@@ -3,7 +3,9 @@ package kvstore
 import (
 	"bytes"
 	"encoding/hex"
+	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
@@ -11,6 +13,22 @@ import (
 
 func TestKeyGolden(t *testing.T) {
 	p, g, s := "aa000000000000000000000000000001", "bb000000000000000000000000000002", "cc000000000000000000000000000003"
+	h := "0000000000000000000000000000000000000000000000000000000000000001"
+	hash, alice := [32]byte{31: 1}, entity.Principal{Kind: entity.PrincipalUser, ID: pid}
+	// A source is keyed masked: the host bits of each prefix below are set.
+	v4, v6 := netip.MustParsePrefix("10.1.2.3/24"), netip.MustParsePrefix("2001:db8:0:1:ffff::1/64")
+	epoch := entity.SignInFailures{Last: time.Unix(0, 0), Failed: time.Unix(0, 0)}
+	// sf is k's count key, or with an f, the XP row of a count holding it.
+	sf := func(k entity.SignInKey, f ...entity.SignInFailures) []byte {
+		tag, tail, err := signInTail(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(f) > 0 {
+			return signInExpiryKey(tag, tail, f[0])
+		}
+		return signInKey(tag, tail)
+	}
 	for _, c := range []struct {
 		name string
 		key  []byte
@@ -29,14 +47,49 @@ func TestKeyGolden(t *testing.T) {
 		{"share info", shareKey(sid, keys.SInfo), "02" + s + "01"},
 		{"grant", grantKey(sid, gid), "02" + s + "04" + g},
 		{"grant rev", grantRevKey(gid, sid), "24" + g + s},
+		{"grant-list version", shareKey(sid, keys.SGv), "02" + s + "1e"},
 		{"setting, installation", settingKey(entity.SettingScope{Kind: entity.ScopeInstallation}, "k"), "3201" + "6b0001"},
 		{"setting, share", settingKey(entity.SettingScope{Kind: entity.ScopeShare, ID: sid}, "k"), "3205" + s + "6b0001"},
 		{"share list", shareListKey, "28"},
 		{"installation", installationKey, "29"},
 		{"settings generation", cfgGenKey, "33"},
+		{"principals generation", pgenKey, "3b"},
 		{"journal", journalKey(gid), "2e" + g},
 		{"journal index", journalIndexKey(entity.NodeID(pid), "/j"), "48" + p + "2f6a0001"},
 		{"removal step", shardRemovalKey(7), "2d" + "0000000000000007" + "04"},
+		{"enabled admin", adminKey(pid), "4a" + p},
+		{"audit", auditKey(time.Unix(0, 1), [16]byte(gid)), "45" + "0000000000000001" + g},
+		{"audit by actor", auditActorPrefix(group), "4601" + g},
+		{"audit by target", auditTargetPrefix(entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{0}}), "4602" + "05" + "00ff0001"},
+		{"audit by node", auditNodePrefix(entity.NodeID(sid)), "4603" + s},
+		{"node", nodeKey(entity.NodeID(pid)), "2c" + p},
+		{"node status", nodeStatusKey(entity.NodeID(pid)), "2c" + p + "03"},
+		{"operation", operationKey(entity.OperationID(gid)), "3c" + g},
+		{"running operation", runningKey("k", entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{0}}), "3d" + "6b0001" + "05" + "00ff0001"},
+		{"operation expiry", operationExpiryKey(entity.Operation{ID: entity.OperationID(gid), Updated: time.Unix(0, 2)}),
+			"3f" + "0002260ff9290002" + "02" + g}, // 7 days after its end
+		{"idempotency", idempotencyKey(group, "k"), "3e" + g + "6b0001"},
+		{"idempotency expiry", idempotencyExpiryKey(entity.IdempotencyRecord{Account: group, Key: "k", Expires: time.Unix(0, 2)}),
+			"3f" + "0000000000000002" + "01" + g + "6b0001"},
+		{"namespace", namespaceInfoKey(entity.NamespaceID(gid)), "17" + g + "0a"},
+		{"namespace share", namespaceShareKey(entity.NamespaceID(gid), sid), "17" + g + "0b" + s},
+		{"store index", storeIndexKey([16]byte(pid), entity.NamespaceID(gid)), "4b" + p + g},
+		{"session", sessionKey(pid), "40" + p},
+		{"session's refresh hash", sessionHashKey(pid, hash), "40" + p + "01" + h},
+		{"refresh hash", refreshKey(hash), "41" + h},
+		{"account's session", accountSessionKey(alice, sid), "4c" + p + s},
+		{"session expiry", sessionExpiryKey(entity.Session{ID: sid, Expires: time.Unix(0, 2)}), "3f" + "0000000000000002" + "03" + s},
+		{"token", tokenKey(pid), "42" + p},
+		{"token hash", tokenHashKey(hash), "43" + h},
+		{"account's token", accountTokenKey(alice, sid), "44" + p + s},
+		{"token expiry", tokenExpiryKey(entity.APIToken{ID: sid, Expires: time.Unix(0, 2)}), "3f" + "0000000000000002" + "05" + s},
+		{"account's sign-in count", sf(entity.SignInKey{Account: alice}), "4901" + p},
+		{"source's sign-in count", sf(entity.SignInKey{Source: v4}), "4902" + "0a010200" + "18"},
+		{"IPv4-mapped source's sign-in count", sf(entity.SignInKey{Source: netip.MustParsePrefix("::ffff:10.1.2.3/120")}), "4902" + "0a010200" + "18"},
+		{"IPv6 source's sign-in count", sf(entity.SignInKey{Source: v6}), "4902" + "20010db8000000010000000000000000" + "40"},
+		{"pair's sign-in count", sf(entity.SignInKey{Account: alice, Source: v4}), "4903" + p + "0a010200" + "18"},
+		{"source's count expiry", sf(entity.SignInKey{Source: v4}, epoch), "3f" + "000000d18c2e2800" + "04" + "0a010200" + "18"},
+		{"pair's count expiry", sf(entity.SignInKey{Account: alice, Source: v4}, epoch), "3f" + "00004e94914f0000" + "06" + p + "0a010200" + "18"},
 	} {
 		if got := hex.EncodeToString(c.key); got != c.want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)

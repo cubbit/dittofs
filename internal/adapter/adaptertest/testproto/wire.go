@@ -9,12 +9,17 @@
 // Every integer is big-endian.
 //
 // A record is a 4-byte length and a body of that many bytes, at most 1 MiB.
+// The length's 31 low bits are the body's size, and its top bit set means the
+// body is one fragment of a record, followed by more such marks until one with
+// the bit clear ends it: every body may come in fragments, at most four of
+// them, and this protocol's own records never use the bit, writing every
+// record as one fragment with the bit clear.
 // The body is one or more messages. A message is a 40-byte header and its
 // arguments, which run to the next message or to the body's end:
 //
 //	offset  size  field
 //	0       4     next: the next message's offset in the body, 0 for the last
-//	4       1     flags: 1 related, 2 pend, 4 reply, 8 interim
+//	4       1     flags: 1 related, 2 pend, 4 reply, 8 interim, 16 clear, 32 signed
 //	5       1     version: 1 or 2
 //	6       2     credits: charged by a request, granted by a reply
 //	8       4     operation
@@ -33,13 +38,16 @@
 // parked request carry its message ID with the top bit set. A reply never
 // carries an all-ones session: it carries the one its request resolved to.
 //
-// Under a session s other than 0, a message is sealed. Its arguments are
+// Under a session s other than 0, a message is sealed, unless it is flagged
+// clear, as a client that skips the seal sends it, or a reply is flagged
+// signed, as a refusal whose seal failed is answered. Its arguments are
 // XORed with the session's key, byte i of them with byte i mod 4 of s times
 // 0x01000193, big-endian. Its checksum is then the sum of its bytes as sent,
 // header and arguments, with the checksum field read as zero, plus s times
-// 0x01000193, modulo 2^32. A member whose session field is all ones is sealed
-// under the session it inherits. Under session 0 nothing is XORed and the
-// field is 0.
+// 0x01000193, modulo 2^32. A signed reply's arguments are not XORed; its
+// checksum is the same sum. A member whose session field is all ones is
+// sealed under the session it inherits. Under session 0, and on a message
+// flagged clear, nothing is XORed and the field is 0.
 //
 // The arguments, by operation:
 //
@@ -49,10 +57,12 @@
 //	Create    the name
 //	Park      the name
 //	Notify    target (8 bytes), the message ID of the request it names
-//	Compound  count (4 bytes), then per member: operation (4), length (4), arguments
+//	Compound  count (4 bytes), tag length (4), the tag, then per member: operation (4), length (4), arguments
 //
 // Every other operation has none. A Cancel names its target by carrying the
-// target's message ID as its own. A reply's arguments are its body.
+// target's message ID as its own. A reply's arguments are its body; a
+// compound's reply body is its status (4 bytes), its tag's length (4), the tag and its count of results (4),
+// then per result: operation (4), status (4), length (4), body.
 package testproto
 
 import (
@@ -65,9 +75,11 @@ import (
 )
 
 const (
-	lengthLen = 4       // the record's length prefix
-	headerLen = 40      // a message's header
-	maxBody   = 1 << 20 // the cap on a record's body
+	lengthLen     = 4       // the record's length prefix
+	moreFragments = 1 << 31 // the length prefix's flag: set, more fragments follow
+	maxFragments  = 4       // the most fragments one record comes in
+	headerLen     = 40      // a message's header
+	maxBody       = 1 << 20 // the cap on a record's body
 
 	inherited = 1<<32 - 1 // the session field of a member that takes the one before's
 	sumKey    = 0x01000193
@@ -79,6 +91,8 @@ const (
 	flagPend
 	flagReply
 	flagInterim
+	flagClear  // a request sent neither sealed nor checksummed under its session
+	flagSigned // a reply checksummed under its session and its arguments left clear
 )
 
 // The header's field offsets.
@@ -113,6 +127,10 @@ const (
 	OpCompound                    // version 1: the compound row, its members Msg.Members
 )
 
+// ErrFragmentedReply is a reply whose record mark says more fragments follow:
+// this protocol never sends one.
+var ErrFragmentedReply = errors.New("testproto: a reply in fragments")
+
 var (
 	errChecksum = errors.New("testproto: a message whose checksum does not match")
 	errTooLong  = errors.New("testproto: a record past the 1 MiB cap")
@@ -120,23 +138,40 @@ var (
 	errNext     = errors.New("testproto: a next offset that points backwards or past the record")
 )
 
-// framer finds a record's length from its 4-byte prefix.
+// framer finds a fragment's length from its 4-byte prefix, its top bit saying
+// whether more fragments follow.
 type framer struct{}
 
 func (framer) HeaderLen() int { return lengthLen }
 
-// BodyLen refuses a length past the cap, so nothing is reserved for it.
-func (framer) BodyLen(hdr []byte) (int, error) {
-	if len(hdr) < lengthLen {
-		return 0, errShort
-	}
-	n := binary.BigEndian.Uint32(hdr)
-	if n > maxBody {
-		return 0, fmt.Errorf("%w: %d bytes", errTooLong, n)
-	}
-
-	return int(n), nil
+// Frame appends the 4-byte length of a record whose body is body bytes, its
+// fragment flag clear: this protocol writes one fragment per record.
+func (framer) Frame(dst []byte, body int) []byte {
+	return binary.BigEndian.AppendUint32(dst, uint32(body))
 }
+
+// BodyLen reads a fragment's length and whether it ends the record. The prefix's
+// top bit set means more fragments follow.
+//
+// decision: the prefix's flag is inverted from RFC 5531 section 11's record
+// mark, which sets its top bit on the last fragment; this protocol's vectors are
+// written with the bits clear, so every one of them still ends with its first
+// header. Overturned if the test protocol ever needs to match the mark byte for
+// byte.
+func (framer) BodyLen(hdr []byte) (int, bool, error) {
+	if len(hdr) < lengthLen {
+		return 0, false, errShort
+	}
+	m := binary.BigEndian.Uint32(hdr)
+	n, last := int(m&^moreFragments), m&moreFragments == 0
+	if n > maxBody {
+		return 0, false, fmt.Errorf("%w: %d bytes", errTooLong, n)
+	}
+	return n, last, nil
+}
+
+// MaxRecord is the record cap and the most fragments a record comes in.
+func (framer) MaxRecord() (int, int) { return maxBody, maxFragments }
 
 // header is one message's header, read in place.
 //
@@ -145,6 +180,44 @@ func (framer) BodyLen(hdr []byte) (int, error) {
 // is retained, which core does for a request's life. Withdraw it, and copy the
 // fields out, if core ever releases a record before its request ends.
 type header [headerLen]byte
+
+// stepless is a header refused for its own next step: its Next is one the
+// chain's walk refuses, so the chain ends there (RFC 20 §4.7).
+type stepless struct{ *header }
+
+func (stepless) Next() int { return -1 }
+
+// tagged is a compound request's header once Unwrap has read the tag from
+// its arguments, clear by then: Encode echoes it in the head of a refusal
+// answered with its status alone, and ReplyLen counts it.
+type tagged struct {
+	*header
+	tag []byte
+}
+
+// plain is h as the header in its record: a request's own, or a compound's
+// under its tag.
+func plain(h core.Header) (*header, bool) {
+	switch h := h.(type) {
+	case *header:
+		return h, true
+	case *tagged:
+		return h.header, true
+	case stepless:
+		return h.header, true
+	}
+
+	return nil, false
+}
+
+// tagOf is a compound request's tag, as Unwrap read it, or none.
+func tagOf(h core.Header) []byte {
+	if t, ok := h.(*tagged); ok {
+		return t.tag
+	}
+
+	return nil
+}
 
 func (h *header) Op() uint32            { return binary.BigEndian.Uint32(h[offOp:]) }
 func (h *header) Version() core.Version { return core.Version(h[offVersion]) }
@@ -167,14 +240,15 @@ func (h *header) checksum() uint32 { return binary.BigEndian.Uint32(h[offChecksu
 type final struct{ header }
 
 // headerAt is the header at off in body, checked to lie inside it with a next
-// that is 0 or leaves room for a whole header after this one.
+// that is 0 or leaves room for a whole header after this one; a bad next
+// comes back with the header.
 func headerAt(body []byte, off int) (*header, error) {
 	if off < 0 || off > len(body)-headerLen {
 		return nil, errShort
 	}
 	h := (*header)(body[off : off+headerLen])
 	if next := h.Next(); next != 0 && (next < off+headerLen || next > len(body)-headerLen) {
-		return nil, errNext
+		return h, errNext
 	}
 
 	return h, nil
@@ -221,9 +295,14 @@ func xorKey(b []byte, session uint32) {
 // counting, as Bare does.
 type headerCodec struct{ flow *flow }
 
-// Decode returns the header at off in the record.
+// Decode returns the header at off in the record. A header whose fields
+// decoded and whose next is bad comes back with its error, so its refusal
+// can be addressed; one that runs past the record, with none.
 func (headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
 	h, err := headerAt(rec.B, off)
+	if errors.Is(err, errNext) {
+		return stepless{h}, err
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +311,8 @@ func (headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
 }
 
 // Encode appends to out the header of the reply to h with status s: h's
-// operation, version, IDs and sequence, the reply flag, and a grant of the
+// operation, version, IDs and sequence, the reply flag and h's signed flag,
+// which Unwrap's verdict set, and a grant of the
 // credits h charged, at least one, so a client that charges nothing still
 // earns credit; a header from HoldCodec.Final grants exactly what it carries.
 // The grant stops at the connection's credit target. Its checksum is left
@@ -254,12 +334,44 @@ func (c headerCodec) Encode(h core.Header, s core.Status, out *resources.Buf) er
 	if c.flow != nil {
 		grant = c.flow.grant(grant)
 	}
-	rep[offFlags] = flagReply
+	rep[offFlags] = flagReply | req.flags()&flagSigned
 	binary.BigEndian.PutUint16(rep[offCredits:], grant)
 	binary.BigEndian.PutUint32(rep[offStatus:], uint32(s))
 	binary.BigEndian.PutUint32(rep[offChecksum:], 0)
+	if req.Op() == OpCompound && s != 0 {
+		// A compound answered a status alone carries its head, with the tag
+		// Unwrap read and no results.
+		out.B = appendHead(out.B, s, tagOf(h), 0)
+	}
 
 	return nil
+}
+
+// Args is the arguments of the message h in rec: from after its header to
+// the next message or the body's end; nil for a header not in rec.
+func (headerCodec) Args(rec *resources.Buf, h core.Header) []byte {
+	hd, ok := plain(h)
+	if !ok {
+		return nil
+	}
+	off, ok := offsetOf(rec.B, hd)
+	if !ok {
+		return nil
+	}
+
+	return arguments(rec.B, off, hd)
+}
+
+// ReplyLen is the most Encode writes for h: a reply header's 40 bytes, since a
+// status alone has no body, Chain pads nothing and Wrap adds nothing; and, for
+// a compound, its head and the status-alone result of a member that did not
+// decode, which its runner writes.
+func (headerCodec) ReplyLen(h core.Header) int {
+	if h.Op() == OpCompound {
+		return headerLen + 12 + len(tagOf(h)) + resultHead
+	}
+
+	return headerLen
 }
 
 // Chain points the reply at prev in out to the one appended after it, which

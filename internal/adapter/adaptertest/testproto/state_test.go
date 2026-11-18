@@ -1,6 +1,7 @@
 package testproto
 
 import (
+	"bytes"
 	"errors"
 	"go/ast"
 	"go/parser"
@@ -271,7 +272,7 @@ func TestARefusedParkMakesNoCall(t *testing.T) {
 // the members' rows then walk each member, and refuse one past the record.
 func TestTheCompoundRowAndItsMembers(t *testing.T) {
 	p := New(adapter.Deps{})
-	args := Append(nil, Msg{Op: OpCompound, Version: 1, Members: []Msg{
+	args := Append(nil, Msg{Op: OpCompound, Version: 1, Tag: []byte{0x5e, 0xed}, Members: []Msg{
 		{Op: OpPutFH, Handle: vfs.Handle("fh")},
 		{Op: OpEcho, Role: core.RoleFlush, Payload: []byte("pay")},
 		{Op: OpPanic},
@@ -282,11 +283,15 @@ func TestTheCompoundRowAndItsMembers(t *testing.T) {
 		t.Errorf("the compound row is served in %v, want version 1 alone", c.Versions)
 	}
 	inv, n, err := c.Decode(args, 1)
-	if err != nil || n != 4 || inv.Count != 3 {
-		t.Fatalf("the compound's Decode took %d bytes with a count of %d, %v; want 4 and 3", n, inv.Count, err)
+	if err != nil || n != 10 || inv.Count != 3 {
+		t.Fatalf("the compound's Decode took %d bytes with a count of %d, %v; want 10 and 3", n, inv.Count, err)
 	}
-	if inv.Bound == nil || inv.Resolve == nil || inv.Call == nil || inv.Encode == nil {
+	if inv.Bound == nil || inv.Resolve == nil || inv.Call == nil || inv.Encode == nil || inv.EncodeHead == nil {
 		t.Fatal("the compound's invocation has a nil step")
+	}
+	var head resources.Buf
+	if err := inv.EncodeHead(&head, 5, 2, 1); err != nil || !bytes.Equal(head.B, []byte{0, 0, 0, 5, 0, 0, 0, 2, 0x5e, 0xed, 0, 0, 0, 2}) {
+		t.Errorf("the compound's head is %x, %v; want its status, the tag it decoded with its length, and its count", head.B, err)
 	}
 
 	members := map[uint32]*core.Op{}
@@ -310,7 +315,9 @@ func TestTheCompoundRowAndItsMembers(t *testing.T) {
 				t.Errorf("the PutFH member's handle is %q", h)
 			}
 		case OpEcho:
-			if m.Role(nil) != core.RoleFlush || m.Bound() != 3 {
+			// A member's bound is its payload's 3 bytes, with its result head
+			// and its body's length, which its reply in the compound carries.
+			if m.Role(nil) != core.RoleFlush || m.Bound() != 3+resultHead {
 				t.Errorf("the Echo member's role is %d and its bound %d", m.Role(nil), m.Bound())
 			}
 		}
@@ -346,7 +353,6 @@ var exempt = map[string]string{
 	"Server":     "the adapter NewServer returns",
 	"Listener":   "handed to NewServer by whoever builds the adapter",
 	"Errors":     "read by a real protocol's totality test",
-	"ErrorTable": "built with NewErrorTable; the type is named by core alone",
 	"Call":       "a middleware's type; the pipeline builds the chain",
 	"Middleware": "the pipeline's",
 	"Handler":    "named through Bind's type parameters, never written out",

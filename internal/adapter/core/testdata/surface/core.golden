@@ -81,7 +81,12 @@ type FlowControl interface {
 
 type Framer interface {
 	HeaderLen() int
-	BodyLen(hdr []byte) (int, error)
+
+	BodyLen(hdr []byte) (n int, last bool, err error)
+
+	MaxRecord() (bytes, fragments int)
+
+	Frame(dst []byte, body int) []byte
 }
 
 type Handler[Req, Rep any] func(ctx context.Context, r *Request, req *Req) (*Rep, error)
@@ -95,8 +100,11 @@ type Header interface {
 
 type HeaderCodec interface {
 	Decode(rec *resources.Buf, off int) (Header, error)
+
 	Encode(h Header, s Status, out *resources.Buf) error
 	Chain(out *resources.Buf, prev int) error
+	Args(rec *resources.Buf, h Header) []byte
+	ReplyLen(h Header) int
 }
 
 type HoldCodec interface {
@@ -120,6 +128,8 @@ type Invocation struct {
 	Handle func() (vfs.Handle, bool)
 
 	Count int
+
+	EncodeHead func(out *resources.Buf, s Status, n int, v Version) error
 
 	Role func(r *Request) Role
 }
@@ -146,6 +156,8 @@ type Op struct {
 	Decode    func(body []byte, v Version) (inv Invocation, n int, err error)
 
 	Members *OpTable
+
+	MaxMembers int
 }
 
 type OpTable struct {
@@ -153,7 +165,11 @@ type OpTable struct {
 	Errors *ErrorTable
 	Holds  bool
 
+	Protocol string
+
 	ReadOp func(b []byte) (op uint32, n int, err error)
+
+	EncodeResult func(out *resources.Buf, op uint32, s Status, v Version) error
 }
 
 type Protocol interface {
@@ -194,12 +210,14 @@ type Server struct{}
 type Stages struct {
 	Header     HeaderCodec
 	Router     Router
+	Errors     *ErrorTable
 	Security   Security
 	Flow       FlowControl
 	Replay     ReplayCache
 	Hold       HoldCodec
 	MaxPending int
 	OnClose    func(ctx context.Context)
+	Protocol   string
 }
 
 type Status uint32
@@ -214,11 +232,13 @@ var (
 	ErrNoTree         = errors.New("core: no tree")
 	ErrNoFH           = errors.New("core: no current filehandle")
 	ErrTooLong        = errors.New("core: compound past its cap")
+	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool")
 	ErrExpired        = errors.New("core: credential expired")
 	ErrNotLast        = errors.New("core: not the last member of a chain")
 	ErrTooManyPending = errors.New("core: too many pending requests")
-	ErrDecode         = errors.New("core: cannot decode")
-	ErrCancelled      = errors.New("core: cancelled by its client")
+
+	ErrDecode    = errors.New("core: cannot decode")
+	ErrCancelled = errors.New("core: cancelled by its client")
 
 	ErrMoved    = errors.New("core: moved")
 	ErrDraining = errors.New("core: draining")

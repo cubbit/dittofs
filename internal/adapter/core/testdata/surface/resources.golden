@@ -2,6 +2,10 @@ func (b *Budget) Reserve(n int64) (Reservation, error)
 
 func (b *Budget) Reserved() int64
 
+func (b *Buf) Charge() int64
+
+func (b *Buf) Recharge(to *Budget) error
+
 func (b *Buf) Release()
 
 func (b *Buf) Retain() *Buf
@@ -10,9 +14,17 @@ func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Rese
 
 func (b *WaitBudget) Reserved() int64
 
+func (p *BufPool) Ceiling() int64
+
+func (p *BufPool) Charge(n int) int64
+
 func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error)
 
+func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)
+
 func (r *Reservation) Release()
+
+func Join(n int, bufs ...*Buf) *Buf
 
 func NewBudget(name string, ceiling int64) *Budget
 
@@ -40,4 +52,6 @@ type Reservation struct {
 
 type WaitBudget struct {
 }
+
+var ErrTooLarge = errors.New("resources: charge past the ceiling")
 

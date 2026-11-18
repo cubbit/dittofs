@@ -7,7 +7,7 @@ import (
 )
 
 // ProviderKind identifies which machine-credential provider backs a running
-// NETLOGON authenticator, as reported by `dfsctl netlogon status`.
+// NETLOGON authenticator, as reported in its Status.
 type ProviderKind string
 
 const (
@@ -28,8 +28,8 @@ const (
 var ErrRotateNotOnlineJoin = errors.New("netlogon: machine-password rotation is only supported for the online-join provider")
 
 // Status is a point-in-time snapshot of the NETLOGON machine-account and
-// secure-channel state on the running server, surfaced by `dfsctl netlogon
-// status`. It is built without directory or DC I/O.
+// secure-channel state on the running server. It is built without directory or
+// DC I/O.
 type Status struct {
 	// Provider is the active machine-credential provider ("offline" or
 	// "online-join").

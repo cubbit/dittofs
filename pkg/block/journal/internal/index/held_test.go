@@ -620,3 +620,26 @@ func TestUnmark(t *testing.T) {
 		)
 	})
 }
+
+// TestUnplaceDropsTheRecordsOwnPiecesAlone: unplace removes every piece the
+// record at rec placed inside e — a foreign record's content overlapped by
+// e, its later version included, keeps its piece — and a split or narrowed
+// remainder of the record's own piece goes too, whole. A zero-length extent
+// reaches nothing.
+func TestUnplaceDropsTheRecordsOwnPiecesAlone(t *testing.T) {
+	var s heldSet
+	a, b := rec(1, 0), rec(1, 8)
+	s.insert(write(0, 16, a, 7)) // A, then B over A's tail and past it
+	s.insert(write(8, 16, b, 8))
+	s.unplace(a, ext(0, 32))
+	assertPieces(t, &s, Piece{Extent: ext(8, 16), Record: b, Version: ver(8)})
+
+	// A fill's packed pieces of one record go together, and the gaps they
+	// filled keep nothing behind them.
+	var t2 heldSet
+	c, d := rec(2, 0), rec(2, 64)
+	t2.fill(write(0, 96, c, 7))
+	t2.insert(write(16, 16, d, 8))
+	t2.unplace(c, ext(0, 96))
+	assertPieces(t, &t2, Piece{Extent: ext(16, 16), Record: d, Version: ver(8)})
+}

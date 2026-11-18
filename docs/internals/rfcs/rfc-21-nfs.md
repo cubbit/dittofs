@@ -301,7 +301,10 @@ table, all of it by default
 only 4.x serves no MOUNT, NLM or NSM.
 
 - A `COMPOUND` whose minor version is above 2 **MUST** be answered
-  `NFS4ERR_MINOR_VERS_MISMATCH` with no operation run.
+  `NFS4ERR_MINOR_VERS_MISMATCH` with no operation run: its tag echoed and no
+  results (RFC 8881 §16.2.3, §15.1.3.2), written by the header codec, which
+  reads the tag and the minor version with the RPC header, so the router
+  refuses it before any member decodes (§11.5).
 - The minor version is the client's choice per `COMPOUND`; the server
   **MUST NOT** remember one per client, so a client that falls back from 4.2
   to 4.1 needs no new client ID.
@@ -357,6 +360,42 @@ compound overhead for the limits that include headers. That covers NFSv4's
 and its 4 KiB of header room ([RFC 24 §3.1](rfc-24-resources.md#3.1%20Buffer%20classes)),
 the class a 1 MiB `READ`'s reply is drawn from. The preferred directory-read
 size (`dtpref`) is 64 KiB; the largest file (`maxfilesize`) is 2^63 − 1.
+
+A record, its fragments together, is at most the transfer class's capacity, 1
+MiB and 4 KiB, in at most 64 fragments: a record mark that would take it past
+either closes the connection ([RFC 20 §5.2](rfc-20-adapters.md#5.2%20Decoding%20is%20bounded),
+[RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)).
+A reply record is held to the same cap, `Framer.MaxRecord`'s bytes. A single
+operation's reply is bounded by its class. In a `COMPOUND`, each `READ` and
+`READ_PLUS` is clamped by its row's `Bound` hook before it runs, to what is
+left of the cap after the replies before it and the bounds of the operations
+that follow it, and answered as a short read (RFC 8881 §18.22, RFC 7530
+§16.23.5, RFC 7862 §15.10.3). It is never lowered below one byte, since Linux
+turns a short read of no data with `eof` false into `EIO`: a `COMPOUND` that
+would leave one less is refused, as one whose operation after a `READ` has a
+bound near the cap is
+([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
+In an NFSv4.1 session the hook also lowers the room it is handed by what the
+session's `ca_maxresponsesize` falls short of the cap, read from the session
+the compound's own `SEQUENCE` resolved into `Request.State` (§3.1), so the
+reply stays within that budget too.
+
+> decision: a `READDIR`'s `maxcount`, and a `LISTXATTRS`'s `lxa_maxcount`
+> (RFC 8276 §8.4.3), are not clamped to the room, as a `READ`'s count is.
+> Their floor is one entry, not one byte, and an entry's size is not known
+> before the listing is read: a count too small for one is `NFS4ERR_TOOSMALL`
+> (RFC 8881 §18.23.3), which would fail an operation whose own count fits.
+> The ceiling: a `COMPOUND` whose `READDIR` or `LISTXATTRS`, with the
+> operations around it, would pass the cap is refused; Linux's own
+> directory-read compound (`PUTFH`, `READDIR`, after `SEQUENCE` in NFSv4.1)
+> carries no `GETATTR`, so the cap holds its `READDIR` whole. Clamp the count
+> in their `Bound` hooks too, since a client resumes from its cookie, once a
+> client is seen sending one beside an operation whose bound passes the cap's
+> header room.
+
+> ponytail: 64 fragments let a record of the cap arrive in fragments of just
+> over 16 KiB (1028 KiB over 64) and more; common clients send one. Raise it
+> when a client is seen sending smaller ones.
 
 The size is fixed, not a setting ([RFC 13](rfc-13-configuration.md)). A client
 negotiates down, never up, so a value that differs between nodes breaks a client
@@ -2093,12 +2132,27 @@ no Kerberos level:
 The identity also carries the connection's source address, which client rules
 are checked against.
 
-- **Refused credentials.** A credential that does not decode, an `AUTH_SYS`
+- **Refused credentials.** A credential whose body does not decode inside its opaque, an `AUTH_SYS`
   credential over RFC 5531's limits — more than 16 gids, a machine name over
-  255 bytes — and every flavour other than `AUTH_NONE`, `AUTH_SYS` and
+  255 bytes, bytes left after its group list: the body is one `authsys_parms`
+  (RFC 5531 Appendix A), so bytes left after it are a decode error — and every
+  flavour other than `AUTH_NONE`, `AUTH_SYS` and
   `RPCSEC_GSS` **MUST** be rejected `AUTH_BADCRED` and run nothing. None is ever
   treated as anonymous: that would turn a malformed credential into the share's
   everyone grant.
+- **Where they are judged.** Decoding the call's header only bounds its
+  credential and verifier: one whose body runs past the record, or past the 400
+  bytes RFC 5531 §8.2's `opaque_auth` allows, is a decode error, answered
+  `GARBAGE_ARGS` ([RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline)). A
+  call whose RPC version is not 2 has neither read: it is answered
+  `RPC_MISMATCH` first (§11.5). The
+  flavour and an `AUTH_SYS` body are judged when the call is routed, so a body
+  truncated inside a whole credential is `AUTH_BADCRED`; an `RPCSEC_GSS`
+  credential is the GSS stage's, at unwrap (§10). A verifier other than an
+  empty `AUTH_NONE` beside an `AUTH_NONE` or `AUTH_SYS` credential is rejected
+  `AUTH_BADVERF`: RFC 5531 Appendix A says only that it should be `AUTH_NONE`,
+  and names no status, so the answer is the implementations', the Linux
+  server's here.
 - **Root.** A claimed uid 0 maps to RFC 18's root principal
   ([RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)).
 - **Export flavour policy.** "Requires Kerberos" is the share's `MinProof`
@@ -2516,13 +2570,15 @@ an NFSv4.1 code such as `SEQUENCE` sent under NFSv4.0 included, is routed to
 the `ILLEGAL` row, which answers `NFS4ERR_OP_ILLEGAL`, as develop does; `ErrVersion` to
 `PROG_MISMATCH` for an RPC version, and for an NFSv4 minor version not served
 to `NFS4ERR_MINOR_VERS_MISMATCH`, answered once for the compound before any
-operation runs; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrDecode` to
+operation runs, with its tag and no results; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrDecode` to
 `GARBAGE_ARGS`, the RPC accept state, in a row naming no operation or version,
 which RFC 20 §4.7's `NewErrorTable` demands of every table; `ErrTooLong` to
 `NFS4ERR_TOO_MANY_OPS` in a row naming no version, which RFC 20 §4.7's
 `NewOpTable` demands of a table with a compound row, and to `NFS4ERR_RESOURCE`
 for NFSv4.0, which has no such status, in a row naming it that wins there; `ErrReplyTooBig`, a
-`COMPOUND` whose reply would hold more than a quarter of the reply pool
+`COMPOUND` whose reply would hold more than a quarter of the reply pool, or
+would pass the reply record cap of §2.3, or leave a `READ` or `READ_PLUS` less
+than one byte under it
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)),
 to `NFS4ERR_REP_TOO_BIG` (RFC 8881 §15.1.3.6) in a row naming no version, which
 RFC 20 §4.7's `NewOpTable` demands of a table with a compound row, and to
@@ -2533,6 +2589,41 @@ row of NFSv4's table naming them in `Ops`; NFSv3, MOUNT and NLM each have a
 table of their own, RFC 20 §4.5), §7.4; `ErrDraining`, and `ErrMoved` for any other
 NFSv4 operation and for NFSv3, MOUNT and NLM, which have no move signal, to no
 reply.
+
+**A reply carrying a status alone** is written whole by the header codec
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`HeaderCodec.Encode`): the RPC reply header, with `mismatch_info`'s lowest and
+highest versions for `PROG_MISMATCH`, those the connection serves, and for
+`RPC_MISMATCH`, 2 and 2 (RFC 5531 §9), and for an NFSv4 `COMPOUND` its status,
+its tag and an empty results array. A procedure's encoder handed no reply writes
+only what its result carries beside the status.
+
+**The `COMPOUND` tag** has no cap of its own: it is a `utf8str_cs`, an
+`opaque<>` (RFC 8881 §3.2, RFC 7530 §2.1), whose definition RFC 8881 §16.2.3
+and RFC 7530 §15.2.4 leave to the implementor, asking only that the reply's tag
+SHOULD be the request's. It is bounded by the
+record alone ([§2.3](#2.3%20Transfer%20sizes)) and echoed whole, in every reply
+the compound gets, a refusal's included. The header codec reads it with the
+RPC header, so `HeaderCodec.ReplyLen` counts its bytes in the reply head, and
+the reply's reservation, or a status alone's buffer, is sized with them before
+it is taken: no reservation grows with the tag, and NFS parks nothing.
+
+**Malformed calls.** A record too short to hold its transaction ID and message
+type closes the connection. A call's RPC version, the first field of its body
+(RFC 5531 §9's `call_body`), is judged before anything after it is read: one
+other than 2 is decoded no further, its credential and verifier unread, and is
+answered `RPC_MISMATCH` with 2 and 2, as RFC 5531 §9 answers a version the
+server does not run, and as the Linux server does before it reads the
+credential. So a malformed credential behind a wrong version is never
+`GARBAGE_ARGS`. A call of version 2 whose later fields do not decode is
+answered `GARBAGE_ARGS` from the row for `ErrDecode`
+([RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline)).
+
+**The fault status**
+([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)) is
+`NFS3ERR_SERVERFAULT` in NFSv3's table, `NFS4ERR_SERVERFAULT` in NFSv4's, and the
+RPC accept state `SYSTEM_ERR` in the stages' table and in MOUNT's, NLM's and
+NSM's.
 
 **What runs while draining** is each operation's `Role`
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)):
@@ -2700,6 +2791,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §5.4 single-node restart | On one node: a client mounts, sending `RECLAIM_COMPLETE`, and takes a lock; restart the node. Assert the shard's incarnation rose, the client's reclaim of the lock is granted rather than `NFS4ERR_NO_GRACE`, and a second client's conflicting lock is refused until the reclaim. | an incarnation raised only when a journal begins serving, so the grace instance repeats |
 | §5.4 NFSv4.0 signal | An NFSv4.0 client holds an open in a shard that fails over. Assert its `RENEW` is `NFS4ERR_STALE_CLIENTID`, a `READ` under the open's stateid `NFS4ERR_STALE_STATEID`, and after it repeats `SETCLIENTID` and the confirm, the client ID unchanged and its reclaim granted. A Linux client completes recovery without looping. | `NFS4ERR_STALE_STATEID` with a valid client ID as the only signal |
 | §11.5 full journal | Fill the journal with offload stalled and the remote reachable; assert a write is answered `NFS4ERR_DELAY` (v4) and `NFS3ERR_JUKEBOX` (v3), not `NFS4ERR_NOSPC`, and succeeds on retry once offload resumes. Fill one share's journal limit the same way: assert `NFS4ERR_DELAY` too, and success once offload drains it. Fill the journal with the store unreachable for 2 minutes, past the caller's deadline: assert every retry is `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`, never `NOSPC`, and the writes succeed once the store returns. Make the store deny puts; assert `NFS4ERR_NOSPC` at once. Exceed a user quota; assert `NFS4ERR_DQUOT` at once. Exceed a project quota, then a share-wide one; assert `NFS4ERR_NOSPC` at once for each. | a share's journal limit answered "no space" at once, a transient refusal turned into "no space" at its deadline, or a quota answered "retry" |
+| §2.3 a compound's reply under the record cap | Over NFSv4.0, on a file longer than 2 MiB, send `PUTFH, READ(1 MiB)` followed by `GETATTR`s of fixed-size attributes (`type`, `size`, `change`, `time_modify`), whose bounds those attributes state, enough that they sum past the 4 KiB of header room: assert the `READ` is answered short, with at least one byte and `eof` false, each `GETATTR` answered, and the reply within 1 MiB and 4 KiB. Over NFSv4.2, send `SEQUENCE, PUTFH, READ_PLUS(1 MiB)` and the same `GETATTR`s: assert the `READ_PLUS` is answered short likewise. Send `PUTFH, READ(1 MiB), READ(1 MiB)`: assert the first `READ` is answered short and the second whole. Send `PUTFH` and three `READ(1 MiB)`; `PUTFH, READ(1 MiB), READDIR` with a `maxcount` of 1 MiB followed by those `GETATTR`s, where the `READDIR` leaves the `READ` no byte; and the same without the `READ`: assert `NFS4ERR_RESOURCE` before any operation runs; repeat over NFSv4.1 and assert `NFS4ERR_REP_TOO_BIG`. Over NFSv4.1, on a session whose `ca_maxresponsesize` is 512 KiB, send `SEQUENCE, PUTFH, READ(1 MiB)`: assert the `READ` is answered short within 512 KiB. Assert `adapter_reads_shortened_total` rose by one per short `READ` and `READ_PLUS`. | a compound refused for a reply a short read would fit, a reply past the cap or the session's budget, a `READ` or `READ_PLUS` answered no data with `eof` false, or a `READDIR` clamped rather than refused |
 | §5.3 lock recall | Client A holds a write delegation; client B sends an NLM lock and, separately, an NFSv4 `LOCK` over a range A locked locally. Assert `CB_RECALL` before B's answer and A's lock sent to the server; once the recall ends, B's NFSv4 `LOCK` is `NFS4ERR_DENIED`, a non-blocking NLM lock `NLM4_DENIED`, and a blocking NLM lock stays `NLM4_BLOCKED` behind A's lock and is sent `NLMPROC4_GRANTED` when A unlocks. Repeat with A holding a read delegation and no local lock; assert `CB_RECALL` before B is granted. While A delays its `DELEGRETURN`, assert B's NFSv4 `LOCK` answered `NFS4ERR_DELAY`, a blocking NLM lock `NLM4_BLOCKED` and then `NLMPROC4_GRANTED` once A returns, and a non-blocking one `NLM4_DENIED_GRACE_PERIOD` — never `NFS4ERR_DENIED` or `NLM4_DENIED`. | a lock request that does not recall, recalls write delegations only, or is answered "held" or "blocked" with no waiter while the recall runs |
 | §5.3 handle-cached deny mode | An SMB client opens with deny-write under an RWH lease and closes its handle locally. An NFSv4 client opens for write, and an NFSv3 client writes: assert each `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX` while the break runs, then succeeds. Repeat with the SMB handle still in use: assert `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES` only after the break. | an NFS request refused by a deny mode only a handle cache held |
 | §6 NLM | cthon04 lock tests over NFSv3; an NLM lock against an SMB byte-range lock and an SMB deny mode against `NLMPROC4_SHARE`. Fail a shard over and assert `SM_NOTIFY` reaches the client's statd and it reclaims. | NLM state held in the adapter |

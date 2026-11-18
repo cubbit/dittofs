@@ -10,10 +10,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var validateCmd = &cobra.Command{
-	Use:   "validate",
-	Short: "Validate configuration file",
-	Long: `Validate the DittoFS configuration file.
+func newValidateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate",
+		Short: "Validate configuration file",
+		Long: `Validate the DittoFS configuration file.
 
 Checks for syntax errors, missing required fields, and invalid values.
 
@@ -23,7 +24,8 @@ Examples:
 
   # Validate specific config file
   dfs config validate --config /etc/dittofs/config.yaml`,
-	RunE: runConfigValidate,
+		RunE: runConfigValidate,
+	}
 }
 
 func runConfigValidate(cmd *cobra.Command, _ []string) error {

@@ -203,6 +203,36 @@ func TestDropOfAShareWithNoBindingAnswersNil(t *testing.T) {
 	u.wantEvents(t)
 }
 
+// An Unbind or a Drop of a share with no binding records it as removed: a
+// Bind of it afterwards answers ErrStale and attaches nothing, and a Drop
+// of it again answers nil and calls no journal method.
+func TestARemovalOfAShareWithNoBindingRefusesALaterBind(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove func(*engine.Engine, context.Context, entity.ShareID) error
+	}{
+		{"unbind", func(e *engine.Engine, ctx context.Context, id entity.ShareID) error { return e.Unbind(ctx, id, false) }},
+		{"drop", (*engine.Engine).Drop},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newUnitWith(t, unitConfig{unbound: true})
+			if err := tc.remove(u.e, t.Context(), u.share.ID); err != nil {
+				t.Fatalf("%s of a share with no binding: %v", tc.name, err)
+			}
+			if err := u.e.Bind(t.Context(), u.share); !errors.Is(err, vfserr.ErrStale) {
+				t.Errorf("Bind after the %s: got %v, want ErrStale", tc.name, err)
+			}
+			if got := u.e.StateOf(u.share.ID); got != 0 {
+				t.Errorf("binding state after the refused Bind: got %v, want none", got)
+			}
+			if err := u.e.Drop(t.Context(), u.share.ID); err != nil {
+				t.Errorf("Drop again: got %v, want nil", err)
+			}
+			u.wantEvents(t)
+		})
+	}
+}
+
 // After Close began, Drop answers what a content call does.
 func TestDropAfterCloseAnswersClosed(t *testing.T) {
 	u := newUnit(t)
@@ -363,7 +393,7 @@ func TestCloseWaitsForADropInProgress(t *testing.T) {
 // never run; the clone item that ran before it is not ended.
 func TestADropEndsTheParkedItemsOfTheShareOnce(t *testing.T) {
 	u := newUnit(t)
-	other := u.bindShare(t, "other", entity.NamespaceID{})
+	other := u.bindShare(t, "other", u.share.Namespace)
 	block := u.post(other, entity.RemoveTruncate, true)
 
 	t.Cleanup(func() {
@@ -604,7 +634,7 @@ func TestDropTakesTheSharesFilesOffTheDueSetAndNoLaterBatchCapturesOne(t *testin
 		t.Fatal(err)
 	}
 
-	other := u.bindShare(t, "other", entity.NamespaceID{})
+	other := u.bindShare(t, "other", u.share.Namespace)
 	mine := []entity.FileID{u.create(t, "a"), u.create(t, "b")}
 	theirs := entity.NewFileID()
 

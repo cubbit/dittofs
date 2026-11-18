@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -37,15 +38,15 @@ func fuzzShare(f *testing.F) (*Filesystem, vfs.Call, vfs.Handle) {
 	admin := entity.User{Principal: entity.NewUser(), Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}
 	sh := entity.Share{ID: entity.NewShareID(), Name: "data", Path: "/data", Root: entity.NewFileID()}
 	for _, err := range []error{
-		cp.PutUser(ctx, admin), cp.PutShare(ctx, sh),
-		cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: admin.Principal, Access: entity.AccessAdmin}),
+		errOf(cp.PutUser(ctx, admin, 0, entity.Alloc{})), errOf(kvstoretest.CreateShare(ctx, cp, sh)),
+		errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0)),
 	} {
 		if err != nil {
 			f.Fatal(err)
 		}
 	}
 	clock := sim.NewTestClock(time.Unix(0, 0))
-	tab, err := openstate.New(openstate.Deps{Records: st, Clock: clock, Rand: rand.Reader})
+	tab, err := openstate.New(openstate.Deps{Records: st, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
 	if err != nil {
 		f.Fatal(err)
 	}

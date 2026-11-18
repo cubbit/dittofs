@@ -9,10 +9,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var startCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start the DittoFS server",
-	Long: `Start the DittoFS server in the foreground with the specified configuration.
+func newStartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "start",
+		Short: "Start the DittoFS server",
+		Long: `Start the DittoFS server in the foreground with the specified configuration.
 
 The server runs until it is stopped. Run it under a process supervisor
 (systemd, Docker) to keep it in the background.
@@ -26,12 +27,14 @@ Examples:
 
   # Start with a custom config file
   dfs start --config /etc/dittofs/config.yaml`,
-	Args: cobra.NoArgs,
-	RunE: runStart,
+		Args: cobra.NoArgs,
+		RunE: runStart,
+	}
 }
 
 func runStart(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.MustLoad(GetConfigFile())
+	configPath, _ := cmd.Flags().GetString("config")
+	cfg, err := config.MustLoad(configPath)
 	if err != nil {
 		return err
 	}
@@ -39,7 +42,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	// The KV, the clock and the metrics registry join the node's
-	// configuration once the node opens its stores.
+	// configuration once the start command opens the host's store; until
+	// then New refuses.
 	n, err := node.New(node.Config{Bootstrap: *cfg, Logger: slog.Default()})
 	if err != nil {
 		return fmt.Errorf("building the node: %w", err)
@@ -48,8 +52,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	if err := n.Start(ctx); err != nil {
 		return fmt.Errorf("starting the node: %w", err)
 	}
-	// ponytail: a node that starts is stopped at once, since none starts yet
-	// and so none has anything to serve. Wait for a termination signal
-	// before Stop once Start starts anything.
+	// ponytail: Stop runs at once, because New refuses until this command
+	// opens the host's KV and metrics registry, so no node gets here yet.
+	// Wait for a termination signal before Stop once this command does.
 	return n.Stop(ctx)
 }

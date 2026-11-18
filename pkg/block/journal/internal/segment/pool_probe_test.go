@@ -53,6 +53,16 @@ func (p *Pool) ParkedWaitersForTest() int {
 	return p.parked
 }
 
+// FillingForTest reports whether a refill pass is running or its kick is
+// still queued, so a test can wait for a pass it expects to make nothing: no
+// counter moves over such a pass, and its end is the only event it leaves.
+func (p *Pool) FillingForTest() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.filling
+}
+
 // KickQueuedForTest reports whether a kick sits in the pool's one-slot channel
 // unconsumed, so a test can place a waiter provably between a take's ask and
 // the pass it asked for, whatever the scheduler does with the worker.

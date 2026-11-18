@@ -278,7 +278,7 @@ func gcStateDirReclaimable(dir string) bool {
 //
 // All counts are aggregate (no file paths or hashes beyond DryRunCandidates,
 // which only contain CAS keys, not source paths). This file lives under
-// the gc-state root and is consumed by `dfsctl store block gc-status`.
+// the gc-state root, where an operator reads it.
 type GCRunSummary struct {
 	RunID            string    `json:"run_id"`
 	StartedAt        time.Time `json:"started_at"`

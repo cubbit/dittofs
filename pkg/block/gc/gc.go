@@ -178,9 +178,9 @@ type Options struct {
 	// GracePeriodSet, when true, makes GracePeriod authoritative — it is used
 	// verbatim, including a value of zero (reap every eligible orphan with no
 	// age guard). When false, a non-positive GracePeriod falls back to the
-	// one-hour default. This lets an explicit operator override (dfsctl store
-	// block gc --grace-period 0) bypass the floor without changing the
-	// default-substitution behaviour for every other caller.
+	// one-hour default. This lets an explicit operator override of zero bypass
+	// the floor without changing the default-substitution behaviour for every
+	// other caller.
 	GracePeriodSet bool
 
 	// DryRunSampleSize bounds the count of candidate keys captured in

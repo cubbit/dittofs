@@ -10,16 +10,13 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
-// A refused Share or Reserve answers a nil interface, never one holding a nil
-// pointer, which a caller's nil check would take for a handle.
-func TestRefusalAnswersNil(t *testing.T) {
-	h, err := wrapJournal(&journal.Journal{}, func(journal.ShareTag, engine.Handle) { t.Error("a refused Share handed a handle on") }).Share(1, 0, journal.Version{})
+// A refused Share hands nothing to opened and answers a nil handle.
+func TestARefusedShareHandsNothingOn(t *testing.T) {
+	h, err := wrapJournal(engine.JournalOf(&journal.Journal{}), func(journal.ShareTag, engine.Handle) {
+		t.Error("opened called for a refused Share, want it not called")
+	}).Share(1, 0, journal.Version{})
 	if !errors.Is(err, journal.ErrNotImplemented) || h != nil {
 		t.Errorf("Share = %v, %v; want nil, the journal's error", h, err)
-	}
-	r, err := handle{&journal.Handle{}}.Reserve(1, 1)
-	if !errors.Is(err, journal.ErrNotImplemented) || r != nil {
-		t.Errorf("Reserve = %v, %v; want nil, the journal's error", r, err)
 	}
 }
 
@@ -42,7 +39,7 @@ func TestShareAgreesWithTheJournal(t *testing.T) {
 			return j
 		}},
 		{"journal", func(t *testing.T) engine.Journal {
-			return wrapJournal(journaltest.New(t).J, func(journal.ShareTag, engine.Handle) {})
+			return wrapJournal(engine.JournalOf(journaltest.New(t).J), func(journal.ShareTag, engine.Handle) {})
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) { shareTwice(t, c.open(t)) })
@@ -143,7 +140,7 @@ func TestSinceYieldsOverAsTheJournalDoes(t *testing.T) {
 			return h
 		}},
 		{"journal", func(t *testing.T) engine.Handle {
-			h, err := wrapJournal(journaltest.New(t).J, func(journal.ShareTag, engine.Handle) {}).
+			h, err := wrapJournal(engine.JournalOf(journaltest.New(t).J), func(journal.ShareTag, engine.Handle) {}).
 				Share(1, 0, journal.Version{})
 			if err != nil {
 				t.Fatal(err)

@@ -14,8 +14,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The adapter reads each connection's records as framed byte streams.** A
+  record is cut from a 4 KiB read buffer into its own receive buffer of the
+  matching class, charged before its body is read; a fragmented record is
+  charged once at the protocol's cap and read to its last fragment, at
+  most the protocol's fragment cap; and the rest of a request, once its first
+  byte has arrived, has
+  `read_timeout` to arrive or the connection closes, the deadline resting
+  while the receive charge waits. A record the peer cuts mid-stream is an
+  unexpected end, told apart from a clean close between records.
+
+- **The adapter sends each connection's replies through a bounded queue in
+  gathered writes.** A worker hands its reply over without blocking; the
+  reader stops reading the connection once 64 messages are held, so the
+  client's TCP window pushes back. Queued replies go out framed in one
+  `net.Buffers` write each, up to the protocol's record cap of bodies, each
+  write bounded by `write_timeout`; a failed or late write closes the
+  connection and releases everything queued.
+
+- **The request path is measurable, per protocol and per operation.** Prometheus
+  now carries requests in flight, refusals and wire time by stage, replay hits,
+  held requests and bytes, chain splits by reason, and per operation the
+  routed counts, unmapped errors, status mappings, hold refusals and handler
+  panics, as `dittofs_adapter_*`. Each series is registered once per node and
+  resolved once per table or stages label, so recording is one atomic add or
+  histogram observation with no label lookup.
+
 ### Changed
 
+- **The journal's open proves its unproven tail on the device.** A seal marker
+  only the live view serves no longer seals at open: the marker is re-read on
+  the device before it counts. Each tail record no sync or seal proved is
+  read whole, and one that reached only the cache is re-appended from the copy
+  the open kept, while one whose bytes never verify is dropped as never
+  written — its marker goes with it, so a removal the crash tore is never
+  reported.
+- **A sync that fails while the open proves the tail is a failed window.** The
+  records whose first read verified are handed to the re-append the same way
+  as lost ones, so the open still succeeds and the journal repairs itself
+  without operator action.
 - **The journal's open tells a crash's torn tail from damage.** A record that
   fails its checksum no longer refuses the open on the spot: it is dropped and
   reported as corrupt where a sync or a seal proved it whole, and cut as a torn
@@ -23,6 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that verifies is read by scanning it, as one with no footer is. The open
   still refuses a named predecessor that ends without its seal marker, at any
   length, and a range inside a sealed segment that no footer names.
+- **The journal's open settles a crash's spare segments before it answers.**
+  A record-less segment a crash left untaken has its header and trailer slots
+  zeroed when its file holds exactly the segment cap and its body is allocated
+  whole, and is unlinked when it does not. A segment a sync mark names is left
+  as it stands, and so is a record-less take whose header names a
+  predecessor still on disk, until that predecessor's end is proven.
+  Opening a journal that holds segments still fails with
+  `ErrNotImplemented`, so these spares are not yet handed to the pool.
 
 ## [0.36.0] — 2026-10-19
 

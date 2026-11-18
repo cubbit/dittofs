@@ -58,10 +58,27 @@ func (b *binding) holdsNoJournal() bool {
 type bindings = map[entity.ShareID]*binding
 
 // bindingOf is the binding of share s, read from the share table without a
-// lock; a share with no binding is a Delay with DelayFrozen, its binding
-// still to come, and a share with a removed binding is ErrStale. Neither
-// touches a journal.
+// lock, for a content call: boundOf's answers, and a quiesced share is a
+// Delay with DelayFrozen, which the caller retries until the share serves
+// again (RFC 16 §2.3.1). A call admitted before the quiesce runs to its end.
 func (e *Engine) bindingOf(s entity.ShareID) (*binding, error) {
+	b, err := e.boundOf(s)
+	if err != nil {
+		return nil, err
+	}
+
+	if ShareState(b.state.Load()) == Quiesced {
+		return nil, &vfserr.Delay{Cause: vfserr.DelayFrozen}
+	}
+
+	return b, nil
+}
+
+// boundOf is the binding of share s, read from the share table without a
+// lock, whatever its state; a share with no binding is a Delay with
+// DelayFrozen, its binding still to come, and a share with a removed binding
+// is ErrStale. Neither touches a journal.
+func (e *Engine) boundOf(s entity.ShareID) (*binding, error) {
 	if e.closed.Load() {
 		return nil, errClosed
 	}

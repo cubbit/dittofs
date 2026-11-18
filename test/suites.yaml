@@ -30,7 +30,7 @@ suites:
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
       # going red. None of these tags excludes another.
-      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,engine_conformance,engine_soak,adapter_conformance ./...
+      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,engine_conformance,engine_soak,engine_bench,adapter_conformance ./...
       # The adapters run on every platform a node does, and their socket code differs by
       # platform, so they are vetted for Windows and macOS beside the host's own.
       - { sh: 'for os in windows darwin; do GOOS=$os go vet ./pkg/adapter/... ./pkg/resources/... ./internal/adapter/... || exit 1; done' }
@@ -53,6 +53,7 @@ suites:
       # on pushes too, since planning commits reach develop without a pull request.
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
+      - test/go-cache-push-only.sh             # only a push run saves to the Actions cache
       - go test ./test/harness/...              # dt's own tests
       - go test ./test/journal/                 # every journal RFC row maps to a test or an owner
   # Every shell script: the *.sh files, and the executables without an extension whose first
@@ -114,7 +115,11 @@ suites:
         tier: pr
       # The adapters' allocation gates, which skip under -race.
       adapter-allocs:
-        cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/ ./pkg/resources/
+        cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/ ./internal/adapter/core/ ./pkg/resources/ ./internal/adapter/nfs/wire/
+      # The architecture rules and the CLI reference check read the whole module, so a change
+      # anywhere can break them; with no {packages}, dt run --changed never narrows them away.
+      whole-tree:
+        cmd: go test -race -timeout=5m -run=^(TestImportRules|TestNodeExports|TestReferenceMatchesCommandTrees)$ ./internal/node/ ./cmd/gendocs/
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:
@@ -131,13 +136,38 @@ suites:
     tier: pr
   # The crash-and-restart soak over the composed engine, a short fixed list of seeds. Its run
   # over the real journal is red until the journal can sync and recover. No -race: the race
-  # detector changes the timing a soak explores. engine-conformance covers the engine's races, but
-  # no suite runs the soak's own fault log under -race.
+  # detector changes the timing a soak explores. engine-conformance covers the engine's races, and
+  # unit runs the soak's fault log, which carries no tag, under -race.
   engine-soak:
     format: go-json
     cmd: go test -tags=engine_conformance,engine_soak -run=^(TestSoak|TestOracle) -timeout=20m ./internal/vfs/integration/...
     known: test/engine/soak-known.yaml
     tier: pr
+  # The engine's benchmarks, RFC 8 §15.4's B5, B7 and B9, over a composition on a real directory
+  # with an on-disk store and the real clock; run by hand on the dedicated host, gating nothing.
+  # Each iteration is one run of a workload, so -benchtime=1x -count=10 gives benchstat its
+  # samples, written to {out}/bench.txt; ENGINE_BENCH_COUNT=1 in the environment takes one.
+  # DITTOFS_BENCH_DIR must name a directory on the device under test: without it every
+  # benchmark skips and go test passes, so the cell fails before running it.
+  # No -race: it changes the latency they measure, and engine-conformance covers the races.
+  # No -timeout either: go test applies none to benchmarks, so the cell's limit is the guard.
+  # decision: format exit, not go-json: go test -json sends no pass event for a passing
+  # benchmark, which a go-json cell grades as failed. A count a benchmark breaks fails the cell,
+  # which then names the command rather than the benchmark; its b.Fatalf line is in bench.txt.
+  engine-bench:
+    cmd:
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "ENGINE_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 300m, cell: 310m }
+  # The reconcile pass a live change waits on, at 10⁴ shares cold and under share churn, against
+  # RFC 23 §8's 5 s; run by hand, gating nothing. -count=10 gives benchstat its samples, written
+  # to {out}/bench.txt. A figure over the bound is a finding, not a failure: the cell fails only
+  # when a pass leaves a change unbound. No -race, as for engine-bench.
+  reconcile-bench:
+    cmd:
+      - { sh: 'go test -count=10 -benchtime=1x -run ^$ -bench ^BenchmarkReconcile$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 180m, cell: 190m }
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
   # epic that fills its stub, and each failure is a known one.
   adapter-conformance:

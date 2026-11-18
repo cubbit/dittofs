@@ -28,6 +28,14 @@ type Deps struct {
 	Streams     int   // number of append streams, at least 1
 	SegmentCap  int64 // size a segment is accounted at
 	ExtentLimit int64 // the placement index's entry bound
+	// LastSegment is the highest segment id the directory holds, the figure
+	// the spare maker draws its first id above so a fresh spare never meets a
+	// rebuilt segment's id. Zero keeps the drawing fresh — the answer of a
+	// caller opening a directory with no segments, which the production open
+	// is today; a caller that rebuilds a directory's state passes the highest
+	// id its attach pass found, or the pool's spares collide with the rebuilt
+	// ids and no spare readies.
+	LastSegment core.SegmentID
 	// MaxBytes is the journal's configured maximum local footprint, in
 	// bytes: the whole segments WriteAt's admission reserves against and
 	// the spare maker raises UsedBytes under. Zero keeps the maker
@@ -54,19 +62,50 @@ type Deps struct {
 
 // State is the in-memory state a Core continues from. A zero State builds a
 // fresh index, counters and segment set; a caller that rebuilt them from disk
-// passes the rebuilt ones.
+// passes the rebuilt ones, with the Open payload the rebuild collected beside
+// them.
 //
 // decision: State is plain data handed to New and holds no lock domain of its
 // own; the index and counters it carries take their own short, I/O-free locks.
 //
-// decision: a rebuilt index does not seed the dirty-file list, because apply
-// adds a file only on BecameDirty and a rebuild's deltas are discarded. This is
-// harmless while Open refuses a directory holding segments, so no core starts
-// from a rebuilt index. Recovery must seed the list from the rebuilt files.
+// decision: the dirty-file list, the journal-wide axes and the per-share
+// figures are all seeded by the Open payload alone. The rebuild's own index
+// deltas are discarded, so the open derives one delta per rebuilt file that
+// holds or retains an extent — its whole held, dirty and retained byte
+// figures, the became-dirty transition when the file holds content whose
+// offloaded bit is unset, and the zero write time restored content carries —
+// and the wiring folds each through Account, the path every running delta
+// takes. A State that rebuilds the index while skipping the Open payload
+// leaves its figures and dirty files at zero and unlisted; no
+// journal-internal caller builds that shape, so the gap is the caller's own
+// to close.
 type State struct {
 	Index    *index.Index
 	Counters *index.Counters
 	Set      *segment.Set
+	// Open is the rebuild's collected payload: nil keeps a continued core
+	// off the registration, the dirty seed and the worker start below — the
+	// behaviour of a caller seeding the index and set by hand.
+	Open *OpenState
+}
+
+// OpenState is what a rebuild hands the open beside the rebuilt index,
+// counters and segment set: the liveness registrations of every record still
+// live on disk — one Rec per attached header-only record and copy, forget
+// records with the snapshot of the segments their tag's records held below
+// them, and unsynced losses with the segments still holding the record each
+// names — and the dirty-file seed, one became-dirty delta per rebuilt file
+// that holds content whose offloaded bit is unset, with the zero write time
+// restored content carries.
+type OpenState struct {
+	Live     []reclaim.Rec
+	Forgets  []reclaim.ForgetSet
+	Unsynced []reclaim.UnsyncedLoss
+	// Dirty holds the rebuilt dirty files' seed: one became-dirty delta per
+	// file, the whole content of the list the open starts the dirty list
+	// from, so a file nothing seeded answers unlisted until a write of its
+	// own lands.
+	Dirty []index.HeldDelta
 }
 
 // coreOptions are the test-only adjustments newCore applies before the layers
@@ -336,9 +375,9 @@ const unboundedBytes = int64(1) << 62
 func New(deps Deps, state State) (*Core, error) { return newCore(deps, state, coreOptions{}) }
 
 func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
-	// A caller's State can carry a rebuilt set whose header-only records
-	// nobody has registered with the liveness tracker yet; the worker below
-	// must stay off its back until the open registration exists.
+	// A caller's State can carry a rebuilt set; the set the core did not
+	// build gains a retirement worker only through the open payload below,
+	// which registers its records before the worker's first pass.
 	freshSet := state.Set == nil
 	if state.Set == nil {
 		state.Set = segment.NewSet(deps.SegmentCap, deps.Log)
@@ -477,7 +516,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	if maxBytes > 0 {
 		makerBytes = maxBytes
 	}
-	maker := segment.NewMaker(fs, state.Set, makerBytes, 0, deps.Log)
+	maker := segment.NewMaker(fs, state.Set, makerBytes, deps.LastSegment, deps.Log)
 	// The pool asks the read-only check before each spare it makes, so a
 	// read-only journal makes none (RFC 1 §5.4). The headroom's spare class
 	// is sized by the records it holds, whole spares at the charge the
@@ -629,6 +668,27 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	})
 	state.Set.OnSeal(tr.SealObserved)
 
+	// The open's registration: a core continued from a rebuilt state
+	// registers every record the rebuild found still live on disk through
+	// the same call the append paths take, with the set's member answer and
+	// seal observer wired above; the one OpenDone that closes the window
+	// then spends every registration the drop test already answers
+	// droppable — a marker settled before the open read its record, a
+	// removal nothing on disk outranks — so its segment's candidate crosses
+	// now rather than at its file's first event, which a file whose records
+	// all resolved at the open may never see. The seed's deltas each run
+	// through Account, the consumer every delta of a running journal takes,
+	// so the journal-wide axes and the per-share figures open at the
+	// figures the rebuilt index holds rather than at zero; the zero write
+	// time the deltas carry is the time restored content opens with.
+	if o := state.Open; o != nil {
+		tr.RegisterAtOpen(o.Live, o.Forgets, o.Unsynced)
+		tr.OpenDone()
+		for _, d := range o.Dirty {
+			c.Account(d)
+		}
+	}
+
 	// The workers register their stops as they start, in the order their
 	// pieces were built: the retirer, then the reclaim worker, then the idle
 	// sealer, then the pool, then the durability layer. Close stops them in
@@ -650,17 +710,17 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// stream's appends, not the sealer, so a stopped pool cannot starve or
 	// deadlock a sealer in flight.
 	c.retirer.Start()
-	// decision: only a set this constructor built itself starts the
-	// retirement worker, whatever State the core continues from. A caller's
-	// set — the rebuild hand-off shape — carries segments whose header-only
-	// records no registration pins, so the worker's tick would hand them to
-	// the retirer as soon as their bytes answer not held; until the open
-	// registration exists, a continued core runs the executor but not the
-	// worker, and its liveness events queue for a start that must come with
-	// that registration. Overturned by the open registration landing: it
-	// must register the rebuilt records before starting the worker, which
-	// this guard then wants removed.
-	if freshSet {
+	// decision: the retirement worker runs only once its set's header-only
+	// records are registered with the liveness tracker, whatever built the
+	// set. A fresh set owns none, so its start is unconditional; a continued
+	// set starts with the open registration above, registered before this
+	// line, so the worker's first pass re-checks segments the tracker already
+	// pins. A caller's set without an Open payload stays refused: its
+	// records carry no registration, and the worker's tick would hand their
+	// not-held segments to the retirer while the records the disk still
+	// holds ride in them. Overturned by the rebuild hand-off always
+	// carrying its open payload, which would close this to every set.
+	if freshSet || state.Open != nil {
 		c.retiring.Start()
 	}
 	c.addStop(c.retirer.Stop)

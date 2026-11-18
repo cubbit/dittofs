@@ -621,7 +621,7 @@ func (c *Client) Balance() int
     one `Echo` sent by the client and its reply read, `CheckLeaks` clean after `Stop`; its
     `known.yaml` entry (`message: 'core: new server'` since #4194 built the tables, `issue: "#3966"`, its
     reason naming E5's tables and pipeline and E4's server).
-- **Consumers:** E4's accept, reader, writer and sidecar-runner tests (T4.1–T4.4, T4.9: `Echo`,
+- **Consumers:** E4's accept, reader, writer and sidecar-runner tests (T4.1, T4.2a, T4.3, T4.4, T4.9: `Echo`,
   `Client`, `Bare` as the second listener, `Addrs` for the bound port and the `Serving` report),
   and its `Reconfigure` test (T4.6: `MaxVersion` read from each connection's snapshot); E5's T5.1a (nil stages over `Bare`, `Echo`'s role,
   the cap of 64 over `Bare`, `Panic`), T5.2b (`Versions`, `Needs`), T5.5b (`Create` held), T5.1c
@@ -691,11 +691,11 @@ func (c *Client) Balance() int
 
   | `core` behaviour | What `testproto` gives it | Test lands in |
   | --- | --- | --- |
-  | handshake deadline; kept state past the idle timeout | `Session` (`Established`, `Keep`), `Logoff` | E4 T4.7 |
-  | `OnClose` on close | the registry | E4 T4.5 |
-  | a message sent ahead of a named reply | `Notify` | E4 T4.4 |
+  | handshake deadline; kept state past the idle timeout | `Session` (`Established`, `Keep`), `Logoff` | E4 T4.7a |
+  | `OnClose` on close | the registry | E4 T4.10 |
+  | a message sent ahead of a named reply | `Notify` | E5 T5.1c, over loopback; E4 T4.4 holds `before` through the suite of `out` |
   | session and tree levels; `Versions` | `Session`, `Tree`, D3's tables | E5 T5.2b |
-  | drain decided per request; the expired-credential gate | `Echo`'s role, `PutFH`'s handle, `Session`'s expiry, `Logoff` | E5 T5.1a, T5.2b; E4 T4.5 |
+  | drain decided per request; the expired-credential gate | `Echo`'s role, `PutFH`'s handle, `Session`'s expiry, `Logoff` | E5 T5.1a, T5.2b; E4 T4.5a, T4.5b |
   | chains: a related member's state, a bad checksum, a pending last member, a member before the last pending or answered `ErrNotLast`, a `NoReply` stop whose interim grants the later members' credits, replies wrapped once | version 2, `Msg.Related`, `Msg.Pend`, the stages, `Client.Balance` | E5 T5.4, T5.5b, T5.5c |
   | a single-reply compound judged whole while draining; the slot's sequence kept; a compound past its cap | the compound row, `PutFH`'s handle, `Echo`'s role, `ReplayCache` | E5 T5.4 |
   | holds past the ceiling and the floor, a cancel before and after its target | `Create` held by `Faults`, `OpCancel`, `HoldCodec` | E5 T5.5b |
@@ -706,7 +706,7 @@ func (c *Client) Balance() int
   - Every exported identifier of `core` is referenced as `core.<Name>` in `testproto`'s non-test
     files, and every exported method of `Conn` and `Request` by name, but for those on the
     test's exemption list, each with why (D16); the epic whose test calls each: `NewServer`,
-    `Server` and its methods, `Listener` (E4's T4.1, T4.7), `Errors` and `ErrorTable.Map` (E5's
+    `Server` and its methods, `Listener` (E4's T4.1, T4.7b), `Errors` and `ErrorTable.Map` (E5's
     T5.7), `Call` and `Middleware` (E5's T5.6).
   - A message with one byte changed is refused by `Unwrap`; a related member with an all-ones
     session is checked under `prev`'s session, and without `prev` is refused.

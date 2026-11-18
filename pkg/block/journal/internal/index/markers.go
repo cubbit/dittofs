@@ -187,10 +187,30 @@ func (f *file) cloneTarget(spec core.CloneSpec, v core.Version) error {
 // which Since still yields so metadata learns the size.
 func (f *file) remove(m marker) {
 	f.held.cutBelow(m.extent, m.version)
-	f.markers = slices.Insert(f.markers, f.firstAbove(m.version), m)
+	// decision: a removal whose identical marker already stands is not
+	// inserted twice. Two synced loss records can leave the same removal
+	// in one open — two losses of the same file, extent and version naming
+	// different sequence numbers — and a second copy of the marker would
+	// tell Since of one change twice while the two are settled together
+	// anyway. The identically-shaped copy is what is refused: a different
+	// removal at the same version still reports. Overturned by a caller
+	// ruled to read a marker's copy count.
+	if !markerStands(f.markers, m) {
+		f.markers = slices.Insert(f.markers, f.firstAbove(m.version), m)
+	}
 	if m.version.Compare(f.change) > 0 {
 		f.change = m.version
 	}
+}
+
+// markerStands reports whether an unsettled marker identical to m — the same
+// version, extent, kind and spec — already sits among ms.
+func markerStands(ms []marker, m marker) bool {
+	return slices.ContainsFunc(ms, func(x marker) bool {
+		return x.version == m.version && x.extent == m.extent && x.kind == m.kind &&
+			((x.clone == nil) == (m.clone == nil)) &&
+			(x.clone == nil || *x.clone == *m.clone)
+	})
 }
 
 // firstAbove returns the index of the file's first marker whose version is

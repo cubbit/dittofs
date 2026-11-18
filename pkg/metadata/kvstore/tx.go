@@ -22,19 +22,32 @@ func get(r kv.Reader, key []byte) ([]byte, bool, error) {
 	return b, err == nil, err
 }
 
-// raise adds one to the counter at key, an absent counter being zero.
-func raise(tx kv.Txn, key []byte) error {
-	b, ok, err := get(tx, key)
+// raise adds one to the counter at key, an absent counter being zero, and
+// returns the value it raised it to.
+func raise(tx kv.Txn, key []byte) (uint64, error) {
+	v, err := counterIn(tx, key)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	var v uint64
-	if ok {
-		if v, err = decodeCounter(b); err != nil {
-			return err
+	v++
+	return v, tx.Set(key, encodeCounter(v))
+}
+
+// raisePrincipals raises the principals generation once in a transaction,
+// however many users, groups, memberships and protocol-ID rows it writes,
+// and returns the raised value: the position of every principal the
+// transaction writes. raised holds the transaction's value, zero until its
+// first call, so a transaction keeps one and a retried attempt starts from
+// zero again. Every transaction that writes those records calls it.
+func raisePrincipals(tx kv.Txn, raised *uint64) (uint64, error) {
+	if *raised == 0 {
+		v, err := raise(tx, pgenKey)
+		if err != nil {
+			return 0, err
 		}
+		*raised = v
 	}
-	return tx.Set(key, encodeCounter(v+1))
+	return *raised, nil
 }
 
 // nextVersion is the version a changed record takes: above old, and at least
@@ -105,13 +118,18 @@ func pages[T any](ctx context.Context, db kv.KV, prefix, after []byte, load func
 // counter reads the counter at key, an absent counter being zero.
 func counter(ctx context.Context, db kv.KV, key []byte) (uint64, error) {
 	var v uint64
-	err := db.View(ctx, func(r kv.Reader) error {
-		b, ok, err := get(r, key)
-		if err != nil || !ok {
-			return err
-		}
-		v, err = decodeCounter(b)
+	err := db.View(ctx, func(r kv.Reader) (err error) {
+		v, err = counterIn(r, key)
 		return err
 	})
 	return v, err
+}
+
+// counterIn reads the counter at key, an absent one being zero.
+func counterIn(r kv.Reader, key []byte) (uint64, error) {
+	b, ok, err := get(r, key)
+	if err != nil || !ok {
+		return 0, err
+	}
+	return decodeCounter(b)
 }

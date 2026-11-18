@@ -98,8 +98,7 @@ Provide a `krb5.conf` pointing at the realm/KDC (e.g. `C:\etc\krb5.conf`):
   cubbit.local  = CUBBIT.LOCAL
 ```
 
-Add the `kerberos:` block to the DittoFS config (or set it via
-`dfsctl identity-provider set kerberos …` after start — note Kerberos changes are
+Add the `kerberos:` block to the DittoFS config (Kerberos changes are
 restart-required):
 
 ```yaml
@@ -139,22 +138,8 @@ Use `idmap: rid` (Samba `idmap_rid`-style): UIDs/GIDs are derived
 deterministically from the SID's RID, so you do **not** need to stamp
 `uidNumber`/`gidNumber` POSIX attributes on your AD objects.
 
-**CLI** (LDAP is hot-reloaded — no restart):
-
-```powershell
-dfsctl identity-provider test ldap --config '{ ...json below... }'   # dry-run first
-dfsctl identity-provider set  ldap --config '{
-  "enabled": true,
-  "url": "ldaps://vm1.cubbit.local:636",
-  "base_dn": "DC=cubbit,DC=local",
-  "bind_dn": "CN=svc-dittofs,CN=Users,DC=cubbit,DC=local",
-  "bind_password": "<svc-dittofs password>",
-  "idmap": "rid",
-  "realm": "CUBBIT.LOCAL",
-  "nested_groups": true
-}'
-dfsctl identity-provider list        # confirm LDAP shows configured + enabled
-```
+The CLI no longer configures identity providers, and the v2 CLI does not
+rebuild that command.
 
 **Pro dashboard:** go to **Identity Providers → LDAP**, fill in the URL, base DN,
 bind DN/password, and set idmap to `rid`; click **Test**, then **Save**.
@@ -297,29 +282,10 @@ kerberos:
 Restart the server. The log should show
 `NETLOGON machine account: offline provider active account=DITTOFS$`.
 
-Verify the machine account can reach the DC before testing a real logon, by
-interrogating the **live** server with `dfsctl` (admin credentials required):
-
-```bash
-# Live machine-account and secure-channel state
-dfsctl netlogon status
-#   Provider           online-join
-#   Account            DITTOFS$
-#   Realm              CUBBIT.LOCAL
-#   Channel connected  yes
-#   Joined             yes
-#   Next rotation      2026-07-17T09:00:00Z
-
-# Force a machine-password rotation now (online-join only)
-dfsctl netlogon rotate
-```
-
-`netlogon rotate` performs the complete rotation — it sets the new password on
-the DC (NetrServerPasswordSet2), switches the in-memory credential, and persists
-the new secret — so the stored secret never drifts from the DC. It applies only
-to the **online-join** provider (which owns the password lifecycle); for the
-offline/static provider rotate the secret by updating the machine-account
-configuration instead.
+The CLI no longer has commands to show the live machine-account state or to
+force a password rotation, and the v2 CLI rebuilds neither. For the
+offline/static provider, rotate the secret by updating the machine-account
+configuration.
 
 **Step 3 — test the NTLM path.** From a domain member, connect by **IP** (forces
 NTLM) or double-click the server in Explorer → Network:
@@ -383,7 +349,7 @@ workstation never bleed permissions.
 |---|---|
 | `System error 1219` on `net use` | A pre-existing/"Disconnected" session to the same server under different creds. `net use * /delete /y` and `cmdkey /delete:vm2.cubbit.local`, then retry. Not a DittoFS bug. |
 | Mount falls back to NTLM or fails with a signing error | Keytab lacks AES keys (RC4-only) — Windows 11 rejects RC4 (#1318). Re-export with `-crypto AES256-SHA1` and set `msDS-SupportedEncryptionTypes`. |
-| Grant by name returns "not found" | LDAP not configured/reachable, or the name isn't a directory object. Check `dfsctl identity-provider list` and `… test ldap`. Grant by `--sid` to bypass LDAP. |
+| Grant by name returns "not found" | LDAP not configured/reachable, or the name isn't a directory object. Grant by `--sid` to bypass LDAP. |
 | Access denied despite a grant | Confirm the grant with `dfsctl share permission list <share>`; confirm the user's ticket carries the granted group (their PAC group SIDs). |
 | `ldaps://` cert error | Set `tls.ca_cert_file` to the DC's issuing CA; do not disable verification in production. |
 

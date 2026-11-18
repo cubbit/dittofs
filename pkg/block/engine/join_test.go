@@ -176,7 +176,7 @@ func TestACloneWithAnotherSpecIsNotJoined(t *testing.T) {
 	u, h, src, dst := heldCloneUnit(t)
 	other := u.committedFile(t, "other", fill(2*mib, 'o'))
 	u.startCloneHeld(t, h, src, u.share.ID, dst)
-	same := u.bindShare(t, "same", entity.NamespaceID{})
+	same := u.bindShare(t, "same", u.share.Namespace)
 	for _, c := range []struct {
 		name     string
 		share    entity.ShareID

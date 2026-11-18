@@ -3,7 +3,6 @@ package vfs
 import (
 	"context"
 	"errors"
-	"net/netip"
 	"strconv"
 
 	"github.com/cubbit/dittofs/internal/vfs/admit"
@@ -60,6 +59,16 @@ func (fs *Filesystem) admitHandleFor(ctx context.Context, c vfs.Call, h vfs.Hand
 // per (share, identity) with every version §4.9 lists in the key once a
 // profile shows them.
 //
+// decision: a share the node has not bound, one just created or one it
+// refused, answers a Delay rather than an error, as a share reconcile binds
+// within a second of its creation. A share it refused for its configuration
+// keeps answering it until the configuration changes. Answer ErrUnavailable
+// for a refused share if clients are seen retrying one for long.
+//
+// ponytail: every admitted call asks the node's running set, which takes the
+// node's reconcile mutex, one lock all calls share. Publish the running set
+// as an atomic snapshot if that lock shows in a profile.
+//
 // decision: the share cap on the node's request buffers, admission's last
 // step, is not run: no request-buffer pool exists to charge. Add it, refusing
 // with DelayResources except for a call that only releases or reclaims
@@ -71,6 +80,9 @@ func (fs *Filesystem) admit(ctx context.Context, c vfs.Call, share entity.ShareI
 		return nil, func() {}, err
 	}
 	a, err := fs.check(ctx, c, share, secure, false, releases)
+	if err == nil && fs.running != nil && !fs.running(share) {
+		err = &vfs.Delay{Cause: vfs.DelayFrozen}
+	}
 	if err == nil {
 		err = fs.servedShard(ctx, a.share)
 	}
@@ -199,21 +211,15 @@ type join struct {
 // answered. A share's removal calls it once its mark has committed, and
 // before it ends the share's open state; every call counted after the mark
 // reads the mark and is refused at once. At ctx's end it answers ctx's
-// error.
+// error. The node's removal driver calls it, while serving and again at its
+// start, so a delete answers at once and a crash between the mark and the
+// join is finished at the next start.
 //
 // ponytail: waits for the share's count to reach zero, not for the calls
 // counted before it was called, so calls counted after the mark that keep
 // overlapping one another hold it, each refused but never all at once.
 // Count each share's calls per epoch, and wait for the epochs before the
 // mark's, if a removal is seen to wait on them.
-//
-// ponytail: only removeShare calls it, on a share seen to leave the share
-// list while serving; Start drops a share being removed with no join, as it
-// admits no call before. The node, not the control plane's delete, runs a
-// removal's join, while serving and again at its start, so a delete answers
-// at once and a crash between the mark and the join is finished at the next
-// start. Replace removeShare and Start's drop with the node's removal
-// driver, which runs both.
 func (fs *Filesystem) JoinShare(ctx context.Context, share entity.ShareID) error {
 	fs.mu.Lock()
 	j := fs.joins[share]
@@ -227,41 +233,6 @@ func (fs *Filesystem) JoinShare(ctx context.Context, share entity.ShareID) error
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// removeShare is the node's side of a share's removal, run once for each
-// share seen to leave the share list while serving: in the background, and
-// counted as a call, so a drain waits for it and its deadline ends it, it
-// joins the share's calls, then has open state drop the share's state,
-// telling each holder.
-//
-// ponytail: joins and drops a share the store marked for removal, and
-// nothing after; RFC 16 §2.3.2's full removal driver, on the node,
-// replaces it. It is started from admission, by a share gone from the share
-// list when its version moves, which costs every admission a read of that
-// version; a share marked after Start and before the first call builds the
-// list is never seen to leave it, and a run a drain or a stopped table fails
-// is not run again before the next start. It drops every shard of the share, not only those this node is
-// primary of, and keeps every share it ran for, one entry a removed share,
-// for the filesystem's life.
-func (fs *Filesystem) removeShare(share entity.ShareID) {
-	fs.mu.Lock()
-	seen := fs.removed[share]
-	fs.removed[share] = true
-	fs.mu.Unlock()
-	if seen {
-		return
-	}
-	ctx, done, err := fs.enter(context.Background())
-	if err != nil {
-		return
-	}
-	go func() {
-		defer done()
-		if fs.JoinShare(ctx, share) == nil {
-			_ = fs.open.Recovery().DropShare(ctx, share, netip.Addr{})
-		}
-	}()
 }
 
 // flavors is what a share lists, as SECINFO and a share's info list it, in

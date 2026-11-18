@@ -89,7 +89,7 @@ func unbindHeldByAnItem(t *testing.T) (*unit, *loopItem, <-chan error) {
 // runs.
 func TestUnbindJoinsTheBatchInFlightAndRefusesWhileItWaits(t *testing.T) {
 	u, held, unbound := unbindHeldByAnItem(t)
-	other := u.bindShare(t, "other", entity.NamespaceID{})
+	other := u.bindShare(t, "other", u.share.Namespace)
 	f := u.create(t, "f")
 
 	if err := u.writeTo(t, f); !isStale(err) {
@@ -202,7 +202,7 @@ func TestUnbindWithTenThousandPendingWritesAndARemovalItemInFlightJoinsOnlyTheIt
 // the items of a clone still run.
 func TestAnUnboundSharesQueuedItemsAreParkedAndOnlyClonesRun(t *testing.T) {
 	u := newUnit(t)
-	other := u.bindShare(t, "other", entity.NamespaceID{})
+	other := u.bindShare(t, "other", u.share.Namespace)
 	block := u.post(other, entity.RemoveTruncate, true)
 
 	t.Cleanup(func() {

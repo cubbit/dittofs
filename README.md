@@ -175,15 +175,12 @@ stores, mounts and other users. So: **set it before the very first start.**
 # 2. Create a user mapped to your host UID (needed for NFS write access)
 ./dfsctl user create --username $(whoami) --host-uid
 
-# 3. Create the stores (interactive prompts collect paths / S3 credentials)
-./dfsctl store metadata add --name default --type badger
-./dfsctl store block add --name s3-remote --type s3
-
-# 4. Create a share and grant access
+# 3. Create a share and grant access. The CLI no longer creates stores, so
+# --metadata and --block-store name stores that already exist.
 ./dfsctl share create --name /export --metadata default --block-store s3-remote
 ./dfsctl share permission grant /export --user $(whoami) --level read-write
 
-# 5. Mount it
+# 4. Mount it
 # Linux:
 sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
 # macOS:
@@ -192,10 +189,9 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/e
 echo "Hello DittoFS!" > /mnt/nfs/hello.txt
 ```
 
-> This uses persistent storage (BadgerDB metadata, S3 durable backend). Writes land in the
-> share's on-disk journal first and sync to S3 in the background. For dependency-free
-> local testing, use `--in-memory` for the metadata store and
-> `--type memory` for the block store instead.
+> With a BadgerDB metadata store and an S3 block store, writes land in the share's
+> on-disk journal first and sync to S3 in the background. For dependency-free local
+> testing, an in-memory metadata store and a `memory` block store work instead.
 
 ### Mount an SMB share
 

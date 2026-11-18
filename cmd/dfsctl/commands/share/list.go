@@ -5,10 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var listCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all shares",
-	Long: `List all shares configured on the DittoFS server.
+func newListCmd() *cobra.Command {
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all shares",
+		Long: `List all shares configured on the DittoFS server.
 
 Each row shows the share's name, the metadata and block stores it uses, its
 storage quota and current usage, the default permission level, the block
@@ -32,4 +33,6 @@ Examples:
 
   # Output as YAML
   dfsctl share list -o yaml`, RunE: cmdutil.Unavailable,
+	}
+	return listCmd
 }

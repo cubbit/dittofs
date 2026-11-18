@@ -67,11 +67,11 @@ jobs:
       # extract on every run between its go directive reaching 1.26.0 and this
       # change. Matches release.yml.
       - name: Set up Go
+        id: go
         if: matrix.language == 'go'
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/go-cache
         with:
           go-version-file: k8s/dittofs-operator/go.mod
-          cache: true
       # Autobuild compiles fdbkv, which links libfdb_c on Linux.
       - name: Install the FoundationDB client
         if: matrix.language == 'go'
@@ -174,3 +174,14 @@ jobs:
           # mean running a QL query against the finalized one. Upgrade to that if
           # a package-level gap ever ships.
           echo "the Go extractor discovered k8s/dittofs-operator and reported no extraction failures"
+
+      # Only a push run saves: a pull request run reads its base branch's
+      # entries and every run reads the default branch's, while what a pull
+      # request run saves only that pull request's runs can read, and a merge
+      # queue run's only its own re-runs.
+      - name: Save the Go caches
+        if: matrix.language == 'go' && github.event_name == 'push' && steps.go.outputs.cache-hit != 'true' && steps.go.outputs.key != ''
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.go.outputs.path }}
+          key: ${{ steps.go.outputs.key }}

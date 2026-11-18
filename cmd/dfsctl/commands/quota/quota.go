@@ -5,11 +5,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Cmd is the parent command for per-identity quota management.
-var Cmd = &cobra.Command{
-	Use:   "quota",
-	Short: "Per-identity quota management",
-	Long: `Manage per-identity (user/group/default-user) storage quotas on a share.
+// New returns the parent command for per-identity quota management.
+func New() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "quota",
+		Short: "Per-identity quota management",
+		Long: `Manage per-identity (user/group/default-user) storage quotas on a share.
 
 Quotas bound both bytes and inode (file) count, with optional soft thresholds
 and a grace period before a soft threshold is enforced as hard. These operations
@@ -30,10 +31,9 @@ Examples:
 
   # Remove a per-user quota
   dfsctl quota remove /archive --scope user --id 1000`,
-}
-
-func init() {
-	Cmd.AddCommand(listCmd)
-	Cmd.AddCommand(setCmd)
-	Cmd.AddCommand(removeCmd)
+	}
+	cmd.AddCommand(newListCmd())
+	cmd.AddCommand(newSetCmd())
+	cmd.AddCommand(newRemoveCmd())
+	return cmd
 }

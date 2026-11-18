@@ -184,9 +184,17 @@ func TestVectorsDecodeToTheirFields(t *testing.T) {
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			n, err := framer{}.BodyLen(c.vector[:lengthLen])
-			if err != nil || n != len(c.vector)-lengthLen {
-				t.Fatalf("BodyLen = %d, %v; want %d", n, err, len(c.vector)-lengthLen)
+			n, last, err := framer{}.BodyLen(c.vector[:lengthLen])
+			if err != nil || !last || n != len(c.vector)-lengthLen {
+				t.Fatalf("BodyLen = %d, %t, %v; want %d and the last fragment", n, last, err, len(c.vector)-lengthLen)
+			}
+			// The mark's top bit, read back: a fragment of one byte, not the
+			// record's last.
+			more := append([]byte{}, c.vector[:lengthLen]...)
+			more[0] |= 0x80
+			fn, flast, ferr := framer{}.BodyLen(more)
+			if ferr != nil || flast || fn != n {
+				t.Fatalf("a fragment's mark reads %d, %t, %v; want %d and more to follow", fn, flast, ferr, n)
 			}
 			got := decodeAll(t, c.vector[lengthLen:])
 			if len(got) != len(c.want) {
@@ -220,14 +228,22 @@ func TestAppendEncodesToTheVectors(t *testing.T) {
 	}
 }
 
-func TestBodyLenRefusesPastTheCap(t *testing.T) {
-	if n, err := (framer{}).BodyLen([]byte{0x00, 0x10, 0x00, 0x00}); err != nil || n != 1<<20 {
-		t.Errorf("BodyLen at the cap = %d, %v; want 1 MiB", n, err)
+// The record cap and its fragment count are the framer's own constants: 1 MiB
+// of body, the transfer class's capacity, in four fragments.
+func TestMaxRecord(t *testing.T) {
+	if n, fragments := (framer{}).MaxRecord(); n != 1<<20 || fragments != 4 {
+		t.Fatalf("MaxRecord = %d, %d; want 1 MiB in 4 fragments", n, fragments)
 	}
-	if _, err := (framer{}).BodyLen([]byte{0x00, 0x10, 0x00, 0x01}); !errors.Is(err, errTooLong) {
+}
+
+func TestBodyLenRefusesPastTheCap(t *testing.T) {
+	if n, last, err := (framer{}).BodyLen([]byte{0x00, 0x10, 0x00, 0x00}); err != nil || !last || n != 1<<20 {
+		t.Errorf("BodyLen at the cap = %d, %t, %v; want 1 MiB and the last fragment", n, last, err)
+	}
+	if _, _, err := (framer{}).BodyLen([]byte{0x00, 0x10, 0x00, 0x01}); !errors.Is(err, errTooLong) {
 		t.Errorf("BodyLen one byte past the cap = %v, want a refusal", err)
 	}
-	if _, err := (framer{}).BodyLen([]byte{0x00, 0x10}); err == nil {
+	if _, _, err := (framer{}).BodyLen([]byte{0x00, 0x10}); err == nil {
 		t.Error("BodyLen of a 2-byte prefix was accepted")
 	}
 }
@@ -251,8 +267,14 @@ func TestDecodeRefusesAHeaderOrNextOutsideTheRecord(t *testing.T) {
 		{"a next that leaves no room for a header", body(headerLen+1, 2*headerLen), 0, errNext},
 		{"a next past the end", body(1<<31, 2*headerLen), 0, errNext},
 	} {
-		if _, err := (headerCodec{}).Decode(c.rec, c.off); !errors.Is(err, c.want) {
+		h, err := (headerCodec{}).Decode(c.rec, c.off)
+		if !errors.Is(err, c.want) {
 			t.Errorf("%s: Decode = %v, want %v", c.name, err, c.want)
+		}
+		// A header that decoded comes back with a bad next, so its refusal
+		// can be addressed; one that runs short comes back with none.
+		if (h != nil) != (c.want == errNext) {
+			t.Errorf("%s: Decode returned the header %v with %v", c.name, h, err)
 		}
 	}
 	if _, err := (headerCodec{}).Decode(body(headerLen, 2*headerLen), 0); err != nil {
@@ -327,6 +349,22 @@ func loopback(t *testing.T) (client, server net.Conn) {
 	_ = server.SetDeadline(deadline)
 
 	return client, server
+}
+
+// A reply the server sends in fragments is refused: this protocol writes one
+// fragment per reply. The body is a valid reply, so the flag is the only thing
+// wrong with it.
+func TestClientRefusesAFragmentedReply(t *testing.T) {
+	conn, peer := loopback(t)
+	c := NewClient(conn)
+	rec := bytes.Clone(replyVector)
+	rec[0] |= 0x80 // more fragments follow
+	if _, err := peer.Write(rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Recv(); !errors.Is(err, ErrFragmentedReply) {
+		t.Errorf("a reply in fragments returns %v, want the fragment refusal", err)
+	}
 }
 
 // The client writes exactly the bytes Append gives, and its balance is the
@@ -442,25 +480,28 @@ func TestHeaderDecodeAndEncodeAllocateNothing(t *testing.T) {
 // header that decodes re-encodes, as its reply, to bytes that decode to the
 // same fields.
 func FuzzFrame(f *testing.F) {
-	for _, v := range [][]byte{echoVector, chainVector, replyVector, {0x00, 0x10, 0x00, 0x01}, {}} {
+	for _, v := range [][]byte{echoVector, chainVector, replyVector, {0x00, 0x10, 0x00, 0x01}, {0x80, 0x00, 0x00, 0x10}, {}} {
 		f.Add(v)
 	}
 	f.Fuzz(func(t *testing.T, record []byte) {
 		if len(record) < lengthLen {
-			if _, err := (framer{}).BodyLen(record); err == nil {
+			if _, _, err := (framer{}).BodyLen(record); err == nil {
 				t.Fatal("a prefix shorter than 4 bytes was accepted")
 			}
 			return
 		}
-		n, err := framer{}.BodyLen(record[:lengthLen])
+		n, last, err := framer{}.BodyLen(record[:lengthLen])
 		if err != nil {
-			if binary.BigEndian.Uint32(record) <= maxBody {
+			if binary.BigEndian.Uint32(record)&^moreFragments <= maxBody {
 				t.Fatalf("a length within the cap was refused: %v", err)
 			}
 			return
 		}
 		if n > maxBody {
 			t.Fatalf("a length of %d past the cap was accepted", n)
+		}
+		if last != (binary.BigEndian.Uint32(record[:lengthLen])&moreFragments == 0) {
+			t.Fatalf("a prefix of %x reads as last %t", record[:lengthLen], last)
 		}
 		body := record[lengthLen:]
 		if n < len(body) {
@@ -577,5 +618,42 @@ func fuzzCompound(t *testing.T, body []byte) {
 			t.Fatalf("a member took %d of the %d bytes left", took+used, len(rest))
 		}
 		rest = rest[took+used:]
+	}
+}
+
+// Frame writes the length BodyLen reads back, as a record's one fragment.
+func TestFrameWritesTheLengthBodyLenReads(t *testing.T) {
+	for _, n := range []int{0, 1, headerLen, maxBody} {
+		prefix := framer{}.Frame([]byte("x"), n)[1:]
+		if got, last, err := (framer{}).BodyLen(prefix); err != nil || got != n || !last || len(prefix) != (framer{}).HeaderLen() {
+			t.Errorf("Frame of %d bytes reads back as %d, last %v (%v), %d bytes long", n, got, last, err, len(prefix))
+		}
+	}
+}
+
+// Args is a message's own arguments, wherever it lies in the record, and
+// ReplyLen is what Encode appends for a reply header.
+func TestArgsAndReplyLen(t *testing.T) {
+	body := Append(nil, Msg{Op: OpEcho, Version: 1, Payload: []byte("first")}, Msg{Op: OpEcho, Version: 1, Payload: []byte("second")})[lengthLen:]
+	rec := &resources.Buf{B: body}
+	first, err := headerCodec{}.Decode(rec, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := headerCodec{}.Decode(rec, first.Next())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for h, want := range map[core.Header]string{first: "\x00first", second: "\x00second"} {
+		if got := (headerCodec{}).Args(rec, h); string(got) != want {
+			t.Errorf("Args = %q, want %q", got, want)
+		}
+	}
+	out := &resources.Buf{}
+	if err := (headerCodec{}).Encode(first, 0, out); err != nil {
+		t.Fatal(err)
+	}
+	if n := (headerCodec{}).ReplyLen(first); n != len(out.B) {
+		t.Errorf("ReplyLen = %d, Encode appended %d", n, len(out.B))
 	}
 }

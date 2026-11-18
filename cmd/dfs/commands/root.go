@@ -6,57 +6,45 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version, Commit and Date describe the build; main sets them from the values
+// -ldflags gives it, before building a root.
 var (
-	// Version information injected at build time.
 	Version = "dev"
 	Commit  = "none"
 	Date    = "unknown"
-
-	// Global flags.
-	cfgFile string
 )
 
-// rootCmd represents the base command when called without any subcommands.
-var rootCmd = &cobra.Command{
-	Use:   "dfs",
-	Short: "DittoFS - Modular virtual filesystem",
-	Long: `DittoFS is an experimental modular virtual filesystem that decouples
+// NewRoot builds dfs's command tree for one invocation. Its flags live in the
+// tree, so the values one run parses never reach a tree built for another.
+func NewRoot() *cobra.Command {
+	root := &cobra.Command{
+		Use:   "dfs",
+		Short: "DittoFS - Modular virtual filesystem",
+		Long: `DittoFS is an experimental modular virtual filesystem that decouples
 file interfaces from storage backends, with pluggable metadata and content
 stores. This build serves no file protocol.
 
 Use "dfs [command] --help" for more information about a command.`,
-	SilenceUsage:  true,
-	SilenceErrors: true,
-}
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	root.PersistentFlags().String("config", "", "config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)")
 
-// Execute adds all child commands to the root command and sets flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
-func Execute() error {
-	return rootCmd.Execute()
-}
-
-// GetRootCmd returns the root command for testing purposes.
-func GetRootCmd() *cobra.Command {
-	return rootCmd
-}
-
-func init() {
-	// Global persistent flags
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)")
-
-	// Add subcommands
-	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(initCmd)
-	rootCmd.AddCommand(startCmd)
-	rootCmd.AddCommand(resetAdminCmd)
-	rootCmd.AddCommand(config.Cmd)
-	rootCmd.AddCommand(completionCmd)
+	root.AddCommand(
+		newVersionCmd(),
+		newInitCmd(),
+		newStartCmd(),
+		newResetAdminCmd(),
+		config.New(),
+		newCompletionCmd(),
+	)
 
 	// Hide the default completion command (we provide our own)
-	rootCmd.CompletionOptions.DisableDefaultCmd = true
+	root.CompletionOptions.DisableDefaultCmd = true
+	return root
 }
 
-// GetConfigFile returns the config file path from the global flag.
-func GetConfigFile() string {
-	return cfgFile
+// Execute runs one dfs invocation with the process's arguments.
+func Execute() error {
+	return NewRoot().Execute()
 }

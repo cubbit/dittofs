@@ -58,6 +58,20 @@ func TestTablesBuild(t *testing.T) {
 	if got, reply := v2.Errors.Map(vfs.ErrDelay, v2.Ops[OpCreate], 2); got != StatusDelay || !reply {
 		t.Errorf("version 2 maps ErrDelay to %d, reply %v; want %d", got, reply, StatusDelay)
 	}
+	if v1.Protocol != Name || v2.Protocol != Name {
+		t.Errorf("the tables record under %q and %q, want %q", v1.Protocol, v2.Protocol, Name)
+	}
+}
+
+// Every connection's stages, on the full protocol and on Bare, record under
+// testproto's name.
+func TestStagesNameTheProtocol(t *testing.T) {
+	p := New(adapter.Deps{})
+	for name, q := range map[string]core.Protocol{"full": p, "bare": p.Bare()} {
+		if got := q.NewConn(nil).Protocol; got != Name {
+			t.Errorf("the %s protocol's stages record under %q, want %q", name, got, Name)
+		}
+	}
 }
 
 func TestEchoAnswersItsPayloadUnderItsOwnRole(t *testing.T) {
@@ -218,26 +232,34 @@ func TestRows(t *testing.T) {
 	}
 }
 
-// Every refusal of core's has a row, the two drain errors answer nothing, and
-// only the table that holds holds, for HoldFor from the hold's start.
+// Each error is answered by the first row that matches it in NewErrorTable's
+// order, a typed row before a sentinel's, since no row here names operations
+// or versions. Every refusal of core's has a status of its own, the two drain
+// errors answer nothing, and only the table that holds holds ErrDelay, for
+// HoldFor from the hold's start; ErrDelay of DelayResources is answered
+// StatusDelay at once in both tables, by a typed row.
 func TestErrorRows(t *testing.T) {
+	resources := &vfs.Delay{Cause: vfs.DelayResources}
 	for _, holds := range []bool{false, true} {
 		rows := errorRows(holds)
-		find := func(err error) *core.ErrorRow {
-			var found *core.ErrorRow
+		first := func(err error) *core.ErrorRow {
+			var sentinel *core.ErrorRow
 			for i := range rows {
-				if errors.Is(err, rows[i].Err) {
-					if found != nil {
-						t.Errorf("two rows match %v", err)
-					}
-					found = &rows[i]
+				if !errors.Is(err, rows[i].Err) {
+					continue
+				}
+				if _, typed := rows[i].Err.(interface{ Is(error) bool }); typed {
+					return &rows[i]
+				}
+				if sentinel == nil {
+					sentinel = &rows[i]
 				}
 			}
-			return found
+			return sentinel
 		}
 		statuses := map[core.Status]error{}
 		for _, err := range append(core.Errors(), vfs.ErrDelay) {
-			r := find(err)
+			r := first(err)
 			if r == nil {
 				t.Errorf("holds %v: no row maps %v", holds, err)
 				continue
@@ -260,13 +282,16 @@ func TestErrorRows(t *testing.T) {
 				t.Errorf("holds %v: %v has a Hold: %v", holds, err, r.Hold != nil)
 			}
 		}
-		if r := find(vfs.ErrDelay); holds && r != nil && r.Hold != nil {
+		if r := first(vfs.ErrDelay); holds && r != nil && r.Hold != nil {
 			start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 			if got := r.Hold(vfs.ErrDelay, start); !got.Equal(start.Add(HoldFor)) {
 				t.Errorf("the hold ends at %v, want %v after its start", got, HoldFor)
 			}
 		}
-		if find(vfs.ErrNotFound) != nil {
+		if r := first(resources); r == nil || r == first(vfs.ErrDelay) || r.Hold != nil || r.NoReply || r.Status != StatusDelay {
+			t.Errorf("holds %v: %v is answered by %+v; want a typed row answering StatusDelay at once", holds, resources, r)
+		}
+		if first(vfs.ErrNotFound) != nil {
 			t.Errorf("holds %v: a row maps ErrNotFound; the tables leave service errors to the fault status", holds)
 		}
 	}
@@ -298,8 +323,55 @@ func TestRouteRefusesAVersionItDoesNotServe(t *testing.T) {
 		v    core.Version
 	}{{"version 0", full, 0}, {"version 3", full, 3}, {"version 2 on Bare", full.Bare(), 2}} {
 		st := c.p.NewConn(nil)
-		if _, _, err := st.Router.Route(header(c.v), nil); !errors.Is(err, core.ErrVersion) {
-			t.Errorf("%s: Route = %v, want ErrVersion", c.name, err)
+		if tb, _, err := st.Router.Route(header(c.v), nil); !errors.Is(err, core.ErrVersion) || tb != nil {
+			t.Errorf("%s: Route = %v, %v; want ErrVersion and no table", c.name, tb, err)
+		}
+	}
+
+	// A refusal after the table is chosen comes back with it: version 2 on
+	// a connection that negotiated 1.
+	st := full.NewConn(nil)
+	st.Router.(*router).cs.version.Store(1)
+	if tb, _, err := st.Router.Route(header(2), nil); !errors.Is(err, core.ErrVersion) || tb != full.tables()[1] {
+		t.Errorf("version 2 after negotiating 1: Route = %v, %v; want version 2's table with ErrVersion", tb, err)
+	}
+}
+
+// A router built with no connection, as the seam builds it, negotiates up to
+// version 2 without reading settings.
+func TestRouteNegotiatesWithNoConnection(t *testing.T) {
+	b := Append(nil, Msg{Op: OpNegotiate, Version: 1})[lengthLen:]
+	h, err := headerCodec{}.Decode(&resources.Buf{B: b}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, r, err := New(adapter.Deps{}).NewConn(nil).Router.Route(h, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, ok := r.State.(*state); !ok || s.max != 2 {
+		t.Errorf("a negotiate with no connection may pick up to %v, want 2", r.State)
+	}
+}
+
+// Both stage sets carry the table that answers a refusal before Route.
+func TestStagesMapTheirRefusals(t *testing.T) {
+	p := New(adapter.Deps{})
+	for name, q := range map[string]core.Protocol{"full": p, "bare": p.Bare()} {
+		errs := q.NewConn(nil).Errors
+		if errs == nil {
+			t.Fatalf("the %s protocol's stages have no Errors", name)
+		}
+		for err, want := range map[error]core.Status{
+			core.ErrDecode:                        StatusDecode,
+			errChecksum:                           StatusChecksum,
+			errOverdraw:                           StatusOverdraw,
+			core.ErrVersion:                       StatusVersion,
+			&vfs.Delay{Cause: vfs.DelayResources}: StatusDelay,
+		} {
+			if got, reply := errs.Map(err, nil, 1); got != want || !reply {
+				t.Errorf("the %s protocol's stages map %v to %d (reply %v), want %d", name, err, got, reply, want)
+			}
 		}
 	}
 }

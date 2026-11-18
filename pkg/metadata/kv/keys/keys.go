@@ -56,7 +56,23 @@ const (
 	KindTG     byte = 0x37
 	KindMKP    byte = 0x38
 	KindIDS    byte = 0x3A // server-wide ID allocators, IDS‖kind; 0x39 is retired
+	KindPGEN   byte = 0x3B // principals generation
+	KindOP     byte = 0x3C // operation: OP‖opID
+	KindOPR    byte = 0x3D // running-operation index: OPR‖kind‖target → opID
+	KindIK     byte = 0x3E // idempotency record: IK‖account‖key
+	KindXP     byte = 0x3F // expiry index: XP‖expiry‖tagged, empty
+	KindAU     byte = 0x45 // audit record: AU‖time‖auditID
+	KindAUX    byte = 0x46 // audit index: AUX‖tagged‖time‖auditID, empty
 	KindJD     byte = 0x48 // a node's journal device to its journal: JD‖node‖device
+	KindUA     byte = 0x4A // enabled-admin index: UA‖principal, empty
+	KindNSR    byte = 0x4B // remote store to namespace: NSR‖store‖ns, empty
+	KindSS     byte = 0x40 // session: SS‖session, and SS‖session‖h‖hash, empty
+	KindSSH    byte = 0x41 // refresh-token index: SSH‖hash → session
+	KindAT     byte = 0x42 // API token: AT‖tokenID
+	KindATH    byte = 0x43 // token index: ATH‖hash → tokenID
+	KindATA    byte = 0x44 // per-account token index: ATA‖principal‖tokenID, empty
+	KindSF     byte = 0x49 // sign-in counts: SF‖tagged
+	KindSSA    byte = 0x4C // per-account session index: SSA‖principal‖session, empty
 )
 
 // Sub-kinds under F‖id. The File itself has none.
@@ -113,6 +129,7 @@ const (
 	SPr   byte = 0x19 // pending-release index: S‖id‖pr‖shard‖file
 	SRr   byte = 0x1A // unfinished-removal index: S‖id‖rr‖shard‖file‖version
 	SDo   byte = 0x1B // durable-open index: S‖id‖do‖shard‖file‖openID
+	SGv   byte = 0x1E // grant-list version
 )
 
 // Sub-kinds under NS‖ns, and under NS‖ns‖gc.
@@ -123,6 +140,8 @@ const (
 	NSKey   byte = 0x04
 	NSBk    byte = 0x05
 	NSDrain byte = 0x06
+	NSInfo  byte = 0x0A // the namespace's own record
+	NSShare byte = 0x0B // namespace to share: NS‖ns‖share‖ShareID, empty
 
 	GcLease   byte = 0x01
 	GcRecheck byte = 0x02
@@ -137,6 +156,7 @@ const (
 const (
 	NExp byte = 0x01
 	NClk byte = 0x02
+	NSt  byte = 0x03 // the node's status
 
 	SHRq byte = 0x01
 	SHXh byte = 0x02
@@ -144,6 +164,8 @@ const (
 	SHRm byte = 0x04
 
 	CLSh byte = 0x01
+
+	SSh byte = 0x01 // a refresh hash the session has had
 )
 
 // Sub-kinds under J‖journal.
@@ -168,6 +190,21 @@ const (
 	// 0x03 is unassigned: it named the header key, which is gone.
 	KeyExport byte = 0x04
 	KeyData   byte = 0x05
+
+	XPIdempotency byte = 0x01
+	XPOperation   byte = 0x02
+	XPSession     byte = 0x03
+	XPSource      byte = 0x04 // a source's sign-in count
+	XPToken       byte = 0x05
+	XPPair        byte = 0x06 // an account-and-source pair's sign-in count
+
+	SFAccount byte = 0x01
+	SFSource  byte = 0x02
+	SFPair    byte = 0x03
+
+	AUXActor  byte = 0x01
+	AUXTarget byte = 0x02
+	AUXNode   byte = 0x03
 )
 
 // IDLen is the length of every minted identifier.

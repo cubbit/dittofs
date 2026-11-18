@@ -64,15 +64,69 @@ func TestAnUnnamedZeroHeaderSegmentWithNoProofIsEndedNotSkipped(t *testing.T) {
 	wantDamaged(t, st)
 }
 
+// TestAZeroHeaderSegmentsTailIsProvenLikeAnyOthers holds that a zero-header
+// segment whose records the rebuild walked reaches the tail's proof: its
+// records were on the journal's books, so a tail record the device lost is
+// re-appended and ends the segment, and one whose bytes never verified drops
+// as never written, keeping the fate the classing gave a segment no proof
+// covers its header slot — ended at the last record that held, never a
+// torn tail's seal written over the slot nothing proves.
+func TestAZeroHeaderSegmentsTailIsProvenLikeAnyOthers(t *testing.T) {
+	const overwrite = 0x4100
+	t.Run("a lost tail record is re-appended and the segment ends", func(t *testing.T) {
+		endA := endAfter(tailRec(200, overwrite))
+		endB := endAfter(tailRec(200, overwrite), tailRec(201, 0x8100))
+		full := buildSeg(2, syncedRec(200, overwrite, endA), syncedRec(201, 0x8100, endA))
+		name := format.SegmentName(2)
+		goodB := full[endA:endB]
+
+		r := newRig(t)
+		r.writeFormat()
+		// The header slot reads zero past a synced-through that covers it, so
+		// the classing marks the slot damaged, the segment intact.
+		r.plantSeg(2, zeroHeader(full[:endA]))
+		r.writeLiveOnly(name, endA, goodB) // B, whole in the cache alone
+		r.dropSyncs(name)
+
+		st := runTailsReserve(t, r)
+
+		wantReappends(t, st, reappendOf(t, 2, endA, goodB))
+		if got := planted(st); got != 2 {
+			t.Errorf("the index holds %d entries, want 2: A attached and B re-appended from the cache", got)
+		}
+		wantFate(t, st, 2, fateEnded, endB)
+		wantDamaged(t, st, 2)
+	})
+	t.Run("a torn tail record drops and the ended fate stands", func(t *testing.T) {
+		endA := endAfter(tailRec(200, overwrite))
+		seg := buildSeg(2, tailRec(200, overwrite), tailRec(201, 0x8100))
+		seg[endA+format.RecordHeaderSize+8+2] ^= 0xff // B's payload, torn everywhere
+
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(2, zeroHeader(seg))
+		st := runUnchanged(t, r, 2)
+
+		if got := planted(st); got != 1 {
+			t.Errorf("the index holds %d entries, want 1: A attaches and the torn B drops as never written", got)
+		}
+		noTornReport(t, st)
+		wantFate(t, st, 2, fateEnded, endA)
+		wantDamaged(t, st)
+	})
+}
+
 // An all-zero spare at the segment cap scans empty: it holds no record, so it
-// takes no fate and no damage, and the open changes nothing.
+// takes no fate and no damage, and the open changes nothing. The spares phase
+// re-adopts each where it stands, so a fixture planted cap-sized keeps them
+// on disk as this row reads them; the phase unlinks one short or over the cap.
 func TestAnAllZeroSpareScansEmptyAndTakesNoFate(t *testing.T) {
 	const spares = 6
 	r := newRig(t)
 	r.writeFormat()
 	r.plantSeg(1, buildSeg(1, tailRec(200, 0x4100)))
 	for id := core.SegmentID(2); id < 2+spares; id++ {
-		r.plantSeg(id, make([]byte, 1<<16))
+		r.plantSeg(id, make([]byte, testCap))
 	}
 	before := r.snapshot()
 	st := runTails(t, r)

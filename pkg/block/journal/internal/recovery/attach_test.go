@@ -28,6 +28,11 @@ type rig struct {
 	seam *kit.Seam
 
 	clk kit.DrivenClock
+
+	// faults holds the rules the rig's fault helpers have collected,
+	// scheduled together each time: the seam's fault is one schedule, and
+	// rescheduling only the last rule would drop the ones a leg set before it.
+	faults []kit.Rule
 }
 
 // newRig makes the directory and the seam over it, and registers the cleanup.
@@ -111,12 +116,13 @@ func (r *rig) run(ctx context.Context) (Attached, []core.SegmentRange) {
 }
 
 // failReads makes reads of name fail count times with EIO, then pass; zero
-// fails every read.
+// fails every read. The rule joins the ones the rig's fault helpers
+// scheduled before it, so a leg that both drops a file's syncs and fails its
+// reads keeps both.
 func (r *rig) failReads(name string, count int) {
 	r.t.Helper()
-	if err := r.seam.Schedule(kit.Failing(kit.OpRead, name, count, syscall.EIO)); err != nil {
-		r.t.Fatalf("fixture: schedule: %v", err)
-	}
+	r.faults = append(r.faults, kit.Failing(kit.OpRead, name, count, syscall.EIO))
+	r.scheduleFaults()
 }
 
 func TestAttachOwnSegment(t *testing.T) {

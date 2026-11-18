@@ -727,15 +727,8 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 			return false, err
 		}
 	}
-	for gen, d := range deltas {
-		ns, _ := nss.namespace(gen)
-		blocks := map[entity.BlockName]*entity.Block{}
-		if err := applyCounts(tx, ns, d, blocks); err != nil {
-			return false, err
-		}
-		if err := writeBlocks(tx, ns, blocks); err != nil {
-			return false, err
-		}
+	if err := applyDeltas(tx, nss, deltas); err != nil {
+		return false, err
 	}
 
 	m.Cursor = batch.End()
@@ -756,6 +749,25 @@ func (s *Store) resumeBatch(tx kv.Txn, share entity.ShareID, file entity.FileID)
 		return false, err
 	}
 	return true, nil
+}
+
+// applyDeltas applies a batch's refcount changes, gathered per namespace
+// generation, to each namespace's chunk and block records.
+func applyDeltas(tx kv.Txn, nss shareNamespaces, deltas map[uint32]counts) error {
+	for gen, d := range deltas {
+		ns, err := nss.namespace(gen)
+		if err != nil {
+			return err
+		}
+		blocks := map[entity.BlockName]*entity.Block{}
+		if err := applyCounts(tx, ns, d, blocks); err != nil {
+			return err
+		}
+		if err := writeBlocks(tx, ns, blocks); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // finishRemoval is the one write of the File a removal's phase 2 makes, in

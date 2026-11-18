@@ -114,10 +114,8 @@ jobs:
           SUITE: ${{ inputs.suite }}
           # decision: on feat/storage-v2 the data path answers unavailable until
           # the adapters run on vfs.Service, so the data-path suites are skipped
-          # there, and so is integration/ad-dc, which drives SMB through the old
-          # adapter against the AD DC: nothing merged there changes that flow.
-          # integration/kerberos is skipped too: the Kerberos code it tests is
-          # deleted there.
+          # there. integration/kerberos is skipped too: the Kerberos code it
+          # tests is deleted there.
           # unit/windows moves no file bytes but is skipped for its cost;
           # journal-platforms.yml covers the journal on Windows. Delete V2 once
           # the adapters run on vfs.Service. A merge queue run's ref is its
@@ -132,7 +130,7 @@ jobs:
           # new suite runs only once it is named there.
           jq -c --arg suite "$SUITE" --arg v2 "$V2" '[(.cells // [])[] | select($suite == "" or .suite == $suite)
               | select($v2 != "true" or ((IN(.suite; "e2e", "pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04",
-                  "nfstest", "clients", "fio-verify", "bench-smoke", "system") or IN(.name; "unit/windows", "integration/ad-dc", "integration/kerberos")) | not))
+                  "nfstest", "clients", "fio-verify", "bench-smoke", "system") or IN(.name; "unit/windows", "integration/kerberos")) | not))
               | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
                 or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest" or .suite == "fio-verify"
@@ -192,10 +190,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Restores on every run; a step at the job's end saves, on a push only.
       - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
+        id: go
+        uses: ./.github/actions/go-cache
 
       # Every module before anything builds: the cache is saved once per key
       # and never updated, so whichever job saves it saves all of them. -x
@@ -332,6 +330,18 @@ jobs:
             !test/harness/results/*/tools/
           if-no-files-found: ignore
 
+      # Only a push run saves: a pull request run reads its base branch's
+      # entries and every run reads the default branch's, while what a pull
+      # request run saves only that pull request's runs can read, and a merge
+      # queue run's only its own re-runs.
+      - &go-save
+        name: Save the Go caches
+        if: github.event_name == 'push' && steps.go.outputs.cache-hit != 'true' && steps.go.outputs.key != ''
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.go.outputs.path }}
+          key: ${{ steps.go.outputs.key }}
+
   # Reported and annotated like the blocking cells, and a failed one shows as
   # failed on the pull request, but gate doesn't wait for it, and it doesn't
   # fail the run, whose result is what CI Health reads for develop.
@@ -370,9 +380,8 @@ jobs:
       # output into annotations on the pull request.
       - &go
         name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
+        id: go
+        uses: ./.github/actions/go-cache
 
       - *download
 
@@ -429,6 +438,8 @@ jobs:
           name: dt-run-${{ github.job }}-${{ github.run_attempt }}
           path: test/harness/results/
           if-no-files-found: ignore
+
+      - *go-save
 
   lint-repo:
     name: Repo Checks
@@ -541,6 +552,10 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: '"$RUNNER_TEMP/dt" run unit/adapter-allocs --tier "$TIER" --ci --retry "$RETRY"'
 
+      - name: Run unit/whole-tree
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: '"$RUNNER_TEMP/dt" run unit/whole-tree --tier "$TIER" --ci --retry "$RETRY"'
+
       # On feat/storage-v2 nothing else links the commands: the data-path
       # suites that build them are skipped there.
       - name: Build the commands
@@ -549,6 +564,7 @@ jobs:
 
       - *report
       - *upload
+      - *go-save
 
       # A retry rewrites the coverage profile with the retried tests' alone,
       # and a pull request's holds only the packages it changed, so neither
@@ -606,6 +622,7 @@ jobs:
 
       - *report
       - *upload
+      - *go-save
 
   # Fails unless plan passed and every other job it needs passed or skipped:
   # a run job passes only when its cell's dt run exited 0, and a fixed job

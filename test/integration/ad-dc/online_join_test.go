@@ -65,9 +65,7 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 	}
 
 	// Start the AD-DC fixture (reuses setupADDC from ad_dc_integration_test.go).
-	setupADDC(t)
-
-	dcIP := getContainerIP(t)
+	dcIP := setupADDC(t)
 	t.Logf("AD-DC container IP: %s", dcIP)
 
 	// NETLOGON needs EPM (135) + SMB (445); LDAP join needs 389 (StartTLS).
@@ -82,7 +80,7 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 
 	// Online-join config: create DITTOJOIN$ over StartTLS against the DC's LDAP,
 	// binding as the domain Administrator (which can create computer objects).
-	// The DC's self-signed cert is accepted via InsecureSkipVerify (lab fixture).
+	// The DC's certificate is verified against the fixture CA.
 	cfg := netlogon.OnlineConfig{
 		AccountName: onlineJoinMachineName + "$",
 		Workstation: onlineJoinMachineName,
@@ -98,7 +96,7 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 			MachineName:  onlineJoinMachineName,
 			DNSHostName:  fmt.Sprintf("%s.%s", onlineJoinMachineName, "dittofs.ad"),
 			SPNs:         []string{"HOST/" + onlineJoinMachineName + ".dittofs.ad"},
-			TLS:          netlogon.JoinTLSConfig{InsecureSkipVerify: true},
+			TLS:          netlogon.JoinTLSConfig{CACertFile: copyADCA(t)},
 		},
 	}
 

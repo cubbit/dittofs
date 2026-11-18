@@ -67,6 +67,43 @@ type Targets struct {
 	Reserve  int
 }
 
+// AdoptClasses returns the classes of the first n adopted spares: the fill
+// order fills the headroom first, then the repack reserve, then the content
+// class, and every spare past every target takes the content class. The
+// re-adoptions the spares phase records ascend by id, so the caller hands the
+// i-th class to the i-th id: the lowest ids land in the headroom. A caller
+// with other claimants on the headroom — the spares phase's held takes, which
+// stand there first — counts them into n ahead of this call and hands this
+// call only the classes the re-adoptions take.
+//
+// decision: the counting starts at the headroom, not at the reconcile spare
+// — a re-adopted spare counts toward the reconcile spare's quota while the
+// journal has none, and the reconcile spare is not built, so a count toward
+// it is a count no reader ever pays out. Counting re-adoptions toward the
+// reconcile spare's quota first is withdrawn when the reconcile work lands
+// and brings one.
+//
+// decision: a spare past every target still takes the content class, neither
+// held behind an age-gate nor unlinked as an extra: an extra spare is one
+// the pool keeps ready as content — exactly a spare its own worker would
+// have made — and dropping or ageing one out is the orphaning no spare may
+// take. Withdraw only if re-adopted extras ever show up as a cost that
+// outweighs keeping them ready.
+func (t Targets) AdoptClasses(n int) []Class {
+	classes := make([]Class, n)
+	i := 0
+	for ; i < n && i < t.Headroom; i++ {
+		classes[i] = Headroom
+	}
+	for r := 0; i < n && r < t.Reserve; i, r = i+1, r+1 {
+		classes[i] = Reserve
+	}
+	for ; i < n; i++ {
+		classes[i] = Content
+	}
+	return classes
+}
+
 // PoolCounters is the pool's read: one lock and a copy from fields the pool
 // maintains at each event that moves one, never a walk of its slices.
 type PoolCounters struct {
@@ -113,6 +150,7 @@ type Pool struct {
 	held       int                           // spares owed to open holds; guarded by mu
 	pending    int                           // the largest ask of a refused Hold the refill has not yet made up, a level not a sum; guarded by mu
 	incoming   [Reserve + 1]int              // recycles in flight, reserved per class; guarded by mu
+	holdTaken  int                           // the open's held takes: segments on disk the open did not re-adopt, standing in the headroom the pool must not re-fill; guarded by mu
 	started    bool                          // guarded by mu
 	stopped    bool                          // guarded by mu
 	deviceFull bool                          // guarded by mu
@@ -183,6 +221,25 @@ func NewPool(m *Maker, t Targets, readOnly func() error, log *slog.Logger) *Pool
 // the mutex a plain one.
 func (p *Pool) SetRecorder(rec *lockorder.Recorder) {
 	p.mu.Init(lockorder.Capacity, rec)
+}
+
+// HoldTaken sets the count of the open's held takes: segments on disk this
+// open did not re-adopt, whose predecessors' ends were not yet proven, which
+// stand in the headroom until the open that reads their proof releases them.
+// The count rides every shortage decision the pool makes over the headroom —
+// the refill's and a recycle's — so the pool makes and reserves no spare for
+// a slot a held take occupies; the ready spares and reservations in flight
+// are counted beside it, so a hold never re-fills a slot a spare already
+// holds. Recovery hands nothing over yet: its wiring is the later change
+// that reads the open's Spares.Held, and the count above stands until an
+// open replaces it. A kick follows, for a count that freed headroom the pool
+// can now fill.
+func (p *Pool) HoldTaken(n int) {
+	p.mu.Lock()
+	p.holdTaken = n
+	p.mu.Unlock()
+
+	p.Kick()
 }
 
 // Adopt accounts a spare found at open into class c: the pool calls the
@@ -526,7 +583,10 @@ func (p *Pool) wantRecycle() (Class, bool) {
 		return 0, false
 	}
 	switch {
-	case len(p.ready[Headroom])+p.incoming[Headroom] < p.t.Headroom:
+	case len(p.ready[Headroom])+p.incoming[Headroom]+p.holdTaken < p.t.Headroom:
+		// The open's held takes count here as the refill counts them: a
+		// reserved slot a held take occupies is a slot the recycle would
+		// double-fill.
 		p.incoming[Headroom]++
 		return Headroom, true
 	case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
@@ -764,7 +824,10 @@ func (p *Pool) WaitSpares(ctx context.Context) error {
 // recycle's, or a pass's — answers whatever moved. The caller holds mu.
 func (p *Pool) readyShortLocked() bool {
 	switch {
-	case len(p.ready[Headroom]) < p.t.Headroom:
+	case len(p.ready[Headroom])+p.holdTaken < p.t.Headroom:
+		// The held takes count exactly as the refill's own headroom gate
+		// counts them: a wait answers by the accounting the pool fills to,
+		// never by ready spares the holds already stand in.
 		return true
 	case len(p.ready[Reserve]) < p.t.Reserve:
 		return true
@@ -778,7 +841,10 @@ func (p *Pool) readyShortLocked() bool {
 // across its classes, counted as the refill chooses them. The caller holds mu.
 func (p *Pool) shortAtLocked() int64 {
 	var missing int64
-	if d := p.t.Headroom - len(p.ready[Headroom]); d > 0 {
+	// The held takes count in the same headroom term the wait's own shortness
+	// reads, so a refusal's missing number never counts a headroom the
+	// holds already fill.
+	if d := p.t.Headroom - len(p.ready[Headroom]) - p.holdTaken; d > 0 {
 		missing += int64(d)
 	}
 	if d := p.t.Reserve - len(p.ready[Reserve]); d > 0 {
@@ -876,7 +942,11 @@ func (p *Pool) refill() bool {
 		// refusals show content rolls refused while a reserve was filling.
 		var c Class
 		switch {
-		case len(p.ready[Headroom])+p.incoming[Headroom] < p.t.Headroom:
+		case len(p.ready[Headroom])+p.incoming[Headroom]+p.holdTaken < p.t.Headroom:
+			// The open's held takes count toward the headroom's target:
+			// they stand on disk as segments, held for their unproven
+			// predecessors, and a spare made over them would double-fill
+			// the slot they occupy.
 			c = Headroom
 		case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
 			c = Reserve

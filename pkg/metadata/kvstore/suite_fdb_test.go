@@ -27,6 +27,24 @@ func TestStoreConformanceFDBFrozenClock(t *testing.T) {
 	kvstoretest.Run(t, fdbStore(fdbkv.Options{Clock: func() time.Time { return frozen }}))
 }
 
+// The reopen and clock cases on FoundationDB, each reopen over the case's
+// key prefix.
+func TestStoreDurableFDB(t *testing.T) {
+	kvstoretest.RunDurable(t, func(tb testing.TB, clock func() time.Time) func() kv.KV {
+		prefix := fdbkvtest.Prefix()
+		var db *fdbkv.Store
+		return func() kv.KV {
+			if db != nil {
+				if err := db.Close(); err != nil {
+					tb.Fatal(err)
+				}
+			}
+			db = fdbkvtest.Open(tb, fdbkv.Options{Prefix: prefix, Clock: clock})
+			return db
+		}
+	})
+}
+
 func FuzzNamespaceFDB(f *testing.F) { kvstoretest.FuzzNamespace(f, fdbStore(fdbkv.Options{})) }
 
 // BenchmarkStoreFDB runs the store's benchmarks on FoundationDB.

@@ -2,6 +2,7 @@ package testproto
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,16 +31,21 @@ type Msg struct {
 	Name    string     // OpCreate, OpPark
 	Target  uint64     // OpNotify, OpCancel: the message ID of the request it names; a Cancel carries it as its own ID, and its ID is ignored
 	Payload []byte     // OpEcho
+	Clear   bool       // sent neither sealed nor checksummed under its session
 	Members []Msg      // OpCompound
+	Tag     []byte     // OpCompound: what its reply's head echoes
 }
 
 // Reply is one reply message, as a test reads it.
 type Reply struct {
-	ID      uint64 // the request's; with the top bit set on the interim and final replies to a held or parked request
-	Status  core.Status
-	Interim bool
-	Credits uint16 // granted by this reply
-	Body    []byte
+	ID       uint64 // the request's; with the top bit set on the interim and final replies to a held or parked request
+	Status   core.Status
+	Interim  bool
+	Credits  uint16 // granted by this reply
+	Session  uint32 // the session it came under
+	Signed   bool   // checksummed under it and not sealed
+	Checksum uint32 // 0: neither signed nor sealed
+	Body     []byte
 }
 
 // Append appends one record carrying msgs to b, chained when several.
@@ -58,10 +64,10 @@ func Append(b []byte, msgs ...Msg) []byte {
 		if m.Session != inherited {
 			session = m.Session
 		}
-		if session != 0 {
+		if session != 0 && !m.Clear {
 			xorKey(b[at+headerLen:], session)
+			binary.BigEndian.PutUint32(b[at+offChecksum:], checksum(b[at:], session))
 		}
-		binary.BigEndian.PutUint32(b[at+offChecksum:], checksum(b[at:], session))
 	}
 	binary.BigEndian.PutUint32(b[start:], uint32(len(b)-body))
 
@@ -76,6 +82,9 @@ func appendHeader(b []byte, m Msg) []byte {
 	}
 	if m.Pend {
 		flags |= flagPend
+	}
+	if m.Clear {
+		flags |= flagClear
 	}
 	b = binary.BigEndian.AppendUint32(b, 0)
 	b = append(b, flags, uint8(m.Version))
@@ -120,6 +129,8 @@ func appendArguments(b []byte, m Msg) []byte {
 		b = binary.BigEndian.AppendUint64(b, m.Target)
 	case OpCompound:
 		b = binary.BigEndian.AppendUint32(b, uint32(len(m.Members)))
+		b = binary.BigEndian.AppendUint32(b, uint32(len(m.Tag)))
+		b = append(b, m.Tag...)
 		for _, member := range m.Members {
 			b = binary.BigEndian.AppendUint32(b, member.Op)
 			at := len(b)
@@ -167,9 +178,14 @@ func (c *Client) Recv() ([]Reply, error) {
 	if _, err := io.ReadFull(c.c, prefix[:]); err != nil {
 		return nil, fmt.Errorf("testproto: receive: %w", err)
 	}
-	n, err := framer{}.BodyLen(prefix[:])
+	n, last, err := framer{}.BodyLen(prefix[:])
 	if err != nil {
 		return nil, err
+	}
+	if !last {
+		// The server never sends a reply in fragments; a client that reads one
+		// would be reading a record this protocol does not write.
+		return nil, ErrFragmentedReply
 	}
 	body := make([]byte, n)
 	if _, err := io.ReadFull(c.c, body); err != nil {
@@ -184,8 +200,8 @@ func (c *Client) Recv() ([]Reply, error) {
 	return replies, err
 }
 
-// openReplies reads a record's replies, checking and opening each one sealed
-// under a session.
+// openReplies reads a record's replies, checking each one under its session,
+// and opening the sealed ones; a reply with a zero checksum is read clear.
 func openReplies(body []byte) ([]Reply, error) {
 	var replies []Reply
 	for off := 0; ; {
@@ -194,18 +210,24 @@ func openReplies(body []byte) ([]Reply, error) {
 			return replies, err
 		}
 		args := arguments(body, off, h)
-		if s := h.session(); s != 0 && s != inherited {
+		signed := h.flags()&flagSigned != 0
+		if s := h.session(); s != 0 && s != inherited && h.checksum() != 0 {
 			if checksum(body[off:off+headerLen+len(args)], s) != h.checksum() {
 				return replies, fmt.Errorf("%w: the reply to message %d", errChecksum, h.id())
 			}
-			xorKey(args, s)
+			if !signed {
+				xorKey(args, s)
+			}
 		}
 		replies = append(replies, Reply{
-			ID:      h.id(),
-			Status:  core.Status(h.status()),
-			Interim: h.flags()&flagInterim != 0,
-			Credits: h.credits(),
-			Body:    args,
+			ID:       h.id(),
+			Status:   core.Status(h.status()),
+			Interim:  h.flags()&flagInterim != 0,
+			Credits:  h.credits(),
+			Session:  h.session(),
+			Signed:   signed,
+			Checksum: h.checksum(),
+			Body:     args,
 		})
 		if off = h.Next(); off == 0 {
 			return replies, nil
@@ -217,3 +239,51 @@ func openReplies(body []byte) ([]Reply, error) {
 // the credits every Msg sent charged; it starts at 1, the credit a connection
 // opens with.
 func (c *Client) Balance() int { return int(c.balance.Load()) }
+
+// Result is one member's result in a compound's reply.
+type Result struct {
+	Op     uint32
+	Status core.Status
+	Body   []byte
+}
+
+// Head is a compound reply's head: its status and the tag it echoes.
+type Head struct {
+	Status core.Status
+	Tag    []byte
+}
+
+// Results reads a compound's reply body: its head and its results.
+func Results(body []byte) (Head, []Result, error) {
+	if len(body) < 12 {
+		return Head{}, nil, fmt.Errorf("testproto: a compound reply of %d bytes", len(body))
+	}
+	tagLen := int(binary.BigEndian.Uint32(body[4:]))
+	if tagLen > len(body)-12 {
+		return Head{}, nil, fmt.Errorf("testproto: a compound's tag of %d bytes past its reply", tagLen)
+	}
+	status := Head{Status: core.Status(binary.BigEndian.Uint32(body)), Tag: body[8 : 8+tagLen]}
+	n := int(binary.BigEndian.Uint32(body[8+tagLen:]))
+	body = body[12+tagLen:]
+	var results []Result
+	for range n {
+		if len(body) < resultHead {
+			return status, results, errors.New("testproto: a compound result past the reply")
+		}
+		length := int(binary.BigEndian.Uint32(body[8:]))
+		if length > len(body)-resultHead {
+			return status, results, errors.New("testproto: a compound result's body past the reply")
+		}
+		results = append(results, Result{
+			Op:     binary.BigEndian.Uint32(body),
+			Status: core.Status(binary.BigEndian.Uint32(body[4:])),
+			Body:   body[resultHead : resultHead+length],
+		})
+		body = body[resultHead+length:]
+	}
+	if len(body) > 0 {
+		return status, results, fmt.Errorf("testproto: %d bytes after a compound's last result", len(body))
+	}
+
+	return status, results, nil
+}

@@ -98,8 +98,11 @@ func TestRFC8A_Clone(t *testing.T) {
 
 // §9.1 removals of a cloning destination, its last assertion: once the
 // clone is answered, its last batch has deleted the source's clone-kind
-// open. Whether Release reports an unlinked source an orphan is the unit
-// tests', which unlink one.
+// open. The half left: the hole punch, truncate, second clone and unlink held
+// until the clone is done, and the release prune leaving its Removal, are
+// checked over the fake journal by the engine's unit tests; they move here
+// with a fixture hold between two batches of a clone. Whether Release reports
+// an unlinked source an orphan is the unit tests', which unlink one.
 func TestRFC8A_RemovalsOfACloningDestination(t *testing.T) {
 	f := enginetest.New(t)
 	ctx := t.Context()

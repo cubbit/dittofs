@@ -7,10 +7,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var renameCmd = &cobra.Command{
-	Use:   "rename <old-name> <new-name>",
-	Short: "Rename a context",
-	Long: `Rename an existing server context to a new name.
+func newRenameCmd() *cobra.Command {
+	renameCmd := &cobra.Command{
+		Use:   "rename <old-name> <new-name>",
+		Short: "Rename a context",
+		Long: `Rename an existing server context to a new name.
 
 All stored credentials and the active-context pointer are updated atomically; no re-authentication is needed. Use this after promoting a staging server to production, or simply to give a context a more descriptive name.
 
@@ -20,8 +21,10 @@ Examples:
 
   # Rename a development context to something more descriptive
   dfsctl context rename dev local-dev`,
-	Args: cobra.ExactArgs(2),
-	RunE: runContextRename,
+		Args: cobra.ExactArgs(2),
+		RunE: runContextRename,
+	}
+	return renameCmd
 }
 
 func runContextRename(cmd *cobra.Command, args []string) error {
@@ -42,6 +45,6 @@ func runContextRename(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to rename context: %w", err)
 	}
 
-	fmt.Printf("Context renamed: %s -> %s\n", oldName, newName)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Context renamed: %s -> %s\n", oldName, newName)
 	return nil
 }

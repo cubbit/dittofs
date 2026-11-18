@@ -10,10 +10,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var editCmd = &cobra.Command{
-	Use:   "edit",
-	Short: "Open configuration in editor",
-	Long: `Open the configuration file in your default editor.
+func newEditCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "edit",
+		Short: "Open configuration in editor",
+		Long: `Open the configuration file in your default editor.
 
 Uses the EDITOR environment variable, falling back to 'vi' if not set.
 
@@ -23,7 +24,8 @@ Examples:
 
   # Edit specific config file
   dfs config edit --config /etc/dittofs/config.yaml`,
-	RunE: runConfigEdit,
+		RunE: runConfigEdit,
+	}
 }
 
 func runConfigEdit(cmd *cobra.Command, args []string) error {

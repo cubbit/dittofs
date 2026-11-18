@@ -6,7 +6,7 @@ DittoFS now keeps file metadata in **BadgerDB** only. The `postgres`, `sqlite` a
 | Removed type | Replacement |
 |--------------|-------------|
 | `postgres`, `sqlite` | `badger` (on disk) |
-| `memory` | `badger` kept in RAM: `dfsctl store metadata add --name <n> --in-memory` |
+| `memory` | `badger` kept in RAM |
 
 There is no tool that converts a SQL metadata store to Badger. A share on a removed
 type moves to the new version by **copying its files** through a second DittoFS
@@ -21,13 +21,8 @@ instance, as described below.
 
 ## Are you affected?
 
-On the version you run now, before upgrading:
-
-```bash
-dfsctl store metadata list
-```
-
-If every metadata store has type `badger`, you are not affected: upgrade as usual.
+On the version you run now, before upgrading, list the metadata stores with that
+version's `dfsctl`. If every metadata store has type `badger`, you are not affected: upgrade as usual.
 
 ## What happens if you upgrade anyway
 
@@ -44,17 +39,17 @@ running server.
 ## `memory` stores: remove them before upgrading
 
 A `memory` store holds nothing that survives a restart, so there is nothing to copy.
-On the old version, remove each share that uses one, then the store:
+On the old version, remove each share that uses one, then remove the store with
+that version's `dfsctl`:
 
 ```bash
 dfsctl share remove /<share> --force
-dfsctl store metadata remove <store> --force
 ```
 
-Then upgrade, and recreate them on Badger in RAM:
+Then upgrade, and recreate the shares on a Badger store kept in RAM. The CLI creates
+no metadata store:
 
 ```bash
-dfsctl store metadata add --name <store> --in-memory
 dfsctl share create --name /<share> --metadata <store> --block-store <block store>
 ```
 
@@ -95,11 +90,10 @@ SMB again.
 
 2. **Recreate the setup on the new instance.** Its control plane starts empty, so
    create again the users, groups and permissions the shares need
-   ([Access control](access-control.md)), then the stores and shares:
+   ([Access control](access-control.md)), then the shares. The CLI creates no
+   metadata store and has no block store command today:
 
    ```bash
-   dfsctl store metadata add --name md --db-path /var/lib/dittofs-new/md
-   dfsctl store block add --name s3 --type s3 --config '<JSON>'
    dfsctl share create --name /export --metadata md --block-store s3
    ```
 

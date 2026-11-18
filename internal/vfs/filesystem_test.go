@@ -64,11 +64,12 @@ func newFixtureOver(t *testing.T, d Deps, fs *kvstoretest.FS) *fixture {
 	t.Helper()
 	// The administrator holds a uid, so that it signs in as itself rather
 	// than as the share's anonymous principal.
-	if err := fs.Store.ControlPlane().PutUser(t.Context(), entity.User{Principal: fs.Admin.Principal, Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}); err != nil {
+	admin := entity.User{Principal: fs.Admin.Principal, Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}
+	if _, err := fs.Store.ControlPlane().PutUser(t.Context(), admin, userGeneration(t, fs.Store, admin.Principal), entity.Alloc{}); err != nil {
 		t.Fatal(err)
 	}
 	clock := sim.NewTestClock(time.Unix(0, 0))
-	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clock: clock, Rand: rand.Reader})
+	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
 	if err != nil {
 		t.Fatal(err)
 	}

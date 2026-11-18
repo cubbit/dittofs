@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/logger"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
@@ -29,6 +30,20 @@ type Bootstrap struct {
 
 	// Blockstore holds the per-share local state root.
 	Blockstore BlockstoreConfig `mapstructure:"blockstore" yaml:"blockstore"`
+
+	// Node is this node's identity, Devices its journal directories, one
+	// per device, which the engine opens its journals in, and APIAddr and
+	// MetricsAddr the host:port its API and metrics listeners bind, a port
+	// of 0 picking a free one.
+	//
+	// ponytail: nothing in the file sets any of them today, and Load never
+	// reads them: the host sets them before it builds the node. RFC 13's
+	// bootstrap loader reads them once the node's identity, its devices and
+	// its listen addresses are bootstrap facts.
+	Node        entity.NodeID `mapstructure:"-" yaml:"-" json:"-"`
+	Devices     []string      `mapstructure:"-" yaml:"-" json:"-"`
+	APIAddr     string        `mapstructure:"-" yaml:"-" json:"-"`
+	MetricsAddr string        `mapstructure:"-" yaml:"-" json:"-"`
 }
 
 // LoggingConfig controls logging behavior.

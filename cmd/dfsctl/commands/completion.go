@@ -1,15 +1,14 @@
 package commands
 
 import (
-	"os"
-
 	"github.com/spf13/cobra"
 )
 
-var completionCmd = &cobra.Command{
-	Use:   "completion [bash|zsh|fish|powershell]",
-	Short: "Generate shell completion script",
-	Long: `Generate shell completion script for dfsctl.
+func newCompletionCmd() *cobra.Command {
+	completionCmd := &cobra.Command{
+		Use:   "completion [bash|zsh|fish|powershell]",
+		Short: "Generate shell completion script",
+		Long: `Generate shell completion script for dfsctl.
 
 The generated script enables tab-completion for dfsctl commands, subcommands,
 and flags in your shell. Pick the snippet for your shell and load it once.
@@ -36,20 +35,22 @@ Examples:
 
   # PowerShell: persist across sessions by sourcing from your profile
   dfsctl completion powershell > dfsctl.ps1`,
-	DisableFlagsInUseLine: true,
-	ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
-	Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		switch args[0] {
-		case "bash":
-			return cmd.Root().GenBashCompletion(os.Stdout)
-		case "zsh":
-			return cmd.Root().GenZshCompletion(os.Stdout)
-		case "fish":
-			return cmd.Root().GenFishCompletion(os.Stdout, true)
-		case "powershell":
-			return cmd.Root().GenPowerShellCompletionWithDesc(os.Stdout)
-		}
-		return nil
-	},
+		DisableFlagsInUseLine: true,
+		ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
+		Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch args[0] {
+			case "bash":
+				return cmd.Root().GenBashCompletion(cmd.OutOrStdout())
+			case "zsh":
+				return cmd.Root().GenZshCompletion(cmd.OutOrStdout())
+			case "fish":
+				return cmd.Root().GenFishCompletion(cmd.OutOrStdout(), true)
+			case "powershell":
+				return cmd.Root().GenPowerShellCompletionWithDesc(cmd.OutOrStdout())
+			}
+			return nil
+		},
+	}
+	return completionCmd
 }

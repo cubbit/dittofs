@@ -22,6 +22,12 @@ var (
 // The store formats this binary reads and writes. Format n names the codec
 // versions a binary may write in it, so raising the active format is the only
 // way a newer codec version reaches the store.
+//
+// decision: format 1 is not frozen yet. No release has created a store, so
+// new record kinds join it and the control-plane codecs change in place at
+// version 1, with no reader to break. The first release that creates a store
+// freezes it: from then on a new record kind or codec version raises the
+// format, and the codecs' golden vectors fail any change that does not.
 const (
 	minFormat = 1
 	maxFormat = 1

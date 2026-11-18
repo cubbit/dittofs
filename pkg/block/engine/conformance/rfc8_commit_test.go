@@ -40,7 +40,9 @@ func TestRFC8A_SyncBeforeExistence(t *testing.T) {
 
 // A Commit over an overwrite of committed content returns only once the
 // overwrite's existence has committed: the File record carries it when
-// Commit answers.
+// Commit answers. The half left: the offloaded range, and the read failing
+// as Lost after the record is dropped, are the engine's second part's, which
+// offloads; the 64-file batch in one transaction is the group commit's row.
 func TestRFC8A_OverwriteWaitsForExistence(t *testing.T) {
 	f := enginetest.New(t)
 	h, id := f.File("a")

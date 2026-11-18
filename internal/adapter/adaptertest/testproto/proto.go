@@ -29,10 +29,16 @@ const (
 	StatusExpired                    // core.ErrExpired
 	StatusNotLast                    // core.ErrNotLast
 	StatusTooManyPending             // core.ErrTooManyPending
-	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2
+	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2; of DelayResources, at once in both
 	StatusCancelled                  // core.ErrCancelled: a parked or held request its client cancelled
 	StatusDecode                     // core.ErrDecode: a record or arguments it cannot decode
+	StatusReplyTooBig                // core.ErrReplyTooBig: a reply's charge past a quarter of the reply pool's ceiling
+	StatusChecksum                   // a checksum that does not match, or a message sent clear under a session: the stages' table
+	StatusOverdraw                   // a message that charges more credits than the connection holds: the stages' table
 )
+
+// Name is the protocol label testproto's tables and stages record under.
+const Name = "testproto"
 
 // HoldFor is how long version 2 holds a request the service answered
 // ErrDelay before it answers StatusDelay.
@@ -75,6 +81,18 @@ type Protocol struct {
 	reg    *registry
 	pool   *resources.BufPool // over the reply budget; nil when d has no budgets
 	tables func() [2]*core.OpTable
+	errs   *core.ErrorTable // the stages' own, for a refusal before Route returns a table
+	call   vfs.Call         // what every request's Call starts from
+}
+
+// WithCall is p with every request's Call starting from c: the identity a
+// session would resolve, which testproto does not model, so a test hands it
+// the call its service admits. A session's expiry is still its own.
+func (p *Protocol) WithCall(c vfs.Call) *Protocol {
+	q := *p
+	q.call = c
+
+	return &q
 }
 
 // New returns the protocol over d: its handlers call d.VFS, and the replay
@@ -91,6 +109,7 @@ func New(d adapter.Deps) *Protocol {
 		p.pool = resources.NewBufPool(d.Budgets.Reply)
 	}
 	p.tables = sync.OnceValue(p.build)
+	p.errs = stagesErrors()
 
 	return p
 }
@@ -113,7 +132,7 @@ func (p *Protocol) Framer() core.Framer { return framer{} }
 func (p *Protocol) NewConn(c *core.Conn) core.Stages {
 	cs := &connState{p: p, c: c}
 	if p.bare {
-		return core.Stages{Header: headerCodec{}, Router: &router{cs}}
+		return core.Stages{Header: headerCodec{}, Router: &router{cs}, Errors: p.errs, Protocol: Name}
 	}
 	credits := newFlow()
 	cs.replay = &replay{pool: p.pool, flow: credits, m: map[replayKey][]byte{}}
@@ -121,12 +140,14 @@ func (p *Protocol) NewConn(c *core.Conn) core.Stages {
 	return core.Stages{
 		Header:     headerCodec{flow: credits},
 		Router:     &router{cs},
+		Errors:     p.errs,
 		Security:   security{},
 		Flow:       credits,
 		Replay:     cs.replay,
 		Hold:       hold{flow: credits},
 		MaxPending: 8,
 		OnClose:    func(context.Context) { p.reg.leave(cs) },
+		Protocol:   Name,
 	}
 }
 
@@ -152,28 +173,31 @@ type state struct {
 type router struct{ cs *connState }
 
 // Route answers the table of the header's version: 1 or 2, and 1 alone on
-// Bare.
+// Bare. A refusal after it has chosen that table comes back with it, and is
+// mapped there; a version with no table, with none.
 func (rt *router) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	v := h.Version()
+	if v < 1 || v > 2 || (rt.cs.p.bare && v != 1) {
+		return nil, nil, fmt.Errorf("testproto: version %d: %w", v, core.ErrVersion)
+	}
+	tb := rt.cs.p.tables()[v-1]
 	r, err := rt.request(h, prev)
 	if err != nil {
-		return nil, nil, err
+		return tb, nil, err
 	}
 
-	return rt.cs.p.tables()[r.Version-1], r, nil
+	return tb, r, nil
 }
 
 // request builds the Request: its level is what the connection negotiated
 // and what the header's session and tree reach, and its credential ends when
 // the session's does.
 func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, error) {
-	hd, ok := h.(*header)
+	hd, ok := plain(h)
 	if !ok {
 		return nil, errors.New("testproto: route a header of another protocol")
 	}
 	v := h.Version()
-	if v < 1 || v > 2 || (rt.cs.p.bare && v != 1) {
-		return nil, fmt.Errorf("testproto: version %d: %w", v, core.ErrVersion)
-	}
 	// A connection keeps what it negotiated: a request in a version above it
 	// is refused, one below it is served by that version's table.
 	if n := rt.cs.version.Load(); n != 0 && uint32(v) > n {
@@ -186,20 +210,24 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 	if s == nil {
 		s = &state{conn: rt.cs}
 	}
+	// A router built by NewConn(nil), as the seam builds it, has no
+	// connection to read settings from, and negotiates up to version 2.
 	if h.Op() == OpNegotiate {
 		s.max = 2
-		switch set := rt.cs.c.Settings().(type) {
-		case Settings:
-			s.max = set.MaxVersion
-		case *Settings:
-			s.max = set.MaxVersion
+		if rt.cs.c != nil {
+			switch set := rt.cs.c.Settings().(type) {
+			case Settings:
+				s.max = set.MaxVersion
+			case *Settings:
+				s.max = set.MaxVersion
+			}
 		}
 		if s.max == 0 {
 			s.max = 2
 		}
 	}
 	s.sid, s.tid = hd.session(), hd.tree()
-	r := &core.Request{Version: v, Level: core.NeedsNothing, Conn: rt.cs.c, State: s}
+	r := &core.Request{Call: rt.cs.p.call, Version: v, Level: core.NeedsNothing, Conn: rt.cs.c, State: s}
 	if rt.cs.version.Load() != 0 {
 		r.Level = core.NeedsNegotiated
 		if carried, expires, hasTree := rt.cs.p.reg.look(s.sid, rt.cs, s.tid); carried && !rt.cs.p.bare {
@@ -222,28 +250,35 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 func (p *Protocol) build() [2]*core.OpTable {
 	errs := core.NewErrorTable(StatusFault, errorRows(false)...)
 	members := core.NewOpTable(errs, false, memberRows(p.ops())...)
-	members.ReadOp = readOp
+	members.ReadOp, members.EncodeResult = readOp, encodeResult
 
-	return [2]*core.OpTable{
+	tables := [2]*core.OpTable{
 		core.NewOpTable(errs, false, append(p.ops(), compound(members))...),
 		core.NewOpTable(core.NewErrorTable(StatusFault, errorRows(true)...), true, p.ops()...),
 	}
+	for _, t := range tables {
+		t.Protocol = Name
+	}
+
+	return tables
 }
 
 // errorRows is a table's rows, with the hold row's Hold set where the table
 // holds.
 //
 // decision: the tables are not total. They map core's refusals, the service's
-// ErrDelay, a cancel and the two drain errors, and nothing else, so a service
-// error no row maps is reachable and answered StatusFault. Totality is a real
-// protocol's property, checked on NFS's and SMB's tables. Withdraw it if a
-// core test needs a service error this table leaves unmapped to have a status
-// of its own.
+// ErrDelay and its DelayResources delay, a cancel and the two drain errors,
+// and nothing else, so a service error no row maps is reachable and answered
+// StatusFault. Totality is a real protocol's property, checked on NFS's and
+// SMB's tables. Withdraw it if a core test needs a service error this table
+// leaves unmapped to have a status of its own.
 func errorRows(holds bool) []core.ErrorRow {
-	// decision: this row is testproto's only delay and only hold. A request is
-	// delayed or held because the service a test supplied answered ErrDelay,
-	// never because an operation here waits or answers an error itself.
-	// Withdraw it if core gains a hold that no service error can cause.
+	// decision: this row is testproto's only hold. A request is held because
+	// the service a test supplied answered ErrDelay, never because an
+	// operation here waits or answers an error itself; ErrDelay of
+	// DelayResources, a node pool's refusal, is answered at once by its typed
+	// row in both tables, as a table that holds must (RFC 20 §6.3). Withdraw
+	// it if core gains a hold that no service error can cause.
 	delay := core.ErrorRow{Err: vfs.ErrDelay, Status: StatusDelay}
 	if holds {
 		delay.Hold = func(_ error, start time.Time) time.Time { return start.Add(HoldFor) }
@@ -257,15 +292,31 @@ func errorRows(holds bool) []core.ErrorRow {
 		{Err: core.ErrNoTree, Status: StatusNoTree},
 		{Err: core.ErrNoFH, Status: StatusNoFH},
 		{Err: core.ErrTooLong, Status: StatusTooLong},
+		{Err: core.ErrReplyTooBig, Status: StatusReplyTooBig},
 		{Err: core.ErrExpired, Status: StatusExpired},
 		{Err: core.ErrNotLast, Status: StatusNotLast},
 		{Err: core.ErrTooManyPending, Status: StatusTooManyPending},
 		delay,
+		{Err: &vfs.Delay{Cause: vfs.DelayResources}, Status: StatusDelay},
 		{Err: core.ErrDecode, Status: StatusDecode},
 		{Err: core.ErrCancelled, Status: StatusCancelled},
 		{Err: core.ErrDraining, NoReply: true},
 		{Err: core.ErrMoved, NoReply: true},
 	}
+}
+
+// stagesErrors is the stages' own table, which answers with no operation a
+// refusal before Route returns a table: a header's decode error, a bad
+// checksum or a message sent clear under a session, an overdraw, a version
+// the router serves no table of, and the replay copy's delay.
+func stagesErrors() *core.ErrorTable {
+	return core.NewErrorTable(StatusFault,
+		core.ErrorRow{Err: core.ErrDecode, Status: StatusDecode},
+		core.ErrorRow{Err: errChecksum, Status: StatusChecksum},
+		core.ErrorRow{Err: errOverdraw, Status: StatusOverdraw},
+		core.ErrorRow{Err: core.ErrVersion, Status: StatusVersion},
+		core.ErrorRow{Err: &vfs.Delay{Cause: vfs.DelayResources}, Status: StatusDelay},
+	)
 }
 
 // ops is the rows both tables hold, each with the versions it is served in:
@@ -408,14 +459,14 @@ func decodeName(b []byte, _ core.Version, req *nameReq) (int, error) {
 	return len(b), nil
 }
 
-// create makes one service call: a Create of the name in the current
-// filehandle's directory.
+// create makes one service call: a Create of a regular file of the name in
+// the current filehandle's directory.
 func (p *Protocol) create(ctx context.Context, r *core.Request, req *nameReq) (*empty, error) {
 	s, err := stateOf(r)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := p.d.VFS.Create(ctx, r.Call, s.fh, req.name, vfs.CreateArgs{}); err != nil {
+	if _, err := p.d.VFS.Create(ctx, r.Call, s.fh, req.name, vfs.CreateArgs{Kind: vfs.CreateRegular}); err != nil {
 		return nil, err
 	}
 

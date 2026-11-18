@@ -80,13 +80,8 @@ it** (size, mtime, the block manifest). They do not govern **namespace**
 operations — `create`, `unlink`, `rename`, `mkdir`, `rmdir`, and attribute-only
 `setattr`. Those are controlled separately, by the metadata store's
 `relaxed_durability` setting, which is **enabled by default** on on-disk `badger`
-stores. It is a per-store config key, set when the store is created or
-edited:
-
-```bash
-dfsctl store metadata add --name badger-main --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata","relaxed_durability":false}'
-```
+stores. It is a per-store config key. The CLI creates no metadata store, so it
+has no command to set it.
 
 When enabled, a namespace commit does not `fsync` inline; a background syncer
 calls `DB.Sync()` on an interval, so the window is ~100 ms.

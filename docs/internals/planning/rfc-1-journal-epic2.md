@@ -145,7 +145,7 @@ is named with the reason.
 | 8. Real storage | **Applies, and is the reason for the seam.** The seam wraps a real directory. The reference model is in memory but stands in only for the expected answer, never for storage. |
 | 9. Comments | **Applies.** Each conformance test's doc comment states the check in terms of the journal's behaviour, with no RFC section or epic number; the map from test to RFC row lives in `test/journal/trace.yaml` (D3). `decision:` markers for D5–D8 and D12 sit at their code sites. |
 | 10. Tests must be able to fail | **Applies, with D4's limit.** Every conformance test asserts the specific outcome its RFC row names, through `errors.Is` or `errors.As` against the named sentinel where it expects a refusal, so a stub's `ErrNotImplemented` never satisfies it. |
-| 11. Export only what RFC 1 §3 uses | **Applies to `journal` only.** This epic adds no exported symbol to the journal's public package. The segment-cap override is an unexported field reached through `internal/core` (D8). `pkg/sim` and `journaltest` are test packages and export what their callers use. |
+| 11. Export only what RFC 1 §3 uses | **Applies to `journal` only.** This epic adds no exported symbol to the journal's public package. The segment-cap override is an unexported field set through `internal/core`, and through `journaltest.SetSegmentCap` for the harnesses outside the journal's tree (D8). `pkg/sim` and `journaltest` are test packages and export what their callers use. |
 | 12. Create only what is declared | **Applies.** Each component lands with its first consumer: the clock with the schedule's delay, the schedule with the seam, the seam and profiler with the fixture's first tests, the byte builders with their own field-by-field tests against RFC 28 §2, which epic 3's golden vectors are checked against (2.13a). No system e2e scaffolding lands without a test (D11). |
 
 ---
@@ -324,11 +324,15 @@ failures on develop (RFC 29 §4.7).
 - *Random seeds* run only where a tier sets `DITTOFS_SEED` from a fresh draw, which epic 12
   registers.
 
-**D8. The segment cap is overridden by an unexported setting reached only inside the
-journal's tree.**
+**D8. The segment cap is overridden by an unexported setting, set through two doors
+that open only to test harnesses.**
 Checks over many segments (1,000 segments for pinned-segment bounds, recycling, the
 descriptor bound) are unrunnable at 256 MiB per segment in a temporary directory. The cap
-is not a setting, and no exported symbol may be added for it (rule 11).
+is not a setting, and no exported symbol may be added for it to the journal's public
+package (rule 11). The setter that writes it lives in internal/core, which only code
+inside the journal's tree can import, and journaltest.SetSegmentCap carries the same to
+the harnesses outside the tree, the engine's fixture the first: only a test harness may
+ever set it, and no operator surface changes.
 
 - *How:* `core.Settings` gains an unexported field, set only through
   `core.SetSegmentCap(*Settings, int64)` in `internal/core`. The fixture, inside the

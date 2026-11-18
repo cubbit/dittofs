@@ -7,8 +7,8 @@ reclaimed **asynchronously** by garbage collection (GC). GC sweeps the share's
 
 The **journal** on disk (e.g. `/var/lib/dittofs/blocks`) is not swept by GC. It
 reclaims its own dead bytes as it rewrites, and evicts what the block store
-already holds when it comes under space pressure. So `dfsctl store block gc` is
-not the way to free journal disk.
+already holds when it comes under space pressure. So GC is not the way to free
+journal disk.
 
 A block is reclaimed only when **no live file references it** and **no snapshot
 holds it**. Blocks shared by several files (deduplication) survive until the last
@@ -39,20 +39,8 @@ reclamation entirely on demand or via external scheduling.
 
 ## Manual GC
 
-You can trigger GC at any time:
-
-```bash
-# Reclaim now for a share:
-dfsctl store block gc <share>
-
-# Preview only — enumerate candidates, delete nothing:
-dfsctl store block gc <share> --dry-run
-
-# See the last run's summary (objects swept, bytes freed, errors):
-dfsctl store block gc-status <share>
-```
-
-> The command lives under `dfsctl store block`, not `dfsctl system`.
+The CLI no longer has a command to trigger GC or show a run's summary. With
+`auto_enabled: false`, nothing reclaims blocks.
 
 ## Reclaiming space leaked by older versions
 
@@ -61,21 +49,10 @@ when files were deleted, so their blocks were never reclaimed and disk usage onl
 grew. On upgrade, the server runs a **one-time reconcile** automatically (guarded by
 a per-store marker) to reap those stranded rows and reclaim the space.
 
-You can also run it on demand — recommended if an older deployment accumulated a
-large backlog:
+The CLI no longer has a command to run it on demand.
 
-```bash
-# --reconcile reaps stranded rows across every share, then sweeps. The share
-# name addresses the API; the reap itself is server-wide.
-dfsctl store block gc <share> --reconcile
-
-# Preview the reconcile first:
-dfsctl store block gc <share> --reconcile --dry-run
-```
-
-A reconcile run reports how many rows it reaped as `stranded_rows_reaped` — visible in
-`dfsctl store block gc <share> --reconcile -o json` (under `stats.stranded_rows_reaped`),
-in the Prometheus counter `dittofs_gc_stranded_rows_reaped_total`, and in the server log
+A reconcile run reports how many rows it reaped in the Prometheus counter
+`dittofs_gc_stranded_rows_reaped_total`, and in the server log
 (`INFO RunBlockGCReconcile: complete`).
 
 ## Retention and pinning
@@ -101,7 +78,7 @@ pins its blocks until the snapshot is deleted. See [Snapshots](snapshots.md).
 ## Trash (recycle bin)
 
 If a share has the [trash](configuration.md#8-shares-exports) feature enabled
-(`--enable-trash`, **off by default**), deleting a file **moves it to `#recycle`**
+(`trash_enabled`, **off by default**), deleting a file **moves it to `#recycle`**
 rather than removing it — its blocks stay referenced and are **not** GC-eligible.
 Blocks are reclaimed only after the file leaves the trash:
 
@@ -109,11 +86,7 @@ Blocks are reclaimed only after the file leaves the trash:
 delete file → moved to #recycle (blocks retained) → empty trash → real delete → GC reclaims
 ```
 
-```bash
-dfsctl trash status <share>    # items + bytes held in the recycle bin
-dfsctl trash empty <share>     # purge — makes the blocks GC-eligible
-dfsctl trash restore <share> <id>
-```
+The CLI no longer has trash commands; they return with their own API.
 
 ## Monitoring
 

@@ -9,12 +9,11 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"slices"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
@@ -42,6 +41,12 @@ var soakSeed = flag.Uint64(
 // measured time once the soak passes.
 var soakSeeds = []uint64{1, 2}
 
+// soakFakeSeeds are the seeds the run over the in-memory journal replays: the
+// soak's own, two that reach the debt and flush paths, 26, whose Commit
+// waits on an existence commit the engine retries on the test clock, and 59,
+// whose SMB flush is the Commit whose own Sync fails a window.
+var soakFakeSeeds = []uint64{1, 2, 10, 26, 59, 60}
+
 const (
 	soakFiles     = 3                // files each seed writes
 	soakRounds    = 4                // restarts each seed runs, each after soakCalls calls
@@ -66,6 +71,19 @@ var (
 		{Op: kit.OpWrite, Key: "*.seg", Prob: 0.02, Action: sim.FaultAction{TearAfter: 16}},
 		{Op: kit.OpSync, Key: "*.seg", Prob: 0.03, Action: sim.FaultAction{Err: errInjected}},
 	}
+	// The in-memory journal has no storage under it, so its faults are the
+	// fake's own: after each write the run asks these rules, keyed by the
+	// file's name, whether the write's record is lost (Lose) and, for an
+	// unstable append or hole fill, whether its sync window fails (FailSync).
+	soakFakeRules = []sim.Rule{
+		{Op: kit.OpWrite, Key: "*", Prob: 0.05, Action: sim.FaultAction{TearAfter: sim.Lose}},
+		{Op: kit.OpSync, Key: "*", Prob: 0.30, Action: sim.FaultAction{Err: errInjected}},
+	}
+	// The run over the in-memory journal fails store updates more often, so
+	// each of its seeds fires a store fault (seed 60 fired none at 3%).
+	soakFakeStoreRules = []sim.Rule{
+		{Op: kvtest.OpUpdate, Key: "*", Prob: 0.06, Action: sim.FaultAction{Err: errInjected}},
+	}
 	soakStoreRules = []sim.Rule{
 		{Op: kvtest.OpUpdate, Key: "*", Prob: 0.03, Action: sim.FaultAction{Err: errInjected}},
 	}
@@ -84,116 +102,45 @@ func TestSoak(t *testing.T) {
 
 	for _, seed := range seeds {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
-			runSoak(t, seed)
+			runSoak(t, seed, false, nil)
 		})
 	}
 }
 
-// firedFault is one fault a schedule fired: where, on what, and the client
-// call in flight, 0 for none.
-type firedFault struct {
-	side, op, key string
-	tear          int
-	err           error
-	call          int
-	desc          string
-}
-
-// faultLog records every fault the seed's schedules fire, in order, with the
-// client call in flight when each fired. The writer sets the call; the
-// engine's goroutines consult the schedules, so every field is under mu.
-type faultLog struct {
-	mu     sync.Mutex
-	call   int
-	desc   string
-	paused bool
-	fired  []firedFault
-}
-
-// loggedFault is a schedule whose every non-zero answer goes to log.
-type loggedFault struct {
-	log   *faultLog
-	side  string
-	inner sim.Fault
-}
-
-func (l loggedFault) At(op string, key []byte) (time.Duration, int, error) {
-	// One lock covers the pause, the draw and the record, so a fault drawn
-	// while paused is never logged, and one drawn while running is logged
-	// with the call in flight when it was drawn.
-	//
-	// decision: the lock is held across inner.At because no soak rule
-	// delays: sim.Schedule.At waits out a rule's Delay on the clock, which
-	// would block every faulted call and the writer's set and since while it
-	// waits. Overturned by a soak rule with a Delay, which needs the wait
-	// taken outside the lock.
-	l.log.mu.Lock()
-	defer l.log.mu.Unlock()
-
-	// A fault while the fixture restarts fails the fixture, not the engine.
-	if l.log.paused {
-		return 0, 0, nil
+// TestSoakOverTheInMemoryJournal is TestSoak's loop and oracle over the
+// in-memory journal: a restart is its Reopen, and the journal's faults are its
+// Lose and FailSync. The fake keeps everything durable across a restart and
+// has no crash variants, so this run shows the engine's half (the Lost a loss
+// leaves, the verifier, the existence a restart re-applies) and the oracle's
+// plumbing, not torn tails or a committed size after a host crash.
+//
+// It stands in for TestSoak until the journal's Open recovers the segments a
+// crash leaves, and goes then, since a soak over a double proves nothing
+// about the journal.
+func TestSoakOverTheInMemoryJournal(t *testing.T) {
+	seeds := soakFakeSeeds
+	if *soakSeed != 0 {
+		seeds = []uint64{*soakSeed}
 	}
 
-	d, tear, err := l.inner.At(op, key)
-	if tear != 0 || err != nil {
-		l.log.fired = append(l.log.fired, firedFault{
-			side: l.side,
-			op:   op,
-			key:  string(key),
-			tear: tear,
-			err:  err,
-			call: l.log.call,
-			desc: l.log.desc,
+	var list listCounts
+
+	for _, seed := range seeds {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			runSoak(t, seed, true, &list)
 		})
 	}
 
-	return d, tear, err
-}
-
-func (l *faultLog) set(call int, desc string, paused bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	l.call, l.desc, l.paused = call, desc, paused
-}
-
-// since is every fault fired after the first n.
-func (l *faultLog) since(n int) []firedFault {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	return append([]firedFault(nil), l.fired[n:]...)
-}
-
-func (l *faultLog) String() string {
-	var b strings.Builder
-	for i, f := range l.since(0) {
-		in := "no client call in flight"
-		if f.call != 0 {
-			in = fmt.Sprintf("in call %d, %s", f.call, f.desc)
-		}
-
-		fmt.Fprintf(
-			&b,
-			"  %d. %s %s %s: tear %d, err %v, %s\n",
-			i+1,
-			f.side,
-			f.op,
-			f.key,
-			f.tear,
-			f.err,
-			in,
-		)
+	// A list that fails no sync window tests none of the failed-window path:
+	// the changed verifier, the open's ErrLost. One that resends nothing
+	// tests no NFS client's answer to a changed verifier.
+	if *soakSeed == 0 && list.windows == 0 {
+		t.Errorf("the seeds %v failed no sync window; the list must fail at least one", seeds)
 	}
 
-	return b.String()
-}
-
-// lostRecord reports whether f made a journal record not durable: a lost
-// write, or one torn with no error.
-func (f firedFault) lostRecord() bool {
-	return f.side == "journal" && f.op == kit.OpWrite && (f.tear < 0 || f.tear > 0 && f.err == nil)
+	if *soakSeed == 0 && list.resends == 0 {
+		t.Errorf("the seeds %v resent nothing; the list must resend at least once", seeds)
+	}
 }
 
 // soakRun is one seed's run.
@@ -213,26 +160,59 @@ type soakRun struct {
 	calls int
 	seen  int // the faults already attributed
 
+	// Over the in-memory journal: the fake, the files' identifiers, and the
+	// journal schedule the run consults after each write in the seam's place.
+	fake        *enginetest.FakeJournal
+	ids         []entity.FileID
+	fakeJournal sim.Fault
+	lossSeen    uint64 // the newest event of the fake's loss ring the run has read
+	// doomed holds, per file, the condemned writes that landed and whose
+	// windows have not failed yet.
+	doomed map[int][]*soakOp
+
 	// clock is the test clock the run moves, and clockSteps the seed's stream
 	// of the steps it moves it by while a call waits, apart from the calls'
 	// own stream so a call's wait never changes the calls that follow.
 	clock      *sim.TestClock
 	clockSteps *rand.Rand
+
+	resends int // the resends a Commit acknowledged
 }
 
-func runSoak(t *testing.T, seed uint64) {
+// listCounts is what a seed list did, counted across its seeds: the sync
+// windows the journal schedule failed, and the resends a Commit acknowledged.
+type listCounts struct {
+	windows, resends int
+}
+
+// runSoak runs one seed; when list is not nil, it adds to it what the seed
+// did, even if the seed fails.
+func runSoak(t *testing.T, seed uint64, fake bool, list *listCounts) {
+	var opts []enginetest.Option
+	if fake {
+		opts = append(opts, enginetest.WithFakeJournal())
+	}
+
 	r := &soakRun{
 		t:    t,
 		seed: seed,
-		c:    compose(t),
+		c:    compose(t, opts...),
 		rng:  rand.New(rand.NewPCG(seed, 0)),
-		log:  &faultLog{},
-		m:    newSoakModel(),
 		// The clock's own stream: how far the clock moves while a call waits
 		// depends on how long it waits, so it draws apart from the calls.
 		clockSteps: rand.New(rand.NewPCG(seed, 1)),
+		log:        &faultLog{},
+		m:          newSoakModel(),
 	}
+
 	r.clock = r.c.Clock
+
+	if list != nil {
+		t.Cleanup(func() {
+			list.windows += r.windowsFired()
+			list.resends += r.resends
+		})
+	}
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -249,7 +229,7 @@ func runSoak(t *testing.T, seed uint64) {
 	// run's.
 	for i := range soakFiles {
 		name := fmt.Sprintf("f%d", i)
-		h, _ := r.c.File(name)
+		h, id := r.c.File(name)
 		ctx, cancel := r.bounded()
 		attr, err := r.c.fs.GetAttr(ctx, r.c.admin, h)
 		cancel()
@@ -257,24 +237,35 @@ func runSoak(t *testing.T, seed uint64) {
 			t.Fatalf("seed %d: GetAttr of the new %s: %v", seed, name, err)
 		}
 
-		r.files = append(r.files, h)
+		r.files, r.ids = append(r.files, h), append(r.ids, id)
 		r.m.file(name, attr.Modify)
 	}
 
-	journal, err := sim.NewSchedule(seed, r.c.Clock, soakJournalRules...)
+	rules, storeRules := soakJournalRules, soakStoreRules
+	if fake {
+		rules, storeRules = soakFakeRules, soakFakeStoreRules
+	}
+
+	jsched, err := sim.NewSchedule(seed, r.c.Clock, rules...)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	store, err := sim.NewSchedule(seed, r.c.Clock, soakStoreRules...)
+	store, err := sim.NewSchedule(seed, r.c.Clock, storeRules...)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	r.c.Seam.SetFault(loggedFault{log: r.log, side: "journal", inner: journal})
-	t.Cleanup(func() {
-		r.c.Seam.SetFault(nil)
-	})
+	if fake {
+		r.fake = r.c.Fake()
+		r.fakeJournal = loggedFault{log: r.log, side: "journal", inner: jsched}
+	} else {
+		r.c.Seam.SetFault(loggedFault{log: r.log, side: "journal", inner: jsched})
+		t.Cleanup(func() {
+			r.c.Seam.SetFault(nil)
+		})
+	}
+
 	r.c.FaultStore(loggedFault{log: r.log, side: "store", inner: store})
 
 	r.startProcess()
@@ -295,9 +286,29 @@ func runSoak(t *testing.T, seed uint64) {
 // that lost every fault would pass unseen.
 func (r *soakRun) firedBoth() {
 	sides := map[string]int{}
+	lost, windows := 0, 0
 	for _, f := range r.log.since(0) {
 		sides[f.side]++
+
+		switch {
+		case f.lostRecord():
+			lost++
+		case f.side == "journal" && f.op == kit.OpSync && f.err != nil:
+			windows++
+		}
 	}
+
+	r.t.Logf(
+		"seed %d: %d calls, %d processes, %d store faults, "+
+			"%d journal faults (%d lost records, %d failed sync windows)",
+		r.seed,
+		r.calls,
+		r.proc,
+		sides["store"],
+		sides["journal"],
+		lost,
+		windows,
+	)
 
 	if sides["journal"] == 0 || sides["store"] == 0 {
 		r.fail(
@@ -308,6 +319,19 @@ func (r *soakRun) firedBoth() {
 	}
 }
 
+// windowsFired is how many sync windows the seed's journal schedule failed.
+func (r *soakRun) windowsFired() int {
+	n := 0
+
+	for _, f := range r.log.since(0) {
+		if f.side == "journal" && f.op == kit.OpSync && f.err != nil {
+			n++
+		}
+	}
+
+	return n
+}
+
 // startProcess counts a new process and opens every file through a new SMB
 // client of it, with the faults paused.
 func (r *soakRun) startProcess() {
@@ -315,6 +339,7 @@ func (r *soakRun) startProcess() {
 	defer r.log.set(0, "", false)
 
 	r.proc++
+	r.doomed = map[int][]*soakOp{} // a restart drops the windows not yet failed
 	r.smb = r.c.smb(r.t, fmt.Sprintf("soak-%d", r.proc), r.c.FS.Admin.Principal)
 	r.refs, r.opens = r.refs[:0], r.opens[:0]
 
@@ -356,11 +381,24 @@ func (r *soakRun) restart() {
 	case 1:
 		r.c.Crash()
 	case 2:
-		r.c.Crash(kit.Reordered(r.rng.Uint64()))
+		seed := r.rng.Uint64()
+		if r.fake != nil {
+			r.c.Crash() // the fake keeps everything durable, so no crash variant applies
+		} else {
+			r.c.Crash(kit.Reordered(seed))
+		}
 	default:
-		r.c.Crash(kit.Torn(1 + r.rng.IntN(16)))
+		n := 1 + r.rng.IntN(16)
+		if r.fake != nil {
+			r.c.Crash()
+		} else {
+			r.c.Crash(kit.Torn(n))
+		}
 	}
 
+	// A window the stop's last Sync failed belongs to the process that
+	// ended, whose report the restart drops.
+	r.failedWindows()
 	r.attribute()
 	r.startProcess()
 }
@@ -381,13 +419,22 @@ func (r *soakRun) step() {
 		desc   string
 		err    error
 		commit bool
+		// lostOpen is set when the SMB open flushed may answer ErrLost.
+		lostOpen bool
+		// flushOpen is the SMB open flushed, and spare that its file held a
+		// loss a restart found before the call.
+		flushOpen *smbOpen
+		spare     bool
+		// anonymous is set for a Commit without an open, and answered to the
+		// verifier it answered with success.
+		anonymous bool
+		answered  vfs.Verifier
 		// record puts a Commit's answer in the oracle. It runs after the
 		// call's faults are attributed: a record lost inside the Commit must
 		// credit the writes it has not yet acknowledged, as check does.
 		record func()
 	)
 	start := time.Now()
-
 	switch k := r.rng.IntN(100); {
 	case k < 50:
 		stable := k >= 35
@@ -407,11 +454,14 @@ func (r *soakRun) step() {
 
 		desc = fmt.Sprintf("write %s [%d, %d) stable=%v", f.name, off, off+int64(len(data)), stable)
 		r.log.set(r.calls, desc, false)
+		doomed := r.doomWrite(i, off, off+int64(len(data)), stable)
+
 		var res vfs.WriteResult
 
 		r.waiting(func() {
 			res, err = r.c.fs.Write(ctx, r.c.admin, vfs.Anonymous(h), off, data, how)
 		})
+
 		op = &soakOp{
 			kind:     opWrite,
 			off:      off,
@@ -421,35 +471,56 @@ func (r *soakRun) step() {
 			verifier: res.Verifier,
 		}
 		f.add(op, stable)
+
+		if doomed {
+			r.fake.FailNextWrite(journal.NewFileID(r.ids[i]), false)
+
+			if err == nil {
+				r.doomed[i] = append(r.doomed[i], op)
+			}
+		}
+
 		if err == nil {
 			r.observe(res.Verifier)
+			r.faultFake(i, op)
 		}
 	case k < 62:
 		commit = true
 		desc = fmt.Sprintf("commit %s", f.name)
 		r.log.set(r.calls, desc, false)
+
+		anonymous = true
+
 		var v vfs.Verifier
 
 		r.waiting(func() {
 			v, err = r.c.fs.Commit(ctx, r.c.admin, vfs.Anonymous(h), 0, 0)
 		})
 		record = func() {
+			if ferr := f.nfsCommit(r.proc, v, err); ferr != nil {
+				r.fail("call %d, %s: %v", r.calls, desc, ferr)
+			}
+
 			f.commit(r.proc, 0, 0, v, err)
+
 			if err == nil {
 				r.observe(v)
+				answered = v
 			}
 		}
 	case k < 74:
 		commit = true
 		desc = fmt.Sprintf("commit %s through an SMB open", f.name)
+		spare, flushOpen = f.owes, r.opens[i]
 		r.log.set(r.calls, desc, false)
+
 		var v vfs.Verifier
 
 		r.waiting(func() {
 			v, err = r.c.fs.Commit(ctx, r.smb, r.refs[i], 0, 0)
 		})
 		record = func() {
-			if ferr := r.m.flush(r.opens[i], v, err); ferr != nil {
+			if ferr := r.m.flush(r.opens[i], v, err, spare); ferr != nil {
 				r.fail("call %d, %s: %v", r.calls, desc, ferr)
 			}
 
@@ -503,17 +574,32 @@ func (r *soakRun) step() {
 
 	r.log.set(0, "", false)
 	r.slow(desc, start)
+	r.failedWindows()
+
+	if flushOpen != nil {
+		// An open across a loss found in this process answers ErrLost on
+		// exactly one flush, whatever Commit of the file came between, a
+		// window this flush's own Sync failed included; a loss a restart
+		// found may also reach the open's loss sequence.
+		lostOpen = r.m.owesLost(flushOpen) || spare
+	}
+
 	faulted := r.attribute(op)
 	if record != nil {
 		record()
 	}
 
-	// A failed sync window, or a loss a restart found, may fail the file's
-	// next Commit once, through an SMB open as ErrLost; the one after owes
-	// nothing.
+	// A lost record, or a loss a restart found, may fail the file's next
+	// Commit once, through an SMB open as ErrLost; the one after owes
+	// nothing. A failed sync window fails no Commit: it changes the verifier.
 	owed := commit && f.owed()
-	if !r.excused(err, faulted || owed) {
+
+	if !r.commitExcused(err, faulted || owed, lostOpen) {
 		r.fail("call %d, %s: %v", r.calls, desc, err)
+	}
+
+	if anonymous && err == nil {
+		r.resend(ctx, i, answered)
 	}
 
 	if op != nil {
@@ -530,6 +616,197 @@ func (r *soakRun) step() {
 	r.c.Clock.Advance(time.Duration(r.rng.Int64N(int64(2 * enginetest.Settings.ExistenceAge))))
 }
 
+// faultFake stands for the storage the in-memory journal does not have:
+// after write op of file i answered, still inside its call, it asks the
+// journal schedule whether the write's record is lost, and applies it with
+// the fake's Lose. A lost record is a loss event, which raises the file's
+// loss sequence, so the file's next Commit may answer it once.
+func (r *soakRun) faultFake(i int, op *soakOp) {
+	if r.fake == nil {
+		return
+	}
+
+	f := r.m.files[i]
+	id := journal.NewFileID(r.ids[i])
+	e := journal.Extent{Off: op.off, Len: int64(len(op.data))}
+
+	if _, tear, _ := r.fakeJournal.At(kit.OpWrite, []byte(f.name)); tear < 0 {
+		r.fake.Lose(id, e, journal.LossCorrupt)
+
+		f.owes = true
+		r.m.lose(f, r.proc)
+	}
+}
+
+// doomWrite asks the journal schedule, before an unstable write of file i to
+// [off, end) is issued, whether its sync window fails, and if so has the fake
+// fail it at the next Sync that covers the record, as the journal does. It
+// answers whether it armed that, so the caller disarms it once the call
+// returns, a failed write having appended nothing.
+//
+// decision: a failed window only on an unstable append or hole fill, never
+// on an overwrite, because the fake's unsynced loss cuts the extent instead
+// of holding again what the write overwrote, which RFC 1 §3.8 has a failed
+// window do. Withdraw it once the fake holds that content again.
+func (r *soakRun) doomWrite(i int, off, end int64, stable bool) bool {
+	f := r.m.files[i]
+	if r.fake == nil || stable || f.meets(off, end) {
+		return false
+	}
+
+	if _, _, err := r.fakeJournal.At(kit.OpSync, []byte(f.name)); err == nil {
+		return false
+	}
+
+	r.fake.FailNextWrite(journal.NewFileID(r.ids[i]), true)
+
+	return true
+}
+
+// resend is the NFS client's answer to a Commit of file i that answered
+// verifier v: it writes again, unstable, every write of this process that
+// carries another verifier and no Commit acknowledged, then commits again,
+// as a client resends after a changed verifier. The oracle checks after the
+// next restart that every byte it stabilised reads back.
+func (r *soakRun) resend(ctx context.Context, i int, v vfs.Verifier) {
+	f, h := r.m.files[i], r.files[i]
+
+	var again []*soakOp
+
+	for _, o := range f.ops {
+		if o.kind == opWrite && o.done && !o.acked && o.proc == r.proc && o.verifier != v {
+			again = append(again, o)
+		}
+	}
+
+	if len(again) == 0 {
+		return
+	}
+
+	for _, o := range again {
+		desc := fmt.Sprintf("resend %s [%d, %d)", f.name, o.off, o.off+int64(len(o.data)))
+		r.log.set(r.calls, desc, false)
+
+		start := time.Now()
+
+		var (
+			res vfs.WriteResult
+			err error
+		)
+
+		r.waiting(func() {
+			res, err = r.c.fs.Write(ctx, r.c.admin, vfs.Anonymous(h), o.off, o.data, vfs.Unstable)
+		})
+		r.log.set(0, "", false)
+		r.slow(desc, start)
+
+		op := &soakOp{kind: opWrite, off: o.off, data: o.data, proc: r.proc, done: err == nil}
+		op.verifier = res.Verifier
+		f.add(op, false)
+
+		if !r.excused(err, r.attribute(op)) {
+			r.fail("call %d, %s: %v", r.calls, desc, err)
+		}
+
+		if err != nil {
+			return
+		}
+
+		r.observe(res.Verifier)
+
+		gctx, gcancel := r.bounded()
+		attr, aerr := r.c.fs.GetAttr(gctx, r.c.admin, h)
+
+		gcancel()
+
+		if aerr != nil {
+			r.fail("GetAttr of %s after resending in call %d: %v", f.name, r.calls, aerr)
+		}
+
+		op.mtime = attr.Modify
+	}
+
+	desc := fmt.Sprintf("commit %s after resending", f.name)
+	r.log.set(r.calls, desc, false)
+
+	start := time.Now()
+
+	var (
+		v2  vfs.Verifier
+		err error
+	)
+
+	r.waiting(func() {
+		v2, err = r.c.fs.Commit(ctx, r.c.admin, vfs.Anonymous(h), 0, 0)
+	})
+	r.log.set(0, "", false)
+	r.slow(desc, start)
+
+	faulted := r.attribute()
+	f.commit(r.proc, 0, 0, v2, err)
+
+	if !r.excused(err, faulted) {
+		r.fail("call %d, %s: %v", r.calls, desc, err)
+	}
+
+	if err != nil {
+		return
+	}
+
+	r.observe(v2)
+	r.resends++
+}
+
+// failedWindows reads the windows the fake failed since the last read and
+// puts each in the oracle, under the process running now.
+func (r *soakRun) failedWindows() {
+	if r.fake == nil {
+		return
+	}
+
+	for _, ev := range r.fake.Stats().Losses {
+		if ev.SeqNum <= r.lossSeen {
+			continue
+		}
+
+		r.lossSeen = ev.SeqNum
+		if ev.Reason != journal.LossFailedWindow {
+			continue
+		}
+
+		for i, id := range r.ids {
+			if journal.NewFileID(id) == ev.File {
+				// The event names the dropped write's extent, which picks it
+				// among the file's condemned writes.
+				var w *soakOp
+
+				for k, o := range r.doomed[i] {
+					if o.off == ev.Extent.Off && int64(len(o.data)) == ev.Extent.Len {
+						w = o
+						r.doomed[i] = slices.Delete(r.doomed[i], k, k+1)
+
+						break
+					}
+				}
+
+				r.m.failWindow(r.m.files[i], r.proc, w)
+			}
+		}
+	}
+}
+
+// meets reports whether [off, end) meets any write of f, so that a failed
+// window over a write there would have older content to hold again.
+func (f *fileModel) meets(off, end int64) bool {
+	for _, o := range f.ops {
+		if o.kind == opWrite && o.off < end && off < o.off+int64(len(o.data)) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // attribute credits the faults fired since the last call to the oracle, and
 // reports whether any of them failed its operation: one fired in the call
 // just made, or with no call in flight since the one before. A lost record in
@@ -542,8 +819,16 @@ func (r *soakRun) attribute(own ...*soakOp) bool {
 	failed := false
 	for _, f := range r.log.since(r.seen) {
 		r.seen++
-		failed = failed || f.err != nil
-		if f.side == "journal" && f.op == kit.OpSync && f.err != nil {
+		// Over the in-memory journal a sync fault is only the draw that dooms
+		// a write's window, which fails nothing until a later Sync answers it
+		// as a changed verifier, so it excuses no error.
+		doom := r.fake != nil && f.side == "journal" && f.op == kit.OpSync
+		failed = failed || f.err != nil && !doom
+		// Over the in-memory journal the run knows which file a failed
+		// window held and requires its report (failedWindows); over
+		// the real journal it cannot tell, so it only excuses one failure of
+		// every file with an unacknowledged write.
+		if f.side == "journal" && f.op == kit.OpSync && f.err != nil && r.fake == nil {
 			r.m.syncFailed()
 		}
 
@@ -576,6 +861,13 @@ func (r *soakRun) excused(err error, faulted bool) bool {
 	}
 
 	return faulted || errors.Is(err, vfs.ErrDelay)
+}
+
+// commitExcused is excused for a Commit's answer: an SMB open across a loss
+// found in its process may also answer ErrLost, whatever Commit of the file
+// came between (lostOpen).
+func (r *soakRun) commitExcused(err error, faulted, lostOpen bool) bool {
+	return r.excused(err, faulted || lostOpen && errors.Is(err, vfs.ErrLost))
 }
 
 // bounded is a context cut off after soakCallBound, for one call of the
@@ -614,9 +906,9 @@ func stalled(desc string, d time.Duration) error {
 // waiting runs call, a client call, and moves the test clock while it waits:
 // every soakTick of real time, by a step the seed's clock stream draws, up to
 // twice ExistenceAge as between calls. A call waiting on the engine's timers,
-// such as the journal's re-sync of a failed window or the group commit's
-// backoff after a store fault, gets them as it would on a running clock; a
-// call waiting on anything else still meets its own deadline.
+// such as an existence commit it retries after the store failed it, gets them
+// as it would on a running clock; a call waiting on anything else still meets
+// its own deadline.
 func (r *soakRun) waiting(call func()) {
 	done, moved := make(chan struct{}), make(chan struct{})
 
@@ -713,7 +1005,7 @@ func (r *soakRun) check() {
 			// Attribute first, so a record lost in this Commit credits the
 			// writes it has not acknowledged yet.
 			faulted, owed := r.attribute(), f.owed()
-			if ferr := r.m.flush(r.opens[i], v, err); ferr != nil {
+			if ferr := r.m.flush(r.opens[i], v, err, true); ferr != nil {
 				r.fail("process %d: %v", r.proc, ferr)
 			}
 
@@ -909,9 +1201,9 @@ func (f *fileModel) pieces(size int64) [][2]int64 {
 	return ps
 }
 
-// TestSoakStalled holds that nothing excuses a stalled call: a call that
-// took the slow bound fails, whatever it answered, since the clock moves
-// while a call waits.
+// TestSoakStalled holds that nothing excuses a stalled call any more: a call
+// that took the slow bound fails, whatever it answered and whatever store or
+// sync fault came before it, since the clock moves while a call waits.
 func TestSoakStalled(t *testing.T) {
 	if err := stalled("a quick call", soakSlowCall-time.Millisecond); err != nil {
 		t.Errorf("a call under the slow bound: %v, want no failure", err)
@@ -925,9 +1217,8 @@ func TestSoakStalled(t *testing.T) {
 }
 
 // TestSoakWaitingMovesTheClock holds the loop's clock rule: a call waiting on
-// the test clock gets it moved by the seed's steps, without drawing from the
-// calls' stream, and a call waiting on anything else still meets its own
-// deadline and is failed as stalled.
+// the test clock gets it moved by the seed's steps, and a call waiting on
+// anything else still meets its own deadline and is failed as stalled.
 func TestSoakWaitingMovesTheClock(t *testing.T) {
 	r := &soakRun{
 		clock:      sim.NewTestClock(time.Unix(1000, 0)),
@@ -951,13 +1242,22 @@ func TestSoakWaitingMovesTheClock(t *testing.T) {
 	})
 
 	if err != nil {
-		t.Errorf("a call waiting ten minutes on the test clock: %v after %v, "+
-			"want it woken by the moved clock", err, time.Since(start))
+		t.Errorf(
+			"a call waiting ten minutes on the test clock: %v after %v, "+
+				"want it woken by the moved clock",
+			err,
+			time.Since(start),
+		)
 	}
 
+	// The clock's steps come from their own stream, so a wait never changes
+	// the calls the seed draws after it.
 	if got, want := r.rng.Uint64(), rand.New(rand.NewPCG(1, 0)).Uint64(); got != want {
-		t.Errorf("the calls' stream after a wait drew %d, want %d: the wait drew from it",
-			got, want)
+		t.Errorf(
+			"the calls' stream after a wait drew %d, want %d: the wait drew from it",
+			got,
+			want,
+		)
 	}
 
 	start = time.Now()
@@ -991,5 +1291,231 @@ func TestSoakTruncateGrows(t *testing.T) {
 			t.Errorf("a truncate to %d with %d reported: grow %v, want %v",
 				c.size, c.reported, got, c.want)
 		}
+	}
+}
+
+// TestSoakCommitExcused holds that an SMB open's flush may answer ErrLost
+// only across a loss found in its process.
+func TestSoakCommitExcused(t *testing.T) {
+	r := &soakRun{}
+	if !r.commitExcused(vfs.ErrLost, false, true) {
+		t.Error("ErrLost through an open across a loss is not excused")
+	}
+
+	if r.commitExcused(vfs.ErrLost, false, false) {
+		t.Error("ErrLost through an open with no loss after it is excused")
+	}
+
+	if r.commitExcused(errInjected, false, true) {
+		t.Error("another error through an open across a loss is excused")
+	}
+}
+
+// TestSoakFaultFake holds what the run does to the in-memory journal, and to
+// the oracle, when the journal schedule fires around a write: a lost record is
+// the fake's Lose and a loss each earlier open owes; a failed window is drawn
+// before an unstable append or hole fill, never an overwrite or a stable
+// write, fails at the next Sync, and is then a window the file's next
+// stability point must report.
+func TestSoakFaultFake(t *testing.T) {
+	type world struct {
+		r *soakRun
+		f *fileModel
+		o *smbOpen
+		h interface {
+			WriteAt(
+				ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64,
+			) (journal.Version, error)
+			Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error)
+		}
+		id journal.FileID
+	}
+
+	setup := func(t *testing.T, action sim.FaultAction, op string, earlier int64) world {
+		t.Helper()
+
+		sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: op, Key: "*", Action: action})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		r := &soakRun{
+			log:  &faultLog{},
+			m:    newSoakModel(),
+			proc: 1,
+			fake: enginetest.NewFakeJournal(),
+		}
+		r.fakeJournal = loggedFault{log: r.log, side: "journal", inner: sched}
+		r.ids = []entity.FileID{{1}}
+		f := r.m.file("f", time.Time{})
+
+		if err := r.fake.SetVersionLimit(journal.Version{Counter: 1 << 32}); err != nil {
+			t.Fatal(err)
+		}
+
+		h, err := r.fake.Share(1, 0, journal.Version{})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// earlier, when not negative, is where an earlier write of 3 bytes
+		// sits in the model.
+		if earlier >= 0 {
+			f.add(
+				&soakOp{kind: opWrite, off: earlier, data: []byte("old"), proc: 1, done: true},
+				false,
+			)
+		}
+
+		return world{r: r, f: f, o: r.m.open(f, 1), h: h, id: journal.NewFileID(r.ids[0])}
+	}
+
+	// write writes 3 bytes at 3 through the fake, then closes the window.
+	write := func(t *testing.T, w world) {
+		t.Helper()
+
+		if _, err := w.h.WriteAt(t.Context(), w.id, 3, []byte("new"), 0); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := w.h.Sync(t.Context(), journal.NewFileID(entity.FileID{2})); err != nil {
+			t.Fatal(err)
+		}
+
+		w.r.failedWindows()
+	}
+
+	t.Run("a lost record", func(t *testing.T) {
+		w := setup(t, sim.FaultAction{TearAfter: sim.Lose}, kit.OpWrite, -1)
+		write(t, w)
+		op := w.f.add(
+			&soakOp{kind: opWrite, off: 3, data: []byte("new"), proc: 1, done: true},
+			false,
+		)
+		w.r.faultFake(0, op)
+
+		if !w.r.m.owesLost(w.o) {
+			t.Error("an open taken before a lost record owes no ErrLost")
+		}
+
+		if !w.f.owed() {
+			t.Error("a lost record leaves the file's next Commit owing nothing")
+		}
+	})
+
+	t.Run("a failed window", func(t *testing.T) {
+		w := setup(t, sim.FaultAction{Err: errInjected}, kit.OpSync, -1)
+		if !w.r.doomWrite(0, 3, 6, false) {
+			t.Fatal("a failed window drawn over an append was not armed")
+		}
+
+		if w.r.attribute() {
+			t.Error("the draw that dooms a write's window excuses the write's own error")
+		}
+
+		op := w.f.add(
+			&soakOp{kind: opWrite, off: 3, data: []byte("new"), proc: 1, done: true},
+			false,
+		)
+		w.r.doomed = map[int][]*soakOp{0: {op}}
+		write(t, w)
+
+		if !op.dropped {
+			t.Error("the write whose window failed may still read back")
+		}
+
+		if w.r.fake.Durable(w.id) || !w.r.m.owesLost(w.o) {
+			t.Errorf("after the window's Sync: durable %v, the open may answer ErrLost %v; "+
+				"want undurable, ErrLost", w.r.fake.Durable(w.id), w.r.m.owesLost(w.o))
+		}
+
+		if err := w.f.nfsCommit(1, vfs.Verifier{}, nil); err == nil {
+			t.Error("the file's next Commit may answer the dropped write's verifier " +
+				"after its failed window")
+		}
+	})
+
+	t.Run("two failed windows of one file before a Sync", func(t *testing.T) {
+		w := setup(t, sim.FaultAction{Err: errInjected}, kit.OpSync, -1)
+		w.r.doomed = map[int][]*soakOp{}
+
+		var ops []*soakOp
+
+		for k, off := range []int64{3, 10} {
+			if !w.r.doomWrite(0, off, off+3, false) {
+				t.Fatalf("a failed window drawn over [%d, %d) was not armed", off, off+3)
+			}
+
+			if _, err := w.h.WriteAt(t.Context(), w.id, off, []byte("new"), 0); err != nil {
+				t.Fatal(err)
+			}
+
+			op := w.f.add(&soakOp{
+				kind:     opWrite,
+				off:      off,
+				data:     []byte("new"),
+				proc:     1,
+				done:     true,
+				verifier: vfs.Verifier{byte(k + 1)},
+			}, false)
+			w.r.doomed[0] = append(w.r.doomed[0], op)
+			ops = append(ops, op)
+		}
+
+		if _, err := w.h.Sync(t.Context(), journal.NewFileID(entity.FileID{2})); err != nil {
+			t.Fatal(err)
+		}
+
+		w.r.failedWindows()
+
+		for _, op := range ops {
+			if !op.dropped {
+				t.Errorf("the write at %d whose window failed may still read back", op.off)
+			}
+		}
+
+		if w.f.window == nil || w.f.window.verifier == (vfs.Verifier{}) {
+			t.Error("the second failed window lost the verifier of the write it dropped")
+		}
+	})
+
+	t.Run("a disarmed window takes no later write", func(t *testing.T) {
+		w := setup(t, sim.FaultAction{Err: errInjected}, kit.OpSync, -1)
+		if !w.r.doomWrite(0, 3, 6, false) {
+			t.Fatal("a failed window drawn over an append was not armed")
+		}
+
+		w.r.fake.FailNextWrite(w.id, false)
+		write(t, w)
+
+		if !w.r.fake.Durable(w.id) || w.r.m.owesLost(w.o) {
+			t.Error("a window disarmed after a write that appended nothing failed the next one")
+		}
+	})
+
+	for _, c := range []struct {
+		name    string
+		earlier int64
+		stable  bool
+		want    bool
+	}{
+		{"no failed window over an overwrite", 1, false, false},
+		{"no failed window over a stable write", -1, true, false},
+		{"a failed window on an append past an earlier write", 20, false, true},
+		{"a failed window on a write right after an earlier one", 0, false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := setup(t, sim.FaultAction{Err: errInjected}, kit.OpSync, c.earlier)
+			if got := w.r.doomWrite(0, 3, 6, c.stable); got != c.want {
+				t.Errorf(
+					"a failed window drawn over [3, 6), an earlier write at %d, "+
+						"stable %v: armed %v, want %v",
+					c.earlier,
+					c.stable,
+					got,
+					c.want,
+				)
+			}
+		})
 	}
 }

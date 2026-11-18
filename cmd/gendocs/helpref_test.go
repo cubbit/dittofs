@@ -32,14 +32,22 @@ import (
 	"github.com/spf13/pflag"
 
 	dfs "github.com/cubbit/dittofs/cmd/dfs/commands"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	dfsctl "github.com/cubbit/dittofs/cmd/dfsctl/commands"
+)
+
+// dfsRoot and dfsctlRoot are one tree of each binary, built once for every
+// check to walk.
+var (
+	dfsRoot    = dfs.NewRoot()
+	dfsctlRoot = dfsctl.NewRoot(cmdutil.Env{})
 )
 
 // roots maps a binary name to its command tree.
 func roots() map[string]*cobra.Command {
 	return map[string]*cobra.Command{
-		"dfs":    dfs.GetRootCmd(),
-		"dfsctl": dfsctl.GetRootCmd(),
+		"dfs":    dfsRoot,
+		"dfsctl": dfsctlRoot,
 	}
 }
 
@@ -427,7 +435,7 @@ func TestDocsCommandReferences(t *testing.T) {
 // as a separate token, where the value must not be read as a subcommand.
 func TestCheckerAcceptsAndRejects(t *testing.T) {
 	accept := []string{
-		"`dfsctl store block add --name r1`",
+		"`dfsctl quota set /archive --scope user --id 1000`",
 		"`dfsctl -o json share list`",
 		"`dfsctl --server https://host:8443 share list`",
 		"`dfs start`",
@@ -448,7 +456,7 @@ func TestCheckerAcceptsAndRejects(t *testing.T) {
 	reject := []string{
 		"`dfsctl user update alice`",                   // it is `user edit`
 		"`dfs config init`",                            // it is `dfs init`
-		"`dfsctl store block health --kind remote`",    // no such flag
+		"`dfsctl quota list --kind remote`",            // no such flag
 		"`dfs init --admin`",                           // no such flag
 		"dfs start --config c.yaml \\\n  --pid-file p", // a flag on a continued line
 	}

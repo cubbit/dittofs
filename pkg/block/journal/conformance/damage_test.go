@@ -831,7 +831,7 @@ var syncPoints = []struct {
 		d.writeSynced(1, 1, 0, 64<<10)
 		var recs []rec
 		var seg journal.SegmentID
-		awaitSpare(t, d.f, func() { recs, _, seg = d.fill(0, 0, 64<<10) })
+		awaitSettledSpare(t, d.f, func() { recs, _, seg = d.fill(0, 0, 64<<10) })
 		d.sync(0, recs[0].id)
 		d.f.Reopen() // the pool is at its target as the open counts it
 		d.writeSynced(0, 0, 0, 64<<10)
@@ -868,7 +868,7 @@ var syncPoints = []struct {
 		// A take's refill is awaited and the journal reopened, so the pool is
 		// at its target as the open counts it and no spare-making of the
 		// open's own is in flight: the next directory sync is a refill's.
-		awaitSpare(t, d.f, func() { d.writeSynced(0, 2, 0, journaltest.FixtureSegmentCap) })
+		awaitSettledSpare(t, d.f, func() { d.writeSynced(0, 2, 0, journaltest.FixtureSegmentCap) })
 		d.f.Reopen()
 		before := len(segmentFiles(t, d.f))
 		held := d.f.Seam.Hold(d.tb, kit.OpSyncDir, "*")
@@ -1296,7 +1296,7 @@ func reorderScript(t *testing.T, tb testing.TB, d *driven) (*kit.Hold, []pieced)
 	t.Helper()
 
 	const size = 64 << 10
-	awaitSpare(t, d.f, func() { d.writeSynced(0, 2, 0, journaltest.FixtureSegmentCap) })
+	awaitSettledSpare(t, d.f, func() { d.writeSynced(0, 2, 0, journaltest.FixtureSegmentCap) })
 	if err := d.f.TryReopen(); err != nil { // the pool is at its target as the open counts it
 		t.Fatalf("%s: reopen: %v", d.label, err)
 	}
@@ -1965,7 +1965,7 @@ func TestDamage_SegmentDeleted(t *testing.T) {
 
 	// A spare is made under a temporary name, so a take and its refill show
 	// whether the deleted name is drawn again.
-	awaitSpare(t, f, func() { writeSynced(t, f, 0, 2, 0, journaltest.FixtureSegmentCap) })
+	awaitSettledSpare(t, f, func() { writeSynced(t, f, 0, 2, 0, journaltest.FixtureSegmentCap) })
 	if slices.Contains(segmentFiles(t, f), name) {
 		t.Fatalf("the deleted segment's name %s was made again by a spare; a fresh id exceeds every id the directory names", name)
 	}

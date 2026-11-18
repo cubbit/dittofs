@@ -1,10 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/cmd/dfsctl/commands"
+	"golang.org/x/term"
 )
 
 // Build-time variables injected via ldflags
@@ -15,13 +16,14 @@ var (
 )
 
 func main() {
-	// Set version info for commands package
 	commands.Version = version
 	commands.Commit = commit
 	commands.Date = date
 
-	if err := commands.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+	os.Exit(commands.Run(cmdutil.Env{
+		In:          os.Stdin,
+		Out:         os.Stdout,
+		Err:         os.Stderr,
+		Interactive: term.IsTerminal(int(os.Stdin.Fd())),
+	}, os.Args[1:]))
 }

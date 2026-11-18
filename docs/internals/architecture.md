@@ -296,18 +296,14 @@ Mark is idempotent, so resume-on-restart is intentionally not built.
   runs GC every `gc.auto_interval` (default 15m; values in (0, 1m) are
   refused) unless `gc.auto_enabled` is false. See
   [Garbage Collection](../guide/garbage-collection.md#automatic-gc-default).
-- **On-demand** via `dfsctl store block gc <share> [--dry-run]`;
-  `--dry-run` skips DELETEs and prints up to `gc.dry_run_sample_size`
-  candidate keys (default 1000). The mark-sweep is global across every
-  share that targets the same remote, and every run scans every remote.
-  The `<share>` argument only selects where the run summary
-  (`last-run.json`) is written; it does not choose the remotes or scope
-  the live set to one share.
+- **On-demand**: the CLI no longer has a command to run GC. Remote
+  (block) store commands return as resource commands of the v2 management
+  API. The mark-sweep is global across every share that targets the same
+  remote, and every run scans every remote.
 - **Observability** via structured slog INFO at start/end with `run_id`,
   `hashes_marked`, `objects_swept`, `bytes_freed`, `duration_ms`, and
   `error_count`. An on-demand run also persists its summary at
-  `<localStore>/gc-state/last-run.json`; inspect it with
-  `dfsctl store block gc-status <share>`. A scheduled run persists none.
+  `<localStore>/gc-state/last-run.json`. A scheduled run persists none.
 
 GC coordinates with the share-snapshots subsystem through a single
 rule: **manifest-on-disk = block held**. Snapshots register a hold
@@ -319,12 +315,11 @@ survives the sweep. The provider that exposes this hold to the GC
 layer is `SnapshotHoldProvider`. No hold flag lives in any database
 table — the disk is the source of truth.
 
-See [SNAPSHOTS.md](../guide/snapshots.md#10-gc-hold-semantics) for the
+See [SNAPSHOTS.md](../guide/snapshots.md#8-gc-hold-semantics) for the
 operator-facing description of the hold semantics, including the
 delete-vs-GC race window.
 
-See `docs/guide/configuration.md` for every `gc.*` and `syncer.*` knob, and
-`docs/guide/cli.md` for the `dfsctl store block gc` reference.
+See `docs/guide/configuration.md` for every `gc.*` and `syncer.*` knob.
 
 ## Share Snapshots
 
@@ -531,26 +526,11 @@ The Control Plane is the central management component enabling flexible, multi-s
 3. **Handle Identity**: File handles encode both the share ID and file-specific data
 4. **Store Resolution**: When handling operations, the runtime decodes the handle to identify the share, then routes to the correct stores
 
-### Configuration Example
+### Configuring shares
 
-Stores, shares, and adapters are managed at runtime via `dfsctl` (persisted in the control plane database):
-
-```bash
-# Create named stores (created once, shared across shares)
-./dfsctl store metadata add --name fast-meta --in-memory
-./dfsctl store metadata add --name persistent-meta --type badger \
-  --config '{"path":"/data/metadata"}'
-
-# Create block stores (shared across shares)
-./dfsctl store block add --name mem-blocks --type memory
-./dfsctl store block add --name s3-remote --type s3 \
-  --config '{"region":"us-east-1","bucket":"my-bucket"}'
-
-# Create shares referencing stores by name (each gets its own BlockStore + journal)
-./dfsctl share create --name /temp --metadata fast-meta --block-store mem-blocks
-./dfsctl share create --name /archive --metadata persistent-meta \
-  --block-store s3-remote
-```
+Each share names its metadata store and its block store, and gets its own
+`*engine.Store` and journal directory. The CLI's share and store commands are
+unavailable until they are rebuilt on the v2 management API.
 
 ### Benefits
 
@@ -601,12 +581,7 @@ its own status. A zero-count WRITE then succeeds; any other answers
 No custom code required - configure via CLI:
 
 ```bash
-# Create stores
-./dfsctl store metadata add --name default-meta --type badger \
-  --db-path /data/metadata   # or --in-memory for tests
-
-# Create share referencing the stores
-./dfsctl store block add --name default-blocks --type memory
+# Create a share referencing the stores
 ./dfsctl share create --name /export --metadata default-meta --block-store default-blocks
 ```
 

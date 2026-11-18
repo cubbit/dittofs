@@ -41,8 +41,11 @@ func rows(t *testing.T, s *Store, kvs ...[]byte) {
 	}
 }
 
+// member is m's membership of g, with g's record: a membership of a group
+// that has none grants nothing.
 func member(g, m entity.Principal) [][]byte {
-	return [][]byte{memberKey(g.ID, m.ID), encodeKind(m.Kind), memberRevKey(m.ID, g.ID), encodeKind(m.Kind)}
+	return [][]byte{memberKey(g.ID, m.ID), encodeKind(m.Kind), memberRevKey(m.ID, g.ID), encodeKind(m.Kind),
+		groupKey(g.ID), encodeGroup(entity.Group{Principal: g})}
 }
 
 func grantRow(share entity.ShareID, p entity.Principal, a entity.ShareAccess) [][]byte {

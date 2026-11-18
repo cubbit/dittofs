@@ -29,7 +29,11 @@ type Deps struct {
 	Budgets *resources.Budgets
 	Metrics *metrics.Registry // nil: registers nothing
 	Tracer  trace.Tracer      // spans; nil: the no-op tracer
-	Logger  *slog.Logger      // nil: discards
+	// SampleRatio is RFC 25 §6.3's tracing.sample_ratio, which the root
+	// passes beside Tracer: the adapter samples a request on the trace ID it
+	// draws and opens spans only for one it sampled. 0 samples none.
+	SampleRatio float64
+	Logger      *slog.Logger // nil: discards
 	// Watch registers a loop with the node's liveness watchdog, which the
 	// loop reports to until it closes the Loop at unbind. nil watches
 	// nothing, as in a test.

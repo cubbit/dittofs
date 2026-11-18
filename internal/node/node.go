@@ -6,19 +6,32 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
 
+	"github.com/cubbit/dittofs/internal/node/api"
+	"github.com/cubbit/dittofs/internal/node/api/auth"
+	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/openstate"
 )
 
 // Config is what the host supplies and the node cannot build itself.
 type Config struct {
 	// Bootstrap is the configuration the host read before anything opened.
 	Bootstrap config.Bootstrap
-	// KV is the backend the node's metadata store opens on.
+	// KV is the backend the node's metadata store opens on. The node owns it
+	// from New on: Stop closes it, and so does a New that fails.
 	KV kv.KV
 	// Clock is the node's one source of time.
 	Clock engine.Clock
@@ -26,26 +39,148 @@ type Config struct {
 	Metrics *metrics.Registry
 	// Logger is where the node logs.
 	Logger *slog.Logger
+	// Journal are options for every journal the node opens, after one
+	// reading Clock: the engine's and the one Start reads each device's
+	// identity with. A test passes journaltest.SuitableMount here, so the
+	// host's own mount cannot refuse its temporary directories.
+	Journal []journal.Option
 }
 
 // Node is one running DittoFS node.
 type Node struct {
-	cfg Config
+	cfg      Config
+	meta     *kvstore.Store
+	open     *openstate.Table
+	engine   *engine.Engine
+	fs       *vfs.Filesystem
+	runner   *runner
+	rec      reconciler
+	status   statusWriter
+	sweep    sweeper
+	health   *health.Evaluator
+	watchdog *health.Watchdog
+	api      *api.Server
+	life     lifecycle
+	// ending, when set, is called by step 3 of each share removal once its
+	// bound is set on the clock, before it waits on anything.
+	ending func(entity.ShareID)
 }
 
-// New builds a node from cfg. It opens nothing; Start does.
-func New(cfg Config) (*Node, error) {
-	return &Node{cfg: cfg}, nil
+// New opens the metadata store over cfg.KV, refusing a KV that holds no
+// installation or one this binary does not read, then builds open state,
+// the engine and the filesystem, each empty from its own Deps, the
+// operation runner with the steps of the kinds this node drives, the
+// watchdog, and the API over the store's control plane and node view, the
+// runner's progress, the health evaluator and the writer's wait. It starts
+// nothing: no journal, goroutine
+// or listener exists until Start.
+//
+// ponytail: the node both builds and drives its components. Split the
+// builder out when it gains dependencies a multi-node test cannot replace
+// cheaply.
+//
+// decision: New builds over another installation's KV, because nothing in
+// Config names the installation to expect. Start refuses that KV at its first
+// step, before its first write, by reading the installation each device's
+// journal names and comparing it with the store's. Check it here instead once
+// the bootstrap carries the installation's ID.
+//
+// decision: a node is built once per metrics registry. Stop does not
+// unregister the filesystem's collectors, so a second New on the same
+// registry is refused as a duplicate registration; the test harness gives
+// each build a fresh registry. Unregister in Stop when an in-process
+// rebuild on one registry is needed.
+func New(cfg Config) (*Node, error) { return newNode(cfg, nil) }
+
+// newNode is New with authenticate as the API's Authenticate, which only a
+// test sets.
+func newNode(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*Node, error) {
+	if cfg.KV == nil {
+		return nil, errors.New("node: Config.KV is missing")
+	}
+	n, err := build(cfg, authenticate)
+	if err != nil {
+		return nil, errors.Join(err, cfg.KV.Close())
+	}
+	return n, nil
 }
 
-// Start opens the node's stores and starts its services. It does not start
-// one yet: it returns errors.ErrUnsupported.
-func (n *Node) Start(ctx context.Context) error {
-	return errors.ErrUnsupported
-}
-
-// Stop stops what Start started. It returns errors.ErrUnsupported until
-// Start starts anything.
-func (n *Node) Stop(ctx context.Context) error {
-	return errors.ErrUnsupported
+func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*Node, error) {
+	if cfg.Metrics == nil {
+		return nil, errors.New("node: Config.Metrics is missing")
+	}
+	// An empty address would bind a random port on every interface.
+	if cfg.Bootstrap.APIAddr == "" || cfg.Bootstrap.MetricsAddr == "" {
+		return nil, errors.New("node: Config.Bootstrap.APIAddr and MetricsAddr must both be set")
+	}
+	n := &Node{cfg: cfg, rec: newReconciler(), sweep: newSweeper()}
+	var err error
+	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
+		return nil, fmt.Errorf("node: metadata store: %w", err)
+	}
+	open, deps, err := enginewire.Compose(enginewire.Params{
+		Node:    cfg.Bootstrap.Node,
+		Devices: cfg.Bootstrap.Devices,
+		Store:   n.meta,
+		Clock:   cfg.Clock,
+		Logger:  cfg.Logger,
+		Journal: cfg.Journal,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("node: %w", err)
+	}
+	n.open = open
+	if n.engine, err = engine.New(deps); err != nil {
+		return nil, fmt.Errorf("node: %w", err)
+	}
+	reg := cfg.Metrics.Registry()
+	if err := reg.Register(engineSeries{n.engine.Stats}); err != nil {
+		return nil, fmt.Errorf("node: engine series: %w", err)
+	}
+	if err := reg.Register(nodeSeries{n}); err != nil {
+		return nil, fmt.Errorf("node: node series: %w", err)
+	}
+	if err := reg.Register(n.sweep.idempotency); err != nil {
+		return nil, fmt.Errorf("node: sweep series: %w", err)
+	}
+	n.health = &health.Evaluator{}
+	n.health.Add(&engineConditions{n.engine.Stats})
+	n.health.Add(&nodeConditions{n})
+	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves}); err != nil {
+		return nil, fmt.Errorf("node: %w", err)
+	}
+	steps := operationSteps(n.meta.Nodes())
+	steps[string(apiv1.OpShareDelete)] = stepRow{n.shareDeletion, n.removalProgress}
+	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node, cfg.Logger, steps)
+	n.watchdog = health.NewWatchdog(cfg.Clock)
+	n.life.ready.Store(readyStarting)
+	// decision: the API gets no TLS, local socket, signing key or tracer,
+	// and in production no Authenticate, because nothing the node is handed
+	// holds them yet: the bootstrap carries no certificate, key or socket
+	// path, the installation's signing key is a secret no secret store
+	// reads, and Config names no tracer. So a start on an address but
+	// loopback is refused for want of a certificate, no local socket is
+	// served, every call but a public row's answers 401, every POST and
+	// DELETE, which must carry an Idempotency-Key, answers 503 or 428, and
+	// spans go to the no-op tracer. Fill
+	// each from the bootstrap, the secret store, sign-in and the host's
+	// tracer as they land.
+	n.api = api.New(api.Deps{
+		Ready:        n.life.readiness,
+		Served:       n.life.served.Load,
+		Live:         n.watchdog.Live,
+		Addr:         cfg.Bootstrap.APIAddr,
+		MetricsAddr:  cfg.Bootstrap.MetricsAddr,
+		Metrics:      cfg.Metrics,
+		Logger:       cfg.Logger,
+		Authenticate: authenticate,
+		Store:        n.meta.ControlPlane(),
+		Nodes:        n.meta.Nodes(),
+		Progress:     n.runner.progressOf,
+		Health:       n.health,
+		Clock:        cfg.Clock,
+		Node:         cfg.Bootstrap.Node,
+		Applied:      n.applied,
+	})
+	return n, nil
 }

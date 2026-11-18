@@ -16,7 +16,8 @@ import (
 // so a closing engine commits nothing that only recovery may. An existence
 // commit answers done, so the closing engine's last group commit ends; every
 // other change is refused. The embedded views are nil: a call reaching them
-// panics.
+// panics. The fence has no gate (a nil one passes at once), and a clone's gate
+// comes before its crash check, so the clone still answers errCrashed.
 func TestACrashedProcessChangesNothingInTheStore(t *testing.T) {
 	crashed := new(atomic.Bool)
 	crashed.Store(true)

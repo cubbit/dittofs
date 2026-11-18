@@ -21,6 +21,11 @@ import (
 // modelID is the journal identity the planted format file names.
 var modelID = core.JournalID{'o', 'w', 'n', '-', 'i', 'd', 'e', 'n', 't', 'i', 't', 'y'}
 
+// modelSegCap is the segment cap the model's re-opened recovery accounts the
+// planted segments at: far above every planted segment's file, the journal's
+// own default scale.
+const modelSegCap = 1 << 20
+
 // modelInstall is the installation ID the planted format file names.
 var modelInstall = core.InstallationID{'k', 'i', 't'}
 
@@ -344,7 +349,7 @@ func rebuildAndCompare(t *testing.T, w *workload) recovery.State {
 	r.writeFormat()
 	r.plantWorkload(w)
 
-	st, err := recovery.Run(context.Background(), recovery.Deps{FS: r.seam.FS(), Clock: r.clk}, core.Version{}, modelID, nil)
+	st, err := recovery.Run(context.Background(), recovery.Deps{FS: r.seam.FS(), Clock: r.clk, SegmentCap: modelSegCap}, core.Version{}, modelID, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

@@ -7,10 +7,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var logoutCmd = &cobra.Command{
-	Use:   "logout",
-	Short: "Clear stored credentials",
-	Long: `Clear stored credentials for the current context.
+func newLogoutCmd() *cobra.Command {
+	logoutCmd := &cobra.Command{
+		Use:   "logout",
+		Short: "Clear stored credentials",
+		Long: `Clear stored credentials for the current context.
 
 Removes the access and refresh tokens from the active context in
 ~/.config/dfsctl/config.json but preserves the server URL and context name so
@@ -23,7 +24,9 @@ Examples:
 
   # Logout then immediately log back in as a different user
   dfsctl logout && dfsctl login --username operator`,
-	RunE: runLogout,
+		RunE: runLogout,
+	}
+	return logoutCmd
 }
 
 func runLogout(cmd *cobra.Command, args []string) error {
@@ -44,6 +47,6 @@ func runLogout(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to clear credentials: %w", err)
 	}
 
-	fmt.Printf("Logged out from context: %s\n", contextName)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Logged out from context: %s\n", contextName)
 	return nil
 }
