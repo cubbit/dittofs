@@ -61,7 +61,7 @@ func TestComplete(t *testing.T) {
 		"report|":                      {"run-1", "run-2"},
 		"report|--results|elsewhere|":  {"run-3"},
 		"report|--format|":             {"json", "md", "text"},
-		"history|":                     {"m", "plain", "smbtorture"},
+		"history|":                     {"diff\t" + newHistoryDiff().Short, "m", "plain", "smbtorture"}, // the subcommand, with its summary, then the suites
 		"history|m|":                   nil,
 		"known|prune|":                 {"m"},
 		"known|baseline|":              {"smbtorture/a", "smbtorture/k"},

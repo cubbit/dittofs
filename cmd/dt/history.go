@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -104,6 +105,7 @@ func newHistory() *cobra.Command {
 		ValidArgsFunction: completeSuite,
 	}
 	historyFlags(cmd, &ci, &last, &branch)
+	cmd.AddCommand(newHistoryDiff())
 	return cmd
 }
 
@@ -248,4 +250,138 @@ func newKnownPrune() *cobra.Command {
 	}
 	historyFlags(cmd, &ci, &last, &branch)
 	return cmd
+}
+
+// diffFloor and diffTop are what dt history diff keeps unless --floor and
+// --top say otherwise.
+//
+// decision: 100 ms, ten times the 10 ms a Go test's time is rounded to, so
+// rounding and run-to-run noise don't fill the list; lower it when a suite of
+// short tests is what's being searched.
+const (
+	diffFloor = 100 * time.Millisecond
+	diffTop   = 30
+)
+
+func newHistoryDiff() *cobra.Command {
+	var last, top int
+	var branch string
+	var floor time.Duration
+	cmd := &cobra.Command{
+		Use:   "diff [A B]",
+		Short: "Which cells and tests took longer or shorter between two runs of tests.yml, by workflow run ID, or between the oldest and the newest of the last N on --branch",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 0 && len(args) != 2 {
+				return fmt.Errorf("expected two workflow run IDs, A and B, or none with --last; got %d", len(args))
+			}
+			if len(args) == 2 && cmd.Flags().Changed("last") {
+				return errors.New("two workflow run IDs and --last both say which runs to compare; give one")
+			}
+			for _, a := range args {
+				if _, err := strconv.ParseInt(a, 10, 64); err != nil {
+					return fmt.Errorf("%q is not a workflow run ID", a)
+				}
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var a, b []report.Run
+			var err error
+			if len(args) == 2 {
+				ids := [2]int64{}
+				for i, arg := range args {
+					ids[i], _ = strconv.ParseInt(arg, 10, 64)
+				}
+				if a, err = history.Workflow(cmd.Context(), "", ids[0], cmd.ErrOrStderr()); err == nil {
+					b, err = history.Workflow(cmd.Context(), "", ids[1], cmd.ErrOrStderr())
+				}
+			} else {
+				var runs []report.Run
+				if runs, err = history.CI(cmd.Context(), "", last, branch, cmd.ErrOrStderr()); err == nil {
+					a, b, err = ends(runs)
+				}
+			}
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if _, err := fmt.Fprintf(out, "A: %s\nB: %s\n\n", runName(a), runName(b)); err != nil {
+				return err
+			}
+			return writeDiff(out, history.Diff(a, b, floor, top))
+		},
+	}
+	cmd.Flags().IntVar(&last, "last", lastRuns, "without run IDs, compare the oldest and the newest of the last N runs")
+	cmd.Flags().StringVar(&branch, "branch", "develop", "without run IDs, the branch whose runs of tests.yml are compared")
+	cmd.Flags().DurationVar(&floor, "floor", diffFloor, "leave out tests whose time changed by less than this")
+	cmd.Flags().IntVar(&top, "top", diffTop, "show at most N tests, the ones that took longer first; 0 shows all")
+	return cmd
+}
+
+// runName is the name of the workflow run runs belong to, its first job's.
+func runName(runs []report.Run) string {
+	if len(runs) == 0 {
+		return "(no results)"
+	}
+	return runs[0].Name
+}
+
+// ends splits runs, oldest first, which are each workflow run's jobs one
+// after another, into the first workflow run's and the last's, by name. Fewer
+// than two workflow runs have nothing to compare, which is an error.
+func ends(runs []report.Run) (first, last []report.Run, err error) {
+	var names []string
+	for _, r := range runs {
+		if len(names) == 0 || names[len(names)-1] != r.Name {
+			names = append(names, r.Name)
+		}
+	}
+	if len(names) < 2 {
+		return nil, nil, fmt.Errorf("found %d workflow runs, and comparing needs 2; raise --last or check --branch", len(names))
+	}
+	for _, r := range runs {
+		switch r.Name {
+		case names[0]:
+			first = append(first, r)
+		case names[len(names)-1]:
+			last = append(last, r)
+		}
+	}
+	return first, last, nil
+}
+
+// writeDiff writes the cells and then the tests of d: each with its time in A
+// and in B, and how much longer it took, and which side it's missing from.
+func writeDiff(out io.Writer, d history.Delta) error {
+	rows := [][]string{{"CELL", "A", "B", "DELTA"}}
+	for _, c := range d.Cells {
+		rows = append(rows, diffRow(c, c.Cell))
+	}
+	rows = append(rows, nil, []string{"TEST", "CELL", "A", "B", "DELTA"})
+	for _, c := range d.Tests {
+		rows = append(rows, append([]string{c.Test}, diffRow(c, c.Cell)...))
+	}
+	return table(out, rows)
+}
+
+// diffRow is a change's cell, its times and its delta, marked new or gone
+// when it's in one run only.
+func diffRow(c history.Change, first string) []string {
+	at := func(d time.Duration, in bool) string {
+		if !in {
+			return "-"
+		}
+		return duration(d)
+	}
+	delta := duration(c.Delta())
+	if c.Delta() >= 0 {
+		delta = "+" + delta
+	}
+	switch {
+	case !c.InA:
+		delta += " (new)"
+	case !c.InB:
+		delta += " (gone)"
+	}
+	return []string{first, at(c.A, c.InA), at(c.B, c.InB), delta}
 }
