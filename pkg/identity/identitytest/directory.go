@@ -1,6 +1,7 @@
 // Package identitytest holds the doubles identity's tests share: the
-// in-memory directory, which DirectoryConformance holds to a real one, and
-// the fault wrapper around a directory.
+// in-memory directory and domain controller, which DirectoryConformance and
+// DomainControllerConformance hold to real ones, and the fault wrapper around
+// each.
 package identitytest
 
 import (
