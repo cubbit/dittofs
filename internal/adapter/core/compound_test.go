@@ -824,15 +824,20 @@ func TestACompoundRowThatSetsNoHeadClosesTheConnection(t *testing.T) {
 
 // A compound refused at route, before its row decodes it, is answered its
 // status alone with its head: the tag its header's codec read, and no
-// results.
+// results. So it is on Bare too, whose stages have no Security to read the
+// tag after the header (RFC 20 §4.1).
 func TestACompoundRefusedAtRouteEchoesItsTag(t *testing.T) {
 	off := testproto.Settings{Adapter: settings.Adapter{DisabledOperations: []string{"Compound"}}}
-	s := newSeamSet(t, testproto.New(adapter.Deps{}), 1<<20, adapter.Deps{}, off)
-	s.serve(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 3, Tag: tagOf(3), Members: []testproto.Msg{echo}})
-	r := s.read()
-	hd, rs, err := testproto.Results(r.Body)
-	if r.Status != testproto.StatusNotSupported || err != nil || !headIs(hd, testproto.StatusNotSupported, tagOf(3)) || len(rs) != 0 {
-		t.Errorf("a compound switched off is answered %d with head %+v and %v (%v), want not supported, its tag and no results", r.Status, hd, rs, err)
+	for name, proto := range map[string]core.Protocol{"full": testproto.New(adapter.Deps{}), "bare": testproto.New(adapter.Deps{}).Bare()} {
+		t.Run(name, func(t *testing.T) {
+			s := newSeamSet(t, proto, 1<<20, adapter.Deps{}, off)
+			s.serve(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 3, Tag: tagOf(3), Members: []testproto.Msg{echo}})
+			r := s.read()
+			hd, rs, err := testproto.Results(r.Body)
+			if r.Status != testproto.StatusNotSupported || err != nil || !headIs(hd, testproto.StatusNotSupported, tagOf(3)) || len(rs) != 0 {
+				t.Errorf("a compound switched off is answered %d with head %+v and %v (%v), want not supported, its tag and no results", r.Status, hd, rs, err)
+			}
+		})
 	}
 }
 
