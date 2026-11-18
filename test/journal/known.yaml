@@ -24,22 +24,6 @@
   issue: '#3378'
   message: 'stub:'
 
-- test: TestMetrics_ConditionsMoveTheirMetric/corrupt_data_loss
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The corrupt-dirty leg runs past every stub and fails at its own figure: no path raises the corrupt data-loss counter yet. Needs the corrupt outcomes.'
-  issue: '#3378'
-  message: 'a corrupt dirty extent moved CorruptExtentsDataLoss from 0 to 0, want it risen'
-
-- test: TestMetrics_ConditionsMoveTheirMetric/loss_corrupt
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The corrupt-dirty loss leg runs past every stub and fails at its own figure: no path raises the corrupt data-loss counter yet. Needs the corrupt outcomes and their loss events.'
-  issue: '#3378'
-  message: 'a corrupt dirty extent moved CorruptExtentsDataLoss from 0 to 0, want it risen'
-
 - test: TestModel
   status: fail
   fix: planned
