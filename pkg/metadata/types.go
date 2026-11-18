@@ -152,8 +152,8 @@ type ShareOptions struct {
 // MetadataServerConfig contains metadata repository server-wide configuration settings.
 //
 // This includes settings that apply across all shares and operations at the
-// metadata repository level. This is distinct from pkg/config.ServerConfig which
-// contains application-level server settings.
+// metadata repository level. This is distinct from pkg/bootstrap, which holds
+// the server's startup settings.
 //
 // The structure is intentionally flexible to accommodate protocol-specific
 // settings without coupling the repository to specific protocols.

@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/cubbit/dittofs/internal/cli/output"
-	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -38,7 +38,7 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 
 	// Load configuration
-	cfg, err := config.MustLoad(configPath)
+	cfg, err := bootstrap.MustLoad(configPath)
 	if err != nil {
 		return err
 	}
@@ -55,7 +55,7 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 	case output.FormatJSON:
 		// The Config structs carry only mapstructure/yaml tags (no json
 		// tags), so a direct json.Marshal emits PascalCase keys that
-		// config.Load cannot re-parse. Round-trip through yaml first to
+		// bootstrap.Load cannot re-parse. Round-trip through yaml first to
 		// obtain the lowercase yaml-keyed shape (which also applies the
 		// secret-redaction MarshalYAML hooks), then emit that as JSON so
 		// the output re-parses through Load.
@@ -71,9 +71,9 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 
 // yamlKeyedView converts cfg to a generic map keyed by its yaml tags by
 // marshalling to YAML and unmarshalling back into an interface{}. This yields
-// the same lowercase key namespace config.Load consumes, so the JSON encoding
+// the same lowercase key namespace bootstrap.Load consumes, so the JSON encoding
 // of the result round-trips through Load.
-func yamlKeyedView(cfg *config.Bootstrap) (interface{}, error) {
+func yamlKeyedView(cfg *bootstrap.Bootstrap) (interface{}, error) {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal config: %w", err)

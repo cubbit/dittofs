@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/spf13/cobra"
 )
 
@@ -32,14 +32,14 @@ func runConfigValidate(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 	out := cmd.OutOrStdout()
 
-	cfg, err := config.MustLoad(configPath)
+	cfg, err := bootstrap.MustLoad(configPath)
 	if err != nil {
 		return err
 	}
 
 	displayPath := configPath
 	if displayPath == "" {
-		displayPath = config.GetDefaultConfigPath()
+		displayPath = bootstrap.GetDefaultConfigPath()
 	}
 
 	var warnings []string

@@ -227,7 +227,7 @@ suites:
           - internal/identity/**            # the identity server: sign-in and resolution
           - pkg/identity/**                 # identity's contract
           - pkg/auth/**
-          - pkg/config/**                   # the Kerberos keytab and principal
+          - pkg/bootstrap/**                # the Kerberos keytab and principal
           - cmd/dfs/**                      # the server's Kerberos capability at start
           - test/e2e/framework/kerberos.go
           - test/integration/kerberos/**

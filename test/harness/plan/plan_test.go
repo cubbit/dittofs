@@ -306,7 +306,8 @@ func TestChangedPaths(t *testing.T) {
 	if got := plan("pkg/block/engine/flush.go"); slices.Contains(got, "e2e/kerberos") || slices.Contains(got, "e2e/cross-protocol") || !slices.Contains(got, "unit") {
 		t.Errorf("a block change: %v", got)
 	}
-	if got := plan("pkg/config/config.go"); slices.Contains(got, "e2e/cross-protocol") {
+
+	if got := plan("pkg/bootstrap/config.go"); slices.Contains(got, "e2e/cross-protocol") {
 		t.Errorf("a configuration change plans e2e/cross-protocol: %v", got)
 	}
 	for _, p := range []string{
@@ -319,7 +320,7 @@ func TestChangedPaths(t *testing.T) {
 	}
 	for _, p := range []string{
 		"internal/adapter/smb/handlers/session_setup.go", "pkg/metadata/file.go", "test/e2e/framework/kerberos.go",
-		"pkg/config/config.go", "cmd/dfs/commands/start.go",
+		"pkg/bootstrap/config.go", "cmd/dfs/commands/start.go",
 	} {
 		if got := plan(p); !slices.Contains(got, "e2e/kerberos") {
 			t.Errorf("a change to %s doesn't plan e2e/kerberos", p)
