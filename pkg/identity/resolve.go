@@ -18,6 +18,16 @@ import (
 // an undecidable lookup or an incomplete group closure.
 type Resolver interface {
 	Resolve(ctx context.Context, id Identity, p entity.SharePolicy, narrowed ReadOnlyCause) (*Caller, error)
+	// Current is the serial of the State a Resolve starting now reads, one
+	// atomic load of that State: admission stores and serves a cached Caller
+	// only while its Built equals it.
+	//
+	// decision: the serial is read through the Resolver, not handed to
+	// admission some other way, because admission has no other path to the
+	// identity server's State and a cache that cannot tell a stale caller
+	// would serve one. Overturned if admission ever receives the State
+	// itself.
+	Current() uint64
 }
 
 // Caller is what one call acts as on one share. Every field any check reads
