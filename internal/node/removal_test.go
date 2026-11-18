@@ -518,36 +518,50 @@ func TestAdmissionServesOnlyTheRunningSet(t *testing.T) {
 
 // A removal joined at start whose store stops answering fails Start at the
 // filesystem step, its step named, within the store's bound on the node's
-// clock, rather than hang it.
+// clock, rather than hang it: whether the removal's own record write hangs
+// or the shard's removal record write does.
 func TestARemovalsHungStoreFailsStartAtItsStep(t *testing.T) {
-	h, f := faulted(t)
-	configure(t, h, storeA)
-	sh := createShare(t, h, "a", storeA)
-	deleteShare(t, h, sh)
-	held := sim.NewTestClock(time.Unix(0, 0))
-	state := keys.Describe(append(keys.ID([]byte{keys.KindS}, sh.ID[:]), keys.SSt))
-	setFault(t, f, held, sim.Rule{Op: kvtest.OpSet, Key: state, Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
-	defer held.Advance(time.Hour)
-	failed := make(chan error, 1)
-	go func() { failed <- h.Node().Start(context.Background()) }()
-	for deadline := time.Now().Add(10 * time.Second); held.Pending() == 0; runtime.Gosched() {
-		if time.Now().After(deadline) {
-			t.Fatal("the removal's write at start did not reach the store within 10 s")
-		}
-	}
-	h.Clock().Advance(time.Minute)
-	select {
-	case err := <-failed:
-		if err == nil || !strings.Contains(err.Error(), "filesystem") {
-			t.Fatalf("Start with the removal's write hung: %v, want it failed at the filesystem step", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Start with the removal's write hung: not returned within 10 s of the clock passing the store's bound")
-	}
-	// A failed start leaves the listeners open for health; the late write
-	// is released before the node stops.
-	held.Advance(time.Hour)
-	if err := h.Node().Stop(context.Background()); err != nil {
-		t.Errorf("Stop after the failed start: %v", err)
+	for _, tc := range []struct {
+		name string
+		key  func(entity.Share) string
+	}{
+		{"the removal's state", func(sh entity.Share) string {
+			return keys.Describe(append(keys.ID([]byte{keys.KindS}, sh.ID[:]), keys.SSt))
+		}},
+		{"the shard's removal record", func(sh entity.Share) string {
+			return keys.Describe(append(keys.Uint64([]byte{keys.KindSH}, uint64(sh.Shard)), keys.SHRm))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, f := faulted(t)
+			configure(t, h, storeA)
+			sh := createShare(t, h, "a", storeA)
+			deleteShare(t, h, sh)
+			held := sim.NewTestClock(time.Unix(0, 0))
+			setFault(t, f, held, sim.Rule{Op: kvtest.OpSet, Key: tc.key(sh), Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+			defer held.Advance(time.Hour)
+			failed := make(chan error, 1)
+			go func() { failed <- h.Node().Start(context.Background()) }()
+			for deadline := time.Now().Add(10 * time.Second); held.Pending() == 0; runtime.Gosched() {
+				if time.Now().After(deadline) {
+					t.Fatalf("the write of %s at start did not reach the store within 10 s", tc.name)
+				}
+			}
+			h.Clock().Advance(time.Minute)
+			select {
+			case err := <-failed:
+				if err == nil || !strings.Contains(err.Error(), "filesystem") {
+					t.Fatalf("Start with the write of %s hung: %v, want it failed at the filesystem step", tc.name, err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("Start with the write of %s hung: not returned within 10 s of the clock passing the store's bound", tc.name)
+			}
+			// A failed start leaves the listeners open for health; the late
+			// write is released before the node stops.
+			held.Advance(time.Hour)
+			if err := h.Node().Stop(context.Background()); err != nil {
+				t.Errorf("Stop after the failed start: %v", err)
+			}
+		})
 	}
 }
