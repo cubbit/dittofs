@@ -2368,9 +2368,12 @@ user name. The caller cache's metrics are admission's
 a call whose caller is not stored (§7.1) counted a miss; and
 `vfs_caller_cache_evictions_total`, the counter §7.3's row names.
 
-**Spans.** `identity.authenticate` is a child of the adapter's request span.
-`identity.resolve` is a child of the service-call span, opened only on a cache
-miss. Each directory query is a child of whichever opened it. Attributes are the
+**Spans.** Under a sampled parent
+([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)), `identity.authenticate`
+is a child of the adapter's request span, and `identity.resolve` a child of the
+service-call span, opened only on a cache miss; an unsampled request's sign-in
+and resolution open none. Each directory query is a child of whichever opened
+it. Attributes are the
 proof kind, the outcome and the principal's ID: never a name, SID, ticket or hash
 ([RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)).
 
