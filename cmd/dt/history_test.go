@@ -203,36 +203,68 @@ func TestPlanEstimate(t *testing.T) {
 	}
 }
 
-// ends splits runs, which are a workflow run's jobs one after another, into
-// the first workflow run's and the last's, and needs two of them.
-func TestEnds(t *testing.T) {
-	name := func(names ...string) []report.Run {
+// halves splits runs, which are a workflow run's jobs one after another, into
+// the older half of the workflow runs and the newer, of the last run's tier,
+// and needs two of them.
+func TestHalves(t *testing.T) {
+	names := func(runs []report.Run) string {
+		var out []string
+		for _, r := range runs {
+			out = append(out, r.Name)
+		}
+		return strings.Join(out, " ")
+	}
+	job := func(tier string, ns ...string) []report.Run {
 		var runs []report.Run
-		for _, n := range names {
-			runs = append(runs, report.Run{Name: n, Commit: n})
+		for _, n := range ns {
+			runs = append(runs, report.Run{Name: n, Tier: tier})
 		}
 		return runs
 	}
-	a, b, err := ends(name("r1", "r1", "r2", "r3", "r3"))
-	if err != nil || len(a) != 2 || a[0].Name != "r1" || len(b) != 2 || b[0].Name != "r3" {
-		t.Errorf("r1 r1 r2 r3 r3: got %v and %v, %v; want both r1 runs and both r3 runs", a, b, err)
+	for _, c := range []struct {
+		name         string
+		runs         []report.Run
+		older, newer string
+	}{
+		{"two", job("", "r1", "r2"), "r1", "r2"},
+		{"five, the newer takes the odd one", job("", "r1", "r2", "r3", "r4", "r5"), "r1 r2", "r3 r4 r5"},
+		{"jobs of a run stay together", job("", "r1", "r1", "r2", "r3", "r3"), "r1 r1", "r2 r3 r3"},
+		// The newest run is a merge run: the nightly one before it is no side of
+		// the comparison, or its nightly-only cells would all read as gone.
+		{"another tier is left out", append(job("nightly", "r1"), job("merge", "r2", "r3")...), "r2", "r3"},
+	} {
+		older, newer, err := halves(c.runs)
+		if err != nil || names(older) != c.older || names(newer) != c.newer {
+			t.Errorf("%s: got %q and %q, %v; want %q and %q", c.name, names(older), names(newer), err, c.older, c.newer)
+		}
 	}
-	// The newest run is a merge run: the nightly one before it is no side of the
-	// comparison, or its nightly-only cells would all read as gone.
-	tiered := []report.Run{{Name: "r1", Tier: "nightly"}, {Name: "r2", Tier: "merge"}, {Name: "r3", Tier: "merge"}}
-	a, b, err = ends(tiered)
-	if err != nil || len(a) != 1 || a[0].Name != "r2" || len(b) != 1 || b[0].Name != "r3" {
-		t.Errorf("nightly, merge, merge: got %v and %v, %v; want r2 and r3", a, b, err)
+	for _, c := range []struct {
+		name string
+		runs []report.Run
+		want string
+	}{
+		{"one run", job("", "r1", "r1"), "found 1"},
+		{"none", nil, "found 0"},
+		{"one of the tier", append(job("nightly", "r1"), job("merge", "r2")...), "found 1"},
+	} {
+		if _, _, err := halves(c.runs); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got %v, want an error containing %q", c.name, err, c.want)
+		}
 	}
-	if _, _, err = ends(append(tiered[:1:1], tiered[2])); err == nil || !strings.Contains(err.Error(), "found 1") {
-		t.Errorf("nightly, merge: got %v, want an error containing %q", err, "found 1")
-	}
+}
+
+// sideName gives one run's name, or the first and last of several and how many,
+// and the tier.
+func TestSideName(t *testing.T) {
 	for _, c := range []struct {
 		runs []report.Run
 		want string
-	}{{name("r1", "r1"), "found 1"}, {nil, "found 0"}} {
-		if _, _, err := ends(c.runs); err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%d runs: got %v, want an error containing %q", len(c.runs), err, c.want)
+	}{
+		{[]report.Run{{Name: "r1", Tier: "merge"}, {Name: "r1", Tier: "merge"}}, "r1 (merge)"},
+		{[]report.Run{{Name: "r1"}, {Name: "r2"}, {Name: "r2"}, {Name: "r3"}}, "r1 .. r3, median of 3 runs"},
+	} {
+		if got := sideName(c.runs); got != c.want {
+			t.Errorf("sideName: got %q, want %q", got, c.want)
 		}
 	}
 }

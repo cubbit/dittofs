@@ -269,7 +269,7 @@ func newHistoryDiff() *cobra.Command {
 	var floor time.Duration
 	cmd := &cobra.Command{
 		Use:   "diff [A B]",
-		Short: "Which cells and tests took longer or shorter between two runs of tests.yml, by workflow run ID, or between the oldest and the newest of the last N on --branch",
+		Short: "Which cells and tests took longer or shorter between two runs of tests.yml, by workflow run ID, or between the older and the newer half of the last N on --branch, each test's median",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 0 && len(args) != 2 {
 				return fmt.Errorf("expected two workflow run IDs, A and B, or none with --last; got %d", len(args))
@@ -298,7 +298,7 @@ func newHistoryDiff() *cobra.Command {
 			} else {
 				var runs []report.Run
 				if runs, err = history.CI(cmd.Context(), "", last, branch, cmd.ErrOrStderr()); err == nil {
-					a, b, err = ends(runs)
+					a, b, err = halves(runs)
 				}
 			}
 			if err != nil {
@@ -308,13 +308,13 @@ func newHistoryDiff() *cobra.Command {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			if _, err := fmt.Fprintf(out, "A: %s\nB: %s\n\n", runName(a), runName(b)); err != nil {
+			if _, err := fmt.Fprintf(out, "A: %s\nB: %s\n\n", sideName(a), sideName(b)); err != nil {
 				return err
 			}
 			return writeDiff(out, history.Diff(a, b, floor, top))
 		},
 	}
-	cmd.Flags().IntVar(&last, "last", lastRuns, "without run IDs, compare the oldest and the newest of the last N runs")
+	cmd.Flags().IntVar(&last, "last", lastRuns, "without run IDs, compare the median of the older half of the last N runs with the newer half's")
 	cmd.Flags().StringVar(&branch, "branch", "develop", "without run IDs, the branch whose runs of tests.yml are compared")
 	cmd.Flags().DurationVar(&floor, "floor", diffFloor, "leave out tests whose time changed by less than this")
 	cmd.Flags().IntVar(&top, "top", diffTop, "show at most N tests, the ones that took longer first; 0 shows all")
@@ -336,22 +336,32 @@ func bothRan(a, b []report.Run) error {
 	return nil
 }
 
-// runName is the name of the workflow run runs belong to, its first job's, and
-// its tier, which two runs may not share; runs holds one, which bothRan has
-// checked.
-func runName(runs []report.Run) string {
-	if t := runs[0].Tier; t != "" {
-		return runs[0].Name + " (" + t + ")"
+// sideName names the workflow runs a side holds: the run's name, or the first
+// and the last with how many, and the tier, which two sides may not share;
+// runs is not empty, which bothRan has checked.
+func sideName(runs []report.Run) string {
+	var names []string
+	for _, r := range runs {
+		if !slices.Contains(names, r.Name) {
+			names = append(names, r.Name)
+		}
 	}
-	return runs[0].Name
+	name := names[0]
+	if len(names) > 1 {
+		name = fmt.Sprintf("%s .. %s, median of %d runs", names[0], names[len(names)-1], len(names))
+	}
+	if t := runs[0].Tier; t != "" {
+		name += " (" + t + ")"
+	}
+	return name
 }
 
-// ends splits runs, oldest first, which are each workflow run's jobs one
-// after another, into the first workflow run's and the last's, by name, of
-// those of the last run's tier: another tier runs other cells, which would all
-// read as new or gone. Fewer than two workflow runs have nothing to compare,
-// which is an error.
-func ends(runs []report.Run) (first, last []report.Run, err error) {
+// halves splits runs, oldest first, which are each workflow run's jobs one
+// after another, into the older half of the workflow runs and the newer half,
+// the newer taking the odd one, of those of the last run's tier: another tier
+// runs other cells, which would all read as new or gone. Fewer than two
+// workflow runs have nothing to compare, which is an error.
+func halves(runs []report.Run) (older, newer []report.Run, err error) {
 	if len(runs) > 0 {
 		tier := runs[len(runs)-1].Tier
 		runs = slices.DeleteFunc(slices.Clone(runs), func(r report.Run) bool { return r.Tier != tier })
@@ -365,15 +375,15 @@ func ends(runs []report.Run) (first, last []report.Run, err error) {
 	if len(names) < 2 {
 		return nil, nil, fmt.Errorf("found %d workflow runs, and comparing needs 2; raise --last or check --branch", len(names))
 	}
+	old := names[:len(names)/2]
 	for _, r := range runs {
-		switch r.Name {
-		case names[0]:
-			first = append(first, r)
-		case names[len(names)-1]:
-			last = append(last, r)
+		if slices.Contains(old, r.Name) {
+			older = append(older, r)
+		} else {
+			newer = append(newer, r)
 		}
 	}
-	return first, last, nil
+	return older, newer, nil
 }
 
 // writeDiff writes the cells and then the tests of d: each with its time in A
