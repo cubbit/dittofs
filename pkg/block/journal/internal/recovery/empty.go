@@ -374,19 +374,27 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			if !rots {
 				continue
 			}
+			// decision: the rot branch always carries, even when another
+			// sealed copy verifies, though a standing copy would let the
+			// segment that holds it stay held. The index serves the greatest
+			// copy among the kept segments, so any such copy sits below the
+			// rotten twin, and the twin wins again at the next open, whose
+			// walk verifies no payload: the standing copy is then held by
+			// nothing for this record and goes once its other records are
+			// superseded, leaving only the rotten copy. A carry lands in a
+			// reserve spare whose id is above every id the directory held,
+			// so the next open serves it and retires the stale duplicate
+			// as unheld; the duplicate this leaves lasts one open. Holding a
+			// segment by a repoint lasts only for this process. Ceiling: a
+			// take a durable unlink freed is drawn before the reserve and
+			// may sit below the twin (another stream's later segment), and a
+			// copy into it loses to the twin at the next open the same way;
+			// so would a re-adopted spare once the pool adopts them, for
+			// their ids are old and the pool hands its oldest spare out
+			// first. Withdrawn when the walk
+			// verifies payloads or the open records a rotten placement, so
+			// a restart cannot serve the twin again.
 			from = twin
-			// A copy that already verifies stands in the twin's place: a
-			// crash between an earlier open's copy and its unlink leaves
-			// that copy beside the ended segment, and carrying this one
-			// again would hold the record twice.
-			other, found, serr := e.standingCopy(rec, id)
-			if serr != nil {
-				return serr
-			}
-			if found {
-				moves = append(moves, moveAt{file: rec.File, from: twin, to: other})
-				continue
-			}
 		} else {
 			other, found, serr := e.standingCopy(rec, id)
 			if serr != nil {

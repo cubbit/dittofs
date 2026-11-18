@@ -1419,12 +1419,14 @@ func verifyingCopies(t *testing.T, r *rig, seq uint64) int {
 	return n
 }
 
-// TestACopyThatVerifiesIsNotCarriedAgainOverARottenServedTwin holds the
-// state a crash between a copy and its unlink leaves: the ended segment, a
-// sealed copy that verifies and a greater sealed twin the index serves whose
-// body rots. The verifying copy stands, and the ended segment's is not
-// carried a second time.
-func TestACopyThatVerifiesIsNotCarriedAgainOverARottenServedTwin(t *testing.T) {
+// TestACopyBelowARottenServedTwinDoesNotOutliveTheNextOpen holds the rot
+// branch across a restart: the ended segment 3, a sealed copy in 2 that
+// verifies and a greater sealed twin in 4 the index serves whose body rots.
+// A copy below the twin loses to it at the next open, whose walk verifies
+// no payload, so the ended copy is carried above it. Then a sealed segment
+// supersedes 2's other record, a second open retires 2 as unheld, and a
+// copy of the record must still verify.
+func TestACopyBelowARottenServedTwinDoesNotOutliveTheNextOpen(t *testing.T) {
 	r, st, file := twinRig(t, 3, []core.SegmentID{2, 4}, 4)
 	if placed, ok := st.Rebuilt.Index.Lookup(file, 0x4100); !ok || placed.Record.Segment != 4 {
 		t.Fatalf("the index serves %+v (%v) at the open, want the greater twin in 4", placed, ok)
@@ -1433,11 +1435,19 @@ func TestACopyThatVerifiesIsNotCarriedAgainOverARottenServedTwin(t *testing.T) {
 	if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil); err != nil {
 		t.Fatalf("Emptying: %v", err)
 	}
-	if placed, ok := st.Rebuilt.Index.Lookup(file, 0x4100); !ok || placed.Record.Segment != 2 {
-		t.Errorf("the extent serves %+v (%v), want the verifying copy in 2", placed, ok)
+	over, _ := buildSealed(20, collectWrite(7, file, 30, 30, 0x5100, 16))
+	r.plantSeg(20, over)
+	st2, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	if err != nil {
+		t.Fatalf("the second Run: %v", err)
 	}
-	if n := verifyingCopies(t, r, 5); n != 1 {
-		t.Errorf("seq 5 verifies in %d placements on disk, want 1: no second copy carried", n)
+	h2 := newEmptyingHarness(t, r, &st2, segment.Targets{Reserve: 1})
+	if err := Emptying(context.Background(), h2.deps, &st2, journalID, core.Version{}, nil); err != nil {
+		t.Fatalf("the second Emptying: %v", err)
+	}
+	if n := verifyingCopies(t, r, 5); n < 1 {
+		placed, ok := st2.Rebuilt.Index.Lookup(file, 0x4100)
+		t.Errorf("seq 5 verifies in %d placements after the second open (serving %+v, %v), want at least 1", n, placed, ok)
 	}
 }
 
