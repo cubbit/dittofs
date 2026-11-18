@@ -217,6 +217,16 @@ func TestEnds(t *testing.T) {
 	if err != nil || len(a) != 2 || a[0].Name != "r1" || len(b) != 2 || b[0].Name != "r3" {
 		t.Errorf("r1 r1 r2 r3 r3: got %v and %v, %v; want both r1 runs and both r3 runs", a, b, err)
 	}
+	// The newest run is a merge run: the nightly one before it is no side of the
+	// comparison, or its nightly-only cells would all read as gone.
+	tiered := []report.Run{{Name: "r1", Tier: "nightly"}, {Name: "r2", Tier: "merge"}, {Name: "r3", Tier: "merge"}}
+	a, b, err = ends(tiered)
+	if err != nil || len(a) != 1 || a[0].Name != "r2" || len(b) != 1 || b[0].Name != "r3" {
+		t.Errorf("nightly, merge, merge: got %v and %v, %v; want r2 and r3", a, b, err)
+	}
+	if _, _, err = ends(append(tiered[:1:1], tiered[2])); err == nil || !strings.Contains(err.Error(), "found 1") {
+		t.Errorf("nightly, merge: got %v, want an error containing %q", err, "found 1")
+	}
 	for _, c := range []struct {
 		runs []report.Run
 		want string

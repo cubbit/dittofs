@@ -336,14 +336,26 @@ func bothRan(a, b []report.Run) error {
 	return nil
 }
 
-// runName is the name of the workflow run runs belong to, its first job's;
-// runs holds one, which bothRan has checked.
-func runName(runs []report.Run) string { return runs[0].Name }
+// runName is the name of the workflow run runs belong to, its first job's, and
+// its tier, which two runs may not share; runs holds one, which bothRan has
+// checked.
+func runName(runs []report.Run) string {
+	if t := runs[0].Tier; t != "" {
+		return runs[0].Name + " (" + t + ")"
+	}
+	return runs[0].Name
+}
 
 // ends splits runs, oldest first, which are each workflow run's jobs one
-// after another, into the first workflow run's and the last's, by name. Fewer
-// than two workflow runs have nothing to compare, which is an error.
+// after another, into the first workflow run's and the last's, by name, of
+// those of the last run's tier: another tier runs other cells, which would all
+// read as new or gone. Fewer than two workflow runs have nothing to compare,
+// which is an error.
 func ends(runs []report.Run) (first, last []report.Run, err error) {
+	if len(runs) > 0 {
+		tier := runs[len(runs)-1].Tier
+		runs = slices.DeleteFunc(slices.Clone(runs), func(r report.Run) bool { return r.Tier != tier })
+	}
 	var names []string
 	for _, r := range runs {
 		if len(names) == 0 || names[len(names)-1] != r.Name {
