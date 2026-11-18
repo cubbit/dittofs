@@ -65,24 +65,6 @@ type Loss struct {
 	Seg core.SegmentID
 }
 
-// toFormat maps a reason to the number its loss record carries. It panics on
-// a reason that names none, which is a caller bug.
-func toFormat(r core.LossReason) format.LossReason {
-	switch r {
-	case core.LossCorrupt:
-		return format.LossCorrupt
-	case core.LossStale:
-		return format.LossStale
-	case core.LossFailedWindow:
-		return format.LossFailedSync
-	case core.LossSuperseded:
-		return format.LossSuperseded
-	case core.LossAcknowledged:
-		return format.LossAcknowledged
-	}
-	panic(fmt.Sprintf("durability: loss reason %d names no reason", r))
-}
-
 // Lose records a loss: it appends and syncs the loss record, leaves the
 // index's marker for a synced loss, raises the generation by the reason's
 // rule, counts the loss, and publishes its event, in that order. The event
@@ -138,7 +120,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 
 	// A reason that names none is a caller bug refused here, before the seq
 	// is named, so every path refuses it alike.
-	toFormat(l.Reason)
+	format.LossReasonOf(l.Reason)
 
 	// A deferred loss names the segment holding its dropped record, the
 	// segment whose copy writes the record this one defers; a zero Seg is a
@@ -343,7 +325,7 @@ func (d *Durability) appendRecord(l Loss) (segment.Location, error) {
 		Dropped:   l.Seq,
 		Synced:    l.Synced,
 		Offloaded: l.Offloaded,
-		Reason:    toFormat(l.Reason),
+		Reason:    format.LossReasonOf(l.Reason),
 	}}
 	streams := d.streams.Load()
 	if streams == nil {

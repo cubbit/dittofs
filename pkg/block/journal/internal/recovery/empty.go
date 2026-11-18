@@ -1001,7 +1001,7 @@ func (e *emptying) newLossWrite(l durability.Loss) (lossWrite, error) {
 		Dropped:   l.Seq,
 		Synced:    l.Synced,
 		Offloaded: l.Offloaded,
-		Reason:    lossReasonOf(l.Reason),
+		Reason:    format.LossReasonOf(l.Reason),
 	}}
 	at := format.AppendRecord(nil, e.identity, h, body)
 	// The registration the copy carries, mirrors what the kinds pass builds
@@ -1049,25 +1049,6 @@ func (e *emptying) lossOnDisk(l durability.Loss) bool {
 		}
 	}
 	return false
-}
-
-// lossReasonOf maps a loss reason to the number its loss record carries. It
-// panics on a reason that names none, which is a caller bug: the layer that
-// owns the registry refused one at Lose already.
-func lossReasonOf(r core.LossReason) format.LossReason {
-	switch r {
-	case core.LossCorrupt:
-		return format.LossCorrupt
-	case core.LossStale:
-		return format.LossStale
-	case core.LossFailedWindow:
-		return format.LossFailedSync
-	case core.LossSuperseded:
-		return format.LossSuperseded
-	case core.LossAcknowledged:
-		return format.LossAcknowledged
-	}
-	panic(fmt.Sprintf("recovery: loss reason %d names no reason", r))
 }
 
 // asideRecs answers every registered aside record the open rebuilt: the live

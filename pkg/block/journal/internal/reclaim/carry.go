@@ -233,7 +233,7 @@ func (c *Copier) carryDeferredLoss(ctx context.Context, seg core.SegmentID, entr
 		Dropped:   entry.Seq,
 		Synced:    entry.Synced,
 		Offloaded: entry.Offloaded,
-		Reason:    lossReasonOf(entry.Reason),
+		Reason:    format.LossReasonOf(entry.Reason),
 	}}
 	// ponytail: in a copy a loss record takes its real bytes, 184 — a
 	// 96-byte header, a 16-byte payload and a 72-byte footer entry — against
@@ -495,23 +495,4 @@ func (t *Tracker) forgetSnapshotOf(rec Rec) []core.SegmentID {
 		out = append(out, s)
 	}
 	return out
-}
-
-// lossReasonOf maps a reason to the number its loss record carries. It
-// panics on a reason that names none, which is a wiring bug: the layer whose
-// registry the entry came from refused one at Lose already.
-func lossReasonOf(r core.LossReason) format.LossReason {
-	switch r {
-	case core.LossCorrupt:
-		return format.LossCorrupt
-	case core.LossStale:
-		return format.LossStale
-	case core.LossFailedWindow:
-		return format.LossFailedSync
-	case core.LossSuperseded:
-		return format.LossSuperseded
-	case core.LossAcknowledged:
-		return format.LossAcknowledged
-	}
-	panic(fmt.Sprintf("reclaim: loss reason %d names no reason", r))
 }
