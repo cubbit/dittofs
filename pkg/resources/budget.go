@@ -355,6 +355,10 @@ func NewConnLimit(limit int) *ConnLimit {
 // limit is read before the address's quarter, the order RFC 24 section 4.4
 // names them in, which decides the reason a socket both bounds would count
 // its close under.
+//
+// decision: the addrs key is the address whole, so one host can fill the
+// node's limit through four source addresses of one IPv6 /64: the line does
+// not narrow to a /128 until RFC 24 grows that keying for it.
 func (l *ConnLimit) Take(addr netip.Addr) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
