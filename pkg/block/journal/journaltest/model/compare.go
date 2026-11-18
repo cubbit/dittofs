@@ -431,8 +431,7 @@ func merge(es []extent) []extent {
 // names the bytes, as the run of them that differ the same way, and the rule
 // the journal broke where one is.
 func differ(o *observation, st *fileState, ceiling version) string {
-	offs := slices.Sorted(maps.Keys(st.held))
-	if d := firstRun(offs, func(off int64) string {
+	if d := firstRunIn(st.held, func(off int64) string {
 		c := st.held[off]
 		switch got, ok := o.held[off]; {
 		case !ok && c.rec.durable && c.rec.kind == kindWrite:
@@ -450,7 +449,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 	}); d != "" {
 		return d
 	}
-	if d := firstRun(slices.Sorted(maps.Keys(o.held)), func(off int64) string {
+	if d := firstRunIn(o.held, func(off int64) string {
 		if _, ok := st.held[off]; !ok {
 			return fmt.Sprintf("served at %s, but the model holds nothing there: removed, released or never written", fmtVersion(o.held[off].ver))
 		}
@@ -458,7 +457,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 	}); d != "" {
 		return d
 	}
-	if d := firstRun(slices.Sorted(maps.Keys(o.extents)), func(off int64) string {
+	if d := firstRunIn(o.extents, func(off int64) string {
 		if _, ok := st.held[off]; !ok {
 			return "named by Extents, but the model holds nothing there"
 		}
@@ -485,7 +484,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 	}
 
 	for _, sv := range o.since {
-		if d := sinceDiffers(sv, st, offs); d != "" {
+		if d := sinceDiffers(sv, st); d != "" {
 			return d
 		}
 	}
@@ -504,7 +503,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 		return d
 	}
 
-	if d := firstRun(offs, func(off int64) string {
+	if d := firstRunIn(st.held, func(off int64) string {
 		got, ok := o.bits[off]
 		want := st.held[off]
 		switch {
@@ -521,7 +520,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 	}); d != "" {
 		return d
 	}
-	return firstRun(slices.Sorted(maps.Keys(o.bits)), func(off int64) string {
+	return firstRunIn(o.bits, func(off int64) string {
 		if _, ok := st.held[off]; !ok {
 			return "named held by the index, but the model holds nothing there"
 		}
@@ -532,7 +531,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 // sinceDiffers returns how what Since yielded from sv.from differs from st:
 // every held byte above from as a write, with its version and mtime, and every
 // live marker above from.
-func sinceDiffers(sv sinceView, st *fileState, offs []int64) string {
+func sinceDiffers(sv sinceView, st *fileState) string {
 	from := fmtVersion(sv.from)
 	want := func(off int64) (sinceByte, bool) {
 		c := st.held[off]
@@ -545,7 +544,7 @@ func sinceDiffers(sv sinceView, st *fileState, offs []int64) string {
 		}
 		return w, true
 	}
-	if d := firstRun(offs, func(off int64) string {
+	if d := firstRunIn(st.held, func(off int64) string {
 		w, ok := want(off)
 		got, named := sv.writes[off]
 		switch {
@@ -560,7 +559,7 @@ func sinceDiffers(sv sinceView, st *fileState, offs []int64) string {
 	}); d != "" {
 		return d
 	}
-	if d := firstRun(slices.Sorted(maps.Keys(sv.writes)), func(off int64) string {
+	if d := firstRunIn(sv.writes, func(off int64) string {
 		if _, ok := st.held[off]; !ok {
 			return fmt.Sprintf("named held by Since from %s, but the model holds nothing there", from)
 		}
@@ -576,6 +575,25 @@ func sinceDiffers(sv sinceView, st *fileState, offs []int64) string {
 		}
 	}
 	return markersDiffer("Since from "+from, sv.markers, markers)
+}
+
+// firstRunIn is firstRun over the keys of m in order. It sorts the keys only
+// once a first pass over them in any order finds a problem, so the common
+// answer, no problem anywhere, costs no sort of a byte-keyed map.
+func firstRunIn[V any](m map[int64]V, problem func(int64) string) string {
+	clean := true
+	for off := range m {
+		if problem(off) != "" {
+			clean = false
+			break
+		}
+	}
+
+	if clean {
+		return ""
+	}
+
+	return firstRun(slices.Sorted(maps.Keys(m)), problem)
 }
 
 // firstRun returns the first of offs for which problem says something, with
