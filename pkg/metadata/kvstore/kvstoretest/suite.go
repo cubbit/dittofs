@@ -1,6 +1,8 @@
 // Package kvstoretest is the metadata store's conformance suite: every case
 // drives the store through its public views only and never reads a key, so
-// any KV backend that passes kv/kvtest can run it as it is.
+// any KV backend that passes kv/kvtest can run it as it is. WriteActive and
+// WriteActiveRaw are the exception, test support for other packages that
+// writes the installation record directly, since no call raises a version.
 package kvstoretest
 
 import (

@@ -46,6 +46,8 @@ var frozenExports = []string{
 		"KMIP struct{Endpoint string; ServerCA string; ClientCert string; ClientKey string; " +
 		"KeyUID string; Timeout time.Duration; RetiredKeyUIDs []string}}",
 	"func (WrappingKey).Provider() keyprovider.Config",
+	"func Register(ctx context.Context, store *kvstore.Store, node entity.Node, " +
+		"reg *metrics.Registry) error",
 }
 
 // sourceImporter reads every import from source, once for all the cases.
