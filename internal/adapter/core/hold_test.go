@@ -68,13 +68,17 @@ func (r *pendingRecv) arrived() bool {
 }
 
 // interimOf reads the record a held chain's first answer goes out in: the
-// PutFH's success and the Create's interim, keyed by its message ID.
+// PutFH's success and the Create's interim, keyed by its message ID. It
+// returns once the pipeline has settled: a hold arms its re-drive after its
+// interim goes out, so a clock moved at once could pass the re-drive's time
+// before it is armed.
 func (s *served) interimOf(id uint64) testproto.Reply {
 	s.t.Helper()
 	rs, err := s.client.Recv()
 	if err != nil || len(rs) != 2 || rs[0].Status != testproto.StatusOK || !rs[1].Interim || rs[1].ID != keyOf(id) {
 		s.t.Fatalf("the chain is answered %+v (%v), want the PutFH's success and the Create's interim keyed %d", rs, err, id)
 	}
+	synctest.Wait()
 	return rs[1]
 }
 
@@ -1047,6 +1051,7 @@ func TestAChainWhoseMembersHoldInTurnGivesTheHoldPoolBack(t *testing.T) {
 		if err != nil || len(rs) != 2 || rs[0].Interim || rs[0].ID != keyOf(2) || rs[0].Status != testproto.StatusOK || !rs[1].Interim || rs[1].ID != keyOf(3) {
 			t.Fatalf("the first Create is answered %+v (%v), want its final success and the second's interim", rs, err)
 		}
+		synctest.Wait() // the second Create's re-drive is armed after its interim goes out
 		if got := budgets.Hold.Reserved(); got <= reserved {
 			t.Fatalf("the second Create holds with %d bytes in the hold pool, want its record's charge there", got)
 		}
