@@ -2725,3 +2725,106 @@ func TestASendAfterCloseIsNeverWritten(t *testing.T) {
 		}
 	})
 }
+
+// withStages is a protocol whose NewConn hands each connection's stages to
+// edit before returning them, while the connection has no pipeline yet.
+type withStages struct {
+	core.Protocol
+	edit func(c *core.Conn, st *core.Stages)
+}
+
+func (p withStages) NewConn(c *core.Conn) core.Stages {
+	st := p.Protocol.NewConn(c)
+	if c != nil {
+		p.edit(c, &st)
+	}
+	return st
+}
+
+// waitingWrap is a Security that passes every message unchanged, its Wrap
+// closing wrapping and then waiting for release.
+type waitingWrap struct{ wrapping, release chan struct{} }
+
+func (waitingWrap) Unwrap(h core.Header, _ *resources.Buf, _ core.Header) (core.Header, error) {
+	return h, nil
+}
+
+func (s waitingWrap) Wrap(core.Header, *resources.Buf) error {
+	close(s.wrapping)
+	<-s.release
+	return nil
+}
+
+// A Send the close overtakes in its Wrap, past its closed check, is never
+// written, though the teardown has yet to stop the writer: the writer takes
+// nothing once Close has run, so Send drops it and returns net.ErrClosed, and
+// the client reads nothing before the connection's end (RFC 20 sections 4.7
+// and 6.5).
+func TestASendTheCloseOvertakesInItsWrapIsNeverWritten(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		wrapping, release, sent := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: withStages{testproto.New(adapter.Deps{}).Bare(), func(_ *core.Conn, st *core.Stages) {
+			st.Security = waitingWrap{wrapping, release}
+			// OnClose holds the teardown, before it stops the writer, until
+			// the client has read what was written.
+			st.OnClose = func(context.Context) { <-sent }
+		}}}
+		srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		core.Serving(srv)
+		conn, peer := servedConn(t, srv, &l)
+		msg, err := resources.NewBufPool(b.Reply).Get(context.Background(), netip.Addr{}, 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg.B = append(msg.B[:0], "late"...)
+		errc := make(chan error, 1)
+		go func() { errc <- conn.Send(nil, msg, 0) }()
+		<-wrapping // the Send is past its closed check
+		conn.Close(nil)
+		synctest.Wait() // the teardown waits in OnClose
+		close(release)
+		if err := <-errc; !errors.Is(err, net.ErrClosed) {
+			t.Errorf("a Send the close overtook in its Wrap = %v, want net.ErrClosed", err)
+		}
+		read := make(chan []byte, 1)
+		go func() {
+			got, _ := io.ReadAll(peer)
+			read <- got
+		}()
+		synctest.Wait() // a message written reaches the client now
+		close(sent)
+		if got := <-read; len(got) != 0 {
+			t.Errorf("after the close the client read %q, want the connection's end alone", got)
+		}
+	})
+}
+
+// A Send inside NewConn, before the connection's pipeline exists, writes
+// nothing: it drops msg and returns net.ErrClosed (RFC 20 section 4.7).
+func TestASendInsideNewConnIsDropped(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	var sendErr error
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: withStages{testproto.New(adapter.Deps{}).Bare(), func(c *core.Conn, _ *core.Stages) {
+		msg, err := resources.NewBufPool(b.Reply).Get(context.Background(), netip.Addr{}, 8)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		sendErr = c.Send(nil, msg, 0)
+	}}}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	servedConn(t, srv, &l)
+	if !errors.Is(sendErr, net.ErrClosed) {
+		t.Errorf("a Send inside NewConn = %v, want net.ErrClosed", sendErr)
+	}
+}
