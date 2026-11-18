@@ -1,0 +1,180 @@
+package identity
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
+)
+
+// mintsSpec counts every record identity mints, by its kind: machine, user
+// or group.
+var mintsSpec = metrics.Spec{
+	Name:   "identity_mints_total",
+	Help:   "Principal records identity minted, by kind.",
+	Labels: []string{"kind"},
+}
+
+// unnamedSpec counts the records minted without their name because another
+// principal of their kind held it.
+var unnamedSpec = metrics.Spec{
+	Name:   "identity_mints_unnamed_total",
+	Help:   "Principal records minted without their name, which another principal held, by kind.",
+	Labels: []string{"kind"},
+}
+
+// mint is the one path that writes new principal records. plan looks up the
+// principals one sign-in, lookup or resolution needs, and returns the batch
+// of those still missing with the number it found bound. The batch is
+// written in one Create; on ErrExist, another call minted something this one
+// needs, so plan runs again, and its run must bind more than the one before,
+// or the call fails ErrUnavailable having written nothing. A record whose
+// name is held is minted without it.
+//
+// decision: the path re-runs the plan, not the batch, and no count bounds
+// the loop: each ErrExist that leads to progress shrinks the batch, so the
+// progress rule ends the re-runs, and the caller's deadline bounds them in
+// time. A run that binds nothing new means the clash is with a principal the
+// plan cannot bind, such as another entry holding the same uid, and running
+// it again would answer the same. Overturned if a clash is ever found that
+// a later run resolves without binding more.
+func (s *Server) mint(ctx context.Context, plan func(context.Context) (entity.MintBatch, int, error)) error {
+	var failed entity.MintBatch
+	last := -1
+	for {
+		// The store may not watch ctx, so the loop does: the caller's
+		// deadline bounds the re-runs whatever answers them.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
+		}
+		b, bound, err := plan(ctx)
+		if err != nil {
+			return err
+		}
+		if last >= 0 && bound <= last {
+			s.logClash(ctx, failed)
+			return fmt.Errorf("%w: a mint re-run bound no principal the run before did not", vfserr.ErrUnavailable)
+		}
+		if len(b.Users) == 0 && len(b.Groups) == 0 {
+			return nil
+		}
+		if err := s.unnameHeld(ctx, &b); err != nil {
+			return err
+		}
+		err = s.deps.Store.Minter().Create(ctx, b)
+		if err == nil {
+			s.countMints(b)
+			return nil
+		}
+		if !isExist(err) {
+			return fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
+		}
+		failed, last = b, bound
+	}
+}
+
+// unnameHeld marks Unnamed each record of b whose name another principal of
+// its kind holds under the principal fold: one the name index holds, or an
+// earlier record of its kind in b.
+func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch) error {
+	users, groups := map[string]entity.Principal{}, map[string]entity.Principal{}
+	for i := range b.Users {
+		r := &b.Users[i]
+		held, err := s.held(ctx, entity.PrincipalUser, r.User.Principal, r.User.Name, r.Unnamed, users)
+		if err != nil {
+			return err
+		}
+		r.Unnamed = r.Unnamed || held
+	}
+	for i := range b.Groups {
+		r := &b.Groups[i]
+		held, err := s.held(ctx, entity.PrincipalGroup, r.Group.Principal, r.Group.Name, r.Unnamed, groups)
+		if err != nil {
+			return err
+		}
+		r.Unnamed = r.Unnamed || held
+	}
+	return nil
+}
+
+// held reports whether name is held by a principal other than p: in batch,
+// the names the batch's earlier records of kind claim, or in the name index.
+// A name p keeps is added to batch.
+func (s *Server) held(ctx context.Context, kind entity.PrincipalKind, p entity.Principal, name string, unnamed bool, batch map[string]entity.Principal) (bool, error) {
+	if name == "" || unnamed {
+		return false, nil
+	}
+	folded := entity.FoldPrincipalName(name)
+	holder, ok := batch[folded]
+	if !ok {
+		var err error
+		holder, err = s.deps.Store.Principals().ByName(ctx, kind, name)
+		switch {
+		case merrs.IsNotFoundError(err):
+			batch[folded] = p
+			return false, nil
+		case err != nil:
+			return false, fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
+		case holder.ID == p.ID:
+			// The record itself exists: Create refuses it ErrExist.
+			return false, nil
+		}
+	}
+	s.logger.WarnContext(ctx, "identity: principal minted without its name, which another holds",
+		"kind", kind.String(), "principal", p.ID.String(), "holder", holder.ID.String())
+	return true, nil
+}
+
+// countMints counts each record of a committed batch.
+func (s *Server) countMints(b entity.MintBatch) {
+	for _, r := range b.Users {
+		kind := r.User.Principal.Kind.String()
+		s.mints.WithLabelValues(kind).Inc()
+		if r.Unnamed {
+			s.unnamed.WithLabelValues(kind).Inc()
+		}
+	}
+	for _, r := range b.Groups {
+		s.mints.WithLabelValues("group").Inc()
+		if r.Unnamed {
+			s.unnamed.WithLabelValues("group").Inc()
+		}
+	}
+}
+
+// logClash logs the first record of b whose spelling another principal
+// holds, naming both, after a re-run that bound nothing new. A clash it
+// cannot find, the holder deleted since, is logged naming b's first record.
+func (s *Server) logClash(ctx context.Context, b entity.MintBatch) {
+	var ps []entity.Principal
+	var ids []entity.ProtocolIDs
+	for _, r := range b.Users {
+		ps, ids = append(ps, r.User.Principal), append(ids, r.User.IDs)
+	}
+	for _, r := range b.Groups {
+		ps, ids = append(ps, r.Group.Principal), append(ids, r.Group.IDs)
+	}
+	for i, p := range ps {
+		for _, id := range ids[i] {
+			holder, err := s.deps.Store.Principals().ByProtocolID(ctx, id)
+			if err == nil && holder.ID != p.ID {
+				s.logger.WarnContext(ctx, "identity: mint refused, a spelling it needs is held by a principal it cannot bind",
+					"principal", p.ID.String(), "holder", holder.ID.String(), "scheme", id.Scheme.String())
+				return
+			}
+		}
+	}
+	if len(ps) > 0 {
+		s.logger.WarnContext(ctx, "identity: mint refused, its re-run bound nothing new", "principal", ps[0].ID.String())
+	}
+}
+
+// isExist is the store's ErrExist.
+func isExist(err error) bool {
+	var se *merrs.StoreError
+	return errors.As(err, &se) && se.Code == merrs.ErrAlreadyExists
+}

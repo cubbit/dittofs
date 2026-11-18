@@ -36,6 +36,7 @@ import (
 // wrapper over a pass-through counter, with its metrics and spans recorded.
 type resolving struct {
 	srv   *identity.Server
+	st    *kvstore.Store
 	cp    kvstore.ControlPlane
 	fault *kvtest.FaultKV
 	reads *kv.Counting // what reached the store
@@ -63,7 +64,7 @@ func newResolving(t *testing.T) *resolving {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.cp = st.ControlPlane()
+	r.st, r.cp = st, st.ControlPlane()
 	// AlwaysSample, not the default parent-based sampler, so a span opened
 	// under an unsampled parent is recorded and the test can see it.
 	r.tp = sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()), sdktrace.WithSpanProcessor(r.spans))
@@ -101,17 +102,23 @@ func (r *resolving) user(t *testing.T, u entity.User, expect uint64) uint64 {
 // refusals is identity_resolution_refusals_total's value for reason.
 func (r *resolving) refusals(t *testing.T, reason string) float64 {
 	t.Helper()
+	return r.counter(t, "identity_resolution_refusals_total", "reason", reason)
+}
+
+// counter is the named counter's value where its label is value.
+func (r *resolving) counter(t *testing.T, name, label, value string) float64 {
+	t.Helper()
 	mfs, err := r.reg.Registry().Gather()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, mf := range mfs {
-		if mf.GetName() != metrics.Namespace+"_identity_resolution_refusals_total" {
+		if mf.GetName() != metrics.Namespace+"_"+name {
 			continue
 		}
 		for _, m := range mf.GetMetric() {
 			for _, l := range m.GetLabel() {
-				if l.GetName() == "reason" && l.GetValue() == reason {
+				if l.GetName() == label && l.GetValue() == value {
 					return m.GetCounter().GetValue()
 				}
 			}
