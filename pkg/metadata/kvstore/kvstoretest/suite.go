@@ -203,6 +203,9 @@ func Run(t *testing.T, open Opener) {
 		{"SecretTxPutRollsBack", testSecretTxPutRollsBack},
 		{"SecretRefusedTxPutRaisesNothing", testSecretRefusedTxPutRaisesNothing},
 		{"SecretTxReadTracked", testSecretTxReadTracked},
+		{"AllSettingsPages", testAllSettingsPages},
+		{"AllSettingsWriteBetweenPages", testAllSettingsWriteBetweenPages},
+		{"AllSettingsResumes", testAllSettingsResumes},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}

@@ -2,6 +2,7 @@ package entity
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"net/netip"
 	"time"
@@ -471,8 +472,16 @@ type SettingKey struct {
 
 // SettingsReader is the one read settings.Read makes of the store.
 type SettingsReader interface {
+	// AllSettings lists every scope's settings in key order, resuming after
+	// after; the zero key starts from the first. A row that does not decode
+	// is yielded with an error wrapping ErrBadRow, and the listing goes on.
 	AllSettings(ctx context.Context, after SettingKey) iter.Seq2[Setting, error]
 }
+
+// ErrBadRow is a setting row that does not decode. An error wrapping it also
+// wraps the cause, and its Setting carries the scope and key when the row's
+// key parses.
+var ErrBadRow = errors.New("entity: a setting row does not decode")
 
 type ScopeKind uint8
 
