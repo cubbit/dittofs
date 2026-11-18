@@ -219,7 +219,7 @@ func TestScanSegmentSetsAsideTheT75Kinds(t *testing.T) {
 
 // TestScanSegmentRefusesReconcileKinds holds the reconcile ceiling: a
 // verifying reconcile or reconciled record fails the scan with
-// ErrOpenRefused, naming the kind and the segment, rather than being
+// ErrNotImplemented, naming the kind and the segment, rather than being
 // skipped or set aside — an open that quietly dropped it would serve without
 // the reconcile metadata it owes.
 func TestScanSegmentRefusesReconcileKinds(t *testing.T) {
@@ -248,8 +248,8 @@ func TestScanSegmentRefusesReconcileKinds(t *testing.T) {
 			r.plantSeg(id, buildSeg(id, tc.rec))
 
 			_, err := r.scan(id, journalID)
-			if !errors.Is(err, core.ErrOpenRefused) {
-				t.Fatalf("scanSegment over a %s record got err %v, want ErrOpenRefused", tc.kind, err)
+			if !errors.Is(err, core.ErrNotImplemented) {
+				t.Fatalf("scanSegment over a %s record got err %v, want ErrNotImplemented", tc.kind, err)
 			}
 			if got := err.Error(); !contains(got, tc.kind) || !contains(got, "6") {
 				t.Errorf("scanSegment: the refusal %q names neither the kind %q nor the segment 6", got, tc.kind)

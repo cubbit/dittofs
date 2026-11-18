@@ -187,11 +187,11 @@ func classifyTails(rd *reader, identity core.JournalID, named, unverified map[co
 					if nerr := checkNumbers(headerFromEntry(id, e)); nerr != nil {
 						return tails{}, nerr
 					}
-					// A reconcile kind refuses the open on every other path
+					// A reconcile kind fails the open as unbuilt on every other path
 					// too: this journal cannot yet feed one, so a footer
 					// entry naming one is never confined as a corrupt drop.
 					if e.Kind > format.KindForget {
-						return tails{}, fmt.Errorf("%w: a %s record in segment %d", core.ErrOpenRefused, e.Kind, id)
+						return tails{}, fmt.Errorf("%w: a %s record in segment %d", core.ErrNotImplemented, e.Kind, id)
 					}
 					sc.Dropped = append(sc.Dropped, droppedRecord{
 						Entry: e, Header: headerFromEntry(id, e), Synced: true,

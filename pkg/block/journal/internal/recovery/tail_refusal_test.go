@@ -323,8 +323,8 @@ func TestARottedRecordHeaderInAnUnnamedSealedSegmentIsConfinedByItsFooter(t *tes
 		}
 	})
 	t.Run("an entry in the range names a reconciled record", func(t *testing.T) {
-		// Every other path refuses a reconcile kind, so the footer entry the
-		// classing would confine refuses the open too, never a corrupt drop.
+		// Every other path fails on a reconcile kind as unbuilt, so the footer
+		// entry the classing would confine fails the open too, never a corrupt drop.
 		reconciled := rec(16, func(r *raw.Record) {
 			r.Offset, r.Length = 0, 0
 			r.Reconciled = &raw.ReconciledBody{Segment: 1, Start: 48, End: 96}
@@ -335,8 +335,8 @@ func TestARottedRecordHeaderInAnUnnamedSealedSegmentIsConfinedByItsFooter(t *tes
 		r.writeFormat()
 		r.plantSeg(1, b)
 		_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
-		if !errors.Is(err, core.ErrOpenRefused) {
-			t.Fatalf("Run got err %v, want one wrapping core.ErrOpenRefused", err)
+		if !errors.Is(err, core.ErrNotImplemented) {
+			t.Fatalf("Run got err %v, want one wrapping core.ErrNotImplemented", err)
 		}
 		for _, want := range []string{format.KindReconciled.String(), "segment 1"} {
 			if !strings.Contains(err.Error(), want) {

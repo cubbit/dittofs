@@ -118,9 +118,9 @@ func (a readerAt) ReadAt(p []byte, off int64) (int, error) {
 // are the tail phases' to judge, and nothing here fails the open.
 //
 // decision: a reconcile or reconciled record fails the scan with
-// ErrOpenRefused rather than being fed, skipped or set aside: the
-// metadata reconcile that record names is not built, and an open that
-// dropped it would serve without knowing a reconcile was owed. The
+// ErrNotImplemented, which the engine never retries, rather than being fed,
+// skipped or set aside: the metadata reconcile that record names is not
+// built, so no retry of the open clears it, and an open that dropped it would serve without knowing a reconcile was owed. The
 // ceiling is an open that cannot serve such a segment at all — no
 // reconcile record may be read past until the reconcile work lands, which
 // is what withdraws this marker.
@@ -206,7 +206,7 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 				sc.Aside = append(sc.Aside, asideRecord{Header: h})
 			}
 		default: // the reconcile kinds, 15 and 16
-			return sc, fmt.Errorf("%w: a %s record in segment %d", core.ErrOpenRefused, h.Kind, info.ID)
+			return sc, fmt.Errorf("%w: a %s record in segment %d", core.ErrNotImplemented, h.Kind, info.ID)
 		}
 		sc.VerifiedEnd = h.Offset + h.Size()
 	}

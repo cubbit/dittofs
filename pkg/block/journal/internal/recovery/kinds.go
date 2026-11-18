@@ -396,7 +396,7 @@ func decodeAsides(rd *reader, identity core.JournalID, failed []core.Seq, scs []
 		// until the holds' own rules are implemented, which is the only
 		// thing that withdraws this marker.
 		return ks, fmt.Errorf("%w: a %s record in segment %d at %d that no drop covers",
-			core.ErrOpenRefused, d.h.Kind, d.h.Segment, d.h.Offset)
+			core.ErrNotImplemented, d.h.Kind, d.h.Segment, d.h.Offset)
 	}
 	return ks, nil
 }

@@ -1190,8 +1190,8 @@ func TestRunDoesNotLetACoveredForgetCoverAnything(t *testing.T) {
 			forgetRec(7, 10),
 		))
 
-		if _, err := r.asideRun([]core.Seq{10}); !errors.Is(err, core.ErrOpenRefused) {
-			t.Fatalf("Run over a hold below a covered forget got err %v, want ErrOpenRefused: the covered forget covers nothing, so no rule covers the hold", err)
+		if _, err := r.asideRun([]core.Seq{10}); !errors.Is(err, core.ErrNotImplemented) {
+			t.Fatalf("Run over a hold below a covered forget got err %v, want ErrNotImplemented: the covered forget covers nothing, so no rule covers the hold", err)
 		}
 	})
 }
@@ -1470,10 +1470,10 @@ func TestRunCollectsForgetsByTheirGreatestSeq(t *testing.T) {
 	}
 }
 
-// TestRunRefusesAVerifiedHoldKindRecord holds the D6 refusal: a hold, unhold
+// TestRunRefusesAVerifiedHoldKindRecord holds the refusal: a hold, unhold
 // or stamp record that verifies — its header on the scan and its body read
-// whole here — and that no drop covers refuses the open with
-// ErrOpenRefused naming its kind and its segment, whatever the failed
+// whole here — and that no drop covers fails the open with
+// ErrNotImplemented naming its kind and its segment, whatever the failed
 // list the deps carry would have withheld. The boundary row plants the hold
 // at the seq just past a forget of its own tag — the first seq the forget
 // does not cover — and the refusal stands: a forget comparison that took one
@@ -1523,8 +1523,8 @@ func TestRunRefusesAVerifiedHoldKindRecord(t *testing.T) {
 			r.plantSeg(2, buildSeg(2, tc.rec))
 
 			st, err := r.asideRun(nil)
-			if !errors.Is(err, core.ErrOpenRefused) {
-				t.Fatalf("Run over a %s record got err %v, want one matching %v", tc.name, err, core.ErrOpenRefused)
+			if !errors.Is(err, core.ErrNotImplemented) {
+				t.Fatalf("Run over a %s record got err %v, want one matching %v", tc.name, err, core.ErrNotImplemented)
 			}
 
 			if !strings.Contains(err.Error(), tc.kind) {

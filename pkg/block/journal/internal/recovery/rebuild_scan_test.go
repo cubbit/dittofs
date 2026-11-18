@@ -441,7 +441,7 @@ func TestRunRebuildScansConcurrentlyUpToTheReaderBound(t *testing.T) {
 
 // TestRunRebuildFailsOnAVerifyingReconcileRecord keeps the reconcile ceiling
 // through the whole open: a verifying reconcile or reconciled record fails
-// the open with ErrOpenRefused, and a record of an unknown kind, a
+// the open with ErrNotImplemented, and a record of an unknown kind, a
 // non-zero epoch or the largest counter fails it with ErrUnknownFormat, each
 // raw enough for errors.Is — the refusals
 // reach Run's caller as the open's error — and the directory keeps every
@@ -462,7 +462,7 @@ func TestRunRebuildFailsOnAVerifyingReconcileRecord(t *testing.T) {
 				r.Version = raw.Version{}
 				r.Tag = 0
 			})
-		}, "reconcile", core.ErrOpenRefused},
+		}, "reconcile", core.ErrNotImplemented},
 		{"reconciled", func(id core.SegmentID) raw.Record {
 			return rec(16, func(r *raw.Record) {
 				r.Identity = journalID
@@ -473,7 +473,7 @@ func TestRunRebuildFailsOnAVerifyingReconcileRecord(t *testing.T) {
 				r.Tag = 0
 				r.Reconciled = &raw.ReconciledBody{Segment: 1, Start: 1, End: 2}
 			})
-		}, "reconciled", core.ErrOpenRefused},
+		}, "reconciled", core.ErrNotImplemented},
 		{"kind 17", func(core.SegmentID) raw.Record { return rec(17, nil) }, "segment 4", core.ErrUnknownFormat},
 		{"kind 128", func(core.SegmentID) raw.Record { return rec(128, nil) }, "segment 4", core.ErrUnknownFormat},
 		{"epoch 1", func(core.SegmentID) raw.Record {
