@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -198,7 +200,8 @@ func TestStatusWrittenOnlyOnAChange(t *testing.T) {
 // clock, so every status turn here is released by one advance the test waits
 // on, and none is still running when the store is read back.
 func TestStatusWriteRetriedAfterAFault(t *testing.T) {
-	h, f := faulted(t)
+	logs := make(logLines, 256)
+	h, f := faulted(t, func(cfg *node.Config) { cfg.Logger = slog.New(slog.NewTextHandler(logs, nil)) })
 	ch := watchStatus(h)
 	started(t, h)
 	awaitTurn(t, ch)
@@ -223,6 +226,18 @@ func TestStatusWriteRetriedAfterAFault(t *testing.T) {
 	}
 	if got := readStatus(t, h); got.Settings != want {
 		t.Errorf("status read back after the retried write: settings %d, want %d", got.Settings, want)
+	}
+	var statusLogs []string
+	for len(logs) != 0 {
+		if line := <-logs; strings.Contains(line, "loop=status") {
+			statusLogs = append(statusLogs, line)
+		}
+	}
+	if len(statusLogs) != 2 || !strings.Contains(statusLogs[0], "node store fault started") ||
+		!strings.Contains(statusLogs[0], "status write lost") ||
+		!strings.Contains(statusLogs[1], "node store fault cleared") ||
+		!strings.Contains(statusLogs[1], "failures_total=1") {
+		t.Errorf("status logs: got %q, want a fault started by the failed write and cleared after the retry", statusLogs)
 	}
 }
 

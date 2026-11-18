@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/health"
@@ -23,6 +24,7 @@ const (
 
 // sweeper is the sweep's series and the state only its loop touches.
 type sweeper struct {
+	fault storeFault
 	// idempotency counts the idempotency records the sweep deleted.
 	idempotency prometheus.Counter
 	// running, when set, answers a Sweep call a turn stopped waiting on past
@@ -83,15 +85,8 @@ func (n *Node) sweepLoop(ctx context.Context, loop *health.Loop) {
 // it runs, no turn calls Sweep, so at most one call is outstanding however
 // long the store hangs.
 //
-// ponytail: a Sweep that fails is logged at each turn and raises no health
-// condition, though one stopped by a record that does not decode fails the
-// same way at every turn until it is repaired, and its Warn repeats at every
-// turn, one line each sweepInterval for as long as the fault lasts, rather
-// than RFC 25 §5.2's line when a lasting fault starts, a summary at an
-// interval and a line when it ends; reconcile and the status writer log the
-// same way. Raise a condition once an operator must see a stuck sweep from
-// the health call rather than the log, and move the three loops to §5.2's
-// lines together.
+// ponytail: a stopped sweep is visible in its incident logs. Raise a health
+// condition once an operator must see a stuck sweep from the health call.
 func (n *Node) sweepTurn(ctx context.Context, loop *health.Loop) {
 	w := &n.sweep
 	var calls []kvstore.Swept
@@ -104,6 +99,7 @@ func (n *Node) sweepTurn(ctx context.Context, loop *health.Loop) {
 			n.cfg.Logger.Debug("sweep: a call past its bound settled", "error", err)
 			w.running = nil
 		default:
+			w.fault.summarize(ctx, n, stepSweep)
 			return
 		}
 	}
@@ -120,13 +116,12 @@ func (n *Node) sweepTurn(ctx context.Context, loop *health.Loop) {
 		loop.Turn()
 		w.running = running
 		if err != nil {
-			if ctx.Err() == nil {
-				n.cfg.Logger.Warn("sweep: delete the expired records", "error", err, "undecodable", kvstore.SweepRowUndecodable(err))
-			}
+			w.fault.observed(ctx, n, stepSweep, err, slog.Bool("undecodable", kvstore.SweepRowUndecodable(err)))
 			return
 		}
 		calls = append(calls, sw)
 		if !sw.More {
+			w.fault.observed(ctx, n, stepSweep, nil, slog.Attr{})
 			return
 		}
 	}

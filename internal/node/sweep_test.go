@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -225,6 +228,50 @@ func TestSweepClearsABacklogInOneTurn(t *testing.T) {
 	}
 	if got := series(t, h, idempotencyDeleted, ""); got != fit+1 {
 		t.Errorf("%s after the turn: got %v, want %d", idempotencyDeleted, got, fit+1)
+	}
+}
+
+func TestSweepLogsOneIncidentForAnUndecodableRow(t *testing.T) {
+	logs := make(logLines, 256)
+	h, store := faulted(t, func(cfg *node.Config) { cfg.Logger = slog.New(slog.NewTextHandler(logs, nil)) })
+	turns := watchSweep(h)
+	started(t, h)
+	awaitSweep(t, turns)
+
+	// An expired row with an unknown record kind stops the real sweep.
+	row := append(keys.Uint64([]byte{keys.KindXP}, uint64(time.Second)), 0xff)
+	if err := store.Update(t.Context(), func(tx kv.Txn) error { return tx.Set(row, nil) }); err != nil {
+		t.Fatalf("write a malformed expiry row: %v", err)
+	}
+	for range 3 {
+		h.Clock().Advance(sweepInterval)
+		awaitSweep(t, turns)
+	}
+	if err := store.Update(t.Context(), func(tx kv.Txn) error { return tx.Delete(row) }); err != nil {
+		t.Fatalf("remove the malformed expiry row: %v", err)
+	}
+	h.Clock().Advance(sweepInterval)
+	awaitSweep(t, turns)
+
+	var got []string
+	for len(logs) != 0 {
+		if line := <-logs; strings.Contains(line, "loop=sweep") {
+			got = append(got, line)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("sweep logs: got %d, want start, summary and clear: %q", len(got), got)
+	}
+	for i, want := range [][]string{
+		{"node store fault started", "undecodable=true"},
+		{"node store fault ongoing", "duration=1m0s", "failures=2", "undecodable=true"},
+		{"node store fault cleared", "duration=1m30s", "failures_total=3"},
+	} {
+		for _, field := range want {
+			if !strings.Contains(got[i], field) {
+				t.Errorf("sweep log %d = %q, want %q", i+1, got[i], field)
+			}
+		}
 	}
 }
 
