@@ -1068,6 +1068,8 @@ dt report [RUN...] --failures                  only the new failures; --post CEL
    [--post CELL,...]                           run's planned cells and its runs
 dt report RUN --commit-status NAME             set the commit status NAME on the run's commit, from its exit status
 dt history [SUITE[/TEST]] [--ci] [--last N]    pass, fail, skip and flaky counts over past runs, with durations
+dt history diff [A B] [--last N]               the cells and tests that took longer or shorter between two runs of tests.yml
+   [--branch B] [--floor D] [--top N]          A and B are workflow run IDs; without them, the oldest and newest of the last N
 dt doctor                                      which `needs` this machine meets, and how to meet the rest
 dt known prune SUITE [--ci] [--last N]         remove entries that matched no failing or skipping test in recent runs
 dt known import FILE.md KNOWN.yaml             convert a Markdown known-failure list into a known file, once;
@@ -1094,6 +1096,7 @@ grade: a known or quarantined failure is a fail, an unexpected pass a pass, ever
 pass on a retry a pass that is also flaky. Without SUITE it gives a row per suite, with the p50 and
 p90 of its cells' durations (§4.3); with SUITE, a row per test, with the p50 and p90 of its own; and
 with SUITE/TEST, also each of that test's results, run by run, which shows since when it fails.
+`dt history diff` compares two runs of `tests.yml`, given by workflow run ID (a pull request's too) or, without IDs, the oldest and the newest of the last N on `--branch`, develop by default, as `--ci` reads it. It lists every cell either run ran, then the tests whose time changed by at least `--floor` (100 ms), at most `--top` (30), the ones that took longer first. A test is compared in a cell both runs ran, and several results of it in one cell add up. A side with no results or a run still going is an error. Two runs differ by runner noise too, so a small change in one is not a regression.
 `dt known prune` reads the same runs. It judges each entry of the known files of the suite and its
 options on the results that matched its `test` in the cells the file grades and the entry's `where`
 applies to, at each cell's option, matrix values, tier and OS as `dt run` grades it. It removes a
