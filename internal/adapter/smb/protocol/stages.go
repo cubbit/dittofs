@@ -125,16 +125,19 @@ func (headerStage) Encode(h core.Header, s core.Status, out *resources.Buf) erro
 	if !ok {
 		return errForeign
 	}
-	// ponytail: every reply but an async one's grants one credit, which never
-	// takes a client past any credit target and keeps its balance above zero;
-	// the reply to an async-form request grants none (MS-SMB2 3.3.4.4). Grant
-	// what RFC 22 §3.3 states, what the client asks, at least 1, up to the
-	// connection's target, once a stage keeps the connection's credit count.
-	credits := uint16(1)
-	if v.raw().Flags()&wire.FlagAsyncCommand != 0 {
-		credits = 0
-	}
-	out.B = wire.AppendReply(out.B, v.raw(), uint32(s), credits)
+	// ponytail: every reply grants one credit, which never takes a client
+	// past any credit target and keeps its balance above zero, an async-form
+	// request's reply included (D4): this stage puts no request off, so that
+	// reply takes no async form - the form belongs to the stage that puts a
+	// request off, with the AsyncId it chose (MS-SMB2 3.3.4.2) - and falls
+	// under 3.3.4.4's Otherwise, which grants per 3.3.1.2 at least 1 (RFC 22
+	// section 3.3), never its CreditResponse 0 branch: that keys on
+	// Request.AsyncId, the server's own, zeroed on receipt by 3.3.5.2 and set
+	// only by 3.3.4.2 going async, not on the form a request arrives with, and
+	// would take a client holding one credit down to zero. Grant what RFC 22
+	// section 3.3 states, what the client asks, up to the connection's
+	// target, once a stage keeps the connection's credit count.
+	out.B = wire.AppendReply(out.B, v.raw(), uint32(s), 1)
 	if s != 0 {
 		out.B = wire.AppendError(out.B)
 	}

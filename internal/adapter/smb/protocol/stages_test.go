@@ -399,7 +399,7 @@ func TestACancelIsAnsweredNothing(t *testing.T) {
 			t.Errorf("a CANCEL of flags %#x routes %p, %v, %v; want the table, no request and ErrCancel", flags, got, rq, err)
 		}
 	}
-	if _, send := r.table.Errors.Map(ErrCancel, nil, 0); send {
+	if _, send, _ := r.table.Errors.Map(ErrCancel, nil, 0); send {
 		t.Error("the table sends a CANCEL a reply, which MS-SMB2 3.3.5.16 answers nothing")
 	}
 }
@@ -424,12 +424,14 @@ func TestAForeignHeader(t *testing.T) {
 	}
 }
 
-// The reply to an async-form request grants no credit (MS-SMB2 3.3.4.4),
-// where every other reply grants one, and takes no async form: ASYNC_COMMAND
-// is not a bit a reply echoes, the async reply being the hold stage's with
-// the AsyncId it chose, and no request is put off here (MS-SMB2 2.2.1.1's
-// flags table, 3.3.4.4).
-func TestAnAsyncRequestsReplyGrantsNoCredit(t *testing.T) {
+// The reply to an async-form request is granted as any synchronous one, one
+// credit and the sync form (D4): no request is put off here, so the reply
+// falls under 3.3.4.4's Otherwise, not its CreditResponse 0 branch, which
+// keys on Request.AsyncId, the server's own, rather than on the form the
+// request arrives with; ASYNC_COMMAND is not a bit a reply echoes, the
+// async reply being the hold stage's with the AsyncId it chose (MS-SMB2
+// 3.3.5.2, 3.3.1.2, 2.2.1.1's flags table; RFC 22 section 3.3).
+func TestAnAsyncFormsReplyIsGrantedAsAnySynchronousOne(t *testing.T) {
 	req := request(cmdRead, wire.FlagAsyncCommand, 0, 42, 0, 0)
 	h, err := headerStage{}.Decode(&resources.Buf{B: req}, 0)
 	if err != nil {
@@ -439,10 +441,10 @@ func TestAnAsyncRequestsReplyGrantsNoCredit(t *testing.T) {
 	if err := (headerStage{}).Encode(h, wire.StatusNotSupported, out); err != nil {
 		t.Fatal(err)
 	}
-	if got := binary.LittleEndian.Uint16(out.B[14:]); got != 0 {
-		t.Errorf("the reply to an async request grants %d credits, want none", got)
+	if got := binary.LittleEndian.Uint16(out.B[14:]); got != 1 {
+		t.Errorf("the reply to an async-form request grants %d credits, want one", got)
 	}
 	if got := binary.LittleEndian.Uint32(out.B[16:]); got != wire.FlagServerToRedir {
-		t.Errorf("the reply to an async request carries flags %#x, want SERVER_TO_REDIR alone", got)
+		t.Errorf("the reply to an async-form request carries flags %#x, want SERVER_TO_REDIR alone", got)
 	}
 }
