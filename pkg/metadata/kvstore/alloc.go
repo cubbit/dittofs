@@ -146,7 +146,7 @@ func fileSpellings(kind entity.PrincipalKind, ids entity.ProtocolIDs) error {
 	switch {
 	case kind == entity.PrincipalUser && has(entity.SchemeUID) != has(entity.SchemeSID):
 		return merrs.NewInvalidArgumentError("a user holds a uid and a SID, or neither")
-	case kind == entity.PrincipalGroup && !(has(entity.SchemeGID) && has(entity.SchemeSID)):
+	case kind == entity.PrincipalGroup && (!has(entity.SchemeGID) || !has(entity.SchemeSID)):
 		return merrs.NewInvalidArgumentError("a group holds a gid and a SID")
 	}
 	return nil
