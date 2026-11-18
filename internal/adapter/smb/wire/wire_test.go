@@ -350,18 +350,15 @@ func TestAppendErrorWritesTheNineByteBody(t *testing.T) {
 	}
 }
 
-// A related member's all-ones IDs are resolved against the pair the caller
+// A related member runs under the carried pair whole, whatever its own
+// header carries - all-ones, zero, a pair of its own, or an async form's
+// AsyncId where a tree would sit - resolved against the pair the caller
 // carries from the member before it, the pair that member resolved to, not
-// its raw bytes: a third related member would otherwise get the second's
-// sentinels back - nothing writes resolved IDs into the request, which is
-// what the client signed - and would look up a session that does not exist.
-// The caller gates the member by its RELATED flag, carries the pair from
-// member to member and writes what a member resolved into the reply it
-// signs. The sync form takes the tree as well as the session; the async form
-// takes the session alone, its tree offset being the async ID's high half
-// (RFC 20 section 4.7, MS-SMB2 3.2.5.1.3, 3.3.5.2.7.2). Each ID resolves on
-// its own, and a member with IDs of its own carries them: the pair handed
-// touches no ID that is not a sentinel.
+// its raw bytes: nothing writes resolved IDs into the request, which is
+// what the client signed. The caller gates the member by its RELATED flag,
+// carries the pair from member to member and writes what a member resolved
+// into the reply it signs (RFC 20 section 4.7, MS-SMB2 3.2.5.1.3,
+// 3.3.5.2.7.2).
 func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
 	chain := readGolden(t, "chain_request")
 	// A third member for the chain, the golden's second copied after it: the
@@ -395,6 +392,32 @@ func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
 	if lastS != first.SessionID() || lastT != first.TreeID() {
 		t.Errorf("the third member resolves to %x/%x, want the first's %x/%x carried through the second", lastS, lastT, first.SessionID(), first.TreeID())
 	}
+
+	// An async middle member passes the chain's pair on whole instead of
+	// handing its AsyncId's high half out as a tree: the member patches into
+	// the async form, session all-ones and AsyncId 0x9_00000001, and both it
+	// and the all-ones member after it stay under the first member's pair.
+	midFlags := binary.LittleEndian.Uint32(third[80+offFlags:]) | FlagAsyncCommand
+	asyncMid := patched(patched(patched(patched(third,
+		80+offFlags, byte(midFlags), byte(midFlags>>8), byte(midFlags>>16), byte(midFlags>>24)),
+		80+offSessionID, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff),
+		80+32, 1, 0, 0, 0), // the AsyncId's low half; its high half sits at the tree offset
+		80+offTreeID, 9, 0, 0, 0)
+	am, err := DecodeHeader(asyncMid, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if am.Flags()&FlagAsyncCommand == 0 || am.SessionID() != ^uint64(0) || am.TreeID() != 9 {
+		t.Fatalf("the patched middle member is async with the session sentinel and AsyncId high half 9, not %x/%x", am.SessionID(), am.TreeID())
+	}
+	midS, midT := am.Inherited(first.SessionID(), first.TreeID())
+	if midS != first.SessionID() || midT != first.TreeID() {
+		t.Errorf("the async member resolves to %x/%x, want the carried pair %x/%x whole", midS, midT, first.SessionID(), first.TreeID())
+	}
+	lastS, lastT = last.Inherited(midS, midT)
+	if lastS != first.SessionID() || lastT != first.TreeID() {
+		t.Errorf("the member after an async one resolves to %x/%x, want the first's %x/%x carried through, not the AsyncId's high half handed on as a tree", lastS, lastT, first.SessionID(), first.TreeID())
+	}
 	if !bytes.Equal(third, signed) {
 		t.Fatalf("resolving the members' IDs wrote into the signed request:\n% x\nwant\n% x", third, signed)
 	}
@@ -411,10 +434,11 @@ func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
 		t.Errorf("the member's own reply carries %x/%x, want the all-ones the request carried", r.SessionID(), r.TreeID())
 	}
 
-	// Single members resolved against the chain's first pair: a sentinel ID
-	// takes its carried partner, an ID of its own stays, and the async form
-	// keeps its whole tree offset - all-ones there being an async ID's high
-	// half, not a sentinel tree.
+	// Single members resolved against the chain's first pair: a related
+	// member runs under the carried pair whole, whatever its own header
+	// carries - all-ones, the clients' convention, zero, which v1 inherits
+	// too, a pair of its own, or an async form's AsyncId where a tree
+	// would sit.
 	for _, c := range []struct {
 		name  string
 		msg   []byte
@@ -422,14 +446,14 @@ func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
 		wantS uint64
 		wantT uint32
 	}{
-		{"an all-ones session with a tree of its own takes the session alone",
-			patched(chain, 80+offTreeID, 9, 0, 0, 0), 80, first.SessionID(), 9},
-		{"a tree sentinel with a session of its own takes the tree alone",
-			patched(chain, 80+offSessionID, 9, 0, 0, 0, 0, 0, 0, 0), 80, 9, first.TreeID()},
-		{"a member with IDs of its own carries them",
-			patched(patched(chain, 80+offSessionID, 9, 0, 0, 0, 0, 0, 0, 0), 80+offTreeID, 3, 0, 0, 0), 80, 9, 3},
-		{"an async member keeps its tree offset, all-ones included",
-			patched(patched(readGolden(t, "async_request"), offSessionID, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff), offTreeID, 0xff, 0xff, 0xff, 0xff), 0, first.SessionID(), 0xffffffff},
+		{"a member with the all-ones IDs takes the carried pair",
+			patched(patched(chain, 80+offSessionID, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff), 80+offTreeID, 0xff, 0xff, 0xff, 0xff), 80, first.SessionID(), first.TreeID()},
+		{"a member with a pair of its own still runs under the carried pair",
+			patched(patched(chain, 80+offSessionID, 9, 0, 0, 0, 0, 0, 0, 0), 80+offTreeID, 3, 0, 0, 0), 80, first.SessionID(), first.TreeID()},
+		{"a member with zero IDs takes the carried pair too",
+			patched(patched(chain, 80+offSessionID, 0, 0, 0, 0, 0, 0, 0, 0), 80+offTreeID, 0, 0, 0, 0), 80, first.SessionID(), first.TreeID()},
+		{"an async member takes the carried pair, its tree offset an AsyncId's high half",
+			patched(patched(readGolden(t, "async_request"), offSessionID, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff), offTreeID, 0xff, 0xff, 0xff, 0xff), 0, first.SessionID(), first.TreeID()},
 	} {
 		h, err := DecodeHeader(c.msg, c.off)
 		if err != nil {
@@ -628,8 +652,8 @@ func TestRefusalsAllocateNothing(t *testing.T) {
 		}
 		if prof.RaceEnabled {
 			// Under -race the allocation count below reads memory the
-			// detector allocates itself (sync primitives); the unit cell runs
-			// this without the detector.
+			// detector allocates itself (sync primitives); the
+			// adapter-allocs cell runs this without the detector.
 			continue
 		}
 		if n := testing.AllocsPerRun(100, func() { _ = c.refu() }); n != 0 {

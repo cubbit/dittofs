@@ -91,30 +91,26 @@ func (h *Header) TreeID() uint32 { return binary.LittleEndian.Uint32(h[offTreeID
 func (h *Header) SessionID() uint64 { return binary.LittleEndian.Uint64(h[offSessionID:]) }
 
 // Inherited is the session and tree a related member of a chain takes from
-// the member before it: its own IDs with their all-ones sentinels resolved
-// against prevSession and prevTree, the pair the caller resolved that member
-// to. Each ID resolves on its own, v1's shape: a member with the session
-// sentinel and a tree of its own takes the session alone, and the other way
-// round. The tree resolves only in the sync form: the async form's tree
-// offset is its async ID's high half, no tree of its own. The caller gates
-// the member by its RELATED flag and carries the resolved pair from member
-// to member, writing the IDs it resolved into the reply it signs, since
-// request bytes also cannot carry a tree the server returned mid-chain
-// (MS-SMB2 3.3.5.2.7.2's previous operation's IDs). It writes nothing: the
-// request's bytes are the ones the client signed, and the IDs are resolved
-// where the reply is built and signed, not in place, or a signed related
-// compound would verify different bytes than the client sent (RFC 20 section
-// 4.7 has Unwrap take the IDs from prev before the check; v1 resolves them
-// on a parsed copy too and verifies the raw bytes).
+// the member before it, whole: prevSession and prevTree, the pair the caller
+// resolved that member to, whatever its own header carries - all-ones, the
+// clients' convention, zero, which v1 inherits too, a pair of its own, or
+// the async form's AsyncId where a tree would sit, which is no tree - for
+// the previous operation's IDs are what a related member runs under, with no
+// sentinel condition (MS-SMB2 3.3.5.2.7.2). decision: a related member
+// inherits unconditionally rather than being judged for naming a pair of its
+// own - the rule replaces the member's IDs instead of grading them, so no
+// member after it ever runs under a tree or session the chain never named.
+// The caller gates the member by its RELATED flag and carries the resolved
+// pair from member to member, writing the IDs it resolved into the reply it
+// signs, since request bytes also cannot carry a tree the server returned
+// mid-chain (the same rule). It writes nothing: the request's bytes are the
+// ones the client signed, and the IDs are resolved where the reply is built
+// and signed, not in place, or a signed related compound would verify
+// different bytes than the client sent (RFC 20 section 4.7 has Unwrap take
+// the IDs from prev before the check; v1 resolves them on a parsed copy too
+// and verifies the raw bytes).
 func (h *Header) Inherited(prevSession uint64, prevTree uint32) (session uint64, tree uint32) {
-	session, tree = h.SessionID(), h.TreeID()
-	if session == ^uint64(0) {
-		session = prevSession
-	}
-	if h.Flags()&FlagAsyncCommand == 0 && tree == ^uint32(0) {
-		tree = prevTree
-	}
-	return session, tree
+	return prevSession, prevTree
 }
 
 // DecodeHeader returns the SMB2 header at off in msg, as a view of msg's
@@ -190,8 +186,10 @@ func DecodeHeader(msg []byte, off int) (*Header, error) {
 // the signature is zero: a reply is signed, when it is, after it is encoded.
 // Its StructureSize is 64, whatever req's.
 func AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte {
-	// Read the flags before the append: an out overlapping req's bytes cannot
-	// corrupt what is echoed.
+	// Read the flags before the append: the append copies the header and the
+	// writes below go over those bytes, so the flags are read from the
+	// request while it is still the request - out must not alias req's
+	// bytes, the caller's contract above.
 	flags := req.Flags()
 	at := len(out)
 	out = append(out, req[:]...)

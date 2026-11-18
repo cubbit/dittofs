@@ -134,23 +134,21 @@ func FuzzRecord(f *testing.F) {
 				if next != 0 && (next%8 != 0 || next < HeaderLen || off+next+HeaderLen > len(msg)) {
 					t.Fatalf("DecodeHeader at %d accepted a NextCommand of %d in a message of %d", off, next, len(msg))
 				}
-				// A related member resolves its all-ones IDs against the pair
-				// the stage carries from the member before it; the fuzz reads
-				// the same resolution off the bytes on its own, reading the
-				// tree only where the member's form has one.
-				modelS := binary.LittleEndian.Uint64(msg[off+40:])
-				modelT := binary.LittleEndian.Uint32(msg[off+36:])
-				if modelS == ^uint64(0) {
-					modelS = carryS
+				// A related member takes the pair the stage carries from the
+				// member before it whole, whatever its own header carries
+				// (MS-SMB2 3.3.5.2.7.2); an unrelated member's pair is its
+				// own, re-rooting what the stage carries there. The fuzz
+				// reads the related flag and the carried pair off the bytes
+				// on its own, and Inherited must answer with exactly the
+				// carried pair for a related member.
+				if binary.LittleEndian.Uint32(msg[off+16:])&FlagRelatedOperations != 0 {
+					if s, tr := h.Inherited(carryS, carryT); s != carryS || tr != carryT {
+						t.Fatalf("Inherited at %d gave (%x, %x), want the carried pair whole (%x, %x): a related member runs under the member before it, whatever its own header carries",
+							off, s, tr, carryS, carryT)
+					}
+				} else {
+					carryS, carryT = binary.LittleEndian.Uint64(msg[off+40:]), binary.LittleEndian.Uint32(msg[off+36:])
 				}
-				if binary.LittleEndian.Uint32(msg[off+16:])&FlagAsyncCommand == 0 && modelT == ^uint32(0) {
-					modelT = carryT
-				}
-				if s, tr := h.Inherited(carryS, carryT); s != modelS || tr != modelT {
-					t.Fatalf("Inherited at %d gave (%x, %x), want the member's IDs with their sentinels resolved against the carried pair (%x, %x): (%x, %x)",
-						off, s, tr, carryS, carryT, modelS, modelT)
-				}
-				carryS, carryT = modelS, modelT
 			}
 
 			reply = AppendReply(reply[:0], h, StatusNotSupported, 1)
