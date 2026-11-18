@@ -63,14 +63,16 @@ func TestGenerateRefuses(t *testing.T) {
 }
 
 // A count is checked against the bytes left at its elements' least, never more
-// than an element takes: a struct's fields on the wire in every version, each
-// at least a word, and a union's discriminant alone, since its arm may be void.
+// than an element takes: a struct's fields on the wire in every version, a
+// hyper, a fixed-length opaque or a fixed-length array at its size and any
+// other at a word, and a union's discriminant alone, since its arm may be void.
 func TestCountsBoundElementsAtTheirLeast(t *testing.T) {
 	dir := t.TempDir()
 	src := "package p\n\n" +
-		"type S struct {\n\tA []E `xdr:\"max=2\"`\n\tB []U `xdr:\"max=2\"`\n}\n" +
+		"type S struct {\n\tA []E `xdr:\"max=2\"`\n\tB []U `xdr:\"max=2\"`\n\tC []F `xdr:\"max=2\"`\n}\n" +
 		"type E struct {\n\tX uint32\n\tY uint64 `xdr:\"since=1\"`\n\tZ [8]byte\n}\n" +
-		"type U struct {\n\tD uint32 `xdr:\"union\"`\n\tX uint64 `xdr:\"case=1\"`\n}\n"
+		"type U struct {\n\tD uint32 `xdr:\"union\"`\n\tX uint64 `xdr:\"case=1\"`\n}\n" +
+		"type F struct {\n\tH uint64\n\tI int64\n\tW [3]uint32\n}\n"
 	if err := os.WriteFile(filepath.Join(dir, "in.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +80,11 @@ func TestCountsBoundElementsAtTheirLeast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"d.Count(2, 8); n0 > 0 {\n\t\tx.A = make([]E, n0)", "d.Count(2, 4); n0 > 0 {\n\t\tx.B = make([]U, n0)"} {
+	for _, want := range []string{
+		"d.Count(2, 12); n0 > 0 {\n\t\tx.A = make([]E, n0)",
+		"d.Count(2, 4); n0 > 0 {\n\t\tx.B = make([]U, n0)",
+		"d.Count(2, 28); n0 > 0 {\n\t\tx.C = make([]F, n0)",
+	} {
 		if !bytes.Contains(out, []byte(want)) {
 			t.Errorf("no %q in:\n%s", want, out)
 		}

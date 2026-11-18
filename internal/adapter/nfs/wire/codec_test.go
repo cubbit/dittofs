@@ -88,6 +88,7 @@ func vectors(t testing.TB) []struct {
 		{"codec-post-op-fh-present", 0, &PostOpFH{Handle: &FH3{Data: []byte{1, 0, 1, 0, 0, 0, 0, 0}}}},
 		{"codec-post-op-fh-absent", 0, &PostOpFH{}},
 		{"codec-write-args", 0, &Write4Args{StateID: stateID(1), Offset: 4 << 30, Stable: 2, Data: []byte("hello")}},
+		{"codec-void", 0, &Void{}},
 		{"codec-sample-v0", 0, &sample},
 		{"codec-sample-v1", 1, &sampleV1},
 	}
@@ -170,6 +171,22 @@ func TestCodecByteFieldIsASliceOfTheRecord(t *testing.T) {
 		_, _ = w.DecodeWire(rec, 0)
 	}); n >= 4<<10 {
 		t.Errorf("decoding 1 MiB of data allocates %d bytes", n)
+	}
+}
+
+// A byte field's capacity ends at its last byte, so an append to it copies
+// rather than overwriting what the record holds next, a COMPOUND's next
+// operation (RFC 20 section 5.3).
+func TestCodecByteFieldEndsAtItsLength(t *testing.T) {
+	rec := binary.BigEndian.AppendUint32(readGolden(t, "codec-write-args"), 9) // the next operation, GETATTR
+	want := bytes.Clone(rec)
+	var w Write4Args
+	if _, err := w.DecodeWire(rec, 0); err != nil {
+		t.Fatal(err)
+	}
+	_ = append(w.Data, "more"...)
+	if !bytes.Equal(rec, want) {
+		t.Errorf("an append to the data overwrote the record\n  %x\nwant\n  %x", rec, want)
 	}
 }
 
@@ -314,7 +331,7 @@ func TestCodecIsZero(t *testing.T) {
 			t.Fatalf("no value set for a %s", v.Type())
 		}
 	}
-	for _, c := range []codec{&SetClientIDArgs{}, &SetattrArgs{}, &ACL{}, &OpenClaim{}, &SetTime{}, &PostOpFH{}, &Write4Args{}, &Sample{}} {
+	for _, c := range []codec{&SetClientIDArgs{}, &SetattrArgs{}, &ACL{}, &OpenClaim{}, &SetTime{}, &PostOpFH{}, &Write4Args{}, &Void{}, &Sample{}} {
 		if !fresh(c).IsZero() {
 			t.Errorf("a zero %T is not zero", c)
 		}

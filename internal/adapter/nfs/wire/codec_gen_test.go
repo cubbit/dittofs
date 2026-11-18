@@ -660,6 +660,36 @@ func (x *Write4Args) IsZero() bool {
 		len(x.Data) == 0
 }
 
+func (x *Void) DecodeWire(b []byte, v uint32) (int, error) {
+	d := wire.Decoder{B: b}
+	x.decodeXDR(&d, v)
+	return d.N, d.Err
+}
+
+func (x *Void) EncodeWire(v uint32, out *resources.Buf) error {
+	e := wire.Encoder{B: out.B}
+	x.encodeXDR(&e, v)
+	if e.Err != nil {
+		return e.Err
+	}
+	out.B = e.B
+	return nil
+}
+
+func (x *Void) decodeXDR(d *wire.Decoder, v uint32) {
+}
+
+func (x *Void) encodeXDR(e *wire.Encoder, v uint32) {
+}
+
+func (*Void) MaxWire(v uint32) int {
+	return 0
+}
+
+func (x *Void) IsZero() bool {
+	return true
+}
+
 func (x *Sample) DecodeWire(b []byte, v uint32) (int, error) {
 	d := wire.Decoder{B: b}
 	x.decodeXDR(&d, v)

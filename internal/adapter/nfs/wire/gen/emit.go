@@ -10,22 +10,30 @@ import (
 func pad4(n int) int { return n + (4-n%4)%4 }
 
 // least is a lower bound on the bytes an array's element of t encodes to,
-// which bounds a claimed count by the bytes left before the array is made: a
-// word for anything but a struct, every XDR item taking at least one (RFC 4506
+// which bounds a claimed count by the bytes left before the array is made: its
+// size for a hyper, a fixed-length opaque or a fixed-length array; a word for
+// any other kind but a struct, every XDR item taking at least one (RFC 4506
 // section 3); a union's discriminant for a union, whose arm may be void; and
 // for any other struct, its fields' on the wire in every version.
 func (g *gen) least(t *xtype) int {
-	s := g.byName[t.name]
-	if t.kind != kStruct || s.union {
-		return 4
-	}
-	n := 0
-	for _, f := range s.fields {
-		if f.since == 0 {
-			n += g.least(f.t)
+	switch t.kind {
+	case kUint64, kInt64, kFixed, kVector:
+		n, _ := g.size(t)
+		return n
+	case kStruct:
+		s := g.byName[t.name]
+		if s.union {
+			return 4
 		}
+		n := 0
+		for _, f := range s.fields {
+			if f.since == 0 {
+				n += g.least(f.t)
+			}
+		}
+		return n
 	}
-	return n
+	return 4
 }
 
 // size is the most bytes t encodes to: a count, or, where a struct's MaxWire
@@ -233,6 +241,9 @@ func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
 		if f.name != "_" {
 			terms = append(terms, zero("x."+f.name, f.t))
 		}
+	}
+	if len(terms) == 0 {
+		terms = []string{"true"} // a void struct, always its zero
 	}
 	fmt.Fprintf(b, "\nfunc (x *%s) IsZero() bool {\nreturn %s\n}\n", s.name, strings.Join(terms, " &&\n"))
 }

@@ -122,6 +122,10 @@ type Write4Args struct {
 	Data    []byte `xdr:"max=1048576"`
 }
 
+// Void is NULL's arguments and result (RFC 7530 section 15.1): void, no bytes
+// (RFC 4506 section 4.16).
+type Void struct{}
+
 // Sample is no protocol's: a fixed-length array of three uint32, a bool, a
 // string and an array whose vectors sit at their bounds, and a field on the
 // wire from minor version 1.
