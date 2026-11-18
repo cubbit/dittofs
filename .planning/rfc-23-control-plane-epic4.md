@@ -19,7 +19,7 @@ running index, the node view and its statuses, and the namespace record `NS‖ns
 reads `Namespace(id)` and `StoreNamed(store)` on `entity.ControlPlaneTx`. E3: `internal/node/api` with `New(Deps)`, its listener and health rows, `Deps.Ready`,
 `Deps.Live` and the node's `Deps.Applied` (A8), the two architecture rules over the package, the operation runner, and
 `internal/node/nodetest`. T4.11's success paths also wait on the RFC 18 plan's epics 6 and 7 for
-identity's directory and join calls and their in-memory doubles, and on X1's `pkg/secrets`.
+identity's directory and join calls and their in-memory doubles, and on X1's `pkg/secrets`; T4.3 waits on X1's `MakeRuntimeDir`.
 **Blocks:** E5, which fills `Deps.Authenticate` from `internal/node/api/auth`, adds its rights to the
 role table and its routes to the route table on the call and write adapters; E6, which builds the
 commands on `pkg/apiclient` and the wire types; E7, which runs RFC 23 §12's rows through these
@@ -106,8 +106,8 @@ span per call; RFC 23 §4.3's amendment for the pre-write step.
 - **E6**, epic 6, the CLI: `dfsctl`'s commands on `pkg/apiclient`.
 - **E7**, epic 7, **the integration epic**: RFC 23 §12's single-node rows through the API.
 - **S1**, E1 merged: v1 gone and the surface frozen.
-- **X1**, the RFC 13 plan's bootstrap and secrets (`pkg/bootstrap`, `pkg/secrets`), outside RFC 23's
-  plan.
+- **X1**, the RFC 13 plan's bootstrap and secrets (`pkg/bootstrap`, its `MakeRuntimeDir` among it,
+  and `pkg/secrets`), outside RFC 23's plan.
 - **X3**, the RFC 13 plan's epic 5, which hands in the settings table and wires `Check`, `Diff` and
   `Get`, outside RFC 23's plan.
 
@@ -512,14 +512,14 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 **Subtask T4.3 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** T4.2.
+- **Track:** B. **Depends on:** T4.2, and on X1 (`MakeRuntimeDir`, the RFC 13 plan's T2.4).
 - **Covers:** R23, R31, R55, R56, R60.
 - **Deliverables:** E3's listener extended: TLS through `internal/tlsconfig` on every address but
   loopback, a start refusing a non-loopback address without the bootstrap's certificate and key; the
   metrics listener under the same TLS rule as the API's; a TLS configuration naming a client CA
   refused at start, for both listeners, a `decision:` at `Start` naming its overturn, the API
   reached by client certificate; the
-  local socket, at the bootstrap's `api.socket` path, `dfs.sock` in the runtime directory by default,
+  local socket, at the bootstrap's `api.socket` path, `dfs.sock` in the runtime directory by default (when neither `RUNTIME_DIRECTORY` nor `XDG_RUNTIME_DIR` names one, the directory made through X1's `MakeRuntimeDir` before the socket binds),
   created `0600` in a directory only the server's user owns (a `0700` subdirectory of a group-owned volume), a socket left over probed before it, refused while one answers and replaced once
   dead, its requests marked local on the context
   for E5 (`auth.Local`, D3); the call
@@ -895,6 +895,7 @@ flowchart TD
   T4_1["T4.1 Problems and decoding"] --> T4_2["T4.2 Route table, rights, adapters"]
   T4_2 --> C1(["after T4.2: every route answers 401, the layering held"]):::sync
   T4_2 --> T4_3["T4.3 Listeners and bound"]
+  X1(["X1: MakeRuntimeDir"]):::sync --> T4_3
   T4_2 --> T4_4["T4.4 Write path"]
   T4_2 --> T4_5["T4.5 Reads and long polls"]
   T4_5 --> T4_6["T4.6 Operations, nodes, audit"]
