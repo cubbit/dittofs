@@ -322,9 +322,9 @@ reads, so every loopback test fails.
     variable length, so the header is a value holding one pointer to the record's `Buf`, whose
     methods read the fields through `wire`'s accessors, which `wire`'s parse has bounded.
     `decision:` at the type.
-  - Either view is valid while the record's `Buf` is retained (§9 has a finding for E5 on
-    `Park`, which releases it). Prior art: `testproto`'s `header`, whose `decision:` says the
-    same.
+  - Either view is valid while the record's `Buf` is retained; a parked request's goes once
+    its handler returns `ErrParked`, after `HoldCodec.Final`'s header, which must not point
+    into it, is taken (RFC 20 §4.7).
 - **D2, NFS's `core.Status` carries an RPC reply state or a program's status.** RFC 20 §4.7's
   `Status` is "an NFS stat, an RPC accept or reject state"; one `uint32` must tell them apart for
   `HeaderCodec.Encode`. **Two high bits name the layer: 0 a program's status inside an accepted
@@ -352,8 +352,10 @@ reads, so every loopback test fails.
 - **D4, a scaffold reply grants one credit.** RFC 22 §3.3's grant (what the client asks, at
   least 1, up to the connection's target) needs the credit count that the RFC 22 plan's `Flow`
   (its T3.6) keeps. **`wire`'s reply encoder takes the grant as an argument; the header stage
-  passes 1, which never takes a client past any target and keeps its balance above zero, and 0
-  for an async-form reply, which MS-SMB2 3.3.4.4 has grant none.**
+  passes 1, which never takes a client past any target and keeps its balance above zero, the
+  reply to an async-form request included: MS-SMB2 3.3.4.4 sets `CreditResponse` to 0 only
+  where `Request.AsyncId` is nonzero, which 3.3.1.13 leaves zero until the server sends an
+  interim (3.3.4.2), so that reply, in sync form, grants as 3.3.1.2 says.**
   `ponytail:` at the call, naming the grant RFC 22 §3.3 states, which needs the connection's
   credit count, as the upgrade. No prior art sought.
 - **D5, `RPCSEC_GSS` is refused as a flavour not served, until the GSS stage.** With no
@@ -449,8 +451,7 @@ Exported symbols added, all under `internal/adapter/`:
     its reply carries;
   - `MessageID()`: the RFC 22 plan's `Replay` and `HoldCodec` (its T3.6 and T3.7), the
     message-ID window and a sync `CANCEL`'s key;
-  - `AsyncID()`: the RFC 22 plan's `HoldCodec` (its T3.7), an async `CANCEL`'s key, and the
-    async-form reply T6.3a's `Encode` writes;
+  - `AsyncID()`: the RFC 22 plan's `HoldCodec` (its T3.7), an async `CANCEL`'s key;
   - `TreeID()`: the RFC 22 plan's request state (its epic 1) and `Security.Unwrap` (its T3.4),
     the tree a request reaches, which `Inherit` writes;
   - `SessionID()`: the RFC 22 plan's `Security` (its T3.3 and T3.4), the session whose key signs
@@ -509,9 +510,15 @@ framer's.
   `StructureSize` other than 64 and for a `NextCommand` not a multiple of 8 or leaving no room
   for a header before the record's end (RFC 22 §16.5); `AppendReply` writes the response
   header as MS-SMB2 3.3.4.3 and 3.3.4.4 have it, matching "the SMB2 header of the request with
-  the following changes": the request's command, message ID, credit charge, session and tree or
-  async ID, and its flags but `SMB2_FLAGS_SIGNED`, which `Wrap` sets once it signs (MS-SMB2
-  3.3.4.1.1), with `SMB2_FLAGS_SERVER_TO_REDIR` set; `NextCommand` and signature zero; the
+  the following changes": the request's command, message ID, credit charge, session, and the
+  8 bytes after the message ID as they came, since 3.3.4.3 and 3.3.4.4 change them only for a
+  request the server put off, so an async-form request's async ID lands in its sync-form
+  reply's `Reserved` and `TreeId`; and of its flags only `SMB2_FLAGS_RELATED_OPERATIONS`, the
+  priority mask, `SMB2_FLAGS_DFS_OPERATIONS` and `SMB2_FLAGS_REPLAY_OPERATION`, not
+  `SMB2_FLAGS_SIGNED`, which
+  `Wrap` sets once it signs (MS-SMB2 3.3.4.1.1), nor `SMB2_FLAGS_ASYNC_COMMAND`, since only the
+  stage that puts a request off gives its reply the async form, with the async ID it chose;
+  with `SMB2_FLAGS_SERVER_TO_REDIR` set; `NextCommand` and signature zero; the
   status and the credits it is handed (D4); `AppendError` writes MS-SMB2 2.2.2's body with
   no error data; `Chain` pads to 8 and sets the previous reply's `NextCommand`. Golden vectors
   (D3), read by a helper in `wire_test.go`; `FuzzRecord`.
@@ -530,7 +537,8 @@ framer's.
     68 and one past the record return the header with an error.
   - `AppendReply` over the capture's request header, with frame 6's status and credits, gives
     frame 6's header byte for byte, but for any field the server chooses that the test lists
-    with its reason; the hand-written async reply too. Over frame 126's request, whose flags
+    with its reason; over the hand-written async request, the hand-written reply to it, in the
+    sync form. Over frame 126's request, whose flags
     are `0x10`, the reply's flags are frame 127's, `0x11`; over a request whose flags are
     `0x18`, `SIGNED` among them, they are `0x11` until `Wrap` signs. `AppendError` gives
     MS-SMB2 2.2.2's 9 bytes. Two replies joined with `Chain` put the second at a multiple of 8, the first's
@@ -548,10 +556,12 @@ framer's.
   addressable header refused as unaddressable, which closes a connection RFC 22 §16.5 keeps,
   and an unaligned or out-of-record `NextCommand` accepted, R9). The cap, at its byte and one
   past (catches a cap off by its header room). The reply vectors (catch a reply missing the
-  server-to-client flag, which a client discards, an async reply written in the sync form, and
-  the frame header's length off by its own 4 bytes, R4); the capture's flags (catch a request
-  flag the reply drops, such as the priority bits its requests carry, answered `0x10` to `0x11`
-  and `0x18` to `0x19` in that capture, and `SIGNED` copied onto a reply not yet signed). `Chain` (catches padding to 4, or
+  server-to-client flag, which a client discards, the reply to an async request written in the
+  async form, and the frame header's length off by its own 4 bytes, R4); the capture's flags
+  and a request with every flag set (catch one of the four bits the reply carries dropped, such
+  as the priority bits the capture's requests carry, answered `0x10` to `0x11` and `0x18` to
+  `0x19` in that capture; `SIGNED` copied onto a reply not yet signed; and `ASYNC_COMMAND` or a
+  bit no flag names copied onto a reply). `Chain` (catches padding to 4, or
   none). The claimed lengths (catch a buffer allocated before its length is checked, R8).
   `FuzzRecord`, over a frame header and the headers of a chain (a panic; a length past the cap
   or the record accepted; an accepted header whose reply, from `AppendReply`, does not carry
@@ -574,7 +584,7 @@ framer's.
   elsewhere, `nil` with the error for a header `wire` cannot address and the header with it for
   one it can, a header refused for its `NextCommand` reporting as `Next` an offset past the
   record's end, which the walk refuses (RFC 20 §4.7); whose `Encode` calls `wire.AppendReply`
-  with one credit, and none for an async-form reply (D4; MS-SMB2 3.3.4.4), and, for a failure answered with a status alone, appends
+  with one credit (D4), and, for a failure answered with a status alone, appends
   `wire.AppendError`'s body, every refusal of this epic being one (the pairs RFC 22 §16.5
   leaves to a command's encoder are added here by the RFC 22 plan, with each command); whose
   `Chain` calls `wire.Chain`; whose `Args` is a message's bytes past its 64-byte header to the
@@ -598,9 +608,9 @@ framer's.
     header and the error; a header whose `NextCommand` is 68 does, and its `Next` lies past the
     record's end.
   - `Encode` of `STATUS_NOT_SUPPORTED` gives the reply header with one credit, then the 9-byte
-    error body; of status 0, the header alone; over an async request, the async-form reply with
-    no credit. Three replies encoded and chained lie at
-    multiples of 8, each `NextCommand` pointing at the next.
+    error body; of status 0, the header alone; the reply to an async-form request takes no
+    async form. Three replies encoded and chained lie at multiples of 8, each `NextCommand`
+    pointing at the next.
   - `Args` of each member of the chain of three is its own arguments, none of the next
     member's header; `Encode` of any status, with `Chain`'s padding, writes no more than
     `ReplyLen`.
@@ -622,8 +632,9 @@ framer's.
   smaller than the status's reply, which the error body or the padding then overruns).
   `Route` (catches a request routed to no table, or at a level that would let a later row skip
   its `Needs`); the `CANCEL`s (catch a `CANCEL` answered, which MS-SMB2 3.3.5.16 forbids, and
-  one refused with no table, which `Stages.Errors` would answer). The async reply (catches a
-  credit granted on an async-form reply, against MS-SMB2 3.3.4.4). `TestHeaderStageAllocs` (catches a header boxed by value, which allocates per
+  one refused with no table, which `Stages.Errors` would answer). The async request's reply
+  (catches an async form it takes, which only the hold stage gives a reply, with the async ID
+  it chose). `TestHeaderStageAllocs` (catches a header boxed by value, which allocates per
   request, a member allocated at offset 0, and an error built on a refusal's path).
 - **Rules:** rule 4: the gate; rule 7: D1's `decision:` at the view and `ponytail:` at the
   member, D4's `ponytail:`; rule 9: `ErrCancel` alone exported, which the table's error rows
@@ -1257,11 +1268,9 @@ merged as #4540.
     `ReplyLen`'s coverage of a compound's head and one result's head is T5.4's (#4522). The
     epic 5 document names none of this as a deliverable, on `feat/storage-v2` or in #4449, and
     should list each part under its subtask.
-  - E5's T5.11 and RFC 20 §4.7's `Park`: `Park` releases the record's `Buf` (E5's D12) before
-    `HoldCodec.Final` gives the final reply's header, and `testproto`'s `decision:` on its
-    header view says to withdraw the view if `core` ever releases a record before its request
-    ends. RFC 20 §4.7 should say that `Final`'s header, or a copy of what it needs, is taken
-    before `Park` releases the record.
+  - E5's T5.11 and RFC 20 §4.7's `Park`, settled: `core` releases the record's `Buf` once the
+    handler returns `ErrParked`, after `Park` has taken `HoldCodec.Final`'s header, which
+    reads the interim's grant and, RFC 20 §4.7 now says, must not point into the record.
   - The RFC 22 plan's T3.2: it names the dialects but not RFC 20 §4.8's range,
     `Conn.Settings()`'s `Dialects`, inside which `NEGOTIATE` picks; the program's description
     of T6.3 had the pick, which this document leaves to the RFC 22 plan's T3.2. An edit to that
