@@ -2,29 +2,18 @@
 package smb
 
 import (
-	"errors"
-	"fmt"
-	"strings"
-
+	"github.com/cubbit/dittofs/internal/adapter/smb"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 )
 
 // New builds the SMB adapter, configured: it validates s and refuses Deps
-// missing a required field, naming every one missing, and opens nothing.
+// missing a required field, naming every one missing, and opens nothing. It
+// is one call into internal/adapter/smb, whose refusal is a nil adapter.
 func New(d adapter.Deps, s settings.SMB) (adapter.Adapter, error) {
-	if err := s.Validate(); err != nil {
+	srv, err := smb.New(d, s)
+	if err != nil {
 		return nil, err
 	}
-	var missing []string
-	if d.VFS == nil {
-		missing = append(missing, "Deps.VFS")
-	}
-	if d.Budgets == nil {
-		missing = append(missing, "Deps.Budgets")
-	}
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("smb: %s required", strings.Join(missing, ", "))
-	}
-	return nil, fmt.Errorf("smb: the SMB adapter is not built: %w", errors.ErrUnsupported)
+	return srv, nil
 }
