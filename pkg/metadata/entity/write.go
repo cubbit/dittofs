@@ -2,7 +2,6 @@ package entity
 
 import (
 	"errors"
-	"iter"
 	"time"
 )
 
@@ -190,8 +189,6 @@ type ControlPlaneTx interface {
 	// DeleteSetting removes an override, so the wider scope's value is
 	// effective, and raises the settings generation as a put does.
 	DeleteSetting(scope SettingScope, key string, expect uint64) error
-	// AllSettings reads every scope's settings in one scan, tracked.
-	AllSettings() iter.Seq2[Setting, error]
 	// Secret is one version of a secret, still sealed; version 0 reads the
 	// current one. A tracked read, so a write that checks a reference's kind
 	// and owner conflicts with a concurrent change of the secret. False when

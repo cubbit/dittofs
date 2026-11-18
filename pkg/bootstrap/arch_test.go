@@ -55,8 +55,8 @@ var sourceImporter = importer.ForCompiler(token.NewFileSet(), "source", nil)
 // their build tags, so a file behind a tag cannot hide an export, plus the
 // planted files, and prints each exported declaration on one line: a
 // function or method with its signature and receiver, a constant with its
-// value, a struct with its exported fields only, since a later epic adds
-// unexported ones to an opaque struct.
+// value, a struct with its exported and embedded fields only, since an opaque
+// struct may gain unexported fields.
 func exports(dir string, planted ...string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -121,10 +121,13 @@ func exports(dir string, planted ...string) ([]string, error) {
 		}
 
 		got = append(got, "type "+name+" "+typeString(tn.Type().Underlying(), qualify))
-		if named, ok := tn.Type().(*types.Named); ok {
-			for m := range named.Methods() {
-				if m.Exported() {
-					got = append(got, types.ObjectString(m, qualify))
+		// An interface prints every method in typeString; any other type
+		// prints the whole method set, promoted methods of an embedded type
+		// included, since a method promoted that way is public too.
+		if _, isIface := tn.Type().Underlying().(*types.Interface); !isIface {
+			for sel := range types.NewMethodSet(types.NewPointer(tn.Type())).Methods() {
+				if sel.Obj().Exported() {
+					got = append(got, types.ObjectString(sel.Obj(), qualify))
 				}
 			}
 		}
@@ -134,7 +137,7 @@ func exports(dir string, planted ...string) ([]string, error) {
 }
 
 // typeString prints t as types.TypeString does, but a struct with its
-// exported fields only and no tags, nested anonymous structs included.
+// exported and embedded fields only and no tags, nested anonymous structs included.
 func typeString(t types.Type, qualify types.Qualifier) string {
 	st, ok := t.(*types.Struct)
 	if !ok {
@@ -144,7 +147,7 @@ func typeString(t types.Type, qualify types.Qualifier) string {
 	var fields []string
 
 	for f := range st.Fields() {
-		if f.Exported() {
+		if f.Exported() || f.Embedded() {
 			fields = append(fields, f.Name()+" "+typeString(f.Type(), qualify))
 		}
 	}
@@ -226,6 +229,10 @@ func TestBootstrapExports(t *testing.T) {
 		{"the package", "", "", nil},
 		{"extra function", "extra_func.go", "", []string{"extra export: func Extra()"}},
 		{"extra method", "extra_method.go", "", []string{"extra export: func (Bootstrap).Extra()"}},
+		{"promoted method", "extra_embed.go", "", []string{
+			"extra export: func (embedded).Promoted()",
+			"extra export: type Leaky struct{embedded embedded}",
+		}},
 		{"extra type", "extra_type.go", "", []string{"extra export: type Extra struct{A int}"}},
 		{"missing export", "", "func Gone()", []string{"missing export: func Gone()"}},
 		{"behind a build tag", hiddenCase, "", []string{"extra export: func Hidden()"}},

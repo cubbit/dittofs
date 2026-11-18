@@ -3,7 +3,6 @@ package settings_test
 import (
 	"context"
 	"errors"
-	"iter"
 
 	adaptersettings "github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -93,9 +92,9 @@ func ExampleRead() {
 		),
 	}
 
-	var scan func(context.Context) iter.Seq2[entity.Setting, error] // the node's cp.AllSettings
+	var r entity.SettingsReader // the node's view of the control plane
 
-	snap, refused, err := settings.Read(context.Background(), scan, table, entity.NodeID{})
+	snap, refused, err := settings.Read(context.Background(), r, table, entity.NodeID{})
 	if err != nil || len(refused) > 0 {
 		return
 	}

@@ -2,7 +2,6 @@ package settings
 
 import (
 	"context"
-	"iter"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -18,13 +17,12 @@ type Change struct {
 	Class   Class
 }
 
-// Read decodes every section of table for node from scan, which lists every
-// scope's settings, and returns the snapshot and the sections it refused, each
-// with its error; a refused section does not stop the others. The node passes
-// its control plane's settings scan.
+// Read decodes every section of table for node from the settings r lists
+// across every scope, and returns the snapshot and the sections it refused,
+// each with its error; a refused section does not stop the others.
 func Read(
 	ctx context.Context,
-	scan func(context.Context) iter.Seq2[entity.Setting, error],
+	r entity.SettingsReader,
 	table Table,
 	node entity.NodeID,
 ) (*Snapshot, map[string]error, error) {
