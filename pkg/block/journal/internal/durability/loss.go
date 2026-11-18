@@ -155,7 +155,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// A reported loss takes back a piece a placed but unsynced record holds:
 	// the take stopped its second event, not the record it is still owed.
 	k := piece{l.Seq, l.Extent}
-	if !d.dir.take(k) && !(l.Reported && d.dir.retakeUnsynced(k)) {
+	if !d.dir.take(k) && (!l.Reported || !d.dir.retakeUnsynced(k)) {
 		return core.LossEvent{}, nil
 	}
 
