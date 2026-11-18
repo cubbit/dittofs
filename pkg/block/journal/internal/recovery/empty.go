@@ -732,6 +732,19 @@ func (e *emptying) finish(ctx context.Context, id core.SegmentID, target core.Se
 // left for later copies, else the pool's own repack reserve through the
 // closure the open wired, whose ids are above every id the directory held.
 // floor is zero for a copy that carries nothing in a twin's place.
+//
+// decision: a copy lands above every copy it replaces. The rule: the rebuild
+// serves the greatest placement among the kept copies of a record and
+// verifies no payload, so a carry in a rotten twin's place must take an id
+// above the twin and must stay held until the older copies are gone, or the
+// next open serves the twin again. The hazard: a freed take
+// below the floor would hold the only verifying copy under the twin, which
+// the next open serves rotten; so such a take is skipped, never drawn. When
+// every freed take is below the floor and the pool's reserve is empty, the
+// draw answers the pool's spare refusal, which the copier returns as the pool
+// gave it: the open fails, the ended segment stands, and the copy is never
+// placed low. Withdrawn when the rebuild verifies payloads, or the open
+// records a rotten placement so a restart cannot serve it again.
 func (e *emptying) drawAbove(floor core.SegmentID) (core.SegmentID, error) {
 	for i, id := range e.freed {
 		if id > floor {
