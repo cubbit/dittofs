@@ -192,6 +192,10 @@ func TestADFixture(t *testing.T) {
 		if joinerSID == "" {
 			t.Fatal("joiner has no objectSid")
 		}
+		dittofsSID := adAttrs(t, "computer", "dittofs", "objectSid")["objectSid"]
+		if dittofsSID == "" {
+			t.Fatal("dittofs$ has no objectSid")
+		}
 		for _, acct := range []struct {
 			name, password, enctypes, owner string
 			delegated                       bool
@@ -213,6 +217,9 @@ func TestADFixture(t *testing.T) {
 			}
 			if got := attrs[delegation] != ""; got != acct.delegated {
 				t.Errorf("%s$ %s set = %v (%q), want %v", acct.name, delegation, got, attrs[delegation], acct.delegated)
+			}
+			if acct.delegated && !strings.Contains(attrs[delegation], dittofsSID) {
+				t.Errorf("%s$ %s = %q, want it naming dittofs$ (%s)", acct.name, delegation, attrs[delegation], dittofsSID)
 			}
 			if got := adOwner(t, attrs["dn"]); got != acct.owner {
 				t.Errorf("%s$ owner = %q, want %q", acct.name, got, acct.owner)

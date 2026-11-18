@@ -78,6 +78,9 @@ provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
 - user `alice` — RFC2307 `uidNumber=10001`, `gidNumber=10000`, member of `devs`
   (which is nested under `engineering`).
 - user `bob` — no RFC2307 attrs (the RID-fallback case), member of `engineering`.
+- user `joiner` — no RFC2307 attrs, password `TestPassword01!` (`USER_PASSWORD`); its only grant
+  beyond Domain Users is create-child for the computer class on the `Computers`
+  container, which is what makes it `offjoinowned$`'s owner below.
 - groups `engineering` and `devs` (with `devs` nested under `engineering`).
 - a service account `dittofs-svc` holding the `cifs/` and `nfs/` SPNs, AES only,
   and a combined keytab of their keys at `/keytabs/dittofs.keytab`.
@@ -88,8 +91,7 @@ provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
   `offjoinaes$` (password `OffJoinAES01!`, `msDS-SupportedEncryptionTypes`
   `0x18`) and `offjoinlegacy$` (password `OffJoinLegacy01!`, none), pre-staged
   for an offline join; `offjoinowned$` (password `OffJoinOwned01!`, `0x18`),
-  created by the user `joiner`, who may create computer objects in the
-  `Computers` container and nothing more, so `joiner` owns it, with
+  created by the user `joiner`, so `joiner` owns it, with
   `msDS-AllowedToActOnBehalfOfOtherIdentity` naming `dittofs$`; and `BUILD01$`
   (password `Build01Pass01!`), a plain workstation account. `MACHINE_PASSWORD`,
   `OFFJOIN_AES_PASSWORD`, `OFFJOIN_LEGACY_PASSWORD`, `OFFJOIN_OWNED_PASSWORD`
