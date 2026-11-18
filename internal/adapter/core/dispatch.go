@@ -205,7 +205,7 @@ type Encoder[T any] interface {
 	*T
 	EncodeWire(v Version, out *resources.Buf) error
 	MaxWire(v Version) int // the reply's largest encoding at v under its tags' maxima
-	IsZero() bool          // needed only while Rep is returned by value (§11 question 4)
+	IsZero() bool          // needed only while Rep is returned by value (§4.3)
 }
 
 // Hooks are Bind's optional arguments, typed against the row's request; at
