@@ -162,10 +162,13 @@ suites:
   # The reconcile pass a live change waits on, at 10⁴ shares cold and under share churn, against
   # RFC 23 §8's 5 s; run by hand, gating nothing. -count=10 gives benchstat its samples, written
   # to {out}/bench.txt. A figure over the bound is a finding, not a failure: the cell fails only
-  # when a pass leaves a change unbound. No -race, as for engine-bench.
+  # when a pass leaves a change unbound. No -race, as for engine-bench. Badger and the journal live
+  # under t.TempDir(), so TMPDIR is pointed at DITTOFS_BENCH_DIR, a directory on the device under
+  # test: on tmpfs the fsyncs a bind waits on vanish and the figures are not comparable. A cold
+  # pass at 10⁴ shares allocates about 22 GB, so run it on a host that holds that.
   reconcile-bench:
     cmd:
-      - { sh: 'go test -count=10 -benchtime=1x -run ^$ -bench ^BenchmarkReconcile$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -benchtime=1x -run ^$ -bench ^BenchmarkReconcile$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
     timeout: { test: 180m, cell: 190m }
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
