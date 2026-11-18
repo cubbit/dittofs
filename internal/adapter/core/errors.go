@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // Status is a protocol's wire status: an NFS stat, an RPC accept or reject
@@ -14,8 +16,14 @@ type Status uint32
 // ErrorTable maps a service error to a Status. Map takes the most specific
 // row that matches, in a total order: a row whose Err is a typed value before
 // one whose Err is a sentinel; then, among those, a row naming Ops and
-// Versions, Ops alone, Versions alone, neither. NewErrorTable refuses two rows
-// equal in that order that can match the same error, operation and version.
+// Versions, Ops alone, Versions alone, neither. A NotFailure row is taken
+// only where no other row matches. NewErrorTable refuses two rows equal in
+// that order that can match the same error, operation and version.
+//
+// A zero Status is success in every protocol here, and a NotFailure row's
+// status is one its protocol counts as no failure for the operations it
+// names. Every other status is a failure, which ends a compound there and
+// fails the related members of a chain after it (RFC 20 §4.3).
 type ErrorTable struct {
 	fault Status
 	rows  []ErrorRow // most specific first
@@ -30,6 +38,13 @@ type ErrorRow struct {
 	// signal fits); a table that Holds sends an interim granting the
 	// request's credits. Status is unused.
 	NoReply bool
+	// NotFailure marks Status, for the operations the row names, as one its
+	// protocol counts as no failure: a compound runs its next member past
+	// it, and a chain its related members (RFC 20 §4.3). Its Err is a value
+	// of its pair's own, returned only by that pair's handler. NewErrorTable
+	// refuses a row keyed on an error every operation shares; review holds
+	// the rest, and each protocol's test pins its table's NotFailure rows.
+	NotFailure bool
 	// Hold, only in a table that Holds (NewOpTable refuses it elsewhere): a
 	// request whose latest attempt maps here is held and re-driven until the
 	// deadline Hold returns, counted from the hold's start, and is then
@@ -47,7 +62,11 @@ type ErrorRow struct {
 // answering ErrDecode for every operation and version (one naming neither Ops
 // nor Versions that replies at once with a status other than the fault or
 // success), or with a row for it, whatever its Ops or Versions, that holds,
-// sends no reply or answers the fault or success.
+// sends no reply or answers the fault or success. It also refuses a
+// NotFailure row that names no Ops, whose Status is zero or the fault, that
+// sets NoReply or Hold, or whose Err matches, by errors.Is, a value of
+// vfs.Errors() or Errors(), which every operation shares: such a row would
+// let the members after any failure run.
 //
 // decision: a table that fails its check panics, naming the rows, since a
 // table is program text and NewErrorTable returns no error; the first
@@ -65,6 +84,13 @@ func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable {
 			if rank(a) == rank(b) && overlap(a, b) {
 				panic(fmt.Sprintf("core: error table: rows %s and %s can both match one error, operation and version", describe(a), describe(b)))
 			}
+		}
+	}
+	shared := slices.Concat(vfs.Errors(), Errors())
+	for _, r := range t.rows {
+		if r.NotFailure && (len(r.Ops) == 0 || r.Status == 0 || r.Status == fault || r.NoReply || r.Hold != nil ||
+			slices.ContainsFunc(shared, func(e error) bool { return errors.Is(e, r.Err) })) {
+			panic(fmt.Sprintf("core: error table: NotFailure row %s names no operation, answers success or the fault, sends no reply, holds, or matches an error every operation shares", describe(r)))
 		}
 	}
 	// A decode error is mapped with no operation, and outside any version a
@@ -120,21 +146,26 @@ func (t *ErrorTable) typedOnly() *ErrorTable {
 	return &ErrorTable{fault: t.fault, rows: rows}
 }
 
-// Map is err's status for op at v; reply false is a NoReply row.
-func (t *ErrorTable) Map(err error, op *Op, v Version) (s Status, reply bool) {
-	s, reply, _ = t.mapped(err, op, v)
-	return s, reply
+// Map is err's status for op at v. reply false is a NoReply row; notFailure
+// true is a NotFailure row's status, after which the compound runner runs the
+// next member and a chain's related ones (RFC 20 §4.3). An err that also
+// matches a row not marked NotFailure maps to that row instead, as an
+// errors.Join(pairErr, err) or a pair's error wrapping a service one does, so
+// a failure is never answered as none.
+func (t *ErrorTable) Map(err error, op *Op, v Version) (s Status, reply, notFailure bool) {
+	r, _ := t.row(err, op, v)
+	return r.Status, !r.NoReply, r.NotFailure
 }
 
-// mapped is Map, and whether a row matched: an error no row matches is
-// answered the fault status, with a reply.
-func (t *ErrorTable) mapped(err error, op *Op, v Version) (s Status, reply, matched bool) {
+// row is the row Map answers err by for op at v, and whether one matched: an
+// error no row matches is answered the fault status, with a reply.
+func (t *ErrorTable) row(err error, op *Op, v Version) (ErrorRow, bool) {
 	for _, r := range t.rows {
 		if r.matches(err, op, v) {
-			return r.Status, !r.NoReply, true
+			return r, true
 		}
 	}
-	return t.fault, true, false
+	return ErrorRow{Status: t.fault}, false
 }
 
 // matches reports whether r maps err for op at v. A nil op matches only a
@@ -149,12 +180,16 @@ func (r ErrorRow) matches(err error, op *Op, v Version) bool {
 	return errors.Is(err, r.Err)
 }
 
-// rank is r's place in Map's order, lowest first: a typed row before a
-// sentinel's, then Ops and Versions, Ops, Versions, neither.
+// rank is r's place in Map's order, lowest first: every other row before a
+// NotFailure row; then a typed row before a sentinel's; then Ops and
+// Versions, Ops, Versions, neither.
 func rank(r ErrorRow) int {
 	n := 0
+	if r.NotFailure {
+		n = 8
+	}
 	if !r.typed() {
-		n = 4
+		n += 4
 	}
 	switch {
 	case r.Ops != nil && r.Versions != nil:

@@ -68,6 +68,8 @@ const (
 	quota
 	garbage
 	cancelled
+	warned
+	failedIO
 )
 
 var (
@@ -89,7 +91,7 @@ func table(rows ...core.ErrorRow) *core.ErrorTable {
 // mapsTo checks one Map answer.
 func mapsTo(t *testing.T, tb *core.ErrorTable, err error, op *core.Op, v core.Version, want core.Status) {
 	t.Helper()
-	if got, reply := tb.Map(err, op, v); got != want || !reply {
+	if got, reply, _ := tb.Map(err, op, v); got != want || !reply {
 		t.Errorf("Map(%v, %v, %d) = %d, reply %v; want %d with a reply", err, op, v, got, reply, want)
 	}
 }
@@ -148,8 +150,78 @@ func TestMapAnswersTheFaultAndNoReply(t *testing.T) {
 	)
 	mapsTo(t, tb, vfs.ErrNotFound, read, 1, fault)
 	mapsTo(t, tb, &vfs.QuotaError{Scope: vfs.QuotaShare}, read, 1, fault)
-	if _, reply := tb.Map(fmt.Errorf("serve: %w", core.ErrDraining), read, 1); reply {
+	if _, reply, _ := tb.Map(fmt.Errorf("serve: %w", core.ErrDraining), read, 1); reply {
 		t.Error("a NoReply row answered with a reply")
+	}
+}
+
+// errPair is a NotFailure row's error, its pair's own.
+var errPair = errors.New("read: a warning of its own")
+
+// typedPair is a NotFailure row's error that is a typed value: it matches
+// itself alone.
+type typedPair struct{}
+
+func (typedPair) Error() string        { return "read: a typed warning" }
+func (typedPair) Is(target error) bool { return target == typedPair{} }
+
+// A NotFailure row's status comes back with notFailure true, for the
+// operations it names alone; an error that also matches another row, joined
+// or wrapped with the pair's, maps to that row, a sentinel's before a typed
+// NotFailure row's, with notFailure false.
+func TestMapTakesANotFailureRowOnlyWhereNoOtherMatches(t *testing.T) {
+	tb := table(
+		core.ErrorRow{Err: errPair, Ops: []uint32{read.Code}, NotFailure: true, Status: warned},
+		core.ErrorRow{Err: typedPair{}, Ops: []uint32{read.Code}, NotFailure: true, Status: warned},
+		core.ErrorRow{Err: vfs.ErrIO, Status: failedIO},
+	)
+	for _, c := range []struct {
+		err        error
+		op         *core.Op
+		want       core.Status
+		notFailure bool
+	}{
+		{errPair, read, warned, true},
+		{typedPair{}, read, warned, true},
+		{errPair, write, fault, false},
+		{errors.Join(errPair, vfs.ErrIO), read, failedIO, false},
+		{fmt.Errorf("%w: %w", typedPair{}, vfs.ErrIO), read, failedIO, false},
+	} {
+		if s, reply, notFailure := tb.Map(c.err, c.op, 1); s != c.want || !reply || notFailure != c.notFailure {
+			t.Errorf("Map(%v, %s) = %d, reply %v, notFailure %v; want %d with a reply, notFailure %v", c.err, c.op.Name, s, reply, notFailure, c.want, c.notFailure)
+		}
+	}
+}
+
+// A NotFailure row that names no operation, answers success or the fault,
+// sends no reply, holds, or is keyed on an error every operation shares is
+// refused at build, naming the row: it would let the members after any
+// failure run. A row of the pair's own error naming its operation builds.
+func TestNewErrorTableRefusesANotFailureRowThatCouldHideAFailure(t *testing.T) {
+	ok := core.ErrorRow{Err: errPair, Ops: []uint32{read.Code}, NotFailure: true, Status: warned}
+	for _, c := range []struct {
+		name string
+		edit func(*core.ErrorRow)
+	}{
+		{"no operation", func(r *core.ErrorRow) { r.Ops = nil }},
+		{"success", func(r *core.ErrorRow) { r.Status = 0 }},
+		{"the fault", func(r *core.ErrorRow) { r.Status = fault }},
+		{"no reply", func(r *core.ErrorRow) { r.NoReply = true }},
+		{"a hold", func(r *core.ErrorRow) { r.Hold = func(error, time.Time) time.Time { return time.Time{} } }},
+		{"a service sentinel", func(r *core.ErrorRow) { r.Err = vfs.ErrNotFound }},
+		{"a service typed value", func(r *core.ErrorRow) { r.Err = &vfs.Delay{Cause: vfs.DelayRecall} }},
+		{"core's refusal", func(r *core.ErrorRow) { r.Err = core.ErrDecode }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := ok
+			c.edit(&r)
+			if p := buildPanic(r); p == nil || !strings.Contains(fmt.Sprint(p), "NotFailure row {"+fmt.Sprint(r.Err)) {
+				t.Errorf("NewErrorTable over a NotFailure row with %s panicked with %v, want a panic naming the row", c.name, p)
+			}
+		})
+	}
+	if p := buildPanic(ok); p != nil {
+		t.Errorf("NewErrorTable refused a NotFailure row of its pair's own error: %v", p)
 	}
 }
 

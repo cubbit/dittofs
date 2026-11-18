@@ -55,7 +55,7 @@ func TestTablesBuild(t *testing.T) {
 	if c == nil || c.Members == nil || c.Members.ReadOp == nil || v2.Ops[OpCompound] != nil {
 		t.Fatalf("the compound row is %+v in version 1 and %+v in version 2; want it in version 1 alone, with its members' table", c, v2.Ops[OpCompound])
 	}
-	if got, reply := v2.Errors.Map(vfs.ErrDelay, v2.Ops[OpCreate], 2); got != StatusDelay || !reply {
+	if got, reply, _ := v2.Errors.Map(vfs.ErrDelay, v2.Ops[OpCreate], 2); got != StatusDelay || !reply {
 		t.Errorf("version 2 maps ErrDelay to %d, reply %v; want %d", got, reply, StatusDelay)
 	}
 	if v1.Protocol != Name || v2.Protocol != Name {
@@ -369,7 +369,7 @@ func TestStagesMapTheirRefusals(t *testing.T) {
 			core.ErrVersion:                       StatusVersion,
 			&vfs.Delay{Cause: vfs.DelayResources}: StatusDelay,
 		} {
-			if got, reply := errs.Map(err, nil, 1); got != want || !reply {
+			if got, reply, _ := errs.Map(err, nil, 1); got != want || !reply {
 				t.Errorf("the %s protocol's stages map %v to %d (reply %v), want %d", name, err, got, reply, want)
 			}
 		}

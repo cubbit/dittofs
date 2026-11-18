@@ -37,7 +37,7 @@ func (s *Server) Start(ctx context.Context) error
 
 func (s *Server) Stop(ctx context.Context) error
 
-func (t *ErrorTable) Map(err error, op *Op, v Version) (s Status, reply bool)
+func (t *ErrorTable) Map(err error, op *Op, v Version) (s Status, reply, notFailure bool)
 
 func Bind[Req, Rep any](
 	dec func(b []byte, v Version, req *Req) (n int, err error),
@@ -67,6 +67,8 @@ type ErrorRow struct {
 	Versions *Range
 
 	NoReply bool
+
+	NotFailure bool
 
 	Hold   func(err error, start time.Time) time.Time
 	Status Status

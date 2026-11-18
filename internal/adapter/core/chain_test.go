@@ -109,6 +109,23 @@ func TestARelatedMemberAfterAFailureIsAnsweredItsStatus(t *testing.T) {
 	})
 }
 
+// A related member after one answered a NotFailure row's status runs: a
+// PutFH, a related Echo answered it and a related Create make the file.
+func TestARelatedMemberRunsPastANotFailureStatus(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		s.serve(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 30, Session: 7, Tree: 1, Handle: s.root},
+			testproto.Msg{Op: testproto.OpEcho, Version: 2, ID: 31, Session: inherited, Tree: 1, Payload: []byte(testproto.NotFailure), Related: true},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 32, Session: inherited, Tree: 1, Name: "c", Related: true},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 3 || rs[0].Status != testproto.StatusOK || rs[1].Status != testproto.StatusNotFailure || rs[2].Status != testproto.StatusOK || s.creates() != 1 {
+			t.Errorf("the chain is answered %+v, %v, with %d files made; want the NotFailure status, then the Create run and its file", rs, err, s.creates())
+		}
+	})
+}
+
 // chainOf is the body of a record chaining msgs, as the seam serves it, and
 // the offset of each member's header in it.
 func chainOf(f core.Framer, msgs ...testproto.Msg) ([]byte, []int) {

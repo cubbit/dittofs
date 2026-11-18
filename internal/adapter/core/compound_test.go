@@ -289,6 +289,22 @@ func TestACompoundRunsItsMembersInTurn(t *testing.T) {
 	}
 }
 
+// A compound runs on past a member answered a NotFailure row's status: a
+// PutFH, an Echo answered it and a Create make the file. A member after it
+// that does not decode is answered its error.
+func TestACompoundRunsPastANotFailureStatus(t *testing.T) {
+	s := newServed(t, 1<<20, adapter.Deps{})
+	warn := testproto.Msg{Op: testproto.OpEcho, Payload: []byte(testproto.NotFailure)}
+	s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, warn, testproto.Msg{Op: testproto.OpCreate, Name: "a"})
+	if st, rs := s.results(); st != testproto.StatusOK || !slices.Equal(rs, []core.Status{testproto.StatusOK, testproto.StatusNotFailure, testproto.StatusOK}) || s.creates() != 1 {
+		t.Errorf("a compound past a NotFailure status is answered %d with results %v, %d files made; want the Create run and its file", st, rs, s.creates())
+	}
+	s.compound(2, warn, testproto.Msg{Op: 99})
+	if st, rs := s.results(); st != testproto.StatusNotSupported || !slices.Equal(rs, []core.Status{testproto.StatusNotFailure, testproto.StatusNotSupported}) {
+		t.Errorf("a member the table lacks after a NotFailure status: answered %d with results %v; want its error after the NotFailure status", st, rs)
+	}
+}
+
 // A compound of 9 members is answered the too-long status with no member
 // read or run; one of 8 runs.
 func TestTheCapAtNineAndEight(t *testing.T) {

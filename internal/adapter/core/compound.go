@@ -100,7 +100,8 @@ func judge(ms []member, decoded bool, r *Request) (whole bool, handles []vfs.Han
 // bounds and the compound's header and head, refused past a quarter of the
 // reply pool's ceiling; then each member in turn, through the row's checks,
 // Resolve and its chain, carrying r between them, the first failure ending
-// the reply, and one a NoReply row maps leaving it unanswered. The head, which
+// the reply, a NotFailure row's status being none (RFC 20 §4.3), and one a
+// NoReply row maps leaving it unanswered. The head, which
 // the compound's own Invocation encodes, goes first and again, in place, with
 // the final status and count. A compound refused whole is answered its
 // status alone, whose head, with no results, its header's codec writes.
@@ -189,9 +190,10 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		status Status
 		count  int
 		last   error
+		failed bool
 	)
 	for _, m := range ms {
-		s, send, merr := p.member(tr, mts, mt.Errors, m, r, v)
+		s, send, notFailure, merr := p.member(tr, mts, mt.Errors, m, r, v)
 		if !send {
 			p.unanswered(tr, h, tb, reply, merr, release)
 			return
@@ -203,11 +205,11 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 			return
 		}
 		status, last, count = s, merr, count+1
-		if s != 0 {
+		if failed = s != 0 && !notFailure; failed {
 			break
 		}
 	}
-	if err != nil && status == 0 {
+	if err != nil && !failed {
 		// The member that did not decode, or names a code the table lacks,
 		// once the members before it have run, counted where a request
 		// alone's would be: a code the table lacks at route, the rest at
@@ -218,7 +220,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 			mts.refused(stageDecodeArgs)
 		}
 		var send bool
-		if status, send = p.mapped(tr, mt.Errors, err, nil, v, true); !send {
+		if status, send, _ = p.mapped(tr, mt.Errors, err, nil, v, true); !send {
 			p.unanswered(tr, h, tb, reply, err, release)
 			return
 		}
@@ -256,8 +258,9 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 // members' table's series. send is false for an error a NoReply row maps,
 // which leaves the whole compound unanswered (RFC 20 §4.3): a results array
 // cut short under a success is malformed; and for a call the connection's
-// close ended, which is mapped as no error.
-func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version) (s Status, send bool, err error) {
+// close ended, which is mapped as no error. notFailure is a NotFailure row's
+// status, past which the compound runs its next member.
+func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version) (s Status, send, notFailure bool, err error) {
 	err = p.check(m.op, r)
 	if err != nil {
 		mts.refused(stageRoute)
@@ -281,16 +284,16 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 	}
 	switch {
 	case err == nil:
-		return 0, true, nil
+		return 0, true, false, nil
 	case errors.Is(err, errPanicked):
-		return errs.fault, true, err
+		return errs.fault, true, false, err
 	case p.endedByClose(err):
 		// A call the close ended is no error: the compound ends unsent, as
 		// unanswered ends it.
-		return 0, false, err
+		return 0, false, false, err
 	}
-	s, send = p.mapped(tr, errs, err, m.op, v, true)
-	return s, send, err
+	s, send, notFailure = p.mapped(tr, errs, err, m.op, v, true)
+	return s, send, notFailure, err
 }
 
 // result encodes one member's result into reply: its head, then, where the
