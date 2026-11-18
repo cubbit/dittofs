@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -89,7 +90,6 @@ func newCopyFixture(t *testing.T) *copyFixture {
 	if err := counters.SetVersionLimit(core.Version{Counter: 1 << 40}); err != nil {
 		t.Fatalf("SetVersionLimit: %v", err)
 	}
-	set := segment.NewSet(copySegCap, nil)
 	c, err := datapath.New(datapath.Deps{
 		FS:              seam.FS(),
 		Clock:           clock,
@@ -101,10 +101,11 @@ func newCopyFixture(t *testing.T) *copyFixture {
 		MaxBytes:        0,
 		HeadroomRecords: copyHeadroomRecords,
 		Targets:         segment.Targets{Content: 1, Reserve: 1, Headroom: 1},
-	}, datapath.State{Index: ix, Counters: counters, Set: set})
+	}, datapath.State{Index: ix, Counters: counters})
 	if err != nil {
 		t.Fatalf("datapath.New: %v", err)
 	}
+	set := c.Set()
 	f := &copyFixture{
 		core:     c,
 		seam:     seam,
@@ -518,4 +519,50 @@ func (f *copyFixture) readBack(t *testing.T, at index.RecordAt) (format.RecordHe
 		t.Fatalf("VerifyRecordBody in %s: %v", name, err)
 	}
 	return h, verified
+}
+
+// TestTheCopyFixtureCoreRunsItsRetirementWorker holds the fixture's core to
+// the constructor that starts its retirement worker: a write lands in a
+// segment the stream then seals, a truncate to nothing empties it, and the sealed segment
+// leaves the set on the worker's own claim, with no retirer driven by hand.
+func TestTheCopyFixtureCoreRunsItsRetirementWorker(t *testing.T) {
+	f := newCopyFixture(t)
+	s := f.share(t, copyTag)
+	file := core.NewFileID([16]byte{0x7e})
+	ctx := context.Background()
+	if _, err := f.core.WriteAt(ctx, s, file, 0, make([]byte, 4<<10), 1); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	f.sealSource(t, file)
+	var sealed []core.SegmentID
+	for _, r := range f.set.Snapshot() {
+		if r.State == segment.Sealed {
+			sealed = append(sealed, r.ID)
+		}
+	}
+	if len(sealed) == 0 {
+		t.Fatal("the sealed write left no sealed segment in the set")
+	}
+	if _, err := f.core.Truncate(ctx, s, file, 0); err != nil {
+		t.Fatalf("Truncate to nothing: %v", err)
+	}
+	if _, err := f.core.Sync(ctx, s, file); err != nil {
+		t.Fatalf("Sync after the truncate: %v", err)
+	}
+	inSet := func() []core.SegmentID {
+		var left []core.SegmentID
+		for _, r := range f.set.Snapshot() {
+			if slices.Contains(sealed, r.ID) {
+				left = append(left, r.ID)
+			}
+		}
+		return left
+	}
+	// Polling the set itself, a millisecond between reads, with the
+	// fixture's own wait as the backstop.
+	for deadline := time.Now().Add(copyWait); len(inSet()) != 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the emptied sealed segments %v still in the set after %v, want them retired by the core's worker", inSet(), copyWait)
+		}
+	}
 }

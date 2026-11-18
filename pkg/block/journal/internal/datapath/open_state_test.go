@@ -2,6 +2,7 @@ package datapath
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -343,5 +344,44 @@ func TestContinueRefusesASetWithNoOpenPayload(t *testing.T) {
 	}
 	if ran {
 		t.Errorf("Continue ran the hook over a set it refused, want it refused before the hook")
+	}
+}
+
+// TestNewRefusesACallerSuppliedSet holds New's half of the one-door rule: a
+// State carrying a set or an open payload is refused with an error naming
+// Continue, so no core New returns runs over a set without its retirement
+// worker.
+func TestNewRefusesACallerSuppliedSet(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state State
+	}{
+		{name: "a caller's set", state: State{Set: segment.NewSet(testSegmentCap, nil)}},
+		{name: "an open payload", state: State{Open: &OpenState{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			seam, err := kit.NewSeam(dir)
+			if err != nil {
+				t.Fatalf("the seam could not be made: %v", err)
+			}
+			c, err := New(Deps{
+				FS:          seam.FS(),
+				Clock:       kit.NewStopwatchClock(),
+				Dir:         dir,
+				Identity:    testIdentity,
+				Streams:     testStreams,
+				SegmentCap:  testSegmentCap,
+				ExtentLimit: 1 << 20,
+				Descriptors: core.NewDescriptorBudget(64),
+				Targets:     segment.Targets{Content: 2 * testStreams},
+			}, tc.state)
+			if c != nil {
+				_ = c.Close()
+			}
+			if err == nil || c != nil || !strings.Contains(err.Error(), "Continue") {
+				t.Fatalf("New over %s returned a core %t, err %v; want no core and a refusal naming Continue", tc.name, c != nil, err)
+			}
+		})
 	}
 }

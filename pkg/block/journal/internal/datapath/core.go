@@ -374,7 +374,24 @@ const unboundedBytes = int64(1) << 62
 // validated here, because the open path validates the settings before it
 // calls New. Overturned by a caller that builds Deps from user input without
 // that validation.
-func New(deps Deps, state State) (*Core, error) { return newCore(deps, state, coreOptions{}) }
+//
+// New builds over a set of its own only: a State carrying a Set or an open
+// payload is refused, naming Continue, the one door that registers a
+// caller's set with the liveness tracker and starts its retirement worker.
+// A core New returned over a caller's set would serve appends and reads but
+// retire no segment, filling the journal to its maximum with no condition
+// raised.
+func New(deps Deps, state State) (*Core, error) {
+	if state.Set != nil || state.Open != nil {
+		return nil, errors.New("datapath: New builds its own set; a caller-supplied set or open payload is continued through Continue, which starts its retirement worker")
+	}
+	return newCore(deps, state, coreOptions{})
+}
+
+// Set returns the segment set the core runs. It is a test seam: a fixture
+// that plants records through the core's streams reads the set the core
+// built rather than handing it one, since New builds its own.
+func (c *Core) Set() *segment.Set { return c.set }
 
 func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// A caller's State can carry a rebuilt set; the set the core did not
@@ -891,9 +908,10 @@ func (c *Core) WaitRecordSpares(ctx context.Context, n int) error {
 // open payload is refused and closed, for its records hold no registration
 // with the tracker and the worker's tick would hand their not-held segments
 // to the retirer while the records the disk still holds ride in them — the
-// same refusal New's own start decision makes.
+// same refusal New's own start decision makes. New refuses every
+// caller-supplied set, so Continue is the only door to a core over one.
 func Continue(deps Deps, state State, beforeRetire func(*Core) error) (*Core, error) {
-	c, err := New(deps, state)
+	c, err := newCore(deps, state, coreOptions{})
 	if err != nil {
 		return nil, err
 	}
