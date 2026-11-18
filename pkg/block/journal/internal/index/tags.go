@@ -158,22 +158,31 @@ func (ix *Index) FilesClaimedBy(tag core.ShareTag) []core.FileID {
 // clear and the drop ranges of its records below the forget record: its
 // removals can settle sooner over the lost ranges, and its own removal
 // records release at the liveness re-test the forget runs. Safe everywhere a
-// rivalled file grows — only a fault plants one — and cheaper per piece than
-// a third attribution the held set would have to keep. Overturned by a rival
-// whose unsettled markers must survive a forget of its co-tenant exact.
+// rivalled file grows — only a fault plants one — and cheaper than a stored
+// tag per piece: the entry keeps one byte of side, not eight of tag.
+// Overturned by a rival whose unsettled markers must survive a forget of its
+// co-tenant exact.
 func (ix *Index) ForgetFile(id core.FileID, below core.Seq, tag core.ShareTag) (HeldDelta, []core.SegmentID, error) {
 	var m touched
 	hd, err := ix.fs.update(id, func(f *file) error {
 		f.held.touched = &m
 		defer func() { f.held.touched = nil }()
-		// The drop takes the tag's records alone, by the piece tags the entry
-		// points stamp: the other tag of a rivalled file keeps its held
-		// pieces — and with them the segment its records ride, held by the
-		// same bytes the drop still names — so nothing of the surviving tag's
-		// content is reclaimed under it. A piece no entry point stamped stays,
-		// the safe direction Placed.Tag names.
-		f.held.dropTagged(tag)
+		// The drop takes the tag's records alone: the entry keeps a one-byte
+		// side flag that resolves to the full tag against the file's own
+		// marks, so the other side of a rivalled file keeps its held pieces
+		// — and with them the segment its records ride, held by the same
+		// bytes the drop still names — and nothing of the surviving tag's
+		// content is reclaimed under it. A file the forgotten tag owns whole
+		// (no rival mark) takes the cut it always did.
 		all := toEnd(0)
+		switch {
+		case !f.rivalled:
+			f.held.cut(all)
+		case f.rival == tag:
+			f.held.dropSide(true)
+		default:
+			f.held.dropSide(false)
+		}
 		f.retained.drop(all, func(r Retained) bool { return r.Tag == tag }, nil)
 		f.markers = nil
 		f.forgetRanges(below)

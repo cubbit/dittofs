@@ -173,13 +173,13 @@ func TestRebuildCarriesTheRecordsSeq(t *testing.T) {
 	}
 }
 
-// TestHeldEntryStaysFortyEightBytes pins the entry's size: the sequence
-// number fits in what the version's epoch half took and the share tag the
-// tagged drop of a forget needs fills the alignment the entry already
-// carried, so the index memory bound holds within one word of as before.
-func TestHeldEntryStaysFortyEightBytes(t *testing.T) {
-	if n := unsafe.Sizeof(held{}); n != 48 {
-		t.Fatalf("held is %d bytes, want 48", n)
+// TestHeldEntryStaysFortyBytes pins the entry's size: the sequence number
+// fits in what the version's epoch half took and the rival-side flag the
+// forget's per-side drop reads fills the padding the counter alignment
+// already spent, so the index memory bound holds as before.
+func TestHeldEntryStaysFortyBytes(t *testing.T) {
+	if n := unsafe.Sizeof(held{}); n != 40 {
+		t.Fatalf("held is %d bytes, want 40", n)
 	}
 }
 
@@ -204,7 +204,7 @@ func TestToHeldPanicsOnAnEpoch(t *testing.T) {
 			t.Fatal("toHeld took a version with an epoch")
 		}
 	}()
-	toHeld(Piece{Extent: ext(0, 1), Version: core.Version{Epoch: 1, Counter: 1}})
+	new(heldSet).toHeld(Piece{Extent: ext(0, 1), Version: core.Version{Epoch: 1, Counter: 1}})
 }
 
 // TestSplitsAndCutsKeepEachPiecesSeq checks that an offloaded mark that splits

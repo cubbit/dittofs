@@ -208,6 +208,81 @@ func TestRFC1C_ForgetRules(t *testing.T) {
 		}
 	})
 
+	t.Run("a forget whose record cannot sync fails with the tag whole", func(t *testing.T) {
+		f := journaltest.New(t)
+		f.WaitSpares()
+		tt := journaltest.Tag(3)
+		ut := journaltest.Tag(8)
+		th, err := f.J.Share(tt, 0, f.Floor())
+		stub(t, "Share", err)
+		if err != nil {
+			t.Fatalf("attach T: %v", err)
+		}
+		uh, err := f.J.Share(ut, 0, f.Floor())
+		stub(t, "Share", err)
+		if err != nil {
+			t.Fatalf("attach U: %v", err)
+		}
+		fid := journaltest.File(0)
+		p := distinct(0, 64<<10)
+		write(t, th, fid, 0, p)
+		syncFile(t, th, fid)
+		if err := th.Close(); err != nil {
+			t.Fatalf("close T's handle: %v", err)
+		}
+
+		// The record is admitted and appended with the journal writable; the
+		// sync its durability wait starts is parked and then faulted EROFS, so
+		// the window fails with the record on disk and the journal turns
+		// read-only: the wait answers the refusal with nothing dropped — the
+		// tag is whole — and the mark went with the call.
+		hold := f.Seam.Hold(t, kit.OpSync, "*.seg")
+		forgot := make(chan error, 1)
+		go func() { forgot <- f.J.Forget(t.Context(), tt) }()
+		<-hold.Reached()
+		schedule(t, f, kit.Failing(kit.OpSync, "*", 0, syscall.EROFS), kit.Failing(kit.OpSyncDir, "*", 0, syscall.EROFS))
+		hold.Release()
+		err = <-forgot
+		stub(t, "Forget", err)
+		if err == nil {
+			t.Fatalf("the Forget whose record's sync turned EROFS returned nil, want the failure its window settled with")
+		}
+		eventually(t, "Stats to name the read-only state", func() bool { return f.J.Stats().ReadOnly.ReadOnly })
+
+		// Nothing was dropped: the file is still T's — a write through U is
+		// still refused with the owner's tag, not free — and the refusal the
+		// mark answers a retry with is the read-only one, never ErrHandleOpen,
+		// so the forgetting mark was released with the failed call.
+		if _, err := uh.WriteAt(t.Context(), fid, 0, distinct(2, 16), 0); !errors.Is(err, journal.ErrOtherShare) {
+			t.Fatalf("the write through U after the failed forget returned %v, want the file still T's whole", err)
+		}
+		if err := f.J.Forget(t.Context(), tt); !errors.Is(err, journal.ErrJournalReadOnly) {
+			t.Fatalf("the retry after the failed forget returned %v, want the read-only refusal naming nothing busy", err)
+		}
+		th, err = f.J.Share(tt, 0, f.Floor())
+		stub(t, "Share", err)
+		if err != nil {
+			t.Fatalf("re-attach T after the failed forget: %v", err)
+		}
+		wantBytes(t, th, fid, 0, p, "the content of the tag whose forget record could not make its sync")
+		if err := th.Close(); err != nil {
+			t.Fatalf("close the re-attached handle: %v", err)
+		}
+
+		// The crash drops the unsynced record — nothing was dropped for it —
+		// so the tag reopens whole, and a forget on the journal opened writable
+		// again then succeeds, leaving nothing of it after another crash.
+		f.Seam.SetFault(nil)
+		f.Crash()
+		if err := f.J.Forget(t.Context(), tt); err != nil {
+			t.Fatalf("the forget after the read-only journal reopened writable: %v", err)
+		}
+		f.Crash()
+		if _, ok := f.J.Stats().Shares[tt]; ok {
+			t.Fatalf("the tag is still listed after the forget that followed the refused sync")
+		}
+	})
+
 	t.Run("a copy under the mark is abandoned", func(t *testing.T) {
 		f := journaltest.NewWithSegmentCap(t, 64<<10, nil)
 		f.WaitSpares()

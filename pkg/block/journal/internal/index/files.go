@@ -220,6 +220,7 @@ type file struct {
 func newFile(acct *segments, fs *files) *file {
 	f := &file{held: heldSet{acct: acct}, retained: retainedSet{acct: acct}}
 	f.held.times, f.retained.times = &f.dirtyAt, &f.dirtyAt
+	f.held.of = f
 	f.mu.Init(lockorder.FileIndex, fs.recorder())
 	return f
 }
@@ -424,11 +425,15 @@ func (f *file) read(fn func(*file)) {
 // note is update over no creation: fn runs on id's entry only when the map
 // holds one, and a file no entry names — one a forget's drop removed whole,
 // one never built — answers nil having noted nothing and claimed no tag. The
-// existence check is one step with the update, both inside this call's own
-// take of the shard's lock, so a drop that removes the entry between the
-// shard's reads cannot be handed a fresh empty entry to claim by a note that
-// raced it. fn runs holding the file's lock exclusively, and the unlock is
-// apply's, whatever fn returns.
+// guard is the drop's own shape: the shard lock names the entry and comes
+// down, and the f.mu take that follows re-checks `gone`, so a settle that
+// removes the entry between the two is retried against the empty shard the
+// removal left — no second take ever creates an entry, which is what `update`
+// would do — and the carry's note of a piece whose file a forget dropped
+// reaches nobody. The interleaving itself needs a hook inside the index to be
+// driven in a test; the contract test pins the no-recreation half, and the
+// two-lock shape is what closes the race. fn runs holding the file's lock
+// exclusively, and the unlock is apply's, whatever fn returns.
 func (fs *files) note(id core.FileID, fn func(*file) error) error {
 	s := fs.shard(id)
 	for {
@@ -578,7 +583,7 @@ func (f *file) settle(fs *files, s *fileShard, id core.FileID) {
 	// accounting and the dirty-time table: a cut in a later update happens to
 	// this same set, and a dirty write after it must still be timed. An empty
 	// tree holds no bytes, so its byte counters are already zero.
-	f.held = heldSet{acct: f.held.acct, times: f.held.times}
+	f.held = heldSet{of: f, acct: f.held.acct, times: f.held.times}
 	if len(f.segs) > 0 || f.retained.len() > 0 {
 		return
 	}
