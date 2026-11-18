@@ -190,24 +190,33 @@ func (r *Runner) Close() { r.cancel() }
 func (r *Runner) sync(ctx context.Context, sc *sidecar, set []adapter.Serving) error {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+	return r.syncLocked(ctx, sc, set)
+}
+
+// syncLocked is sync's body with sc already held, so a re-sync the retry
+// makes and one the Runner drives share sc's mutex and cannot pass one
+// another: which set a retry carries and whether the sidecar is still
+// failed read behind the same lock that records both.
+func (r *Runner) syncLocked(ctx context.Context, sc *sidecar, set []adapter.Serving) error {
 	r.mu.Lock()
 	sc.last = set
 	r.mu.Unlock()
 	err := sc.Sync(ctx, set)
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	sc.failed = err != nil
 	if err != nil && !sc.retrying {
 		sc.retrying = true
 		go r.retry(sc)
 	}
+	r.mu.Unlock()
 	return err
 }
 
 // retry calls a failed sidecar's Sync again with its last set, after a
 // backoff from 1 s doubling to 30 s, until one succeeds or Close ends the
 // Runner (RFC 20 section 3.5). A sync the Runner drives while this one waits
-// ends it: the sidecar is no longer failed, or the wait carries a newer set.
+// ends it: the sidecar is no longer failed, or the wait carries a newer
+// set.
 func (r *Runner) retry(sc *sidecar) {
 	wait := retryBase
 	for {
@@ -221,21 +230,36 @@ func (r *Runner) retry(sc *sidecar) {
 		if r.ctx.Err() != nil {
 			break // Close ended the retries
 		}
-		r.mu.Lock()
-		if !sc.failed {
-			r.mu.Unlock()
-			break // a sync the Runner drove succeeded while this one waited
-		}
-		set := sc.last
-		r.mu.Unlock()
-		if err := r.sync(r.ctx, sc, set); err == nil {
-			break
+		if r.retryOnce(sc) {
+			break // the retry succeeded, or a driven sync owns the health
 		}
 		wait = min(2*wait, retryMax)
 	}
+}
+
+// retryOnce re-syncs sc with its last set, if it is still failed, behind
+// sc's mutex: a sync the Runner drives while this one waited cannot be
+// passed, so the retry never carries an older set over a newer one, and
+// whether this loop leaves is decided where retrying is cleared, so a
+// sync failing in that instant still finds its own retry.
+func (r *Runner) retryOnce(sc *sidecar) (done bool) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
 	r.mu.Lock()
-	sc.retrying = false
+	if !sc.failed {
+		sc.retrying = false
+		r.mu.Unlock()
+		return true // a sync the Runner drove succeeded while this one waited
+	}
+	set := sc.last
 	r.mu.Unlock()
+	if err := r.syncLocked(r.ctx, sc, set); err == nil {
+		r.mu.Lock()
+		sc.retrying = false
+		r.mu.Unlock()
+		return true
+	}
+	return false
 }
 
 // enabledFor is the enabled sidecars serving name, in New's order.

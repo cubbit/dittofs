@@ -572,3 +572,44 @@ func TestAFailedSyncIsRetriedUntilItSucceeds(t *testing.T) {
 		t.Errorf("after Close the sidecar holds %v, want the pre-Close set %v: a retry was synced past Close", got, full)
 	}
 }
+
+// A retry that slept through a driven sync keeps the newer set: whether the
+// sidecar is still failed, and the set to carry, read behind the same lock
+// the driven sync took, so a Stop that syncs the empty set, or a disable
+// that syncs none, is what the sidecar holds after the retry wakes (RFC 20
+// section 3.5).
+func TestARetrySleepingThroughADrivenSyncKeepsItsSet(t *testing.T) {
+	needIPv6Loopback(t)
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	gone := &faulting{Sidecar: newHolder("gone", "smb")}
+	r := sidecar.New(gone)
+	t.Cleanup(r.Close)
+	clk := newManualClock()
+	sidecar.SetClock(r, clk)
+	smb := buildServer(t, b, "smb", on("127.0.0.1"))
+
+	gone.cue.Store(true)
+	if err := r.Start(t.Context(), "smb", smb); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "the retry behind the failed Sync to arm", func() bool { return clk.pending() > 0 })
+	// The driven sync while the retry waits: Stop's, which succeeds and
+	// syncs the empty set.
+	gone.cue.Store(false)
+	if err := r.Stop(t.Context(), "smb", smb); err != nil {
+		t.Fatal(err)
+	}
+	if h := gone.Sidecar.(*holder); len(h.holding()) != 0 {
+		t.Fatalf("the driven Stop left the sidecar holding %v, want the empty set", h.holding())
+	}
+	// The retry wakes after the driven sync: it is no longer failed, so it
+	// leaves the driven set alone and carries nothing over it.
+	clk.Advance(2 * time.Second)
+	waitsFor(t, "the driven set to stand", func() bool {
+		return clk.pending() == 0
+	})
+	if h := gone.Sidecar.(*holder); len(h.holding()) != 0 {
+		t.Errorf("the sleeping retry overwrote the driven set with a stale one: %v", h.holding())
+	}
+}
