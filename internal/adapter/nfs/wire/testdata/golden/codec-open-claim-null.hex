@@ -1,0 +1,3 @@
+# open_claim4 (RFC 8881 section 18.16.1), written by hand from RFC 4506: CLAIM_NULL's arm.
+00000000                               # claim: CLAIM_NULL, the discriminant (RFC 4506 4.15)
+00000005 612e7478 74 000000            # file, component4: "a.txt", 3 bytes of padding

@@ -1,0 +1,4 @@
+# settime4 (RFC 7530 section 2.2), by hand: SET_TO_CLIENT_TIME4's arm, an nfstime4.
+00000001                               # set_it: SET_TO_CLIENT_TIME4
+ffffffff ffffffff                      # time.seconds, a hyper: -1, two's complement (RFC 4506 4.5)
+1dcd6500                               # time.nseconds: 500000000
