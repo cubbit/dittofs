@@ -97,7 +97,7 @@ func readIDs(r *codec.Reader) (entity.ProtocolIDs, error) {
 //
 // decision: the field changes the krb spellings' layout in the user record
 // and the PX krb row in place, at codec version 1, so a value written before
-// it fails to decode, closed, as truncated. That holds while store format 1
+// it fails to decode, closed. That holds while store format 1
 // is not frozen (store.go): no release has created a store. The release
 // that first creates one freezes the format, and from then on a layout
 // change takes a new codec version that decodes the old one.
