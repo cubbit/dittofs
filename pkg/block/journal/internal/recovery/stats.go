@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 )
 
 // SyncMarks answers, one per append stream whose records the run recovered,
@@ -26,8 +27,15 @@ import (
 // next sync answers.
 //
 // decision: a Replaced entry is attributed by its source segment's stream, and
-// the copy target's own rebuild scan, whose last sequence number is zero, is
-// skipped, for the copier writes the target's header with no stream number. A
+// the copy target's own rebuild scan is attributed to no stream, for the
+// copier writes the target's header with format.NoStream — its records come
+// from several streams — which streamSteads leaves out unless a caller's mark
+// names the copy; the copy's records join through the Replaced entries of
+// the open that wrote it and through that mark after. The records the
+// emptying copies out of a segment it unlinks are credited to no stream, for
+// the segment is gone from the ledger by the settle and the copy's header
+// names none, so a stream whose last record only that segment held has no
+// entry — missing, never naming a file that is gone. A
 // source the caller recorded no mark for and whose own header did not verify
 // names no stream, so its stream gets no entry from the re-append — the entry
 // is then missing, never wrong, and the caller treats a missing entry as no
@@ -76,7 +84,7 @@ func (st State) SyncMarks() []core.SyncMark {
 
 	for i := range st.Rebuilt.Scans {
 		sc := &st.Rebuilt.Scans[i]
-		if sc.LastSeq == 0 || sources[sc.ID] {
+		if sc.LastSeq == 0 || sources[sc.ID] || !st.stands(sc.ID) {
 			continue
 		}
 		stream, ok := steads[sc.ID]
@@ -100,6 +108,18 @@ func (st State) SyncMarks() []core.SyncMark {
 	return out
 }
 
+// stands answers whether segment id is still in the open's ledger: a segment
+// the emptying copied out and unlinked, or the retire step retired, is gone
+// from it, and no mark may name a file that is not on disk. A state without
+// an assembled ledger, one no emptying ran over, answers true for every id.
+func (st State) stands(id core.SegmentID) bool {
+	if st.Assembled.Set == nil {
+		return true
+	}
+	_, err := st.Assembled.Set.State(id)
+	return err == nil
+}
+
 // streamSteads answers the append stream each segment's bytes name: the one
 // a caller's recorded mark answers first — the only word on a copy target,
 // whose header the copier writes with no stream number, and a torn header
@@ -109,7 +129,9 @@ func (st State) SyncMarks() []core.SyncMark {
 func (st State) streamSteads() map[core.SegmentID]uint32 {
 	out := make(map[core.SegmentID]uint32, len(st.Attached.Own)+len(st.Marks.set))
 	for _, seg := range st.Attached.Own {
-		out[seg.ID] = seg.Header.Stream
+		if seg.Header.Stream != format.NoStream {
+			out[seg.ID] = seg.Header.Stream
+		}
 	}
 	for id, m := range st.Marks.set {
 		out[id] = m.Stream
