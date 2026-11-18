@@ -115,7 +115,7 @@ func TestLookups(t *testing.T) {
 		nameKey(keys.NXUser, "alice"), encodeNameRow(u.ID, "alice"),
 		nameKey(keys.NXGroup, "alice"), encodeNameRow(g.ID, "alice"),
 		nameKey(keys.NXGroup, "staff"), encodeNameRow(g.ID, "staff"),
-		protocolKey(sidID), encodePrincipal(g),
+		protocolKey(sidID), encodeProtocolRow(g, sidID),
 	)
 	p := s.Principals()
 	// A user and a group named alice are two principals, told apart by kind.
@@ -139,5 +139,41 @@ func TestLookups(t *testing.T) {
 	}
 	if _, err := p.ByProtocolID(ctx, entity.ProtocolID{Scheme: entity.SchemeUID, Value: "7"}); !merrs.IsNotFoundError(err) {
 		t.Errorf("ByProtocolID(uid 7): %v", err)
+	}
+}
+
+// A krb row's value holds the SID its spelling is linked for, as the user's
+// record does, through every put that sets, changes or clears it.
+func TestKrbRowHoldsLinked(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	cp := s.ControlPlane()
+	u := entity.User{Principal: entity.NewUser(), Name: "alice"}
+	var gen uint64
+	for _, linked := range []string{"S-1-5-21-1-2-3-1104", "S-1-5-21-1-2-3-1105", ""} {
+		krb := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "alice@AD.EXAMPLE"}
+		if linked != "" {
+			krb.Linked = sidBytes(linked)
+		}
+		u.IDs = entity.ProtocolIDs{krb}
+		var err error
+		if gen, err = cp.PutUser(ctx, u, gen, entity.Alloc{}); err != nil {
+			t.Fatalf("put linked %q: %v", linked, err)
+		}
+		var got entity.ProtocolID
+		var holder entity.Principal
+		if err := s.kv.View(ctx, func(r kv.Reader) error {
+			b, err := r.Get(protocolKey(krb))
+			if err != nil {
+				return err
+			}
+			holder, got, err = decodeProtocolRow(krb, b)
+			return err
+		}); err != nil {
+			t.Fatalf("linked %q: reading the krb row: %v", linked, err)
+		}
+		if holder != u.Principal || got != krb {
+			t.Errorf("krb row = %v %q, want %v %q (linked for %q)", holder, got, u.Principal, krb, linked)
+		}
 	}
 }

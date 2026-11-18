@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	authsid "github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 )
@@ -24,6 +25,20 @@ var (
 	sid   = entity.ShareID{0: 0xCC, 15: 0x03}
 	group = entity.Principal{Kind: entity.PrincipalGroup, ID: gid}
 )
+
+// sidBytes is the binary form of the SID s spells.
+func sidBytes(s string) string {
+	var b bytes.Buffer
+	authsid.EncodeSID(&b, authsid.ParseSIDMust(s))
+	return b.String()
+}
+
+// krbRow is a decoded protocol-ID row: its principal and its spelling,
+// Linked as the row holds it.
+type krbRow struct {
+	P  entity.Principal
+	ID entity.ProtocolID
+}
 
 // codecCase is one entity, its encoding pinned, and a decoder of it.
 type codecCase struct {
@@ -51,6 +66,10 @@ func codecCases() []codecCase {
 		Position:   11,
 		Deleted:    true,
 	}
+	gidID := entity.ProtocolID{Scheme: entity.SchemeGID, Value: "100"}
+	linkedKrb := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "a@R", Linked: sidBytes("S-1-5-21-1104")}
+	unlinkedKrb := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "a@R"}
+	linkedUser := entity.User{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: pid}, Name: "b", IDs: entity.ProtocolIDs{linkedKrb}}
 	grp := entity.Group{Principal: group, Name: "staff", Generation: 2, Position: 12, Deleted: true}
 	share := entity.Share{ID: sid, Name: "Photos", Path: "/photos", Root: entity.FileID{15: 7}, Tag: 9,
 		Fold: entity.FoldUpcase, Names: entity.NamesWindows, DigestKey: [32]byte{31: 0x5A}, Generation: 4, Position: 13}
@@ -112,8 +131,26 @@ func codecCases() []codecCase {
 			func(b []byte) (any, error) { return decodeKind(b) }},
 		{"id", [16]byte(sid), encodeID(sid), "01" + "cc000000000000000000000000000003",
 			func(b []byte) (any, error) { return decodeID(b) }},
-		{"principal", group, encodePrincipal(group), "01" + "02" + "bb000000000000000000000000000002",
-			func(b []byte) (any, error) { return decodePrincipal(b) }},
+		{"principal", group, encodeProtocolRow(group, gidID), "01" + "02" + "bb000000000000000000000000000002",
+			func(b []byte) (any, error) { p, _, err := decodeProtocolRow(gidID, b); return p, err }},
+		{"user linked", linkedUser, encodeUser(linkedUser),
+			"01" + "01" + "0162" + "01" + "04" + "03614052" + "10" + "0102000000000005" + "15000000" + "50040000" +
+				"00" + "00000000000000000000000000000000" + "00" + "00000000000000000000000000000000" +
+				"00000000000000000000000000000000" + "00" + "00" +
+				"0000000000000000" + "00" + "0000000000000000" + "0000000000000000" + "00",
+			func(b []byte) (any, error) { return decodeUser(pid, b) }},
+		{"krb row", krbRow{alice, linkedKrb}, encodeProtocolRow(alice, linkedKrb),
+			"01" + "01" + "aa000000000000000000000000000001" + "10" + "0102000000000005" + "15000000" + "50040000",
+			func(b []byte) (any, error) {
+				p, id, err := decodeProtocolRow(entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "a@R"}, b)
+				return krbRow{p, id}, err
+			}},
+		{"krb row unlinked", krbRow{alice, unlinkedKrb}, encodeProtocolRow(alice, unlinkedKrb),
+			"01" + "01" + "aa000000000000000000000000000001" + "00",
+			func(b []byte) (any, error) {
+				p, id, err := decodeProtocolRow(unlinkedKrb, b)
+				return krbRow{p, id}, err
+			}},
 		{"share", share, encodeShareInfo(share),
 			"01" + "0650686f746f73" + "072f70686f746f73" + "00000000000000000000000000000007" +
 				"00000002" + "02" + "000000000000000000000000000000000000000000000000000000000000005a" + "00000009" + "0000000000000004" + "000000000000000d",
@@ -243,6 +280,21 @@ func TestUserUnknownRole(t *testing.T) {
 	}
 }
 
+// A krb spelling stored with a SID cut short, or of a revision no SID has,
+// is refused in the record and in the row, never read as some other link.
+func TestKrbLinkedMalformed(t *testing.T) {
+	good := sidBytes("S-1-5-21-1104")
+	for name, linked := range map[string]string{"cut short": good[:len(good)-1], "revision 0": "\x00" + good[1:]} {
+		id := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "a@R", Linked: linked}
+		if _, err := decodeUser(pid, encodeUser(entity.User{Name: "b", IDs: entity.ProtocolIDs{id}})); !errors.Is(err, errMalformed) {
+			t.Errorf("%s: user record decode = %v, want %v", name, err, errMalformed)
+		}
+		if _, _, err := decodeProtocolRow(id, encodeProtocolRow(group, id)); !errors.Is(err, errMalformed) {
+			t.Errorf("%s: krb row decode = %v, want %v", name, err, errMalformed)
+		}
+	}
+}
+
 func TestAuditUnknownKind(t *testing.T) {
 	a := entity.AuditRecord{Target: entity.ResourceRef{Kind: entity.ResourceSession + 1}}
 	if _, err := decodeAudit(auditPos(a.Time, a.ID), encodeAudit(a)); !errors.Is(err, errMalformed) {
@@ -257,7 +309,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 	decoders := map[string]func([]byte) (any, error){}
 	for _, c := range append(codecCases(), fileCodecCases()...) {
 		switch c.name {
-		case "user", "group", "share", "setting", "quota", "installation", "audit", "idempotency", "namespace",
+		case "user", "user linked", "group", "share", "setting", "quota", "installation", "audit", "idempotency", "namespace",
 			"session", "api token", "sign-in failures", "operation", "node", "node status", "state":
 			decoders[c.name] = c.dec
 			f.Add(c.enc)
@@ -267,6 +319,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 	}
 	encoders := map[string]func(any) []byte{
 		"user":             func(v any) []byte { return encodeUser(v.(entity.User)) },
+		"user linked":      func(v any) []byte { return encodeUser(v.(entity.User)) },
 		"group":            func(v any) []byte { return encodeGroup(v.(entity.Group)) },
 		"share":            func(v any) []byte { return encodeShareInfo(v.(entity.Share)) },
 		"setting":          func(v any) []byte { return encodeSetting(v.(entity.Setting)) },

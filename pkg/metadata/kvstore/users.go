@@ -250,13 +250,17 @@ func expected(stored, expect uint64) error {
 
 // validIDs refuses a scheme the principal's kind may not carry, an empty
 // spelling, a UID or GID not in canonical decimal or reserved to root (0) or
-// anonymous (65534), and a second ID of one scheme: a principal has at most
-// one spelling per scheme, so fileSpellings' check that a scheme is held and
+// anonymous (65534), a linked SID on any spelling but krb or one not well
+// formed, and a second ID of one scheme: a principal has at most one
+// spelling per scheme, so fileSpellings' check that a scheme is held and
 // keepSID's that the old SID is kept each pin the one spelling.
 func validIDs(ids entity.ProtocolIDs, schemes ...entity.ProtocolScheme) error {
 	for i, id := range ids {
 		if !slices.Contains(schemes, id.Scheme) || id.Value == "" {
 			return merrs.NewInvalidArgumentError("protocol ID " + id.Scheme.String() + " not valid here")
+		}
+		if id.Linked != "" && (id.Scheme != entity.SchemeKerberos || !wellFormedSID(id.Linked)) {
+			return merrs.NewInvalidArgumentError("protocol ID " + id.Scheme.String() + " " + id.Value + ": a linked SID is a well-formed SID on a krb spelling")
 		}
 		if id.Scheme == entity.SchemeUID || id.Scheme == entity.SchemeGID {
 			n, err := strconv.ParseUint(id.Value, 10, 32)
@@ -278,7 +282,8 @@ func validIDs(ids entity.ProtocolIDs, schemes ...entity.ProtocolScheme) error {
 // new one's, refusing a name or ID another principal holds. Each row is read
 // before it is claimed, so of two principals racing for one row, the second
 // to commit conflicts and then finds it taken. A row p already holds is left
-// unwritten. An empty name has no row.
+// unwritten, but for a krb row whose linked SID changed, rewritten in place.
+// An empty name has no row.
 func reindex(tx kv.Txn, p entity.Principal, existed bool, oldName, newName string, oldIDs, newIDs entity.ProtocolIDs) error {
 	kind := nameKind(p.Kind)
 	switch {
@@ -301,20 +306,36 @@ func reindex(tx kv.Txn, p entity.Principal, existed bool, oldName, newName strin
 		}
 	}
 	for _, id := range newIDs {
-		if !slices.Contains(oldIDs, id) {
-			if err := claim(tx, protocolKey(id), id.Scheme.String()+" "+id.Value, p, encodePrincipal(p), decodePrincipal); err != nil {
+		i := slices.IndexFunc(oldIDs, sameRow(id))
+		switch {
+		case i < 0:
+			decode := func(b []byte) (entity.Principal, error) {
+				holder, _, err := decodeProtocolRow(id, b)
+				return holder, err
+			}
+			if err := claim(tx, protocolKey(id), id.Scheme.String()+" "+id.Value, p, encodeProtocolRow(p, id), decode); err != nil {
+				return err
+			}
+		case oldIDs[i].Linked != id.Linked:
+			if err := tx.Set(protocolKey(id), encodeProtocolRow(p, id)); err != nil {
 				return err
 			}
 		}
 	}
 	for _, id := range oldIDs {
-		if !slices.Contains(newIDs, id) {
+		if !slices.ContainsFunc(newIDs, sameRow(id)) {
 			if err := tx.Delete(protocolKey(id)); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// sameRow matches the spellings sharing id's index row: its scheme and
+// value, whatever their Linked.
+func sameRow(id entity.ProtocolID) func(entity.ProtocolID) bool {
+	return func(o entity.ProtocolID) bool { return o.Scheme == id.Scheme && o.Value == id.Value }
 }
 
 func decodeIDAs(kind entity.PrincipalKind) func([]byte) (entity.Principal, error) {
