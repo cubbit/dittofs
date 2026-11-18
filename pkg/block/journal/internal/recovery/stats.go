@@ -77,6 +77,8 @@ func (st State) SyncMarks() []core.SyncMark {
 	credit := func(r replacedRecord) {
 		sources[r.Source] = true
 		// A copy a later step retired is no placement to name.
+		// Defensive bound: the retire step runs before the copies are made, so
+		// no open retires its own target today.
 		if !st.stands(r.Target) {
 			return
 		}

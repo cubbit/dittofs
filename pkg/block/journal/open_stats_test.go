@@ -396,6 +396,29 @@ func TestEmptiedDamagedSegmentCountsUntilClose(t *testing.T) {
 	}
 }
 
+// TestRetiredSegmentIsNoStreamEntry checks that a sealed segment the open's
+// retire step removes, because a newer sealed segment holds the same extent,
+// is no stream's entry: the caller's mark names it for stream 1, and the
+// entry for that stream must not name a file the open unlinked.
+func TestRetiredSegmentIsNoStreamEntry(t *testing.T) {
+	f := seededJournal(t)
+	file := fileOf(6)
+	old, newer := core.SegmentID(940), core.SegmentID(941)
+	plantSealed(t, f.seam, old, plantRecord(1, ownerTag, file, 5, 50, 0, 32))
+	plantSealed(t, f.seam, newer, plantRecord(1, ownerTag, file, 6, 51, 0, 32))
+	_, size := f.viewRecord(t, old, format.SegmentHeaderSize)
+	end := format.SegmentHeaderSize + int64(size)
+
+	j := f.openOver(t, []SyncMark{{Stream: 1, Segment: uint64(old), Through: end, Offset: end, Sequence: 5}})
+
+	if slices.Contains(f.segmentFileNames(t), format.SegmentName(old)) {
+		t.Fatalf("segment %d still holds its file, want the open's retire step to have removed it", old)
+	}
+	if e, ok := j.Stats().SyncMarks[1]; ok && e.Segment == uint64(old) {
+		t.Errorf("SyncMarks[1] = %+v names retired segment %d, want no entry naming a file the open removed", e, old)
+	}
+}
+
 // recordedSpan is one span a recordingTracer opened.
 type recordedSpan struct {
 	op    SpanOp
