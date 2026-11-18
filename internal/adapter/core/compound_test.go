@@ -522,7 +522,8 @@ func TestAReadLeftNoByteRefusesTheCompound(t *testing.T) {
 }
 
 // While draining, a compound with one refused member gets no reply and runs
-// nothing; a compound begun before the drain runs whole.
+// nothing, refused at decode_args, judged whole before any member resolves
+// its IDs (RFC 20 §10.1); a compound begun before the drain runs whole.
 func TestADrainedCompound(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := metrics.New("v", "c")
@@ -543,8 +544,9 @@ func TestADrainedCompound(t *testing.T) {
 		if !s.sentNothing() || s.creates() != 0 {
 			t.Errorf("a drained compound with a refused member was answered, or made %d files", s.creates())
 		}
-		if got, _ := scrape(t, m); got["adapter_refusals_total{protocol="+testproto.Name+",stage=resolve_ids}"] != 1 {
-			t.Errorf("the drained compound counted %v under resolve_ids, want 1", got["adapter_refusals_total{protocol="+testproto.Name+",stage=resolve_ids}"])
+		got, _ := scrape(t, m)
+		if n, wrong := got["adapter_refusals_total{protocol="+testproto.Name+",stage=decode_args}"], got["adapter_refusals_total{protocol="+testproto.Name+",stage=resolve_ids}"]; n != 1 || wrong != 0 {
+			t.Errorf("the drained compound counted %v under decode_args and %v under resolve_ids, want 1 and 0", n, wrong)
 		}
 	})
 }
