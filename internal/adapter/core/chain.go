@@ -35,6 +35,7 @@ type entry struct {
 	h, u      Header // as Decode and Unwrap returned them
 	unwrapped bool   // Unwrap ran on the reader, for the first member
 	cancel    bool   // it cancels a hold, and is answered nothing
+	key       uint64 // with cancel, the key of the request it cancels
 	st        stage  // the stage that refused it, read only with err
 	err       error
 	release   func() // its admission
@@ -96,8 +97,8 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 		case err != nil:
 			e.st, e.err = stageUnwrap, err
 		default:
-			if _, ok := p.st.Hold.Cancels(u); ok {
-				e.cancel = true
+			if key, ok := p.st.Hold.Cancels(u); ok {
+				e.cancel, e.key = true, key
 			} else if release, err := p.st.Flow.Admit(tr.ctx, u); err != nil {
 				e.st, e.err = stageAdmit, err
 			} else {
@@ -234,8 +235,8 @@ func (c *chain) one(e *entry) {
 		case err != nil:
 			e.st, e.err = stageUnwrap, err
 		default:
-			if _, ok := p.st.Hold.Cancels(u); ok {
-				e.cancel = true
+			if key, ok := p.st.Hold.Cancels(u); ok {
+				e.cancel, e.key = true, key
 				break
 			}
 			c.admit(e)
@@ -261,6 +262,7 @@ func (c *chain) one(e *entry) {
 		c.prevR = nil
 		c.failed, c.failS = false, 0
 		p.end(e.tr, false, 0, 0, nil)
+		p.endHold(e.key)
 		return
 	case e.err == nil:
 	case e.st == stageUnwrap:

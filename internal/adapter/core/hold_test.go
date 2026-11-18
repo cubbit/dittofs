@@ -643,3 +643,161 @@ func TestASecondChainIsAnsweredWhileTheFirstIsInTheService(t *testing.T) {
 		s.finalOf(12)
 	})
 }
+
+// cancelOf is a version 2 Cancel, sealed under session, naming message id.
+func cancelOf(id uint64, session uint32) testproto.Msg {
+	return testproto.Msg{Op: testproto.OpCancel, Version: 2, Session: session, Target: id}
+}
+
+// A cancel ends a hold between attempts at once, alone or as a chain's
+// first or later member: its final reply is the cancel status, the cancel
+// gets no reply of its own, no re-drive is left and no file is made. core
+// matches the protocol's key alone, so a cancel under a second session of the
+// connection ends it too (§4.7, §6.5).
+func TestACancelEndsAHoldBetweenAttempts(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		session uint32 // the cancel's, set up where not 7
+		msgs    []testproto.Msg
+	}{
+		{"alone", 7, []testproto.Msg{cancelOf(2, 7)}},
+		{"under a second session", 8, []testproto.Msg{cancelOf(2, 8)}},
+		{"first in a chain", 7, []testproto.Msg{cancelOf(2, 7), cancelOf(92, 7)}},
+		{"later in a chain", 7, []testproto.Msg{cancelOf(92, 7), cancelOf(2, 7)}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				clk := newManualClock()
+				s := newHeld(t, 1<<20, adapter.Deps{}, clk)
+				if c.session != 7 {
+					s.serve(testproto.Msg{Op: testproto.OpSession, Version: 2, Session: c.session})
+					if r := s.read(); r.Status != testproto.StatusOK {
+						t.Fatalf("the second session is answered %+v", r)
+					}
+				}
+				s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+				s.serve(s.heldChain(1, "f")...)
+				s.interimOf(2)
+				s.serve(c.msgs...)
+				if r := s.finalOf(2); r.Status != testproto.StatusCancelled {
+					t.Errorf("the cancelled hold is answered %+v, want the cancel status", r)
+				}
+				if n, files := clk.pending(), s.creates(); n != 0 || files != 0 {
+					t.Errorf("%d timers left armed and %d files made, want none", n, files)
+				}
+				if !s.sentNothing() {
+					t.Error("the cancel got a reply of its own")
+				}
+			})
+		})
+	}
+}
+
+// A cancel sent while an attempt is in the service, where the interim timer
+// found it, lets the attempt finish: its final reply is its own success, and
+// the file is made (§6.5).
+func TestACancelLetsARunningAttemptFinish(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newHeld(t, 1<<20, adapter.Deps{}, clk)
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.heldChain(1, "f")...)
+		<-hold.Reached()
+		clk.Advance(time.Second)
+		s.interimOf(2)
+		s.serve(cancelOf(2, 7))
+		synctest.Wait()
+		hold.Release()
+		if r := s.finalOf(2); r.Status != testproto.StatusOK || s.creates() != 1 {
+			t.Errorf("the attempt is answered %+v with %d files made, want its success and the file", r, s.creates())
+		}
+	})
+}
+
+// A cancel that finds nothing is remembered: its target, sent next and
+// answered ErrDelay, ends as cancelled once it holds, right after its
+// interim, with no re-drive (§4.7).
+func TestACancelBeforeItsTargetHoldsEndsIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		s.serve(cancelOf(2, 7))
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		s.serve(s.heldChain(1, "f")...)
+		s.interimOf(2)
+		if r := s.finalOf(2); r.Status != testproto.StatusCancelled || s.creates() != 0 {
+			t.Errorf("the target is answered %+v with %d files made, want the cancel status and none", r, s.creates())
+		}
+	})
+}
+
+// A cancel sent clear under its session fails Unwrap and is refused there,
+// never asked of Cancels: the hold it names goes on, and its re-drive's
+// success is its final reply (§4.7, §5.5).
+func TestAnUnsealedCancelEndsNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newHeld(t, 1<<20, adapter.Deps{}, clk)
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		s.serve(s.heldChain(1, "f")...)
+		s.interimOf(2)
+		unsealed := cancelOf(2, 7)
+		unsealed.Clear = true
+		s.serve(unsealed)
+		if r := s.recvOne(); r.Status != testproto.StatusChecksum {
+			t.Fatalf("the unsealed cancel is answered %+v, want the checksum status", r)
+		}
+		clk.Advance(10 * time.Millisecond)
+		if r := s.finalOf(2); r.Status != testproto.StatusOK || s.creates() != 1 {
+			t.Errorf("the hold is answered %+v with %d files made, want its re-drive's success and the file", r, s.creates())
+		}
+	})
+}
+
+// A remembered cancel is forgotten 5 s after it came, on the clock, and at
+// most MaxPending of them, eight in testproto, are kept, the oldest dropped
+// first: a target that holds past either is re-driven, not cancelled (§4.7).
+func TestARememberedCancelIsBounded(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		cancels   int           // naming messages 2, 12, 22 and on
+		after     time.Duration // on the clock, before the targets come
+		cancelled []bool        // per target, messages 2, 12 and on
+	}{
+		{"just under 5 s on", 1, 5*time.Second - time.Nanosecond, []bool{true}},
+		{"5 s on", 1, 5 * time.Second, []bool{false}},
+		{"the ninth", 9, 0, []bool{false, true}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				clk := newManualClock()
+				s := newHeld(t, 1<<20, adapter.Deps{}, clk)
+				for i := range c.cancels {
+					s.serve(cancelOf(uint64(10*i+2), 7))
+				}
+				clk.Advance(c.after)
+				for i, want := range c.cancelled {
+					id := uint64(10*i + 2)
+					s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+					s.serve(s.heldChain(id-1, "f"+strconv.Itoa(i))...)
+					s.interimOf(id)
+					if !want {
+						continue
+					}
+					if r := s.finalOf(id); r.Status != testproto.StatusCancelled {
+						t.Errorf("target %d is answered %+v, want the cancel status", id, r)
+					}
+				}
+				clk.Advance(10 * time.Millisecond)
+				for i, want := range c.cancelled {
+					if want {
+						continue
+					}
+					if r := s.finalOf(uint64(10*i + 2)); r.Status != testproto.StatusOK {
+						t.Errorf("target %d is answered %+v, want its re-drive's success", 10*i+2, r)
+					}
+				}
+			})
+		})
+	}
+}

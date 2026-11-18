@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -86,12 +87,62 @@ var cloneWait = &vfs.Delay{Cause: vfs.DelayClone}
 // held between attempts and those the interim timer found in the service.
 // Its mutex is held for a lookup or a count, never across a call (§6.6).
 type pends struct {
-	mu     sync.Mutex
-	m      map[uint64]*pending
-	n      int   // the pending, which Stages.MaxPending bounds
-	floor  int   // those counted on the floor
-	bytes  int64 // their records' receive charge
-	closed bool  // close ended every hold: no timer is armed after it
+	mu      sync.Mutex
+	m       map[uint64]*pending
+	n       int          // the pending, which Stages.MaxPending bounds
+	floor   int          // those counted on the floor
+	bytes   int64        // their records' receive charge
+	closed  bool         // close ended every hold: no timer is armed after it
+	cancels []remembered // the cancels that ended nothing, oldest first
+}
+
+// cancelKept is how long a cancel that ended nothing is remembered (§4.7);
+// HoldCodec's ponytail says what that loses.
+const cancelKept = 5 * time.Second
+
+// remembered is a cancel that ended nothing: the key it names, and when it is
+// forgotten.
+type remembered struct {
+	key   uint64
+	until time.Time
+}
+
+// remember keeps a cancel of key that ended nothing until cancelKept from
+// now, and at most max of them, the oldest dropped first (§4.7). The caller
+// holds t.mu.
+//
+// decision: a remembered cancel is forgotten as the list is next read, not on
+// a timer of its own: the list never passes MaxPending, so it holds no timer
+// for close to stop. Overturned if a connection must give the memory back
+// when no cancel or hold comes after.
+func (t *pends) remember(key uint64, now time.Time, max int) {
+	t.forget(now)
+	t.cancels = append(t.cancels, remembered{key, now.Add(cancelKept)})
+	if n := len(t.cancels) - max; n > 0 {
+		t.cancels = slices.Delete(t.cancels, 0, n)
+	}
+}
+
+// cancelledAt reports whether a cancel of key is remembered at now, and
+// forgets it. The caller holds t.mu.
+func (t *pends) cancelledAt(key uint64, now time.Time) bool {
+	t.forget(now)
+	i := slices.IndexFunc(t.cancels, func(c remembered) bool { return c.key == key })
+	if i < 0 {
+		return false
+	}
+	t.cancels = slices.Delete(t.cancels, i, i+1)
+	return true
+}
+
+// forget drops the cancels remembered cancelKept or longer before now, the
+// oldest first.
+func (t *pends) forget(now time.Time) {
+	n := 0
+	for n < len(t.cancels) && !now.Before(t.cancels[n].until) {
+		n++
+	}
+	t.cancels = slices.Delete(t.cancels, 0, n)
 }
 
 // pending is one request of a table that holds, from its call on: what its
@@ -245,7 +296,8 @@ func (p *pipeline) interimIn(pd *pending, buf *resources.Buf, grant bool) {
 // deadline, from the hold's start, is past now, the request is held: on its
 // first such error its interim goes out in reply, unless it already has one,
 // and it is re-driven on the backoff; release, its admission, is released,
-// and after reports true. Otherwise it returns err, or the refusal that
+// and after reports true; a cancel remembered for its key ends it there as
+// cancelled. Otherwise it returns err, or the refusal that
 // replaces it, for the request to be answered. A chain's member before the
 // last is answered at once: whether it pends is for Pends to say (§4.7),
 // which is not asked here.
@@ -291,17 +343,56 @@ func (p *pipeline) after(pd *pending, err error, reply *resources.Buf, release f
 	pd.backoff = min(2*pd.backoff, redriveMax)
 	t := &p.pend
 	t.mu.Lock()
-	if !t.closed {
+	closed := t.closed
+	// A cancel that came before it held, or while its attempt ran, ends it
+	// now that it holds (§4.7).
+	cancelled := !closed && t.cancelledAt(pd.key, now)
+	if !closed && !cancelled {
 		pd.timer = p.sh.clock.AfterFunc(wait, func() { p.redrive(pd) })
 	}
-	closed := t.closed
 	t.mu.Unlock()
 	release()
-	if closed {
+	switch {
+	case closed:
 		p.end(pd.tr, false, 0, 0, nil)
 		p.unpend(pd)
+	case cancelled:
+		p.cancelled(pd)
 	}
 	return true, nil
+}
+
+// endHold is a client's cancel of the request keyed key: a hold between
+// attempts ends, answered on a goroutine of its own, since its status may
+// wait for a buffer and a cancel comes on the reader; a running attempt
+// finishes and answers its own result. A cancel that ends nothing is
+// remembered, so a request with its key that holds meanwhile ends as
+// cancelled (§4.6, §4.7, §6.5).
+//
+// decision: a cancel finds its target by the protocol's key alone, within its
+// connection; core compares no session, so a request of one session can
+// cancel another's when the key lets it, and a protocol that must stop that
+// puts the verified session into its key. Overturned if core must check the
+// session itself.
+func (p *pipeline) endHold(key uint64) {
+	t := &p.pend
+	t.mu.Lock()
+	pd := t.m[key]
+	if pd == nil || !pd.timer.Stop() {
+		t.remember(key, p.sh.clock.Now(), p.st.MaxPending)
+		t.mu.Unlock()
+		return
+	}
+	t.mu.Unlock()
+	go p.cancelled(pd)
+}
+
+// cancelled answers a hold its client's cancel ended between attempts
+// ErrCancelled, which its table maps to the protocol's cancel status, under
+// Final's header (§6.5).
+func (p *pipeline) cancelled(pd *pending) {
+	p.finish(pd.tr, pd.h, pd.tb, pd.tb.Errors, pd.op, pd.inv, nil, ErrCancelled, func() {}, alone{p}, pd)
+	p.unpend(pd)
 }
 
 // redrive is a held request's next attempt, on its timer's goroutine: from

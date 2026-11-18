@@ -388,12 +388,11 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		p.refuse(tr, rec, u, stageUnwrap, err, true, false)
 		return
 	}
-	if _, ok := p.st.Hold.Cancels(u); ok {
-		// ponytail: the key a cancel names is dropped, since nothing holds a
-		// request yet. End the hold it names, and keep an early cancel for
-		// HoldCodec's while, once the hold registry lands.
+	if key, ok := p.st.Hold.Cancels(u); ok {
+		// A cancel gets no reply of its own (§4.7).
 		p.end(tr, false, 0, 0, nil)
 		rec.Release()
+		p.endHold(key)
 		return
 	}
 	release, err := p.st.Flow.Admit(tr.ctx, u)
