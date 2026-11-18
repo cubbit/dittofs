@@ -56,8 +56,8 @@ in this epic.
 
 ### 1.2 Out of scope
 
-- The cross-scope read, `Nodes.AllSettings`, its `ErrBadRow` pair and the removal of
-  `feat/storage-v2`'s `ControlPlane.AllSettings` stubs: RFC 23's epic 2's T2.8, #4812 (open).
+- The cross-scope read, `Nodes.AllSettings`, and its `ErrBadRow` pair: RFC 23's epic 2's T2.8,
+  #4812 (open). `feat/storage-v2`'s `ControlPlane.AllSettings` stubs went with #4796, merged.
 - The node's table, reconcile, the API's settings routes and `HoldsContent`'s implementation: E5.
   The route builds `holds` inside `Write` as a closure over the write's `tx`, so E1's frozen
   signature, `func(scope entity.SettingScope) (bool, error)`, stays without a `tx` parameter (the
@@ -749,8 +749,9 @@ A suggestion only: one pull request per subtask works as well.
   #4491 gave it to RFC 23's epic 2: a paged `Nodes.AllSettings(ctx, after SettingKey)` behind
   `entity.SettingsReader`, which `Read` takes, and "no `ControlPlane` method repeats" it. So T3.1
   keeps the delete and the schema refusal, and `Read`, T3.4 and T3.9 read through `Nodes`. The
-  `ErrBadRow` pair (D2) and the removal of `feat/storage-v2`'s `ControlPlane.AllSettings` stubs
-  are #4812's (open). Open: until it merges, T3.4's tests that read a scan, and T3.9, wait on it.
+  `ErrBadRow` pair (D2) is #4812's (open); #4796, merged, removed `feat/storage-v2`'s
+  `ControlPlane.AllSettings` stubs. Open: until #4812 merges, T3.4's tests that read a scan, and
+  T3.9, wait on it.
 - **A row of undecodable bytes.** A put over it fails in the store, which reads the row to check
   `expect` (`PutSetting`, `kvstore/settings.go:107-118` on `feat/storage-v2`), and the delete
   `T3.1` builds needs the row's generation for `expect` too. How such a row is repaired is not
