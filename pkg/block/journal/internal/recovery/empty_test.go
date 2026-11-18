@@ -635,6 +635,63 @@ func TestDeferredLossWrittenIntoTheCopy(t *testing.T) {
 	}
 }
 
+// TestADeferralIsNotEndedByAnUnsealedRowsLossRecord holds the narrowing of
+// the on-disk loss lookup to sealed rows: the loss record a deferral owes
+// sits only in an Active segment with no seal, whose bytes no sync proved, so
+// the emptying still writes the record into its sealed copy rather than end
+// the deferral on the unproven one.
+func TestADeferralIsNotEndedByAnUnsealedRowsLossRecord(t *testing.T) {
+	const tag = core.ShareTag(7)
+	file := tailFile()
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(5, damageHeader(buildSeg(5, collectWrite(tag, file, 29, 29, 0, 32))))
+	r.plantSeg(4, buildSeg(4, collectLoss(tag, file, 30, 31, 931, 0, 32, 1<<8)))
+	sealedAbove, _ := buildSealed(6, collectWrite(tag, file, 32, 32, 0x8000, 32))
+	r.plantSeg(6, sealedAbove)
+	dur := r.registryDurability(t, journalID)
+	RegistryPlant(t, dur, durability.Loss{
+		Share: tag, File: file, Extent: core.Extent{Off: 0, Len: 32},
+		Version: core.Version{Counter: 30}, Seq: 30, Reason: core.LossCorrupt,
+		Synced: true, Deferred: true, Seg: 5,
+	})
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, err := st.Assembled.Set.State(4); err != nil || got != segment.Active {
+		t.Fatalf("the segment holding the loss record got %v (%v), want Active: the fixture no longer plants the case", got, err)
+	}
+	h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 1})
+	h.deps.EndDeferral = dur.EndDeferral
+	if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil); err != nil {
+		t.Fatalf("Emptying: %v", err)
+	}
+	sealed := 0
+	for _, name := range r.listing() {
+		kind, id := format.ClassifyName(name)
+		if kind != format.NameSegment || id == 4 {
+			continue
+		}
+		bs, err := r.seam.Durable(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		walk, werr := format.ScanSegmentHeaders(bytes.NewReader(bs), int64(len(bs)), journalID, id)
+		if werr != nil {
+			continue
+		}
+		for _, rec := range walk.Records {
+			if rec.Header.Kind == format.KindLoss {
+				sealed++
+			}
+		}
+	}
+	if sealed != 1 {
+		t.Errorf("%d loss records sit in the sealed segments, want the one the emptying wrote: an unsealed row's record is no proof the deferral may end on", sealed)
+	}
+}
+
 // TestEmptyingWithoutASpareLeavesTheSegment holds the no-spare half of the
 // emptying's refusal: an ended segment whose survivors need a copy draws a
 // spare of the pool's repack reserve — the closure the open wires, never a
@@ -992,6 +1049,13 @@ func TestCrashAtEveryEmptyingStep(t *testing.T) {
 		st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
 		if err != nil {
 			t.Fatalf("the reopen's Run: %v", err)
+		}
+		// The open seals the re-append's target in the set as it continues, for
+		// no fate names it.
+		if tgt := st.Proof.ReappendTarget; tgt != 0 {
+			if err := st.Assembled.Set.Seal(tgt, true); err != nil {
+				t.Fatalf("sealing the re-append target %d: %v", tgt, err)
+			}
 		}
 		h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 2})
 		if dur != nil {

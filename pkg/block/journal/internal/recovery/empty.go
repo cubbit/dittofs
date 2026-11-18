@@ -1037,6 +1037,12 @@ func (e *emptying) deferralOf(lw lossWrite) lossWrite {
 // a second record.
 func (e *emptying) lossOnDisk(l durability.Loss) bool {
 	for i := range e.st.Rebuilt.Scans {
+		// The trust asideCopyVerifies keeps: a sealed row's bytes alone are
+		// proven, and a deferral ended on an unsealed row's record would
+		// leave the loss unwritten if that record never reached a seal.
+		if state, err := e.st.Assembled.Set.State(e.st.Rebuilt.Scans[i].ID); err != nil || state != segment.Sealed {
+			continue
+		}
 		for _, a := range e.st.Rebuilt.Scans[i].Aside {
 			if a.Header.Kind != format.KindLoss ||
 				a.Body.Loss.Dropped != l.Seq || a.Header.Extent != l.Extent {
@@ -1046,6 +1052,19 @@ func (e *emptying) lossOnDisk(l durability.Loss) bool {
 			// for the same loss over the same extent whatever its reason's
 			// number is, for a piece is taken once by (seq, extent).
 			return true
+		}
+	}
+	// The records the re-append sealed into its target: the walks never read
+	// that target, whose proof is its own seal.
+	if e.st.Proof.ReappendTarget != 0 {
+		for _, rec := range e.st.Proof.Reappends {
+			h := rec.Header
+			if h.Kind != format.KindLoss || h.Extent != l.Extent || int64(len(rec.First)) < format.RecordHeaderSize+h.BodySize() {
+				continue
+			}
+			if body, err := format.VerifyRecordBody(rec.First[format.RecordHeaderSize:format.RecordHeaderSize+h.BodySize()], e.identity, h); err == nil && body.Loss.Dropped == l.Seq {
+				return true
+			}
 		}
 	}
 	return false
