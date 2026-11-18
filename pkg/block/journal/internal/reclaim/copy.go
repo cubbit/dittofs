@@ -308,18 +308,24 @@ func (c *Copier) append(ctx context.Context, sources []source) (Result, error) {
 	})
 
 	for _, file := range files {
-		unlock := c.dom.Lock(file)
 		srcs := make([]source, 0, len(sources))
 		for _, s := range sources {
 			if s.file == file {
 				srcs = append(srcs, s)
 			}
 		}
-		if err := c.appendFile(ctx, file, srcs, &res); err != nil {
-			unlock()
+		// The domain is taken and released inside the closure, so the
+		// deferred unlock runs on a panic through appendFile too: a
+		// failing copy must not leave the file's append domain locked,
+		// since every later holder of it — the durability worker's close
+		// among them — would wedge on it.
+		if err := func() error {
+			unlock := c.dom.Lock(file)
+			defer unlock()
+			return c.appendFile(ctx, file, srcs, &res)
+		}(); err != nil {
 			return res, err
 		}
-		unlock()
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
