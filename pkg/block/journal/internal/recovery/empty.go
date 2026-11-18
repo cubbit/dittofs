@@ -301,6 +301,15 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 	var moves []moveAt
 	var losses []lossWrite
 
+	// The proofs a read-found loss is synced by, the classing's own rule for a
+	// dropped record: the segment's seal, a successor naming it, a record's
+	// synced-through past it, or a sync mark's.
+	named := successorSet(st.Attached.Own)
+	through := make(map[core.SegmentID]int64, len(e.marks))
+	for _, m := range e.marks {
+		through[core.SegmentID(m.Segment)] = m.Through
+	}
+
 	var ins []carriedCopy
 	// The content records: a payload kind whose placement still serves a
 	// piece, read whole and verified; a record whose copy verifies in a
@@ -324,7 +333,8 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			moves = append(moves, moveAt{file: rec.File, from: at, to: other})
 			continue
 		}
-		bytes, synced, refused := e.readPayload(id, rec, sc)
+		bytes, refused := e.readPayload(id, rec)
+		synced := sc.Sealed || named[id] || int64(rec.At) < sc.SyncedThrough || int64(rec.At) < through[id]
 		if refused != nil {
 			return refused
 		}
@@ -339,8 +349,8 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			// the same cut the data path's corrupt drop makes, for the
 			// segment is about to go and a served piece pointing into an
 			// unlinked file answers a read with the file's absence, not the
-			// loss the mask records. The cut errs the strict way for a
-			// record no sync proved: it masks the extent caller-side too,
+			// loss the mask records. For a record no sync proved the cut
+			// errs the strict way: it masks the extent caller-side too,
 			// which the reveal of an unsynced read-found loss would need
 			// its own rule to unmask. The generation, the counters and the
 			// event are the next open's found record's own, published when
@@ -351,6 +361,17 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			if _, _, lerr := st.Rebuilt.Index.LoseSuperseded(rec.File,
 				core.Extent{Off: rec.Off, Len: rec.Len}, rec.Numbers.Version, rec.Numbers.Seq); lerr != nil {
 				return lerr
+			}
+			if synced {
+				// A record a seal, a successor, a synced-through or a mark
+				// proves synced is a synced loss: its extent reads lost, the
+				// marker the next open's own cut leaves for the same record,
+				// so no older copy is served over it in this process or the
+				// next.
+				if _, _, lerr := st.Rebuilt.Index.Lose(rec.File,
+					core.Extent{Off: rec.Off, Len: rec.Len}, rec.Numbers.Version); lerr != nil {
+					return lerr
+				}
 			}
 			lw, lerr := e.newLossWrite(durability.Loss{
 				Share:   rec.Tag,
@@ -706,24 +727,19 @@ func (e *emptying) asideCopyVerifies(rec reclaim.Rec, id core.SegmentID) bool {
 
 // readPayload reads the payload record rec of segment id whole — its header
 // and the body its header sizes — through the open's reader, answering the
-// bytes a verifying read kept and whether a sync the header names covered
-// the record. A read no bounded attempt completed refuses the open on the
-// ranges the reader collected. A record whose bytes do not decode or verify
-// answers nil with a nil error: the record failed only on this read, the
-// caller's loss leg owns it.
-func (e *emptying) readPayload(id core.SegmentID, rec index.Record, sc segmentScan) (bytes []byte, synced bool, refused error) {
-	b, h, rot, rerr := readRecordWhole(e.rd, e.identity, id, int64(rec.At))
+// bytes a verifying read kept. A read no bounded attempt completed refuses the
+// open on the ranges the reader collected. A record whose bytes do not decode
+// or verify answers nil with a nil error: the record failed only on this
+// read, the caller's loss leg owns it.
+func (e *emptying) readPayload(id core.SegmentID, rec index.Record) (bytes []byte, refused error) {
+	b, _, rot, rerr := readRecordWhole(e.rd, e.identity, id, int64(rec.At))
 	if rerr != nil {
-		return nil, false, rerr
+		return nil, rerr
 	}
 	if rot {
-		// The proof the record was synced: the header's own synced-through
-		// covering the record's whole extent is the corruption leg's synced
-		// flag, the classing's own rule for a drop a sync covered.
-		return nil, false, nil
+		return nil, nil
 	}
-	end := h.Offset + h.Size()
-	return b, h.SyncedThrough >= end, nil
+	return b, nil
 }
 
 // readAside reads the aside record rec whole at the placement its

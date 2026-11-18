@@ -745,12 +745,12 @@ func TestFreedTakeAfterDurableUnlink(t *testing.T) {
 }
 
 // TestReadFoundRotRidesTheLossRecord holds the read-found leg: a payload
-// whose header verified at the open's walk — its synced-through covering
-// it, so the proof's own reads reached nothing of the segment — and whose
-// body fails the copy's whole read, the rot landing between the two,
-// leaves the copy with no record of it and a loss record naming its
-// sequence number over its extent, and the running index answers the
-// extent missing, never the bytes of a placement the unlink takes away.
+// whose header verified at the open's walk, with no seal, no successor and
+// no synced-through covering it, and whose body fails the copy's whole read,
+// the rot landing between the two, leaves the copy with no record of it and
+// an unsynced loss record naming its sequence number over its extent, and
+// the running index answers the extent missing, never the bytes of a
+// placement the unlink takes away.
 func TestReadFoundRotRidesTheLossRecord(t *testing.T) {
 	file := tailFile()
 	r := newRig(t)
@@ -848,6 +848,89 @@ func TestReadFoundRotRidesTheLossRecord(t *testing.T) {
 	}
 	if _, ok := st.Rebuilt.Index.Lookup(file, 0x4100); ok {
 		t.Errorf("the index still serves a record at 0x4100 from an unlinked segment, want the rot's cut leaving the extent missing")
+	}
+}
+
+// TestReadFoundRotInASealedHolderReadsLost holds the read-found leg over a
+// record its seal proves synced: a sealed holder emptied for its failed
+// records, whose surviving write's body rots between the open's walk and the
+// copy's whole read, leaves a loss record carrying the synced bit, and the
+// index answers the extent lost, a loss marker, never a hole an older copy
+// could fill at the next open.
+func TestReadFoundRotInASealedHolderReadsLost(t *testing.T) {
+	f := newFailedFixture(t)
+	st, h := f.open(t)
+	placed, ok := st.Rebuilt.Index.Lookup(f.file, f.survOff)
+	if !ok || placed.Record.Segment != 5 {
+		t.Fatalf("the survivor serves %+v (%v) at the open, want it placed in the sealed holder 5", placed, ok)
+	}
+	rotByte(t, f.r, format.SegmentName(5), int64(placed.Record.Offset)+format.RecordHeaderSize)
+
+	if err := Emptying(context.Background(), h.deps, st, journalID, core.Version{}, nil); err != nil {
+		t.Fatalf("Emptying: %v", err)
+	}
+	if slices.Contains(f.r.listing(), format.SegmentName(5)) {
+		t.Errorf("the sealed holder 5 is still on disk, want it unlinked by the emptying")
+	}
+	found := false
+	for _, name := range f.r.listing() {
+		kind, id := format.ClassifyName(name)
+		if kind != format.NameSegment {
+			continue
+		}
+		bs, err := f.r.seam.Durable(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		walk, werr := format.ScanSegmentHeaders(bytes.NewReader(bs), int64(len(bs)), journalID, id)
+		if werr != nil {
+			t.Fatalf("walking %s: %v", name, werr)
+		}
+		for _, rec := range walk.Records {
+			if rec.Header.Kind != format.KindLoss {
+				continue
+			}
+			body, berr := format.VerifyRecordBody(bs[rec.Header.Offset+format.RecordHeaderSize:rec.Header.Offset+rec.Header.Size()], journalID, rec.Header)
+			if berr != nil || body.Loss.Dropped != f.survSeq {
+				continue
+			}
+			found = true
+			if !body.Loss.Synced {
+				t.Errorf("the loss record of the rotted seq %d carries no synced bit, want it: the holder's seal proves the record synced", f.survSeq)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no loss record names the rotted record of seq %d, want the copy carrying it", f.survSeq)
+	}
+	lost := false
+	for _, ch := range st.Rebuilt.Index.Since(f.file, core.Version{}) {
+		if ch.Kind == core.ChangeLoss && ch.Extent.Off <= f.survOff && f.survOff < ch.Extent.Off+ch.Extent.Len {
+			lost = true
+		}
+	}
+	if !lost {
+		t.Errorf("the index yields no loss marker over the rotted extent at %d, want the synced loss reading lost", f.survOff)
+	}
+}
+
+// rotByte flips the byte at off of the file name and syncs it: the device
+// failing under the open, between its walk and the emptying's reads.
+func rotByte(t *testing.T, r *rig, name string, off int64) {
+	t.Helper()
+	seg, err := r.seam.Durable(name)
+	if err != nil {
+		t.Fatalf("read %s to rot: %v", name, err)
+	}
+	fo, err := r.seam.Open(name)
+	if err != nil {
+		t.Fatalf("open %s to rot: %v", name, err)
+	}
+	if _, err := fo.WriteAt([]byte{seg[off] ^ 0xff}, off); err != nil {
+		t.Fatalf("rot %s at %d: %v", name, off, err)
+	}
+	if err := errors.Join(fo.Sync(), fo.Close()); err != nil {
+		t.Fatalf("sync the rot of %s: %v", name, err)
 	}
 }
 
