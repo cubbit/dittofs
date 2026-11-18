@@ -206,14 +206,11 @@ func (m *Model) Compare(ctx context.Context, tag shareTag, v View) error {
 			continue
 		}
 		st := derive(f, all)
-		if len(st.held) > 0 || len(st.markers) > 0 {
+		if st.holds() || len(st.markers) > 0 {
 			wantFiles[id] = true
 		}
-		for off := range st.held {
-			if !st.bit[off] {
-				wantDirty[id] = true
-				break
-			}
+		if st.dirty() {
+			wantDirty[id] = true
 		}
 	}
 	gotFiles, gotDirty := map[fileID]bool{}, map[fileID]bool{}
@@ -503,8 +500,8 @@ func merge(es []extent) []extent {
 // names the bytes, as the run of them that differ the same way, and the rule
 // the journal broke where one is.
 func differ(o *observation, st *fileState, ceiling version) string {
-	if d := firstRunIn(st.held, func(off int64) string {
-		c := st.held[off]
+	if d := firstRunIn(st.cells(), func(off int64) string {
+		c := st.cells()[off]
 		switch got, ok := o.held[off]; {
 		case !ok && c.rec.durable && c.rec.kind == kindWrite:
 			return fmt.Sprintf("held by %s, but the journal reports them missing: a synced write was lost", heldBy(c))
@@ -522,7 +519,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 		return d
 	}
 	if d := firstRunIn(o.held, func(off int64) string {
-		if _, ok := st.held[off]; !ok {
+		if _, ok := st.cells()[off]; !ok {
 			return fmt.Sprintf("served at %s, but the model holds nothing there: removed, released or never written", fmtVersion(o.held[off].ver))
 		}
 		return ""
@@ -530,7 +527,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 		return d
 	}
 	if d := firstRunIn(o.extents, func(off int64) string {
-		if _, ok := st.held[off]; !ok {
+		if _, ok := st.cells()[off]; !ok {
 			return "named by Extents, but the model holds nothing there"
 		}
 		return ""
@@ -545,7 +542,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 	// up to its bucket until it next changes, so that no read begun before
 	// the reopen can still fill. Require equality after a reopen if the RFC
 	// ever rebuilds an entry from its records alone.
-	entry := len(st.held) > 0 || len(st.markers) > 0
+	entry := st.holds() || len(st.markers) > 0
 	switch {
 	case entry && st.change != (version{}) && !st.inexact && o.asOf != st.change:
 		return fmt.Sprintf("a read reports the file changed at %s, but its newest change is %s: a file with an index entry reports its change version", fmtVersion(o.asOf), fmtVersion(st.change))
@@ -576,17 +573,17 @@ func differ(o *observation, st *fileState, ceiling version) string {
 		return d
 	}
 
-	if d := firstRunIn(st.held, func(off int64) string {
+	if d := firstRunIn(st.cells(), func(off int64) string {
 		got, ok := o.bits[off]
-		want := st.held[off]
+		want := st.cells()[off]
 		switch {
 		case !ok:
 			return "held, but the index has no held entry for them"
 		case got.ver != want.rec.ver:
 			return fmt.Sprintf("held at %s, but the index names %s", fmtVersion(want.rec.ver), fmtVersion(got.ver))
-		case got.offloaded && !st.bit[off]:
+		case got.offloaded && !st.bits()[off]:
 			return fmt.Sprintf("dirty at %s, but the index marks them offloaded: a release would evict the only copy", fmtVersion(want.rec.ver))
-		case !got.offloaded && st.bit[off]:
+		case !got.offloaded && st.bits()[off]:
 			return fmt.Sprintf("offloaded at %s, but the index marks them dirty", fmtVersion(want.rec.ver))
 		}
 		return ""
@@ -594,7 +591,7 @@ func differ(o *observation, st *fileState, ceiling version) string {
 		return d
 	}
 	return firstRunIn(o.bits, func(off int64) string {
-		if _, ok := st.held[off]; !ok {
+		if _, ok := st.cells()[off]; !ok {
 			return "named held by the index, but the model holds nothing there"
 		}
 		return ""

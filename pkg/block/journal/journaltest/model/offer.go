@@ -94,12 +94,12 @@ func (m *Model) Offer(tag shareTag, id fileID, through version, limit, widen int
 			return m.mismatch(op, id, "offered %v stamped, but no stamp was given", d.Extent)
 		}
 		for off := d.Extent.Off; off < end(d.Extent); off++ {
-			c, held := below.held[off]
+			c, held := below.cells()[off]
 			switch {
 			case !held:
 				return m.mismatch(op, id, "offered byte %d, not held at or below %v", off, through)
-			case c.rec.ver != d.Version || c.rec.kind != kindWrite || below.bit[off]:
-				return m.mismatch(op, id, "offered byte %d at %v, but it is %s content at %v (offloaded %t)", off, d.Version, c.rec.kind, c.rec.ver, below.bit[off])
+			case c.rec.ver != d.Version || c.rec.kind != kindWrite || below.bits()[off]:
+				return m.mismatch(op, id, "offered byte %d at %v, but it is %s content at %v (offloaded %t)", off, d.Version, c.rec.kind, c.rec.ver, below.bits()[off])
 			}
 		}
 		if err := readsAs(o.Offered, d.Extent, below); err != "" {
@@ -152,7 +152,7 @@ func (m *Model) Offer(tag shareTag, id fileID, through version, limit, widen int
 	captured := map[*record][]extent{}
 	capture := func(st *fileState, e extent) {
 		for off := e.Off; off < end(e); off++ {
-			if c, ok := st.held[off]; ok {
+			if c, ok := st.cells()[off]; ok {
 				captured[c.rec] = append(captured[c.rec], extent{Off: off, Len: 1})
 			}
 		}
@@ -197,8 +197,8 @@ func (m *Model) checkNeighbours(id fileID, widen int64, o journal.Offer, cur *fi
 	}
 	for _, n := range o.Neighbours {
 		for off := n.Extent.Off; off < end(n.Extent); off++ {
-			c, held := cur.held[off]
-			if !held || c.rec.ver != n.Version || !cur.bit[off] {
+			c, held := cur.cells()[off]
+			if !held || c.rec.ver != n.Version || !cur.bits()[off] {
 				return m.mismatch(op, id, "offered neighbour byte %d at %v, not offloaded content held at that version", off, n.Version)
 			}
 		}
@@ -275,7 +275,7 @@ func readsAs(r io.ReaderAt, e extent, st *fileState) string {
 		return fmt.Sprintf("Offered failed reading %s: %v", fmtExtent(e), err)
 	}
 	for i, b := range buf {
-		if want := st.held[e.Off+int64(i)].b; b != want {
+		if want := st.cells()[e.Off+int64(i)].b; b != want {
 			return fmt.Sprintf("Offered byte %d is %q, not %q", e.Off+int64(i), b, want)
 		}
 	}
@@ -408,14 +408,14 @@ func (m *Model) mustOffer(id fileID, through version) (int64, version, bool) {
 	}
 	cur := derive(f, all)
 	below := derive(f, func(r *record) bool { return r.ver.Compare(through) <= 0 })
-	for _, off := range slices.Sorted(maps.Keys(below.held)) {
-		c := below.held[off]
-		if c.rec.kind != kindWrite || below.bit[off] {
+	for _, off := range slices.Sorted(maps.Keys(below.cells())) {
+		c := below.cells()[off]
+		if c.rec.kind != kindWrite || below.bits()[off] {
 			continue
 		}
-		top, held := cur.held[off]
+		top, held := cur.cells()[off]
 		switch {
-		case held && top.rec == c.rec && !cur.bit[off]:
+		case held && top.rec == c.rec && !cur.bits()[off]:
 			return off, c.rec.ver, true
 		case held && top.rec.kind == kindWrite && top.rec.ver.Compare(through) > 0:
 			return off, c.rec.ver, true
@@ -444,8 +444,8 @@ func (m *Model) Release(tag shareTag, id fileID, extents []extent, err error) er
 
 	cur := m.current(id)
 	dirtyAt := int64(-1)
-	for off := range cur.held {
-		if !cur.bit[off] && slices.ContainsFunc(extents, func(e extent) bool { return covers(e, off) }) {
+	for off := range cur.cells() {
+		if !cur.bits()[off] && slices.ContainsFunc(extents, func(e extent) bool { return covers(e, off) }) {
 			dirtyAt = off
 			break
 		}

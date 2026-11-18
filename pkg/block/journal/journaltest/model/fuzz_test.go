@@ -194,8 +194,8 @@ func (d *driver) step() {
 		err := d.other(id, tag)
 		if err == nil {
 			st := d.journal.current(id)
-			for off := range st.held {
-				if covers(e, off) && !st.bit[off] {
+			for off := range st.cells() {
+				if covers(e, off) && !st.bits()[off] {
 					err = journal.ErrNotOffloaded
 					break
 				}
@@ -298,7 +298,7 @@ func (d *driver) compare() {
 		if f.unresolved {
 			continue
 		}
-		for off, c := range d.m.current(id).held {
+		for off, c := range d.m.current(id).cells() {
 			if !d.given[id][c.rec.ver][off][c.b] {
 				d.t.Fatalf("%s byte %d holds %q at %s, which no write or fill gave", fmtFile(id), off, c.b, fmtVersion(c.rec.ver))
 			}

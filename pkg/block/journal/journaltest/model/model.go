@@ -164,28 +164,92 @@ type cell struct {
 
 // fileState is a file's content as decided from a set of its records.
 type fileState struct {
-	held    map[int64]cell
-	bit     map[int64]bool // offloaded bit of each held byte
-	markers []*record      // removals whose marker is live
-	change  version        // the highest version of a record that changed the file
-
-	// painters are the writes and fills the state was painted from: every
-	// held byte is read from one of them.
-	painters []*record
+	// spans are the held bytes as runs sorted by offset, each a maximal
+	// stretch read from one record; offloaded are the held bytes whose
+	// offloaded bit is set, as sorted, disjoint extents.
+	spans     []heldRun
+	offloaded []extent
+	markers   []*record // removals whose marker is live
+	change    version   // the highest version of a record that changed the file
 
 	// inexact reports that the journal may answer with a change version
 	// above change: a reopen raised the file to the floor, and a crash before
 	// it may have dropped a record the model cannot see. The file's next
 	// change draws a version above both.
 	inexact bool
+
+	// held and bit are the same state one map entry per byte, built from
+	// spans and offloaded the first time a caller asks for them.
+	held map[int64]cell
+	bit  map[int64]bool
+}
+
+// cells returns the held bytes one map entry per byte.
+func (st *fileState) cells() map[int64]cell {
+	if st.held == nil {
+		st.held = map[int64]cell{}
+		for _, s := range st.spans {
+			for off := s.ext.Off; off < end(s.ext); off++ {
+				st.held[off] = cell{s.rec.data[off-s.rec.ext.Off], s.rec}
+			}
+		}
+	}
+	return st.held
+}
+
+// bits returns the offloaded bit of each held byte that has it set.
+func (st *fileState) bits() map[int64]bool {
+	if st.bit == nil {
+		st.bit = map[int64]bool{}
+		for _, e := range st.offloaded {
+			for off := e.Off; off < end(e); off++ {
+				st.bit[off] = true
+			}
+		}
+	}
+	return st.bit
+}
+
+// holds reports whether any byte is held.
+func (st *fileState) holds() bool { return len(st.spans) > 0 }
+
+// dirty reports whether any held byte has its offloaded bit clear.
+func (st *fileState) dirty() bool {
+	var held, off int64
+	for _, s := range st.spans {
+		held += s.ext.Len
+	}
+	for _, e := range st.offloaded {
+		off += e.Len
+	}
+	return held > off
+}
+
+// cut returns spans with the bytes of e removed, cutting a run e covers in
+// part down to the rest of it.
+func cut(spans []heldRun, e extent) []heldRun {
+	out := make([]heldRun, 0, len(spans)+1)
+	for _, s := range spans {
+		if end(s.ext) <= e.Off || s.ext.Off >= end(e) {
+			out = append(out, s)
+			continue
+		}
+		if s.ext.Off < e.Off {
+			out = append(out, heldRun{extent{Off: s.ext.Off, Len: e.Off - s.ext.Off}, s.rec})
+		}
+		if end(s.ext) > end(e) {
+			out = append(out, heldRun{extent{Off: end(e), Len: end(s.ext) - end(e)}, s.rec})
+		}
+	}
+	return out
 }
 
 // derive decides every byte of f among the records keep admits.
 //
-// ponytail: the state is one map entry per held byte and every derivation
-// repaints every record, O(records × held bytes). The model is an oracle for
-// test-sized files; switch to an interval map if the model-based test needs
-// files of more than a few megabytes.
+// ponytail: every derivation repaints every record, each paint a pass over
+// the runs held so far, O(records × runs); only cells and bits expand the
+// state to one map entry per byte. Keep the runs in a search tree if a file
+// ever holds enough runs that the paint passes show in a profile.
 func derive(f *file, keep func(*record) bool) *fileState {
 	recs := slices.DeleteFunc(slices.Clone(f.recs), func(r *record) bool { return !keep(r) })
 	slices.SortFunc(recs, func(a, b *record) int {
@@ -195,21 +259,20 @@ func derive(f *file, keep func(*record) bool) *fileState {
 		return cmp.Compare(a.seq, b.seq)
 	})
 
-	st := &fileState{held: map[int64]cell{}, bit: map[int64]bool{}}
+	st := &fileState{}
 	var marks []*record
 	for _, r := range recs {
 		switch {
 		case r.kind == kindWrite || r.kind == kindFill:
-			st.painters = append(st.painters, r)
-			for i, b := range r.data {
-				st.held[r.ext.Off+int64(i)] = cell{b, r}
+			if len(r.data) == 0 {
+				break
 			}
+			e := extent{Off: r.ext.Off, Len: int64(len(r.data))}
+			st.spans = cut(st.spans, e)
+			i, _ := slices.BinarySearchFunc(st.spans, e.Off, func(s heldRun, off int64) int { return cmp.Compare(s.ext.Off, off) })
+			st.spans = slices.Insert(st.spans, i, heldRun{e, r})
 		case r.kind == kindRelease || r.kind.removal():
-			for off := range st.held {
-				if covers(r.ext, off) {
-					delete(st.held, off)
-				}
-			}
+			st.spans = cut(st.spans, r.ext)
 		case r.kind == kindMark:
 			marks = append(marks, r)
 		}
@@ -230,18 +293,22 @@ func derive(f *file, keep func(*record) bool) *fileState {
 	// A mark sets the bit of the content of its version only, so it never
 	// marks a newer write over the bytes it names. Filled content came from
 	// the remote tier and is offloaded by construction.
-	for off, c := range st.held {
-		if c.rec.kind == kindFill {
-			st.bit[off] = true
+	var bits []extent
+	for _, s := range st.spans {
+		if s.rec.kind == kindFill {
+			bits = append(bits, s.ext)
 			continue
 		}
 		for _, mk := range marks {
-			if mk.ver == c.rec.ver && covers(mk.ext, off) {
-				st.bit[off] = true
-				break
+			if mk.ver != s.rec.ver {
+				continue
+			}
+			if lo, hi := max(s.ext.Off, mk.ext.Off), min(end(s.ext), end(mk.ext)); lo < hi {
+				bits = append(bits, extent{Off: lo, Len: hi - lo})
 			}
 		}
 	}
+	st.offloaded = merge(bits)
 	return st
 }
 
@@ -252,7 +319,7 @@ func all(*record) bool { return true }
 func (m *Model) current(id fileID) *fileState {
 	f := m.files[id]
 	if f == nil {
-		return &fileState{held: map[int64]cell{}, bit: map[int64]bool{}}
+		return &fileState{}
 	}
 	return derive(f, all)
 }
@@ -273,33 +340,15 @@ type heldRun struct {
 	rec *record
 }
 
-// heldRuns returns the held bytes of st as runs sorted by offset, found by
-// walking the bytes of the records st was painted from rather than by
-// sorting the bytes themselves.
-func (st *fileState) heldRuns() []heldRun {
-	var out []heldRun
-	for _, r := range st.painters {
-		for i := range r.data {
-			off := r.ext.Off + int64(i)
-			if c, ok := st.held[off]; !ok || c.rec != r {
-				continue
-			}
-			if n := len(out); n > 0 && out[n-1].rec == r && end(out[n-1].ext) == off {
-				out[n-1].ext.Len++
-				continue
-			}
-			out = append(out, heldRun{extent{Off: off, Len: 1}, r})
-		}
-	}
-	slices.SortFunc(out, func(a, b heldRun) int { return cmp.Compare(a.ext.Off, b.ext.Off) })
-	return out
-}
+// heldRuns returns the held bytes of st as runs sorted by offset.
+func (st *fileState) heldRuns() []heldRun { return st.spans }
 
 func (st *fileState) runs() []run {
-	offs := slices.Sorted(maps.Keys(st.held))
+	held, bits := st.cells(), st.bits()
+	offs := slices.Sorted(maps.Keys(held))
 	var out []run
 	for _, off := range offs {
-		c, bit := st.held[off], st.bit[off]
+		c, bit := held[off], bits[off]
 		if n := len(out); n > 0 {
 			last := &out[n-1]
 			if last.rec.seq == c.rec.seq && last.offloaded == bit && last.ext.Off+last.ext.Len == off {
@@ -316,7 +365,7 @@ func (st *fileState) runs() []run {
 // so that another share's call on it is certainly refused.
 func (f *file) holdsAnything() bool {
 	st := derive(f, all)
-	return len(st.held) > 0 || len(st.markers) > 0
+	return st.holds() || len(st.markers) > 0
 }
 
 // The two kinds of error the model returns, for errors.Is.
@@ -459,8 +508,8 @@ func (f *file) sync(captured map[*record][]extent) {
 func (f *file) countLive() {
 	st := derive(f, all)
 	live := map[*record]bool{}
-	for _, c := range st.held {
-		live[c.rec] = true
+	for _, s := range st.spans {
+		live[s.rec] = true
 	}
 	for _, r := range f.recs {
 		r.uncounted = r.kind.changes() && !live[r] && !r.hasMarker()

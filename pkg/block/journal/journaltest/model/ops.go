@@ -229,13 +229,13 @@ func (m *Model) Fill(tag shareTag, id fileID, off int64, p []byte, asOf, v versi
 
 	f = m.claim(f, tag, id)
 	for i := 0; i < len(p); {
-		if _, held := st.held[off+int64(i)]; held {
+		if _, held := st.cells()[off+int64(i)]; held {
 			i++
 			continue
 		}
 		j := i
 		for j < len(p) {
-			if _, held := st.held[off+int64(j)]; held {
+			if _, held := st.cells()[off+int64(j)]; held {
 				break
 			}
 			j++

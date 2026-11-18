@@ -327,7 +327,7 @@ fill off=32 len=4 pick=255
 	st := s.j.current(fileOf(0))
 	p := payload(steps[10])
 	for i := range p {
-		c, held := st.held[steps[10].Off+int64(i)]
+		c, held := st.cells()[steps[10].Off+int64(i)]
 		if !held || c.b != p[i] || c.rec.kind != kindFill {
 			t.Fatalf("byte %d of the last fill: held %v, want byte %d from a fill record", steps[10].Off+int64(i), held, p[i])
 		}

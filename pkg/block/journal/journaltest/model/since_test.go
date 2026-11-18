@@ -19,7 +19,7 @@ func sinceDiffersByByte(sv sinceView, st *fileState) string {
 		}
 	}
 	want := func(off int64) (sinceByte, bool) {
-		c := st.held[off]
+		c := st.cells()[off]
 		if c.rec.ver.Compare(sv.from) <= 0 {
 			return sinceByte{}, false
 		}
@@ -29,7 +29,7 @@ func sinceDiffersByByte(sv sinceView, st *fileState) string {
 		}
 		return w, true
 	}
-	if d := firstRunIn(st.held, func(off int64) string {
+	if d := firstRunIn(st.cells(), func(off int64) string {
 		w, ok := want(off)
 		got, named := writes[off]
 		switch {
@@ -45,7 +45,7 @@ func sinceDiffersByByte(sv sinceView, st *fileState) string {
 		return d
 	}
 	return firstRunIn(writes, func(off int64) string {
-		if _, ok := st.held[off]; !ok {
+		if _, ok := st.cells()[off]; !ok {
 			return fmt.Sprintf("named held by Since from %s, but the model holds nothing there", from)
 		}
 		return ""
