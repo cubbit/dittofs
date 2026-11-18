@@ -306,28 +306,32 @@ func (p *pipeline) interimIn(pd *pending, buf *resources.Buf, grant bool) {
 // has its interim, so Pends is not asked of it.
 func (p *pipeline) after(pd *pending, err error, reply *resources.Buf, release func()) (bool, error) {
 	pd.mu.Lock()
-	defer pd.mu.Unlock()
 	pd.in = false
 	pd.timer.Stop()
 	if err == nil || p.ctx.Err() != nil {
+		pd.mu.Unlock()
 		return false, err
 	}
 	bound := pd.tb.Errors.hold(err, pd.op, pd.h.Version())
 	if bound == nil {
+		pd.mu.Unlock()
 		return false, err
 	}
 	if pd.h.Next() != 0 && !pd.pend && !p.st.Hold.Pends(pd.h, err) {
 		pd.last = err
+		pd.mu.Unlock()
 		return false, ErrNotLast
 	}
 	now := p.sh.clock.Now()
 	at := bound(err, pd.start)
 	if !at.After(now) {
+		pd.mu.Unlock()
 		return false, err
 	}
 	if !pd.held {
 		interim := !pd.pend
 		if _, rerr := p.count(pd, true); rerr != nil {
+			pd.mu.Unlock()
 			return false, rerr
 		}
 		if interim {
@@ -358,6 +362,9 @@ func (p *pipeline) after(pd *pending, err error, reply *resources.Buf, release f
 		pd.timer = p.sh.clock.AfterFunc(wait, func() { p.redrive(pd) })
 	}
 	t.mu.Unlock()
+	// Its interim is out; what follows may run the chain's later members or
+	// wait for a status's buffer, so it holds no lock (§6.6).
+	pd.mu.Unlock()
 	release()
 	switch {
 	case closed:
