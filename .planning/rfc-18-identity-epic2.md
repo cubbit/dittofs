@@ -118,7 +118,7 @@ behind `Alloc` on `PutUser` and `PutGroup`; `Minter.Create`; identity's settings
 - The `oidc` scheme: deferred with `TokenVerifier`, the ledger row "OpenID Connect's
   `TokenVerifier` (RFC 18 §8.2) and §10's token rows".
 - Listing machines, unnamed users and unnamed groups: `ControlPlane.Users` and `Groups` walk the
-  name index, so they leave all three out, and T2.1's `UnnamedPrincipals` case pins that. A
+  name index, so they leave all three out, and T2.3's `UnnamedPrincipals` case pins that. A
   listing of every record is the RFC 18 plan's deferral ledger row "Listing every user or group
   record", owned by RFC 23's plan.
 
@@ -442,11 +442,7 @@ internal/identity/
   `entity`, a machine principal round-tripping through `MarshalText` and `ParsePrincipal`
   (catches `PrincipalMachine` left out of `principalKinds`, R3); in `entity`, `PrincipalUserPart`
   of `alice`, `ALICE`, `CORP\alice` and `Alice@CORP.EXAMPLE` each equal to
-  `FoldPrincipalName("alice")` (catches a form left unstripped or unfolded, D2);
-  `UnnamedPrincipals`, an unnamed user, an unnamed group and a machine each found by its
-  protocol ID while `ControlPlane.Users` lists only the named user and `Groups` nothing (catches
-  a listing over the `U‖` or `G‖` records, which the deferral ledger's "Listing every user or
-  group record" leaves to RFC 23). No test double.
+  `FoldPrincipalName("alice")` (catches a form left unstripped or unfolded, D2). No test double.
 
 ### T2.2 The ID counters and the domain SID: the allocation behind RFC 23's `Alloc`
 
@@ -523,8 +519,11 @@ internal/identity/
   a `Special`-kind record, each `ErrInvalid` (R1, R2, R3); a batch with uid 0 written and no
   `Alloc.UID`, refused rather than allocated (R12); the 300-group batch's records each read back
   with the raised `PGEN` as `Position` (catches a position left zero, RFC 23's R27); a user minted
-  with `Role` admin, refused, and `EnabledAdmins` unchanged (catches an admin outside the index).
-  No test double.
+  with `Role` admin, refused, and `EnabledAdmins` unchanged (catches an admin outside the index);
+  `UnnamedPrincipals`, an unnamed user, an unnamed group and a machine each found by its
+  protocol ID while `ControlPlane.Users` lists only the named user and `Groups` nothing (catches
+  a listing over the `U‖` or `G‖` records, which the deferral ledger's "Listing every user or
+  group record" leaves to RFC 23). No test double.
 
 ### T2.4 Identity's settings, `State` and `Deps.Secrets`
 
