@@ -333,11 +333,11 @@ func (sh *shared) closeLine(ls *labelSeries, r reason, err error, atAccept bool)
 }
 
 // closeAddressLine writes the per_address close at accept's line, naming the
-// address its quarter held back (R8): warning, at most once a minute per
+// address its quarter held back: warning, at most once a minute per
 // address, the next line carrying the count held back since the last
-// (RFC 25 section 5.2), on the server's clock, which decides the minute
-// (D3). The line names the address because no metric may carry a client
-// label (R55), so the log is where the noisy client is found.
+// (RFC 25 section 5.2), on the server's clock, which decides the minute.
+// The line names the address because no metric may carry a client label,
+// so the log is where the noisy client is found.
 func (sh *shared) closeAddressLine(ls *labelSeries, addr netip.Addr, err error) {
 	ok, held := sh.addressLine(addr).take(sh.clock.Now())
 	if !ok {

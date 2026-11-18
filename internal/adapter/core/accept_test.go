@@ -885,7 +885,7 @@ func dialFrom(t *testing.T, local netip.Addr, at netip.AddrPort) net.Conn {
 }
 
 // refusesFast fails t unless c, a socket refused at accept, sees its end at
-// once: no byte of it is read, so nothing is written back (R8).
+// once: no byte of it is read, so nothing is written back.
 func refusesFast(t *testing.T, c net.Conn) {
 	t.Helper()
 	defer func() { _ = c.Close() }()
@@ -930,7 +930,7 @@ func closesKey(reason string) string {
 
 // Over loopback with a limit of 8: one address holds two connections and its
 // third is closed under per_address before any byte of it is read, and a
-// second address still connects (R8, R9). Each refusal's line names its own
+// second address still connects. Each refusal's line names its own
 // address, so two addresses refused in the same minute log two lines, not
 // one and a suppressed count between them (RFC 20 section 10.3).
 func TestTheQuarterHoldsOneAddressWhileAnotherConnects(t *testing.T) {
@@ -1010,8 +1010,8 @@ func TestTheQuarterHoldsOneAddressWhileAnotherConnects(t *testing.T) {
 // The per_address close's line names the address its quarter refused, at most
 // once a minute: two refused connections over the first address log one line
 // carrying the address, and once the server's clock passes the minute the
-// next refusal logs a second, carrying the count it held back (R8; RFC 25
-// section 5.2; D3). A line per close, one that names no address, or one that
+// next refusal logs a second, carrying the count it held back (RFC 25
+// section 5.2). A line per close, one that names no address, or one that
 // drops the held-back count, fails here.
 func TestTheQuarterCloseLineNamesTheAddressOnceAMinute(t *testing.T) {
 	logged := &syncLog{}
@@ -1046,9 +1046,9 @@ func TestTheQuarterCloseLineNamesTheAddressOnceAMinute(t *testing.T) {
 		}
 		return n == 2
 	})
-	// Wait on the line, not the counter: the second close holds its line
-	// back, which the count alone cannot see, and the line is written by
-	// the server's own goroutine, in flight past the count.
+	// The line is decided before the close counts, so a wait on the count
+	// finds it decided: the second close's held back, its minute read before
+	// the clock moves.
 	refusesFast(t, dialFrom(t, loop1, at))
 	waitsFor(t, "the first refused close's line", func() bool { return len(logged.lines()) == 1 })
 	var first struct {
@@ -1081,12 +1081,12 @@ func TestTheQuarterCloseLineNamesTheAddressOnceAMinute(t *testing.T) {
 
 // With a limit of 1: a connection from 127.0.0.1 holds it, and one from
 // 127.0.0.2, below its own quarter, is closed under limit; once the first
-// closes the second address connects, its count given back at the teardown
-// (R60, D2). Two sources are needed because at 2 the quarter is 1, so every
+// closes the second address connects, its count given back at the
+// teardown. Two sources are needed because at 2 the quarter is 1, so every
 // refusal from an address holding one would be the quarter's too; here the
 // second address holds none, so the limit's refusal is its own. A count the
-// teardown never releases fails the last dial, which CheckLeaks cannot read
-// (G13).
+// teardown never releases fails the last dial, which CheckLeaks cannot
+// read.
 func TestALimitOfOneClosesASecondAddressUntilTheFirstCloses(t *testing.T) {
 	need127_0_0_2(t)
 	m := metrics.New("v", "c")
@@ -1134,7 +1134,7 @@ func TestALimitOfOneClosesASecondAddressUntilTheFirstCloses(t *testing.T) {
 // and a limit of 2: a dial from 127.0.0.1 and one from 127.0.0.2 are each
 // closed under pool; once the budget has room, one from each address is
 // admitted, and a third is refused at the limit the two now hold: the
-// refused accepts used no slot, and the count was back at zero (R60). A slot
+// refused accepts used no slot, and the count was back at zero. A slot
 // kept by a refused accept fails the second dial of this test, under which
 // connection_limit such refusals shut every adapter of the node to new
 // connections.
@@ -1264,7 +1264,7 @@ func poolCloses(t *testing.T, m *metrics.Registry) float64 {
 }
 
 // Two servers over one Budgets share the count: an address holding two
-// connections on one is refused on the other (R60). A count per server,
+// connections on one is refused on the other. A count per server,
 // under which NFS's and SMB's connections would each get the whole limit,
 // fails here.
 func TestTwoServersShareOneConnectionCount(t *testing.T) {

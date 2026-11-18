@@ -57,7 +57,8 @@ const acceptIdle = 10 * time.Second
 // node's connection count for its remote address, then charged to the
 // connection-state budget; one either of them refuses is closed at once,
 // before any byte is read, its admission given back where the charge
-// refused it, and handed to serveConn with both when neither does (R60).
+// refused it, and handed to serveConn with both when neither does (RFC 24
+// section 4.4).
 // An Accept error but the listener's own close and the deadline's own wake
 // is retried after the backoff; the first and the last failure of each
 // streak are recorded on the server's clock, so Health derives the lost
@@ -127,11 +128,11 @@ func (s *Server) acceptLoop(b *bound) {
 		if watch != nil {
 			watch.Turn()
 		}
-		// One count per node (R60): the socket is taken from it for its
-		// remote address before the connection-state charge (R7). A refusal
+		// One count per node: the socket is taken from it for its remote
+		// address before the connection-state charge. A refusal
 		// closes the socket at once, before any byte is read, and counts
 		// under limit, or under per_address where its address's quarter
-		// refused it, whose line names the address (R8).
+		// refused it, whose line names the address.
 		remote, _ := remoteOf(nc)
 		if lerr := s.d.Budgets.Conns.Take(remote); lerr != nil {
 			_ = nc.Close()
@@ -140,12 +141,14 @@ func (s *Server) acceptLoop(b *bound) {
 				r = rsnPerAddress
 			}
 			ls := s.sh.label(b.l.label)
-			ls.refusedAtAccept(r)
+			// The line's minute is read before the close counts, so a reader
+			// of the count finds that read done.
 			if r == rsnPerAddress {
 				s.sh.closeAddressLine(ls, remote, lerr)
 			} else {
 				s.sh.closeLine(ls, r, lerr, true)
 			}
+			ls.refusedAtAccept(r)
 			continue
 		}
 		charge, cerr := s.d.Budgets.Connection.Reserve(connCharge)
@@ -153,7 +156,7 @@ func (s *Server) acceptLoop(b *bound) {
 			// The budget is full: the socket closes at once, before any byte
 			// is read, and the server holds nothing of it. The count its
 			// admission took goes back at once, before the close, so such a
-			// refusal shuts no adapter of the node to new connections (R60).
+			// refusal shuts no adapter of the node to new connections.
 			// The close counts under pool, at accept, whose line the minute
 			// rate-limits (§10.1, §10.3).
 			s.d.Budgets.Conns.Release(remote)

@@ -48,7 +48,7 @@ func (l *loggedBuf) String() string {
 
 // budgets is a fresh set of the budgets a server's tests need: the four on
 // the request path and the node's connection count, through adaptertest, so
-// every test-built server runs with a limit (R60).
+// every test-built server runs with a limit.
 func budgets() *resources.Budgets { return adaptertest.Budgets() }
 
 // testServer is a server serving testproto's bare protocol under snap, its

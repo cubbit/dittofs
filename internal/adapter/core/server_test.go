@@ -24,7 +24,7 @@ import (
 
 // newDeps is a server's dependencies, with the budgets the leak check reads:
 // the four on the request path and the node's connection count, through
-// adaptertest, so every test-built server runs with a limit (R60).
+// adaptertest, so every test-built server runs with a limit.
 func newDeps() adapter.Deps {
 	return adapter.Deps{VFS: vfstest.Null{}, Budgets: adaptertest.Budgets()}
 }
@@ -106,7 +106,7 @@ func dialRefused(t *testing.T, a netip.AddrPort) {
 
 // NewServer refuses a Budgets whose Conns is nil, naming Budgets.Conns: a
 // missing count would drop the node's connection limit silently, every accept
-// taking no count (R60). A check dropped fails here.
+// taking no count. A check dropped fails here.
 func TestNewServerRefusesABudgetsWithoutTheConnectionCount(t *testing.T) {
 	b := adaptertest.Budgets()
 	adaptertest.CheckLeaks(t, b)
