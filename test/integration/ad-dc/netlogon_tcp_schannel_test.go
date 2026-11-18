@@ -230,7 +230,10 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 		}
 		defer cl.Destroy()
 		for _, host := range []string{"dc1", "offjoinlegacy"} {
-			spns, _ := adDockerExec("samba-tool", "spn", "list", host+"$")
+			spns, err := adDockerExec("samba-tool", "spn", "list", host+"$")
+			if err != nil {
+				t.Fatalf("samba-tool spn list %s$: %v\n%s", host, err, spns)
+			}
 			if strings.Contains(strings.ToLower(string(spns)), "cifs/") {
 				t.Errorf("%s$ holds a cifs/ name, want host/ names only:\n%s", host, spns)
 			}
@@ -306,11 +309,22 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 		if err := conn.Modify(mod); err != nil {
 			t.Fatalf("set unicodePwd: %v", err)
 		}
-		t.Logf("msDS-KeyVersionNumber, added then given a password: %q after the add, %q after the password set", created, kvno(dn))
+		// These pin the answer the join's key version rests on: only an account
+		// given its password in the add starts at key version 1.
+		set := kvno(dn)
+		t.Logf("msDS-KeyVersionNumber, added then given a password: %q after the add, %q after the password set", created, set)
+		if created != "1" {
+			t.Errorf("msDS-KeyVersionNumber after the add, before the password set = %q, want 1", created)
+		}
+		if set != "2" {
+			t.Errorf("msDS-KeyVersionNumber after add-then-set = %q, want 2 (v1's join)", set)
+		}
 
 		// The password in the add itself.
 		dn = addComputer("spikekvnopw", 0x1000, "SpikeKvno02!")
-		t.Logf("msDS-KeyVersionNumber, added with its password: %q", kvno(dn))
+		if got := kvno(dn); got != "1" {
+			t.Errorf("msDS-KeyVersionNumber with the password in the add = %q, want 1", got)
+		}
 	})
 }
 
