@@ -31,6 +31,7 @@ type Conn struct {
 	remote     netip.Addr
 	remoteAddr netip.AddrPort         // the client's address as it reached this node
 	accept     *bound                 // the bound socket that accepted it, whose removal closes it; a hook's connection names none
+	service    string                 // the first service its listener names, which the client list reports
 	since      time.Time              // accepted at
 	charge     *resources.Reservation // the connection-state charge the accept loop took; nil for none
 
@@ -235,7 +236,7 @@ var errIdle = errors.New("core: the idle deadline passed")
 func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, charge *resources.Reservation) *Conn {
 	snap := *s.settings.Load()
 	remote, port := remoteOf(nc)
-	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, remote: remote, remoteAddr: port, accept: b, since: time.Now(), charge: charge, done: make(chan struct{})}
+	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, remote: remote, remoteAddr: port, accept: b, service: l.Services[0], since: time.Now(), charge: charge, done: make(chan struct{})}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	st, err := withDefaults(l.Protocol.NewConn(c))
 	if err != nil {
@@ -306,15 +307,6 @@ func (c *Conn) teardown() {
 	c.release()
 	c.srv.unregister(c)
 	_ = c.nc.Close()
-}
-
-// protocol is the connection's protocol label, what a request records before
-// Route.
-func (c *Conn) protocol() string {
-	if c.p == nil {
-		return ""
-	}
-	return c.p.st.Protocol
 }
 
 // release gives the connection's charge back to the connection-state budget

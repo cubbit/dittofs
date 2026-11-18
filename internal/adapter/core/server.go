@@ -507,6 +507,10 @@ func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort {
 // Health is the server's state with the conditions its sockets' own evidence
 // derives: a lost listener raises adapter_listener_lost until its next
 // accepted connection. The server reports no other condition.
+//
+// decision: no self-probe. Orchestrators probe the HTTP endpoints, never the
+// protocol ports: a TCP probe on 445 or 2049 opens a connection the adapter
+// charges and logs (RFC 20 section 3.7).
 func (s *Server) Health() adapter.Health {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -522,12 +526,14 @@ func (s *Server) Health() adapter.Health {
 }
 
 // Connections lists the connections open now, as the API's client list reads
-// them; a connection whose protocol names no session reports none.
+// them: each with its Protocol, the first service its listener names, its
+// remote address, an empty Session, which RFC 21 and RFC 22's sessions
+// name, and its accept time (RFC 20 section 3.4).
 func (s *Server) Connections() iter.Seq[adapter.ConnInfo] {
 	s.mu.RLock()
 	infos := make([]adapter.ConnInfo, 0, len(s.conns))
 	for c := range s.conns {
-		infos = append(infos, adapter.ConnInfo{Protocol: c.protocol(), Remote: c.remoteAddr, Since: c.since})
+		infos = append(infos, adapter.ConnInfo{Protocol: c.service, Remote: c.remoteAddr, Since: c.since})
 	}
 	s.mu.RUnlock()
 	return func(yield func(adapter.ConnInfo) bool) {

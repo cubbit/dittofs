@@ -1320,8 +1320,8 @@ func TestTheRegistryListsLiveConnections(t *testing.T) {
 	var listed int
 	for info := range srv.Connections() {
 		listed++
-		if info.Protocol != "testproto" {
-			t.Errorf("a connection lists protocol %q", info.Protocol)
+		if info.Protocol != "test" {
+			t.Errorf("a connection lists protocol %q, want the first service its listener names", info.Protocol)
 		}
 	}
 	if listed != 1 {
@@ -1380,6 +1380,59 @@ func TestARefusedConnectionStopsItsTimers(t *testing.T) {
 		t.Fatalf("a refused connection left %d timer(s) armed", pending)
 	}
 	clk.Advance(2 * time.Minute)
+}
+
+// The client list's row over a listener naming two services: the connection
+// is listed with its Protocol, the first service its listener names, its
+// remote address, an empty Session and its accept time, and no longer once
+// it closed. A registry entry left after a close, or a Protocol read from a
+// service other than the first or from the stages' own label, fails here
+// (RFC 20 section 3.4).
+func TestConnectionsListTheFirstServiceAndDropClosedOnes(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"one", "two"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{}).Bare()}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, on("127.0.0.1"), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	_, client := clientAt(t, srv.Addrs()[key("one")][0])
+
+	waitsFor(t, "the connection to be listed", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n == 1
+	})
+	for info := range srv.Connections() {
+		if info.Protocol != "one" {
+			t.Errorf("a connection over a listener naming one and two lists protocol %q, want the first service", info.Protocol)
+		}
+		if info.Remote != client.LocalAddr().(*net.TCPAddr).AddrPort() {
+			t.Errorf("a connection lists remote %s, want the client's own address %s", info.Remote, client.LocalAddr())
+		}
+		if info.Session != "" {
+			t.Errorf("a connection lists session %q, want none: no protocol names one yet", info.Session)
+		}
+		if info.Since.Before(before) || info.Since.After(time.Now()) {
+			t.Errorf("a connection lists its accept at %v, outside the accept's own window", info.Since)
+		}
+	}
+	// A closed connection is listed no longer.
+	_ = client.Close()
+	waitsFor(t, "the closed connection to be dropped", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n == 0
+	})
 }
 
 // A connection answers an Echo over the full protocol, session and tree set up.
