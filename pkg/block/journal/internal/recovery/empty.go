@@ -41,17 +41,20 @@ func Emptying(ctx context.Context, deps Deps, st *State, expect core.JournalID, 
 	}
 	// The counts the open kept of the segments it read back ride the work
 	// span as attributes, the same figures the opened journal's Stats
-	// reports as its Recovery. The other phase children open in the run's
-	// own loop before their steps have read the directory, so the counts
-	// ride the one child opened over work that already holds them. A
-	// journal opened without a tracer keeps its context, as StartSpan's.
-	end := func(error) {}
-	if deps.Tracer != nil {
-		r := st.Reporting()
-		ctx, end = deps.Tracer(ctx, core.SpanOpenEmptying,
-			slog.Attr{Key: "catalog_segments", Value: slog.Int64Value(int64(r.CatalogSegments))},
-			slog.Attr{Key: "scanned_segments", Value: slog.Int64Value(int64(r.ScannedSegments))})
-	}
+	// reports as its Recovery.
+	//
+	// decision: the emptying's work span alone carries the counts, and the
+	// rebuild's span, where they are made, and the list's no-op span of this
+	// phase carry none: a Tracer takes attributes only when it opens a span,
+	// and the end function it returns takes the error alone, while the
+	// run's loop opens every phase child before the step has read the
+	// directory. A reader looking for the counts on the rebuild span finds
+	// them here. Withdrawn if the Tracer ever takes attributes at a span's
+	// end, which would carry them on the rebuild's own span.
+	r := st.Reporting()
+	ctx, end := startSpan(ctx, deps, core.SpanOpenEmptying,
+		slog.Int64("catalog_segments", int64(r.CatalogSegments)),
+		slog.Int64("scanned_segments", int64(r.ScannedSegments)))
 	defer func() { end(err) }()
 	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
 	empty := &emptying{deps: deps, rd: rd, st: st, identity: expect, marks: marks}

@@ -4,10 +4,8 @@ package conformance
 
 import (
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // The allocations per operation of RFC 1 §9.7's counted row: one warm WriteAt, one ReadAt of held
@@ -83,14 +81,7 @@ func newAllocRig(t *testing.T) *allocRig {
 func allocsPerCall(t *testing.T, r *allocRig, op string, call func()) float64 {
 	t.Helper()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for prev := -1; ; time.Sleep(10 * time.Millisecond) {
-		if n := r.f.Seam.Calls(kit.OpWrite); n == prev || time.Now().After(deadline) {
-			break
-		} else {
-			prev = n
-		}
-	}
+	quiet(t, r.f)
 	least := testing.AllocsPerRun(10, call)
 	for range 4 {
 		least = min(least, testing.AllocsPerRun(10, call))

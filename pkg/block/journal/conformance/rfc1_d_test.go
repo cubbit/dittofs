@@ -255,22 +255,12 @@ func TestRFC1D_StatsCostIsFlat(t *testing.T) {
 	// AllocsPerRun counts the whole process's allocations, so each size is
 	// measured once the journal's background work, such as making spares, has
 	// gone quiet, and the smallest of several samples is kept.
-	quiet := func() {
-		deadline := time.Now().Add(2 * time.Second)
-		for prev := -1; ; time.Sleep(10 * time.Millisecond) {
-			n := f.Seam.Calls(kit.OpWrite)
-			if n == prev || time.Now().After(deadline) {
-				return
-			}
-			prev = n
-		}
-	}
 	allocsAt := func(extents int) float64 {
 		for i := f.J.Stats().ExtentCount; i < int64(extents); i++ {
 			// One-byte writes a byte apart never merge into one extent.
 			write(t, h, journaltest.File(1), 2*i, []byte{byte(i)})
 		}
-		quiet()
+		quiet(t, f)
 		least := testing.AllocsPerRun(10, func() { f.J.Stats() })
 		for range 4 {
 			least = min(least, testing.AllocsPerRun(10, func() { f.J.Stats() }))

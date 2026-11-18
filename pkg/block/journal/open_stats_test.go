@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -427,8 +428,18 @@ func TestTheOpenSpanCountsItsSegments(t *testing.T) {
 	plantSegment(t, f.seam, core.SegmentID(952),
 		plantRecord(1, ownerTag, fileOf(2), 11, 11, 0, 32))
 
+	// The open runs on a clock the tracer advances when the rebuild phase
+	// opens, so the duration the Stats report is the advance and nothing else.
+	const took = 37 * time.Millisecond
+	clock := kit.NewStopwatchClock()
 	rt := &recordingTracer{}
-	opts := append(f.opts(nil), WithTracer(rt.tracer))
+	tracer := func(ctx context.Context, op SpanOp, attrs ...slog.Attr) (context.Context, func(error)) {
+		if op == core.SpanOpenRebuild {
+			clock.Advance(took)
+		}
+		return rt.tracer(ctx, op, attrs...)
+	}
+	opts := append(f.opts(nil), WithClock(clock), WithTracer(tracer))
 	j := f.openTraced(t, opts)
 
 	if got := len(rt.of(core.SpanOpen)); got != 1 {
@@ -459,8 +470,11 @@ func TestTheOpenSpanCountsItsSegments(t *testing.T) {
 		t.Fatalf("no span of op %s carries catalog_segments, want the emptying's work span to", core.SpanOpenEmptying)
 	}
 	rec := j.Stats().Recovery
-	if rec.ScannedSegments == 0 {
-		t.Errorf("Recovery.ScannedSegments = 0, want the two planted segments read by scan")
+	if rec.CatalogSegments != 0 || rec.ScannedSegments != 2 {
+		t.Errorf("Recovery counts = %d by catalogue and %d by scan, want 0 and 2: the two planted segments, neither sealed with a catalogue", rec.CatalogSegments, rec.ScannedSegments)
+	}
+	if rec.Duration != took {
+		t.Errorf("Recovery.Duration = %v, want %v: the advance the test clock made during the open", rec.Duration, took)
 	}
 	if got, ok := attrs["catalog_segments"]; !ok || got != int64(rec.CatalogSegments) {
 		t.Errorf("the emptying's work span carries catalog_segments %d (present %v), want %d as the Stats reports", got, ok, rec.CatalogSegments)

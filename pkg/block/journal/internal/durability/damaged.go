@@ -61,19 +61,8 @@ func (d *Durability) Retired(seg core.SegmentID) {
 // seam: the runtime's damage rows come from the corrupt and copy paths that
 // raise them as they serve.
 func (d *Durability) DamagedAtOpen(segs []core.SegmentID) {
-	if len(segs) == 0 {
-		return
-	}
-	d.dmu.Lock()
-	defer d.dmu.Unlock()
 	for _, seg := range segs {
-		if _, ok := d.damaged[seg]; ok {
-			continue
-		}
-		if d.damaged == nil {
-			d.damaged = map[core.SegmentID]*damagedRow{}
-		}
-		d.damaged[seg] = &damagedRow{}
+		d.markDamaged(seg)
 	}
 }
 

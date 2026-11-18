@@ -401,12 +401,13 @@ func Run(ctx context.Context, deps Deps, floor core.Version, expect core.Journal
 // the span ctx carries, when one is given, and returns the context carrying
 // the new span with the function that ends it with the operation's error,
 // nil when it succeeded. A journal opened without a tracer keeps its ctx
-// and gets a no-op end.
-func startSpan(ctx context.Context, deps Deps, op core.SpanOp) (context.Context, func(error)) {
+// and gets a no-op end. attrs ride the span from its start: a Tracer takes
+// attributes only when it opens a span.
+func startSpan(ctx context.Context, deps Deps, op core.SpanOp, attrs ...slog.Attr) (context.Context, func(error)) {
 	if deps.Tracer == nil {
 		return ctx, func(error) {}
 	}
-	return deps.Tracer(ctx, op)
+	return deps.Tracer(ctx, op, attrs...)
 }
 
 // ReadFormat reads and decodes the journal's format file through the open's
