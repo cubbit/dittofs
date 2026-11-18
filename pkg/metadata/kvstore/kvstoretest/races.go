@@ -129,7 +129,7 @@ func testUniqueClaimsRace(t *testing.T, kvo Opener) {
 						if inner != nil {
 							t.Fatalf("the operation committing first failed: %v", inner)
 						}
-						if !isExist(outer) {
+						if !merrs.IsAlreadyExistsError(outer) {
 							t.Fatalf("the operation committing second: %v, want already exists", outer)
 						}
 					})

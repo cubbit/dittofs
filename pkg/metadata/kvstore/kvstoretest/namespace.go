@@ -100,7 +100,7 @@ func testCreateAndLookup(t *testing.T, kvo Opener) {
 	if _, _, err := ns.Lookup(ctx, f.admin, f.root, []byte("readme")); !merrs.IsNotFoundError(err) {
 		t.Errorf("case-sensitive share found readme: %v", err)
 	}
-	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("README"), regular(0o644)); !isExist(err) {
+	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("README"), regular(0o644)); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("second README: %v", err)
 	}
 	if _, _, err := ns.Create(ctx, f.admin, h, []byte("x"), regular(0o644)); err == nil {
@@ -114,7 +114,7 @@ func testCreateAndLookup(t *testing.T, kvo Opener) {
 		t.Errorf("a create naming its ID: %v, %v; want %v", drawn.ID, err, id)
 	}
 	nf.ID = made.ID
-	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("again"), nf); !isExist(err) {
+	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("again"), nf); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("a create naming README's ID: %v, want it existing", err)
 	}
 	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("a/b"), regular(0o644)); !errors.Is(err, entity.ErrInvalidName) {
@@ -136,7 +136,7 @@ func testCaseInsensitiveShare(t *testing.T, kvo Opener) {
 	f := newFS(t, kvo, entity.FoldUpcase)
 	ns := f.s.Namespace()
 	_, made := f.create(f.admin, f.root, "README", regular(0o644))
-	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("readme"), regular(0o644)); !isExist(err) {
+	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("readme"), regular(0o644)); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("readme beside README: %v", err)
 	}
 	f.c.Take()
@@ -225,7 +225,7 @@ func testExclusiveCreate(t *testing.T, kvo Opener) {
 	if err != nil || again.ID != first.ID {
 		t.Fatalf("retry with the same verifier: %v, %v", again.ID, err)
 	}
-	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("lock"), excl("v2")); !isExist(err) {
+	if _, _, err := ns.Create(ctx, f.admin, f.root, []byte("lock"), excl("v2")); !merrs.IsAlreadyExistsError(err) {
 		t.Errorf("another verifier: %v", err)
 	}
 	if first.Modify.IsZero() || string(first.CreateVerifier) != "v1" {

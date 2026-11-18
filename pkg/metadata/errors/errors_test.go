@@ -132,6 +132,7 @@ type classifier struct {
 
 var classifiers = []classifier{
 	{"IsNotFoundError", IsNotFoundError},
+	{"IsAlreadyExistsError", IsAlreadyExistsError},
 	{"IsLockConflictError", IsLockConflictError},
 	{"IsDeadlockError", IsDeadlockError},
 	{"IsGracePeriodError", IsGracePeriodError},
@@ -150,6 +151,7 @@ func TestClassifiers(t *testing.T) {
 	expect := map[ErrorCode]map[string]bool{
 		ErrNotFound:          {"IsNotFoundError": true},
 		ErrLockNotFound:      {"IsNotFoundError": true},
+		ErrAlreadyExists:     {"IsAlreadyExistsError": true},
 		ErrLocked:            {"IsLockConflictError": true},
 		ErrLockConflict:      {"IsLockConflictError": true},
 		ErrDeadlock:          {"IsDeadlockError": true},

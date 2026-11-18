@@ -88,7 +88,7 @@ func testMintAllOrNothing(t *testing.T, kvo Opener) {
 		Users:  []entity.MintUser{mintUser("alice")},
 		Groups: []entity.MintGroup{mintGroup("staff"), {Group: last}},
 	}
-	if err := s.Minter().Create(ctx, b); !isExist(err) {
+	if err := s.Minter().Create(ctx, b); !merrs.IsAlreadyExistsError(err) {
 		t.Fatalf("a batch whose last group holds another's SID: %v, want already exists", err)
 	}
 	if _, err := s.Principals().User(ctx, b.Users[0].User.Principal); !merrs.IsNotFoundError(err) {
@@ -143,7 +143,7 @@ func testMintNeverOverwrites(t *testing.T, kvo Opener) {
 		"user":  {Users: []entity.MintUser{{User: u}}},
 		"group": {Groups: []entity.MintGroup{{Group: g}}},
 	} {
-		if err := s.Minter().Create(ctx, b); !isExist(err) {
+		if err := s.Minter().Create(ctx, b); !merrs.IsAlreadyExistsError(err) {
 			t.Errorf("minting an existing %s's ID: %v, want already exists", what, err)
 		}
 	}
