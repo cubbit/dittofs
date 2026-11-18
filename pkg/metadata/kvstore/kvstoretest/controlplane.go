@@ -1,6 +1,7 @@
 package kvstoretest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
@@ -863,6 +865,63 @@ func testProjects(t *testing.T, kvo Opener) {
 	if _, err := ns.Rename(ctx, f.admin, sub, []byte("b"), out, []byte("b")); !errors.Is(err, entity.ErrCrossProject) {
 		t.Errorf("a file moved out of its project: %v", err)
 	}
+}
+
+// A krb spelling's linked SID is kept in the user's record and its index
+// row: put, changed and cleared on the same spelling, the row still
+// resolves and the record reads back what was put. On a spelling of any
+// other scheme, or not a well-formed SID, it is refused.
+func testKrbLinkedSID(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp, p := s.ControlPlane(), s.Principals()
+	krb := func(linked string) entity.ProtocolID { return krbAs("alice@AD.EXAMPLE", linked) }
+	u := user("alice", uid("1000"))
+	own := u.IDs[1] // the SID user gave alice to go with her uid
+	for i, linked := range []string{"S-1-5-21-1-2-3-1104", "S-1-5-21-1-2-3-1105", ""} {
+		u.IDs = entity.ProtocolIDs{uid("1000"), own, krb(linked)}
+		must(t, errOf(cp.PutUser(ctx, u, userGeneration(t, s, u.Principal), entity.Alloc{})))
+		if got, err := p.ByProtocolID(ctx, krb("")); err != nil || got != u.Principal {
+			t.Errorf("put %d, linked %q: ByProtocolID(krb) = %v, %v; want %v", i, linked, got, err, u.Principal)
+		}
+		got, err := p.User(ctx, u.Principal)
+		must(t, err)
+		if want := (entity.ProtocolIDs{uid("1000"), own, krb(linked)}); !slices.Equal(got.IDs, want) {
+			t.Errorf("put %d: record's IDs = %q, want %q", i, got.IDs, want)
+		}
+	}
+
+	// A spelling no user holds, so each refusal is the put's validation.
+	bad := krbAs("bob@AD.EXAMPLE", "S-1-5-21-1-2-3-1104")
+	bad.Linked = bad.Linked[:len(bad.Linked)-1] // a sub-authority cut short
+	linkedUID := uid("1001")
+	linkedUID.Linked = krbAs("", "S-1-5-21-1-2-3-1104").Linked
+	linkedSID := entity.ProtocolID{Scheme: entity.SchemeSID, Value: "\x01", Linked: linkedUID.Linked}
+	for _, c := range []struct {
+		name string
+		ids  entity.ProtocolIDs
+	}{
+		{"a uid spelling linked for a SID", entity.ProtocolIDs{linkedUID}},
+		{"a sid spelling linked for a SID", entity.ProtocolIDs{linkedSID}},
+		{"a krb spelling linked for a malformed SID", entity.ProtocolIDs{bad}},
+		{"one krb spelling twice, linked apart", entity.ProtocolIDs{krbAs("bob@AD.EXAMPLE", "S-1-5-21-1-2-3-1104"), krbAs("bob@AD.EXAMPLE", "S-1-5-21-1-2-3-1105")}},
+	} {
+		v := user("bob-"+strings.ReplaceAll(c.name, " ", "-"), c.ids...)
+		if _, err := cp.PutUser(ctx, v, 0, entity.Alloc{}); !isCode(err, merrs.ErrInvalidArgument) {
+			t.Errorf("%s: PutUser = %v, want %v", c.name, err, merrs.ErrInvalidArgument)
+		}
+	}
+}
+
+// krbAs is the krb spelling name, linked for the binary form of the SID
+// linked spells, or for none when it is empty.
+func krbAs(name, linked string) entity.ProtocolID {
+	id := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: name}
+	if linked != "" {
+		var b bytes.Buffer
+		sid.EncodeSID(&b, sid.ParseSIDMust(linked))
+		id.Linked = b.String()
+	}
+	return id
 }
 
 // A user's management API fields read back as written, its not-before in

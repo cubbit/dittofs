@@ -42,6 +42,7 @@ func Run(t *testing.T, open Opener) {
 		{"ParallelCreatesInOneDirectory", testParallelCreatesInOneDirectory},
 		{"UserRenameAndIDsMoveTheirRows", testUserRenameAndIDsMoveTheirRows},
 		{"UserAPIFields", testUserAPIFields},
+		{"KrbLinkedSID", testKrbLinkedSID},
 		{"PrincipalUniqueness", testPrincipalUniqueness},
 		{"WellKnownUserRefused", testWellKnownUserRefused},
 		{"ReservedIDsRefused", testReservedIDsRefused},

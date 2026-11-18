@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	authsid "github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 )
@@ -71,20 +72,52 @@ func readResource(r *codec.Reader, known *bool) entity.ResourceRef {
 func putIDs(w *codec.Writer, ids entity.ProtocolIDs) {
 	w.Len(len(ids))
 	for _, id := range ids {
-		w.Uint8(uint8(id.Scheme)).String(id.Value)
+		putLinked(w.Uint8(uint8(id.Scheme)).String(id.Value), id)
 	}
 }
 
-func readIDs(r *codec.Reader) entity.ProtocolIDs {
+func readIDs(r *codec.Reader) (entity.ProtocolIDs, error) {
 	n := r.Len()
 	if n == 0 {
-		return nil
+		return nil, nil
 	}
 	ids := make(entity.ProtocolIDs, n)
 	for i := range ids {
 		ids[i] = entity.ProtocolID{Scheme: entity.ProtocolScheme(r.Uint8()), Value: r.String()}
+		if err := readLinked(r, &ids[i]); err != nil {
+			return nil, err
+		}
 	}
-	return ids
+	return ids, nil
+}
+
+// putLinked writes a krb spelling's linked SID, empty for none. No other
+// scheme carries the field, so their encodings are unchanged.
+func putLinked(w *codec.Writer, id entity.ProtocolID) *codec.Writer {
+	if id.Scheme != entity.SchemeKerberos {
+		return w
+	}
+	return w.String(id.Linked)
+}
+
+// readLinked reads what putLinked wrote into id, refusing a SID that is not
+// well formed.
+func readLinked(r *codec.Reader, id *entity.ProtocolID) error {
+	if id.Scheme != entity.SchemeKerberos {
+		return nil
+	}
+	if id.Linked = r.String(); id.Linked != "" && !wellFormedSID(id.Linked) {
+		return errMalformed
+	}
+	return nil
+}
+
+// wellFormedSID reports a binary SID of revision 1 that is exactly as long
+// as its count of sub-authorities says, at most the fifteen a SID may have:
+// the only form a spelling is linked for.
+func wellFormedSID(b string) bool {
+	s, n, err := authsid.DecodeSID([]byte(b))
+	return err == nil && n == len(b) && s.Revision == 1 && s.SubAuthorityCount <= 15
 }
 
 // encodeUser writes the record's kind, a user or a machine, which its key
@@ -118,7 +151,10 @@ func decodeUser(id entity.PrincipalID, b []byte) (entity.User, error) {
 		return entity.User{}, err
 	}
 	kind := entity.PrincipalKind(r.Uint8())
-	u := entity.User{Principal: entity.Principal{Kind: kind, ID: id}, Name: r.String(), IDs: readIDs(r)}
+	u := entity.User{Principal: entity.Principal{Kind: kind, ID: id}, Name: r.String()}
+	if u.IDs, err = readIDs(r); err != nil {
+		return u, err
+	}
 	u.Primary = readPrincipal(r)
 	u.Disabled = r.Bool()
 	copy(u.Password[:], r.Fixed(16))
@@ -147,7 +183,10 @@ func decodeGroup(id entity.PrincipalID, b []byte) (entity.Group, error) {
 	if err != nil {
 		return entity.Group{}, err
 	}
-	g := entity.Group{Principal: entity.Principal{Kind: entity.PrincipalGroup, ID: id}, Name: r.String(), IDs: readIDs(r)}
+	g := entity.Group{Principal: entity.Principal{Kind: entity.PrincipalGroup, ID: id}, Name: r.String()}
+	if g.IDs, err = readIDs(r); err != nil {
+		return g, err
+	}
 	g.Generation, g.Position, g.Deleted = r.Uint64(), r.Uint64(), r.Bool()
 	return g, r.Done()
 }
@@ -195,17 +234,26 @@ func decodeID(b []byte) ([16]byte, error) {
 	return id, r.Done()
 }
 
-// encodePrincipal is a protocol-ID row's value: a SID names a user or a
-// group, so the row carries the kind as well as the ID.
-func encodePrincipal(p entity.Principal) []byte { return putPrincipal(codec.NewWriter(v1), p).Encode() }
+// encodeProtocolRow is id's protocol-ID row's value: a SID names a user or
+// a group, so the row carries the kind as well as the ID, and a krb row
+// also the SID it is linked for.
+func encodeProtocolRow(p entity.Principal, id entity.ProtocolID) []byte {
+	return putLinked(putPrincipal(codec.NewWriter(v1), p), id).Encode()
+}
 
-func decodePrincipal(b []byte) (entity.Principal, error) {
+// decodeProtocolRow reads the row of id's scheme and value, returning its
+// principal and id with the row's Linked.
+func decodeProtocolRow(id entity.ProtocolID, b []byte) (entity.Principal, entity.ProtocolID, error) {
+	id.Linked = ""
 	r, err := open(b)
 	if err != nil {
-		return entity.Principal{}, err
+		return entity.Principal{}, id, err
 	}
 	p := readPrincipal(r)
-	return p, r.Done()
+	if err := readLinked(r, &id); err != nil {
+		return p, id, err
+	}
+	return p, id, r.Done()
 }
 
 // encodeShareInfo writes the fields a share put owns; State is its own record.

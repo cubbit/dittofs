@@ -67,6 +67,20 @@ type Membership struct {
 type ProtocolID struct {
 	Scheme ProtocolScheme
 	Value  string
+	// Linked is the directory user SID a krb spelling was linked for, in
+	// its binary form as a sid spelling's Value is, empty for none. A string
+	// keeps ProtocolID comparable: == means the same scheme, value and link.
+	// Two spellings are one index row when their Scheme and Value agree,
+	// whatever their Linked.
+	//
+	// decision: the SID is a field of the spelling, stored in the record and
+	// in the spelling's index row, rather than a record of its own, because
+	// sign-in reads it through the user record it reads anyway and its
+	// writer, the link, writes that record. The store refuses it on any
+	// scheme but krb, as no reader looks for it there. Make it its own
+	// record if a reader ever needs it without the user's record, or a
+	// second scheme needs a link.
+	Linked string
 }
 
 type ProtocolIDs []ProtocolID
