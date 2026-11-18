@@ -24,8 +24,10 @@ const (
 	// TestCounted_AllocationsPerCall measured it here.
 	maxReadAllocs = 7.0
 	// Exactly what one Stats spent when TestCounted_AllocationsPerCall
-	// measured it here.
-	maxStatsAllocs = 13.0
+	// measured it here: the two above the 13 it spent before the open's
+	// own figures — Recovery with its duration, the extra counters — came
+	// to ride it, which the bound was not retuned for at the time.
+	maxStatsAllocs = 15.0
 )
 
 // allocRig is the fixture the allocation checks measure against, with the

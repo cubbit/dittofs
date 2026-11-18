@@ -166,6 +166,7 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 				return sc, false, rerr
 			}
 			sc.Records = append(sc.Records, rec)
+			sc.keptLast(h)
 		case e.Kind <= format.KindUnmark: // the remaining content kinds, 1-6, 8 and 9
 			// The record's header is read at the entry's offset and held to
 			// the entry's word, though its body is not: an entry is a summary
@@ -196,6 +197,14 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 				return sc, false, rerr
 			}
 			sc.Records = append(sc.Records, rec)
+			// A content record whose header rotted is fed on its entry's
+			// word, so the scan names its end by the entry's summary alone
+			// and keeps the pair — a segment whose last entry's header
+			// rotted reports the record before it, never a boundary its
+			// own bytes never proved.
+			if herr == nil {
+				sc.keptLast(h)
+			}
 		case e.Kind <= format.KindStamp: // the aside kinds whose bodies carry facts, 10-13
 			// A loss's flags and a hold's, unhold's or stamp's cut live only
 			// in the record's body, so the record is read at the entry's
@@ -223,6 +232,7 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 				continue
 			}
 			sc.Aside = append(sc.Aside, asideRecord{Header: h, Body: vb})
+			sc.keptLast(h)
 		case e.Kind == format.KindForget:
 			// decision: a forget record is carried as the header its entry
 			// claims, its record not read back at open. A forget names only
@@ -233,7 +243,9 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 			// buys: a forget record whose bytes disagree with its entry is
 			// caught by no read of this open — widened when a later phase
 			// reads the forget record back for its own rules.
-			sc.Aside = append(sc.Aside, asideRecord{Header: headerFromEntry(info.ID, e)})
+			h := headerFromEntry(info.ID, e)
+			sc.Aside = append(sc.Aside, asideRecord{Header: h})
+			sc.keptLast(h)
 		default: // the reconcile kinds, 15 and 16
 			return sc, false, fmt.Errorf("%w: a %s record in segment %d", core.ErrNotImplemented, e.Kind, info.ID)
 		}
@@ -343,6 +355,13 @@ func entryMatchesHeader(e format.CatalogEntry, h format.RecordHeader) error {
 			errEntryMismatch, h.Segment, h.Offset, h.Tag, e.Tag)
 	}
 	return nil
+}
+
+// keptLast notes the last record the catalogue kept, by its verified header:
+// the stream marks read the pair it maintains, and every neighbour of the
+// entry whose record rotted still names what its own bytes proved.
+func (sc *segmentScan) keptLast(h format.RecordHeader) {
+	sc.LastSeq, sc.LastEnd = h.Seq, h.Offset+h.Size()
 }
 
 // drop confines one catalogue record this read could not feed: the entry

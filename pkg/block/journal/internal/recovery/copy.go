@@ -338,6 +338,16 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 		return err
 	}
 	st.Proof.ReappendTarget = target
+	// The copies' own numbers, one per record the target took: the stream
+	// marks the open reports read them, for a re-appended record is the last
+	// verifying one its stream has and the entry names the copy, never the
+	// placement the device lost or the emptying unlinks.
+	for i, rec := range pending {
+		st.Proof.Replaced = append(st.Proof.Replaced, replacedRecord{
+			Source: rec.Segment, Target: target, At: at[i],
+			End: at[i] + rec.Header.Size(), Seq: rec.Header.Seq,
+		})
+	}
 	// The bytes the phase wrote back, the figure the served journal reports
 	// beside its own syncs' re-appends: the pending list alone, for the
 	// sealed copies the skip filtered out wrote nothing here.

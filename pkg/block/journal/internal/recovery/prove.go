@@ -26,6 +26,16 @@ type tailRecord struct {
 	First   []byte
 }
 
+// replacedRecord is one record the re-append phase wrote into its target:
+// the copy's placement and numbers, with the source the phase moved it from.
+type replacedRecord struct {
+	Source core.SegmentID
+	Target core.SegmentID
+	At     int64
+	End    int64
+	Seq    core.Seq
+}
+
 // proof is the tail proof's answer: the records the re-append phase takes,
 // the segments whose proof sync failed, and — one entry per segment whose
 // tail it actually read — the end of the last record that still held after
@@ -43,6 +53,14 @@ type proof struct {
 	// active row the continuation must seal. Zero when nothing re-appended
 	// or the copy failed; a failed target the fates name, ended whole.
 	ReappendTarget core.SegmentID
+
+	// Replaced holds, one per record the re-append wrote into its target
+	// this run, the copy's own numbers: the target, the record's source —
+	// the placement the device lost or the window failed — and the copy's
+	// header offset, its end and its sequence number. The stream marks the
+	// open reports read it: a re-appended record is the last verifying one
+	// its stream has, and where its copy verifies is where the entry names.
+	Replaced []replacedRecord
 
 	// ReappendedBytes is the payload bytes the re-append phase wrote back,
 	// the figure the served journal's own syncs count beside theirs.

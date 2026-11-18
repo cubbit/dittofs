@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"slices"
 
@@ -38,7 +39,19 @@ func Emptying(ctx context.Context, deps Deps, st *State, expect core.JournalID, 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	ctx, end := startSpan(ctx, deps, core.SpanOpenEmptying)
+	// The counts the open kept of the segments it read back ride the work
+	// span as attributes, the same figures the opened journal's Stats
+	// reports as its Recovery. The other phase children open in the run's
+	// own loop before their steps have read the directory, so the counts
+	// ride the one child opened over work that already holds them. A
+	// journal opened without a tracer keeps its context, as StartSpan's.
+	end := func(error) {}
+	if deps.Tracer != nil {
+		r := st.Reporting()
+		ctx, end = deps.Tracer(ctx, core.SpanOpenEmptying,
+			slog.Attr{Key: "catalog_segments", Value: slog.Int64Value(int64(r.CatalogSegments))},
+			slog.Attr{Key: "scanned_segments", Value: slog.Int64Value(int64(r.ScannedSegments))})
+	}
 	defer func() { end(err) }()
 	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
 	empty := &emptying{deps: deps, rd: rd, st: st, identity: expect, marks: marks}

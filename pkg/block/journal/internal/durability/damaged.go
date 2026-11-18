@@ -53,6 +53,30 @@ func (d *Durability) Retired(seg core.SegmentID) {
 	d.dropCopies(seg)
 }
 
+// DamagedAtOpen records the segments an open reported as damaged: one new
+// row per id, idempotent, an existing row left as it is — retired or not.
+// The open calls it once, past the recovery and before any step of its own
+// can retire a segment, so a segment the open then empties or retires keeps
+// its row with the retired flag the count survives on. It is the open's own
+// seam: the runtime's damage rows come from the corrupt and copy paths that
+// raise them as they serve.
+func (d *Durability) DamagedAtOpen(segs []core.SegmentID) {
+	if len(segs) == 0 {
+		return
+	}
+	d.dmu.Lock()
+	defer d.dmu.Unlock()
+	for _, seg := range segs {
+		if _, ok := d.damaged[seg]; ok {
+			continue
+		}
+		if d.damaged == nil {
+			d.damaged = map[core.SegmentID]*damagedRow{}
+		}
+		d.damaged[seg] = &damagedRow{}
+	}
+}
+
 // countUnproduced adds delta to the count of held records seg cannot produce,
 // dropping the entry at zero so the map follows the live holds.
 func (d *Durability) countUnproduced(seg core.SegmentID, delta int) {
