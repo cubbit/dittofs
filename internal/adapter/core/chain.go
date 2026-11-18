@@ -95,6 +95,8 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 		if u == nil {
 			if err == nil {
 				err = errUnwrapNeither
+			} else {
+				err = fmt.Errorf("%w: %w", errUnwrapClose, err)
 			}
 			p.drop(tr, rec, err)
 			return
@@ -290,6 +292,8 @@ func (c *chain) one(e *entry) bool {
 		if u == nil {
 			if err == nil {
 				err = errUnwrapNeither
+			} else {
+				err = fmt.Errorf("%w: %w", errUnwrapClose, err)
 			}
 			c.abort(e.tr, err)
 			return false
@@ -435,7 +439,7 @@ func (c *chain) status1(e *entry, h Header, s Status, cause error) {
 	buf.B = buf.B[:0]
 	if err := p.st.Header.Encode(h, s, buf); err != nil {
 		buf.Release()
-		c.abort(e.tr, err)
+		c.abort(e.tr, stageFault(err))
 		return
 	}
 	c.hold(held{tr: e.tr, h: h, reply: buf, s: s, final: true, err: cause})
@@ -621,7 +625,7 @@ func (c *chain) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Bu
 		reply.Release()
 		p.end(tr, false, 0, 0, ierr)
 		c.flush(splits, nil)
-		c.close(ierr)
+		c.close(stageFault(ierr))
 		return
 	}
 	c.hold(held{tr: tr, h: h, reply: reply, err: err})
@@ -705,7 +709,7 @@ func (c *chain) flush(why split, tr *track) {
 		for _, m := range c.held {
 			p.end(m.tr, false, 0, 0, err)
 		}
-		c.close(err)
+		c.close(stageFault(err))
 		return
 	}
 	// ponytail: the record is queued under its last member's key, so a

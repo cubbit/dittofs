@@ -345,7 +345,11 @@ func (c *Conn) teardown() {
 	c.stopTimers()
 	err := c.closeErr()
 	r := closeReason(err)
-	c.series.closed(r, c.established.Load())
+	// The flag is claimed here, not read: a request still running as the
+	// teardown counted its close can call Established after it, and the
+	// gauge must not drift to a handshake below zero with an established
+	// above it for good (§10.1).
+	c.series.closed(r, !c.established.CompareAndSwap(false, true))
 	c.sh.closeLine(c.series, r, err, c.p == nil)
 	// OnClose's context is the server's clock's, not the connection's: the
 	// close has cancelled that one (RFC 20 section 4.7).

@@ -2231,6 +2231,41 @@ func TestASessionMovesTheConnectionsGauge(t *testing.T) {
 	counted(t, m, "client")
 }
 
+// A late Established after the close moves no gauge: the teardown claims the
+// flag, so a request still running as the close was counted, a session setup
+// a reset cut off, that arrives after it leaves both states alone instead of
+// drifting handshake below zero with an established above it (§10.1).
+func TestALateEstablishedAfterTheCloseMovesNoGauge(t *testing.T) {
+	m := metrics.New("v", "c")
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	p := testproto.New(adapter.Deps{})
+	srv, l := protoServer(t, adapter.Deps{Metrics: m, Budgets: b}, settings.DefaultNFS(), p)
+	core.Serving(srv)
+	conn, peer := servedConn(t, srv, &l)
+	c := testproto.NewClient(peer)
+	if err := c.Send(testproto.Msg{Op: testproto.OpNegotiate, Version: 1, ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+		t.Fatalf("the Negotiate is answered %+v (%v)", rs, err)
+	}
+	waitsFor(t, "the gauge to raise the handshake state", func() bool {
+		values, _ := scrape(t, m)
+		return values["adapter_connections{protocol="+testproto.Name+",state=handshake}"] == 1
+	})
+	_ = peer.Close()
+	waitClosed(t, conn)
+	counted(t, m, "client")
+	conn.Established()
+	values, _ := scrape(t, m)
+	for _, state := range []string{"handshake", "established"} {
+		if k := "adapter_connections{protocol=" + testproto.Name + ",state=" + state + "}"; values[k] != 0 {
+			t.Errorf("a closed connection's late Established left the %s state at %v", state, values[k])
+		}
+	}
+}
+
 // Bytes in and out equal what the client wrote and read, framing included:
 // the record marks and the message headers count with the payloads (§10.1). A
 // count that leaves a header out fails here.
