@@ -169,8 +169,7 @@ func (r *refusals) refuse(field, format string, args ...any) {
 
 // Validate checks every field against its rule, shapes and ranges only,
 // touching no file, and returns an error naming the field and the rule; it
-// never clamps or defaults. New, Reconfigure and the control plane call it;
-// nfs.New loads the TLS files.
+// never clamps or defaults. New, Reconfigure and the control plane call it.
 func (s NFS) Validate() error {
 	var r refusals
 	s.validate(&r)
@@ -188,12 +187,10 @@ func (s NFS) Validate() error {
 			}
 		}
 	default:
-		if t.CertFile == "" {
-			r.refuse("TLS.CertFile", "empty while Mode is %s", t.Mode)
-		}
-		if t.KeyFile == "" {
-			r.refuse("TLS.KeyFile", "empty while Mode is %s", t.Mode)
-		}
+		// Until StartTLS is added, no mode but off is served, so no adapter
+		// serves in plaintext what its settings ask to carry over TLS, and
+		// no certificate file is loaded (RFC 20 sections 3.6 and 5.5).
+		r.refuse("TLS.Mode", "%q is not served until StartTLS: Mode is off until then", t.Mode)
 	}
 	return errors.Join(r...)
 }

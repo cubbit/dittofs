@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cubbit/dittofs/internal/tlsconfig"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 )
 
-// New builds the NFS adapter, configured: it validates s, refuses Deps
-// missing a required field, naming every one missing, and loads the TLS
-// files, refusing what it cannot apply, and opens nothing.
+// New builds the NFS adapter, configured: it validates s, refusing a TLS
+// mode other than off until StartTLS among the rest, refuses Deps missing a
+// required field, naming every one missing, and opens nothing.
 func New(d adapter.Deps, s settings.NFS) (adapter.Adapter, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
@@ -27,16 +26,6 @@ func New(d adapter.Deps, s settings.NFS) (adapter.Adapter, error) {
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("nfs: %s required", strings.Join(missing, ", "))
-	}
-	if s.TLS.Mode != "off" {
-		if _, err := tlsconfig.ServerConfig(tlsconfig.Config{
-			CertFile:   s.TLS.CertFile,
-			KeyFile:    s.TLS.KeyFile,
-			ClientCA:   s.TLS.ClientCA,
-			MinVersion: "1.3",
-		}); err != nil {
-			return nil, fmt.Errorf("nfs: TLS: %w", err)
-		}
 	}
 	return nil, fmt.Errorf("nfs: the NFS adapter is not built: %w", errors.ErrUnsupported)
 }

@@ -295,17 +295,21 @@ func SetListen(s *Server, f func(ctx context.Context, network, addr string) (net
 // loop's tests reach.
 
 // ServeConn hands the server a socket, which its accept loop does in
-// production, and returns the connection it serves on it.
-func ServeConn(s *Server, nc net.Conn, l *Listener) *Conn { return s.serveConn(nc, l, nil) }
+// production, and returns the connection it serves on it. A hook's connection
+// names no bound address, so a Reconfigure that removes an address never
+// closes it.
+func ServeConn(s *Server, nc net.Conn, l *Listener) *Conn {
+	return s.serveConn(nc, l, netip.Addr{}, nil)
+}
 
 // ServeConnCharged hands the server a socket with the connection-state charge
 // its accept loop would take, and returns the connection.
 func ServeConnCharged(s *Server, nc net.Conn, l *Listener, charge *resources.Reservation) *Conn {
-	return s.serveConn(nc, l, charge)
+	return s.serveConn(nc, l, netip.Addr{}, charge)
 }
 
 // SetServerSettings replaces the server's current snapshot, as Reconfigure
-// does once it lands, so a test can tell a connection's own from it.
+// does on a serving server, so a test can tell a connection's own from it.
 func SetServerSettings(s *Server, snap settings.Settings) { s.settings.Store(&snap) }
 
 // SetServerClock replaces the server's shared clock with a test's.

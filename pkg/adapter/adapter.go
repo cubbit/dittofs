@@ -6,6 +6,7 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"net/netip"
@@ -111,6 +112,11 @@ type ConnInfo struct {
 	Session  string         // the protocol's session the connection carries, as text; empty where none
 	Since    time.Time      // accepted at
 }
+
+// ErrPortChanged is what Reconfigure refuses a changed Port with: Port is
+// restart-class, the node builds a new adapter for it and never calls
+// Reconfigure with one.
+var ErrPortChanged = errors.New("adapter: port changed")
 
 // Sidecar runs beside adapters, reaches no service and holds no client state:
 // it tells clients where an adapter is, or that something happened.

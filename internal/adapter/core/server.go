@@ -319,13 +319,6 @@ func (s *Server) closeBound() {
 	s.bound = nil
 }
 
-// Reconfigure applies next, the server's own protocol's shape, to connections
-// set up after it returns; the other protocol's, or any other type, is
-// refused.
-func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error {
-	return fmt.Errorf("core: reconfigure: %w", errors.ErrUnsupported)
-}
-
 // Stop moves a serving server through draining to stopped, and a configured
 // one straight to stopped. It moves under the first lock to draining, one of
 // the four states (RFC 20 section 3.1), before it waits its loops, so while
