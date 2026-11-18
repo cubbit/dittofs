@@ -486,9 +486,9 @@ flowchart TD
   20's plan's S4 ("`internal/node` exists"), so it unblocks RFC 20's epic 7, which builds the
   adapters through their factories inside this node.
 - **🔀 X1, the RFC 13 plan's bootstrap and secrets.** Outside this plan: #4059's epic 2
-  (`pkg/bootstrap`, the node identity) and epic 4 (`pkg/secrets`). Epic 3 builds its composition,
+  (`pkg/bootstrap`, the node identity, the version gate) and epic 4 (`pkg/secrets`). Epic 3 builds its composition,
   start and stop and reconcile before it, on a `node.Config` its tests fill in; of epic 3, X1
-  gates only the node identity at start (its T3.10), and `dfs start` reads the bootstrap from the
+  gates only the node identity and the version gate at start (its T3.10), and `dfs start` reads the bootstrap from the
   RFC 13 plan's epic 1. Epic 5's `dfs init` and its signing key wait for it.
 - **🔀 X2, the RFC 18 plan's sign-in interface.** Outside this plan: #4058's epic 2 (`APISignIn`,
   `NewHashes`), served by identity composed in `node.New` (#4058's epic 8's T8.1). Epic 5 builds

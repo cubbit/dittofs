@@ -18,7 +18,7 @@ type. RFC 23's epic 2 (T2.8, the `Node` record with `Formats` and its
 `Format` and `VersionRange` types) for T2.8 here; S4, RFC 23's `dfs init`, for T2.9.
 **Blocks:** E5, which builds the node's table on a loaded bootstrap; partly E3, whose T3.1 and
 T3.6 read the binary's registered ranges T2.8 adds; RFC 23's epic 3 (`dfs start`
-reads `Load` and `NodeID`, its T3.10 calls `WriteMissingNodeIDs`) and epic 5 (`dfs init` calls
+reads `Load` and `NodeID`, its T3.10 calls `WriteMissingNodeIDs` and the version gate) and epic 5 (`dfs init` calls
 `InitNodeID`): its X1.
 
 ---
@@ -72,7 +72,8 @@ The loader and its refusals; the environment scan and its allowed names; the nod
   RFC 13's commands name only `show`, `validate` and `schema` (#4486).
 - The control plane's refusal to advance a namespace's block format version (RFC 13 §5.4): E3.
 - The other launchers on `dfs init` (Compose, `docker/`, the bench and demo scripts): E6.
-- The start step that calls `WriteMissingNodeIDs` and `dfs init` itself: RFC 23's T3.10 and T5.4.
+- The start steps that call `WriteMissingNodeIDs` (step 1) and the version gate (step 3), and `dfs
+  init` itself: RFC 23's T3.10 and T5.4.
 - The Kubernetes operator, a module of its own that still sets v1's names: RFC 23's O4.
 
 ### 1.3 Names used here
@@ -543,7 +544,8 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
   opens the store through `kvstore.Open`, which refuses a store format outside its range, naming
   both versions, and never rewrites the record; then writes the node's ranges to its `Node`
   record, store format included, and compares every `Installation.Active` version
-  with them, refusing with the format and both versions (a namespace's block format version waits
+  with them in that registration's one transaction (RFC 23 §2.2, step 3), so a refused start leaves
+  its node record as it was, refusing with the format and both versions (a namespace's block format version waits
   with its key, D12); the series, `format_active_version`, `format_supported_min` and
   `format_supported_max`; the `ponytail:` marker (D5). The gate adds no store-format branch of its
   own.
@@ -554,7 +556,8 @@ bench/                                 T2.9  dfsbench's backend on dfs init and 
   range through kvstore and the start refused, naming it (catches a gate that compares nothing);
   the store format in `\x00format` raised past `MaxFormat` the same way and the start refused
   naming the format and both versions, and the record unchanged (catches a gate that swallows
-  `kvstore.Open`'s refusal, or a start that rewrites the record); a start under an older active version keeps it and the
+  `kvstore.Open`'s refusal, or a start that rewrites the record); the node record as it was after
+  each refusal (catches a registration committed before the comparison, RFC 23 §2.2 step 3); a start under an older active version keeps it and the
   record is unchanged after (catches a start that upgrades, R25); after a start, the node record's
   `Formats` holds each format's range, the store format's equal to `MinFormat` and `MaxFormat`
   (catches a registration dropped or a range off by one, R22); an `Installation.Active` entry for a `Format` value this binary does not register, written through kvstore and read back, refuses the start naming the format (catches a gate that loops over its own ranges and skips it, and an `Active` codec that drops a key it does not know, as an older binary meets after a downgrade); the three series read from the
@@ -619,7 +622,3 @@ A suggestion only: one pull request per subtask works as well.
 - **No epic declares the namespace setting for the block format version (D12).** RFC 4's plan
   declares the key when it runs, and a deferral ledger row carries it. The gate gains the
   comparison then, and a start over a namespace record refuses a version outside the range.
-- **Nothing calls the version gate at start yet.** RFC 23's plan's epic 3 calls
-  `WriteMissingNodeIDs` in its T3.10 and does not name the gate or `Node.Formats`, so R22, R23 and
-  R26 have no production path until a start step calls T2.8's gate. Which subtask of RFC 23's epic 3
-  takes the call is for that plan to say.
