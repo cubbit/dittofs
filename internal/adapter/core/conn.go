@@ -63,7 +63,7 @@ func (c *Conn) Send(h Header, msg *resources.Buf, before uint64) error {
 		msg.Release()
 		return err
 	}
-	return c.w.out(msg, 0, before)
+	return c.w.out(msg, 0, 0, before)
 }
 
 // Established ends the handshake deadline: SMB at its first authenticated

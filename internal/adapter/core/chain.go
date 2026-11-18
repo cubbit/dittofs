@@ -708,12 +708,15 @@ func (c *chain) flush(why split, tr *track) {
 		c.close(err)
 		return
 	}
-	// ponytail: the record is queued under its last member's key, so a
-	// message that must go before a middle member's reply, sent once the
-	// record is queued, finds none to go before. Queue it under every
-	// member's key once Conn.Send, the only caller that hands out a before,
-	// is implemented.
-	sent := p.out(rec, c.held[len(c.held)-1].key)
+	// The record is queued under the least and greatest of its members'
+	// keys, so a callback naming any member goes ahead of it (§6.2); not the
+	// first and last, since a client picks its message IDs and a chain's need
+	// not rise.
+	lo, hi := c.held[0].key, c.held[0].key
+	for _, m := range c.held[1:] {
+		lo, hi = min(lo, m.key), max(hi, m.key)
+	}
+	sent := p.out(rec, lo, hi)
 	for _, m := range c.held {
 		p.end(m.tr, sent && m.final, m.s, m.n, m.err)
 	}

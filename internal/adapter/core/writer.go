@@ -20,11 +20,11 @@ import (
 // bind (RFC 24 section 5.1).
 const writeBound = 64
 
-// queued is one message the writer holds: its record, and the key of the
-// request whose reply it must precede.
+// queued is one message the writer holds: its record, and the least and
+// greatest keys of the replies it carries, 0 for none.
 type queued struct {
-	msg *resources.Buf
-	key uint64
+	msg    *resources.Buf
+	lo, hi uint64
 }
 
 // writer sends a connection's messages: a bounded queue, net.Buffers writes
@@ -74,10 +74,11 @@ func newWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(erro
 }
 
 // out queues msg, returning before it is sent: past the bound the queue still
-// takes it, so a caller never blocks. A message handed with before goes out
-// ahead of the reply of that key still queued. The writer takes the message's
-// reference whatever it returns.
-func (w *writer) out(msg *resources.Buf, key, before uint64) error {
+// takes it, so a caller never blocks. lo and hi are the least and greatest
+// keys of the replies msg carries; a message handed with before goes out
+// ahead of the first queued message whose keys span it. The writer takes the
+// message's reference whatever it returns.
+func (w *writer) out(msg *resources.Buf, lo, hi, before uint64) error {
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
@@ -87,7 +88,7 @@ func (w *writer) out(msg *resources.Buf, key, before uint64) error {
 	at := len(w.queue)
 	if before != 0 {
 		for i := range w.queue {
-			if w.queue[i].key == before {
+			if w.queue[i].lo <= before && before <= w.queue[i].hi {
 				at = i
 				break
 			}
@@ -95,7 +96,7 @@ func (w *writer) out(msg *resources.Buf, key, before uint64) error {
 	}
 	w.queue = append(w.queue, queued{})
 	copy(w.queue[at+1:], w.queue[at:])
-	w.queue[at] = queued{msg: msg, key: key}
+	w.queue[at] = queued{msg: msg, lo: lo, hi: hi}
 	w.held++
 	if w.held >= writeBound && isClosed(w.room) {
 		w.room = make(chan struct{})

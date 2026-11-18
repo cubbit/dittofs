@@ -248,14 +248,23 @@ func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, n int, at t
 // snapshot loaded at accept; the writer's enqueue; and Conn.Close, which the
 // pipeline calls where a stage says close. out never blocks its caller, takes
 // msg's reference whatever it returns, fails only once the connection is
-// closed, and sends a message handed with before ahead of the reply of that
-// key; key is the request's HoldCodec.Key in a table that holds, else 0.
+// closed, and sends a message handed with before ahead of the first queued
+// message whose keys span it, lo <= before <= hi. lo and hi are the least and
+// greatest HoldCodec.Key of the replies a message carries, in a table that
+// holds: equal for a reply alone, 0 for none.
+//
+// decision: a message is queued under the span of its replies' keys rather
+// than each key, so a chain's record costs no allocation. A callback whose
+// before falls inside a record's span without naming one of its members goes
+// ahead of that record too, earlier than it must, which breaks no order
+// RFC 20 section 6.2 keeps. Overturned if a callback must ever stay behind a
+// reply it does not name.
 type link struct {
 	ctx    context.Context
 	remote netip.Addr
 	set    settings.Settings // nil: none, so no operation is switched off
 	record int               // the protocol's record cap, Framer.MaxRecord's bytes: a chain's record and a compound's reply stay within it
-	out    func(msg *resources.Buf, key, before uint64) error
+	out    func(msg *resources.Buf, lo, hi, before uint64) error
 	close  func(err error)
 	idle   func() // called at each moment nothing runs any more
 	turn   func() // called when a request starts or ends, under the pipeline's mutex, so a connection's idle deadline knows its arm was superseded
@@ -552,7 +561,7 @@ func (p *pipeline) answer(tr *track, rec *resources.Buf, h Header, s Status, buf
 	n := len(buf.B)
 	var sent bool
 	if !wrap {
-		sent = p.out(buf, 0)
+		sent = p.out(buf, 0, 0)
 	} else {
 		sent = p.send(h, buf, 0)
 	}
@@ -564,14 +573,15 @@ func (p *pipeline) answer(tr *track, rec *resources.Buf, h Header, s Status, buf
 
 // out hands a message to the writer, which takes its reference, or, once the
 // pipeline is closed, drops it: a closed connection's replies are not sent.
-// It reports whether the writer took it, so a dropped reply's span is not
-// ended as sent (§10.2).
-func (p *pipeline) out(msg *resources.Buf, key uint64) bool {
+// lo and hi are the least and greatest keys of the replies it carries. It
+// reports whether the writer took it, so a dropped reply's span is not ended
+// as sent (§10.2).
+func (p *pipeline) out(msg *resources.Buf, lo, hi uint64) bool {
 	if p.ctx.Err() != nil {
 		msg.Release()
 		return false
 	}
-	return p.l.out(msg, key, 0) == nil
+	return p.l.out(msg, lo, hi, 0) == nil
 }
 
 // run is one admitted request alone, on its own goroutine, from the replay
@@ -1221,7 +1231,7 @@ func (p *pipeline) send(h Header, reply *resources.Buf, key uint64) bool {
 		p.l.close(err)
 		return false
 	}
-	return p.out(reply, key)
+	return p.out(reply, key, key)
 }
 
 // interim sends the interim a NoReply row gets in a table that holds, which

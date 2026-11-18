@@ -390,11 +390,11 @@ func (s *seam) connect(proto core.Protocol, remote netip.Addr, set settings.Sett
 	// timeout.
 	_ = conn.SetReadDeadline(time.Now().Add(time.Hour))
 	s.stop, s.client = stop, testproto.NewClient(conn)
-	sent := func(msg *resources.Buf, key, before uint64) error {
+	sent := func(msg *resources.Buf, lo, hi, before uint64) error {
 		if s.sent != nil {
 			s.sent(msg)
 		}
-		return out(msg, key, before)
+		return out(msg, lo, hi, before)
 	}
 	record, _ := s.f.MaxRecord()
 	s.p = core.NewPipeline(s.sh, st, context.Background(), remote, set, record, sent, func(err error) {

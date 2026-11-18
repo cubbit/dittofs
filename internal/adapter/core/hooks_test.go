@@ -200,7 +200,7 @@ var (
 	ErrNoHold        = errNoHold
 )
 
-func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, set settings.Settings, record int, out func(*resources.Buf, uint64, uint64) error, close func(error)) *Pipeline {
+func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, set settings.Settings, record int, out func(*resources.Buf, uint64, uint64, uint64) error, close func(error)) *Pipeline {
 	return newPipeline(sh, st, link{ctx: ctx, remote: remote, set: set, record: record, out: out, close: close})
 }
 
@@ -240,8 +240,8 @@ func NewTestWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(
 }
 
 // Out queues a message.
-func (t *TestWriter) Out(msg *resources.Buf, key, before uint64) error {
-	return t.w.out(msg, key, before)
+func (t *TestWriter) Out(msg *resources.Buf, lo, hi, before uint64) error {
+	return t.w.out(msg, lo, hi, before)
 }
 
 // Stop ends the writer.

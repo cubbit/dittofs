@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1783,6 +1784,73 @@ func TestAParkOnAConnectionAViolateClosedIsDropped(t *testing.T) {
 		}
 		if rs, err := c.Recv(); err == nil {
 			t.Errorf("after the Violate the client read %+v, want the connection's end and no reply", rs)
+		}
+	})
+}
+
+// A Notify naming any member of a chain goes ahead of the record that holds
+// that member's reply joined with the others': a record is behind every
+// callback that names one of its members. The chain's message IDs are in no
+// order, as a client may pick them, so its greatest key is its middle
+// member's and its least its last member's, and a Notify names each (RFC 20
+// sections 4.7 and 6.2).
+func TestANotifyGoesAheadOfTheRecordHoldingTheReplyItNames(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		d := adapter.Deps{Budgets: b}
+		l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(d)}
+		srv, err := core.NewServer(d, settings.DefaultNFS(), l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		core.Serving(srv)
+		_, peer := servedConn(t, srv, &l)
+		c := testproto.NewClient(peer)
+		for _, m := range []testproto.Msg{
+			{Op: testproto.OpNegotiate, Version: 2, ID: 1},
+			{Op: testproto.OpSession, Version: 2, ID: 2, Session: 7},
+		} {
+			if err := c.Send(m); err != nil {
+				t.Fatal(err)
+			}
+			if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != testproto.StatusOK {
+				t.Fatalf("setting the connection up: %+v (%v)", rs, err)
+			}
+		}
+		// The client reads nothing yet: the Echo's reply holds the writer in
+		// its write, and the chain's record, its three replies joined, waits
+		// in the queue behind it when each Notify names one of them.
+		for _, rec := range [][]testproto.Msg{
+			{{Op: testproto.OpEcho, Version: 2, ID: 10, Session: 7, Payload: []byte("first")}},
+			{
+				{Op: testproto.OpTree, Version: 2, ID: 12, Session: 7, Tree: 1},
+				{Op: testproto.OpTree, Version: 2, ID: 13, Session: 7, Tree: 2},
+				{Op: testproto.OpTree, Version: 2, ID: 11, Session: 7, Tree: 3},
+			},
+			{{Op: testproto.OpNotify, Version: 2, ID: 14, Session: 7, Target: 13}},
+			{{Op: testproto.OpNotify, Version: 2, ID: 15, Session: 7, Target: 11}},
+		} {
+			if err := c.Send(rec...); err != nil {
+				t.Fatal(err)
+			}
+			synctest.Wait()
+		}
+		var got [][]uint64
+		for range 6 {
+			rs, err := c.Recv()
+			if err != nil {
+				t.Fatalf("after %v: %v", got, err)
+			}
+			var ids []uint64
+			for _, r := range rs {
+				ids = append(ids, r.ID)
+			}
+			got = append(got, ids)
+		}
+		want := [][]uint64{{10}, {13}, {11}, {12, 13, 11}, {14}, {15}}
+		if !slices.EqualFunc(got, want, slices.Equal) {
+			t.Errorf("records by message ID %v, want %v: the Notifies' messages for 13 and 11 ahead of the chain's record", got, want)
 		}
 	})
 }
