@@ -390,8 +390,10 @@ func labelName(name string) bool {
 // span of them. For NFSv4 a Version is the minor version, so Range{0, 0} is
 // NFSv4.0 alone.
 //
-// decision: Version is an alias of uint32 (§4.7), so a generated codec, which
-// may not import core (§7.1), meets Row's Decoder and Encoder with a uint32.
+// decision: Version is an alias of uint32 (§4.7), not a defined type, so
+// generated code meets Row's Decoder and Encoder with a uint32 and never
+// imports core (§7.1). It must never get methods: that needs a defined type,
+// which generated code could name only by importing core.
 type Version = uint32
 
 // Range is a closed span of versions.

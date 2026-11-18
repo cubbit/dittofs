@@ -309,9 +309,10 @@ func (g *gen) xdrType(e ast.Expr, max int) (t *xtype, took bool, err error) {
 // cycles refuses a type that holds itself.
 //
 // decision: such a type, an XDR linked list (RFC 4506 section 4.19), fails
-// generation: no tag bounds it, so it has no MaxWire, and RFC 20 section 4.7's
-// way out, a row passing its own Bound, is a row's, which the generator never
-// sees. Overturned when the RFC states how a list's length is bounded.
+// generation: no tag bounds it, so it has no MaxWire, and no reply holds one
+// yet. When the first one is tagged, the generator marks that reply unbounded
+// and NewOpTable refuses its row unless the row passes its own Bound, so the
+// server fails at startup; RFC 20 section 4.7's rule stays as it is.
 func (g *gen) cycles() {
 	state := map[string]int{} // 1 while its fields are walked, 2 after
 	var walk func(s *strct)

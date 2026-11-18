@@ -4203,7 +4203,9 @@ aliases. It is seeded with one
 deliberate violation in its own test data and must report it, so a check that
 silently matches nothing is caught. The same test lists adapter files over 800
 lines and fails on one not in its allowlist (§2.5), fails a `wire` package that
-imports anything but the standard library and `pkg/resources` (§2.5), a
+imports anything but the standard library and `pkg/resources`, or a standard
+package that does file or network I/O, `<protocol>/wire/gen` alone excepted,
+which may import `os` to write its file (§2.5), a
 generated `codec_gen.go` that imports more than those and its protocol's
 `wire`, and an `ops` file other than `codec_gen.go` that imports `wire`'s
 runtime or `encoding/binary`, since a command file touches no bytes (§5.1), and
