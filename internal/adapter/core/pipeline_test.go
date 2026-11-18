@@ -394,7 +394,8 @@ func (s *seam) connect(proto core.Protocol, remote netip.Addr, set settings.Sett
 		}
 		return out(msg, key, before)
 	}
-	s.p = core.NewPipeline(s.sh, st, context.Background(), remote, set, sent, func(err error) {
+	record, _ := s.f.MaxRecord()
+	s.p = core.NewPipeline(s.sh, st, context.Background(), remote, set, record, sent, func(err error) {
 		select {
 		case s.closed <- err:
 		default:

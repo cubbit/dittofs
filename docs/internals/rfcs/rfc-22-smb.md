@@ -940,7 +940,8 @@ up its cache, and how a reconnect finds its open.
   `GENERIC_WRITE`, `GENERIC_EXECUTE` and `GENERIC_ALL` in `DesiredAccess`
   (MS-SMB2 2.2.13.1) **MUST** be mapped through the file generic mapping to
   `FILE_GENERIC_READ`, `FILE_GENERIC_WRITE`, `FILE_GENERIC_EXECUTE` and
-  `FILE_ALL_ACCESS` (MS-FSA 2.1.5.1.2) before `Open`, and so are the same
+  `FILE_ALL_ACCESS` (MS-FSA 2.1.5.1.2) by the `CREATE` handler before `Open`,
+  never by the codec, and so are the same
   bits in every access mask of a descriptor a client sets (§11), before the
   call. Directories use the same bits. This RFC is the one owner of the mapping:
   the core receives entry rights only, and refuses a generic bit that reaches it
@@ -1417,10 +1418,10 @@ that against every protocol; this section maps the SMB request.
   64-bit range.
 - **A `LOCK` is one service call, however many elements it carries.** Its
   elements are all locks or all unlocks, as the first element's flags say
-  (MS-SMB2 3.3.5.14); every element's flags are checked when the arguments are
-  decoded, and a request mixing the two, or with a flag combination MS-SMB2
-  2.2.26.1 does not list, is `STATUS_INVALID_PARAMETER` before any range is
-  touched. The handler then makes one `Lock` or one `Unlock` call with every
+  (MS-SMB2 3.3.5.14); the handler checks every element's flags before its
+  call, not the codec, which decodes only the elements' layout, and a request
+  mixing the two, or with a flag combination MS-SMB2 2.2.26.1 does not list,
+  is `STATUS_INVALID_PARAMETER` before any range is touched. The handler then makes one `Lock` or one `Unlock` call with every
   element's range in order
   ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)):
   - a lock list is all or nothing: if any range cannot be granted, the service
@@ -1465,7 +1466,7 @@ that against every protocol; this section maps the SMB request.
 
 > decision: a mixed lock-and-unlock array is refused before any range is taken,
 > where MS-SMB2 lets a lock array take its earlier ranges and keep them when an
-> unlock element fails it. Checking every element at decode keeps the call all
+> unlock element fails it. Checking every element before the call keeps it all
 > or nothing, which the one-call rule needs; the client sees the same
 > `STATUS_INVALID_PARAMETER` either way and only the earlier ranges' state
 > differs. Revisit if a client is shown to send such arrays and depend on the
@@ -1649,11 +1650,11 @@ and nothing else: every file may have holes, sparse or not, and holes are
   verifier to tell the client. A `FLUSH` through an open whose `LossSeen` is
   below the file's loss sequence is `ErrLost`, answered
   `STATUS_UNEXPECTED_IO_ERROR`, and brings `LossSeen` up to date, so each open
-  that was open across the loss learns of it once, at its next flush, and later
+  that was open across the loss learns of it once, at its next flush that commits, and later
   flushes succeed
   ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
   A durable open that reconnects after such a loss carries the same mark, so
-  its next flush fails too. The loss sequence lives for one process, so a
+  its next flush that commits fails too. The loss sequence lives for one process, so a
   persistent open reinstated after its primary's restart or failover, or
   imported at another installation by a namespace move, has `LossSeen` reset
   to 0
@@ -2256,6 +2257,59 @@ left, a result left to right. Each mapping is a pure function of the request
 and, where named, the record's `Adapter` bytes, and each is total: a wire value
 maps to one core value or to a named refusal, never to a default.
 
+**Decoding is not translation.** Every SMB2 command, in every dialect, is
+decoded and encoded by one codec, MS-SMB2 §2.2's layouts generated from tags on
+each command's request and response structs
+([RFC 20 §5.1](rfc-20-adapters.md#5.1%20Codecs%20are%20pure)); none is written
+by hand. A command is one file, `ops/<cmd>.go`, holding its structs and its
+handler, and one `core.Row` line in the table; a control code is one file in
+`ops/ioctl/`. It has no codec of its own, and the translations of this chapter
+read decoded fields, never bytes:
+
+```go
+// internal/adapter/smb/ops/open.go
+type CreateRequest struct {
+	OplockLevel   uint8
+	DesiredAccess AccessMask
+	Name          string          `smb2:"offset=NameOffset,len=NameLength,utf16"`
+	Contexts      []CreateContext `smb2:"chain"`
+}
+type CreateResponse struct{ /* … */ }
+
+func (h *Handlers) Open(ctx context.Context, r *core.Request, req CreateRequest) (CreateResponse, error)
+
+// table row
+core.Row(smb2.CREATE, "CREATE", core.NeedsTree, h.Open)
+```
+
+What the tags must carry beyond fixed fields:
+
+- every offset and length pair, checked to lie inside the message, and the
+  8-byte alignment between chained structures;
+- the chained create contexts of `CREATE` and negotiate contexts of
+  `NEGOTIATE`, each found from the one before by `Next`, each context's body
+  decoded by its name or type into its own struct (`DHnQ`, `DH2Q`, `DH2C`,
+  `RqLs`, `AppInstanceId`, Appendix D; the preauthentication, encryption and
+  signing contexts of §3.2), an unknown one kept as bytes and ignored;
+- `IOCTL`'s input and output buffers, the input decoded by the control code
+  into that code's request struct (§10, Appendix F), the output bounded by
+  `MaxOutputResponse`;
+- `QUERY_INFO`, `SET_INFO` and `QUERY_DIRECTORY` buffers, chosen by the
+  information class (Appendix E), the output bounded by the request's
+  `OutputBufferLength`, and security descriptors in their self-relative form
+  (§11);
+- a `WRITE`'s data as a slice of the receive buffer and a `READ`'s as its own
+  segment of the reply
+  ([RFC 20 §5.3](rfc-20-adapters.md#5.3%20No%20copies%20on%20the%20data%20path)).
+
+A request whose structure does not decode is `STATUS_INVALID_PARAMETER`, for
+every command alike. An information class or control code the codec has no
+struct for decodes as unknown and is refused by its row's rule, as Appendices
+E and F say — most `STATUS_NOT_SUPPORTED`. A rule between fields — the generic mapping of §6.1, a `LOCK`'s
+elements of §7 — is the handler's, checked before its call. The session's
+`Identity` and `r.Call` of §16.1 are built by the pipeline, once per member of
+a chain, never by a handler.
+
 ### 16.1 Identity
 
 Each session becomes RFC 17's neutral `Identity`
@@ -2654,7 +2708,11 @@ in an `FSCTL_SRV_COPYCHUNK` or `FSCTL_SRV_COPYCHUNK_WRITE` response returning an
 They are also `STATUS_BUFFER_OVERFLOW` in an `FSCTL_GET_REPARSE_POINT` response,
 which this server serves (Appendix F) and Windows answers so (MS-SMB2
 Appendix A, note 244), and an error response carrying the command's error data,
-as `STATUS_STOPPED_ON_SYMLINK`'s does ([§12.4](#12.4%20Reparse%20points)). The
+as `STATUS_STOPPED_ON_SYMLINK`'s does ([§12.4](#12.4%20Reparse%20points)): the
+`CREATE` handler returns its reply beside that status, as RFC 20 §4.7 lets an
+NFSv3 failure return its WCC data, and `CREATE`'s encoder writes the whole
+error response, with the symlink error data (MS-SMB2 2.2.2.2.1), or the
+generic one from a nil reply. The
 named-pipe `READ` case never arises here: a pipe `READ` that does not fit is
 answered a short read with `STATUS_SUCCESS` ([§3.3](#3.3%20Sizes%20and%20credits)).
 The error table marks MS-SMB2 3.3.4.4's pairs above, and `STATUS_BUFFER_OVERFLOW`
@@ -2715,6 +2773,13 @@ included, with `ErrNoSession`, `STATUS_USER_SESSION_DELETED`, the status
 > not find. MS-SMB2 leaves the code to the implementation, and Windows answers
 > `0x80090302` under GSS-API (Appendix A, note 273). Withdraw it if a client
 > is seen to act on Windows' code.
+
+> decision: the symlink error data reaches the wire through the `CREATE`
+> reply, so nothing carries it from the handler to the header codec. A
+> handler returning its reply beside its error is what an NFSv3 failure
+> already does for its WCC data, and the header codec tells the exception
+> from the command and the status, as it does the others, so
+> `HeaderCodec.Encode` is unchanged.
 
 **Malformed headers.** A message shorter than the 64-byte SMB2 header, a header
 whose command code no request carries (MS-SMB2 2.2.1.2), and a
@@ -2784,9 +2849,16 @@ service, before any wire suite runs:
   field maps to a neutral value or a named refusal; every neutral error in
   `vfs.Errors()` has an SMB status (RFC 20 §7.3); access and share masks,
   grant levels and lock elements round-trip.
-- **Every decoder is fuzzed.** Native Go fuzz targets (`testing.F`) over
-  create-context decoding (`DHnQ`, `DH2Q`, `DH2C`, `RqLs`, `AppInstanceId`),
-  access and share masks, `LOCK` elements, security descriptors, and the
+- **The SMB2 codec is tested once, for every command.** One golden-vector
+  suite and one fuzz target cover every command, create and negotiate context,
+  control code and information class, the target checking the generated
+  decoder against a second, written by hand
+  ([RFC 20 §5.4](rfc-20-adapters.md#5.4%20How%20codecs%20are%20tested)); no
+  command has a codec test of its own. The targets below are the
+  translations'.
+- **Every decoder is fuzzed.** Native Go fuzz targets (`testing.F`) over the
+  translation of create contexts (`DHnQ`, `DH2Q`, `DH2C`, `RqLs`,
+  `AppInstanceId`), access and share masks, `LOCK` elements, security descriptors, and the
   `Adapter`-bytes decoder fed truncated, corrupt, older- and newer-version
   bytes: no panic, and each input either yields a valid neutral request or a
   refusal, never a misread value.
@@ -2822,9 +2894,12 @@ session, file or principal label.
 | `Adapter` bytes that failed to decode, by `reason` (`truncated`, `corrupt`, `unknown_version`); any nonzero is an alert | `adapter_record_decode_failures_total{protocol, reason}` | counter |
 | `CREATE` and `LOCK` replays answered from the record (§6.5) | `adapter_record_replays_total{protocol}` | counter |
 
-**The request span.** One per SMB2 message, named `adapter.smb.<COMMAND>`, with
-one child per command of a compound chain and the service's span below it
-([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)). A request held pending
+**The request span.** One per SMB2 message, named `adapter.smb.<COMMAND>`, or
+`adapter.smb` for one refused before `Route` (RFC 20 §10.2), with
+the service's span below it
+([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)). Each member of a
+compound chain is a request of its own, with its own request span and no
+child per command ([RFC 20 §10.2](rfc-20-adapters.md#10.2%20Spans)). A request held pending
 keeps its span across its re-runs, one child per attempt. Its attributes are
 closed sets: protocol, dialect, command, NT status, the neutral error or
 result, request and reply bytes, and the stage that refused. Never a path, a

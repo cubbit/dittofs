@@ -13,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	identitysrv "github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/vfs/admit"
 	"github.com/cubbit/dittofs/internal/vfs/authz"
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -523,8 +525,8 @@ func TestStatFSAndQuotaReportTheShares(t *testing.T) {
 	}
 }
 
-// Snapshots answers none, after admission; the Principals area refuses
-// every call.
+// Snapshots answers none, after admission; without Deps.Names the
+// Principals area refuses every call.
 func TestTheStubsAnswerTheirPlaceholders(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
@@ -541,6 +543,62 @@ func TestTheStubsAnswerTheirPlaceholders(t *testing.T) {
 	for _, err := range []error{e1, e2, e3} {
 		if !errors.Is(err, vfs.ErrAccess) {
 			t.Errorf("a Principals call answered %v", err)
+		}
+	}
+}
+
+// findOpts passes every call through to the identity server and records the
+// FindOpts each Find reached it with.
+type findOpts struct {
+	identity.Identities
+	mu  sync.Mutex
+	got []identity.FindOpts
+}
+
+func (n *findOpts) Find(ctx context.Context, sp identity.Spelling, o identity.FindOpts) (entity.Principal, error) {
+	n.mu.Lock()
+	n.got = append(n.got, o)
+	n.mu.Unlock()
+	return n.Identities.Find(ctx, sp, o)
+}
+
+// Spell and Find reach Deps.Names and answer what it answers; Find lets the
+// directory mint only for a call proved by a secret or a ticket.
+func TestSpellAndFindPassThroughToNames(t *testing.T) {
+	store := kvstoretest.NewFS(t, memKV)
+	srv, err := identitysrv.New(identitysrv.Deps{Store: store.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The server's answer for a call it cannot serve, which a filesystem
+	// without Names never gives.
+	want, err := srv.Find(t.Context(), identity.Spelling{}, identity.FindOpts{})
+	if err == nil || errors.Is(err, errUnsigned) {
+		t.Fatalf("the identity server's Find answered %v, %v; want an error other than errUnsigned", want, err)
+	}
+	names := &findOpts{Identities: srv}
+	s := startShares(t, newFixtureOver(t, Deps{Names: names}, store), nil)
+	ctx := t.Context()
+
+	if _, got := s.Spell(ctx, s.fs.Admin.Principal, vfs.SchemeUID); !errors.Is(got, err) || errors.Is(got, errUnsigned) {
+		t.Errorf("Spell answered %v, want the identity server's %v", got, err)
+	}
+	for _, tc := range []struct {
+		proof vfs.ProofKind
+		mint  bool
+	}{
+		{vfs.ProofNone, false},
+		{vfs.ProofClaimed, false},
+		{vfs.ProofSecret, true},
+		{vfs.ProofTicket, true},
+	} {
+		names.got = nil
+		c := vfs.Call{Identity: vfs.Identity{Proof: tc.proof, Evidence: vfs.Evidence{Principal: s.fs.Admin.Principal}, Client: inLab}}
+		if _, got := s.Find(ctx, c, vfs.Spelling{Scheme: vfs.SchemeUID, Num: 100}); !errors.Is(got, err) || errors.Is(got, errUnsigned) {
+			t.Errorf("Find at proof %d answered %v, want the identity server's %v", tc.proof, got, err)
+		}
+		if len(names.got) != 1 || names.got[0].Mint != tc.mint {
+			t.Errorf("Find at proof %d reached identity with %+v, want one call with Mint %v", tc.proof, names.got, tc.mint)
 		}
 	}
 }

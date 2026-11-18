@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write bounded by `write_timeout`; a failed or late write closes the
   connection and releases everything queued.
 
+- **A record that chains several requests is answered as one record.** Each
+  member is decoded where the one before it points, admitted, run and
+  answered in turn. A related member runs under the state the member before
+  it left, and after a failure it is answered that status with no call. The
+  replies are joined and wrapped once. They go out in more than one record
+  only where the chain would otherwise wait on flow control or the reply
+  pool while holding reply buffers, or would pass a quarter of the reply
+  pool or the protocol's record cap, or where Unwrap refuses a member or its
+  header fails to decode, whose refusal goes out in a record of its own; each
+  such split is counted by its reason.
+
 - **The request path is measurable, per protocol and per operation.** Prometheus
   now carries requests in flight, refusals and wire time by stage, replay hits,
   held requests and bytes, chain splits by reason, and per operation the

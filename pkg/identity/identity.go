@@ -65,8 +65,3 @@ type Evidence struct {
 	DenyOnly  []SID            // marked deny-only by the signer
 	Expires   time.Time        // the ticket's end time; zero for NTLM
 }
-
-// EvidenceDigest is the evidence's part of the proof key: a collision-resistant
-// hash of the fields sign-in established, computed once at sign-in. It is
-// derived from identifiers, not from a secret, so it is no key.
-type EvidenceDigest [32]byte

@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -327,23 +328,42 @@ func (fs *Filesystem) pseudoOnly(ctx context.Context, h vfs.Handle, err error) e
 }
 
 // errUnsigned is the Principals area's answer until an identity component
-// signs callers in and spells principals.
+// signs callers in, and Spell's and Find's while the filesystem is built
+// without Deps.Names.
 //
-// ponytail: SignIn, Spell and Find answer ErrAccess, as nothing under them
-// exists: no authenticator, no principal mapping. Delegate each to RFC 18's
-// identity component, held in Deps, once it lands.
+// ponytail: SignIn answers ErrAccess, as no authenticator is held. Delegate
+// it to Deps.Auth once sign-in is routed through it.
 var errUnsigned = fmt.Errorf("vfs: no identity component signs in or spells principals: %w", vfs.ErrAccess)
 
 func (fs *Filesystem) SignIn(ctx context.Context, step vfs.SignInStep) (vfs.SignInResult, error) {
 	return vfs.SignInResult{}, fs.unsigned(ctx)
 }
 
+// Spell passes through to Deps.Names.
 func (fs *Filesystem) Spell(ctx context.Context, p vfs.Principal, as vfs.Scheme) (vfs.Spelling, error) {
-	return vfs.Spelling{}, fs.unsigned(ctx)
+	ctx, done, err := fs.enter(ctx)
+	if err != nil {
+		return vfs.Spelling{}, err
+	}
+	defer done()
+	if fs.names == nil {
+		return vfs.Spelling{}, errUnsigned
+	}
+	return fs.names.Spell(ctx, p, as)
 }
 
+// Find passes through to Deps.Names, letting the directory mint a principal
+// only for a call whose Identity proved one.
 func (fs *Filesystem) Find(ctx context.Context, c vfs.Call, sp vfs.Spelling) (vfs.Principal, error) {
-	return vfs.Principal{}, fs.unsigned(ctx)
+	ctx, done, err := fs.enter(ctx)
+	if err != nil {
+		return vfs.Principal{}, err
+	}
+	defer done()
+	if fs.names == nil {
+		return vfs.Principal{}, errUnsigned
+	}
+	return fs.names.Find(ctx, sp, identity.FindOpts{Mint: c.Identity.Proof >= vfs.ProofSecret})
 }
 
 // unsigned is the body of a Principals call: not admitted, as it acts on no
