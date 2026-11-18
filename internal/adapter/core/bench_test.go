@@ -98,17 +98,13 @@ type loopback struct {
 	ln  net.Listener
 }
 
-// newLoopback starts a server for c on b's budgets, tracing under tracer
-// (nil: none) at ratio 0.
-func newLoopback(tb testing.TB, c pipelineCase, b *resources.Budgets, tracer trace.Tracer) *loopback {
+// newLoopback starts a server for c on b's budgets, tracing as tracing's
+// Tracer, SampleRatio and TraceIDs say (zero: off).
+func newLoopback(tb testing.TB, c pipelineCase, b *resources.Budgets, tracing adapter.Deps) *loopback {
 	tb.Helper()
-	d := adapter.Deps{
-		VFS:     passThrough{err: c.err},
-		Budgets: b,
-		Metrics: metrics.New("v", "c"),
-		Tracer:  tracer,
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError + 1})),
-	}
+	d := tracing
+	d.VFS, d.Budgets, d.Metrics = passThrough{err: c.err}, b, metrics.New("v", "c")
+	d.Logger = slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 	var proto core.Protocol = testproto.New(d)
 	if c.bare {
 		proto = testproto.New(d).Bare()
@@ -236,13 +232,13 @@ func (cl *client) exchange() error {
 }
 
 // allocs is the allocations per record sent, its members together, of 1000 runs of the case on its own
-// server, tracing under tracer (nil: none). Each run waits for its request's
+// server, tracing as tracing says. Each run waits for its request's
 // end on the server before it returns, so the last run's tail is counted:
 // nothing running on its pipeline, and the reply budget, which nothing else
 // holds, back at zero, the writer having released each reply once written.
-func (c pipelineCase) allocs(t *testing.T, b *resources.Budgets, tracer trace.Tracer) float64 {
+func (c pipelineCase) allocs(t *testing.T, b *resources.Budgets, tracing adapter.Deps) float64 {
 	t.Helper()
-	cl := newLoopback(t, c, b, tracer).dial()
+	cl := newLoopback(t, c, b, tracing).dial()
 	p := core.ConnPipeline(cl.conn)
 	return testing.AllocsPerRun(1000, func() {
 		if err := cl.exchange(); err != nil {
@@ -285,8 +281,9 @@ func checkedIn(t *testing.T) map[string]float64 {
 // The pipeline's allocations per record sent, at the numbers checked in, which
 // may only fall: a case above its number fails, and so does one below it,
 // until the number is lowered. An unsampled request allocates nothing for
-// tracing: under a real provider at ratio 0 each case counts what it counts
-// with tracing off (RFC 20 §10.2). Create refused ErrDelay of
+// tracing: under a real provider at ratio 0, and at ratio 0.01 with every
+// trace ID one the ratio rule rejects, each case counts what it counts with
+// tracing off (RFC 20 §6.10, §10.2). Create refused ErrDelay of
 // DelayResources, which both of testproto's tables map to StatusDelay at
 // once, an expected refusal logged at debug, counts what its successful run
 // does at a level that drops every line, so no line is built for it
@@ -298,10 +295,20 @@ func TestPipelineAllocs(t *testing.T) {
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
 	want := checkedIn(t)
-	tracer := sdktrace.NewTracerProvider().Tracer("gate")
+	tracer, src := sdktrace.NewTracerProvider().Tracer("gate"), seeded(7)
+	unsampled := map[string]adapter.Deps{
+		"at ratio 0": {Tracer: tracer},
+		// Bit 63 of each ID's low eight bytes is set, so the ratio rule
+		// rejects every request, the warm-up's and the dial's included.
+		"at ratio 0.01": {Tracer: tracer, SampleRatio: 0.01, TraceIDs: func() trace.TraceID {
+			id := src()
+			id[8] |= 0x80
+			return id
+		}},
+	}
 	off := map[string]float64{}
 	for _, c := range gated {
-		off[c.name] = c.allocs(t, b, nil)
+		off[c.name] = c.allocs(t, b, adapter.Deps{})
 		w, ok := want[c.name]
 		switch {
 		case !ok:
@@ -311,12 +318,14 @@ func TestPipelineAllocs(t *testing.T) {
 		case off[c.name] < w:
 			t.Errorf("%s allocates %v times per record, below the %v checked in: lower it in testdata/allocs", c.name, off[c.name], w)
 		}
-		if n := c.allocs(t, b, tracer); n != off[c.name] {
-			t.Errorf("%s unsampled allocates %v times per record, %v with tracing off; want the same", c.name, n, off[c.name])
+		for name, d := range unsampled {
+			if n := c.allocs(t, b, d); n != off[c.name] {
+				t.Errorf("%s unsampled %s allocates %v times per record, %v with tracing off; want the same", c.name, name, n, off[c.name])
+			}
 		}
 	}
 	refused := pipelineCase{name: "compound-v1-refused", version: 1, err: &vfs.Delay{Cause: vfs.DelayResources}, msgs: compoundV1, status: testproto.StatusDelay}
-	if n := refused.allocs(t, b, nil); n != off["compound-v1"] {
+	if n := refused.allocs(t, b, adapter.Deps{}); n != off["compound-v1"] {
 		t.Errorf("the compound refused ErrDelay of DelayResources allocates %v times per record, %v answered success; want the same", n, off["compound-v1"])
 	}
 }
@@ -328,7 +337,7 @@ func TestPipelineAllocs(t *testing.T) {
 func BenchmarkPipeline(b *testing.B) {
 	for _, c := range gated {
 		b.Run(c.name, func(b *testing.B) {
-			exchanges(b, newLoopback(b, c, budgets(), nil).dial())
+			exchanges(b, newLoopback(b, c, budgets(), adapter.Deps{}).dial())
 		})
 	}
 	b.Run("echo-bare-64-in-flight", benchInFlight)
@@ -338,11 +347,11 @@ func BenchmarkPipeline(b *testing.B) {
 		{Op: testproto.OpEcho, Version: 1, ID: 3, Payload: []byte("hi")},
 	}}
 	b.Run("chain-of-3-echo-idle", func(b *testing.B) {
-		exchanges(b, newLoopback(b, chain, budgets(), nil).dial())
+		exchanges(b, newLoopback(b, chain, budgets(), adapter.Deps{}).dial())
 	})
 	b.Run("chain-of-3-echo-one-reply-of-room", func(b *testing.B) {
 		bs := budgets()
-		cl := newLoopback(b, chain, bs, nil).dial()
+		cl := newLoopback(b, chain, bs, adapter.Deps{}).dial()
 		// The reply pool held to the room of one Echo's reply, its payload and
 		// a 40-byte header: each member after the first finds no room at once
 		// while its chain holds a reply, so the chain sends the replies before
@@ -356,7 +365,7 @@ func BenchmarkPipeline(b *testing.B) {
 		exchanges(b, cl)
 	})
 	b.Run("echo-bare-per-proc", func(b *testing.B) {
-		lb := newLoopback(b, echoBare, budgets(), nil)
+		lb := newLoopback(b, echoBare, budgets(), adapter.Deps{})
 		var cls []*client
 		for range runtime.GOMAXPROCS(0) {
 			cls = append(cls, lb.dial())
@@ -393,7 +402,7 @@ func exchanges(b *testing.B, cl *client) {
 // and wakes the goroutine its message ID names, at byte 12 of its header in
 // testproto's format.
 func benchInFlight(b *testing.B) {
-	lb := newLoopback(b, echoBare, budgets(), nil)
+	lb := newLoopback(b, echoBare, budgets(), adapter.Deps{})
 	cl := lb.dial()
 	procs := runtime.GOMAXPROCS(0)
 	n := (64 + procs - 1) / procs * procs
