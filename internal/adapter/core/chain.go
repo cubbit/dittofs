@@ -713,8 +713,8 @@ func (c *chain) flush(why split, tr *track) {
 	// ponytail: the record is queued under its last member's key, so a
 	// message that must go before a middle member's reply, sent once the
 	// record is queued, finds none to go before. Queue it under every
-	// member's key once held requests send interims that can race their
-	// final replies.
+	// member's key once Conn.Send, the only caller that hands out a before,
+	// is implemented.
 	p.out(rec, c.held[len(c.held)-1].key)
 	for _, m := range c.held {
 		p.end(m.tr, m.final, m.s, m.n, m.err)

@@ -617,7 +617,9 @@ func TestEachAttemptOfAHeldRequestHasAChildSpan(t *testing.T) {
 }
 
 // A second chain is answered while the first is in the service: the hold
-// table's lock is never held across a call (§6.6).
+// table's lock is never held across a call (§6.6). Its mutant, that lock held
+// across the call, shows as the go test timeout, since synctest cannot settle
+// a goroutine blocked on a mutex.
 func TestASecondChainIsAnsweredWhileTheFirstIsInTheService(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		clk := newManualClock()
