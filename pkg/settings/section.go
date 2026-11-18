@@ -354,6 +354,8 @@ func rank(r entity.APIRole) int {
 	}
 }
 
-// Table is every section the node declares. Once built, two sections that
-// declare one key make the table panic, naming both, when it is first used.
+// Table is every section the node declares. Read and Check build its index
+// once per call, which checks it: two sections that declare one prefix, or a
+// key one section declares that another's prefix takes, make it panic,
+// naming both.
 type Table []Section
