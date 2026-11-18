@@ -5,7 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/cubbit/dittofs/internal/node"
-	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/spf13/cobra"
 )
 
@@ -34,11 +34,13 @@ Examples:
 
 func runStart(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
-	cfg, err := config.MustLoad(configPath)
+
+	cfg, err := bootstrap.MustLoad(configPath)
 	if err != nil {
 		return err
 	}
-	if err := config.InitLogger(cfg); err != nil {
+
+	if err := bootstrap.InitLogger(cfg); err != nil {
 		return err
 	}
 	// The KV, the clock and the metrics registry join the node's

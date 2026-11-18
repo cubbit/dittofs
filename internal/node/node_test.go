@@ -11,7 +11,7 @@ import (
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/internal/prof"
-	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -37,7 +37,16 @@ func TestNewRefusesAKVWithNoInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = node.New(node.Config{Bootstrap: config.Bootstrap{APIAddr: "127.0.0.1:0", MetricsAddr: "127.0.0.1:0"}, KV: db, Clock: sim.NewTestClock(time.Unix(0, 0)), Metrics: metrics.New("test", "test"), Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
+
+	_, err = node.New(
+		node.Config{
+			Bootstrap: bootstrap.Bootstrap{APIAddr: "127.0.0.1:0", MetricsAddr: "127.0.0.1:0"},
+			KV:        db,
+			Clock:     sim.NewTestClock(time.Unix(0, 0)),
+			Metrics:   metrics.New("test", "test"),
+			Logger:    slog.New(slog.NewTextHandler(t.Output(), nil)),
+		},
+	)
 	if !errors.Is(err, kvstore.ErrNotInitialised) {
 		t.Fatalf("New over an empty KV: got %v, want ErrNotInitialised", err)
 	}
@@ -62,7 +71,7 @@ func TestNewRefusesAnEmptyAddress(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = node.New(node.Config{
-				Bootstrap: config.Bootstrap{APIAddr: tc.api, MetricsAddr: tc.metrics},
+				Bootstrap: bootstrap.Bootstrap{APIAddr: tc.api, MetricsAddr: tc.metrics},
 				KV:        db, Clock: sim.NewTestClock(time.Unix(0, 0)), Metrics: metrics.New("test", "test"),
 				Logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
 			})

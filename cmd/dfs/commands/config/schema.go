@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/invopop/jsonschema"
 	"github.com/spf13/cobra"
 )
@@ -45,7 +45,7 @@ func runSchema(cmd *cobra.Command, args []string) error {
 		FieldNameTag: "yaml",
 	}
 
-	schema := reflector.Reflect(&config.Bootstrap{})
+	schema := reflector.Reflect(&bootstrap.Bootstrap{})
 	schema.Version = "https://json-schema.org/draft/2020-12/schema"
 	schema.Title = "DittoFS Configuration"
 	schema.Description = "Configuration schema for DittoFS server"

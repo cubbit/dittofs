@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +32,7 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 	// Get config path from parent's persistent flag
 	configPath, _ := cmd.Flags().GetString("config")
 	if configPath == "" {
-		configPath = config.GetDefaultConfigPath()
+		configPath = bootstrap.GetDefaultConfigPath()
 	}
 
 	// Check if file exists

@@ -16,7 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
@@ -29,7 +29,7 @@ import (
 // Config is what the host supplies and the node cannot build itself.
 type Config struct {
 	// Bootstrap is the configuration the host read before anything opened.
-	Bootstrap config.Bootstrap
+	Bootstrap bootstrap.Bootstrap
 	// KV is the backend the node's metadata store opens on. The node owns it
 	// from New on: Stop closes it, and so does a New that fails.
 	KV kv.KV

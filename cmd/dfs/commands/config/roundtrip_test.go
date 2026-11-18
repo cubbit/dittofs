@@ -8,12 +8,12 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/cli/output"
-	dfsconfig "github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/invopop/jsonschema"
 )
 
 // expectedTopLevelYAMLKeys mirrors the yaml/mapstructure tags on the top-level
-// dfsconfig.Bootstrap fields. If a field is added/removed there this test fails
+// bootstrap.Bootstrap fields. If a field is added/removed there this test fails
 // loudly, which is the point: the schema must track the real YAML namespace.
 var expectedTopLevelYAMLKeys = []string{
 	"logging",
@@ -30,7 +30,7 @@ func TestConfigSchema_TopLevelKeysAreYAMLKeys(t *testing.T) {
 		DoNotReference:            true,
 		FieldNameTag:              "yaml",
 	}
-	schema := reflector.Reflect(&dfsconfig.Bootstrap{})
+	schema := reflector.Reflect(&bootstrap.Bootstrap{})
 
 	raw, err := json.Marshal(schema)
 	if err != nil {
@@ -59,7 +59,7 @@ func TestConfigSchema_TopLevelKeysAreYAMLKeys(t *testing.T) {
 // TestConfigShowJSON_RoundTripsThroughLoad asserts that the JSON emitted by
 // `config show -o json` re-parses through config.Load.
 func TestConfigShowJSON_RoundTripsThroughLoad(t *testing.T) {
-	cfg := dfsconfig.GetDefaultConfig()
+	cfg := bootstrap.GetDefaultConfig()
 
 	keyed, err := yamlKeyedView(cfg)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestConfigShowJSON_RoundTripsThroughLoad(t *testing.T) {
 		t.Fatalf("write json: %v", err)
 	}
 
-	reloaded, err := dfsconfig.Load(jsonPath)
+	reloaded, err := bootstrap.Load(jsonPath)
 	if err != nil {
 		t.Fatalf("Load could not re-parse `config show -o json` output: %v\noutput was:\n%s", err, buf.String())
 	}
