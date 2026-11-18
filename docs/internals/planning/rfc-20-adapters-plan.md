@@ -413,10 +413,10 @@ flowchart TD
   drain and cancellation tests run the real pipeline, so they land once E5's does, and end to
   end at S3.
 - **Track C: E6, with part of E5.** Both `wire/` packages first (about 6 man-days), which need only
-  E1's types. Track C would then idle until S3, so it takes three E5 subtasks that need only E1's
-  types and `testproto`: the middleware chain (T5.6), the error table (T5.7) and observability
-  (T5.9, whose resolution at `NewServer` also needs E4's `NewServer`). Then each `protocol/`
-  from S2: what epic 6 builds, the `Router` over its tables, is
+  E1's types. Track C would then idle until S3, so it takes three E5 subtasks: the middleware
+  chain (T5.6) and the error table (T5.7), which need only E1's types and `testproto`, and
+  observability (T5.9), whose resolution at `NewServer` also needs E4's `NewServer`. Then each
+  `protocol/` from S2: what epic 6 builds, the `Router` over its tables, is
   unit-tested against the frozen surface, `testproto`'s stateful half and `memory.New`, leaving
   only `New`'s wiring to the real runner for S3. SMB's `Security` and `HoldCodec` are the RFC 22
   plan's (ledger), which can start them at S2 the same way.
@@ -894,8 +894,9 @@ RFC sections: §6.10's codec and pipeline rows.
 5. **RFC 20 §4.4 as an RFC of its own.** The owner expects `gss` to become a separate RFC.
    Until one exists, `gss` sits with the RFC 22 plan, whose SMB sign-in needs it first, but for
    RFC 4121's `Wrap` and `Unwrap`, which no SMB handler calls (§6.2).
-6. **NFS XDR, generated or by hand.** Epic 6 writes the RPC header's XDR by hand; whether every
-   program's codecs are generated (RFC 20 §5.1) is RFC 21's plan's call.
+6. ~~**NFS XDR, generated or by hand.**~~ Settled: generated (RFC 20 §5.1's decision). Epic 6
+   writes only the RPC header's XDR by hand (T6.2); every program's codecs come from the
+   generator (T6.6).
 7. **`pkg/discovery/mdns` and `wsd` are deleted in epic 1** with the other packages v1 alone
    imported: the cutover's discovery sidecars lift what they need from develop's history (§6.2).
 8. **The skills this plan uses are unmerged** (#3524): `rfc-to-epic-plan` and `epic-breakdown`

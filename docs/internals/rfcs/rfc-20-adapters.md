@@ -2518,8 +2518,8 @@ func Bind[Req, Rep any](
 // exceptions, which it tells from the command and the status. A CREATE
 // returns its reply beside STATUS_STOPPED_ON_SYMLINK, as an NFSv3 failure
 // returns its WCC data (Invocation.Encode), and its encoder writes the whole
-// ERROR body with the symlink data, or the generic one from a nil reply. How a
-// handler's reply form reaches this is §11's question 4. The columns Row does not
+// ERROR body with the symlink data, or the generic one from a nil reply. A
+// handler returns its reply by value (§4.3). The columns Row does not
 // take — Versions, Cacheable, Role, Expired — are set on the Op it returns
 // where a row needs other than their zero value.
 func Row[Req, Rep any, PReq Decoder[Req], PRep Encoder[Rep]](
@@ -2540,7 +2540,7 @@ type Encoder[T any] interface {
 	*T
 	EncodeWire(v Version, out *Buf) error
 	MaxWire(v Version) int // the reply's largest encoding at v under its tags' maxima
-	IsZero() bool          // needed only while Rep is returned by value (§11 question 4)
+	IsZero() bool          // needed since Rep is returned by value (§4.3)
 }
 
 // Hooks are Bind's optional arguments, typed against the row's request; at
@@ -3501,14 +3501,6 @@ generated code differs from a fresh run of the generator.
 The constants — operation codes, status codes, flag bits, structure sizes —
 are taken from the specification once, in one place per protocol, `wire/`,
 and every use names them.
-
-*The per-command codec subtasks of RFC 20's plan (its epic 5 and epic 6
-breakdowns) and of RFC 22's plan (T3.1, T5.1, T7.1 and the rest, its "one
-file per command" row, its `core.Bind(wire.DecodeCreate, …)` example) follow
-this section: each protocol builds one generator and runtime, and each command
-its tagged structs, not a codec of its own. RFC 20's plan's T6.2 ("the XDR
-they need written by hand") and its risk 6, generated XDR or by hand, are
-decided here: generated.*
 
 ### 5.2 Decoding is bounded
 
@@ -4763,22 +4755,16 @@ rate-limited as RFC 25 §5.2 says: once a minute per reason, and for
    MOUNT over UDP is not kept: RFC 21 §2.2 serves MOUNT over TCP only. A
    client that defaults to UDP falls back to TCP when the port mapper offers
    only TCP; one told `mountproto=udp` fails to mount.
-4. **The reply form.** §4.3's handlers return `Rep` by value; the built `Bind`
-   on `feat/storage-v2` takes `*Rep`, whose nil means no reply. Either way a
-   failure reply needs its fail arm's body (§4.7's `Row`): by value, the
-   generator would need an `IsZero` to tell no reply from an empty one. The
-   lean is `*Rep`: it matches the built `Bind` and needs no generated
-   `IsZero`, the encoder writing the fail arm from a nil reply.
-5. **SMB2's answer to a request that does not decode.** §4.2 answers every
+4. **SMB2's answer to a request that does not decode.** §4.2 answers every
    command `STATUS_INVALID_PARAMETER`. To be confirmed per command against
    captures of Windows and Samba (§8) before the row is fixed.
-6. **The tag syntax.** §5.1 lists what a tag states; the spelling of each,
+5. **The tag syntax.** §5.1 lists what a tag states; the spelling of each,
    beyond `offset=`, `len=`, `utf16` and `chain`, is the generator's to fix.
-7. **`Row`'s hooks.** `Row(code, name, needs, handler)` takes `Bound`,
+6. **`Row`'s hooks.** `Row(code, name, needs, handler)` takes `Bound`,
    `Resolve`, `Role` and `Handle` through an optional `Hooks[Req]`, and the
    other columns are set on the `*Op` it returns (§4.7). Whether those
    belong in `Row`'s arguments instead is open.
-8. **Which stage builds the caller.** §4.4 has the `Router` resolve the
+7. **Which stage builds the caller.** §4.4 has the `Router` resolve the
    credential into `r.Call` and the pipeline check `needs`, not the `Security`
    stage: `Security` is nil for `AUTH_SYS` and runs before a table is chosen,
    so it cannot see a row's `Needs`. Revisit if `Security` is moved after
