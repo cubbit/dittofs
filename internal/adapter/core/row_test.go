@@ -410,38 +410,56 @@ func TestRowRefusesTwoHooks(t *testing.T) {
 }
 
 // swappedProto is testproto's stages with one row served in a code's place:
-// the routed table's row for op's code gives way to op, so the row a test
-// builds is served on testproto's own tables, error table and stages.
+// each listed table that holds op's code gives way to a copy with op there,
+// so the row a test builds is served on testproto's own tables, error table
+// and stages. It lists the copies, and its router answers the copy of the
+// table testproto chose, so every table a message routes to is one the
+// server resolved (§4.7). A copy is shallow with its map cloned, so
+// testproto's own tables and rows are never touched.
 type swappedProto struct {
-	inner core.Protocol
-	op    *core.Op
+	inner   core.Protocol
+	tables  []*core.OpTable
+	swapped map[*core.OpTable]*core.OpTable // testproto's table to the one listed
+}
+
+func newSwapped(inner core.Protocol, op *core.Op) swappedProto {
+	p := swappedProto{inner: inner, swapped: map[*core.OpTable]*core.OpTable{}}
+	for _, tb := range inner.Tables() {
+		listed := tb
+		if _, ok := tb.Ops[op.Code]; ok {
+			st := *tb
+			st.Ops = maps.Clone(tb.Ops)
+			st.Ops[op.Code] = op
+			listed = &st
+		}
+		p.tables = append(p.tables, listed)
+		p.swapped[tb] = listed
+	}
+	return p
 }
 
 func (p swappedProto) Framer() core.Framer { return p.inner.Framer() }
 
+func (p swappedProto) Tables() []*core.OpTable { return p.tables }
+
 func (p swappedProto) NewConn(c *core.Conn) core.Stages {
 	st := p.inner.NewConn(c)
-	st.Router = swappedRouter{inner: st.Router, op: p.op}
+	st.Router = swappedRouter{inner: st.Router, swapped: p.swapped}
 	return st
 }
 
-// swappedRouter serves the inner router's table with the swapped row in its
-// code's place. The table is copied shallowly and its map cloned, so
-// testproto's own tables and rows are never touched.
+// swappedRouter answers the listed table for the one the inner router chose.
 type swappedRouter struct {
-	inner core.Router
-	op    *core.Op
+	inner   core.Router
+	swapped map[*core.OpTable]*core.OpTable
 }
 
 func (rt swappedRouter) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
 	tb, r, err := rt.inner.Route(h, prev)
-	if err != nil {
-		return tb, r, err
+	if tb != nil {
+		tb = rt.swapped[tb]
 	}
-	st := *tb
-	st.Ops = maps.Clone(tb.Ops)
-	st.Ops[rt.op.Code] = rt.op
-	return &st, r, nil
+	return tb, r, err
 }
 
 // sameReply says whether two answers are the same reply, every field of it.
@@ -467,7 +485,7 @@ func TestRowAnswersAsBind(t *testing.T) {
 	row.Versions = core.Range{First: 1, Last: 2}
 	couple := rowCouple(hooks)
 	couple.Versions = core.Range{First: 1, Last: 2}
-	rows, hand := newSeam(t, swappedProto{inner, row}, 1<<20), newSeam(t, swappedProto{inner, couple}, 1<<20)
+	rows, hand := newSeam(t, newSwapped(inner, row), 1<<20), newSeam(t, newSwapped(inner, couple), 1<<20)
 	for _, c := range []struct {
 		name   string
 		msg    testproto.Msg
