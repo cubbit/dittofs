@@ -292,8 +292,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		key = p.st.Hold.Key(h)
 	}
 	sent := len(reply.B)
-	p.send(h, reply, key)
-	p.end(tr, true, status, sent, last)
+	p.end(tr, p.send(h, reply, key), status, sent, last)
 }
 
 // member runs one member of a compound to its status: the row's checks,

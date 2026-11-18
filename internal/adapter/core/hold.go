@@ -785,8 +785,7 @@ func (p *pipeline) answerPark(pd *pending, err error) {
 		}
 	}
 	n := len(buf.B)
-	p.send(h, buf, pd.key)
-	p.end(tr, true, s, n, err)
+	p.end(tr, p.send(h, buf, pd.key), s, n, err)
 }
 
 // cancelPark is a cancel of pd, parked: its client's, why ErrCancelled, or
