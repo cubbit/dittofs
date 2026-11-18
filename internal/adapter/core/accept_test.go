@@ -556,12 +556,12 @@ func TestStopWaitsALoopParkedInAccept(t *testing.T) {
 	}
 }
 
-// A Stop that runs out of context leaves the server draining, one of the
-// four states (RFC 20 section 3.1): every listener closed, register refusing
+// A Stop parked at an accept loop that outlives its socket keeps the server
+// draining, one of the four states (RFC 20 section 3.1): register refuses
 // (a socket handed over closes before it reads, and is never served) and
-// Health reporting the state; the next Stop owes no wait its sockets could
-// move, closes every connection and returns nil.
-func TestAStopOutOfContextIsDrainingUntilItsNextCallEnds(t *testing.T) {
+// Health reports the state; the Stop ends once the park releases, closing
+// every connection, and a later Stop returns nil.
+func TestAStopParkedAtAnAcceptLoopKeepsTheServerDraining(t *testing.T) {
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
 	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{}).Bare()}
@@ -579,16 +579,13 @@ func TestAStopOutOfContextIsDrainingUntilItsNextCallEnds(t *testing.T) {
 	bl := &blockedAccept{Listener: inner, release: make(chan struct{})}
 	loop := core.AddBound(srv, &l, bl)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := srv.Stop(ctx); err == nil {
-		t.Fatal("Stop returned nil while an accept loop was parked")
-	}
-	if h := srv.Health(); h.State != adapter.StateDraining {
-		t.Fatalf("a Stop out of context left the state %v, want draining", h.State)
-	}
-	// Register refuses while draining: a socket handed over is closed before
-	// it reads, and never served.
+	stopped := make(chan error, 1)
+	go func() { stopped <- srv.Stop(context.Background()) }()
+	// The Stop is at its park: the state moved under its first lock, and
+	// register refuses what the parked loop's socket hands over.
+	waitsFor(t, "the Stop to move the server to draining", func() bool {
+		return srv.Health().State == adapter.StateDraining
+	})
 	conn2, client2 := servedConn(t, srv, &l)
 	c2 := testproto.NewClient(client2)
 	if err := c2.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("hi")}); err == nil {
@@ -596,26 +593,27 @@ func TestAStopOutOfContextIsDrainingUntilItsNextCallEnds(t *testing.T) {
 			t.Error("a socket handed to a draining server was served")
 		}
 	}
-	// The next Stop owes no wait its sockets could move: every one is closed,
-	// so it closes every connection, ends them and returns nil.
-	if err := srv.Stop(context.Background()); err != nil {
-		t.Fatalf("the next Stop: %v", err)
+	close(bl.release)
+	if err := <-stopped; err != nil {
+		t.Fatalf("Stop, released from its park: %v", err)
 	}
 	for _, c := range [2]*core.Conn{conn, conn2} {
 		select {
 		case <-core.ConnDone(c):
 		case <-time.After(2 * time.Second):
-			t.Fatal("the next Stop left a connection open")
+			t.Fatal("the Stop left a connection open")
 		}
 	}
-	if h := srv.Health(); h.State != adapter.StateStopped {
-		t.Fatalf("the next Stop left the state %v, want stopped", h.State)
-	}
-	close(bl.release)
 	select {
 	case <-loop:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the released accept loop did not end")
+	}
+	if h := srv.Health(); h.State != adapter.StateStopped {
+		t.Fatalf("the Stop left the state %v, want stopped", h.State)
+	}
+	if err := srv.Stop(context.Background()); err != nil {
+		t.Fatalf("a later Stop: %v", err)
 	}
 }
 
