@@ -199,19 +199,7 @@ func TestTornTailOnlyOpens(t *testing.T) {
 func TestOpenEndingASegmentEmptiesIt(t *testing.T) {
 	f := seededJournal(t)
 	seg := core.SegmentID(941)
-	a := plantRecord(1, ownerTag, fileOf(2), 20, 30, 0, 32)
-	rr := plantRecord(1, ownerTag, fileOf(2), 21, 31, 32, 32)
-
-	b := raw.SegmentHeader{Identity: f.id, ID: uint64(seg)}.Bytes()
-	a.Identity, a.Segment, a.RecordOffset = f.id, uint64(seg), uint32(len(b))
-	b = append(b, a.Bytes()...)
-	// The torn slot: a zeroed gap no proof covers, below a record that
-	// verifies whole — the classing's ending whole, an ended fate with no
-	// cut, the segment the emptying empties.
-	b = append(b, make([]byte, 16)...)
-	rr.Identity, rr.Segment, rr.RecordOffset = f.id, uint64(seg), uint32(len(b))
-	b = append(b, rr.Bytes()...)
-	plantSealedBytes(t, f, format.SegmentName(seg), b)
+	plantEndedSegment(t, f, seg)
 
 	j := f.publicOpen(t, nil)
 	// The ended segment is gone, its whole survived record read back once
@@ -243,6 +231,65 @@ func TestOpenEndingASegmentEmptiesIt(t *testing.T) {
 				t.Errorf("the copy of the record of seq 31 kept version %d, want its own 31, never merged, numbers kept", rec.Header.Version.Counter)
 			}
 		}
+	}
+}
+
+// plantEndedSegment plants segment seg holding two live records of fileOf(2)
+// — seq 20 at offset 0 and seq 21 at offset 32, 32 bytes each — with a torn
+// slot between them: a zeroed gap no proof covers, below a record that
+// verifies whole, the classing's ending whole, an ended fate with no cut, the
+// segment the emptying empties.
+func plantEndedSegment(t *testing.T, f *assembledJournal, seg core.SegmentID) {
+	t.Helper()
+	a := plantRecord(1, ownerTag, fileOf(2), 20, 30, 0, 32)
+	rr := plantRecord(1, ownerTag, fileOf(2), 21, 31, 32, 32)
+	b := raw.SegmentHeader{Identity: f.id, ID: uint64(seg)}.Bytes()
+	a.Identity, a.Segment, a.RecordOffset = f.id, uint64(seg), uint32(len(b))
+	b = append(b, a.Bytes()...)
+	b = append(b, make([]byte, 16)...)
+	rr.Identity, rr.Segment, rr.RecordOffset = f.id, uint64(seg), uint32(len(b))
+	b = append(b, rr.Bytes()...)
+	plantSealedBytes(t, f, format.SegmentName(seg), b)
+}
+
+// TestOpenAtItsMaximumEndingASegmentOpens holds the emptying at a journal at
+// its maximum: a journal whose pool settled is closed, a segment the open
+// ends is planted beside its files, and the reopen under a maximum of
+// exactly what the directory holds still opens — the copy draws the repack
+// reserve's spare the open re-adopted, so it needs no byte past the files
+// already there — empties the ended segment and serves its records whole,
+// its footprint never past the maximum.
+func TestOpenAtItsMaximumEndingASegmentOpens(t *testing.T) {
+	f := newAssembledJournal(t)
+	j := f.open(t)
+	mustWaitSpares(t, j)
+	if err := j.Close(); err != nil {
+		t.Fatalf("close the settled journal: %v", err)
+	}
+	seg := core.SegmentID(941)
+	plantEndedSegment(t, f, seg)
+	maxBytes := int64(len(f.segmentFileNames(t))) * openSegmentCap
+
+	j2, err := Open(t.Context(), f.dir, Version{}, f.id, nil, f.opts(func(s *Settings) { s.MaxBytes = maxBytes })...)
+	if err != nil {
+		t.Fatalf("the reopen at the maximum %d, the bytes the directory holds, answered %v, want it open: a journal at its maximum whose open ends a segment still opens", maxBytes, err)
+	}
+	t.Cleanup(func() {
+		if err := j2.Close(); err != nil && !errors.Is(err, ErrClosed) {
+			t.Errorf("close the reopened journal: %v", err)
+		}
+	})
+	if slices.Contains(f.segmentFileNames(t), format.SegmentName(seg)) {
+		t.Fatalf("the ended segment %d is still on disk after the open, want it unlinked by the emptying", seg)
+	}
+	h := shareOf(t, j2, ownerTag)
+	p := make([]byte, 64)
+	n, missing, _, _, err := h.ReadAt(t.Context(), fileOf(2), 0, p)
+	if err != nil || n != 64 || len(missing) != 0 {
+		t.Fatalf("reading the records the ended segment held: n %d, missing %+v, err %v, want both served whole from the copy", n, missing, err)
+	}
+	if got := j2.Stats().UsedBytes; got > maxBytes {
+		t.Fatalf("the reopened journal's UsedBytes = %d, want at most the maximum %d", got, maxBytes)
 	}
 }
 
