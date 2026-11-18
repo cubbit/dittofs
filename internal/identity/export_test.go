@@ -21,3 +21,6 @@ func (s *Server) OnStateLoaded(f func()) { s.loaded = f }
 func (s *Server) Mint(ctx context.Context, plan func(context.Context) (entity.MintBatch, int, error)) error {
 	return s.mint(ctx, plan)
 }
+
+// DefaultSettings is the identity section's value where no row sets a key.
+var DefaultSettings = defaultSettings

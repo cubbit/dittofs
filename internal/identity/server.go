@@ -19,8 +19,10 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/secrets"
 )
 
 // Deps is what the server is built over. The node starts and stops each of
@@ -31,7 +33,17 @@ type Deps struct {
 	Metrics *metrics.Registry // nil: registers nothing
 	Tracer  trace.Tracer      // the identity.resolve span; nil: the no-op tracer
 	Logger  *slog.Logger
+	// Secrets resolves the secrets identity holds by reference; New does not
+	// require it.
+	Secrets SecretProvider
 }
+
+// SecretProvider is the secret provider's one call the server makes.
+type SecretProvider interface {
+	Resolve(ctx context.Context, role secrets.Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]byte, error)
+}
+
+var _ SecretProvider = (*secrets.Provider)(nil)
 
 // Store is the store's calls the server makes: the principals and their
 // records, and the one write that mints principals. Declaring it here keeps a
@@ -53,6 +65,8 @@ type State struct {
 	// Generation is the principals generation as of this Apply. Account
 	// never checks a record under it: it reads the generation per call.
 	Generation uint64
+	// Settings is the identity section as of this Apply.
+	Settings Settings
 	// Serial is set by Apply, whatever the caller passes: raised only when
 	// the State differs from the current one. A Caller's Built is the Serial
 	// of the State it was resolved under.
@@ -143,6 +157,8 @@ func counter(reg *metrics.Registry, spec metrics.Spec) *prometheus.CounterVec {
 // equal to the current one but for its Serial is not swapped in, so the
 // serial stays; any other gets a serial greater than every one before it.
 //
+// A State whose Settings fail Validate is refused and the current one kept.
+//
 // decision: the serial is raised per differing State, not per Apply, so a
 // once-a-second reconcile that changed nothing empties no cache, and under
 // one lock across the load, the compare, the serial and the store, so two
@@ -150,6 +166,9 @@ func counter(reg *metrics.Registry, spec metrics.Spec) *prometheus.CounterVec {
 // serial survives Stop, so a restarted server never repeats one a cache may
 // still hold. Overturned if Apply ever needs to run without that lock.
 func (s *Server) Apply(st State) error {
+	if err := st.Settings.Validate(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur := s.state.Load()
