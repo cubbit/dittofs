@@ -164,6 +164,10 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, built uint64, id 
 		return c, nil
 	}
 
+	// ponytail: root is found by a uid 0 in the user's record, but the store
+	// holds uid 0 for the well-known root principal and refuses it on any
+	// record, so this never matches. Replace it with a caller mapped to the
+	// well-known root when resolution handles well-known principals.
 	root := proven && slices.Contains(u.IDs, entity.ProtocolID{Scheme: entity.SchemeUID, Value: "0"})
 	fileUser := proven && slices.ContainsFunc(u.IDs, func(i entity.ProtocolID) bool { return i.Scheme == entity.SchemeUID })
 	squashed := !fileUser || p.Squash == entity.SquashAll || root && p.Squash == entity.SquashRoot

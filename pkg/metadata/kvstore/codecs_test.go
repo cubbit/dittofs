@@ -41,7 +41,8 @@ func codecCases() []codecCase {
 		IDs:        entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "1000"}},
 		Primary:    group,
 		Disabled:   true,
-		Secret:     entity.SecretRef{15: 9},
+		Password:   entity.SecretRef{15: 9},
+		NTHash:     entity.SecretRef{15: 8},
 		Email:      "a@x",
 		Role:       entity.RoleAdmin,
 		NotBefore:  time.Unix(1_800_000_000, 0).UTC(),
@@ -101,7 +102,8 @@ func codecCases() []codecCase {
 	set := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "k", Value: []byte("v"), Generation: 6, Schema: 1, Position: 14}
 	return []codecCase{
 		{"user", user, encodeUser(user),
-			"01" + "05616c696365" + "01" + "0104" + "31303030" + "02" + "bb000000000000000000000000000002" + "01" + "00000000000000000000000000000009" +
+			"01" + "01" + "05616c696365" + "01" + "0104" + "31303030" + "02" + "bb000000000000000000000000000002" + "01" +
+				"00000000000000000000000000000009" + "00000000000000000000000000000008" +
 				"03614078" + "03" + "000000006b49d200" + "01" + "0000000000000005" + "000000000000000b" + "01",
 			func(b []byte) (any, error) { return decodeUser(pid, b) }},
 		{"group", grp, encodeGroup(grp), "01" + "057374616666" + "00" + "0000000000000002" + "000000000000000c" + "01",
@@ -231,9 +233,13 @@ func TestPolicyUnknownMatchTag(t *testing.T) {
 }
 
 func TestUserUnknownRole(t *testing.T) {
-	b := encodeUser(entity.User{Name: "u", Role: entity.APIRole(200)})
+	b := encodeUser(entity.User{Principal: entity.Principal{Kind: entity.PrincipalUser}, Name: "u", Role: entity.APIRole(200)})
 	if _, err := decodeUser(entity.PrincipalID{}, b); !errors.Is(err, errMalformed) {
 		t.Errorf("user with role byte 200: %v, want %v", err, errMalformed)
+	}
+	b = encodeUser(entity.User{Principal: entity.Principal{Kind: entity.PrincipalGroup}, Name: "u"})
+	if _, err := decodeUser(entity.PrincipalID{}, b); !errors.Is(err, errMalformed) {
+		t.Errorf("user record of kind group: %v, want %v", err, errMalformed)
 	}
 }
 

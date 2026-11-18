@@ -36,10 +36,33 @@ func (*IdempotentReplay) Error() string {
 	return "entity: request already answered under its idempotency key"
 }
 
-// Alloc names the IDs a user or group write draws from the store's uid, gid
+// IDRange is the span uids and gids are allocated from, both ends included.
+type IDRange struct{ Lo, Hi uint32 }
+
+// Alloc names the IDs a user or group create draws from the store's uid, gid
 // and RID counters in its own transaction. An ID it does not name is written
-// as the record holds it.
-type Alloc struct{ UID, GID, RID bool }
+// as the record holds it. Range is the span a named uid or gid is drawn from,
+// as the caller read the installation's range setting; a RID is appended to
+// the installation's domain SID. A write that is not a create names none.
+//
+// decision: a missing uid or gid is allocated, never filled with a default:
+// a default makes every principal without one the same principal to every
+// check that reads a uid. So the write names what the store allocates, and a
+// zero ID is never read as "allocate one". Overturned only by a client
+// protocol that must derive a uid from another spelling and cannot be given
+// an allocated one.
+//
+// decision: the caller passes the range rather than the store reading the
+// setting, which would couple the store to that setting's encoding. A caller
+// that read the range before a change commits still allocates from the old
+// one, and since the counters never go back, a range ending at or below a
+// counter's last ID allocates nothing more: every create naming it fails
+// ErrNoSpace until the range is widened. Withdraw it if the store comes to
+// decode settings itself.
+type Alloc struct {
+	UID, GID, RID bool
+	Range         IDRange
+}
 
 // WriteMeta is what a control-plane write records beside its change, each in
 // the change's own transaction. The write's function may complete the
@@ -60,7 +83,7 @@ type WriteMeta struct {
 // write's function runs again.
 type ControlPlaneTx interface {
 	Setting(scope SettingScope, key string) (Setting, bool, error)
-	User(p Principal) (User, bool, error) // false for a user marked deleted
+	User(p Principal) (User, bool, error) // false for a user or machine marked deleted, or a record of another kind than p's
 	Share(id ShareID) (Share, bool, error)
 	// ExportPolicy is the share's export policy; the default one, version
 	// zero, when none is stored.

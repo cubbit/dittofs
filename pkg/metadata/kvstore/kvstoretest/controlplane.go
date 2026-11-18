@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,9 +55,21 @@ func all[T any](t testing.TB, seq iter.Seq2[T, error]) []T {
 	return out
 }
 
+// user is a user holding ids, and a fresh SID beside a uid that has none,
+// as the store keeps a user's file spellings together.
 func user(name string, ids ...entity.ProtocolID) entity.User {
+	if slices.ContainsFunc(ids, func(id entity.ProtocolID) bool { return id.Scheme == entity.SchemeUID }) &&
+		!slices.ContainsFunc(ids, func(id entity.ProtocolID) bool { return id.Scheme == entity.SchemeSID }) {
+		ids = append(ids, freshSID())
+	}
 	return entity.User{Principal: entity.NewUser(), Name: name, IDs: ids}
 }
+
+// fixtureIDs numbers the gids and SIDs fixtures hand out, so no two collide.
+var fixtureIDs atomic.Uint32
+
+// freshSID is a SID no other fixture holds.
+func freshSID() entity.ProtocolID { return sidOf(fmt.Sprintf("fixture-sid-%d", fixtureIDs.Add(1))) }
 
 // grantVersion is the version of the grant naming p on share, zero for none:
 // what a write replacing or deleting it expects.
@@ -87,7 +100,12 @@ func effective(t *testing.T, s *kvstore.Store, share entity.ShareID, p entity.Pr
 	return entity.AccessReadWrite
 }
 
-func group(name string) entity.Group { return entity.Group{Principal: entity.NewGroup(), Name: name} }
+// group is a group holding a fresh gid, above the default allocation range,
+// and a fresh SID.
+func group(name string) entity.Group {
+	n := fixtureIDs.Add(1)
+	return entity.Group{Principal: entity.NewGroup(), Name: name, IDs: entity.ProtocolIDs{gid(fmt.Sprint(2_000_000_000 + n)), freshSID()}}
+}
 
 func uid(n string) entity.ProtocolID { return entity.ProtocolID{Scheme: entity.SchemeUID, Value: n} }
 
@@ -101,7 +119,7 @@ func testUserRenameAndIDsMoveTheirRows(t *testing.T, kvo Opener) {
 	u := user("alice", uid("1000"))
 	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 
-	u.Name, u.IDs = "alicia", entity.ProtocolIDs{uid("1001")}
+	u.Name, u.IDs = "alicia", entity.ProtocolIDs{uid("1001"), u.IDs[1]}
 	must(t, errOf(cp.PutUser(ctx, u, userGeneration(t, s, u.Principal), entity.Alloc{})))
 	if _, err := p.ByName(ctx, entity.PrincipalUser, "alice"); !merrs.IsNotFoundError(err) {
 		t.Errorf("old name still resolves: %v", err)
@@ -147,7 +165,6 @@ func testPrincipalUniqueness(t *testing.T, kvo Opener) {
 		user("carol", uid("x")),
 		user("carol", entity.ProtocolID{Scheme: entity.SchemeGID, Value: "5"}),
 		user("carol", uid("5"), uid("5")),
-		user(""),
 	} {
 		if _, err := cp.PutUser(ctx, bad, 0, entity.Alloc{}); err == nil {
 			t.Errorf("accepted %+v", bad)

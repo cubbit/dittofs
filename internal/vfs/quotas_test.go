@@ -134,7 +134,7 @@ func TestARefusedWriteHoldsNoReservation(t *testing.T) {
 func TestAWriteIsRefusedByEachScopeInTurn(t *testing.T) {
 	s, sink := newQuotas(t)
 	ctx := t.Context()
-	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
+	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: "2000"}, {Scheme: entity.SchemeSID, Value: "sid-staff"}}}
 	s.must(t, errOf(s.cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
 	tree, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "tree", kvstore.Dir(0o777))
 	project, err := s.fs.Store.Files().SetProject(ctx, s.fs.Admin, tree)
@@ -241,7 +241,7 @@ func TestACreateChargesTheNewFilesOwner(t *testing.T) {
 	// The group: staff's quota is spent by the directory itself, so a
 	// create there by alice, who is not in staff, is refused once the
 	// directory is setgid, and admitted before.
-	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
+	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: "2000"}, {Scheme: entity.SchemeSID, Value: "sid-staff"}}}
 	s.must(t, errOf(s.cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
 	shared, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "shared", kvstore.Dir(0o777))
 	_, err = files.SetAttrs(ctx, s.fs.Admin, shared, entity.Attrs{}.WithGroup(staff.Principal))
@@ -376,10 +376,10 @@ func TestACreateChargesItsProjectNamedOwnerAndPrimaryGroup(t *testing.T) {
 
 	// staff's quota is spent by a directory it owns; carol, whose primary
 	// group is staff, is charged to it.
-	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
+	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: "2000"}, {Scheme: entity.SchemeSID, Value: "sid-staff"}}}
 	s.must(t, errOf(s.cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
 	carol := entity.User{Principal: entity.NewUser(), Name: "carol", Primary: staff.Principal,
-		IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "61999"}}}
+		IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "61999"}, {Scheme: entity.SchemeSID, Value: "sid-61999"}}}
 	s.must(t, errOf(s.cp.PutUser(ctx, carol, 0, entity.Alloc{})))
 	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: carol.Principal, Access: entity.AccessReadWrite}, 0)))
 	theirs, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "theirs", kvstore.Dir(0o777))
@@ -397,7 +397,7 @@ func fullGroup(t *testing.T) (s *attrs, sink *quotaSink, staff entity.Principal,
 	t.Helper()
 	s, sink = newQuotas(t)
 	ctx := t.Context()
-	g := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
+	g := entity.Group{Principal: entity.NewGroup(), Name: "staff", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: "2000"}, {Scheme: entity.SchemeSID, Value: "sid-staff"}}}
 	s.must(t, errOf(s.cp.PutGroup(ctx, g, 0, entity.Alloc{})))
 	theirs, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "theirs", kvstore.Dir(0o777))
 	_, err := s.fs.Store.Files().SetAttrs(ctx, s.fs.Admin, theirs, entity.Attrs{}.WithGroup(g.Principal))

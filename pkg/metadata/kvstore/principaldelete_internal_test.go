@@ -2,12 +2,15 @@ package kvstore
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
@@ -146,10 +149,10 @@ func TestUserDeletionResumesFromTheMarkAcrossRestarts(t *testing.T) {
 	ctx := context.Background()
 	r := newRestarting(t, 1)
 	cp := r.s.ControlPlane()
-	ref, otherRef := entity.SecretRef{15: 1}, entity.SecretRef{15: 2}
-	u := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "1000"}}, Secret: ref}
-	other := entity.User{Principal: entity.NewUser(), Name: "bob", Secret: otherRef}
-	g1, g2 := entity.Group{Principal: entity.NewGroup(), Name: "g1"}, entity.Group{Principal: entity.NewGroup(), Name: "g2"}
+	ref, otherRef, ntRef := entity.SecretRef{15: 1}, entity.SecretRef{15: 2}, entity.SecretRef{15: 3}
+	u := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "1000"}, {Scheme: entity.SchemeSID, Value: "sid-alice"}}, Password: ref, NTHash: ntRef}
+	other := entity.User{Principal: entity.NewUser(), Name: "bob", Password: otherRef}
+	g1, g2 := fileGroup("g1", "2001"), fileGroup("g2", "2002")
 	gen, err := cp.PutUser(ctx, u, 0, entity.Alloc{})
 	r.must(err)
 	for _, err := range []error{errOf(cp.PutUser(ctx, other, 0, entity.Alloc{})), errOf(cp.PutGroup(ctx, g1, 0, entity.Alloc{})), errOf(cp.PutGroup(ctx, g2, 0, entity.Alloc{}))} {
@@ -175,7 +178,7 @@ func TestUserDeletionResumesFromTheMarkAcrossRestarts(t *testing.T) {
 		}
 		return tx.PutSignInFailures(count, entity.SignInFailures{Count: 1})
 	}))
-	rows(t, r.s, secretVersionKey(ref, 1), []byte{1}, secretVersionKey(ref, 2), []byte{2}, secretVersionKey(otherRef, 1), []byte{3})
+	rows(t, r.s, secretVersionKey(ref, 1), []byte{1}, secretVersionKey(ref, 2), []byte{2}, secretVersionKey(otherRef, 1), []byte{3}, secretVersionKey(ntRef, 1), []byte{4})
 
 	r.must(cp.DeleteUser(ctx, u.Principal, gen))
 	// Two grants, two memberships, a quota, a token, the session's refresh
@@ -198,7 +201,7 @@ func TestUserDeletionResumesFromTheMarkAcrossRestarts(t *testing.T) {
 	}, [][]byte{
 		grantsOfPrefix(u.Principal.ID), memberOfPrefix(u.Principal.ID),
 		accountTokensPrefix(u.Principal), accountSessionsPrefix(u.Principal),
-		keys.ID([]byte{keys.KindSEC}, ref[:]),
+		keys.ID([]byte{keys.KindSEC}, ref[:]), keys.ID([]byte{keys.KindSEC}, ntRef[:]),
 	})
 	if err := r.s.kv.View(ctx, func(rd kv.Reader) error {
 		_, ok, err := get(rd, secretVersionKey(otherRef, 1))
@@ -219,7 +222,7 @@ func TestGroupDeletionDropsMembershipsBothWays(t *testing.T) {
 	r := newRestarting(t, 1)
 	cp := r.s.ControlPlane()
 	m := entity.User{Principal: entity.NewUser(), Name: "m"}
-	g, outer := entity.Group{Principal: entity.NewGroup(), Name: "g"}, entity.Group{Principal: entity.NewGroup(), Name: "outer"}
+	g, outer := fileGroup("g", "2001"), fileGroup("outer", "2002")
 	r.must(errOf(cp.PutUser(ctx, m, 0, entity.Alloc{})))
 	gen, err := cp.PutGroup(ctx, g, 0, entity.Alloc{})
 	r.must(err)
@@ -263,8 +266,8 @@ func TestDeletionBatchesFollowKeyCosts(t *testing.T) {
 			}
 		}, []uint64{0, 0, 1}},
 		{"two memberships at 5 keys, in one batch", 5, func(r *restarting, cp ControlPlane, u entity.Principal) {
-			for _, name := range []string{"g1", "g2"} {
-				g := entity.Group{Principal: entity.NewGroup(), Name: name}
+			for i, name := range []string{"g1", "g2"} {
+				g := fileGroup(name, strconv.Itoa(2001+i))
 				r.must(errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
 				r.must(cp.AddMember(ctx, entity.Membership{Group: g.Principal, Member: u}))
 			}
@@ -299,4 +302,27 @@ func TestDeletionBatchesFollowKeyCosts(t *testing.T) {
 			r.deleteInBatches(u.Principal, c.pgen, 0)
 		})
 	}
+}
+
+// fileGroup is a group named name holding gid and a SID of its own.
+func fileGroup(name, gid string) entity.Group {
+	return entity.Group{Principal: entity.NewGroup(), Name: name, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: gid}, {Scheme: entity.SchemeSID, Value: "sid-" + name}}}
+}
+
+// A deletion naming a marked user record as a machine refuses, and the
+// record stays for its own deletion.
+func TestDeletionOfAnotherKindRefuses(t *testing.T) {
+	ctx := context.Background()
+	r := newRestarting(t, 10)
+	cp := r.s.ControlPlane()
+	u := entity.User{Principal: entity.NewUser(), Name: "alice"}
+	gen, err := cp.PutUser(ctx, u, 0, entity.Alloc{})
+	r.must(err)
+	r.must(cp.DeleteUser(ctx, u.Principal, gen))
+	asMachine := entity.Principal{Kind: entity.PrincipalMachine, ID: u.Principal.ID}
+	done, err := r.s.Nodes().ContinueDelete(ctx, asMachine)
+	if se, ok := errors.AsType[*merrs.StoreError](err); done || !ok || se.Code != merrs.ErrInvalidArgument {
+		t.Errorf("deletion of a user record as a machine: done %v, %v; want not done, invalid argument", done, err)
+	}
+	r.deleteInBatches(u.Principal, []uint64{1}, 0)
 }

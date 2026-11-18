@@ -14,6 +14,7 @@ import (
 	"time"
 
 	identitysrv "github.com/cubbit/dittofs/internal/identity"
+	"github.com/cubbit/dittofs/internal/vfs/admit"
 	"github.com/cubbit/dittofs/internal/vfs/authz"
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
 	"github.com/cubbit/dittofs/pkg/identity"
@@ -75,7 +76,7 @@ func (s *shares) user(t *testing.T, name, uid string, share entity.ShareID, a en
 	if uid == "" {
 		uid = strconv.FormatUint(uint64(60000+nextUID.Add(1)), 10)
 	}
-	u := entity.User{Principal: entity.NewUser(), Name: name, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: uid}}}
+	u := entity.User{Principal: entity.NewUser(), Name: name, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: uid}, {Scheme: entity.SchemeSID, Value: "sid-" + uid}}}
 	s.must(t, errOf(s.cp.PutUser(t.Context(), u, 0, entity.Alloc{})))
 	s.must(t, errOf(s.cp.SetGrant(t.Context(), entity.ShareGrant{Share: share, Principal: u.Principal, Access: a}, 0)))
 	return u
@@ -260,8 +261,7 @@ func TestAdmissionOnEveryEntryPath(t *testing.T) {
 func TestSquashIsEachSharesOwn(t *testing.T) {
 	s := newShares(t, nil, nil)
 	other := s.addShare(t, "other", "/other")
-	root := s.user(t, "root", "0", s.share, entity.AccessReadWrite)
-	s.must(t, errOf(s.cp.SetGrant(t.Context(), entity.ShareGrant{Share: other, Principal: root.Principal, Access: entity.AccessReadWrite}, 0)))
+	s.must(t, errOf(s.cp.SetGrant(t.Context(), entity.ShareGrant{Share: other, Principal: entity.Everyone, Access: entity.AccessReadWrite}, 0)))
 	nobody := s.user(t, "nobody", "", s.share, entity.AccessReadWrite)
 	s.must(t, errOf(s.cp.PutExportPolicy(t.Context(), entity.ExportPolicy{Share: s.share, Squash: entity.SquashRoot, Anonymous: nobody.Principal}, 0)))
 	s.must(t, errOf(s.cp.PutExportPolicy(t.Context(), entity.ExportPolicy{Share: other, Squash: entity.SquashNone}, 0)))
@@ -677,30 +677,6 @@ func TestOnlyAnUnsquashedProvenCallerIsAdmin(t *testing.T) {
 	}
 }
 
-// A proven caller whose user holds uid 0 is root: a root squash squashes it,
-// and unsquashed it is privileged with no admin grant.
-func TestAProvenUserHoldingUIDZeroIsRoot(t *testing.T) {
-	s := newShares(t, nil, nil)
-	ctx := t.Context()
-	root := s.user(t, "root", "0", s.share, entity.AccessReadWrite)
-	nobody := s.user(t, "nobody", "", s.share, entity.AccessRead)
-	caller := func() authz.Caller {
-		t.Helper()
-		a, release, err := s.admit(ctx, proven(root.Principal, inLab), s.share, true, false)
-		s.must(t, err)
-		release()
-		return a.caller
-	}
-	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashRoot, Anonymous: nobody.Principal}, 0)))
-	if c := caller(); c.Principal != nobody.Principal || c.Privileged || c.Mapped != root.Principal {
-		t.Errorf("root signed in on a root-squash share: %+v, mapped %v", c.Identity, c.Mapped)
-	}
-	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashNone}, policyVersion(t, s.cp, s.share))))
-	if c := caller(); c.Principal != root.Principal || !c.Privileged || c.Admin {
-		t.Errorf("root signed in on an unsquashed share: %+v", c.Identity)
-	}
-}
-
 // A proven caller's share grant is read for whom it signed in as, before
 // the squash: on an all-squash share its own grant of none refuses it,
 // whatever the anonymous principal's, and its own read-write admits it
@@ -747,7 +723,8 @@ func TestAProvenCallersGroupGrantIsReadBeforeTheSquash(t *testing.T) {
 	dan := s.user(t, "dan", "", s.share, entity.AccessNone)
 	s.must(t, s.cp.DeleteGrant(ctx, s.share, dan.Principal, grantVersion(t, s.cp, s.share, dan.Principal)))
 	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
-	s.must(t, errOf(s.cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
+	// A group holds a gid and a SID, so the store allocates both.
+	s.must(t, errOf(s.cp.PutGroup(ctx, staff, 0, entity.Alloc{GID: true, RID: true, Range: entity.IDRange{Lo: 1_000_000, Hi: 1_999_999_999}})))
 	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: dan.Principal}))
 	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: staff.Principal, Access: entity.AccessReadWrite}, 0)))
 	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashAll, Anonymous: nobody.Principal}, 0)))
@@ -790,6 +767,48 @@ func TestAProvenPrincipalWithNoUIDIsAnonymous(t *testing.T) {
 	release()
 	if c := a.caller; c.Principal != nobody.Principal || c.Authenticated || c.Admin || c.Privileged || c.Mapped != host.Principal {
 		t.Errorf("a proven principal with no uid: %+v, mapped %v", c.Identity, c.Mapped)
+	}
+}
+
+// A machine principal deleted or disabled is refused as a user is: admission
+// does not admit it as the share's anonymous principal, and Mapped, which a
+// call naming no share acts through, refuses it too.
+func TestADeletedOrDisabledMachineIsRefused(t *testing.T) {
+	s := newShares(t, nil, nil)
+	ctx := t.Context()
+	nobody := s.user(t, "nobody", "", s.share, entity.AccessRead)
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashNone, Anonymous: nobody.Principal}, 0)))
+	for i, c := range []struct {
+		name   string
+		revoke func(m entity.User)
+	}{
+		{"deleted", func(m entity.User) {
+			s.must(t, s.cp.DeleteUser(ctx, m.Principal, userGeneration(t, s.fs.Store, m.Principal)))
+		}},
+		{"disabled", func(m entity.User) {
+			m.Disabled = true
+			s.must(t, errOf(s.cp.PutUser(ctx, m, userGeneration(t, s.fs.Store, m.Principal), entity.Alloc{})))
+		}},
+	} {
+		m := entity.User{Principal: entity.Principal{Kind: entity.PrincipalMachine, ID: entity.NewPrincipalID()},
+			IDs: entity.ProtocolIDs{{Scheme: entity.SchemeKerberos, Value: "host/build0" + strconv.Itoa(i) + ".corp.example@CORP.EXAMPLE"}}}
+		s.must(t, errOf(s.cp.PutUser(ctx, m, 0, entity.Alloc{})))
+		id := proven(m.Principal, inLab)
+		a, release, err := s.admit(ctx, id, s.share, true, false)
+		if err != nil {
+			t.Fatalf("%s: a live machine before: %v", c.name, err)
+		}
+		release()
+		if a.caller.Principal != nobody.Principal {
+			t.Fatalf("%s: a live machine acts as %v, want the anonymous %v", c.name, a.caller.Principal, nobody.Principal)
+		}
+		c.revoke(m)
+		if _, _, err := s.admit(ctx, id, s.share, true, false); !errors.Is(err, vfs.ErrAccess) {
+			t.Errorf("%s machine: admission on a share with an anonymous principal answered %v, want ErrAccess", c.name, err)
+		}
+		if p, err := admit.Mapped(ctx, principals{s.meta.Principals()}, id.Identity); !errors.Is(err, vfs.ErrAccess) {
+			t.Errorf("%s machine: Mapped = %v, %v; want ErrAccess", c.name, p, err)
+		}
 	}
 }
 
@@ -984,7 +1003,7 @@ func TestANewShareSquashesRootToAnonymous(t *testing.T) {
 func TestASquashedCallerIsTheAnonymousPrincipalOnly(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
-	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: "1000"}}}
+	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: "1000"}, {Scheme: entity.SchemeSID, Value: "sid-staff"}}}
 	s.must(t, errOf(s.cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
 	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: staff.Principal, Access: entity.AccessReadWrite}, 0)))
 	bob := s.user(t, "bob", "1000", s.share, entity.AccessReadWrite)

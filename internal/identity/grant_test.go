@@ -50,7 +50,7 @@ func grantTo(p entity.Principal, a entity.ShareAccess) entity.ShareGrant {
 func TestResolveTable(t *testing.T) {
 	ctx := context.Background()
 	r := newResolving(t)
-	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("65534")}
+	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("60000")}
 	r.user(t, nobody, 0)
 	guests := r.group(t, "Guests", "")
 	r.member(t, guests, nobody.Principal)
@@ -173,7 +173,7 @@ func callersEqual(a, b pid.Caller) bool {
 func TestResolveOwnNoneOverridesAGroupGrant(t *testing.T) {
 	ctx := context.Background()
 	r := newResolving(t)
-	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("65534")}
+	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("60000")}
 	r.user(t, nobody, 0)
 	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1000")}
 	r.user(t, alice, 0)
@@ -219,17 +219,16 @@ func grantVersion(t *testing.T, r *resolving, share entity.ShareID, p entity.Pri
 // Admin comes from the grant alone and only for a proven caller: an
 // evidence SID S-1-5-32-544 mapping to a group no grant names leaves it
 // false; the same caller's own admin grant sets it, and privilege with it;
-// a None caller acting as an Anonymous granted admin holds neither; a
-// proven user holding uid 0 is privileged without being admin.
+// a None caller acting as an Anonymous granted admin holds neither. Root's
+// privilege is the well-known root principal's, which resolution handles
+// with the root squash.
 func TestResolveAdminComesFromTheGrantAlone(t *testing.T) {
 	ctx := context.Background()
 	r := newResolving(t)
-	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("65534")}
+	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("60000")}
 	r.user(t, nobody, 0)
 	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1000")}
 	r.user(t, alice, 0)
-	root := entity.User{Principal: entity.NewUser(), Name: "root", IDs: fileIDs("0")}
-	r.user(t, root, 0)
 	admins := r.group(t, "Administrators", "S-1-5-32-544")
 	id := ticket(alice.Principal, alice.Name)
 	id.Evidence.SIDs = []pid.SID{*sid.ParseSIDMust("S-1-5-32-544")}
@@ -246,7 +245,7 @@ func TestResolveAdminComesFromTheGrantAlone(t *testing.T) {
 		t.Errorf("S-1-5-32-544 with a read-write grant: Groups %v, Admin %v, Privileged %v; want %v listed, not admin, not privileged", c.Groups, c.Admin, c.Privileged, admins)
 	}
 
-	granted := r.sharing(t, grantTo(alice.Principal, entity.AccessAdmin), grantTo(nobody.Principal, entity.AccessAdmin), grantTo(root.Principal, entity.AccessRead))
+	granted := r.sharing(t, grantTo(alice.Principal, entity.AccessAdmin), grantTo(nobody.Principal, entity.AccessAdmin))
 	c, err = r.srv.Resolve(ctx, id, policy(granted), pid.ReadOnlyNotNarrowed)
 	if err != nil || !c.Admin || !c.Privileged || c.Access != entity.AccessAdmin {
 		t.Errorf("an own admin grant: %+v, %v; want admin, privileged, Access admin", c, err)
@@ -254,10 +253,6 @@ func TestResolveAdminComesFromTheGrantAlone(t *testing.T) {
 	c, err = r.srv.Resolve(ctx, pid.Identity{Proof: pid.ProofNone}, policy(granted), pid.ReadOnlyNotNarrowed)
 	if err != nil || c.Admin || c.Privileged || c.Authenticated || c.Access != entity.AccessAdmin {
 		t.Errorf("a None caller as an Anonymous granted admin: %+v, %v; want Access admin and no flag", c, err)
-	}
-	c, err = r.srv.Resolve(ctx, ticket(root.Principal, root.Name), policy(granted), pid.ReadOnlyNotNarrowed)
-	if err != nil || c.Admin || !c.Privileged {
-		t.Errorf("a proven uid 0 with a read grant: %+v, %v; want privileged, not admin", c, err)
 	}
 }
 
@@ -267,7 +262,7 @@ func TestResolveAdminComesFromTheGrantAlone(t *testing.T) {
 func TestResolveDenyOnlyMatchesNoGrant(t *testing.T) {
 	ctx := context.Background()
 	r := newResolving(t)
-	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("65534")}
+	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("60000")}
 	r.user(t, nobody, 0)
 	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1000")}
 	r.user(t, alice, 0)

@@ -89,8 +89,8 @@ func (id *PrincipalID) UnmarshalText(b []byte) (err error) {
 	return err
 }
 
-// Principal is a protocol-neutral identity: a user, a group, or one of the
-// fixed well-known specials. Its ID is minted when the principal is created
+// Principal is a protocol-neutral identity: a user, a group, a machine, or
+// one of the fixed well-known specials. Its ID is minted when the principal is created
 // and never reissued, so an account reusing a UID or SID cannot inherit an
 // old principal's files or grants. Protocol spellings live only on the User
 // or Group record and in the protocol-ID index; nothing here interprets one.
@@ -105,9 +105,12 @@ const (
 	PrincipalUser PrincipalKind = iota + 1
 	PrincipalGroup
 	PrincipalSpecial
+	// PrincipalMachine is a host or service signing in for itself, held as a
+	// User record with no name and only its Kerberos spelling.
+	PrincipalMachine
 )
 
-var principalKinds = []string{PrincipalUser: "user", PrincipalGroup: "group", PrincipalSpecial: "special"}
+var principalKinds = []string{PrincipalUser: "user", PrincipalGroup: "group", PrincipalSpecial: "special", PrincipalMachine: "machine"}
 
 func (k PrincipalKind) String() string                { return enumString(principalKinds, k) }
 func (k PrincipalKind) MarshalText() ([]byte, error)  { return enumMarshal(principalKinds, k) }
@@ -134,12 +137,26 @@ var (
 	// a caller whose principal it is, never authenticated, admin or
 	// privileged.
 	AnonymousPrincipal = Principal{PrincipalSpecial, PrincipalID{15: 0x0C}}
+	// RootPrincipal is what a claimed uid 0 maps to: privileged where a
+	// share leaves it unsquashed, and the owner of what it creates there.
+	// Resolution does not map uid 0 to it yet, and no ACL check matches it,
+	// so ACL.Valid refuses a deny naming it; admit.Resolve's decision says
+	// what a claimed uid 0 acts as meanwhile.
+	//
+	// decision: uid 0 is a well-known principal, root, not a user an operator
+	// creates. Without it a claimed uid 0 maps to no principal and acts as
+	// anonymous, so a share that squashes nothing still squashes root:
+	// chown, tar xpf and restores fail, and root's files are owned by 65534.
+	// The cost is that root is one principal across every client host.
+	// Overturned if a deployment needs root on one host told apart from root
+	// on another; that is a per-host link, not a second rule.
+	RootPrincipal = Principal{PrincipalSpecial, PrincipalID{15: 0x0D}}
 )
 
 // WellKnown reports whether p is one of the well-known principals above.
 func (p Principal) WellKnown() bool {
 	var prefix [15]byte
-	return p.Kind == PrincipalSpecial && [15]byte(p.ID[:15]) == prefix && p.ID[15] >= 0x01 && p.ID[15] <= 0x0C
+	return p.Kind == PrincipalSpecial && [15]byte(p.ID[:15]) == prefix && p.ID[15] >= 0x01 && p.ID[15] <= 0x0D
 }
 
 // IsCreator reports CREATOR OWNER or CREATOR GROUP, which act only through

@@ -346,15 +346,18 @@ func TestResolveOpensNoSpanUnderAnUnsampledParent(t *testing.T) {
 	}
 }
 
-// group stores a group named name, with the SID spelling sd when it is not
-// empty, and returns its principal.
+// group stores a group named name and returns its principal. A group holds a
+// gid and a SID, so the store allocates the gid, and the SID too unless sd
+// names it.
 func (r *resolving) group(t *testing.T, name, sd string) entity.Principal {
 	t.Helper()
 	g := entity.Group{Principal: entity.NewGroup(), Name: name}
+	alloc := entity.Alloc{GID: true, RID: true, Range: entity.IDRange{Lo: 1_000_000, Hi: 1_999_999_999}}
 	if sd != "" {
 		g.IDs = entity.ProtocolIDs{sidID(sd)}
+		alloc.RID = false
 	}
-	if _, err := r.cp.PutGroup(context.Background(), g, 0, entity.Alloc{}); err != nil {
+	if _, err := r.cp.PutGroup(context.Background(), g, 0, alloc); err != nil {
 		t.Fatalf("PutGroup %s: %v", name, err)
 	}
 	return g.Principal
@@ -506,7 +509,7 @@ func TestResolveRefusesACallerOverTheGroupCap(t *testing.T) {
 // no flag, though its evidence's SIDs map to groups.
 func TestResolveSquashedCallerKeepsNothingOfItsOwn(t *testing.T) {
 	r := newResolving(t)
-	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("65534")}
+	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("60000")}
 	r.user(t, nobody, 0)
 	guests := r.group(t, "Guests", "")
 	r.member(t, guests, nobody.Principal)
@@ -538,7 +541,7 @@ func TestResolveSquashedCallerKeepsNothingOfItsOwn(t *testing.T) {
 func TestResolveRefusesASquashToADeletedAnonymous(t *testing.T) {
 	ctx := context.Background()
 	r := newResolving(t)
-	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("65534")}
+	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("60000")}
 	gen := r.user(t, nobody, 0)
 	if err := r.cp.DeleteUser(ctx, nobody.Principal, gen); err != nil {
 		t.Fatalf("DeleteUser: %v", err)

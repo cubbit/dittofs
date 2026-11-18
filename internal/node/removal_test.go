@@ -411,7 +411,7 @@ func grantedCaller(t *testing.T, h *nodetest.Harness, sh entity.Share) vfs.Call 
 	t.Helper()
 	cp := h.Store().ControlPlane()
 	u := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "60001"}}}
-	if _, err := cp.PutUser(t.Context(), u, 0, entity.Alloc{}); err != nil {
+	if _, err := cp.PutUser(t.Context(), u, 0, entity.Alloc{RID: true}); err != nil {
 		t.Fatalf("create a user: %v", err)
 	}
 	if _, err := cp.SetGrant(t.Context(), entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessAdmin}, 0); err != nil {
@@ -498,7 +498,7 @@ func TestAdmissionServesOnlyTheRunningSet(t *testing.T) {
 	// A proven caller acts as itself only with a UID, else as the anonymous one.
 	u := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "60001"}}}
 	cp := h.Store().ControlPlane()
-	if _, err := cp.PutUser(ctx, u, 0, entity.Alloc{}); err != nil {
+	if _, err := cp.PutUser(ctx, u, 0, entity.Alloc{RID: true}); err != nil {
 		t.Fatalf("create a user: %v", err)
 	}
 	for _, sh := range []entity.Share{bound, refused} {

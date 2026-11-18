@@ -8,6 +8,7 @@ import (
 )
 
 //go:generate go run ./internal/upcasegen
+//go:generate go run ./internal/principalfoldgen
 
 // FoldRule is how a share's entry keys are folded, by the ID the store's
 // format record names it by. A share's rule is bound when it is created and
@@ -76,6 +77,33 @@ func (r FoldRule) Fold(name []byte) []byte {
 // FoldShareName is the form share names are unique under: the upcase rule,
 // as SMB servers compare them.
 func FoldShareName(name string) string { return string(FoldUpcase.Fold([]byte(name))) }
+
+// FoldPrincipalName is the form user and group names are unique under:
+// simple Unicode case folding, each rune replaced by the smallest rune of its
+// case-folding orbit, so two names strings.EqualFold calls equal share one
+// key and the Kelvin sign folds with k. Bytes that are not valid UTF-8 are
+// kept as they are.
+//
+// decision: the fold reads only principalFold, frozen from Unicode 15, never
+// the toolchain's unicode tables, because every user and group name row is
+// keyed by it. A pair a newer Unicode adds to an orbit is deliberately not
+// folded: those names stay distinct keys. Regenerate the table under a newer
+// version only together with a migration that re-keys every name row.
+func FoldPrincipalName(name string) string {
+	out := make([]byte, 0, len(name))
+	for len(name) > 0 {
+		c, n := utf8.DecodeRuneInString(name)
+		if c == utf8.RuneError && n <= 1 {
+			out = append(out, name[0])
+		} else if f, ok := principalFold[c]; ok {
+			out = utf8.AppendRune(out, f)
+		} else {
+			out = utf8.AppendRune(out, c)
+		}
+		name = name[n:]
+	}
+	return string(out)
+}
 
 // DigestKeyLen is the length of a share's digest key.
 const DigestKeyLen = 32

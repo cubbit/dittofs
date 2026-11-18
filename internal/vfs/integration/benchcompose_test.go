@@ -255,8 +255,9 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 	})
 }
 
-// signIn records the store's administrator as a user holding a uid, so it
-// signs in as itself rather than as the share's anonymous principal.
+// signIn records the store's administrator as a user holding a uid and its
+// SID, so it signs in as itself rather than as the share's anonymous
+// principal.
 func (c *bench) signIn(b *testing.B) {
 	b.Helper()
 
@@ -266,7 +267,10 @@ func (c *bench) signIn(b *testing.B) {
 	u := entity.User{
 		Principal: p,
 		Name:      "admin",
-		IDs:       entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}},
+		IDs: entity.ProtocolIDs{
+			{Scheme: entity.SchemeUID, Value: "100"},
+			{Scheme: entity.SchemeSID, Value: "sid-100"},
+		},
 	}
 	// The administrator may already be a user with a grant: each write
 	// expects what it replaces.

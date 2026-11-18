@@ -327,15 +327,19 @@ func (a ACL) LimitsOwner() bool {
 
 // Valid reports whether every entry is of the list it sits in: allow and
 // deny in Entries, audit and alarm in Audit, each naming a principal. A deny
-// naming a special principal that is not well known is invalid: no caller
-// matches it, so every walk would skip it and it would fail open. An allow
+// naming a special principal that is not well known, or naming root, is
+// invalid: no caller matches it, so every walk would skip it and it would
+// fail open. An allow
 // naming one is valid and grants nothing.
 func (a ACL) Valid() bool {
 	for _, e := range a.Entries {
 		if (e.Type != ACEAllow && e.Type != ACEDeny) || e.Who.IsZero() {
 			return false
 		}
-		if e.Type == ACEDeny && e.Who.Kind == PrincipalSpecial && !e.Who.WellKnown() {
+		// decision: a deny naming root is refused like an unknown one, since no
+		// access check matches root until resolution maps a claimed uid 0 to
+		// it. Accept it once the check matches root's callers.
+		if e.Type == ACEDeny && e.Who.Kind == PrincipalSpecial && (!e.Who.WellKnown() || e.Who == RootPrincipal) {
 			return false
 		}
 	}

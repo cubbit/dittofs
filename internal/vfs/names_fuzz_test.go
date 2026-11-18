@@ -35,7 +35,7 @@ func fuzzShare(f *testing.F) (*Filesystem, vfs.Call, vfs.Handle) {
 		f.Fatal(err)
 	}
 	cp := st.ControlPlane()
-	admin := entity.User{Principal: entity.NewUser(), Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}
+	admin := entity.User{Principal: entity.NewUser(), Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}, {Scheme: entity.SchemeSID, Value: "sid-100"}}}
 	sh := entity.Share{ID: entity.NewShareID(), Name: "data", Path: "/data", Root: entity.NewFileID()}
 	for _, err := range []error{
 		errOf(cp.PutUser(ctx, admin, 0, entity.Alloc{})), errOf(kvstoretest.CreateShare(ctx, cp, sh)),

@@ -3,6 +3,7 @@ package kvstoretest
 import (
 	"context"
 	"github.com/google/uuid"
+	"slices"
 	"sync"
 	"testing"
 
@@ -204,5 +205,34 @@ func testShareStateRace(t *testing.T, kvo Opener) {
 	must(t, inner)
 	if !merrs.IsConflictError(outer) {
 		t.Fatalf("second change: %v", outer)
+	}
+}
+
+// Two creates allocating at once get different uids and SIDs, both inside
+// the range: the one committing second draws past the first's.
+func testAllocRace(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
+		t.Run(b.name, func(t *testing.T) {
+			s, h := heldStore(t, b)
+			cp := s.ControlPlane()
+			a, c := user("a"), user("c")
+			create := func(u entity.User) func() error {
+				return func() error {
+					return errOf(cp.PutUser(ctx, u, 0, entity.Alloc{UID: true, RID: true, Range: entity.IDRange{Lo: 1_000_000, Hi: 1_000_001}}))
+				}
+			}
+			outer, inner := race(h, create(a), create(c))
+			must(t, inner)
+			must(t, outer)
+			var uids, sids []string
+			for _, u := range []entity.User{a, c} {
+				got, err := s.Principals().User(ctx, u.Principal)
+				must(t, err)
+				uids, sids = append(uids, spelling(got.IDs, entity.SchemeUID)), append(sids, spelling(got.IDs, entity.SchemeSID))
+			}
+			if uids[0] == uids[1] || sids[0] == sids[1] || !slices.Contains([]string{"1000000", "1000001"}, uids[0]) || !slices.Contains([]string{"1000000", "1000001"}, uids[1]) {
+				t.Errorf("racing creates: uids %v, SIDs %x; want 1000000 and 1000001 and two SIDs", uids, sids)
+			}
+		})
 	}
 }

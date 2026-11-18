@@ -263,6 +263,10 @@ func testWellKnownPrincipals(t *testing.T, kvo Opener) {
 	if err := set(entity.ACE{Type: entity.ACEDeny, Mask: read, Who: unknown}); !isCode(err, merrs.ErrInvalidArgument) {
 		t.Errorf("a deny naming an unknown special principal was stored: %v", err)
 	}
+	// No caller matches root yet, so a deny naming it would fail open.
+	if err := set(entity.ACE{Type: entity.ACEDeny, Mask: read, Who: entity.RootPrincipal}); !isCode(err, merrs.ErrInvalidArgument) {
+		t.Errorf("a deny naming root was stored: %v", err)
+	}
 	must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: unknown}))
 	if err := files.Authorize(ctx, bob, h, nil, read); err == nil {
 		t.Error("an allow naming an unknown special principal granted")

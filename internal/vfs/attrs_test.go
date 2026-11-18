@@ -426,7 +426,7 @@ func TestEachAttributeAsksItsOwnRight(t *testing.T) {
 	if _, err := s.SetAttr(ctx, bob, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o600)}); err != nil {
 		t.Errorf("a chmod by a caller granted write the ACL: %v", err)
 	}
-	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
+	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: "2000"}, {Scheme: entity.SchemeSID, Value: "sid-staff"}}}
 	s.must(t, errOf(s.cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
 	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: s.bob.Principal}))
 	if _, err := s.SetAttr(ctx, bob, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithGroup(staff.Principal)}); !errors.Is(err, vfs.ErrAccess) {
@@ -604,7 +604,7 @@ func TestChangeOfNamesWhatOpenStateJudges(t *testing.T) {
 func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
-	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
+	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: "2000"}, {Scheme: entity.SchemeSID, Value: "sid-staff"}}}
 	s.must(t, errOf(s.cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
 	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: s.bob.Principal}))
 	g := s.file(t, "g", s.alice.Principal, 0o664)

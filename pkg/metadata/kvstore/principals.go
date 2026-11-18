@@ -31,7 +31,7 @@ func (p Principals) ByName(ctx context.Context, kind entity.PrincipalKind, name 
 		if !ok {
 			return merrs.NewNotFoundError(name, kind.String())
 		}
-		id, err := decodeID(b)
+		id, err := decodeNameRow(b)
 		out = entity.Principal{Kind: kind, ID: id}
 		return err
 	})
@@ -142,18 +142,15 @@ func grantIn(r kv.Reader, share entity.ShareID, p entity.PrincipalID) (entity.Sh
 	return g, err == nil, err
 }
 
-// User is the user record of p: what resolution reads to refuse a disabled
-// or deleted user. A deleted one, or one marked deleted, is not found, and a
+// User is the user or machine record of p: what resolution reads to refuse
+// a disabled or deleted user. A deleted one, or one marked deleted, is not found, and a
 // Primary naming a group deleted or marked deleted reads as zero.
 func (p Principals) User(ctx context.Context, of entity.Principal) (entity.User, error) {
 	var u entity.User
 	err := p.s.kv.View(ctx, func(r kv.Reader) error {
-		if of.Kind != entity.PrincipalUser {
-			return merrs.NewNotFoundError(of.ID.String(), "user")
-		}
 		var ok bool
 		var err error
-		if u, ok, err = userIn(r, of.ID); err != nil || !ok {
+		if u, ok, err = userIn(r, of); err != nil || !ok {
 			return notFound(err, of)
 		}
 		u.Primary, err = primaryIn(r, u)

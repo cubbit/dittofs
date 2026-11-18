@@ -563,21 +563,21 @@ func TestAReleaseFailsClosedOnANetgroupReadError(t *testing.T) {
 	}
 }
 
-// Ownership under no open is judged on the squashed principal: root,
-// squashed to nobody on a root-squash share, is refused an NLM lock of a
-// root-owned file nobody cannot read.
+// Ownership under no open is judged on the squashed principal: ops, squashed
+// to nobody on an all-squash share, is refused an NLM lock of its own file
+// nobody cannot read, though the uid it claims maps to the file's owner.
 func TestASquashedOwnerIsDecidedAsReadData(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
-	root := s.user(t, "root", "0", s.share, entity.AccessReadWrite)
 	nobody := s.user(t, "nobody", "", s.share, entity.AccessReadWrite)
+	ops := s.user(t, "ops", "1500", s.share, entity.AccessReadWrite)
 	a := &attrs{shares: s}
-	h := a.file(t, "f", root.Principal, 0o600)
-	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashRoot, Anonymous: nobody.Principal}, 0)))
-	host, _ := s.connected(t, claimed(0, inLab), nlmHost("root-host", 1))
+	h := a.file(t, "f", ops.Principal, 0o600)
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashAll, Anonymous: nobody.Principal}, 0)))
+	host, _ := s.connected(t, claimed(1500, inLab), nlmHost("ops-host", 1))
 	o := vfs.LockOwner{Client: host.Client, Name: []byte("pid 1")}
 	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: o, Ranges: span(0, 1, true)}); !errors.Is(err, vfs.ErrAccess) {
-		t.Errorf("squashed root's NLM lock of its own 0600 file: %v, want ErrAccess", err)
+		t.Errorf("squashed ops's NLM lock of its own 0600 file: %v, want ErrAccess", err)
 	}
 }
 

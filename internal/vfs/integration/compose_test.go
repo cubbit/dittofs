@@ -76,7 +76,7 @@ func composeOver(t *testing.T, wrap func(c *composition, e filesystem.Content) f
 func (c *composition) user(t *testing.T, p entity.Principal, name, uid string, a entity.ShareAccess) {
 	t.Helper()
 	cp := c.FS.Store.ControlPlane()
-	u := entity.User{Principal: p, Name: name, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: uid}}}
+	u := entity.User{Principal: p, Name: name, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: uid}, {Scheme: entity.SchemeSID, Value: "sid-" + uid}}}
 	// p may already be a user with a grant, the share's administrator among
 	// them: each write expects what it replaces.
 	old, err := c.FS.Store.Principals().User(t.Context(), p)

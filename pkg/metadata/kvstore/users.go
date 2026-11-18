@@ -1,10 +1,12 @@
 package kvstore
 
 import (
+	"bytes"
 	"context"
 	"iter"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
@@ -19,7 +21,9 @@ type ControlPlane struct{ s *Store }
 
 func (s *Store) ControlPlane() ControlPlane { return ControlPlane{s} }
 
-// Users lists users in name order, resuming after the name after.
+// Users lists users in name order, resuming after the name after. It walks the
+// name index, so a user with no name, a machine among them, is not listed:
+// such a record is read by its ID or a protocol ID.
 func (c ControlPlane) Users(ctx context.Context, after string) iter.Seq2[entity.User, error] {
 	return pages(ctx, c.s.kv, []byte{keys.KindNX, keys.NXUser}, nameCursor(keys.NXUser, after),
 		func(r kv.Reader, row kv.KeyValue) (entity.User, error) {
@@ -31,7 +35,8 @@ func (c ControlPlane) Users(ctx context.Context, after string) iter.Seq2[entity.
 		})
 }
 
-// Groups lists groups in name order, resuming after the name after.
+// Groups lists groups in name order, resuming after the name after. It walks
+// the name index, so a group with no name is not listed.
 func (c ControlPlane) Groups(ctx context.Context, after string) iter.Seq2[entity.Group, error] {
 	return pages(ctx, c.s.kv, []byte{keys.KindNX, keys.NXGroup}, nameCursor(keys.NXGroup, after),
 		func(r kv.Reader, row kv.KeyValue) (entity.Group, error) {
@@ -52,7 +57,7 @@ func nameCursor(kind byte, after string) []byte {
 
 // byIndex follows a name index row to the record it names.
 func byIndex(r kv.Reader, row kv.KeyValue, key func(entity.PrincipalID) []byte) (entity.PrincipalID, []byte, error) {
-	id, err := decodeID(row.Value)
+	id, err := decodeNameRow(row.Value)
 	if err != nil {
 		return id, nil, err
 	}
@@ -74,20 +79,14 @@ func (c ControlPlane) PutUser(ctx context.Context, u entity.User, expect uint64,
 }
 
 func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64, error) {
-	if u.Principal.Kind != entity.PrincipalUser || fixedID(u.Principal.ID) || u.Name == "" {
-		return 0, merrs.NewInvalidArgumentError("a user needs a minted user principal and a name")
+	if err := userShape(u); err != nil {
+		return 0, err
 	}
 	if !u.Primary.IsZero() && u.Primary.Kind != entity.PrincipalGroup {
 		return 0, merrs.NewInvalidArgumentError("a user's primary group must be a group")
 	}
 	if u.Role.String() == "" {
 		return 0, merrs.NewInvalidArgumentError("unknown API role")
-	}
-	if err := validIDs(u.IDs, entity.SchemeUID, entity.SchemeSID, entity.SchemeKerberos); err != nil {
-		return 0, err
-	}
-	if err := noAlloc(a); err != nil {
-		return 0, err
 	}
 	key := userKey(u.Principal.ID)
 	b, existed, err := get(c.tx, key)
@@ -99,11 +98,23 @@ func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64
 		if old, err = decodeUser(u.Principal.ID, b); err != nil {
 			return 0, err
 		}
-		if old.Deleted {
+		if old.Deleted || old.Principal.Kind != u.Principal.Kind {
 			return 0, notFound(nil, u.Principal)
 		}
 	}
 	if err := expected(old.Generation, expect); err != nil {
+		return 0, err
+	}
+	if u.IDs, err = c.allocate(u.Principal.Kind, u.IDs, existed, a); err != nil {
+		return 0, err
+	}
+	if err := fileSpellings(u.Principal.Kind, u.IDs); err != nil {
+		return 0, err
+	}
+	if err := keepSID(old.IDs, u.IDs); err != nil {
+		return 0, err
+	}
+	if err := localName(u.Name, existed, old.Name); err != nil {
 		return 0, err
 	}
 	if err := reindex(c.tx, u.Principal, existed, old.Name, u.Name, old.IDs, u.IDs); err != nil {
@@ -127,13 +138,10 @@ func (c ControlPlane) PutGroup(ctx context.Context, g entity.Group, expect uint6
 }
 
 func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint64, error) {
-	if g.Principal.Kind != entity.PrincipalGroup || fixedID(g.Principal.ID) || g.Name == "" {
-		return 0, merrs.NewInvalidArgumentError("a group needs a minted group principal and a name")
+	if g.Principal.Kind != entity.PrincipalGroup || fixedID(g.Principal.ID) {
+		return 0, merrs.NewInvalidArgumentError("a group needs a minted group principal")
 	}
 	if err := validIDs(g.IDs, entity.SchemeGID, entity.SchemeSID); err != nil {
-		return 0, err
-	}
-	if err := noAlloc(a); err != nil {
 		return 0, err
 	}
 	key := groupKey(g.Principal.ID)
@@ -153,6 +161,18 @@ func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint
 	if err := expected(old.Generation, expect); err != nil {
 		return 0, err
 	}
+	if g.IDs, err = c.allocate(g.Principal.Kind, g.IDs, existed, a); err != nil {
+		return 0, err
+	}
+	if err := fileSpellings(g.Principal.Kind, g.IDs); err != nil {
+		return 0, err
+	}
+	if err := keepSID(old.IDs, g.IDs); err != nil {
+		return 0, err
+	}
+	if err := localName(g.Name, existed, old.Name); err != nil {
+		return 0, err
+	}
 	if err := reindex(c.tx, g.Principal, existed, old.Name, g.Name, old.IDs, g.IDs); err != nil {
 		return 0, err
 	}
@@ -161,6 +181,41 @@ func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint
 		return 0, err
 	}
 	return g.Generation, c.tx.Set(key, encodeGroup(g))
+}
+
+// userShape refuses a user record of a shape no principal has: a
+// well-known or unminted principal, and a machine with anything but its one
+// Kerberos spelling. A user or group may have no name, as one minted from a
+// directory whose name another principal holds: no name row finds it.
+//
+// decision: the shape is checked on every write, not only where a record is
+// first made, so no path stores a well-known principal or a machine holding
+// a name, a file spelling or a credential. Withdraw a part of it only if the
+// principal kinds themselves change.
+func userShape(u entity.User) error {
+	if fixedID(u.Principal.ID) {
+		return merrs.NewInvalidArgumentError("a user needs a minted principal")
+	}
+	switch u.Principal.Kind {
+	case entity.PrincipalUser:
+		return validIDs(u.IDs, entity.SchemeUID, entity.SchemeSID, entity.SchemeKerberos)
+	case entity.PrincipalMachine:
+		if u.Name != "" || len(u.IDs) != 1 || !u.Primary.IsZero() || u.Password != (entity.SecretRef{}) || u.NTHash != (entity.SecretRef{}) || u.Role != entity.RoleNone {
+			return merrs.NewInvalidArgumentError("a machine holds its Kerberos name only: no name, file spelling, primary group, credential or API role")
+		}
+		return validIDs(u.IDs, entity.SchemeKerberos)
+	}
+	return merrs.NewInvalidArgumentError("a user record is a user or a machine")
+}
+
+// localName refuses a created or renamed user or group name holding @ or \,
+// so a sign-in name with @ always names a directory principal, and a
+// DOMAIN\name spelling, whose prefix a lookup strips, names one principal.
+func localName(name string, existed bool, oldName string) error {
+	if (!existed || name != oldName) && strings.ContainsAny(name, `@\`) {
+		return merrs.NewInvalidArgumentError("a local name never holds @ or \\: " + name)
+	}
+	return nil
 }
 
 func enabledAdmin(u entity.User) bool { return u.Role == entity.RoleAdmin && !u.Disabled }
@@ -180,18 +235,6 @@ func indexAdmin(tx kv.Txn, id entity.PrincipalID, was, is bool) error {
 
 func adminKey(id entity.PrincipalID) []byte { return keys.ID([]byte{keys.KindUA}, id[:]) }
 
-// noAlloc refuses an Alloc naming any ID.
-//
-// ponytail: the store keeps no uid, gid or RID counter yet, so a write can
-// allocate nothing and takes every ID as the record holds it. Draw the named
-// IDs from those counters in the write's transaction once they exist.
-func noAlloc(a entity.Alloc) error {
-	if a != (entity.Alloc{}) {
-		return merrs.NewInvalidArgumentError("the store allocates no uid, gid or RID yet")
-	}
-	return nil
-}
-
 // expected refuses a write whose caller read another generation or version
 // than the stored one, zero standing for no record. The stored one is read
 // with conflict tracking, so of two writes from one read, the second to
@@ -206,8 +249,10 @@ func expected(stored, expect uint64) error {
 }
 
 // validIDs refuses a scheme the principal's kind may not carry, an empty
-// spelling, a UID or GID not in canonical decimal, and a repeated ID: each
-// spelling has one index row, so it must have one form.
+// spelling, a UID or GID not in canonical decimal or reserved to root (0) or
+// anonymous (65534), and a second ID of one scheme: a principal has at most
+// one spelling per scheme, so fileSpellings' check that a scheme is held and
+// keepSID's that the old SID is kept each pin the one spelling.
 func validIDs(ids entity.ProtocolIDs, schemes ...entity.ProtocolScheme) error {
 	for i, id := range ids {
 		if !slices.Contains(schemes, id.Scheme) || id.Value == "" {
@@ -218,9 +263,12 @@ func validIDs(ids entity.ProtocolIDs, schemes ...entity.ProtocolScheme) error {
 			if err != nil || strconv.FormatUint(n, 10) != id.Value {
 				return merrs.NewInvalidArgumentError(id.Scheme.String() + " " + id.Value + " is not a canonical decimal")
 			}
+			if n == 0 || n == 65534 {
+				return merrs.NewInvalidArgumentError(id.Scheme.String() + " " + id.Value + " is root's or anonymous's, held by rule")
+			}
 		}
-		if slices.Contains(ids[:i], id) {
-			return merrs.NewInvalidArgumentError("protocol ID repeated")
+		if slices.ContainsFunc(ids[:i], func(o entity.ProtocolID) bool { return o.Scheme == id.Scheme }) {
+			return merrs.NewInvalidArgumentError("one " + id.Scheme.String() + " per principal")
 		}
 	}
 	return nil
@@ -230,14 +278,23 @@ func validIDs(ids entity.ProtocolIDs, schemes ...entity.ProtocolScheme) error {
 // new one's, refusing a name or ID another principal holds. Each row is read
 // before it is claimed, so of two principals racing for one row, the second
 // to commit conflicts and then finds it taken. A row p already holds is left
-// unwritten.
+// unwritten. An empty name has no row.
 func reindex(tx kv.Txn, p entity.Principal, existed bool, oldName, newName string, oldIDs, newIDs entity.ProtocolIDs) error {
 	kind := nameKind(p.Kind)
-	if !existed || oldName != newName {
-		if err := claim(tx, nameKey(kind, newName), "name "+newName, p, encodeID(p.ID), decodeIDAs(p.Kind)); err != nil {
+	switch {
+	case existed && oldName == newName:
+	case existed && newName != "" && bytes.Equal(nameKey(kind, oldName), nameKey(kind, newName)):
+		// a change of case only: the row stays, holding the new spelling
+		if err := tx.Set(nameKey(kind, newName), encodeNameRow(p.ID, newName)); err != nil {
 			return err
 		}
-		if existed {
+	default:
+		if newName != "" {
+			if err := claim(tx, nameKey(kind, newName), "name "+newName, p, encodeNameRow(p.ID, newName), decodeIDAs(p.Kind)); err != nil {
+				return err
+			}
+		}
+		if existed && oldName != "" {
 			if err := tx.Delete(nameKey(kind, oldName)); err != nil {
 				return err
 			}
@@ -262,7 +319,7 @@ func reindex(tx kv.Txn, p entity.Principal, existed bool, oldName, newName strin
 
 func decodeIDAs(kind entity.PrincipalKind) func([]byte) (entity.Principal, error) {
 	return func(b []byte) (entity.Principal, error) {
-		id, err := decodeID(b)
+		id, err := decodeNameRow(b)
 		return entity.Principal{Kind: kind, ID: id}, err
 	}
 }
@@ -301,8 +358,8 @@ func (c ControlPlane) DeleteUser(ctx context.Context, p entity.Principal, expect
 // mark, freeing the name at once; telling a deleted account from a wrong
 // name would take a change to that specification, not to this method.
 func (c controlTx) DeleteUser(p entity.Principal, expect uint64) error {
-	if p.Kind != entity.PrincipalUser {
-		return merrs.NewInvalidArgumentError("not a user")
+	if p.Kind != entity.PrincipalUser && p.Kind != entity.PrincipalMachine {
+		return merrs.NewInvalidArgumentError("not a user or a machine")
 	}
 	u, err := c.liveUser(p)
 	if err != nil {
@@ -356,22 +413,22 @@ func (c controlTx) DeleteGroup(p entity.Principal, expect uint64) error {
 // liveUser reads p's user record tracked, refusing one absent or marked
 // deleted as not found.
 func (c controlTx) liveUser(p entity.Principal) (entity.User, error) {
-	u, ok, err := userIn(c.tx, p.ID)
+	u, ok, err := userIn(c.tx, p)
 	if err != nil || !ok {
 		return entity.User{}, notFound(err, p)
 	}
 	return u, nil
 }
 
-// userIn reads id's user record, tracked in a transaction. A user marked
-// deleted reads as absent.
-func userIn(r kv.Reader, id entity.PrincipalID) (entity.User, bool, error) {
-	b, ok, err := get(r, userKey(id))
+// userIn reads p's user record, tracked in a transaction. A record marked
+// deleted, or one of another kind than p's, reads as absent.
+func userIn(r kv.Reader, p entity.Principal) (entity.User, bool, error) {
+	b, ok, err := get(r, userKey(p.ID))
 	if err != nil || !ok {
 		return entity.User{}, false, err
 	}
-	u, err := decodeUser(id, b)
-	if err != nil || u.Deleted {
+	u, err := decodeUser(p.ID, b)
+	if err != nil || u.Deleted || u.Principal.Kind != p.Kind {
 		return entity.User{}, false, err
 	}
 	return u, true, nil
@@ -390,20 +447,20 @@ func (c controlTx) liveGroup(p entity.Principal) (entity.Group, error) {
 	return g, err
 }
 
-// live reports whether p's user or group record exists and is not marked
-// deleted. A transaction's read is tracked, so a mark committed meanwhile
-// conflicts with the caller.
+// live reports whether p's user or group record exists, of p's kind, and is
+// not marked deleted, a user record as userIn reads it. A transaction's read
+// is tracked, so a mark committed meanwhile conflicts with the caller.
 func live(r kv.Reader, p entity.Principal) (bool, error) {
-	b, ok, err := get(r, principalKey(p))
+	if p.Kind != entity.PrincipalGroup {
+		_, ok, err := userIn(r, p)
+		return ok, err
+	}
+	b, ok, err := get(r, groupKey(p.ID))
 	if err != nil || !ok {
 		return false, err
 	}
-	if p.Kind == entity.PrincipalGroup {
-		g, err := decodeGroup(p.ID, b)
-		return !g.Deleted, err
-	}
-	u, err := decodeUser(p.ID, b)
-	return !u.Deleted, err
+	g, err := decodeGroup(p.ID, b)
+	return !g.Deleted, err
 }
 
 func notFound(err error, p entity.Principal) error {
