@@ -21,9 +21,16 @@ func open(t *testing.T, opts Options) *Store {
 	return s
 }
 
+// suiteMemTable is the memtable the conformance suite runs on. At Badger's
+// default the entry limit is about 105,000, and filling it twice under -race
+// takes most of the 5 s transaction age, so a loaded machine aborted the
+// transaction at the limit. At 8 MiB the limit is about 13,000 entries; the
+// limits derive from the memtable by the same code at any size.
+const suiteMemTable = 8 << 20
+
 func TestConformance(t *testing.T) {
 	kvtest.Run(t, func(t *testing.T) kv.KV {
-		s := open(t, Options{})
+		s := open(t, Options{MemTableSize: suiteMemTable})
 		t.Cleanup(func() {
 			if err := s.Close(); err != nil {
 				t.Error(err)
@@ -39,7 +46,7 @@ func TestConformanceOnDisk(t *testing.T) {
 		t.Skip("syncs every commit")
 	}
 	kvtest.Run(t, func(t *testing.T) kv.KV {
-		s := open(t, Options{Dir: t.TempDir()})
+		s := open(t, Options{Dir: t.TempDir(), MemTableSize: suiteMemTable})
 		t.Cleanup(func() {
 			if err := s.Close(); err != nil {
 				t.Error(err)
