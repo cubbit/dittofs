@@ -227,10 +227,12 @@ names the epic that owns the rest.
 - **D8, the error tables are not total.** They map `core`'s refusals, `vfs.ErrDelay` (with a
   bounded `Hold` in version 2), `core.ErrCancelled` (`StatusCancelled`, what a parked or held
   request its client cancelled is answered), `core.ErrDraining` and `core.ErrMoved` (`NoReply`, as
-  RFC 20 §4.7 maps `ErrMoved` where no move signal fits), each status named with the later test
+  RFC 20 §4.7 maps `ErrMoved` where no move signal fits; version 1's `Create`, which uses the
+  current filehandle, answers `ErrMoved` as `StatusMoved`, its move signal, which E4's T4.5b
+  adds, so a drain test tells the two apart), each status named with the later test
   that reads it, and nothing else, so an unmapped service error, answered server fault and
-  counted (E5's T5.7), is reachable. `ErrMoved`'s row is read by no drain test until
-  `MoveTarget` names a target (RFC 15's topology); E5's T5.7 reads it through `ErrorTable.Map`.
+  counted (E5's T5.7), is reachable. E4's T4.5b reads `ErrMoved`'s rows through a service
+  declared in its test that names a target; E5's T5.7 reads them through `ErrorTable.Map`.
   Totality is a protocol table's property (§7.3), RFC 21's and 22's. A `decision:` marker on
   the tables says so.
 - **D9, one seed per rule, and seeded allowed imports.** §7.1 seeds one violation; a walk with

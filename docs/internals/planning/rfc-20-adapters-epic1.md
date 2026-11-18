@@ -808,8 +808,9 @@ cannot build apart.
   builds it yet, before RFC 22's first row that bounds a hold by a grace's end; E5's T5.5b
   hands the error to `ErrorRow.Hold` and does not wait for it.
 - `vfs.Shares.MoveTarget` (D16), named in RFC 17 by T1.9, in `pkg/vfs`, `*vfs.Filesystem`
-  (so `memory.New`) and `vfstest.Null`. Owner: RFC 17's plan, no piece of which builds it
-  yet, before E4 calls it; until RFC 15's topology exists it answers none.
+  (so `memory.New`) and `vfstest.Null`. Owner: RFC 17's plan, no piece of which builds it.
+  E4's T4.5b builds it instead, answering none until RFC 15's topology exists, and the row
+  leaves the ledger once T4.5b lands (epic 4's §9).
 - `memory.New`, the in-memory service passing RFC 17 §8's conformance suite, and
   `vfstest.Faults`, its fault wrapper, which every handler and `core` test runs on; `Null` serves
   the allocation gate and the benchmarks only (RFC 20 §7.2). Owner: RFC 17's plan, piece 12, a
