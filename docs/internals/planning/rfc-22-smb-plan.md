@@ -1619,6 +1619,10 @@ thread is named.
 
 ### 6.4 RFC 20's ledger rows for SMB
 
+Each row is one of [RFC 20's plan](rfc-20-adapters-plan.md)'s deferral ledger (its §6.2), or, where
+the row names it, of the open points (§9) of RFC 20's [epic 2](rfc-20-adapters-epic2.md) or
+[epic 6](rfc-20-adapters-epic6.md) document.
+
 | Row of RFC 20's plan's deferral ledger | Here |
 | --- | --- |
 | SMB 2.1 to 3.1.1 commands and `ioctl/` | E3, E5 to E13, one row per command of Appendix G |
@@ -1642,6 +1646,17 @@ thread is named.
 | the `/durable-handles` listing | not here: unowned, §6.5's deferral ledger (plan gap 13) |
 | `test/required-tests.json` pins for SMB's authorization gates | E16 |
 | SMB's suites skipped by the V2 filter | E15 (turned on), E16 (green) |
+| `ConnInfo.Session`: the `Conn` call that names the session a connection carries (RFC 20 §3.4) | E5, with the session registry (T5.2) |
+| a `FlowControl` conformance check in `adaptertest` that each protocol's `Flow` passes: under an ended context `Admit` takes a free place or returns at once (RFC 20's epic 5, its D8) | E3, with `Flow` (T3.6) |
+| RFC 20 §10.1's `adapter_translation_refused_total`, `adapter_record_decode_failures_total` and `adapter_record_replays_total` | with `translate` (E7, E8, E12) and the client record (T5.4) |
+| `internal/mfsymlink`, deleted by RFC 20's T1.1 for having no importer | not here: unowned, §6.5's deferral ledger |
+| the import test's cases for the packages two protocols share: a protocol may import `translate` and `gss`, `translate` imports only neutral types, `gss`'s own clause, `smb/dcerpc` imports no SMB package (epic 2's §9) | each with its package's first commit: `gss` in E4, `dcerpc` in E6, `translate` in E7 |
+| a command added to a table without a vector in its protocol's suite fails the suite, a check in `internal/adapter/smb` (epic 6's §9) | E3, with the first command |
+| each request's `vfs.Call` and its `Identity`, built from SMB's session (RFC 20 §4.4, RFC 22 §16.1; epic 6's §9) | E5 (§7's §16.1 row) |
+| an `IOCTL` buffer decoded by its control code (RFC 22 §16; epic 6's §9) | T3.5 |
+| a buffer decoded by its information class (RFC 22 §16; epic 6's §9) | T8.2 |
+| a security descriptor's self-relative offsets (RFC 22 §16, §11; epic 6's §9) | T12.1 |
+| the encoder's `resources.Buf` segment (RFC 20 §5.3), once RFC 20 names the call (epic 6's §9) | T7.6 |
 
 ### 6.5 Deferral ledger
 
@@ -1656,6 +1671,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | `/durable-handles`, v1's listing of durable opens, which RFC 20's plan's ledger gives this plan (plan gap 13, §6.4) | RFC 23 defines no endpoint or record for it, and RFC 23's plan (#4050) builds none | unowned | RFC 23 adds an endpoint over RFC 14 §8.1's durable opens |
 | T13.4, Previous Versions, with §18's §15 rows (E13; §6.2, point 9) | `Snapshots` answers an empty list until RFC 12's store view, which #3119 leaves for later; kept in E13, it would stall track C on RFC 12 | the stage that builds RFC 12's store view, running T13.4 as written here | RFC 12's store view answers `Snapshots` |
 | T16.1's remote outage on reads on the composed node, §18's §16.5 row (E16; §7) | a journal-only node has no remote tier to fail; the row's `memory.New` half, through `vfstest.Faults`, stands in T7.6 and T9.5 | RFC 8's second part, the remote tier (stage 3 of #3119, planned separately) | a composed node with a remote tier |
+| `internal/mfsymlink`, Minshall+French symlinks, which RFC 20's plan's ledger gives this plan (§6.4) | RFC 22 names no Minshall+French symlink, so no epic builds it | unowned | RFC 22 states them, or a recorded decision drops them |
 
 ## 7. RFC coverage
 
