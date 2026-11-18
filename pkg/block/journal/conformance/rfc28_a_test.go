@@ -10,7 +10,6 @@ import (
 	"slices"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
@@ -591,19 +590,12 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 		t.Fatalf("Sync returned (%v) without writing the window's resolution", err)
 	}
 	killHeld(t, k, held)
-	// A call the process died in; what it returned means nothing, and over
-	// this tree the killed journal's unresolved window can hold the Sync in
-	// its await past the kill — the abandoned journal keeps retrying the
-	// resolution's write against the crashed seam — so the drain is bounded
-	// and its silence is not a failure: the directory is what the reopen
-	// judges.
-	select {
-	case err := <-synced:
-		stub(t, "Sync", err)
-	case <-time.After(30 * time.Second):
-		// The bounded wait is the assertion's own backstop; the leak the
-		// unwatched fixture exists to carry.
-	}
+	// A call the process died in: nothing can answer it — the journal is
+	// dead and its waiters died with it — so the leg waits on nothing and
+	// asserts nothing on its return, the leak of its parked Sync being the
+	// one the unwatched fixture exists to carry. The directory is what the
+	// reopen below judges, and a test that needed this drained would be
+	// waiting on its own goroutine, not on the journal.
 	wantVerifiedThenReappended(t, k, u, true)
 }
 

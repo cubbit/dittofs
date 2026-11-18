@@ -444,6 +444,66 @@ func TestRFC28C_Rebuild(t *testing.T) {
 	}
 }
 
+// TestRFC28C_AFailedWindowAtTheMaximumIsFailedWhole checks the running
+// journal's failed window at the journal's exact maximum: a re-append there
+// needs a spare, the pool can make none at the maximum and a roll takes no
+// spare of the headroom or reserve classes (RFC 1 §6), and the read-only
+// transition of §5.4 cannot fire without a spare a stream took to leave the
+// failed segment. §5.3 settles a failed window by one of two resolutions and
+// §6 forbids waiting for space — the engine's own Release, Offload and Repack
+// are what free it — so the window is failed whole: its records are lost with
+// the generation raised, the file is told once by its Sync, and the file is
+// not wedged, a later Sync of it reporting nothing.
+func TestRFC28C_AFailedWindowAtTheMaximumIsFailedWhole(t *testing.T) {
+	g := journaltest.NewUnwatched(t)
+	filled := fillUntilRefused(t, g, []int{1}, 2, 256<<10)
+	for _, w := range filled {
+		syncFiles(t, g.Share(1), w.id)
+	}
+	if s := g.J.Stats(); s.UsedBytes != s.MaxBytes {
+		t.Fatalf("UsedBytes = %d of the maximum %d, want the journal refusing at exactly it", s.UsedBytes, s.MaxBytes)
+	}
+
+	// The record lands in the active segment's free tail: the only place a
+	// write still fits at the maximum, and a place a failed sync leaves
+	// stranded behind a segment whose resolution needs a new one.
+	r := writeRec(t, g, 0, 0, 4<<20, 64<<10)
+	before := g.J.Stats().LossGeneration
+	g.FailNext(kit.OpSync, "*.seg", 1)
+	synced := make(chan error, 1)
+	go func() {
+		_, err := g.Share(0).Sync(t.Context(), r.id)
+		synced <- err
+	}()
+	// decision: the bound is the assertion's own backstop, generous on a
+	// loaded box for a resolution the worker runs once, and the test never
+	// reaches it when the journal behaves: a window parked on a re-append no
+	// spare can ever be made for reaches it, which is the wedge the row
+	// exists to catch.
+	select {
+	case err := <-synced:
+		var se *journal.SyncError
+		if !errors.As(err, &se) {
+			t.Fatalf("the Sync of a failed window at the maximum returned %v, want its whole-window failure", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the Sync of a failed window at the maximum is still parked after 30s: the pool can make no spare for its re-append, and the journal must not wait for one")
+	}
+
+	wantExtentMissing(t, g.Share(0), r.id, r.extent)
+	if gen := g.J.Stats().LossGeneration; gen <= before {
+		t.Fatalf("the loss generation is %d after a window failed whole, want it above its %d", gen, before)
+	}
+	losses := g.J.Stats().Losses
+	if len(losses) != 1 || losses[0].File != r.id || losses[0].Extent != r.extent || losses[0].Reason != journal.LossFailedWindow {
+		t.Fatalf("losses of the failed window: %+v, want the record of file %v at %+v failed", losses, r.id, r.extent)
+	}
+
+	// The window ended: a Sync of the file names nothing pending and
+	// returns, so the failure did not wedge the file (RFC 1 §5.3).
+	syncFiles(t, g.Share(0), r.id)
+}
+
 // TestRFC28C_TornTailCutOff checks that a torn record at the end of the
 // newest segment is cut off and the segment sealed, so the next write lands
 // in a new segment and a second crash cannot lose it behind the torn bytes.
