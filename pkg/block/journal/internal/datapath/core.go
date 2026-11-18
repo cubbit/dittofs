@@ -872,11 +872,13 @@ func (c *Core) retiredSegment(id core.SegmentID) {
 // refill and never by time.
 func (c *Core) WaitSpares(ctx context.Context) error { return c.pool.WaitSpares(ctx) }
 
-// WaitRecordSpare blocks until the pool holds one spare a header-only
+// WaitRecordSpares blocks until the pool holds n spares a header-only
 // record's roll can take, or reports the pool's word for why it stopped
 // filling: the wait the open's loss pass takes before the first record it
-// appends.
-func (c *Core) WaitRecordSpare(ctx context.Context) error { return c.pool.WaitRecordSpare(ctx) }
+// appends, n being the streams its records append on.
+func (c *Core) WaitRecordSpares(ctx context.Context, n int) error {
+	return c.pool.WaitRecordSpares(ctx, n)
+}
 
 // Continue builds the core over a set continued from a recovery's open
 // payload, runs beforeRetire — the open's loss pass, the one step that must

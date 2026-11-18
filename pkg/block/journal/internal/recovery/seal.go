@@ -327,9 +327,14 @@ func corruptLoss(c corruptRecord) durability.Loss {
 // no second Lose.
 //
 // The settle wait, when the caller passes one, precedes the first record
-// the pass appends and nothing else: a pass whose every loss is named asks
-// for no refill, so a clean reopen — and a name-only one over a device
-// that cannot make a spare — blocks on nothing.
+// the pass appends and nothing else, and is handed the number of distinct
+// streams the plan's records append on: a fresh core holds no active
+// segment on any stream, so each of them rolls once. A pool that cannot
+// ready that many spares answers its refusal there, before any record is
+// durable, so a short device fails the open whole rather than after part
+// of the plan landed. A pass whose every loss is named asks for no refill,
+// so a clean reopen — and a name-only one over a device that cannot make a
+// spare — blocks on nothing.
 //
 // Lose appends and syncs its record before it returns, so the open's caller
 // holds loss records durable the moment each leg lands; a Lose that fails
@@ -339,7 +344,7 @@ func corruptLoss(c corruptRecord) durability.Loss {
 // directory's failed list for the next open to answer. The generational
 // raise, the marker and the counters are Lose's own, whichever call they
 // came from: extension of the one rule, not a second one.
-func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroomRecords int, waitForSpares func() error) error {
+func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroomRecords int, waitForSpares func(streams int) error) error {
 	for _, lo := range st.Kinds.Losses {
 		d.Place(lo.Ev, lo.Dropped)
 	}
@@ -366,19 +371,25 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 	// runs once, before the first record that appends — never for a
 	// name-only pass over an open the disk answers whole. Nil waits on
 	// nothing, the caller that has settled its pool already.
-	settled := false
-	settle := func() error {
-		if settled || waitForSpares == nil {
-			return nil
+	//
+	// decision: the count reads no active segment's remaining room, for the
+	// continued core builds its streams new and none holds an active
+	// segment before this pass's first roll, so each distinct stream needs
+	// a spare whatever the set holds. Overturned by a continuation that
+	// resumes a stream on a recovered open segment: that stream's room then
+	// holds its records, and counting it as a spare is what keeps a journal
+	// at its maximum opening.
+	if len(plan) > 0 && waitForSpares != nil {
+		streams := map[int]struct{}{}
+		for _, l := range plan {
+			streams[d.StreamIndex(l.File)] = struct{}{}
 		}
-		settled = true
-		return waitForSpares()
+		if err := waitForSpares(len(streams)); err != nil {
+			return err
+		}
 	}
 
 	for _, l := range plan {
-		if err := settle(); err != nil {
-			return err
-		}
 		if _, err := d.Lose(ctx, l); err != nil {
 			return err
 		}

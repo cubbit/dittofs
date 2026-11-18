@@ -93,6 +93,18 @@ func toFormat(r core.LossReason) format.LossReason {
 // other piece, of a Seq already reported or not, goes through all of it, so
 // no event precedes its own record.
 //
+// StreamIndex returns the number of the stream a loss record of file appends
+// on, the stream Lose draws through streams.For, so a caller counting the
+// rolls a set of losses needs counts the streams the records land on. It
+// answers -1 before Start, when the layer has no streams.
+func (d *Durability) StreamIndex(file core.FileID) int {
+	streams := d.streams.Load()
+	if streams == nil {
+		return -1
+	}
+	return streams.IndexFor(file)
+}
+
 // decision: Lose applies no admission of its own and does not look at
 // Loss.AtOpen when it appends, so a loss found on a read can draw on the
 // headroom an open reserves for its own records (RFC 1 section 6, "An open
