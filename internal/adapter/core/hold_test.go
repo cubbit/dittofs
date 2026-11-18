@@ -20,6 +20,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
 // newHeld is a chained seam in version 2, the version that holds, whose
@@ -954,6 +956,71 @@ func TestAMemberInTheServicePendsWithoutTheFlag(t *testing.T) {
 			t.Errorf("%d files made, want 1", n)
 		}
 	})
+}
+
+// With the reply pool full when the interim timer fires, a chain's Create
+// still in the service gets no interim, not even once the pool has room, and
+// goes on unannounced: answered success, its reply carries its own header,
+// not Final's; answered ErrDelay, it is asked Pends as any member is and,
+// without the pend flag, answered the not-last status at once. Either way
+// the Echo after it runs and the chain goes out as one record (§4.6, §4.7).
+func TestWithTheReplyPoolFullAtTheInterval(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		fail bool
+		want core.Status
+	}{
+		{"the call answered success", false, testproto.StatusOK},
+		{"the call answered ErrDelay", true, testproto.StatusNotLast},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				// The Create waits in the service on the outer fault's hold
+				// and, let through, is answered by the inner one.
+				svc := memory.New(t)
+				root, _, err := svc.Root(t.Context(), svc.Admin(), vfs.ShareRef{Name: svc.Store.Share.Name})
+				if err != nil {
+					t.Fatal(err)
+				}
+				inner := vfstest.Faults(svc)
+				outer := vfstest.Faults(inner)
+				d := adapter.Deps{VFS: outer}
+				s := &served{seam: newSeamWith(t, testproto.New(d).WithCall(svc.Admin()), 1<<20, d), svc: svc, faults: outer, root: root}
+				s.setUp(7)
+				synctest.Wait() // the last set-up reply's buffer is given back after its send
+				clk := newManualClock()
+				core.SetClock(s.sh, clk)
+				if c.fail {
+					inner.Fail(vfs.OpCreate, vfs.ErrDelay)
+				}
+				hold := outer.Hold(vfs.OpCreate)
+				defer hold.Release()
+				s.serve(s.pendChain(1, false)...)
+				<-hold.Reached()
+				synctest.Wait()
+				full, err := s.budgets.Reply.Reserve(context.Background(), peer, (1<<20)-s.budgets.Reply.Reserved())
+				if err != nil {
+					t.Fatal(err)
+				}
+				next := s.recvLater()
+				fired := start(func() { clk.Advance(time.Second) })
+				synctest.Wait()
+				full.Release()
+				<-fired.done
+				clk.Advance(time.Second)
+				if next.arrived() {
+					t.Fatalf("with no reply buffer at the interval the chain got %+v, want no interim", next.rs)
+				}
+				hold.Release()
+				if !next.arrived() {
+					t.Fatal("the chain is unanswered once the Create's call returned")
+				}
+				if rs := next.rs; next.err != nil || len(rs) != 3 || rs[1].Interim || rs[1].ID != 2 || rs[1].Status != c.want || rs[2].ID != 3 || rs[2].Status != testproto.StatusOK {
+					t.Errorf("the chain is answered %+v (%v), want the Create's status %d under its own header and the Echo's success", rs, next.err, c.want)
+				}
+			})
+		})
+	}
 }
 
 // A chain whose members hold in turn, past a floor of none, moves its record's
