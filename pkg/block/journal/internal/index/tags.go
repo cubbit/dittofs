@@ -120,6 +120,57 @@ func (ix *Index) ClearTag(id core.FileID) error {
 	return err
 }
 
+// ForgetFile drops the file whole from the running index, the half a durable
+// forget record of the file's tag does at its drop: every held and retained
+// extent, every removal marker, and the drop ranges of the records below
+// seq — those are the ones the forget record covers, so no drop query of the
+// file is answered against them — while the entry's marks are left alone.
+// It returns the held-state delta of the drop and the segments whose held
+// bytes fell, so the caller accounts the drop and offers the emptied
+// segments with the forget record as the causality record, exactly as a
+// removal does. A file with no entry drops nothing and names no segment.
+//
+// The marks are the second half, ForgetTagMarks: the delta of this update
+// names the tag as the update ended, so the drop must run first, while the
+// entry still owns its tag, and the marks are cleared once the drop is
+// accounted.
+func (ix *Index) ForgetFile(id core.FileID, below core.Seq) (HeldDelta, []core.SegmentID, error) {
+	var m touched
+	hd, err := ix.fs.update(id, func(f *file) error {
+		f.held.touched = &m
+		defer func() { f.held.touched = nil }()
+		all := toEnd(0)
+		f.held.cut(all)
+		f.retained.drop(all, func(Retained) bool { return true }, nil)
+		f.markers = nil
+		f.forgetRanges(below)
+		return nil
+	})
+	return hd, m.named(), err
+}
+
+// ForgetTagMarks clears the marks of the forgotten tag on id, the second
+// half of a forget the durable record settles: the file goes to the other
+// tag of a rivalled one — its records of the forgotten tag are the forget's
+// own, and a reopen rebuilds the marks of the records that remain — and to
+// nobody otherwise, so the next appending call through any tag claims the
+// file afresh, as recovery would. A file the forgotten tag never marked, and
+// one with no entry, are no-ops.
+func (ix *Index) ForgetTagMarks(id core.FileID, forgotten core.ShareTag) error {
+	_, err := ix.fs.update(id, func(f *file) error {
+		switch {
+		case f.rivalled && f.rival == forgotten:
+			f.rivalled, f.rival = false, 0
+		case f.rivalled && f.tag == forgotten:
+			f.tag, f.rivalled, f.rival = f.rival, false, 0
+		case f.tag == forgotten:
+			f.tagged, f.tag = false, 0
+		}
+		return nil
+	})
+	return err
+}
+
 // conflictDiff settles the conflict set's side of the update whose apply
 // holds the file's lock: a file the update marked rivalled, with neither mark
 // before it, joins the set naming both tags, and one the update left without

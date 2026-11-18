@@ -912,6 +912,41 @@ func (s *Set) TagFigures() (bytes, overhead map[core.ShareTag]int64) {
 	return maps.Clone(s.tags), maps.Clone(s.over)
 }
 
+// ForgetTag releases tag's record bytes from the whole set's accounting, as
+// the durable forget record of the tag does: the bytes stay in their segments
+// until those retire, but they are the tag's no longer — a Stats listing of
+// tags with records on disk no longer names it, a fresh seed of its capacity
+// figure opens at zero, and the retirement of a segment that held its records
+// releases nothing more for it. The per-segment entries and the running total
+// leave together, and the bytes they held move to the tag's cumulative
+// retired figure — the release the retirements would have made, made at the
+// forget, once — so the capacity reconciliation that reads the pair settles
+// the tag's figure to what is left of it: nothing.
+//
+// The call runs after the forget's liveness snapshot was taken, which reads
+// the per-segment figures this clears.
+func (s *Set) ForgetTag(tag core.ShareTag) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.segs {
+		n := e.tags[tag]
+		if n == 0 {
+			continue
+		}
+		// The segment's records are still there: only the tag's share of the
+		// accounting moves, so the totals the Check walk reconciles — the
+		// segment's own held bytes against its per-tag entries — stay whole.
+		e.held -= n
+		delete(e.tags, tag)
+		delete(e.over, tag)
+	}
+	if n := s.tags[tag]; n != 0 {
+		s.retired[tag] += n
+		delete(s.tags, tag)
+	}
+	delete(s.over, tag)
+}
+
 // ShareBytes returns the record bytes of the share's tag still held in
 // segments of the set — one map read, no walk of the set.
 func (s *Set) ShareBytes(tag core.ShareTag) int64 {

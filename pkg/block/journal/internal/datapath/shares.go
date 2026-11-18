@@ -1,6 +1,7 @@
 package datapath
 
 import (
+	"fmt"
 	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -18,10 +19,11 @@ const closedBit = uint64(1) << 63
 // holding the count of calls in flight and a closed bit, and a channel its
 // Close waits on; that state orders a handle's close against its own calls
 // only. The one mutex around handles is the core's registryMu, a leaf that
-// only Share and Close take, outside the domain order: never held while a lock
-// domain is held, while the counters or the index are called, or while Close
-// waits for the drain. Revisit when a share gains state that writers must
-// serialize.
+// Share, Close and the Forget path's mark take — the forgetting mark's own
+// mutex nested inside it, nothing else — outside the domain order: never
+// held while a lock domain is held, while the counters or the index are
+// called, or while Close waits for the drain. Revisit when a share gains
+// state that writers must serialize.
 type Share struct {
 	// Tag is the share's tag, fixed for the handle's life.
 	Tag core.ShareTag
@@ -142,6 +144,24 @@ func (c *Core) Share(tag core.ShareTag, limit int64, floor core.Version) (*Share
 	if c.closed() {
 		return nil, core.ErrClosed
 	}
+	// The forgetting mark of the tag is read here, under the registry's own
+	// lock, so the mark the Forget path sets under this same lock can never
+	// land behind an attach its barrier must fence out: whichever of the two
+	// takes this lock first wins — a Forget that sees the handle attaches
+	// nothing, and an attach that sees the mark is refused.
+	//
+	// decision: a Share refused during a forget answers ErrHandleOpen,
+	// wrapped to name the forget, because one error already names a busy tag
+	// and a distinct refusal would need a new export the callers have no use
+	// for. Its ceiling: a Share is refused for as long as the forget's
+	// barrier and one sync take — the refused attach is the engine's own
+	// start retrying, not a caller's error to report. Overturned by a
+	// tagged-error contract that names the forget, or by a forget of a
+	// many-file tag that is seen to keep an attach waiting long enough to
+	// matter.
+	if c.isForgetting(tag) {
+		return nil, fmt.Errorf("datapath: a forget of tag %d is in progress: %w", tag, core.ErrHandleOpen)
+	}
 	var open []*Share
 	if p := c.registry.Load(); p != nil {
 		open = *p
@@ -225,14 +245,39 @@ func (c *Core) Shares() []core.ShareTag {
 }
 
 // isForgetting reports whether tag's Forget path is running: the mark the
-// Forget path sets on the registry before its barrier. Nothing sets it today —
-// the Forget path's own setter is its first owner, landing with that path —
-// so the set reads empty and every copy of every tag appends undisturbed,
-// which is the wiring-complete answer the reclamation pass's copies consult
-// under each file's append domain.
+// Forget path sets on the registry before its barrier and clears when it
+// returns, so the reclamation pass's copies consult it under each file's
+// append domain — a copy whose held check runs after the mark is abandoned,
+// never appended after the forget record. The Share path reads it holding
+// the registry's mutex; the forgetting mark's own mutex nests inside the
+// registry's, and the mark's takers take them in that order alone, so that
+// read cannot deadlock against a Forget marking. Nothing but the Forget path
+// sets or clears the mark.
 func (c *Core) isForgetting(tag core.ShareTag) bool {
 	c.forgettingMu.Lock()
 	defer c.forgettingMu.Unlock()
 	_, marked := c.forgetting[tag]
 	return marked
+}
+
+// markForgetting sets the tag's mark. The caller holds the registry's mutex
+// and has checked the registry holds no handle of the tag; the two steps are
+// one under that lock, so an attach racing the mark is either refused by the
+// mark or already in the registry the Forget path reads and refuses. The
+// lock order this site and the Forget path keep: the registry's mutex
+// outermost, the forgetting mark's mutex inside it, the stranded set's — in
+// the Forget path — innermost.
+func (c *Core) markForgetting(tag core.ShareTag) {
+	c.forgettingMu.Lock()
+	c.forgetting[tag] = struct{}{}
+	c.forgettingMu.Unlock()
+}
+
+// clearForgetting removes the tag's mark, releasing the busy-answer a Share of
+// the tag reads while the forget runs. Every path of the Forget call clears
+// it before returning, so a refused or failed forget leaves the tag usable.
+func (c *Core) clearForgetting(tag core.ShareTag) {
+	c.forgettingMu.Lock()
+	delete(c.forgetting, tag)
+	c.forgettingMu.Unlock()
 }

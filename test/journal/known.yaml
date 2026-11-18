@@ -344,14 +344,6 @@
   issue: '#3378'
   message: 'stub: Offload'
 
-- test: TestRFC1C_ForgetLeavesNothingToSettle
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens and Stats counts the removal markers; the check stops at Forget, a stub. Needs forget settling the removal markers of a tag and dropping every one of its index entries.'
-  issue: '#3815'
-  message: 'stub: Forget'
-
 - test: TestRFC1C_HeaderOnlyRecordsReappended
   status: fail
   fix: planned
@@ -423,14 +415,6 @@
   reason: 'The journal opens; every failing leg of the check fails on a stub call, Sync or Truncate. Needs Sync and Truncate.'
   issue: '#3378'
   message: 'stub:'
-
-- test: TestRFC1C_UnclaimedTagReported
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the per-share statistics rebuilt at open for a tag no share attached.'
-  issue: '#3815'
-  message: 'stub: Forget'
 
 - test: TestRFC1C_UnclaimedTagsAreTheCallersToName
   status: fail

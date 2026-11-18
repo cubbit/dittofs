@@ -688,6 +688,36 @@ func (fs *files) segmentLive(seg core.SegmentID) int64 { return fs.segs.live(seg
 // reclamation needs to be idempotent.
 func (fs *files) retireSegment(seg core.SegmentID) (SegmentBytes, bool) { return fs.segs.retire(seg) }
 
+// forgetRanges drops the ranges of the records the forget record covers —
+// every range whose lowest pair sits below its sequence number, the only
+// ones of the file a durable forget leaves drop queries to keep — and the
+// segment entries those ranges leave empty: a segment that no longer holds a
+// covered record of the file must not keep the entry alive, or an entry
+// whose tag the forget cleared would stay in the map holding nothing. The
+// caller holds the file's lock, inside the update whose gauges count the
+// change by the f.nranges movement here.
+func (f *file) forgetRanges(below core.Seq) {
+	kept := f.segs[:0]
+	for _, s := range f.segs {
+		rs := s.ranges[:0]
+		for _, r := range s.ranges {
+			if r.low.Seq < below {
+				f.nranges--
+				continue
+			}
+			rs = append(rs, r)
+		}
+		clear(s.ranges[len(rs):])
+		s.ranges = rs
+		if len(rs) == 0 {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	clear(f.segs[len(kept):])
+	f.segs = kept
+}
+
 // segmentGone notes that seg, unlinked or recycled, no longer holds a record
 // of the file — and, with them, forgets the segment's drop ranges, so from
 // here on no drop query is answered against seg's records. A segment the file

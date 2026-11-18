@@ -36,6 +36,33 @@ func (c *Core) Strand(tag core.ShareTag) error {
 	return nil
 }
 
+// unstrand removes tag from the stranded set: the Forget path calls it once
+// the forget record is durable, since only the caller that names a tag to
+// Forget can say when it stops being stranded. The Forget path holds no
+// other lock of the core when it reaches this — the mark was cleared under
+// its own mutex, the registry's mutex is down — and strandMu is a leaf that
+// takes nothing, so the removal nests inside whatever the caller holds; its
+// place in the Forget path's lock order is innermost. A tag nothing stranded
+// runs through unharmed.
+func (c *Core) unstrand(tag core.ShareTag) {
+	c.strandMu.Lock()
+	defer c.strandMu.Unlock()
+	var set []core.ShareTag
+	if p := c.stranded.Load(); p != nil {
+		set = *p
+	}
+	if !slices.Contains(set, tag) {
+		return
+	}
+	next := make([]core.ShareTag, 0, len(set)-1)
+	for _, t := range set {
+		if t != tag {
+			next = append(next, t)
+		}
+	}
+	c.stranded.Store(&next)
+}
+
 // Stranded reports whether tag is in the stranded set. It reads the pointer
 // alone, so it never waits on a Strand in flight. A tag nothing stranded
 // reads false, tag 0 with the rest.

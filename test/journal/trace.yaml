@@ -171,11 +171,11 @@ rfc1 / 9.4 / C / "attached share raises the counter":
 rfc1 / 9.4 / C / "unclaimed tags are the caller's to name":
   tests: [TestRFC1C_UnclaimedTagsAreTheCallersToName]
 rfc1 / 9.4 / C / "a cancelled call changes nothing or completes":
-  tests: [TestRFC1C_CancelledCallChangesNothingOrCompletes]
+  tests: [TestRFC1C_CancelledCallChangesNothingOrCompletes, TestRFC1C_ForgetRules]
 rfc1 / 9.4 / C / "restamp after a lost store":
   tests: [TestRFC1C_RestampAfterLostStore]
 rfc1 / 9.4 / C / "forget leaves nothing to settle":
-  tests: [TestRFC1C_ForgetLeavesNothingToSettle]
+  tests: [TestRFC1C_ForgetLeavesNothingToSettle, TestRFC1C_ForgetRules]
 rfc1 / 9.4 / C / "unclaimed tag reported":
   tests: [TestRFC1C_UnclaimedTagReported]
 rfc1 / 9.4 / C / "a file is its share's":

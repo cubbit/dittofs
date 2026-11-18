@@ -72,13 +72,6 @@
   category: feature
   reason: 'the removal''s prune at recovery: a release whose last batch committed and whose prune did not is pruned at the restart, and its index entry goes. The open recovers the segments and the row gets past its writes and the restart, but the release reads unfinished after the prune, wanting none, and the released file still holds its keys. The row waits on the start''s retirement pruning the removals the recovery finds done.'
   issue: '#4210'
-- test: TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag
-  message: 'forget the tag: engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the journal''s Forget: an Unbind returns once the removal batch in flight has, and after a Drop the journal names no entry for the share and every accepted write had one Done (§2.3). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes, the Unbind and the held removal batch, and stops at Drop, whose forget of the tag answers journal: not implemented, until the journal''s Forget is built.'
-  issue: '#4206'
 - test: TestRFC8A_UnsuitableJournalAtStart
   message: 'the retry''s timer is set: not within 10s'
   status: fail
