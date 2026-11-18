@@ -539,7 +539,9 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 	// or a freed take drew Active is sealed here, the same shape the open's
 	// own continuation gives the re-append's target.
 	if err := st.Assembled.Set.Seal(target, true); err != nil {
-		return err
+		// A ledger refusal is the rows' own state, read again the same way
+		// by a retry.
+		return fmt.Errorf("%w: sealing the copy target %d in the ledger: %w", core.ErrOpenRefused, target, err)
 	}
 	// A draw that failed before the one that landed left a row the draw
 	// took and a file of half-written records: the row ends, for no stream
@@ -550,7 +552,7 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 			continue
 		}
 		if err := st.Assembled.Set.End(failed); err != nil {
-			return err
+			return fmt.Errorf("%w: ending the failed copy target %d in the ledger: %w", core.ErrOpenRefused, failed, err)
 		}
 		endSegment(st, failed)
 	}
@@ -890,7 +892,8 @@ func readRecordWhole(rd *reader, identity core.JournalID, id core.SegmentID, off
 func (e *emptying) newLossWrite(l durability.Loss) (lossWrite, error) {
 	seq, err := e.st.Rebuilt.Counters.NextSeq()
 	if err != nil {
-		return lossWrite{}, fmt.Errorf("numbering the loss record of the dropped record %d: %w", l.Seq, err)
+		// The counter's exhaustion repeats identically on every retry.
+		return lossWrite{}, fmt.Errorf("%w: numbering the loss record of the dropped record %d: %w", core.ErrOpenRefused, l.Seq, err)
 	}
 	h := format.RecordHeader{
 		Kind:    format.KindLoss,
