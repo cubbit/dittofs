@@ -1285,13 +1285,15 @@ batch**: one transaction, which allocates what each record lacks, with one
 principals-generation raise (§7.2), however many groups the batch holds. On
 `ErrExist` the whole batch writes nothing and the lookups that led to it are
 re-run: a principal they now find is bound, and the rest are minted in a new
-batch, for as long as each re-run binds a principal the one before did not
-or newly marks a record `Unnamed` (below). Each `ErrExist` means another call
-minted something this one needs, or took a name it was about to write, so the
-batch shrinks or loses a name every round and the re-runs end, inside §5.1's
-bound. A re-run that does neither fails the call `ErrUnavailable`; it writes
-nothing and logs both `PrincipalID`s. Two nodes minting alice find alice by name or SID on the
-re-run; bob claiming alice's `uidNumber` finds no bob, and fails.
+batch, for as long as each re-run binds a principal the one before did not or
+newly marks a record `Unnamed` (below); a record this call already marked
+`Unnamed` in an earlier run is not newly marked again. Each `ErrExist` means
+another call minted something this one needs, or took a name it was about to
+write, so the batch shrinks or loses a name every round and the re-runs end,
+inside §5.1's bound. A re-run that does neither fails the call
+`ErrUnavailable`; it writes nothing and logs both `PrincipalID`s. Two nodes
+minting alice find alice by name or SID on the re-run; bob claiming alice's
+`uidNumber` finds no bob, and fails.
 
 **A name never fails a mint.** A directory principal whose name another
 principal of its kind holds under §4.6's comparison — a local group `finance`
