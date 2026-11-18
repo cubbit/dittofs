@@ -841,7 +841,8 @@ func (m moving) MoveTarget(ctx context.Context, c vfs.Call, h vfs.Handle) (netip
 
 // drained is a connection a server on testproto serves over faults over
 // moving, in a synctest bubble, set up to session 7 and tree 1 and then told
-// to drain.
+// to drain. A non-nil outer replaces the error table of every table the
+// router returns, a compound row's members keeping their own.
 type drained struct {
 	t            *testing.T
 	svc          *memory.Service
@@ -851,7 +852,7 @@ type drained struct {
 	peer         net.Conn
 }
 
-func newDrained(t *testing.T) *drained {
+func newDrained(t *testing.T, outer *core.ErrorTable) *drained {
 	t.Helper()
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
@@ -867,7 +868,11 @@ func newDrained(t *testing.T) *drained {
 	}
 	faults := vfstest.Faults(moving{Service: svc, share: svc.Store.Share.ID})
 	d := adapter.Deps{Budgets: b, VFS: faults}
-	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(d).WithCall(admin)}
+	var p core.Protocol = testproto.New(d).WithCall(admin)
+	if outer != nil {
+		p = edited{p, func(st *core.Stages) { st.Router = outerRouter{st.Router, outer} }}
+	}
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: p}
 	srv, err := core.NewServer(d, drainSnap(), l)
 	if err != nil {
 		t.Fatal(err)
@@ -945,7 +950,7 @@ func TestADrainedCompoundMovesOnlyWhenEveryHandleItNamesHasATarget(t *testing.T)
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				d := newDrained(t)
+				d := newDrained(t, nil)
 				if c.fails {
 					d.faults.Fail(vfs.OpMoveTarget, vfs.ErrAccess)
 				}
@@ -983,20 +988,25 @@ func TestADrainedCompoundMovesOnlyWhenEveryHandleItNamesHasATarget(t *testing.T)
 // While draining, a compound any of whose members would be refused with a
 // NoReply row answers nothing and runs nothing, though every handle it names
 // moves: an Echo the drain refuses after a Create it moves, whose row has no
-// move signal, and a member that does not decode (RFC 20 section 4.7). Run
-// to the first member refused instead, the first is answered the Create's
-// move signal and the second the refusal of an operation its table lacks.
+// move signal, the same where the compound's own table moves every
+// operation, and a member that does not decode (RFC 20 section 4.7). Run to
+// the first member refused instead, the first is answered the Create's move
+// signal and the third the refusal of an operation its table lacks; refused
+// whole with the drain's error rather than ErrDraining, the second is
+// answered its own table's move signal.
 func TestADrainedCompoundWithANoReplyRefusalAnswersNothing(t *testing.T) {
 	for _, c := range []struct {
-		name string
-		rest []testproto.Msg // after a PutFH of the share's root
+		name  string
+		rest  []testproto.Msg // after a PutFH of the share's root
+		outer *core.ErrorTable
 	}{
-		{"an Echo the drain refuses after the Create", []testproto.Msg{{Op: testproto.OpCreate, Name: "f"}, {Op: testproto.OpEcho, Role: core.RoleNone, Payload: []byte("e")}}},
-		{"a member that does not decode", []testproto.Msg{{Op: testproto.OpEcho, Role: core.RoleRelease, Payload: []byte("e")}, {Op: 99}}},
+		{"an Echo the drain refuses after the Create", []testproto.Msg{{Op: testproto.OpCreate, Name: "f"}, {Op: testproto.OpEcho, Role: core.RoleNone, Payload: []byte("e")}}, nil},
+		{"the same, the compound's own table moving every operation", []testproto.Msg{{Op: testproto.OpCreate, Name: "f"}, {Op: testproto.OpEcho, Role: core.RoleNone, Payload: []byte("e")}}, movesEverywhere()},
+		{"a member that does not decode", []testproto.Msg{{Op: testproto.OpEcho, Role: core.RoleRelease, Payload: []byte("e")}, {Op: 99}}, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				d := newDrained(t)
+				d := newDrained(t, c.outer)
 				d.compound(append([]testproto.Msg{{Op: testproto.OpPutFH, Handle: d.root}}, c.rest...)...)
 				if !d.sentNothing() {
 					t.Error("the compound was answered, want nothing")
@@ -1007,4 +1017,33 @@ func TestADrainedCompoundWithANoReplyRefusalAnswersNothing(t *testing.T) {
 			})
 		})
 	}
+}
+
+// outerRouter is a router whose tables answer their own refusals with errs,
+// each a copy: a compound row's members keep their own table.
+type outerRouter struct {
+	core.Router
+	errs *core.ErrorTable
+}
+
+func (o outerRouter) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	tb, r, err := o.Router.Route(h, prev)
+	if tb != nil {
+		c := *tb
+		c.Errors = o.errs
+		tb = &c
+	}
+	return tb, r, err
+}
+
+// movesEverywhere answers ErrMoved with the move signal on every operation,
+// as a table whose ErrMoved row names none does, and ErrDraining nothing.
+func movesEverywhere() *core.ErrorTable {
+	return core.NewErrorTable(testproto.StatusFault,
+		core.ErrorRow{Err: core.ErrDecode, Status: testproto.StatusDecode},
+		core.ErrorRow{Err: core.ErrTooLong, Status: testproto.StatusTooLong},
+		core.ErrorRow{Err: core.ErrReplyTooBig, Status: testproto.StatusReplyTooBig},
+		core.ErrorRow{Err: core.ErrDraining, NoReply: true},
+		core.ErrorRow{Err: core.ErrMoved, Status: testproto.StatusMoved},
+	)
 }

@@ -226,7 +226,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 			}
 			if silent {
 				p.refused(tr, stageDecodeArgs) // judged whole before any member resolves its IDs (§10.1)
-				p.finish(tr, h, tb, errs, row, Invocation{}, reply, drained, release, alone{p}, nil)
+				p.finish(tr, h, tb, errs, row, Invocation{}, reply, ErrDraining, release, alone{p}, nil)
 				return
 			}
 		}
