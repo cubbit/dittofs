@@ -227,7 +227,7 @@ tests can cite them. Sources are RFC 18 unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R39 | Every record identity writes goes through one mint path: one sign-in, lookup or resolution mints every principal it needs in one batch; on `ErrExist` the lookups are re-run, a principal now found is bound, the rest minted in a new batch, for as long as each re-run binds a principal the one before did not; a re-run that binds none fails `ErrUnavailable`, writes nothing and logs both `PrincipalID`s | invariant | §4.1 | T6.2 |
+| R39 | Every record identity writes goes through one mint path: one sign-in, lookup or resolution mints every principal it needs in one batch; on `ErrExist` the lookups are re-run, a principal now found is bound, the rest minted in a new batch, for as long as each re-run binds a principal the one before did not or newly marks a record `Unnamed`; a re-run that does neither fails `ErrUnavailable`, writes nothing and logs both `PrincipalID`s | invariant | §4.1 | T6.2 |
 | R40 | A name never fails a mint: a principal whose name another of its kind holds under §4.6's comparison is minted without a name, counted in `identity_mints_unnamed_total` and logged naming both | invariant | §4.1, §9.2 | T6.2 |
 | R41 | Every record minted is counted in `identity_mints_total{kind}` | invariant | §9.2 | T6.2 |
 | R42 | A directory record is minted once, from the first answer, and holds its `PrincipalID`, `dir` entry ID, SID, uid and gid from then on; a later answer renames it (R51) | invariant | §5.1 | T6.9 |
@@ -300,8 +300,9 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   by a principal outside the list. Needs an RFC 16 §3 amendment. Prior art: none found.
 - **D6, the mint path re-runs a plan, not a batch.** The caller hands the path a function that
   looks its principals up and returns the batch of those still missing with the ones bound; on
-  `ErrExist` the path calls it again, and stops with `ErrUnavailable` when a run binds no
-  principal the one before did not. A held name is found before the write, by the name index, and
+  `ErrExist` the path calls it again, and stops with `ErrUnavailable` when a run neither binds a
+  principal the one before did not nor newly marks a record `Unnamed`: a name another call took
+  between the name check and the commit is progress, never a failure (R40). A held name is found before the write, by the name index, and
   the record marked `Unnamed` (R40). No count bounds the loop: R39's progress rule and §5.1's
   20 seconds do. Prior art: optimistic concurrency's re-read and retry, bounded by progress
   (from memory).
@@ -430,7 +431,7 @@ pkg/settings/
 - **Covers:** R39, R40, R41.
 - **Deliverables:** `internal/identity`'s `mint(ctx, plan func(context.Context) (entity.MintBatch,
   int, error)) error`, the `int` the number of principals the run bound, with D6's re-run loop:
-  `ErrExist` re-runs the plan, a run that binds no more than the one before fails `ErrUnavailable`
+  `ErrExist` re-runs the plan, a run that binds and newly unnames no more than the one before fails `ErrUnavailable`
   and logs both `PrincipalID`s; before the write, a record whose name the name index shows held by
   another principal of its kind, or which folds to the name of an earlier record of its kind in the
   same batch, is marked `Unnamed` and logged naming both;
@@ -444,7 +445,7 @@ pkg/settings/
   its three groups: the first re-runs, binds those two
   and mints the third, the generation raised once per commit (catches a re-run bounded at one,
   R39); a plan that keeps answering the same batch while another writer holds a row it needs:
-  `ErrUnavailable` after the second run, nothing written (catches an unbounded loop, R39); a group
+  `ErrUnavailable` after the second run, nothing written (catches an unbounded loop, R39); a `sim.Fault` delaying the first `Create`'s commit while a concurrent `mint` takes a name the batch writes: the re-run binds nothing but commits the record `Unnamed`, counted in `identity_mints_unnamed_total` (catches a progress rule that counts only bindings, R39, R40); a group
   named `finance` beside a local `Finance`: minted, found by SID, not by name, and
   `identity_mints_unnamed_total{kind="group"}` 1 (R40); one batch holding directory groups
   `Finance` and `FINANCE`: both minted, the second unnamed, never `ErrUnavailable` (catches a clash
