@@ -36,7 +36,7 @@ func FuzzHandles(f *testing.F) {
 		f.Fatal(err)
 	}
 	cp := st.ControlPlane()
-	admin := entity.User{Principal: entity.NewUser(), Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}
+	admin := entity.User{Principal: entity.NewUser(), Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}, {Scheme: entity.SchemeSID, Value: "sid-100"}}}
 	open := entity.Share{ID: entity.NewShareID(), Name: "open", Path: "/a/open", Root: entity.NewFileID()}
 	closed := entity.Share{ID: entity.NewShareID(), Name: "closed", Path: "/closed", Root: entity.NewFileID()}
 	for _, err := range []error{

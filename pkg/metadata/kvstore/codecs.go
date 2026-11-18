@@ -87,10 +87,12 @@ func readIDs(r *codec.Reader) entity.ProtocolIDs {
 	return ids
 }
 
+// encodeUser writes the record's kind, a user or a machine, which its key
+// does not hold.
 func encodeUser(u entity.User) []byte {
-	w := codec.NewWriter(v1).String(u.Name)
+	w := codec.NewWriter(v1).Uint8(uint8(u.Principal.Kind)).String(u.Name)
 	putIDs(w, u.IDs)
-	putPrincipal(w, u.Primary).Bool(u.Disabled).Fixed(u.Secret[:]).String(u.Email).Uint8(uint8(u.Role))
+	putPrincipal(w, u.Primary).Bool(u.Disabled).Fixed(u.Password[:]).Fixed(u.NTHash[:]).String(u.Email).Uint8(uint8(u.Role))
 	return putSeconds(w, u.NotBefore).Bool(u.MustChange).Uint64(u.Generation).Uint64(u.Position).Bool(u.Deleted).Encode()
 }
 
@@ -115,18 +117,20 @@ func decodeUser(id entity.PrincipalID, b []byte) (entity.User, error) {
 	if err != nil {
 		return entity.User{}, err
 	}
-	u := entity.User{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: id}, Name: r.String(), IDs: readIDs(r)}
+	kind := entity.PrincipalKind(r.Uint8())
+	u := entity.User{Principal: entity.Principal{Kind: kind, ID: id}, Name: r.String(), IDs: readIDs(r)}
 	u.Primary = readPrincipal(r)
 	u.Disabled = r.Bool()
-	copy(u.Secret[:], r.Fixed(16))
+	copy(u.Password[:], r.Fixed(16))
+	copy(u.NTHash[:], r.Fixed(16))
 	u.Email, u.Role = r.String(), entity.APIRole(r.Uint8())
 	u.NotBefore, u.MustChange, u.Generation, u.Position, u.Deleted = readSeconds(r), r.Bool(), r.Uint64(), r.Uint64(), r.Bool()
 	if err := r.Done(); err != nil {
 		return u, err
 	}
-	// A role this build does not know is refused rather than read as some
-	// role, so a record from a newer build grants no rights by accident.
-	if u.Role.String() == "" {
+	// A role or kind this build does not know is refused rather than read as
+	// some other, so a record from a newer build grants no rights by accident.
+	if u.Role.String() == "" || kind != entity.PrincipalUser && kind != entity.PrincipalMachine {
 		return u, errMalformed
 	}
 	return u, nil
@@ -163,6 +167,23 @@ func decodeKind(b []byte) (entity.PrincipalKind, error) {
 
 // encodeID is a name or path index row's value: the ID it names.
 func encodeID(id [16]byte) []byte { return codec.NewWriter(v1).Fixed(id[:]).Encode() }
+
+// encodeNameRow is a user or group name row's value: the principal's ID and
+// its name as written, which the row's key holds only folded.
+func encodeNameRow(id entity.PrincipalID, name string) []byte {
+	return codec.NewWriter(v1).Fixed(id[:]).String(name).Encode()
+}
+
+func decodeNameRow(b []byte) (entity.PrincipalID, error) {
+	var id entity.PrincipalID
+	r, err := open(b)
+	if err != nil {
+		return id, err
+	}
+	copy(id[:], r.Fixed(16))
+	_ = r.String()
+	return id, r.Done()
+}
 
 func decodeID(b []byte) ([16]byte, error) {
 	var id [16]byte

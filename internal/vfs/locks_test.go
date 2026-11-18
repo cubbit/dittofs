@@ -569,10 +569,9 @@ func TestAReleaseFailsClosedOnANetgroupReadError(t *testing.T) {
 func TestASquashedOwnerIsDecidedAsReadData(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
-	root := s.user(t, "root", "0", s.share, entity.AccessReadWrite)
 	nobody := s.user(t, "nobody", "", s.share, entity.AccessReadWrite)
 	a := &attrs{shares: s}
-	h := a.file(t, "f", root.Principal, 0o600)
+	h := a.file(t, "f", entity.RootPrincipal, 0o600)
 	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashRoot, Anonymous: nobody.Principal}, 0)))
 	host, _ := s.connected(t, claimed(0, inLab), nlmHost("root-host", 1))
 	o := vfs.LockOwner{Client: host.Client, Name: []byte("pid 1")}

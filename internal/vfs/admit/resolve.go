@@ -27,11 +27,11 @@ type Principals interface {
 // to before any squash. A proven caller maps to the principal its sign-in
 // bound, a claimed one to the user holding its claimed uid, and anyone else
 // to none; a disabled or deleted user is refused. A caller is root when it
-// claims uid 0 or proves a user holding uid 0, and a root squash squashes
-// either. A caller the policy squashes, one mapped to no principal, or one
-// proving a user that holds no uid, such as a machine principal, acts as the
-// policy's anonymous principal, with its groups and no flag; a policy naming
-// none refuses it, as it does a deleted or disabled one.
+// claims uid 0, which no user holds, and a root squash squashes it. A caller
+// the policy squashes, one mapped to no principal, or one proving a user that
+// holds no uid, such as a machine principal, acts as the policy's anonymous
+// principal, with its groups and no flag; a policy naming none refuses it, as
+// it does a deleted or disabled one.
 // Otherwise a proven caller acts as itself, authenticated, admin where its
 // share grant names admin, and privileged where it is admin or root; a
 // claimed one acts as its user and the group holding its gid, privileged
@@ -60,12 +60,14 @@ type Principals interface {
 // store does not hold is one the operator never granted. Trust them if an
 // installation without principals' memberships needs AUTH_SYS groups.
 //
-// decision: a claimed uid 0 no user holds is not anonymous, as an unmapped
-// uid otherwise is: unsquashed, it is privileged with no principal, so the
-// files it creates are owned by the zero principal and its share grant is
-// the one its gid's group holds. That keeps what no_root_squash asks of an
-// installation that never named a root user. Overturned once the store
-// holds a well-known root principal for uid 0 to map to.
+// decision: a claimed uid 0, which no user holds, is not anonymous, as an
+// unmapped uid otherwise is: unsquashed, it is privileged with no principal,
+// not entity.RootPrincipal, so the files it creates are owned by the zero
+// principal and its share grant is the one its gid's group holds. That keeps
+// what no_root_squash asks without a root user. Root's well-known principal
+// exists, but mapping uid 0 to it waits for the access check to match it, so
+// that a deny naming root applies; until then entity.ACL.Valid refuses one.
+// Overturned when mapID maps uid 0 to entity.RootPrincipal.
 func Resolve(ctx context.Context, pr Principals, id vfs.Identity, share entity.ShareID, p entity.ExportPolicy, ro entity.ReadOnlyCause) (c entity.Identity, mapped entity.Principal, err error) {
 	proven := id.Proof >= vfs.ProofSecret
 	root := id.Proof == vfs.ProofClaimed && id.Claims.UID == 0
@@ -73,7 +75,6 @@ func Resolve(ctx context.Context, pr Principals, id vfs.Identity, share entity.S
 	if err != nil {
 		return c, mapped, err
 	}
-	root = root || proven && slices.Contains(u.IDs, entity.ProtocolID{Scheme: entity.SchemeUID, Value: "0"})
 	fileUser := proven && slices.ContainsFunc(u.IDs, func(i entity.ProtocolID) bool { return i.Scheme == entity.SchemeUID })
 	squashed := p.Squash == entity.SquashAll || root && p.Squash == entity.SquashRoot
 	var access entity.ShareAccess
@@ -145,6 +146,8 @@ func mapID(ctx context.Context, pr Principals, id vfs.Identity) (mapped, group e
 	case id.Proof >= vfs.ProofSecret:
 		mapped = id.Evidence.Principal
 	case id.Proof == vfs.ProofClaimed:
+		// uid 0 finds no user, so it maps to the zero principal; Resolve's
+		// decision says why not yet to entity.RootPrincipal.
 		if mapped, _, err = pr.ByID(ctx, entity.SchemeUID, id.Claims.UID); err != nil {
 			return mapped, group, u, err
 		}

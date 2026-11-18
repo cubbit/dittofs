@@ -7,14 +7,17 @@ import (
 
 // User and Group are principals with a name. A file refers to them only by
 // Principal, never by name, so renaming one touches no file, and deleting one
-// leaves its principal in ACLs as an unknown principal.
+// leaves its principal in ACLs as an unknown principal. A machine principal
+// is a User record of kind PrincipalMachine: no Name, one Kerberos spelling,
+// and no Primary, Password or NTHash.
 type User struct {
 	Principal Principal
 	Name      string
 	IDs       ProtocolIDs // each also a protocol-ID index row
 	Primary   Principal   // the group a new file gets; zero: the creator's own principal
 	Disabled  bool
-	Secret    SecretRef // by reference, never the credential itself
+	Password  SecretRef // the password hash, sealed under the storage key; zero for an account with no password
+	NTHash    SecretRef // the NT hash, sealed under the protocol key; zero while NTLM is off, for a directory principal and for an API-only account
 	Email     string    // optional, never defaulted, and never a spelling: nothing looks a user up by it
 	// Role, NotBefore and MustChange are the management API's: they grant
 	// nothing on files.

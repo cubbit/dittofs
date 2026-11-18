@@ -196,22 +196,6 @@ func testRecreatedPrincipalRefusesOldGeneration(t *testing.T, kvo Opener) {
 	}
 }
 
-// An Alloc naming an ID is refused: the store keeps no uid, gid or RID
-// counter to draw it from.
-func testAllocRefused(t *testing.T, kvo Opener) {
-	s, _ := newStore(t, kvo)
-	cp := s.ControlPlane()
-	for name, err := range map[string]error{
-		"user uid": errOf(cp.PutUser(ctx, user("alice"), 0, entity.Alloc{UID: true})),
-		"user rid": errOf(cp.PutUser(ctx, user("bob"), 0, entity.Alloc{RID: true})),
-		"group":    errOf(cp.PutGroup(ctx, group("staff"), 0, entity.Alloc{GID: true})),
-	} {
-		if !isCode(err, merrs.ErrInvalidArgument) {
-			t.Errorf("%s allocation: %v, want invalid argument", name, err)
-		}
-	}
-}
-
 // A grant's delete and a share's setting name the share, and are stale once
 // it is being removed.
 func testWritesToRemovedShare(t *testing.T, kvo Opener) {

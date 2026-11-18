@@ -16,16 +16,18 @@ import (
 // version of each share whose grant it drops; its memberships, both ways for
 // a group; its quota records; and, for a user, its API tokens, its sessions
 // and its account's sign-in count. The batch that finds none of them left
-// deletes the record and, for a user, every version of the secret it names.
-// Files keep naming p, as an unknown principal.
+// deletes the record and, for a user, every version of each secret it names.
+// Files keep naming p, as an unknown principal. A user's deletion of a
+// machine's ID deletes the machine; a record of any other kind than p's
+// refuses.
 //
 // Each batch finds what is left by the rows themselves, so a restart resumes
 // from the mark with no cursor, and a batch lost to a crash is run again. An
 // absent record answers done: a deletion whose end was not recorded ends
 // when resumed.
 func (n Nodes) ContinueDelete(ctx context.Context, p entity.Principal) (done bool, err error) {
-	if p.Kind != entity.PrincipalUser && p.Kind != entity.PrincipalGroup {
-		return false, merrs.NewInvalidArgumentError("only a user or a group is deleted in batches")
+	if p.Kind != entity.PrincipalUser && p.Kind != entity.PrincipalMachine && p.Kind != entity.PrincipalGroup {
+		return false, merrs.NewInvalidArgumentError("only a user, a machine or a group is deleted in batches")
 	}
 	err = n.s.kv.Update(ctx, func(tx kv.Txn) (err error) {
 		done, err = deleteBatch(tx, p, n.s.k)
@@ -42,13 +44,21 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 		return !ok, err
 	}
 	var marked bool
-	var secret entity.SecretRef
-	if p.Kind == entity.PrincipalUser {
+	var secrets []entity.SecretRef
+	if p.Kind != entity.PrincipalGroup {
 		u, err := decodeUser(p.ID, b)
 		if err != nil {
 			return false, err
 		}
-		marked, secret = u.Deleted, u.Secret
+		if u.Principal.Kind != p.Kind {
+			// A user's deletion names its record by ID alone, so a machine
+			// DeleteUser marked is deleted as one; any other kind refuses.
+			if p.Kind != entity.PrincipalUser || u.Principal.Kind != entity.PrincipalMachine {
+				return false, merrs.NewInvalidArgumentError(p.String() + " names a " + u.Principal.Kind.String() + " record")
+			}
+			p = u.Principal
+		}
+		marked, secrets = u.Deleted, []entity.SecretRef{u.Password, u.NTHash}
 	} else {
 		g, err := decodeGroup(p.ID, b)
 		if err != nil {
@@ -77,8 +87,10 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 			return d.dropPairs(membersPrefix(p.ID), 2, func(m [16]byte) []byte { return memberRevKey(entity.PrincipalID(m), p.ID) }, inGroups)
 		})
 	}
-	steps = append(steps, func() error { return d.dropQuotas(p) })
-	if p.Kind == entity.PrincipalUser {
+	if p.Kind != entity.PrincipalMachine { // a quota never limits a machine
+		steps = append(steps, func() error { return d.dropQuotas(p) })
+	}
+	if p.Kind != entity.PrincipalGroup {
 		steps = append(steps,
 			func() error { return d.dropPairs(accountTokensPrefix(p), 4, nil, ctl.DeleteAPIToken) },
 			func() error { return d.dropSessions(p) },
@@ -92,7 +104,7 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 	if d.took {
 		return false, nil
 	}
-	return true, deleteRecord(tx, p, secret)
+	return true, deleteRecord(tx, p, secrets...)
 }
 
 // batch is what one batch of a deletion may still delete. A take it refuses
@@ -259,7 +271,7 @@ func (b *batch) dropSignInCount(p entity.Principal) error {
 }
 
 // deleteRecord ends p's deletion: its record goes, with every version of
-// the secret a user's names.
+// each secret a user's names, its password hash and its NT hash.
 //
 // decision: the secret is deleted by the reference the owner's own record
 // holds, so the owner check secrets make holds by construction, and the
@@ -271,19 +283,25 @@ func (b *batch) dropSignInCount(p entity.Principal) error {
 // ponytail: every version goes in this one transaction, which holds as long
 // as a secret keeps a current version and the few it replaced. Delete the
 // versions in batches if retention ever keeps many.
-func deleteRecord(tx kv.Txn, p entity.Principal, secret entity.SecretRef) error {
+func deleteRecord(tx kv.Txn, p entity.Principal, secrets ...entity.SecretRef) error {
 	if _, err := raise(tx, pgenKey); err != nil {
 		return err
 	}
-	if secret != (entity.SecretRef{}) {
-		prefix := keys.ID([]byte{keys.KindSEC}, secret[:])
-		var versions [][]byte
-		for row, err := range tx.Scan(prefix, nil) {
+	var versions [][]byte
+	named := false
+	for _, secret := range secrets {
+		if secret == (entity.SecretRef{}) {
+			continue
+		}
+		named = true
+		for row, err := range tx.Scan(keys.ID([]byte{keys.KindSEC}, secret[:]), nil) {
 			if err != nil {
 				return err
 			}
 			versions = append(versions, slices.Clone(row.Key))
 		}
+	}
+	if named {
 		if err := deleteRows(tx, versions); err != nil {
 			return err
 		}

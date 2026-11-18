@@ -64,7 +64,7 @@ func newFixtureOver(t *testing.T, d Deps, fs *kvstoretest.FS) *fixture {
 	t.Helper()
 	// The administrator holds a uid, so that it signs in as itself rather
 	// than as the share's anonymous principal.
-	admin := entity.User{Principal: fs.Admin.Principal, Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}
+	admin := entity.User{Principal: fs.Admin.Principal, Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}, {Scheme: entity.SchemeSID, Value: "sid-100"}}}
 	if _, err := fs.Store.ControlPlane().PutUser(t.Context(), admin, userGeneration(t, fs.Store, admin.Principal), entity.Alloc{}); err != nil {
 		t.Fatal(err)
 	}

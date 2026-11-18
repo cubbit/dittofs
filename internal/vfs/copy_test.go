@@ -30,7 +30,8 @@ func newCopier(t *testing.T) *copier {
 	s := memory.New(t)
 	user := func(name string) vfs.Call {
 		cp := s.Store.Store.ControlPlane()
-		u := entity.User{Principal: entity.NewUser(), Name: name, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: strconv.Itoa(int(61000 + copyUIDs.Add(1)))}}}
+		uid := strconv.Itoa(int(61000 + copyUIDs.Add(1)))
+		u := entity.User{Principal: entity.NewUser(), Name: name, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: uid}, {Scheme: entity.SchemeSID, Value: "sid-" + uid}}}
 		if _, err := cp.PutUser(t.Context(), u, 0, entity.Alloc{}); err != nil {
 			t.Fatal(err)
 		}

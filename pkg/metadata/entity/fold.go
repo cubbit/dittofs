@@ -2,6 +2,7 @@ package entity
 
 import (
 	"encoding/binary"
+	"unicode"
 	"unicode/utf8"
 
 	"lukechampine.com/blake3"
@@ -76,6 +77,33 @@ func (r FoldRule) Fold(name []byte) []byte {
 // FoldShareName is the form share names are unique under: the upcase rule,
 // as SMB servers compare them.
 func FoldShareName(name string) string { return string(FoldUpcase.Fold([]byte(name))) }
+
+// FoldPrincipalName is the form user and group names are unique under:
+// simple Unicode case folding, each rune replaced by the smallest rune of its
+// unicode.SimpleFold orbit, so two names strings.EqualFold calls equal share
+// one key and the Kelvin sign folds with k. Bytes that are not valid UTF-8
+// are kept as they are.
+//
+// ponytail: the fold follows the Unicode tables of the Go release that built
+// the binary, so a stored key could drift when a release changes a fold.
+// Re-key every user and group name row when a toolchain upgrade changes one.
+func FoldPrincipalName(name string) string {
+	out := make([]byte, 0, len(name))
+	for len(name) > 0 {
+		c, n := utf8.DecodeRuneInString(name)
+		if c == utf8.RuneError && n <= 1 {
+			out = append(out, name[0])
+		} else {
+			least := c
+			for f := unicode.SimpleFold(c); f != c; f = unicode.SimpleFold(f) {
+				least = min(least, f)
+			}
+			out = utf8.AppendRune(out, least)
+		}
+		name = name[n:]
+	}
+	return string(out)
+}
 
 // DigestKeyLen is the length of a share's digest key.
 const DigestKeyLen = 32

@@ -17,6 +17,7 @@ import (
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
@@ -131,6 +132,9 @@ func (b *bench) deleteUser(u entity.Principal, gen uint64) entity.Operation {
 		func(tx entity.ControlPlaneTx) error { return tx.DeleteUser(u, gen) })
 }
 
+// groupIDs allocates the gid and SID every group holds.
+var groupIDs = entity.Alloc{GID: true, RID: true, Range: entity.IDRange{Lo: 1_000_000, Hi: 1_999_999_999}}
+
 // user creates a user and returns it with its generation.
 func (b *bench) user(u entity.User) (entity.Principal, uint64) {
 	b.t.Helper()
@@ -214,12 +218,12 @@ func TestUserDeletionResumesAcrossRestart(t *testing.T) {
 	b := newBench(t, t.TempDir(), nil)
 	ctx, cp := t.Context(), b.store.ControlPlane()
 	secret := entity.SecretRef{15: 1}
-	alice, gen := b.user(entity.User{Name: "alice", Secret: secret})
+	alice, gen := b.user(entity.User{Name: "alice", Password: secret})
 	bob, _ := b.user(entity.User{Name: "bob"})
 	secretPrefix := keys.ID([]byte{keys.KindSEC}, secret[:])
 	b.must("write alice's secret", b.db.Update(ctx, func(tx kv.Txn) error { return tx.Set(keys.Uint64(secretPrefix, 1), []byte{1}) }))
 	g := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
-	_, err := cp.PutGroup(ctx, g, 0, entity.Alloc{})
+	_, err := cp.PutGroup(ctx, g, 0, groupIDs)
 	b.must("create group staff", err)
 	sh := entity.Share{ID: entity.NewShareID(), Name: "photos", Path: "/photos", Root: entity.NewFileID()}
 	_, err = kvstoretest.CreateShare(ctx, cp, sh)
@@ -567,6 +571,32 @@ func TestUserDeletionStepAnswers(t *testing.T) {
 	}
 }
 
+// A machine DeleteUser marked is deleted by the user deletion's step: the
+// operation ends succeeded with no row naming the machine, and its Kerberos
+// name finds nothing.
+func TestMachineDeletionEnds(t *testing.T) {
+	b := newBench(t, "", nil)
+	ctx, cp := t.Context(), b.store.ControlPlane()
+	name := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "host/build01.corp.example@CORP.EXAMPLE"}
+	m := entity.User{Principal: entity.Principal{Kind: entity.PrincipalMachine, ID: entity.NewPrincipalID()}, IDs: []entity.ProtocolID{name}}
+	gen, err := cp.PutUser(ctx, m, 0, entity.Alloc{})
+	b.must("create the machine", err)
+	op := b.deleteUser(m.Principal, gen)
+	r := b.runner(nil)
+	for turn := time.Duration(0); turn < 10*time.Second && b.read(op.ID).State != entity.OpSucceeded; turn += time.Second {
+		b.at(r, turn)
+	}
+	if got := b.read(op.ID); got.State != entity.OpSucceeded {
+		t.Fatalf("machine deletion: got %v (error %s), want succeeded", got.State, got.Error)
+	}
+	if n := b.keysNaming(m.Principal.ID[:]); n != 0 {
+		t.Errorf("keys naming the machine after its deletion: got %d, want none", n)
+	}
+	if p, err := b.store.Principals().ByProtocolID(ctx, name); !merrs.IsNotFoundError(err) {
+		t.Errorf("ByProtocolID(%s) after the machine's deletion: %v, %v; want not found", name.Value, p, err)
+	}
+}
+
 // A group's deletion runs past its mark to its end, leaving no row naming
 // the group.
 func TestGroupDeletionEnds(t *testing.T) {
@@ -574,7 +604,7 @@ func TestGroupDeletionEnds(t *testing.T) {
 	ctx, cp := t.Context(), b.store.ControlPlane()
 	alice, _ := b.user(entity.User{Name: "alice"})
 	g := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
-	gen, err := cp.PutGroup(ctx, g, 0, entity.Alloc{})
+	gen, err := cp.PutGroup(ctx, g, 0, groupIDs)
 	b.must("create group staff", err)
 	b.must("add alice to staff", cp.AddMember(ctx, entity.Membership{Group: g.Principal, Member: alice}))
 	op := b.markDeleted(apiv1.OpGroupDelete, entity.ResourceRef{Kind: entity.ResourceGroup, ID: g.Principal.ID[:]}, entity.Principal{},

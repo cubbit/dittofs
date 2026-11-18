@@ -76,3 +76,18 @@ func TestDigest(t *testing.T) {
 }
 
 const goldenDigest = 0x2ca3e6cfaac30e45
+
+func TestFoldPrincipalName(t *testing.T) {
+	for _, c := range []struct{ a, b string }{
+		{"Alice", "aLICE"},
+		{"\u212Aelvin", "kelvin"}, // the Kelvin sign folds with k, which ToLower and an ASCII fold miss
+		{"\u017F", "s"},           // long s, likewise
+	} {
+		if FoldPrincipalName(c.a) != FoldPrincipalName(c.b) {
+			t.Errorf("FoldPrincipalName(%q) = %q, FoldPrincipalName(%q) = %q: want equal", c.a, FoldPrincipalName(c.a), c.b, FoldPrincipalName(c.b))
+		}
+	}
+	if FoldPrincipalName("alice") == FoldPrincipalName("alicia") {
+		t.Error("distinct names fold together")
+	}
+}

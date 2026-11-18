@@ -348,7 +348,7 @@ func createGroup(r kv.Reader, id entity.Identity, d entity.File) (entity.Princip
 		return id.Group, nil
 	}
 	if id.Principal.Kind == entity.PrincipalUser {
-		u, ok, err := userIn(r, id.Principal.ID)
+		u, ok, err := userIn(r, id.Principal)
 		if err != nil {
 			return entity.Principal{}, err
 		}

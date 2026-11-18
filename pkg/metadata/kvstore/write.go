@@ -175,10 +175,7 @@ func (c controlTx) Setting(scope entity.SettingScope, key string) (entity.Settin
 }
 
 func (c controlTx) User(p entity.Principal) (entity.User, bool, error) {
-	if p.Kind != entity.PrincipalUser {
-		return entity.User{}, false, nil
-	}
-	u, ok, err := userIn(c.tx, p.ID)
+	u, ok, err := userIn(c.tx, p)
 	if err != nil || !ok {
 		return entity.User{}, false, err
 	}

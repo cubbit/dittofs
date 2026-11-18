@@ -46,6 +46,31 @@ func TestPrincipalText(t *testing.T) {
 	}
 }
 
+// A machine principal survives its text form, as the management API and an
+// open's owner write it.
+func TestMachinePrincipalText(t *testing.T) {
+	p := Principal{Kind: PrincipalMachine, ID: NewPrincipalID()}
+	b, err := p.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText(%v): %v", p, err)
+	}
+	if back, err := ParsePrincipal(string(b)); err != nil || back != p {
+		t.Fatalf("ParsePrincipal(%q) = %v, %v; want %v", b, back, err, p)
+	}
+}
+
+func TestRootPrincipal(t *testing.T) {
+	if want := (PrincipalID{15: 0x0D}); RootPrincipal.ID != want || RootPrincipal.Kind != PrincipalSpecial {
+		t.Fatalf("root = %v, want special %x", RootPrincipal, want)
+	}
+	if !RootPrincipal.WellKnown() {
+		t.Error("root is not well-known")
+	}
+	if (Principal{PrincipalSpecial, PrincipalID{15: 0x0E}}).WellKnown() {
+		t.Error("0x0E is well-known; root is the last")
+	}
+}
+
 func TestEnumText(t *testing.T) {
 	for v := ShareEnabled; v <= ShareRetired; v++ {
 		b, err := v.MarshalText()

@@ -35,11 +35,13 @@ func memberOfPrefix(member entity.PrincipalID) []byte {
 	return keys.ID([]byte{keys.KindMR}, member[:])
 }
 
-// nameKey is the name index row of a user, group or share name. A share's
-// name is keyed by its fold, so two names equal under it collide.
+// nameKey is the name index row of a user, group or share name. A name is
+// keyed by its kind's fold, so two names equal under it collide.
 func nameKey(kind byte, name string) []byte {
 	if kind == keys.NXShare {
 		name = entity.FoldShareName(name)
+	} else {
+		name = entity.FoldPrincipalName(name)
 	}
 	return keys.String([]byte{keys.KindNX, kind}, []byte(name))
 }

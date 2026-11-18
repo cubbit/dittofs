@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   panics, as `dittofs_adapter_*`. Each series is registered once per node and
   resolved once per table or stages label, so recording is one atomic add or
   histogram observation with no label lookup.
+- **The v2 metadata store numbers its users and groups itself.** A create may
+  ask for a uid or gid, drawn from a range the caller passes, and a RID under
+  the installation's own domain SID; a drawn ID is never given again, even
+  after its principal is deleted. A user holds a uid and a SID together or
+  neither, a group always both, and a SID never changes once given. The store
+  also keeps machine principals, holding one Kerberos name and nothing else,
+  and users and groups with no name, found only by their IDs.
 
 ### Changed
 
@@ -70,6 +77,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   predecessor still on disk, until that predecessor's end is proven.
   Opening a journal that holds segments still fails with
   `ErrNotImplemented`, so these spares are not yet handed to the pool.
+- **User and group names in the v2 metadata store are case-insensitive.**
+  `Alice` and `aLICE` are one name under Unicode simple case folding, found
+  under any case and read back as written; a user and a group may still share
+  a name. A local name holding `@` is refused, as are uid and gid 0 and 65534,
+  which belong to root and anonymous. Deleting a user deletes its NT hash
+  along with its password hash.
 
 ## [0.36.0] — 2026-10-19
 

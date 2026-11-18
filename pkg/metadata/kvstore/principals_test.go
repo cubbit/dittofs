@@ -111,9 +111,9 @@ func TestLookups(t *testing.T) {
 	u, g := entity.NewUser(), entity.NewGroup()
 	sidID := entity.ProtocolID{Scheme: entity.SchemeSID, Value: "\x01\x02"}
 	rows(t, s,
-		nameKey(keys.NXUser, "alice"), encodeID(u.ID),
-		nameKey(keys.NXGroup, "alice"), encodeID(g.ID),
-		nameKey(keys.NXGroup, "staff"), encodeID(g.ID),
+		nameKey(keys.NXUser, "alice"), encodeNameRow(u.ID, "alice"),
+		nameKey(keys.NXGroup, "alice"), encodeNameRow(g.ID, "alice"),
+		nameKey(keys.NXGroup, "staff"), encodeNameRow(g.ID, "staff"),
 		protocolKey(sidID), encodePrincipal(g),
 	)
 	p := s.Principals()

@@ -22,7 +22,7 @@ func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
 	cp, p := s.ControlPlane(), s.Principals()
 	gid := entity.ProtocolID{Scheme: entity.SchemeGID, Value: "50"}
 	staff, outer := group("staff"), group("all")
-	staff.IDs = entity.ProtocolIDs{gid}
+	staff.IDs[0] = gid
 	u := user("alice", uid("1000"))
 	u.Primary = staff.Principal
 	sh := share("photos", "/photos")
@@ -69,7 +69,7 @@ func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
 		}
 	}
 	again := group("staff")
-	again.IDs = entity.ProtocolIDs{gid}
+	again.IDs[0] = gid
 	if _, err := cp.PutGroup(ctx, again, 0, entity.Alloc{}); err != nil {
 		t.Errorf("a new group taking a marked group's name and gid: %v", err)
 	}
