@@ -668,9 +668,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs spares made ahead, recovery that re-adopts them and the reserves accounted. The open now spends the repack reserve on a copy target when a crash ends a segment with live records, and the refill that follows creates segments; the row settles the pool before it counts, so the count line is the one that fails.'
+  reason: 'The journal opens and its re-adopted spares reach the pool, so the half where every spare must be on disk passes. The other half fails: a segment a stream took and never synced does not come back as a spare after the crash. Needs recovery that gives a taken record-less segment back to the pool.'
   issue: '#3814'
-  message: 'every spare was on disk'
+  message: 'taken and never synced, is not a spare again after the crash'
 
 - test: TestRFC28C_SpareIsWholeOrAbsent/create
   status: fail
