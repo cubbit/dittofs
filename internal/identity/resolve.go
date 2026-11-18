@@ -39,6 +39,9 @@ func unavailable(err error) error {
 	return &refusal{reasonStoreUnavailable, fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)}
 }
 
+// noSpan stands in for the span of a resolution that opens none.
+var noSpan = trace.SpanFromContext(context.Background())
+
 // Resolve resolves id to the Caller it acts as on the share p governs,
 // narrowed to read-only by narrowed. It is admission's resolution step: it
 // keeps no table of callers, and reads the store on every call, so a
@@ -63,7 +66,12 @@ func unavailable(err error) error {
 //
 // A store error is ErrUnavailable, never a caller.
 func (s *Server) Resolve(ctx context.Context, id identity.Identity, p entity.SharePolicy, narrowed identity.ReadOnlyCause) (c *identity.Caller, err error) {
-	ctx, span := s.tracer.Start(ctx, "identity.resolve", trace.WithAttributes(attribute.Int("identity.proof", int(id.Proof))))
+	// Only a sampled request's resolution opens a span: under an unsampled
+	// parent, Start would still allocate a span nobody records.
+	span := noSpan
+	if trace.SpanContextFromContext(ctx).IsSampled() {
+		ctx, span = s.tracer.Start(ctx, "identity.resolve", trace.WithAttributes(attribute.Int("identity.proof", int(id.Proof))))
+	}
 	defer func() { s.finish(span, err) }()
 
 	if err := forwarded(id); err != nil {

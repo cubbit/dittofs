@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/prof"
@@ -56,7 +57,9 @@ func newResolving(t *testing.T) *resolving {
 		t.Fatal(err)
 	}
 	r.cp = st.ControlPlane()
-	r.tp = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(r.spans))
+	// AlwaysSample, not the default parent-based sampler, so a span opened
+	// under an unsampled parent is recorded and the test can see it.
+	r.tp = sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()), sdktrace.WithSpanProcessor(r.spans))
 	t.Cleanup(func() { _ = r.tp.Shutdown(context.Background()) })
 	if r.srv, err = identity.New(identity.Deps{Store: st, Metrics: r.reg, Tracer: r.tp.Tracer("test")}); err != nil {
 		t.Fatalf("New: %v", err)
@@ -305,6 +308,24 @@ func TestResolveOpensItsSpan(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("%s: no identity.resolve span under the call's span", c.who.Name)
+		}
+	}
+}
+
+// An unsampled request's resolution opens no span: the parent carries a
+// trace that the ratio rule did not sample.
+func TestResolveOpensNoSpanUnderAnUnsampledParent(t *testing.T) {
+	r := newResolving(t)
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: uid("1000")}
+	r.user(t, alice, 0)
+	unsampled := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{1}, SpanID: trace.SpanID{1}})
+	ctx := trace.ContextWithSpanContext(context.Background(), unsampled)
+	if _, err := r.srv.Resolve(ctx, ticket(alice.Principal, alice.Name), entity.SharePolicy{}, pid.ReadOnlyNotNarrowed); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, s := range r.spans.Ended() {
+		if s.Name() == "identity.resolve" {
+			t.Errorf("Resolve under an unsampled parent opened span %q, want none", s.Name())
 		}
 	}
 }
