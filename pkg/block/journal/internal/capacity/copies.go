@@ -2,16 +2,17 @@ package capacity
 
 import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 
-// CopyLanded counts n record bytes of a repack copy of tag's records, made
-// out of source segment src, to the journal's repack reserve: the set already
-// holds them in the tag's settled figure, but they are the share's only once
-// src is retired, so until then the share's tally, which its limit admits
-// against, does not include them and a copy is never refused by that limit.
+// CopyLanded holds n record bytes of a repack copy of tag's records, made out
+// of source segment src, out of the share's tally: the set already holds them
+// in the tag's settled figure, but the tally, which the share's limit admits
+// against, takes them only once src is retired, so a copy is never refused by
+// that limit. This is a deferral ledger for the share tally alone; the repack
+// reserve's bound is the pool's ready spares and does not read it.
 //
 // ponytail: the count is made when the unit's copies have all landed, not at
 // each append, so a tag seeded in that window reads the copies in its settled
 // figure and counts them again when they transfer: the tally stands high by
-// that unit's copy bytes, failing closed, until the share is reattached.
+// that unit's copy bytes, failing closed, until the tally is next reseeded.
 // Upgrade to counting at the append when a share's first write racing a pass
 // over its records shows in the field.
 func (c *Capacity) CopyLanded(src core.SegmentID, tag core.ShareTag, n int64) {
@@ -55,8 +56,8 @@ func (c *Capacity) CopiesTransfer(src core.SegmentID) {
 	delete(c.copies, src)
 }
 
-// CopyHeldBytes returns the record bytes of repack copies counted to the
-// journal's reserve, whose sources are not yet retired.
+// CopyHeldBytes returns the record bytes of repack copies held out of the
+// share tallies, whose sources are not yet retired.
 func (c *Capacity) CopyHeldBytes() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()

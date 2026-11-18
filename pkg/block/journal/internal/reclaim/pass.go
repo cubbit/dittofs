@@ -167,6 +167,11 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 	p.mu.Unlock()
 	defer p.wg.Done()
 	var out Outcome
+	// decision: the reserve is read once, here, and every unit is counted
+	// against that reading. A reserve not yet refilled reads zero, so the
+	// pass returns freeing nothing and a caller looping until a pass frees
+	// nothing can stop early. Overturned by a wait or poll for the refill, or
+	// by a caller contract that retries after the retirements report.
 	allowed := p.res.held()
 	// reheld are the sources whose unit stayed: their claims — the run's,
 	// not the unit's, from the moment they stay — keep every later Select
@@ -233,8 +238,8 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 		p.sel.Done(seg)
 		return 0, 0, false, fmt.Errorf("reclaim: the unit over segment %d: %w", seg, err)
 	}
-	// The copies are the journal's reserve's until the source goes: counted
-	// here, handed to their shares when it is retired.
+	// The copies are held out of their shares' tallies until the source goes: held here,
+	// handed to their shares when it is retired.
 	if p.res.Count != nil {
 		for _, cp := range res.Copies {
 			p.res.Count(seg, cp.Tag, cp.Loc.Len)

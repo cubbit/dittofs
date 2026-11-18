@@ -6,16 +6,19 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
-// Reserve is what a pass asks of the repack reserve: how much it holds, and
-// where a copy's bytes are counted. Its zero value bounds nothing and counts
-// nothing, for a pass over a journal with no reserve to ask.
+// Reserve is what a pass asks of the repack reserve and of the share tally.
+// Held bounds the pass by the reserve's ready spares; Count and Transfer are a
+// separate ledger, which holds a copy's bytes out of its share's tally while
+// its source remains. Held does not read that ledger. The zero value bounds
+// nothing and holds nothing out, for a pass over a journal with no reserve to
+// ask.
 type Reserve struct {
 	// Held reports the bytes of the repack reserve's ready spares now.
 	Held func() int64
-	// Count counts n record bytes of a copy of tag's records, made out of
-	// source segment src, to the journal's reserve while src remains.
+	// Count holds n record bytes of a copy of tag's records, made out of
+	// source segment src, out of the tag's share tally while src remains.
 	Count func(src core.SegmentID, tag core.ShareTag, n int64)
-	// Transfer hands every copy counted against src to its share. The
+	// Transfer puts every copy held out for src into its share's tally. The
 	// retirement of src does it too, for every segment it retires; the pass
 	// calls it for a source it abandons, whose copies are the share's
 	// records from then on.

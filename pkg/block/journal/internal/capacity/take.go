@@ -203,7 +203,7 @@ type Capacity struct {
 	retiredSeen map[core.ShareTag]int64
 
 	// copies is the repack copies' record bytes per source segment and tag,
-	// counted to the journal's reserve until the source's retirement hands
+	// held out of the share tallies until the source's retirement hands
 	// them to the tag's figure, and copyHeld their sum per tag. Both are
 	// guarded by mu and created on first use; see copies.go.
 	copies   map[core.SegmentID]map[core.ShareTag]int64
