@@ -1,6 +1,9 @@
 package core
 
 import (
+	"fmt"
+	"testing"
+
 	"context"
 	"net"
 	"net/netip"
@@ -442,4 +445,26 @@ func Stopping(s *Server, done chan struct{}) {
 	s.state = adapter.StateDraining
 	s.stopDone = done
 	s.mu.Unlock()
+}
+
+// Past the per-address line map's cap the addresses share the reason's own
+// line: the map stops at its cap, so a client rotating through a prefix
+// grows the server's memory no further, and the shared line is still one,
+// not none (RFC 20 s10.3, RFC 25 s5.2).
+func TestPerAddressLinesPastTheCapShareTheReasonLine(t *testing.T) {
+	sh := &shared{closes: map[reason]*lineLimiter{}, addressLines: map[netip.Addr]*lineLimiter{}}
+	for i := range addressLinesMax {
+		sh.addressLine(netip.MustParseAddr(fmt.Sprintf("10.1.%d.%d", i/256, i%256)))
+	}
+	if len(sh.addressLines) != addressLinesMax {
+		t.Fatalf("below the cap the map holds %d, want the cap alone", len(sh.addressLines))
+	}
+	first := sh.addressLine(netip.MustParseAddr("10.2.0.1"))
+	second := sh.addressLine(netip.MustParseAddr("10.3.0.1"))
+	if len(sh.addressLines) != addressLinesMax {
+		t.Errorf("an address past the cap grew the map to %d", len(sh.addressLines))
+	}
+	if first != second || first != sh.closes[rsnPerAddress] {
+		t.Error("the addresses past the cap do not share the reason's own line")
+	}
 }

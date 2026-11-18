@@ -269,6 +269,11 @@ func (sh *shared) panicLine(p, op string) *lineLimiter {
 func (sh *shared) acceptLine(r reason) *lineLimiter {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
+	return sh.acceptLineLocked(r)
+}
+
+// acceptLineLocked is acceptLine with sh already held.
+func (sh *shared) acceptLineLocked(r reason) *lineLimiter {
 	if l, ok := sh.closes[r]; ok {
 		return l
 	}
@@ -276,6 +281,12 @@ func (sh *shared) acceptLine(r reason) *lineLimiter {
 	sh.closes[r] = l
 	return l
 }
+
+// addressLinesMax bounds the per-address line map: a client rotating through
+// a prefix grows it no further, and every address past the cap shares the
+// reason's own line, one a minute, so the noisy-client mean the per-address
+// minute buys stays and the total stays bounded (RFC 25 section 5.2).
+const addressLinesMax = 1024
 
 // addressLine is the limiter of the per_address close at accept's line, one
 // per address per server, resolved under sh.mu.
@@ -289,6 +300,11 @@ func (sh *shared) addressLine(addr netip.Addr) *lineLimiter {
 	defer sh.mu.Unlock()
 	if l, ok := sh.addressLines[addr]; ok {
 		return l
+	}
+	if len(sh.addressLines) >= addressLinesMax {
+		// The map is at its cap: this address shares the reason's own
+		// line rather than growing the server's memory.
+		return sh.acceptLineLocked(rsnPerAddress)
 	}
 	l := &lineLimiter{}
 	sh.addressLines[addr] = l
