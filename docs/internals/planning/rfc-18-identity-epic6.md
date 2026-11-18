@@ -227,7 +227,7 @@ tests can cite them. Sources are RFC 18 unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R39 | Every record identity writes goes through one mint path: one sign-in, lookup or resolution mints every principal it needs in one batch; on `ErrExist` the lookups are re-run, a principal now found is bound, the rest minted in a new batch, for as long as each re-run binds a principal the one before did not; a re-run that binds none fails `ErrUnavailable`, writes nothing and logs both `PrincipalID`s | invariant | §4.1 | T6.2 |
+| R39 | Every record identity writes goes through one mint path: one sign-in, lookup or resolution mints every principal it needs in one batch; on `ErrExist` the lookups are re-run, a principal now found is bound, the rest minted in a new batch, for as long as each re-run binds a principal the one before did not or newly marks a record `Unnamed`; a re-run that does neither fails `ErrUnavailable`, writes nothing and logs both `PrincipalID`s | invariant | §4.1 | T6.2 |
 | R40 | A name never fails a mint: a principal whose name another of its kind holds under §4.6's comparison is minted without a name, counted in `identity_mints_unnamed_total` and logged naming both | invariant | §4.1, §9.2 | T6.2 |
 | R41 | Every record minted is counted in `identity_mints_total{kind}` | invariant | §9.2 | T6.2 |
 | R42 | A directory record is minted once, from the first answer, and holds its `PrincipalID`, `dir` entry ID, SID, uid and gid from then on; a later answer renames it (R51) | invariant | §5.1 | T6.9 |
@@ -298,13 +298,15 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   `Rename(ctx, []Renaming{P, Name})` applies its list in order in one transaction: each `""`
   first, then the takes, refusing the whole list with `ErrExist` when a take finds its name held
   by a principal outside the list. Needs an RFC 16 §3 amendment. Prior art: none found.
-- **D6, the mint path re-runs a plan, not a batch.** The caller hands the path a function that
-  looks its principals up and returns the batch of those still missing with the ones bound; on
-  `ErrExist` the path calls it again, and stops with `ErrUnavailable` when a run binds no
-  principal the one before did not. A held name is found before the write, by the name index, and
-  the record marked `Unnamed` (R40). No count bounds the loop: R39's progress rule and §5.1's
-  20 seconds do. Prior art: optimistic concurrency's re-read and retry, bounded by progress
-  (from memory).
+- **D6, the mint path re-runs a plan, not a batch.** The caller hands the path a function that looks
+  its principals up and returns the batch of those still missing with the ones bound; on `ErrExist`
+  the path calls it again, and stops with `ErrUnavailable` when a run neither binds a principal the
+  one before did not nor newly marks a record `Unnamed`: a name another call took between the name
+  check and the commit is progress, never a failure (R40). A record this mint call already marked
+  `Unnamed` in an earlier run is not newly marked again, so a name an unrelated principal keeps
+  holding counts once. A held name is found before the write, by the name index, and the record
+  marked `Unnamed` (R40). No count bounds the loop: R39's progress rule and §5.1's 20 seconds do.
+  Prior art: optimistic concurrency's re-read and retry, bounded by progress (from memory).
 - **D7, the 20-second bound is one deadline on the injected clock.** `Find` with a directory
   question and resolution's directory step each open the bound once, through a context the
   injected clock cancels at 20 seconds, which every query, mint and wait below it inherits; E5's
@@ -430,27 +432,32 @@ pkg/settings/
 - **Covers:** R39, R40, R41.
 - **Deliverables:** `internal/identity`'s `mint(ctx, plan func(context.Context) (entity.MintBatch,
   int, error)) error`, the `int` the number of principals the run bound, with D6's re-run loop:
-  `ErrExist` re-runs the plan, a run that binds no more than the one before fails `ErrUnavailable`
-  and logs both `PrincipalID`s; before the write, a record whose name the name index shows held by
-  another principal of its kind, or which folds to the name of an earlier record of its kind in the
-  same batch, is marked `Unnamed` and logged naming both;
-  `identity_mints_total{kind}` and `identity_mints_unnamed_total{kind}` counted after the commit.
-  Consumed by T6.9, T6.11 and E5's machine mints.
+  `ErrExist` re-runs the plan; a run that neither binds a principal the one before did not nor newly
+  marks a record `Unnamed` fails `ErrUnavailable` and logs both `PrincipalID`s; before the write, a
+  record whose name the name index shows held by another principal of its kind, or which folds to
+  the name of an earlier record of its kind in the same batch, is marked `Unnamed` and logged naming
+  both; `identity_mints_total{kind}` and `identity_mints_unnamed_total{kind}` counted after the
+  commit. Consumed by T6.9, T6.11 and E5's machine mints.
 - **Acceptance criteria:**
   - Every write of a new principal in `internal/identity` goes through `mint`:
     `rg -g '!*_test.go' 'Minter\(\)\.Create|\.Create\(ctx, ' internal/identity` shows it alone.
 - **Tests:** at `mint`, over the memory KV store wrapped in `kvtest`'s `FaultKV`, a `sim.Fault`
   delaying the first `Create`'s commit on the test clock while a concurrent `mint` commits two of
-  its three groups: the first re-runs, binds those two
-  and mints the third, the generation raised once per commit (catches a re-run bounded at one,
-  R39); a plan that keeps answering the same batch while another writer holds a row it needs:
-  `ErrUnavailable` after the second run, nothing written (catches an unbounded loop, R39); a group
-  named `finance` beside a local `Finance`: minted, found by SID, not by name, and
-  `identity_mints_unnamed_total{kind="group"}` 1 (R40); one batch holding directory groups
-  `Finance` and `FINANCE`: both minted, the second unnamed, never `ErrUnavailable` (catches a clash
-  inside one batch failing every run, R40); `identity_mints_total` read from the
-  registry after a batch of one user and two groups: `user` 1, `group` 2 (R41). Doubles: `kvtest`'s
-  `FaultKV` (kind 3), the injected clock (kind 1).
+  its three groups: the first re-runs, binds those two and mints the third, the generation raised
+  once per commit (catches a re-run bounded at one, R39); a plan that keeps answering the same batch
+  while another writer holds a row it needs: `ErrUnavailable` after the second run, nothing written
+  (catches an unbounded loop, R39); a `sim.Fault` delaying the first `Create`'s commit while a
+  concurrent `mint` takes a name the batch writes: the re-run binds nothing but commits the record
+  `Unnamed`, counted in `identity_mints_unnamed_total` (catches a progress rule that counts only
+  bindings, R39, R40); a re-run that binds a new principal beside a name an unrelated principal
+  keeps holding: committed (catches a progress rule that sums bindings and unnamings, R39); a re-run
+  that only re-marks a record the mint already unnamed: `ErrUnavailable` on the second run, not at
+  §5.1's deadline (catches "newly" read per run, R39); a group named `finance` beside a local
+  `Finance`: minted, found by SID, not by name, and `identity_mints_unnamed_total{kind="group"}` 1
+  (R40); one batch holding directory groups `Finance` and `FINANCE`: both minted, the second
+  unnamed, never `ErrUnavailable` (catches a clash inside one batch failing every run, R40);
+  `identity_mints_total` read from the registry after a batch of one user and two groups: `user` 1,
+  `group` 2 (R41). Doubles: `kvtest`'s `FaultKV` (kind 3), the injected clock (kind 1).
 - **Rules:** rule 9 (D6's marker).
 
 ### T6.3 The `identity.directory` record

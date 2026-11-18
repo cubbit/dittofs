@@ -268,24 +268,22 @@ epic's test holds it.
 
 ## 4. Decisions this epic takes
 
-- **D1, NETLOGON on `ncacn_ip_tcp` with schannel, settled by T7.1's spike before T7.6.** As the
-  RFC 18 plan's D5 says: no SMB session, so no Kerberos client key, and the offline join's first
-  closing rotation sets its password over a channel the handed-over password authenticates.
-  `feat/storage-v2`'s `securechannel.go` records Samba answering a sealed-schannel `AlterContext` on
-  `ncacn_ip_tcp` with `RPC_S_UNKNOWN_AUTHN_SERVICE`, which is why v1 moved to the named pipe; T7.1
-  settles whether that was `go-msrpc`'s bind sequence or Samba. If the transport fails, the fallback
-  is v1's `\PIPE\NETLOGON` named pipe on the controller's `IPC$`, over an SMB session authenticated
-  as the computer account with Kerberos (a `cifs/<dc>` ticket), with the Netlogon credential sealing
-  the schannel on top; for an offline join's first closing rotation, that credential is the machine
-  password that was handed over. Machine NTLM over SMB is not an option: v1's `securechannel.go`
-  records Samba refusing a machine-account NTLM SMB logon, which is why v1 signs in to SMB with
-  Kerberos. The fallback keeps v1's Kerberos session in place of deleting it, its ticket fetched
-  under the version the channel signs in with, and adds 2 man-days to T7.6, lifts T7.6's "no
-  Kerberos library" criterion, and changes the guides' ports to 445 and 88 in place of 135 and the
-  dynamic RPC range (T7.17); it is recorded by revising this decision. The credential arithmetic
-  is `go-msrpc`'s `ssp/netlogon` (session key, credential chain, its server-credential check, AES
-  encryption), with `CapRC4` taken out of its default capabilities. A `decision:` marker at the
-  dial. Prior art (from memory): Samba's `winbindd` reaches NETLOGON on `ncacn_ip_tcp` with schannel.
+- **D1, NETLOGON on `ncacn_ip_tcp` with schannel.** As the RFC 18 plan's D5 says: no SMB session, so
+  no Kerberos client key, and the offline join's first closing rotation sets its password over a
+  channel the handed-over password authenticates. T7.1 ran it against the Samba fixture (#4759): the
+  endpoint mapper (135) names NETLOGON's port in the pinned range; an unauthenticated association
+  runs the challenge and `NetrServerAuthenticate3`, asking for AES_SHA2 | StrongKey | SecureRPC with
+  no RC4, which Samba grants; a second association binds sealed with the Netlogon auth type and
+  carries `NetrLogonSamLogonEx` and `NetrServerPasswordSet2`. The logon on the unauthenticated
+  association is refused, so the seal is what admits it. `feat/storage-v2`'s `securechannel.go`
+  records Samba answering a sealed-schannel `AlterContext` on `ncacn_ip_tcp` with
+  `RPC_S_UNKNOWN_AUTHN_SERVICE`, which is why v1 moved to the named pipe; it did not reproduce with
+  this Samba and this `go-msrpc`, so v1's named-pipe fallback and its 2 man-days go, and T7.6 keeps
+  its "no Kerberos library" criterion. `go-msrpc`'s `NewSecureChannelClient` forces `CapRC4`, so the
+  channel is built from `ssp/netlogon`'s parts (session key, credential chain, AES encryption), and
+  the client checks the server credential and each return authenticator itself (T7.6, T7.8's rows).
+  A `decision:` marker at the dial. Prior art (from memory): Samba's `winbindd` reaches NETLOGON on
+  `ncacn_ip_tcp` with schannel.
 - **D2, the seam stands above the NETLOGON client.** `netlogon.Dialer` and `netlogon.DC` (T7.3) take
   the logon, the probe, the password set and the computer account's reads and writes, as RFC 18 §10
   and the RFC 18 plan's D11 place the in-memory controller. Below the seam, the server-credential
@@ -340,13 +338,15 @@ epic's test holds it.
   `Join entity.MachineJoin`, filled by E8 from the same read as `Machine`. A zero `State.Join` is
   "not joined", which is the right answer while the field is unset. Written in place in T7.9,
   T7.12, T7.14 and T7.15.
-- **D7, the online join's tag.** A created account has no key version number before its creation,
-  and a tag is never changed (R50). The created account's version is sealed with `KeyVersion` 1, the
-  number an account takes at its first password set (from memory, checked by T7.1), and its confirm
-  reports and counts a mismatch as a rotation's does; a takeover's is the pinned controller's number
-  plus one. Tickets under another number verify through the fallback (R26). The join writes
-  `LastRotation` at its confirm, so the schedule has a start. A `decision:` marker at the seal.
-  Prior art: none found.
+- **D7, the online join's tag, pending the user's answer (§9).** A created account has no key
+  version number before its creation, and a tag is never changed (R50). T7.1 found Samba numbers an
+  account added with `unicodePwd` in the add itself 1, and one added without a password, as v1's
+  join does, 1 at the add and 2 at the first password set. Recommended: the join writes the password
+  in the add, over LDAPS (T7.7's `computer.go`), and the created account's version is sealed with
+  `KeyVersion` 1; the alternative keeps v1's add-then-set and seals under 2. Its confirm reports and
+  counts a mismatch as a rotation's does; a takeover's is the pinned controller's number plus one.
+  Tickets under another number verify through the fallback (R26). The join writes `LastRotation` at
+  its confirm, so the schedule has a start. A `decision:` marker at the seal. Prior art: none found.
 - **D8, an imported key for a name the account holds contributes nothing to the ring.** `Apply`
   cannot refuse the `State` for it without holding a principal change back (E8's D2), so the ring
   skips that entry, logs it at `Error`, and keeps the derived key; RFC 23's secret route refuses the
@@ -445,8 +445,8 @@ pkg/identity/identitytest/
   dcsuite.go            T7.3   DomainControllerConformance, DCSeeder
 pkg/identity/arch_test.go T7.6 internal/auth/netlogon's LDAP exemption removed
 test/integration/ad-dc/
-  dc_test.go            T7.1   NETLOGON on ncacn_ip_tcp with schannel (the spike's check)
-                        T7.7   the suite against Samba
+  netlogon_tcp_schannel_test.go  T7.1  NETLOGON on ncacn_ip_tcp with schannel (the spike's check)
+  dc_test.go            T7.7   the suite against Samba
   netlogon_wire_test.go T7.8   the fault wrapper around net.Conn; the two wire rows
   join_scenario_test.go T7.16  both joins, a rotation, Kerberos and pass-through against Samba
   netlogon_passthrough_test.go, netlogon_reload_test.go, online_join_test.go   T7.6  deleted (v1)
@@ -464,20 +464,22 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 - **Track:** A. **Depends on:** none. The fixture branch `test/ad-dc-join`.
 - **Covers:** none; consumed by T7.6 (the transport), T7.2 (the names to register), T7.14 (D7's
   number) and T7.17 (the ports).
-- **Deliverables:** a fixture test, `TestNetlogonTCPSchannel` in `test/integration/ad-dc`, that
-  looks NETLOGON up through the endpoint mapper (the existing check of 869cdc2c5), sets up a
-  schannel-sealed binding on `ncacn_ip_tcp` as `dittofs$` with `go-msrpc`'s `ssp/netlogon`, runs
-  `NetrServerAuthenticate3` with AES and no RC4, `NetrLogonSamLogonEx` for alice at SamInfo4, and
-  `NetrServerPasswordSet2`; and records its answers by revising D1 and §9 in a pull request: the
-  transport (or the fallback, with its cost); whether `go-msrpc`'s client verifies the server
-  credential itself or leaves it to the caller; whether Samba issues a `cifs/` ticket for a host
-  holding only `host/` names (`sPNMappings`); and `msDS-KeyVersionNumber` of an account created with
-  a password (D7). The ports 135 and 50000-50019 checked from outside the fixture's network. No
-  production code.
+- **Deliverables:** built, not merged, as `TestNetlogonTCPSchannel` in
+  `test/integration/ad-dc/netlogon_tcp_schannel_test.go`, open on `feat/storage-v2` as #4759; its
+  answers are in D1, D7 and §9. What is left is merging #4759. The test looks NETLOGON up through
+  the endpoint mapper (the existing check of 869cdc2c5), sets up a schannel-sealed binding on
+  `ncacn_ip_tcp` as `dittofs$` with `go-msrpc`'s `ssp/netlogon`, runs `NetrServerAuthenticate3` with
+  AES and no RC4, `NetrLogonSamLogonEx` for alice at SamInfo4, and `NetrServerPasswordSet2`, the
+  server credential and every return authenticator checked by the caller; the ports 135 and
+  50000-50019 dialled from outside the fixture's network. It answered: the transport holds, so no
+  fallback (D1); `go-msrpc` checks the server credential only in `NewSecureChannelClient`, which
+  forces `CapRC4`, so the caller checks it (D1); Samba issues a `cifs/` ticket for a host holding
+  only `host/` names, and for an account with no `servicePrincipalName` at all (T7.2);
+  `msDS-KeyVersionNumber` is 1 only for an account added with its password (D7). No production code.
 - **Acceptance criteria:**
   - The test passes in `integration/ad-dc`, or fails naming the call Samba refused, and D1 says which.
-- **Tests:** the fixture test above, against the real controller (rule 8). Reverting the schannel
-  option makes the logon fail on its assertion.
+- **Tests:** the fixture test above, against the real controller (rule 8). Replacing the sealed
+  bind with `WithInsecure()` makes the logon fail on its assertion (`STATUS_INVALID_PARAMETER`).
 
 ### T7.2 The fixture's join part
 
@@ -489,9 +491,11 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   and `offjoinlegacy$` and the pinned RPC range: a `joiner` user granted "create computer objects"
   on the `Computers` container, and `offjoinowned$` created by it with `0x18`, so its owner is
   `joiner`, with `msDS-AllowedToActOnBehalfOfOtherIdentity` set on it; `BUILD01$` with a known
-  password; `cifs/` names registered on the offline-join accounts if T7.1 finds Samba applies no
-  `sPNMappings`; the fixture test asserting each account's owner, encryption types and names. The
-  guide's fixture section names the new accounts.
+  password; `host/<name>` and `host/<fqdn>` registered on the offline-join accounts, as Windows AD
+  resolves `cifs/` through them (from memory), though T7.1 found Samba issues `cifs/` even for an
+  account with no `servicePrincipalName`, so the fixture cannot show the registration matters; the
+  fixture test asserting each account's owner, encryption types and names. The guide's fixture
+  section names the new accounts.
 - **Acceptance criteria:**
   - The accounts T7.7 and T7.16 change are put back by `DCSeeder` at each test's start (T7.7), so the
     cell can run twice on one fixture.
@@ -625,9 +629,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   removed in the same change (D3), and the three v1 tests in `integration/ad-dc` that import the old
   package deleted; the channel on D1's transport over `go-msrpc`'s `ssp/netlogon`, capabilities AES
   and Secure RPC without `CapRC4`, a reply negotiating no AES refused, the server credential
-  verified before anything else is sent (by the library or by this code, as T7.1 found); the binding
-  sealed; `NetrLogonSamLogonEx` at `NetlogonNetworkTransitiveInformation` and SamInfo4, without
-  `MSV1_0_ALLOW_WORKSTATION_TRUST_ACCOUNT`, retried once on a new connection only for a failure
+  verified before anything else is sent by this code, since `go-msrpc`'s helper forces `CapRC4`
+  (D1); the binding sealed; `NetrLogonSamLogonEx` at `NetlogonNetworkTransitiveInformation` and
+  SamInfo4, without `MSV1_0_ALLOW_WORKSTATION_TRUST_ACCOUNT`, retried once on a new connection only for a failure
   before its request was written; set-up serialised, logons concurrent; `NetrServerPasswordSet2`
   with v1's trust-password layout (MS-NRPC 3.4.5.2.6); the reply decoder from `go-msrpc`'s SamInfo4
   to `Reply`, and `FuzzSamInfo4`; v1's Kerberos-signed named pipe, `SecretStore`, providers,
@@ -1082,7 +1086,7 @@ both joins run and E8's T8.6 can start.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T7.1, T7.2 | 1.75 | #4422 | the spike and the fixture, on `test/ad-dc-join-v2` |
+| 1 | T7.1, T7.2 | 1.75 | #4422 | the spike, open on `feat/storage-v2` as #4759, and the fixture, on `test/ad-dc-join-v2` |
 | 2 | T7.3, T7.4, T7.5 | 5 | S1, E6's T6.4, T6.5 and T6.9, the kinds' parameter types | the seam and the calls other epics wait for; may be open beside PR 1 |
 | 3 | T7.6, T7.7, T7.8 | 6.75 | PR 1, PR 2, #4334, #4529 | the client moved, hardened and held to Samba |
 | 4 | T7.9, T7.10, T7.11 | 8 | PR 2; RFC 23's plan's epic 2's T2.4; E2's T2.4, E3's T3.1, E4, E5's T5.2, T5.3 and T5.7, E6's T6.5 and T6.9 | derived keys and pass-through; may be open beside PR 3 |
@@ -1109,6 +1113,26 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
 `LastRotation.Confirmed`, and identity's own loop starts the scheduled rotation, with the zero
 `Account` and an audit record naming the schedule.
 
+**Pending the user's answer:**
+
+- **The online join's tag (D7), for Marco to decide.** T7.1 found `msDS-KeyVersionNumber` 1 only
+  when the online join writes the password in the add; v1's add-then-set gives 1 at the add and 2
+  at the first password set. Options: (a) the password in the add, over LDAPS, keeping D7's 1;
+  (b) v1's add-then-set, the first version sealed under 2. Recommended: (a), which T7.7's
+  `computer.go` and T7.3's in-memory controller already assume. Written in place in D7, T7.7 and
+  T7.14.
+
+**What T7.1 found** (#4759, run against the fixture's Samba 4.17 with `go-msrpc` v1.6.4):
+
+- The transport is `ncacn_ip_tcp` with schannel (D1); the named-pipe fallback is dropped, and with
+  it the 2 man-days of contingency it would have added to T7.6. Its ports changed nothing in T7.17.
+- D7's "1 at the first password set" is wrong for an account added without a password: Samba gives
+  1 at the add and 2 at the first set, and 1 for an account added with its password. D7 is pending
+  above.
+- Samba issues `cifs/<host>` even for an account with no `servicePrincipalName`, matching the host
+  label to the `sAMAccountName`, so whether `host/` alone suffices is untested here. T7.2 registers
+  `host/<name>` and `host/<fqdn>` regardless.
+
 **Where the RFC 18 plan and this document differ:**
 
 - The figure here is 36.75 man-days over 17 subtasks, against the RFC 18 plan's 32 over 13. It holds
@@ -1122,9 +1146,10 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
   T7.3, 0.25), a rotation and a join refusing each other (in T7.12, 0.25), `Prune` and `Versions`
   on `SecretProvider`, which E5 no longer adds (in T7.12, 0.25), the schedule's audit record (in
   T7.13, 0.25) and the salt checked against Samba with a chosen host name (in T7.16,
-  0.25). T7.6 and T7.7 are the least certain: they depend on T7.1, and the fallback adds 2.
-- The RFC 18 plan has D5's spike run "before the epic is broken down". It has not run, so T7.1 is
-  the first subtask, and the transport-dependent parts (T7.6, T7.17) say what the fallback costs.
+  0.25). T7.6 and T7.7 are the least certain. The named-pipe fallback's 2 man-days, never in the
+  figure, are dropped: T7.1 found the transport holds (D1).
+- The RFC 18 plan has D5's spike run "before the epic is broken down". It ran after, as T7.1
+  (#4759), and its answers are in D1, D7 and below; T7.6 and T7.17 keep the transport's figures.
 - The RFC 18 plan's fixture part asks for no pre-created `dittofs$`. The branch keeps `dittofs$`
   without resetting its password, so the online join's existing-account refusal runs on it, and the
   online join's success runs under another name, since the fixture registers

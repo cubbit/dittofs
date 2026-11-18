@@ -335,11 +335,17 @@ record are E6's and E8's to drive, on the rule this epic builds.
   own tests build tickets with `messages.NewTicket`. A `decision:` marker at `Realm` says why it
   is no double: real tickets, its PACs held to the captures.
 - **D11, the `krb` row's SID is a field of `entity.ProtocolID`.** `ProtocolID` gains `Linked
-  sid.SID`, zero for none, set only on a `krb` spelling, encoded with the record's spellings and
-  in the `PX‖krb` row's value as RFC 16's row says. Sign-in reads it through the user record it
-  reads anyway. A field another scheme sets is refused `ErrInvalid` by kvstore. It is its own
-  subtask, T5.8a, so the API's link write waits on nothing but S1. A `decision:` marker at the field. Prior
-  art: none found.
+  string`, the binary form of the directory user SID the spelling was linked for, the same form a
+  `sid` spelling's `Value` uses, empty for none. A string rather than `sid.SID` keeps `ProtocolID`
+  comparable, so `==` means the same scheme, value and link. Two spellings still share one `PX‖` row
+  when their scheme and value agree, whatever their `Linked`, and a put that changes only the SID
+  rewrites that row in place. It is set only on a `krb` spelling and encoded with the record's
+  spellings and in the `PX‖krb` row's value after the principal, as RFC 16's row says. kvstore
+  refuses it on another scheme, or when it is not a well-formed SID (revision 1, length matching its
+  sub-authority count, at most 15), with `ErrInvalid` on write and as malformed on read. Sign-in
+  reads it through the user record it reads anyway, comparing the PAC's user SID in binary form. It
+  is its own subtask, T5.8a, so the API's link write waits on nothing but S1. A `decision:` marker
+  at the field. Prior art: none found.
 - **D12, the machine mint goes through identity's one mint path, E6's T6.2.** E2 leaves the path,
   its re-runs on `ErrExist` and `identity_mints_total`, to E6's T6.2 (its §1.2); E6's T6.2
   comes early in E6 and needs only E2's T2.3, while T5.9 is late in this epic, so E6 owns it and
@@ -705,16 +711,17 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
 
 - **Track:** B. **Depends on:** S1.
 - **Covers:** R38.
-- **Deliverables:** `entity.ProtocolID.Linked` and kvstore's encoding of it in the record and the
-  `PX‖krb` row's value, refused on another scheme (D11), with `kvstoretest` rows; D11's marker.
+- **Deliverables:** `entity.ProtocolID.Linked`, a `string` holding the SID's binary form so
+  `ProtocolID` stays comparable, and kvstore's encoding of it in the record and the `PX‖krb` row's
+  value, refused on another scheme or when malformed (D11), with `kvstoretest` rows; D11's marker.
   Consumed by T5.8b, T5.9 and RFC 23's plan's epic 4's T4.11, which writes it, so the API's link
   write need not wait for the PAC work.
 - **Acceptance criteria:**
   - `Linked` round-trips through the record and the `PX‖krb` row.
 - **Tests:** `kvstoretest`: `Linked` round-trips through `PutUser` and `ByProtocolID`, on a `uid`
-  spelling refused `ErrInvalid` (catches a SID stored on a spelling no binding reads), on the
-  memory KV and Badger. A move keeping the SID is the writer's rule, held by RFC 23's plan's
-  epic 4's T4.11 (its R44).
+  spelling refused `ErrInvalid` (catches a SID stored on a spelling no binding reads), a malformed
+  SID refused `ErrInvalid` (catches a link no PAC can ever match), on the memory KV and Badger. A
+  move keeping the SID is the writer's rule, held by RFC 23's plan's epic 4's T4.11 (its R44).
 - **Rules:** rule 9 (D11's marker).
 
 ### T5.8b `require_pac` and the PAC bound to the record
