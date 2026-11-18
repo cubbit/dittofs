@@ -6,8 +6,8 @@ Do not copy its content.
 
 # Epic 3: quota v2 usage index and limit checks
 
-**Sources:** [RFC 90](../rfcs/rfc-90-quota.md) §3.1–§3.4 and §6.2;
-[RFC 16](../rfcs/rfc-16-metadata-store.md) §4.3, for the transaction hook only.
+**Sources:** [RFC 90](../docs/internals/rfcs/rfc-90-quota.md) §3.1–§3.4 and §6.2;
+[RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §4.3, for the transaction hook only.
 **Track:** B.
 **Epic 3 estimate: 6 subtasks, 11.25 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: epic 1's `quotav2.Checker` interface
@@ -60,7 +60,7 @@ cited by number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | each subtask's tests use the reference model, the injected clock (kind 1), a fault-injection wrapper around the memory store (kind 3, T3.4) and the landed epics they depend on |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each subtask's tests use the reference model, the injected clock (kind 1), a fault-injection wrapper around the memory store (kind 3, T3.4) and the landed epics they depend on |
 | rule 2, fuzz tests where relevant | none | no parser: the index reads only values the store already decoded |
 | rule 3, observability follows RFC 25 | T3.1, T3.3, T3.5 | `Deps.Metrics` and `Deps.Logger` taken in T3.1; `quota_refusals_total` and `quota_soft_crossings_total` resolved at construction and recorded with an atomic add. No span: `Check` runs inside the VFS's service span, and its wait on a shard lock is too short to be a span event |
 | … | | |

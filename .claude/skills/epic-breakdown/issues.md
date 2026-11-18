@@ -142,7 +142,7 @@ split across releases.
 
   **In this release:** the whole RFC. | the whole RFC except epics <k>, …, which ship in <later milestone> (#<roadmap>). | epics <k> (<title>), …; the rest of the RFC ships in <milestone> (#<roadmap>).
   **RFC:** [`rfc-<n>-<slug>.md`](https://github.com/<R>/blob/<branch>/docs/internals/rfcs/rfc-<n>-<slug>.md)
-  **Plan:** [`<plan>.md`](https://github.com/<R>/blob/<branch>/docs/internals/planning/<plan>.md) | none yet.
+  **Plan:** [`<plan>.md`](https://github.com/<R>/blob/<branch>/.planning/<plan>.md) | none yet.
 
   The RFC's epic issues for this release, and its deferred items due in it, are sub-issues of this one, and each carries this milestone. A unit of the RFC with no epic issue of its own ships with this roadmap epic. The plan and the epic documents say what to build; the milestone is the only place that says when.
   ```
@@ -165,7 +165,7 @@ Epic <k> of <component> v2 (RFC <n>): <the epic's goal, in one sentence>.
 ```markdown
 Epic <k> of <component> v2 (RFC <n>): <§1's goal, in one sentence>.
 
-**Specification:** [Epic <k>: <title>](https://github.com/<R>/blob/<branch>/docs/internals/planning/<file>.md)
+**Specification:** [Epic <k>: <title>](https://github.com/<R>/blob/<branch>/.planning/<file>.md)
 **Sources:** RFC <n> §…; **Track:** <A|B|C>.
 
 The document is the specification: requirements, subtasks, acceptance criteria and
@@ -355,4 +355,4 @@ forms, with the repository named as 6.1 says:
   and `'"<e>.<n>" in:title,body'`;
 - the sub-issues of every part's epic issue (6.4);
 - the other planning documents, leaving out this document and the plan:
-  `rg -n 'T<e>\.<n>\b' docs/internals/planning -g '!<plan>' -g '!<this-doc>'`.
+  `rg -n 'T<e>\.<n>\b' .planning -g '!<plan>' -g '!<this-doc>'`.
