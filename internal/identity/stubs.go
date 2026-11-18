@@ -13,7 +13,7 @@ import (
 // consumer wired to the server before its bodies exist fails closed. Each is
 // replaced by its body: SignIn by NTLMv2, Kerberos and the domain's secure
 // channel; Spell and Find by the principal indexes and the directory;
-// Resolve by resolution; Lookup, VerifyPassword
+// Lookup, VerifyPassword
 // and Account by the principals' password checks.
 
 // SignIn verifies one handshake round.
@@ -29,11 +29,6 @@ func (s *Server) Spell(ctx context.Context, p entity.Principal, scheme identity.
 // Find returns the principal holding sp.
 func (s *Server) Find(ctx context.Context, sp identity.Spelling, o identity.FindOpts) (entity.Principal, error) {
 	return entity.Principal{}, vfserr.ErrUnavailable
-}
-
-// Resolve resolves id to the Caller it acts as on the share p governs.
-func (s *Server) Resolve(ctx context.Context, id identity.Identity, p entity.SharePolicy, narrowed identity.ReadOnlyCause) (*identity.Caller, error) {
-	return nil, vfserr.ErrUnavailable
 }
 
 // Lookup resolves a name as presented to its account's principal.
