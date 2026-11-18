@@ -1281,7 +1281,9 @@ func TestACompoundSumsItsMembersRuns(t *testing.T) {
 // holds it; in a member's Bound, then refused past the record cap, under
 // none, since reply_too_big is no timed stage and map_error is timed from the
 // refusal; in a member's Role, then refused by the drain, under map_error,
-// the drain judging it once decode_args and reply_wait are observed; 30 s in
+// the drain judging it once decode_args and reply_wait are observed; in a
+// member's Resolve, then refused by the drain with a reply, under
+// resolve_ids, the stage that refused it; 30 s in
 // its reply reservation, the reply budget full, under reply_wait, where its
 // deadline refuses it; a chain's first or second member in Admit, under
 // admit; the record a chain's second member splits off, or the refusal's
@@ -1341,6 +1343,33 @@ func TestACompoundOrAChainsStageIsTimedFromTheStepBeforeIt(t *testing.T) {
 				return func() { close(open) }
 			}
 		}, time.Second, "map_error"},
+		{"held in a member's Resolve, then refused by the drain with a reply", func(t *testing.T, d adapter.Deps, open chan struct{}) (*served, func() func()) {
+			s := newServedOn(t, 1<<20, d, func(p core.Protocol) core.Protocol {
+				r := echoMember(func(inv core.Invocation) core.Invocation {
+					inv.Resolve = func(*core.Request) error {
+						<-open
+						return nil
+					}
+					inv.Role = func(*core.Request) core.Role { return core.RoleNone }
+					return inv
+				})(p).(retabled)
+				answered := core.NewErrorTable(testproto.StatusFault,
+					core.ErrorRow{Err: core.ErrDecode, Status: testproto.StatusDecode},
+					core.ErrorRow{Err: core.ErrDraining, Status: testproto.StatusMoved},
+				)
+				for _, tb := range r.Tables() {
+					if c := tb.Ops[testproto.OpCompound]; c != nil {
+						c.Members.Errors = answered
+					}
+				}
+				return r
+			})
+			return s, func() func() {
+				s.p.Drain()
+				s.compound(1, echo)
+				return func() { close(open) }
+			}
+		}, time.Second, "resolve_ids"},
 		{"held in its reply reservation past its deadline", func(t *testing.T, d adapter.Deps, _ chan struct{}) (*served, func() func()) {
 			// A quarter of 64 KiB clears the compound's charge, so it is not
 			// refused past the ceiling; five small classes fill the rest.

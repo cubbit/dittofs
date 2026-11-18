@@ -357,14 +357,13 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 		if err == nil && p.expired(r) && !m.op.Expired && roleOf(m.op, m.inv, r) != RoleRelease {
 			err = ErrExpired
 		}
+		if err == nil && m.refused {
+			err = drained
+		}
 		if err != nil {
 			mts.refused(stageResolveIDs)
 			sum.add(stageResolveIDs, p.since(tr))
 		}
-	}
-	if err == nil && m.refused {
-		err = drained
-		mts.refused(stageResolveIDs)
 	}
 	if err == nil {
 		r.invoke = m.inv.Call
