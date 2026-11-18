@@ -290,13 +290,13 @@ Out of scope, each named in O1:
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 7 | 8.75 | team | every epic |
 | E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 9 | 18.5 | A | E5; partly E3; RFC 23's epics 3, 4 and 5 (its X1) |
-| E3 | Settings | a delete, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19.5 | B | E5; partly RFC 18's plan's epic 6 |
+| E3 | Settings | a delete, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19 | B | E5; partly RFC 18's plan's epic 6 |
 | E4 | Secrets | `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epics 4 and 5 (its X1) |
 | E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty, off by default; the launchers on `dfs init` and the images' `init` as an explicit step, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
-| | **Total** | | **42** | **81.25** | | |
+| | **Total** | | **42** | **80.75** | | |
 
-**Plan estimate: 42 subtasks, 81.25 man-days.**
+**Plan estimate: 42 subtasks, 80.75 man-days.**
 
 The skill's estimate for RFC 13's 1,221 lines is 3 middle epics (`round(1221 / 400)`), and this plan
 has 3.
@@ -1166,7 +1166,7 @@ value; D7's drift test passes.
 
 ### Epic 3 — Settings
 
-**Epic 3 estimate: 9 subtasks, 19.5 man-days.**
+**Epic 3 estimate: 9 subtasks, 19 man-days.**
 
 Settings are rows at their scope. A component's effective value is read through one call. A write is
 checked by the component's own rules, and a change is classified for reconcile.
