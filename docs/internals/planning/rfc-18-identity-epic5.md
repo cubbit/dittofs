@@ -276,7 +276,9 @@ record are E6's and E8's to drive, on the rule this epic builds.
   memory): MIT's `krb5_rd_req` with a server principal set refuses another name.
 - **D5, the replay cache is a map with an expiry heap, bounded at 1 048 576 entries.** The key
   is the authenticator's client name and realm, its time and microseconds, and the ticket's
-  service name (RFC 4120 §3.2.3); an entry lives until the authenticator's time plus 5 minutes;
+  service name with ASCII letters folded (RFC 4120 §3.2.3): the name sits outside the encrypted
+  parts and R5 accepts it in any case, so an unfolded key would let a replay respell it past the
+  cache; an entry lives until the authenticator's time plus 5 minutes;
   an insert first drops expired entries from the heap's head, and a full cache refuses
   `ErrUnavailable`. One mutex, no goroutine. The order is: the authenticator decrypts, D9's
   throttle admits the (name, address) pair, then the insert; so a pair flooding failures takes at
@@ -472,8 +474,10 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   building D2's ring from it, a version with a key that is not AES contributing none;
   `identity.keytab`, the keytab's secret reference, a key of E2's `identity.Settings` declared
   through `pkg/settings` (§9: RFC 13 Appendix B has no row for it); `pkg/identity.CheckKeytab(b
-  []byte) error`, refusing a keytab that does not parse, holds no key, or holds any key that is
-  not `aes128-cts-hmac-sha1-96` or `aes256-cts-hmac-sha1-96` (D3); RFC 18 §3.3's AES-only
+  []byte) error`, its own parser, refusing a keytab that does not parse as version 2 (a version-1
+  keytab is refused), holds no key, or holds any key that is not `aes128-cts-hmac-sha1-96` or
+  `aes256-cts-hmac-sha1-96`, and `FuzzCheckKeytab` against gokrb5's decoder (D3); RFC 18 §3.3's
+  AES-only
   `decision:`. `New` refuses no `State` or `Deps` for want of a keytab; while the ring holds
   no key (`State.Keytab` is empty, or D2 dropped every version as not AES), T5.5 answers a
   Kerberos step `ErrUnavailable`, as every field added after S1 answers while unset (E1's D4), and a ticket for a name a non-empty ring lacks is
@@ -506,7 +510,8 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   (R6), the service name (D4, R5), the start and end times and the authenticator's time within
   5 minutes of `now` (R7), the authenticator's client equal to the ticket's, and the addresses
   (R8, when `Transport` is SMB (D15), lifted from `develop`'s `ticketAllowsClientIP` without gokrb5's
-  workaround); an unset `Transport` `ErrInvalid` (D15); a parse error
+  workaround); an unset `Transport` `ErrInvalid` (D15), and a step naming no service `ErrInvalid`;
+  a parse error
   `ErrInvalid`, every refusal `ErrLogonFailure`; `Keys.Session` and `Keys.APRep`, the AP-REP
   lifted from `develop`'s `BuildMutualAuth`, with no subkey (R12); RFC 18 §3.3's `ponytail:` on
   the skew constant; D1's and D4's markers; `FuzzAPReq`. Consumed by T5.4, T5.5, T5.6 (the key that
@@ -550,7 +555,8 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
 - **Track:** B. **Depends on:** T5.3.
 - **Covers:** R9, R10, R11.
 - **Deliverables:** `develop`'s `replay.go` lifted and rewritten as D5's cache: keyed on the
-  authenticator's client, time and microseconds and the ticket's service name, each entry kept
+  authenticator's client, time and microseconds and the ticket's service name, folded (D5), each
+  entry kept
   until the authenticator's time plus 5 minutes on the injected clock, bounded at 1 048 576, a
   full cache answering `ErrUnavailable`; a count per ticket client capping each at 16 384, a
   sixty-fourth of the bound, past which that client alone is answered `ErrUnavailable`, its count
@@ -719,9 +725,12 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   write need not wait for the PAC work.
 - **Acceptance criteria:**
   - `Linked` round-trips through the record and the `PX‖krb` row.
-- **Tests:** `kvstoretest`: `Linked` round-trips through `PutUser` and `ByProtocolID`, on a `uid`
-  spelling refused `ErrInvalid` (catches a SID stored on a spelling no binding reads), a malformed
-  SID refused `ErrInvalid` (catches a link no PAC can ever match), on the memory KV and Badger. A
+- **Tests:** `kvstoretest`: `Linked` put, changed and cleared through `PutUser` and read back from
+  the user record, the record sign-in reads it through (D11), while `ByProtocolID` still resolves
+  the `krb` row; no lookup returns the row's own copy, so a kvstore package test reads the row.
+  On a `uid` spelling refused `ErrInvalid` (catches a SID stored on a spelling no binding reads), a
+  malformed SID, or one that is not a domain account's (everyone, a built-in group), refused
+  `ErrInvalid` (catches a link no PAC can ever match), on the memory KV and Badger. A
   move keeping the SID is the writer's rule, held by RFC 23's plan's epic 4's T4.11 (its R44).
 - **Rules:** rule 9 (D11's marker).
 
@@ -920,7 +929,7 @@ the version this document was written against.
   the RFC's.
 - RFC 18 §3.1's `SignInStep` has no transport, so §9.2's `protocol` label and RFC 22 §4.1's
   SMB-only address check have no source; D15 adds `Transport`, which the RFC 21 and RFC 22 plans'
-  adapters set.
+  adapters set. T5.3 builds it ahead of the amendment, which is still to be made.
 - RFC 23 §3.3 keeps the old version for the retention RFC 13 §7 names for a keytab (RFC 18
   §3.3's 10 hours plus the skew after the change at the KDC). The rotation cannot observe that
   event, so a rotation that starts the retention at the nodes' report prunes early, and a KDC
