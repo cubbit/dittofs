@@ -16,7 +16,8 @@ import (
 // its target counted at the copy, for the copy is where it verifies and the
 // source is the placement the device lost or the emptying unlinks. A stream
 // whose records verify nowhere has no entry, and none joins from a segment
-// whose stream nothing the run reads can name.
+// whose stream nothing the run reads can name. Only a segment that stands
+// offers a mark.
 //
 // The answer is computed once, over the state the phases already collected —
 // the re-append's answers and the scans' own last-kept pairs, never a walk
@@ -26,32 +27,32 @@ import (
 // open assembled keeps its entry until the group commit records whatever the
 // next sync answers.
 //
-// decision: a Replaced entry is attributed by its source segment's stream, and
-// the copy target's own rebuild scan is attributed to no stream, for the
-// copier writes the target's header with format.NoStream — its records come
-// from several streams — which streamSteads leaves out unless a caller's mark
-// names the copy; the copy's records join through the Replaced entries of
-// the open that wrote it and through that mark after. The records the
-// emptying copies out of a segment it unlinks are credited to no stream, for
-// the segment is gone from the ledger by the settle and the copy's header
-// names none, so a stream whose last record only that segment held has no
-// entry — missing, never naming a file that is gone. A
-// source the caller recorded no mark for and whose own header did not verify
-// names no stream, so its stream gets no entry from the re-append — the entry
-// is then missing, never wrong, and the caller treats a missing entry as no
-// recorded mark. A source whose records a sealed copy already held is left out
-// and its stream is named only by a mark the caller recorded for the copy.
-// A catalogued forget record sets its segment's last sequence number from its
-// catalogue entry, which no read of this open checks against the disk, so a
-// stream's last verifying record may be named by an entry a record never
-// verified; R34's last verifying record is held to what the footer's word
-// buys. The figure is also the open's alone: Stats.SyncMarks holds it fixed
-// until close, though the mark of a stream's last completed sync moves with
-// every later sync, so a caller that writes it back on each commit would
-// overwrite a later sync's mark with this one. Withdrawn when the open records each copy's stream durably beside it, a
-// metadata write per copy, or when a copy header names the source's stream;
-// overturned by a field open that reports a stream's entry missing where its
-// source's header was unverified.
+// decision: a Replaced entry, the re-append's and the emptying's alike, is
+// attributed by its source segment's stream, and the copy target's own
+// rebuild scan is attributed to no stream, for the copier writes the
+// target's header with format.NoStream — its records come from several
+// streams — which streamSteads leaves out unless a caller's mark names the
+// copy. So the copy's records join through the Replaced entries of the open
+// that wrote it. A later open that no recorded mark names the copy for
+// answers the stream's older standing segment, a mark below the stream's
+// last verifying record, which the copy holds; the open's caller hands back
+// the mark it recorded, which raises it. A source the caller recorded no
+// mark for and whose own header did not verify names no stream, so its
+// stream gets no entry from the copy. A source whose records a sealed copy
+// already held credits that copy's position to its stream. A catalogued
+// forget record sets its segment's last sequence number from its catalogue
+// entry, which no read of this open checks against the disk, so a stream's
+// last verifying record may be named by an entry a record never verified,
+// held to what the footer's word buys. A copy written before the copier
+// named NoStream carries stream 0 and is read as stream 0's segment.
+//
+// The figure is also the open's alone: Stats.SyncMarks holds it fixed until
+// close, though the mark of a stream's last completed sync moves with every
+// later sync, so a caller that writes it back on each commit would overwrite
+// a later sync's mark with this one. Withdrawn when the open records each
+// copy's stream durably beside it, a metadata write per copy, or when a copy
+// header names the source's stream; overturned by a field open that reports
+// a stream's entry lower than its last record where a copy holds it.
 func (st State) SyncMarks() []core.SyncMark {
 	steads := st.streamSteads()
 
@@ -75,6 +76,10 @@ func (st State) SyncMarks() []core.SyncMark {
 	sources := make(map[core.SegmentID]bool, len(st.Proof.Replaced)+len(st.Proof.Superseded))
 	credit := func(r replacedRecord) {
 		sources[r.Source] = true
+		// A copy a later step retired is no placement to name.
+		if !st.stands(r.Target) {
+			return
+		}
 		if stream, ok := steads[r.Source]; ok {
 			keep(stream, r.Seq, core.SyncMark{
 				Stream:   stream,

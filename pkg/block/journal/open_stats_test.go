@@ -302,8 +302,12 @@ func TestStatsSyncMarksAfterAReopenedCopy(t *testing.T) {
 
 	f.killJournal(t, j)
 	j2 := f.openOver(t, []SyncMark{recorded})
-	if _, ok := j2.Stats().SyncMarks[uint32(recorded.Stream)]; !ok {
-		t.Fatalf("SyncMarks after the re-appending open = %+v, want an entry for stream %d", j2.Stats().SyncMarks, recorded.Stream)
+	copied := heldLocation(t, j2, id, 0).Segment
+	if copied == first.Segment {
+		t.Fatalf("the lost record is still served from segment %d, want the re-append's copy", first.Segment)
+	}
+	if e, ok := j2.Stats().SyncMarks[uint32(recorded.Stream)]; !ok || e.Segment != uint64(copied) {
+		t.Fatalf("SyncMarks after the re-appending open = %+v, want stream %d's entry naming the copy %d", j2.Stats().SyncMarks, recorded.Stream, copied)
 	}
 	if err := j2.Close(); err != nil {
 		t.Fatalf("close the re-appending open: %v", err)
@@ -312,6 +316,9 @@ func TestStatsSyncMarksAfterAReopenedCopy(t *testing.T) {
 	// The reopen: no mark names the copy the second open sealed.
 	j3 := f.openOver(t, nil)
 	copySeg := heldLocation(t, j3, id, 0).Segment
+	if copySeg != copied {
+		t.Fatalf("the reopen serves the record from segment %d, want the copy %d the second open sealed", copySeg, copied)
+	}
 	for stream, e := range j3.Stats().SyncMarks {
 		if e.Segment == uint64(copySeg) {
 			t.Errorf("the reopen's entry for stream %d = %+v, want none naming the copy %d: its records belong to stream %d, and its header names no stream", stream, e, copySeg, recorded.Stream)
@@ -345,6 +352,12 @@ func TestEmptiedDamagedSegmentCountsUntilClose(t *testing.T) {
 	b[47] ^= 0xff // the header's checksum: the slot tears
 	plantSealedBytes(t, f, format.SegmentName(seg), b)
 
+	// An older segment of the same stream stands beside it, its one record a
+	// lower sequence number: the entry may never fall back to it once the
+	// emptied segment's record is copied out.
+	plantSegment(t, f.seam, core.SegmentID(944),
+		plantRecord(1, ownerTag, fileOf(7), 20, 41, 0, 32))
+
 	// The caller's mark proves the header slot synced — a sync covered its
 	// bytes whole — and covers the segment's one record.
 	mark := SyncMark{
@@ -362,15 +375,16 @@ func TestEmptiedDamagedSegmentCountsUntilClose(t *testing.T) {
 	if slices.Contains(f.segmentFileNames(t), format.SegmentName(seg)) {
 		t.Fatalf("the damaged segment %d still holds its file, want the emptying to have unlinked it", seg)
 	}
-	// The emptying copied the segment's record out and unlinked the file, so
-	// no entry may name it: an entry names a segment that stands.
-	for stream, e := range j.Stats().SyncMarks {
-		if e.Segment == uint64(seg) {
-			t.Errorf("the entry for stream %d names segment %d, whose file the emptying unlinked: %+v", stream, seg, e)
-		}
-		if !slices.Contains(f.segmentFileNames(t), format.SegmentName(core.SegmentID(e.Segment))) {
-			t.Errorf("the entry for stream %d names segment %d, which is not on disk: %+v", stream, e.Segment, e)
-		}
+	// The emptying copied the segment's record out and unlinked the file: the
+	// stream's entry names that record at the copy, never the unlinked
+	// segment and never the older segment's lower record.
+	moved := heldLocation(t, j, file, 0)
+	if moved.Segment == seg {
+		t.Fatalf("the record is still served from segment %d, want the emptying's copy", seg)
+	}
+	want := SyncMark{Stream: 0, Segment: uint64(moved.Segment), Through: int64(moved.Offset) + (recordEnd - format.SegmentHeaderSize), Offset: int64(moved.Offset) + (recordEnd - format.SegmentHeaderSize), Sequence: rec.Seq}
+	if got := j.Stats().SyncMarks; len(got) != 1 || got[0] != want {
+		t.Errorf("SyncMarks = %+v, want exactly stream 0's entry %+v: the copied record, not the older segment's", got, want)
 	}
 	// The count holds until the journal closes; the close serves the zero
 	// Stats, so the row went with it.

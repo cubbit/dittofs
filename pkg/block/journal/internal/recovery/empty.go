@@ -658,6 +658,19 @@ func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred [
 	if err := repoint(); err != nil {
 		return err
 	}
+	// The stream marks the open reports read where each record the segment
+	// held verifies now: at the copy, the segment being unlinked no longer
+	// standing. A synthesized loss record, which sits at no offset of the
+	// segment, belongs to no stream's tail and is left out.
+	for i := range ins {
+		if ins[i].in.At == 0 {
+			continue
+		}
+		st.Proof.Replaced = append(st.Proof.Replaced, replacedRecord{
+			Source: id, Target: target,
+			End: at[i] + int64(len(ins[i].in.Bytes)), Seq: ins[i].in.Seq,
+		})
+	}
 	// The carried registrations, notes and loss records: each copy registers
 	// at the placement the copier answered — the journal's own carry's
 	// shape, the forget snapshot riding with its record — and the index

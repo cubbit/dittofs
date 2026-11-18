@@ -189,8 +189,9 @@ func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodi
 
 	// The whole batch as one buffer, the shape the packing loop spells: the
 	// header naming this journal and the target's own id, no predecessor and no
-	// stream, for its records come from several — the ended sources are never a predecessor a later open would have to
-	// answer for — then each record re-encoded at the offset it lands at.
+	// stream, for its records come from several — the ended sources are never
+	// a predecessor a later open would have to answer for — then each record
+	// re-encoded at the offset it lands at.
 	buf := format.AppendSegmentHeader(nil, format.SegmentHeader{Identity: c.identity, ID: id, Stream: format.NoStream})
 	entries := make([]format.CatalogEntry, 0, len(recs))
 	at := make([]int64, len(recs))
