@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"errors"
 	"net"
 	"time"
@@ -123,14 +122,10 @@ func (s *Server) sleep(b *bound, d time.Duration) (stopped bool) {
 
 // stopOnLoops waits for each of bs's accept loops to end. The sockets are
 // closed already, which ends each loop, in its Accept or in its backoff's
-// sleep; ctx bounds the wait.
-func (s *Server) stopOnLoops(bs []*bound, ctx context.Context) error {
+// sleep; a connection its loop hands to serveConn as it closes registers
+// before the loop ends, so the wait after it sees every connection.
+func (s *Server) stopOnLoops(bs []*bound) {
 	for _, b := range bs {
-		select {
-		case <-b.loopDone:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		<-b.loopDone
 	}
-	return nil
 }

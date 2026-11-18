@@ -1,0 +1,601 @@
+package core_test
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"net/netip"
+	"sync"
+	"syscall"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
+	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
+	"github.com/cubbit/dittofs/internal/adapter/core"
+	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/resources"
+)
+
+// The drain, Stop's serving half (RFC 20 sections 3.1 and 3.4): the listeners
+// close first so no dial completes while draining, every pipeline is told the
+// server drains, and Stop returns once nothing runs or the drain deadline
+// ends the waiting, the earlier of its context's deadline and drain_timeout.
+// The loopback tests move the server's clock to the deadline; the two
+// deadlines test and the slow OnClose run in a synctest bubble on the
+// server's real clock, where both deadlines run on the bubble's time.
+
+// drainSnap is testproto's shape with drain_timeout at 200 ms, the deadline
+// every test here reaches: either the test advances the clock to it or the
+// bubble's time runs out at it.
+func drainSnap(addrs ...string) testproto.Settings {
+	s := on(addrs...)
+	s.DrainTimeout = 200 * time.Millisecond
+	return s
+}
+
+// capturing is a protocol that keeps every connection it is handed, so a
+// loopback test reaches the connections whose pipelines the drain counts.
+type capturing struct {
+	core.Protocol
+	mu    sync.Mutex
+	conns []*core.Conn
+}
+
+func newCapturing(p core.Protocol) *capturing { return &capturing{Protocol: p} }
+
+func (p *capturing) NewConn(c *core.Conn) core.Stages {
+	// NewServer's own check wires a nil connection once, at configured (the
+	// listener's NewConn(nil) it probes); a capture is an accepted connection.
+	if c != nil {
+		p.mu.Lock()
+		p.conns = append(p.conns, c)
+		p.mu.Unlock()
+	}
+	return p.Protocol.NewConn(c)
+}
+
+// list is the connections handed over so far, one per accepted socket.
+func (p *capturing) list() []*core.Conn {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.conns
+}
+
+// pipelineRuns is what runs on a connection's pipeline, 0 where the
+// connection was captured before its pipeline was built: at accept the
+// protocol wires before the pipeline does.
+func pipelineRuns(c *core.Conn) int {
+	if p := core.ConnPipeline(c); p != nil {
+		return core.Runs(p)
+	}
+	return 0
+}
+
+// registered waits until the registry holds every connection the protocol
+// captured: a capture happens at accept, before the pipeline is built, and
+// the registry only after, under the server's mutex, so a read of the
+// pipeline past this wait is ordered behind its build.
+func registered(t *testing.T, srv *core.Server, p *capturing) {
+	t.Helper()
+	waitsFor(t, "the captured connections to be registered", func() bool {
+		n := 0
+		for range srv.Connections() {
+			n++
+		}
+		return n >= len(p.list())
+	})
+}
+
+// theConn waits for the only connection the server ever accepts.
+func theConn(t *testing.T, p *capturing) *core.Conn {
+	t.Helper()
+	waitsFor(t, "the connection to be handed over", func() bool {
+		return len(p.list()) > 0
+	})
+	return p.list()[0]
+}
+
+// drainServer is a loopback server on testproto's bare protocol under snap,
+// started on the settings' addresses, its clock the test's manual one. An
+// OnClose the test declares rides on every connection it accepts; the server's
+// own teardown still runs the pipeline's waits around it.
+func drainServer(t *testing.T, b *resources.Budgets, snap testproto.Settings, onClose func(context.Context)) (*core.Server, *manualClock, *capturing) {
+	t.Helper()
+	p := newCapturing(testproto.New(adapter.Deps{}).Bare())
+	if onClose != nil {
+		p.Protocol = withOnClose{p.Protocol, onClose}
+	}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, snap, core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	clk := newManualClock()
+	core.SetServerClock(srv, clk)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return srv, clk, p
+}
+
+// bubbleServer is a server serving on no address, for a pipe test in a
+// synctest bubble: Stop runs on the same bubble time its deadlines do.
+func bubbleServer(t *testing.T, b *resources.Budgets, snap testproto.Settings, onClose func(context.Context)) (*core.Server, core.Listener) {
+	t.Helper()
+	p := core.Protocol(testproto.New(adapter.Deps{}).Bare())
+	if onClose != nil {
+		p = withOnClose{p, onClose}
+	}
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: p}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, snap, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Serving(srv)
+	return srv, l
+}
+
+// testAddr is the server's one bound address.
+func testAddr(t *testing.T, srv *core.Server) netip.AddrPort {
+	t.Helper()
+	at := srv.Addrs()[key("test")]
+	if len(at) != 1 {
+		t.Fatalf("Addrs %v, want one address", at)
+	}
+	return at[0]
+}
+
+// clientAt dials at and wraps the client's end, under a ten-second deadline:
+// a server that never answers fails the read, not the test.
+func clientAt(t *testing.T, at netip.AddrPort) (*testproto.Client, net.Conn) {
+	t.Helper()
+	conn, err := net.Dial("tcp", at.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return testproto.NewClient(conn), conn
+}
+
+// holdsRoom fills the reply budget from a pool over b.Reply, holding n
+// small-class charges, and returns what frees them: a request sent while the
+// room is held waits for its reply reservation, counted as running, and what
+// runs is what the drain waits out (RFC 20 sections 3.1 and 6.3).
+func holdsRoom(t *testing.T, b *resources.Budgets, n int) (free func()) {
+	t.Helper()
+	pool := resources.NewBufPool(b.Reply)
+	held := make([]*resources.Buf, 0, n)
+	for range n {
+		buf, err := pool.Get(context.Background(), netip.Addr{}, 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, buf)
+	}
+	return func() {
+		for _, h := range held {
+			h.Release()
+		}
+	}
+}
+
+// An Echo, its role release, waiting for its reply reservation as Stop begins
+// is answered once the test frees room before the deadline, and Stop then
+// returns on the quiet the answer left, reaching for no deadline: the clock
+// never advances. The connection's OnClose gate holds the teardown until the
+// reply was read, so the answer is proven sent before Stop returns, not
+// queued and later dropped by the writer's stop. A drain that closes
+// connections at once fails here: the Echo would die with the client's read.
+// An Echo of the none role would be refused at the same moment, as the role
+// test tells.
+func TestStopAnswersAnEchoThatFreesItsReplyRoomBeforeTheDeadline(t *testing.T) {
+	b := budgets()
+	// Room enough for one reply: the Echo waits until the test frees it.
+	b.Reply = resources.NewWaitBudget("reply", chargeOfReply(t, 8))
+	adaptertest.CheckLeaks(t, b)
+	gate := make(chan struct{})
+	// The teardown waits for the reply's read, and whatever way the test
+	// ends, success or failure, the gate opens so no cleanup is stranded
+	// behind it.
+	var open sync.Once
+	defer open.Do(func() { close(gate) })
+	srv, _, p := drainServer(t, b, drainSnap("127.0.0.1"), func(context.Context) { <-gate })
+	at := testAddr(t, srv)
+	c, _ := clientAt(t, at)
+	conn := theConn(t, p)
+	registered(t, srv, p)
+	free := holdsRoom(t, b, 1)
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Role: core.RoleRelease, Payload: []byte("hi")}); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "the Echo to wait for its reply room", func() bool {
+		return pipelineRuns(conn) == 1
+	})
+	stopped := make(chan error, 1)
+	go func() { stopped <- srv.Stop(context.Background()) }()
+	waitsFor(t, "the server to drain", func() bool {
+		return srv.Health().State == adapter.StateDraining
+	})
+	free()
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].ID != 7 || rs[0].Status != testproto.StatusOK {
+		t.Fatalf("the Echo freed before the deadline is answered %+v (%v)", rs, err)
+	}
+	// The listeners closed at Stop's start: no dial completes while draining.
+	dialRefused(t, at)
+	open.Do(func() { close(gate) })
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop never returned: the drain's quiet never ended it")
+	}
+	if h := srv.Health(); h.State != adapter.StateStopped {
+		t.Errorf("after Stop the server is %s, want stopped", h.State)
+	}
+}
+
+// With room never freed and the drain deadline at 200 ms on the server's
+// clock, Stop returns once the clock reaches the deadline, the parked Echo
+// gets no reply, its connection is closed and every budget it charged is at
+// zero. A drain that reads its deadline from nowhere never returns; a close
+// that leaves the request running hangs Stop at the teardown; an answer sent
+// for the abandoned Echo reaches the client's read (RFC 20 sections 3.1 and
+// 3.4).
+func TestTheDrainDeadlineAbandonsAnEchoStillWaiting(t *testing.T) {
+	b := budgets()
+	b.Reply = resources.NewWaitBudget("reply", chargeOfReply(t, 8))
+	adaptertest.CheckLeaks(t, b)
+	srv, clk, p := drainServer(t, b, drainSnap("127.0.0.1"), nil)
+	at := testAddr(t, srv)
+	c, nc := clientAt(t, at)
+	conn := theConn(t, p)
+	registered(t, srv, p)
+	free := holdsRoom(t, b, 1)
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Payload: []byte("hi")}); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "the Echo to wait for its reply room", func() bool {
+		return pipelineRuns(conn) == 1
+	})
+	stopped := make(chan error, 1)
+	go func() { stopped <- srv.Stop(context.Background()) }()
+	waitsFor(t, "the server to drain", func() bool {
+		return srv.Health().State == adapter.StateDraining
+	})
+	clk.Advance(201 * time.Millisecond)
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop at the drain deadline: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop never returned: the drain held no deadline")
+	}
+	var buf [64]byte
+	if h := srv.Health(); h.State != adapter.StateStopped {
+		t.Errorf("after Stop the server is %s, want stopped", h.State)
+	}
+	if n, rerr := nc.Read(buf[:]); n > 0 {
+		t.Fatalf("the abandoned Echo was answered with %d bytes at the deadline", n)
+	} else if rerr == nil || (!errors.Is(rerr, io.EOF) && !errors.Is(rerr, syscall.ECONNRESET)) {
+		t.Fatalf("the closed connection's read answers %d, %v; want its end, no reply of it", n, rerr)
+	}
+	free() // the test's held room, kept to the end and given back after
+	if r := b.Receive.Reserved(); r != 0 {
+		t.Errorf("the closed connection's receive charge is still %d bytes", r)
+	}
+	if r := b.Connection.Reserved(); r != 0 {
+		t.Errorf("the closed connection's state charge is still %d bytes", r)
+	}
+}
+
+// While the drain waits, Health reports draining and not ready, and no dial
+// completes: the listeners closed before the first pipeline was told. A drain
+// that leaves its listeners accepting fails the dial; one that closes the
+// connections at once answers nothing on the connection the finish serves.
+func TestWhileDrainingADialIsRefusedAndHealthIsNotReady(t *testing.T) {
+	b := budgets()
+	// Room for two replies: one Echo holds the drain, and the connection the
+	// free ends answers too.
+	b.Reply = resources.NewWaitBudget("reply", chargeOfReply(t, 16))
+	adaptertest.CheckLeaks(t, b)
+	srv, _, p := drainServer(t, b, drainSnap("127.0.0.1"), nil)
+	at := testAddr(t, srv)
+	c, _ := clientAt(t, at)
+	conn := theConn(t, p)
+	registered(t, srv, p)
+	free := holdsRoom(t, b, 1)
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Role: core.RoleRelease, Payload: []byte("hi")}); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "the Echo to wait for its reply room", func() bool {
+		return pipelineRuns(conn) == 1
+	})
+	stopped := make(chan error, 1)
+	go func() { stopped <- srv.Stop(context.Background()) }()
+	waitsFor(t, "the server to drain", func() bool {
+		return srv.Health().State == adapter.StateDraining
+	})
+	dialRefused(t, at)
+	h := srv.Health()
+	if h.State != adapter.StateDraining || h.Ready() || len(h.Conditions) != 0 {
+		t.Errorf("while draining Health is %+v, want draining, not ready, no condition", h)
+	}
+	free()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop never returned: the drain's quiet never ended it")
+	}
+	if h := srv.Health(); h.State != adapter.StateStopped {
+		t.Errorf("after Stop the server is %s, want stopped", h.State)
+	}
+}
+
+// While draining, what a request does to state decides whether it runs: an
+// Echo whose role is none, sent after the drain began, is refused as the
+// table answers the drain's error, which over version 1 is no reply at all,
+// and its connection closes without a byte of it; one whose role is release
+// is answered. The Echo that holds the drain is itself a release, freed
+// once both are in: whichever of the two the room reaches, the none is
+// refused and the release answered, so the race costs the test nothing. A
+// drain told to one pipeline answers the none Echo; a drain told to none
+// answers both.
+func TestWhileDrainingARequestIsServedByRole(t *testing.T) {
+	b := budgets()
+	// Room enough for the two Echoes the drain holds and answers one of.
+	b.Reply = resources.NewWaitBudget("reply", 2*chargeOfReply(t, 8))
+	adaptertest.CheckLeaks(t, b)
+	// The gate holds each teardown until the answered reply was read, so the
+	// queue the writer holds is flushed and not dropped by its stop.
+	gate := make(chan struct{})
+	var open sync.Once
+	defer open.Do(func() { close(gate) })
+	srv, _, p := drainServer(t, b, drainSnap("127.0.0.1"), func(context.Context) { <-gate })
+	at := testAddr(t, srv)
+	rel, _ := clientAt(t, at)
+	none, _ := clientAt(t, at)
+	waitsFor(t, "both connections to be accepted", func() bool {
+		return len(p.list()) == 2
+	})
+	registered(t, srv, p)
+	free := holdsRoom(t, b, 2)
+	if err := rel.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Role: core.RoleRelease, Payload: []byte("r")}); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "the release Echo to wait for its reply room", func() bool {
+		for _, c := range p.list() {
+			if pipelineRuns(c) == 1 {
+				return true
+			}
+		}
+		return false
+	})
+	// runs is what the two pipelines run among them.
+	runs := func() int {
+		n := 0
+		for _, c := range p.list() {
+			n += pipelineRuns(c)
+		}
+		return n
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- srv.Stop(context.Background()) }()
+	waitsFor(t, "the server to drain", func() bool {
+		return srv.Health().State == adapter.StateDraining
+	})
+	// The none Echo, sent after the drain began, has the drain's refusal
+	// waiting for it; it reaches the pipeline before the room it shares with
+	// the release is freed, so its end is the refusal's, not a record never
+	// read.
+	if err := none.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Payload: []byte("n")}); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "both Echoes to run on the drain", func() bool { return runs() == 2 })
+	free()
+	waitsFor(t, "both Echoes to end", func() bool { return runs() == 0 })
+	if rs, err := rel.Recv(); err != nil || len(rs) != 1 || rs[0].ID != 1 || rs[0].Status != testproto.StatusOK {
+		t.Errorf("the release Echo sent under the drain is answered %+v (%v)", rs, err)
+	}
+	open.Do(func() { close(gate) })
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop never returned: the drain's quiet never ended it")
+	}
+	// The none Echo was refused with no reply: the closed connection ends as
+	// it was, and nothing it sent washes back as its answer.
+	rs, err := none.Recv()
+	if len(rs) != 0 || (err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, syscall.ECONNRESET)) {
+		t.Fatalf("the none Echo, sent after the drain began, got %+v (%v), want no reply and the connection's end", rs, err)
+	}
+	if err == nil {
+		t.Error("the none Echo's connection still reads: it never closed")
+	}
+	if h := srv.Health(); h.State != adapter.StateStopped {
+		t.Errorf("after Stop the server is %s, want stopped", h.State)
+	}
+}
+
+// Two Stop calls that overlap in the drain both return after stopped, and by
+// then every OnClose has run: the second parks on the first's end, and an
+// Echo holding its reply room keeps every connection out of its teardown
+// until the test frees it. A second call that returns before the teardowns
+// returns while the room is still held, before any OnClose can have run.
+func TestTwoConcurrentStopsReturnOnceEveryOnCloseHasRun(t *testing.T) {
+	b := budgets()
+	b.Reply = resources.NewWaitBudget("reply", chargeOfReply(t, 8))
+	adaptertest.CheckLeaks(t, b)
+	fired := make(chan struct{})
+	srv, _, p := drainServer(t, b, drainSnap("127.0.0.1"), func(context.Context) { close(fired) })
+	at := testAddr(t, srv)
+	c, _ := clientAt(t, at)
+	conn := theConn(t, p)
+	registered(t, srv, p)
+	free := holdsRoom(t, b, 1)
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Role: core.RoleRelease, Payload: []byte("hi")}); err != nil {
+		t.Fatal(err)
+	}
+	waitsFor(t, "the Echo to wait for its reply room", func() bool {
+		return pipelineRuns(conn) == 1
+	})
+	stops := make(chan error, 2)
+	go func() { stops <- srv.Stop(context.Background()) }()
+	waitsFor(t, "the server to drain", func() bool {
+		return srv.Health().State == adapter.StateDraining
+	})
+	// The drain is held, so the first Stop cannot end yet: a Stop that
+	// arrives now returns only once it has torn every connection down,
+	// OnClose included. Whatever returns inside the window returned early,
+	// before anything could have been torn down, and the window is short real
+	// time: the drain itself, held by the room the test frees after it, keeps
+	// the rest deterministic.
+	early := make(chan error, 1)
+	go func() { early <- srv.Stop(context.Background()) }()
+	select {
+	case err := <-early:
+		select {
+		case <-fired:
+		default:
+			t.Error("a concurrent Stop returned before OnClose had run")
+		}
+		if err != nil {
+			t.Errorf("a concurrent Stop that returned early: %v", err)
+		} else {
+			t.Error("a concurrent Stop returned while the drain held, before the first had stopped the server")
+		}
+		free()
+		select {
+		case err := <-stops:
+			if err != nil {
+				t.Errorf("the first Stop: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("the first Stop never returned")
+		}
+	case <-time.After(300 * time.Millisecond):
+		free()
+		select {
+		case err := <-early:
+			if err != nil {
+				t.Fatalf("the parked Stop at the first's end: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("the parked Stop never returned")
+		}
+		if err := <-stops; err != nil {
+			t.Fatalf("the first Stop: %v", err)
+		}
+		if h := srv.Health(); h.State != adapter.StateStopped {
+			t.Errorf("after both Stops the server is %s, want stopped", h.State)
+		}
+		// Every OnClose has run: the teardown closed it before Stop
+		// returned. The fired check inside the early case above is the
+		// other side of the same proof.
+		select {
+		case <-fired:
+		default:
+			t.Error("no OnClose had run at the stopped server")
+		}
+	}
+}
+
+// In a pipe-test bubble on the server's real clock, both deadlines run on the
+// bubble's time: with drain_timeout at 200 ms and Stop's context ending at
+// 100 ms, the drain ends at the earlier one and the echo parked on its reply
+// room is abandoned there. A drain that reads its deadline from one of them
+// alone ends at the other here: the context's, gone as soon as Stop's own
+// wait reaches it late.
+func TestTheDrainEndsAtTheEarlierOfTheTwoDeadlines(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		b.Reply = resources.NewWaitBudget("reply", chargeOfReply(t, 8))
+		adaptertest.CheckLeaks(t, b)
+		srv, l := bubbleServer(t, b, drainSnap(), nil)
+		conn, peer := servedConn(t, srv, &l)
+		defer func() { _ = peer.Close() }()
+		c := testproto.NewClient(peer)
+		free := holdsRoom(t, b, 1)
+		defer free()
+		if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Role: core.RoleRelease, Payload: []byte("hi")}); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait() // the reader back in its pipe, the Echo on its room
+		if got := pipelineRuns(conn); got != 1 {
+			t.Fatalf("the Echo runs %d, want it parked on its reply room", got)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		stopped := make(chan error, 1)
+		go func() { stopped <- srv.Stop(ctx) }()
+		if err := <-stopped; err != nil {
+			t.Fatalf("Stop at the earlier deadline: %v", err)
+		}
+		elapsed := time.Since(start)
+		if elapsed < 100*time.Millisecond {
+			t.Fatalf("the drain ended %s in, before either deadline", elapsed)
+		}
+		if elapsed >= 200*time.Millisecond {
+			t.Fatalf("the drain waited the whole drain_timeout (%s in, %s under it); want Stop's earlier context deadline", elapsed, 200*time.Millisecond)
+		}
+		if h := srv.Health(); h.State != adapter.StateStopped {
+			t.Errorf("after Stop the server is %s, want stopped", h.State)
+		}
+	})
+}
+
+// Stop waits for OnClose but no longer than its 30 s grace: with a connection
+// whose OnClose returns only when its context ends, and the drain held to its
+// 200 ms deadline by an Echo it abandons, Stop returns at the grace's end, 30 s
+// past the drain deadline and none later. A Stop that returns before the
+// teardowns, or a teardown that holds OnClose past its grace, misses the
+// window; nothing is waited for that a protocol's registry handed to
+// Deps.Retry, whose calls never reach Stop at all.
+func TestStopWaitsOutASlowOnClosePastItsGrace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		b.Reply = resources.NewWaitBudget("reply", chargeOfReply(t, 8))
+		adaptertest.CheckLeaks(t, b)
+		srv, l := bubbleServer(t, b, drainSnap(), func(ctx context.Context) { <-ctx.Done() })
+		conn, peer := servedConn(t, srv, &l)
+		defer func() { _ = peer.Close() }()
+		c := testproto.NewClient(peer)
+		free := holdsRoom(t, b, 1)
+		defer free()
+		if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Payload: []byte("hi")}); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait() // the reader back in its pipe, the Echo on its room
+		if got := pipelineRuns(conn); got != 1 {
+			t.Fatalf("the Echo runs %d, want it parked on its reply room", got)
+		}
+		start := time.Now()
+		stopped := make(chan error, 1)
+		go func() { stopped <- srv.Stop(context.Background()) }()
+		if err := <-stopped; err != nil {
+			t.Fatalf("Stop behind a slow OnClose: %v", err)
+		}
+		grace := 30*time.Second + 200*time.Millisecond
+		if elapsed := time.Since(start); elapsed < grace || elapsed >= grace+time.Second {
+			t.Fatalf("Stop returned %s from its start, want the 30 s grace past the 200 ms drain deadline (%s to %s)", elapsed, grace, grace+time.Second)
+		}
+		if h := srv.Health(); h.State != adapter.StateStopped {
+			t.Errorf("after Stop the server is %s, want stopped", h.State)
+		}
+	})
+}

@@ -39,10 +39,11 @@ type Server struct {
 	reply    *resources.BufPool // the reply pool every reply is taken from
 	sh       *shared            // the pools, metrics, clock and logger every connection shares
 
-	mu    sync.RWMutex
-	state adapter.State
-	bound []*bound           // every socket open now, by listener, then by address in the settings' order
-	conns map[*Conn]struct{} // every connection open now
+	mu       sync.RWMutex
+	state    adapter.State
+	bound    []*bound           // every socket open now, by listener, then by address in the settings' order
+	conns    map[*Conn]struct{} // every connection open now
+	stopDone chan struct{}      // the running Stop closes it once the server is stopped; nil before
 }
 
 // bound is one listener's socket on one address, with the state its accept
@@ -325,43 +326,111 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 	return fmt.Errorf("core: reconfigure: %w", errors.ErrUnsupported)
 }
 
-// Stop closes every listener, closes every connection and moves the server to
-// stopped, from any state. It moves to draining under the first lock, before
-// it waits its loops, so a context that ends mid-stop leaves every listener
-// closed, register refusing (and Health reporting draining, one of the four
-// states, RFC 20 section 3.1) and the next Stop closing every connection.
+// Stop moves a serving server through draining to stopped, and a configured
+// one straight to stopped. It moves under the first lock to draining, one of
+// the four states (RFC 20 section 3.1), before it waits its loops, so while
+// the loops are waited a socket handed over closes before it reads and
+// Health reports the state. The listeners close first, so no connection is
+// accepted while draining, and every connection's pipeline is told the server
+// drains, one being built before its first record included, since the accept
+// loops' end waits every connection into the registry. Draining ends when
+// nothing runs on any connection, or at the drain deadline, the earlier of
+// this context's deadline and drain_timeout from the snapshot, on the
+// server's clock; what still runs at it is abandoned, its context cancelled
+// and its reply not sent (RFC 20 sections 3.1 and 3.4). Every connection is
+// then closed and torn down, and Stop returns once every OnClose has, at most
+// 30 s past the drain deadline: nothing a protocol's registry handed to
+// Deps.Retry is waited for (RFC 20 sections 3.2 and 3.4). A concurrent or
+// later Stop returns once the server is stopped.
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
+	if s.state == adapter.StateStopped {
+		s.mu.Unlock()
+		return nil
+	}
+	if s.stopDone != nil {
+		// A Stop is already running: this one returns once it has stopped
+		// the server.
+		done := s.stopDone
+		s.mu.Unlock()
+		<-done
+		return nil
+	}
+	s.stopDone = make(chan struct{})
+	wasServing := s.state == adapter.StateServing
 	s.state = adapter.StateDraining
 	looped := slices.Clone(s.bound)
 	s.closeBound()
 	s.mu.Unlock()
-	if err := s.stopOnLoops(looped, ctx); err != nil {
-		return err
-	}
+	s.stopOnLoops(looped)
 	// The loops have ended, so not one more socket can be accepted: every
 	// connection the registry will ever hold while this server stops is in
 	// this snapshot, and a socket its loop was handing to serveConn as it
 	// ended was refused at its registration and torn down on that loop,
 	// OnClose included, before the loop ended.
 	s.mu.Lock()
-	s.state = adapter.StateStopped
 	conns := make([]*Conn, 0, len(s.conns))
 	for c := range s.conns {
 		conns = append(conns, c)
 	}
-	s.mu.Unlock()
+	if wasServing {
+		// Every pipeline is told before Health names the state, so a request
+		// that meets draining meets the refusal too (RFC 20 section 3.1).
+		for _, c := range conns {
+			c.p.drain()
+		}
+		s.state = adapter.StateDraining
+		s.mu.Unlock()
+		s.drainConns(ctx, conns)
+	} else {
+		s.mu.Unlock()
+	}
 	for _, c := range conns {
 		c.Close(errStop)
 	}
 	for _, c := range conns {
-		select {
-		case <-c.done:
-		case <-ctx.Done():
-			return ctx.Err()
+		<-c.done
+	}
+	s.mu.Lock()
+	s.state = adapter.StateStopped
+	s.mu.Unlock()
+	close(s.stopDone)
+	return nil
+}
+
+// drainConns waits until nothing runs on any connection, or until the drain
+// deadline, the earlier of ctx's deadline and drain_timeout from the
+// snapshot, on the server's clock; what still runs at it is left for the
+// close that follows (RFC 20 sections 3.1 and 3.4).
+func (s *Server) drainConns(ctx context.Context, conns []*Conn) {
+	if len(conns) == 0 {
+		return
+	}
+	at := s.sh.clock.Now().Add((*s.settings.Load()).Common().DrainTimeout)
+	wait, cancel := withClockDeadline(ctx, s.sh.clock, at)
+	defer cancel()
+	// decision: the sweep repeats, never one wait per connection, since a
+	// request the drain serves, a release say, starts while it waits, so a
+	// connection that fell quiet earlier is waited again. It ends when one
+	// full pass reads every connection quiet, and the moment that decides
+	// races a request admitted in the same instant, which the close then
+	// abandons as at the deadline. Overturned if the pipeline grows a place
+	// to latch the drain on each request's arrival.
+	for {
+		waited := false
+		for _, c := range conns {
+			if c.p.quiet() {
+				continue
+			}
+			waited = true
+			if err := c.p.wait(wait); err != nil {
+				return // the drain deadline: the close abandons what runs
+			}
+		}
+		if !waited {
+			return
 		}
 	}
-	return nil
 }
 
 // errStop is a connection's close, the server stopping.
