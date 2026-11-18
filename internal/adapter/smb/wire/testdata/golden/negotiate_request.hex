@@ -1,0 +1,34 @@
+# test/pcap-corpus/smb-sd/reference.pcap, frame 4: a client's SMB2 NEGOTIATE
+# request to the reference server, the frame's TCP payload as tshark cuts it
+# (tcp.payload). The Direct TCP header (MS-SMB2 2.1), the SMB2 header in its
+# sync form (MS-SMB2 2.2.1.2), field by field, then the NEGOTIATE request's
+# body, which this package does not read. Multi-byte header fields are
+# little-endian (MS-SMB2 2.2).
+00                          # Direct TCP header: Zero
+00 00 e2                    # StreamProtocolLength 226, big-endian
+fe 53 4d 42                 # [0,4)   ProtocolId 0xFE 'S' 'M' 'B'
+40 00                       # [4,6)   StructureSize 64
+00 00                       # [6,8)   CreditCharge 0
+00 00 00 00                 # [8,12)  ChannelSequence 0, Reserved 0
+00 00                       # [12,14) Command 0x0000, NEGOTIATE
+1f 00                       # [14,16) CreditRequest 31
+00 00 00 00                 # [16,20) Flags: none
+00 00 00 00                 # [20,24) NextCommand 0: no member follows
+00 00 00 00 00 00 00 00     # [24,32) MessageId 0
+00 00 00 00                 # [32,36) Reserved
+00 00 00 00                 # [36,40) TreeId 0
+00 00 00 00 00 00 00 00     # [40,48) SessionId 0
+00 00 00 00 00 00 00 00     # [48,64) Signature: none
+00 00 00 00 00 00 00 00
+# [64,226) the NEGOTIATE request's body
+24 00 05 00 01 00 00 00 7f 00 00 00 cb 71 c5 d4
+dd c6 96 44 b8 1a 6d 7f 9e f5 de f1 70 00 00 00
+04 00 00 00 02 02 10 02 00 03 02 03 11 03 00 00
+01 00 26 00 00 00 00 00 01 00 20 00 01 00 2d e6
+db 8f 9d 54 5e 10 32 6a 9a 4e d8 f7 d1 f6 a0 e1
+45 2f 71 16 e6 06 08 c7 a9 8a 65 e1 bb bd 00 00
+02 00 0a 00 00 00 00 00 04 00 02 00 01 00 04 00
+03 00 00 00 00 00 00 00 08 00 08 00 00 00 00 00
+03 00 02 00 01 00 00 00 05 00 12 00 00 00 00 00
+31 00 32 00 37 00 2e 00 30 00 2e 00 30 00 2e 00
+31 00

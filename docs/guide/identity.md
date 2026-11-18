@@ -87,8 +87,13 @@ provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
 - computer accounts for the joins: `dittofs$` (password `MachinePass01!`), and
   `offjoinaes$` (password `OffJoinAES01!`, `msDS-SupportedEncryptionTypes`
   `0x18`) and `offjoinlegacy$` (password `OffJoinLegacy01!`, none), pre-staged
-  for an offline join. `MACHINE_PASSWORD`, `OFFJOIN_AES_PASSWORD` and
-  `OFFJOIN_LEGACY_PASSWORD` override the three passwords.
+  for an offline join; `offjoinowned$` (password `OffJoinOwned01!`, `0x18`),
+  created by the user `joiner`, who may create computer objects in the
+  `Computers` container and nothing more, so `joiner` owns it, with
+  `msDS-AllowedToActOnBehalfOfOtherIdentity` naming `dittofs$`; and `BUILD01$`
+  (password `Build01Pass01!`), a plain workstation account. `MACHINE_PASSWORD`,
+  `OFFJOIN_AES_PASSWORD`, `OFFJOIN_LEGACY_PASSWORD`, `OFFJOIN_OWNED_PASSWORD`
+  and `BUILD01_PASSWORD` override the passwords.
 
 NETLOGON's dynamic RPC port comes from the pinned range `50000-50019`, beside
 135 for the endpoint mapper.

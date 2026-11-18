@@ -222,31 +222,67 @@ samba-tool group addmembers engineering "$USER_BOB" >/dev/null 2>&1 || true
 # without the attribute, as Active Directory Users and Computers creates one,
 # which an offline join refuses.
 #
+# offjoinowned$ is created by joiner, a user granted only "create computer
+# objects" on the Computers container, so its owner is joiner's SID rather
+# than Domain Admins, as a delegated administrator's pre-staged account is. It
+# carries msDS-SupportedEncryptionTypes 0x18 and an
+# msDS-AllowedToActOnBehalfOfOtherIdentity naming dittofs$, the two things a
+# join reports on such an account besides its owner.
+#
+# BUILD01$ is a plain workstation account with a known password, one a join
+# meets already holding the name it asks for.
+#
 # NOTE (#1345): `samba-tool computer create --computerpassword=...` is NOT a
 # valid option on this samba (4.17.x). Create the computer first, then set its
 # password via `user setpassword`, which derives its Kerberos keys.
 MACHINE_PASSWORD="${MACHINE_PASSWORD:-MachinePass01!}"
 OFFJOIN_AES_PASSWORD="${OFFJOIN_AES_PASSWORD:-OffJoinAES01!}"
 OFFJOIN_LEGACY_PASSWORD="${OFFJOIN_LEGACY_PASSWORD:-OffJoinLegacy01!}"
+OFFJOIN_OWNED_PASSWORD="${OFFJOIN_OWNED_PASSWORD:-OffJoinOwned01!}"
+BUILD01_PASSWORD="${BUILD01_PASSWORD:-Build01Pass01!}"
+USER_JOINER="${USER_JOINER:-joiner}"
 
-# create_computer_if_absent NAME PASSWORD [ENCTYPES]
+# create_computer_if_absent NAME PASSWORD ["ATTRIBUTE: VALUE"]...
+# Each ATTRIBUTE is replaced as Administrator on the local database, which
+# leaves the owner as it was. With CREATED_BY set, that user creates the
+# account over LDAP, so it becomes the owner.
 create_computer_if_absent() {
-    local name="$1" password="$2" enctypes="${3:-}" dn
+    local name="$1" password="$2" dn attr
+    shift 2
     local marker="/var/lib/samba/.computer-$name"
     [ -f "$marker" ] && return 0
     log "Creating computer account $name\$"
-    samba-tool computer show "$name" >/dev/null 2>&1 || samba-tool computer create "$name"
-    if [ -n "$enctypes" ]; then
-        dn="$(dn_of computer "$name")"
-        printf 'dn: %s\nchangetype: modify\nreplace: msDS-SupportedEncryptionTypes\nmsDS-SupportedEncryptionTypes: %s\n' \
-            "$dn" "$enctypes" | ldbmodify -H /var/lib/samba/private/sam.ldb
-    fi
+    local create=(samba-tool computer create "$name")
+    [ -n "${CREATED_BY:-}" ] && create+=(-H ldap://127.0.0.1 -U "$DOMAIN\\$CREATED_BY%$USER_PASSWORD")
+    samba-tool computer show "$name" >/dev/null 2>&1 || "${create[@]}"
+    dn="$(dn_of computer "$name")"
+    for attr in "$@"; do
+        printf 'dn: %s\nchangetype: modify\nreplace: %s\n%s\n' "$dn" "${attr%%:*}" "$attr" \
+            | ldbmodify -H /var/lib/samba/private/sam.ldb
+    done
     samba-tool user setpassword "$name\$" --newpassword="$password"
     touch "$marker"
 }
 create_computer_if_absent dittofs "$MACHINE_PASSWORD"
-create_computer_if_absent offjoinaes "$OFFJOIN_AES_PASSWORD" 24
+create_computer_if_absent offjoinaes "$OFFJOIN_AES_PASSWORD" "msDS-SupportedEncryptionTypes: 24"
 create_computer_if_absent offjoinlegacy "$OFFJOIN_LEGACY_PASSWORD"
+create_computer_if_absent BUILD01 "$BUILD01_PASSWORD"
+
+# joiner may create computer objects in the Computers container and nothing
+# more: an object-specific create-child ACE for the computer class.
+create_user_if_absent "$USER_JOINER"
+joiner_sid="$(samba-tool user show "$USER_JOINER" --attributes=objectSid | sed -n 's/^objectSid: //p')"
+computers_dn="CN=Computers,DC=${REALM,,}"
+computers_dn="${computers_dn//./,DC=}"
+if ! samba-tool dsacl get --objectdn="$computers_dn" | grep -q "$joiner_sid"; then
+    log "Granting $USER_JOINER create computer objects on $computers_dn"
+    samba-tool dsacl set --objectdn="$computers_dn" \
+        --sddl="(OA;;CC;bf967a86-0de6-11d0-a285-00aa003049e2;;$joiner_sid)" >/dev/null
+fi
+dittofs_sid="$(samba-tool computer show dittofs --attributes=objectSid | sed -n 's/^objectSid: //p')"
+CREATED_BY="$USER_JOINER" create_computer_if_absent offjoinowned "$OFFJOIN_OWNED_PASSWORD" \
+    "msDS-SupportedEncryptionTypes: 24" \
+    "msDS-AllowedToActOnBehalfOfOtherIdentity: O:BAD:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;$dittofs_sid)"
 
 # --- Combined service keytab ----------------------------------------------
 # Register BOTH the DittoFS SMB (cifs/) AND NFS (nfs/) service principals on a

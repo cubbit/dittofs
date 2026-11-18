@@ -307,9 +307,41 @@ func (p principals) User(ctx context.Context, of entity.Principal) (entity.User,
 	return u, err == nil, storeErr(err)
 }
 
+// Grant is of's access to share as a signed-in principal: its own grant,
+// none included, else the widest of its groups', else authenticated users',
+// else everyone's.
+//
+// ponytail: this repeats the identity resolver's grant order over the
+// store's own-grant read. It goes when admission resolves through the
+// identity server.
 func (p principals) Grant(ctx context.Context, share entity.ShareID, of entity.Principal) (entity.ShareAccess, error) {
-	a, err := p.pr.Grant(ctx, share, of)
-	return a, storeErr(err)
+	if a, ok, err := p.pr.Grant(ctx, share, of); err != nil || ok {
+		return a, storeErr(err)
+	}
+	groups, err := p.Groups(ctx, of)
+	if err != nil {
+		return 0, err
+	}
+	var access entity.ShareAccess
+	found := false
+	for _, g := range groups {
+		a, ok, err := p.pr.Grant(ctx, share, g)
+		if err != nil {
+			return 0, storeErr(err)
+		}
+		if ok {
+			found, access = true, max(access, a)
+		}
+	}
+	if found {
+		return access, nil
+	}
+	for _, d := range []entity.Principal{entity.AuthenticatedUsers, entity.Everyone} {
+		if a, ok, err := p.pr.Grant(ctx, share, d); err != nil || ok {
+			return a, storeErr(err)
+		}
+	}
+	return entity.AccessNone, nil
 }
 
 func (p principals) Groups(ctx context.Context, of entity.Principal) ([]entity.Principal, error) {
