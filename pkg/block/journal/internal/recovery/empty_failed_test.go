@@ -194,6 +194,9 @@ func TestCrashAtEveryFailedHolderEmptyingStep(t *testing.T) {
 			if err := f.r.seam.Crash(); err != nil {
 				t.Fatalf("the power cut at the held step: %v", err)
 			}
+			if tc.afterRemove && !slices.Contains(f.r.listing(), format.SegmentName(5)) {
+				t.Errorf("the source segment is gone after a power cut before the directory sync, want the unsynced unlink resurrected")
+			}
 			hold.Release()
 			select {
 			case err := <-done:
@@ -211,6 +214,84 @@ func TestCrashAtEveryFailedHolderEmptyingStep(t *testing.T) {
 				if err := f.r.seam.Crash(); err != nil {
 					t.Fatalf("the power loss after reopen %d: %v", pass, err)
 				}
+			}
+		})
+	}
+}
+
+// TestAnAsideDuplicateInASealedHolderThisRunEmptiesStillSurvives holds the
+// standing-copy tests against a sealed row the same run unlinks: an ended
+// segment holds a live loss record whose duplicate sits in a sealed holder of
+// a failed record, which the emptying also empties. Each copy is registered
+// at its own segment, so whichever segment is emptied last finds no standing
+// duplicate left and carries the loss; the row holds that for both id
+// orders, and fails if both skip on each other.
+func TestAnAsideDuplicateInASealedHolderThisRunEmptiesStillSurvives(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		holder, ended core.SegmentID
+	}{
+		{name: "holder_before_ended", holder: 3, ended: 5},
+		{name: "ended_before_holder", holder: 5, ended: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const tag = core.ShareTag(7)
+			file := tailFile()
+			r := newRig(t)
+			r.writeFormat()
+			loss := collectLoss(tag, file, 40, 41, 941, 0x200, 64, 1<<8)
+			// The record the loss names, in a sealed segment, keeps it live.
+			older, _ := buildSealed(6, collectWrite(tag, file, 40, 40, 0x200, 64))
+			r.plantSeg(6, older)
+			// The sealed holder: the loss's duplicate and a failed write.
+			holder, _ := buildSealed(tc.holder, loss, collectWrite(tag, file, 20, 20, 0x100, 32))
+			r.plantSeg(tc.holder, holder)
+			r.plantSeg(tc.ended, damageHeader(buildSeg(tc.ended, loss)))
+
+			d := r.runDeps()
+			d.Failed = []core.Seq{20}
+			st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			_, past := planOpenLosses(st, noPiece, noPiece, 0)
+			if len(past) != 1 {
+				t.Fatalf("the planner left %d failed records past the reserve, want 1: the fixture no longer plants the case", len(past))
+			}
+			st.Kinds.PastReserve = past
+			if got, err := st.Assembled.Set.State(tc.holder); err != nil || got != segment.Sealed {
+				t.Fatalf("the holder's row got %v (%v), want Sealed", got, err)
+			}
+			h := newEmptyingHarness(t, r, &st, segment.Targets{Reserve: 2})
+			if err := Emptying(context.Background(), h.deps, &st, journalID, core.Version{}, nil); err != nil {
+				t.Fatalf("Emptying: %v", err)
+			}
+
+			survivors := 0
+			for _, name := range r.listing() {
+				kind, id := format.ClassifyName(name)
+				if kind != format.NameSegment {
+					continue
+				}
+				if id == tc.holder || id == tc.ended {
+					t.Errorf("segment %d is still on disk, want it emptied", id)
+				}
+				bs, err := r.seam.Durable(name)
+				if err != nil {
+					t.Fatalf("read %s: %v", name, err)
+				}
+				walk, werr := format.ScanSegmentHeaders(bytes.NewReader(bs), int64(len(bs)), journalID, id)
+				if werr != nil {
+					continue
+				}
+				for _, rec := range walk.Records {
+					if rec.Header.Kind == format.KindLoss && rec.Header.Seq == 41 {
+						survivors++
+					}
+				}
+			}
+			if survivors == 0 {
+				t.Errorf("no durable copy of the loss record of seq 41 remains, want one: both copies went with their segments")
 			}
 		})
 	}

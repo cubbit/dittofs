@@ -173,8 +173,8 @@ func runEmptying(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	// records left out of the copy because the index serves none of them.
 	// An ended segment already goes through its own leg, so none is listed
 	// twice.
-	for _, rd := range st.Kinds.PastReserve {
-		for _, id := range rd.Segments {
+	for _, drop := range st.Kinds.PastReserve {
+		for _, id := range drop.Segments {
 			if state, err := st.Assembled.Set.State(id); err == nil && state == segment.Sealed {
 				ended = append(ended, id)
 			}
@@ -557,6 +557,13 @@ func (e *emptying) finish(ctx context.Context, id core.SegmentID, target core.Se
 	}
 	reason := segment.ReasonEnded
 	if state, serr := e.st.Assembled.Set.State(id); serr == nil && state == segment.Sealed {
+		// decision: a sealed holder retires through the same call whether
+		// the retirer unlinks it or, full-size with the pool short, recycles
+		// it into a spare. Both paths run only here, after the copy is
+		// sealed and synced, and a recycle zeroes the header and the trailer
+		// after its durable rename, so the failed records stay behind no
+		// header any scan would read. Withdrawn if a recycle ever keeps a
+		// header it could be re-scanned under.
 		reason = segment.NotHeld // a sealed holder of a failed record, emptied before it is unheld
 	}
 	ret, err := e.deps.Retire(id, reason)
@@ -638,6 +645,12 @@ func (e *emptying) standingCopy(rec index.Record, id core.SegmentID) (index.Reco
 		if sc.ID == id {
 			continue // the ended segment's own copy is no skip: it goes with the segment
 		}
+		// decision: a content duplicate in a sealed row this run also empties
+		// is a standing copy all the same: the skip repoints the served piece
+		// there, so that row's own emptying finds the record named and carries
+		// it, and one emptied first never named it and leaves the ended
+		// segment's copy to carry. Withdrawn if the index stops serving the
+		// repointed placement.
 		state, err := e.st.Assembled.Set.State(sc.ID)
 		if err != nil || state != segment.Sealed {
 			// decision: only a sealed row's duplicate stands. An unsealed row's
@@ -671,6 +684,12 @@ func (e *emptying) asideCopyVerifies(rec reclaim.Rec, id core.SegmentID) bool {
 		if sc.ID == id {
 			continue
 		}
+		// decision: a sealed row this run also empties is a standing copy
+		// all the same. The asides register one record per copy, so each
+		// segment owes its own carry, and a segment emptied later finds the
+		// earlier one's row gone (State errors, so it is skipped here) and
+		// carries; the last of any set of duplicates always does. Withdrawn
+		// if the open ever registers one record for a set of duplicates.
 		state, err := e.st.Assembled.Set.State(sc.ID)
 		if err != nil || state != segment.Sealed {
 			continue // the same trust standingCopy keeps: a sealed row alone

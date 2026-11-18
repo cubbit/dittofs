@@ -419,10 +419,10 @@ func OpenLosses(ctx context.Context, st *State, d *durability.Durability, headro
 //
 // decision: only a sealed segment holding a past-reserve failed record is
 // emptied. A segment the open leaves unsealed (an intact tail still taking a
-// stream's records) or leaves failed stands whole, its failed records still
-// on disk, for a later open to settle; the one-open answer for those needs
-// the open to seal first. Withdrawn when the emptying seals such a segment
-// before it copies.
+// stream's records) stands whole, its failed records still on disk: a later
+// open in this process withholds them again, while a new process has no
+// failed list. The one-open answer for those needs the open to seal first.
+// Withdrawn when the emptying seals such a segment before it copies.
 //
 // decision: the past-the-reserve answer is the deferral itself — the corrupt
 // drops the open reserve cannot hold defer, through the same Lose a running
