@@ -29,11 +29,10 @@ const maxNetBIOSName = 15
 func defaultSettings() Settings {
 	return Settings{
 		IDRange: entity.IDRange{Lo: 1_000_000, Hi: 1_999_999_999},
-		// decision: NTLM is on by default because a workgroup installation
-		// has no KDC, so with it off nobody could sign in over SMB at all.
-		// Turned off by an installation that joins a domain and wants
-		// Kerberos only; the default changes only if a KDC ships with the
-		// installation.
+		// decision: NTLM is on by default. Workgroup deployments with local users
+		// have no KDC, and SMB clients outside a domain fall back to NTLM. A
+		// deployment with Kerberos everywhere turns it off. Revisit the default
+		// once local users are shown to be rare (RFC 18 section 3.5).
 		NTLM:        true,
 		NetBIOSName: "DITTOFS",
 	}

@@ -149,8 +149,10 @@ func TestApplySwapsTheStateWhole(t *testing.T) {
 				t.Error("no State applied while Applies run")
 				return
 			}
-			if want := fmt.Sprintf("G%d", st.Generation); st.Settings.NetBIOSName != want {
-				t.Errorf("read State with Generation %d and NetBIOSName %q, want %q: two Applies mixed", st.Generation, st.Settings.NetBIOSName, want)
+			// Copied once, so the message prints the pair that was compared.
+			gen, name := st.Generation, st.Settings.NetBIOSName
+			if want := fmt.Sprintf("G%d", gen); name != want {
+				t.Errorf("read State with Generation %d and NetBIOSName %q, want %q: two Applies mixed", gen, name, want)
 				return
 			}
 		}

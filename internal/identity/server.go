@@ -33,9 +33,8 @@ type Deps struct {
 	Metrics *metrics.Registry // nil: registers nothing
 	Tracer  trace.Tracer      // the identity.resolve span; nil: the no-op tracer
 	Logger  *slog.Logger
-	// Secrets resolves the secrets identity holds by reference. New does
-	// not require it: while it is nil, a call that needs a secret answers
-	// ErrUnavailable.
+	// Secrets resolves the secrets identity holds by reference; New does not
+	// require it.
 	Secrets SecretProvider
 }
 

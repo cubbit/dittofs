@@ -43,11 +43,13 @@ func TestSettingsValidate(t *testing.T) {
 		{"range of one ID", func(s *identity.Settings) { s.IDRange = entity.IDRange{Lo: 5, Hi: 5} }, false},
 		{"range Lo above Hi", func(s *identity.Settings) { s.IDRange = entity.IDRange{Lo: 6, Hi: 5} }, true},
 	} {
-		s := identity.DefaultSettings()
-		tc.edit(&s)
-		if err := s.Validate(); (err != nil) != tc.refuse {
-			t.Errorf("%s: Validate(%+v) = %v, want refused %v", tc.name, s, err, tc.refuse)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			s := identity.DefaultSettings()
+			tc.edit(&s)
+			if err := s.Validate(); (err != nil) != tc.refuse {
+				t.Errorf("Validate(%+v) = %v, want refused %v", s, err, tc.refuse)
+			}
+		})
 	}
 }
 
@@ -62,8 +64,8 @@ func TestApplyRefusesInvalidSettings(t *testing.T) {
 	want := *s.Applied()
 	bad := state(2)
 	bad.Settings.NetBIOSName = "dittofs.lab"
-	if err := s.Apply(bad); err == nil {
-		t.Fatal("Apply with NetBIOSName dittofs.lab = nil, want refused")
+	if err := s.Apply(bad); err == nil || !strings.Contains(err.Error(), "netbios_name") {
+		t.Fatalf("Apply with NetBIOSName dittofs.lab = %v, want Validate's netbios_name refusal", err)
 	}
 	if got := s.Applied(); got == nil || *got != want {
 		t.Fatalf("State after a refused Apply = %+v, want the last applied %+v", got, want)

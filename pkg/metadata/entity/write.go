@@ -37,7 +37,10 @@ func (*IdempotentReplay) Error() string {
 }
 
 // IDRange is the span uids and gids are allocated from, both ends included.
-type IDRange struct{ Lo, Hi uint32 }
+type IDRange struct {
+	Lo uint32 `json:"lo"`
+	Hi uint32 `json:"hi"`
+}
 
 // Alloc names the IDs a user or group create draws from the store's uid, gid
 // and RID counters in its own transaction. An ID it does not name is written
