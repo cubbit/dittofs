@@ -19,9 +19,11 @@ go run ./cmd/jdemo --dir talk-journal        # name the directory (a used one op
 - Between beats the chooser offers the views, as often as you like:
   `(i)` index, `(s)` segments, `(f)` filesystem, `(d)` data dump, `(+)` stats.
   An empty line moves to the next beat; `q` ends the story.
-- Every mutating beat refreshes the diff snapshots: the next look at a view
-  marks its rows — `+` new, `~` changed, `- removed` — colourised on a real
-  terminal, glyphed on a piped one.
+- A view's rows are marked against how the view stood just before the beat
+  that ran — `+` new, `~` changed, `- removed` — so a view you skipped for a
+  beat shows only the latest beat's changes, and looking twice in one beat
+  shows the same diff. Colourised on a real terminal, glyphed on a piped one.
+  (The data dump `(d)` lists every record and is not diffed.)
 
 ## The views
 
