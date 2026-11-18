@@ -1091,11 +1091,24 @@ func TestASessionSurvivesOneConnectionsClose(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the second connection's teardown did not end")
 	}
-	// The second's close ends the session, which a third connection would find
-	// gone. That half cannot be asserted at this base: core's row checks, which
-	// compare a row's Needs with the request's level, are the epic 5 stack's and
-	// are not in this branch, so a request that needs a session runs anyway. The
-	// registry's leave runs all the same, on the teardown's OnClose.
+	// The second's close ends the session: re-created by a third connection's
+	// join, its trees gone with the leave, it answers no tree - the row
+	// checks refuse a tree-needing PutFH naming the tree the session once had
+	// with StatusNoTree, while a session latched with its trees would let the
+	// join preserve them and answer instead.
+	connC, clientC, cClient := join(t)
+	if err := cClient.Send(testproto.Msg{Op: testproto.OpPutFH, Version: 1, ID: 3, Session: 7, Tree: 1, Handle: []byte("h")}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := cClient.Recv(); err != nil || len(rs) != 1 || rs[0].Status != testproto.StatusNoTree {
+		t.Fatalf("a tree-needing operation on the re-created session: %+v (%v)", rs, err)
+	}
+	_ = clientC.Close()
+	select {
+	case <-core.ConnDone(connC):
+	case <-time.After(2 * time.Second):
+		t.Fatal("the third connection's teardown did not end")
+	}
 }
 
 // A live connection is listed, and one whose server is not serving closes
