@@ -269,8 +269,8 @@ func TestUserDeletionResumesAcrossRestart(t *testing.T) {
 	if n := b.keys(inSecret); n != 0 {
 		t.Errorf("versions of alice's secret after her deletion: got %d, want none", n)
 	}
-	if a, err := b.store.Principals().Grant(ctx, sh.ID, bob); err != nil || a != entity.AccessRead {
-		t.Errorf("bob's grant after alice's deletion: got %v, %v; want read", a, err)
+	if a, ok, err := b.store.Principals().Grant(ctx, sh.ID, bob); err != nil || !ok || a != entity.AccessRead {
+		t.Errorf("bob's grant after alice's deletion: got %v, %v, %v; want read, true", a, ok, err)
 	}
 }
 

@@ -149,8 +149,8 @@ func testDefaultGrants(t *testing.T, kvo Opener) {
 	if e := files.Authorize(ctx, proven, pub, nil, entity.WriteData); e != nil {
 		t.Errorf("authenticated users' read-write, write: %v", e)
 	}
-	if a, err := f.s.Principals().Grant(ctx, f.share.ID, dave.Principal); err != nil || a != entity.AccessReadWrite {
-		t.Errorf("Grant of a signed-in user with no grant of its own: %v, %v", a, err)
+	if a, ok, err := f.s.Principals().Grant(ctx, f.share.ID, dave.Principal); err != nil || ok || a != entity.AccessNone {
+		t.Errorf("Grant of a user with no grant of its own under the defaults = %v, %v, %v; want none, false", a, ok, err)
 	}
 	staff := f.group("staff")
 	must(t, cp.AddMember(ctx, entity.Membership{Group: staff, Member: dave.Principal}))

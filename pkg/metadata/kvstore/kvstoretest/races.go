@@ -183,8 +183,8 @@ func testDeleteRacesAdd(t *testing.T, kvo Opener) {
 						if got := all(t, p.Groups(ctx, u.Principal)); len(got) != 0 {
 							t.Errorf("deleted user still in %v", got)
 						}
-						if a, err := p.Grant(ctx, sh.ID, u.Principal); err != nil || a != entity.AccessNone {
-							t.Errorf("deleted user's grant: %v, %v", a, err)
+						if a, ok, err := p.Grant(ctx, sh.ID, u.Principal); err != nil || ok {
+							t.Errorf("deleted user's grant: %v, %v, %v; want none, false", a, ok, err)
 						}
 					})
 				}

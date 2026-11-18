@@ -77,11 +77,17 @@ var noSpan = trace.SpanFromContext(context.Background())
 // policy naming none refuses it, as does a deleted or disabled Anonymous.
 // Otherwise a proven caller's groups are its closure unioned with those of
 // its evidence's SIDs, its deny-only SIDs mapped apart. A caller in more than
-// groupCap groups is refused. A proven caller acts as itself, authenticated,
-// admin where its share grant names admin, and privileged where it is admin
-// or holds uid 0. A proven caller's share grant is read for the principal it
-// mapped to, before any squash; no other caller's grant is read, so its
-// Access is none.
+// groupCap groups is refused.
+//
+// Access is the share's grant (see grant): for a proven caller with a uid,
+// read for the principal it mapped to, with that principal's own groups,
+// authenticated, before any squash; for any other caller, for the Anonymous
+// it acts as, with Anonymous's groups, unauthenticated. A squashed proven
+// caller whose grant is none is refused. Access is then narrowed to read
+// where admission narrowed the call, and ReadOnly says why it is read. An
+// unsquashed proven caller is authenticated, admin where its grant is admin,
+// and privileged where it is admin or holds uid 0; no other caller holds a
+// flag.
 //
 // A store error is ErrUnavailable, never a caller.
 //
@@ -158,19 +164,38 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, built uint64, id 
 		return c, nil
 	}
 
+	// ponytail: root is found by a uid 0 in the user's record, but the store
+	// holds uid 0 for the well-known root principal and refuses it on any
+	// record, so this never matches. Replace it with a caller mapped to the
+	// well-known root when resolution handles well-known principals.
 	root := proven && slices.Contains(u.IDs, entity.ProtocolID{Scheme: entity.SchemeUID, Value: "0"})
 	fileUser := proven && slices.ContainsFunc(u.IDs, func(i entity.ProtocolID) bool { return i.Scheme == entity.SchemeUID })
 	squashed := !fileUser || p.Squash == entity.SquashAll || root && p.Squash == entity.SquashRoot
+	// decision: a claimed identity is squashed before its grant is read, a
+	// proven one after. A grant on a claimed uid has no security value, since
+	// any client can claim an administrator's uid; a proven principal's grant
+	// names who the proof established, so it decides who may reach a
+	// squashed share. Overturned if a proof kind between Claimed and Secret
+	// is added; it then needs its own order.
+	var groups, deny []entity.Principal
 	if fileUser {
-		if c.Access, err = pr.Grant(ctx, p.Share, mapped); err != nil {
-			return nil, unavailable(err)
+		if groups, deny, err = collect(ctx, pr, mapped, id.Evidence); err != nil {
+			return nil, err
 		}
-		// decision: a squashed proven caller whose own grant is none is
-		// refused here, at resolution, and so is not audited, while an
-		// unsquashed one is refused by the store's check and audited there.
-		// The store reads the grants of the principal a caller acts as, and a
-		// squashed caller acts as another. Overturned once resolution's
-		// refusals are audited, or the store takes a grant of none.
+		if err := s.capped(ctx, mapped, groups); err != nil {
+			return nil, err
+		}
+		if c.Access, err = grant(ctx, pr, p.Share, mapped, groups, true); err != nil {
+			return nil, err
+		}
+		// decision: a squashed proven caller whose grant is none, its own
+		// none or no grant at all, is refused here, at resolution, and so is
+		// not audited, while an unsquashed one is refused by the store's
+		// check and audited there. The store reads the grants of the
+		// principal a caller acts as, and a squashed caller acts as another
+		// whose grants are not the ones read here. Overturned once
+		// resolution's refusals are audited, or the store's check takes the
+		// caller's Access, none included, in place of reading the grants.
 		if squashed && c.Access == entity.AccessNone {
 			return nil, fmt.Errorf("%w: the share grants the caller none", vfserr.ErrAccess)
 		}
@@ -182,13 +207,6 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, built uint64, id 
 	// them matching. It applies to every protocol alike, so a share's policy
 	// means one thing whatever the protocol. Revisit if an operator needs
 	// NFS squashed and SMB not on one share; that is two shares today.
-	//
-	// decision: a claimed identity is squashed before its grant is read, a
-	// proven one after. A grant on a claimed uid has no security value, since
-	// any client can claim an administrator's uid; a proven principal's grant
-	// names who the proof established, so it decides who may reach a
-	// squashed share. Overturned if a proof kind between Claimed and Secret
-	// is added; it then needs its own order.
 	if squashed {
 		if p.Anonymous.IsZero() {
 			return nil, &refusal{reasonAnonymousMissing, fmt.Errorf("%w: the share names no anonymous principal", vfserr.ErrAccess)}
@@ -197,28 +215,102 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, built uint64, id 
 		if _, err := live(ctx, pr, c.Principal, reasonAnonymousMissing); err != nil {
 			return nil, err
 		}
-		c.Groups, err = closure(ctx, pr, c.Principal)
+		if c.Groups, err = closure(ctx, pr, c.Principal); err != nil {
+			return nil, err
+		}
+		if err := s.capped(ctx, c.Principal, c.Groups); err != nil {
+			return nil, err
+		}
+		if !fileUser {
+			if c.Access, err = grant(ctx, pr, p.Share, c.Principal, c.Groups, false); err != nil {
+				return nil, err
+			}
+		}
 	} else {
-		c.Principal, c.Authenticated = mapped, true
+		c.Principal, c.Groups, c.DenyOnly = mapped, groups, deny
+		c.Authenticated = true
 		c.Admin = c.Access == entity.AccessAdmin
 		c.Privileged = c.Admin || root
-		c.Groups, c.DenyOnly, err = collect(ctx, pr, mapped, id.Evidence)
-	}
-	if err != nil {
-		return nil, err
 	}
 	slices.SortFunc(c.Groups, comparePrincipals)
-	// decision: deny-only principals do not count toward the cap. It caps
-	// groups, and a deny-only principal is never one: counting it would
-	// refuse a restricted token for the denies it carries. Both are still
-	// mapped whole or the call fails. Overturned if the cap is read to bound
-	// a token's SIDs, deny-only included.
-	if n := len(c.Groups); n > groupCap {
-		s.logger.WarnContext(ctx, "identity: caller refused over the group cap", "principal", mapped.ID.String(), "groups", n, "cap", groupCap)
-		return nil, &refusal{reasonGroupCap, fmt.Errorf("%w: the caller is in %d groups, over the cap of %d", vfserr.ErrAccess, n, groupCap)}
+	switch {
+	case c.Access == entity.AccessNone:
+	case narrowed != identity.ReadOnlyNotNarrowed:
+		c.Access, c.ReadOnly = entity.AccessRead, narrowed
+	case c.Access == entity.AccessRead:
+		c.ReadOnly = identity.ReadOnlyGrant
 	}
-	c.ReadOnly = narrowed
 	return c, nil
+}
+
+// capped refuses p's groups when they number more than groupCap, logging
+// the count.
+//
+// decision: deny-only principals do not count toward the cap. It caps
+// groups, and a deny-only principal is never one: counting it would refuse a
+// restricted token for the denies it carries. Both are still mapped whole or
+// the call fails. Overturned if the cap is read to bound a token's SIDs,
+// deny-only included.
+func (s *Server) capped(ctx context.Context, p entity.Principal, groups []entity.Principal) error {
+	if n := len(groups); n > groupCap {
+		s.logger.WarnContext(ctx, "identity: caller refused over the group cap", "principal", p.ID.String(), "groups", n, "cap", groupCap)
+		return &refusal{reasonGroupCap, fmt.Errorf("%w: the caller is in %d groups, over the cap of %d", vfserr.ErrAccess, n, groupCap)}
+	}
+	return nil
+}
+
+// grant is of's access to share, read from the share's grants in order,
+// the first that matches deciding: the grant naming of itself, whatever it
+// says; the widest grant naming one of groups; for an authenticated caller,
+// the grant naming authenticated users; the grant naming everyone; else
+// none. groups never holds a deny-only principal, so a deny-only principal's
+// grant never admits.
+//
+// decision: a principal's own grant overrides its groups', including a
+// none. That is how an operator blocks one user of a group without leaving
+// the group, and it is the only way to express it with four access levels.
+// The cost is that a user granted read alone misses a group's read-write.
+// Revisit if operators are shown to expect group grants to widen a user's.
+//
+// ponytail: reads one grant per group, up to groupCap point reads on a
+// cache miss. Read the share's grant list once, under its grant-list
+// version, when a profile shows misses dominated by grant reads.
+func grant(ctx context.Context, pr kvstore.Principals, share entity.ShareID, of entity.Principal, groups []entity.Principal, authenticated bool) (entity.ShareAccess, error) {
+	if a, ok, err := pr.Grant(ctx, share, of); err != nil || ok {
+		return a, storeErr(err)
+	}
+	var access entity.ShareAccess
+	found := false
+	for _, g := range groups {
+		a, ok, err := pr.Grant(ctx, share, g)
+		if err != nil {
+			return 0, unavailable(err)
+		}
+		if ok {
+			found, access = true, max(access, a)
+		}
+	}
+	if found {
+		return access, nil
+	}
+	defaults := []entity.Principal{entity.Everyone}
+	if authenticated {
+		defaults = []entity.Principal{entity.AuthenticatedUsers, entity.Everyone}
+	}
+	for _, d := range defaults {
+		if a, ok, err := pr.Grant(ctx, share, d); err != nil || ok {
+			return a, storeErr(err)
+		}
+	}
+	return entity.AccessNone, nil
+}
+
+// storeErr is err as unavailable, nil kept.
+func storeErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return unavailable(err)
 }
 
 // closure is every group p is in, directly or through nested groups, each
