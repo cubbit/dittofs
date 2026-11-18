@@ -1210,6 +1210,52 @@ func TestAChargeRefusedAfterAdmissionGivesItsSlotBack(t *testing.T) {
 	})
 }
 
+// A handover the server refuses, with the count admission took beside its
+// charge, gives both back once, in its teardown, before the handover
+// returns. The node's limit stays whole: one connection's slot may be taken
+// again, and a take past the limit after it still refuses. A refusal that
+// releases the count a second time spends the limit instead, and the take
+// past it succeeds.
+func TestARefusedHandoverReleasesItsCountOnce(t *testing.T) {
+	b := budgets()
+	b.Conns = resources.NewConnLimit(1)
+	adaptertest.CheckLeaks(t, b)
+	srv, l := testServer(t, adapter.Deps{Budgets: b}, settings.DefaultNFS())
+	// The server is stopped, so a socket handed over has its registration
+	// refused, as a handover racing a Stop does.
+	if err := srv.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	charge, err := b.Connection.Reserve(64 << 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := netip.Addr{}
+	if err := b.Conns.Take(remote); err != nil {
+		t.Fatal(err)
+	}
+	nc, client2 := net.Pipe()
+	refused := core.ServeConnAdmitted(srv, nc, &l, b.Conns, &charge)
+	if r := b.Connection.Reserved(); r != 0 {
+		t.Fatalf("the refused handover's charge is still %d bytes", r)
+	}
+	_ = client2.Close()
+	select {
+	case <-core.ConnDone(refused):
+	case <-time.After(2 * time.Second):
+		t.Fatal("the refused handover's teardown did not end")
+	}
+	// The count is back: one connection's slot may be taken again...
+	if err := b.Conns.Take(remote); err != nil {
+		t.Fatalf("the refused handover kept its count: %v", err)
+	}
+	// ...and the take past the limit, from a fresh address whose own quarter
+	// does not refuse it, still refuses at the limit itself.
+	if err := b.Conns.Take(netip.MustParseAddr("127.0.0.5")); err == nil {
+		t.Error("a second take past the limit succeeded: the refused handover released its count twice")
+	}
+}
+
 // poolCloses is the pool close counter over the test protocol's label.
 func poolCloses(t *testing.T, m *metrics.Registry) float64 {
 	t.Helper()

@@ -346,6 +346,13 @@ func ServeConnCharged(s *Server, nc net.Conn, l *Listener, charge *resources.Res
 	return s.serveConn(nc, l, nil, nil, charge)
 }
 
+// ServeConnAdmitted hands the server a socket with the count its accept loop
+// took at admission beside the connection-state charge, as the loop does: a
+// handover the server refuses then gives both back, each once.
+func ServeConnAdmitted(s *Server, nc net.Conn, l *Listener, count *resources.ConnLimit, charge *resources.Reservation) *Conn {
+	return s.serveConn(nc, l, nil, count, charge)
+}
+
 // Labeled sets on l the label a connection closed at accept counts under,
 // which NewServer reads from its own listeners' nil-Conn stages (§10.1): a
 // listener a test hands to ServeConn carries none, its label being a field

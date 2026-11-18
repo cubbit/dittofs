@@ -124,10 +124,6 @@ func (s *Server) acceptLoop(b *bound) {
 		backoff = 0
 		b.firstFailure.Store(0)
 		b.lastFailure.Store(0)
-		// ponytail: the gate here is the connection-state budget's one global
-		// charge alone, with no per-address cap, so one address can take every
-		// slot. Lift it when connection_limit and the per-address quarter land
-		// (RFC 24 sections 4.4 and 9 R10).
 		if watch != nil {
 			watch.Turn()
 		}

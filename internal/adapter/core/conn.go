@@ -404,8 +404,8 @@ func (c *Conn) closeErr() error {
 
 // release gives the connection's charge back to the connection-state budget
 // and its count to the node's connection count, in that order, each only
-// where admission took it, once, from the teardown, or from the refusal of a
-// NewConn that failed.
+// where admission took it. Each path a connection ends by calls it once: the
+// teardown, or the refusal of a NewConn that failed.
 func (c *Conn) release() {
 	if c.charge != nil {
 		r := c.charge
