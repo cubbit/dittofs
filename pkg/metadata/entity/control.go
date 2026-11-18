@@ -235,6 +235,32 @@ type ExportPolicy struct {
 	Version       uint64 // raised by every change; the authorisation cache key carries it
 }
 
+// SharePolicy is a share's identity policy as resolution reads it, in one
+// snapshot, so a squash, an anonymous principal and the versions a cache keys
+// on never come from two different commits. ShareIndex.Share reads the share
+// and its export policy in one view, and the share's Share.GrantVersion is
+// the grant version of that view; resolution builds SharePolicy from the two
+// through ExportPolicy.SharePolicy, never field by field.
+type SharePolicy struct {
+	Share         ShareID
+	Squash        Squash
+	Anonymous     Principal
+	PolicyVersion uint64 // ExportPolicy.Version
+	GrantVersion  uint64 // the share's grant version row, S‖id‖gv
+}
+
+// SharePolicy is the share's identity policy at grantVersion, which the
+// caller read in the same view as p.
+func (p ExportPolicy) SharePolicy(grantVersion uint64) SharePolicy {
+	return SharePolicy{
+		Share:         p.Share,
+		Squash:        p.Squash,
+		Anonymous:     p.Anonymous,
+		PolicyVersion: p.Version,
+		GrantVersion:  grantVersion,
+	}
+}
+
 // Valid reports whether the policy's minimums can be met together. A
 // protection floor needs a verified proof: a caller allowed in on a claim, or
 // on none, carries no protection, so a share admitting it with a floor

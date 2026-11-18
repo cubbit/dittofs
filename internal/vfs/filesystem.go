@@ -20,6 +20,7 @@ import (
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
 	"github.com/cubbit/dittofs/internal/vfs/quota"
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/openstate"
@@ -40,6 +41,17 @@ type Deps struct {
 	Audit   func(vfs.ShareID) authz.Policy // each share's audit policy; nil: every share's is off
 	Metrics prometheus.Registerer          // nil: the filesystem's metrics are kept but not registered
 	Logger  *slog.Logger                   // nil: slog.Default()
+
+	// Identity resolves each admitted call's Identity to its Caller, Auth
+	// verifies SignIn's rounds, and Names answers Spell and Find.
+	//
+	// decision: nothing reads the three yet: admission still resolves on its
+	// own, and SignIn, Spell and Find answer as they did. They are declared
+	// now so the identity server's consumers are fixed before its bodies are
+	// written; each is read once the call it serves is routed through it.
+	Identity identity.Resolver
+	Auth     identity.Authenticator
+	Names    identity.Identities
 	// Running reports whether the node has bound a share, which admission
 	// serves only then; nil: every share is served.
 	Running func(entity.ShareID) bool

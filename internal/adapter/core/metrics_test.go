@@ -283,6 +283,7 @@ func TestServiceErrorsNameEverySentinel(t *testing.T) {
 		vfs.ErrState: "state", vfs.ErrCross: "cross", vfs.ErrIncomplete: "incomplete",
 		vfs.ErrInconsistent: "inconsistent", vfs.ErrLost: "lost", vfs.ErrUnavailable: "unavailable",
 		vfs.ErrCorrupt: "corrupt", vfs.ErrIO: "io", vfs.ErrPastEnd: "past_end",
+		vfs.ErrLogonFailure: "logon_failure", vfs.ErrUnknownPrincipal: "unknown_principal",
 	}
 	if !maps.Equal(names, want) {
 		t.Errorf("the error label names %v, want %v", names, want)

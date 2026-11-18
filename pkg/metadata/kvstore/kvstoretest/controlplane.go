@@ -413,6 +413,41 @@ func testShareReadsPolicyAndGrantsTogether(t *testing.T, kvo Opener) {
 	}
 }
 
+// The share's identity policy comes from one ShareIndex.Share read through
+// ExportPolicy.SharePolicy: the stored squash, the anonymous principal a
+// policy naming none reads back as, the policy's version and the grant-list
+// version the share's last grant write set.
+func testSharePolicyFromOneRead(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp, ix := s.ControlPlane(), s.ShareIndex()
+	sh, u := share("photos", "/photos"), user("alice")
+	must(t, errOf(CreateShare(ctx, cp, sh)))
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	polVersion, err := cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashRoot}, 0)
+	must(t, err)
+	v, err := cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0)
+	must(t, err)
+
+	got, pol, err := ix.Share(ctx, sh.ID)
+	must(t, err)
+	sp := pol.SharePolicy(got.GrantVersion)
+	if sp.Share != sh.ID {
+		t.Errorf("SharePolicy.Share = %v, want %v", sp.Share, sh.ID)
+	}
+	if sp.Squash != entity.SquashRoot {
+		t.Errorf("SharePolicy.Squash = %v, want %v", sp.Squash, entity.SquashRoot)
+	}
+	if sp.Anonymous == (entity.Principal{}) {
+		t.Errorf("SharePolicy.Anonymous is zero, want the anonymous principal")
+	}
+	if sp.PolicyVersion != polVersion {
+		t.Errorf("SharePolicy.PolicyVersion = %d, want %d", sp.PolicyVersion, polVersion)
+	}
+	if sp.GrantVersion != v {
+		t.Errorf("SharePolicy.GrantVersion = %d, want the grant write's %d", sp.GrantVersion, v)
+	}
+}
+
 // RFC 16 §4.2's quota records (qt, qx) and RFC 17 §5.6: limits on a user,
 // a group or a project; when usage first went above the soft limit, kept
 // until it falls back, restarted by a new soft limit; a principal's

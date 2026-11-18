@@ -50,10 +50,6 @@ func (c storeCode) Error() string { return merrs.ErrorCode(c).String() }
 // of its *merrs.StoreError's code, so a cause the store error carries answers
 // before the code that wraps it. A typed error matches the row of the
 // sentinel it is, so vfserr's *AccessError answers as ErrAccess.
-//
-// Identity's logon failure and unknown principal are to be declared in
-// vfserr, whose every error this table must name, and its unavailable is
-// already vfserr.ErrUnavailable.
 var components = []struct {
 	err error
 	answerOf
@@ -105,6 +101,15 @@ var components = []struct {
 	{vfserr.ErrCorrupt, answerOf{http.StatusInternalServerError, "corrupt", false}},
 	{vfserr.ErrIO, answerOf{http.StatusInternalServerError, "io", false}},
 	{vfserr.ErrPastEnd, answerOf{http.StatusBadRequest, "past_end", false}},
+	// decision: a failed sign-in answers the API's own 401 code, not its
+	// name, so a refused credential reads as any other missing or refused
+	// token (RFC 23 §5.3) and the body tells no failure apart. It is the one
+	// component error answered by another code; withdraw it if a client must
+	// tell a failed sign-in from an expired token.
+	{vfserr.ErrLogonFailure, answerOf{http.StatusUnauthorized, apiv1.CodeUnauthenticated, false}},
+	// A spelling no principal holds is a refused value, the name the write
+	// carried, not a missing resource.
+	{vfserr.ErrUnknownPrincipal, answerOf{http.StatusBadRequest, "unknown_principal", false}},
 	{vfserr.ErrFileOpen, answerOf{http.StatusInternalServerError, "file_open", false}},
 
 	// ponytail: the metadata store's codes, and kv's errors below, are

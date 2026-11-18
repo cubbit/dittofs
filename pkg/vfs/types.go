@@ -2,14 +2,13 @@
 // protocol adapters call, the values they pass and receive, the errors they
 // map, and the codecs of every name a client holds. An adapter imports this
 // package and nothing else of the core, so every type it needs from the
-// metadata store or open state is aliased here.
+// metadata store, open state or identity is aliased here.
 package vfs
 
 import (
-	"net/netip"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/auth/sid"
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/openstate"
 )
@@ -108,21 +107,48 @@ const (
 	ChangeEnumerate = openstate.ChangeEnumerate
 )
 
-// Identity is what the adapter proved for one request, not yet mapped through
-// any share's policy, in no protocol's terms: each adapter maps its own
-// flavour and mechanism to a ProofKind and a Protection. It never carries a
-// session key.
-//
-// ponytail: Identity, its parts, and the sign-in and spelling types below are
-// declared here because the identity package that should declare them does
-// not exist yet; move them there and alias them here once it does.
-type Identity struct {
-	Proof      ProofKind
-	Protection Protection
-	Claims     Claims     // what the client asserted; read only at ProofClaimed, never as proof
-	Evidence   Evidence   // what sign-in established; zero below ProofSecret
-	Client     netip.Addr // the client's address, which client rules read
-}
+// Identity's value types an adapter passes or receives.
+type (
+	Identity         = identity.Identity
+	ProofKind        = identity.ProofKind
+	Protection       = identity.Protection
+	Claims           = identity.Claims
+	Evidence         = identity.Evidence
+	SignInStep       = identity.SignInStep
+	SignInService    = identity.Service // vfs.Service is the filesystem's interface
+	NTLMAuthenticate = identity.NTLMAuthenticate
+	SignInResult     = identity.SignInResult
+	Keys             = identity.Keys
+	Scheme           = identity.Scheme
+	Spelling         = identity.Spelling
+)
+
+// The values of identity's enumerations, so an adapter names them from here.
+const (
+	ProofNone    = identity.ProofNone
+	ProofClaimed = identity.ProofClaimed
+	ProofSecret  = identity.ProofSecret
+	ProofTicket  = identity.ProofTicket
+
+	ProtectionNone      = identity.ProtectionNone
+	ProtectionIntegrity = identity.ProtectionIntegrity
+	ProtectionPrivacy   = identity.ProtectionPrivacy
+
+	ServiceNFS  = identity.ServiceNFS
+	ServiceCIFS = identity.ServiceCIFS
+	ServiceHost = identity.ServiceHost
+
+	SchemeUID       = identity.SchemeUID
+	SchemeGID       = identity.SchemeGID
+	SchemeSID       = identity.SchemeSID
+	SchemeKrb       = identity.SchemeKrb
+	SchemeDir       = identity.SchemeDir
+	SchemeUserName  = identity.SchemeUserName
+	SchemeGroupName = identity.SchemeGroupName
+	SchemeOIDC      = identity.SchemeOIDC
+	SchemeOwner     = identity.SchemeOwner
+	SchemeQualified = identity.SchemeQualified
+)
 
 // Call is one call's caller: the Identity it proved and, beside it, never in
 // it, the client, session and channel it came on. Every Service method that
@@ -151,106 +177,6 @@ type Call struct {
 		Seq    uint16 // the SMB channel sequence the request carried
 		Replay bool   // the request is marked a replay
 	}
-}
-
-// ProofKind is how the sender was proved, in increasing order.
-type ProofKind uint8
-
-const (
-	ProofNone    ProofKind = iota // an anonymous or guest caller
-	ProofClaimed                  // POSIX ids asserted, nothing verified
-	ProofSecret                   // a shared-secret challenge, such as NTLM
-	ProofTicket                   // a third party's mutual proof, such as Kerberos
-)
-
-// Protection is how the request's messages are protected, in increasing order.
-type Protection uint8
-
-const (
-	ProtectionNone      Protection = iota
-	ProtectionIntegrity            // every message signed
-	ProtectionPrivacy              // every message sealed
-)
-
-// Claims are POSIX ids a client asserted. They name no principal until the
-// filesystem maps them, and never make a caller authenticated.
-type Claims struct {
-	UID, GID uint32
-	GIDs     []uint32
-}
-
-// Evidence is what one sign-in established, and no key.
-type Evidence struct {
-	Name      string    // the proven name; empty: none
-	Principal Principal // what sign-in bound Name to; zero: none
-	SIDs      []sid.SID // the user's first
-	DenyOnly  []sid.SID
-	Expires   time.Time // the ticket's end; zero for NTLM
-}
-
-// SignInStep is one verification round: a Kerberos AP-REQ for Service, or a
-// decoded NTLM AUTHENTICATE answering Challenge.
-type SignInStep struct {
-	Kerberos  []byte
-	Service   SignInService
-	NTLM      *NTLMAuthenticate
-	Challenge [8]byte
-	Client    netip.Addr
-	Context   *Evidence // the context's current evidence, on a re-authentication; nil otherwise
-}
-
-// SignInService is the keytab service name a ticket is for.
-type SignInService uint8
-
-const (
-	ServiceNFS SignInService = iota + 1
-	ServiceCIFS
-	ServiceHost
-)
-
-// NTLMAuthenticate is a decoded NTLM AUTHENTICATE message, with the bytes of
-// the three messages kept as sent so the MIC can be checked.
-type NTLMAuthenticate struct {
-	User, Domain, Workstation       string
-	NTResponse, EncryptedSessionKey []byte
-	MIC                             []byte
-	Flags                           uint32
-	AVFlags                         uint32
-	Negotiate, Challenge, Raw       []byte
-}
-
-// SignInResult is the Identity a sign-in proved and, beside it, never in it,
-// the keys the adapter's mechanism needs.
-type SignInResult struct {
-	Identity Identity
-	Keys     Keys
-}
-
-// Keys is what signing, sealing and the AP-REP need.
-type Keys struct{ Session, Subkey, APRep []byte }
-
-// Scheme names how a protocol spells a principal.
-type Scheme uint8
-
-const (
-	SchemeUID Scheme = iota + 1
-	SchemeGID
-	SchemeSID
-	SchemeKrb
-	SchemeDir
-	SchemeUserName
-	SchemeGroupName
-	SchemeOIDC
-	SchemeOwner // an NFSv4 owner string
-	SchemeQualified
-)
-
-// Spelling is one protocol's name for a principal: Num, SID or Text, by Scheme.
-type Spelling struct {
-	Scheme Scheme
-	Num    uint32
-	SID    sid.SID
-	Text   string
 }
 
 // Target is what a mutation acts on: the file for an attribute change, the

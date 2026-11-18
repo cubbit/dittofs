@@ -119,7 +119,7 @@ suites:
       # The architecture rules and the CLI reference check read the whole module, so a change
       # anywhere can break them; with no {packages}, dt run --changed never narrows them away.
       whole-tree:
-        cmd: go test -race -timeout=5m -run=^(TestImportRules|TestNodeExports|TestReferenceMatchesCommandTrees)$ ./internal/node/ ./cmd/gendocs/
+        cmd: go test -race -timeout=5m -run=^(TestImportRules|TestNodeExports|TestReferenceMatchesCommandTrees|TestImports)$ ./internal/node/ ./cmd/gendocs/ ./pkg/identity/
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:
@@ -212,6 +212,8 @@ suites:
           - pkg/adapter/**
           - pkg/metadata/**
           - internal/auth/**
+          - internal/identity/**            # the identity server: sign-in and resolution
+          - pkg/identity/**                 # identity's contract
           - pkg/auth/**
           - pkg/config/**                   # the Kerberos keytab and principal
           - cmd/dfs/**                      # the server's Kerberos capability at start
@@ -235,6 +237,7 @@ suites:
           - pkg/vfs/**
           - pkg/metadata/**
           - pkg/auth/**                       # the SIDs both adapters encode
+          - pkg/identity/**                   # the caller and identity types both adapters carry
           - test/e2e/framework/**             # the mount and fixture code the option runs on
 
   # Conformance runs the production profile, badger-s3, only.

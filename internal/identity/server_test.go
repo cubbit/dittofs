@@ -1,0 +1,139 @@
+package identity_test
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/cubbit/dittofs/internal/identity"
+	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+)
+
+// newStore opens an initialised in-memory metadata store, closed at the
+// test's end before the leak check runs, since cleanups run last-in first-out
+// and the check is registered first.
+func newStore(t *testing.T) *kvstore.Store {
+	t.Helper()
+	ctx := context.Background()
+	db, err := badgerkv.Open(badgerkv.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := kvstore.Init(ctx, db, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	st, err := kvstore.Open(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// newServer builds a server over a fresh store, under the leak check.
+func newServer(t *testing.T) *identity.Server {
+	t.Helper()
+	prof.Watch(t, prof.Options{})
+	s, err := identity.New(identity.Deps{Store: newStore(t)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s
+}
+
+func TestNewRefusesNoStore(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		store identity.Store
+	}{
+		{"nil", nil},
+		{"typed nil", (*kvstore.Store)(nil)},
+	} {
+		if s, err := identity.New(identity.Deps{Store: tc.store}); err == nil {
+			t.Errorf("New with a %s store = %v, nil; want an error", tc.name, s)
+		}
+	}
+}
+
+// New starts nothing, so a server built and stopped, never started, leaves
+// nothing running.
+func TestNewStartsNothing(t *testing.T) {
+	s := newServer(t)
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// The first Apply comes before Start: a Start with none is refused, and one
+// after it succeeds.
+func TestStartNeedsAnApply(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	if err := s.Start(ctx); !errors.Is(err, identity.ErrNotApplied) {
+		t.Fatalf("Start before Apply = %v, want ErrNotApplied", err)
+	}
+	if err := s.Apply(identity.State{Generation: 1}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start after Apply = %v, want nil", err)
+	}
+	if err := s.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// Stop drops the applied State, and leaves no goroutine Start started.
+func TestStopDropsItsState(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	if err := s.Apply(identity.State{Generation: 1}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := s.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := s.Applied(); got != nil {
+		t.Errorf("State after Stop = %+v, want none", *got)
+	}
+}
+
+// Apply swaps a State in whole: concurrent Applies and a reader of the
+// current State never race, which only the race detector checks. With one
+// field a reader cannot see part of one Apply and part of another; the test
+// that pairs fields across Applies lands with State's second field.
+func TestApplySwapsTheStateWhole(t *testing.T) {
+	s := newServer(t)
+	if err := s.Apply(identity.State{Generation: 1}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	var wg sync.WaitGroup
+	for g := range uint64(4) {
+		wg.Go(func() {
+			for i := range uint64(200) {
+				if err := s.Apply(identity.State{Generation: g*1000 + i}); err != nil {
+					t.Errorf("Apply: %v", err)
+				}
+			}
+		})
+	}
+	wg.Go(func() {
+		for range 800 {
+			st := s.Applied()
+			if st == nil {
+				t.Error("no State applied while Applies run")
+				return
+			}
+			_ = st.Generation
+		}
+	})
+	wg.Wait()
+}
