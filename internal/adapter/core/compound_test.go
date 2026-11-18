@@ -305,6 +305,19 @@ func TestACompoundRunsPastANotFailureStatus(t *testing.T) {
 	}
 }
 
+// A member whose error joins a NotFailure row's error to one a failure's row
+// maps is answered that failure, and the members after it do not run: a
+// PutFH, an Echo answered its NotFailure error joined to ErrIO, and a Create
+// end at the Echo's StatusIO with no file made (RFC 20 §4.7's Map).
+func TestAJoinedFailureEndsTheCompound(t *testing.T) {
+	s := newServed(t, 1<<20, adapter.Deps{})
+	joined := testproto.Msg{Op: testproto.OpEcho, Payload: []byte(testproto.JoinedIO)}
+	s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, joined, testproto.Msg{Op: testproto.OpCreate, Name: "a"})
+	if st, rs := s.results(); st != testproto.StatusIO || !slices.Equal(rs, []core.Status{testproto.StatusOK, testproto.StatusIO}) || s.creates() != 0 {
+		t.Errorf("a compound past a joined failure is answered %d with results %v, %d files made; want it ended at the Echo's StatusIO and no file", st, rs, s.creates())
+	}
+}
+
 // A compound of 9 members is answered the too-long status with no member
 // read or run; one of 8 runs.
 func TestTheCapAtNineAndEight(t *testing.T) {

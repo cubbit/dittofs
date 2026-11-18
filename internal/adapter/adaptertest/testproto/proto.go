@@ -37,6 +37,7 @@ const (
 	StatusChecksum                   // a checksum that does not match, or a message sent clear under a session: the stages' table
 	StatusOverdraw                   // a message that charges more credits than the connection holds: the stages' table
 	StatusNotFailure                 // an Echo whose payload is NotFailure: a NotFailure row's, so a compound runs on past it and a chain's related members run
+	StatusIO                         // vfs.ErrIO: an Echo whose payload is JoinedIO, its NotFailure error joined to ErrIO
 )
 
 // NotFailure is the Echo payload that asks for StatusNotFailure, a status
@@ -46,6 +47,11 @@ const NotFailure = "not a failure"
 // errNotFailure is what Echo returns for a NotFailure payload: an error of
 // its own, which no other operation returns, as a NotFailure row's must be.
 var errNotFailure = errors.New("testproto: an Echo answered no failure")
+
+// JoinedIO is the Echo payload whose call returns errNotFailure joined to
+// vfs.ErrIO, which maps to StatusIO, a failure, never to StatusNotFailure
+// (RFC 20 §4.7's Map).
+const JoinedIO = "not a failure, joined to an I/O error"
 
 // Name is the protocol label testproto's tables and stages record under.
 const Name = "testproto"
@@ -277,8 +283,9 @@ func (p *Protocol) build() [2]*core.OpTable {
 // holds.
 //
 // decision: the tables are not total. They map core's refusals, the service's
-// ErrDelay and its DelayResources delay, a cancel, the two drain errors and
-// Echo's NotFailure pair, and nothing else, so a service error no row maps is
+// ErrDelay and its DelayResources delay, a cancel, the two drain errors,
+// Echo's NotFailure pair and ErrIO, which Echo's JoinedIO joins to that
+// pair's error, and nothing else, so a service error no row maps is
 // reachable and answered StatusFault. Totality is a real protocol's property,
 // checked on NFS's and SMB's tables. Withdraw it if a core test needs a
 // service error this table leaves unmapped to have a status of its own.
@@ -313,6 +320,7 @@ func errorRows(holds bool) []core.ErrorRow {
 		{Err: core.ErrDraining, NoReply: true},
 		{Err: core.ErrMoved, NoReply: true},
 		{Err: errNotFailure, Ops: []uint32{OpEcho}, NotFailure: true, Status: StatusNotFailure},
+		{Err: vfs.ErrIO, Status: StatusIO},
 	}
 }
 
@@ -450,11 +458,14 @@ func echoBound(_ *core.Request, req *echoReq, _ int) (int, bool) { return len(re
 
 func echoRole(_ *core.Request, req *echoReq) core.Role { return req.role }
 
-// echo answers the payload, or errNotFailure where the payload is
-// NotFailure.
+// echo answers the payload, errNotFailure where the payload is NotFailure,
+// and errNotFailure joined to vfs.ErrIO where it is JoinedIO.
 func echo(_ context.Context, _ *core.Request, req *echoReq) (*[]byte, error) {
-	if string(req.payload) == NotFailure {
+	switch string(req.payload) {
+	case NotFailure:
 		return nil, errNotFailure
+	case JoinedIO:
+		return nil, errors.Join(errNotFailure, vfs.ErrIO)
 	}
 
 	return &req.payload, nil
