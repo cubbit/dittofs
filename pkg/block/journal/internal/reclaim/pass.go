@@ -67,6 +67,9 @@ type Pass struct {
 	// res bounds the pass's copying by the repack reserve and counts each
 	// copy to it while its source remains.
 	res Reserve
+	// seal closes a share's active segments before a share-scoped pass
+	// selects; nil seals nothing. Set before the first Run.
+	seal *Sealer
 
 	// decision: mu is a leaf. It guards the stop flag and the run count's
 	// admission alone — spent once to refuse a Run begun after Stop and to
@@ -93,6 +96,11 @@ func NewPass(sel *Selector, cop *Copier, tr *Tracker, ix *index.Index, set *segm
 	}
 	return &Pass{sel: sel, cop: cop, tr: tr, ix: ix, set: set, dur: dur, wait: wait, ret: ret, end: end, acct: acct, res: res}
 }
+
+// SetSealer gives the pass the sealer a share-scoped run closes the share's
+// active segments with. It runs before the pass is shared, and a nil sealer
+// leaves every scope sealing nothing.
+func (p *Pass) SetSealer(s *Sealer) { p.seal = s }
 
 // Stop interrupts every running pass between its units and joins it. What the
 // in-flight unit does depends on where it stands: a segment it is already
@@ -173,6 +181,13 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 	// nothing can stop early. Overturned by a wait or poll for the refill, or
 	// by a caller contract that retries after the retirements report.
 	allowed := p.res.held()
+	// The share seal: only a pass aimed at one share by tag alone closes
+	// its active segments, which no selection offers while they are open. A
+	// zero scope and a segment-set scope name segments or none, and seal
+	// nothing. A budget that runs no unit seals nothing either.
+	if p.seal != nil && budget > 0 && scope.Share != 0 && len(scope.Segments) == 0 {
+		p.seal.SealShare(scope.Share)
+	}
 	// reheld are the sources whose unit stayed: their claims — the run's,
 	// not the unit's, from the moment they stay — keep every later Select
 	// of the run from offering them again, and release when the run ends.

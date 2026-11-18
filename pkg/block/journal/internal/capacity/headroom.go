@@ -17,7 +17,9 @@ const RecordCharge = 224
 // RecordClass is which record without bytes an admission is for. The classes
 // split three ways at the admission table: what frees nothing (Hold, Stamp,
 // CloneTarget), what an open appends to its own reserve (Open), and the
-// repack copy, which draws on the repack reserve, not the headroom.
+// repack copy, which draws on the repack reserve, not the headroom. Seal, the
+// marker a share-scoped repack closes an active segment with, is a class that
+// returns space, so it draws like a release does.
 type RecordClass uint8
 
 const (
@@ -36,12 +38,13 @@ const (
 	Reconciled
 	Open
 	RepackCopy
+	Seal
 )
 
 var classNames = [...]string{
 	"", "release", "truncate", "deallocate", "delete", "clone_target",
 	"offloaded", "unmark", "loss", "hold", "unhold", "stamp", "forget",
-	"reconciled", "open", "repack_copy",
+	"reconciled", "open", "repack_copy", "seal",
 }
 
 // String returns the class's name, or its number for a value the table does

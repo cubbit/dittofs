@@ -251,6 +251,7 @@ type Core struct {
 	retiring      *reclaim.Worker     // the retirement worker that turns liveness into retirements
 	repack        *reclaim.Pass       // the repack pass, over the same pieces the worker serves
 	openPayload   bool                // the set carried the open registration Continue asks the credential of
+	unread        *unread.Set         // the records no read returned, kept for the per-segment rows
 	sealer        *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
 
 	held, dirty, retained atomic.Int64
@@ -747,6 +748,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// stayed sources by holding their claims, never by touching a pin, so
 	// nothing a pass does can delete an offer's.
 	pun := unread.New(deps.Clock)
+	c.unread = pun
 	pins := reclaim.NewPins()
 	c.repack = reclaim.NewPass(
 		reclaim.NewSelector(state.Set, state.Index, pun, d, pins),
@@ -791,6 +793,8 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 			Count:    c.cap.CopyLanded,
 			Transfer: c.cap.CopiesTransfer,
 		})
+
+	c.repack.SetSealer(reclaim.NewSealer(c.streams, state.Set, c.headroom.Admit, c.headroom.Drawn, c.headroom.Refund))
 
 	// The open's registration: a core continued from a rebuilt state
 	// registers every record the rebuild found still live on disk through
@@ -965,6 +969,10 @@ func deferredLossOf(l durability.Loss) reclaim.DeferredLoss {
 
 // Durability returns the durability layer.
 func (c *Core) Durability() *durability.Durability { return c.dur }
+
+// Unread returns the set of records no read returned, which the repack
+// pass's reads mark and the per-segment rows report.
+func (c *Core) Unread() *unread.Set { return c.unread }
 
 // Streams returns the append streams.
 func (c *Core) Streams() *segment.Streams { return c.streams }

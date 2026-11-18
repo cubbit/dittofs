@@ -86,6 +86,14 @@ func newCopyFixture(t *testing.T) *copyFixture {
 // for a test that reads the spans the core emits; nil traces nothing.
 func newCopyFixtureTraced(t *testing.T, tracer core.Tracer) *copyFixture {
 	t.Helper()
+	return newCopyFixtureBounded(t, tracer, 0, copyHeadroomRecords)
+}
+
+// newCopyFixtureBounded is newCopyFixtureTraced over a journal whose
+// footprint maximum is maxBytes (zero: unbounded) and whose headroom is
+// headroomRecords records.
+func newCopyFixtureBounded(t *testing.T, tracer core.Tracer, maxBytes int64, headroomRecords int) *copyFixture {
+	t.Helper()
 	dir := t.TempDir()
 	seam, err := kit.NewSeam(dir)
 	if err != nil {
@@ -106,8 +114,8 @@ func newCopyFixtureTraced(t *testing.T, tracer core.Tracer) *copyFixture {
 		Identity:        copyIdentity,
 		Streams:         copyStreams,
 		SegmentCap:      copySegCap,
-		MaxBytes:        0,
-		HeadroomRecords: copyHeadroomRecords,
+		MaxBytes:        maxBytes,
+		HeadroomRecords: headroomRecords,
 		Targets:         segment.Targets{Content: 1, Reserve: 1, Headroom: 1},
 	}, datapath.State{Index: ix, Counters: counters})
 	if err != nil {

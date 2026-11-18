@@ -1237,6 +1237,9 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	if err != nil {
 		return s.endTaken(id, Ref{}, err)
 	}
+	// The set learns whose segment this is outside the append lock: its own
+	// lock ranks above that one's, so it is never taken under it.
+	s.set.SetStream(id, s.no)
 	buf := format.AppendSegmentHeader(nil, format.SegmentHeader{
 		Identity:    s.identity,
 		ID:          id,
@@ -1930,6 +1933,18 @@ func (s *Stream) AcquireRead(seg core.SegmentID) (Ref, error) {
 		return Ref{}, ErrStreamClosed
 	}
 	return s.cache.Acquire(seg)
+}
+
+// OpenSegment returns the segment the stream appends to, when it takes
+// appends: false for a stream that has not taken a segment, a closed one, or
+// one whose segment is sealing, sealed or ended.
+func (s *Stream) OpenSegment() (core.SegmentID, bool) {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+	if s.closed || s.id == 0 || s.sealState != sealOpen {
+		return 0, false
+	}
+	return s.id, true
 }
 
 // Identity returns the journal identity the stream seeds its records'

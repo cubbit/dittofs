@@ -31,6 +31,12 @@ type Candidate struct {
 	Unreclaimed int64
 }
 
+// Unreclaimed is the part of a segment accounted at size that backs nothing,
+// given the live bytes the index still holds in it: the size less them,
+// floored at zero. Selection and the per-segment rows both read it, so the
+// figure has one definition.
+func Unreclaimed(size, live int64) int64 { return max(0, size-live) }
+
 // Durability is what a selection asks of the durability service.
 type Durability interface {
 	WindowOpen(core.SegmentID) bool
@@ -247,7 +253,7 @@ func (s *Selector) Select(scope Scope, limit int) []Candidate {
 		}
 		b := s.ix.SegmentBytes(r.ID)
 		live := b.Held + b.Retained
-		out = append(out, Candidate{ID: r.ID, Live: live, Unreclaimed: max(0, r.Size-live)})
+		out = append(out, Candidate{ID: r.ID, Live: live, Unreclaimed: Unreclaimed(r.Size, live)})
 	}
 	// The snapshot is id-ascending, so a stable sort keeps the oldest first
 	// among equals.

@@ -200,8 +200,11 @@ type Set struct {
 // and only that Set reaches an entry — the capacity lock domain its owner
 // names covers it.
 type entry struct {
-	state   State
-	size    int64
+	state State
+	size  int64
+	// stream is the append stream that took the segment, zero until a stream
+	// names it: a segment an open adopted is not named.
+	stream  uint32
 	claimed bool
 	// full is what the seal named: true only for a segment closed at its cap
 	// by a full seal, never for one the seal named early — whose truncation
@@ -549,6 +552,16 @@ func (s *Set) AdoptRebuilt(id core.SegmentID, size int64, st State, full bool, t
 	return nil
 }
 
+// SetStream records that stream no took segment id, for its row to report. A
+// segment not in the set is left alone.
+func (s *Set) SetStream(id core.SegmentID, no uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.segs[id]; ok {
+		e.stream = no
+	}
+}
+
 // Take carries a spare into the set, as the segment a stream appends to. The
 // storage is already accounted, so the footprint does not move: it moves only
 // when a segment is created, unlinked or shortened.
@@ -811,7 +824,15 @@ type Row struct {
 	ID    core.SegmentID
 	State State
 	Size  int64
-	Tags  map[core.ShareTag]int64
+	// Stream is the append stream that took the segment; zero for one an
+	// open adopted, which no stream has named.
+	//
+	// ponytail: an adopted segment reports stream zero, for the rebuild keeps
+	// no header's stream beside its scan. Upgrade to carrying the scanned
+	// header's stream into the adoption when a reader needs the stream of a
+	// segment that predates this process.
+	Stream uint32
+	Tags   map[core.ShareTag]int64
 }
 
 // Snapshot lists every segment of the set, spares excluded, in ascending id
@@ -824,7 +845,7 @@ func (s *Set) Snapshot() []Row {
 
 	rows := make([]Row, 0, len(s.segs))
 	for id, e := range s.segs {
-		rows = append(rows, Row{ID: id, State: e.state, Size: e.size, Tags: maps.Clone(e.tags)})
+		rows = append(rows, Row{ID: id, State: e.state, Size: e.size, Stream: e.stream, Tags: maps.Clone(e.tags)})
 	}
 	slices.SortFunc(rows, func(a, b Row) int { return cmp.Compare(a.ID, b.ID) })
 	return rows
