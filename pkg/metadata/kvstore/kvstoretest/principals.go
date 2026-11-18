@@ -520,15 +520,22 @@ func testAllocNeedsRID(t *testing.T, kvo Opener) {
 // numbers, followed by the RID, from 1000.
 func testAllocatedSID(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
+	_, got := allocUser(t, s, "alice", fileRange)
+	if want := ridSID(t, s, 1000); got != want {
+		t.Errorf("allocated SID %x, want %x", got, want)
+	}
+}
+
+// ridSID is the encoded SID the installation's domain SID and rid make,
+// computed here from the installation ID rather than by the store.
+func ridSID(t *testing.T, s *kvstore.Store, rid uint32) string {
+	t.Helper()
 	in, err := s.Installation(ctx)
 	must(t, err)
-	_, got := allocUser(t, s, "alice", fileRange)
 	le := binary.LittleEndian
-	want, err := sid.ParseSIDString(fmt.Sprintf("S-1-5-21-%d-%d-%d-1000", le.Uint32(in.ID[0:]), le.Uint32(in.ID[4:]), le.Uint32(in.ID[8:])))
+	want, err := sid.ParseSIDString(fmt.Sprintf("S-1-5-21-%d-%d-%d-%d", le.Uint32(in.ID[0:]), le.Uint32(in.ID[4:]), le.Uint32(in.ID[8:]), rid))
 	must(t, err)
 	var b bytes.Buffer
 	sid.EncodeSID(&b, want)
-	if got != b.String() {
-		t.Errorf("allocated SID %x, want %x (%s)", got, b.String(), sid.FormatSID(want))
-	}
+	return b.String()
 }

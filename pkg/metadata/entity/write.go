@@ -63,6 +63,28 @@ type Alloc struct {
 	Range         IDRange
 }
 
+// MintBatch is one Minter create: each record with the IDs to allocate for
+// it. A record marked Unnamed is minted without its name, so a name another
+// principal holds never fails the batch.
+type MintBatch struct {
+	Users  []MintUser
+	Groups []MintGroup
+}
+
+// MintUser is a user or machine record of a MintBatch.
+type MintUser struct {
+	User    User
+	Alloc   Alloc
+	Unnamed bool
+}
+
+// MintGroup is a group record of a MintBatch.
+type MintGroup struct {
+	Group   Group
+	Alloc   Alloc
+	Unnamed bool
+}
+
 // WriteMeta is what a control-plane write records beside its change, each in
 // the change's own transaction. The write's function may complete the
 // records through these pointers: the audit record's After and Outcome, the
