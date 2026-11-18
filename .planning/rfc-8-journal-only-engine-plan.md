@@ -28,8 +28,8 @@ and built on top of this part, not beside it. Related RFCs, with how far each is
 "the engine (RFC 8)". This part is built by rif's team, which built stages 1 and 2. The
 journal v2 team, Davide (`didimelli`) and Vitor (`viquitorreis`), coordinated by Simone
 (`simonebaracchi`), builds the journal itself, RFC 1 and RFC 28, which this part sits on.
-#3119's stage list and the journal plan's epic 11 still give all of stage 3 to the journal
-v2 team (§6, point 1). Stage 3 replaces nothing that a later stage deletes: today's engine
+#3119's stage list still gives all of stage 3 to the journal v2 team, and the journal plan's
+epic 11 is superseded by this plan (§6, point 1). Stage 3 replaces nothing that a later stage deletes: today's engine
 keeps serving `develop` until the cutover (stage 7), and this part is composed by no root
 before `node.New`, which RFC 23's plan's epic 3 (#4050) builds.
 **Naming:** **v1** was the engine before this plan, `pkg/block/engine` until #3645 deleted it on `feat/storage-v2`, over one journal per
@@ -499,8 +499,8 @@ flowchart TD
   `SetVersionLimit`, `Truncate`, `Deallocate`, `Delete`, `CloneTarget`, `Reserve`, `Since`,
   `Settle`, `Files`, the named refusals and `Stats`; E6's `Sync`, loss records, the
   loss ring and failed windows; E7a's `Open` with floor and `expect`; E9a's `Repack`,
-  auto-retire, `Forget` and `Strand`, and none of E9b's offload half; E10's `J‖journal`
-  record written by the initialisation step; and what §6 point 8 asks of RFC 1 for T7.1,
+  auto-retire, `Forget` and `Strand`, and none of E9b's offload half; the `J‖journal`
+  record written by the initialisation step (the RFC 23 plan's epic 5); and what §6 point 8 asks of RFC 1 for T7.1,
   `Repack` scoped to a share sealing the scope's active segments itself and unreclaimed
   bytes per segment; the scope's sync is the handle's `Sync` over its `Files`, which
   `journal` has. The first rows to turn green come with the
@@ -1093,10 +1093,10 @@ follows the journal's, not this part's (§6 point 7).
 
 **Programme and ownership**
 1. **Ownership.** rif's team builds this part. #3119's stage list ("Stage 3: the engine
-   (RFC 8), journal v2 team (#3152)") and the journal plan's epic 11 ("Engine on the RFC 16
-   store … team", planned after S4a, which also makes the `Content` check epic 11's) say
-   otherwise. Both need revising: epic 11 narrows to RFC 8's second part, and the `Content`
-   check moves here (T9.2). Pending the journal v2 team's agreement.
+   (RFC 8), journal v2 team (#3152)") says otherwise, and the journal plan's epic 11 ("Engine on the RFC 16
+   store … team", which also made the `Content` check epic 11's) is now superseded by this
+   plan: its leftovers are RFC 8's second part, and the `Content` check moves here (T9.2).
+   The journal plan's epic 13 takes the journal's own exports.
 
 **Settled in #3543, carried by #3547**
 2. **#3547**, against `develop` and cherry-picked here, carries the

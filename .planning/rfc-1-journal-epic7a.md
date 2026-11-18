@@ -211,8 +211,8 @@ each refusal.
   liveness tracker of its T9.1, which says whether a header-only record and a segment are live.
 - **E9b**, the rest of epic 9: `Offload`, `report`, pins, `MarkOffloaded`, `Unmark`, `Release`,
   the stale rule, snapshot holds and `Stamp`.
-- **E10**, epic 10, start and initialisation: the start check and the device configuration.
-- **E11**, epic 11, the engine on the RFC 16 store: the caller that opens each journal at
+- **E10**, epic 10, the start check: the start check and the device configuration.
+- **E11**, epic 11, the engine on the RFC 16 store (superseded: RFC 8's journal-only engine plan owns it): the caller that opens each journal at
   start.
 - **E12**, epic 12, e2e green: the burn-down of the known-failure list.
 - **S1**, interfaces frozen: E1's exported surface no longer changes.
@@ -256,7 +256,7 @@ each refusal.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
-   checks only whether v1 state exists, to refuse it at start (E10), and never reads
+   checks only whether v1 state exists, to refuse it at start (the RFC 23 plan's T3.9), and never reads
    v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
@@ -288,8 +288,8 @@ each refusal.
 | 3 Metrics and tracing | T7.4, T7.10, T7.12, T7.14 | `Recovery` (segments read by catalog and by scan, and how long), `RejectedSegments`, `torn_tails` and `scan_resyncs` are set as the open finds each, `SyncMarks` once the re-appends have run (T7.14), and `DamagedSegments` is raised through the segment set's damage mark; `corrupt_extents` is E6's, raised by `Lose`. The `open` span wraps `Open`, with one child span per phase (attach, rebuild, marks (raise and withhold), tail proof, marks (lost-tail check), spares, re-append, assembly, cut and seal, emptying) |
 | 4 Profiling | T7.2, T7.3, T7.15 | every test runs under E2's profiler: an open that fails or is cancelled leaks no descriptor or goroutine; a rebuild's peak heap is recorded at 10⁶ records outside `-race` (the builder's own `ponytail:` names its ceiling). The hot paths of rule 4 are other epics'; the open has no counted check of RFC 1 §9.7 |
 | 5 Public and internals, `-race` | all | the internal `recovery` package is tested directly, and the public `Open` once the checkpoint after T7.12 enables it. The concurrent rebuild runs under `-race` (T7.2). A value this epic rebuilds is checked where it is consumed: `ReadAt`, `Since`, `Files`, `DirtyFiles`, `Stats` and the refusals of E8, not the builder's state |
-| 6 Known failures | T7.12, T7.13, T7.15 | each conformance test leaves `known.yaml` in the change that turns it green. Before T7.12 the public `Open` answers `ErrNotImplemented`, so the rows of R69–R75 are run through `recovery.Run` in their subtask and leave the list in T7.12, or in T7.13 where an ended segment is emptied; T7.15 only re-points the entries this epic does not turn green to the epic that will |
-| 7 v2 ignores v1 | all | the import test forbade v1's journal until it was deleted. Nothing of v1's journal is read; the open never looks for v1 state (that is E10's start check) |
+| 6 Known failures | T7.12, T7.13, T7.15 | each conformance test leaves `known.yaml` in the change that turns it green. Before T7.12 the public `Open` answers `ErrNotImplemented`, so the rows of R69–R75 are run through `recovery.Run` in their subtask and leave the list in T7.12, or in T7.13 where an ended segment is emptied; T7.15 only re-points the entries this epic does not turn green to the epic that will. A row that now fails further, on another message, is retagged in the same change to the owner of that message; until epic 12's T12.1 test exists, this change re-runs the classification by hand, in every `known:` file, and uses the test after |
+| 7 v2 ignores v1 | all | the import test forbade v1's journal until it was deleted. Nothing of v1's journal is read; the open never looks for v1 state (that is the RFC 23 plan's T3.9, and epic 10's start check) |
 | 8 Real storage | T7.4, T7.7, T7.9, T7.10, T7.11, T7.12, T7.13, T7.15 | every torn, crash, unlink and damage check runs on E3's `platform.OS` through E2's crash-simulating seam, never an in-memory filesystem. Direct reads (T7.8) are checked on a real file, by the pages its read leaves in the cache |
 | 9 Comment markers | T7.1, T7.2, T7.3, T7.4, T7.5, T7.7, T7.8, T7.10, T7.11, T7.12, T7.13 | the RFC's markers at their code sites: RFC 28 §3.3's two `ponytail:` notes on the failed slot and the forward search (T7.4), its `decision:` on emptying an ended segment whole (T7.13), its `ponytail:` on a segment's absence taken as its retirement (T7.10), and its two `decision:` notes on a failed read (T7.1); RFC 1 §6's `decision:` on the open reserve (T7.12) and its `ponytail:` on a loss record's bytes in a copy (T7.13). This epic's D2 (T7.1), D3 (T7.3), D4 (T7.11), D6 (T7.5), D8 (T7.2), D11 (T7.8), D12 (T7.7), D13 (T7.10), D14 (T7.2, T7.4) and D15 (T7.1, T7.2) at theirs |
 | 10 A test must be able to fail | all | §6 names, per test, the change that would make it fail |
