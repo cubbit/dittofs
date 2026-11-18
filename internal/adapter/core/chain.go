@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -33,11 +32,13 @@ type entry struct {
 	off       int
 	tr        *track
 	h, u      Header // as Decode and Unwrap returned them
-	unwrapped bool   // Unwrap ran on the reader, for the first member
+	unwrapped bool   // Unwrap ran, and a refusal was mapped, on the reader, for the first member
 	cancel    bool   // it cancels a hold, and is answered nothing
 	key       uint64 // with cancel, the key of the request it cancels
 	st        stage  // the stage that refused it, read only with err
 	err       error
+	s         Status // with err, the status its refusal maps to
+	send      bool   // with err, whether that status is sent
 	release   func() // its admission
 }
 
@@ -120,15 +121,21 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 			}
 		}
 	}
-	// A first member refused takes the connection's one status wait here,
-	// on the reader, as a refusal alone does: the next such chain then holds
-	// the reader until this one's status is reserved, so the records waiting
-	// for a status stay one per connection. The status's 30 s, where this
-	// wait blocks, runs on into its wait for its buffer on the chain's
-	// goroutine.
+	// A first member refused is mapped and takes the connection's one status
+	// wait here, on the reader, as a refusal alone does: the next such chain
+	// then holds the reader until this one's status is reserved, so the
+	// records waiting for a status stay one per connection, and the wait
+	// falls into encode, as every status's does (§10.1). The status's 30 s,
+	// where this wait blocks, runs on into its wait for its buffer on the
+	// chain's goroutine.
 	slot := false
 	var at time.Time
 	if e.err != nil {
+		mh := e.u // as a refusal alone maps: under Unwrap's header, or Decode's where it refused
+		if e.st == stageDecodeHeader {
+			mh = h
+		}
+		e.s, e.send = p.mapRefusal(tr, mh, e.st, e.err)
 		at, slot = p.takeStatus(p.ctx)
 	}
 	p.add()
@@ -283,7 +290,7 @@ func (c *chain) one(e *entry) bool {
 	c.cur = *e
 	related := e.h.Related()
 	if c.isolated && !related {
-		c.flush(splits, nil) // a refusal's record ends before the next unrelated member
+		c.flush(splits, e.tr) // a refusal's record ends before the next unrelated member
 		c.clear, c.isolated = false, false
 	}
 	if e.err != nil && e.st == stageDecodeHeader {
@@ -413,22 +420,19 @@ func (c *chain) admit(e *entry) {
 }
 
 // refusal answers e's refusal at its stage, before Route, as the stages'
-// table maps it, under h, into the record the chain is building.
+// table maps it, under h, into the record the chain is building: mapped
+// here, or, for the first member, on the reader.
 func (c *chain) refusal(e *entry, h Header) {
 	p := c.p
-	p.refused(e.tr, e.st)
-	s, send, _ := p.mapped(e.tr, p.st.Errors, e.err, nil, h.Version(), e.st != stageUnwrap)
-	if e.st == stageUnwrap && p.misbehaved.CompareAndSwap(false, true) {
-		// A client that sends what Unwrap refuses is logged once per
-		// connection, not once per request (§10.3).
-		p.sh.log.LogAttrs(e.tr.ctx, slog.LevelWarn, "a message the connection's security refused", e.tr.attrs(e.err)...)
+	if !e.unwrapped {
+		e.s, e.send = p.mapRefusal(e.tr, h, e.st, e.err)
 	}
-	c.failed, c.failS = true, s
-	if !send {
+	c.failed, c.failS = true, e.s
+	if !e.send {
 		p.end(e.tr, false, 0, 0, e.err)
 		return
 	}
-	c.status1(e, h, s, e.err)
+	c.status1(e, h, e.s, e.err)
 }
 
 // answerFailed answers a related member after a failed one the failed
@@ -454,6 +458,7 @@ func (c *chain) status1(e *entry, h Header, s Status, cause error) {
 		c.abort(e.tr, stageFault(err))
 		return
 	}
+	p.lap(e.tr, stageEncode)
 	c.hold(held{tr: e.tr, h: h, reply: buf, s: s, final: true, err: cause})
 }
 
@@ -687,13 +692,13 @@ func (c *chain) hold(m held) {
 }
 
 // flush sends the record the chain holds, joined and wrapped once, unless it
-// is a header's refusal, which no Wrap sees; why, where it is one of the
-// split reasons, counts the split under tr's series. A flush that holds
-// nothing changes nothing, and a refusal's record keeps its clear and
-// isolated marks across a split inside it: only its end clears them. Once
-// the connection's close has cancelled the members' contexts, what the
-// chain holds is dropped, neither joined nor wrapped, each member ended
-// unsent (§6.5).
+// is a header's refusal, which no Wrap sees; tr is the member that sends it,
+// if any, under whose series why, where it is one of the split reasons,
+// counts the split. A flush that holds nothing changes nothing, and a
+// refusal's record keeps its clear and isolated marks across a split inside
+// it: only its end clears them. Once the connection's close has cancelled
+// the members' contexts, what the chain holds is dropped, neither joined nor
+// wrapped, each member ended unsent (§6.5).
 func (c *chain) flush(why split, tr *track) {
 	p := c.p
 	if len(c.held) == 0 {
@@ -710,6 +715,15 @@ func (c *chain) flush(why split, tr *track) {
 	if why < splits && tr != nil {
 		tr.series().split(why)
 	}
+	// The record's wrap, its join included, and its send are observed once,
+	// as its first reply's request's, timed from here, so no member's run
+	// lands in them; a record of an interim alone, which answers no request,
+	// times neither, as an interim alone does (§10.1).
+	var first *track
+	if c.held[0].final {
+		first = c.held[0].tr
+		first.mark = p.sh.clock.Now()
+	}
 	rec, err := c.join()
 	if err == nil && !c.clear {
 		err = p.st.Security.Wrap(c.held[0].h, rec)
@@ -724,6 +738,9 @@ func (c *chain) flush(why split, tr *track) {
 		c.close(stageFault(err))
 		return
 	}
+	if !c.clear {
+		p.lap(first, stageWrap)
+	}
 	// The record is queued under the least and greatest of its members'
 	// keys, so a callback naming any member goes ahead of it (§6.2); not the
 	// first and last, since a client picks its message IDs and a chain's need
@@ -733,6 +750,12 @@ func (c *chain) flush(why split, tr *track) {
 		lo, hi = min(lo, m.key), max(hi, m.key)
 	}
 	sent := p.out(rec, lo, hi)
+	p.lap(first, stageSend)
+	if tr != nil {
+		// The member that sends it times the stage it is in from the
+		// record's end, so that stage holds none of the record's time.
+		tr.mark = first.mark
+	}
 	for _, m := range c.held {
 		p.end(m.tr, sent && m.final, m.s, m.n, m.err)
 	}

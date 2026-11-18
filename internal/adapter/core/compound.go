@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -110,8 +111,22 @@ func judge(ms []member, decoded bool, r *Request) (whole bool, handles []vfs.Han
 // first and again, in place, with the final status and count. A compound
 // refused whole is answered its status alone, whose head, with no results,
 // its header's codec writes.
-func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *Op, inv Invocation, rest []byte, release func()) {
+//
+// Its stages are timed as a request's are, its decode_args on through the
+// members' walk. route, the run of its own row checks, starts route's sum,
+// and each member's runs of route, resolve_ids, map_error and encode add to
+// their stage's; each stage is observed once, as the compound ends (RFC 20
+// §10.1).
+//
+// decision: the compound's header and head, written before its first member
+// and rewritten after its last, are no member's encode run, so, as any step
+// between two stages, the write falls into the first member's route and the
+// rewrite into wrap. Overturned if §10.1 counts them under encode.
+func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *Op, inv Invocation, rest []byte, route time.Duration, release func()) {
 	ctx, v, errs := tr.ctx, h.Version(), tb.Errors
+	var sum sums
+	sum.add(stageRoute, route)
+	defer sum.observe(tr)
 	if inv.EncodeHead == nil {
 		// A compound row whose Decode sets no head is a fault of the
 		// protocol's wiring, since no reply could carry the compound's
@@ -123,9 +138,11 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	ms, at, code, err := members(row, inv, rest, v)
 	if at < 0 {
 		p.refused(tr, stageDecodeArgs)
+		p.lap(tr, stageDecodeArgs)
 		p.finish(tr, h, tb, errs, row, Invocation{}, nil, err, release, alone{p}, nil)
 		return
 	}
+	p.lap(tr, stageDecodeArgs)
 	// Each member's bound is first taken for the record cap less the
 	// compound's ReplyLen, as a request's is, then handed its room: what the
 	// cap leaves after ReplyLen, the members before it at their bounds and
@@ -185,7 +202,6 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		return
 	}
 	mts := p.sh.tables[row.Members] // resolved with its parent's, at NewServer
-	start := p.sh.clock.Now()
 	reply, rerr := p.sh.reserveReply(ctx, p.l.remote, n)
 	if rerr != nil {
 		if st, ok := reservationStage(rerr); ok {
@@ -195,7 +211,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		p.finish(tr, h, tb, errs, row, Invocation{}, nil, rerr, release, alone{p}, nil)
 		return
 	}
-	mts.observe(stageReplyWait, p.sh.clock.Now().Sub(start))
+	p.lap(tr, stageReplyWait)
 	// The drain is read once the reply is reserved, which can wait: a
 	// compound that waited through the drain's start has not been handed to
 	// the service, so it is a new request, which the drain judges (§3.1).
@@ -222,7 +238,11 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 				}
 			}
 			if silent {
-				p.refused(tr, stageDecodeArgs) // judged whole before any member resolves its IDs (§10.1)
+				// decision: counted under decode_args, as §10.1 has it, judged whole
+				// before any member resolves its IDs, though once the reply is
+				// reserved (§3.1): decode_args and reply_wait are already observed,
+				// so the judgment falls into map_error, timed from reply_wait's end.
+				p.refused(tr, stageDecodeArgs)
 				p.finish(tr, h, tb, errs, row, Invocation{}, reply, ErrDraining, release, alone{p}, nil)
 				return
 			}
@@ -253,7 +273,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		failed bool
 	)
 	for _, m := range ms {
-		s, send, notFailure, merr := p.member(tr, mts, mt.Errors, m, r, v, drained)
+		s, send, notFailure, merr := p.member(tr, mts, mt.Errors, m, r, v, drained, &sum)
 		if !send {
 			p.unanswered(tr, h, tb, reply, merr, release)
 			return
@@ -264,6 +284,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 			p.drop(tr, nil, stageFault(encErr))
 			return
 		}
+		sum.add(stageEncode, p.since(tr))
 		status, last, count = s, merr, count+1
 		if failed = s != 0 && !notFailure; failed {
 			break
@@ -280,7 +301,9 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 			mts.refused(stageDecodeArgs)
 		}
 		var send bool
-		if status, send, _ = p.mapped(tr, mt.Errors, err, nil, v, true); !send {
+		status, send, _ = p.mapped(tr, mt.Errors, err, nil, v, true)
+		sum.add(stageMapError, p.since(tr))
+		if !send {
 			p.unanswered(tr, h, tb, reply, err, release)
 			return
 		}
@@ -290,6 +313,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 			p.drop(tr, nil, stageFault(encErr))
 			return
 		}
+		sum.add(stageEncode, p.since(tr))
 		last, count = err, count+1
 	}
 	again := &resources.Buf{B: reply.B[head : head : head+headLen]}
@@ -308,7 +332,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		key = p.st.Hold.Key(h)
 	}
 	sent := len(reply.B)
-	p.end(tr, p.send(nil, h, reply, key), status, sent, last)
+	p.end(tr, p.send(tr, h, reply, key), status, sent, last)
 }
 
 // member runs one member of a compound to its status: the row's checks,
@@ -321,22 +345,21 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 // request's context, whatever the member answered, so the compound is
 // dropped with no member after it run (RFC 20 §6.5). The close's own cancel
 // is mapped as no error. notFailure is a NotFailure row's status, past which
-// the compound runs its next member.
-func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version, drained error) (s Status, send, notFailure bool, err error) {
+// the compound runs its next member. Its runs of route, resolve_ids and
+// map_error are added to sum.
+func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version, drained error, sum *sums) (s Status, send, notFailure bool, err error) {
 	err = p.check(m.op, r)
+	sum.add(stageRoute, p.since(tr))
 	if err != nil {
 		mts.refused(stageRoute)
-	}
-	if err == nil {
-		r.resolveStart = p.sh.clock.Now()
-		if err = m.inv.Resolve(r); err != nil {
-			mts.refused(stageResolveIDs)
-		}
-	}
-	if err == nil && p.expired(r) {
-		if !m.op.Expired && roleOf(m.op, m.inv, r) != RoleRelease {
+	} else {
+		err = m.inv.Resolve(r)
+		if err == nil && p.expired(r) && !m.op.Expired && roleOf(m.op, m.inv, r) != RoleRelease {
 			err = ErrExpired
+		}
+		if err != nil {
 			mts.refused(stageResolveIDs)
+			sum.add(stageResolveIDs, p.since(tr))
 		}
 	}
 	if err == nil && m.refused {
@@ -347,6 +370,10 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 		r.invoke = m.inv.Call
 		tr.ran = true
 		err = mts.chains[m.op.Code](tr.ctx, r)
+		// The hinge marks the call's start, which ends resolve_ids, and its
+		// end, from which map_error is timed (§10.1).
+		sum.add(stageResolveIDs, r.callStart.Sub(tr.mark))
+		tr.mark = r.callEnd
 	}
 	send = true
 	switch {
@@ -356,6 +383,7 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 	default:
 		s, send, notFailure = p.mapped(tr, errs, err, m.op, v, true)
 	}
+	sum.add(stageMapError, p.since(tr))
 	return s, send && tr.ctx.Err() == nil, notFailure, err
 }
 
