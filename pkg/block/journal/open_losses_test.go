@@ -293,6 +293,79 @@ func TestOpenAtItsMaximumEndingASegmentOpens(t *testing.T) {
 	}
 }
 
+// TestOpenAtItsMaximumCarryingOverARottenTwinOpens holds the draw's floor at
+// the maximum: beside the ended segment, a sealed twin above it holds a copy
+// of its first record whose payload rots, so the carry must land above the
+// twin, while the reserve's one ready spare is the one the open re-adopted
+// under its old id, below it. The reopen under a maximum of exactly what the
+// directory holds still opens — the low spare takes a fresh id in place,
+// no byte past the files already there — and the record reads back whole
+// from the carry above the twin, the footprint never past the maximum.
+func TestOpenAtItsMaximumCarryingOverARottenTwinOpens(t *testing.T) {
+	f := newAssembledJournal(t)
+	j := f.open(t)
+	mustWaitSpares(t, j)
+	if err := j.Close(); err != nil {
+		t.Fatalf("close the settled journal: %v", err)
+	}
+	seg, twin := core.SegmentID(941), core.SegmentID(942)
+	plantEndedSegment(t, f, seg)
+	offs := plantSealedAt(t, f.seam, f.id, twin, plantRecord(1, ownerTag, fileOf(2), 20, 30, 0, 32))
+	rotPayload(t, f, format.SegmentName(twin), int64(offs[0])+format.RecordHeaderSize)
+	maxBytes := int64(len(f.segmentFileNames(t))) * openSegmentCap
+
+	j2, err := Open(t.Context(), f.dir, Version{}, f.id, nil, f.opts(func(s *Settings) { s.MaxBytes = maxBytes })...)
+	if err != nil {
+		t.Fatalf("the reopen at the maximum %d, the bytes the directory holds, answered %v, want it open: the carry above the rotten twin needs no new space", maxBytes, err)
+	}
+	t.Cleanup(func() {
+		if err := j2.Close(); err != nil && !errors.Is(err, ErrClosed) {
+			t.Errorf("close the reopened journal: %v", err)
+		}
+	})
+	h := shareOf(t, j2, ownerTag)
+	p := make([]byte, 64)
+	n, missing, _, _, err := h.ReadAt(t.Context(), fileOf(2), 0, p)
+	if err != nil || n != 64 || len(missing) != 0 {
+		t.Fatalf("reading the records the ended segment held: n %d, missing %+v, err %v, want both served whole", n, missing, err)
+	}
+	if got := j2.Stats().UsedBytes; got > maxBytes {
+		t.Fatalf("the reopened journal's UsedBytes = %d, want at most the maximum %d", got, maxBytes)
+	}
+
+	// The next open serves the greatest placement and verifies no payload:
+	// the carry outranks the twin, so the record still reads whole.
+	if err := errors.Join(h.Close(), j2.Close()); err != nil {
+		t.Fatalf("close the reopened journal: %v", err)
+	}
+	j3 := f.publicOpen(t, func(s *Settings) { s.MaxBytes = maxBytes })
+	h3 := shareOf(t, j3, ownerTag)
+	n, missing, _, _, err = h3.ReadAt(t.Context(), fileOf(2), 0, p)
+	if err != nil || n != 64 || len(missing) != 0 {
+		t.Fatalf("reading the records after the second reopen: n %d, missing %+v, err %v, want both served whole from the carry above the twin", n, missing, err)
+	}
+}
+
+// rotPayload flips one byte at off in the file the seam serves under name.
+func rotPayload(t *testing.T, f *assembledJournal, name string, off int64) {
+	t.Helper()
+	file, err := f.seam.Open(name)
+	if err != nil {
+		t.Fatalf("open %s to rot: %v", name, err)
+	}
+	b := make([]byte, 1)
+	if _, err := file.ReadAt(b, off); err != nil {
+		t.Fatalf("read the byte at %d of %s: %v", off, name, err)
+	}
+	b[0] ^= 0xff
+	if _, err := file.WriteAt(b, off); err != nil {
+		t.Fatalf("rot the byte at %d of %s: %v", off, name, err)
+	}
+	if err := errors.Join(file.Sync(), file.Close()); err != nil {
+		t.Fatalf("sync the rotted %s: %v", name, err)
+	}
+}
+
 // plantSealedBytes writes one planted file whole under the seam, synced as
 // a writer would have left it.
 func plantSealedBytes(t *testing.T, f *assembledJournal, name string, b []byte) {
