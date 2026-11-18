@@ -1578,6 +1578,9 @@ func TestAStatusWaitingOnAPoolOfParks(t *testing.T) {
 					if r := s.recvOne(); !r.Interim {
 						t.Fatalf("park %d is answered %+v, want its interim", i, r)
 					}
+					// Holds pair with calls in their arrival order: park i's
+					// Create takes holds[i] before the next park's is armed.
+					<-holds[i].Reached()
 				}
 				defer func() {
 					for _, h := range holds {
