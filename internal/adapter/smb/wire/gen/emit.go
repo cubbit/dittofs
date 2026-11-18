@@ -25,12 +25,24 @@ func (g *gen) emit(pkg string, files []string) ([]byte, error) {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "%s%s; DO NOT EDIT.\n\npackage %s\n\nimport (\n\t%q\n\t%q\n)\n",
 		header, strings.Join(files, " "), pkg, wirePath, resourcesPath)
+	// A struct another holds, as an arm or a chain's member, is read and
+	// written through its holder alone: its offsets count from its own first
+	// byte, not from a header, so it has no DecodeWire or EncodeWire.
+	held := map[string]bool{}
+	for _, s := range g.structs {
+		for _, f := range s.fields {
+			if f.kind == kArm || f.kind == kChain {
+				held[f.typ] = true
+			}
+		}
+	}
 	for _, s := range g.structs {
 		n := "d.N"
 		if odd := carried(s); odd > 0 {
 			n = fmt.Sprintf("max(d.N, %d)", odd)
 		}
-		fmt.Fprintf(&b, `
+		if !held[s.name] {
+			fmt.Fprintf(&b, `
 func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {
 	d := wire.Decoder{B: b, Base: wire.HeaderLen}
 	x.decodeSMB2(&d, v)
@@ -47,6 +59,7 @@ func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
 	return nil
 }
 `, s.name, n)
+		}
 		g.decode(&b, s)
 		g.encode(&b, s)
 		g.maxWire(&b, s)

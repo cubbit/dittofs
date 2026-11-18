@@ -50,6 +50,8 @@ func TestGenerateRefuses(t *testing.T) {
 		{"type S struct { _ uint8 `smb2:\"name=L\"` }", "S._: a layout field is a uint16 or a uint32"},
 		{"type S struct {\n" + layout + layout + "}", "S._: a second layout field named L"},
 		{"type S struct {\n" + layout + "_ []byte `smb2:\"len=L,max=4\"`\n}", "S._: a variable field that is blank"},
+		{"type S struct {\n_ uint16 `smb2:\"name=L,since=0x311\"`\nB []byte `smb2:\"len=L,max=4\"`\n}", "S.B: its layout field L on the wire in fewer dialects than it"},
+		{"type S struct {\n" + layout + "B []byte `smb2:\"len=L,max=4\"`\nC []byte `smb2:\"len=L,max=4\"`\n}", "S.C: a second field located or sized by L"},
 		{"type S struct {\n" + layout + "B []byte `smb2:\"max=4\"`\n}", "S.B: a variable-length field with no len"},
 		{"type S struct {\n" + layout + "N string `smb2:\"len=L,max=4\"`\n}", "S.N: a string with no utf16"},
 		{"type S struct { A []uint16 `smb2:\"max=4\"` }", "S.A: a []uint16 with no count"},
@@ -95,6 +97,27 @@ func TestCountsBoundMembersAtTheirLeast(t *testing.T) {
 	}
 	if want := "d.Chain(lO, lC, 2, 18)"; !bytes.Contains(out, []byte(want)) {
 		t.Errorf("no %q in:\n%s", want, out)
+	}
+}
+
+// A struct another holds, as a union's arm or a chain's member, gets no
+// DecodeWire or EncodeWire, whose offsets would count from a header it does
+// not follow; the struct holding it does.
+func TestOnlyAStructNoneHoldsIsDecodedAlone(t *testing.T) {
+	out, err := generateFrom(t, "type S struct {\n"+
+		"D uint16 `smb2:\"union\"`\n_ uint16 `smb2:\"name=L\"`\n_ uint32 `smb2:\"name=O\"`\n_ uint16 `smb2:\"name=C\"`\n"+
+		"A A `smb2:\"len=L,case=1\"`\nX []byte `smb2:\"len=L,max=4,default\"`\n"+
+		"M []M `smb2:\"offset=O,count=C,max=2,chain\"`\n}\n"+
+		"type A struct{ V uint32 }\ntype M struct{ V uint32 }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, typ := range []string{"S", "A", "M"} {
+		for _, method := range []string{"DecodeWire", "EncodeWire"} {
+			if has := bytes.Contains(out, []byte("func (x *"+typ+") "+method+"(")); has != (typ == "S") {
+				t.Errorf("%s.%s generated: %v", typ, method, has)
+			}
+		}
 	}
 }
 

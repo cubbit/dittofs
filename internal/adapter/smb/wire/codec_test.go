@@ -15,18 +15,24 @@ import (
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
-// codec is what the generator writes for every struct: RFC 20 section 4.7's
-// Decoder and Encoder methods.
-type codec interface {
-	DecodeWire(b []byte, v uint32) (int, error)
-	EncodeWire(v uint32, out *resources.Buf) error
+// shape is what the generator writes for every struct, of RFC 20 section
+// 4.7's Encoder: MaxWire and IsZero.
+type shape interface {
 	MaxWire(v uint32) int
 	IsZero() bool
 }
 
+// codec is what it writes besides for a struct no other struct holds: the
+// Decoder and Encoder methods.
+type codec interface {
+	shape
+	DecodeWire(b []byte, v uint32) (int, error)
+	EncodeWire(v uint32, out *resources.Buf) error
+}
+
 // fresh is a zero value of c's type.
-func fresh(c codec) codec {
-	return reflect.New(reflect.TypeOf(c).Elem()).Interface().(codec)
+func fresh[C shape](c C) C {
+	return reflect.New(reflect.TypeOf(c).Elem()).Interface().(C)
 }
 
 // allocated is what fn allocates per call, in bytes.
@@ -283,19 +289,33 @@ func TestCodecByteFieldIsASliceOfTheRecord(t *testing.T) {
 	}
 }
 
-// A byte field's capacity ends at its last byte, so an append to it copies
-// rather than overwriting what the record holds next, a chained request's
-// padding (RFC 20 section 5.3).
+// A byte field's capacity ends at its last byte, whether located by its
+// offset or read in order, so an append to it copies rather than overwriting
+// what the record holds next: a chained request's padding after a WRITE's
+// data, the next negotiate context after one kept as bytes (RFC 20 section
+// 5.3).
 func TestCodecByteFieldEndsAtItsLength(t *testing.T) {
-	rec := append(golden(t, "write-request"), 0, 0, 0) // padding to the next request's 8-byte aligned header
-	want := bytes.Clone(rec)
+	write := append(golden(t, "write-request"), 0, 0, 0) // padding to the next request's 8-byte aligned header
+	neg := golden(t, "negotiate-request")
 	var w WriteRequest
-	if _, err := w.DecodeWire(rec, 0x311); err != nil {
-		t.Fatal(err)
+	var n NegotiateRequest
+	_, errW := w.DecodeWire(write, 0x311)
+	_, errN := n.DecodeWire(neg, 0x311)
+	if errW != nil || errN != nil {
+		t.Fatal(errW, errN)
 	}
-	_ = append(w.Data, "more"...)
-	if !bytes.Equal(rec, want) {
-		t.Errorf("an append to the data overwrote the record\n  %x\nwant\n  %x", rec, want)
+	for _, c := range []struct {
+		name      string
+		rec, data []byte
+	}{
+		{"a WRITE's data", write, w.Data},
+		{"a signing context's data", neg, n.Contexts[2].Data},
+	} {
+		want := bytes.Clone(c.rec)
+		_ = append(c.data, "more"...)
+		if !bytes.Equal(c.rec, want) {
+			t.Errorf("an append to %s overwrote the record\n  %x\nwant\n  %x", c.name, c.rec, want)
+		}
 	}
 }
 
@@ -324,12 +344,14 @@ func TestCodecRefusals(t *testing.T) {
 		{"a context's Next off 8", &CreateRequest{}, patched(patched(spliced(ctxs, 192, 192, 0, 0, 0, 0), 136, 60), 116, 124)},
 		{"a context's Next inside it", &CreateRequest{}, patched(ctxs, 136, 8)},
 		{"a context's Next past the contexts", &CreateRequest{}, patched(ctxs, 136, 128)},
+		{"a last context's Next to the end of the contexts", &CreateRequest{}, patched(ctxs, 224, 32)},
 		{"contexts whose names and data share their bytes", &CreateRequest{}, overlapped(t)},
 		{"a context's data before its name", &CreateRequest{}, patched(patched(patched(
 			spliced(ctxs, 240, 256, append(span(ctxs, 248, 256), "MxAc"...)...), 228, 24), 234, 16), 116, 116)},
 		{"contexts past the message", &CreateRequest{}, patched(ctxs, 116, 121)},
 		{"a context's data shorter than its struct", &CreateRequest{}, patched(ctxs, 148, 16)},
 		{"negotiate contexts at an offset off 8", &NegotiateRequest{}, patched(neg, 92, 110)},
+		{"negotiate contexts inside the dialects", &NegotiateRequest{}, patched(neg, 66, 8)},
 		{"negotiate contexts past the message", &NegotiateRequest{}, patched(neg, 96, 5)},
 		{"negotiate contexts past their maximum", &NegotiateRequest{}, patched(neg, 96, 17)},
 		{"dialects past their maximum", &NegotiateRequest{}, patched(neg, 66, 65)},
@@ -386,8 +408,9 @@ func TestCodecContextDataLength(t *testing.T) {
 	}
 }
 
-// A refusal of a claimed length or count costs less than 4 KiB: it is checked
-// against the bytes left before anything is made (RFC 20 section 5.2).
+// A refusal of a claimed length or count costs less than 1 KiB, within RFC 20
+// section 5.2's 4 KiB: it is checked against the bytes left before anything
+// is made, where 16 negotiate contexts made first would take 1.7 KB.
 func TestCodecClaimedLengths(t *testing.T) {
 	if prof.RaceEnabled {
 		t.Skip("the allocation count says nothing under the detector")
@@ -406,7 +429,7 @@ func TestCodecClaimedLengths(t *testing.T) {
 			if _, err := c.into().DecodeWire(c.b, 0x311); err == nil {
 				t.Fatal("a claim past the bytes left is accepted")
 			}
-			if n := allocated(func() { _, _ = c.into().DecodeWire(c.b, 0x311) }); n >= 4<<10 {
+			if n := allocated(func() { _, _ = c.into().DecodeWire(c.b, 0x311) }); n >= 1<<10 {
 				t.Errorf("the refusal allocates %d bytes", n)
 			}
 		})
@@ -449,7 +472,7 @@ func TestCodecEncodeRefusals(t *testing.T) {
 func TestCodecMaxWire(t *testing.T) {
 	const negCtx = 8 + 1024 // its fixed part and its data's maximum, past either struct's
 	for _, c := range []struct {
-		of        codec
+		of        shape
 		v21, v311 int
 	}{
 		{&CloseRequest{}, 24, 24},
@@ -500,7 +523,7 @@ func TestCodecIsZero(t *testing.T) {
 			t.Fatalf("no value set for a %s", v.Type())
 		}
 	}
-	for _, c := range []codec{
+	for _, c := range []shape{
 		&CloseRequest{}, &CreateRequest{}, &CreateContext{}, &DurableHandleRequestV2{}, &AllocationSize{},
 		&NegotiateRequest{}, &NegotiateResponse{}, &NegotiateContext{}, &PreauthIntegrityCapabilities{},
 		&EncryptionCapabilities{}, &WriteRequest{}, &EchoRequest{},

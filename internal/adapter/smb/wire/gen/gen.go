@@ -67,6 +67,7 @@ type field struct {
 	cas                   string // case=
 	def                   bool
 	since                 string // the dialect a field is on the wire from, as written; "" for every one
+	from                  int    // since's dialect, 0 for every one
 }
 
 // variable reports whether f follows the fixed part.
@@ -263,7 +264,7 @@ func (g *gen) field(st string, f *ast.Field) *field {
 		case "exact":
 			fl.exact = true
 		case "since":
-			num(0)
+			fl.from = num(0)
 			fl.since = v
 		default:
 			g.errorf(fl.pos, where, "a tag it does not know, %q", k)
@@ -277,6 +278,7 @@ func (g *gen) field(st string, f *ast.Field) *field {
 // check fails each field of s whose tags the generator cannot honour.
 func (g *gen) check(s *strct) {
 	labels := map[string]*field{}
+	users := map[string]*field{} // the field each label locates or sizes
 	unions := 0
 	for _, f := range s.fields {
 		where := s.name + "." + f.name
@@ -295,8 +297,16 @@ func (g *gen) check(s *strct) {
 			}
 		}
 		for _, l := range []string{f.offset, f.length, f.count} {
-			if l != "" && labels[l] == nil {
+			switch u := users[l]; {
+			case l == "":
+			case labels[l] == nil:
 				bad("no layout field named %s before it", l)
+			case labels[l].from > f.from:
+				bad("its layout field %s on the wire in fewer dialects than it", l)
+			case u != nil && (!arm(u) || !arm(f)):
+				bad("a second field located or sized by %s", l)
+			default:
+				users[l] = f
 			}
 		}
 		if f.align > 1 && f.offset == "" {
@@ -367,6 +377,10 @@ func (g *gen) check(s *strct) {
 		}
 	}
 }
+
+// arm reports whether f is an arm of its struct's union, which share one
+// offset and length.
+func arm(f *field) bool { return f.kind == kArm || f.def }
 
 // checkChain fails a chain field whose tags do not say how its members follow.
 func (g *gen) checkChain(f *field, bad func(string, ...any)) {

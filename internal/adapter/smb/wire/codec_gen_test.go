@@ -155,22 +155,6 @@ func (x *CreateRequest) IsZero() bool {
 		len(x.Contexts) == 0
 }
 
-func (x *CreateContext) DecodeWire(b []byte, v uint32) (int, error) {
-	d := wire.Decoder{B: b, Base: wire.HeaderLen}
-	x.decodeSMB2(&d, v)
-	return d.N, d.Err
-}
-
-func (x *CreateContext) EncodeWire(v uint32, out *resources.Buf) error {
-	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
-	x.encodeSMB2(&e, v)
-	if e.Err != nil {
-		return e.Err
-	}
-	out.B = e.B
-	return nil
-}
-
 func (x *CreateContext) decodeSMB2(d *wire.Decoder, v uint32) {
 	var lNameOffset, lNameLength, lDataOffset, lDataLength int
 	d.Skip(4)
@@ -244,22 +228,6 @@ func (x *CreateContext) IsZero() bool {
 		len(x.Data) == 0
 }
 
-func (x *DurableHandleRequestV2) DecodeWire(b []byte, v uint32) (int, error) {
-	d := wire.Decoder{B: b, Base: wire.HeaderLen}
-	x.decodeSMB2(&d, v)
-	return d.N, d.Err
-}
-
-func (x *DurableHandleRequestV2) EncodeWire(v uint32, out *resources.Buf) error {
-	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
-	x.encodeSMB2(&e, v)
-	if e.Err != nil {
-		return e.Err
-	}
-	out.B = e.B
-	return nil
-}
-
 func (x *DurableHandleRequestV2) decodeSMB2(d *wire.Decoder, v uint32) {
 	x.Timeout = d.Uint32()
 	x.Flags = d.Uint32()
@@ -283,22 +251,6 @@ func (x *DurableHandleRequestV2) IsZero() bool {
 	return x.Timeout == 0 &&
 		x.Flags == 0 &&
 		x.CreateGUID == [16]byte{}
-}
-
-func (x *AllocationSize) DecodeWire(b []byte, v uint32) (int, error) {
-	d := wire.Decoder{B: b, Base: wire.HeaderLen}
-	x.decodeSMB2(&d, v)
-	return d.N, d.Err
-}
-
-func (x *AllocationSize) EncodeWire(v uint32, out *resources.Buf) error {
-	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
-	x.encodeSMB2(&e, v)
-	if e.Err != nil {
-		return e.Err
-	}
-	out.B = e.B
-	return nil
 }
 
 func (x *AllocationSize) decodeSMB2(d *wire.Decoder, v uint32) {
@@ -506,22 +458,6 @@ func (x *NegotiateResponse) IsZero() bool {
 		len(x.Contexts) == 0
 }
 
-func (x *NegotiateContext) DecodeWire(b []byte, v uint32) (int, error) {
-	d := wire.Decoder{B: b, Base: wire.HeaderLen}
-	x.decodeSMB2(&d, v)
-	return d.N, d.Err
-}
-
-func (x *NegotiateContext) EncodeWire(v uint32, out *resources.Buf) error {
-	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
-	x.encodeSMB2(&e, v)
-	if e.Err != nil {
-		return e.Err
-	}
-	out.B = e.B
-	return nil
-}
-
 func (x *NegotiateContext) decodeSMB2(d *wire.Decoder, v uint32) {
 	var lDataLength int
 	x.ContextType = d.Uint16()
@@ -580,22 +516,6 @@ func (x *NegotiateContext) IsZero() bool {
 		len(x.Data) == 0
 }
 
-func (x *PreauthIntegrityCapabilities) DecodeWire(b []byte, v uint32) (int, error) {
-	d := wire.Decoder{B: b, Base: wire.HeaderLen}
-	x.decodeSMB2(&d, v)
-	return d.N, d.Err
-}
-
-func (x *PreauthIntegrityCapabilities) EncodeWire(v uint32, out *resources.Buf) error {
-	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
-	x.encodeSMB2(&e, v)
-	if e.Err != nil {
-		return e.Err
-	}
-	out.B = e.B
-	return nil
-}
-
 func (x *PreauthIntegrityCapabilities) decodeSMB2(d *wire.Decoder, v uint32) {
 	var lHashAlgorithmCount, lSaltLength int
 	lHashAlgorithmCount = int(d.Uint16())
@@ -631,22 +551,6 @@ func (*PreauthIntegrityCapabilities) MaxWire(v uint32) int {
 func (x *PreauthIntegrityCapabilities) IsZero() bool {
 	return len(x.HashAlgorithms) == 0 &&
 		len(x.Salt) == 0
-}
-
-func (x *EncryptionCapabilities) DecodeWire(b []byte, v uint32) (int, error) {
-	d := wire.Decoder{B: b, Base: wire.HeaderLen}
-	x.decodeSMB2(&d, v)
-	return d.N, d.Err
-}
-
-func (x *EncryptionCapabilities) EncodeWire(v uint32, out *resources.Buf) error {
-	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
-	x.encodeSMB2(&e, v)
-	if e.Err != nil {
-		return e.Err
-	}
-	out.B = e.B
-	return nil
 }
 
 func (x *EncryptionCapabilities) decodeSMB2(d *wire.Decoder, v uint32) {
