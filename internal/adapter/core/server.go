@@ -23,6 +23,9 @@ import (
 // every protocol.
 type Server struct {
 	ls []Listener
+	// accepted, where a test sets it, sees each accepted socket, so a test
+	// can read the socket options the kernel holds on it. nil in production.
+	accepted func(nc net.Conn)
 	// listen opens the socket a bind names. It is a field because no real
 	// bind can be made to answer with what a test needs on demand: an
 	// in-use refusal, to hold a family's port out from under a port-0
@@ -117,7 +120,7 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 			return nil, fmt.Errorf("core: new server: listener %d %q: %w", i, ls[i].Services, err)
 		}
 	}
-	srv := &Server{ls: ls, d: d, conns: map[*Conn]struct{}{}, listen: (&net.ListenConfig{}).Listen}
+	srv := &Server{ls: ls, d: d, conns: map[*Conn]struct{}{}, listen: listenCfg.Listen}
 	srv.recv = resources.NewBufPool(d.Budgets.Receive)
 	srv.reply = resources.NewBufPool(d.Budgets.Reply)
 	srv.sh = newShared(d, srv.reply)

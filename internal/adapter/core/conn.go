@@ -228,16 +228,25 @@ var errIdle = errors.New("core: the idle deadline passed")
 // serveConn serves one accepted socket until it closes: the snapshot, the
 // protocol's stages, the writer, the pipeline and the reader, with the teardown
 // on the reader once its loop ends, or here, on the accept loop, for a socket
-// the registry refuses (RFC 20 section 3.2). b is the bound socket
-// that accepted it, whose removal by a Reconfigure closes this connection; nil
-// for a hook's connection, which no removal closes. charge is the
-// connection-state reservation the accept loop took, which the teardown
+// the registry refuses (RFC 20 section 3.2). The socket's TCP options are set
+// on it first (section 6.7), before its stages are built, so a test reading
+// them through the accepted hook sees the socket as it serves. b is the bound
+// socket that accepted it, whose removal by a Reconfigure closes this
+// connection; nil for a hook's connection, which no removal closes. charge is
+// the connection-state reservation the accept loop took, which the teardown
 // releases; nil for none.
 func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, charge *resources.Reservation) *Conn {
 	snap := *s.settings.Load()
 	remote, port := remoteOf(nc)
 	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, remote: remote, remoteAddr: port, accept: b, service: l.Services[0], since: time.Now(), charge: charge, done: make(chan struct{})}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
+	// The socket's TCP options, from the snapshot this connection loaded
+	// (section 6.7): TCP_USER_TIMEOUT, write_timeout in milliseconds, where
+	// the platform has it.
+	userTimeout(nc, snap.Common().WriteTimeout)
+	if s.accepted != nil {
+		s.accepted(nc)
+	}
 	st, err := withDefaults(l.Protocol.NewConn(c))
 	if err != nil {
 		// A protocol that armed a deadline inside NewConn leaves it armed

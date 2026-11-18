@@ -291,6 +291,10 @@ func SetListen(s *Server, f func(ctx context.Context, network, addr string) (net
 	s.listen = f
 }
 
+// SetAccepted has the server report each accepted socket to f, once its TCP
+// options are set: the socket-option tests read the kernel's answer from it.
+func SetAccepted(s *Server, f func(nc net.Conn)) { s.accepted = f }
+
 // The connection and accept seams: what the connection's and the accept
 // loop's tests reach.
 
