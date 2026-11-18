@@ -350,16 +350,13 @@ func TestAppendErrorWritesTheNineByteBody(t *testing.T) {
 	}
 }
 
-// A related member runs under the carried pair whole, whatever its own
-// header carries - all-ones, zero, a pair of its own, or an async form's
-// AsyncId where a tree would sit - resolved against the pair the caller
-// carries from the member before it, the pair that member resolved to, not
-// its raw bytes: nothing writes resolved IDs into the request, which is
-// what the client signed. The caller gates the member by its RELATED flag,
-// carries the pair from member to member and writes what a member resolved
-// into the reply it signs (RFC 20 section 4.7, MS-SMB2 3.2.5.1.3,
-// 3.3.5.2.7.2).
-func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
+// A related member stays as the client signed it - all-ones IDs, or an
+// async form, where its AsyncId sits where a tree would and is no tree -
+// and its reply carries the member's own IDs: the pair it runs under is
+// what the answering stage carries from the member before it and writes
+// into the reply it signs, never into the request, the bytes the client
+// signed (RFC 20 section 4.7, MS-SMB2 3.2.5.1.3, 3.3.5.2.7.2).
+func TestARelatedMemberStaysAsSignedAndItsReplyCarriesItsOwnIDs(t *testing.T) {
 	chain := readGolden(t, "chain_request")
 	// A third member for the chain, the golden's second copied after it: the
 	// second's NextCommand now steps over its padded body to the copy, which
@@ -369,10 +366,6 @@ func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
 	binary.LittleEndian.PutUint64(third[160+offMessageID:], 12)
 	signed := bytes.Clone(third)
 
-	first, err := DecodeHeader(third, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
 	second, err := DecodeHeader(third, 80)
 	if err != nil {
 		t.Fatal(err)
@@ -384,19 +377,11 @@ func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
 	if last.SessionID() != ^uint64(0) || last.TreeID() != 0xffffffff || last.Flags()&FlagRelatedOperations == 0 {
 		t.Fatalf("the chain's third member carries %x/%x, want a related member with the all-ones IDs", last.SessionID(), last.TreeID())
 	}
-	carriedS, carriedT := second.Inherited(first.SessionID(), first.TreeID())
-	if carriedS != first.SessionID() || carriedT != first.TreeID() {
-		t.Errorf("the second member resolves to %x/%x, want the first's %x/%x", carriedS, carriedT, first.SessionID(), first.TreeID())
-	}
-	lastS, lastT := last.Inherited(carriedS, carriedT)
-	if lastS != first.SessionID() || lastT != first.TreeID() {
-		t.Errorf("the third member resolves to %x/%x, want the first's %x/%x carried through the second", lastS, lastT, first.SessionID(), first.TreeID())
-	}
 
-	// An async middle member passes the chain's pair on whole instead of
-	// handing its AsyncId's high half out as a tree: the member patches into
-	// the async form, session all-ones and AsyncId 0x9_00000001, and both it
-	// and the all-ones member after it stay under the first member's pair.
+	// An async middle member decodes all the same: patched into the async
+	// form, session all-ones and AsyncId 0x9_00000001, so the offset a tree
+	// sits at in the sync form carries the AsyncId's high half, which is no
+	// tree the codec resolves.
 	midFlags := binary.LittleEndian.Uint32(third[80+offFlags:]) | FlagAsyncCommand
 	asyncMid := patched(patched(patched(patched(third,
 		80+offFlags, byte(midFlags), byte(midFlags>>8), byte(midFlags>>16), byte(midFlags>>24)),
@@ -409,14 +394,6 @@ func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
 	}
 	if am.Flags()&FlagAsyncCommand == 0 || am.SessionID() != ^uint64(0) || am.TreeID() != 9 {
 		t.Fatalf("the patched middle member is async with the session sentinel and AsyncId high half 9, not %x/%x", am.SessionID(), am.TreeID())
-	}
-	midS, midT := am.Inherited(first.SessionID(), first.TreeID())
-	if midS != first.SessionID() || midT != first.TreeID() {
-		t.Errorf("the async member resolves to %x/%x, want the carried pair %x/%x whole", midS, midT, first.SessionID(), first.TreeID())
-	}
-	lastS, lastT = last.Inherited(midS, midT)
-	if lastS != first.SessionID() || lastT != first.TreeID() {
-		t.Errorf("the member after an async one resolves to %x/%x, want the first's %x/%x carried through, not the AsyncId's high half handed on as a tree", lastS, lastT, first.SessionID(), first.TreeID())
 	}
 	if !bytes.Equal(third, signed) {
 		t.Fatalf("resolving the members' IDs wrote into the signed request:\n% x\nwant\n% x", third, signed)
@@ -432,36 +409,6 @@ func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
 	}
 	if r.SessionID() != ^uint64(0) || r.TreeID() != 0xffffffff {
 		t.Errorf("the member's own reply carries %x/%x, want the all-ones the request carried", r.SessionID(), r.TreeID())
-	}
-
-	// Single members resolved against the chain's first pair: a related
-	// member runs under the carried pair whole, whatever its own header
-	// carries - all-ones, the clients' convention, zero, which v1 inherits
-	// too, a pair of its own, or an async form's AsyncId where a tree
-	// would sit.
-	for _, c := range []struct {
-		name  string
-		msg   []byte
-		off   int
-		wantS uint64
-		wantT uint32
-	}{
-		{"a member with the all-ones IDs takes the carried pair",
-			patched(patched(chain, 80+offSessionID, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff), 80+offTreeID, 0xff, 0xff, 0xff, 0xff), 80, first.SessionID(), first.TreeID()},
-		{"a member with a pair of its own still runs under the carried pair",
-			patched(patched(chain, 80+offSessionID, 9, 0, 0, 0, 0, 0, 0, 0), 80+offTreeID, 3, 0, 0, 0), 80, first.SessionID(), first.TreeID()},
-		{"a member with zero IDs takes the carried pair too",
-			patched(patched(chain, 80+offSessionID, 0, 0, 0, 0, 0, 0, 0, 0), 80+offTreeID, 0, 0, 0, 0), 80, first.SessionID(), first.TreeID()},
-		{"an async member takes the carried pair, its tree offset an AsyncId's high half",
-			patched(patched(readGolden(t, "async_request"), offSessionID, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff), offTreeID, 0xff, 0xff, 0xff, 0xff), 0, first.SessionID(), first.TreeID()},
-	} {
-		h, err := DecodeHeader(c.msg, c.off)
-		if err != nil {
-			t.Fatalf("%s: %v", c.name, err)
-		}
-		if s, tr := h.Inherited(first.SessionID(), first.TreeID()); s != c.wantS || tr != c.wantT {
-			t.Errorf("%s: Inherited(%x, %x) = %x/%x, want %x/%x", c.name, first.SessionID(), first.TreeID(), s, tr, c.wantS, c.wantT)
-		}
 	}
 }
 

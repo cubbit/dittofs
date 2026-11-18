@@ -90,29 +90,6 @@ func (h *Header) TreeID() uint32 { return binary.LittleEndian.Uint32(h[offTreeID
 // a signed reply up by (MS-SMB2 3.2.5.1.3).
 func (h *Header) SessionID() uint64 { return binary.LittleEndian.Uint64(h[offSessionID:]) }
 
-// Inherited is the session and tree a related member of a chain takes from
-// the member before it, whole: prevSession and prevTree, the pair the caller
-// resolved that member to, whatever its own header carries - all-ones, the
-// clients' convention, zero, which v1 inherits too, a pair of its own, or
-// the async form's AsyncId where a tree would sit, which is no tree - for
-// the previous operation's IDs are what a related member runs under, with no
-// sentinel condition (MS-SMB2 3.3.5.2.7.2). decision: a related member
-// inherits unconditionally rather than being judged for naming a pair of its
-// own - the rule replaces the member's IDs instead of grading them, so no
-// member after it ever runs under a tree or session the chain never named.
-// The caller gates the member by its RELATED flag and carries the resolved
-// pair from member to member, writing the IDs it resolved into the reply it
-// signs, since request bytes also cannot carry a tree the server returned
-// mid-chain (the same rule). It writes nothing: the request's bytes are the
-// ones the client signed, and the IDs are resolved where the reply is built
-// and signed, not in place, or a signed related compound would verify
-// different bytes than the client sent (RFC 20 section 4.7 has Unwrap take
-// the IDs from prev before the check; v1 resolves them on a parsed copy too
-// and verifies the raw bytes).
-func (h *Header) Inherited(prevSession uint64, prevTree uint32) (session uint64, tree uint32) {
-	return prevSession, prevTree
-}
-
 // DecodeHeader returns the SMB2 header at off in msg, as a view of msg's
 // bytes. It runs after the message is sorted by what opens it: the caller
 // tells a server's own header, a transform header the reader unwraps (RFC 22
@@ -121,7 +98,10 @@ func (h *Header) Inherited(prevSession uint64, prevTree uint32) (session uint64,
 // the RFC names no stage for that sort, so it belongs to the reader it
 // precedes, which the RFC 22 plan's sorting follows. A header is a view into
 // msg: it stays valid while msg does, and nothing in this package writes
-// into it; Inherited resolves a related member's IDs without touching msg.
+// into it. A related member runs under the session and tree the caller
+// carried from the member before it, whatever its own header holds
+// (MS-SMB2 3.3.5.2.7.2); the caller writes them into the reply, never into
+// msg, whose bytes the client signed.
 // Its body ends where its NextCommand steps to, or at the record's end for a
 // last member, so a body decoder stops at the next header rather than reading
 // past the member.

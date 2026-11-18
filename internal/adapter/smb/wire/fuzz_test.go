@@ -41,9 +41,8 @@ func framedBytes(f *testing.F, msg []byte) []byte {
 // input may panic either. A length past the cap is never accepted, nor a
 // header or a NextCommand step past the message. The oracle is the fuzz's
 // own reading of the bytes - the frame's big-endian length, the gates an
-// accepted header passed, the step at the member's own offset, the IDs each
-// member resolves to against the pair carried from the member before it,
-// and the answer's fields compared where they lie - so no bug shared with
+// accepted header passed, the step at the member's own offset, and the
+// answer's fields compared where they lie - so no bug shared with
 // the codec slips through; and the chain the runner would answer - every
 // member's reply appended, padded and pointed - must re-walk to the same
 // members.
@@ -55,11 +54,9 @@ func FuzzRecord(f *testing.F) {
 		f.Add(framed(f, name))
 	}
 	f.Add(framedShort(f))
-	// Chains that carry the resolved pair past the second member, where the
-	// two-member golden never takes it: a third related member reading the
-	// first's IDs through the second's pair, and an async related member
-	// whose all-ones tree offset is its async ID's high half, no tree of its
-	// own to resolve.
+	// Chains and forms past the two-member golden: a third related member
+	// for the walk, and an async related member whose all-ones tree offset
+	// is its async ID's high half, no tree of its own.
 	chain := readGolden(f, "chain_request")
 	third := append(append(bytes.Clone(chain), make([]byte, 12)...), bytes.Clone(chain[80:])...)
 	binary.LittleEndian.PutUint32(third[80+offNextCommand:], 80)
@@ -101,8 +98,6 @@ func FuzzRecord(f *testing.F) {
 		reply := make([]byte, 0, 80)
 		var answer []byte // every member's answer, padded and pointed, as the runner builds it
 		var reqOffs []int // the message's member each of those answers stands for
-		var carryS uint64 // the pair the stage carries: what the member before
-		var carryT uint32 // this one resolved its IDs to
 		for off := 0; ; {
 			h, err := DecodeHeader(msg, off)
 			if h == nil {
@@ -134,21 +129,11 @@ func FuzzRecord(f *testing.F) {
 				if next != 0 && (next%8 != 0 || next < HeaderLen || off+next+HeaderLen > len(msg)) {
 					t.Fatalf("DecodeHeader at %d accepted a NextCommand of %d in a message of %d", off, next, len(msg))
 				}
-				// A related member takes the pair the stage carries from the
-				// member before it whole, whatever its own header carries
-				// (MS-SMB2 3.3.5.2.7.2); an unrelated member's pair is its
-				// own, re-rooting what the stage carries there. The fuzz
-				// reads the related flag and the carried pair off the bytes
-				// on its own, and Inherited must answer with exactly the
-				// carried pair for a related member.
-				if binary.LittleEndian.Uint32(msg[off+16:])&FlagRelatedOperations != 0 {
-					if s, tr := h.Inherited(carryS, carryT); s != carryS || tr != carryT {
-						t.Fatalf("Inherited at %d gave (%x, %x), want the carried pair whole (%x, %x): a related member runs under the member before it, whatever its own header carries",
-							off, s, tr, carryS, carryT)
-					}
-				} else {
-					carryS, carryT = binary.LittleEndian.Uint64(msg[off+40:]), binary.LittleEndian.Uint32(msg[off+36:])
-				}
+				// A related member runs under the pair the answering stage
+				// carries from the member before it whole, whatever its own
+				// header carries (MS-SMB2 3.3.5.2.7.2); the codec resolves
+				// nothing, so the walk carries no resolved pair and the reply
+				// answers the member as it was signed.
 			}
 
 			reply = AppendReply(reply[:0], h, StatusNotSupported, 1)
