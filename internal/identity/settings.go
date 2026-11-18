@@ -50,10 +50,17 @@ func Section() settings.Section {
 
 // DirectorySection declares the identity.directory section, the directory
 // record, which only an admin writes, whole, its bind password a Secret named
-// by reference.
+// by reference. Address has no default, so a snapshot holding a row of the
+// section but no address is refused rather than validated as an empty one.
+//
+// decision: a section with no rows is no directory, State.Directory nil, and
+// the reader that fills the State maps it so: the declared default is never
+// decoded or validated alone, since an empty address fails Validate. Overturned
+// if the settings read ever validates a section with no rows from its default.
 func DirectorySection() settings.Section {
 	return settings.Of("identity.directory", settings.At(entity.ScopeInstallation),
 		directory.Record{Schema: directory.SchemaAD},
+		settings.Required("Address"),
 		settings.WriteRole(entity.RoleAdmin),
 		settings.SecretRef("BindCredential", entity.SecretDirectoryCredential))
 }
