@@ -228,8 +228,9 @@ func boolRank(b bool) int {
 // emptying carries the state one run of the emptying step shares across the
 // ended segments it walks: the spares the durable unlinks freed — the takes
 // naming a predecessor the emptying unlinked, which the spares phase's own
-// verdict held back — are drawn front-first, before the pool's reserve, so a
-// freed take is the first spare the next ended segment's copy takes.
+// verdict held back — are drawn front-first, before the pool's reserve, but
+// only when the take's id is above every segment the copy replaces: a copy
+// below a rotten twin it replaces would not outlive the next open.
 type emptying struct {
 	deps     Deps
 	rd       *reader
@@ -238,7 +239,7 @@ type emptying struct {
 	marks    []core.SyncMark
 
 	// freed holds the takes a durable unlink released, drawn front-first for
-	// the copies that follow. A freed take is the emptying's own spare alone,
+	// the copies that follow whose id floor it clears. A freed take is the emptying's own spare alone,
 	// exactly the shape a freed successor would reach the running pool
 	// through once the pool's open-time wiring exists; until then the pool
 	// learns nothing of it, as it learns nothing of the spares the spares
