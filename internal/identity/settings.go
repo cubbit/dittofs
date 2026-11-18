@@ -19,6 +19,9 @@ type Settings struct {
 	// NetBIOSName is the installation's own NetBIOS name, which an SMB
 	// CHALLENGE advertises as its computer name.
 	NetBIOSName string `json:"netbios_name" class:"live"`
+	// Keytab names the keytab, a Secret of kind keytab, never the keytab
+	// itself. Its versions reach the server as State.Keytab.
+	Keytab entity.SecretRef `json:"keytab" class:"live"`
 }
 
 // maxNetBIOSName is a NetBIOS name's length in bytes; the sixteenth byte of
@@ -40,7 +43,8 @@ func defaultSettings() Settings {
 
 // Section declares the identity section for the node's settings table.
 func Section() settings.Section {
-	return settings.Of("identity", settings.At(entity.ScopeInstallation), defaultSettings())
+	return settings.Of("identity", settings.At(entity.ScopeInstallation), defaultSettings(),
+		settings.SecretRef("Keytab", entity.SecretKeytab))
 }
 
 // Validate refuses a range whose low end is above its high end, and a NetBIOS

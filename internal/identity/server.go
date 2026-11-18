@@ -67,6 +67,13 @@ type State struct {
 	Generation uint64
 	// Settings is the identity section as of this Apply.
 	Settings Settings
+	// Keytab is the keytab's versions in force, opened, current first. A
+	// new version takes effect at the Apply that delivers it, and one no
+	// longer delivered is gone from the ring at that Apply.
+	Keytab []secrets.Version
+	// keys is the ring Apply builds from Keytab; whatever the caller
+	// passes is replaced.
+	keys keyRing
 	// Serial is set by Apply, whatever the caller passes: raised only when
 	// the State differs from the current one. A Caller's Built is the Serial
 	// of the State it was resolved under.
@@ -169,12 +176,14 @@ func (s *Server) Apply(st State) error {
 	if err := st.Settings.Validate(); err != nil {
 		return err
 	}
+	st.keys = buildRing(st.Keytab, s.logger)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur := s.state.Load()
 	if cur != nil {
 		st.Serial = cur.Serial
-		if st == *cur {
+		// DeepEqual, since a State's keytab versions are compared by value.
+		if reflect.DeepEqual(st, *cur) {
 			return nil
 		}
 	}

@@ -1,6 +1,7 @@
 package identity_test
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -67,7 +68,7 @@ func TestApplyRefusesInvalidSettings(t *testing.T) {
 	if err := s.Apply(bad); err == nil || !strings.Contains(err.Error(), "netbios_name") {
 		t.Fatalf("Apply with NetBIOSName dittofs.lab = %v, want Validate's netbios_name refusal", err)
 	}
-	if got := s.Applied(); got == nil || *got != want {
+	if got := s.Applied(); got == nil || !reflect.DeepEqual(*got, want) {
 		t.Fatalf("State after a refused Apply = %+v, want the last applied %+v", got, want)
 	}
 }
