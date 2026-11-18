@@ -122,8 +122,9 @@ func (s *Server) sleep(b *bound, d time.Duration) (stopped bool) {
 
 // stopOnLoops waits for each of bs's accept loops to end. The sockets are
 // closed already, which ends each loop, in its Accept or in its backoff's
-// sleep; a connection its loop hands to serveConn as it closes registers
-// before the loop ends, so the wait after it sees every connection.
+// sleep; a connection its loop hands to serveConn as it closes finds the
+// server draining, is refused and is torn down on the loop, OnClose
+// included, before the loop ends.
 func (s *Server) stopOnLoops(bs []*bound) {
 	for _, b := range bs {
 		<-b.loopDone
