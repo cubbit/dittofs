@@ -122,14 +122,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for them. Corrupt losses past that reserve defer: the open serves and the
   segment holding each deferred drop stays in place. When the open ends that
   segment, or empties it for its failed records, the loss record is written
-  into the copy the emptying makes; any other sealed segment holding a
-  deferred drop stays held until a restart, whose open finds the drop again
-  and defers it again, since the deferral registry is process-local. A segment the
+  into the copy the emptying makes. Any other sealed segment holding a
+  deferred drop stays held and its loss is never recorded: the deferral
+  never ends in the process that made it, and it stands across restarts,
+  since each open finds the drop again and defers it again. A segment the
   recovery ends is copied out whole into a sealed spare and unlinked before
   the journal serves, its served pieces repointed to the copy. An open still
   refuses what it cannot settle, such as a copy that needs more than one
   segment: it answers `ErrOpenRefused`, the engine leaves the device's shares
   unattached under `journal_open_refused` and retries the open.
+  Known gap: the engine opens its journal with no sync marks, so nothing
+  proves a record in an unproven tail was synced. With the ended-segment
+  refusal gone, a synced record that rotted there now reads through the
+  engine as a torn tail: the open cuts it and empties the segment without
+  recording the loss, and the extent reads zeros with no error. Handing the
+  engine's recorded sync marks to the open closes it (#4711).
 
 ## [0.36.0] — 2026-10-19
 
