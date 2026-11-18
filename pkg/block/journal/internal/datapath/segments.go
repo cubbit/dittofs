@@ -32,6 +32,9 @@ type SegmentRow struct {
 	Unreclaimed int64
 }
 
+// The row builder lives here, not in package segment: it reads the index, the
+// unread set and the durability layer, all of which import segment.
+
 // Segments returns one row per segment the journal owns, in segment order,
 // followed in the same order by the rows of damaged segments already retired.
 // Each row reads the set, the index's counters, the durability layer's

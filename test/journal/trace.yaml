@@ -62,7 +62,7 @@ rfc1 / 9.4 / A / "copy loses to a newer write":
 rfc1 / 9.4 / A / "loss raises the loss generation":
   tests: [TestRFC1A_LossRaisesLossGeneration]
 rfc1 / 9.4 / A / "a recycled segment keeps its new records":
-  tests: [TestRFC1A_RecycledSegmentKeepsNewRecords]
+  tests: [TestRFC1A_RecycledSegmentKeepsNewRecords, TestFailedAppendCarriedOnceResolvedJournalLevel]
 rfc1 / 9.4 / A / "failed sync window":
   tests: [TestRFC1A_FailedSyncWindow, TestRFC1A_FailedWindowsCarryNoMarks]
 rfc1 / 9.4 / A / "offered bytes verified":
@@ -100,7 +100,7 @@ rfc1 / 9.4 / B / "named refusal":
 rfc1 / 9.4 / B / "share limit":
   tests: [TestRFC1B_ShareLimit]
 rfc1 / 9.4 / B / "repack at capacity":
-  tests: [TestRFC1B_RepackAtCapacity]
+  tests: [TestRFC1B_RepackAtCapacity, TestRepackAtCapacityJournalLevel, TestRepackUnitsRunOnePerReserve]
 rfc1 / 9.4 / B / "descriptors":
   tests: [TestRFC1B_Descriptors]
 rfc1 / 9.4 / B / "coalescing":
@@ -108,7 +108,7 @@ rfc1 / 9.4 / B / "coalescing":
 rfc1 / 9.4 / B / "index bound refuses":
   tests: [TestRFC1B_IndexBoundRefuses]
 rfc1 / 9.4 / B / "repack beside a share at its limit":
-  tests: [TestRFC1B_RepackBesideShareAtLimit]
+  tests: [TestRFC1B_RepackBesideShareAtLimit, TestRepackBesideShareAtLimitJournalLevel]
 rfc1 / 9.4 / B / "headroom is allocated":
   tests: [TestRFC1B_HeadroomIsAllocated]
 rfc1 / 9.4 / B / "pinned segments bounded":

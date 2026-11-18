@@ -827,7 +827,8 @@ type Row struct {
 	// Stream is the append stream that took the segment; zero for one an
 	// open adopted, which no stream has named.
 	//
-	// ponytail: an adopted segment reports stream zero, for the rebuild keeps
+	// ponytail: an adopted segment reports stream zero, indistinguishable from
+	// a real stream-0 segment, for the rebuild keeps
 	// no header's stream beside its scan. Upgrade to carrying the scanned
 	// header's stream into the adoption when a reader needs the stream of a
 	// segment that predates this process.

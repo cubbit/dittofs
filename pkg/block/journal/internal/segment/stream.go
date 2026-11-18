@@ -1609,6 +1609,25 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 	return s.sealLocked(early)
 }
 
+// ErrNotOpenSegment is the refusal of SealOpen when the segment named is not
+// the one the stream appends to: the stream rolled, sealed or ended since the
+// caller looked. Nothing was written.
+var ErrNotOpenSegment = errors.New("segment: the segment is not the stream's open one")
+
+// SealOpen is Seal for a caller that decided on one segment: the check that id
+// is the stream's open segment and the seal's own move to sealing happen under
+// one hold of the append lock, so a roll between the caller's look and this
+// call can never turn the seal onto the successor. Any other segment is
+// refused with ErrNotOpenSegment.
+func (s *Stream) SealOpen(id core.SegmentID, early bool) (SealResult, error) {
+	s.appendMu.Lock()
+	if s.closed || s.id != id || s.sealState != sealOpen {
+		s.appendMu.Unlock()
+		return SealResult{}, ErrNotOpenSegment
+	}
+	return s.sealLocked(early)
+}
+
 // sealLocked is Seal under the append lock: the caller enters holding
 // appendMu and this body releases it on every path, exactly as Seal does,
 // so a caller that has the lock — the idle seal's check-and-take below —

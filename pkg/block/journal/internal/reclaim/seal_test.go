@@ -1,6 +1,7 @@
 package reclaim_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -148,5 +149,29 @@ func TestSealer_OnePerStreamUntilRetired(t *testing.T) {
 	}
 	if n := sl.SealShare(copyTag); n != 1 {
 		t.Errorf("SealShare sealed %d segments after the first was retired, want 1", n)
+	}
+}
+
+// TestSealOpen_RefusesASegmentTheStreamLeft is a seal aimed at a segment the
+// stream rolled away from: it is refused and seals nothing, never the
+// successor the stream holds now.
+func TestSealOpen_RefusesASegmentTheStreamLeft(t *testing.T) {
+	p := &passFixture{f: newCopyFixture(t)}
+	file := copyFile(1)
+	stream := p.f.core.Streams().For(file)
+
+	first, _, _ := p.f.plant(t, copyTag, file, []byte("first"), 0)
+	p.f.sealSource(t, file)
+	p.f.waitSpares(t)
+	second, _, _ := p.f.plant(t, copyTag, file, []byte("second"), 0)
+
+	if _, err := stream.SealOpen(first.Segment, true); !errors.Is(err, segment.ErrNotOpenSegment) {
+		t.Fatalf("SealOpen of the segment the stream left: error %v, want %v", err, segment.ErrNotOpenSegment)
+	}
+	if st, _ := p.f.set.State(second.Segment); st != segment.Active {
+		t.Fatalf("the successor is in state %v after a refused seal of its predecessor, want Active", st)
+	}
+	if _, err := stream.SealOpen(second.Segment, true); err != nil {
+		t.Fatalf("SealOpen of the open segment: %v", err)
 	}
 }

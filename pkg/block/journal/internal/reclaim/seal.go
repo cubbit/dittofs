@@ -1,6 +1,7 @@
 package reclaim
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
@@ -79,6 +80,13 @@ func (s *Sealer) SealShare(share core.ShareTag) int {
 }
 
 // holds reports whether the row of id holds bytes of share.
+//
+// decision: this is an approximation of "holds the share's unreclaimed bytes".
+// No per-share, per-segment unreclaimed figure exists, so any open segment
+// holding bytes of the share qualifies, including one that is fully live. Such
+// a segment is sealed, then pins the stream's single slot and stays booked if
+// repack cannot retire it. Overturned by a per-share per-segment unreclaimed
+// figure, the same upgrade the per-segment unreclaimed figure's marker names.
 func holds(rows []segment.Row, id core.SegmentID, share core.ShareTag) bool {
 	for _, r := range rows {
 		if r.ID == id {
@@ -115,13 +123,17 @@ func (s *Sealer) seal(st *segment.Stream, i int, id core.SegmentID) bool {
 		}
 		draw = d
 	}
-	if _, err := st.Seal(true); err != nil {
+	if _, err := st.SealOpen(id, true); err != nil {
 		if s.refund != nil {
 			s.refund(draw)
 		}
 		// A segment the failure ended, or another seal closed, stays booked
 		// until it goes; one still open was never closed, so its stream may
 		// be asked again.
+		if errors.Is(err, segment.ErrNotOpenSegment) {
+			s.release(i, id)
+			return false
+		}
 		if state, serr := s.set.State(id); serr != nil || state == segment.Active {
 			s.release(i, id)
 		}

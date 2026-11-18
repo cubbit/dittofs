@@ -49,6 +49,12 @@ func TestSegmentRows_AgreeWithAWalk(t *testing.T) {
 	// returns what differs, or "" when they agree.
 	disagreement := func() string {
 		held, retained := walkedBytes(f)
+		streamOf := map[core.SegmentID]uint32{}
+		for _, file := range files {
+			for _, e := range f.ix.FileEntries(file) {
+				streamOf[e.Record.Segment] = uint32(f.core.Streams().IndexFor(file))
+			}
+		}
 		var sum int64
 		var ids, got []core.SegmentID
 		snap := f.set.Snapshot()
@@ -74,6 +80,12 @@ func TestSegmentRows_AgreeWithAWalk(t *testing.T) {
 			}
 			if wantUn := reclaim.Unreclaimed(want.Size, held[row.ID]+retained[row.ID]); row.Unreclaimed != wantUn {
 				return fmt.Sprintf("segment %d row says %d unreclaimed, want %d", row.ID, row.Unreclaimed, wantUn)
+			}
+			if row.Damaged || row.Retired {
+				return fmt.Sprintf("segment %d row says damaged %t retired %t, nothing in this sequence damages a record", row.ID, row.Damaged, row.Retired)
+			}
+			if want, ok := streamOf[row.ID]; ok && row.Stream != want {
+				return fmt.Sprintf("segment %d row says stream %d, the stream of its files is %d", row.ID, row.Stream, want)
 			}
 			sum += row.Held
 		}
