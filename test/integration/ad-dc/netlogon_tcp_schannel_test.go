@@ -24,6 +24,7 @@ import (
 	"github.com/oiweiwei/go-msrpc/msrpc/dtyp"
 	epm "github.com/oiweiwei/go-msrpc/msrpc/epm/epm/v3"
 	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
+	"github.com/oiweiwei/go-msrpc/ssp"
 	"github.com/oiweiwei/go-msrpc/ssp/credential"
 	"github.com/oiweiwei/go-msrpc/ssp/gssapi"
 	nlssp "github.com/oiweiwei/go-msrpc/ssp/netlogon"
@@ -57,9 +58,34 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 		credential.Workstation("DITTOFS"), credential.Domain(adRealm))
 	const logonServer = `\\DC1`
 
+	logonReq := func(t *testing.T) *logon.SAMLogonExRequest {
+		challenge := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+		nt, lm := ntlmResponseFor(ctx, t, adUserAlice, adUserPass, challenge)
+		return &logon.SAMLogonExRequest{
+			LogonServer: logonServer, ComputerName: "DITTOFS",
+			LogonLevel: logon.LogonInfoClassNetworkTransitiveInformation,
+			LogonInformation: &logon.Level{Value: &logon.Level_LogonNetworkTransitive{
+				LogonNetworkTransitive: &logon.NetworkInfo{
+					Identity: &logon.LogonIdentityInfo{
+						ParameterControl: logon.IdentityAllowWorkstationTrustAccount,
+						LogonDomainName:  &dtyp.UnicodeString{Buffer: adDomain},
+						UserName:         &dtyp.UnicodeString{Buffer: adUserAlice},
+						Workstation:      &dtyp.UnicodeString{Buffer: "DITTOFS"},
+					},
+					LMChallenge:         &logon.LMChallenge{Data: challenge[:]},
+					NTChallengeResponse: &logon.String{Buffer: nt},
+					LMChallengeResponse: &logon.String{Buffer: lm},
+				},
+			}},
+			ValidationLevel: logon.ValidationInfoClassSAMInfo4,
+		}
+	}
+
 	// go-msrpc's own helper: an NTLM-sealed bind, then an AlterContext to
-	// schannel on the same association. Its answer is logged, not asserted: it
-	// is the sequence securechannel.go records Samba refusing.
+	// schannel on the same association, the sequence securechannel.go records
+	// Samba refusing on ncacn_ip_tcp; this Samba accepts it. The helper asks
+	// for RC4 among its capabilities, which D1 takes out, so the channel below
+	// is built from ssp/netlogon's parts.
 	t.Run("one association upgraded by alter context", func(t *testing.T) {
 		gctx := gssapi.NewSecurityContext(ctx)
 		cc, err := dcerpc.Dial(gctx, binding, dcerpc.WithCredentials(machine))
@@ -67,8 +93,15 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 			t.Fatalf("dial %s: %v", binding, err)
 		}
 		defer func() { _ = cc.Close(gctx) }()
-		_, err = logon.NewSecureChannelClient(gctx, cc, dcerpc.WithSeal(), dcerpc.WithCredentials(machine))
-		t.Logf("logon.NewSecureChannelClient on ncacn_ip_tcp: err=%v", err)
+		cli, err := logon.NewSecureChannelClient(gctx, cc, dcerpc.WithSeal(), dcerpc.WithCredentials(machine))
+		if err != nil {
+			t.Fatalf("logon.NewSecureChannelClient on ncacn_ip_tcp: %v", err)
+		}
+		out, err := cli.SAMLogonEx(gctx, logonReq(t))
+		if err != nil || out.Return != 0 {
+			t.Fatalf("NetrLogonSamLogonEx over the upgraded association: err=%v status=0x%08x", err, uint32(samReturn(out)))
+		}
+		t.Log("logon.NewSecureChannelClient on ncacn_ip_tcp: bound, upgraded and signed alice in")
 	})
 
 	// The first association carries no authentication: the challenge and the
@@ -131,29 +164,6 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 		t.Fatalf("server credential %x, want %x", auth3.ServerCredential.Data, wantServer)
 	}
 
-	logonReq := func(t *testing.T) *logon.SAMLogonExRequest {
-		challenge := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
-		nt, lm := ntlmResponseFor(ctx, t, adUserAlice, adUserPass, challenge)
-		return &logon.SAMLogonExRequest{
-			LogonServer: logonServer, ComputerName: "DITTOFS",
-			LogonLevel: logon.LogonInfoClassNetworkTransitiveInformation,
-			LogonInformation: &logon.Level{Value: &logon.Level_LogonNetworkTransitive{
-				LogonNetworkTransitive: &logon.NetworkInfo{
-					Identity: &logon.LogonIdentityInfo{
-						ParameterControl: logon.IdentityAllowWorkstationTrustAccount,
-						LogonDomainName:  &dtyp.UnicodeString{Buffer: adDomain},
-						UserName:         &dtyp.UnicodeString{Buffer: adUserAlice},
-						Workstation:      &dtyp.UnicodeString{Buffer: "DITTOFS"},
-					},
-					LMChallenge:         &logon.LMChallenge{Data: challenge[:]},
-					NTChallengeResponse: &logon.String{Buffer: nt},
-					LMChallengeResponse: &logon.String{Buffer: lm},
-				},
-			}},
-			ValidationLevel: logon.ValidationInfoClassSAMInfo4,
-		}
-	}
-
 	// The unauthenticated association may not sign anyone in.
 	if out, err := plain.SAMLogonEx(ctx, logonReq(t)); err == nil && out.Return == 0 {
 		t.Errorf("NetrLogonSamLogonEx on the unauthenticated association succeeded, want it refused")
@@ -167,7 +177,8 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 		t.Fatalf("dial %s: %v", binding, err)
 	}
 	defer func() { _ = cc2.Close(ctx) }()
-	sealed, err := logon.NewLogonClient(ctx, cc2, dcerpc.WithSeal(), dcerpc.WithSecurityConfig(cfg))
+	sealed, err := logon.NewLogonClient(ctx, cc2, dcerpc.WithSeal(), dcerpc.WithSecurityConfig(cfg),
+		dcerpc.WithMechanism(ssp.Netlogon), dcerpc.WithCredentials(machine))
 	if err != nil {
 		t.Fatalf("schannel-sealed bind on ncacn_ip_tcp: %v", err)
 	}
@@ -231,9 +242,16 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 			}
 			t.Logf("service ticket for %s issued, etype %d; %s$ names:\n%s", spn, key.KeyType, host, spns)
 		}
+		// A name no account holds is refused, so the issues above are not a
+		// KDC answering every cifs/ name.
+		if _, _, err := cl.GetServiceTicket("cifs/nosuchhost.dittofs.ad"); err == nil {
+			t.Errorf("service ticket for cifs/nosuchhost.dittofs.ad issued, want it refused")
+		} else {
+			t.Logf("service ticket for cifs/nosuchhost.dittofs.ad: %v", err)
+		}
 	})
 
-	t.Run("key version of an account created then given a password", func(t *testing.T) {
+	t.Run("key version of a created computer account", func(t *testing.T) {
 		pem, err := os.ReadFile(copyADCA(t))
 		if err != nil {
 			t.Fatal(err)
@@ -249,35 +267,50 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 		if err := conn.Bind(adBindDN, adAdminPassword); err != nil {
 			t.Fatalf("bind: %v", err)
 		}
-		dn := "CN=spikekvno,CN=Computers," + adBaseDN
-		// As the online join creates one: disabled, no password, then unicodePwd.
-		add := ldap.NewAddRequest(dn, nil)
-		add.Attribute("objectClass", []string{"top", "person", "organizationalPerson", "user", "computer"})
-		add.Attribute("sAMAccountName", []string{"spikekvno$"})
-		add.Attribute("userAccountControl", []string{strconv.Itoa(0x1000 | 0x2)})
-		if err := conn.Add(add); err != nil {
-			t.Fatalf("add %s: %v", dn, err)
+		unicodePwd := func(password string) string {
+			pw := utf16.Encode([]rune(`"` + password + `"`))
+			b := make([]byte, 2*len(pw))
+			for i, c := range pw {
+				binary.LittleEndian.PutUint16(b[2*i:], c)
+			}
+			return string(b)
 		}
-		kvno := func() string {
+		kvno := func(dn string) string {
 			res, err := conn.Search(ldap.NewSearchRequest(dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases,
 				0, 0, false, "(objectClass=*)", []string{"msDS-KeyVersionNumber"}, nil))
 			if err != nil || len(res.Entries) != 1 {
-				t.Fatalf("read msDS-KeyVersionNumber: %v", err)
+				t.Fatalf("read msDS-KeyVersionNumber of %s: %v", dn, err)
 			}
 			return res.Entries[0].GetAttributeValue("msDS-KeyVersionNumber")
 		}
-		created := kvno()
-		mod := ldap.NewModifyRequest(dn, nil)
-		pw := utf16.Encode([]rune(`"SpikeKvno01!"`))
-		b := make([]byte, 2*len(pw))
-		for i, c := range pw {
-			binary.LittleEndian.PutUint16(b[2*i:], c)
+		addComputer := func(name string, uac int, password string) string {
+			dn := "CN=" + name + ",CN=Computers," + adBaseDN
+			add := ldap.NewAddRequest(dn, nil)
+			add.Attribute("objectClass", []string{"top", "person", "organizationalPerson", "user", "computer"})
+			add.Attribute("sAMAccountName", []string{name + "$"})
+			add.Attribute("userAccountControl", []string{strconv.Itoa(uac)})
+			if password != "" {
+				add.Attribute("unicodePwd", []string{unicodePwd(password)})
+			}
+			if err := conn.Add(add); err != nil {
+				t.Fatalf("add %s: %v", dn, err)
+			}
+			return dn
 		}
-		mod.Replace("unicodePwd", []string{string(b)})
+
+		// As v1's online join creates one: disabled, no password, then unicodePwd.
+		dn := addComputer("spikekvno", 0x1000|0x2, "")
+		created := kvno(dn)
+		mod := ldap.NewModifyRequest(dn, nil)
+		mod.Replace("unicodePwd", []string{unicodePwd("SpikeKvno01!")})
 		if err := conn.Modify(mod); err != nil {
 			t.Fatalf("set unicodePwd: %v", err)
 		}
-		t.Logf("msDS-KeyVersionNumber: %q after the add, %q after the first password set", created, kvno())
+		t.Logf("msDS-KeyVersionNumber, added then given a password: %q after the add, %q after the password set", created, kvno(dn))
+
+		// The password in the add itself.
+		dn = addComputer("spikekvnopw", 0x1000, "SpikeKvno02!")
+		t.Logf("msDS-KeyVersionNumber, added with its password: %q", kvno(dn))
 	})
 }
 
