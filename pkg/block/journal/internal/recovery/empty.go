@@ -606,8 +606,8 @@ func (e *emptying) freedTakes(pred core.SegmentID) []core.SegmentID {
 // standingCopy answers the placement a verifying copy of rec already holds in
 // a segment the open neither ends nor saw fail: its own Ended rows are
 // excluded — each is emptied or was, and its records carry through its own
-// leg — and a failed window's whole standing one too, for its bytes are the
-// device's own word nothing proved. Such a segment stays held.
+// leg — and so is every unsealed row, whose bytes nothing proved. Such a
+// segment stays held.
 func (e *emptying) standingCopy(rec index.Record, id core.SegmentID) (index.RecordAt, bool) {
 	scans := slices.Clone(e.st.Rebuilt.Scans)
 	slices.SortFunc(scans, func(a, b segmentScan) int { return cmp.Compare(a.ID, b.ID) })
@@ -617,9 +617,12 @@ func (e *emptying) standingCopy(rec index.Record, id core.SegmentID) (index.Reco
 			continue // the ended segment's own copy is no skip: it goes with the segment
 		}
 		state, err := e.st.Assembled.Set.State(sc.ID)
-		if err != nil || state != segment.Active && state != segment.Sealed {
-			// Not in the set, or a row the open ends: the bytes are nobody's
-			// to rely on. A sealed row or an active one stands.
+		if err != nil || state != segment.Sealed {
+			// decision: only a sealed row's duplicate stands. An unsealed row's
+			// bytes are the cache's word until a sync the open can read proves
+			// them, and the copy this skip stands in for goes to a sealed,
+			// synced spare. Withdrawn if an active row's synced-through is
+			// read here and proves the duplicate's whole extent.
 			continue
 		}
 		for _, other := range sc.Records {
@@ -642,8 +645,8 @@ func (e *emptying) asideCopyVerifies(rec reclaim.Rec, id core.SegmentID) bool {
 			continue
 		}
 		state, err := e.st.Assembled.Set.State(sc.ID)
-		if err != nil || state != segment.Active && state != segment.Sealed {
-			continue
+		if err != nil || state != segment.Sealed {
+			continue // the same trust standingCopy keeps: a sealed row alone
 		}
 		for _, a := range sc.Aside {
 			if a.Header.Kind == rec.Kind && a.Header.Seq == rec.Seq &&
