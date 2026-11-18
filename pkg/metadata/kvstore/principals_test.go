@@ -75,33 +75,34 @@ func TestGroupsTransitiveWithCycle(t *testing.T) {
 	}
 }
 
-func TestGrantResolution(t *testing.T) {
+// Grant answers the grant naming the principal itself, never one reached
+// through its groups, and tells a stored none from no grant.
+func TestGrantIsTheOwnGrantAlone(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
 	share := entity.NewShareID()
-	u, v, g1, g2 := entity.NewUser(), entity.NewUser(), entity.NewGroup(), entity.NewGroup()
+	u, v, g1 := entity.NewUser(), entity.NewUser(), entity.NewGroup()
 	rows(t, s, slices.Concat(
-		member(g1, u), member(g2, g1), member(g1, v),
-		grantRow(share, g1, entity.AccessRead),
-		grantRow(share, g2, entity.AccessReadWrite), // reached through g1
-		grantRow(share, v, entity.AccessNone),       // v's own grant decides
+		member(g1, u), member(g1, v),
+		grantRow(share, g1, entity.AccessReadWrite),
+		grantRow(share, v, entity.AccessNone),
 	)...)
 	for _, c := range []struct {
-		name string
-		p    entity.Principal
-		want entity.ShareAccess
+		name   string
+		share  entity.ShareID
+		p      entity.Principal
+		want   entity.ShareAccess
+		wantOK bool
 	}{
-		{"widest group grant", u, entity.AccessReadWrite},
-		{"own grant of none wins over groups", v, entity.AccessNone},
-		{"no grant", entity.NewUser(), entity.AccessNone},
+		{"a group's grant", share, g1, entity.AccessReadWrite, true},
+		{"a member with no grant of its own", share, u, entity.AccessNone, false},
+		{"an own grant of none", share, v, entity.AccessNone, true},
+		{"another share", entity.NewShareID(), g1, entity.AccessNone, false},
 	} {
-		got, err := s.Principals().Grant(ctx, share, c.p)
-		if err != nil || got != c.want {
-			t.Errorf("%s: %v, %v; want %v", c.name, got, err, c.want)
+		got, ok, err := s.Principals().Grant(ctx, c.share, c.p)
+		if err != nil || got != c.want || ok != c.wantOK {
+			t.Errorf("Grant of %s = %v, %v, %v; want %v, %v", c.name, got, ok, err, c.want, c.wantOK)
 		}
-	}
-	if got, _ := s.Principals().Grant(ctx, entity.NewShareID(), u); got != entity.AccessNone {
-		t.Errorf("other share: %v", got)
 	}
 }
 

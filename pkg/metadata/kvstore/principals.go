@@ -115,21 +115,19 @@ func groupsOf(r kv.Reader, of entity.Principal) ([]entity.Principal, error) {
 	return out, nil
 }
 
-// Grant is p's access to share once signed in, so authenticated: a grant
-// naming p itself decides, even one of none; without one, the widest grant
-// naming any of p's groups does; without one, a grant naming authenticated
-// users, then one naming everyone. No grant at all is none.
-func (p Principals) Grant(ctx context.Context, share entity.ShareID, of entity.Principal) (entity.ShareAccess, error) {
-	var access entity.ShareAccess
-	err := p.s.kv.View(ctx, func(r kv.Reader) error {
-		groups, err := groupsOf(r, of)
-		if err != nil {
-			return err
-		}
-		access, err = grantFor(r, share, entity.Identity{Principal: of, Groups: groups, Authenticated: true})
+// Grant is the grant naming of itself on share, and true; false when none
+// does. A stored grant of none is (none, true), distinct from no grant: it
+// refuses of where its groups' grants would admit (RFC 18 §6.4). Grants
+// naming of's groups, authenticated users or everyone are not read: the
+// order among them is resolution's.
+func (p Principals) Grant(ctx context.Context, share entity.ShareID, of entity.Principal) (entity.ShareAccess, bool, error) {
+	var g entity.ShareGrant
+	var ok bool
+	err := p.s.kv.View(ctx, func(r kv.Reader) (err error) {
+		g, ok, err = grantIn(r, share, of.ID)
 		return err
 	})
-	return access, err
+	return g.Access, ok, err
 }
 
 func grantIn(r kv.Reader, share entity.ShareID, p entity.PrincipalID) (entity.ShareGrant, bool, error) {
