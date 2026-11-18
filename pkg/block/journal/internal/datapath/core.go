@@ -741,9 +741,10 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// entry — the registry entry is its own identity, and the map keeps
 	// package reclaim off the layer that owns it. Every repoint's held
 	// delta runs through Account as any other index change does.
-	// The pins hold back, for the length of one run, each source a pass
-	// could not hand over, so the same run cannot select it again: a set
-	// of one journal shared by its selector and its passes.
+	// The pins keep the protocol that pins segments out of selection — the
+	// running offers' — wired to the selector alone: a pass excludes its own
+	// stayed sources by holding their claims, never by touching a pin, so
+	// nothing a pass does can delete an offer's.
 	pun := unread.New(deps.Clock)
 	pins := reclaim.NewPins()
 	c.repack = reclaim.NewPass(
@@ -783,7 +784,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 			}
 			return false
 		},
-		c.Account, pins)
+		c.Account)
 
 	// The open's registration: a core continued from a rebuilt state
 	// registers every record the rebuild found still live on disk through

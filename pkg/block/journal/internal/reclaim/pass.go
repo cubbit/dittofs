@@ -57,10 +57,6 @@ type Pass struct {
 	// may be nil: the pass ends no deferral, accounts no delta.
 	end  func(core.SegmentID, DeferredLoss) bool
 	acct func(index.HeldDelta)
-	// pins holds back, until the run ends, every source the pass could not
-	// hand over, so the next unit of the same run cannot select it again.
-	// A nil *Pins pins nothing, which is every test wiring's choice.
-	pins *Pins
 
 	// decision: mu is a leaf. It guards the stop flag and the run count's
 	// admission alone — spent once to refuse a Run begun after Stop and to
@@ -80,19 +76,32 @@ type Pass struct {
 // the held-delta consumer. dur, end and acct may be nil — a pass over a journal
 // that carries no deferral needs none of them, and the tests that drive the
 // pieces alone pass nil. The rest are a caller bug and panic here.
-func NewPass(sel *Selector, cop *Copier, tr *Tracker, ix *index.Index, set *segment.Set, dur Durability, wait Durable, ret Retirer, end func(core.SegmentID, DeferredLoss) bool, acct func(index.HeldDelta), pins *Pins) *Pass {
+func NewPass(sel *Selector, cop *Copier, tr *Tracker, ix *index.Index, set *segment.Set, dur Durability, wait Durable, ret Retirer, end func(core.SegmentID, DeferredLoss) bool, acct func(index.HeldDelta)) *Pass {
 	if sel == nil || cop == nil || tr == nil || ix == nil || set == nil || wait == nil || ret == nil {
 		panic("reclaim: NewPass needs its selector, copier, tracker, index, segment set, durability waiter and retirer")
 	}
-	return &Pass{sel: sel, cop: cop, tr: tr, ix: ix, set: set, dur: dur, wait: wait, ret: ret, end: end, acct: acct, pins: pins}
+	return &Pass{sel: sel, cop: cop, tr: tr, ix: ix, set: set, dur: dur, wait: wait, ret: ret, end: end, acct: acct}
 }
 
-// Stop interrupts every running pass between its units and joins it: a unit in
-// flight completes — its copies, repoints, deferral ends and retirement run to
-// their ends — and the loop returns at its next turn. A Run begun after Stop
-// returns core.ErrClosed. Stop is safe to call twice and safe from any
-// goroutine; it must not be called from inside one of its own passes, which
-// would wait for themselves.
+// Stop interrupts every running pass between its units and joins it. What the
+// in-flight unit does depends on where it stands: a segment it is already
+// retiring completes — the retirer runs until after the pass's stop — while a
+// unit waiting for a record to become durable is woken by the durability
+// layer's own stop, which runs first, and abandons safely: nothing was
+// published at that point, so it repoints nothing, retires nothing, and the
+// claim goes back. A Run begun after Stop returns core.ErrClosed. Stop is
+// safe to call twice and safe from any goroutine; it must not be called from
+// inside one of its own passes, which would wait for themselves.
+//
+// decision: a never-blocking close outranks the interrupted unit's completion.
+// The close's own reverse order stops the durability layer — whose stop wakes
+// every durability waiter — and the pool, whose refill a roll that landed its
+// first placement would be waiting on, before the pass's stop, so a close
+// joins an abandoned unit rather than a finished one whenever they meet in a
+// wait. That order is the core's deliberate close sequence and is not the
+// pass's to invert. Overturned only by a ruled requirement that a close join
+// a pass's completed retirement, which would need the durability layer to
+// outlive the pass's stop — a close-order change, not a pass change.
 func (p *Pass) Stop() {
 	p.mu.Lock()
 	p.stopped = true
@@ -118,8 +127,17 @@ func (p *Pass) stoppedNow() bool {
 // in flight. The pass stops when no candidate remains, when the budget is
 // reached, on its context's error, or on the error of a unit that cannot
 // complete — a permanently failing unit ends the pass, its claim released,
-// never retried within the same call. Every source the pass cannot hand over
-// is pinned off its own selection until Run returns.
+// never retried within the same call. Every source a unit of this run chose
+// not to hand over stays excluded from the run's own selection: the unit
+// hands its claim to the run, which holds it open — no later Select offers
+// the segment again — and releases it when the run ends.
+//
+// decision: the exclusion is the run's own claim, never the selector's pin
+// set — the pins are the offer protocol's, and a run's unpin would delete an
+// offer's pin on the same segment, so the pass touches no pin. The expense is
+// one claim held per stayed candidate, to the run's end, so the selector
+// leaves it out of every later Select of the run. Overturned by a pin
+// protocol that counts its holders instead of naming them.
 func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, error) {
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, err
@@ -133,12 +151,13 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 	p.mu.Unlock()
 	defer p.wg.Done()
 	var out Outcome
-	var stayed []core.SegmentID
-	defer func() {
-		for _, seg := range stayed {
-			p.pins.Unpin(seg)
-		}
-	}()
+	// reheld are the sources whose unit stayed: their claims — the run's,
+	// not the unit's, from the moment they stay — keep every later Select
+	// of the run from offering them again, and release when the run ends.
+	// The release is a closure because a deferred call binds its arguments
+	// where it is registered, and reheld is empty here.
+	var reheld []core.SegmentID
+	defer func() { p.sel.Done(reheld...) }()
 	for {
 		if err := ctx.Err(); err != nil {
 			return out, err
@@ -166,8 +185,7 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 		out.Freed += freed
 		out.Segments++
 		if stayedNow {
-			stayed = append(stayed, seg)
-			p.pins.Pin(seg)
+			reheld = append(reheld, seg)
 		}
 		if err != nil {
 			return out, err
@@ -176,11 +194,13 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 }
 
 // unit runs one unit of work over seg, whose claim the selector holds. Every
-// return releases the claim: on the retirement path before the hand-over —
-// the retirer takes the ledger's own claim itself, the order the retirement
-// worker's own hand-over keeps — and on every refusal. stayed reports a
-// source the unit completed without handing over, whose next selection in
-// the same pass would only repeat it.
+// return releases the claim except a stay: on the retirement path the release
+// comes first — the retirer takes the ledger's own claim itself, the order
+// the retirement worker's own hand-over keeps — and every refusal releases
+// too, while a stay hands the claim to the run it answers, which holds it
+// open and releases it when the run ends. stayed reports a source the unit
+// completed without handing over, whose next selection in the same run would
+// only repeat it.
 func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64, stayed bool, err error) {
 	res, err := p.cop.Copy(ctx, seg)
 	if err != nil {
@@ -261,13 +281,14 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 
 	// The deferral ends: the waits above have covered each deferred loss
 	// record's place, so the registry gives its entry up and the tracker's
-	// deferred count lowers with it — the source may be handed over only
-	// after both (RFC 1 §6).
+	// deferred count — lowered only for an entry the registry actually
+	// gave up, never for one that already left or for a raise another
+	// deferral owns — the source may be handed over only after both
+	// (RFC 1 §6).
 	for _, dc := range carry.Deferred {
-		if p.end != nil {
-			p.end(seg, dc.Loss)
+		if p.end == nil || p.end(seg, dc.Loss) {
+			p.tr.SetDeferred(seg, false)
 		}
-		p.tr.SetDeferred(seg, false)
 	}
 	// The deferred snapshot's re-check: the carry read the registry once,
 	// and a deferral raised since must not have its loss record left behind
@@ -283,7 +304,9 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 	// segment whose liveness the tracker still counts.
 	stayed = p.tr.Held(seg)
 	if stayed {
-		p.sel.Done(seg)
+		// The claim is kept, not released: the run must not re-select the
+		// segment for a unit that will only repeat this one, and it
+		// releases the claim when the run ends.
 		return bytes, 0, true, nil
 	}
 	st, serr := p.set.State(seg)
@@ -301,7 +324,9 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 		// window that opened since the selection keeps its source for a
 		// pass that runs once its records are carried and resolved.
 		if p.dur != nil && (p.dur.WindowOpen(seg) || p.dur.ReclaimBlocked(seg)) {
-			p.sel.Done(seg)
+			// The claim stays with the run, as the hold does above: the
+			// ended segment whose window reopened keeps its place out of
+			// this run's selections until the run releases it.
 			return bytes, 0, true, nil
 		}
 		reason = segment.ReasonEnded

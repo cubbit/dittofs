@@ -216,18 +216,32 @@ func TestPassDeferredLossHandover(t *testing.T) {
 }
 
 // TestPassADeferralRaisedInTheGapKeepsTheSource pins the re-check the retire
-// gate makes: a deferral raised after the carry read its snapshot — the pass
-// is blocked in its durability wait, so the raise provably lands after it —
-// keeps the source in the set, its loss record still owed, the freed at
-// zero.
+// gate makes and the gate the deferral's end answers through: a deferral
+// raised after the carry read its snapshot — the pass is blocked in its
+// durability wait, so the raise provably lands after it — keeps the source in
+// the set, its loss record still owed, the freed at zero. The raise the pass
+// must not touch arrives while the entry the carry did snapshot has already
+// left the registry, so only a held deferral whose end refused to fire can
+// answer for it.
 func TestPassADeferralRaisedInTheGapKeepsTheSource(t *testing.T) {
 	p := newPassFixture(t)
 	d := p.f.core.Durability()
+	tr := p.f.core.Liveness()
 	file := copyFile(9)
 	rec, seqW, vW := p.f.plant(t, copyTag, file, []byte("the write the gap deferral counts beside"), 0)
 	src := rec.Segment
 	p.f.sealSource(t, file)
 	p.retainActivity(t, p.f.core.Streams().IndexFor(file), file)
+	// One deferred loss stands against the source exactly as an open leaves
+	// it: the registry entry, and the deferred count raised beside it.
+	a := durability.Loss{
+		Share: copyTag, File: file, Extent: core.Extent{Off: 9 << 10, Len: 64},
+		Version: vW, Seq: seqW + 1000, Reason: core.LossStale, Deferred: true, Seg: src,
+	}
+	if _, err := d.Lose(t.Context(), a); err != nil {
+		t.Fatalf("planting the standing deferral: %v", err)
+	}
+	tr.SetDeferred(src, true)
 
 	hold := p.f.seam.Hold(t, kit.OpSync, "*")
 	// A budget of one copied byte runs exactly one unit: whatever the raise
@@ -235,14 +249,25 @@ func TestPassADeferralRaisedInTheGapKeepsTheSource(t *testing.T) {
 	// the decision behind a second run.
 	done := p.goRepack(context.Background(), 1, src)
 	reachHold(t, hold)
+	// The pass is past the carry's snapshot — its wait is the only thing
+	// the seam can hold here — so the gap opens: the standing entry is
+	// ended by the registry's own word, its count lowered the way the
+	// emptying lowers it, and a second deferral is raised in that same
+	// gap. The pass's later end of the entry it snapshotted must refuse —
+	// the registry no longer holds it — and a refusal that lowered the
+	// count anyway would steal the raise the gap stands on.
+	if !d.EndDeferral(src, a) {
+		t.Fatal("ending the standing deferral during the gap = false, want the entry to leave")
+	}
+	tr.SetDeferred(src, false)
 	l := durability.Loss{
-		Share: copyTag, File: file, Extent: core.Extent{Off: 9 << 10, Len: 64},
+		Share: copyTag, File: file, Extent: core.Extent{Off: 10 << 10, Len: 64},
 		Version: vW, Seq: seqW + 2000, Reason: core.LossStale, Deferred: true, Seg: src,
 	}
 	if _, err := d.Lose(context.Background(), l); err != nil {
 		t.Fatalf("raising the gap deferral: %v", err)
 	}
-	p.f.core.Liveness().SetDeferred(src, true)
+	tr.SetDeferred(src, true)
 
 	hold.Release()
 	r := awaitRepack(t, done)
@@ -252,8 +277,8 @@ func TestPassADeferralRaisedInTheGapKeepsTheSource(t *testing.T) {
 	if r.freed != 0 {
 		t.Fatalf("Repack freed %d, want 0: the source held by the raised deferral must not be handed over", r.freed)
 	}
-	if !p.f.core.Liveness().Held(src) {
-		t.Fatal("the source no longer answers held after the gap deferral, want the raise to keep it")
+	if !tr.Held(src) {
+		t.Fatal("the source no longer answers held after the gap deferral, want the raise to keep it: the end of the spent entry must not lower the count the raise stands on")
 	}
 	if entries := d.DeferredAgainst(src); len(entries) != 1 {
 		t.Fatalf("the deferred registry after the pass holds %d entries (%+v), want the gap raise standing alone", len(entries), entries)
@@ -262,6 +287,47 @@ func TestPassADeferralRaisedInTheGapKeepsTheSource(t *testing.T) {
 	}
 	if p.setGone(src) {
 		t.Fatal("the source left the set, want the gap deferral keeping it for the copy of a later pass")
+	}
+}
+
+// TestPassASkippedSourceGivesWayToTheNextCandidate pins the run's own
+// exclusion of a source its unit chose not to hand over: a raise nothing a
+// carry can end will lower — so the unit's retire gate refuses and the unit
+// stays — must neither spin the pass on a re-selection of the same segment
+// nor stop it short of the candidate behind it, and the stayed source's
+// claim is released when the run ends, not before.
+func TestPassASkippedSourceGivesWayToTheNextCandidate(t *testing.T) {
+	p := newPassFixture(t)
+	fa, fb := passFilesOnDistinctStreams(p.f)
+	sa := p.plantSealed(t, fa, []byte("the write whose source stays held "))
+	sb := p.plantSealed(t, fb, []byte("the write whose source gives way"))
+	// A raise with no registry entry behind it: nothing a carry ends owes
+	// this count a lowering, so the unit over the held source stays.
+	p.f.core.Liveness().SetDeferred(sa, true)
+
+	r := awaitRepack(t, p.goRepack(context.Background(), copySegCap*8, sa, sb))
+	if r.err != nil {
+		t.Fatalf("Repack beside a staying source: %v", r.err)
+	}
+	if p.setGone(sa) {
+		t.Fatal("the held source left the set, want its unit's retire refused")
+	}
+	if !p.f.core.Liveness().Held(sa) {
+		t.Fatal("the staying source no longer answers held, want its raise to outlive the run")
+	}
+	if !p.setGone(sb) {
+		t.Fatal("the next candidate is still in the set, want the pass to run it once the stayed source gave way")
+	}
+	if r.freed <= 0 {
+		t.Fatalf("Repack freed %d, want the next candidate's retirement", r.freed)
+	}
+	// The run released the stayed source's claim, so a later run can take
+	// it — the exclusion lives no longer than the run that excluded.
+	sel := p.f.selector()
+	if cands := sel.Select(reclaim.Scope{Segments: []core.SegmentID{sa}}, 1); len(cands) == 0 {
+		t.Fatal("the stayed source answers no candidate after the run, want its claim released at the run's end")
+	} else {
+		sel.Done(cands[0].ID)
 	}
 }
 
