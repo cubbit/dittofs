@@ -430,6 +430,28 @@ func TestSeriesTwoServersOnOneRegistry(t *testing.T) {
 	}
 }
 
+// One table on two servers, each with a registry of its own, records into
+// each server's own: the series live with the server, not the table.
+func TestSeriesOneTableOnTwoRegistries(t *testing.T) {
+	tb := routed(t)[0]
+	ms := [2]*metrics.Registry{metrics.New("v", "c"), metrics.New("v", "c")}
+	for i, m := range ms {
+		ts, err := core.NewShared(adapter.Deps{Metrics: m}, nil).Table(tb)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range i + 1 {
+			ts.UnmappedErr()
+		}
+	}
+	k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"
+	for i, m := range ms {
+		if got, _ := scrape(t, m); got[k] != float64(i+1) {
+			t.Errorf("server %d's registry reads %s = %v, want its own %d", i, k, got[k], i+1)
+		}
+	}
+}
+
 // A compound member's panic counts under its own operation, with its
 // parent's label; an operation outside the table counts nothing and does
 // not crash.

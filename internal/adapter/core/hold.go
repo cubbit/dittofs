@@ -153,13 +153,14 @@ func (t *pends) forget(now time.Time) {
 }
 
 // pending is one request of a table that holds, from its call on: what its
-// interim, its re-drives and its final reply need.
+// interim, its re-drives, its park and its final reply need.
 //
 // decision: a request held between attempts keeps its record's Buf until its
 // final answer, since core cannot tell which decoded arguments point into
 // it; only a park releases its record. Overturned if a release hook lets
 // core free a held request's arguments.
 type pending struct {
+	p      *pipeline
 	tr     *track
 	rec    *resources.Buf
 	h      Header
@@ -170,13 +171,14 @@ type pending struct {
 	inv    Invocation
 	a      answerer // where its interim and its answer go
 	key    uint64
-	start  time.Time // the hold's start: its first attempt's
-	callAt time.Time // the runtime's time its first call started, for a sampled request's span
+	start  time.Time      // the hold's start: its first attempt's
+	callAt time.Time      // the runtime's time its first call started, for a sampled request's span
+	reply  *resources.Buf // its attempt's reply buffer, which Park keeps or swaps for a small one
 
 	mu      sync.Mutex // orders its interim before its final reply
 	in      bool       // its call is in the service
 	timer   timer      // the interim's, then each re-drive's, which pends.mu guards once it is in the table
-	pend    bool       // in the table, counted toward MaxPending and in the held gauges
+	pend    bool       // in the table, counted toward MaxPending and, unless parked, in the held gauges
 	held    bool       // held between attempts: its record retained, counted in runs
 	grant   bool       // its interim withheld its credits, so its final reply grants them
 	floor   bool       // counted on the floor
@@ -185,13 +187,15 @@ type pending struct {
 	backoff time.Duration
 	last    error                            // its last attempt's error, whose row holds
 	bound   func(error, time.Time) time.Time // that row's Hold
+	park    *parked                          // set by Park under pends.mu and mu, so parked reads it under mu alone
 }
 
 // watch arms the interim timer of a call about to start in a table that
 // holds, and returns its record: a call still in the service when the timer
 // fires gets its interim where the reply pool has a buffer at once (§4.6).
 func (p *pipeline) watch(tr *track, rec *resources.Buf, h Header, r *Request, tb *OpTable, ts *tableSeries, op *Op, inv Invocation, a answerer) *pending {
-	pd := &pending{tr: tr, rec: rec, h: h, r: r, tb: tb, ts: ts, op: op, inv: inv, a: a, key: p.st.Hold.Key(h), start: tr.req.start}
+	pd := &pending{p: p, tr: tr, rec: rec, h: h, r: r, tb: tb, ts: ts, op: op, inv: inv, a: a, key: p.st.Hold.Key(h), start: tr.req.start}
+	r.pd = pd
 	if tr.span != nil {
 		pd.callAt = time.Now()
 	}
@@ -384,9 +388,10 @@ func (p *pipeline) after(pd *pending, err error, reply *resources.Buf, release f
 // endHold is a client's cancel of the request keyed key: a hold between
 // attempts ends, answered ErrCancelled, which its table maps to the
 // protocol's cancel status, on a goroutine of its own, since its status may
-// wait for a buffer and a cancel comes on the reader; a running attempt
+// wait for a buffer and a cancel comes on the reader; a park is cancelled on
+// one too, since its handler's cancel may call the service; a running attempt
 // finishes and answers its own result. A cancel that ends nothing is
-// remembered, so a request with its key that holds meanwhile ends as
+// remembered, so a request with its key that holds or parks meanwhile ends as
 // cancelled (§4.6, §4.7, §6.5).
 //
 // decision: a cancel finds its target by the protocol's key alone, within its
@@ -398,6 +403,11 @@ func (p *pipeline) endHold(key uint64) {
 	t := &p.pend
 	t.mu.Lock()
 	pd := t.m[key]
+	if pd != nil && pd.park != nil {
+		t.mu.Unlock()
+		go p.cancelPark(pd, ErrCancelled)
+		return
+	}
 	if pd == nil || !pd.timer.Stop() {
 		t.remember(key, p.sh.clock.Now(), p.st.MaxPending)
 		t.mu.Unlock()
@@ -458,10 +468,14 @@ func (p *pipeline) redrive(pd *pending) {
 	}
 	if err == nil {
 		pd.r.invoke = pd.inv.Call
+		pd.reply = reply
 		err = pd.ts.chains[pd.op.Code](ctx, pd.r)
 	}
 	if span != nil {
 		span.End()
+	}
+	if p.parked(pd, func() {}) {
+		return
 	}
 	held, err := p.after(pd, err, reply, func() {})
 	if held {
@@ -498,17 +512,21 @@ func (p *pipeline) unpend(pd *pending) {
 	}
 }
 
-// endHolds ends every request held between attempts as close does: its
-// timer stopped, its reply dropped, its record released. A request in an
-// attempt, or found in the service, ends on its own goroutine, which the
-// close's cancel reaches.
+// endHolds ends every request held between attempts or parked as close
+// does: a hold's timer stopped, its reply dropped, its record released, and a
+// park ended on a goroutine of its own, since its cancel may call the
+// service. A request in an attempt, or found in the service, ends on its own
+// goroutine, which the close's cancel reaches.
 func (p *pipeline) endHolds() {
 	t := &p.pend
 	t.mu.Lock()
 	t.closed = true
-	var ended []*pending
+	var ended, parks []*pending
 	for _, pd := range t.m {
-		if pd.timer.Stop() {
+		switch {
+		case pd.park != nil:
+			parks = append(parks, pd)
+		case pd.timer.Stop():
 			ended = append(ended, pd)
 		}
 	}
@@ -516,4 +534,306 @@ func (p *pipeline) endHolds() {
 	for _, pd := range ended {
 		p.dropHeld(pd)
 	}
+	for _, pd := range parks {
+		go p.closePark(pd)
+	}
+}
+
+// parked is what a parked request keeps beside its record of pending: its
+// handler's cancel, which core calls at most once, the header its final reply
+// goes out under, taken while its record still holds the header, what
+// replaces an error done reports, and how far its end has come, under
+// pending.mu (§4.7).
+type parked struct {
+	cancel    func()
+	final     Header
+	why       error // ErrCancelled, or the drain's error
+	cancelled bool  // cancel was called, or is being called
+	returned  bool  // the call that parked it has returned
+	called    bool  // done was called, with err
+	err       error
+	over      bool // answered or dropped
+}
+
+// park is Request.Park's body, on the goroutine of pd's call, which the
+// service has registered a waiter for (§4.7). It refuses a member before the
+// last of a chain with ErrNotLast; a request not yet pending, on a connection
+// at MaxPending, with ErrTooManyPending, one already pending keeping its
+// slot; a request on a draining connection with the drain's error; and,
+// where the request's own reply buffer is larger than the small class, a
+// reply pool that cannot take a small one at once with ErrDelay of
+// DelayResources, answered in the buffer the request still holds; it sends
+// nothing then.
+// Otherwise the request is parked: off the hold floor and the held gauges,
+// counted toward MaxPending and in runs, its interim timer stopped, its
+// interim sent, unless it already has one, and a small reply buffer kept,
+// its own where it is of the small class, else one taken before its own goes,
+// carrying the interim where one is sent. On a connection already closed it
+// calls cancel at once, done does nothing, and the handler's ErrParked ends
+// the request unsent, as the close's cancel would (endedByClose).
+//
+// decision: the interim of a park whose own reply buffer is the one it keeps
+// goes out in a status's buffer, taken at once where the pool has room, and
+// otherwise waiting as any status of that request waits, alone or as its
+// chain's last member, at most 30 s, in its place (RFC 24 §3.3), since RFC 20
+// §4.7 names no buffer for it and the park keeps its own for its final reply.
+// Overturned if the RFC gives the interim another buffer.
+//
+// decision: Final's header is taken here, before the record goes, since a
+// header may lie in it, and done's reply goes out under it. Overturned if a
+// protocol's final header must be built when done is called.
+func (p *pipeline) park(pd *pending, cancel func()) (func(error), error) {
+	if pd.h.Next() != 0 {
+		return nil, ErrNotLast
+	}
+	pd.mu.Lock()
+	pd.in = false
+	pd.timer.Stop()
+	t := &p.pend
+	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		pd.mu.Unlock()
+		cancel()
+		return dropped, nil
+	}
+	var err error
+	switch {
+	case !pd.pend && t.n >= p.st.MaxPending:
+		err = ErrTooManyPending
+	case p.draining.Load():
+		err = drainErr(pd.tr.ctx, handlesOf(pd.inv))
+	}
+	own, keep := pd.reply, pd.reply
+	if err == nil && own.Charge() > p.sh.reply.Charge(0) {
+		var ok bool
+		if keep, ok = p.sh.reply.TryGet(p.l.remote, 0); !ok {
+			err = &vfs.Delay{Cause: vfs.DelayResources}
+		}
+	}
+	if err != nil {
+		t.mu.Unlock()
+		pd.mu.Unlock()
+		return nil, err
+	}
+	wasPending, held := pd.pend, pd.held
+	if wasPending {
+		// A request already pending past its interim gets no second one:
+		// its slot moves from held to parked, off the floor (§4.6).
+		if pd.floor {
+			t.floor--
+			t.bytes -= pd.charge
+		}
+	} else {
+		if t.m == nil {
+			t.m = map[uint64]*pending{}
+		}
+		t.m[pd.key] = pd
+		t.n++
+		pd.pend = true
+	}
+	pk := &parked{cancel: cancel}
+	pd.park, pd.reply = pk, keep
+	// A cancel that came before it parked ends it as cancelled (§4.7).
+	cancelled := t.cancelledAt(pd.key, p.sh.clock.Now())
+	if cancelled {
+		pk.why, pk.cancelled = ErrCancelled, true
+	}
+	// A held request's count in runs is its park's now; any other's starts
+	// before a close can end it.
+	if !held {
+		p.add()
+	}
+	t.mu.Unlock()
+	pd.mu.Unlock()
+	if wasPending {
+		pd.ts.released(pd.charge)
+		if pd.pool {
+			p.sh.holdPoolCharged(-pd.charge)
+		}
+		pd.floor, pd.pool = false, false
+	}
+	switch {
+	case wasPending && own != keep:
+		own.Release()
+	case !wasPending:
+		buf := own
+		if own == keep {
+			buf = pd.a.status(pd.tr.ctx, p.st.Header.ReplyLen(pd.h))
+		}
+		if buf != nil {
+			p.interimIn(pd, buf, true)
+		}
+	}
+	pk.final = p.st.Hold.Final(pd.h, pd.grant)
+	if cancelled {
+		cancel()
+	}
+	return func(err error) { p.parkDone(pd, err) }, nil
+}
+
+// dropped is done on a connection that was closed when its request parked.
+func dropped(error) {}
+
+// parkDone is done's body: err, or the error a cancel or the drain put in
+// its place, unless err is nil, a call that took effect (§6.5), answers pd
+// once the call that parked it has returned. A second done, or one after the
+// park was dropped, does nothing.
+func (p *pipeline) parkDone(pd *pending, err error) {
+	pk := pd.park
+	pd.mu.Lock()
+	if pk.called || pk.over {
+		pd.mu.Unlock()
+		return
+	}
+	pk.called = true
+	if err != nil && pk.why != nil {
+		err = pk.why
+	}
+	pk.err, pk.over = err, pk.returned
+	answer := pk.over
+	pd.mu.Unlock()
+	if answer {
+		p.answerPark(pd, err)
+	}
+}
+
+// parked ends the call that parked pd, on its goroutine, and reports false
+// for a request that did not park. Its admission goes, and a record its hold
+// kept, its chain, if one waits for it, running on to its end, since a
+// parked member is the last; otherwise its record goes with its request's
+// goroutine or its chain. A done that came before is answered now.
+//
+// decision: a park's record goes here, once the handler returns ErrParked,
+// not inside Park as §4.7 says, since a handler copies out of its decoded
+// arguments what done needs after Park returns, a refused Park needing no
+// copy. Withdraw it if §4.7 keeps the release in Park and every handler
+// copies before it calls Park.
+func (p *pipeline) parked(pd *pending, release func()) bool {
+	pd.mu.Lock()
+	pk := pd.park
+	pd.mu.Unlock()
+	if pk == nil {
+		return false
+	}
+	release()
+	if pd.held {
+		pd.held = false
+		pd.rec.Release()
+		pd.a.resume(func() {})
+	}
+	pd.mu.Lock()
+	pk.returned = true
+	answer, err := pk.called && !pk.over, pk.err
+	if answer {
+		pk.over = true
+	}
+	pd.mu.Unlock()
+	if answer {
+		p.answerPark(pd, err)
+	}
+	return true
+}
+
+// errOutgrown is a parked reply its encoder grew past its buffer with no
+// error: no row maps it, so it is answered the fault status and logged at
+// error.
+var errOutgrown = errors.New("core: a parked reply grew past its small buffer")
+
+// answerPark answers pd, parked, err, mapped by its table, encoded into the
+// small buffer it kept under Final's header, wrapped and sent, and ends it. A
+// NoReply row sends nothing more, its interim being out (§3.1).
+//
+// decision: a reply that does not fit the small buffer is answered as its
+// protocol answers an overflow (§4.7) through its encoder, since only the
+// protocol knows that status: an encoder with more to write than the buffer
+// holds returns its protocol's error, which the table maps, and the status
+// goes out alone; one that grew past the buffer with no error is answered the
+// fault status and logged at error. Overturned if the RFC gives core an
+// overflow error of its own for every table to map.
+//
+// decision: a parked reply is never stored in the replay cache: its request's
+// header went with its record, and no row that parks is cacheable. Overturned
+// if a protocol caches a parked request's reply.
+func (p *pipeline) answerPark(pd *pending, err error) {
+	defer p.unpark(pd)
+	tr, h, buf := pd.tr, pd.park.final, pd.reply
+	var s Status
+	send := true
+	if err != nil {
+		s, send, _ = p.mapped(tr, pd.tb.Errors, err, pd.op, h.Version(), true)
+	}
+	if !send || p.ctx.Err() != nil {
+		buf.Release()
+		p.end(tr, false, 0, 0, err)
+		return
+	}
+	room := cap(buf.B)
+	buf.B = buf.B[:0]
+	encErr := p.encode(h, s, buf, pd.inv)
+	if encErr == nil && len(buf.B) > room {
+		encErr = errOutgrown
+	}
+	if encErr != nil {
+		s, _, _ = p.mapped(tr, pd.tb.Errors, encErr, pd.op, h.Version(), true)
+		buf.B = buf.B[:0]
+		if encErr = p.st.Header.Encode(h, s, buf); encErr != nil {
+			buf.Release()
+			p.end(tr, false, 0, 0, encErr)
+			p.l.close(encErr)
+			return
+		}
+	}
+	n := len(buf.B)
+	p.send(h, buf, pd.key)
+	p.end(tr, true, s, n, err)
+}
+
+// cancelPark is a cancel of pd, parked: its client's, why ErrCancelled, or
+// the drain's start, why the drain's error. Unless done has come or its
+// handler's cancel was called, why replaces the error done reports, and then
+// that cancel is called (§3.1, §4.7, §6.5).
+func (p *pipeline) cancelPark(pd *pending, why error) {
+	pk := pd.park
+	pd.mu.Lock()
+	if pk.called || pk.over || pk.cancelled {
+		pd.mu.Unlock()
+		return
+	}
+	pk.why, pk.cancelled = why, true
+	pd.mu.Unlock()
+	pk.cancel()
+}
+
+// closePark ends pd, parked, as its connection closes: its handler's cancel
+// is called, unless it was before, its reply buffer released and its request
+// ended unsent, and a done that comes later does nothing (§4.7, §6.5).
+func (p *pipeline) closePark(pd *pending) {
+	pk := pd.park
+	pd.mu.Lock()
+	over, cancelled := pk.over, pk.cancelled
+	pk.over = true
+	pd.mu.Unlock()
+	if over {
+		return
+	}
+	if !cancelled {
+		pk.cancel()
+	}
+	pd.reply.Release()
+	p.end(pd.tr, false, 0, 0, nil)
+	p.unpark(pd)
+}
+
+// unpark takes pd, parked, out of the table, its count toward MaxPending
+// and runs.
+func (p *pipeline) unpark(pd *pending) {
+	t := &p.pend
+	t.mu.Lock()
+	if t.m[pd.key] == pd {
+		delete(t.m, pd.key)
+	}
+	t.n--
+	t.mu.Unlock()
+	p.done()
 }

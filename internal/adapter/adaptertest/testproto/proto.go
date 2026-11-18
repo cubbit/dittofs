@@ -38,6 +38,7 @@ const (
 	StatusOverdraw                   // a message that charges more credits than the connection holds: the stages' table
 	StatusNotFailure                 // an Echo whose payload is NotFailure: a NotFailure row's, so a compound runs on past it and a chain's related members run
 	StatusIO                         // vfs.ErrIO: an Echo whose payload is JoinedIO, its NotFailure error joined to ErrIO
+	StatusOverflow                   // a parked Park whose name its reply's buffer cannot hold
 )
 
 // NotFailure is the Echo payload that asks for StatusNotFailure, a status
@@ -292,7 +293,7 @@ func (p *Protocol) build() [2]*core.OpTable {
 // decision: the tables are not total. They map core's refusals, the service's
 // ErrDelay and its DelayResources delay, a cancel, the two drain errors,
 // Echo's NotFailure pair and ErrIO, which Echo's JoinedIO joins to that
-// pair's error, and nothing else, so a service error no row maps is
+// pair's error, Park's overflow, and nothing else, so a service error no row maps is
 // reachable and answered StatusFault. Totality is a real protocol's property,
 // checked on NFS's and SMB's tables. Withdraw it if a core test needs a
 // service error this table leaves unmapped to have a status of its own.
@@ -328,6 +329,7 @@ func (p *Protocol) errorRows(holds bool) []core.ErrorRow {
 		{Err: core.ErrMoved, NoReply: true},
 		{Err: errNotFailure, Ops: []uint32{OpEcho}, NotFailure: true, Status: StatusNotFailure},
 		{Err: vfs.ErrIO, Status: StatusIO},
+		{Err: errOverflow, Status: StatusOverflow},
 	}
 }
 
@@ -363,7 +365,7 @@ func (p *Protocol) ops() []*core.Op {
 		{Code: OpViolate, Name: "Violate", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
 			noArguments[empty], noBound[empty], nil, nil, nil, violate, encodeNothing[empty])},
 		{Code: OpPark, Name: "Park", Versions: core.Range{First: 2, Last: 2}, Needs: core.NeedsTree | core.NeedsFH, Decode: core.Bind(
-			decodeName, noBound[nameReq], nil, nil, nil, p.park, encodeNothing[empty])},
+			decodeName, nameBound, nil, nil, nil, p.park, encodeName)},
 		{Code: OpNegotiate, Name: "Negotiate", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
 			noArguments[empty], noBound[empty], nil, nil, nil, negotiate, encodeVersion)},
 		{Code: OpPutFH, Name: "PutFH", Versions: both, Needs: core.NeedsTree, Role: core.RoleContext, Decode: core.Bind(
@@ -493,6 +495,31 @@ func decodeName(b []byte, _ core.Version, req *nameReq) (int, error) {
 	req.name = b
 
 	return len(b), nil
+}
+
+// nameBound is Park's reply: the name.
+func nameBound(_ *core.Request, req *nameReq, _ int) (int, bool) { return len(req.name), true }
+
+// nameRep is Park's reply: the name it parked on.
+type nameRep struct{ name []byte }
+
+// errOverflow is Park's encoder's refusal of a name the buffer it is handed
+// cannot hold: a parked reply is encoded into a small-class buffer, and its
+// protocol answers an overflow (RFC 20 §4.7).
+var errOverflow = errors.New("testproto: a reply past the buffer it is encoded in")
+
+// encodeName appends the name, or refuses with errOverflow, appending
+// nothing, where out's capacity cannot hold it; a nil reply has no body.
+func encodeName(rep *nameRep, _ core.Version, out *resources.Buf) error {
+	if rep == nil {
+		return nil
+	}
+	if len(out.B)+len(rep.name) > cap(out.B) {
+		return errOverflow
+	}
+	out.B = append(out.B, rep.name...)
+
+	return nil
 }
 
 // inSession is Create's Resolve: it refuses ErrNoSession once the request's

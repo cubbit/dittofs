@@ -3,9 +3,12 @@ package core_test
 import (
 	"bytes"
 	"context"
+	"errors"
+	"net/netip"
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1064,4 +1067,563 @@ func TestAChainWhoseMembersHoldInTurnGivesTheHoldPoolBack(t *testing.T) {
 			t.Errorf("once the chain ends the hold pool's gauge reads %v and its budget %d, want %v and %d as before it", got, rsv, gauge, reserved)
 		}
 	})
+}
+
+// parkChain is a version 2 chain under session 7 and tree 1: a PutFH of the
+// root's handle, then a related Park of name, whose message ID is id+1.
+func (s *served) parkChain(id uint64, name string) []testproto.Msg {
+	msgs := s.heldChain(id, name)
+	msgs[1].Op = testproto.OpPark
+	return msgs
+}
+
+// parkWait holds a park's wait, its second read of the current filehandle:
+// the first, made before Park, passes.
+func (s *served) parkWait() *vfstest.Hold {
+	s.faults.Hold(vfs.OpGetAttr).Release()
+	return s.faults.Hold(vfs.OpGetAttr)
+}
+
+// exists says whether the root holds a file of name.
+func (s *served) exists(name string) bool {
+	_, _, err := s.svc.Lookup(context.Background(), s.svc.Admin(), s.root, []byte(name))
+	return err == nil
+}
+
+// A parked request gets its interim at once; while it waits the receive
+// budget holds nothing and the reply budget one small buffer; released, it
+// is answered under its key, with its name, and its file is made (§4.7;
+// RFC 24 §3.3).
+func TestAParkedRequestKeepsOneSmallReplyAndNoRecord(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		synctest.Wait()
+		if recv, reply := s.budgets.Receive.Reserved(), s.budgets.Reply.Reserved(); recv != 0 || reply != smallCharge {
+			t.Errorf("while parked the receive budget holds %d and the reply budget %d, want 0 and one small buffer, %d", recv, reply, smallCharge)
+		}
+		hold.Release()
+		if r := s.finalOf(2); r.Status != testproto.StatusOK || string(r.Body) != "f" || !s.exists("f") {
+			t.Errorf("released, the park is answered %+v, file made %v; want success with its name, and the file", r, s.exists("f"))
+		}
+	})
+}
+
+// A park has no deadline: left while the clock passes 30 s and the hold's
+// bound it is still parked, with no second interim, and is answered when
+// released (§4.7, §6.4).
+func TestAParkOutlivesTheDeadlineAndTheHoldsBound(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newHeld(t, 1<<20, adapter.Deps{}, clk)
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		next := s.recvLater()
+		clk.Advance(30*time.Second + testproto.HoldFor)
+		if next.arrived() {
+			t.Fatalf("the park got %+v past 30 s and the hold's bound, want nothing", next.rs)
+		}
+		hold.Release()
+		<-next.done
+		if next.err != nil || len(next.rs) != 1 || next.rs[0].Interim || next.rs[0].ID != keyOf(2) || next.rs[0].Status != testproto.StatusOK {
+			t.Errorf("released, the park is answered %+v (%v), want its final success", next.rs, next.err)
+		}
+	})
+}
+
+// A park whose name does not fit the small class keeps a small buffer, not
+// its own, while it waits, and is answered the overflow status alone (§4.7;
+// RFC 24 §3.3).
+func TestALongParkedNameIsAnsweredTheOverflow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		name := strings.Repeat("n", 5000)
+		s.serve(s.parkChain(1, name)...)
+		s.interimOf(2)
+		synctest.Wait()
+		if reply := s.budgets.Reply.Reserved(); reply != smallCharge {
+			t.Errorf("while parked the reply budget holds %d, want one small buffer, %d", reply, smallCharge)
+		}
+		hold.Release()
+		if r := s.finalOf(2); r.Status != testproto.StatusOverflow || len(r.Body) != 0 {
+			t.Errorf("released, the park is answered %d with %d bytes, want the overflow status alone", r.Status, len(r.Body))
+		}
+	})
+}
+
+// parkEight parks eight requests, each waiting in its held Create.
+func (s *served) parkEight() {
+	s.t.Helper()
+	for i := range 8 {
+		s.faults.Hold(vfs.OpCreate)
+		s.serve(s.parkChain(uint64(10*i+1), "f"+strconv.Itoa(i))...)
+		s.interimOf(uint64(10*i + 2))
+	}
+}
+
+// bigCharge is what a reply of a directory-class buffer reserves: 64 KiB,
+// its 4 KiB of header room and the per-request overhead.
+const bigCharge = 76 << 10
+
+// A park before the last member, a ninth park, a park while draining and a
+// park with the reply budget full each make no call and send no interim: each
+// is answered its status at once, after the PutFH's reply, the drain's
+// refusal its interim alone, and nothing more is sent (§4.7). The full
+// budget's park, its name past the small class, finds no room for a small
+// buffer: the pool is filled to the byte by unread replies on another
+// connection, at four times what the chain holds, so the chain does not split
+// at a quarter of it.
+func TestARefusedParkMakesNoCallAndSendsNoInterim(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		reply int64
+		park  func(s *served) ([]testproto.Msg, func()) // set up: the chain to serve, and what frees the budget after
+		want  testproto.Reply                           // the Park's reply, after the PutFH's
+	}{
+		{"before the last", 1 << 20, func(s *served) ([]testproto.Msg, func()) {
+			return append(s.parkChain(1, "f"), echoIn(3, 7)), func() {}
+		}, testproto.Reply{ID: 2, Status: testproto.StatusNotLast}},
+		{"the ninth", 1 << 20, func(s *served) ([]testproto.Msg, func()) {
+			s.parkEight()
+			return s.parkChain(91, "g"), func() {}
+		}, testproto.Reply{ID: 92, Status: testproto.StatusTooManyPending}},
+		{"while draining", 1 << 20, func(s *served) ([]testproto.Msg, func()) {
+			read := s.faults.Hold(vfs.OpGetAttr)
+			go func() {
+				<-read.Reached()
+				s.p.Drain()
+				read.Release()
+			}()
+			return s.parkChain(1, "f"), func() {}
+		}, testproto.Reply{ID: keyOf(2), Interim: true}},
+		{"with the reply budget full", 4 * (smallCharge + bigCharge), func(s *served) ([]testproto.Msg, func()) {
+			o := s.another(netip.MustParseAddr("192.0.2.2"), 8)
+			n := 3 * (smallCharge + bigCharge) / smallCharge
+			for i := range n {
+				o.serve(echoIn(uint64(100+i), 8))
+			}
+			synctest.Wait()
+			return s.parkChain(1, strings.Repeat("n", 5000)), func() {
+				for range n {
+					o.recvOne()
+				}
+			}
+		}, testproto.Reply{ID: 2, Status: testproto.StatusDelay}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := newHeld(t, c.reply, adapter.Deps{}, newManualClock())
+				msgs, free := c.park(s)
+				s.serve(msgs...)
+				next := s.recvLater()
+				if !next.arrived() {
+					t.Fatal("the refused park is not answered at once")
+				}
+				if next.err != nil || len(next.rs) < 2 || next.rs[0].Status != testproto.StatusOK {
+					t.Fatalf("the chain is answered %+v (%v), want the PutFH's success first", next.rs, next.err)
+				}
+				if r := next.rs[1]; r.ID != c.want.ID || r.Interim != c.want.Interim || r.Status != c.want.Status {
+					t.Errorf("the Park is answered %+v, want %+v", r, c.want)
+				}
+				if ops := s.svc.Ops(); len(ops) != 0 {
+					t.Errorf("the refused park made %v, want no call", ops)
+				}
+				free()
+				if !s.sentNothing() {
+					t.Error("more was sent after the refusal")
+				}
+			})
+		})
+	}
+}
+
+// Eight parks are not held requests: the held gauges read nothing (§4.6).
+func TestEightParksAreNotCountedAsHeld(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, newManualClock())
+		s.parkEight()
+		if got := gauges(t, m); got != [4]float64{} {
+			t.Errorf("with eight parked, held, their bytes, the pool's and the refusals read %v, want zero", got)
+		}
+	})
+}
+
+// A park its client cancels during its wait is answered the cancel status,
+// the error done reports replaced, and makes no file; the cancel gets no
+// reply of its own (§4.7, §6.5).
+func TestACancelledParkIsAnsweredTheCancelStatus(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		wait := s.parkWait()
+		defer wait.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		<-wait.Reached()
+		s.serve(cancelOf(2, 7))
+		if r := s.finalOf(2); r.Status != testproto.StatusCancelled || s.exists("f") {
+			t.Errorf("the cancelled park is answered %+v, file made %v; want the cancel status and no file", r, s.exists("f"))
+		}
+		if !s.sentNothing() {
+			t.Error("the cancel got a reply of its own")
+		}
+	})
+}
+
+// A park whose call the service applies as its client cancels it, done
+// reporting no error, is answered success, and its file exists: a call that
+// took effect is never reported cancelled (§6.5).
+func TestAParkCancelledAsItsCallCompletesIsAnsweredSuccess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		<-hold.Reached()
+		s.serve(cancelOf(2, 7))
+		if r := s.finalOf(2); r.Status != testproto.StatusOK || !s.exists("f") {
+			t.Errorf("the park is answered %+v, file made %v; want success and the file", r, s.exists("f"))
+		}
+	})
+}
+
+// A cancel that comes before its target parks is remembered, and ends the
+// park as cancelled: its handler's cancel is called as it parks, and no file
+// is made (§4.7).
+func TestACancelBeforeItsTargetParksEndsIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		s.serve(cancelOf(2, 7))
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		if r := s.finalOf(2); r.Status != testproto.StatusCancelled || s.exists("f") {
+			t.Errorf("the park is answered %+v, file made %v; want the cancel status and no file", r, s.exists("f"))
+		}
+	})
+}
+
+// The start of a drain cancels a park during its wait, so it does not wait
+// for the drain's deadline: the drain's error, whose row answers nothing,
+// replaces the error done reports, nothing more is sent, no file is made and
+// the park holds nothing (§3.1, §4.7).
+func TestADrainCancelsAPark(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		wait := s.parkWait()
+		defer wait.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		<-wait.Reached()
+		s.p.Drain()
+		synctest.Wait()
+		if n, reply := s.p.Runs(), s.budgets.Reply.Reserved(); n != 0 || reply != 0 {
+			t.Errorf("once the drain began %d run and the reply budget holds %d, want the park ended", n, reply)
+		}
+		if s.exists("f") || !s.sentNothing() {
+			t.Errorf("the drained park made its file (%v) or was answered", s.exists("f"))
+		}
+	})
+}
+
+// A park whose call the service applies as the drain cancels it, done
+// reporting no error, is answered success, and its file exists (§3.1, §6.5).
+func TestAParkDrainedAsItsCallCompletesIsAnsweredSuccess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		<-hold.Reached()
+		s.p.Drain()
+		if r := s.finalOf(2); r.Status != testproto.StatusOK || !s.exists("f") {
+			t.Errorf("the park is answered %+v, file made %v; want success and the file", r, s.exists("f"))
+		}
+	})
+}
+
+// close ends a park at once: close returns while the park waits, its
+// handler's cancel is called, nothing is sent, its request span ends unsent,
+// no error is counted as one no row maps, and every budget is back at zero
+// once wait returns (§4.7, §6.5, §10.1).
+func TestCloseEndsAPark(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		spans := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m, Tracer: tracer, SampleRatio: 1}, newManualClock())
+		wait := s.parkWait()
+		defer wait.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		<-wait.Reached()
+		closing := start(s.p.Close)
+		synctest.Wait()
+		if !closing.returned() {
+			t.Fatal("close waited for the park it ends")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := s.p.Wait(ctx); err != nil {
+			t.Fatalf("the park outlived its connection: %v", err)
+		}
+		if recv, reply := s.budgets.Receive.Reserved(), s.budgets.Reply.Reserved(); recv != 0 || reply != 0 {
+			t.Errorf("after the close the receive budget holds %d and the reply budget %d, want 0", recv, reply)
+		}
+		if sd := requestSpan(t, spans, "Park"); slices.ContainsFunc(sd.Attributes(), func(kv attribute.KeyValue) bool { return kv.Key == "reply_bytes" }) {
+			t.Errorf("the closed park's span ended as sent: %v", sd.Attributes())
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 0 {
+			t.Errorf("%s = %v, want 0", k, got[k])
+		}
+		if s.exists("f") || !s.sentNothing() {
+			t.Errorf("the closed park made its file (%v) or was answered", s.exists("f"))
+		}
+	})
+}
+
+// A request whose read before Park is in the service as its connection closes
+// parks on the closed connection and is dropped as a close drops a park:
+// Park calls its cancel at once, so no file is made, nothing is sent, no error
+// is counted as one no row maps, and every budget is back at zero once wait
+// returns (§4.7, §10.1).
+func TestAParkOnAClosedConnectionIsDropped(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, newManualClock())
+		read := s.faults.Hold(vfs.OpGetAttr)
+		defer read.Release()
+		s.serve(s.parkChain(1, "f")...)
+		<-read.Reached()
+		s.p.Close()
+		read.Release()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := s.p.Wait(ctx); err != nil {
+			t.Fatalf("the park outlived its connection: %v", err)
+		}
+		synctest.Wait()
+		got, _ := scrape(t, m)
+		if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 0 {
+			t.Errorf("%s = %v, want 0", k, got[k])
+		}
+		if recv, reply := s.budgets.Receive.Reserved(), s.budgets.Reply.Reserved(); recv != 0 || reply != 0 {
+			t.Errorf("after the close the receive budget holds %d and the reply budget %d, want 0", recv, reply)
+		}
+		if s.exists("f") || !s.sentNothing() {
+			t.Errorf("the park on a closed connection made its file (%v) or was answered", s.exists("f"))
+		}
+	})
+}
+
+// Core calls a park's cancel once: a client's cancel, its withdrawal held in
+// the service, then a drain or a close, leaves the service one CancelLock and
+// no Create (§3.1, §4.7, §6.5).
+func TestAParksCancelIsCalledOnce(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		then func(*served)
+	}{
+		{"then a drain", func(s *served) { s.p.Drain() }},
+		{"then a close", func(s *served) { s.p.Close() }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+				wait := s.parkWait()
+				defer wait.Release()
+				withdraw := s.faults.Hold(vfs.OpCancelLock)
+				defer withdraw.Release()
+				s.serve(s.parkChain(1, "f")...)
+				s.interimOf(2)
+				<-wait.Reached()
+				s.serve(cancelOf(2, 7))
+				<-withdraw.Reached()
+				c.then(s)
+				synctest.Wait()
+				withdraw.Release()
+				synctest.Wait()
+				if ops := s.svc.Ops(); !slices.Equal(ops, []vfs.Op{vfs.OpCancelLock}) {
+					t.Errorf("the service saw %v, want one CancelLock", ops)
+				}
+			})
+		})
+	}
+}
+
+// A request held on its read, then parked on its re-drive, has received one
+// interim: its slot moves from held to parked, its record goes, and its
+// final reply comes when released (§4.6, §4.7).
+func TestARequestHeldThenParkedHasOneInterim(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newHeld(t, 1<<20, adapter.Deps{}, clk)
+		s.faults.Fail(vfs.OpGetAttr, vfs.ErrDelay)
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		next := s.recvLater()
+		clk.Advance(10 * time.Millisecond)
+		<-hold.Reached()
+		if next.arrived() {
+			t.Fatalf("the re-drive that parked sent %+v, want nothing", next.rs)
+		}
+		if recv, reply := s.budgets.Receive.Reserved(), s.budgets.Reply.Reserved(); recv != 0 || reply != smallCharge {
+			t.Errorf("parked on its re-drive the receive budget holds %d and the reply budget %d, want 0 and one small buffer", recv, reply)
+		}
+		hold.Release()
+		<-next.done
+		if next.err != nil || len(next.rs) != 1 || next.rs[0].Interim || next.rs[0].ID != keyOf(2) || next.rs[0].Status != testproto.StatusOK || string(next.rs[0].Body) != "f" {
+			t.Errorf("released, the park is answered %+v (%v), want its final success with its name", next.rs, next.err)
+		}
+	})
+}
+
+// A request held at MaxPending of one, re-driven while a call the interim
+// timer found takes the connection past it, parks: its slot moves from held
+// to parked, so it is not refused, and it is answered when its wait ends
+// (§4.6, §4.7).
+func TestAHeldRequestParksPastMaxPending(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newHeld(t, 1<<20, adapter.Deps{}, clk, func(st *core.Stages) { st.MaxPending = 1 })
+		s.faults.Fail(vfs.OpGetAttr, vfs.ErrDelay)
+		read := s.faults.Hold(vfs.OpGetAttr)
+		defer read.Release()
+		create := s.faults.Hold(vfs.OpCreate)
+		defer create.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		redrive := start(func() { clk.Advance(10 * time.Millisecond) })
+		<-read.Reached()
+		s.serve(s.heldChain(11, "g")...)
+		<-create.Reached()
+		clk.Advance(time.Second)
+		s.interimOf(12)
+		read.Release()
+		<-redrive.done
+		if r := s.finalOf(2); r.Status != testproto.StatusOK || string(r.Body) != "f" {
+			t.Errorf("the held request that parked is answered %+v, want its final success with its name", r)
+		}
+		create.Release()
+		s.finalOf(12)
+	})
+}
+
+// A park whose own reply buffer is of the small class keeps it, and is not
+// refused while another request waits on the reply pool: its interim waits
+// for a status's buffer behind that request, and its final reply goes out in
+// the buffer it kept (§4.7; RFC 24 §3.3).
+func TestASmallParkKeepsItsReplyWhileARequestWaitsOnThePool(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newHeld(t, 3*smallCharge, adapter.Deps{}, newManualClock())
+		o := s.another(netip.MustParseAddr("192.0.2.2"), 8)
+		o.serve(echoIn(100, 8)) // its reply, unread, holds one buffer
+		synctest.Wait()
+		read := s.faults.Hold(vfs.OpGetAttr)
+		s.serve(s.parkChain(1, "f")...)
+		<-read.Reached() // the PutFH's reply, unread, and the Park's own hold the other two
+		o.serve(echoIn(101, 8))
+		synctest.Wait() // the second Echo waits on the pool
+		read.Release()
+		synctest.Wait() // the Park has parked, its interim waiting behind the Echo
+		if r := s.recvOne(); r.ID != 1 || r.Status != testproto.StatusOK {
+			t.Fatalf("read %+v, want the PutFH's success", r)
+		}
+		if r := o.recvOne(); r.ID != 100 {
+			t.Fatalf("read %+v, want the first Echo's reply", r)
+		}
+		if r := s.recvOne(); !r.Interim || r.ID != keyOf(2) {
+			t.Fatalf("the park is answered %+v, want its interim", r)
+		}
+		if r := s.finalOf(2); r.Status != testproto.StatusOK || string(r.Body) != "f" {
+			t.Errorf("the park's final reply is %+v, want success with its name", r)
+		}
+		if r := o.recvOne(); r.ID != 101 || r.Status != testproto.StatusOK {
+			t.Errorf("the waiting Echo is answered %+v, want its success", r)
+		}
+		synctest.Wait() // each reply's buffer is given back after its send
+	})
+}
+
+// With the reply pool filled by two parks and an unread reply on other
+// connections, a request whose reply reservation's wait ends at 30 s gets its
+// delay status once one park is released and its reply read; with none
+// released, its connection is closed with the reply-wait error 30 s after
+// its status began to wait, and the request no longer runs (RFC 24 §3.3;
+// §6.4).
+func TestAStatusWaitingOnAPoolOfParks(t *testing.T) {
+	for _, released := range []bool{true, false} {
+		t.Run("one released "+strconv.FormatBool(released), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				clk := newManualClock()
+				s := newHeld(t, 3*smallCharge, adapter.Deps{}, clk)
+				w := s.another(netip.MustParseAddr("192.0.2.2"), 8)
+				fill := s.another(netip.MustParseAddr("192.0.2.3"), 9)
+				var holds []*vfstest.Hold
+				for i := range 2 {
+					holds = append(holds, s.faults.Hold(vfs.OpCreate))
+					s.serve(s.parkChain(uint64(10*i+1), "f"+strconv.Itoa(i))...)
+					s.recvOne() // the PutFH's, split off at a quarter of the pool
+					if r := s.recvOne(); !r.Interim {
+						t.Fatalf("park %d is answered %+v, want its interim", i, r)
+					}
+					// Holds pair with calls in their arrival order: park i's
+					// Create takes holds[i] before the next park's is armed.
+					<-holds[i].Reached()
+				}
+				defer func() {
+					for _, h := range holds {
+						h.Release()
+					}
+				}()
+				fill.serve(echoIn(300, 9)) // its reply, unread, holds the last buffer
+				synctest.Wait()
+				w.serve(echoIn(200, 8))
+				synctest.Wait()
+				clk.Advance(30 * time.Second)
+				synctest.Wait()
+				begin := time.Now()
+				if released {
+					holds[0].Release()
+					if r := s.finalOf(2); r.Status != testproto.StatusOK {
+						t.Fatalf("the released park is answered %+v, want success", r)
+					}
+					if r := w.recvOne(); r.ID != 200 || r.Status != testproto.StatusDelay {
+						t.Errorf("the request is answered %+v, want its delay status", r)
+					}
+				} else {
+					select {
+					case err := <-w.closed:
+						if !errors.Is(err, core.ErrReplyWait) {
+							t.Errorf("the connection was closed with %v, want the reply-wait error", err)
+						}
+					case <-time.After(time.Minute):
+						t.Fatal("the status still waits a minute on, want its connection closed at 30 s")
+					}
+					if waited := time.Since(begin); waited != 30*time.Second {
+						t.Errorf("the connection was closed %v after its status began to wait, want 30s", waited)
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+					defer cancel()
+					if err := w.p.Wait(ctx); err != nil {
+						t.Errorf("the request still runs after its connection closed: %v", err)
+					}
+				}
+				s.p.Close()
+				fill.recvOne()
+				synctest.Wait()
+			})
+		})
+	}
 }

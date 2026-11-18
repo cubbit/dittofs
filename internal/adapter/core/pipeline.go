@@ -299,7 +299,7 @@ type pipeline struct {
 	status   chan struct{} // the one wait for a status's buffer a connection has
 
 	mu   sync.Mutex
-	runs int           // requests running, held and statuses waiting
+	runs int           // requests running, held or parked, and statuses waiting
 	idle chan struct{} // made by a wait while runs is above 0, closed when it falls to 0
 
 	pend pends
@@ -731,10 +731,14 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		tr.ran = true
 		if tb.Holds {
 			pd = p.watch(tr, rec, h, r, tb, ts, op, inv, a)
+			pd.reply = reply
 		}
 		err = ts.chains[op.Code](ctx, r)
 	}
 	if pd != nil {
+		if p.parked(pd, release) {
+			return r, false
+		}
 		var held bool
 		if held, err = p.after(pd, err, reply, release); held {
 			return r, true
@@ -1066,11 +1070,12 @@ func (p *pipeline) end(tr *track, sent bool, s Status, reply int, err error) {
 }
 
 // endedByClose reports whether err is the connection's close ending a wait
-// or a call under its context. That is no error: nothing can be sent, and the
-// request is neither counted as a refusal or an error no row maps nor logged
-// at error (§10.1).
+// or a call under its context, or a handler's ErrParked on a closed
+// connection, whose reply Park drops as a close would (§4.7). That is
+// no error: nothing can be sent, and the request is neither counted as a
+// refusal or an error no row maps nor logged at error (§10.1).
 func (p *pipeline) endedByClose(err error) bool {
-	return p.ctx.Err() != nil && errors.Is(err, context.Canceled)
+	return p.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, ErrParked))
 }
 
 // reservationStage is the stage the request's reply reservation's refusal
@@ -1210,11 +1215,31 @@ func handlesOf(inv Invocation) []vfs.Handle {
 func drainErr(context.Context, []vfs.Handle) error { return ErrDraining }
 
 // drain begins the connection's drain: from here on a request whose role is
-// none is refused with drainErr.
-func (p *pipeline) drain() { p.draining.Store(true) }
+// none, and a park, is refused with drainErr, and every request parked is
+// cancelled, on a goroutine of its own, since its handler's cancel may call
+// the service, done's error replaced by drainErr's (§3.1, §4.7).
+//
+// decision: a park's drain error is decided with no filehandle, since the
+// arguments that name one went with its record. Overturned when drainErr
+// reads the filehandles it is handed.
+func (p *pipeline) drain() {
+	p.draining.Store(true)
+	t := &p.pend
+	t.mu.Lock()
+	var parks []*pending
+	for _, pd := range t.m {
+		if pd.park != nil {
+			parks = append(parks, pd)
+		}
+	}
+	t.mu.Unlock()
+	for _, pd := range parks {
+		go p.cancelPark(pd, drainErr(pd.tr.ctx, nil))
+	}
+}
 
-// wait returns nil once nothing runs, is held or waits for a status, or
-// ctx's error.
+// wait returns nil once nothing runs, is held, is parked or waits for a
+// status, or ctx's error.
 func (p *pipeline) wait(ctx context.Context) error {
 	p.mu.Lock()
 	if p.runs == 0 {
@@ -1236,14 +1261,15 @@ func (p *pipeline) wait(ctx context.Context) error {
 
 // close starts the teardown and returns at once, so it may be entered from a
 // handler's own goroutine and from the reader: it ends the pipeline's
-// context, which ends every wait a request or a status is in, and every
-// hold between attempts (§4.6, §6.5).
+// context, which ends every wait a request or a status is in, every hold
+// between attempts and every park (§4.6, §4.7, §6.5).
 func (p *pipeline) close() {
 	p.cancel()
 	p.endHolds()
 }
 
-// add counts a request, a hold or a status wait starting; done, one ending.
+// add counts a request, a hold, a park or a status wait starting; done, one
+// ending.
 func (p *pipeline) add() {
 	p.mu.Lock()
 	p.runs++

@@ -16,6 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
 // A session two connections carry outlives the first's close and ends at the
@@ -254,17 +255,59 @@ func TestSessionDecodesItsKeepAndExpiry(t *testing.T) {
 	}
 }
 
-// A park core refuses makes no service call: the handler answers the refusal,
-// and with no service given a call would panic.
+// A park core refuses makes no Create: the handler reads the current
+// filehandle, then answers the refusal.
 func TestARefusedParkMakesNoCall(t *testing.T) {
-	op, inv := row(t, 2, OpPark, "name")
-	if op.Versions != (core.Range{First: 2, Last: 2}) {
-		t.Fatalf("Park is served in %v", op.Versions)
+	svc := memory.New(t)
+	root, _, err := svc.Root(t.Context(), svc.Admin(), vfs.ShareRef{Name: svc.Store.Share.Name})
+	if err != nil {
+		t.Fatal(err)
 	}
-	r, _ := request(2)
-	err := inv.Call(t.Context(), r)
+	var park *core.Op
+	for _, op := range New(adapter.Deps{VFS: svc}).ops() {
+		if op.Code == OpPark {
+			park = op
+		}
+	}
+	if park.Versions != (core.Range{First: 2, Last: 2}) {
+		t.Fatalf("Park is served in %v", park.Versions)
+	}
+	inv, _, err := park.Decode([]byte("name"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, s := request(2)
+	r.Call, s.fh = svc.Admin(), root
+	err = inv.Call(t.Context(), r)
 	if err == nil || errors.Is(err, core.ErrParked) {
 		t.Errorf("Park on a request core refuses to park = %v, want that refusal", err)
+	}
+	if ops := svc.Ops(); len(ops) != 0 {
+		t.Errorf("a refused park made %v, want no call that changes state", ops)
+	}
+}
+
+// Park's reply is its name, its bound the name's length; an encoder handed a
+// buffer that cannot hold the name refuses it, appending nothing, with an
+// error both tables answer the overflow status (RFC 20 §4.7).
+func TestParksReplyIsItsNameOrAnOverflow(t *testing.T) {
+	op, inv := row(t, 2, OpPark, "name")
+	if n, ok := inv.Bound(nil, 0); n != 4 || !ok {
+		t.Errorf("Park's bound is %d, %v; want the name's 4 bytes", n, ok)
+	}
+	rep := &nameRep{name: []byte("name")}
+	fits := &resources.Buf{B: make([]byte, 0, 4)}
+	if err := encodeName(rep, 2, fits); err != nil || string(fits.B) != "name" {
+		t.Errorf("into a buffer that holds it Park's reply is %q, %v; want the name", fits.B, err)
+	}
+	short := &resources.Buf{B: make([]byte, 0, 3)}
+	if err := encodeName(rep, 2, short); !errors.Is(err, errOverflow) || len(short.B) != 0 {
+		t.Errorf("into a buffer of 3 bytes Park's encoder wrote %q, %v; want nothing and the overflow", short.B, err)
+	}
+	for _, tb := range New(adapter.Deps{}).tables() {
+		if s, reply, _ := tb.Errors.Map(errOverflow, op, 2); s != StatusOverflow || !reply {
+			t.Errorf("the overflow maps to %d, reply %v; want %d", s, reply, StatusOverflow)
+		}
 	}
 }
 

@@ -317,12 +317,25 @@ type Request struct {
 	resolveStart time.Time
 	callEnd      time.Time
 	trace        trace.TraceID // every log line for the request carries it
+	pd           *pending      // its record in a table that holds, which Park parks; nil elsewhere
 }
 
 // Park holds the request until done: core sends the interim, and answers
 // done's result under Final's header, as a cancel, a drain or a close
-// replaces it. It refuses with ErrNotLast, ErrTooManyPending or the drain's
-// error, and the handler then withdraws the waiter its call registered.
+// replaces it. It refuses with ErrNotLast, ErrTooManyPending, the drain's
+// error or ErrDelay of DelayResources, and the handler then withdraws the
+// waiter its call registered (§4.7).
+//
+// decision: a request of a table that does not hold cannot park, since no
+// HoldCodec could send its interim or key its cancel: Park refuses it with an
+// error no row maps, answered the fault status and logged as a bug.
+// Overturned if a protocol must park in a table that does not hold.
 func (r *Request) Park(cancel func()) (done func(err error), err error) {
-	return nil, fmt.Errorf("core: park: %w", errors.ErrUnsupported)
+	if r.pd == nil {
+		return nil, errNoPark
+	}
+	return r.pd.p.park(r.pd, cancel)
 }
+
+// errNoPark refuses Park on a request of a table that does not hold.
+var errNoPark = fmt.Errorf("core: park: a table that does not hold: %w", errors.ErrUnsupported)
