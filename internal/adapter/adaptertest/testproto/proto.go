@@ -39,6 +39,7 @@ const (
 	StatusNotFailure                 // an Echo whose payload is NotFailure: a NotFailure row's, so a compound runs on past it and a chain's related members run
 	StatusIO                         // vfs.ErrIO: an Echo whose payload is JoinedIO, its NotFailure error joined to ErrIO
 	StatusOverflow                   // a parked Park whose name its reply's buffer cannot hold
+	StatusMoved                      // core.ErrMoved on version 1's Create: the move signal
 )
 
 // NotFailure is the Echo payload that asks for StatusNotFailure, a status
@@ -309,7 +310,7 @@ func (p *Protocol) errorRows(holds bool) []core.ErrorRow {
 		delay.Hold = func(_ error, start time.Time) time.Time { return start.Add(time.Duration(p.hold.Load())) }
 	}
 
-	return []core.ErrorRow{
+	rows := []core.ErrorRow{
 		{Err: core.ErrNotSupported, Status: StatusNotSupported},
 		{Err: core.ErrVersion, Status: StatusVersion},
 		{Err: core.ErrNotNegotiated, Status: StatusNotNegotiated},
@@ -331,6 +332,14 @@ func (p *Protocol) errorRows(holds bool) []core.ErrorRow {
 		{Err: vfs.ErrIO, Status: StatusIO},
 		{Err: errOverflow, Status: StatusOverflow},
 	}
+	if !holds {
+		// Version 1 answers ErrMoved with a move signal on Create, its one
+		// operation that uses the current filehandle, as NFSv4 does; its other
+		// operations, and version 2, have none and send no reply (RFC 20 §3.1).
+		rows = append(rows, core.ErrorRow{Err: core.ErrMoved, Ops: []uint32{OpCreate}, Status: StatusMoved})
+	}
+
+	return rows
 }
 
 // stagesErrors is the stages' own table, which answers with no operation a

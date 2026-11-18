@@ -12,6 +12,7 @@ package vfstest
 
 import (
 	"context"
+	"net/netip"
 
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
@@ -232,6 +233,10 @@ func (Null) Quota(ctx context.Context, c vfs.Call, h vfs.Handle, p vfs.Principal
 
 func (Null) Snapshots(ctx context.Context, c vfs.Call, h vfs.Handle) ([]vfs.SnapshotInfo, error) {
 	return nil, nil
+}
+
+func (Null) MoveTarget(ctx context.Context, c vfs.Call, h vfs.Handle) (netip.Addr, error) {
+	return netip.Addr{}, nil
 }
 
 func (Null) SignIn(ctx context.Context, step vfs.SignInStep) (vfs.SignInResult, error) {

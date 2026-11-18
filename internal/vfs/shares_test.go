@@ -525,17 +525,23 @@ func TestStatFSAndQuotaReportTheShares(t *testing.T) {
 	}
 }
 
-// Snapshots answers none, after admission; without Deps.Names the
-// Principals area refuses every call.
+// Snapshots and MoveTarget answer none, after admission; without Deps.Names
+// the Principals area refuses every call.
 func TestTheStubsAnswerTheirPlaceholders(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
 	if got, err := s.Snapshots(ctx, proven(s.fs.Admin.Principal, inLab), s.fs.Root); err != nil || len(got) != 0 {
 		t.Errorf("Snapshots: %v, %v", got, err)
 	}
+	if to, err := s.MoveTarget(ctx, proven(s.fs.Admin.Principal, inLab), s.fs.Root); err != nil || to.IsValid() {
+		t.Errorf("MoveTarget: %v, %v", to, err)
+	}
 	s.must(t, s.cp.SetShareState(ctx, s.share, entity.ShareEnabled, entity.ShareQuiesced))
 	if _, err := s.Snapshots(ctx, proven(s.fs.Admin.Principal, inLab), s.fs.Root); !errors.Is(err, vfs.ErrDelay) {
 		t.Errorf("Snapshots in a quiesced share: %v", err)
+	}
+	if _, err := s.MoveTarget(ctx, proven(s.fs.Admin.Principal, inLab), s.fs.Root); !errors.Is(err, vfs.ErrDelay) {
+		t.Errorf("MoveTarget in a quiesced share: %v", err)
 	}
 	_, e1 := s.SignIn(ctx, vfs.SignInStep{})
 	_, e2 := s.Spell(ctx, s.fs.Admin.Principal, vfs.SchemeUID)

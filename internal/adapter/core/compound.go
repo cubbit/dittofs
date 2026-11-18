@@ -8,12 +8,14 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// member is one decoded member of a compound: its row, its invocation, and
-// its reply bound, as its room in the compound's record left it.
+// member is one decoded member of a compound: its row, its invocation, its
+// reply bound, as its room in the compound's record left it, and whether the
+// drain refuses it.
 type member struct {
-	op    *Op
-	inv   Invocation
-	bound int
+	op      *Op
+	inv     Invocation
+	bound   int
+	refused bool // judged while draining: its role is none (§4.7)
 }
 
 // members decodes the members of the compound row's request inv from rest,
@@ -78,20 +80,18 @@ func roleOf(op *Op, inv Invocation, r *Request) Role {
 
 // judge says whether a compound runs whole while draining: each member's
 // role, its row's or its Invocation's over its decoded arguments, asked
-// before Resolve, is one the drain serves, and every member decoded. It
-// collects every filehandle the members name, from which the drain's error
-// is decided once for the whole compound.
+// before Resolve, is one the drain serves, and every member decoded. It marks
+// each member whose role is none as refused, and collects every filehandle
+// the members name, from which the drain's error is decided once for the
+// whole compound.
 func judge(ms []member, decoded bool, r *Request) (whole bool, handles []vfs.Handle) {
 	whole = decoded
-	for _, m := range ms {
+	for i := range ms {
+		m := &ms[i]
 		if roleOf(m.op, m.inv, r) == RoleNone {
-			whole = false
+			m.refused, whole = true, false
 		}
-		if m.inv.Handle != nil {
-			if h, ok := m.inv.Handle(); ok {
-				handles = append(handles, h)
-			}
-		}
+		handles = append(handles, handlesOf(m.inv)...)
 	}
 	return whole, handles
 }
@@ -101,8 +101,9 @@ func judge(ms []member, decoded bool, r *Request) (whole bool, handles []vfs.Han
 // protocol's record cap; one reply buffer of the members' bounds and the
 // compound's header and head, refused past the record cap or a quarter of
 // the reply pool's ceiling; while draining, the compound judged whole, the
-// drain read once, after that buffer is reserved and before any member runs;
-// then each member in turn, through the row's checks, Resolve and its chain,
+// drain read once, after that buffer is reserved and before any member runs,
+// and the drain's error its refused members get decided once; then each
+// member in turn, through the row's checks, Resolve, the drain and its chain,
 // carrying r between them, the first failure ending the reply, a NotFailure
 // row's status being none (RFC 20 §4.3), and one a NoReply row maps leaving
 // it unanswered. The head, which the compound's own Invocation encodes, goes
@@ -201,15 +202,33 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	// The drain is read once the reply is reserved, which can wait: a
 	// compound that waited through the drain's start has not been handed to
 	// the service, so it is a new request, which the drain judges (§3.1).
+	var drained error // the drain's error, which every member it refuses gets
 	if p.draining.Load() {
-		// ponytail: a compound the drain does not serve whole is refused
-		// whole, since drainErr answers ErrDraining, a NoReply row. Once it
-		// can answer ErrMoved, a refusal with a reply, the compound runs to
-		// the moved member and is answered there (§4.7).
 		if whole, handles := judge(ms, err == nil, r); !whole {
-			p.refused(tr, stageResolveIDs)
-			p.finish(tr, h, tb, errs, row, Invocation{}, reply, drainErr(ctx, handles), release, alone{p}, nil)
-			return
+			// A member that does not decode counts as refused with a NoReply
+			// row, and a compound with any member refused with one answers
+			// nothing and runs nothing; any other runs to its first refused
+			// member and is answered there (§4.7).
+			silent := err != nil
+			drained = ErrDraining
+			if !silent {
+				// decision: asked before any member resolves, under r.Call,
+				// which the Router builds once for the compound and every
+				// member passes to the service: Resolve maps wire IDs alone,
+				// and MoveTarget's admission resolves the identity on each
+				// share. Overturned if a member's Resolve may change the call.
+				drained = p.drainErr(ctx, r.Call, handles)
+			}
+			for _, m := range ms {
+				if _, reply, _ := row.Members.Errors.Map(drained, m.op, v); m.refused && !reply {
+					silent = true
+				}
+			}
+			if silent {
+				p.refused(tr, stageDecodeArgs) // judged whole before any member resolves its IDs (§10.1)
+				p.finish(tr, h, tb, errs, row, Invocation{}, reply, ErrDraining, release, alone{p}, nil)
+				return
+			}
 		}
 	}
 	mts.readsShortened(shortened)
@@ -237,7 +256,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		failed bool
 	)
 	for _, m := range ms {
-		s, send, notFailure, merr := p.member(tr, mts, mt.Errors, m, r, v)
+		s, send, notFailure, merr := p.member(tr, mts, mt.Errors, m, r, v, drained)
 		if !send {
 			p.unanswered(tr, h, tb, reply, merr, release)
 			return
@@ -296,16 +315,17 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 }
 
 // member runs one member of a compound to its status: the row's checks,
-// Resolve, the expired credential and its chain, under r as the member
-// before left it. A refusal counts under the stage that refused it, in the
-// members' table's series. send is false for an error a NoReply row maps,
-// which leaves the whole compound unanswered (RFC 20 §4.3): a results array
-// cut short under a success is malformed; and once the connection's close
-// has cancelled the request's context, whatever the member answered, so the
-// compound is dropped with no member after it run (RFC 20 §6.5). The
-// close's own cancel is mapped as no error. notFailure is a NotFailure row's
-// status, past which the compound runs its next member.
-func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version) (s Status, send, notFailure bool, err error) {
+// Resolve, the expired credential, the drain, which answers a refused member
+// drained, and its chain, under r as the member before left it. A refusal
+// counts under the stage that refused it, in the members' table's series.
+// send is false for an error a NoReply row maps, which leaves the whole
+// compound unanswered (RFC 20 §4.3): a results array cut short under a
+// success is malformed; and once the connection's close has cancelled the
+// request's context, whatever the member answered, so the compound is
+// dropped with no member after it run (RFC 20 §6.5). The close's own cancel
+// is mapped as no error. notFailure is a NotFailure row's status, past which
+// the compound runs its next member.
+func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version, drained error) (s Status, send, notFailure bool, err error) {
 	err = p.check(m.op, r)
 	if err != nil {
 		mts.refused(stageRoute)
@@ -321,6 +341,10 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 			err = ErrExpired
 			mts.refused(stageResolveIDs)
 		}
+	}
+	if err == nil && m.refused {
+		err = drained
+		mts.refused(stageResolveIDs)
 	}
 	if err == nil {
 		r.invoke = m.inv.Call

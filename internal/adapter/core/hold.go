@@ -602,7 +602,11 @@ func (p *pipeline) park(pd *pending, cancel func()) (func(error), error) {
 	case !pd.pend && t.n >= p.st.MaxPending:
 		err = ErrTooManyPending
 	case p.draining.Load():
-		err = drainErr(pd.tr.ctx, handlesOf(pd.inv))
+		// A park the drain refuses ends as one the drain cancels, with the
+		// drain's own error, and asks the service nothing under these locks:
+		// one parked just before the drain and one that reaches Park after it
+		// end alike (RFC 20 section 3.1).
+		err = ErrDraining
 	}
 	own, keep := pd.reply, pd.reply
 	if err == nil && own.Charge() > p.sh.reply.Charge(0) {

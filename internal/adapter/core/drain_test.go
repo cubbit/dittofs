@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/netip"
 	"sync"
@@ -18,6 +19,9 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
 // The drain, Stop's serving half (RFC 20 sections 3.1 and 3.4): the listeners
@@ -26,7 +30,9 @@ import (
 // ends the waiting, the earlier of its context's deadline and drain_timeout.
 // The loopback tests move the server's clock to the deadline; the two
 // deadlines test and the slow OnClose run in a synctest bubble on the
-// server's real clock, where both deadlines run on the bubble's time.
+// server's real clock, where both deadlines run on the bubble's time. The
+// move target's tests drain one connection in a bubble too, where a reply
+// never sent shows once the bubble settles.
 
 // drainSnap is testproto's shape with drain_timeout at 200 ms, the deadline
 // every test here reaches: either the test advances the clock to it or the
@@ -813,4 +819,278 @@ func TestStopWaitsOutASlowOnClosePastItsGrace(t *testing.T) {
 			t.Errorf("after Stop the server is %s, want stopped", h.State)
 		}
 	})
+}
+
+// moving is the filesystem over memory with its one share moving to gateway,
+// a fault wrapper: MoveTarget names gateway for every handle the filesystem's
+// StatFS places in share, and passes any other to the filesystem, which
+// names none; every other call passes through.
+type moving struct {
+	vfs.Service
+	share vfs.ShareID
+}
+
+// gateway is the node the moving share moves to.
+var gateway = netip.MustParseAddr("192.0.2.7")
+
+func (m moving) MoveTarget(ctx context.Context, c vfs.Call, h vfs.Handle) (netip.Addr, error) {
+	if info, err := m.StatFS(ctx, c, h); err == nil && info.Share == m.share {
+		return gateway, nil
+	}
+	return m.Service.MoveTarget(ctx, c, h)
+}
+
+// drained is a connection a server on testproto serves over faults over
+// moving, in a synctest bubble, set up to session 7 and tree 1 and then told
+// to drain. A non-nil outer replaces the error table of every table the
+// router returns, a compound row's members keeping their own, and none, where
+// not zero, is an operation of those tables the drain refuses.
+type drained struct {
+	t            *testing.T
+	svc          *memory.Service
+	faults       *vfstest.FaultService
+	root, pseudo vfs.Handle // the share's root; the pseudo-root, in no share
+	c            *testproto.Client
+	peer         net.Conn
+}
+
+func newDrained(t *testing.T, outer *core.ErrorTable, none uint32) *drained {
+	t.Helper()
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	svc := memory.New(t)
+	ctx, admin := t.Context(), svc.Admin()
+	root, _, err := svc.Root(ctx, admin, vfs.ShareRef{Name: svc.Store.Share.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pseudo, _, err := svc.Root(ctx, admin, vfs.ShareRef{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	faults := vfstest.Faults(moving{Service: svc, share: svc.Store.Share.ID})
+	d := adapter.Deps{Budgets: b, VFS: faults}
+	var p core.Protocol = testproto.New(d).WithCall(admin)
+	if outer != nil {
+		p = edited{p, func(st *core.Stages) { st.Router = outerRouter{st.Router, outer, none} }}
+	}
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: p}
+	srv, err := core.NewServer(d, drainSnap(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	core.Serving(srv)
+	conn, peer := servedConn(t, srv, &l)
+	c := testproto.NewClient(peer)
+	for _, m := range []testproto.Msg{
+		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
+		{Op: testproto.OpTree, Version: 1, ID: 3, Session: 7, Tree: 1},
+	} {
+		if err := c.Send(m); err != nil {
+			t.Fatal(err)
+		}
+		if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != testproto.StatusOK {
+			t.Fatalf("setting up the connection: %+v (%v)", rs, err)
+		}
+	}
+	core.ConnPipeline(conn).Drain()
+	return &drained{t: t, svc: svc, faults: faults, root: root, pseudo: pseudo, c: c, peer: peer}
+}
+
+// compound sends a version 1 compound of members and lets the bubble settle.
+func (d *drained) compound(members ...testproto.Msg) {
+	d.t.Helper()
+	if err := d.c.Send(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 4, Session: 7, Tree: 1, Members: members}); err != nil {
+		d.t.Fatal(err)
+	}
+	synctest.Wait()
+}
+
+// sentNothing reports whether nothing came back, then closes the client's end.
+func (d *drained) sentNothing() bool {
+	read := start(func() { _, _ = d.c.Recv() })
+	synctest.Wait()
+	sent := read.returned()
+	_ = d.peer.Close()
+	<-read.done
+	return !sent
+}
+
+// made reports whether the share's root holds name.
+func (d *drained) made(name string) bool {
+	_, _, err := d.svc.Lookup(d.t.Context(), d.svc.Admin(), d.root, []byte(name))
+	return err == nil
+}
+
+// While draining, the drain's error a compound's refused members get is
+// decided once, from every filehandle the compound names: ErrMoved, which
+// version 1 answers on Create with its move signal, only when the compound
+// names one at least and the service names a target for the share of each,
+// and ErrDraining, which answers nothing and runs nothing, otherwise, a
+// MoveTarget that fails included (RFC 20 sections 3.1 and 4.7). The moved
+// compound runs to its Create, which names no handle of its own, and is
+// answered there, the Create not applied. A drain that answers ErrMoved
+// without asking, asks about its first or last handle alone, or moves a
+// compound naming none answers one of the others, and one that answers
+// MoveTarget's error answers the failing one; one that decides per member,
+// or refuses every drained compound whole, answers the moved one nothing.
+func TestADrainedCompoundMovesOnlyWhenEveryHandleItNamesHasATarget(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		handles []string // a PutFH of each, before the Create
+		fails   bool     // the service's MoveTarget answers an error
+		moved   bool
+	}{
+		{"a handle in the moving share", []string{"share"}, false, true},
+		{"the pseudo-root, in no share", []string{"pseudo"}, false, false},
+		{"a handle in the share, then the pseudo-root", []string{"share", "pseudo"}, false, false},
+		{"the pseudo-root, then a handle in the share", []string{"pseudo", "share"}, false, false},
+		{"a handle in the moving share, its MoveTarget failing", []string{"share"}, true, false},
+		{"no handle", nil, false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newDrained(t, nil, 0)
+				if c.fails {
+					d.faults.Fail(vfs.OpMoveTarget, vfs.ErrAccess)
+				}
+				fh := map[string]vfs.Handle{"share": d.root, "pseudo": d.pseudo}
+				var members []testproto.Msg
+				for _, n := range c.handles {
+					members = append(members, testproto.Msg{Op: testproto.OpPutFH, Handle: fh[n]})
+				}
+				d.compound(append(members, testproto.Msg{Op: testproto.OpCreate, Name: "f"})...)
+				if !c.moved {
+					if !d.sentNothing() {
+						t.Error("the compound was answered, want nothing: the drain's error is ErrDraining")
+					}
+				} else {
+					rs, err := d.c.Recv()
+					if err != nil || len(rs) != 1 || rs[0].Status != testproto.StatusOK {
+						t.Fatalf("the moved compound is answered %+v (%v)", rs, err)
+					}
+					hd, res, err := testproto.Results(rs[0].Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if hd.Status != testproto.StatusMoved || len(res) != 2 || res[0].Status != testproto.StatusOK || res[1].Op != testproto.OpCreate || res[1].Status != testproto.StatusMoved {
+						t.Errorf("the moved compound is answered %d with %+v, want the PutFH run and the Create's move signal", hd.Status, res)
+					}
+				}
+				if d.made("f") {
+					t.Error("the drained Create made its file")
+				}
+			})
+		})
+	}
+}
+
+// While draining, a compound any of whose members would be refused with a
+// NoReply row answers nothing and runs nothing, though every handle it names
+// moves: an Echo the drain refuses after a Create it moves, whose row has no
+// move signal, the same where the compound's own table moves every
+// operation, and a member that does not decode (RFC 20 section 4.7). Run to
+// the first member refused instead, the first is answered the Create's move
+// signal and the third the refusal of an operation its table lacks; refused
+// whole with the drain's error rather than ErrDraining, the second is
+// answered its own table's move signal.
+func TestADrainedCompoundWithANoReplyRefusalAnswersNothing(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		rest  []testproto.Msg // after a PutFH of the share's root
+		outer *core.ErrorTable
+	}{
+		{"an Echo the drain refuses after the Create", []testproto.Msg{{Op: testproto.OpCreate, Name: "f"}, {Op: testproto.OpEcho, Role: core.RoleNone, Payload: []byte("e")}}, nil},
+		{"the same, the compound's own table moving every operation", []testproto.Msg{{Op: testproto.OpCreate, Name: "f"}, {Op: testproto.OpEcho, Role: core.RoleNone, Payload: []byte("e")}}, movesEverywhere()},
+		{"a member that does not decode", []testproto.Msg{{Op: testproto.OpEcho, Role: core.RoleRelease, Payload: []byte("e")}, {Op: 99}}, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newDrained(t, c.outer, 0)
+				d.compound(append([]testproto.Msg{{Op: testproto.OpPutFH, Handle: d.root}}, c.rest...)...)
+				if !d.sentNothing() {
+					t.Error("the compound was answered, want nothing")
+				}
+				if d.made("f") {
+					t.Error("the drained Create made its file")
+				}
+			})
+		})
+	}
+}
+
+// While draining, a request alone the drain refuses gets ErrMoved, which its
+// table answers with the move signal, when the service names a target for the
+// share of the handle it names, and ErrDraining, which answers nothing,
+// otherwise (RFC 20 section 3.1): a PutFH the drain refuses, its table moving
+// every operation. A drain that never asks answers the first nothing; one
+// that answers ErrMoved without asking answers the second.
+func TestADrainedRequestMovesOnlyWhenItsHandleHasATarget(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		handle string // "share" or "pseudo"
+		moved  bool
+	}{
+		{"a handle in the moving share", "share", true},
+		{"the pseudo-root, in no share", "pseudo", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newDrained(t, movesEverywhere(), testproto.OpPutFH)
+				fh := map[string]vfs.Handle{"share": d.root, "pseudo": d.pseudo}
+				if err := d.c.Send(testproto.Msg{Op: testproto.OpPutFH, Version: 1, ID: 4, Session: 7, Tree: 1, Handle: fh[c.handle]}); err != nil {
+					t.Fatal(err)
+				}
+				synctest.Wait()
+				if !c.moved {
+					if !d.sentNothing() {
+						t.Error("the PutFH was answered, want nothing: the drain's error is ErrDraining")
+					}
+					return
+				}
+				if rs, err := d.c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != testproto.StatusMoved {
+					t.Errorf("the moved PutFH is answered %+v (%v), want the move signal", rs, err)
+				}
+			})
+		})
+	}
+}
+
+// outerRouter is a router whose tables answer their own refusals with errs
+// and give the operation none, where not zero, the role RoleNone, each a
+// copy: a compound row's members keep their own table.
+type outerRouter struct {
+	core.Router
+	errs *core.ErrorTable
+	none uint32
+}
+
+func (o outerRouter) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	tb, r, err := o.Router.Route(h, prev)
+	if tb != nil {
+		c := *tb
+		c.Errors = o.errs
+		if op := tb.Ops[o.none]; op != nil {
+			refused := *op
+			refused.Role = core.RoleNone
+			c.Ops = maps.Clone(tb.Ops)
+			c.Ops[o.none] = &refused
+		}
+		tb = &c
+	}
+	return tb, r, err
+}
+
+// movesEverywhere answers ErrMoved with the move signal on every operation,
+// as a table whose ErrMoved row names none does, and ErrDraining nothing.
+func movesEverywhere() *core.ErrorTable {
+	return core.NewErrorTable(testproto.StatusFault,
+		core.ErrorRow{Err: core.ErrDecode, Status: testproto.StatusDecode},
+		core.ErrorRow{Err: core.ErrTooLong, Status: testproto.StatusTooLong},
+		core.ErrorRow{Err: core.ErrReplyTooBig, Status: testproto.StatusReplyTooBig},
+		core.ErrorRow{Err: core.ErrDraining, NoReply: true},
+		core.ErrorRow{Err: core.ErrMoved, Status: testproto.StatusMoved},
+	)
 }
