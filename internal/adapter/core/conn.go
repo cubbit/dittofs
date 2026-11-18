@@ -30,7 +30,7 @@ type Conn struct {
 	rd         *reader
 	remote     netip.Addr
 	remoteAddr netip.AddrPort         // the client's address as it reached this node
-	accept     netip.Addr             // the address its listener was bound on, as the settings name it; a hook's connection names none
+	accept     *bound                 // the bound socket that accepted it, whose removal closes it; a hook's connection names none
 	since      time.Time              // accepted at
 	charge     *resources.Reservation // the connection-state charge the accept loop took; nil for none
 
@@ -226,15 +226,15 @@ var errIdle = errors.New("core: the idle deadline passed")
 
 // serveConn serves one accepted socket until it closes: the snapshot, the
 // protocol's stages, the writer, the pipeline and the reader, with the teardown
-// on the reader once its loop ends (RFC 20 section 3.2). at is the address its
-// listener was bound on, as the settings name it, which a Reconfigure that
-// removes the address closes this connection by. charge is the
+// on the reader once its loop ends (RFC 20 section 3.2). b is the bound socket
+// that accepted it, whose removal by a Reconfigure closes this connection; nil
+// for a hook's connection, which no removal closes. charge is the
 // connection-state reservation the accept loop took, which the teardown
 // releases; nil for none.
-func (s *Server) serveConn(nc net.Conn, l *Listener, at netip.Addr, charge *resources.Reservation) *Conn {
+func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, charge *resources.Reservation) *Conn {
 	snap := *s.settings.Load()
 	remote, port := remoteOf(nc)
-	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, remote: remote, remoteAddr: port, accept: at, since: time.Now(), charge: charge, done: make(chan struct{})}
+	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, remote: remote, remoteAddr: port, accept: b, since: time.Now(), charge: charge, done: make(chan struct{})}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	st, err := withDefaults(l.Protocol.NewConn(c))
 	if err != nil {

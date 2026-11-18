@@ -299,13 +299,13 @@ func SetListen(s *Server, f func(ctx context.Context, network, addr string) (net
 // names no bound address, so a Reconfigure that removes an address never
 // closes it.
 func ServeConn(s *Server, nc net.Conn, l *Listener) *Conn {
-	return s.serveConn(nc, l, netip.Addr{}, nil)
+	return s.serveConn(nc, l, nil, nil)
 }
 
 // ServeConnCharged hands the server a socket with the connection-state charge
 // its accept loop would take, and returns the connection.
 func ServeConnCharged(s *Server, nc net.Conn, l *Listener, charge *resources.Reservation) *Conn {
-	return s.serveConn(nc, l, netip.Addr{}, charge)
+	return s.serveConn(nc, l, nil, charge)
 }
 
 // SetServerSettings replaces the server's current snapshot, as Reconfigure
@@ -386,4 +386,13 @@ func WatchIdleArms(c *Conn) (current func() bool) {
 // record's tail closes instead of re-arming.
 func RecordHeld(c *Conn) bool {
 	return c.rd.holding()
+}
+
+// Stopping shows a running Stop's marker, as a Stop on a configured or a
+// serving server sets it under the lock, without running the rest: the
+// Start and Reconfigure gates on the marker are read deterministically.
+func Stopping(s *Server, done chan struct{}) {
+	s.mu.Lock()
+	s.stopDone = done
+	s.mu.Unlock()
 }

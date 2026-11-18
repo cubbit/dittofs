@@ -203,6 +203,13 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.state != adapter.StateConfigured {
 		return fmt.Errorf("core: start: the server is %s", s.state)
 	}
+	if s.stopDone != nil {
+		// A Stop runs even on a configured server, its marker set before it
+		// moves the server to stopped: a Start in that window would bind
+		// loops that Stop's empty snapshot never closes. Refused as
+		// stopping (RFC 20 section 3.1).
+		return errors.New("core: start: the server is stopping")
+	}
 	if s.settings.Load() == nil {
 		// A Server is what NewServer builds: a zero value carries no snapshot
 		// and never served. Reading its absent settings would panic.
@@ -350,6 +357,13 @@ func (s *Server) Stop(ctx context.Context) error {
 		return nil
 	}
 	s.stopDone = make(chan struct{})
+	// decision: the three waits under Stop (a second Stop on the running
+	// one, the accept loops' ends, and each connection's teardown) are not
+	// bounded by Stop's ctx: the loops end at their sockets' close and each
+	// teardown at its reader's loop and OnClose's own context, which the
+	// protocol supplies (section 4.7). A NewConn that never returns, or an
+	// OnClose that ignores its context, parks Stop and every Stop behind it
+	// until the protocol gives their mounts their end.
 	wasServing := s.state == adapter.StateServing
 	s.state = adapter.StateDraining
 	looped := slices.Clone(s.bound)
@@ -399,6 +413,9 @@ func (s *Server) drainConns(ctx context.Context, conns []*Conn) {
 	if len(conns) == 0 {
 		return
 	}
+	// drain_timeout runs from the accept loops' end, which is where the
+	// drain starts, not from Stop's call, which the loops' hand-overs
+	// precede.
 	at := s.sh.clock.Now().Add((*s.settings.Load()).Common().DrainTimeout)
 	wait, cancel := withClockDeadline(ctx, s.sh.clock, at)
 	defer cancel()

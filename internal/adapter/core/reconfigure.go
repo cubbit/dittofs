@@ -59,6 +59,13 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 		s.mu.Unlock()
 		return fmt.Errorf("core: reconfigure: the server is %s", st)
 	case adapter.StateConfigured:
+		if s.stopDone != nil {
+			// A Stop runs the configured path with nothing bound, its marker
+			// set: refusing the call keeps the description's word that a
+			// stopping server accepts no Reconfigure.
+			s.mu.Unlock()
+			return errors.New("core: reconfigure: the server is stopping")
+		}
 		// Nothing is bound, and only Start binds: the settings are what it
 		// will bind.
 		s.settings.Store(&next)
@@ -108,14 +115,17 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 	}
 	s.mu.Unlock()
 	// Each removed loop hands every connection it accepted to the registry
-	// before it ends, so the walk after this wait is complete.
+	// before it ends, so the walk after this wait is complete. The sweep
+	// matches by the bound that accepted each connection, not by its address:
+	// a Reconfigure that adds a dropped address back in this window would
+	// name its own fresh connections otherwise.
 	for _, b := range off {
 		<-b.loopDone
 	}
 	s.mu.Lock()
 	gone := make([]*Conn, 0, len(s.conns))
 	for c := range s.conns {
-		if slices.Contains(drop, c.accept) {
+		if slices.Contains(off, c.accept) {
 			gone = append(gone, c)
 		}
 	}
@@ -182,15 +192,18 @@ func (s *Server) boundPort(i int) uint16 {
 }
 
 // diffAddrs is which of next the server does not hold, and which of its own
-// next drops, each in its list's order.
+// next drops, each in its list's order. One address is one however its list
+// spells it: each mapped IPv4 address compares as the IPv4 one it maps, as
+// bind and Validate already write it, so a Reconfigure that only respells an
+// address adds and drops nothing (Addrs still names it as its settings do).
 func diffAddrs(cur, next []netip.Addr) (add, drop []netip.Addr) {
 	for _, a := range next {
-		if !slices.Contains(cur, a) {
+		if !slices.ContainsFunc(cur, func(c netip.Addr) bool { return c.Unmap() == a.Unmap() }) {
 			add = append(add, a)
 		}
 	}
 	for _, a := range cur {
-		if !slices.Contains(next, a) {
+		if !slices.ContainsFunc(next, func(c netip.Addr) bool { return c.Unmap() == a.Unmap() }) {
 			drop = append(drop, a)
 		}
 	}

@@ -87,7 +87,7 @@ func (s *Server) acceptLoop(b *bound) {
 			_ = nc.Close()
 			continue
 		}
-		s.serveConn(nc, b.l, b.addr.Addr(), &charge)
+		s.serveConn(nc, b.l, b, &charge)
 	}
 }
 

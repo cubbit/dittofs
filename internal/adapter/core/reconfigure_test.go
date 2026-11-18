@@ -592,3 +592,104 @@ func TestAStopWaitsThenClosesWhatAReconfigureBound(t *testing.T) {
 	dialRefused(t, before[key("test")][0])
 	dialRefused(t, netip.AddrPortFrom(netip.IPv6Loopback(), before[key("test")][0].Port()))
 }
+
+// One address spelt mapped and spelt plainly is one address: the Reconfigure
+// that names the same set in the other spelling binds and drops nothing,
+// where raw spellings read one add and one drop and the add failed on the
+// port its own drop was about to free (bind and Validate already unmap).
+func TestAMappedSpellingOfOneAddressReconfiguresAsItself(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	srv := servingOn(t, b, drainOn("::ffff:127.0.0.1"))
+	before := srv.Addrs()
+	if err := srv.Reconfigure(context.Background(), drainOn("127.0.0.1")); err != nil {
+		t.Fatalf("Reconfigure with the plain spelling: %v", err)
+	}
+	if got := srv.Addrs(); !sameAddrs(got, before) {
+		t.Errorf("a Reconfigure between spellings of one address moved it: %v -> %v", before, got)
+	}
+}
+
+// While a Stop runs, even over a configured server, its marker refuses a
+// Start and a Reconfigure: a Start would bind loops Stop's snapshot never
+// closes, and the refusal keeps the description's word.
+func TestAStartAndAReconfigureAreRefusedWhileAConfiguredServerStops(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.Stopping(srv, make(chan struct{}))
+	if err := srv.Start(context.Background()); err == nil {
+		t.Error("a Start during a configured server's Stop returned nil")
+	}
+	if err := srv.Reconfigure(context.Background(), settings.DefaultNFS()); err == nil {
+		t.Error("a Reconfigure during a configured server's Stop returned nil")
+	}
+}
+
+// gatedListener is the first bind's socket, an injection: its Accept parks
+// until the test opens the gate, holding the accept loop open through the
+// listener's close, so a Reconfigure that removes it waits mid-sweep.
+type gatedListener struct {
+	gate chan struct{}
+}
+
+func (l *gatedListener) Accept() (net.Conn, error) {
+	<-l.gate
+	return nil, net.ErrClosed
+}
+func (l *gatedListener) Close() error   { return nil }
+func (l *gatedListener) Addr() net.Addr { return &net.TCPAddr{} }
+
+// A Reconfigure's sweep closes only the connections the bound it removed
+// accepted: a second Reconfigure that adds the dropped address back binds
+// its own socket, and the connection it accepted survives the first sweep,
+// where matching by the address would close it (section 3.6).
+func TestASweepClosesOnlyWhatItsDroppedBoundAccepted(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	gate := make(chan struct{})
+	gated := &gatedListener{gate: gate}
+	var real bool
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, drainOn("::1"), core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.SetListen(srv, func(ctx context.Context, network, addr string) (net.Listener, error) {
+		if !real {
+			real = true
+			return gated, nil
+		}
+		return (&net.ListenConfig{}).Listen(ctx, network, addr)
+	})
+	stopAtEnd(t, srv)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- srv.Reconfigure(context.Background(), drainOn()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("the removal returned before the gated loop ended: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := srv.Reconfigure(context.Background(), drainOn("::1")); err != nil {
+		t.Fatalf("Reconfigure adding the address back: %v", err)
+	}
+	c, _ := clientAt(t, testAddr(t, srv))
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatalf("the first Reconfigure: %v", err)
+	}
+	// The sweep closed only the connections the gated bound accepted: the
+	// connection the later bind accepted answers after it, where matching
+	// by the address would have closed it (section 3.6).
+	if err := c.Send(testproto.Msg{Op: testproto.OpNegotiate, Version: 2, ID: 2}); err != nil {
+		t.Fatalf("the negotiation after the sweep: %v", err)
+	}
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || len(rs[0].Body) != 1 {
+		t.Fatalf("the connection the second bind accepted was closed by the sweep: %+v (%v)", rs, err)
+	}
+}
