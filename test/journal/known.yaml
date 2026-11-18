@@ -68,8 +68,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and Since yields Over before the crash; the reopen after a crash before any Settle yields nothing where the removal''s marker is wanted, so the open does not recover the removal markers (RFC 1 9.4 ''removals survive''). The reopen half (R72) is owed by no open subtask of epic 7a; the entry stays on the epic until one is filed.'
-  issue: '#3814'
+  reason: 'The journal opens and Since yields Over before the crash; the reopen after a crash before any Settle yields nothing where the removal''s marker is wanted, so the open does not recover the removal markers (RFC 1 9.4 ''removals survive''). The reopen half (R72) is owed by #4863.'
+  issue: '#4863'
   message: 'after a crash before any Settle: Since(F, 0) = map[]'
 
 - test: TestRFC1A_NoZeroFill
@@ -380,8 +380,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and reads the loss record back from disk, but an in-process reopen places it into no ring: the piece it names was taken by the running journal that appended the record, and the registry answers it named. Needs the ruling on RFC 1 3.8: whether the found-at-open ring serves an in-process reopen, or only a restart, which wipes the registry. The ruling and the reopen half (R72) are owed by no open subtask of epic 7a; the entry stays on the epic until one is filed.'
-  issue: '#3814'
+  reason: 'The journal opens and reads the loss record back from disk, but an in-process reopen places it into no ring: the piece it names was taken by the running journal that appended the record, and the registry answers it named. Needs the ruling on RFC 1 3.8: whether the found-at-open ring serves an in-process reopen, or only a restart, which wipes the registry. The ruling and the reopen half (R72) are owed by #4862.'
+  issue: '#4862'
   message: '0 loss events after the reopen, want the one found at open'
 
 - test: TestRFC1C_Monotonicity
@@ -572,8 +572,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens over a segment holding synced damage and drops the record, but publishes no loss event for it: the check reads 0 loss events where it wants 1. The open''s loss records for synced damage (R71) are owed by no open subtask of epic 7a; the entry stays on the epic until one is filed.'
-  issue: '#3814'
+  reason: 'The journal opens over a segment holding synced damage and drops the record, but publishes no loss event for it: the check reads 0 loss events where it wants 1. The open''s loss records for synced damage (R71) are owed by #4859.'
+  issue: '#4859'
   message: '0 loss events, want 1'
 
 - test: TestRFC28C_Rebuild
@@ -676,8 +676,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and its re-adopted spares reach the pool, so the half where every spare must be on disk passes. The other half fails: a segment a stream took and never synced does not come back as a spare after the crash. The record-less take''s return to the pool (R74) is owed by no open subtask of epic 7a; the entry stays on the epic until one is filed.'
-  issue: '#3814'
+  reason: 'The journal opens and its re-adopted spares reach the pool, so the half where every spare must be on disk passes. The other half fails: a segment a stream took and never synced does not come back as a spare after the crash. The record-less take''s return to the pool (R74) is owed by #4860.'
+  issue: '#4860'
   message: 'taken and never synced, is not a spare again after the crash'
 
 - test: TestRFC28C_SpareIsWholeOrAbsent/create
@@ -764,16 +764,16 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; an open with no recorded identity over a directory an earlier open ran in answers segments true where the check wants false: the spares the earlier open left behind still count. Refusing a missing, emptied or replaced journal and the identity error (R69) are owed by no open subtask of epic 7a; the entry stays on the epic until one is filed.'
-  issue: '#3814'
+  reason: 'The journal opens; an open with no recorded identity over a directory an earlier open ran in answers segments true where the check wants false: the spares the earlier open left behind still count. Refusing a missing, emptied or replaced journal and the identity error (R69) are owed by #4861.'
+  issue: '#4861'
   message: 'segments true, want '
 
 - test: TestRFC28C_InterruptedInit
   status: fail
   fix: planned
   category: feature
-  reason: 'The check has two legs. Its first leg, an open with no recorded identity over a directory holding only the format file that Init wrote, needs an Init-only fixture: this check opens its journal first, and the open leaves finished spares behind, so the leg sees a directory that has run and answers segments true where false is wanted; that is the failure today. Its second leg, the reopen with the identity recorded once the journal has served, is not reached. The unidentified-directory half (R69) is owed by no open subtask of epic 7a; the entry stays on the epic until one is filed.'
-  issue: '#3814'
+  reason: 'The check has two legs. Its first leg, an open with no recorded identity over a directory holding only the format file that Init wrote, needs an Init-only fixture: this check opens its journal first, and the open leaves finished spares behind, so the leg sees a directory that has run and answers segments true where false is wanted; that is the failure today. Its second leg, the reopen with the identity recorded once the journal has served, is not reached. The unidentified-directory half (R69) is owed by #4861.'
+  issue: '#4861'
   message: 'segments true, want '
 
 - test: TestRFC28C_FormatFile
