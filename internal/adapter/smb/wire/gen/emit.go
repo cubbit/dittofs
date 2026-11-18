@@ -117,6 +117,24 @@ func discriminant(d *field) (string, func(string) string) {
 	return "x." + d.name, func(v string) string { return v }
 }
 
+// empties says, as one expression, that every arm but the chosen one holds
+// no value: a union's encode writes the one arm its switch named, and any
+// other arm's value would silently stay behind, so it is refused.
+func empties(arms []*field, chosen *field) string {
+	var terms []string
+	for _, a := range arms {
+		if a == chosen {
+			continue
+		}
+		if a.kind == kArm {
+			terms = append(terms, "x."+a.name+".IsZero()")
+		} else {
+			terms = append(terms, "len(x."+a.name+") == 0")
+		}
+	}
+	return strings.Join(terms, " && ")
+}
+
 func (g *gen) decode(b *bytes.Buffer, s *strct) {
 	fmt.Fprintf(b, "\nfunc (x *%s) decodeSMB2(d *wire.Decoder, v uint32) {\n", s.name)
 	labels := used(s)
@@ -277,9 +295,9 @@ func (g *gen) encode(b *bytes.Buffer, s *strct) {
 			expr, lit := discriminant(disc)
 			fmt.Fprintf(b, "switch %s {\n", expr)
 			for _, a := range arms[:len(arms)-1] {
-				fmt.Fprintf(b, "case %s:\nsub := e.Sub()\nx.%s.encodeSMB2(&sub, v)\ne.Join(&sub)\n", lit(a.cas), a.name)
+				fmt.Fprintf(b, "case %s:\ne.Arm(%s)\nsub := e.Sub()\nx.%s.encodeSMB2(&sub, v)\ne.Join(&sub)\n", lit(a.cas), empties(arms, a), a.name)
 			}
-			fmt.Fprintf(b, "default:\ne.Bytes(x.%s)\n}\n", loc.name)
+			fmt.Fprintf(b, "default:\ne.Arm(%s)\ne.Bytes(x.%s)\n}\n", empties(arms[:len(arms)-1], nil), loc.name)
 		}
 		if loc.length != "" {
 			fmt.Fprintf(b, "e.Len(p%s, %d, e.Pos()-at, %d)\n", loc.length, width(s, loc.length), loc.max)

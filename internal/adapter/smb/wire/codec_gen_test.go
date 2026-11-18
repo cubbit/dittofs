@@ -199,14 +199,17 @@ func (x *CreateContext) encodeSMB2(e *wire.Encoder, v uint32) {
 		begin, at := e.Begin(8)
 		switch string(x.Name) {
 		case "DH2Q":
+			e.Arm(x.AllocationSize.IsZero() && len(x.Data) == 0)
 			sub := e.Sub()
 			x.DurableV2.encodeSMB2(&sub, v)
 			e.Join(&sub)
 		case "AlSi":
+			e.Arm(x.DurableV2.IsZero() && len(x.Data) == 0)
 			sub := e.Sub()
 			x.AllocationSize.encodeSMB2(&sub, v)
 			e.Join(&sub)
 		default:
+			e.Arm(x.DurableV2.IsZero() && x.AllocationSize.IsZero())
 			e.Bytes(x.Data)
 		}
 		e.Len(pDataLength, 4, e.Pos()-at, 1024)
@@ -489,14 +492,17 @@ func (x *NegotiateContext) encodeSMB2(e *wire.Encoder, v uint32) {
 		at := e.Pos()
 		switch x.ContextType {
 		case 1:
+			e.Arm(x.Encryption.IsZero() && len(x.Data) == 0)
 			sub := e.Sub()
 			x.Preauth.encodeSMB2(&sub, v)
 			e.Join(&sub)
 		case 2:
+			e.Arm(x.Preauth.IsZero() && len(x.Data) == 0)
 			sub := e.Sub()
 			x.Encryption.encodeSMB2(&sub, v)
 			e.Join(&sub)
 		default:
+			e.Arm(x.Preauth.IsZero() && x.Encryption.IsZero())
 			e.Bytes(x.Data)
 		}
 		e.Len(pDataLength, 2, e.Pos()-at, 1024)

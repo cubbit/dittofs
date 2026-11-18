@@ -76,6 +76,7 @@ func (f *field) variable() bool { return f.kind >= kBytes }
 type strct struct {
 	name   string
 	fields []*field
+	kept   bool
 }
 
 // disc returns s's union discriminant, nil when it has none, and its arms,
@@ -103,7 +104,10 @@ type gen struct {
 	fset    *token.FileSet
 	structs []*strct
 	byName  map[string]*strct
-	named   map[string]int // the types named over an integer, by width
+	shapes  map[string]*ast.StructType
+	tagged  map[string]bool
+	links   map[string]string // each chained member type and the label its members link by
+	named   map[string]int    // the types named over an integer, by width
 	errs    []error
 }
 
@@ -114,7 +118,7 @@ func (g *gen) errorf(pos token.Pos, where, format string, args ...any) {
 // generate reads files, in dir, and returns the codec of every struct type
 // they declare, or every field it cannot honour.
 func generate(dir string, files []string) ([]byte, error) {
-	g := &gen{fset: token.NewFileSet(), byName: map[string]*strct{}, named: map[string]int{}}
+	g := &gen{fset: token.NewFileSet(), byName: map[string]*strct{}, shapes: map[string]*ast.StructType{}, tagged: map[string]bool{}, links: map[string]string{}, named: map[string]int{}}
 	pkg := ""
 	var specs []*ast.TypeSpec
 	for _, name := range files {
@@ -140,26 +144,56 @@ func generate(dir string, files []string) ([]byte, error) {
 			s := &strct{name: ts.Name.Name}
 			g.structs = append(g.structs, s)
 			g.byName[s.name] = s
+			g.shapes[s.name] = t
+			for _, f := range t.Fields.List {
+				if f.Tag != nil && strings.Contains(f.Tag.Value, "smb2:") {
+					g.tagged[s.name] = true
+				}
+			}
 		case *ast.Ident:
 			if w := widths[t.Name]; w > 0 {
 				g.named[ts.Name.Name] = w
 			}
 		}
 	}
-	for _, ts := range specs {
-		if st, ok := ts.Type.(*ast.StructType); ok {
-			s := g.byName[ts.Name.Name]
-			for _, f := range st.Fields.List {
-				if len(f.Names) != 1 {
-					g.errorf(f.Pos(), s.name, "one name per field")
-					continue
-				}
-				if fl := g.field(s.name, f); fl != nil {
-					s.fields = append(s.fields, fl)
-				}
+	// A file declares its wire structs and whatever else its handler needs
+	// beside them: only a struct with a tagged field, and the ones a kept
+	// struct holds as an arm or a chain, gain a codec; the rest the ops file
+	// keeps to itself.
+	var keep func(s *strct)
+	keep = func(s *strct) {
+		if s == nil || s.kept {
+			return
+		}
+		s.kept = true
+		for _, f := range g.shapes[s.name].Fields.List {
+			if len(f.Names) != 1 {
+				g.errorf(f.Pos(), s.name, "one name per field")
+				continue
+			}
+			if fl := g.field(s.name, f); fl != nil {
+				s.fields = append(s.fields, fl)
+			}
+		}
+		for _, f := range s.fields {
+			if f.kind == kChain && f.link != "" {
+				g.links[f.typ] = f.link
+			}
+			if f.typ != "" && (f.kind == kArm || f.kind == kChain) {
+				keep(g.byName[f.typ])
 			}
 		}
 	}
+	for _, s := range g.structs {
+		if g.tagged[s.name] {
+			keep(s)
+		}
+	}
+	kept := slices.DeleteFunc(g.structs, func(s *strct) bool { return !s.kept })
+	if len(kept) == 0 {
+		return nil, errors.New("no wire struct to generate a codec for")
+	}
+	g.structs = kept
 	for _, s := range g.structs {
 		g.check(s)
 	}
@@ -280,9 +314,18 @@ func (g *gen) check(s *strct) {
 	labels := map[string]*field{}
 	users := map[string]*field{} // the field each label locates or sizes
 	unions := 0
+	pastVariable := false
 	for _, f := range s.fields {
 		where := s.name + "." + f.name
 		bad := func(format string, args ...any) { g.errorf(f.pos, where, format, args...) }
+		// A fixed field after a variable one would decode from wherever the
+		// variable field ended, not from its place in the struct's order.
+		if pastVariable && !f.variable() {
+			bad("a fixed field after a variable one")
+		}
+		if f.variable() {
+			pastVariable = true
+		}
 		if f.union {
 			if unions++; unions > 1 {
 				bad("a second union discriminant")
@@ -355,6 +398,14 @@ func (g *gen) check(s *strct) {
 			bad("a variable-length field with no maximum")
 		}
 	}
+	// A declared layout label no field names is never written: its struct
+	// would answer whatever the wire sent to the offset it ignores. A chain
+	// that links this struct's members by the label is a user of it.
+	for _, f := range s.fields {
+		if f.label != "" && users[f.label] == nil && g.links[s.name] != f.label {
+			g.errorf(f.pos, s.name+"."+f.name, "a layout field no field uses")
+		}
+	}
 	d, arms := s.disc()
 	switch {
 	case d == nil && len(arms) > 0:
@@ -369,6 +420,9 @@ func (g *gen) check(s *strct) {
 		}
 		if a.offset != def.offset || a.length != def.length || a.align != def.align || a.since != def.since {
 			g.errorf(a.pos, s.name+"."+a.name, "an arm not located as its union's default")
+		}
+		if a != def && g.fieldMax(a, map[string]bool{}) > def.max {
+			g.errorf(a.pos, s.name+"."+a.name, "an arm whose maximum %d exceeds its union's default %d", g.fieldMax(a, map[string]bool{}), def.max)
 		}
 		if d != nil && d.kind == kInt {
 			if _, err := strconv.ParseUint(a.cas, 0, 8*d.n); err != nil && !a.def {
@@ -399,6 +453,51 @@ func (g *gen) checkChain(f *field, bad func(string, ...any)) {
 			bad("a linked chain's member %s does not begin with a blank uint32 named %s", f.typ, f.link)
 		}
 	}
+}
+
+// fieldMax is the most f writes on the wire: a named struct's own bound, a
+// raw or scalar arm its own width or maximum. A struct already being measured
+// counts as nothing: it holds itself, and holds' own check refuses it.
+func (g *gen) fieldMax(f *field, seen map[string]bool) int {
+	if f.typ != "" {
+		return g.structMax(g.byName[f.typ], seen)
+	}
+	return max(f.n, f.max)
+}
+
+// structMax is the most s ever writes on the wire, an upper bound over every
+// dialect: fixed fields whole, since-gated fields counted too, a union's
+// region one entry at its greatest member's width, a counted chain's members
+// by the same depth. It backs the union arm check alone.
+func (g *gen) structMax(s *strct, seen map[string]bool) int {
+	if s == nil || seen[s.name] {
+		return 0
+	}
+	seen[s.name] = true
+	defer delete(seen, s.name)
+	n, m, region := 0, 0, true
+	_, arms := s.disc()
+	for _, a := range arms {
+		if w := g.fieldMax(a, seen); w > m {
+			m = w
+		}
+	}
+	for _, f := range s.fields {
+		switch {
+		case f.kind == kArm || f.def:
+			if region {
+				n += m
+				region = false
+			}
+		case !f.variable():
+			n += f.n
+		case f.kind == kChain && f.link == "":
+			n += f.align - 1 + f.max*(7+g.structMax(g.byName[f.typ], seen))
+		default:
+			n += f.align - 1 + f.max
+		}
+	}
+	return n
 }
 
 // holds reports whether s holds the struct named name through an arm or a

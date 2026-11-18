@@ -365,6 +365,33 @@ func TestCodecRefusals(t *testing.T) {
 	}
 }
 
+// A length or offset a 32-bit int reads as a negative fits under every
+// limit of bytes, where it cuts a slice backwards: At, Next, Chain and Link
+// refuse the negative as the maximum it names, and a link step a platform
+// reads negative is refused with it (a WRITE's Length of 0xFFFFFFF8 on
+// GOARCH=386).
+func TestCodecNegativeBoundsAreRefused(t *testing.T) {
+	d := func() *wire.Decoder { return &wire.Decoder{B: make([]byte, 64)} }
+	if b := d().At(-16, 4, 32, 8); b != nil {
+		t.Error("a negative offset was taken")
+	}
+	if b := d().At(0, -4, 32, 8); b != nil {
+		t.Error("a negative length was taken")
+	}
+	if b := d().Next(-4, 32); b != nil {
+		t.Error("Next took a negative length")
+	}
+	if at := d().Chain(-16, 2, 4, 8); at >= 0 {
+		t.Error("Chain took a negative offset")
+	}
+	if at := d().Chain(0, -2, 4, 8); at >= 0 {
+		t.Error("Chain took a negative count")
+	}
+	if r, _ := d().Link([]byte{0xf8, 0xff, 0xff, 0xff, 0, 0, 0, 0}, 0); r != nil {
+		t.Error("Link took a step a platform reads negative")
+	}
+}
+
 // An odd StructureSize counts the variable part's first byte, which a request
 // carries and a reply, or a WRITE, need not: a CREATE of its fixed part alone
 // is refused and an empty one is written with that byte, while a WRITE of its
@@ -438,8 +465,9 @@ func TestCodecClaimedLengths(t *testing.T) {
 
 // A value the peer's decoder would refuse is refused on encode, and its output
 // is left as it was: a name, a count or a context past its maximum, contexts
-// past the bytes their chain may take, a name that is not WTF-8, and an offset
-// its two bytes cannot hold.
+// past the bytes their chain may take, a name that is not WTF-8, an offset
+// its two bytes cannot hold, and a context naming one arm while another
+// holds a value.
 func TestCodecEncodeRefusals(t *testing.T) {
 	big := CreateContext{Name: []byte("MxAc"), Data: make([]byte, 1000)}
 	for _, c := range []struct {
@@ -448,7 +476,9 @@ func TestCodecEncodeRefusals(t *testing.T) {
 	}{
 		{"a name past its maximum", &CreateRequest{Name: strings.Repeat("a", 513)}},
 		{"a name that is not WTF-8", &CreateRequest{Name: "a\xffb"}},
+		{"a name with a surrogate pair written as two WTF-8 halves", &CreateRequest{Name: "\xed\xa0\x80\xed\xb0\x80"}},
 		{"a context's data past its maximum", &CreateRequest{Contexts: []CreateContext{{Name: []byte("MxAc"), Data: make([]byte, 1025)}}}},
+		{"a union naming one arm while another holds a value", &CreateRequest{Contexts: []CreateContext{{Name: []byte("DH2Q"), Data: []byte{1}}}}},
 		{"contexts past their chain's maximum", &CreateRequest{Contexts: []CreateContext{big, big, big, big, big}}},
 		{"dialects past their maximum", &NegotiateRequest{Dialects: make([]uint16, 65)}},
 		{"negotiate contexts past their maximum", &NegotiateRequest{Contexts: make([]NegotiateContext, 17)}},

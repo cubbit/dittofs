@@ -36,12 +36,13 @@ func TestGenerateRefuses(t *testing.T) {
 		{"type S struct { A uint32 `smb2:\"min=1\"` }", `S.A: a tag it does not know, "min"`},
 		{"type S struct { A uint32 `smb2:\"max=4\"` }", `S.A: a tag it cannot honour on this field's type, "max"`},
 		{"type S struct { A uint32 `smb2:\"since=x\"` }", "S.A: tag since=x is not a number of at least 0"},
-		{"type S struct { N int }", "S.N: a type it cannot encode, int"},
-		{"type S struct { M map[string]uint32 }", "S.M: a type it cannot encode"},
-		{"type S struct { A []uint32 }", "S.A: an array or slice it cannot encode"},
-		{"type S struct { A [0]byte }", "S.A: an array or slice it cannot encode"},
-		{"type S struct { A, B uint32 }", "S: one name per field"},
-		{"type S struct { uint32 }", "S: one name per field"},
+		{"type S struct {\n" + layout + "N int\n}", "S.N: a type it cannot encode, int"},
+		{"type S struct {\n" + layout + "M map[string]uint32\n}", "S.M: a type it cannot encode"},
+		{"type S struct {\n" + layout + "A []uint32\n}", "S.A: an array or slice it cannot encode"},
+		{"type S struct {\n" + layout + "A [0]byte\n}", "S.A: an array or slice it cannot encode"},
+		{"type S struct { A, B uint32 `smb2:\"name=L\"` }", "S: one name per field"},
+		{"type S struct {\n" + layout + "uint32\n}", "S: one name per field"},
+		{"type S struct { uint32 }", "no wire struct to generate a codec for"},
 		{"type S struct { B []byte `smb2:\"len=L,max=4\"` }", "S.B: no layout field named L before it"},
 		{"type S struct {\n" + layout + "B []byte `smb2:\"len=L,max=4,align=8\"`\n}", "S.B: align without an offset"},
 		{"type S struct { A uint16 `smb2:\"size=4\"` }", "S.A: size and name go on a blank field"},
@@ -69,6 +70,9 @@ func TestGenerateRefuses(t *testing.T) {
 		{"type S struct {\n" + union + "A T `smb2:\"len=L,case=x\"`\n" + def + "}\n" + arm, `S.A: a case its integer discriminant cannot hold, "x"`},
 		{"type S struct {\n" + union + "E uint16 `smb2:\"union\"`\n" + def + "}", "S.E: a second union discriminant"},
 		{"type S struct { _ uint16 `smb2:\"union\"` }", "S._: a union's discriminant is a named field"},
+		{"type S struct {\n" + union + "A T8 `smb2:\"len=L,case=1\"`\n" + def + "}\ntype T8 struct{ A uint64 }", "S.A: an arm whose maximum 8 exceeds its union's default 4"},
+		{"type S struct {\n" + layout + "B []byte `smb2:\"len=L,max=4\"`\nA uint32\n}", "S.A: a fixed field after a variable one"},
+		{"type S struct {\n" + layout + "_ uint16 `smb2:\"name=U\"`\nB []byte `smb2:\"len=L,max=4\"`\n}", "S._: a layout field no field uses"},
 	} {
 		t.Run(c.want, func(t *testing.T) {
 			src, err := generateFrom(t, c.src)
@@ -118,6 +122,25 @@ func TestOnlyAStructNoneHoldsIsDecodedAlone(t *testing.T) {
 				t.Errorf("%s.%s generated: %v", typ, method, has)
 			}
 		}
+	}
+}
+
+// A file keeps what its handler needs beside its wire structs: a struct
+// with no tagged field gets no codec, and a field nothing can encode, on a
+// struct the codec never sees, stops nothing.
+func TestAnUntaggedStructGetsNoCodec(t *testing.T) {
+	out, err := generateFrom(t, "type S struct {\n"+
+		"_ uint16 `smb2:\"name=L\"`\n"+
+		"B []byte `smb2:\"len=L,max=4\"`\n}\n"+
+		"type h struct{ s fmt.Stringer; n uint32 }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte("func (x *S) DecodeWire(")) {
+		t.Errorf("no codec for the tagged struct:\n%s", out)
+	}
+	if bytes.Contains(out, []byte("func (x *h) ")) {
+		t.Errorf("the untagged struct gained a codec:\n%s", out)
 	}
 }
 

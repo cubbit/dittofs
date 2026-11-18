@@ -25,6 +25,7 @@ var (
 	errUTF16  = errors.New("smb: a UTF-16 string of an odd byte length")
 	errWTF8   = errors.New("smb: a string to encode that is not WTF-8")
 	errWide   = errors.New("smb: a length or offset its field is too narrow for")
+	errArm    = errors.New("smb: a union holding a value in another arm than the one it names")
 )
 
 // Decoder reads one structure of an SMB2 message. Every check comes before
@@ -128,7 +129,9 @@ func (d *Decoder) At(off, n, limit, align int) []byte {
 	if d.Err != nil || n == 0 {
 		return nil
 	}
-	if n > limit {
+	// A 32-bit int reads a length or offset past 2^31 as a negative, which
+	// passes every limit below: refuse it as the maximum it names.
+	if off < 0 || n < 0 || n > limit {
 		d.fail(errMax)
 		return nil
 	}
@@ -156,7 +159,7 @@ func (d *Decoder) Next(n, limit int) []byte {
 	if d.Err != nil || n == 0 {
 		return nil
 	}
-	if n > limit {
+	if n < 0 || n > limit {
 		d.fail(errMax)
 		return nil
 	}
@@ -260,7 +263,7 @@ func (d *Decoder) Link(region []byte, at int) ([]byte, int) {
 	switch {
 	case step == 0:
 		return region[at:], len(region)
-	case step%8 != 0 || step >= len(region)-at:
+	case step < 0 || step%8 != 0 || step >= len(region)-at:
 		d.fail(errStep)
 		return nil, len(region)
 	}
@@ -276,7 +279,7 @@ func (d *Decoder) Chain(off, n, limit, least int) int {
 	if d.Err != nil || n == 0 {
 		return -1
 	}
-	if n > limit {
+	if off < 0 || n < 0 || n > limit {
 		d.fail(errMax)
 		return -1
 	}
@@ -384,6 +387,15 @@ func (e *Encoder) Len(p, w, n, limit int) {
 	e.put(p, w, n)
 }
 
+// Arm refuses the encode when a union holds a value in any arm beside the one
+// its switch chose: the union writes one arm's bytes, and any other arm's
+// would silently stay behind.
+func (e *Encoder) Arm(empty bool) {
+	if !empty {
+		e.fail(errArm)
+	}
+}
+
 // Off fills the w-byte layout field at p with the offset of the field that
 // begins at at. A field of no bytes keeps offset 0 and drops the padding
 // before it, from begin: MS-SMB2 2.2.13.2 asks it of a context's DataOffset.
@@ -400,7 +412,9 @@ func (e *Encoder) Off(p, w, begin, at int) {
 }
 
 func (e *Encoder) put(p, w, v int) {
-	if v >= 1<<(8*w) {
+	// A 32-bit int cannot hold 1<<(8*w) at four bytes wide: the bound is
+	// taken in uint64, and a negative is refused with it.
+	if v < 0 || uint64(v) >= 1<<(8*uint(w)) {
 		e.fail(errWide)
 		return
 	}
@@ -414,10 +428,16 @@ func (e *Encoder) put(p, w, v int) {
 
 // UTF16 appends s, WTF-8, as UTF-16LE: a surrogate written alone goes back
 // as the code unit it was (Decoder.UTF16's decision). A string that is not
-// WTF-8 is refused.
+// WTF-8 is refused, and a pair written as two halves is refused with it: it
+// is CESU-8, not WTF-8, and would name a file on the wire by another file's
+// code point.
 func (e *Encoder) UTF16(s string) {
 	for i := 0; i < len(s); {
 		if s[i] == 0xED && i+2 < len(s) && s[i+1]&0xE0 == 0xA0 && s[i+2]&0xC0 == 0x80 {
+			if s[i+1]&0xF0 == 0xA0 && i+5 < len(s) && s[i+3] == 0xED && s[i+4]&0xF0 == 0xB0 && s[i+5]&0xC0 == 0x80 {
+				e.fail(errWTF8)
+				return
+			}
 			e.Uint16(0xD000 | uint16(s[i+1]&0x3F)<<6 | uint16(s[i+2]&0x3F))
 			i += 3
 			continue
