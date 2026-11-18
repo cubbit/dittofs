@@ -28,23 +28,24 @@ import (
 // prune need a longer window by default.
 const lastRuns = 10
 
-// historyFlags are the flags of the commands that read past runs: --ci and
-// --last.
-func historyFlags(cmd *cobra.Command, ci *bool, last *int) {
-	cmd.Flags().BoolVar(ci, "ci", false, "read the last N develop runs of tests.yml, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs")
+// historyFlags are the flags of the commands that read past runs: --ci,
+// --last and --branch.
+func historyFlags(cmd *cobra.Command, ci *bool, last *int, branch *string) {
+	cmd.Flags().BoolVar(ci, "ci", false, "read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs")
 	cmd.Flags().IntVar(last, "last", lastRuns, "read the last N runs")
+	cmd.Flags().StringVar(branch, "branch", "develop", "with --ci, the branch whose runs of tests.yml are read")
 }
 
 // pastRuns are the runs dt history reads, oldest first: this checkout's last
-// ones, or with ci develop's, each with the cells of its jobs' first attempt.
-// With suite, only develop's artifacts of its cells are read, and warn says
+// ones, or with ci those of branch, each with the cells of its jobs' first attempt.
+// With suite, only the artifacts of its cells are read, and warn says
 // which couldn't be.
-func pastRuns(ctx context.Context, suite string, ci bool, last int, warn io.Writer) ([]report.Run, error) {
+func pastRuns(ctx context.Context, suite string, ci bool, last int, branch string, warn io.Writer) ([]report.Run, error) {
 	if last < 1 {
 		return nil, fmt.Errorf("--last %d: expected 1 or more", last)
 	}
 	if ci {
-		return history.CI(ctx, suite, last, warn)
+		return history.CI(ctx, suite, last, branch, warn)
 	}
 	root, err := repoRoot()
 	if err != nil {
@@ -56,13 +57,14 @@ func pastRuns(ctx context.Context, suite string, ci bool, last int, warn io.Writ
 func newHistory() *cobra.Command {
 	var ci bool
 	var last int
+	var branch string
 	cmd := &cobra.Command{
 		Use:   "history [SUITE[/TEST]]",
 		Short: "Pass, fail, skip and flaky counts over past runs, with p50 and p90 durations: per suite, per test of SUITE, and each result of TEST",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			suite, test, _ := strings.Cut(first(args), "/")
-			runs, err := pastRuns(cmd.Context(), suite, ci, last, cmd.ErrOrStderr())
+			runs, err := pastRuns(cmd.Context(), suite, ci, last, branch, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -101,7 +103,7 @@ func newHistory() *cobra.Command {
 		},
 		ValidArgsFunction: completeSuite,
 	}
-	historyFlags(cmd, &ci, &last)
+	historyFlags(cmd, &ci, &last, &branch)
 	return cmd
 }
 
@@ -155,6 +157,7 @@ func duration(d time.Duration) string {
 func newKnownPrune() *cobra.Command {
 	var ci bool
 	var last int
+	var branch string
 	cmd := &cobra.Command{
 		Use:   "prune SUITE",
 		Short: "Remove the known entries that matched no failing or skipping test in the runs dt history reads",
@@ -168,7 +171,7 @@ func newKnownPrune() *cobra.Command {
 			if s == nil {
 				return fmt.Errorf("no suite %q", args[0])
 			}
-			runs, err := pastRuns(cmd.Context(), s.Name, ci, last, cmd.ErrOrStderr())
+			runs, err := pastRuns(cmd.Context(), s.Name, ci, last, branch, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -243,6 +246,6 @@ func newKnownPrune() *cobra.Command {
 		},
 		ValidArgsFunction: completeKnownSuite,
 	}
-	historyFlags(cmd, &ci, &last)
+	historyFlags(cmd, &ci, &last, &branch)
 	return cmd
 }

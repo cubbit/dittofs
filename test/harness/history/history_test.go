@@ -82,7 +82,9 @@ func TestLocal(t *testing.T) {
 // those of its cells, not the expired ones, and in each artifact only the
 // first attempt's summary.json: each job's run, with its own OS, under the
 // workflow run's name, and a short commit as it is. An artifact gone or cut
-// short is skipped with a warning. Every request carries the token.
+// short is skipped with a warning. Every request carries the token. The
+// branch listed is the one asked for, develop when none is. Workflow reads one
+// run by its ID whatever its event, and a run that isn't there is an error.
 func TestCI(t *testing.T) {
 	dir := t.TempDir()
 	cell := func(run, name, result, os string) []byte {
@@ -107,6 +109,7 @@ func TestCI(t *testing.T) {
 		"34": cell("20261021T120100Z-33333333", "pjdfstest/badger-s3/3", "passed", "linux"),
 		"11": cell("20261020T221400Z-111", "pjdfstest/badger-s3/3", "not run", "linux"),
 	}
+	downloads["21"] = cell("20261021T110000Z-22222222", "pjdfstest/badger-s3/3", "passed", "linux")
 	whole := cell("20261021T120100Z-33333333", "pjdfstest/badger-s3/4.0", "passed", "linux")
 	downloads["42"] = whole[:len(whole)/2] // cut short
 	artifact := func(id, name string, expired bool) map[string]any {
@@ -122,12 +125,21 @@ func TestCI(t *testing.T) {
 			artifact("41", "dt-run-pjdfstest-badger-s3-4.2-1", false),
 			artifact("42", "dt-run-pjdfstest-badger-s3-4.0-1", false),
 		},
+		"2": {artifact("21", "dt-run-pjdfstest-badger-s3-3-1", false)},
 		"1": {artifact("11", "dt-non-blocking-pjdfstest-badger-s3-3-1", false)},
 	}
 	run := func(id int, event, conclusion, sha, created string) map[string]any {
 		return map[string]any{"id": id, "event": event, "conclusion": conclusion, "head_sha": strings.Repeat(sha, 40), "created_at": created}
 	}
-	var fetched []string
+	byID := map[string]map[string]any{
+		"3": run(3, "push", "failure", "3", "2026-10-21T12:00:00Z"),
+		"2": run(2, "pull_request", "success", "2", "2026-10-21T11:00:00Z"),
+	}
+	var fetched, listed []string
+	// decision: this server answers canned JSON in GitHub's place, so the test
+	// proves what the code asks for and does with those answers, not that
+	// GitHub answers so. No in-memory GitHub exists to hold it to; replace it
+	// when one does, or by a run against the real API.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer tok" {
 			http.Error(w, "no token", http.StatusUnauthorized)
@@ -136,13 +148,16 @@ func TestCI(t *testing.T) {
 		q, page := r.URL.Query(), r.URL.Query().Get("page")
 		var body any
 		switch p := strings.TrimPrefix(r.URL.Path, "/repos/o/r/actions/"); {
-		case p == "workflows/tests.yml/runs" && q.Get("branch") == "develop" && q.Get("status") == "completed":
+		case p == "workflows/tests.yml/runs" && q.Get("status") == "completed":
+			listed = append(listed, q.Get("branch"))
 			pages := [][]any{
-				{run(4, "push", "cancelled", "4", "2026-10-21T12:30:00Z"), run(3, "push", "failure", "3", "2026-10-21T12:00:00Z"), run(2, "pull_request", "success", "2", "2026-10-21T11:00:00Z")},
+				{run(4, "push", "cancelled", "4", "2026-10-21T12:30:00Z"), byID["3"], byID["2"]},
 				{map[string]any{"id": 1, "event": "schedule", "conclusion": "success", "head_sha": "111", "created_at": "2026-10-20T22:13:00Z"}},
 				{},
 			}
 			body = map[string]any{"workflow_runs": pages[min(int(page[0]-'1'), 2)]}
+		case strings.HasPrefix(p, "runs/") && byID[strings.TrimPrefix(p, "runs/")] != nil:
+			body = byID[strings.TrimPrefix(p, "runs/")]
 		case strings.HasPrefix(p, "runs/") && strings.HasSuffix(p, "/artifacts"):
 			all := artifacts[strings.TrimSuffix(strings.TrimPrefix(p, "runs/"), "/artifacts")]
 			from := 2 * (int(page[0]-'0') - 1)
@@ -192,7 +207,7 @@ func TestCI(t *testing.T) {
 	} {
 		fetched = nil
 		var warned bytes.Buffer
-		runs, err := CI(context.Background(), c.suite, c.n, &warned)
+		runs, err := CI(context.Background(), c.suite, c.n, "", &warned)
 		if err != nil || !slices.Equal(names(runs), c.want) {
 			t.Errorf("suite %q, last %d: %q, %v; want %q", c.suite, c.n, names(runs), err, c.want)
 		}
@@ -205,8 +220,36 @@ func TestCI(t *testing.T) {
 		}
 	}
 
+	// The branch asked for is the one listed, develop when none is.
+	listed = nil
+	for _, branch := range []string{"feat/x", ""} {
+		if _, err := CI(context.Background(), "pynfs", 1, branch, io.Discard); err != nil {
+			t.Fatalf("branch %q: %v", branch, err)
+		}
+	}
+	if want := []string{"feat/x", "develop"}; !slices.Equal(listed, want) {
+		t.Errorf("listed branches: got %q, want %q", listed, want)
+	}
+
+	// One run by its ID, a pull request's too, named as CI names it.
+	for _, c := range []struct {
+		id   int64
+		want []string
+	}{
+		{3, []string{"20261021T120000Z-33333333 on windows pynfs/badger-s3/0=passed", "20261021T120000Z-33333333 on linux pjdfstest/badger-s3/4.1=failed"}},
+		{2, []string{"20261021T110000Z-22222222 on linux pjdfstest/badger-s3/3=passed"}},
+	} {
+		runs, err := Workflow(context.Background(), "", c.id, io.Discard)
+		if err != nil || !slices.Equal(names(runs), c.want) {
+			t.Errorf("Workflow %d: %q, %v; want %q", c.id, names(runs), err, c.want)
+		}
+	}
+	if _, err := Workflow(context.Background(), "", 99, io.Discard); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Errorf("Workflow of a run that isn't there: got %v, want an error naming 404", err)
+	}
+
 	t.Setenv("GITHUB_TOKEN", "")
-	if _, err := CI(context.Background(), "", 1, io.Discard); err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN") {
+	if _, err := CI(context.Background(), "", 1, "", io.Discard); err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN") {
 		t.Errorf("without a token: %v", err)
 	}
 }

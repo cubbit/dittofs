@@ -147,6 +147,7 @@ func newPlan() *cobra.Command {
 	var tier, base, shardFlag string
 	var asJSON, estimating, ci bool
 	var last int
+	var branch string
 	cmd := &cobra.Command{
 		Use:   "plan",
 		Short: "The cells a tier runs, each with its place; with --estimate, the tier's runner-minutes from dt history",
@@ -184,7 +185,7 @@ func newPlan() *cobra.Command {
 			if !estimating {
 				return table(cmd.OutOrStdout(), rows)
 			}
-			runs, err := pastRuns(cmd.Context(), "", ci, last, cmd.ErrOrStderr())
+			runs, err := pastRuns(cmd.Context(), "", ci, last, branch, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -209,7 +210,7 @@ func newPlan() *cobra.Command {
 	cmd.Flags().StringVar(&shardFlag, "shard", "", "only shard I of N of the cells, as I/N")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	cmd.Flags().BoolVar(&estimating, "estimate", false, "give each cell its p50 over the runs dt history reads, and the tier's runner-minutes, their sum")
-	historyFlags(cmd, &ci, &last)
+	historyFlags(cmd, &ci, &last, &branch)
 	_ = cmd.MarkFlagRequired("tier")
 	_ = cmd.RegisterFlagCompletionFunc("tier", fixed(registry.Tiers...))
 	return cmd
