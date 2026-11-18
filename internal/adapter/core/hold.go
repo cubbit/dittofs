@@ -703,6 +703,12 @@ func (p *pipeline) parkDone(pd *pending, err error) {
 // kept, its chain, if one waits for it, running on to its end, since a
 // parked member is the last; otherwise its record goes with its request's
 // goroutine or its chain. A done that came before is answered now.
+//
+// decision: a park's record goes here, once the handler returns ErrParked,
+// not inside Park as §4.7 says, since a handler copies out of its decoded
+// arguments what done needs after Park returns, a refused Park needing no
+// copy. Withdraw it if §4.7 keeps the release in Park and every handler
+// copies before it calls Park.
 func (p *pipeline) parked(pd *pending, release func()) bool {
 	pd.mu.Lock()
 	pk := pd.park
@@ -736,9 +742,15 @@ var errOutgrown = errors.New("core: a parked reply grew past its small buffer")
 
 // answerPark answers pd, parked, err, mapped by its table, encoded into the
 // small buffer it kept under Final's header, wrapped and sent, and ends it. A
-// NoReply row sends nothing more, its interim being out (§3.1). An encoder
-// with more to write than the buffer holds returns its protocol's error,
-// which the table maps, and the status goes out alone (§4.7).
+// NoReply row sends nothing more, its interim being out (§3.1).
+//
+// decision: a reply that does not fit the small buffer is answered as its
+// protocol answers an overflow (§4.7) through its encoder, since only the
+// protocol knows that status: an encoder with more to write than the buffer
+// holds returns its protocol's error, which the table maps, and the status
+// goes out alone; one that grew past the buffer with no error is answered the
+// fault status and logged at error. Overturned if the RFC gives core an
+// overflow error of its own for every table to map.
 //
 // decision: a parked reply is never stored in the replay cache: its request's
 // header went with its record, and no row that parks is cacheable. Overturned
