@@ -261,7 +261,7 @@ function chrome({ lang, motion, ui, onStart, onLang, onMotion }) {
     home.title = label('chrome.home');
     start.setAttribute('aria-label', start.title);
     home.setAttribute('aria-label', home.title);
-    home.href = `${new URL('../', import.meta.url).pathname}?lang=${current.lang}`;
+    home.href = `${new URL('../index.html', import.meta.url).pathname}?lang=${current.lang}`;
     motionGroup.setAttribute('aria-label', label('chrome.motion'));
     motionGroup.querySelectorAll('button').forEach((b) => {
       b.title = `${label('chrome.motion')}: ${label(`chrome.motionModes.${b.dataset.motion}`)}`;
