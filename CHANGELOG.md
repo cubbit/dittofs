@@ -117,13 +117,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no tear and appends behind none. The open also records what the crash
   corrupted: every corrupt drop and every record a failed window left
   unrecorded gets a loss record, drawn on a reserve the headroom keeps for
-  the open. An open whose corrupt losses would run past that reserve is
-  refused before any record is appended, for their deferral needs the
-  segment-emptying that is not built; an open whose recovery ends a segment
-  is refused the same way. These refusals answer `ErrOpenRefused`: the
-  engine leaves the device's shares unattached under `journal_open_refused`
-  and retries the open, and a refusal past the reserve names
-  `journal.headroom_records` as the setting to raise.
+  the open. Corrupt losses past that reserve defer: the open serves, the
+  segment holding each deferred drop stays in place, and the loss record is
+  written into the copy the next open's emptying makes. A segment the
+  recovery ends is copied out whole into a sealed spare and unlinked before
+  the journal serves, its served pieces repointed to the copy. An open still
+  refuses what it cannot settle, such as a copy that needs more than one
+  segment: it answers `ErrOpenRefused`, the engine leaves the device's shares
+  unattached under `journal_open_refused` and retries the open.
 
 ## [0.36.0] — 2026-10-19
 
