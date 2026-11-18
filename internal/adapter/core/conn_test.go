@@ -185,16 +185,11 @@ func TestStopClosesConnections(t *testing.T) {
 	b := budgets()
 	adaptertest.CheckLeaks(t, b)
 	srv, l := testServer(t, adapter.Deps{Budgets: b}, settings.DefaultNFS())
-	var clients []*testproto.Client
 	for range 3 {
-		clients = append(clients, connPair(t, srv, l))
+		connPair(t, srv, l)
 	}
 	if err := srv.Stop(context.Background()); err != nil {
 		t.Fatal(err)
-	}
-	for i, c := range clients {
-		_ = c
-		_ = i
 	}
 	// Every connection's teardown ended before Stop returned: the registry is
 	// empty and no budget holds a byte.
@@ -1128,10 +1123,7 @@ func TestASilentClientStopsTheReader(t *testing.T) {
 		b := budgets()
 		adaptertest.CheckLeaks(t, b)
 		srv, l := testServer(t, adapter.Deps{Budgets: b}, settings.DefaultNFS())
-		client := testproto.NewClient(nil)
-		_ = client
-		connA, peerA := servedConn(t, srv, &l)
-		_ = connA
+		_, peerA := servedConn(t, srv, &l)
 		a := testproto.NewClient(peerA)
 		const sent = 200
 		sending := make(chan error, 1)
@@ -1145,8 +1137,8 @@ func TestASilentClientStopsTheReader(t *testing.T) {
 			sending <- nil
 		}()
 		synctest.Wait()
-		//// The bound is reached: the sender waits in a write, and the reader,
-		//// paused, holds no record.
+		// The bound is reached: the sender waits in a write, and the reader,
+		// paused, holds no record.
 		select {
 		case err := <-sending:
 			t.Fatalf("every write completed with the client reading nothing: %v", err)
@@ -1155,7 +1147,7 @@ func TestASilentClientStopsTheReader(t *testing.T) {
 		if r := b.Receive.Reserved(); r != 0 {
 			t.Errorf("a paused reader holds %d receive bytes", r)
 		}
-		//// A second connection is served meanwhile.
+		// A second connection is served meanwhile.
 		_, peerB := servedConn(t, srv, &l)
 		bm := testproto.NewClient(peerB)
 		if err := bm.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("y")}); err != nil {
@@ -1165,7 +1157,7 @@ func TestASilentClientStopsTheReader(t *testing.T) {
 		if err != nil || len(rs) != 1 {
 			t.Fatalf("the second connection answered %+v: %v", rs, err)
 		}
-		//// Reading A drains both: every reply, in order, then the sender ends.
+		// Reading A drains both: every reply, in order, then the sender ends.
 		// Every request is answered exactly once: the replies are not in the
 		// requests' order, which a protocol without ordering leaves to xids.
 		answered := make(map[uint64]bool, sent)
