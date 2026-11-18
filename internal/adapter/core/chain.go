@@ -9,13 +9,12 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/resources"
-	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// endedCtx is a member's context with its deadline passed: Admit under it
+// endedCtx is a request's context with its deadline passed: Admit under it
 // tries once and, where it would wait, answers its error at once, and Lookup
 // tries its copy's reservation once, answering ErrDelay of DelayResources
-// (§4.7). It keeps the member's values, its trace ID and span among them.
+// (§4.7). It keeps the request's values, its trace ID and span among them.
 type endedCtx struct{ context.Context }
 
 // closedDone is the done channel of every endedCtx.
@@ -66,11 +65,10 @@ type chain struct {
 	prevR    *Request
 	failed   bool // the member before failed, with failS
 	failS    Status
-	cur      entry    // the member running
-	stopped  bool     // a NoReply member ended the chain, or the connection closed
-	slot     bool     // the chain holds the connection's one status wait
-	kept     func()   // the place of the last member admitted, until the next is admitted or would wait
-	try      endedCtx // the running member's context, ended, for its first try; reused so a try boxes nothing
+	cur      entry  // the member running
+	stopped  bool   // a NoReply member ended the chain, or the connection closed
+	slot     bool   // the chain holds the connection's one status wait
+	kept     func() // the place of the last member admitted, until the next is admitted or would wait
 }
 
 // serveChain takes a record whose messages chain (§4.7). On the reader it
@@ -306,7 +304,7 @@ func (c *chain) one(e *entry) {
 // a place.
 func (c *chain) admit(e *entry) {
 	p := c.p
-	try := c.ended(e.tr.ctx)
+	try := e.tr.ended()
 	release, err := p.st.Flow.Admit(try, e.u)
 	if err != nil && errors.Is(err, context.DeadlineExceeded) {
 		c.giveBack() // never wait at flow control holding a place
@@ -481,26 +479,19 @@ func (c *chain) free() {
 	}
 }
 
-// ended is ctx ended, for a member's first try: the chain's one endedCtx,
-// repointed at ctx, which a stage, as any call's, keeps no further than its
-// return.
-func (c *chain) ended(ctx context.Context) context.Context {
-	c.try.Context = ctx
-	return &c.try
-}
-
 // lookup asks the replay cache under an ended context first: when its
 // copy's reservation would wait, the replies the chain holds go out, and it
-// is asked again under the member's deadline, so the chain never waits on
-// the reply pool holding it (§4.7).
-func (c *chain) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
-	cached, err := c.p.st.Replay.Lookup(c.ended(ctx), h)
-	var d *vfs.Delay
-	if errors.As(err, &d) && d.Cause == vfs.DelayResources {
-		c.flush(splitReplyPool, c.cur.tr)
-		return c.p.st.Replay.Lookup(ctx, h)
+// is asked again under the member's attempt deadline, so the chain never
+// waits on the reply pool holding it (§4.7, §6.4).
+func (c *chain) lookup(tr *track, h Header) (*resources.Buf, error) {
+	cached, err := c.p.st.Replay.Lookup(tr.ended(), h)
+	if !copyWaits(err) {
+		return cached, err
 	}
-	return cached, err
+	c.flush(splitReplyPool, c.cur.tr)
+	ctx, cancel := c.p.sh.attempt(tr.ctx)
+	defer cancel()
+	return c.p.st.Replay.Lookup(ctx, h)
 }
 
 func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, failed bool, err error) {

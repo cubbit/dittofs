@@ -544,7 +544,7 @@ type answerer interface {
 	// none once its wait has ended.
 	status(ctx context.Context, n int) *resources.Buf
 	// lookup asks the replay cache for h's reply.
-	lookup(ctx context.Context, h Header) (*resources.Buf, error)
+	lookup(tr *track, h Header) (*resources.Buf, error)
 	// halted says the message is to run no further: its chain stopped, its
 	// connection closed by a split, while it looked up or reserved.
 	halted() bool
@@ -569,8 +569,29 @@ func (a alone) status(ctx context.Context, n int) *resources.Buf {
 	return a.p.sh.reserveStatus(ctx, a.p.l.remote, n, a.p.l.close)
 }
 
-func (a alone) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
+// lookup asks the replay cache under an ended context first, which tries its
+// copy's reservation once; where that would wait, it asks again under the
+// attempt's deadline, which the copy's reservation waits under (§4.7, §6.4).
+//
+// decision: a request alone asks first under an ended context too, as a
+// chain's member does, so a request whose copy fits at once, or that has
+// none, arms no deadline: every request asks, on a protocol with no cache
+// too. Overturned if a protocol's cache must be asked once per request.
+func (a alone) lookup(tr *track, h Header) (*resources.Buf, error) {
+	cached, err := a.p.st.Replay.Lookup(tr.ended(), h)
+	if !copyWaits(err) {
+		return cached, err
+	}
+	ctx, cancel := a.p.sh.attempt(tr.ctx)
+	defer cancel()
 	return a.p.st.Replay.Lookup(ctx, h)
+}
+
+// copyWaits says a Lookup under an ended context refused because its copy's
+// reservation would wait (§4.7).
+func copyWaits(err error) bool {
+	var d *vfs.Delay
+	return errors.As(err, &d) && d.Cause == vfs.DelayResources
 }
 
 func (alone) halted() bool { return false }
@@ -594,7 +615,7 @@ func (a alone) pended(h Header, interim *resources.Buf, key uint64) { a.p.send(h
 // request, for a related member after it.
 func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Request, release func(), a answerer) *Request {
 	ctx := tr.ctx
-	cached, err := a.lookup(ctx, h)
+	cached, err := a.lookup(tr, h)
 	if cached != nil {
 		tr.label.replayHit()
 		tr.cached = true
@@ -836,6 +857,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 type track struct {
 	ctx       context.Context // &req, the request's context
 	req       requestCtx
+	try       endedCtx      // ctx ended, for a first try; reused so a try boxes nothing
 	span      trace.Span    // nil on a server with no tracer
 	id        trace.TraceID // drawn even when the request is not traced
 	label     *labelSeries
@@ -892,6 +914,14 @@ func (c *requestCtx) Value(key any) any {
 		return c
 	}
 	return c.Context.Value(key)
+}
+
+// ended is the request's context ended, for its first try at the replay
+// cache or at flow control: its one endedCtx, repointed at its context,
+// which a stage, as any call's, keeps no further than its return.
+func (tr *track) ended() context.Context {
+	tr.try.Context = tr.ctx
+	return &tr.try
 }
 
 // series is what the request records into now: its connection's label's

@@ -2003,6 +2003,59 @@ func TestAReplyReservationPastItsDeadlineMakesNoCall(t *testing.T) {
 	})
 }
 
+// A sequenced Create sent again while the reply budget's one buffer holds a
+// reply the client has not read: the cache's copy waits for room under the
+// attempt's deadline, 30 s from its start, whether the Create comes alone or
+// as a chain's member. Room at 10 s, it is answered the cached reply; room
+// at 30 s, its wait has ended, and it is answered the delay status (§4.7,
+// §6.4).
+func TestAReplayCopyWaitsUnderTheAttemptsDeadline(t *testing.T) {
+	cached := func(s *served, id uint64) []testproto.Msg {
+		msgs := s.fhThenCreate(id, "f")
+		msgs[1].Seq = 1
+		return msgs
+	}
+	alone := func(s *served) [][]testproto.Msg {
+		return [][]testproto.Msg{
+			{{Op: testproto.OpEcho, Version: 1, ID: 20, Payload: []byte("x")}},
+			{{Op: testproto.OpCreate, Version: 1, ID: 21, Session: 7, Tree: 1, Seq: 1, Name: "f"}},
+		}
+	}
+	chained := func(s *served) [][]testproto.Msg { return [][]testproto.Msg{cached(s, 30)} }
+	for _, c := range []struct {
+		name    string
+		records func(*served) [][]testproto.Msg // the first reply holds the buffer until the client reads it
+		room    time.Duration
+		status  core.Status
+	}{
+		{"alone, room at 10 s", alone, 10 * time.Second, testproto.StatusOK},
+		{"alone, room at 30 s", alone, 30 * time.Second, testproto.StatusDelay},
+		{"a chain's member, room at 30 s", chained, 30 * time.Second, testproto.StatusDelay},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				clk := newManualClock()
+				s := newTimed(t, smallCharge, adapter.Deps{Budgets: serverBudgets(smallCharge)}, clk)
+				s.serve(cached(s, 1)...)
+				s.statuses()
+				if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusOK}) {
+					t.Fatalf("the first Create is answered %v, want ok", st)
+				}
+				synctest.Wait()
+				for _, msgs := range c.records(s) {
+					s.serve(msgs...)
+					synctest.Wait()
+				}
+				clk.Advance(c.room)
+				s.statuses()
+				if st := s.statuses(); !slices.Equal(st, []core.Status{c.status}) {
+					t.Errorf("the Create sent again is answered %v, want [%d]", st, c.status)
+				}
+			})
+		})
+	}
+}
+
 // With the connection's one place held until 10 s on the clock by a chain
 // whose Create is in the service, the request after it waits in Admit, then
 // for a reply buffer, which the chain's unread reply holds. Its first attempt
