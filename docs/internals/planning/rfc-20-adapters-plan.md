@@ -413,10 +413,10 @@ flowchart TD
   drain and cancellation tests run the real pipeline, so they land once E5's does, and end to
   end at S3.
 - **Track C: E6, with part of E5.** Both `wire/` packages first (about 6 man-days), which need only
-  E1's types. Track C would then idle until S3, so it takes three E5 subtasks that need only E1's
-  types and `testproto`: the middleware chain (T5.6), the error table (T5.7) and observability
-  (T5.9, whose resolution at `NewServer` also needs E4's `NewServer`). Then each `protocol/`
-  from S2: what epic 6 builds, the `Router` over its tables, is
+  E1's types. Track C would then idle until S3, so it takes three E5 subtasks: the middleware
+  chain (T5.6) and the error table (T5.7), which need only E1's types and `testproto`, and
+  observability (T5.9), whose resolution at `NewServer` also needs E4's `NewServer`. Then each
+  `protocol/` from S2: what epic 6 builds, the `Router` over its tables, is
   unit-tested against the frozen surface, `testproto`'s stateful half and `memory.New`, leaving
   only `New`'s wiring to the real runner for S3. SMB's `Security` and `HoldCodec` are the RFC 22
   plan's (ledger), which can start them at S2 the same way.

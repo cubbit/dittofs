@@ -1685,7 +1685,8 @@ registry. Nothing else is exported.
 - **Landed:** the compound with #4522, the chain with #4566, and the chain's record cap and
   three of its fixes with #4722; left: #4583's `NotFailure` and `Bound`'s room with R98's
   clamp, in #4723, D9's one 30 s, and each member's stages (R97).
-- **Deliverables:** in `compound.go`, the walk, the judgment and the runner.
+- **Deliverables:** in `compound.go`, the walk, the judgment and the runner; in `chain.go`, a
+  chain's walk and runner.
   `members(row *Op, inv Invocation, rest []byte, v Version)` refuses a `Count` past the row's
   `MaxMembers` with `ErrTooLong` before it reads a member (D10), decodes up to `Count`
   members with their rows, walking each member's arguments inside the compound's one
@@ -2519,7 +2520,7 @@ A suggestion only: one pull request per subtask works as well.
   class does not keep a single operation's under it, since the large class is 8 MiB and NFS's
   cap 1 MiB and 4 KiB; only each protocol's per-operation bound does (RFC 20 §4.2, RFC 21
   §2.3), which `core` does not
-  check. A single-reply compound's can
+  check. A single-reply compound's reply can
   pass it on a large node, NFS's cap being 1 MiB and 4 KiB (RFC 21 §2.3), not the record
   mark's 31-bit limit, and NFSv4.0 having no `ca_maxresponsesize`, so each `READ`'s count is
   clamped by its row's `Bound` hook to the room the runner hands it, and the compound is

@@ -136,7 +136,7 @@ and E5 to E8, for sign-in (§3.2).
 | Connection, signing, credits, replay | inline in one connection loop in `pkg/adapter/smb` | `core`'s pipeline; SMB's `Security`, `Flow`, `Replay` and `HoldCodec` stages in `smb/protocol` |
 | Sign-in | `SESSION_SETUP` decodes Kerberos itself and runs NETLOGON pass-through to the domain controller | `gss`'s mechanisms (RFC 20 §4.4); every secret behind `SignIn` (RFC 18) |
 | Held requests | per-handler pending code | `core`'s hold and park, with SMB's bounds by cause (RFC 22 §16.5) |
-| Codecs | split between `smbenc`, `header` and handlers | `smb/wire`, pure, one file per command, golden vectors and fuzz targets |
+| Codecs | split between `smbenc`, `header` and handlers | one codec, pure, generated from each command's tagged structs in `smb/ops/<cmd>.go` over `smb/wire`'s runtime; golden vectors and fuzz targets |
 | Durable and lease state | in the adapter's session tables | RFC 14's records at the file's primary; the adapter keeps only a connection's state |
 | Dialects | 2.0.2 among them | 2.1, 3.0, 3.0.2, 3.1.1; SMB1 and 2.0.2 refused (RFC 22 §3.1) |
 | Witness | not served | (cluster) by amendment A1, deferred to the cluster stage (§6.2, point 13) |
@@ -623,7 +623,7 @@ internal/adapter/
   smb/
     smb.go                    RFC 20's E6: New; builds the stages and the tables
     callbacks.go              E1 type; E9 (RecallGrant, Revoked), E11 (LockWaitOver, Notify)
-    wire/                     RFC 20's E6: NetBIOS framer, header; then one file per command, in its epic
+    wire/                     RFC 20's E6: NetBIOS framer, header, codec generator and runtime
       transform.go            E3
       names.go                E8: RFC 22 Appendix B's mapping
     protocol/                 RFC 20's E6: Router; E1: State, Session, Tree, FileIds, Caps
@@ -632,7 +632,7 @@ internal/adapter/
       window.go               E3: Replay, the message-ID window
       hold.go                 E3: HoldCodec
       sessions.go             E5: the session registry
-    ops/                      E1: Handlers and the table; one file per command, in its epic
+    ops/                      E1: Handlers and the table; <cmd>.go per command, in its epic
       errors.go               E3: RFC 22 §16.5's table
       ioctl/                  E1 table; one file per control code: E3, E5, E6, E8, E13
     dcerpc/                   E6: NDR, PDUs, interfaces by opnum; imports no SMB package
@@ -647,25 +647,30 @@ them.
 
 ### 4.1 Code sketch
 
-The sketch is illustrative: `core.Bind`, `core.Op`, `core.Request` and `vfs.OpenRequest` are as
-`feat/storage-v2` has them, and the SMB names are planned, for the epic documents to decide. A
-handler is decode, one `vfs.Service` call, translate and encode (RFC 20 §4.3); `core.Bind` joins
-them into the `Decode` of the `CREATE` row (E1's table, E7's row):
+The sketch is illustrative: `core.Row` is RFC 20 §4.7's, `core.Request` and `vfs.OpenRequest`
+are as `feat/storage-v2` has them, and the SMB names are planned, for the epic documents to
+decide. A command is one file, `ops/<cmd>.go`: its request and reply structs, tagged for SMB2's
+generated codec, and its handler, which never sees a byte (RFC 20 §4.3, §5.1). Its row is one
+`core.Row` line of the table (E1's table, E7's row):
 
 ```go
-// smb/ops/create.go (planned: E1's row, E7's body; E9 and E10 add their contexts)
-func (h *Handlers) createOp() *core.Op {
-	return &core.Op{
-		Code: wire.Create, Name: "CREATE", Versions: dialects, Needs: core.NeedsTree,
-		Decode: core.Bind(wire.DecodeCreate, wire.CreateBound, nil, nil, nil, h.Create, wire.EncodeCreate),
-	}
+// smb/ops/create.go (planned: E7's structs and body; E9 and E10 add their contexts)
+type CreateRequest struct { // MS-SMB2 2.2.13, abridged
+	DesiredAccess     uint32
+	ShareAccess       uint32
+	CreateDisposition uint32
+	Name              string          `smb2:"offset=NameOffset,len=NameLength,utf16"`
+	Contexts          []CreateContext `smb2:"chain"`
 }
+type CreateResponse struct{ /* ... */ }
 
-func (h *Handlers) Create(ctx context.Context, r *core.Request, req *wire.CreateRequest) (*wire.CreateResponse, error) {
+func (h *Handlers) Create(
+	ctx context.Context, r *core.Request, req CreateRequest,
+) (CreateResponse, error) {
 	st := r.State.(*protocol.State)            // the session, the tree and the FileId table (T1.1)
 	dir, name, err := h.walk(ctx, r, req.Name) // read-only Lookups from the tree's root (T7.3)
 	if err != nil {
-		return nil, err
+		return CreateResponse{}, err
 	}
 	res, err := h.VFS.Open(ctx, r.Call, vfs.OpenRequest{ // the one mutating call
 		Dir: dir, Name: name,
@@ -674,13 +679,16 @@ func (h *Handlers) Create(ctx context.Context, r *core.Request, req *wire.Create
 		Deny:        translate.Deny(req.ShareAccess),
 	})
 	if err != nil {
-		return nil, err // the error table answers it (RFC 22 §16.5), never the handler
+		return CreateResponse{}, err // the error table answers it (RFC 22 §16.5), never the handler
 	}
-	return &wire.CreateResponse{
+	return CreateResponse{
 		FileId: st.Files.Add(res.Ref), File: res.File, // the volatile half in the session's table (T7.2)
 		Grant: res.Grant, MaximalAccess: res.MaximalAccess, // as the service answered them; MxAc by A3
 	}, nil
 }
+
+// smb/ops/table.go (planned: E1's table, E7's row)
+core.Row(wire.Create, "CREATE", core.NeedsTree, h.Create)
 ```
 
 A handler whose call answers `ErrState` (`Revoked`) for a `FileId` calls `FreeState` once for
