@@ -672,6 +672,33 @@ func (p *Pool) DeviceFull() bool {
 	return p.deviceFull
 }
 
+// journalRefuses answers the NoSpaceError the journal's own maximum owes a
+// spare the maker has not yet drawn, or nil when making one is affordable:
+// the maker's reservation read in its own critical section, so the roll that
+// finds no spare ready names the limit that cannot be refilled rather than
+// the pool's own `spare` (R21), which clears on the pool's own.
+//
+// decision: the answer is given only while the content class holds nothing
+// the pool can still serve or refill on its own — a spare owed to an open
+// hold is one the hold's release, its rolls or a Replace can hand back, and
+// an outstanding ask a refused Hold recorded is one the refill owes, so a
+// shortage that owes spares to itself is named `spare` however tight the
+// journal. Overturned by a hold or an ask whose spares can never be served
+// back, which would strand its holders retried on the journal's name.
+func (p *Pool) journalRefuses() *core.NoSpaceError {
+	p.mu.Lock()
+	callable := len(p.ready[Content]) > 0 || p.held > 0 || p.pending > 0
+	p.mu.Unlock()
+	if callable {
+		return nil
+	}
+	ns, refused := p.m.set.RefusesSpare(p.m.max)
+	if !refused {
+		return nil
+	}
+	return ns
+}
+
 // countSpareRefusal raises the spare-refusal counter. The pool never calls
 // it: only a roll that drew its final answer `spare` does, for a missed
 // content take that a fallback served is no refusal.

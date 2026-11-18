@@ -89,6 +89,32 @@ func assertSpareRefusal(t *testing.T, where string, err error, missing int64) {
 	}
 }
 
+// assertJournalRefusal fails t unless err is the answer a roll draws when no
+// spare is ready and the journal's own maximum refuses to make one: the
+// ErrNoSegmentForTheRoll sentinel carrying the spare-class take's NoSpaceError
+// with the missing bytes the reservation lacked, never the pool's own `spare`,
+// and a spare-refusal counter the answer never raises.
+func assertJournalRefusal(t *testing.T, where string, err error, missing int64) {
+	t.Helper()
+
+	if !errors.Is(err, segment.ErrNoSegmentForTheRoll) {
+		t.Fatalf("%s: %v, want the ErrNoSegmentForTheRoll the refusing maximum answers with", where, err)
+	}
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) {
+		t.Fatalf("%s: %v, want a *core.NoSpaceError", where, err)
+	}
+	if ns.Limit != core.LimitJournal {
+		t.Fatalf("%s named the %s limit, want %s", where, ns.Limit, core.LimitJournal)
+	}
+	if ns.Missing != missing {
+		t.Fatalf("%s said %d missing, want %d", where, ns.Missing, missing)
+	}
+	if ns.Unit != core.UnitBytes {
+		t.Fatalf("%s counted %s, want %s", where, ns.Unit, core.UnitBytes)
+	}
+}
+
 // recording is a slog Handler keeping every record handed to it, so a test
 // can assert the pool logged a refusal and at which level. The refill worker
 // logs from its own goroutine, so the records are kept under a mutex.

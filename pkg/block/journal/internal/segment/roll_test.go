@@ -388,12 +388,13 @@ func TestRollARecordThatExactlyFillsTheRoomIsWrittenInPlace(t *testing.T) {
 	}
 }
 
-// TestRollRefusedWithAnEmptyPoolMakesNoSeamCall checks the spare refusal
-// (R15, R20): a pool whose only ready spare was taken by hand answers a
-// content roll at once with the NoSpaceError naming `spare`, changes nothing
-// of the stream — the segment stays open, sealed by nobody — and makes no
-// seam call of any op. It catches a refusal that seals first, or makes a
-// spare.
+// TestRollRefusedWithAnEmptyPoolMakesNoSeamCall checks the refusal over an
+// unrefillable pool (R15, R20, R21): a pool whose only ready spare was taken
+// by hand, under a maximum the taken spare and the headroom's whole spend —
+// answers a content roll at once with the journal's own limit, the shortage
+// nothing but the caller's reclamation can drain, changes nothing of the
+// stream — the segment stays open, sealed by nobody — and makes no seam call
+// of any op. It catches a refusal that seals first, or makes a spare.
 func TestRollRefusedWithAnEmptyPoolMakesNoSeamCall(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -424,7 +425,7 @@ func TestRollRefusedWithAnEmptyPoolMakesNoSeamCall(t *testing.T) {
 	h, body := streamWriteHeader(streamFileID(2), 0, straddle, 7, core.Version{Counter: 2})
 	before := rollAllCountersOf(e)
 	leads, err := e.s.AppendRoll(h, body, segment.Roll{})
-	assertSpareRefusal(t, "the refused roll", err, 1)
+	assertJournalRefusal(t, "the refused roll", err, 4096)
 	if leads != (segment.Placed{}) {
 		t.Fatalf("the refused roll placed %+v, want nothing", leads)
 	}
@@ -497,9 +498,11 @@ func TestRollSpareRefusalsRiseByOnePerRefusedRoll(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	// The content class holds no target, the headroom one spare: every
-	// content roll is refused alone, and the header-only fallback below
-	// finds its spare.
-	e := rollPin(t, streamCap, segment.Targets{Content: 0, Headroom: 1}, nil).withStream(t, 1)
+	// content roll is refused by the empty class alone, and the header-only
+	// fallback below finds its spare. The maximum is open — the content
+	// class is emptied by its lack of a target, not by the journal — so the
+	// refusals stay the pool's own to refill and are answered `spare`.
+	e := rollBuild(t, streamCap, segment.Targets{Content: 0, Headroom: 1}, nil).withStream(t, 1)
 	awaitCounters(t, "the headroom spare ready", e.pool,
 		func(c segment.PoolCounters) bool { return c.HeadroomBytes == segCap && c.Spares == 0 })
 
@@ -529,11 +532,12 @@ func TestRollSpareRefusalsRiseByOnePerRefusedRoll(t *testing.T) {
 
 // TestRollHeaderOnlyFallsBackToHeadroomThenRefusesNamingIt checks the
 // header-only roll (D12, R17, R23): with the content class empty and a
-// headroom spare ready, a content roll is refused `spare` while a
-// header-only record proceeds onto the headroom spare; with the headroom gone
-// too, the header-only roll is refused naming `headroom` and is not counted.
-// It catches a header-only record refused `spare`, and a headroom draw counted
-// as a content refusal.
+// headroom spare ready, a content roll is refused by the journal's own limit
+// — the pinned maximum leaves the class unrefillable — while a header-only
+// record proceeds onto the headroom spare; with the headroom gone too, the
+// header-only roll is refused naming `headroom`, never the journal's limit,
+// and is not counted. It catches a header-only record refused by the
+// journal's limit, and a headroom draw counted as a content refusal.
 func TestRollHeaderOnlyFallsBackToHeadroomThenRefusesNamingIt(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -585,9 +589,9 @@ func TestRollHeaderOnlyFallsBackToHeadroomThenRefusesNamingIt(t *testing.T) {
 	payload := streamTestBody(64, 0x3c)
 	h, body := streamWriteHeader(streamFileID(3), 0, payload, 7, core.Version{Counter: 3})
 	_, err = e.s.AppendRoll(h, body, segment.Roll{})
-	assertSpareRefusal(t, "the content roll that finds only headroom", err, 1)
-	if got := e.pool.Counters().SpareRefusals; got != 1 {
-		t.Fatalf("after the refused content roll the pool counts %d, want 1", got)
+	assertJournalRefusal(t, "the content roll that finds only headroom", err, segCap)
+	if got := e.pool.Counters().SpareRefusals; got != 0 {
+		t.Fatalf("after the refused content roll the pool counts %d, want 0: the journal's answer is not the pool's refusal", got)
 	}
 
 	// The refused content roll took nothing, so the second header-only
@@ -630,8 +634,8 @@ func TestRollHeaderOnlyFallsBackToHeadroomThenRefusesNamingIt(t *testing.T) {
 	if !errors.Is(err, core.ErrNoSpace) {
 		t.Fatalf("the header-only refusal is not ErrNoSpace: %v", err)
 	}
-	if got := e.pool.Counters().SpareRefusals; got != 1 {
-		t.Fatalf("the header-only refusal raised the counter to %d, want it at 1: a missed content take is not a refusal", got)
+	if got := e.pool.Counters().SpareRefusals; got != 0 {
+		t.Fatalf("the header-only refusal raised the counter to %d, want it at 0: neither the journal-named roll nor a missed content take counts", got)
 	}
 }
 
@@ -712,11 +716,13 @@ func TestRollARepackCopyTakesAReserveSpareNeverAContentOne(t *testing.T) {
 	awaitCounters(t, "the two reserve spares ready", e.pool,
 		func(c segment.PoolCounters) bool { return c.RepackReserveBytes == 2*segCap && c.Spares == 0 })
 
-	// The plain write is refused `spare`: the content class holds nothing.
+	// The plain write is refused by the journal's own limit: the content
+	// class holds nothing and the pinned maximum — spent whole on the two
+	// reserve spares — makes no spare it could refill the class with.
 	payload := streamTestBody(64, 0x3c)
 	h, body := streamWriteHeader(streamFileID(1), 0, payload, 7, core.Version{Counter: 1})
 	_, err := e.s.AppendRoll(h, body, segment.Roll{})
-	assertSpareRefusal(t, "the plain write over only reserve spares", err, 1)
+	assertJournalRefusal(t, "the plain write over only reserve spares", err, segCap)
 
 	// The repack copy's roll succeeds onto a reserve spare.
 	h2, b2 := streamWriteHeader(streamFileID(2), 0, payload, 7, core.Version{Counter: 2})
@@ -730,8 +736,8 @@ func TestRollARepackCopyTakesAReserveSpareNeverAContentOne(t *testing.T) {
 	if got := e.pool.Counters().RepackReserveBytes; got != segCap {
 		t.Fatalf("the repack roll left the reserve at %d bytes, want the one spare it took gone", got)
 	}
-	if got := e.pool.Counters().SpareRefusals; got != 1 {
-		t.Fatalf("a repack roll that found its spare counted a refusal: the pool counts %d, want 1", got)
+	if got := e.pool.Counters().SpareRefusals; got != 0 {
+		t.Fatalf("a repack roll that found its spare counted a refusal: the pool counts %d, want 0", got)
 	}
 
 	// The next repack append lands in the segment the first made: no roll

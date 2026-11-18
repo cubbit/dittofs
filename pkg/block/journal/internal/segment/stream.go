@@ -474,6 +474,18 @@ type Roll struct {
 // is reserved and nothing written.
 var ErrBadRoll = errors.New("segment: the roll options do not fit the record")
 
+// ErrNoSegmentForTheRoll names the roll's answer when no segment can be had
+// for it at all: the spare pool holds none and making one fails for the
+// journal's own maximum or for lack of device space, with no full-size
+// retired segment queued to recycle into the take. Such a shortage clears
+// only by the caller's own reclamation — or an operator's, at a full device —
+// never on the pool's own (R21), so anything that waited for it would wait
+// on its caller, which the journal must not (RFC 1 §6): a failed window
+// takes its resolution at once instead, the failed one §5.3 owes it. The
+// answer carries the NoSpaceError the maximum owes, or syscall.ENOSPC for a
+// full device.
+var ErrNoSegmentForTheRoll = errors.New("segment: no segment can be had for the roll")
+
 // takeSpare takes the spare the roll needs and, when no class can serve it,
 // classifies the refusal the roll answers with — the one place the roll
 // knows its answer is final.
@@ -503,7 +515,24 @@ func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 	// full-size retired segment is to hand: that recycle is the spare.
 	var spare *core.NoSpaceError
 	if errors.As(err, &spare) && spare.Limit == core.LimitSpare && s.pool.DeviceFull() && !s.pool.retiredToHand() {
-		return 0, fmt.Errorf("segment: no spare is ready and making one failed for lack of device space: %w", syscall.ENOSPC)
+		return 0, fmt.Errorf("%w: making one failed for lack of device space: %w", ErrNoSegmentForTheRoll, syscall.ENOSPC)
+	}
+	// The journal's own maximum, answered as itself for a roll that carries
+	// a payload and runs under no hold and no repack class of its own: the
+	// pool's `spare` names a shortage the pool clears on its own, and at the
+	// maximum the maker cannot afford a single spare — the same reservation
+	// call AddSpare makes, read in AddSpare's own critical section, so two
+	// callers near the maximum cannot both pass it either — nothing clears
+	// it but the caller's own reclamation (R21), and a header-only record
+	// still falls back to the headroom inside drawSpare, never refused by
+	// the journal's limit. A full-size retired segment to hand is the
+	// recycle that clears it, so its answer stays the pool's. Neither this
+	// answer nor a hold's miss is counted: `spare_refusals` counts only the
+	// roll the pool itself can refill.
+	if errors.As(err, &spare) && spare.Limit == core.LimitSpare && hasPayload && r.Hold == nil && !r.Repack && !s.pool.retiredToHand() {
+		if ns := s.pool.journalRefuses(); ns != nil {
+			return 0, fmt.Errorf("%w: %w", ErrNoSegmentForTheRoll, ns)
+		}
 	}
 
 	// The spare refusal, counted once here.
