@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,7 @@ type Conn struct {
 	p          *pipeline
 	w          *writer
 	rd         *reader
+	series     *labelSeries // its connection series, resolved at accept from its listener's label (§10.1)
 	remote     netip.Addr
 	remoteAddr netip.AddrPort         // the client's address as it reached this node
 	accept     *bound                 // the bound socket that accepted it, whose removal closes it; a hook's connection names none
@@ -63,11 +65,13 @@ func (c *Conn) Send(h Header, msg *resources.Buf, before uint64) error {
 
 // Established ends the handshake deadline: SMB at its first authenticated
 // session, NFS at its first routed call. It is idempotent, and the first call
-// starts the idle deadline's watch (RFC 20 section 6.4).
+// starts the idle deadline's watch (RFC 20 section 6.4) and moves
+// adapter_connections from handshake to established, once (§10.1).
 func (c *Conn) Established() {
 	if !c.established.CompareAndSwap(false, true) {
 		return
 	}
+	c.series.established()
 	c.timersMu.Lock()
 	if c.handshakeT != nil {
 		c.handshakeT.Stop()
@@ -225,38 +229,103 @@ var errHandshake = errors.New("core: the handshake deadline passed")
 // errIdle is a connection closed at its idle deadline.
 var errIdle = errors.New("core: the idle deadline passed")
 
+// errAtRead wraps the errors the reader's own read fails a connection with,
+// errAtWrite the ones the writer's write does, so a close tells the side its
+// socket failed on apart from a protocol's own error (§10.1): a read failed is
+// the client's or its read_timeout's reason, a write its write or
+// write_timeout's.
+var (
+	errAtRead  = errors.New("core: the read failed")
+	errAtWrite = errors.New("core: the write failed")
+)
+
+// closeReason is the reason a connection's close counts under (§10.1):
+// core's own ends by their errors, a framing error by the reader's, a
+// peer that closed or reset, or a read that failed as keepalive or
+// TCP_USER_TIMEOUT ended a vanished one with ETIMEDOUT, the client's - told
+// from read_timeout by os.ErrDeadlineExceeded, never by Timeout(), which
+// syscall.Errno also reports for ETIMEDOUT (Go 1.26's syscall_unix.go) - and
+// a close nothing of core's closed, which protocol code asked for.
+func closeReason(err error) reason {
+	switch {
+	case errors.Is(err, errAtWrite):
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return rsnWriteTimeout
+		}
+		return rsnWrite
+	case errors.Is(err, errFrame):
+		return rsnFrame
+	case errors.Is(err, errWalk):
+		return rsnWalk
+	case errors.Is(err, ErrDecode):
+		return rsnDecode
+	case errors.Is(err, errUnwrapClose):
+		return rsnUnwrap
+	case errors.Is(err, errWiring):
+		return rsnWiring
+	case errors.Is(err, errAtRead):
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return rsnReadTimeout
+		}
+		return rsnClient
+	case errors.Is(err, errHandshake):
+		return rsnHandshake
+	case errors.Is(err, errIdle):
+		return rsnIdle
+	case errors.Is(err, errReplyWait):
+		return rsnReplyWait
+	case errors.Is(err, errDrain):
+		return rsnDrain
+	case errors.Is(err, errRemoved):
+		return rsnRemoved
+	case errors.Is(err, errStop):
+		return rsnStop
+	}
+	return rsnViolation
+}
+
 // serveConn serves one accepted socket until it closes: the snapshot, the
 // protocol's stages, the writer, the pipeline and the reader, with the teardown
 // on the reader once its loop ends, or here, on the accept loop, for a socket
-// the registry refuses (RFC 20 section 3.2). b is the bound socket
-// that accepted it, whose removal by a Reconfigure closes this connection; nil
-// for a hook's connection, which no removal closes. charge is the
-// connection-state reservation the accept loop took, which the teardown
+// the registry refuses (RFC 20 section 3.2). The socket carries the TCP
+// options (section 6.7), set before its stages are built, and the connection
+// counts into its series (§10.1), both from the snapshot it loads here. b is
+// the bound socket that accepted it, whose removal by a Reconfigure closes
+// this connection; nil for a hook's connection, which no removal closes. A
+// connection whose stages withDefaults refuses never starts its reader, so
+// serveConn runs its teardown itself: the close is counted under wiring, the
+// gauge lowered, the error-level line rate-limited (§10.1, §10.3). charge is
+// the connection-state reservation the accept loop took, which the teardown
 // releases; nil for none.
 func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, charge *resources.Reservation) *Conn {
 	snap := *s.settings.Load()
 	remote, port := remoteOf(nc)
-	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, remote: remote, remoteAddr: port, accept: b, service: l.Services[0], since: time.Now(), charge: charge, done: make(chan struct{})}
+	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, series: s.sh.label(l.label), remote: remote, remoteAddr: port, accept: b, service: l.Services[0], since: time.Now(), charge: charge, done: make(chan struct{})}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
+	c.series.accepted()
+	common := snap.Common()
+	userTimeout(nc, common.WriteTimeout)
+	if s.accepted != nil {
+		s.accepted(nc)
+	}
 	st, err := withDefaults(l.Protocol.NewConn(c))
 	if err != nil {
-		// A protocol that armed a deadline inside NewConn leaves it armed
-		// here: the connection is closed and its timers stopped, as no
-		// reader ever starts to stop them.
-		c.closed.Store(true)
-		c.stopTimers()
-		s.sh.log.ErrorContext(c.ctx, "connection refused", "err", err)
-		_ = nc.Close()
-		c.release()
-		close(c.done)
+		c.Close(err)
+		c.teardown()
 		return c
+	}
+	// The connection's series are its own Stages.Protocol's from here, the
+	// listener's only while its stages were unbuilt (RFC 20 section 10.1).
+	if ls := s.sh.label(st.Protocol); ls != c.series {
+		c.series.states[stHandshake].Add(-1)
+		ls.accepted()
+		c.series = ls
 	}
 	f := l.Protocol.Framer()
 	record, _ := f.MaxRecord()
-	common := snap.Common()
-	c.w = newWriter(nc, f, common.WriteTimeout, c.Close)
+	c.w = newWriter(nc, f, common.WriteTimeout, func(err error) { c.Close(fmt.Errorf("%w: %w", errAtWrite, err)) }, c.series.out)
 	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, set: snap, record: record, out: c.w.out, close: c.Close, idle: c.idle, turn: func() { c.idleGen.Add(1) }})
-	c.rd = newReader(nc, f, s.recv, c.remote, common.ReadTimeout)
+	c.rd = newReader(nc, f, s.recv, c.remote, common.ReadTimeout, c.series.in)
 	// Armed only once the writer, pipeline and reader exist, so a deadline
 	// that fires at once never races their assignment.
 	c.armHandshake()
@@ -274,16 +343,23 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, charge *resources
 	return c
 }
 
-// teardown runs once on the reader as its loop ends, or on the accept loop for a
-// connection the registry refused: the requests still running, then OnClose
-// under a context of its own, the writer, the charge and the registry (RFC 20
-// section 3.2's order).
+// teardown runs once, on the reader as its loop ends, or on the accept loop for
+// a connection the registry or its stages refused: the close counted and its
+// gauge lowered, here alone, then the requests still running, OnClose
+// under a context of its own, the writer, the charge and the registry
+// (RFC 20 section 3.2's order). A teardown with no pipeline is a close at
+// accept: the stages' refusal, whose line the minute rate-limits (§10.3).
 func (c *Conn) teardown() {
 	defer close(c.done)
 	c.stopTimers()
-	if ep := c.err.Load(); ep != nil {
-		c.sh.log.Debug("core: connection closed", "remote", c.remoteAddr, "err", *ep)
-	}
+	err := c.closeErr()
+	r := closeReason(err)
+	// The flag is claimed here, not read: a request still running as the
+	// teardown counted its close can call Established after it, and the
+	// gauge must not drift to a handshake below zero with an established
+	// above it for good (§10.1).
+	c.series.closed(r, !c.established.CompareAndSwap(false, true))
+	c.sh.closeLine(c.series, r, err, c.p == nil)
 	// OnClose's context is the server's clock's, not the connection's: the
 	// close has cancelled that one (RFC 20 section 4.7).
 	// The wait and OnClose share one grace, counted from the close: the teardown
@@ -293,20 +369,34 @@ func (c *Conn) teardown() {
 	if closedAt := c.closedAt.Load(); closedAt != 0 {
 		at = time.Unix(0, closedAt).Add(onCloseGrace)
 	}
-	wait, cancelWait := withClockDeadline(context.Background(), c.sh.clock, at)
-	defer cancelWait()
-	if err := c.p.wait(wait); err != nil {
-		c.sh.log.ErrorContext(wait, "connection teardown: requests still running", "err", err)
+	if c.p != nil {
+		wait, cancelWait := withClockDeadline(context.Background(), c.sh.clock, at)
+		defer cancelWait()
+		if err := c.p.wait(wait); err != nil {
+			c.sh.log.ErrorContext(wait, "connection teardown: requests still running", "err", err)
+		}
+		if c.p.st.OnClose != nil {
+			ctx, cancel := withClockDeadline(context.Background(), c.sh.clock, at)
+			defer cancel()
+			c.p.st.OnClose(ctx)
+		}
 	}
-	if c.p.st.OnClose != nil {
-		ctx, cancel := withClockDeadline(context.Background(), c.sh.clock, at)
-		defer cancel()
-		c.p.st.OnClose(ctx)
+	if c.w != nil {
+		c.w.stop()
 	}
-	c.w.stop()
 	c.release()
 	c.srv.unregister(c)
 	_ = c.nc.Close()
+}
+
+// closeErr is the error the connection's close carries: the first close's,
+// which later ones leave (RFC 20 section 4.7), or core's own where none was
+// stored.
+func (c *Conn) closeErr() error {
+	if err := c.err.Load(); err != nil {
+		return *err
+	}
+	return errConnClosed
 }
 
 // release gives the connection's charge back to the connection-state budget

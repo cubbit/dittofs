@@ -101,6 +101,19 @@ func orderedValues(m map[int]string) []string {
 	return out
 }
 
+// reasonOf is the index of a reason label value, as the connection-series
+// hooks take it.
+func reasonOf(t *testing.T, name string) int {
+	t.Helper()
+	for r, n := range core.ReasonNames() {
+		if n == name {
+			return r
+		}
+	}
+	t.Fatalf("no close reason named %s", name)
+	return 0
+}
+
 // Each record method moves its own series, under its own labels: the
 // in-flight count from the connection's label to the table's at Route.
 func TestSeriesRecordEachIntoItsOwnSeries(t *testing.T) {
@@ -146,6 +159,14 @@ func TestSeriesRecordEachIntoItsOwnSeries(t *testing.T) {
 		ls.Refused(st)
 		ts.Refused(st)
 	}
+	// A connection's own series too: in at accept, moved to established,
+	// closed at a reason, refused at one at accept, and one byte each way.
+	ls.Accepted()
+	ls.Established()
+	ls.Closed(reasonOf(t, "client"), true)
+	ls.RefusedAtAccept(reasonOf(t, "pool"))
+	ls.BytesIn().Add(100)
+	ls.BytesOut().Add(50)
 	for st := range wire {
 		ls.Observe(st, time.Millisecond)
 		ts.Observe(st, time.Millisecond)
@@ -191,6 +212,21 @@ func TestSeriesRecordEachIntoItsOwnSeries(t *testing.T) {
 			t.Errorf("%s = %v after one record of each, want %v", k, got[k], v)
 		}
 	}
+	// A connection's own series, under the label's ("before"): in at accept,
+	// moved to established and closed there, one refused at accept, and one
+	// byte each way - each into its own, the state gauge back at its level.
+	for k, v := range map[string]float64{
+		"adapter_connections{protocol=before,state=handshake}":           0,
+		"adapter_connections{protocol=before,state=established}":         0,
+		"adapter_connection_closes_total{protocol=before,reason=client}": 1,
+		"adapter_connection_closes_total{protocol=before,reason=pool}":   1,
+		"adapter_bytes_total{direction=in,protocol=before}":              100,
+		"adapter_bytes_total{direction=out,protocol=before}":             50,
+	} {
+		if got[k] != v {
+			t.Errorf("%s = %v after a connection's own moves, want %v", k, got[k], v)
+		}
+	}
 }
 
 // Every series carries only the labels §10.1 gives it, and each label only
@@ -203,22 +239,34 @@ func TestSeriesCarryOnlyTheirLabels(t *testing.T) {
 	if _, err := sh.Table(tb); err != nil {
 		t.Fatal(err)
 	}
-	sh.Label(testproto.Name)
+	ls := sh.Label(testproto.Name)
+	// One record of each connection series, so each vector's children exist to
+	// check their labels: a connection in and moved to established, closed at a
+	// reason, one refused at accept, one byte each way.
+	ls.Accepted()
+	ls.Established()
+	ls.Closed(reasonOf(t, "client"), true)
+	ls.RefusedAtAccept(reasonOf(t, "pool"))
+	ls.BytesIn().Add(1)
+	ls.BytesOut().Add(1)
 	values, got := scrape(t, m)
 	want := map[string][]string{
-		"adapter_requests_in_flight":    {"protocol"},
-		"adapter_refusals_total":        {"protocol", "stage"},
-		"adapter_replay_hits_total":     {"protocol"},
-		"adapter_wire_seconds":          {"protocol", "stage"},
-		"adapter_handler_panics_total":  {"op", "protocol"},
-		"adapter_unmapped_errors_total": {"protocol"},
-		"adapter_status_mapped_total":   {"error", "protocol"},
-		"adapter_held_requests":         {"protocol"},
-		"adapter_held_bytes":            {"protocol"},
-		"adapter_hold_pool_bytes":       nil,
-		"adapter_hold_refusals_total":   {"protocol"},
-		"adapter_chain_splits_total":    {"protocol", "reason"},
-		"adapter_reads_shortened_total": {"protocol"},
+		"adapter_requests_in_flight":      {"protocol"},
+		"adapter_refusals_total":          {"protocol", "stage"},
+		"adapter_replay_hits_total":       {"protocol"},
+		"adapter_wire_seconds":            {"protocol", "stage"},
+		"adapter_handler_panics_total":    {"op", "protocol"},
+		"adapter_unmapped_errors_total":   {"protocol"},
+		"adapter_status_mapped_total":     {"error", "protocol"},
+		"adapter_held_requests":           {"protocol"},
+		"adapter_held_bytes":              {"protocol"},
+		"adapter_hold_pool_bytes":         nil,
+		"adapter_hold_refusals_total":     {"protocol"},
+		"adapter_chain_splits_total":      {"protocol", "reason"},
+		"adapter_reads_shortened_total":   {"protocol"},
+		"adapter_connections":             {"protocol", "state"},
+		"adapter_connection_closes_total": {"protocol", "reason"},
+		"adapter_bytes_total":             {"direction", "protocol"},
 	}
 	for name, labels := range want {
 		if l, ok := got[name]; !ok || !slices.Equal(l, labels) {
@@ -246,6 +294,9 @@ func TestSeriesCarryOnlyTheirLabels(t *testing.T) {
 		{"adapter_status_mapped_total", "error", slices.Sorted(maps.Values(core.ServiceErrorNames()))},
 		{"adapter_chain_splits_total", "reason", slices.Sorted(slices.Values(core.SplitReasons[:]))},
 		{"adapter_requests_in_flight", "protocol", []string{testproto.Name}},
+		{"adapter_connections", "state", sortedValues(core.StateNames())},
+		{"adapter_connection_closes_total", "reason", sortedValues(core.ReasonNames())},
+		{"adapter_bytes_total", "direction", []string{"in", "out"}},
 	} {
 		if vs := valuesOf(values, c.name, c.label); !slices.Equal(vs, c.want) {
 			t.Errorf("%s's %s takes %v, want %v", c.name, c.label, vs, c.want)
@@ -484,7 +535,9 @@ func TestSeriesPanicsByOperation(t *testing.T) {
 var spent error = &vfs.Delay{Cause: vfs.DelayResources}
 
 // record calls every record method once, leaving each gauge where it was.
-func record(sh *core.Shared, ts *core.TableSeries, ls *core.LabelSeries, op *core.Op) {
+// client and pool are the close reasons of its connection series, resolved
+// once outside it.
+func record(sh *core.Shared, ts *core.TableSeries, ls *core.LabelSeries, op *core.Op, client, pool int) {
 	ls.Admitted()
 	ts.Routed(ls)
 	ts.Answered()
@@ -495,6 +548,14 @@ func record(sh *core.Shared, ts *core.TableSeries, ls *core.LabelSeries, op *cor
 	ts.Refused(0)
 	ls.Observe(0, time.Millisecond)
 	ts.Observe(0, time.Millisecond)
+	// A connection's own series, net zero on the gauge: in at accept, moved
+	// to established and closed there; a close at accept moves no gauge.
+	ls.Accepted()
+	ls.Established()
+	ls.Closed(client, true)
+	ls.RefusedAtAccept(pool)
+	ls.BytesIn().Add(1)
+	ls.BytesOut().Add(1)
 	ts.UnmappedErr()
 	ts.Panicked(op)
 	ts.StatusMapped(spent)
@@ -521,7 +582,8 @@ func TestSeriesRecordAllocatesNothing(t *testing.T) {
 		}
 		ls := sh.Label(testproto.Name)
 		op := tb.Ops[testproto.OpEcho]
-		if n := testing.AllocsPerRun(100, func() { record(sh, ts, ls, op) }); n != 0 {
+		client, pool := reasonOf(t, "client"), reasonOf(t, "pool")
+		if n := testing.AllocsPerRun(100, func() { record(sh, ts, ls, op, client, pool) }); n != 0 {
 			t.Errorf("with %s, recording allocates %v times per run, want 0", name, n)
 		}
 		if n := testing.AllocsPerRun(100, func() {
@@ -545,7 +607,7 @@ func TestSeriesRecordLooksNothingUp(t *testing.T) {
 	}
 	ls := sh.Label(testproto.Name)
 	resolved := n.Load()
-	record(sh, ts, ls, tb.Ops[testproto.OpEcho])
+	record(sh, ts, ls, tb.Ops[testproto.OpEcho], reasonOf(t, "client"), reasonOf(t, "pool"))
 	if n.Load() != resolved {
 		t.Errorf("recording looked up %d children, want none", n.Load()-resolved)
 	}

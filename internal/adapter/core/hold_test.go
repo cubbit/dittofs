@@ -332,6 +332,32 @@ func TestACallStillInTheServiceGetsAnInterim(t *testing.T) {
 	})
 }
 
+// A held Create whose interim does not encode closes its connection as a
+// wiring fault, as the same stage failing off the held path does, never as a
+// violation, which §10.1 keeps for a protocol's own Conn.Close.
+func TestAnInterimThatDoesNotEncodeClosesAsWiring(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newHeld(t, 1<<20, adapter.Deps{}, clk, func(st *core.Stages) { st.Hold = failingInterim{st.Hold} })
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.heldChain(1, "f")...)
+		<-hold.Reached()
+		clk.Advance(time.Second) // the interim's interval
+		if got := core.CloseReason(s.closeErr(t)); got != "wiring" {
+			t.Errorf("the close counts under %s, want wiring", got)
+		}
+	})
+}
+
+// failingInterim is a HoldCodec whose Interim fails: a protocol's stage
+// faulting on the held path, by fault injection.
+type failingInterim struct{ core.HoldCodec }
+
+func (failingInterim) Interim(core.Header, bool, []core.Header, *resources.Buf) error {
+	return errors.New("the interim does not encode")
+}
+
 // A held last member's interim grants its own credits alone, though the
 // PutFH answered before it is in its record: it is handed no headers, which
 // testproto would grant the credits of too (§4.7).

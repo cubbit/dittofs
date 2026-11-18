@@ -23,6 +23,9 @@ import (
 // every protocol.
 type Server struct {
 	ls []Listener
+	// accepted, where a test sets it, sees each accepted socket, so a test
+	// can read the socket options the kernel holds on it. nil in production.
+	accepted func(nc net.Conn)
 	// listen opens the socket a bind names. It is a field because no real
 	// bind can be made to answer with what a test needs on demand: an
 	// in-use refusal, to hold a family's port out from under a port-0
@@ -76,6 +79,12 @@ type Listener struct {
 	Network  string   // "tcp" or "udp"
 	Port     uint16   // 0: one the system picks, which Addrs reports
 	Protocol Protocol
+	// label is the protocol label of its nil-Conn stages, which NewServer
+	// reads once and a connection closed at accept counts under (§10.1).
+	// Unexported, since the caller builds a Listener from its fields alone:
+	// the server's own clone carries it from NewServer, and a listener a
+	// test hands to serveConn itself names none unless told.
+	label string
 }
 
 // NewServer returns the adapter New hands back: each listener bound on each
@@ -111,13 +120,17 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 	// here, at configured, rather than at its first request (RFC 20 section
 	// 3.1): NewConn(nil) is the one call that reads no connection, and
 	// withDefaults is accept's own check, so the faults one refuses can
-	// never drift from the faults the other would.
+	// never drift from the faults the other would. Its stages' Protocol
+	// stays on the server's own listener as the label a connection closed
+	// at accept counts under (§10.1).
 	for i := range ls {
-		if _, err := withDefaults(ls[i].Protocol.NewConn(nil)); err != nil {
+		st, err := withDefaults(ls[i].Protocol.NewConn(nil))
+		if err != nil {
 			return nil, fmt.Errorf("core: new server: listener %d %q: %w", i, ls[i].Services, err)
 		}
+		ls[i].label = st.Protocol
 	}
-	srv := &Server{ls: ls, d: d, conns: map[*Conn]struct{}{}, listen: (&net.ListenConfig{}).Listen}
+	srv := &Server{ls: ls, d: d, conns: map[*Conn]struct{}{}, listen: listenCfg.Listen}
 	srv.recv = resources.NewBufPool(d.Budgets.Receive)
 	srv.reply = resources.NewBufPool(d.Budgets.Reply)
 	srv.sh = newShared(d, srv.reply)
@@ -399,7 +412,15 @@ func (s *Server) Stop(ctx context.Context) error {
 		s.mu.Unlock()
 	}
 	for _, c := range conns {
-		c.Close(errStop)
+		// A connection still running at the drain's end is closed as one the
+		// drain abandoned (§10.1); the quiet ones as the adapter stops. The
+		// quiet it reads now is the evidence at the close: a request that ends
+		// in the same instant was running at the deadline all the same.
+		if c.p.quiet() {
+			c.Close(errStop)
+			continue
+		}
+		c.Close(errDrain)
 	}
 	for _, c := range conns {
 		<-c.done
@@ -460,6 +481,10 @@ func (s *Server) drainConns(ctx context.Context, conns []*Conn, at time.Time) {
 
 // errStop is a connection's close, the server stopping.
 var errStop = errors.New("core: the server stopped")
+
+// errDrain is a connection's close at the drain's end, a request of it still
+// running, which the drain abandoned (§10.1).
+var errDrain = errors.New("core: the drain abandoned a request still running")
 
 // errNoBudgets is a server built without the budgets its pools need.
 var errNoBudgets = errors.New("no budgets")

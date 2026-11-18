@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -260,6 +261,40 @@ func (sh *shared) panicLine(p, op string) *lineLimiter {
 	l := &lineLimiter{}
 	sh.panics[k] = l
 	return l
+}
+
+// acceptLine is the limiter of reason's close-at-accept line, one per reason
+// per server, resolved under sh.mu.
+func (sh *shared) acceptLine(r reason) *lineLimiter {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if l, ok := sh.closes[r]; ok {
+		return l
+	}
+	l := &lineLimiter{}
+	sh.closes[r] = l
+	return l
+}
+
+// closeLine writes a connection's close, at its reason's level (§10.3), under
+// the label whose series ls holds: one line per close, and for one closed at
+// accept, a noisy subject (RFC 20 §10.3), at most one a minute per reason
+// carrying the count held back since the last (RFC 25 §5.2), on the server's
+// clock, which decides the minute.
+func (sh *shared) closeLine(ls *labelSeries, r reason, err error, atAccept bool) {
+	if atAccept {
+		ok, held := sh.acceptLine(r).take(sh.clock.Now())
+		if !ok {
+			return
+		}
+		sh.log.LogAttrs(context.Background(), r.level(), "a connection closed at accept",
+			slog.String("reason", reasonNames[r]), slog.String("protocol", ls.protocol),
+			slog.Any("error", err), slog.Int64("suppressed", held))
+		return
+	}
+	sh.log.LogAttrs(context.Background(), r.level(), "a connection closed",
+		slog.String("reason", reasonNames[r]), slog.String("protocol", ls.protocol),
+		slog.Any("error", err))
 }
 
 // clockCtx is a context whose deadline is on a clock: its Deadline, Done and

@@ -95,6 +95,8 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 		if u == nil {
 			if err == nil {
 				err = errUnwrapNeither
+			} else {
+				err = fmt.Errorf("%w: %w", errUnwrapClose, err)
 			}
 			p.drop(tr, rec, err)
 			return
@@ -163,6 +165,10 @@ func (c *chain) run(e entry) {
 	}
 }
 
+// errWalk is a chain closed at a step that is not a valid one: a member's
+// next behind it or past its record (RFC 20 section 10.1's walk).
+var errWalk = errors.New("core: a chain's step is not a valid step")
+
 // next moves e on to the member at its next, or reports false: once the
 // chain has stopped, and after the last member, once what the chain holds
 // has gone out. A step that does not lead forward to a header inside the
@@ -180,7 +186,7 @@ func (c *chain) next(e *entry) bool {
 	if next <= e.off || next >= len(c.rec.B) {
 		c.flush(splits, nil)
 		if !c.stopped {
-			c.p.l.close(fmt.Errorf("%w: a chain's step from %d to %d, in a record of %d bytes", ErrDecode, e.off, next, len(c.rec.B)))
+			c.p.l.close(fmt.Errorf("%w: %w: a chain's step from %d to %d, in a record of %d bytes", errWalk, ErrDecode, e.off, next, len(c.rec.B)))
 		}
 		return false
 	}
@@ -290,6 +296,8 @@ func (c *chain) one(e *entry) bool {
 		if u == nil {
 			if err == nil {
 				err = errUnwrapNeither
+			} else {
+				err = fmt.Errorf("%w: %w", errUnwrapClose, err)
 			}
 			c.abort(e.tr, err)
 			return false
@@ -435,7 +443,7 @@ func (c *chain) status1(e *entry, h Header, s Status, cause error) {
 	buf.B = buf.B[:0]
 	if err := p.st.Header.Encode(h, s, buf); err != nil {
 		buf.Release()
-		c.abort(e.tr, err)
+		c.abort(e.tr, stageFault(err))
 		return
 	}
 	c.hold(held{tr: e.tr, h: h, reply: buf, s: s, final: true, err: cause})
@@ -621,7 +629,7 @@ func (c *chain) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Bu
 		reply.Release()
 		p.end(tr, false, 0, 0, ierr)
 		c.flush(splits, nil)
-		c.close(ierr)
+		c.close(stageFault(ierr))
 		return
 	}
 	c.hold(held{tr: tr, h: h, reply: reply, err: err})
@@ -705,7 +713,7 @@ func (c *chain) flush(why split, tr *track) {
 		for _, m := range c.held {
 			p.end(m.tr, false, 0, 0, err)
 		}
-		c.close(err)
+		c.close(stageFault(err))
 		return
 	}
 	// ponytail: the record is queued under its last member's key, so a

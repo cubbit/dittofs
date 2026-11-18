@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
@@ -51,6 +52,9 @@ const (
 	vHoldRefusals
 	vChainSplits
 	vShortReads
+	vConnections
+	vCloses
+	vBytes
 	vecs
 )
 
@@ -71,6 +75,9 @@ var specs = [vecs]struct {
 	vHoldRefusals:  {metrics.Spec{Name: "adapter_hold_refusals_total", Help: "Requests refused past their connection's floor with the hold pool full.", Labels: []string{"protocol"}}, false},
 	vChainSplits:   {metrics.Spec{Name: "adapter_chain_splits_total", Help: "Chains whose reply went out in more than one record, by reason.", Labels: []string{"protocol", "reason"}}, false},
 	vShortReads:    {metrics.Spec{Name: "adapter_reads_shortened_total", Help: "Reads in a compound whose count was lowered to fit the protocol's record cap.", Labels: []string{"protocol"}}, false},
+	vConnections:   {metrics.Spec{Name: "adapter_connections", Help: "Connections open, in their state.", Labels: []string{"protocol", "state"}}, true},
+	vCloses:        {metrics.Spec{Name: "adapter_connection_closes_total", Help: "Connections refused or closed, by the reason of the close.", Labels: []string{"protocol", "reason"}}, false},
+	vBytes:         {metrics.Spec{Name: "adapter_bytes_total", Help: "Bytes read and written, framing included.", Labels: []string{"protocol", "direction"}}, false},
 }
 
 var wireSpec = metrics.Spec{Name: "adapter_wire_seconds", Help: "Time a request spends in each stage around the service call.", Labels: []string{"protocol", "stage"}, Buckets: metrics.Request}
@@ -168,6 +175,75 @@ const (
 
 var splitReasons = [splits]string{"unwrap", "decode", "flow", "reply_pool", "quarter", "record"}
 
+// The values of the direction label of adapter_bytes_total (§10.1): in, what
+// the reader read, and out, what the writer wrote.
+const (
+	dirIn  = "in"
+	dirOut = "out"
+)
+
+// connState is a value of the state label of adapter_connections (§10.1):
+// handshake from accept until Conn.Established, established from it on.
+type connState uint8
+
+const (
+	stHandshake connState = iota
+	stEstablished
+	connStates
+)
+
+var stateNames = [connStates]string{"handshake", "established"}
+
+// reason is a value of the reason label of adapter_connection_closes_total
+// (§10.1), one per close: at accept pool, limit and per_address; by the client
+// client; at a deadline handshake, read_timeout, idle, write_timeout,
+// status_wait and reply_wait; by core write, frame, decode, unwrap, walk and
+// wiring; by protocol code violation; by the adapter removed, drain and stop.
+type reason uint8
+
+const (
+	rsnPool reason = iota
+	rsnLimit
+	rsnPerAddress
+	rsnClient
+	rsnReadTimeout
+	rsnHandshake
+	rsnIdle
+	rsnWriteTimeout
+	rsnStatusWait
+	rsnReplyWait
+	rsnWrite
+	rsnFrame
+	rsnDecode
+	rsnUnwrap
+	rsnWalk
+	rsnWiring
+	rsnViolation
+	rsnDrain
+	rsnRemoved
+	rsnStop
+	reasons
+)
+
+var reasonNames = [reasons]string{
+	"pool", "limit", "per_address", "client", "read_timeout", "handshake", "idle", "write_timeout",
+	"status_wait", "reply_wait", "write", "frame", "decode", "unwrap", "walk", "wiring", "violation",
+	"drain", "removed", "stop",
+}
+
+// level is where a line of a close under r is logged (§10.3): debug for the
+// ends RFC 20 names quiet, the client's, the idle deadline's and the
+// adapter's own; error for a wiring fault; warning for every other.
+func (r reason) level() slog.Level {
+	switch r {
+	case rsnClient, rsnIdle, rsnDrain, rsnRemoved, rsnStop:
+		return slog.LevelDebug
+	case rsnWiring:
+		return slog.LevelError
+	}
+	return slog.LevelWarn
+}
+
 // protocolSeries is what a request records under one protocol label: before
 // Route under its connection's Stages.Protocol, from it under its table's.
 // refusals holds the refusing stages, wire the timed ones.
@@ -179,10 +255,17 @@ type protocolSeries struct {
 	splits             [splits]adder
 }
 
-// labelSeries is what a request records before Route returns its table.
+// labelSeries is what a request records before Route returns its table, and
+// what a connection records before its stage list is built: the series of
+// §10.1's connection table, under the label its listener's nil-Conn stages
+// named.
 type labelSeries struct {
 	protocolSeries
+	protocol   string
 	replayHits adder
+	states     [connStates]adder
+	closes     [reasons]adder
+	in, out    adder
 }
 
 // tableSeries is what a request records from Route on, and its rows'
@@ -273,7 +356,7 @@ func (sh *shared) table(t *OpTable) (*tableSeries, error) {
 		return ts, nil
 	}
 	if t.Protocol == "" {
-		return nil, fmt.Errorf("core: the table of %s has no Protocol", opNames(t))
+		return nil, fmt.Errorf("%w: the table of %s has no Protocol", errWiring, opNames(t))
 	}
 	return resolve(&sh.mu, &sh.tables, t, func(m map[*OpTable]*tableSeries) *tableSeries {
 		ts := sh.newTable(t.Protocol, t, false)
@@ -288,17 +371,49 @@ func (sh *shared) table(t *OpTable) (*tableSeries, error) {
 }
 
 // label is the series a connection whose Stages.Protocol is p records
-// before Route.
+// before Route, and the connection series under the same label (§10.1).
 func (sh *shared) label(p string) *labelSeries {
 	if ls, ok := (*sh.labels.Load())[p]; ok {
 		return ls
 	}
 	return resolve(&sh.mu, &sh.labels, p, func(m map[string]*labelSeries) *labelSeries {
-		ls := &labelSeries{protocolSeries: sh.newProtocol(p), replayHits: sh.fam[vReplayHits](p)}
+		ls := &labelSeries{
+			protocolSeries: sh.newProtocol(p),
+			protocol:       p,
+			replayHits:     sh.fam[vReplayHits](p),
+			in:             sh.fam[vBytes](p, dirIn),
+			out:            sh.fam[vBytes](p, dirOut),
+		}
+		for st, name := range stateNames {
+			ls.states[st] = sh.fam[vConnections](p, name)
+		}
+		for r, name := range reasonNames {
+			ls.closes[r] = sh.fam[vCloses](p, name)
+		}
 		m[p] = ls
 		return ls
 	})
 }
+
+// accepted counts a connection in at accept, in the handshake state;
+// established moves it to the established state, once (§10.1).
+func (ls *labelSeries) accepted()    { ls.states[stHandshake].Add(1) }
+func (ls *labelSeries) established() { ls.states[stEstablished].Add(1); ls.states[stHandshake].Add(-1) }
+
+// closed counts a connection's close under r, its state's gauge lowered from
+// established where est, the handshake state otherwise. refusedAtAccept counts
+// one closed at accept, whose gauge never rose: pool, limit and per_address's
+// closes (§10.1).
+func (ls *labelSeries) closed(r reason, est bool) {
+	ls.closes[r].Add(1)
+	if est {
+		ls.states[stEstablished].Add(-1)
+		return
+	}
+	ls.states[stHandshake].Add(-1)
+}
+
+func (ls *labelSeries) refusedAtAccept(r reason) { ls.closes[r].Add(1) }
 
 func (sh *shared) newProtocol(p string) protocolSeries {
 	ps := protocolSeries{inFlight: sh.fam[vInFlight](p), unmapped: sh.fam[vUnmapped](p)}

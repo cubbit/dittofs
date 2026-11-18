@@ -117,7 +117,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		// protocol's wiring, since no reply could carry the compound's
 		// status: the connection closes naming the row (RFC 20 §4.7).
 		release()
-		p.drop(tr, nil, fmt.Errorf("core: the %s row's Decode sets no EncodeHead", row.Name))
+		p.drop(tr, nil, fmt.Errorf("%w: the %s row's Decode sets no EncodeHead", errWiring, row.Name))
 		return
 	}
 	ms, at, code, err := members(row, inv, rest, v)
@@ -237,14 +237,14 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	if encErr := p.st.Header.Encode(h, 0, reply); encErr != nil {
 		reply.Release()
 		release()
-		p.drop(tr, nil, encErr)
+		p.drop(tr, nil, stageFault(encErr))
 		return
 	}
 	head := len(reply.B)
 	if encErr := inv.EncodeHead(reply, 0, 0, v); encErr != nil {
 		reply.Release()
 		release()
-		p.drop(tr, nil, encErr)
+		p.drop(tr, nil, stageFault(encErr))
 		return
 	}
 	headLen := len(reply.B) - head
@@ -264,7 +264,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		if encErr := p.result(mt, reply, m.op.Code, s, m.inv.Encode, v); encErr != nil {
 			reply.Release()
 			release()
-			p.drop(tr, nil, encErr)
+			p.drop(tr, nil, stageFault(encErr))
 			return
 		}
 		status, last, count = s, merr, count+1
@@ -290,7 +290,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		if encErr := p.result(mt, reply, code, status, nil, v); encErr != nil {
 			reply.Release()
 			release()
-			p.drop(tr, nil, encErr)
+			p.drop(tr, nil, stageFault(encErr))
 			return
 		}
 		last, count = err, count+1
@@ -299,7 +299,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	if encErr := inv.EncodeHead(again, status, count, v); encErr != nil || len(again.B) != headLen {
 		reply.Release()
 		release()
-		p.drop(tr, nil, fmt.Errorf("core: a compound's head of %d bytes rewritten as %d (%v)", headLen, len(again.B), encErr))
+		p.drop(tr, nil, fmt.Errorf("%w: a compound's head of %d bytes rewritten as %d (%v)", errWiring, headLen, len(again.B), encErr))
 		return
 	}
 	release()

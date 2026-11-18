@@ -294,7 +294,7 @@ func (p *pipeline) interimIn(pd *pending, buf *resources.Buf, grant bool) {
 	buf.B = buf.B[:0]
 	if err := p.st.Hold.Interim(pd.h, grant, nil, buf); err != nil {
 		buf.Release()
-		p.l.close(err)
+		p.l.close(stageFault(err))
 		return
 	}
 	pd.grant = !grant
@@ -784,7 +784,7 @@ func (p *pipeline) answerPark(pd *pending, err error) {
 		if encErr = p.st.Header.Encode(h, s, buf); encErr != nil {
 			buf.Release()
 			p.end(tr, false, 0, 0, encErr)
-			p.l.close(encErr)
+			p.l.close(stageFault(encErr))
 			return
 		}
 	}

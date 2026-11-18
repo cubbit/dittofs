@@ -131,8 +131,15 @@ func (s *Server) acceptLoop(b *bound) {
 		charge, cerr := s.d.Budgets.Connection.Reserve(connCharge)
 		if cerr != nil {
 			// The budget is full: the socket closes at once, before any byte
-			// is read, and the server holds nothing of it.
+			// is read, and the server holds nothing of it. The close counts
+			// under pool, at accept, whose line the minute rate-limits
+			// (§10.1, §10.3).
 			_ = nc.Close()
+			ls := s.sh.label(b.l.label)
+			// The line's minute is read before the close counts, so a reader
+			// of the count finds that read done.
+			s.sh.closeLine(ls, rsnPool, cerr, true)
+			ls.refusedAtAccept(rsnPool)
 			continue
 		}
 		s.serveConn(nc, b.l, b, &charge)

@@ -1494,8 +1494,8 @@ func TestAChainWhoseStatusDoesNotEncodeReleasesWhatItHolds(t *testing.T) {
 			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 20, Session: 7, Handle: s.root},
 			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 21, Session: inherited, Tree: 1, Name: "b", Related: true},
 		)
-		if err := s.closeErr(t); !errors.Is(err, errEncode) {
-			t.Errorf("the connection closed with %v, want the encoder's error", err)
+		if err := s.closeErr(t); err == nil || !strings.Contains(err.Error(), "a wiring fault: a status that does not encode") {
+			t.Errorf("the connection closed with %v, want the wiring fault the encoder's error wraps", err)
 		}
 		synctest.Wait()
 		if r := s.budgets.Reply.Reserved(); r != 0 {
@@ -1810,8 +1810,8 @@ func TestASplitThatDoesNotWrapStopsTheChain(t *testing.T) {
 				})
 				fw.armed.Store(true)
 				c.serve(s)
-				if err := s.closeErr(t); !errors.Is(err, errWrap) {
-					t.Errorf("the connection closed with %v, want Wrap's error", err)
+				if err := s.closeErr(t); err == nil || !strings.Contains(err.Error(), "a wiring fault: a record that does not wrap") {
+					t.Errorf("the connection closed with %v, want the wiring fault Wrap's error wraps", err)
 				}
 				synctest.Wait()
 				if n := s.creates(); n != 0 {
@@ -2049,8 +2049,8 @@ func TestAFlowSplitThatDoesNotWrapDropsTheMemberWaiting(t *testing.T) {
 		flow.armed.Store(true)
 		fw.armed.Store(true)
 		s.serve(echoIn(70, 7), echoIn(71, 7))
-		if err := s.closeErr(t); !errors.Is(err, errWrap) {
-			t.Errorf("the connection closed with %v, want Wrap's error", err)
+		if err := s.closeErr(t); err == nil || !strings.Contains(err.Error(), "a wiring fault: a record that does not wrap") {
+			t.Errorf("the connection closed with %v, want the wiring fault Wrap's error wraps", err)
 		}
 		synctest.Wait()
 		if r := s.budgets.Reply.Reserved(); r != 0 {
