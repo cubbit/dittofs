@@ -367,8 +367,9 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     refused, with an allowlist of names read elsewhere (today an unknown file key only warns); a
     duration is a string with a unit (`"30s"`, D10), and a bare number refused; a size is a number
     and a unit (`KB` to `TB`, `KiB` to `TiB`, `B`), an integer of bytes only in a record and refused
-    in the file, so `internal/bytesize`'s `Gi`, `Mi`, `m` and `g` are not Appendix B's and E3's
-    codec refuses them; a list and a map are JSON's in a record and YAML's in the file.
+    in the file, so `internal/bytesize`'s `Gi`, `Mi`, `m` and `g` are not Appendix B's and the
+    shared strict parser refuses them; a list and a map are JSON's in a record and YAML's in the
+    file.
   - **The two host rules (R21, R22)**, a non-loopback listener without TLS and the runtime
     directory, stated in Appendix C for E2 to enforce.
   - **`dfs config`'s three commands on the bootstrap.** What `show` prints (the effective

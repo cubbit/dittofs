@@ -1130,10 +1130,15 @@ host's file, so a value valid in one place is valid in all:
   (`30s`, `1h30m`; quoted or not in the host's file); it is never negative, a
   number is whole, `0s` is zero, and a bare number is refused, since it names no
   unit;
-- a size is a number and a unit, decimal `KB` to `TB` or binary `KiB` to `TiB`
-  (`512MiB`), or `B`; in a record it may also be an integer of bytes, but a bare
-  integer in the host's file is refused, since an older file's `max_size: 100`
-  meant megabytes;
+- a size is a whole number and a unit written as it is listed, with no space
+  between them: decimal `KB` to `TB` or binary `KiB` to `TiB` (`512MiB`), or
+  `B`. `1.5GiB`, `4.1GB`, `1Gi`, `10m`, `1g`, `1kb`, `100mib` and `1 MiB` are
+  refused. In a record an integer of bytes, written as a JSON number, is also
+  accepted, exact (the string `"512"` is refused), but a bare integer in the
+  host's file is refused, since an older file's `max_size: 100`
+  meant megabytes; a value past `2^64 - 1` bytes is refused, in a record too
+  (`18446744073709551616` refused, `18446744073709551615` the largest
+  accepted, exact);
 - a boolean is `true` or `false`, and nothing else: `yes`, `on` and `1` are
   refused;
 - a list and a map are JSON's in a record and YAML's in the host's file; in the
