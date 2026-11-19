@@ -322,3 +322,11 @@ func TestMayStartAnswersAsDocumented(t *testing.T) {
 		t.Errorf("operations: %d, want 1", n)
 	}
 }
+
+// The document names a join's modes, the closed set the route takes.
+func TestJoinModeIsAnEnum(t *testing.T) {
+	got := at(openAPIDoc(t), "components", "schemas", "JoinDomainSpecRequest", "properties", "mode", "enum")
+	if vs, ok := got.([]any); !ok || !slices.Equal(vs, []any{string(apiv1.JoinOnline), string(apiv1.JoinOffline)}) {
+		t.Errorf("join mode's enum %v, want [online offline]", got)
+	}
+}

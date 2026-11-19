@@ -959,7 +959,7 @@ func testSpellingHolder(t *testing.T, kvo Opener) {
 			u   entity.User
 			ok  bool
 		}{{"view", got, ok}, {"write", txGot, txOK}} {
-			if side.ok != c.ok || side.u.Principal != c.want.Principal || c.ok && !slices.Equal(side.u.IDs[len(side.u.IDs)-1:], c.want.IDs[len(c.want.IDs)-1:]) {
+			if side.ok != c.ok || side.u.Principal != c.want.Principal || !slices.Equal(side.u.IDs, c.want.IDs) {
 				t.Errorf("%s, from the %s: Holder = %v %v %v, want %v %v holding %v", c.name, side.how, side.u.Principal, side.u.IDs, side.ok, c.want.Principal, c.ok, c.want.IDs)
 			}
 		}
