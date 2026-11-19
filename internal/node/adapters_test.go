@@ -2,6 +2,7 @@ package node_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 
@@ -721,5 +723,257 @@ func TestAnAdapterOnTheAPIsOrTheMetricsPortIsRefused(t *testing.T) {
 	slices.Sort(names)
 	if !slices.Equal(names, []string{"nfs", "smb"}) {
 		t.Errorf("refused with NFS on the API's port and SMB on the metrics listener's: %s, want both by the port rule", describe(refused))
+	}
+}
+
+// lostListener is a real adapter with a fault on cue: while cue is set, its
+// Health names adapter_listener_lost, as an adapter's does once a listener's
+// Accept has kept failing for 60 s (RFC 20 §6.4).
+type lostListener struct {
+	adapter.Adapter
+	cue *atomic.Bool
+}
+
+func (l lostListener) Health() adapter.Health {
+	h := l.Adapter.Health()
+	if l.cue.Load() {
+		h.Conditions = append(h.Conditions, "adapter_listener_lost")
+	}
+	return h
+}
+
+// failingStop is a real adapter with a fault on cue: while cue is set, its
+// Stop stops the adapter and then fails, as a drain that abandoned a request
+// still running does.
+type failingStop struct {
+	adapter.Adapter
+	cue *atomic.Bool
+}
+
+func (f failingStop) Stop(ctx context.Context) error {
+	err := f.Adapter.Stop(ctx)
+	if f.cue.Load() {
+		return errors.Join(err, errors.New("the drain abandoned a request still running"))
+	}
+	return err
+}
+
+// failingSidecar serves both adapters with a fault on cue: while cue is set,
+// its Sync fails, as a sidecar that cannot be brought to match; while it is
+// clear, each Sync succeeds and says so on synced.
+type failingSidecar struct {
+	cue    atomic.Bool
+	synced chan struct{}
+}
+
+func (*failingSidecar) Name() string       { return "failing" }
+func (*failingSidecar) Adapters() []string { return []string{"nfs", "smb"} }
+
+func (s *failingSidecar) Sync(context.Context, []adapter.Serving) error {
+	if s.cue.Load() {
+		return errors.New("the sidecar cannot be synced")
+	}
+	select {
+	case s.synced <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// nodeID is the harness's node as a condition's subject names it.
+func nodeID(h *nodetest.Harness) string {
+	id := h.NodeID()
+	return fmt.Sprintf("%x", id[:])
+}
+
+// healthNow is the conditions GET /api/v1/health answers on the node's API
+// at api, read at each call.
+func healthNow(t *testing.T, api string) []apiv1.Condition {
+	t.Helper()
+	var got apiv1.Health
+	getJSON(t, api, "/api/v1/health", &got)
+	return got.Conditions
+}
+
+// heldPort is a loopback port a listener the test holds is bound to, and
+// that listener, closed when the test ends if the test has not closed it.
+func heldPort(t *testing.T) (uint16, net.Listener) {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	return uint16(l.Addr().(*net.TCPAddr).Port), l
+}
+
+// applied moves the settings generation, giving store a setting, and waits
+// until the node has applied it, as a write on the node does.
+func applied(t *testing.T, h *nodetest.Harness, store [16]byte) {
+	t.Helper()
+	configure(t, h, store)
+	if err := h.Node().Applied(t.Context()); err != nil {
+		t.Fatalf("Applied: %v", err)
+	}
+}
+
+// An adapter refused at configured, SMB on a port the test holds, raises
+// adapter_refused on the node naming SMB, its cause the bind's error, and
+// leaves the node ready; once the port is freed and SMB serves, the status
+// written carries it no more (RFC 20 §3.7, RFC 25 §3.4, §3.6).
+func TestAnAdapterRefusedAtConfiguredRaisesAdapterRefusedUntilItServes(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(admin)))
+	turns := watchStatus(h)
+	port, held := heldPort(t)
+	h.Node().SetSMB(true, smbAt(port))
+	started(t, h)
+
+	refused := storedCondition{Name: "adapter_refused", Scope: "node", ID: nodeID(h), Subject: "smb"}
+	if got := conditionsOf(t, awaitTurn(t, turns).s); !slices.Contains(got, refused) {
+		t.Errorf("the status with SMB's port held carries %v, want %v", got, refused)
+	}
+	api, _ := h.Node().Addrs()
+	if got := get(t, api, "/health/ready"); got != ready {
+		t.Errorf("readiness with SMB refused: got %+v, want 200 ready", got)
+	}
+	bind := fmt.Sprintf("127.0.0.1:%d", port)
+	if got := healthNow(t, api); !slices.ContainsFunc(got, func(c apiv1.Condition) bool {
+		return c.Name == "adapter_refused" && c.Subject == "smb" && strings.Contains(c.Cause, bind)
+	}) {
+		t.Errorf("GET /api/v1/health with SMB's port held: %+v, want adapter_refused naming smb, its cause the bind of %s", got, bind)
+	}
+
+	_ = held.Close()
+	moved := h.Node().Moved()
+	h.Node().Wake()
+	select {
+	case <-moved:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no reconcile pass within 10 s of the wake")
+	}
+	turnAt(t, h, turns, "without adapter_refused once SMB serves", func(tr statusTurn) bool {
+		return !slices.Contains(conditionsOf(t, tr.s), refused)
+	})
+	if got := conditionsOf(t, readStatus(t, h)); slices.Contains(got, refused) {
+		t.Errorf("the status written once SMB serves carries %v, want no %v", got, refused)
+	}
+}
+
+// A refusal raises no adapter_refused while the adapter serves, SMB's port
+// changed to one the test holds and its old port served again, nor once it
+// is disabled, its Stop failing: the condition stands only for an enabled
+// adapter nothing serves (RFC 20 §3.7, RFC 25 §3.9).
+func TestARefusalRaisesNoAdapterRefusedWhileServingOrDisabled(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(admin)))
+	var stopFails atomic.Bool
+	h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return failingStop{a, &stopFails} })
+	port := freePort(t)
+	h.Node().SetSMB(true, smbAt(port))
+	started(t, h)
+	api, _ := h.Node().Addrs()
+	named := func(c apiv1.Condition) bool { return c.Name == "adapter_refused" }
+
+	other, _ := heldPort(t)
+	h.Node().SetSMB(true, smbAt(other))
+	applied(t, h, storeA)
+	if got := h.Node().Refused(); len(got) != 1 || string(got[0].Record.ID) != "smb" || !listens(port) {
+		t.Fatalf("SMB's port changed to a held one: refused %s, its old port %d taking a dial %t; want smb refused, serving on its old port", describe(got), port, listens(port))
+	}
+	if got := healthNow(t, api); slices.ContainsFunc(got, named) {
+		t.Errorf("GET /api/v1/health with SMB refused while it serves: %+v, want no adapter_refused", got)
+	}
+
+	stopFails.Store(true)
+	h.Node().SetSMB(false, smbAt(port))
+	applied(t, h, storeB)
+	if got := h.Node().Refused(); len(got) != 1 || string(got[0].Record.ID) != "smb" || listens(port) {
+		t.Fatalf("SMB disabled, its Stop failing: refused %s, its port %d taking a dial %t; want smb refused, stopped", describe(got), port, listens(port))
+	}
+	if got := healthNow(t, api); slices.ContainsFunc(got, named) {
+		t.Errorf("GET /api/v1/health with SMB disabled, its Stop failing: %+v, want no adapter_refused", got)
+	}
+}
+
+// A running adapter whose Health names adapter_listener_lost raises it on
+// the node naming the adapter, and turns readiness not_ready; both are read
+// at each evaluation, so once its Health no longer names it both clear (RFC
+// 20 §3.7, RFC 25 §3.4, §3.6).
+func TestALostListenerTurnsTheNodeNotReady(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	turns := watchStatus(h)
+	var cue atomic.Bool
+	h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return lostListener{a, &cue} })
+	h.Node().SetSMB(true, smbAt(0))
+	started(t, h)
+	api, _ := h.Node().Addrs()
+
+	lost := storedCondition{Name: "adapter_listener_lost", Scope: "node", ID: nodeID(h), Subject: "smb"}
+	carries := func(tr statusTurn) bool { return slices.Contains(conditionsOf(t, tr.s), lost) }
+	cue.Store(true)
+	turnAt(t, h, turns, "carrying "+lost.Name, carries)
+	if got := get(t, api, "/health/ready"); got != notReady {
+		t.Errorf("readiness with SMB's listener lost: got %+v, want 503 not_ready", got)
+	}
+
+	cue.Store(false)
+	turnAt(t, h, turns, "without "+lost.Name, func(tr statusTurn) bool { return !carries(tr) })
+	if got := get(t, api, "/health/ready"); got != ready {
+		t.Errorf("readiness once SMB's listener is back: got %+v, want 200 ready", got)
+	}
+}
+
+// A sidecar whose Sync fails raises sidecar_failed on the node naming it,
+// and nothing else: both adapters serve and the node stays ready. Once a
+// retry of its Sync succeeds, the condition clears (RFC 20 §3.5, §3.7; RFC
+// 25 §3.9).
+func TestAFailingSidecarFailsOnlyItself(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(admin)))
+	side := &failingSidecar{synced: make(chan struct{}, 1)}
+	side.cue.Store(true)
+	h.Node().SetSidecar(side)
+	nfs, smb := freePort(t), freePort(t)
+	h.Node().SetNFS(true, nfsAt(nfs))
+	h.Node().SetSMB(true, smbAt(smb))
+	started(t, h)
+	api, _ := h.Node().Addrs()
+
+	failed := apiv1.Condition{Name: "sidecar_failed", Scope: "node", ID: nodeID(h), Subject: "failing"}
+	if got := healthNow(t, api); !slices.Equal(got, []apiv1.Condition{failed}) {
+		t.Errorf("GET /api/v1/health with the sidecar failing: %+v, want only %+v", got, failed)
+	}
+	if !listens(nfs) || !listens(smb) {
+		t.Errorf("with the sidecar failing NFS's port %d takes a dial: %t, SMB's %d: %t; want both serving", nfs, listens(nfs), smb, listens(smb))
+	}
+	if got := get(t, api, "/health/ready"); got != ready {
+		t.Errorf("readiness with the sidecar failing: got %+v, want 200 ready", got)
+	}
+
+	side.cue.Store(false)
+	select {
+	case <-side.synced:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no retry of the sidecar's Sync succeeded within 10 s")
+	}
+	wait(t, "no condition once a retry of the sidecar's Sync succeeded", func() bool { return len(healthNow(t, api)) == 0 })
+}
+
+// A port rebuild leaves the node ready while neither of SMB's adapters
+// serves, the old one stopped with its Stop held and the new one not yet
+// started: once started, only a lost listener turns the node not_ready (RFC
+// 23 §3.4, RFC 25 §3.6).
+func TestARebuildLeavesTheNodeReady(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	stoppedSMB, release := make(chan struct{}, 2), make(chan struct{})
+	h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return heldStop{a, stoppedSMB, release} })
+	h.Node().SetSMB(true, smbAt(freePort(t)))
+	started(t, h)
+	end := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(end)
+
+	rebuild(t, h, freePort(t))
+	hears(t, stoppedSMB, "the rebuild")
+	api, _ := h.Node().Addrs()
+	if got := get(t, api, "/health/ready"); got != ready {
+		t.Errorf("readiness while SMB is rebuilt: got %+v, want 200 ready", got)
 	}
 }

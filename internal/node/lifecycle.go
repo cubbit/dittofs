@@ -62,6 +62,28 @@ type lifecycle struct {
 
 func (l *lifecycle) readiness() string { return l.ready.Load().(string) }
 
+// readiness is the readiness word, read at each call: the lifecycle's, and
+// not_ready while it is ready and a running adapter's Health names
+// adapter_listener_lost, as clients sent to that listener cannot connect
+// (RFC 20 §3.7, RFC 25 §3.6).
+//
+// decision: once started, the adapters turn the node not_ready only through
+// a lost listener. An adapter refused, a failed sidecar, an adapter rebuilt
+// for a port change and one enabled after the start leave it ready, though
+// RFC 20 §3.7 and RFC 25 §3.6, read literally, make a node whose adapter is
+// rebuilt unready for up to its drain_timeout: a load balancer would then
+// steer the other adapter's clients away, which RFC 23 §3.4's one adapter at
+// a time is there to spare. Start's own gate is the step order, which turns
+// the node ready only once step 9 has run. Overturned if RFC 25 §3.6 gives
+// a rebuild a row of its own.
+func (n *Node) readiness() string {
+	w := n.life.readiness()
+	if w == readyReady && (n.nfs.lost() || n.smb.lost()) {
+		return readyNot
+	}
+	return w
+}
+
 // part is one thing Start started that Stop stops. Every part uses the
 // metadata store.
 type part struct {
