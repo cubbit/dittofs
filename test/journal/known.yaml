@@ -729,38 +729,6 @@
   message: 'stub: Restamp'
 
 
-- test: TestDamage_LostWrites/open_seal_after_truncation
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The open proves the unproven tail and refuses before the torn tail is truncated and sealed: the teardown of a torn tail at the open is not built. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
-  issue: '#3814'
-  message: 'precondition: the held call is not the sync point meant: no seal marker after the last record that verified'
-
-- test: TestDamage_LostWrites/open_spare_zeroing
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The driven model write is refused for want of a spare the journal never made (no space, refused by the spare limit), which the model has no rule for; no 9b call is involved. Open: whether the journal or the model is wrong at that sync point.'
-  issue: '#3815'
-  message: 'open_spare_zeroing: model: model: write file 66696c652d3030303030303030303031: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
-
-- test: TestDamage_LostWrites/recycle_rename
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The driven model write is refused for want of a spare the journal never made (no space, refused by the spare limit), which the model has no rule for; no 9b call is involved. Open: whether the journal or the model is wrong at that sync point.'
-  issue: '#3815'
-  message: 'recycle_rename: model: model: write file 66696c652d3030303030303030303031: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
-
-- test: TestDamage_LostWrites/open_tmp_unlink
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The driven model write is refused for want of a spare the journal never made (no space, refused by the spare limit), which the model has no rule for; no 9b call is involved. Open: whether the journal or the model is wrong at that sync point.'
-  issue: '#3815'
-  message: 'open_tmp_unlink: model: model: write file 66696c652d3030303030303030303030: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
-
 - test: TestDamage_LostWrites/failed_unlink
   status: fail
   fix: planned
