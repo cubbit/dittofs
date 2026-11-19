@@ -243,8 +243,13 @@ var errStatsUnavailable = errors.New("the engine's stats did not answer within 5
 
 // engineConditions is the engine's conditions as the health evaluator reads
 // them: its node's, each journal's and each share's, from the same deadlined
-// snapshot as the series.
-type engineConditions struct{ snap *snapshot }
+// snapshot as the series. node is this node's identity, the subject the one
+// condition a deadlined fetch raises carries, keyed as every other
+// node-scope condition's is.
+type engineConditions struct {
+	snap *snapshot
+	node entity.NodeID
+}
 
 func (e *engineConditions) Conditions(dst []health.Condition) []health.Condition {
 	s, ok := e.snap.get()
@@ -261,7 +266,7 @@ func (e *engineConditions) Conditions(dst []health.Condition) []health.Condition
 		// for a stats deadline, which this then defers to.
 		dst = append(dst, health.Condition{
 			Name:    "engine_stats_unavailable",
-			Subject: health.Subject{Scope: health.ScopeNode},
+			Subject: health.Subject{Scope: health.ScopeNode, ID: hex.EncodeToString(e.node[:])},
 			Cause:   errStatsUnavailable,
 			Detail:  "the engine's statistics did not answer within their deadline; the export omits its series and this condition names the omission",
 		})
@@ -284,7 +289,7 @@ func journalDesc(name, help string, labels ...string) *prometheus.Desc {
 }
 
 // counterSpec is one of the journal's cumulative counters, read off the
-// Statsthe engine carries whole.
+// Stats the engine carries whole.
 type counterSpec struct {
 	field string // the Counters field it answers, by its Go name
 	name  string // the series' name, without the dittofs_journal_ prefix
@@ -681,7 +686,7 @@ func (c *journalSeries) shareGauges(ch chan<- prometheus.Metric, js engine.Journ
 // export's fixed bucket sets, so they drift from every other duration
 // histogram a node exports. Move to the shared set — which costs redefining
 // the journal's bounds on the journal side, the one place that keeps them —
-// when the journal's bounds are redefined. withdrawal is that change.
+// when the journal's bounds are redefined, by that change.
 func (c *journalSeries) syncHistogram(ch chan<- prometheus.Metric, s *journal.Stats, id string) {
 	h := s.SyncDuration
 	if len(h.Counts) < len(h.Bounds) {

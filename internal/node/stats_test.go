@@ -133,7 +133,10 @@ func TestEngineConditionsDeadlinedRaisesUnavailability(t *testing.T) {
 		<-block
 		return engine.Stats{}
 	}, clock, newPartialCounter())
-	e := &engineConditions{snap}
+	// The node identity is the engine's shape — its first bytes in hex,
+	// zero-padded to the whole ID, as every node-scope subject names it.
+	const node = "6e6f6465000000000000000000000000"
+	e := &engineConditions{snap: snap, node: entity.NodeID{'n', 'o', 'd', 'e'}}
 
 	got := make(chan []health.Condition, 1)
 	go func() { got <- e.Conditions(nil) }()
@@ -155,7 +158,7 @@ func TestEngineConditionsDeadlinedRaisesUnavailability(t *testing.T) {
 	}
 	want := health.Condition{
 		Name:    "engine_stats_unavailable",
-		Subject: health.Subject{Scope: health.ScopeNode},
+		Subject: health.Subject{Scope: health.ScopeNode, ID: node},
 		Cause:   errStatsUnavailable,
 		Detail:  "the engine's statistics did not answer within their deadline; the export omits its series and this condition names the omission",
 	}
