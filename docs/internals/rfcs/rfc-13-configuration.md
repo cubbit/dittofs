@@ -502,7 +502,13 @@ above. [Appendix B](#Appendix%20B%20%E2%80%94%20the%20settings) writes it in one
 
 - *scope* — one value across that scope;
 - *scope*, **per** *thing* — one value for each instance of a thing inside that
-  scope, such as `node, per journal`; the thing is never itself a scope;
+  scope, such as `node, per journal`; the thing is never itself a scope. Each
+  instance's value is its own record. A name that already carries the thing is
+  the key as written: `adapters.<protocol>.<field>` carries the adapter, and
+  its `<protocol>` is the thing's ID. Any other name takes the thing's ID after
+  its first part: `journal.spare_target` for the journal `<id>` is the key
+  `journal.<id>.spare_target`. Either way a bad value refuses that one instance
+  and leaves the others readable;
 - *scope* **default**, *narrower scope* **override** — a value at the wider
   scope that one narrower record **MAY** replace, such as a replica count with
   an installation default and a per-shard value in the shard record. The two are
