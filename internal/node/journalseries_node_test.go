@@ -204,26 +204,34 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 		before := jscrape(t, h)
 
 		// Fill the journal until a write is refused. The engine answers a
-		// capacity refusal and a spill flat of spare segments with one and
-		// the same retry-later error, so the refused-reservation counter
-		// decides which refusal it was: only the journal's own limit marks
-		// a reservation refused.
+		// capacity refusal two ways: retry-later for a spill flat of
+		// spares, a share limit, or a pass still running — and, since
+		// repack's settle, no-space-at-once when nothing is left to free,
+		// a journal full of only dirty bytes, which an endless delay would
+		// hang a hard mount answering. Either way the journal has refused
+		// the write at its own limit first, so the refused-reservation
+		// counter — not the error's shape — decides what the drive has
+		// reached; both shapes are the engine's, matched as its own
+		// conformance matches them.
 		const chunk = 256 << 10
+		capacityRefusal := func(err error) bool {
+			var delay *vfserr.Delay
+			return errors.As(err, &delay) && delay.Cause == vfserr.DelayCapacity || errors.Is(err, vfserr.ErrNoSpace)
+		}
 		refused := false
 		for i := range 128 {
 			err := jwrite(t, h, sh.ID, file.ID, int64(i)*chunk, pattern(fmt.Sprint("fill", i), chunk))
 			if err == nil {
 				continue
 			}
-			var delay *vfserr.Delay
-			if !errors.As(err, &delay) || delay.Cause != vfserr.DelayCapacity {
+			if !capacityRefusal(err) {
 				t.Fatalf("write %d into the journal of 4 MiB: %v", i, err)
 			}
 			if v, _ := at(t, jscrape(t, h), "dittofs_journal_reservation_refused_total"); v >= 1 {
 				refused = true
 				break
 			}
-			// A spill flat of spares reads the same at the engine's
+			// A spill flat of spares passes retry-later at the engine's
 			// surface; the pool makes its next spare in the background and
 			// the fill goes on.
 		}
