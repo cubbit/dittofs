@@ -107,3 +107,15 @@ func TestRunInAuto(t *testing.T) {
 		}
 	}
 }
+
+// dt run --json sent to dtc passes --json on, for the run there to print the
+// JSON on stdout, and says where it went on stderr.
+func TestRunInContainerJSON(t *testing.T) {
+	root := inCheckout(t)
+	results := filepath.Join(root, "results")
+	stdout, stderr, _ := dtStreams(t, "run", "lin", "--in", "container", "--json", "--results", results)
+	want := "run lin --json=true --results=" + results + " --in=host"
+	if got := sent(root); stdout != "" || stderr != "[dt] in dtc: dt "+want+"\n" || got != want {
+		t.Errorf("stdout %q, stderr %q, dtc got %q; want only dtc's command line on stderr, %q", stdout, stderr, got, want)
+	}
+}
