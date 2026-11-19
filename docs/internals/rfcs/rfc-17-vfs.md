@@ -699,9 +699,8 @@ type WatchSpec struct { Dir Handle; Recursive bool; Filter ChangeMask }
 ### 3.1 Operations
 
 One interface per area, embedded in `Service`. An adapter is handed the whole
-`Service`; a component that needs one area — an NLM or rquota handler, a
-sidecar — takes that area's interface, and the conformance suite has one file
-per area (§8).
+`Service`; a component that needs one area (an NLM handler, a sidecar) takes
+that area's interface, and the conformance suite has one file per area (§8).
 
 ```go
 package vfs
@@ -821,7 +820,7 @@ alias RFC 18's types; `SignInResult` carries the session keys beside the
 
 > decision: one interface per area, embedded, and no finer. Each area is one
 > section of this RFC, one file of the conformance suite and the whole surface
-> some consumer needs — NLM needs `Locking` and `Clients`, rquota `Shares` —
+> some consumer needs (NLM needs `Locking` and `Clients`),
 > so a consumer and its test take one area, not 50 methods. Rejected: one flat
 > interface, which makes every narrow consumer declare its own copy of the
 > methods it calls; and an interface per operation, which names groups nobody
