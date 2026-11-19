@@ -745,6 +745,10 @@ Pending the user's answer, each written in its recommended form above:
 
 Further points:
 
+- **Five per-journal rows name no key.** Appendix B L1159, L1163, L1166, L1307 and L1308 (the
+  maximum footprint, `ExtentLimit`, append streams, the eviction occupancy target and the fill
+  low-water mark) say "per journal" and give no key name, and no subtask of this epic declares the
+  journal section. Who names the keys and declares that section is open.
 - **The table's rows (D2)** depart from the plans' "with the adapters' section": the adapters'
   rows are RFC 20's T7.6's. Four places gave them to this epic, each corrected in this document's
   pull request: RFC 13's plan's epic 5 text ("the one table, with the adapters'
