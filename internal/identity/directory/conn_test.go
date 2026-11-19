@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-ldap/ldap/v3"
+
 	"github.com/cubbit/dittofs/internal/identity/directory"
 )
 
@@ -121,6 +123,38 @@ func TestDialTLSVerifiesTheServer(t *testing.T) {
 				t.Errorf("the %s server read application bytes, want none sent", tc.name)
 			}
 		})
+	}
+}
+
+// Bind with an empty password, nil or zero-length, is refused before a byte
+// of it reaches the directory: a name with no password is an unauthenticated
+// bind, which a permissive server accepts. The test pins that rule, whichever
+// layer refuses: Bind's own check and go-ldap's, which the request's spelled-out
+// AllowEmptyPassword: false keeps on, each refuse with the same error class, so
+// it fails only when both go.
+func TestBindRefusesAnEmptyPassword(t *testing.T) {
+	ca := newCert(t, nil)
+	addr, handshake, read := serve(t, newCert(t, ca, "localhost"))
+	c, err := directory.DialTLS(context.Background(), directory.Record{Address: addr, TrustRoots: ca.pem})
+	if err != nil {
+		t.Fatalf("DialTLS: %v", err)
+	}
+	if err := <-handshake; err != nil {
+		t.Fatalf("the server's handshake: %v", err)
+	}
+	// The timeout is only a backstop: the server never answers, so a bind
+	// that was sent would wait for it.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, pw := range [][]byte{nil, {}} {
+		err := c.Bind(ctx, "CN=someone,DC=example,DC=com", pw)
+		if !ldap.IsErrorWithCode(err, ldap.ErrorEmptyPassword) {
+			t.Errorf("Bind with password %#v: err %v, want ldap result code %d (empty password)", pw, err, ldap.ErrorEmptyPassword)
+		}
+	}
+	_ = c.Close()
+	if <-read {
+		t.Error("the server read application bytes after binds with an empty password, want none sent")
 	}
 }
 
