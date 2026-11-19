@@ -99,8 +99,8 @@ func TestOfflineJoinStartsOnlyOnItsVersion(t *testing.T) {
 }
 
 // A computer account's names written after the keytab's pre-write check
-// passed are caught by its check in the write's transaction, which reads the
-// installation tracked.
+// passed are caught by its put, which runs the check again on the
+// installation read tracked in the write's transaction.
 func TestKeytabNamesCheckedInTheWrite(t *testing.T) {
 	cp := ntlmStore(t)
 	kt := keytab.New()
@@ -119,9 +119,12 @@ func TestKeytabNamesCheckedInTheWrite(t *testing.T) {
 	if err := cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetMachineJoin(j) }); err != nil {
 		t.Fatal(err)
 	}
-	err = cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return inTx(tx) })
+	err = cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		_, _, err := keytabs.put(t.Context(), request[apiv1.Credential]{d: Deps{Store: cp}}, sealedSecret{inTx: inTx}, tx)
+		return err
+	})
 	if p, _ := problemOf(err); p.Status != 400 || p.Field != "spec.value" {
-		t.Errorf("the check in the write, the join since naming the key: %v, want 400 naming spec.value", err)
+		t.Errorf("the keytab's put, the join since naming the key: %v, want 400 naming spec.value, ahead of the settings table", err)
 	}
 }
 
