@@ -2383,8 +2383,10 @@ namespace move starts it at 0 too.
 the volatile opens that session made close; one channel lost while another
 stays up closes nothing. A client record names a machine, so a disconnect acts
 on the opens whose `Session` it is, never on the client record: one machine's
-other sessions keep their opens. Its SMB-durable and persistent opens stay,
-with every lock, deny mode and lease they hold, and conflict as before; each is
+other sessions keep their opens. Its persistent opens, and its SMB-durable ones
+a grant with handle caching covers, stay, with every lock, deny mode and lease
+they hold, and conflict as before; its other SMB-durable opens close, as its
+volatile ones do (MS-SMB2 3.3.5.9.7 refuses their reconnect); each kept one is
 closed when `Timeout` has passed since the disconnect without a reconnect. A
 close by timeout is a close: it releases what the open held and can run a
 pending delete ([§9.4](#9.4%20Delete%20on%20close)). A new primary counts every
@@ -2405,8 +2407,8 @@ sessions alone and a restarted node may number one again.
 
 **A reconnect matches an open only when all of these do:** the client, the
 principal (`Caller`), the share the reconnect arrived on, the open's
-`Durable.Create` when it has one, and the lease key, none for an open with
-none (`ReconnectMatch`). Anything else is refused as if the open did not exist. A
+`Durable.Create` and its lease key, each none for an open with none
+(`ReconnectMatch`). Anything else is refused as if the open did not exist. A
 reconnect that matches rebinds the open's `Session`
 to the reconnecting session in the step that answers it, durably for a
 persistent open, so a later disconnect of that session times it.
