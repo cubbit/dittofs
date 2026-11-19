@@ -80,6 +80,9 @@ type Node struct {
 	// adapting is set by start step 9: from then on apply calls the slots.
 	// Written before reconcile's loop starts, and read by apply alone.
 	adapting bool
+	// snap is the one deadlined, single-flight engine.Stats fetch the engine
+	// series, the journal series and the health evaluator read.
+	snap *snapshot
 	// ending, when set, is called by step 3 of each share removal once its
 	// bound is set on the clock, before it waits on anything.
 	ending func(entity.ShareID)
@@ -193,8 +196,16 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 		return nil, fmt.Errorf("node: %w", err)
 	}
 	reg := cfg.Metrics.Registry()
-	if err := reg.Register(engineSeries{n.engine.Stats}); err != nil {
+	snap := newSnapshot(n.engine.Stats, cfg.Clock, newPartialCounter())
+	n.snap = snap
+	if err := reg.Register(snap.partial); err != nil {
+		return nil, fmt.Errorf("node: export partial counter: %w", err)
+	}
+	if err := reg.Register(engineSeries{snap}); err != nil {
 		return nil, fmt.Errorf("node: engine series: %w", err)
+	}
+	if err := reg.Register(&journalSeries{snap: snap}); err != nil {
+		return nil, fmt.Errorf("node: journal series: %w", err)
 	}
 	n.budgets, n.pools = newBudgets()
 	if err := reg.Register(budgetSeries(n.pools)); err != nil {
@@ -207,7 +218,7 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 		return nil, fmt.Errorf("node: sweep series: %w", err)
 	}
 	n.health = &health.Evaluator{}
-	n.health.Add(&engineConditions{n.engine.Stats})
+	n.health.Add(&engineConditions{snap: snap, subject: n.subject()})
 	n.health.Add(&nodeConditions{n})
 	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)

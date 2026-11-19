@@ -371,23 +371,26 @@ func (e *Engine) Stats() Stats {
 
 	for _, j := range js { // Start serves one device: journals[0] is Devices[0]'s
 		dir := e.d.Devices[0]
-		st := j.j.Stats()
 		js := s.Journals[dir]
-		js.MaxBytes, js.UsedBytes = st.MaxBytes, st.UsedBytes
-		js.DirtyBytes, js.UnreclaimedBytes = st.DirtyBytes, st.UnreclaimedBytes
-		js.NextVersion, js.VersionLimit = st.NextVersion, st.VersionLimit
-		js.Shares = map[entity.ShareID]JournalShareStats{}
+		js.ID = id
+		// The snapshot a close leaves out stays nil (JournalStats.Stats's
+		// own doc): a closed journal answers its zero Stats, and no caller
+		// may read that as an open, empty journal exporting zeros. The
+		// journal is read first, the flag after: a false read after it
+		// proves the journal was open through the read, and a true read
+		// drops the snapshot, so a Close racing this call leaves either
+		// the open journal's figures or none, never the closed journal's
+		// zeros.
+		st := j.j.Stats()
+		if !e.closed.Load() {
+			js.Stats = &st
+		}
+		js.TagShares = map[journal.ShareTag]entity.ShareID{}
 		for sid, b := range table {
 			if b.removed || b.j != j.j {
 				continue
 			}
-			ts := st.Shares[b.share.Tag]
-			js.Shares[sid] = JournalShareStats{
-				Limit:            ts.Limit,
-				UsedBytes:        ts.UsedBytes,
-				HeldBytes:        ts.HeldBytes,
-				UnreclaimedBytes: ts.UnreclaimedBytes,
-			}
+			js.TagShares[b.share.Tag] = sid
 		}
 		if c, ok := readOnlyCondition(st.ReadOnly, dir, id); ok {
 			js.Conditions = append(js.Conditions, c)

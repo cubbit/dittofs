@@ -5,12 +5,15 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -19,7 +22,7 @@ import (
 // scrapes shows at the second.
 func TestEngineSeriesReadAtScrape(t *testing.T) {
 	s := engine.Stats{Reads: map[string]int64{}, RemovalRuns: map[string]int64{}}
-	c := engineSeries{func() engine.Stats { return s }}
+	c := engineSeries{snap: testSnapshot(func() engine.Stats { return s })}
 	scrape := func(n int) string {
 		return strings.ReplaceAll(`# HELP dittofs_engine_group_commit_splits_total Group commit batches split.
 # TYPE dittofs_engine_group_commit_splits_total counter
@@ -83,7 +86,7 @@ func TestEngineConditions(t *testing.T) {
 		}}},
 	}
 	var e health.Evaluator
-	src := &engineConditions{func() engine.Stats { return s }}
+	src := &engineConditions{snap: testSnapshot(func() engine.Stats { return s })}
 	e.Add(src)
 	want := []health.Condition{
 		{Name: "node_fenced", Subject: health.Subject{Scope: health.ScopeNode, ID: "n1"}, Cause: cause, Detail: "fenced"},
@@ -108,5 +111,120 @@ func TestEngineConditionsIsAPointerSource(t *testing.T) {
 	}
 	if !reflect.TypeFor[*engineConditions]().Implements(src) {
 		t.Error("*engineConditions does not implement health.Source")
+	}
+}
+
+// testSnapshot builds a snapshot answering stats on a clock that never
+// advances: no fetch of these collectors can run past its deadline.
+func testSnapshot(stats func() engine.Stats) *snapshot {
+	return newSnapshot(stats, sim.NewTestClock(startish), newPartialCounter())
+}
+
+// A fetch past its deadline raises one node-scope condition naming the
+// unavailability, so a health pass cannot read as clean over a wedge: the
+// status writer's next consumption of the evaluator names the omission,
+// while the export omits the series and counts the scrape.
+func TestEngineConditionsDeadlinedRaisesUnavailability(t *testing.T) {
+	block := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	clock := sim.NewTestClock(startish)
+	t.Cleanup(func() { close(block) }) // the wedged fetch answers whenever the test ends, success or not
+	snap := newSnapshot(func() engine.Stats {
+		once.Do(func() { close(entered) })
+		<-block
+		return engine.Stats{}
+	}, clock, newPartialCounter())
+	const node = "6e6f6465000000000000000000000000"
+	e := &engineConditions{snap: snap, subject: health.Subject{Scope: health.ScopeNode, ID: node}}
+
+	got := make(chan []health.Condition, 1)
+	go func() { got <- e.Conditions(nil) }()
+	select {
+	case <-entered: // the flight is led, its watcher armed
+	case <-time.After(10 * time.Second):
+		t.Fatal("the conditions fetch never reached the snapshot")
+	}
+	// The deadline waits on the injected clock alone: no advance, no omit.
+	clock.Advance(6 * time.Second)
+	var conds []health.Condition
+	select {
+	case conds = <-got:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the conditions fetch never returned past its deadline")
+	}
+	if len(conds) != 1 {
+		t.Fatalf("a deadlined fetch yielded %d conditions (%+v), want the one naming the unavailability", len(conds), conds)
+	}
+	want := health.Condition{
+		Name:    "engine_stats_unavailable",
+		Subject: health.Subject{Scope: health.ScopeNode, ID: node},
+		Cause:   errStatsUnavailable,
+		Detail:  "the engine's statistics did not answer within their deadline; the export omits its series and this condition names the omission",
+	}
+	if conds[0] != want {
+		t.Errorf("a deadlined fetch raised %+v, want %+v", conds[0], want)
+	}
+}
+
+// A wedged fetch is one flight: however many callers call get() while it
+// runs, each joins the same in-flight fetch, and one advance of the
+// injected clock past the deadline answers them all, every one with false.
+// The entered count of the wedged seam is asserted once before the advance
+// and once after the answers — the after is the deterministic half, since
+// every caller has then answered through the one flight.
+func TestSnapshotOneWedgedFlightAnswersAllCallers(t *testing.T) {
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	var entered atomic.Int32
+	enteredOnce := make(chan struct{})
+	var once sync.Once
+	fetches := func() engine.Stats {
+		if entered.Add(1) == 1 {
+			once.Do(func() { close(enteredOnce) })
+		}
+		<-block
+		return engine.Stats{}
+	}
+	clock := sim.NewTestClock(startish)
+	snap := newSnapshot(fetches, clock, newPartialCounter())
+
+	// The started gate releases once every caller has entered get(), so
+	// the answers below are the concurrent joining the single flight
+	// describes, not eight spreads of a sequential launch — and what the
+	// gate waits on is the entering of get(), never its answer.
+	var started sync.WaitGroup
+	const callers = 8
+	started.Add(callers)
+	answers := make(chan bool, callers)
+	for range callers {
+		go func() {
+			started.Done()
+			_, ok := snap.get()
+			answers <- ok
+		}()
+	}
+	started.Wait()
+	select {
+	case <-enteredOnce: // the one flight is led, its watcher armed
+	case <-time.After(10 * time.Second):
+		t.Fatal("no caller ever reached the snapshot")
+	}
+	clock.Advance(statsDeadline + time.Second)
+	for range callers {
+		select {
+		case ok := <-answers:
+			if ok {
+				t.Error("a caller of a flight past its deadline answered served, want every one omitted")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a caller of a wedged flight never answered past the deadline")
+		}
+	}
+	// Only after every caller answered is the seam's entry count
+	// deterministic: none can have led a second fetch, for every one already
+	// joined the wedged flight's expiry.
+	if n := entered.Load(); n != 1 {
+		t.Fatalf("the wedged fetch was entered %d times over %d callers, want 1: the single flight served them all", n, callers)
 	}
 }

@@ -175,7 +175,7 @@ func TestRFC8A_CloneResumedAtAFullLimit(t *testing.T) {
 		}
 	}
 
-	used := f.E.Stats().Journals[f.Dir].Shares[f.Second.ID].UsedBytes
+	used := f.E.Stats().Journals[f.Dir].Stats.Shares[f.Second.Tag].UsedBytes
 	if used == 0 {
 		t.Fatal("the second share's journal bytes read 0: its stats are missing, so no re-copy could show")
 	}
@@ -186,7 +186,7 @@ func TestRFC8A_CloneResumedAtAFullLimit(t *testing.T) {
 	// The restart's Start binds only the fixture's first share.
 	limitedSecond(t, f, 1<<20)
 
-	if got := f.E.Stats().Journals[f.Dir].Shares[f.Second.ID].UsedBytes; got != used {
+	if got := f.E.Stats().Journals[f.Dir].Stats.Shares[f.Second.Tag].UsedBytes; got != used {
 		t.Errorf(
 			"the share's journal bytes after the restart: %d, want %d (no copy made again)",
 			got,

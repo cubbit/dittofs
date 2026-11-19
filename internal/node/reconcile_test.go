@@ -78,12 +78,14 @@ func configure(t testing.TB, h *nodetest.Harness, store [16]byte) {
 	}
 }
 
-// inEngine reports whether the engine's stats count share id among a
-// journal's shares, which only a binding puts there.
+// inEngine reports whether the engine's stats name share id's tag as an
+// attached share's, which only a binding puts there.
 func inEngine(h *nodetest.Harness, id entity.ShareID) bool {
 	for _, j := range h.Node().Engine().Stats().Journals {
-		if _, ok := j.Shares[id]; ok {
-			return true
+		for _, sid := range j.TagShares {
+			if sid == id {
+				return true
+			}
 		}
 	}
 	return false

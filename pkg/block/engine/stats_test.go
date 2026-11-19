@@ -3,6 +3,8 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"maps"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -189,6 +192,68 @@ func TestStatsRaisesNoJournalSyncFailedForALossAtOpen(t *testing.T) {
 	}
 }
 
+// Stats carries the journal's whole snapshot: after a write, a commit's sync
+// and a write refused at capacity, the copy Stats hands out equals the
+// journal's own, field for field, so no figure is dropped on the way.
+func TestStatsCarriesTheJournalsSnapshot(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("held"))
+	if _, _, err := u.e.Commit(t.Context(), u.share.ID, f, 0, 4); err != nil {
+		t.Fatal(err)
+	}
+	// A refused reservation: the small share's own journal limit, two bytes,
+	// refuses this write — the journal-wide capacity and its reservation
+	// counters are the journal conformance suite's, over the real journal.
+	small := enginetest.AddShare(t, u.fs.Store, "small", 2)
+	if err := u.e.Bind(t.Context(), small); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.e.Write(t.Context(), small.ID, entity.NewFileID(), 0, []byte("abc"), engine.WriteOpts{Done: func() {}}); err == nil {
+		t.Fatal("a write past the share's journal limit was accepted")
+	}
+	js := u.e.Stats().Journals["unit"]
+	if js.Stats == nil {
+		t.Fatal("the carried snapshot is nil, want the journal's own Stats")
+	}
+	want := u.j.Stats()
+	if !reflect.DeepEqual(*js.Stats, want) {
+		t.Errorf("the carried snapshot is %+v, want the journal's own %+v", *js.Stats, want)
+	}
+}
+
+// TagShares names the tag of every share attached to the journal, and no
+// other: once a share is dropped, its tag is gone from the map.
+func TestStatsTagSharesNameEveryAttachedShare(t *testing.T) {
+	u := newUnit(t)
+	two := enginetest.AddShare(t, u.fs.Store, "two", 1<<30)
+	two.Namespace = u.share.Namespace
+	if err := u.e.Bind(t.Context(), two); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.e.Write(t.Context(), two.ID, entity.NewFileID(), 0, []byte("two's"), engine.WriteOpts{Done: func() {}}); err != nil {
+		t.Fatal(err)
+	}
+	js := u.e.Stats().Journals["unit"]
+	want := map[journal.ShareTag]entity.ShareID{u.share.Tag: u.share.ID, two.Tag: two.ID}
+	if !maps.Equal(js.TagShares, want) {
+		t.Errorf("TagShares is %v, want each attached share's tag: %v", js.TagShares, want)
+	}
+	if err := u.e.Unbind(t.Context(), two.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.e.Drop(t.Context(), two.ID); err != nil {
+		t.Fatal(err)
+	}
+	js = u.e.Stats().Journals["unit"]
+	if _, ok := js.TagShares[two.Tag]; ok {
+		t.Errorf("TagShares names the dropped share's tag %d, want it gone", two.Tag)
+	}
+	if len(js.TagShares) != 1 || js.TagShares[u.share.Tag] != u.share.ID {
+		t.Errorf("TagShares is %v after the drop, want only the bound share's tag %d", js.TagShares, u.share.Tag)
+	}
+}
+
 // Each share's figures in Stats are the journal's for its own tag.
 func TestStatsReportsEachSharesFiguresFromItsTag(t *testing.T) {
 	u := newUnit(t)
@@ -201,17 +266,29 @@ func TestStatsReportsEachSharesFiguresFromItsTag(t *testing.T) {
 	}
 	js := u.e.Stats().Journals["unit"]
 	want := u.j.Stats()
-	if js.UsedBytes != want.UsedBytes || js.UsedBytes != 13 {
-		t.Errorf("the journal's UsedBytes %d, want the journal's %d", js.UsedBytes, want.UsedBytes)
+	if js.Stats.UsedBytes != want.UsedBytes || js.Stats.UsedBytes != 13 {
+		t.Errorf("the journal's UsedBytes %d in the carried snapshot, want the journal's %d", js.Stats.UsedBytes, want.UsedBytes)
 	}
-	if got := js.Shares[u.share.ID].UsedBytes; got != 10 {
+	// The per-share figures read through the carried snapshot's own map,
+	// each share's tag named by the entry's TagShares.
+	tags := map[entity.ShareID]journal.ShareTag{}
+	for tag, sid := range js.TagShares {
+		tags[sid] = tag
+	}
+	if _, named := tags[u.share.ID]; !named {
+		t.Fatal("share one is not in TagShares")
+	}
+	if _, named := tags[two]; !named {
+		t.Fatal("share two is not in TagShares")
+	}
+	if got := js.Stats.Shares[tags[u.share.ID]].UsedBytes; got != 10 {
 		t.Errorf("share one's UsedBytes %d, want its tag's 10", got)
 	}
-	if got := js.Shares[two].UsedBytes; got != 3 {
+	if got := js.Stats.Shares[tags[two]].UsedBytes; got != 3 {
 		t.Errorf("share two's UsedBytes %d, want its tag's 3", got)
 	}
-	if js.NextVersion != want.NextVersion || js.VersionLimit != want.VersionLimit {
-		t.Errorf("versions %v and %v, want the journal's %v and %v", js.NextVersion, js.VersionLimit, want.NextVersion, want.VersionLimit)
+	if js.Stats.NextVersion != want.NextVersion || js.Stats.VersionLimit != want.VersionLimit {
+		t.Errorf("versions %v and %v in the carried snapshot, want the journal's %v and %v", js.Stats.NextVersion, js.Stats.VersionLimit, want.NextVersion, want.VersionLimit)
 	}
 }
 
@@ -267,7 +344,8 @@ func TestStatsBesideWrites(t *testing.T) {
 	eventually(t, "every write committed", func() bool { return u.e.FileEntries() == 0 })
 	close(stop)
 	wg.Wait()
-	if got := u.e.Stats().Journals["unit"].Shares[u.share.ID].UsedBytes; got != 100 {
+	js := u.e.Stats().Journals["unit"]
+	if got := js.Stats.Shares[u.share.Tag].UsedBytes; got != 100 {
 		t.Errorf("the share's UsedBytes %d, want the 100 bytes written", got)
 	}
 }

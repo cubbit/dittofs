@@ -91,7 +91,7 @@ func TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag(t *testing.T) {
 		t.Fatalf("Drop: %v", err)
 	}
 
-	if _, ok := f.E.Stats().Journals[f.Dir].Shares[f.Share.ID]; ok {
+	if _, ok := f.E.Stats().Journals[f.Dir].Stats.Shares[f.Share.Tag]; ok {
 		t.Error("Stats names an entry for the dropped share's tag")
 	}
 

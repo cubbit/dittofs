@@ -573,6 +573,8 @@ func (e *Engine) refuse(
 
 	if c != nil {
 		o.stats.Journals[dir] = JournalStats{
+			// The refusal shape carries no snapshot: nil is what no journal
+			// open behind this entry reads as, not a zero Stats.
 			Conditions: []Condition{*c},
 		}
 	}

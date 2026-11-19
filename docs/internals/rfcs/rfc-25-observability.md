@@ -722,6 +722,7 @@ row.
 | `journal_read_only` | [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write) | journal | unhealthy: writes refused, reads served while the journal is open, until a spare is made, the storage checks pass and the reopen succeeds | page at once |
 | `stranded_export_failed` | [RFC 1 §3](rfc-1-journal.md#3.%20Interface), [RFC 8 §11.1](rfc-8-engine.md#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | node | degraded | ticket |
 | `node_fenced` | [RFC 8 §11.2](rfc-8-engine.md#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) | node | unhealthy: writes answer retry-later | page at once — it already waited 30 s |
+| `engine_stats_unavailable` | RFC 25 §2.8 | node | degraded: the engine's Stats missed the 5 s export deadline | ticket at 15 min |
 | `metadata_store_unhealthy`, `metadata_store_degraded` | [RFC 16 §8.3](rfc-16-metadata-store.md#8.3%20Health%20and%20debugging) | node | as named | page at 5 min; ticket |
 | `metadata_store_lost` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | installation | unhealthy; waits for an operator | page at once |
 | `copied_image` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | node | unhealthy; waits for an operator, and clears once no namespace answers copy | page at once |
