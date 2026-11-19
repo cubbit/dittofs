@@ -1493,6 +1493,12 @@ and RFC 21 carries it on the wire.
   a directory one as `<directory domain>\<name>`, as `lsarpc` lookups answer
   ([RFC 22 §5.2](rfc-22-smb.md#5.2%20IPC%24%20and%20the%20RPC%20services)).
 
+> ponytail: a name is stored as given, folded for comparison by case only. No
+> Unicode normalisation is applied, so two names identical after normalisation
+> are two names, and a name holding a control character is not refused. Refuse
+> control characters and compare after NFC normalisation at a creation or rename
+> once two names that look alike are reported.
+
 ## 5. Directory integration
 
 ### 5.1 What a directory provides

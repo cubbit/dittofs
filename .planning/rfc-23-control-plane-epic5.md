@@ -465,7 +465,9 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   session's revocation and `NotBefore`, the caller's `MustChange`, which E4's row flag reads;
   `checkLastAdmin(tx, before, after)` reading `EnabledAdmins` in the write's transaction, and the
   role-raise rule, for E4's user handlers; a role on a machine principal refused; `nodetest`'s
-  signed-in caller of each role. Consumed by every E4 route, E6 and E7.
+  signed-in caller of each role; the role field on E4's user routes, replacing T4.10's guard that
+  refuses a caller below `admin` any write of a user holding a role. Consumed by every E4 route,
+  E6 and E7.
 - **Acceptance criteria:**
   - Disabling an account refuses its next call with its access token unexpired.
   - Two concurrent demotions of the last two admins: one commits, the other answers `last_admin`.
@@ -475,7 +477,9 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   (R6); a role written on a machine principal refused `400` (R7); a disabled account and a revoked
   session refused on the next call, the clock not advanced (R3, R13); a demotion leaving the
   session and token alive with viewer rights (R15); a must-change session refused `403`
-  `password_change_required` on other routes (R35); a refused call audited and counted (R40, R41).
+  `password_change_required` on other routes (R35); a refused call audited and counted (R40, R41);
+  an API-only account, created with a role and no spelling, holding none (E4's R42, moved here
+  from T4.10 with the role field).
 
 ### T5.7 Passwords
 

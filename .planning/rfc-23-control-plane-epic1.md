@@ -49,8 +49,8 @@ its drift test; the architecture tests that need no package this epic does not c
   `pkg/metadata/entity` (D3): E2 declares and fills them together, so no stub of
   them is frozen here. E2 adds `Alloc` to `PutUser` and `PutGroup` (its D2), refusing
   an allocation until the RFC 18 plan's counters land.
-- `pkg/apiclient`: the package goes with its v1 body (D6), and E4 lands it whole, one generic
-  `Resource[Spec, Status]` with its core.
+- `pkg/apiclient`: the package goes with its v1 body (D6), and E4 lands the client whole as
+  `pkg/node/apiv1/client`, one generic `Resource[Spec, Status]` with its core.
 - Each resource's spec and status types in `pkg/node/apiv1`: E4 for the resources its routes
   serve, E5 for API tokens, sessions and sign-in.
 - The kvstore settings view's delete and the secrets view (`DeleteSetting`,
@@ -216,7 +216,8 @@ that subtasks and tests can cite them.
   `Resource[Spec, Status]` (`List`, `Get`, `Create`, `Replace`, `Patch`, `Delete`) with its core, each
   resource's accessor added with its route. The CLI-closure rule names `pkg/apiclient` among the
   allowed packages, so it holds the client from the day E4 lands it. The user's decision. No
-  marker. Prior art: the Kubernetes dynamic client's generic resource interface (from memory).
+  marker. E4 landed the client as `pkg/node/apiv1/client` instead, which the CLI-closure rule
+  names, so `pkg/apiclient` is now one of the v1 paths the no-v1-import rule refuses. Prior art: the Kubernetes dynamic client's generic resource interface (from memory).
 - **D7, the API's package is not created here.** `internal/node/api` lands with E4, its first
   consumer, and `internal/node/api/auth` with E5; neither touches this epic's surface. The two
   architecture rules about that package land with it in E4 (RFC 23's plan, §1.3). No marker.
@@ -254,7 +255,7 @@ test/harness/fixture/
   spec.go                                  T1.1  Unsupported, Placeholders, Network, moved from fixture.go
   fixture.go, api.go, shares.go            T1.1  deleted, with their tests
 test/harness/run/fixture.go                T1.1  a DittoFS-server fixture refused
-pkg/apiclient/                             T1.2  deleted, with its v1 body (D6); E4 lands it again
+pkg/apiclient/                             T1.2  deleted, with its v1 body (D6); E4 lands the client as pkg/node/apiv1/client
 cmd/dfsctl/commands/**                     T1.2  bodies replaced by a refusal (D11); tree and flags kept
 pkg/controlplane/  internal/controlplane/
 pkg/snapshot/  pkg/identity/               T1.3  deleted (internal/auth/netlogon stays, with no production importer)
@@ -470,7 +471,8 @@ internal/node/
   - **no v1 import** (R3): no `.go` file outside `testdata` imports a path under
     `pkg/controlplane`, `internal/controlplane` or `pkg/snapshot`. `pkg/identity` and
     `pkg/apiclient` return in v2 at the same paths, so the compiler guards their deletion and the
-    rule names neither;
+    rule names neither (E4's client landed as `pkg/node/apiv1/client`, so the rule now names
+    `pkg/apiclient` too);
   - **who imports the node** (R19): only `cmd/dfs/commands/start.go` and files under
     `internal/node/nodetest` import `internal/node`; a `decision:` marker says the harness is the
     one exemption RFC 23 names. `nodetest` does not exist until E3, so the rule's `testdata` tree
@@ -479,8 +481,8 @@ internal/node/
   - **the CLI's closure** (R11, R20), over the binary's dependencies, `go list -deps ./cmd/dfsctl`
     without `-test`, so a test's import of the harness is not counted: the transitive imports of
     `cmd/dfsctl/...` and
-    `pkg/node/apiv1`, and of `pkg/apiclient` once E4 lands it, stay, of this module, within
-    `cmd/dfsctl/...`, `pkg/apiclient`, `pkg/node/apiv1` and `internal/cli/...`, and
+    `pkg/node/apiv1`, and of E4's client once it lands, stay, of this module, within
+    `cmd/dfsctl/...`, the client (`pkg/node/apiv1/client`), `pkg/node/apiv1` and `internal/cli/...`, and
     `pkg/node/apiv1`'s within the standard library;
   Beside T1.3's export pin, in the file T1.3 created. Consumed by every later epic, whose changes these rules hold; E4 adds the two rules over
   `internal/node/api` to the same file.
