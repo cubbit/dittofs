@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
@@ -15,17 +16,18 @@ import (
 
 // modelOpsWithoutOffload is the operation set the many-seed model draws from:
 // every operation the generator's weights table names except the offload and
-// the release, the two calls the 9b data path owns, and the repack. A
-// sequence over it still makes reclaimable space as the epic's scope does
-// without the 9b pair: overwrites, deletes and truncates — and the crashes
+// the release, the two calls the remote-data path owns, and the repack. A
+// sequence over it still makes reclaimable space as the soak's scope does
+// without the pair: overwrites, deletes and truncates — and the crashes
 // and reopens around all of it.
 //
-// decision: OpOffload and OpRelease stay out of the alphabet until the 9b
-// epic lands them, which is the change that removes the exclusion by
-// restoring the two operations here; a fill idles with no offload to report,
-// so no other operation reaches a 9b-only call path. The two weights stay in
-// the table, so GenerateWithin renormalises the rest exactly as the full
-// alphabet will draw them once 9b restores the pair.
+// decision: OpOffload and OpRelease stay out of the alphabet until the
+// offload and the release are wired into the journal, which is the change
+// that removes the exclusion by restoring the two operations here; a fill
+// idles with no offload to report, so no other operation reaches a path
+// only their wiring answers. The two weights stay in the table, so
+// GenerateWithin renormalises the rest exactly as the full alphabet will
+// draw them once the wiring restores the pair.
 //
 // decision: OpRepack stays out too, because the repack pass's per-unit work
 // grows with the segment count — its copy reads a full snapshot of the
@@ -67,31 +69,59 @@ func modelSeeds(t *testing.T) int {
 	return n
 }
 
-// TestModelManySeeds runs the reference model over the seeds 0..n-1, each a
-// fresh timeline of the same operations — the alphabet modelOpsWithoutOffload
-// names — over the two shares and four files of one journal, comparing after
-// every step. The nightly suite raises n through DITTOFS_MODEL_SEEDS, so the
-// rare timeline a change's one draw misses is a matter of which seed trips
-// there. A failing seed's shrunk sequence is written to the artifact
-// directory, to be committed to testdata/model with the fix.
+// modelSeedBase is the first seed the sweep draws: DITTOFS_MODEL_SEED_BASE,
+// unset or "0" for the same draws every run; the UTC day's count of days
+// since 1970 for "night", which the nightly suite sets so every night
+// explores seeds no run has drawn before while a rerun the same night
+// reproduces the same timelines, and a failure's reproduction line names the
+// number it used; or a number, rerunning one sweep's draws exactly. The
+// sweep then draws base..base+n-1.
+func modelSeedBase(t *testing.T) uint64 {
+	t.Helper()
+
+	s, ok := os.LookupEnv("DITTOFS_MODEL_SEED_BASE")
+	if !ok || s == "" || s == "0" {
+		return 0
+	}
+	if s == "night" {
+		return uint64(time.Now().UTC().Unix() / 86400)
+	}
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		t.Fatalf("DITTOFS_MODEL_SEED_BASE=%q: %v", s, err)
+	}
+	return n
+}
+
+// TestModelManySeeds runs the reference model over the seeds base..base+n-1,
+// each a fresh timeline of the same operations — the alphabet
+// modelOpsWithoutOffload names — over the two shares and four files of one
+// journal, comparing after every step. The nightly suite raises n through
+// DITTOFS_MODEL_SEEDS and turns the base over through
+// DITTOFS_MODEL_SEED_BASE=night, so each night explores fresh timelines
+// while a rerun the same night draws the same ones; a failure names the base
+// its rerun needs. A failing seed's shrunk sequence is written to the
+// artifact directory, to be committed to testdata/model with the fix.
 func TestModelManySeeds(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	open, reached := journaltest.ModelTargets(t)
+	base := modelSeedBase(t)
 	for s := 0; s < modelSeeds(t); s++ {
-		name := fmt.Sprintf("seed-%d.txt", s)
-		steps := model.GenerateWithin(uint64(s), model.DefaultSteps, modelOpsWithoutOffload)
+		seed := base + uint64(s)
+		name := fmt.Sprintf("seed-%d.txt", seed)
+		steps := model.GenerateWithin(seed, model.DefaultSteps, modelOpsWithoutOffload)
 		before := t.Failed()
 		model.Check(t, name, steps, open,
-			fmt.Sprintf("drawn from seed %d over the alphabet without offload and release, %d steps", s, model.DefaultSteps),
-			fmt.Sprintf("reproduce: DITTOFS_MODEL_SEEDS=%d running TestModelManySeeds, which reruns seeds 0..%d; or commit the shrunk sequence as testdata/model/%s, which TestModel's corpus runs first", s+1, s, name))
+			fmt.Sprintf("drawn from seed %d over the alphabet without offload and release, %d steps", seed, model.DefaultSteps),
+			fmt.Sprintf("reproduce: DITTOFS_MODEL_SEEDS=%d DITTOFS_MODEL_SEED_BASE=%d running TestModelManySeeds, which reruns seeds %d..%d; or commit the shrunk sequence as testdata/model/%s, which TestModel's corpus runs first", s+1, base, base, seed, name))
 		if !t.Failed() || before {
 			continue
 		}
 		// The first failing seed ends the sweep: Check has already shrunk it
 		// and written its sequence, so the seeds after it would only spend
 		// the run's budget re-reporting what the failing journal cannot pass.
-		t.Errorf("seed %d diverged: rerun the sweep to it with DITTOFS_MODEL_SEEDS=%d (seeds 0..%d, the same draws, the alphabet above); to replay the finding itself, commit the shrunk sequence above as testdata/model/%s, which TestModel's corpus runs", s, s+1, s, name)
+		t.Errorf("seed %d diverged: rerun the sweep to it with DITTOFS_MODEL_SEEDS=%d DITTOFS_MODEL_SEED_BASE=%d (seeds %d..%d, the same draws, the alphabet above); to replay the finding itself, commit the shrunk sequence above as testdata/model/%s, which TestModel's corpus runs", seed, s+1, base, base, seed, name)
 		return
 	}
 

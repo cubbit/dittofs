@@ -144,6 +144,13 @@ suites:
     cmd: go test -tags=journal_conformance,journal_model -run ^TestModelManySeeds$ -timeout=110m -artifacts -outputdir={out} ./pkg/block/journal/conformance/
     env:
       DITTOFS_MODEL_SEEDS: "100"
+      # The base turns over every night: the day's count of days draws seeds no
+      # run has drawn before, while a rerun the same night draws the same ones
+      # and a failure's line names the number its rerun needs. The registry's
+      # own {out}/{base} substitution reaches no run date, so the value is this
+      # spelled word the test itself resolves - the smallest change until a
+      # date-valued key lands in the harness.
+      DITTOFS_MODEL_SEED_BASE: "night"
     tier: nightly
     # The cell limit sits above the seeded run: the registry's default 60m cell would kill
     # it mid-seed, red for the wrong reason.
