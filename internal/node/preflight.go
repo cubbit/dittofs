@@ -1,8 +1,10 @@
+package node
+
 // What a start refuses to serve over: a start over absent or contradictory
 // storage names what it found instead of creating anything. decide turns the
-// facts the start's probes gathered into that one verdict; the probes that
-// gather them land in this file alongside it.
-package node
+// facts the probes gathered — the v1 layouts, the store directory, each
+// journal device — into that one verdict, and nothing under the node's
+// storage is opened, created or changed to gather them.
 
 import (
 	"context"
@@ -71,23 +73,36 @@ const manifestName = "MANIFEST"
 
 // probeV1State returns the path of the first pre-journal (v1) local layout
 // under root: a shares/<name> directory holding a populated journal, blobs or
-// logs directory. "" is none. Listing errors read as none: the store and
-// device probes name their errors, and a root nothing can list is refused
-// there.
-func probeV1State(root string) string {
-	shares, err := os.ReadDir(filepath.Join(root, "shares"))
+// logs directory. "" is none. A shares directory that is not there means the
+// root holds no v1 layout; a directory that is there but cannot be listed,
+// this root's or a leaf's, is the caller's own reading error, refused as that
+// and never read as a verdict over what it could not see.
+func probeV1State(root string) (string, error) {
+	list := func(p string) ([]os.DirEntry, error) {
+		entries, err := os.ReadDir(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return entries, err
+	}
+	sharesPath := filepath.Join(root, "shares")
+	shares, err := list(sharesPath)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("reading %s: %w", sharesPath, err)
 	}
 	for _, share := range shares {
 		for _, leaf := range [...]string{"journal", "blobs", "logs"} {
 			dir := filepath.Join(root, "shares", share.Name(), leaf)
-			if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
-				return dir
+			entries, err := list(dir)
+			if err != nil {
+				return "", fmt.Errorf("reading %s: %w", dir, err)
+			}
+			if len(entries) > 0 {
+				return dir, nil
 			}
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // probeStore stats the store directory: present, absent, unidentifiable.
@@ -146,16 +161,23 @@ func Preflight(ctx context.Context, storeDir string, devices []string, clock eng
 	case storeDir == "":
 		return errNoStoreDir
 	case len(devices) == 0:
-		// decision: the no-device refusal is answered before the probes, so
-		// it does not depend on what storage a deviceless start has no
-		// business of its own reading: a start refusing for a missing wiring
-		// piece must not consult the storage it is about to refuse over.
+		// decision: a bootstrap that names no journal device is a missing
+		// wiring piece, refused before any probe runs: a deviceless start
+		// must refuse over a present store exactly as over an absent one, so
+		// its refusal may not depend on storage it is about to refuse over
+		// either way. Overturned when a caller can name its devices to a
+		// different gate — a device list the metadata store itself holds,
+		// say — that would let the probes answer first.
 		return errNoDevice
 	}
 	facts := startFacts{StoreDir: storeDir}
 	roots := append(slices.Clone(devices), filepath.Dir(storeDir), filepath.Join(filepath.Dir(storeDir), "blocks"))
 	for _, root := range roots {
-		if p := probeV1State(root); p != "" {
+		p, err := probeV1State(root)
+		if err != nil {
+			return err
+		}
+		if p != "" {
 			facts.V1 = p
 			break
 		}
@@ -185,6 +207,11 @@ func Preflight(ctx context.Context, storeDir string, devices []string, clock eng
 		}
 		facts.Devices = append(facts.Devices, fact)
 	}
+	// A context that dies mid-probe is the caller's answer, never a device
+	// verdict: decide would read its cancellation as an unidentified device.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return decide(facts)
 }
 
@@ -197,6 +224,12 @@ func decide(f startFacts) error {
 		return fmt.Errorf("%w: a v1 journal lives at %s, from before the current layout", errV1State, f.V1)
 	}
 	if f.Store == storePresent {
+		// decision: a present store settles the start check on its own and
+		// the devices are left unconsulted: Start's refuse step compares each
+		// device's journal with the installation the store holds, so deciding
+		// over the devices here would answer a second time what comes with no
+		// new fact. Overturned when a start-time state exists in which a
+		// present store must not be trusted on its own.
 		return nil
 	}
 	if f.Store == storeUnidentifiable {
@@ -217,10 +250,17 @@ func decide(f startFacts) error {
 	var installs []journal.InstallationID
 	dirs := make(map[journal.InstallationID]string)
 	segments := false
+	firstID, firstDir, firstSeen := journal.JournalID{}, "", false
 	for _, d := range f.Devices {
 		segments = segments || d.Segments
 		var id *journal.IdentityError
-		if !errors.As(d.OpenErr, &id) || seen[id.Installation] {
+		if !errors.As(d.OpenErr, &id) {
+			continue
+		}
+		if !firstSeen {
+			firstID, firstDir, firstSeen = id.Found, d.Dir, true
+		}
+		if seen[id.Installation] {
 			continue
 		}
 		seen[id.Installation] = true
@@ -235,7 +275,7 @@ func decide(f startFacts) error {
 		if segments {
 			held = ", while its segments still live on the devices"
 		}
-		return fmt.Errorf("%w: the store volume at %s holds none of installation %x the devices name%s; check the store volume's mount first, then restore it from a backup, a restore loses every write since the backup", errStoreLost, f.StoreDir, installs[0], held)
+		return fmt.Errorf("%w: the store volume at %s holds none of installation %x the devices name — the journal at %s carries identity %x%s; check the store volume's mount first, then restore it from a backup, which loses every write since that backup", errStoreLost, f.StoreDir, installs[0], firstDir, firstID, held)
 	default:
 		return fmt.Errorf("%w: no device holds a journal and no store holds one; check that each volume is mounted where the configuration's mount paths point, then run dfs init to initialise the node", errNotInitialised)
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,7 +31,9 @@ func TestDecide(t *testing.T) {
 	instB := journal.InstallationID{0xBB, 0x02}
 	corruptFormat := fmt.Errorf("%w: the format file is damaged", journal.ErrCorrupt)
 	ident := func(inst journal.InstallationID, dir string, segments bool) deviceFacts {
-		return deviceFacts{Dir: dir, OpenErr: &journal.IdentityError{Installation: inst}, Segments: segments}
+		return deviceFacts{Dir: dir,
+			OpenErr:  &journal.IdentityError{Found: journal.JournalID{0x11, 0x22}, Installation: inst},
+			Segments: segments}
 	}
 	noJournal := func(dir string) deviceFacts {
 		return deviceFacts{Dir: dir, OpenErr: journal.ErrNoJournal}
@@ -168,6 +171,8 @@ func TestDecide(t *testing.T) {
 			contains: []string{
 				"/s",
 				"aa01",
+				"1122",
+				"/d1",
 				"check the store volume's mount first",
 				"restore",
 				"loses every write since",
@@ -185,6 +190,8 @@ func TestDecide(t *testing.T) {
 			contains: []string{
 				"/s",
 				"aa01",
+				"1122",
+				"/d1",
 				"check the store volume's mount first",
 				"restore",
 				"loses every write since",
@@ -574,6 +581,39 @@ func TestPreflight(t *testing.T) {
 			},
 		},
 		{
+			name: "a v1 shares directory that cannot be listed",
+			setup: func(t *testing.T, parent string) (string, []string) {
+				openStore(t, filepath.Join(parent, "store"))
+				makeDir(t, filepath.Join(parent, "shares", "s1", "blobs"))
+				device := filepath.Join(parent, "device")
+				makeDir(t, device)
+				return filepath.Join(parent, "store"), []string{device}
+			},
+			// The shares tree is made unreadable between the hashes: beside a
+			// store the check would accept, a v1 tree it cannot read must
+			// refuse as a reading error of its own — not pass as no v1 layout
+			// and not name a verdict over what it could not see.
+			postSetup: func(t *testing.T, storeDir string, _ []string) {
+				shares := filepath.Join(filepath.Dir(storeDir), "shares")
+				if err := os.Chmod(shares, 0o000); err != nil {
+					t.Fatal(err)
+				}
+				if entries, err := os.ReadDir(shares); err == nil {
+					t.Skipf("this host reads a 0-mode directory (%d entries), which root does; the refusal below cannot be shown here", len(entries))
+				}
+			},
+			postRun: func(t *testing.T, storeDir string, _ []string) {
+				if err := os.Chmod(filepath.Join(filepath.Dir(storeDir), "shares"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want:    fs.ErrPermission,
+			neverIs: []error{errV1State, errUnidentifiable, errNoDevice},
+			contains: func(parent string) []string {
+				return []string{filepath.Join(parent, "shares")}
+			},
+		},
+		{
 			name: "unreadable store directory",
 			setup: func(t *testing.T, parent string) (string, []string) {
 				dir := filepath.Join(parent, "store")
@@ -635,12 +675,14 @@ func TestPreflight(t *testing.T) {
 			if !errors.Is(got, r.want) {
 				t.Fatalf("Preflight's verdict: got %v, want %v", got, r.want)
 			}
-			if got != nil && r.contains != nil {
+			if got != nil {
 				for _, never := range r.neverIs {
 					if errors.Is(got, never) {
 						t.Errorf("Preflight's verdict: got %v, which must never wrap %v", got, never)
 					}
 				}
+			}
+			if got != nil && r.contains != nil {
 				for _, want := range r.contains(parent) {
 					if !strings.Contains(got.Error(), want) {
 						t.Errorf("verdict message must contain %q: got %q", want, got.Error())

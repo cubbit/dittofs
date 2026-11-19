@@ -443,8 +443,9 @@ func TestStartRefusesAnUnreadableDevice(t *testing.T) {
 	}
 }
 
-// A foreignJournal is a journal whose format names installation byte 15 = 9,
-// one the harness's store holds no device of, over the test's own directory.
+// foreignJournal creates, over its own temporary directory, a journal of an
+// installation the harness's store does not hold: its installation ID has
+// byte 15 set to 9, which the harness's own installation does not.
 func foreignJournal(t *testing.T) (dir string, id journal.JournalID) {
 	t.Helper()
 	dir = filepath.Join(t.TempDir(), "foreign")
@@ -461,7 +462,7 @@ func foreignJournal(t *testing.T) (dir string, id journal.JournalID) {
 
 // A device whose journal belongs to another installation fails the start at
 // its first step, naming the device, the journal's identity, its installation
-// and the store's, before anything opens.
+// and the store's.
 func TestStartRefusesAJournalOfAnotherInstallation(t *testing.T) {
 	dir, jid := foreignJournal(t)
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
