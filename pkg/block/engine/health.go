@@ -76,15 +76,15 @@ const (
 	ScopeShare   = health.ScopeShare
 )
 
-// JournalStats is one device's journal, as Stats reports it: the journal's
-// figures, copied from its own Stats, and its conditions.
+// JournalStats is one device's journal, as Stats reports it.
 type JournalStats struct {
-	MaxBytes         int64
-	UsedBytes        int64
-	DirtyBytes       int64
-	UnreclaimedBytes int64
-	NextVersion      journal.Version
-	VersionLimit     journal.Version
+	// Stats is the journal's own snapshot, one copy per Engine.Stats call.
+	// nil when no journal is open behind this entry — a device refused at
+	// Start or after Close — so no zero snapshot can read as healthy.
+	Stats *journal.Stats
+	// TagShares names the tag of every share attached to this journal, and
+	// no other: only the engine knows which share holds a tag.
+	TagShares map[journal.ShareTag]entity.ShareID
 	// Shares is, for each share bound to the journal, the journal's figures
 	// for the share's tag.
 	Shares     map[entity.ShareID]JournalShareStats
@@ -128,6 +128,19 @@ func (s Stats) clone() Stats {
 	for dev, j := range s.Journals {
 		j.Conditions = slices.Clone(j.Conditions)
 		j.Shares = maps.Clone(j.Shares)
+		j.TagShares = maps.Clone(j.TagShares)
+		// A nil snapshot stays nil: it is the refusal and close shape, and
+		// cloning it would hand out a zero journal a healthy one reads as.
+		if j.Stats != nil {
+			st := *j.Stats
+			st.SyncMarks = maps.Clone(st.SyncMarks)
+			st.Shares = maps.Clone(st.Shares)
+			st.Losses = slices.Clone(st.Losses)
+			st.TagConflicts = slices.Clone(st.TagConflicts)
+			st.SyncDuration.Bounds = slices.Clone(st.SyncDuration.Bounds)
+			st.SyncDuration.Counts = slices.Clone(st.SyncDuration.Counts)
+			j.Stats = &st
+		}
 		out.Journals[dev] = j
 	}
 

@@ -373,14 +373,14 @@ func (e *Engine) Stats() Stats {
 		dir := e.d.Devices[0]
 		st := j.j.Stats()
 		js := s.Journals[dir]
-		js.MaxBytes, js.UsedBytes = st.MaxBytes, st.UsedBytes
-		js.DirtyBytes, js.UnreclaimedBytes = st.DirtyBytes, st.UnreclaimedBytes
-		js.NextVersion, js.VersionLimit = st.NextVersion, st.VersionLimit
+		js.Stats = &st
+		js.TagShares = map[journal.ShareTag]entity.ShareID{}
 		js.Shares = map[entity.ShareID]JournalShareStats{}
 		for sid, b := range table {
 			if b.removed || b.j != j.j {
 				continue
 			}
+			js.TagShares[b.share.Tag] = sid
 			ts := st.Shares[b.share.Tag]
 			js.Shares[sid] = JournalShareStats{
 				Limit:            ts.Limit,
