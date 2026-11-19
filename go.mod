@@ -23,7 +23,7 @@ require (
 	github.com/jcmturner/gokrb5/v8 v8.4.4
 	github.com/manifoldco/promptui v0.9.0
 	github.com/oiweiwei/go-msrpc v1.6.4
-	github.com/oiweiwei/gokrb5.fork/v9 v9.0.8
+	github.com/oiweiwei/gokrb5.fork/v9 v9.0.8 // indirect
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/olekukonko/tablewriter v1.1.5
 	github.com/pierrec/lz4/v4 v4.1.33
