@@ -127,11 +127,14 @@ func tagsOf[B any](w writing[B]) writing[none] {
 // user holding an API role, to a caller that is not admin, as accounts with
 // a role are admin's alone to read and write.
 //
-// decision: an account with a role is hidden by the role alone: a read
-// answers 404 and a listing leaves it out, and a write naming it answers 404
-// ahead of its precondition, as one naming no user does, so no answer tells
-// a non-admin which IDs are accounts. Epic 5's per-call account check, with
-// the rule on raising a role, replaces it once accounts and sign-in land.
+// decision: an account with a role is hidden by the role alone, and only on
+// /users: there a read answers 404 and a listing leaves it out, and a write
+// naming it answers 404 ahead of its precondition, as one naming no user
+// does. Grants, memberships and quotas resolve a principal's ID through
+// principalIn, which does not hide it, so a grant, membership or quota naming
+// an admin's ID succeeds where one naming a missing ID answers 404, telling a
+// non-admin which IDs are accounts. A per-call check of the caller's account,
+// with the rule on raising a role, closes that once accounts and sign-in land.
 func hiddenFrom(ctx context.Context, u entity.User) bool {
 	c, _ := auth.CallerFrom(ctx)
 	return u.Role != entity.RoleNone && c.Role < entity.RoleAdmin
