@@ -33,6 +33,15 @@ var (
 
 	// WellKnownAdministrators is the BUILTIN\Administrators SID: S-1-5-32-544.
 	WellKnownAdministrators = ParseSIDMust("S-1-5-32-544")
+
+	// WellKnownBuiltinUsers is the BUILTIN\Users SID: S-1-5-32-545.
+	WellKnownBuiltinUsers = ParseSIDMust("S-1-5-32-545")
+
+	// WellKnownNetwork is the NT AUTHORITY\NETWORK SID: S-1-5-2.
+	WellKnownNetwork = ParseSIDMust("S-1-5-2")
+
+	// WellKnownUnixRoot is the Unix-user SID of uid 0: S-1-22-1-0.
+	WellKnownUnixRoot = ParseSIDMust("S-1-22-1-0")
 )
 
 // wellKnownNames maps well-known SID strings to display names.
@@ -45,6 +54,9 @@ var wellKnownNames = map[string]string{
 	"S-1-5-11":     "NT AUTHORITY\\Authenticated Users",
 	"S-1-5-18":     "NT AUTHORITY\\SYSTEM",
 	"S-1-5-32-544": "BUILTIN\\Administrators",
+	"S-1-5-32-545": "BUILTIN\\Users",
+	"S-1-5-2":      "NT AUTHORITY\\NETWORK",
+	"S-1-22-1-0":   "Unix User\\root",
 }
 
 // WellKnownName returns the display name for a well-known SID.

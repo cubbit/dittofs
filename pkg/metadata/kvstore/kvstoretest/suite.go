@@ -49,6 +49,7 @@ func Run(t *testing.T, open Opener) {
 		{"MachineRecordShape", testMachineRecordShape},
 		{"MachineReadAndDelete", testMachineReadAndDelete},
 		{"UnnamedPrincipals", testUnnamedPrincipals},
+		{"GroupRecord", testGroupRecord},
 		{"UserCredentialRefs", testUserCredentialRefs},
 		{"SpellingUniqueAcrossKinds", testSpellingUniqueAcrossKinds},
 		{"PrincipalNameCase", testPrincipalNameCase},

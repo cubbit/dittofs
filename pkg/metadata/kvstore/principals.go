@@ -170,3 +170,28 @@ func primaryIn(r kv.Reader, u entity.User) (entity.Principal, error) {
 	}
 	return u.Primary, nil
 }
+
+// Records reads one group's record by ID: its spellings and its deleted mark.
+type Records struct{ s *Store }
+
+func (s *Store) Records() Records { return Records{s} }
+
+// Group is p's group record. One deleted or marked deleted is not found, nor
+// is a principal of another kind.
+func (r Records) Group(ctx context.Context, p entity.Principal) (entity.Group, error) {
+	var g entity.Group
+	err := r.s.kv.View(ctx, func(rd kv.Reader) error {
+		if p.Kind != entity.PrincipalGroup {
+			return notFound(nil, p)
+		}
+		b, ok, err := get(rd, groupKey(p.ID))
+		if err != nil || !ok {
+			return notFound(err, p)
+		}
+		if g, err = decodeGroup(p.ID, b); err == nil && g.Deleted {
+			err = notFound(nil, p)
+		}
+		return err
+	})
+	return g, err
+}

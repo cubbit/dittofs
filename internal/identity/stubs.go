@@ -12,23 +12,12 @@ import (
 // SignIn may answer and never "unknown principal" or a session, so a
 // consumer wired to the server before its bodies exist fails closed. Each is
 // replaced by its body: SignIn by NTLMv2, Kerberos and the domain's secure
-// channel; Spell and Find by the principal indexes and the directory;
-// Lookup, VerifyPassword
-// and Account by the principals' password checks.
+// channel; Lookup, VerifyPassword and Account by the principals' password
+// checks.
 
 // SignIn verifies one handshake round.
 func (s *Server) SignIn(ctx context.Context, step identity.SignInStep) (identity.SignInResult, error) {
 	return identity.SignInResult{}, vfserr.ErrUnavailable
-}
-
-// Spell returns p's spelling in scheme.
-func (s *Server) Spell(ctx context.Context, p entity.Principal, scheme identity.Scheme) (identity.Spelling, error) {
-	return identity.Spelling{}, vfserr.ErrUnavailable
-}
-
-// Find returns the principal holding sp.
-func (s *Server) Find(ctx context.Context, sp identity.Spelling, o identity.FindOpts) (entity.Principal, error) {
-	return entity.Principal{}, vfserr.ErrUnavailable
 }
 
 // Lookup resolves a name as presented to its account's principal.

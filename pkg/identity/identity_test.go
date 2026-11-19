@@ -72,3 +72,17 @@ func TestKeyFieldsFindsAKey(t *testing.T) {
 		t.Errorf("keyFields = %q, want %q", got, want)
 	}
 }
+
+// Find reads index rows only for the stored schemes: owner and qualified are
+// derived, and oidc has no rows yet.
+func TestSchemeStored(t *testing.T) {
+	for s, want := range map[identity.Scheme]bool{
+		identity.SchemeUID: true, identity.SchemeGID: true, identity.SchemeSID: true, identity.SchemeKrb: true,
+		identity.SchemeDir: true, identity.SchemeUserName: true, identity.SchemeGroupName: true,
+		identity.SchemeOIDC: false, identity.SchemeOwner: false, identity.SchemeQualified: false, 0: false,
+	} {
+		if got := s.Stored(); got != want {
+			t.Errorf("Scheme(%d).Stored() = %v, want %v", s, got, want)
+		}
+	}
+}

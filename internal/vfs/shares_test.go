@@ -576,19 +576,16 @@ func TestSpellAndFindPassThroughToNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The server's answer for a call it cannot serve, which a filesystem
-	// without Names never gives.
-	want, err := srv.Find(t.Context(), identity.Spelling{}, identity.FindOpts{})
-	if err == nil || errors.Is(err, errUnsigned) {
-		t.Fatalf("the identity server's Find answered %v, %v; want an error other than errUnsigned", want, err)
-	}
 	names := &findOpts{Identities: srv}
 	s := startShares(t, newFixtureOver(t, Deps{Names: names}, store), nil)
 	ctx := t.Context()
 
-	if _, got := s.Spell(ctx, s.fs.Admin.Principal, vfs.SchemeUID); !errors.Is(got, err) || errors.Is(got, errUnsigned) {
-		t.Errorf("Spell answered %v, want the identity server's %v", got, err)
+	// Each answer is the identity server's own for the same call.
+	wantSp, wantErr := srv.Spell(ctx, s.fs.Admin.Principal, vfs.SchemeUserName)
+	if sp, got := s.Spell(ctx, s.fs.Admin.Principal, vfs.SchemeUserName); sp.Text != wantSp.Text || !errors.Is(got, wantErr) || errors.Is(got, errUnsigned) {
+		t.Errorf("Spell answered %+v, %v; want the identity server's %+v, %v", sp, got, wantSp, wantErr)
 	}
+	want, err := srv.Find(ctx, vfs.Spelling{Scheme: vfs.SchemeUID, Num: 100}, identity.FindOpts{})
 	for _, tc := range []struct {
 		proof vfs.ProofKind
 		mint  bool
@@ -600,8 +597,8 @@ func TestSpellAndFindPassThroughToNames(t *testing.T) {
 	} {
 		names.got = nil
 		c := vfs.Call{Identity: vfs.Identity{Proof: tc.proof, Evidence: vfs.Evidence{Principal: s.fs.Admin.Principal}, Client: inLab}}
-		if _, got := s.Find(ctx, c, vfs.Spelling{Scheme: vfs.SchemeUID, Num: 100}); !errors.Is(got, err) || errors.Is(got, errUnsigned) {
-			t.Errorf("Find at proof %d answered %v, want the identity server's %v", tc.proof, got, err)
+		if p, got := s.Find(ctx, c, vfs.Spelling{Scheme: vfs.SchemeUID, Num: 100}); p != want || !errors.Is(got, err) || errors.Is(got, errUnsigned) {
+			t.Errorf("Find at proof %d answered %v, %v; want the identity server's %v, %v", tc.proof, p, got, want, err)
 		}
 		if len(names.got) != 1 || names.got[0].Mint != tc.mint {
 			t.Errorf("Find at proof %d reached identity with %+v, want one call with Mint %v", tc.proof, names.got, tc.mint)
