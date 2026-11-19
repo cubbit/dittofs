@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -140,6 +141,16 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		}
 		if sid := one(res.Entries[0], "objectSid"); !domainSID(sid) {
 			t.Errorf("naming context's objectSid = %x, want a binary S-1-5-21-x-y-z", sid)
+		}
+	})
+
+	// The client asks a question again on a new connection only when the
+	// one it held fails this way.
+	t.Run("a search on a closed connection fails ErrClosed", func(t *testing.T) {
+		c, _ := bound(t)
+		_ = c.Close()
+		if _, err := c.Search(ctx, directory.Request{Scope: directory.ScopeBase, Filter: "(objectClass=*)"}); !errors.Is(err, directory.ErrClosed) {
+			t.Errorf("a search on a closed connection = %v, want ErrClosed", err)
 		}
 	})
 

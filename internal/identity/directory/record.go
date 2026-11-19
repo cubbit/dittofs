@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -83,9 +84,10 @@ func (r Record) GroupAttr() string {
 
 // Validate refuses an unknown schema, an address that is not ldaps:// or
 // ldap:// with a host and an optional port and nothing more (no userinfo,
-// path, query or fragment), trust roots that are not PEM certificates, and an
+// path, query or fragment), trust roots that are not PEM certificates, an
 // ad realm holding a lower-case ASCII letter, since a ticket's realm is
-// compared exactly.
+// compared exactly, and a name attribute that is neither an RFC 4512 descr
+// nor a numeric OID, since it is placed in a filter unescaped.
 //
 // decision: TLS is the address's scheme and nothing turns it off: ldaps://
 // dials TLS, ldap:// always upgrades with StartTLS before the bind, and the
@@ -117,6 +119,11 @@ func (r Record) Validate() error {
 	if err := checkPEM(r.TrustRoots); err != nil {
 		return err
 	}
+	for field, attr := range map[string]string{"user_name_attr": r.UserNameAttr, "group_name_attr": r.GroupNameAttr} {
+		if attr != "" && !attrName.MatchString(attr) {
+			return fmt.Errorf("identity.directory: %s %q is neither an attribute name nor a numeric OID", field, attr)
+		}
+	}
 	if r.IsAD() {
 		for i := range len(r.Realm) {
 			if c := r.Realm[i]; 'a' <= c && c <= 'z' {
@@ -126,6 +133,10 @@ func (r Record) Validate() error {
 	}
 	return nil
 }
+
+// attrName is an RFC 4512 oid: a descr, ALPHA *(ALPHA / DIGIT / "-"), or a
+// numericoid, numbers with no leading zero joined by dots.
+var attrName = regexp.MustCompile(`^(?:[A-Za-z][A-Za-z0-9-]*|(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))+)$`)
 
 // checkPEM refuses trust roots holding anything but PEM certificates, or
 // none at all when set.

@@ -2,9 +2,12 @@ package identity
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // Applied is the State calls now read; nil before the first Apply and after
@@ -67,4 +70,14 @@ func (s *Server) HashSlot(ctx context.Context) error {
 // HeldCredential is the join credential held under id.
 func (s *Server) HeldCredential(id entity.OperationID) (identity.JoinCredential, bool) {
 	return s.heldCredential(id)
+}
+
+// DirectoryLookup asks the applied State's directory client a "who holds
+// this" question: ErrUnavailable with no record or no Deps.Directory.
+func (s *Server) DirectoryLookup(ctx context.Context, by directory.Key, value []byte) (directory.Answer, bool, error) {
+	st := s.state.Load()
+	if st == nil || st.dir == nil {
+		return directory.Answer{}, false, fmt.Errorf("%w: identity: no directory", vfserr.ErrUnavailable)
+	}
+	return st.dir.Lookup(ctx, by, value)
 }

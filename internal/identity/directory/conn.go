@@ -33,11 +33,20 @@ type Conn interface {
 	// Search runs one search. A directory's continuation references, to
 	// parts of the answer it holds elsewhere, are handed back in
 	// Result.Referrals, and a referral, the whole answer elsewhere, is an
-	// error; neither is followed.
+	// error wrapping errReferral; neither is followed. A search on a
+	// connection that is closed, by either end, fails wrapping ErrClosed.
 	Search(ctx context.Context, req Request) (Result, error)
 	// Close closes the connection.
 	Close() error
 }
+
+// errReferral is a search the directory answered with a referral, an
+// LDAPResult of code 10 naming another server for the whole answer.
+var errReferral = errors.New("identity.directory: a referral to another server")
+
+// ErrClosed is a call on a connection that is closed: by this end, or by the
+// directory, as Active Directory closes one idle past its MaxConnIdleTime.
+var ErrClosed = errors.New("identity.directory: the connection is closed")
 
 // Dialer opens a connection to the directory rec names. DialTLS is the
 // production one.
@@ -64,6 +73,11 @@ type Request struct {
 	// entries, continuing the search Cookie names; a nil Cookie starts it.
 	PageSize int
 	Cookie   []byte
+	// DomainScope sends Active Directory's domain-scope control
+	// (1.2.840.113556.1.4.1339), not critical, so a directory that honours
+	// it hands back no continuation references and one that ignores it
+	// answers as without it.
+	DomainScope bool
 }
 
 // Result is a search's answer.
@@ -212,23 +226,14 @@ func (c *ldapConn) Bind(ctx context.Context, name string, password []byte) error
 }
 
 func (c *ldapConn) Search(ctx context.Context, req Request) (Result, error) {
-	var controls []ldap.Control
-	var paging *ldap.ControlPaging
-	if req.PageSize > 0 {
-		paging = ldap.NewControlPaging(uint32(req.PageSize))
-		paging.SetCookie(req.Cookie)
-		controls = append(controls, paging)
-	}
-	sr := ldap.NewSearchRequest(req.Base, int(req.Scope), ldap.NeverDerefAliases, 0, 0, false,
-		req.Filter, req.Attrs, controls)
-
+	sr, paging := searchRequest(req)
 	var res *ldap.SearchResult
 	err := c.during(ctx, func() (err error) {
 		res, err = c.l.Search(sr)
 		return err
 	})
 	if err != nil {
-		return Result{}, err
+		return Result{}, searchError(err)
 	}
 
 	out := Result{Referrals: res.Referrals}
@@ -245,6 +250,35 @@ func (c *ldapConn) Search(ctx context.Context, req Request) (Result, error) {
 		}
 	}
 	return out, nil
+}
+
+// searchRequest is req as go-ldap sends it, and its paging control when it
+// asks for a page.
+func searchRequest(req Request) (*ldap.SearchRequest, *ldap.ControlPaging) {
+	var controls []ldap.Control
+	var paging *ldap.ControlPaging
+	if req.PageSize > 0 {
+		paging = ldap.NewControlPaging(uint32(req.PageSize))
+		paging.SetCookie(req.Cookie)
+		controls = append(controls, paging)
+	}
+	if req.DomainScope {
+		controls = append(controls, ldap.NewControlString(ldap.ControlTypeMicrosoftDomainScope, false, ""))
+	}
+	return ldap.NewSearchRequest(req.Base, int(req.Scope), ldap.NeverDerefAliases, 0, 0, false,
+		req.Filter, req.Attrs, controls), paging
+}
+
+// searchError is a failed search's error, a referral's wrapping errReferral
+// and go-ldap's network error, a connection either end closed, ErrClosed.
+func searchError(err error) error {
+	switch {
+	case ldap.IsErrorWithCode(err, ldap.LDAPResultReferral):
+		return fmt.Errorf("%w: %w", errReferral, err)
+	case ldap.IsErrorWithCode(err, ldap.ErrorNetwork):
+		return fmt.Errorf("%w: %w", ErrClosed, err)
+	}
+	return err
 }
 
 func (c *ldapConn) Close() error { return c.l.Close() }

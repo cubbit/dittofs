@@ -3,6 +3,7 @@
 package ad_dc_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -116,4 +118,63 @@ func unicodePwd(password string) string {
 		binary.LittleEndian.PutUint16(b[2*i:], c)
 	}
 	return string(b)
+}
+
+// wallClock is the host's clock, as the node hands identity one.
+type wallClock struct{}
+
+func (wallClock) Now() time.Time { return time.Now() }
+
+func (wallClock) After(d time.Duration) <-chan struct{} {
+	ch := make(chan struct{})
+	time.AfterFunc(d, func() { close(ch) })
+	return ch
+}
+
+// The directory client against Samba: the test call reads the base entry,
+// the domain SID is the domain object's, and a user's answer carries its
+// disabled bit and mail, found over a subtree of the naming context whose
+// continuation references it ignores.
+func TestDirectoryClient(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping AD-DC integration test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found, skipping AD-DC integration test")
+	}
+	ctx := context.Background()
+	dcIP := setupADDC(t)
+	ca, err := os.ReadFile(copyADCA(t))
+	if err != nil {
+		t.Fatalf("read the fixture CA: %v", err)
+	}
+	seed := &sambaSeeder{conn: adminLDAP(t, dcIP, ca)}
+	name := "t65-" + strconv.FormatInt(time.Now().UnixNano()%1e6, 10)
+	dn := seed.AddUser(t, name, map[string][][]byte{"userAccountControl": {[]byte("514")}, "mail": {[]byte(name + "@corp.example")}})
+
+	rec := directory.Record{Address: "ldaps://" + adDCHost, Base: adBaseDN, BindName: adBindDN, TrustRoots: string(ca), Realm: adRealm, DNSServer: dcIP}
+	c := directory.NewClient(rec, directory.DialTLS, func(context.Context) ([]byte, error) { return []byte(adAdminPassword), nil }, wallClock{}, nil)
+	defer c.Close()
+
+	if e, err := c.Test(ctx); err != nil || !strings.EqualFold(e.DN, adBaseDN) {
+		t.Errorf("Test = %q, %v; want the base %q", e.DN, err, adBaseDN)
+	}
+	sid, err := c.DomainSID(ctx)
+	if err != nil || len(sid) == 0 {
+		t.Fatalf("DomainSID = %x, %v; want the domain's", sid, err)
+	}
+	a, ok, err := c.Lookup(ctx, directory.ByUserName, []byte(name))
+	if err != nil || !ok || !strings.EqualFold(a.DN, dn) {
+		t.Fatalf("Lookup(%s) = %q, %v, %v; want %q", name, a.DN, ok, err, dn)
+	}
+	if a.Enabled || a.Mail != name+"@corp.example" || len(a.EntryID) != 16 || len(a.SID) != len(sid)+4 || !bytes.Equal(a.SID[8:len(sid)], sid[8:]) {
+		t.Errorf("Lookup(%s) = enabled %v, mail %q, entry ID %x, SID %x; want disabled, its mail, a GUID, a SID of the domain %x",
+			name, a.Enabled, a.Mail, a.EntryID, a.SID, sid)
+	}
+	if b, ok, err := c.Lookup(ctx, directory.BySID, a.SID); err != nil || !ok || !strings.EqualFold(b.DN, dn) {
+		t.Errorf("Lookup by its SID = %q, %v, %v; want %q", b.DN, ok, err, dn)
+	}
+	if b, ok, err := c.Lookup(ctx, directory.ByEntryID, a.EntryID); err != nil || !ok || !strings.EqualFold(b.DN, dn) {
+		t.Errorf("Lookup by its objectGUID = %q, %v, %v; want %q", b.DN, ok, err, dn)
+	}
 }
