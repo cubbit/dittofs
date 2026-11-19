@@ -56,7 +56,7 @@ func TestDomainControllerConformance(t *testing.T) {
 			t.Errorf("set the lockout threshold back to 0: %v\n%s", err, out)
 		}
 	})
-	seed := &sambaDCSeeder{conn: adminLDAP(t, dcIP, ca)}
+	seed := &sambaDCSeeder{conn: adminLDAP(t, dcIP, ca), ip: dcIP}
 	dialer := netlogon.NewDialer((&net.Dialer{}).DialContext)
 
 	identitytest.DomainControllerConformance(t, func(t *testing.T) (netlogon.DC, identitytest.DCSeeder) {
@@ -244,6 +244,7 @@ func (d *sambaDC) Reset(ctx context.Context, admin identity.JoinCredential, name
 // sambaDCSeeder seeds the fixture's Samba over LDAPS as its administrator.
 type sambaDCSeeder struct {
 	conn *ldap.Conn
+	ip   string // the controller's address
 
 	once      sync.Once
 	domainSID sid.SID
@@ -352,16 +353,28 @@ func (s *sambaDCSeeder) redirect(t testing.TB, dn string) {
 	}
 }
 
-// Unreachable is a sambaDC at a local port nothing listens on.
+// Unreachable is the controller with its NETLOGON port out of reach: the
+// endpoint mapper's connection reaches the real controller, and every other
+// one a local port nothing listens on, so its first call fails to dial.
 func (s *sambaDCSeeder) Unreachable(t testing.TB) netlogon.DC {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for a free port: %v", err)
 	}
-	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+	closed := l.Addr().String()
 	_ = l.Close()
-	return &sambaDC{ip: "127.0.0.1", binding: "ncacn_ip_tcp:127.0.0.1[" + port + "]"}
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if _, port, _ := net.SplitHostPort(addr); port == "135" {
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, closed)
+	}
+	dc, err := netlogon.NewDialer(dial).Dial(t.Context(), fixtureRecord(), s.ip)
+	if err != nil {
+		t.Fatalf("build the unreachable controller: %v", err)
+	}
+	return &sambaDC{DC: dc, ip: s.ip}
 }
 
 func (s *sambaDCSeeder) MoveComputersContainer(t testing.TB, ou string) {

@@ -229,7 +229,7 @@ func FuzzSamInfo4(f *testing.F) {
 		if err != nil {
 			return
 		}
-		rep, err := replyFrom(v)
+		rep, repErr := replyFrom(v)
 		runtime.ReadMemStats(&ms)
 		if used, limit := ms.TotalAlloc-start, 64*uint64(len(b))+64<<10; used > limit {
 			t.Fatalf("decoding %d bytes allocated %d, want at most %d", len(b), used, limit)
@@ -252,10 +252,10 @@ func FuzzSamInfo4(f *testing.F) {
 			t.Fatalf("re-encoded %x does not decode: %v", again, err)
 		}
 		rep2, err3 := replyFrom(w)
-		if (err == nil) != (err3 == nil) {
-			t.Fatalf("replyFrom = %v, re-encoded %v; want both nil or both errors", err, err3)
+		if (repErr == nil) != (err3 == nil) {
+			t.Fatalf("replyFrom = %v, re-encoded %v; want both nil or both errors", repErr, err3)
 		}
-		if err == nil && !reflect.DeepEqual(rep, rep2) {
+		if repErr == nil && !reflect.DeepEqual(rep, rep2) {
 			t.Fatalf("Reply %+v, re-encoded %+v", rep, rep2)
 		}
 	})
