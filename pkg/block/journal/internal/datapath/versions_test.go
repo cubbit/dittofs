@@ -55,6 +55,9 @@ func TestDraw_TwoDrawsIncreaseAndAppendNothing(t *testing.T) {
 	s := mustShare(t, c, 1)
 	f := testFile(1)
 	v0 := mustWrite(t, c, s, f, 0, make([]byte, 4096))
+	// The write took a spare the pool refills in its own background; await it,
+	// so no spare lands between the byte readings below.
+	awaitSpares(t, c, 0)
 
 	beforeBytes := c.set.Counters().UsedBytes
 	beforeEntries := indexEntries(t, c, f)
