@@ -160,7 +160,8 @@ func (c controlTx) PutSecret(s entity.Secret, expect uint64) error {
 }
 
 // PruneSecret deletes every version below the one named, never the current
-// one, in a write of its own.
+// one, in a write of its own that records no audit and checks no owner.
+// Callers go through Provider.Prune inside an audited Write.
 func (c ControlPlane) PruneSecret(ctx context.Context, id entity.SecretRef, below uint64) error {
 	return c.update(ctx, func(tx entity.ControlPlaneTx) error {
 		return tx.PruneSecret(id, below)
@@ -176,6 +177,10 @@ func (c ControlPlane) PruneSecret(ctx context.Context, id entity.SecretRef, belo
 // CFGGEN row say every Secret change raises it, but nothing resolves a
 // version that is pruned, so no node has a reason to read again. Withdraw
 // this if RFC 16 says a prune raises it.
+//
+// decision: a pruned version is never resolved, but only while no cache of
+// opened values serves a version below the current one. Withdraw it if one
+// does.
 func (c controlTx) PruneSecret(id entity.SecretRef, below uint64) error {
 	if err := c.tx.GuardRange(secretPrefix(id)); err != nil {
 		return err

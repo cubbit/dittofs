@@ -15,11 +15,19 @@ import (
 // at all. The current version is read through tx, tracked, so a seal that
 // commits first makes the Write run again against the new current version.
 //
-// ponytail: one node's report counts. A registered node that is down keeps
-// its last report and holds the prune back, and one that reports nothing of
-// ref holds nothing back, since it resolves the current version when it
-// next resolves ref. Ceiling: a second node. Upgrade: RFC 15's membership
+// ponytail: a registered node that is down keeps its last report and holds
+// the prune back. Ceiling: a second node. Upgrade: RFC 15's membership
 // decides which nodes count.
+//
+// decision: a registered node that reports nothing of ref holds nothing back,
+// since it resolves the current version when it next resolves ref. Withdraw
+// it if a node can keep a version below the current one without reporting
+// it.
+//
+// decision: the statuses are read outside tx, untracked, so a report that
+// commits after this read does not rerun the Write. It widens only the gap
+// between a node's resolve and its report, which a tracked read would not
+// close. Withdraw it if a node's reported version can ever go down.
 func (p *Provider) Prune(
 	ctx context.Context,
 	tx entity.ControlPlaneTx,
