@@ -188,6 +188,32 @@ func TestMachineSpellingMovedToAUser(t *testing.T) {
 	}
 }
 
+// A machine's Kerberos name named with its realm in lower case is the
+// machine's name: an admin's create naming it so moves it, answered 202
+// with the machine's deletion, the user holding the stored spelling.
+func TestMachineSpellingMovedUnderALowerCaseRealm(t *testing.T) {
+	s := serve(t, as(entity.RoleAdmin, false))
+	krb, m := putMachine(t, s, "host/build01@AD.EXAMPLE")
+	r := s.do(t, http.MethodPost, "/api/v1/users", `{"spec":{"name":"alice","kerberos":"host/build01@ad.example"}}`, "Idempotency-Key", "alice")
+	if r.status != http.StatusAccepted {
+		t.Fatalf("POST moving the machine's name under a lower-case realm: answered %d %s, want 202", r.status, r.body)
+	}
+	if del := s.opNamed(t, apiv1.OpUserDelete); !bytes.Equal(del.Target.ID, m.ID[:]) {
+		t.Errorf("deletion %+v, want a user deletion of the machine %v", del.Target, m.ID)
+	}
+	var h entity.User
+	if err := s.store.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		var err error
+		h, _, err = tx.Holder(entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: krb.Value})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if h.Principal.Kind != entity.PrincipalUser || h.Name != "alice" || !slices.Contains(h.IDs, krb) {
+		t.Errorf("the name's holder %+v, want alice holding %v with the machine's link", h, krb)
+	}
+}
+
 // putMachine writes a machine holding the krb spelling name, linked, and
 // returns the spelling and the machine.
 func putMachine(t *testing.T, s *served, name string) (entity.ProtocolID, entity.Principal) {
