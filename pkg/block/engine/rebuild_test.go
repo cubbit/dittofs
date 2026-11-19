@@ -138,9 +138,10 @@ func (r *rig) readIn(t *testing.T, s entity.ShareID, f entity.FileID, off int64,
 // marker: both extents are registered before Start serves a file, so a write
 // into the source extent and a read of the destination's answer ErrDelay;
 // the copies the journal holds are kept, only the others made again, the
-// first of them waking the version limit's raise as a live copy does; and the clone finishes with the destination
-// reading the source at its asOf, never zeros where it held bytes, as a
-// marker applied as a plain removal would leave it.
+// first of them waking the version limit's raise as a live copy does; and
+// the clone finishes with the destination reading the source at its asOf,
+// never zeros where it held bytes, as a marker applied as a plain removal
+// would leave it.
 func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 	for _, c := range []struct {
 		name   string

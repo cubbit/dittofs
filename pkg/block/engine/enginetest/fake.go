@@ -1227,10 +1227,12 @@ func (r *fakeReservation) WriteAt(ctx context.Context, id journal.FileID, off in
 	if err == nil {
 		// The reserved figure holds what open reservations have not yet
 		// filled, the real journal's own gauge, so a record landing takes
-		// its bytes off it here rather than all at once at Close: a
-		// fully-written reservation holds none.
+		// its whole charge off it here rather than all at once at Close:
+		// the run the write placed, header and payload together, not the
+		// payload alone — a fully-written reservation holds none, headers
+		// included.
 		j := r.h.j
-		taken := min(int64(len(p)), r.n-r.filled)
+		taken := min(fakeRecordBytes(int64(len(p))), r.n-r.filled)
 		if taken > 0 {
 			r.filled += taken
 			j.mu.Lock()
@@ -1243,6 +1245,11 @@ func (r *fakeReservation) WriteAt(ctx context.Context, id journal.FileID, off in
 	}
 	return v, err
 }
+
+// fakeRecordBytes is what one write of n payload bytes charges the journal,
+// the whole record the engine reserves for a copy run of that size: header,
+// payload and padding together, rounded to the record grid.
+func fakeRecordBytes(n int64) int64 { return (96 + 8 + n + 7) &^ 7 }
 
 // Close gives back what the reservation did not use: the bytes its writes
 // already took left the reserved figure as they landed, so what stays is the
