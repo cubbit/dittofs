@@ -6,6 +6,8 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
+	"unicode/utf8"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -188,6 +190,9 @@ var ownKeys = map[string]string{
 	storeCredential: "PUT /api/v1/stores/{id}/credential",
 }
 
+// maxSettingKey is the longest setting key a route takes.
+const maxSettingKey = 255
+
 // settingRoutes are the generic setting resource's rows at every scope: a
 // setting read, put and deleted by its key, {sub}, below its scope's path.
 // A put states the value; a delete removes the record, so the wider
@@ -199,7 +204,14 @@ var ownKeys = map[string]string{
 func settingRoutes() []route {
 	var out []route
 	for _, sc := range settingScopes {
-		target := func(id [16]byte, key string) ([]byte, error) { return entity.SettingRef(sc.scope(id), key).ID, nil }
+		// The key is the audit target, which an index key holds, so it is
+		// bounded before any record is written for it.
+		target := func(id [16]byte, key string) ([]byte, error) {
+			if key == "" || len(key) > maxSettingKey || !utf8.ValidString(key) {
+				return nil, &fieldError{field: "key", detail: "a setting's key is valid UTF-8 of 1 to " + strconv.Itoa(maxSettingKey) + " bytes"}
+			}
+			return entity.SettingRef(sc.scope(id), key).ID, nil
+		}
 		w := writing[settingDoc]{kind: entity.ResourceSetting, raises: true,
 			read: func(tx entity.ControlPlaneTx, id [16]byte, key string) (settingDoc, uint64, bool, error) {
 				if via, ok := ownKeys[key]; ok {

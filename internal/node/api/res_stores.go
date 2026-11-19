@@ -70,6 +70,13 @@ func createStore(ctx context.Context, rq request[storeDoc], _ struct{}, tx entit
 // the commit outlives the store, and so do its credential's sealed versions,
 // since the secret provider's Delete takes no transaction. Delete both in
 // the transaction once it can list a scope and delete a secret.
+//
+// ponytail: the table judges each setting's delete on its own, and RFC 13
+// refuses a delete that changes the effective value of a store's bucket,
+// endpoint or credential reference even with no content. So once a table
+// is handed in, no store can be deleted. The table must judge a resource's
+// delete as the removal of its whole scope, which RFC 13's Check does not
+// state yet.
 func deleteStore(ctx context.Context, rq request[none], keys []string, tx entity.ControlPlaneTx) (none, [16]byte, error) {
 	named, err := tx.StoreNamed(rq.ID)
 	switch {

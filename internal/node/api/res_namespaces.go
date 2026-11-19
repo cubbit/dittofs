@@ -64,9 +64,16 @@ func createNamespace(ctx context.Context, rq request[namespaceDoc], _ struct{}, 
 
 // deleteNamespace is DELETE /namespaces/{id}: refused 409 not_empty while a
 // share names the namespace, one range read, before anything else; then
-// judged by the settings table, which refuses it even when no setting is
-// left at its scope; then the record under the generation If-Match names,
-// and every setting at its scope the pre-write step listed.
+// refused while the node hands in no settings table, even when no setting
+// is left at its scope; then the record under the generation If-Match
+// names, and every setting at its scope the pre-write step listed, each
+// judged by the table.
+//
+// ponytail: the table judges each setting's delete on its own, and a bound
+// key's delete (the prefix) is refused while the scope holds content, which
+// holdsContent answers for every scope. So once a table is handed in, no
+// namespace can be deleted. The table must judge a resource's delete as
+// the removal of its whole scope, which RFC 13's Check does not state yet.
 //
 // ponytail: a setting written at the namespace's scope between the listing
 // and the commit outlives it; delete it in the transaction once it can list

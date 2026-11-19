@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -376,6 +377,7 @@ func TestGenericSettingGuards(t *testing.T) {
 		{"an unknown node's", "/api/v1/nodes/" + uuid.NewString() + "/settings/adapters.nfs.port", http.StatusNotFound, ""},
 		{"an unknown namespace's", "/api/v1/namespaces/" + uuid.NewString() + "/settings/namespace.prefix", http.StatusNotFound, ""},
 		{"an unknown store's", "/api/v1/stores/" + uuid.NewString() + "/settings/remote.bucket", http.StatusNotFound, ""},
+		{"an overlong key", "/api/v1/settings/" + strings.Repeat("k", 256), http.StatusBadRequest, "key"},
 	} {
 		before := s.written(t, installation)
 		r := s.do(t, http.MethodPut, tc.path, `{"spec":{"value":"x"}}`, "If-None-Match", "*")
