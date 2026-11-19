@@ -96,6 +96,13 @@ func codecCases() []codecCase {
 	in.Join.LastRotation.At, in.Join.LastRotation.Failed = time.Unix(2, 3).UTC(), true
 	in.Join.LastRotation.Tag, in.Join.LastRotation.Read, in.Join.LastRotation.Version = 4, 5, 6
 	in.Join.LastRotation.Confirmed = time.Unix(7, 0).UTC()
+	in.Active = map[entity.Format]uint32{
+		entity.FormatStore:    1,
+		entity.FormatJournal:  3,
+		entity.FormatBlock:    6,
+		entity.FormatSettings: 8,
+		200:                   7,
+	}
 	audit := entity.AuditRecord{ID: [16]byte{7: 0xAD}, Time: time.Unix(0, 1_000).UTC(), Actor: group, ActorName: "n", Credential: "k",
 		Node: entity.NodeID{15: 1}, Source: "s", Request: []byte("r"),
 		Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{9}}, Before: 1, After: 2, Change: []byte("c"), Outcome: []byte("o")}
@@ -181,7 +188,8 @@ func codecCases() []codecCase {
 				"00000000000000000000000000000008" +
 				"01" + "024824" + "0101" + "0102" + "01" + "0161" +
 				"0000000000000002" + "00000003" + "01" + "00000004" + "00000005" + "0000000000000006" +
-				"0000000000000007" + "00000000",
+				"0000000000000007" + "00000000" +
+				"05" + "0100000001" + "0200000003" + "0300000006" + "0400000008" + "c800000007",
 			func(b []byte) (any, error) { return decodeInstallation(b) }},
 		{"audit", audit, encodeAudit(audit),
 			"01" + "02" + "bb000000000000000000000000000002" + "016e" + "016b" + "00000000000000000000000000000001" + "0173" + "0172" +

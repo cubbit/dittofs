@@ -3,6 +3,8 @@ package kvstore
 import (
 	"bytes"
 	"errors"
+	"maps"
+	"slices"
 	"time"
 
 	authsid "github.com/cubbit/dittofs/pkg/auth/sid"
@@ -437,7 +439,16 @@ func encodeInstallation(in entity.Installation) []byte {
 	}
 	rot := j.LastRotation
 	putTime(w, rot.At).Bool(rot.Failed).Uint32(rot.Tag).Uint32(rot.Read).Uint64(rot.Version)
-	return putTime(w, rot.Confirmed).Encode()
+	putTime(w, rot.Confirmed)
+	// Active is the last field, sorted by format: a test that writes active
+	// versions as raw bytes appends them to the record Init wrote.
+	w.Len(len(in.Active))
+
+	for _, f := range slices.Sorted(maps.Keys(in.Active)) {
+		w.Uint8(uint8(f)).Uint32(in.Active[f])
+	}
+
+	return w.Encode()
 }
 
 func decodeInstallation(b []byte) (entity.Installation, error) {
@@ -466,6 +477,13 @@ func decodeInstallation(b []byte) (entity.Installation, error) {
 	rot := &j.LastRotation
 	rot.At, rot.Failed, rot.Tag, rot.Read, rot.Version = readTime(r), r.Bool(), r.Uint32(), r.Uint32(), r.Uint64()
 	rot.Confirmed = readTime(r)
+	if n := r.Len(); n > 0 {
+		in.Active = make(map[entity.Format]uint32, n)
+		for range n {
+			f := entity.Format(r.Uint8())
+			in.Active[f] = r.Uint32()
+		}
+	}
 	return in, r.Done()
 }
 

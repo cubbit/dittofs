@@ -416,6 +416,13 @@ type Installation struct {
 	// Join is the machine account's state, written by the domain join's and
 	// the rotation's steps; zero while no join has run.
 	Join MachineJoin
+	// Active is the version written for each shared format other than the
+	// store format, raised only by the control plane's gate once every
+	// registered node's range holds the new version, never by a binary
+	// opening the store (RFC 13 §5.5, RFC 16 §2.3). A format with no entry
+	// has no recorded version yet. It keeps every format it reads, one this
+	// binary does not know included, so a start can refuse it.
+	Active map[Format]uint32
 }
 
 // MachineJoin is the machine account's state, outliving the operations that

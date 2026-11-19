@@ -60,6 +60,7 @@ var frozenExports = []string{
 	"var ErrUnknownKey error",
 	"var ErrUnproven error",
 	"var ErrWrongScope error",
+	"func Versions() map[entity.Format]entity.VersionRange",
 }
 
 // sourceImporter reads every import from source, once for all the cases.

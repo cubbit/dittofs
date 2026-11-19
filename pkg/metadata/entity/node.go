@@ -1,5 +1,7 @@
 package entity
 
+import "strconv"
+
 // Node is one server process: what it registers at each start, and the
 // epoch its starts raise.
 type Node struct {
@@ -26,6 +28,32 @@ const (
 
 // Format names one versioned format nodes share. Its value is stored.
 type Format uint8
+
+// The formats nodes share, each with an active version the installation
+// writes and a range each node registers (RFC 13 §5.5). Zero is no format.
+const (
+	FormatStore    Format = iota + 1 // the metadata store format, in \x00format (RFC 16 §4.6)
+	FormatJournal                    // the journal format (RFC 28 §2)
+	FormatBlock                      // the block format (RFC 4 §3.5)
+	FormatSettings                   // the settings record schema (RFC 13 §2.3)
+)
+
+// String names the format for errors and series labels: its name, or its
+// number for a format this binary does not know.
+func (f Format) String() string {
+	switch f {
+	case FormatStore:
+		return "store"
+	case FormatJournal:
+		return "journal"
+	case FormatBlock:
+		return "block"
+	case FormatSettings:
+		return "settings"
+	default:
+		return strconv.Itoa(int(f))
+	}
+}
 
 // VersionRange is the versions of a format a node reads and writes,
 // inclusive.

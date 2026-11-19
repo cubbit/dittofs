@@ -79,7 +79,10 @@ func errZeroNode() error { return merrs.NewInvalidArgumentError("a node record n
 // kept as stored, not taken from node: registering decides neither, so the
 // epoch returned is the last one raised, which is this start's only once
 // this start has raised it. The zero node ID, roles other than both, and a
-// version range whose minimum is above its maximum, are refused.
+// version range whose minimum is above its maximum, are refused. So is an
+// active version of the installation outside node's range for its format,
+// or of a format node registers no range for, in the transaction that
+// writes the record, which is then left as it was (RFC 13 §5.5).
 func (n Nodes) RegisterNode(ctx context.Context, node entity.Node) (rec entity.Node, err error) {
 	if node.ID == (entity.NodeID{}) {
 		return rec, errZeroNode()
@@ -93,6 +96,20 @@ func (n Nodes) RegisterNode(ctx context.Context, node entity.Node) (rec entity.N
 		}
 	}
 	err = n.s.kv.Update(ctx, func(tx kv.Txn) error {
+		b, err := tx.Get(installationKey)
+		if err != nil {
+			return fmt.Errorf("installation record: %w", err)
+		}
+
+		in, err := decodeInstallation(b)
+		if err != nil {
+			return fmt.Errorf("installation record: %w", err)
+		}
+
+		if err := admits(node.Formats, in.Active); err != nil {
+			return err
+		}
+
 		old, _, err := nodeIn(tx, node.ID)
 		if err != nil {
 			return err
@@ -102,6 +119,45 @@ func (n Nodes) RegisterNode(ctx context.Context, node entity.Node) (rec entity.N
 		return tx.Set(nodeKey(node.ID), encodeNode(rec))
 	})
 	return rec, err
+}
+
+// admits refuses an active version outside its format's range in formats,
+// and one of a format formats holds no range for, naming the format and
+// both versions. It reads only its arguments, so a retried transaction
+// compares again what its retry read. Active never holds the store format,
+// whose version is \x00format's; an entry for it would be compared like
+// any other.
+//
+// ponytail: one comparison per format, on a single node. Ceiling: a second
+// node, or a format's second version. Upgrade path: the call that raises a
+// version (RFC 13 §5.5), refused while a registered node's range lags.
+func admits(
+	formats map[entity.Format]entity.VersionRange,
+	active map[entity.Format]uint32,
+) error {
+	for _, f := range slices.Sorted(maps.Keys(active)) {
+		v := active[f]
+
+		r, ok := formats[f]
+		switch {
+		case !ok:
+			return fmt.Errorf(
+				"format %s is active at version %d, this node registers no range for it",
+				f,
+				v,
+			)
+		case v < r.Min || v > r.Max:
+			return fmt.Errorf(
+				"%s format %d is active, this node reads %d to %d",
+				f,
+				v,
+				r.Min,
+				r.Max,
+			)
+		}
+	}
+
+	return nil
 }
 
 // Node reads one node's record; false when it has none.
