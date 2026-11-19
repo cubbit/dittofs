@@ -388,7 +388,8 @@ registers no suite and no group, and changes no `lint-go` tag.
     the change it guards: not the compiler, not the diff, not a later epic's tests. "Stub bodies are
     never called by production" stays a review rule.
 11. **A symbol is exported only if RFC 23's interface uses it.** The exported surface is:
-    - `internal/node`'s `New`, `Start`, `Stop` and `Config`;
+    - `internal/node`'s `New`, `Start`, `Stop`, `Config` and `Preflight`, the start check the
+      host runs before it opens the store;
     - `pkg/node/apiv1`'s wire types;
     - `pkg/node/apiv1/client`'s client;
     - kvstore's view methods.
@@ -540,7 +541,8 @@ flowchart TD
 ```text
 cmd/dfs/commands/             init, start, reset-admin (+ config, version, completion)  E1 skeleton, E3, E5
 internal/node/                composition root, one package, one file per concern:      E1 surface, E3
-                              New, Start, Stop, compose, lifecycle, reconcile (the
+                              New, Start, Stop, Preflight (the start check, RFC 1's
+                              journal plan epic 10), compose, lifecycle, reconcile (the
                               loop and addShare, removeShare, apply, unexported, RFC
                               23 §2.1), remotes, node status, the operation runner
                               (D8), the deletions driven past the mark, RFC 23's own

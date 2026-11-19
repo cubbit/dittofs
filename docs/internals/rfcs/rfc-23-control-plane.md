@@ -463,6 +463,15 @@ func New(cfg Config) (*Node, error)
 func (n *Node) Start(ctx context.Context) error // §2.2's start, then reconcile until Stop
 func (n *Node) Stop(ctx context.Context) error  // §2.2's stop: the components in reverse build order
 
+// Preflight is the start check the host runs before it opens the metadata
+// store's KV: over the store directory and journal devices it finds, it
+// refuses naming what it found — a pre-journal (v1) layout, a journal naming
+// an installation with no store, storage it cannot identify — and creates
+// nothing. It belongs here because Config.KV arrives already open, and the
+// backend's own open creates what the check reads, so New and Start are both
+// too late to tell an absent store from a present one.
+func Preflight(ctx context.Context, storeDir string, v1dir string, devices []string, clock Clock) error
+
 // Config is what the host supplies and the node cannot build.
 type Config struct {
 	Bootstrap config.Bootstrap // RFC 13 §2.2
@@ -495,12 +504,15 @@ The node exports no status call. Readiness and conditions come from
 hands the API, so the API never calls the node and the node, which holds the
 API, forms no cycle with it.
 
-> decision: the node exports `New`, `Start` and `Stop` only, and is not
-> restartable: a second `Start` is an error. Reconcile's calls are unexported,
-> so no caller, the API included, can change a component by a second path.
-> Overturned if something other than the server's start command and the test
-> harness must drive a node, and then by a second root, not by exporting the
-> calls.
+> decision: the node exports `New`, `Start`, `Stop` and `Preflight` only,
+> and is not restartable: a second `Start` is an error. Reconcile's calls are
+> unexported, so no caller, the API included, can change a component by a
+> second path. `Preflight` is exported because the start check must run before
+> the host opens the KV store, so no other root can own it; a package of its
+> own for one function would add a boundary and gain nothing, since its
+> probes read the storage the node's own configuration names. Overturned if
+> the check ever needs a second caller, and then by moving it beside that
+> caller, not by exporting more of the node.
 
 ### 2.2 Start and stop
 
@@ -2129,7 +2141,7 @@ in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi
 | --- | --- | --- |
 | §2.1 | one composition root, `node.New` | the start command composes the node; a second, partial root in `pkg/controlplane/controlplane.go` builds store, runtime and API only and has no importer; the adapter and NFSv3 handler test fixtures build their own |
 | §2.1, RFC 20 §3.4 | adapters hold the filesystem service only; the node drives them | adapters are handed the whole runtime by `SetRuntime(rt any)`, and 22 adapter files (16 internal, 6 public) import the runtime; the runtime knows protocols by name (`GetNFSSettings`, `GetSMBSettings`, `SetNFSExportPolicy`, an NFS mount tracker, an SMB oplock-breaker hook) |
-| §2.1 | the node exports `New`, `Start` and `Stop` | `*Runtime` exports 156 methods, in 23 of the package's 35 files, and hosts GC, the snapshot scheduler, trash and integrity scans, which are their components' own |
+| §2.1 | the node exports `New`, `Start`, `Stop` and `Preflight` | `*Runtime` exports 156 methods, in 23 of the package's 35 files, and hosts GC, the snapshot scheduler, trash and integrity scans, which are their components' own |
 | §2.1, §2.3 | the API writes records, the node applies them | handlers write the database and then call the runtime directly — `AddShare`, `UpdateShare`, `RebindShareBlockStore`, adapter start and stop; a runtime failure after the write is logged as a warning and the request still succeeds (a share whose `AddShare` fails returns `201` and loads at the next restart); share create builds the runtime's share configuration field by field in the handler |
 | §2.2 | start: store, content, the filesystem, API, adapters; stop the reverse with the API after adapters | start opens the control-plane database, seeds the admin, default groups and default adapters, opens metadata stores, loads shares, then serves; inside `Serve` the settings watcher and adapters start before the API; shutdown stops adapters, closes stores and then the API |
 | §2.3, §8 | every node reconciles by generation, once a second | changes are applied in-process by direct calls and change callbacks; only adapter settings are polled, every 10 s; there are no node records, so a second node sharing the database sees shares, adapters and users only after a restart |
