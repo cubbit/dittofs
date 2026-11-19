@@ -157,7 +157,8 @@ func (c *Client) Test(ctx context.Context) (Entry, error) {
 		return Entry{}, err
 	}
 	defer func() { _ = conn.Close() }()
-	res, err := c.search(ctx, conn, Request{Base: c.rec.Base, Scope: ScopeBase, Filter: "(objectClass=*)", Attrs: []string{"objectClass"}})
+	// The connection is this call's alone, so its context may end it.
+	res, err := c.searchOn(ctx, conn, Request{Base: c.rec.Base, Scope: ScopeBase, Filter: "(objectClass=*)", Attrs: []string{"objectClass"}})
 	if err != nil {
 		return Entry{}, err
 	}
@@ -222,10 +223,37 @@ func timedOut(ctx context.Context, err error) error {
 	return err
 }
 
+// detach runs f on ctx without its cancellation and waits for it or for ctx
+// to end, so a caller that stops waiting leaves a call other questions share
+// (the connection's dial, bind and domain SID read, a search on it) to finish
+// or be ended by the query timeout, rather than close the connection under
+// them.
+func detach[T any](ctx context.Context, what string, f func(context.Context) (T, error)) (T, error) {
+	type result struct {
+		v   T
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		v, err := f(context.WithoutCancel(ctx))
+		done <- result{v, err}
+	}()
+	select {
+	case r := <-done:
+		return r.v, r.err
+	case <-ctx.Done():
+		var zero T
+		return zero, unavailable(what, ctx.Err())
+	}
+}
+
 // open resolves the bind password, refusing an empty one before any dial,
 // then dials and binds a new connection.
 func (c *Client) open(ctx context.Context) (Conn, error) {
-	pw, err := c.password(ctx)
+	pctx, cancel := c.bounded(ctx)
+	pw, err := c.password(pctx)
+	err = timedOut(pctx, err)
+	cancel()
 	if err != nil {
 		return nil, unavailable("bind credential", err)
 	}
@@ -257,13 +285,22 @@ func (c *Client) open(ctx context.Context) (Conn, error) {
 // connect returns the client's connection, opening it when there is none,
 // with the domain SID read for an ad record before it is used.
 func (c *Client) connect(ctx context.Context) (Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, unavailable("connect", err)
+	}
 	select {
 	case c.connecting <- struct{}{}:
 	case <-ctx.Done():
 		return nil, unavailable("connect", ctx.Err())
 	}
-	defer func() { <-c.connecting }()
+	return detach(ctx, "connect", func(ctx context.Context) (Conn, error) {
+		defer func() { <-c.connecting }()
+		return c.establish(ctx)
+	})
+}
 
+// establish is connect's work, run while c.connecting is held.
+func (c *Client) establish(ctx context.Context) (Conn, error) {
 	c.mu.Lock()
 	conn, sid := c.conn, c.sid
 	c.mu.Unlock()
@@ -317,13 +354,19 @@ func (c *Client) readDomainSID(ctx context.Context, conn Conn) ([]byte, error) {
 }
 
 // search sends req on conn with the domain-scope control, under the query
-// timeout; a failed one drops conn, so the next question dials again.
+// timeout alone: a caller whose context ends stops waiting, and the search
+// runs on. A failed one drops conn, so the next question dials again.
 //
 // ponytail: any failed call drops the connection, a refusal the directory
 // answered (no such object, a referral) as much as a broken transport, so such
 // a question costs the next one a dial. Tell the two apart when the dial rate
 // shows it.
 func (c *Client) search(ctx context.Context, conn Conn, req Request) (Result, error) {
+	return detach(ctx, "search", func(ctx context.Context) (Result, error) { return c.searchOn(ctx, conn, req) })
+}
+
+// searchOn is search's work, on a context no caller cancels.
+func (c *Client) searchOn(ctx context.Context, conn Conn, req Request) (Result, error) {
 	req.DomainScope = true
 	sctx, cancel := c.bounded(ctx)
 	defer cancel()
@@ -352,6 +395,10 @@ func (c *Client) answer(e Entry) Answer {
 		a.Name = string(first(e, c.rec.GroupAttr()))
 	} else {
 		a.Name = string(first(e, c.rec.UserAttr()))
+		// decision: userAccountControl and accountExpires are the whole
+		// enabled rule, so an rfc2307 user, which holds neither, answers
+		// enabled. Reading shadowExpire, or another POSIX account state, is
+		// what would overturn this.
 		a.Enabled = enabled(e, c.clock.Now())
 	}
 	a.EntryID = first(e, c.rec.entryIDAttr())

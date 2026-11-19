@@ -465,3 +465,128 @@ func TestAttrsReadNoHash(t *testing.T) {
 		}
 	}
 }
+
+// A caller that gives up stops waiting at once, with its context's error,
+// and leaves the shared connection to the other questions: one cancelled
+// while its search is held, or while its dial holds the connection being
+// opened, costs no other question an answer or a dial.
+func TestCancelledCallerLeavesConnection(t *testing.T) {
+	// returned reports whether done holds an answer yet, without waiting.
+	returned := func(done <-chan error) (error, bool) {
+		select {
+		case err := <-done:
+			return err, true
+		default:
+			return nil, false
+		}
+	}
+	for name, rule := range map[string]sim.Rule{
+		"search": {Op: "search", Key: "(&(objectClass=user)(sAMAccountName=alice))", Action: sim.FaultAction{Err: identitytest.ErrHold}},
+		"dial":   {Op: "dial", Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Second}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				e := newEnv(t)
+				e.d.AddUser(t, "alice", nil)
+				bob := e.d.AddUser(t, "bob", nil)
+				c := e.client(e.faulty(t, rule).Dial)
+				if name == "search" { // the connection is open before alice's search
+					if _, _, err := c.Lookup(context.Background(), directory.ByUserName, []byte("bob")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				gaveUp := make(chan error, 1)
+				go func() { _, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice")); gaveUp <- err }()
+				synctest.Wait()
+				cancel()
+				synctest.Wait()
+				if err, ok := returned(gaveUp); !ok {
+					t.Error("the cancelled Lookup still waits, want it returned at once")
+				} else if !errors.Is(err, context.Canceled) || !errors.Is(err, vfserr.ErrUnavailable) {
+					t.Errorf("the cancelled Lookup = %v, want ErrUnavailable wrapping context.Canceled", err)
+				}
+				type result struct {
+					dn  string
+					err error
+				}
+				other := make(chan result, 1)
+				go func() {
+					a, _, err := c.Lookup(context.Background(), directory.ByUserName, []byte("bob"))
+					other <- result{a.DN, err}
+				}()
+				synctest.Wait()
+				e.clock.Advance(time.Second) // the held dial, if any, answers
+				r := <-other
+				if r.err != nil || r.dn != bob {
+					t.Errorf("the other Lookup = %q, %v; want %q", r.dn, r.err, bob)
+				}
+				if got := e.dials.dials(); len(got) != 1 {
+					t.Errorf("%d dials, want 1: the cancelled caller dropped the shared connection", len(got))
+				}
+				e.clock.Advance(5 * time.Second) // the held search ends
+				synctest.Wait()
+			})
+		})
+	}
+}
+
+// Resolving the bind password is capped at 5 s too: a secret provider that
+// never answers fails the question then, and the one queued behind it, which
+// waits for the connection being opened, goes on to answer.
+func TestPasswordUnderQueryTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t)
+		dn := e.d.AddUser(t, "alice", nil)
+		var calls sync.Mutex
+		n := 0
+		password := func(ctx context.Context) ([]byte, error) {
+			calls.Lock()
+			n++
+			first := n == 1
+			calls.Unlock()
+			if first {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return e.pw, nil
+		}
+		c := directory.NewClient(e.rec, e.dials.wrap(e.d.Dial), password, e.clock, nil)
+		held := make(chan error, 1)
+		go func() {
+			_, _, err := c.Lookup(context.Background(), directory.ByUserName, []byte("alice"))
+			held <- err
+		}()
+		synctest.Wait()
+		type result struct {
+			dn  string
+			err error
+		}
+		queued := make(chan result, 1)
+		go func() {
+			a, _, err := c.Lookup(context.Background(), directory.ByUserName, []byte("alice"))
+			queued <- result{a.DN, err}
+		}()
+		synctest.Wait()
+		e.clock.Advance(5*time.Second - time.Nanosecond)
+		synctest.Wait()
+		select {
+		case err := <-held:
+			t.Fatalf("Lookup answered %v before 5 s, want it held on the password", err)
+		default:
+		}
+		e.clock.Advance(time.Nanosecond)
+		synctest.Wait()
+		select {
+		case err := <-held:
+			if !errors.Is(err, vfserr.ErrUnavailable) || !strings.Contains(err.Error(), "query timeout") {
+				t.Errorf("Lookup at 5 s = %v, want ErrUnavailable for the query timeout", err)
+			}
+		default:
+			t.Fatal("Lookup still held on the password at 5 s, want it ended by the query timeout")
+		}
+		if r := <-queued; r.err != nil || r.dn != dn {
+			t.Errorf("the queued Lookup = %q, %v; want %q", r.dn, r.err, dn)
+		}
+	})
+}
