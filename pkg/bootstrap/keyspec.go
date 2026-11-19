@@ -143,11 +143,18 @@ func (s *keySpec) envName() string {
 	return variableOf(s.key)
 }
 
-// defaultValue is the key's value when no source sets it. logging.output's
-// follows the state directory.
-func (s *keySpec) defaultValue() any {
-	if s.key == "logging.output" {
-		return getDefaultLogPath()
+// defaultValue is the key's value when no source sets it. The environment's
+// two directories carry three defaults: metadata.badger.path is the state
+// directory's metadata, logging.output its log, api.socket the runtime
+// directory's socket.
+func (s *keySpec) defaultValue(dirs resolvedDirs) any {
+	switch s.key {
+	case "metadata.badger.path":
+		return filepath.Join(dirs.state, "metadata")
+	case "logging.output":
+		return filepath.Join(dirs.state, "dittofs.log")
+	case "api.socket":
+		return filepath.Join(dirs.runtime, "dfs.sock")
 	}
 
 	if l, ok := s.def.([]string); ok {

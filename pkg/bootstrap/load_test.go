@@ -1364,6 +1364,30 @@ func TestLoadAliasCycle(t *testing.T) {
 	}
 }
 
+// A relative state directory that the environment given names refuses,
+// naming the variable that chose it, whatever key the default reaches.
+func TestLoadRelativeStateDirectory(t *testing.T) {
+	t.Parallel()
+
+	const want = "environment: XDG_STATE_HOME: must be an absolute path"
+
+	if _, err := Load("", []string{"XDG_STATE_HOME=rel"}); err == nil || err.Error() != want {
+		t.Errorf("Load with XDG_STATE_HOME=rel: got %v, want %q", err, want)
+	}
+}
+
+// With XDG_STATE_HOME unset, the state directory is HOME's, and a relative
+// HOME is the variable the refusal names.
+func TestLoadRelativeHome(t *testing.T) {
+	t.Parallel()
+
+	const want = "environment: HOME: must be an absolute path"
+
+	if _, err := Load("", []string{"HOME=rel"}); err == nil || err.Error() != want {
+		t.Errorf("Load with HOME=rel: got %v, want %q", err, want)
+	}
+}
+
 // The defaults are fresh for each caller: changing one caller's list does
 // not change the next caller's defaults.
 func TestGetDefaultConfigIsFresh(t *testing.T) {

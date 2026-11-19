@@ -167,6 +167,7 @@ func FuzzLoad(f *testing.F) {
 		for _, line := range strings.Split(err.Error(), "\n") {
 			if !strings.HasPrefix(line, path+": ") &&
 				!strings.HasPrefix(line, "environment: DITTOFS_") &&
+				!strings.HasPrefix(line, "environment: STATE_DIRECTORY: ") &&
 				!strings.HasPrefix(line, "environment: XDG_STATE_HOME: ") &&
 				!strings.HasPrefix(line, "environment: HOME: ") {
 				t.Errorf("report line %q: neither the file's nor a variable's", line)

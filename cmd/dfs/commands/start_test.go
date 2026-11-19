@@ -96,6 +96,25 @@ func startChild(t *testing.T, config string, env ...string) (*exec.Cmd, io.Reade
 	return startChildIn(t, config, "", env...)
 }
 
+// runtimeDir is a runtime directory of the child's own, named short because a
+// socket's path is capped at about 104 bytes on some hosts and t.TempDir
+// names its directory after the test. It keeps the child off the host's own
+// runtime directory.
+func runtimeDir(t *testing.T) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("", "dfs")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+
+	return dir
+}
+
 // startChildIn is startChild run in the working directory dir (the test's
 // own when empty), with env added after the process's, so it wins.
 func startChildIn(t *testing.T, config, dir string, env ...string) (*exec.Cmd, io.Reader) {
@@ -104,7 +123,7 @@ func startChildIn(t *testing.T, config, dir string, env ...string) (*exec.Cmd, i
 	cmd.Dir = dir
 	host := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "DITTOFS_") })
 	cmd.Env = append(host, childEnv+"=start\n--config\n"+config, "XDG_STATE_HOME="+t.TempDir(),
-		"DITTOFS_ENCRYPTION_PASSPHRASE="+storagePassphrase)
+		"XDG_RUNTIME_DIR="+runtimeDir(t), "DITTOFS_ENCRYPTION_PASSPHRASE="+storagePassphrase)
 	cmd.Env = append(cmd.Env, env...)
 	r, w := io.Pipe()
 	cmd.Stdout, cmd.Stderr = w, w
@@ -342,11 +361,16 @@ func TestStartProbesV1Layouts(t *testing.T) {
 		// at says where the v1 layout is: a key of the roots below.
 		at      string
 		refused bool
+
+		// defaultStore leaves metadata.badger.path unset, so the store is the
+		// default one in the state directory the child's environment names.
+		defaultStore bool
 	}{
-		{"on a device", "device", true},
-		{"in blocks beside the store", "blocks", true},
-		{"in the working directory", "cwd", false},
-		{"in an unrelated state directory", "state", false},
+		{"on a device", "device", true, false},
+		{"in blocks beside the store", "blocks", true, false},
+		{"in the working directory", "cwd", false, false},
+		{"in an unrelated state directory", "state", false, false},
+		{"in blocks beside the default store", "state", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -366,11 +390,17 @@ func TestStartProbesV1Layouts(t *testing.T) {
 
 			writeV1Layout(t, roots[tc.at])
 
-			config := bootstrapFile{
+			file := bootstrapFile{
 				store:   filepath.Join(dir, "store"),
 				journal: roots["device"],
 				node:    nodeUUID,
-			}.write(t, dir)
+			}
+
+			if tc.defaultStore {
+				file.store = ""
+			}
+
+			config := file.write(t, dir)
 
 			cmd, r := startChildIn(
 				t, config, roots["cwd"], "XDG_STATE_HOME="+filepath.Join(dir, "state"),
@@ -420,15 +450,18 @@ func TestStartRefusesTheStore(t *testing.T) {
 				node:    nodeUUID,
 			}
 		}, `metadata.backend "foundationdb" is not one this build opens; it opens badger`},
-		{"no store path", func(dir string) bootstrapFile {
+		{"default store path, nothing installed", func(dir string) bootstrapFile {
 			return bootstrapFile{journal: filepath.Join(dir, "device"), node: nodeUUID}
-		}, "metadata.badger.path is not set"},
+		}, "the start check: the node is not initialised"},
 		{"no node", func(dir string) bootstrapFile {
 			return bootstrapFile{store: filepath.Join(dir, "store"), journal: filepath.Join(dir, "device")}
 		}, "node.id is not set"},
 		{"no store directory", func(dir string) bootstrapFile {
-			return bootstrapFile{store: filepath.Join(dir, "missing"),
-				journal: filepath.Join(dir, "device"), node: nodeUUID}
+			return bootstrapFile{
+				store:   filepath.Join(dir, "missing"),
+				journal: filepath.Join(dir, "device"),
+				node:    nodeUUID,
+			}
 		}, "the start check: the node is not initialised"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -572,8 +605,11 @@ func TestStartRefusesAnEmptyStore(t *testing.T) {
 	}
 	root := NewRoot()
 	root.SetOut(io.Discard)
-	root.SetArgs([]string{"start", "--config", bootstrapFile{store: store,
-		journal: filepath.Join(dir, "device"), node: nodeUUID}.write(t, dir)})
+	root.SetArgs([]string{"start", "--config", bootstrapFile{
+		store:   store,
+		journal: filepath.Join(dir, "device"),
+		node:    nodeUUID,
+	}.write(t, dir)})
 	err := root.Execute()
 	if want := "the start check: the node is not initialised"; err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("dfs start over an empty store directory: %v, want an error starting %q", err, want)

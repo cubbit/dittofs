@@ -21,6 +21,7 @@ var frozenExports = []string{
 	"func InitLogger(cfg *Bootstrap) error",
 	"func InitNodeID(ctx context.Context, b *Bootstrap, installation [16]byte, dir string) " +
 		"(entity.NodeID, error)",
+	"func MakeRuntimeDir(environ []string) (string, error)",
 	"func NodeID(b *Bootstrap) (entity.NodeID, error)",
 	"func WriteMissingNodeIDs(ctx context.Context, b *Bootstrap, id entity.NodeID, " +
 		"journalID func(ctx context.Context, node entity.NodeID, device entity.JournalDir) " +
