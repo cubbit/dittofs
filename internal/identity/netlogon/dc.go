@@ -239,7 +239,7 @@ func (d *dc) Account(ctx context.Context, bind identity.JoinCredential, name str
 	if err != nil {
 		return Account{}, accountErr(err)
 	}
-	return Account(a), nil
+	return a, nil
 }
 
 // Create creates the computer account over LDAP as admin.
@@ -247,7 +247,7 @@ func (d *dc) Create(ctx context.Context, admin identity.JoinCredential, c Comput
 	if d.isClosed() {
 		return errClosed
 	}
-	return accountErr(directory.CreateComputer(ctx, d.ldap, admin.User, admin.Password, directory.NewComputer(c), password))
+	return accountErr(directory.CreateComputer(ctx, d.ldap, admin.User, admin.Password, c, password))
 }
 
 // Reset sets the computer account's password over LDAP as admin.

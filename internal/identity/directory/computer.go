@@ -180,7 +180,7 @@ func (c *ldapConn) hostMappings(ctx context.Context) ([]string, error) {
 }
 
 // hostAliases is the services the sPNMappings values map to host: each value
-// is alias,alias,...=service.
+// is service=alias,alias,....
 func hostAliases(mappings []string) []string {
 	var hostTo []string
 	for _, m := range mappings {

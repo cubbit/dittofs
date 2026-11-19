@@ -139,14 +139,22 @@ func TestLookupAsksTheDNSServerForTheLocatorRecord(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	got, err := NewDialer((&net.Dialer{}).DialContext).Lookup(ctx, "CORP.EXAMPLE", srv)
+	// The server records a question before it answers, so once Lookup returns
+	// every question it sent is already in asked; checked first, a Lookup that
+	// asked another server or another name fails here rather than on its error.
+	select {
+	case name := <-asked:
+		if name != "_ldap._tcp.dc._msdcs.corp.example." {
+			t.Fatalf("the DNS server was asked %q, want _ldap._tcp.dc._msdcs.corp.example.", name)
+		}
+	default:
+		t.Fatalf("the DNS server at %s was asked nothing, want _ldap._tcp.dc._msdcs.corp.example.", srv)
+	}
 	if err != nil {
 		t.Fatalf("Lookup through %s: %v", srv, err)
 	}
 	if want := []string{"dc1.corp.example", "dc2.corp.example"}; !slices.Equal(got, want) {
 		t.Errorf("Lookup = %v, want %v, by priority", got, want)
-	}
-	if name := <-asked; name != "_ldap._tcp.dc._msdcs.corp.example." {
-		t.Errorf("the DNS server was asked %q, want _ldap._tcp.dc._msdcs.corp.example.", name)
 	}
 }
 
