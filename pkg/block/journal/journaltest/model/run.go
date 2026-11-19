@@ -39,6 +39,10 @@ type Target interface {
 	View(i int) View
 	// Repack runs one repack pass over the whole journal.
 	Repack(ctx context.Context) error
+	// Forget forgets the tag of share i: the handle is closed first, as the
+	// journal refuses a forget while one is open, and the next Share(i)
+	// attaches it again.
+	Forget(ctx context.Context, i int) error
 	// Crash loses the journal's storage as kind says, with arg the bytes a
 	// torn write keeps or the seed of a reordering, and opens the journal
 	// again on what is left. It returns a ReopenError when the journal does
@@ -138,6 +142,8 @@ type idle struct {
 	// offloaded yet, or what the fill chose was released or its removal
 	// settled since.
 	fills int
+	// forgets are the forget steps the headroom refused.
+	forgets int
 }
 
 // runCounting is runSteps that also counts the steps that did nothing.
@@ -309,6 +315,27 @@ func (r *runner) step(s Step) error {
 
 	case OpCrash, OpReopen:
 		return r.restart(s)
+
+	case OpForget:
+		err := r.tgt.Forget(ctx, s.Share)
+		r.s.seen("Forget", err)
+		var ns *journal.NoSpaceError
+		if errors.As(err, &ns) {
+			// The headroom is spent: the tag stays whole, as the journal says.
+			r.idle.forgets++
+			return nil
+		}
+		if err != nil {
+			return m.mismatch("forget", journal.FileID{}, "returned %v", err)
+		}
+		for _, f := range m.Forget(tag) {
+			for i := range numFiles {
+				if fileOf(i) == f {
+					r.remote[i], r.asOf[i] = nil, [2]journal.Version{}
+				}
+			}
+		}
+		return nil
 	}
 	return fmt.Errorf("model: no operation %v: %w", s.Op, ErrMisuse)
 }

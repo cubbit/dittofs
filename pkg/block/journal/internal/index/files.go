@@ -220,6 +220,7 @@ type file struct {
 func newFile(acct *segments, fs *files) *file {
 	f := &file{held: heldSet{acct: acct}, retained: retainedSet{acct: acct}}
 	f.held.times, f.retained.times = &f.dirtyAt, &f.dirtyAt
+	f.held.of = f
 	f.mu.Init(lockorder.FileIndex, fs.recorder())
 	return f
 }
@@ -421,6 +422,38 @@ func (f *file) read(fn func(*file)) {
 	fn(f)
 }
 
+// note is update over no creation: fn runs on id's entry only when the map
+// holds one, and a file no entry names — one a forget's drop removed whole,
+// one never built — answers nil having noted nothing and claimed no tag. The
+// guard is the drop's own shape: the shard lock names the entry and comes
+// down, and the f.mu take that follows re-checks `gone`, so a settle that
+// removes the entry between the two is retried against the empty shard the
+// removal left — no second take ever creates an entry, which is what `update`
+// would do — and the carry's note of a piece whose file a forget dropped
+// reaches nobody. The interleaving itself needs a hook inside the index to be
+// driven in a test; the contract test pins the no-recreation half, and the
+// two-lock shape is what closes the race. fn runs holding the file's lock
+// exclusively, and the unlock is apply's, whatever fn returns.
+func (fs *files) note(id core.FileID, fn func(*file) error) error {
+	s := fs.shard(id)
+	for {
+		s.mu.Lock()
+		f := s.m[id]
+		s.mu.Unlock()
+		if f == nil {
+			return nil
+		}
+		f.mu.Lock()
+		if f.gone {
+			f.mu.Unlock()
+			continue
+		}
+		before := f.entries()
+		_, err := f.apply(fs, s, id, before, 0, fn)
+		return err
+	}
+}
+
 // update runs fn on id's entry holding the file's lock exclusively, creating
 // the entry when the file has none. Once fn returns, whatever it returned,
 // the entry's lifetimes are applied under the same lock: a file holding
@@ -550,7 +583,7 @@ func (f *file) settle(fs *files, s *fileShard, id core.FileID) {
 	// accounting and the dirty-time table: a cut in a later update happens to
 	// this same set, and a dirty write after it must still be timed. An empty
 	// tree holds no bytes, so its byte counters are already zero.
-	f.held = heldSet{acct: f.held.acct, times: f.held.times}
+	f.held = heldSet{of: f, acct: f.held.acct, times: f.held.times}
 	if len(f.segs) > 0 || f.retained.len() > 0 {
 		return
 	}
@@ -687,6 +720,36 @@ func (fs *files) segmentLive(seg core.SegmentID) int64 { return fs.segs.live(seg
 // and whether the segment was even there: a second retire reports absent, as
 // reclamation needs to be idempotent.
 func (fs *files) retireSegment(seg core.SegmentID) (SegmentBytes, bool) { return fs.segs.retire(seg) }
+
+// forgetRanges drops the ranges of the records the forget record covers —
+// every range whose lowest pair sits below its sequence number, the only
+// ones of the file a durable forget leaves drop queries to keep — and the
+// segment entries those ranges leave empty: a segment that no longer holds a
+// covered record of the file must not keep the entry alive, or an entry
+// whose tag the forget cleared would stay in the map holding nothing. The
+// caller holds the file's lock, inside the update whose gauges count the
+// change by the f.nranges movement here.
+func (f *file) forgetRanges(below core.Seq) {
+	kept := f.segs[:0]
+	for _, s := range f.segs {
+		rs := s.ranges[:0]
+		for _, r := range s.ranges {
+			if r.low.Seq < below {
+				f.nranges--
+				continue
+			}
+			rs = append(rs, r)
+		}
+		clear(s.ranges[len(rs):])
+		s.ranges = rs
+		if len(rs) == 0 {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	clear(f.segs[len(kept):])
+	f.segs = kept
+}
 
 // segmentGone notes that seg, unlinked or recycled, no longer holds a record
 // of the file — and, with them, forgets the segment's drop ranges, so from

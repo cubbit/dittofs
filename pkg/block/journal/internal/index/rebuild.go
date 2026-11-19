@@ -565,7 +565,7 @@ func (f *file) fold(recs []bufRec) ([]bufRec, error) {
 			// the times in from the records. Overturned by a reader of
 			// the oldest dirty time that runs before recovery has done
 			// so.
-			f.write(Placed{Extent: e, Record: at, Version: r.numbers.Version, Seq: r.numbers.Seq})
+			f.write(Placed{Extent: e, Record: at, Version: r.numbers.Version, Seq: r.numbers.Seq, Tag: r.tag})
 		case RecFill:
 			// decision: a fill replays as a plain put. A fill record
 			// covers exactly the extents that were absent when its journal
@@ -581,7 +581,7 @@ func (f *file) fold(recs []bufRec) ([]bufRec, error) {
 			// A fill's own mark, so an unmark's order against it matters
 			// exactly as against a real offloaded record: filled content
 			// enters the journal already offloaded, from the remote tier.
-			f.held.put(Piece{Extent: e, Record: at, Skip: uint32(e.Off - r.off), Version: r.numbers.Version, Seq: r.numbers.Seq})
+			f.held.put(Piece{Extent: e, Record: at, Skip: uint32(e.Off - r.off), Version: r.numbers.Version, Seq: r.numbers.Seq, Tag: r.tag})
 			marks = append(marks, r)
 		case RecRelease:
 			// decision: a release replays as an unconditional cut. The

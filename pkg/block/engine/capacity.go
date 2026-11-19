@@ -384,7 +384,10 @@ func (e *Engine) relieved(
 		// free — its write lands, or it rolls back — so a share holding one
 		// never settles as no space: the refusal stays a delay until the
 		// reservation's own outcome does something (RFC 8 section 10.2,
-		// the table's first row).
+		// the table's first row). The postponement lasts one reservation's
+		// lifetime at most: the engine's only reservation is a clone's
+		// copy-plus-sync attempt, retaken per retry, so the window ends and
+		// the no-space answer is never put off for ever.
 		if answer.noSpace && r.limit == journal.LimitShare &&
 			b.j.Stats().Shares[b.share.Tag].ReservedBytes > 0 {
 			answer = row{delay: vfserr.DelayCapacity}
@@ -393,12 +396,9 @@ func (e *Engine) relieved(
 		return e.answeredAs(b, err, r, answer), false
 	}
 
-	// The share's own limit reads the figures between the last step's sync
-	// and its repack: the step's sync runs first — the figures it leaves
-	// empty name nothing a repack could relieve, so the step answers no
-	// space at once and the repack never runs — and its verdict carries the
-	// sync's outcome to the repack's own guard below, keeping the
-	// no-repack-after-a-dead-sync rule.
+	// The last step syncs, then repacks; the retry's own refusal reads what
+	// is left. (The share's first pass may already have run at a budget of
+	// no bytes: a scope the prefigures name empty is charged nothing.)
 	if serr := e.relieve(ctx, b, r, at); serr != nil {
 		if errors.Is(serr, journal.ErrClosed) {
 			return e.journalErr(serr), false

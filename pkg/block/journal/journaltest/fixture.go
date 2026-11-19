@@ -339,6 +339,17 @@ func (f *Fixture) Share(i int) *journal.Handle {
 	return h
 }
 
+// Detach closes share i's handle and drops it, so the next Share(i) attaches
+// the share again.
+func (f *Fixture) Detach(i int) error {
+	h, ok := f.handles[i]
+	if !ok {
+		return nil
+	}
+	delete(f.handles, i)
+	return h.Close()
+}
+
 // attach attaches share i to the open journal and returns its handle, or
 // the journal's refusal; it fails nothing itself, since an open may run it
 // off the test's goroutine.

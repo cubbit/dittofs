@@ -84,7 +84,10 @@ func (j *Journal) Share(tag ShareTag, limit int64, floor Version) (*Handle, erro
 // The journal never decides on its own which tags to forget: a tag the
 // caller still records may hold the only copy of dirty content.
 func (j *Journal) Forget(ctx context.Context, tag ShareTag) error {
-	return ErrNotImplemented
+	if j.core == nil {
+		return ErrNotImplemented
+	}
+	return j.core.Forget(ctx, tag)
 }
 
 // Strand marks tag as claimed by no share. From the call on, no read through

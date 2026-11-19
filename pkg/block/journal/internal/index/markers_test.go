@@ -22,6 +22,12 @@ func change(t *testing.T, fs *files, id core.FileID, fn func(*file) error) {
 func heldPieces(fs *files, id core.FileID) []Piece {
 	var ps []Piece
 	fs.view(id, func(f *file) { ps = f.held.pieces(nil) })
+	// The rebuild, window and repoint fixtures compare placement, not the
+	// tag the fed record carried; their wants stay literal. The tag a piece
+	// carries is pinned by the forge tests, which read the pieces directly.
+	for i := range ps {
+		ps[i].Tag = 0
+	}
 	return ps
 }
 

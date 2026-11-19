@@ -403,6 +403,17 @@ func (d *Durability) DeferredAgainst(seg core.SegmentID) []Loss {
 	return d.dir.deferredAgainst(seg)
 }
 
+// DeferredOfTag answers every deferred loss whose dropped content belonged
+// to share tag, keyed by the segment each is deferred against, the registry's
+// own tag-keyed census a forget of the tag runs: both at its emptiness check
+// — a pending loss of the tag is something it holds, whatever the set and
+// the index answer — and in its sweep, which the set's per-tag figures
+// cannot guide, a deferral sitting against a segment that carries none of
+// the tag's bytes escaping them otherwise.
+func (d *Durability) DeferredOfTag(tag core.ShareTag) map[core.SegmentID][]Loss {
+	return d.dir.deferredOfTag(tag)
+}
+
 // EndDeferral ends one deferred loss of seg: the copy that retires it has
 // the loss record durable, so the registry gives the entry up. l names the
 // entry as DeferredAgainst returned it. An entry leaves on this call alone,

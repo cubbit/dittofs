@@ -335,9 +335,11 @@ type Core struct {
 	// decision: registryMu is a leaf. It covers only swapping and reading the
 	// registry pointer, and holds nothing else across it but afterSwap, a
 	// test seam that observes the fence from inside the critical section and
-	// takes no lock of its own; nil in production, where the critical
-	// section stays the swap alone. It stays a plain mutex: a recorded order
-	// it cannot break is not its to police.
+	// takes no lock of its own, and, inside the Forget path's critical
+	// section, the forgetting mark's own mutex — the mark set under the
+	// registry's lock so no attach lands between the two. Nil afterSwap in
+	// production, where the critical section stays the swap alone. It stays a
+	// plain mutex: a recorded order it cannot break is not its to police.
 	registryMu sync.Mutex
 
 	// stranded is the set of stranded tags, replaced whole under strandMu
@@ -345,8 +347,9 @@ type Core struct {
 	stranded atomic.Pointer[[]core.ShareTag]
 	// decision: strandMu is a leaf. It guards stranded's replacement alone,
 	// holding nothing across it and taking nothing under it; registryMu's
-	// own contract names only Share and Close as its takers, so this is a
-	// mutex of the strand set's own.
+	// own contract names Share, Close and the Forget path's mark as its
+	// takers, and the strand set is still a mutex of its own: the Forget
+	// path takes it with every lock of the registry's down.
 	strandMu sync.Mutex
 
 	// forgetting is the set of tags whose Forget path is running — the mark
@@ -789,7 +792,12 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 				}
 				return out
 			},
-			c.headroom.Admit, c.headroom.Drawn),
+			c.headroom.Admit, c.headroom.Drawn,
+			// A copy's roll refused for want of a reserve spare waits the
+			// pool's own settle once — the refill racing the unit — before
+			// the refusal is the caller's: the model's repack-and-forget
+			// mix drew the flake this closes.
+			c.pool.WaitReserveSpare),
 		Tracker:    tr,
 		Index:      state.Index,
 		Set:        state.Set,

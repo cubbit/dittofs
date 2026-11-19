@@ -115,6 +115,111 @@ func (ix *Index) ClearTag(id core.FileID) error {
 	_, err := ix.fs.update(id, func(f *file) error {
 		f.tagged, f.tag = false, 0
 		f.rivalled, f.rival = false, 0
+		// Both marks drop together, so the pieces' side flags — the rival
+		// mark's alone — re-own with them, keeping a later claim and rivalry
+		// from resolving stale flags to a rival their pieces never had.
+		f.held.ownAll()
+		return nil
+	})
+	return err
+}
+
+// FilesClaimedBy returns every file tag claims, whether as its owner or as
+// the rival of one: the enumeration the Forget of the tag drops by. Unlike
+// Files, a file nothing holds — every extent settled away, its records still
+// riding their segments — is named by its tag alone, and a rivalled file is
+// named by its rival's tag too, whichever side the Forget has to clear. It
+// takes no file's lock; the answer is in no order and a snapshot.
+func (ix *Index) FilesClaimedBy(tag core.ShareTag) []core.FileID {
+	var out []core.FileID
+	ix.fs.walk(func(id core.FileID, f *file) {
+		if !f.gone && ((f.tagged && f.tag == tag) || (f.rivalled && f.rival == tag)) {
+			out = append(out, id)
+		}
+	})
+	return out
+}
+
+// ForgetFile drops the file whole from the running index, the half a durable
+// forget record of the file's tag does at its drop: every held and retained
+// extent, every removal marker, and the drop ranges of the records below
+// seq — those are the ones the forget record covers, so no drop query of the
+// file is answered against them — while the entry's marks are left alone.
+// It returns the held-state delta of the drop and the segments whose held
+// bytes fell, so the caller accounts the drop and offers the emptied
+// segments with the forget record as the causality record, exactly as a
+// removal does. A file with no entry drops nothing and names no segment.
+//
+// The marks are the second half, ForgetTagMarks: the delta of this update
+// names the tag as the update ended, so the drop must run first, while the
+// entry still owns its tag, and the marks are cleared once the drop is
+// accounted.
+//
+// decision: the markers and the drop ranges are cleared whole, the survivor's
+// with the forgotten tag's. They are kept per file — the index cannot tell a
+// marker's tag — while the pieces it can tell, so the residue a rivalled
+// file's survivor carries is its marker yielding to the forget's settle-free
+// clear and the drop ranges of its records below the forget record: its
+// removals can settle sooner over the lost ranges, and its own removal
+// records release at the liveness re-test the forget runs. Safe everywhere a
+// rivalled file grows — only a fault plants one — and cheaper than a stored
+// tag per piece: the entry keeps one byte of side, not eight of tag.
+// Overturned by a rival whose unsettled markers must survive a forget of its
+// co-tenant exact.
+func (ix *Index) ForgetFile(id core.FileID, below core.Seq, tag core.ShareTag) (HeldDelta, []core.SegmentID, error) {
+	var m touched
+	hd, err := ix.fs.update(id, func(f *file) error {
+		f.held.touched = &m
+		defer func() { f.held.touched = nil }()
+		// The drop takes the tag's records alone: the entry keeps a one-byte
+		// side flag that resolves to the full tag against the file's own
+		// marks, so the other side of a rivalled file keeps its held pieces
+		// — and with them the segment its records ride, held by the same
+		// bytes the drop still names — and nothing of the surviving tag's
+		// content is reclaimed under it. A file the forgotten tag owns whole
+		// (no rival mark) takes the cut it always did.
+		all := toEnd(0)
+		switch {
+		case !f.rivalled:
+			f.held.cut(all)
+		case f.rival == tag:
+			f.held.dropSide(true)
+		default:
+			f.held.dropSide(false)
+		}
+		f.retained.drop(all, func(r Retained) bool { return r.Tag == tag }, nil)
+		f.markers = nil
+		f.forgetRanges(below)
+		return nil
+	})
+	return hd, m.named(), err
+}
+
+// ForgetTagMarks clears the marks of the forgotten tag on id, the second
+// half of a forget the durable record settles: the file goes to the other
+// tag of a rivalled one — its records of the forgotten tag are the forget's
+// own, and a reopen rebuilds the marks of the records that remain — and to
+// nobody otherwise, so the next appending call through any tag claims the
+// file afresh, as recovery would. A file the forgotten tag never marked, and
+// one with no entry, are no-ops.
+func (ix *Index) ForgetTagMarks(id core.FileID, forgotten core.ShareTag) error {
+	_, err := ix.fs.update(id, func(f *file) error {
+		switch {
+		case f.rivalled && f.rival == forgotten:
+			f.rivalled, f.rival = false, 0
+			// What remains is the owner's alone; the pieces the rival's own
+			// forget already dropped never read a flag again, and any flag a
+			// standalone marks-clear leaves would misname the next rivalry.
+			f.held.ownAll()
+		case f.rivalled && f.tag == forgotten:
+			f.tag, f.rivalled, f.rival = f.rival, false, 0
+			// The survivor's pieces are the owner's now: their side flags
+			// must say so before any later rivalry resolves them to its
+			// rival and a forget of it drops them with the rival's own.
+			f.held.ownAll()
+		case f.tag == forgotten:
+			f.tagged, f.tag = false, 0
+		}
 		return nil
 	})
 	return err

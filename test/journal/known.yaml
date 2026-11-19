@@ -344,14 +344,6 @@
   issue: '#3378'
   message: 'stub: Offload'
 
-- test: TestRFC1C_ForgetLeavesNothingToSettle
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens and Stats counts the removal markers; the check stops at Forget, a stub. Needs forget settling the removal markers of a tag and dropping every one of its index entries.'
-  issue: '#3815'
-  message: 'stub: Forget'
-
 - test: TestRFC1C_HeaderOnlyRecordsReappended
   status: fail
   fix: planned
@@ -380,8 +372,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and the row reads its segments, then fails on the Offload stub. Needs Offload.'
-  issue: '#4044'
+  reason: 'The journal opens and the row reads its segments, then fails on the Offload stub. Waits for Offload and the MarkOffloaded it feeds.'
+  issue: '#3379'
   message: 'stub: Offload'
 
 - test: TestRFC1C_ReleaseRecordLost
@@ -423,14 +415,6 @@
   reason: 'The journal opens; every failing leg of the check fails on a stub call, Sync or Truncate. Needs Sync and Truncate.'
   issue: '#3378'
   message: 'stub:'
-
-- test: TestRFC1C_UnclaimedTagReported
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the per-share statistics rebuilt at open for a tag no share attached.'
-  issue: '#3815'
-  message: 'stub: Forget'
 
 - test: TestRFC1C_UnclaimedTagsAreTheCallersToName
   status: fail
@@ -532,7 +516,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the disagreement is over the row of a retired segment, not over any stub. RFC 1 section 4.4 keeps the row of a damaged retired segment, marked retired, until close, and this check reads the row''s expectation to cover also a segment repack emptied and then retired, a case the section''s text names neither way. A wording gap for the RFC owner; the PR text carries it.'
+  reason: 'Segments keeps the row of a retired damaged segment, marked retired, until close (RFC 1 section 4.4), and this check expects the repacked segment gone from the list: the RFC and the check disagree for a segment repack emptied before retiring it. Waits on the RFC owner, not on a call.'
   issue: '#3815'
   message: 'is still among the journal'
 
@@ -745,12 +729,11 @@
   message: 'stub: Restamp'
 
 
-
 - test: TestDamage_LostWrites/failed_unlink
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails: the segment whose sync failed at the crash is not reported failed after the restart, so the row''s unread-window leg never lands. Needs the open reading the failed sync''s shape from the crash state and reporting the segment failed.'
+  reason: 'The precondition fails: a sync that fails with nothing unsynced does not report the segment failed through Inspect().Segments(). Open: whether such a Sync reaches the device at all; no 9b call is involved.'
   issue: '#3815'
   message: 'is not reported failed after its sync failed'
 
@@ -1145,14 +1128,6 @@
   reason: 'The journal opens; the check fails on a stub call. Needs repack that keeps a carried release record''s sequence, and recovery.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
-
-- test: TestRFC1A_CopyLosesToNewerWrite
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check''s own record-count assertion fires after the pass ran: record(s) were appended once the pass''s source was superseded and synced. Needs repack dropping a record superseded mid-copy, and recovery.'
-  issue: '#3815'
-  message: 'record(s) were appended once the pass''s source was superseded and synced'
 
 - test: TestRFC1A_DropsDecidedAfterCopies
   status: fail

@@ -3,6 +3,7 @@ package index
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -31,6 +32,13 @@ type Placed struct {
 	Version core.Version
 	// Seq is the sequence number of the record holding the bytes.
 	Seq core.Seq
+	// Tag is the share the placed record belongs to, stamped by the index
+	// entry points from the tag they were called with: holds never name a
+	// tag themselves, so a forget that drops one side of a rivalled file
+	// tells its own records by this alone. Zero on a placement no entry
+	// point stamped — an index a test built by hand — and such a piece
+	// stays held through any tagged drop, the safe direction.
+	Tag core.ShareTag
 	// At is the time the write was made, the clock's reading when it was
 	// published. It is read only by a client write; reads and fills leave it zero.
 	At time.Time
@@ -45,6 +53,10 @@ type Piece struct {
 	Version   core.Version
 	Seq       core.Seq
 	Offloaded bool
+	// Tag is the share the piece's record belongs to, as Placed's own doc
+	// names. Kept beside the placement the write paths already carry, so a
+	// tagged drop of a rivalled file reads it per piece.
+	Tag core.ShareTag
 }
 
 // The record offset, skip and length of a piece are kept in 32 bits, which
@@ -53,10 +65,15 @@ type Piece struct {
 const _ = uint32(core.SegmentCap)
 
 // held is the tree value of one piece; the piece's start offset is its key.
-// It is 40 bytes. It keeps the version's counter half only: the epoch half is
-// zero on every record of this format, and its eight bytes hold the record's
-// sequence number instead, so the entry names its record exactly at no cost
-// over an entry that carried the whole version.
+// It is 40 bytes, the bound the RFC's index memory check holds. The entry
+// keeps no share tag: a forget that must part a rivalled file's records by
+// side takes the one byte the flag costs in the padding the counter alignment
+// already spent, and resolves it against the file's own marks — the same
+// forty bytes the epoch half's absence bought the sequence number. It keeps
+// the version's counter half only: the epoch half is zero on every record of
+// this format, and its eight bytes hold the record's sequence number instead,
+// so the entry names its record exactly at no cost over an entry that carried
+// the whole version.
 //
 // ponytail: one entry per contiguous held piece of one record, which with the
 // tree around it costs about 53 bytes for extents written front to back and
@@ -79,12 +96,28 @@ type held struct {
 	skip      uint32
 	len       uint32
 	offloaded bool
+	// side is whether the piece's record belongs to the file's rival mark:
+	// the 40-byte entry keeps no tag of its own — a file names its owner
+	// and its rival, and every piece of a not-rivalled file is its owner's —
+	// so the one byte the flag takes in the padding the counter alignment
+	// already spent answers the forget's per-side drop without the eight
+	// a stored tag would cost. It sits in the padding after offloaded, so
+	// the entry stays 40 bytes and the index memory bound holds.
+	side bool
 }
 
 // toHeld packs p. It panics on a version with a non-zero epoch half, which
 // no record of this format carries: a caller bug, refused rather than stored
-// without it.
-func toHeld(p Piece) held {
+// without it. The side flag alone goes in, against the file's own rival mark:
+// no piece is packed before its record was noted — the rebuilder notes every
+// record before it replays any, and a runtime write of another tag on a file
+// already marked rivalled is refused — so the mark the flag read at pack time
+// named the piece's own tag. The flag stays true to those marks while they
+// stand: the paths that change them, a forget of either side and a
+// whole-marks clear, re-own what remains (ownAll), so a piece's flag never
+// names a rival newer than the piece. A set with no file behind it — a test's
+// bare set — packs every side false, the owner's answer.
+func (s *heldSet) toHeld(p Piece) held {
 	if p.Version.Epoch != 0 {
 		panic(fmt.Sprintf("index: a held piece's version carries epoch %d, which this format never writes", p.Version.Epoch))
 	}
@@ -96,10 +129,55 @@ func toHeld(p Piece) held {
 		skip:      p.Skip,
 		len:       uint32(p.Extent.Len),
 		offloaded: p.Offloaded,
+		side:      s.of != nil && s.of.rivalled && p.Tag == s.of.rival,
 	}
 }
 
-func (h held) piece(k uint64) Piece {
+// ownAll re-owns every piece of the set: the file's marks changed so that
+// what remains is the owner's — a forget of a rivalled file's owner names its
+// rival the owner's tag, and a marks-clear drops both — and the side flags
+// that pointed at the old marks must say so, or a later rivalry on the same
+// file would resolve the survivor's pieces to the new rival and a forget of
+// it take their content with the rival's own. It runs where those marks
+// change, beside the change itself, under the file's lock; O(pieces) over a
+// file only a fault makes rivalled, and it touches no counter, bytes, dirty
+// or bounds — the flag is none of them.
+func (s *heldSet) ownAll() {
+	var reowned []uint64
+	s.tree.ascend(0, func(k uint64, v held) bool {
+		if v.side {
+			reowned = append(reowned, k)
+		}
+		return true
+	})
+	for _, k := range reowned {
+		// floor over set: the pieces between the reads cannot have moved,
+		// every path here runs under the file's lock, but the read is fresh
+		// anyway so a piece ownAll itself just re-put has the flip stick.
+		if _, v, ok := s.tree.floor(k); ok {
+			v.side = false
+			s.tree.set(k, v)
+		}
+	}
+}
+
+// pieceOf reads the entry at k back with the tag its side resolves to on
+// the file the set belongs to: the flag alone lives in the entry, but the
+// piece it answers carries the share tag it stands for, so callers — the
+// drop, the re-puts, the placements the index hands out — see the tag, never
+// the flag. The tag answers under the marks standing when the piece is read,
+// and re-ownership keeps the flag truthful across their changes. A bare set,
+// or a file that claims no owner, answers the zero tag; the flag's meaning is
+// the file's marks alone.
+func (s *heldSet) pieceOf(k uint64, h held) Piece {
+	tag := core.ShareTag(0)
+	if s.of != nil && s.of.tagged {
+		if h.side {
+			tag = s.of.rival
+		} else {
+			tag = s.of.tag
+		}
+	}
 	return Piece{
 		Extent:    core.Extent{Off: int64(k), Len: int64(h.len)},
 		Record:    RecordAt{Segment: h.segment, Offset: h.recordOff},
@@ -107,6 +185,7 @@ func (h held) piece(k uint64) Piece {
 		Version:   core.Version{Counter: h.counter},
 		Seq:       h.seq,
 		Offloaded: h.offloaded,
+		Tag:       tag,
 	}
 }
 
@@ -159,6 +238,12 @@ func clip(p Piece, e core.Extent) Piece {
 // does not overflow, and a piece is no longer than a segment. Refusing others
 // is the journal API's job, as for the tree.
 type heldSet struct {
+	// of is the file the set holds, the marks toHeld reads to resolve a
+	// piece's side and pieceOf answers its tag with. Set by newFile beside
+	// the set's own birth; nil on a standalone set a test built by hand. It
+	// is a pointer the entry never stores: the entry's memory is the bound
+	// the cost pins, and the pointer lives once per file.
+	of *file
 	// acct are the per-segment counters this set feeds: every piece put
 	// adds to its record's segment, and every piece cut subtracts. Nil keeps
 	// the set unaccounted, as the standalone sets of tests are.
@@ -180,7 +265,7 @@ type heldSet struct {
 	// cleared by the move's own closure, under the file's exclusive lock.
 	touched *touched
 	// over are the runs where one write superseded another, kept beside the
-	// tree rather than in its entries so an entry stays 40 bytes, and so a run
+	// tree rather than in its entries so an entry stays at its own size, and so a run
 	// outlives the superseded piece, which is gone from the tree by then. They
 	// are in no order.
 	//
@@ -264,12 +349,12 @@ func (s *heldSet) visit(e core.Extent, fn func(Piece) bool) {
 	}
 	start, end := uint64(e.Off), uint64(e.Off+e.Len)
 	if k, v, ok := s.tree.floor(start); ok && k < start && k+uint64(v.len) > start {
-		if !fn(v.piece(k)) {
+		if !fn(s.pieceOf(k, v)) {
 			return
 		}
 	}
 	s.tree.ascend(start, func(k uint64, v held) bool {
-		return k < end && fn(v.piece(k))
+		return k < end && fn(s.pieceOf(k, v))
 	})
 }
 
@@ -282,8 +367,8 @@ func (s *heldSet) lookup(off int64) (Placed, bool) {
 	if !ok || k+uint64(v.len) <= uint64(off) {
 		return Placed{}, false
 	}
-	p := v.piece(k)
-	return Placed{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq}, true
+	p := s.pieceOf(k, v)
+	return Placed{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq, Tag: p.Tag}, true
 }
 
 // span appends to placed the pieces held inside e, clipped to it, and to
@@ -311,7 +396,7 @@ func (s *heldSet) span(e core.Extent, placed []Placed, missing []core.Extent) ([
 				return true
 			}
 		}
-		placed = append(placed, Placed{Extent: q.Extent, Record: q.Record, Skip: q.Skip, Version: q.Version, Seq: q.Seq})
+		placed = append(placed, Placed{Extent: q.Extent, Record: q.Record, Skip: q.Skip, Version: q.Version, Seq: q.Seq, Tag: q.Tag})
 		return true
 	})
 	if end := e.Off + e.Len; end > cursor {
@@ -365,7 +450,7 @@ func (s *heldSet) insert(p Placed) {
 	}
 	s.noteOver(p.Extent, p.Version)
 	s.times.note(p.Version.Counter, p.At)
-	s.put(Piece{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq})
+	s.put(Piece{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq, Tag: p.Tag})
 }
 
 // fill holds p, marked offloaded, only where nothing is held: a held piece
@@ -388,6 +473,7 @@ func (s *heldSet) fill(p Placed) {
 			Version:   p.Version,
 			Seq:       p.Seq,
 			Offloaded: true,
+			Tag:       p.Tag,
 		})
 	}
 	s.visit(p.Extent, func(q Piece) bool {
@@ -520,7 +606,7 @@ func (s *heldSet) repoint(e core.Extent, from, to RecordAt, skip uint32, seq cor
 // pieces appends every piece to out, in offset order. It costs O(n).
 func (s *heldSet) pieces(out []Piece) []Piece {
 	s.tree.ascend(0, func(k uint64, v held) bool {
-		out = append(out, v.piece(k))
+		out = append(out, s.pieceOf(k, v))
 		return true
 	})
 	return out
@@ -546,7 +632,7 @@ func (s *heldSet) put(p Piece) {
 		}
 	}
 	s.cut(p.Extent)
-	s.tree.set(uint64(p.Extent.Off), toHeld(p))
+	s.tree.set(uint64(p.Extent.Off), s.toHeld(p))
 	s.coalesce(p.Extent.Off + p.Extent.Len)
 	s.coalesce(p.Extent.Off)
 }
@@ -648,7 +734,7 @@ func (s *heldSet) cut(e core.Extent) {
 		if p.Extent.Off < e.Off {
 			head := p
 			head.Extent.Len = e.Off - p.Extent.Off
-			s.tree.set(uint64(p.Extent.Off), toHeld(head))
+			s.tree.set(uint64(p.Extent.Off), s.toHeld(head))
 		} else {
 			s.tree.delete(uint64(p.Extent.Off))
 		}
@@ -659,8 +745,44 @@ func (s *heldSet) cut(e core.Extent) {
 				// first payload byte instead of advancing past the cut.
 				tail.Skip = p.Skip
 			}
-			s.tree.set(uint64(end), toHeld(tail))
+			s.tree.set(uint64(end), s.toHeld(tail))
 		}
+	}
+}
+
+// dropSide removes every piece of the set on the named side of a rivalled
+// file — the rival's where side is true, the owner's where it is false —
+// whole: the subtractive accounting cut keeps per piece, and no head or tail
+// splitting is needed, the removal covering the file's whole span. Pieces of
+// the other side pass untouched, keeping their bytes, their bounds and their
+// places: the forget of one side of a rivalled file takes its own records
+// alone. A bare set drops nothing it cannot name a side for — its pieces'
+// sides all read false — the dropSide(false) of an owner's forget.
+func (s *heldSet) dropSide(side bool) {
+	if s.of == nil {
+		return
+	}
+	s.scratch = s.scratch[:0]
+	s.visit(core.Extent{Off: 0, Len: math.MaxInt64}, func(p Piece) bool {
+		if s.of.rivalled && ((p.Tag == s.of.rival) == side) {
+			s.scratch = append(s.scratch, p)
+		}
+		return true
+	})
+	for _, p := range s.scratch {
+		n := p.Extent.Len
+		s.bytes -= n
+		if !p.Offloaded {
+			s.dirty -= n
+			s.times.add(p.Version.Counter, -n)
+		}
+		if s.acct != nil {
+			s.acct.add(p.Record.Segment, -n, 0)
+			if s.touched != nil {
+				s.touched.note(p.Record.Segment)
+			}
+		}
+		s.tree.delete(uint64(p.Extent.Off))
 	}
 }
 

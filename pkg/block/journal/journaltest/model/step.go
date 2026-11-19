@@ -53,6 +53,10 @@ const (
 	OpCrash
 	// OpReopen closes the journal cleanly and opens it again.
 	OpReopen
+	// OpForget forgets the share's whole tag: every file the share holds is
+	// dropped, with its removal markers, and a later call claims the files
+	// afresh. A forget the headroom refuses does nothing.
+	OpForget
 
 	opEnd
 )
@@ -60,7 +64,7 @@ const (
 var opNames = [...]string{
 	OpWrite: "write", OpSync: "sync", OpRead: "read", OpFill: "fill", OpStaleFill: "stalefill",
 	OpOffload: "offload", OpRelease: "release", OpTruncate: "truncate", OpDeallocate: "deallocate",
-	OpDelete: "delete", OpSettle: "settle", OpRepack: "repack", OpCrash: "crash", OpReopen: "reopen",
+	OpDelete: "delete", OpSettle: "settle", OpRepack: "repack", OpCrash: "crash", OpReopen: "reopen", OpForget: "forget",
 }
 
 func (o Op) String() string {
