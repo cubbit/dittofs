@@ -20,15 +20,27 @@ type OpTable struct {
 	Errors *ErrorTable // per operation table, so NFSv3 and NFSv4 map differently
 	Holds  bool        // the table holds and re-drives what its protocol holds, by error and cause; else every error is answered at once
 	// Protocol is the label of every series this table's requests record from
-	// Route on (§10.1), set after NewOpTable as ReadOp is; a server refuses a
-	// table without one at the first Route that returns it. A compound row's
-	// Members take their parent's.
+	// Route on (§10.1), set after NewOpTable as ReadOp is; NewServer refuses a
+	// table without one (Protocol.Tables). A compound row's Members take their
+	// parent's.
 	//
 	// decision: the label is a field the protocol sets, not a name NewOpTable
-	// is given or a registry it resolves into: core first sees a table when
-	// Route returns it, and two servers may share one table. Overturned if a
-	// table is built per server.
+	// is given or a registry it resolves into: two servers may share one
+	// table, and each resolves its series into its own registry at NewServer.
+	// Overturned if a table is built per server.
 	Protocol string
+	// Versions narrows the versions the Router returns this table for, set
+	// as Protocol is; nil is every version, as ErrorRow.Versions is. A
+	// compound row's Members take their parent's. NewServer refuses one
+	// whose First is past its Last, and compares the row names of two tables
+	// of one Protocol unless both set Versions and the two do not overlap
+	// (§10.1's op). A table Route returns for a header whose Version it does
+	// not hold closes the connection as a wiring fault (Protocol.Tables).
+	//
+	// decision: two tables of one Protocol are told apart only by a Versions
+	// a protocol opts into, not by a range every table must carry, as §10.1
+	// decides: NFS numbers its versions per program and sets none.
+	Versions *Range
 	// ReadOp reads the operation code at the head of a compound member's bytes,
 	// and how many bytes it took: NFSv4's argop. Its error is its own, which
 	// the runner wraps (ErrDecode). Set on a table that is a compound row's
@@ -181,19 +193,20 @@ func Bind[Req, Rep any](
 
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
 // each name, lower-cased, lower-case letters, digits and underscores alone,
-// no ErrorRow.Hold unless holds, and, where it holds, a row answering
-// ErrCancelled for every operation and version (one naming neither Ops nor
-// Versions that replies at once with a status other than the fault or
-// success) and no row for it, whatever its Ops or Versions, that holds, sends
-// no reply or answers the fault or success; and, where it holds, the same of
-// a typed row for &vfs.Delay{Cause: vfs.DelayResources}, read among the typed
-// rows alone.
+// and unique once lower-cased (§10.1's op), no ErrorRow.Hold unless holds,
+// and, where it holds, a row answering ErrCancelled for every operation and
+// version (one naming neither Ops nor Versions that replies at once with a
+// status other than the fault or success) and no row for it, whatever its
+// Ops or Versions, that holds, sends no reply or answers the fault or
+// success; and, where it holds, the same of a typed row for
+// &vfs.Delay{Cause: vfs.DelayResources}, read among the typed rows alone.
 //
 // decision: a table that fails a check panics, naming the row, as
 // NewErrorTable does: a table is program text and NewOpTable returns no
 // error. Overturned if a table is ever built from configuration.
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 	t := &OpTable{Ops: make(map[uint32]*Op, len(ops)), Errors: errs, Holds: holds}
+	names := make(map[string]string, len(ops)) // by name lower-cased
 	for _, op := range ops {
 		if prev, dup := t.Ops[op.Code]; dup {
 			panic(fmt.Sprintf("core: op table: %s and %s share code %d", prev.Name, op.Name, op.Code))
@@ -204,6 +217,10 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 		if !labelName(op.Name) {
 			panic(fmt.Sprintf("core: op table: %q, lower-cased, is not lower-case letters, digits and underscores alone", op.Name))
 		}
+		if prev, dup := names[strings.ToLower(op.Name)]; dup {
+			panic(fmt.Sprintf("core: op table: %s and %s are one name once lower-cased", prev, op.Name))
+		}
+		names[strings.ToLower(op.Name)] = op.Name
 		if op.Members != nil && op.MaxMembers <= 0 {
 			panic(fmt.Sprintf("core: op table: %s has members and no MaxMembers", op.Name))
 		}

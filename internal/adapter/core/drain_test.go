@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"maps"
 	"net"
 	"net/netip"
 	"sync"
@@ -872,7 +871,15 @@ func newDrained(t *testing.T, outer *core.ErrorTable, none uint32) *drained {
 	d := adapter.Deps{Budgets: b, VFS: faults}
 	var p core.Protocol = testproto.New(d).WithCall(admin)
 	if outer != nil {
-		p = edited{p, func(st *core.Stages) { st.Router = outerRouter{st.Router, outer, none} }}
+		r := retable(p, func(op *core.Op, member bool) {
+			if !member && op.Code == none {
+				op.Role = core.RoleNone
+			}
+		})
+		for _, tb := range r.Tables() {
+			tb.Errors = outer
+		}
+		p = r
 	}
 	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: p}
 	srv, err := core.NewServer(d, drainSnap(), l)
@@ -1056,31 +1063,6 @@ func TestADrainedRequestMovesOnlyWhenItsHandleHasATarget(t *testing.T) {
 			})
 		})
 	}
-}
-
-// outerRouter is a router whose tables answer their own refusals with errs
-// and give the operation none, where not zero, the role RoleNone, each a
-// copy: a compound row's members keep their own table.
-type outerRouter struct {
-	core.Router
-	errs *core.ErrorTable
-	none uint32
-}
-
-func (o outerRouter) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
-	tb, r, err := o.Router.Route(h, prev)
-	if tb != nil {
-		c := *tb
-		c.Errors = o.errs
-		if op := tb.Ops[o.none]; op != nil {
-			refused := *op
-			refused.Role = core.RoleNone
-			c.Ops = maps.Clone(tb.Ops)
-			c.Ops[o.none] = &refused
-		}
-		tb = &c
-	}
-	return tb, r, err
 }
 
 // movesEverywhere answers ErrMoved with the move signal on every operation,

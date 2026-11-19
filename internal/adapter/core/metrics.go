@@ -7,8 +7,6 @@ import (
 	"maps"
 	"slices"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metrics"
@@ -347,52 +345,69 @@ func (t *tableSeries) released(n int64) {
 // negative n.
 func (sh *shared) holdPoolCharged(n int64) { sh.holdPool.Add(float64(n)) }
 
-// table is t's series. A table with no Protocol is refused, naming its
-// operations: NewOpTable runs before the field is set, so this is the first
-// place core can see it. A compound row's Members are resolved with it,
-// under its label.
-func (sh *shared) table(t *OpTable) (*tableSeries, error) {
-	if ts, ok := (*sh.tables.Load())[t]; ok {
-		return ts, nil
+// table is the series NewServer resolved for t, which Route returned for a
+// header of version v. A table no listener's Tables listed, a compound row's
+// Members among them, or one whose Versions do not hold v, is a fault of the
+// protocol's wiring (§4.7): the error closes the connection, naming the
+// table.
+func (sh *shared) table(t *OpTable, v Version) (*tableSeries, error) {
+	ts, ok := sh.tables[t]
+	if !ok || ts.member {
+		return nil, fmt.Errorf("%w: Route returned the table of %s, which no listener's Tables listed", errWiring, opNames(t))
 	}
-	if t.Protocol == "" {
-		return nil, fmt.Errorf("%w: the table of %s has no Protocol", errWiring, opNames(t))
+	if r := t.Versions; r != nil && (v < r.First || v > r.Last) {
+		return nil, fmt.Errorf("%w: Route returned the table of %s, whose Versions %d to %d do not hold version %d", errWiring, opNames(t), r.First, r.Last, v)
 	}
-	return resolve(&sh.mu, &sh.tables, t, func(m map[*OpTable]*tableSeries) *tableSeries {
-		ts := sh.newTable(t.Protocol, t, false)
-		m[t] = ts
+	return ts, nil
+}
+
+// resolveTables resolves the series of each of ts, which checkTables
+// returned, under its Protocol, and of each of its compound rows' Members
+// with it, under that same label. NewServer calls it before any listener
+// accepts, so no request writes sh.tables and every request reads it with no
+// lock.
+func (sh *shared) resolveTables(ts []*OpTable) {
+	for _, t := range ts {
+		sh.tables[t] = sh.newTable(t.Protocol, t, false)
 		for _, op := range t.Ops {
-			if op.Members != nil && m[op.Members] == nil {
-				m[op.Members] = sh.newTable(t.Protocol, op.Members, true)
+			if op.Members != nil && sh.tables[op.Members] == nil {
+				sh.tables[op.Members] = sh.newTable(t.Protocol, op.Members, true)
 			}
 		}
-		return ts
-	}), nil
+	}
 }
 
 // label is the series a connection whose Stages.Protocol is p records
-// before Route, and the connection series under the same label (§10.1).
+// before Route, and the connection series under the same label (§10.1):
+// read with no lock from the copy-on-write map, and resolved under mu at the
+// first accept that names p, which reads the map again there, so two first
+// accepts at once resolve p once.
 func (sh *shared) label(p string) *labelSeries {
 	if ls, ok := (*sh.labels.Load())[p]; ok {
 		return ls
 	}
-	return resolve(&sh.mu, &sh.labels, p, func(m map[string]*labelSeries) *labelSeries {
-		ls := &labelSeries{
-			protocolSeries: sh.newProtocol(p),
-			protocol:       p,
-			replayHits:     sh.fam[vReplayHits](p),
-			in:             sh.fam[vBytes](p, dirIn),
-			out:            sh.fam[vBytes](p, dirOut),
-		}
-		for st, name := range stateNames {
-			ls.states[st] = sh.fam[vConnections](p, name)
-		}
-		for r, name := range reasonNames {
-			ls.closes[r] = sh.fam[vCloses](p, name)
-		}
-		m[p] = ls
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if ls, ok := (*sh.labels.Load())[p]; ok {
 		return ls
-	})
+	}
+	next := maps.Clone(*sh.labels.Load())
+	ls := &labelSeries{
+		protocolSeries: sh.newProtocol(p),
+		protocol:       p,
+		replayHits:     sh.fam[vReplayHits](p),
+		in:             sh.fam[vBytes](p, dirIn),
+		out:            sh.fam[vBytes](p, dirOut),
+	}
+	for st, name := range stateNames {
+		ls.states[st] = sh.fam[vConnections](p, name)
+	}
+	for r, name := range reasonNames {
+		ls.closes[r] = sh.fam[vCloses](p, name)
+	}
+	next[p] = ls
+	sh.labels.Store(&next)
+	return ls
 }
 
 // accepted counts a connection in at accept, in the handshake state;
@@ -457,20 +472,6 @@ func (sh *shared) newTable(p string, t *OpTable, member bool) *tableSeries {
 		ts.chains[code] = sh.chain(op, ts)
 	}
 	return ts
-}
-
-// resolve returns m's entry for k, which build adds to a copy of m under mu.
-// It reads m again under mu first, so two first calls at once build k once.
-func resolve[K comparable, V any](mu *sync.Mutex, m *atomic.Pointer[map[K]V], k K, build func(map[K]V) V) V {
-	mu.Lock()
-	defer mu.Unlock()
-	if v, ok := (*m.Load())[k]; ok {
-		return v
-	}
-	next := maps.Clone(*m.Load())
-	v := build(next)
-	m.Store(&next)
-	return v
 }
 
 // opNames names t by its operations, sorted.

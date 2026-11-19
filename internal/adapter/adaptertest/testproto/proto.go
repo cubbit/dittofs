@@ -120,13 +120,10 @@ func (p *Protocol) WithCall(c vfs.Call) *Protocol {
 }
 
 // New returns the protocol over d: its handlers call d.VFS, and the replay
-// cache's copies and Notify's message are reserved from d.Budgets.Reply.
-//
-// decision: the tables are built at the first Route, not here, so a test that
-// starts a server on testproto and routes nothing needs no table
-// construction. A table that fails its checks therefore shows at the first
-// request, which a test protocol can afford. Withdraw it if a test needs the
-// failure at New.
+// cache's copies and Notify's message are reserved from d.Budgets.Reply. Its
+// tables are built once, at the first Tables or Route; NewServer calls Tables
+// before any listener accepts, so a table that fails its checks shows at
+// configured.
 func New(d adapter.Deps) *Protocol {
 	p := &Protocol{d: d, reg: newRegistry(), hold: new(atomic.Int64)}
 	p.hold.Store(int64(HoldFor))
@@ -150,6 +147,18 @@ func (p *Protocol) Bare() core.Protocol {
 
 // Framer finds a record's length.
 func (p *Protocol) Framer() core.Framer { return framer{} }
+
+// Tables is every table the Router can return (RFC 20 §4.7): both versions'
+// on the full protocol, version 1's alone on Bare. The two share version 1's
+// table, which a server listing both resolves once.
+func (p *Protocol) Tables() []*core.OpTable {
+	t := p.tables()
+	if p.bare {
+		return t[:1]
+	}
+
+	return t[:]
+}
 
 // NewConn returns the connection's stages: every one on the full protocol,
 // the Hold stage included since the connection may reach version 2, and the
@@ -271,7 +280,8 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 }
 
 // build is both versions' tables: version 1 answers every error at once,
-// version 2 holds.
+// version 2 holds. They hold the same names, told apart by their Versions,
+// {1, 1} and {2, 2}; version 1's compound row's members take its {1, 1}.
 func (p *Protocol) build() [2]*core.OpTable {
 	errs := core.NewErrorTable(StatusFault, p.errorRows(false)...)
 	members := core.NewOpTable(errs, false, memberRows(p.ops())...)
@@ -281,8 +291,9 @@ func (p *Protocol) build() [2]*core.OpTable {
 		core.NewOpTable(errs, false, append(p.ops(), compound(members))...),
 		core.NewOpTable(core.NewErrorTable(StatusFault, p.errorRows(true)...), true, p.ops()...),
 	}
-	for _, t := range tables {
+	for i, t := range tables {
 		t.Protocol = Name
+		t.Versions = &core.Range{First: core.Version(i + 1), Last: core.Version(i + 1)}
 	}
 
 	return tables

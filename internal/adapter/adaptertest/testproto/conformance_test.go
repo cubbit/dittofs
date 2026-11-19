@@ -24,22 +24,17 @@ import (
 // assertion or a returned error, never a panic: a step that reaches a stub
 // that panics runs in the test's goroutine and recovers.
 
-// tablesBuilt routes one header, which builds p's tables, and reports the
-// panic of a stub they reach as an error.
+// tablesBuilt lists p's tables, which builds them, and reports the panic of
+// a stub they reach as an error.
 func tablesBuilt(p *Protocol) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("%v", r)
 		}
 	}()
-	rec := &resources.Buf{B: Append(nil, Msg{Op: OpEcho, Version: 1})[lengthLen:]}
-	h, err := headerCodec{}.Decode(rec, 0)
-	if err != nil {
-		return err
-	}
-	_, _, err = p.NewConn(nil).Router.Route(h, nil)
+	p.Tables()
 
-	return err
+	return nil
 }
 
 // One Echo accepted over loopback by a core server on testproto is answered,

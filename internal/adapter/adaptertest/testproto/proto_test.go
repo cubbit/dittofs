@@ -42,11 +42,15 @@ func request(v core.Version) (*core.Request, *state) {
 	return &core.Request{Version: v, State: s}, s
 }
 
-// Both versions' tables build through core's checks: version 1's with its
-// compound row over the members' table, version 2's holding, with the hold
-// row core refuses in a table that does not hold.
+// Both versions' tables build through core's checks and Tables lists them:
+// version 1's with its compound row over the members' table, version 2's
+// holding, with the hold row core refuses in a table that does not hold;
+// both under testproto's name, at Versions {1, 1} and {2, 2}.
 func TestTablesBuild(t *testing.T) {
-	tables := New(adapter.Deps{}).tables()
+	tables := New(adapter.Deps{}).Tables()
+	if len(tables) != 2 {
+		t.Fatalf("Tables lists %d tables, want both versions'", len(tables))
+	}
 	v1, v2 := tables[0], tables[1]
 	if v1.Holds || !v2.Holds {
 		t.Errorf("version 1 holds %v, version 2 %v; want only version 2", v1.Holds, v2.Holds)
@@ -60,6 +64,9 @@ func TestTablesBuild(t *testing.T) {
 	}
 	if v1.Protocol != Name || v2.Protocol != Name {
 		t.Errorf("the tables record under %q and %q, want %q", v1.Protocol, v2.Protocol, Name)
+	}
+	if one, two := (core.Range{First: 1, Last: 1}), (core.Range{First: 2, Last: 2}); v1.Versions == nil || *v1.Versions != one || v2.Versions == nil || *v2.Versions != two {
+		t.Errorf("the tables hold versions %v and %v, want %v and %v", v1.Versions, v2.Versions, one, two)
 	}
 }
 

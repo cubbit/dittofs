@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -813,7 +812,7 @@ func TestACompoundRowThatSetsNoHeadClosesTheConnection(t *testing.T) {
 			inv.EncodeHead = nil
 			return inv
 		}
-		s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}), noHead, nil), 1<<20)
+		s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}), noHead), 1<<20)
 		s.serve(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 1, Members: []testproto.Msg{echo}})
 		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "the Compound row's Decode sets no EncodeHead") {
 			t.Errorf("a compound row with no head closed the connection with %v, want the fault naming the row", err)
@@ -997,62 +996,26 @@ func TestAMemberWhoseArgumentsDoNotDecodeIsCounted(t *testing.T) {
 	}
 }
 
-// staleMembers is a Router declared in the test whose compound rows'
-// members tables have Echo's Invocation.Resolve fail, a fault injected in a
-// real row.
-type staleMembers struct {
-	core.Router
-	mu     sync.Mutex
-	tables map[*core.OpTable]*core.OpTable
-}
-
-func (w *staleMembers) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
-	tb, r, err := w.Router.Route(h, prev)
-	if tb == nil {
-		return tb, r, err
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.tables == nil {
-		w.tables = map[*core.OpTable]*core.OpTable{}
-	}
-	if cp, ok := w.tables[tb]; ok {
-		return cp, r, err
-	}
-	c := *tb
-	c.Ops = make(map[uint32]*core.Op, len(tb.Ops))
-	for code, op := range tb.Ops {
-		o := *op
-		if op.Members != nil {
-			mc := *op.Members
-			mc.Ops = make(map[uint32]*core.Op, len(op.Members.Ops))
-			for mcode, mop := range op.Members.Ops {
-				mo := *mop
-				if mcode == testproto.OpEcho {
-					dec := mop.Decode
-					mo.Decode = func(b []byte, v core.Version) (core.Invocation, int, error) {
-						inv, n, err := dec(b, v)
-						if err == nil {
-							inv.Resolve = func(*core.Request) error { return vfs.ErrStale }
-						}
-						return inv, n, err
-					}
-				}
-				mc.Ops[mcode] = &mo
-			}
-			o.Members = &mc
-		}
-		c.Ops[code] = &o
-	}
-	w.tables[tb] = &c
-	return &c, r, err
-}
-
 // A compound member whose Resolve fails is counted at resolve_ids.
 func TestAMemberWhoseResolveFailsIsCounted(t *testing.T) {
 	m := metrics.New("v", "c")
 	d := adapter.Deps{Metrics: m}
-	s := newSeamWith(t, edited{testproto.New(d), func(st *core.Stages) { st.Router = &staleMembers{Router: st.Router} }}, 1<<20, d)
+	// The members' Echo has its Invocation.Resolve fail, a fault injected in a
+	// real row.
+	stale := retable(testproto.New(d), func(op *core.Op, member bool) {
+		if !member || op.Code != testproto.OpEcho {
+			return
+		}
+		dec := op.Decode
+		op.Decode = func(b []byte, v core.Version) (core.Invocation, int, error) {
+			inv, n, err := dec(b, v)
+			if err == nil {
+				inv.Resolve = func(*core.Request) error { return vfs.ErrStale }
+			}
+			return inv, n, err
+		}
+	})
+	s := newSeamWith(t, stale, 1<<20, d)
 	for _, msg := range []testproto.Msg{
 		{Op: testproto.OpNegotiate, Version: 1},
 		{Op: testproto.OpSession, Version: 1, Session: 7},

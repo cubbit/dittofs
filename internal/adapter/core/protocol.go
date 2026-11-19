@@ -27,6 +27,19 @@ type Protocol interface {
 	// first routed call), and the connection's pipeline and reader exist only
 	// once NewConn returns.
 	NewConn(c *Conn) Stages
+	// Tables is every operation table the protocol's Router can return.
+	// NewServer checks them and resolves their series once, each compound
+	// row's Members with it (§10.1), so a table without an OpTable.Protocol,
+	// one whose OpTable.Versions has First past Last, or a row name two
+	// tables of one OpTable.Protocol both hold, unless both set
+	// OpTable.Versions and the two do not overlap, fails at configured, not
+	// on a request. A compound row's Members take its table's Protocol and
+	// Versions, and may share a row name with that table alone. A table
+	// several listeners list is one table, known by its pointer, and checked
+	// once. A table Route returns with no series resolved, one no listener
+	// listed, or for a header whose Version its OpTable.Versions does not
+	// hold, is a wiring fault, and closes the connection.
+	Tables() []*OpTable
 }
 
 // Framer finds a record's length from its header, and writes a reply

@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -364,6 +363,9 @@ func newSeamSet(t *testing.T, proto core.Protocol, reply int64, d adapter.Deps, 
 	s.recv = resources.NewBufPool(s.budgets.Receive)
 	s.reply = resources.NewBufPool(s.budgets.Reply)
 	s.sh = core.NewShared(d, s.reply)
+	if err := core.ResolveTables(s.sh, core.Listener{Protocol: proto}); err != nil {
+		t.Fatal(err)
+	}
 	s.connect(proto, peer, set)
 	return s
 }
@@ -573,17 +575,28 @@ func (undecryptable) Unwrap(core.Header, *resources.Buf, core.Header) (core.Head
 	return nil, errUndecryptable
 }
 
-// unlabelled is a Router whose tables carry no Protocol.
-type unlabelled struct{ core.Router }
+// unlisted is a Router that returns a copy of each table it chooses, one no
+// listener's Tables listed.
+type unlisted struct{ core.Router }
 
-func (u unlabelled) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+func (u unlisted) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
 	tb, r, err := u.Router.Route(h, prev)
 	if tb != nil {
 		cp := *tb
-		cp.Protocol = ""
 		tb = &cp
 	}
 	return tb, r, err
+}
+
+// misrouted is a Router that returns version 1's table for every header.
+type misrouted struct {
+	core.Router
+	v1 *core.OpTable
+}
+
+func (m misrouted) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	_, r, err := m.Router.Route(h, prev)
+	return m.v1, r, err
 }
 
 // sentNothing reports, inside a synctest bubble, whether the client has no
@@ -734,20 +747,41 @@ func TestABadChecksumIsRefusedBeforeAdmit(t *testing.T) {
 	}
 }
 
-// Version 2 on stages with no Hold closes the connection; a table whose
-// Protocol is empty closes it, naming the table.
+// Version 2 on stages with no Hold closes the connection; so does a table
+// Route returns that no listener listed, a compound row's Members among
+// them, and version 1's table returned for a version 2 header, outside its
+// Versions, each a wiring fault naming the table (§4.7). In a bubble, so a
+// connection left open fails the test at once.
 func TestTablesTheStagesCannotServeCloseTheConnection(t *testing.T) {
-	p := testproto.New(adapter.Deps{})
-	s := newSeam(t, edited{p, func(st *core.Stages) { st.Hold = nil }}, 1<<20)
-	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 2, ID: 1})
-	if err := <-s.closed; !errors.Is(err, core.ErrNoHold) {
-		t.Errorf("a holding table on stages with no Hold closed with %v", err)
-	}
-	s = newSeam(t, edited{p, func(st *core.Stages) { st.Router = unlabelled{st.Router} }}, 1<<20)
-	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
-	if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "Echo") {
-		t.Errorf("a table with no Protocol closed with %v, want an error naming it", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		p := testproto.New(adapter.Deps{})
+		s := newSeam(t, edited{p, func(st *core.Stages) { st.Hold = nil }}, 1<<20)
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 2, ID: 1})
+		if err := <-s.closed; !errors.Is(err, core.ErrNoHold) {
+			t.Errorf("a holding table on stages with no Hold closed with %v", err)
+		}
+		s = newSeam(t, edited{p, func(st *core.Stages) { st.Router = unlisted{st.Router} }}, 1<<20)
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "Echo") || !strings.Contains(err.Error(), "no listener's Tables listed") {
+			t.Errorf("a table no listener listed closed with %v, want the fault naming the table", err)
+		}
+		members := p.Tables()[0].Ops[testproto.OpCompound].Members
+		s = newSeam(t, edited{p, func(st *core.Stages) { st.Router = misrouted{st.Router, members} }}, 1<<20)
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "Echo") || !strings.Contains(err.Error(), "no listener's Tables listed") {
+			t.Errorf("a compound row's Members returned by Route closed with %v, want the fault naming the table", err)
+		}
+		s = newSeam(t, edited{p, func(st *core.Stages) { st.Router = misrouted{st.Router, p.Tables()[0]} }}, 1<<20)
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 2, ID: 1})
+		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "Echo") || !strings.Contains(err.Error(), "do not hold version 2") {
+			t.Errorf("version 1's table for a version 2 header closed with %v, want the fault naming the table", err)
+		}
+		s = newSeam(t, edited{p, func(st *core.Stages) { st.Router = misrouted{st.Router, p.Tables()[1]} }}, 1<<20)
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "Echo") || !strings.Contains(err.Error(), "do not hold version 1") {
+			t.Errorf("version 2's table for a version 1 header closed with %v, want the fault naming the table", err)
+		}
+	})
 }
 
 // full fills the seam's reply budget, its ceiling one small buffer, and
@@ -1576,66 +1610,94 @@ func TestAnExpiredCredential(t *testing.T) {
 	}
 }
 
-// wrapped is a Router whose tables' rows hand each Invocation they decode to
-// wrap: a pass-through the test reads where the call itself is what is
-// checked. It counts the Routes it is asked. With fail set, every row's
-// Decode answers fail instead: a codec declared in the test, an input
-// standing for arguments that do not decode.
-type wrapped struct {
-	core.Router
-	wrap   func(core.Invocation) core.Invocation
-	fail   error
-	routes atomic.Int64
-	mu     sync.Mutex
-	tables map[*core.OpTable]*core.OpTable
+// retabled is a protocol declared in the test: p, with each table p lists,
+// and each compound row's Members, copied once and each copied row handed to
+// edit, member true for a Members row. It lists the copies, and each
+// connection's Router returns the copy of the table p's chose: an input to
+// the pipeline whose rows differ from p's, listed as NewServer resolves them.
+type retabled struct {
+	core.Protocol
+	copies map[*core.OpTable]*core.OpTable
 }
 
-func (w *wrapped) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
-	w.routes.Add(1)
-	tb, r, err := w.Router.Route(h, prev)
-	if tb == nil {
-		return tb, r, err
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.tables == nil {
-		w.tables = map[*core.OpTable]*core.OpTable{}
-	}
-	cp, ok := w.tables[tb]
-	if !ok {
+func retable(p core.Protocol, edit func(op *core.Op, member bool)) retabled {
+	var copyOf func(tb *core.OpTable, member bool) *core.OpTable
+	copyOf = func(tb *core.OpTable, member bool) *core.OpTable {
 		c := *tb
 		c.Ops = make(map[uint32]*core.Op, len(tb.Ops))
 		for code, op := range tb.Ops {
 			o := *op
-			dec := op.Decode
-			o.Decode = func(b []byte, v core.Version) (core.Invocation, int, error) {
-				if w.fail != nil {
-					return core.Invocation{}, 0, w.fail
-				}
-				inv, n, err := dec(b, v)
-				if err == nil {
-					inv = w.wrap(inv)
-				}
-				return inv, n, err
+			if o.Members != nil {
+				o.Members = copyOf(o.Members, true)
 			}
+			edit(&o, member)
 			c.Ops[code] = &o
 		}
-		cp = &c
-		w.tables[tb] = cp
+		return &c
 	}
-	return cp, r, err
+	r := retabled{Protocol: p, copies: map[*core.OpTable]*core.OpTable{}}
+	for _, tb := range p.Tables() {
+		r.copies[tb] = copyOf(tb, false)
+	}
+	return r
 }
 
-// wrapRows is a protocol whose routers wrap their rows' invocations with f;
-// each connection's router is sent on routers.
-func wrapRows(p core.Protocol, f func(core.Invocation) core.Invocation, routers chan<- *wrapped) edited {
-	return edited{p, func(st *core.Stages) {
-		w := &wrapped{Router: st.Router, wrap: f}
-		st.Router = w
-		if routers != nil {
-			routers <- w
+func (r retabled) Tables() []*core.OpTable {
+	var out []*core.OpTable
+	for _, tb := range r.Protocol.Tables() {
+		out = append(out, r.copies[tb])
+	}
+	return out
+}
+
+func (r retabled) NewConn(c *core.Conn) core.Stages {
+	st := r.Protocol.NewConn(c)
+	st.Router = copied{st.Router, r.copies}
+	return st
+}
+
+// copied is a Router that returns the copy of each table its own chooses.
+type copied struct {
+	core.Router
+	copies map[*core.OpTable]*core.OpTable
+}
+
+func (c copied) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	tb, r, err := c.Router.Route(h, prev)
+	if tb != nil {
+		tb = c.copies[tb]
+	}
+	return tb, r, err
+}
+
+// wrapRows is p with its tables' rows, members aside, handing each
+// Invocation they decode to f: a pass-through the test reads where the call
+// itself is what is checked.
+func wrapRows(p core.Protocol, f func(core.Invocation) core.Invocation) retabled {
+	return retable(p, func(op *core.Op, member bool) {
+		if member {
+			return
 		}
-	}}
+		dec := op.Decode
+		op.Decode = func(b []byte, v core.Version) (core.Invocation, int, error) {
+			inv, n, err := dec(b, v)
+			if err == nil {
+				inv = f(inv)
+			}
+			return inv, n, err
+		}
+	})
+}
+
+// countsRoutes is a Router that counts the Routes it is asked.
+type countsRoutes struct {
+	core.Router
+	routes atomic.Int64
+}
+
+func (c *countsRoutes) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	c.routes.Add(1)
+	return c.Router.Route(h, prev)
 }
 
 // The role is asked only while draining: a request served normally pays for
@@ -1651,7 +1713,7 @@ func TestTheRoleIsAskedOnlyWhileDraining(t *testing.T) {
 		}
 		return inv
 	}
-	s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), count, nil), 1<<20)
+	s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), count), 1<<20)
 	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Role: core.RoleContext})
 	s.read()
 	if n := calls.Load(); n != 0 {
@@ -1680,7 +1742,7 @@ func TestTheCapHoldsThroughTheCall(t *testing.T) {
 			}
 			return inv
 		}
-		s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), hold, nil), 1<<30)
+		s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), hold), 1<<30)
 		all := start(func() {
 			for i := range 65 {
 				s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: uint64(i + 1)})
@@ -1723,9 +1785,12 @@ func TestARouteRefusalIsMappedByItsTable(t *testing.T) {
 // A request admitted after close is not run: no Route, no call, no reply.
 func TestARequestAfterCloseIsNotRun(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		routers := make(chan *wrapped, 1)
+		routers := make(chan *countsRoutes, 1)
 		var s *seam
-		closing := edited{wrapRows(testproto.New(adapter.Deps{}), func(inv core.Invocation) core.Invocation { return inv }, routers), func(st *core.Stages) {
+		closing := edited{testproto.New(adapter.Deps{}), func(st *core.Stages) {
+			w := &countsRoutes{Router: st.Router}
+			st.Router = w
+			routers <- w
 			st.Security = closesOnUnwrap{st.Security, func() { s.p.Close() }}
 		}}
 		s = newSeam(t, closing, 1<<20)
@@ -1754,7 +1819,7 @@ func TestCloseFromAHandlerReturns(t *testing.T) {
 			}
 			return inv
 		}
-		s = newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), closes, nil), 1<<20)
+		s = newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), closes), 1<<20)
 		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
 		if err := s.p.Wait(context.Background()); err != nil {
 			t.Fatal(err)
@@ -1845,20 +1910,25 @@ func (f faultyHeader) Decode(rec *resources.Buf, off int) (core.Header, error) {
 // the cause is not matched.
 func TestADecodeErrorsCauseIsNotMatched(t *testing.T) {
 	cause := fmt.Errorf("a field of another version: %w", core.ErrVersion)
+	bare := testproto.New(adapter.Deps{}).Bare()
 	for _, c := range []struct {
-		name string
-		edit func(*core.Stages)
+		name  string
+		proto core.Protocol
 	}{
-		{"a header's", func(st *core.Stages) {
+		{"a header's", edited{bare, func(st *core.Stages) {
 			st.Header = faultyHeader{st.Header, cause}
 			st.Errors = core.NewErrorTable(testproto.StatusFault,
 				core.ErrorRow{Err: core.ErrVersion, Status: testproto.StatusVersion},
 				core.ErrorRow{Err: core.ErrDecode, Status: testproto.StatusDecode})
-		}},
-		{"a row's", func(st *core.Stages) { st.Router = &wrapped{Router: st.Router, fail: cause} }},
+		}}},
+		// Every row's Decode answers cause: a codec declared in the test, an
+		// input standing for arguments that do not decode.
+		{"a row's", retable(bare, func(op *core.Op, _ bool) {
+			op.Decode = func([]byte, core.Version) (core.Invocation, int, error) { return core.Invocation{}, 0, cause }
+		})},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			s := newSeam(t, edited{testproto.New(adapter.Deps{}).Bare(), c.edit}, 1<<20)
+			s := newSeam(t, c.proto, 1<<20)
 			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
 			if r := s.read(); r.Status != testproto.StatusDecode {
 				t.Errorf("the request is answered %+v, want the decode status", r)
@@ -1890,44 +1960,15 @@ func TestARefusalAfterCloseIsNotRun(t *testing.T) {
 	})
 }
 
-// lastVersion is a Router declared in the test whose tables' Echo row ends
-// at version 1: an input standing for a row a newer version withdraws.
-type lastVersion struct {
-	core.Router
-	mu     sync.Mutex
-	tables map[*core.OpTable]*core.OpTable
-}
-
-func (l *lastVersion) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
-	tb, r, err := l.Router.Route(h, prev)
-	if tb == nil {
-		return tb, r, err
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.tables == nil {
-		l.tables = map[*core.OpTable]*core.OpTable{}
-	}
-	cp, ok := l.tables[tb]
-	if !ok {
-		c := *tb
-		c.Ops = make(map[uint32]*core.Op, len(tb.Ops))
-		for code, op := range tb.Ops {
-			o := *op
-			if code == testproto.OpEcho {
-				o.Versions.Last = 1
-			}
-			c.Ops[code] = &o
-		}
-		cp = &c
-		l.tables[tb] = cp
-	}
-	return cp, r, err
-}
-
 // A row whose versions end below the request's is refused the version status.
 func TestARowPastItsLastVersionIsRefused(t *testing.T) {
-	s := newSeam(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Router = &lastVersion{Router: st.Router} }}, 1<<20)
+	// Echo's row ends at version 1: an input standing for a row a newer
+	// version withdraws.
+	s := newSeam(t, retable(testproto.New(adapter.Deps{}), func(op *core.Op, member bool) {
+		if !member && op.Code == testproto.OpEcho {
+			op.Versions.Last = 1
+		}
+	}), 1<<20)
 	s.serve(testproto.Msg{Op: testproto.OpNegotiate, Version: 2, ID: 1})
 	if r := s.read(); r.Status != testproto.StatusOK {
 		t.Fatalf("negotiating version 2: %+v", r)

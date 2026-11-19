@@ -258,15 +258,12 @@ func TestRecoveryAnswersAPanic(t *testing.T) {
 	m := metrics.New("v", "c")
 	sh := core.NewShared(adapter.Deps{Metrics: m, Logger: slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))}, nil)
 	tb := routed(t)[0]
-	ts, err := sh.Table(tb)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ts := seriesOf(t, sh, tb)
 	echo := tb.Ops[testproto.OpEcho]
 	ctx, span := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample())).Tracer("test").Start(context.Background(), "call")
 	defer span.End()
 	const value = "open /exports/plans-2027.ods"
-	err = sh.Recovery(echo, ts)(func(context.Context, *core.Request) error { panic(value) })(ctx, nil)
+	err := sh.Recovery(echo, ts)(func(context.Context, *core.Request) error { panic(value) })(ctx, nil)
 	if !errors.Is(err, core.ErrPanicked) {
 		t.Errorf("a panic is answered %v, want ErrPanicked", err)
 	}
@@ -308,10 +305,7 @@ func TestRecoveryLogsNoSpanIDWithoutOne(t *testing.T) {
 	var logged bytes.Buffer
 	sh := core.NewShared(adapter.Deps{Logger: slog.New(slog.NewJSONHandler(&logged, nil))}, nil)
 	tb := routed(t)[0]
-	ts, err := sh.Table(tb)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ts := seriesOf(t, sh, tb)
 	_ = sh.Recovery(tb.Ops[testproto.OpEcho], ts)(func(context.Context, *core.Request) error { panic("boom") })(context.Background(), nil)
 	var rec map[string]any
 	if err := json.Unmarshal(logged.Bytes(), &rec); err != nil {
@@ -328,10 +322,7 @@ func TestRecoveryPassesAnErrorThrough(t *testing.T) {
 	var logged bytes.Buffer
 	sh := core.NewShared(adapter.Deps{Logger: slog.New(slog.NewJSONHandler(&logged, nil))}, nil)
 	tb := routed(t)[0]
-	ts, err := sh.Table(tb)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ts := seriesOf(t, sh, tb)
 	if err := sh.Recovery(tb.Ops[testproto.OpEcho], ts)(func(context.Context, *core.Request) error { return errHandler })(context.Background(), nil); err != errHandler {
 		t.Errorf("the handler's error came back as %v", err)
 	}
@@ -348,16 +339,10 @@ func TestRecoveryPassesAnErrorThrough(t *testing.T) {
 func TestAPanicLineIsWrittenOnceAMinutePerOperation(t *testing.T) {
 	tr := newTraced(t, false)
 	v2 := routed(t)[1]
-	v2s, err := tr.sh.Table(v2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	v2s := seriesOf(t, tr.sh, v2)
 	alt := *routed(t)[1]
 	alt.Protocol = "alt"
-	alts, err := tr.sh.Table(&alt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	alts := seriesOf(t, tr.sh, &alt)
 	v2Echo, other := v2.Ops[testproto.OpEcho], v2.Ops[testproto.OpPutFH]
 	if v2Echo == nil || other == nil {
 		t.Fatal("version 2 has no Echo or no PutFH")
@@ -453,13 +438,8 @@ func newTraced(t *testing.T, tracing bool) traced {
 	core.SetClock(tr.sh, tr.clk)
 	tb := routed(t)[0]
 	members := tb.Ops[testproto.OpCompound].Members
-	var err error
-	if tr.top, err = tr.sh.Table(tb); err != nil {
-		t.Fatal(err)
-	}
-	if tr.members, err = tr.sh.Table(members); err != nil {
-		t.Fatal(err)
-	}
+	tr.top = seriesOf(t, tr.sh, tb)
+	tr.members = tr.sh.Resolved(members)
 	tr.topEcho, tr.mEcho = tb.Ops[testproto.OpEcho], members.Ops[testproto.OpEcho]
 	return tr
 }

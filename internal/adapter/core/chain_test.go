@@ -37,6 +37,17 @@ const inherited = 0xffffffff
 // faults.
 func newChained(t *testing.T, reply int64, d adapter.Deps, edit ...func(*core.Stages)) *served {
 	t.Helper()
+	return newChainedOn(t, reply, d, func(p core.Protocol) core.Protocol {
+		for _, e := range edit {
+			p = edited{p, e}
+		}
+		return p
+	})
+}
+
+// newChainedOn is newChained on the protocol wrap makes of testproto's.
+func newChainedOn(t *testing.T, reply int64, d adapter.Deps, wrap func(core.Protocol) core.Protocol) *served {
+	t.Helper()
 	svc := memory.New(t)
 	root, _, err := svc.Root(t.Context(), svc.Admin(), vfs.ShareRef{Name: svc.Store.Share.Name})
 	if err != nil {
@@ -45,10 +56,7 @@ func newChained(t *testing.T, reply int64, d adapter.Deps, edit ...func(*core.St
 	faults := vfstest.Faults(svc)
 	d.VFS = faults
 	tp := testproto.New(d).WithCall(svc.Admin())
-	var proto core.Protocol = tp
-	for _, e := range edit {
-		proto = edited{proto, e}
-	}
+	proto := wrap(tp)
 	s := &served{seam: newSeamWith(t, proto, reply, d), svc: svc, faults: faults, root: root, proto: proto, tp: tp}
 	s.setUp(7)
 	return s
@@ -1181,9 +1189,12 @@ func TestARelatedMemberAfterACancelIsNotFailedByTheMemberBeforeIt(t *testing.T) 
 // A chain admitted after close is not run: no Route, no call, no reply.
 func TestAChainAfterCloseIsNotRun(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		routers := make(chan *wrapped, 1)
+		routers := make(chan *countsRoutes, 1)
 		var s *seam
-		closing := edited{wrapRows(testproto.New(adapter.Deps{}), func(inv core.Invocation) core.Invocation { return inv }, routers), func(st *core.Stages) {
+		closing := edited{testproto.New(adapter.Deps{}), func(st *core.Stages) {
+			w := &countsRoutes{Router: st.Router}
+			st.Router = w
+			routers <- w
 			st.Security = closesOnUnwrap{st.Security, func() { s.p.Close() }}
 		}}
 		s = newSeam(t, closing, 1<<20)
@@ -1347,7 +1358,7 @@ func TestAChainSplitsAtTheRecordCap(t *testing.T) {
 				}
 				m := metrics.New("v", "c")
 				d := adapter.Deps{Metrics: m}
-				proto := edited{wrapRows(testproto.New(d), grow, nil), func(st *core.Stages) {
+				proto := edited{wrapRows(testproto.New(d), grow), func(st *core.Stages) {
 					st.Security = growsWrap{Security: st.Security, codec: st.Header}
 				}}
 				s := newSeamWith(t, proto, 64<<20, d)
@@ -2345,38 +2356,6 @@ func TestARelatedMemberAfterAHitKeepsTheHandle(t *testing.T) {
 	})
 }
 
-// cacheableEcho is the stages' Router with Echo's row marked Cacheable, each
-// table it routes to copied once: an input standing for a protocol whose
-// cacheable row needs no handle, so a hit of one is answered OK.
-type cacheableEcho struct {
-	core.Router
-	mu     sync.Mutex
-	tables map[*core.OpTable]*core.OpTable
-}
-
-func (c *cacheableEcho) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
-	tb, r, err := c.Router.Route(h, prev)
-	if tb == nil || tb.Ops[testproto.OpEcho] == nil {
-		return tb, r, err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	cp, ok := c.tables[tb]
-	if !ok {
-		t := *tb
-		t.Ops = make(map[uint32]*core.Op, len(tb.Ops))
-		for code, op := range tb.Ops {
-			t.Ops[code] = op
-		}
-		echo := *tb.Ops[testproto.OpEcho]
-		echo.Cacheable = true
-		t.Ops[testproto.OpEcho] = &echo
-		cp = &t
-		c.tables[tb] = cp
-	}
-	return cp, r, err
-}
-
 // A related member after an unrelated replay hit starts from no request, as
 // the cached call did: sent again, the chain [PutFH, an unrelated sequenced
 // Echo, cacheable here, a related Create] answers the Create as the first
@@ -2385,8 +2364,14 @@ func (c *cacheableEcho) Route(h core.Header, prev *core.Request) (*core.OpTable,
 // is routed under alone.
 func TestARelatedMemberAfterAnUnrelatedHitStartsFromNoRequest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := newChained(t, 1<<20, adapter.Deps{Budgets: serverBudgets(1 << 20)}, func(st *core.Stages) {
-			st.Router = &cacheableEcho{Router: st.Router, tables: map[*core.OpTable]*core.OpTable{}}
+		// Echo's row marked Cacheable: an input standing for a protocol whose
+		// cacheable row needs no handle, so a hit of one is answered OK.
+		s := newChainedOn(t, 1<<20, adapter.Deps{Budgets: serverBudgets(1 << 20)}, func(p core.Protocol) core.Protocol {
+			return retable(p, func(op *core.Op, member bool) {
+				if !member && op.Code == testproto.OpEcho {
+					op.Cacheable = true
+				}
+			})
 		})
 		chain := []testproto.Msg{
 			{Op: testproto.OpPutFH, Version: 2, ID: 160, Session: 7, Tree: 1, Handle: s.root},
@@ -2448,7 +2433,7 @@ func TestACompoundRefusedAsAChainMemberEncodesNothingOfItsOwn(t *testing.T) {
 			}
 			return inv
 		}
-		s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), mark, nil), 1<<20)
+		s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), mark), 1<<20)
 		s.serve(
 			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1},
 			testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 2, Members: []testproto.Msg{{Op: testproto.OpEcho, Payload: []byte("m")}}},
