@@ -1508,6 +1508,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | `DITTOFS_ENCRYPTION_PASSPHRASE` in the process environment, readable in `/proc/<pid>/environ`, and no check of the bootstrap's and key files' mode or owner (§4.3's `ponytail:`) | `keyprovider`'s local provider reads it today; neither is new here | unowned | a deployment needs the passphrase out of the environment, or a key file is found readable by another user |
 | The image's `HEALTHCHECK` on its first start after `init`, in a `dt` suite (epic 6's **Done when:**), `http` until RFC 23's plan's epic 4 adds TLS, unverified `https` after | no suite builds the image | unowned | a suite builds the image |
 | The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate checks the active versions only and gains the namespace comparison when the key exists, and epic 3's unit test declares one of its own until then | RFC 4 | a plan of RFC 4 declares the key |
+| the settings table's adapters' section and `Check`, wired into reconcile and the settings routes, which RFC 20's plan's deferral ledger gives this plan | needs `internal/node` and `pkg/settings` | this plan, epic 5 | that epic |
 
 ## 7. RFC coverage
 
