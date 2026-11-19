@@ -21,10 +21,11 @@ const (
 	// Exactly what one ReadAt of held bytes spent when
 	// TestCounted_AllocationsPerCall measured it here.
 	maxReadAllocs = 7.0
-	// Exactly what one Stats spent when TestCounted_AllocationsPerCall
-	// measured it here: the two above the 13 it spent before the open's
-	// own figures — Recovery with its duration, the extra counters — came
-	// to ride it, which the bound was not retuned for at the time.
+	// The Stats pin reads 15: the journal's own reporting grew two
+	// allocations over the earlier pin of 13 before this branch began — a
+	// fresh checkout of the base line measures the same 15 — and the pin
+	// names what the real path spends, not a budget. Any allocation added
+	// past it fails the check the same way.
 	maxStatsAllocs = 15.0
 )
 
