@@ -105,13 +105,22 @@ type Counters struct {
 	Segments int64
 	// Sealed is the number of sealed segments in the set.
 	Sealed int64
-	// NoAppendBytes is the accounted bytes of the segments that take no
-	// further append — the sealed and the ended alike — moved at the same
-	// steps the set's own states are: raised at a Seal and an End by the
-	// segment's then-accounted size, lowered at every removal by the same,
-	// and lowered by whatever a Shrink cut from one. It names no active
-	// segment's bytes, so the Stats identity that reads it subtracts the
-	// active side from the shares' live figures beside it.
+	// NoAppendOverBytes is the part of NoAppendBytes that is not payload
+	// — the record headers, padding and whole payload-free records those
+	// segments' entries carry, moved by exactly the edges NoAppendBytes
+	// moves at, the charges of ended segments included. The figure the
+	// ended-unreclaimed identity subtracts beside its live half, so the
+	// answer names live payload only, the same basis UnreclaimedBytes rides
+	// and never above it.
+	NoAppendOverBytes int64
+	// NoAppendBytes is the record bytes the segments that take no further
+	// append — the sealed and the ended alike — hold, the total the per-tag
+	// noAppendTag map keeps per share, moved at every edge that map moves
+	// at: raised by a Seal, an End and an adoption of such a segment, joined
+	// by a record completing against an ended one, lowered at every removal.
+	// The recorded charges are the basis; the accounted size never enters,
+	// so the figure rides the same record-byte basis the shares' settled
+	// figures do.
 	NoAppendBytes int64
 	// Spares is the number of spares the ledger holds.
 	// decision: it counts every spare the ledger holds, every class the pool
@@ -240,6 +249,26 @@ type entry struct {
 	// over is the part of tags that is not payload, per tag; nil until the
 	// first record is accounted.
 	over map[core.ShareTag]int64
+}
+
+// overSum totals a per-tag overhead map. A nil map is the segment that has
+// charged none, summing to zero.
+func overSum(m map[core.ShareTag]int64) int64 {
+	var n int64
+	for _, v := range m {
+		n += v
+	}
+	return n
+}
+
+// tagSum totals a per-tag record-byte map the way overSum does an overhead
+// one. A nil map is the segment that charged none.
+func tagSum(m map[core.ShareTag]int64) int64 {
+	var n int64
+	for _, v := range m {
+		n += v
+	}
+	return n
 }
 
 // absentMessage is the Warn of a retire or recycle that subtracted nothing.
@@ -567,6 +596,18 @@ func (s *Set) AdoptRebuilt(id core.SegmentID, size int64, st State, full bool, t
 	if st == Sealed {
 		s.c.Sealed++
 	}
+	if st != Active {
+		// An adopted segment joins the no-append measures its state names —
+		// a sealed or ended one takes no further append — with the bytes it
+		// arrives accounting for, so its later removal lowers them by what
+		// it entered with. An entry raised here is the same one Seal and End
+		// raise on the running journal.
+		s.c.NoAppendBytes += tagSum(tags)
+		s.c.NoAppendOverBytes += overSum(holds)
+		for tag, n := range tags {
+			s.noAppendTag[tag] += n
+		}
+	}
 	for tag, n := range tags {
 		s.tags[tag] += n
 	}
@@ -642,7 +683,8 @@ func (s *Set) Seal(id core.SegmentID, full bool) error {
 	e.state = Sealed
 	e.full = full
 	s.c.Sealed++
-	s.c.NoAppendBytes += e.size
+	s.c.NoAppendBytes += tagSum(e.tags)
+	s.c.NoAppendOverBytes += overSum(e.over)
 	for tag, n := range e.tags {
 		s.noAppendTag[tag] += n
 	}
@@ -679,7 +721,8 @@ func (s *Set) End(id core.SegmentID) error {
 		return ErrWrongState
 	}
 	e.state = Ended
-	s.c.NoAppendBytes += e.size
+	s.c.NoAppendBytes += tagSum(e.tags)
+	s.c.NoAppendOverBytes += overSum(e.over)
 	for tag, n := range e.tags {
 		s.noAppendTag[tag] += n
 	}
@@ -784,9 +827,6 @@ func (s *Set) Shrink(id core.SegmentID, size int64) error {
 		return ErrBadSize
 	}
 	s.c.UsedBytes -= e.size - size
-	// A cut of a segment that takes no further append lowers the no-append
-	// measure by the same cut; an active one never entered it.
-	s.c.NoAppendBytes -= e.size - size
 	e.size = size
 	return nil
 }
@@ -850,6 +890,10 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n, overhead int64)
 		// A record completing against an ended segment joins the measures
 		// its end took; a sealed one is refused above, and an active one
 		// has not entered them yet.
+		s.c.NoAppendBytes += n
+		if overhead > 0 {
+			s.c.NoAppendOverBytes += overhead
+		}
 		s.noAppendTag[tag] += n
 	}
 	if overhead > 0 {
@@ -1174,7 +1218,8 @@ func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 	if e.state != Active {
 		// The segment's leaving takes the no-append measures with it: an
 		// active one never entered them.
-		s.c.NoAppendBytes -= e.size
+		s.c.NoAppendBytes -= tagSum(e.tags)
+		s.c.NoAppendOverBytes -= overSum(e.over)
 		for tag, n := range e.tags {
 			s.noAppendTag[tag] -= n
 		}

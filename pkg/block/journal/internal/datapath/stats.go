@@ -162,8 +162,10 @@ func (c *Core) Stats() Stats {
 	// take no further append — the sealed ones and the failed ones, a
 	// running repack's selected among them until they are retired — served
 	// from maintained figures, never a walk: the accounted bytes the set
-	// counts per state change, less the live bytes those segments still
-	// back. The live half rides the identity that the shares' held and
+	// counts per state change, less the record overhead those segments
+	// carry — so the answer names live payload only, the same basis
+	// UnreclaimedBytes rides and never above it — less the live bytes
+	// those segments still back. The live half rides the identity that the shares' held and
 	// retained figures sum every segment's live bytes, so the no-append
 	// side is that sum less the bytes still backed by the segments an
 	// append can reach — one per stream, a fixed count. The live figures
@@ -181,7 +183,7 @@ func (c *Core) Stats() Stats {
 			liveAll -= b.Held + b.Retained
 		}
 	}
-	s.UnreclaimedEndedBytes = max(0, sc.NoAppendBytes-liveAll)
+	s.UnreclaimedEndedBytes = max(0, sc.NoAppendBytes-sc.NoAppendOverBytes-liveAll)
 	for t, ss := range s.Shares {
 		ss.UsedBytes = used[t]
 		ss.HeldBytes, ss.DirtyBytes = figs[t].Held, figs[t].Dirty
