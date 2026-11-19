@@ -51,6 +51,9 @@ func checkServerChallenge(c *logon.Credential) error {
 // one the client computed (MS-NRPC §3.1.4.4), and refuses an all-zero one
 // even when want is all zero too.
 func checkServerCredential(want []byte, got *logon.Credential) error {
+	// decision: want is all zero for about 1 server challenge in 256 made of
+	// one repeated byte (AES-CFB8 under a zero IV), so an all-zero credential
+	// can match it without the session key; this refuses that reply.
 	if got == nil || allZero(got.Data) || !hmac.Equal(want, got.Data) {
 		return errServerCredential
 	}

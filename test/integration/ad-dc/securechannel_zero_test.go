@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
 )
@@ -22,11 +23,19 @@ const (
 	opAuthenticate3 = 26
 )
 
-// secureChannelZeroRows sets up netlogon's secure channel as DITTOFS$ through
-// a connection that zeroes the server challenge or the server credential in
-// the controller's reply: the client refuses either, and an all-zero challenge
-// before it sends NetrServerAuthenticate3 (MS-NRPC §3.1.4.1).
-func secureChannelZeroRows(ctx context.Context, t *testing.T, dcIP string) {
+// TestSecureChannelRefusesZeroReply sets up netlogon's secure channel as
+// DITTOFS$ through a connection that zeroes the server challenge or the server
+// credential in the controller's reply: the client refuses either, and an
+// all-zero challenge before it sends NetrServerAuthenticate3 (MS-NRPC §3.1.4.1).
+func TestSecureChannelRefusesZeroReply(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping AD-DC integration test in short mode")
+	}
+	dcIP := setupADDC(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	waitForMachinePassword(t, dcIP, "dittofs", machineAccountPass)
+
 	for _, tc := range []struct {
 		name    string
 		stubLen int    // the reply whose stub is this long has its first 8 bytes zeroed; 0 for none
@@ -37,8 +46,11 @@ func secureChannelZeroRows(ctx context.Context, t *testing.T, dcIP string) {
 		// NetrServerReqChallenge's reply: the server challenge and the status.
 		{"all-zero server challenge", 12, "server challenge", false},
 		// NetrServerAuthenticate3's reply: the server credential, the
-		// negotiated flags, the account RID and the status.
-		{"all-zero server credential", 20, "server credential", true},
+		// negotiated flags, the account RID and the status. The credential
+		// the client computes is not all zero here, so this row checks end to
+		// end that a zeroed credential is refused; the unit rows guard the
+		// all-zero check itself.
+		{"all-zero server credential, end to end", 20, "server credential", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &opRecord{}
