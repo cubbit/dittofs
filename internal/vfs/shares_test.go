@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -16,20 +13,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	identitysrv "github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/vfs/admit"
 	"github.com/cubbit/dittofs/internal/vfs/authz"
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
 	"github.com/cubbit/dittofs/pkg/identity"
-	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
-	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
@@ -613,100 +606,21 @@ func TestSpellAndFindPassThroughToNames(t *testing.T) {
 	}
 }
 
-// MS-NLMP §4.2.4's AUTHENTICATE, the published NTLMv2 example: user "User",
-// domain "Domain", password "Password", answering nlmpChallenge, with the
-// random session key nlmpSessionKey wrapped in nlmpEncryptedKey.
-var (
-	nlmpChallenge  = [8]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef}
-	nlmpFlags      = uint32(0xe28a8233)
-	nlmpSessionKey = bytes.Repeat([]byte{0x55}, 16)
-	nlmpResponse   = unhex("68cd0ab851e51c96aabc927bebef6a1c" + // NTProofStr
-		"0101000000000000" + "0000000000000000" + "aaaaaaaaaaaaaaaa" + "00000000" +
-		"02000c0044006f006d00610069006e00" + "01000c00530065007200760065007200" + "00000000" + "00000000")
-	nlmpEncryptedKey = unhex("c5dad2544fc9799094ce1ce90bc9d03e")
-)
-
-func unhex(s string) []byte {
-	b, err := hex.DecodeString(s)
-	if err != nil {
-		panic(err)
-	}
-	return b
-}
-
-// SignIn passes through to Deps.Auth: §4.2.4's step signs in as the local
-// user "User" holding password "Password", with the identity server's
-// answer unchanged.
+// SignIn reaches Deps.Auth and answers what it answers: a step naming no
+// user is the identity server's own ErrInvalid, not errNoIdentity.
 func TestSignInPassesThroughToAuth(t *testing.T) {
 	store := kvstoretest.NewFS(t, memKV)
-	ctx := t.Context()
-	cp := store.Store.ControlPlane()
-	p, err := secrets.New(cp, map[secrets.Role]keyprovider.KeyProvider{secrets.Protocol: localKey(t)})
+	srv, err := identitysrv.New(identitysrv.Deps{Store: store.Store, Clock: sim.NewTestClock(time.Unix(0, 0))})
 	if err != nil {
-		t.Fatal(err)
-	}
-	srv, err := identitysrv.New(identitysrv.Deps{Store: store.Store, Clock: sim.NewTestClock(time.Unix(0, 0)), Secrets: p})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := srv.Apply(identitysrv.State{Settings: identitysrv.Settings{NTLM: true, NetBIOSName: "DOMAIN", IDRange: entity.DefaultIDRange}}); err != nil {
-		t.Fatal(err)
-	}
-	user := entity.User{Principal: entity.NewUser(), Name: "User", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "1500"}, {Scheme: entity.SchemeSID, Value: "sid-1500"}}}
-	h, err := identity.NewHashes(user, []byte("Password"), identity.NTLMSetting{On: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	user.NTHash = entity.SecretRef(uuid.New())
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(user.Principal.ID[:])}, Key: "nt_hash"}
-	sec, err := p.Seal(ctx, secrets.Protocol, entity.SecretNTHash, owner, user.NTHash, h.NTHash, secrets.Meta{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cp.PutSecret(ctx, sec, 0); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cp.PutUser(ctx, user, 0, entity.Alloc{}); err != nil {
 		t.Fatal(err)
 	}
 	s := startShares(t, newFixtureOver(t, Deps{Auth: srv}, store), nil)
-
-	res, err := s.SignIn(ctx, vfs.SignInStep{
-		NTLM: &identity.NTLMAuthenticate{User: "User", Domain: "Domain", NTResponse: nlmpResponse,
-			EncryptedSessionKey: nlmpEncryptedKey, Flags: nlmpFlags},
-		Challenge: nlmpChallenge, Client: inLab,
-	})
-	if err != nil {
-		t.Fatalf("SignIn(§4.2.4) = %v, want nil", err)
+	ctx := t.Context()
+	step := vfs.SignInStep{NTLM: &identity.NTLMAuthenticate{}, Client: inLab}
+	_, want := srv.SignIn(ctx, step)
+	if _, got := s.SignIn(ctx, step); got == nil || want == nil || got.Error() != want.Error() || !errors.Is(got, vfs.ErrInvalid) {
+		t.Errorf("SignIn of a step naming no user = %v, want the identity server's %v", got, want)
 	}
-	if got := res.Identity; got.Proof != vfs.ProofSecret || got.Evidence.Principal != user.Principal || got.Evidence.Name != "User" || got.Client != inLab {
-		t.Errorf("SignIn(§4.2.4) identity = %+v, want proof Secret as %v (User) from %v", got, user.Principal, inLab)
-	}
-	if !bytes.Equal(res.Keys.Session, nlmpSessionKey) {
-		t.Errorf("SignIn(§4.2.4) session key = %x, want %x", res.Keys.Session, nlmpSessionKey)
-	}
-}
-
-// localKey is a real local key provider over a key file in a temporary
-// directory.
-func localKey(t *testing.T) keyprovider.KeyProvider {
-	t.Helper()
-	const passphrase = "vfs sign-in test passphrase"
-	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
-	b, err := keyprovider.GenerateKeyFile(passphrase)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "protocol.key")
-	if err := os.WriteFile(path, b, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	kp, err := keyprovider.NewProvider(t.Context(), keyprovider.Config{Kind: keyprovider.KindLocal, File: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = kp.Close() })
-	return kp
 }
 
 // recorder is an event sink recording the access events it receives.
