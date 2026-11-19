@@ -19,7 +19,7 @@ adapter port", Appendix B's adapter rows and `connection_limit`, and Appendix C'
 plan's epic 5), the adapter routes and `dfsctl adapter` (RFC 23's plan's epics 4 and 6), the
 concrete sidecars (the cutover).
 **Track:** team.
-**Epic 7 estimate: 6 subtasks, 13 man-days.**
+**Epic 7 estimate: 7 subtasks, 13.5 man-days.**
 **Depends on:** **S4, `internal/node` exists**, reached: RFC 23's plan's S2 has `node.New`
 building the components, `Start` and `Stop` running RFC 23 §2.2's steps in order, and reconcile's
 `apply` slot returning refusals to a loop that owns the backoff (RFC 23's plan's epic 3
@@ -66,8 +66,9 @@ conditions, reads their health into readiness, and lists their connections throu
 
 In `internal/node`: the budgets, their series and their zero check; the adapters' `Deps` and
 listen addresses; one slot per protocol and its rows, called from `apply`; start step 9, stop step
-2 and the part bound it needs (§9, O2); the adapters' conditions and readiness; the hooks the
-tests reach through in `export_test.go`; `nodetest`'s check of the zero-check record. In
+2 and the part bound it needs (§9, O2); the adapters' conditions and readiness; each slot's state
+and running generation, into the node status (T7.7); the hooks the tests reach through in
+`export_test.go`; `nodetest`'s check of the zero-check record. In
 `internal/node/api` and `pkg/node/apiv1`: the connection listing's route and wire type. In
 `internal/sidecar`: `Runner.StopAll` (D2). The node's section type for each adapter, its
 protocol's shape with `enabled` beside it, as §9's O1 has it. The edits §9 proposes to the
@@ -143,9 +144,9 @@ cited by number and title, and how it applies here or why it does not.
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests); [Verifying a change](../../../CLAUDE.md#verifying-a-change)) | all | node tests are `package node_test` on `nodetest`'s harness, real Badger and the injected `sim.TestClock` (kind 1), observing what the node publishes: its status record, its health endpoints, its registry, the hooks of `export_test.go`. The slot's rows and a part's bound, which need no node, are tested in `package node`, as `lifecycle_internal_test.go` tests `halt`. Adapters are the real ones `nfs.New` and `smb.New` build, over loopback, on `memory.New` (kind 2) where no node is built. A setting is asserted on a connection accepted after the change. Doubles: a sidecar that fails its `Sync` on cue, and a wrapper around a real adapter whose `Health` reports a lost listener, or whose `Stop` holds, on cue (kind 3). A port held by the test is a real socket, not a double. A test that asserts a check fails runs `nodetest` on a recording `testing.TB`, as `internal/prof/prof_test.go`'s recorder does |
 | rule 2, fuzz tests where relevant | none | this epic decodes no peer's bytes: the listing's route parses its path as every node route does |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T7.1, T7.4 | the two `memory_pool_*` gauges are a collector the node registers, read at scrape, as `internal/node/stats.go`'s engine series are, and not in RFC 24 §2.8's `pkg/resources/metrics.go`, since a budget is given no registry (the epic 3 document's D7); the conditions are a `health.Source`. An adapter registers `core`'s series through `Deps.Metrics`, and a rebuilt adapter gets the same vectors back (`pkg/metrics/registry.go`'s `register`). No span: `node.Config` names no tracer |
-| rule 4, leaks and allocations | T7.1 to T7.6 | every node test that starts an adapter stops the node and passes T7.1's zero check, under `nodetest.Watch` for goroutines; the slot's tests end with `adaptertest.CheckLeaks`. No allocation gate: nothing here is on a request's path |
+| rule 4, leaks and allocations | T7.1 to T7.7 | every node test that starts an adapter stops the node and passes T7.1's zero check, under `nodetest.Watch` for goroutines; the slot's tests end with `adaptertest.CheckLeaks`. No allocation gate: nothing here is on a request's path |
 | rule 5, v2 ignores v1 | all | nothing is lifted. Appendix B's "the client registry fed by `core`: replace with `Connections()`" is T7.5 |
-| rule 6, nothing deferred is lost | T7.1, T7.2, T7.4, T7.6 | the rows §9 proposes: alert rules, `Deps.Retry`, an adapter's per-node state until it is written, the listener's address, `Detect` and `SplitFor`'s new trigger |
+| rule 6, nothing deferred is lost | T7.1, T7.2, T7.4, T7.6 | the rows §9 proposes: alert rules, `Deps.Retry`, the listener's address, `Detect` and `SplitFor`'s new trigger |
 | rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | all | each decision of §4 leaves the marker it names, and so does each §9 decision where it names one; O3's fixed figures leave a `ponytail:`. A marker names what it waits for in code terms, never an epic, a subtask or a synchronisation point. None of RFC 20's own notes that the rule lists is this epic's |
 | rule 8, a test must be able to fail ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests)) | all | each test in §6 names the change that fails it |
 | rule 9, a symbol is exported only if RFC 20's interface uses it | T7.3, T7.5, T7.6 | `node` exports nothing new (`TestNodeExports`); `internal/sidecar` gains `Runner.StopAll`, internal to the module (D2); `pkg/node/apiv1` gains the listing's wire type, RFC 23 §4.2's fields; `api.Deps` gains one field; `pkg/adapter/settings` does not change: `enabled` is the node's section type's (O1) |
@@ -184,7 +185,7 @@ cited by number and title, and how it applies here or why it does not.
 | --- | --- | --- | --- | --- |
 | R14 | Step 9 starts each enabled adapter, from configured to serving as the records say, after the first full reconcile (step 8) completes and before reconcile's loop (step 10); no adapter listens before the first full reconcile completes | MUST | §3.1; RFC 23 §2.2, §12's "§2.2 order" | T7.3 |
 | R15 | An adapter refused at configured does not fail the start: the others serve, and readiness turns true once every enabled adapter is serving or was refused | MUST | §3.7; RFC 23 §2.2, §8.1; RFC 25 §3.6 | T7.3 |
-| R16 | Stop step 2, after readiness turns false and reconcile stops: the sidecars are synced with the empty set, then every adapter is stopped, concurrently, under one context whose deadline is the step's start plus the longest `drain_timeout` of the adapters stopped (§9's O2); the step's bound is that deadline plus 30 s; a step that misses it leaves open what the adapters call | MUST | §3.1, §3.5; RFC 23 §2.2 | T7.3 |
+| R16 | Stop step 2, after readiness turns false and reconcile stops: the sidecars are synced with the empty set, then every adapter is stopped, concurrently, under one context whose drain deadline is §9's O2's own decision, the step's start plus the longest `drain_timeout` of the adapters stopped, since RFC 23 §2.2 sets the step's bound but not the deadline; the step's bound is that deadline plus 30 s; a step that misses it leaves open what the adapters call | MUST | §3.1, §3.5; RFC 23 §2.2 | T7.3 |
 | R17 | Stop is the reverse of start: the adapters stop before the operation runner, the filesystem and the API, and the API outlives them | invariant | RFC 23 §2.2, §10's CP4 | T7.3 |
 
 **Health and the listing**
@@ -329,15 +330,16 @@ are unexported, in package `node`. `node`'s exports and `pkg/adapter/settings` d
     built and a reserved 0. A reservation of 64 KiB on `hold`, taken through the hook, reads
     65536 under `hold` alone at the next scrape, and 0 once released.
   - A node stopped with 1, 2, 3 and 4 KiB still reserved on `receive`, `reply`, `connection` and
-    `hold` logs one error record per pool, each with its own bytes, after the filesystem's part
-    stopped; with none reserved it logs none.
-  - The same stop, under `nodetest` run on a recording `testing.TB`, leaves that TB failed.
+    `hold`, run under `nodetest` on a recording `testing.TB`, since a plain harness run fails the
+    test on the check's record before its records can be read, logs one error record per pool,
+    each with its own bytes, after the filesystem's part stopped, and that TB is failed; with
+    none reserved it logs none.
 - **Tests:** in `budgets_test.go`, on `nodetest`. The scrape (catches a gauge registered over
   another budget, which reads the reservation under the wrong pool, and a series not
-  registered). The stop with four reservations (catches a check that runs before the filesystem
-  stops, which RFC 24 §2.7 forbids since the filesystem's last calls release replies, and a check
-  that reads fewer than the four budgets). The recording TB, as `internal/prof/prof_test.go`'s
-  recorder (catches a harness that only logs).
+  registered). The stop with four reservations on the recording `testing.TB`, as
+  `internal/prof/prof_test.go`'s recorder (catches a check that runs before the filesystem
+  stops, which RFC 24 §2.7 forbids since the filesystem's last calls release replies, a check
+  that reads fewer than the four budgets, and a harness that only logs).
 - **Rules:** rule 3: the collector; rule 7: D5's `decision:` and O3's `ponytail:`; rule 10: no
   `Detect` or `SplitFor`.
 
@@ -584,6 +586,30 @@ are unexported, in package `node`. `node`'s exports and `pkg/adapter/settings` d
 - **Rules:** rule 6: D4's hook withdrawn with its `ponytail:`; rule 9: no change to
   `pkg/adapter/settings`.
 
+### T7.7 Each slot's state and running generation into the node status
+
+**Subtask T7.7 estimate: 0.5 man-days.**
+
+- **Track:** team. **Depends on:** T7.4.
+- **Needs:** RFC 23's plan's T4.9, the `NodeStatus` field its per-node read reads (§9, O7);
+  none of it runs before that field merges.
+- **Covers:** §9's O7, the node-side write.
+- **Deliverables:**
+  - The status writer writing, per slot, its state and the settings generation it runs into
+    the `NodeStatus` field RFC 23's plan's T4.9 adds (RFC 23 §3.4), from what the slots hold.
+- **Consumers:** RFC 23's plan's epic 4 document's per-node read, `/adapters/{protocol}` (its
+  R40 and T4.9).
+- **Acceptance criteria:**
+  - With SMB serving and NFS disabled, the node's status record carries SMB's slot serving,
+    on the settings generation it runs, and NFS's slot stopped; with SMB disabled too, the
+    next write carries both stopped.
+- **Tests:** in `adapters_test.go` on `nodetest`.
+  - The states (catches a write that reads the running adapters alone, which loses a disabled
+    slot's state).
+  - The generation (catches a slot's state written without the settings generation it runs).
+- **Rules:** rule 1: on `nodetest`; rule 4: the tests stop the node through the zero check;
+  rule 9: `node` exports nothing new.
+
 ## 7. Order of work
 
 ```mermaid
@@ -597,7 +623,9 @@ flowchart TD
   T7_3 --> T7_6["T7.6 the rows on X3's snapshot"]
   X3(["X3, the RFC 13 plan's epic 5"]):::sync --> T7_6
   V4844(["Victor's #4844: prefix-less sections"]):::sync --> T7_6
-  T7_4 & T7_5 & T7_6 --> E8["E8, partly; RFC 23's plan's S3"]
+  T7_4 --> T7_7["T7.7 the slots' state in the node status"]
+  T49(["RFC 23's plan's T4.9: the NodeStatus field"]):::sync --> T7_7
+  T7_4 & T7_5 & T7_6 & T7_7 --> E8["E8, partly; RFC 23's plan's S3"]
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -607,6 +635,7 @@ flowchart TD
 | once E6's T6.3b and T6.4b have landed | T7.2 | 3.5 |
 | then | T7.3, then T7.4 and T7.5 side by side | 5.75 |
 | once X3 has landed and Victor answers on #4844 | T7.6 | 2.25 |
+| once RFC 23's plan's T4.9 has landed | T7.7 | 0.5 |
 
 **The critical path** is E6's T6.3b and T6.4b, then T7.2 and T7.3, 6.25 man-days of this epic,
 then X3 for T7.6, whose date is the RFC 13 plan's. T7.4 and T7.5 fill the wait for X3. The least
@@ -622,6 +651,7 @@ lifecycle and reconcile loop.
 | 2 | T7.3, T7.4 | 4 | PR 1 | the adapters in the node's start, stop and health: what RFC 23 §2.2 orders |
 | 3 | T7.5 | 1.75 | PR 2's T7.3 | the listing route, beside PR 2's health |
 | 4 | T7.6 | 2.25 | PR 2, X3, and Victor's answer on #4844 | a settings generation reaches the adapters |
+| 5 | T7.7 | 0.5 | PR 2 and RFC 23's plan's T4.9 | the slots' state and generation in the node status, held out of the other PRs by T4.9's wait |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -649,13 +679,13 @@ Each open point was decided on 19 Nov. Each entry below says what the decision c
   at its default 90 s, a drain past 30 s leaves the filesystem and the store open and fails the
   stop.
   **Decided 19 Nov.** RFC 23 §2.2's step 2, as merged (#4533, 17 Nov), gives every `Stop` one
-  context, its deadline the step's start plus the longest `drain_timeout` of the adapters
-  stopped, which supersedes D14 (#4336, Marco's) and `lifecycle.go`'s `stopBound` note; the
-  adapters' part is bounded by that deadline plus 30 s, and every other part keeps
-  `stopBound`. T7.3 adds what the rows need: a rebuild's draining old adapter does not hold
-  reconcile's pass more than 30 s past its bound, and step 2's `StopAll` joins the drains
-  under the one context. The RFC 23 §2.2 drain-deadline sentence is a finding for the RFC
-  lines pull request.
+  context, under one drain deadline whose value RFC 23 §2.2 does not set; this decision sets
+  it, the step's start plus the longest `drain_timeout` of the adapters stopped. The adapters'
+  part is bounded by that deadline plus 30 s, and every other part keeps `stopBound`, which
+  supersedes D14 (#4336, Marco's) and `lifecycle.go`'s `stopBound` note. T7.3 adds what the
+  rows need: a rebuild's draining old adapter does not hold reconcile's pass more than 30 s
+  past its bound, and step 2's `StopAll` joins the drains under the one context. The RFC 23
+  §2.2 drain-deadline sentence is a finding for the RFC lines pull request.
 - **O3, the budgets' figures without `Detect` and `SplitFor` (RFC 24 has no plan).** RFC 24
   §2.7 sizes the budgets from L and its split, and `pkg/resources/budget.go` has neither
   `Detect` nor `SplitFor` (its package comment's `ponytail:`); the ledger's row names the RFC 24
@@ -707,20 +737,18 @@ Each open point was decided on 19 Nov. Each entry below says what the decision c
   for it yet, and only the node can write it from its slots.
   **Decided 19 Nov.** The split the draft made stands: the field and its per-node read are
   RFC 23's plan's T4.9's (Marco); the status writer's write of each slot's state and the
-  settings generation it runs is this epic's, a follow-up of T7.4 of about 0.5 man-days once
-  the field merges, outside this epic's total until then; a ledger row naming this epic
-  meanwhile. The gap this found: RFC 23 §3.4 promises per-node state and generation, but RFC
-  23 §2.4 and RFC 16 §2.3's `NodeStatus` carry no field, and `RefusedRecord` cannot derive the
-  running generation; the RFC 23 §2.4 bullet and RFC 16 §2.3's `Adapters` field are findings
-  for the RFC lines pull request.
+  settings generation it runs is this epic's T7.7, 0.5 man-days, blocked by T4.9 and after
+  T7.4, inside the epic's total. The gap this found: RFC 23 §3.4 promises per-node state and
+  generation, but RFC 23 §2.4 and RFC 16 §2.3's `NodeStatus` carry no field, and
+  `RefusedRecord` cannot derive the running generation; the RFC 23 §2.4 bullet and RFC 16
+  §2.3's `Adapters` field are findings for the RFC lines pull request.
 - **O8, `adapter_listener_lost`'s subject (RFC gap).** RFC 25 §3.9 names the adapter and the
   address; `adapter.Health.Conditions` holds names only (RFC 20 §3.4), and `core`'s `Health`
   reports the name alone.
   **Decided 19 Nov.** T7.4 names the adapter only. The address is a conflict between RFC 25
   §3.9 ("naming the adapter and address") and RFC 20 §3.4 (`Health` carries names only): the
-  ledger row is owned by the RFC 20 plan, its trigger RFC 15's floating addresses, or a fold
-  now of about 0.25 man-days; the RFC 20 §3.4 amendment giving `Health` a `Lost
-  []netip.AddrPort` is a finding for the RFC lines pull request.
+  ledger row is `unowned`, its trigger RFC 15's floating addresses; the RFC 20 §3.4 amendment
+  giving `Health` a `Lost []netip.AddrPort` is a finding for the RFC lines pull request.
 - **O9, another node's connections (RFC gap).** RFC 23 §4.2 reads a node's connections "from
   that node", and says nothing of a request for them made on another node.
   **Decided 19 Nov.** On one node, an ID other than this node's is answered `404 not_found`,
@@ -787,15 +815,14 @@ Each open point was decided on 19 Nov. Each entry below says what the decision c
 **Edits this document proposes to the program's implementation plan**, for the coordinator's
 pull request:
 
-- epic 7's row in §2, its estimate line, its description and its §7 coverage cell: 6 subtasks,
-  13 man-days; the alert rules, the retrier and `adapter_record_unreadable` out (O5, O6, §1.2);
+- epic 7's row in §2, its estimate line, its description and its §7 coverage cell: 7 subtasks,
+  13.5 man-days; the alert rules, the retrier and `adapter_record_unreadable` out (O5, O6, §1.2);
   the plan's total grows by the same;
 - the ledger: new rows for the alert rules (owner RFC 25's plan, trigger "an alert-rule home
   exists", copied to #3119 by T8.2; O5), `Deps.Retry` (the field, the retrier and its stop with the
   first session registry that calls it, on top of T7.3, once Marco's queue bound is settled;
-  O6), an adapter's per-node state (this epic's follow-up of T7.4, once RFC 23's plan's T4.9
-  lands the field; O7) and the listener's address (owner the RFC 20 plan, trigger RFC 15's
-  floating addresses; O8); the row "RFC 24's turns, `Reclaim`, `ShareCap`, `Detect`, `Split`"
+  O6) and the listener's address (owner `unowned`, trigger RFC 15's floating
+  addresses; O8); the row "RFC 24's turns, `Reclaim`, `ShareCap`, `Detect`, `Split`"
   with O3's new trigger; the `/clients` row's listing moved to this epic; the row "concrete
   sidecars" naming their enabled settings, `Runner.SetEnabled`'s caller and the port mapper's
   half of RFC 13 §6's port rule.
