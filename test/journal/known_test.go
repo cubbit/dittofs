@@ -107,6 +107,8 @@ func owner(e known.Entry) (string, bool) {
 // and any other value is unknown. The parse layer refuses every other value
 // already, so an unknown one reaching these tables means the two layers have
 // drifted apart, and the classifier reports it rather than exempting the row.
+// The value matches exactly — no trim, no case folding — since only a
+// spelling the parser accepted can reach here.
 func fixState(fix string) (exempt, unknown bool) {
 	switch fix {
 	case "planned":
@@ -186,11 +188,13 @@ func TestKnownFilesClassified(t *testing.T) {
 	// another plan's to re-point, overturned if it is still red once its
 	// issues close, and then it joins by name.
 	for _, e := range reg.Known[journalKnown] {
-		if exempt, unknown := fixState(e.Fix); unknown {
+		exempt, unknown := fixState(e.Fix)
+		if unknown {
 			t.Errorf("%s: %s carries fix: %q, which is neither planned nor wontfix, so it can neither own its failure nor be exempt from owning one",
 				journalKnown, e.Test, e.Fix)
 			continue
-		} else if exempt {
+		}
+		if exempt {
 			continue // a wontfix row carries no owner
 		}
 		if _, ok := openOwners[e.Issue]; !ok {
