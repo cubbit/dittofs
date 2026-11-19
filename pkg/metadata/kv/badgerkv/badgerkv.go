@@ -67,6 +67,14 @@ type Store struct {
 
 // Open opens or creates the store and raises its clock ceiling before
 // returning, so no Now precedes a durable ceiling.
+//
+// decision: Open writes the ceiling into whatever store it opens, so a
+// start over a v1 store — which the start check passes on its MANIFEST —
+// carries this one v2 key once Open returns, before the store's own Init
+// refuses the v1 keys. The ceiling write is accepted by the journal plan's
+// v1-store refusal: it marks no v2 record the v1 store lacks anyway.
+// Withdraw it by reading the store's keys without opening it, once the
+// backend tolerates a read-only open after an unclean close.
 func Open(opts Options) (*Store, error) {
 	bo := badger.DefaultOptions(opts.Dir).WithLogger(nil).WithSyncWrites(false)
 	if opts.Dir == "" {

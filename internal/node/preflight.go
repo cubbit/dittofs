@@ -113,6 +113,15 @@ func probeV1State(root string) (string, error) {
 // ponytail: a MANIFEST with no format record is left to the store's own
 // Open and Init to refuse. Upgrade to a read-only open, once the backend
 // tolerates one after an unclean close.
+//
+// decision: a directory holding files but no MANIFEST — a freshly
+// formatted ext4 volume's lost+found among them — reads as an
+// unidentifiable store and refuses, never as not-initialised: only a
+// missing or empty directory reads as absent, and a start must not
+// initialise over files it cannot name. The cost is that a first start
+// over such a volume needs the files understood first. Withdraw it by
+// allowing known filesystem artifacts once a first start over a fresh
+// volume must succeed unattended.
 func probeStore(storeDir string) (storeState, error) {
 	fi, err := os.Stat(storeDir)
 	switch {

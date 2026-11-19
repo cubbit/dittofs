@@ -492,10 +492,14 @@ func TestStartRefusesAJournalOfAnotherInstallation(t *testing.T) {
 	}
 }
 
-// The refused start changes no byte of the storage it refused over: every
-// device and the store's parent tree — the live store's own directory left
-// out, as the comment below names — hash the same before the start and after
-// the start refused and stopped.
+// decision: the refused start's bytes are hashed over every device and the
+// store's parent tree, the live store's own directory left out — as the
+// comment below names — because Badger settles it when Stop closes it no
+// matter what the start did, so its bytes hold no evidence either way. The
+// row therefore proves the refusal changed no device and no store sibling;
+// it does not prove the store's own files were untouched. Upgrade to a
+// committed-keys before/after scan, as the kvstore Init rows do, when this
+// row must prove that too.
 func TestStartRefusalLeavesEverythingByteIdentical(t *testing.T) {
 	foreign, _ := foreignJournal(t)
 	var device string
