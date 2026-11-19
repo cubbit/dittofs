@@ -191,6 +191,109 @@ func Bind[Req, Rep any](
 	}
 }
 
+// Decoder and Encoder are what the generator writes for every tagged request
+// and reply struct; Row's constraints, so a struct the generator never saw
+// does not build (§5.1). The generator emits MaxWire on every reply; a reply
+// whose tags do not bound it fails generation unless its row passes its own
+// Bound (§4.7). EncodeWire accepts a nil receiver, the reply of a request
+// refused before its call or of a handler that returned an empty reply beside
+// its error, and writes what its operation's reply carries beside the status
+// the header codec wrote (§4.7's Invocation.Encode). A reply is its
+// operation's result past the status, and its zero value is its fail arm:
+// an arm its status selects is an arm field, nil until the handler sets it,
+// so a nil or empty reply writes the fail arm whole.
+type Decoder[T any] interface {
+	*T
+	DecodeWire(b []byte, v Version) (n int, err error)
+}
+
+type Encoder[T any] interface {
+	*T
+	EncodeWire(v Version, out *resources.Buf) error
+	MaxWire(v Version) int // the reply's largest encoding at v under its tags' maxima
+	IsZero() bool          // an empty reply, which beside an error is no reply (§4.3)
+}
+
+// Hooks are Bind's optional arguments, typed against the row's request; at
+// most one (§4.7), Row panicking on more. Every nil field is nil to Bind, but
+// Bound, whose nil is the reply's MaxWire at the request's version: the
+// codec's largest encoding, the room ignored and ok true.
+type Hooks[Req any] struct {
+	Bound   func(r *Request, req *Req, room int) (n int, ok bool) // a reply sized by the request: a READ's count
+	Resolve func(r *Request, req *Req) error
+	Role    func(r *Request, req *Req) Role
+	Handle  func(req *Req) (vfs.Handle, bool)
+}
+
+// Row is the row of one ops file's handler, and how every row but a compound
+// row is built. It infers Req and Rep from h, takes their decoder and encoder
+// from the protocol's generated codec (§5.1), and returns the Op whose Decode
+// is Bind's over them, with Code, Name and Needs set. The columns Row does
+// not take (Versions, Cacheable, Role, Expired) are set on the Op it returns
+// where a row needs other than their zero value (§4.7).
+//
+// decision: the handler takes the ops file's form, its request and its reply
+// by value, and Row lifts it to Handler (§4.3): a reply returned beside its
+// error is kept and encoded from, as a failure reply carries its protocol's
+// fail arm, but an empty one is no reply and reaches the encoder nil, as the
+// answer of a request refused before its call does (Invocation.Encode).
+//
+// decision: Rep is the operation's result past the status, its zero value its
+// fail arm (§4.7), and a handler sets exactly the arm its status selects, at
+// most one, so beside an error only that error's arm or the fail arm's own
+// content, as an NFSv3 failure returns its WCC data: an arm set for another
+// status would go out after the error's, which the encoder, never seeing the
+// status, cannot tell.
+//
+// decision: more than one Hooks panics, naming the row, as NewOpTable does: a
+// row is program text, and a dropped Role would fail open while draining.
+func Row[Req, Rep any, PReq Decoder[Req], PRep Encoder[Rep]](
+	code uint32, name string, needs Needs,
+	h func(ctx context.Context, r *Request, req Req) (Rep, error),
+	hooks ...Hooks[Req],
+) *Op {
+	if len(hooks) > 1 {
+		panic(fmt.Sprintf("core: row %s: at most one Hooks, got %d", name, len(hooks)))
+	}
+	var hk Hooks[Req]
+	if len(hooks) == 1 {
+		hk = hooks[0]
+	}
+	var bound func(r *Request, req *Req, room int) (n int, ok bool)
+	if hk.Bound != nil {
+		bound = hk.Bound
+	} else {
+		var rep PRep = new(Rep)
+		bound = func(r *Request, _ *Req, _ int) (n int, ok bool) {
+			return rep.MaxWire(r.Version), true
+		}
+	}
+	return &Op{
+		Code:  code,
+		Name:  name,
+		Needs: needs,
+		Decode: Bind(
+			func(b []byte, v Version, req *Req) (n int, err error) {
+				return PReq(req).DecodeWire(b, v)
+			},
+			bound,
+			hk.Resolve,
+			hk.Role,
+			hk.Handle,
+			func(ctx context.Context, r *Request, req *Req) (*Rep, error) {
+				rep, err := h(ctx, r, *req)
+				if err != nil && PRep(&rep).IsZero() {
+					return nil, err
+				}
+				return &rep, err
+			},
+			func(rep *Rep, v Version, out *resources.Buf) error {
+				return PRep(rep).EncodeWire(v, out)
+			},
+		),
+	}
+}
+
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
 // each name, lower-cased, lower-case letters, digits and underscores alone,
 // and unique once lower-cased (§10.1's op), no ErrorRow.Hold unless holds,
@@ -296,7 +399,12 @@ func labelName(name string) bool {
 // Version is a protocol's version, minor version or dialect; Range a closed
 // span of them. For NFSv4 a Version is the minor version, so Range{0, 0} is
 // NFSv4.0 alone.
-type Version uint32
+//
+// decision: Version is an alias of uint32 (§4.7), not a defined type, so
+// generated code meets Row's Decoder and Encoder with a uint32 and never
+// imports core (§7.1). It must never get methods: that needs a defined type,
+// which generated code could name only by importing core.
+type Version = uint32
 
 // Range is a closed span of versions.
 type Range struct{ First, Last Version }

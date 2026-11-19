@@ -58,6 +58,8 @@ func (g *gen) size(t *xtype) (int, string) {
 	case kOptional:
 		_, expr := g.size(t.elem)
 		return 0, "4 + " + expr
+	case kArm:
+		return g.size(t.elem)
 	case kStruct:
 		return 0, fmt.Sprintf("(*%s)(nil).MaxWire(v)", t.name)
 	}
@@ -120,6 +122,8 @@ func (g *gen) decode(b *bytes.Buffer, lv string, t *xtype, depth int) {
 		b.WriteString("}\n}\n")
 	case kOptional:
 		fmt.Fprintf(b, "if d.Bool() {\n%[1]s = new(%[2]s)\n%[1]s.decodeXDR(d, v)\n}\n", lv, t.elem.name)
+	case kArm:
+		b.WriteString("d.StatusArm()\n")
 	case kStruct:
 		fmt.Fprintf(b, "%s.decodeXDR(d, v)\n", lv)
 	}
@@ -149,6 +153,9 @@ func (g *gen) encode(b *bytes.Buffer, lv string, t *xtype, depth int) {
 		b.WriteString("}\n")
 	case kOptional:
 		fmt.Fprintf(b, "e.Bool(%[1]s != nil)\nif %[1]s != nil {\n%[1]s.encodeXDR(e, v)\n}\n", lv)
+	case kArm:
+		// No discriminant: the status before the reply selects the arm.
+		fmt.Fprintf(b, "if %[1]s != nil {\n%[1]s.encodeXDR(e, v)\n}\n", lv)
 	case kStruct:
 		fmt.Fprintf(b, "%s.encodeXDR(e, v)\n", lv)
 	}
@@ -164,7 +171,7 @@ func zero(lv string, t *xtype) string {
 		return "len(" + lv + ") == 0"
 	case kFixed, kVector:
 		return lv + " == " + goType(t) + "{}"
-	case kOptional:
+	case kOptional, kArm:
 		return lv + " == nil"
 	case kStruct:
 		return lv + ".IsZero()"
@@ -185,12 +192,18 @@ func since(b *bytes.Buffer, n int, body func()) {
 }
 
 // methods writes s's four methods, and the two its decoder and encoder nest
-// through.
+// through. The version is a uint32, which RFC 20 section 4.7's core.Version
+// aliases, as section 7.1 keeps core out of a codec_gen.go's imports. A nil
+// receiver encodes as the empty struct: section 4.7's encoder accepts a nil
+// reply, writing its fail arm whole from an empty one, since a reply's zero
+// value is its fail arm, each arm its status selects an arm field left nil.
+// A handler sets exactly the arm its status selects, at most one; MaxWire
+// counts every arm, a bound over the one written.
 //
-// decision: the version is a uint32 where RFC 20 section 4.7's Decoder and
-// Encoder name core.Version: section 7.1 holds a codec_gen.go to wire's
-// imports, among which core is not. Overturned when the RFC settles which
-// gives way.
+// decision: a struct with an arm field refuses its decode at the arm, since
+// the status that selects the arm is the header's and core decodes no reply;
+// skipped, the arm's bytes would be read as the fields after it. Overturned
+// when something decodes a reply beside its status.
 func (g *gen) methods(b *bytes.Buffer, s *strct) {
 	fmt.Fprintf(b, `
 func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {
@@ -200,6 +213,9 @@ func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(%[1]s)
+	}
 	e := wire.Encoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {

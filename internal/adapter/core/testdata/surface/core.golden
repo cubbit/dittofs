@@ -57,9 +57,27 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 
 func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error)
 
+func Row[Req, Rep any, PReq Decoder[Req], PRep Encoder[Rep]](
+	code uint32, name string, needs Needs,
+	h func(ctx context.Context, r *Request, req Req) (Rep, error),
+	hooks ...Hooks[Req],
+) *Op
+
 type Call func(ctx context.Context, r *Request) error
 
 type Conn struct{}
+
+type Decoder[T any] interface {
+	*T
+	DecodeWire(b []byte, v Version) (n int, err error)
+}
+
+type Encoder[T any] interface {
+	*T
+	EncodeWire(v Version, out *resources.Buf) error
+	MaxWire(v Version) int
+	IsZero() bool
+}
 
 type ErrorRow struct {
 	Err      error
@@ -117,6 +135,13 @@ type HoldCodec interface {
 	Cancels(h Header) (key uint64, ok bool)
 
 	Pends(h Header, err error) bool
+}
+
+type Hooks[Req any] struct {
+	Bound   func(r *Request, req *Req, room int) (n int, ok bool)
+	Resolve func(r *Request, req *Req) error
+	Role    func(r *Request, req *Req) Role
+	Handle  func(req *Req) (vfs.Handle, bool)
 }
 
 type Invocation struct {
@@ -228,7 +253,7 @@ type Stages struct {
 
 type Status uint32
 
-type Version uint32
+type Version = uint32
 
 var (
 	ErrNotSupported   = errors.New("core: operation not supported")

@@ -37,6 +37,7 @@ const (
 	kString
 	kArray    // []T, T of a basic kind or a struct: a variable-length array
 	kOptional // *T, T a struct: optional data
+	kArm      // *T, T a struct, tagged arm: a reply's arm its status selects
 	kStruct
 	kVoid // struct{}: a void arm
 )
@@ -135,9 +136,9 @@ func generate(dir string, files []string) ([]byte, error) {
 
 // tag is a field's xdr tag, read.
 type tag struct {
-	max, since int
-	union, def bool
-	arm        string
+	max, since            int
+	union, def, statusArm bool
+	arm                   string
 }
 
 func readTag(lit *ast.BasicLit) (tag, error) {
@@ -167,6 +168,8 @@ func readTag(lit *ast.BasicLit) (tag, error) {
 			t.union = true
 		case "default":
 			t.def = true
+		case "arm":
+			t.statusArm = true
 		case "case":
 			// decision: an arm names one value. XDR lets several cases share
 			// an arm (RFC 4506 section 6.3); each is an arm of its own until a
@@ -203,6 +206,13 @@ func (g *gen) parse(s *strct, st *ast.StructType) {
 			}
 			if tg.max > 0 && !took {
 				g.errorf(id.Pos(), "%s: max on a type of fixed length", at)
+			}
+			if tg.statusArm {
+				if t.kind != kOptional {
+					g.errorf(id.Pos(), "%s: arm on a type other than a pointer to a struct", at)
+					continue
+				}
+				t.kind = kArm
 			}
 			fd := field{name: id.Name, t: t, since: tg.since, arm: tg.arm, pos: id.Pos()}
 			if tg.def {
@@ -309,9 +319,10 @@ func (g *gen) xdrType(e ast.Expr, max int) (t *xtype, took bool, err error) {
 // cycles refuses a type that holds itself.
 //
 // decision: such a type, an XDR linked list (RFC 4506 section 4.19), fails
-// generation: no tag bounds it, so it has no MaxWire, and RFC 20 section 4.7's
-// way out, a row passing its own Bound, is a row's, which the generator never
-// sees. Overturned when the RFC states how a list's length is bounded.
+// generation: no tag bounds it, so it has no MaxWire, and no reply holds one
+// yet. When the first one is tagged, the generator marks that reply unbounded
+// and NewOpTable refuses its row unless the row passes its own Bound, so the
+// server fails at startup; RFC 20 section 4.7's rule stays as it is.
 func (g *gen) cycles() {
 	state := map[string]int{} // 1 while its fields are walked, 2 after
 	var walk func(s *strct)

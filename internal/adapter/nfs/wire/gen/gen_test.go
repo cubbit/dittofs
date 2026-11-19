@@ -22,6 +22,7 @@ func TestGenerateRefuses(t *testing.T) {
 		{"type S struct { A []struct{} `xdr:\"max=2\"` }", "S.A: a variable-length array of a type other than an integer, a bool or a struct"},
 		{"type S struct { P *uint32 }", "S.P: optional data of a type other than a struct"},
 		{"type S struct { P *int }", "S.P: optional data of a type other than a struct"},
+		{"type S struct { P uint32 `xdr:\"arm\"` }", "S.P: arm on a type other than a pointer to a struct"},
 		{"type S struct { A uint32 `xdr:\"min=1\"` }", `S.A: "min=1" is no xdr tag`},
 		{"type S struct { A uint32 `xdr:\"since=0\"` }", `S.A: since="0" is not a count above zero`},
 		{"type S struct { A uint32 `xdr:\"max=4\"` }", "S.A: max on a type of fixed length"},

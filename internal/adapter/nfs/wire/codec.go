@@ -2,6 +2,7 @@ package wire
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 )
 
@@ -129,6 +130,13 @@ func (d *Decoder) Count(max, min int) int {
 // decoded, where the union has no default (RFC 4506 section 4.15).
 func (d *Decoder) NoArm(disc uint32) {
 	d.fail(fmt.Errorf("nfs/wire: no arm for discriminant %d", disc))
+}
+
+// StatusArm refuses an arm field, a reply's arm the status before the reply
+// selects: a decoder has no status to choose it by, and one that skipped it
+// would read the fields after it out of the arm's bytes.
+func (d *Decoder) StatusArm() {
+	d.fail(errors.New("nfs/wire: an arm field decodes only beside the status that selects it"))
 }
 
 // Encoder appends XDR to B: the runtime the generated encoders call. Its first

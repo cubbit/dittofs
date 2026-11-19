@@ -2515,7 +2515,13 @@ func Bind[Req, Rep any](
 // empty), so the encoder writes the arm whole from the reply the handler
 // returned beside its error, or an empty one; SMB2 answers a failure with its
 // ERROR body, which the header codec writes, not Rep, but for RFC 22 §16.5's
-// exceptions, which it tells from the command and the status. A CREATE
+// exceptions, which it tells from the command and the status. Rep is the
+// operation's result past the status, its zero value its fail arm: an arm its
+// status selects is an arm field, a pointer the encoder writes whole when set
+// and skips when nil, with no discriminant, since the status before it is
+// one; a handler sets exactly the arm its status selects, at most one. For
+// SMB2 the fail arm past the status is the header codec's ERROR body, so its
+// encoder writes nothing from nil. A CREATE
 // returns its reply beside STATUS_STOPPED_ON_SYMLINK, as an NFSv3 failure
 // returns its WCC data (Invocation.Encode), and its encoder writes the whole
 // ERROR body with the symlink data, or the generic one from a nil reply. A
@@ -2577,8 +2583,10 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 // span of them. For NFSv4 a Version is the minor version, so Range{0, 0} is
 // NFSv4.0 alone: NFS's header codec reads a COMPOUND's tag and minor version
 // with the RPC header, and a procedure of version 4 other than COMPOUND (NULL)
-// carries none and has Version 0.
-type Version uint32
+// carries none and has Version 0. Version is an alias, so a generated codec,
+// which does not import core (§7.1), meets Row's Decoder and Encoder with a
+// uint32.
+type Version = uint32
 type Range struct{ First, Last Version }
 
 // Needs is §4.2's ordered precondition, plus a flag for a current filehandle.
@@ -4201,7 +4209,9 @@ aliases. It is seeded with one
 deliberate violation in its own test data and must report it, so a check that
 silently matches nothing is caught. The same test lists adapter files over 800
 lines and fails on one not in its allowlist (§2.5), fails a `wire` package that
-imports anything but the standard library and `pkg/resources` (§2.5), a
+imports anything but the standard library and `pkg/resources`, or a standard
+package that does file or network I/O, `<protocol>/wire/gen` alone excepted,
+which may import `os` to write its file (§2.5), a
 generated `codec_gen.go` that imports more than those and its protocol's
 `wire`, and an `ops` file other than `codec_gen.go` that imports `wire`'s
 runtime or `encoding/binary`, since a command file touches no bytes (§5.1), and
