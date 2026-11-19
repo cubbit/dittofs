@@ -11,9 +11,10 @@ import (
 
 // sealer seals a secret's value as the next version of its reference,
 // unwritten, under the wrapping key of the role its kind is sealed under; a
-// new version keeps its reference's kind and owner.
+// new version keeps its reference's kind and owner. handedOver marks a
+// machine password an offline join was handed, bound into the sealed value.
 type sealer interface {
-	Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte) (entity.Secret, error)
+	Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte, handedOver bool) (entity.Secret, error)
 }
 
 // refValue is a secret's reference as the setting naming it holds it: the
@@ -111,7 +112,7 @@ func sealCredential(ctx context.Context, rq request[apiv1.Credential]) (entity.S
 		return entity.Secret{}, &fieldError{field: "spec.value", detail: "a credential states its value"}
 	}
 	ref := entity.SecretRef(entity.NewShareID())
-	return rq.d.Sealer.Seal(ctx, entity.SecretRemoteCredential, credentialOwner(rq.ID), ref, rq.Body.Spec.Value)
+	return rq.d.Sealer.Seal(ctx, entity.SecretRemoteCredential, credentialOwner(rq.ID), ref, rq.Body.Spec.Value, false)
 }
 
 // putCredential is PUT /stores/{id}/credential: the sealed version written

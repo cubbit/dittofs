@@ -114,11 +114,23 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			return answer{}, &fieldError{detail: err.Error()}
 		}
 		key := r.Header.Get("Idempotency-Key")
-		if len(key) > maxKey {
+		switch {
+		case len(key) > maxKey:
 			return answer{}, &fieldError{field: "Idempotency-Key", detail: "longer than " + strconv.Itoa(maxKey) + " bytes"}
+		case key != "" && rt.keyless:
+			return answer{}, &fieldError{field: "Idempotency-Key", detail: "this call carries a credential, so it keeps no idempotency record and takes no key"}
 		}
 		rq := request[B]{ID: id, Sub: sub, Query: r.URL.Query()}
 		rq.d = s.d
+		rq.own = func(ctx context.Context, target entity.ResourceRef, change []byte, fn func(entity.ControlPlaneTx) error) error {
+			a := refused
+			a.Target, a.Change, a.Outcome = target, change, []byte("applied")
+			if err := s.d.Store.Write(ctx, entity.WriteMeta{Audit: &a}, fn); err != nil {
+				return err
+			}
+			s.audits.WithLabelValues("applied").Inc()
+			return nil
+		}
 		if err := decode(bytes.NewReader(body), &rq.Body); err != nil {
 			return answer{}, err
 		}
@@ -166,8 +178,15 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 				return answer{}, err
 			}
 		}
+		st, _ := any(in).(opStart)
 		err = s.d.Store.Write(ctx, entity.WriteMeta{Audit: &rec, Idempotency: idem}, func(tx entity.ControlPlaneTx) error {
 			rq := rq
+			var started *apiv1.Operation
+			rq.start = func(kind apiv1.OpKind, target entity.ResourceRef) error {
+				op, err := s.start(ctx, tx, kind, target, opStart{})
+				started = &op
+				return err
+			}
 			if w.hidden != nil && !created {
 				if hide, err := w.hidden(ctx, tx, id); err != nil || hide {
 					return cmp.Or(err, errNotFound)
@@ -212,12 +231,15 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 				status, location = http.StatusCreated, r.URL.Path+"/"+idString(wrote)
 			}
 			if rt.starts != "" {
-				op, err := s.start(ctx, tx, rt.starts, entity.ResourceRef{Kind: w.kind, ID: wrote[:]})
+				op, err := s.start(ctx, tx, rt.starts, entity.ResourceRef{Kind: w.kind, ID: wrote[:]}, st)
 				if err != nil {
 					return err
 				}
-				status, body, location = http.StatusAccepted, op, "/api/v1/operations/"+op.ID
-				rec.Outcome = []byte(op.ID)
+				started = &op
+			}
+			if started != nil {
+				status, body, location = http.StatusAccepted, *started, "/api/v1/operations/"+started.ID
+				rec.Outcome = []byte(started.ID)
 			}
 			if a, err = jsonAnswer(status, body); err != nil {
 				return err
@@ -234,6 +256,9 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			return err
 		})
 		if err != nil {
+			if st.release != nil {
+				st.release()
+			}
 			return s.replayed(err)
 		}
 		s.audits.WithLabelValues("applied").Inc()
@@ -282,13 +307,18 @@ func (s *Server) awaitApplied(ctx context.Context) {
 }
 
 // start writes, in tx, an operation of kind on target, started by the
-// caller ctx carries and driven by no one yet, and returns it as its read
+// caller ctx carries and driven by no one yet, under the ID and with the
+// params st names, a fresh ID when it names none, and returns it as its read
 // answers it, its progress unknown, as it is before any step records one. A
 // second one of kind on target while one runs is refused 409
 // operation_running naming it.
-func (s *Server) start(ctx context.Context, tx entity.ControlPlaneTx, kind apiv1.OpKind, target entity.ResourceRef) (apiv1.Operation, error) {
+func (s *Server) start(ctx context.Context, tx entity.ControlPlaneTx, kind apiv1.OpKind, target entity.ResourceRef, st opStart) (apiv1.Operation, error) {
 	c, _ := auth.CallerFrom(ctx)
-	op := entity.Operation{ID: entity.OperationID(entity.NewShareID()), Kind: string(kind), Target: target, Account: c.Principal, State: entity.OpPending}
+	id := st.id
+	if id == (entity.OperationID{}) {
+		id = entity.OperationID(entity.NewShareID())
+	}
+	op := entity.Operation{ID: id, Kind: string(kind), Target: target, Account: c.Principal, State: entity.OpPending, Params: st.params}
 	gen, err := tx.PutOperation(op, 0)
 	if err != nil {
 		return apiv1.Operation{}, err

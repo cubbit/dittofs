@@ -40,6 +40,14 @@ type request[B any] struct {
 	Expect uint64
 	Query  url.Values // a write's query, holding only parameters its row takes
 	d      Deps       // the serving server's, which every adapter sets, for a handler and a pre-write step
+	// own commits fn in a Write of its own, before the write's, audited as
+	// the request arrived with target, change and an applied outcome, for a
+	// pre-write step whose change must commit first; set by the write adapter.
+	own func(ctx context.Context, target entity.ResourceRef, change []byte, fn func(entity.ControlPlaneTx) error) error
+	// start writes, in the write's transaction, an operation of kind on
+	// target, which the write then answers 202 with, for a handler whose
+	// write starts one only sometimes; set by the write adapter inside it.
+	start func(kind apiv1.OpKind, target entity.ResourceRef) error
 }
 
 // none is the body of a request that carries none.
@@ -223,11 +231,13 @@ func retryAfter(err error, status int, retryable bool) time.Duration {
 }
 
 // pick returns the row of rows r names, its verb cut from the path's {id} at
-// the first colon, and the ID left; nil when none is named.
+// the first colon, and the ID left; nil when none is named. A row with no
+// {id} is served at a pattern of its own, so it is the one row its pattern
+// names.
 func pick(rows []route, r *http.Request) (*route, string) {
 	id, verb, _ := strings.Cut(r.PathValue("id"), ":")
 	for i := range rows {
-		if rows[i].verb == verb {
+		if rows[i].verb == verb || !rows[i].hasID() {
 			return &rows[i], id
 		}
 	}

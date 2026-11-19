@@ -329,7 +329,7 @@ func problemStatuses(rt *route) []int {
 	}
 	if a.form == formWrite {
 		st = append(st, http.StatusConflict)
-		if a.replays {
+		if a.replays && !rt.keyless {
 			st = append(st, http.StatusUnprocessableEntity)
 		}
 		p := rt.precondition()

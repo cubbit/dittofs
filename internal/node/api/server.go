@@ -113,6 +113,14 @@ type Deps struct {
 	// interface, must not be handed in: it is not nil here, and its Seal
 	// would be called.
 	Sealer sealer
+	// Directory is identity's directory, asked the user SID a Kerberos name
+	// links for before the write that stores it; nil, a write of a user's
+	// Kerberos name, resolve-principal and test-directory answer 503.
+	Directory directory
+	// Joins is identity's hold of an online join's administrator credential,
+	// in memory under the operation it is handed to; nil, an online
+	// join-domain and rotate-machine-password answer 503.
+	Joins joins
 }
 
 // controlPlane is the metadata store's control plane as the API reaches it:
@@ -196,7 +204,7 @@ func newServer(d Deps, rows []route) *Server {
 	api.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { s.handle(w, r, nil) })
 	groups := map[string][]route{}
 	for _, rt := range rows {
-		key := rt.method + " " + rt.pattern
+		key := rt.method + " " + rt.muxPattern()
 		groups[key] = append(groups[key], rt)
 	}
 	for key, g := range groups {

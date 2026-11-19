@@ -27,6 +27,12 @@ func (c ControlPlane) RegisteredStatuses(ctx context.Context) ([]entity.NodeStat
 	return c.s.Nodes().RegisteredStatuses(ctx)
 }
 
+// Installation is the installation's identity record, as the store's own
+// read answers it.
+func (c ControlPlane) Installation(ctx context.Context) (entity.Installation, error) {
+	return c.s.Installation(ctx)
+}
+
 // Users lists users in name order, resuming after the name after. It walks the
 // name index, so a user with no name, a machine among them, is not listed:
 // such a record is read by its ID or a protocol ID.

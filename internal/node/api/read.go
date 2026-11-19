@@ -64,6 +64,8 @@ type reads interface {
 	// Secret is one version of a secret, still sealed, version 0 its
 	// current one; one never written is not found.
 	Secret(ctx context.Context, id entity.SecretRef, version uint64) (entity.Secret, error)
+	// Installation is the installation's record.
+	Installation(ctx context.Context) (entity.Installation, error)
 }
 
 // errNoStore refuses a call on a node that holds no control-plane store.

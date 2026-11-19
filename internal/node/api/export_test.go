@@ -53,10 +53,10 @@ func Rows() []Row {
 	var out []Row
 	for _, rt := range append(slices.Clone(routes), testRows...) {
 		id := TestID
-		if rt.verb != "" {
+		if rt.verb != "" && rt.hasID() {
 			id += ":" + rt.verb
 		}
-		out = append(out, Row{rt.method, strings.Replace(rt.pattern, "{id}", id, 1), rt.right == auth.Public})
+		out = append(out, Row{rt.method, strings.Replace(rt.muxPattern(), "{id}", id, 1), rt.right == auth.Public})
 	}
 	return out
 }

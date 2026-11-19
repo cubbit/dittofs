@@ -62,7 +62,8 @@ func newName(name string) error {
 const maxEmail = 254
 
 func userSpecOf(u entity.User) apiv1.UserSpec {
-	return apiv1.UserSpec{Name: u.Name, UID: numberOf(u.IDs, entity.SchemeUID), Email: u.Email, Disabled: u.Disabled}
+	krb, _ := krbOf(u.IDs)
+	return apiv1.UserSpec{Name: u.Name, UID: numberOf(u.IDs, entity.SchemeUID), Email: u.Email, Disabled: u.Disabled, Kerberos: krb.Value}
 }
 
 func userOf(u entity.User) apiv1.User {
@@ -88,11 +89,15 @@ var users = writing[userDoc]{kind: entity.ResourceUser, raises: true, read: func
 // createUser is POST /users: a user of the spec's name, its uid the one the
 // spec names or, when it names none, one allocated from identity.id_range,
 // and its SID allocated, in the create's transaction. A name or uid another
-// principal holds is refused by the store, and a uid of 0 here.
-func createUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
+// principal holds is refused by the store, and a uid of 0 here. Its
+// Kerberos name is stored linked as the pre-write step asked the directory.
+func createUser(_ context.Context, rq request[userDoc], link entity.ProtocolID, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
 	sp := rq.Body.Spec
 	ids, err := withNumber(nil, entity.SchemeUID, sp.UID, "spec.uid")
 	if err != nil {
+		return apiv1.User{}, rq.ID, err
+	}
+	if ids, err = withKerberos(ids, sp.Kerberos, link); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
 	u := entity.User{Principal: entity.NewUser(), Name: sp.Name, Email: sp.Email, Disabled: sp.Disabled, IDs: ids}
@@ -121,8 +126,9 @@ func createUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.Co
 // its SID, which never changes, so the store refuses a spec naming none. A
 // user that does not exist, or that the caller may not know of, is 404
 // before its precondition: a user is created only by POST. Disabling the
-// last enabled admin is refused.
-func putUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
+// last enabled admin is refused. A Kerberos name it keeps keeps its link; a
+// new one is stored linked as the pre-write step asked the directory.
+func putUser(_ context.Context, rq request[userDoc], link entity.ProtocolID, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
 	sp := rq.Body.Spec
 	u, _, err := tx.User(userAt(rq.ID))
 	if err != nil {
@@ -136,6 +142,9 @@ func putUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.Contr
 		return apiv1.User{}, rq.ID, err
 	}
 	if u.IDs, err = withNumber(u.IDs, entity.SchemeUID, sp.UID, "spec.uid"); err != nil {
+		return apiv1.User{}, rq.ID, err
+	}
+	if u.IDs, err = withKerberos(u.IDs, sp.Kerberos, link); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
 	u.Name, u.Email, u.Disabled = sp.Name, sp.Email, sp.Disabled
