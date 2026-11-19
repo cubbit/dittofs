@@ -866,8 +866,8 @@ Performance is tracked, not gated: hosted runners are too noisy for a threshold.
 - **`fio-verify`:** fio jobs over an NFS 4.1 mount (`fio-verify/smb` over SMB) with data
   verification, so a verify error fails the test. Nightly.
 - **`perf-night`:** the full nightly performance run on the dedicated host.
-- **Go benchmarks:** `go test -bench=. -benchmem -run=^$ ./pkg/block/engine/`, and
-  `make bench-blockstore`.
+- **Go benchmarks:** `go test -bench=. -benchmem -run=^$ ./pkg/block/engine/`, and the `manual`
+  suites `engine-bench`, `reconcile-bench` and `version-limit-probe-bench`.
 
 Writing a benchmark: measure only the operation. Do setup before `b.ResetTimer()`, call
 `b.ReportAllocs()` on hot paths, and compare with `benchstat` over `-count=10` runs on the same
@@ -954,9 +954,6 @@ Registration is off by default. The e2e harness turns it on at run time:
 PATCH /api/v1/adapters/nfs/settings
 { "portmapper_register_with_system": true, "udp_enabled": true }
 ```
-
-From the command line, `dfsctl adapter settings nfs update --portmapper-register-with-system
---udp-enabled`, then restart the adapter.
 
 ### What it covers
 
