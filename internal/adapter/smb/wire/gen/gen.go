@@ -40,7 +40,7 @@ var widths = map[string]int{"uint8": 1, "uint16": 2, "uint32": 4, "uint64": 8}
 var allowed = map[kind][]string{
 	kInt:     {"size", "empty", "name", "union", "since"},
 	kFixed:   {"since"},
-	kBytes:   {"offset", "len", "max", "align", "union", "default", "since"},
+	kBytes:   {"offset", "len", "max", "align", "union", "default", "known", "since"},
 	kString:  {"offset", "len", "max", "align", "utf16", "since"},
 	kUint16s: {"count", "max", "since"},
 	kChain:   {"offset", "len", "count", "max", "align", "chain", "since", "if"},
@@ -66,9 +66,10 @@ type field struct {
 	link                  string // chain=L
 	cas                   string // case=
 	def                   bool
-	since                 string // the dialect a field is on the wire from, as written; "" for every one
-	from                  int    // since's dialect, 0 for every one
-	ifList, ifValue       string // if=L:V: on the wire only when the []uint16 field L holds V
+	known                 []string // known=V|V: the default's values the server knows, with no arm of their own
+	since                 string   // the dialect a field is on the wire from, as written; "" for every one
+	from                  int      // since's dialect, 0 for every one
+	ifList, ifValue       string   // if=L:V: on the wire only when the []uint16 field L holds V
 }
 
 // variable reports whether f follows the fixed part.
@@ -296,6 +297,8 @@ func (g *gen) field(st string, f *ast.Field) *field {
 			fl.cas = v
 		case "default":
 			fl.def = true
+		case "known":
+			fl.known = strings.Split(v, "|")
 		case "exact":
 			fl.exact = true
 		case "since":
@@ -405,6 +408,9 @@ func (g *gen) check(s *strct) {
 				bad("a struct field that is no union's arm: it has no case")
 			}
 		}
+		if len(f.known) > 0 && !f.def {
+			bad("known on no default arm")
+		}
 		if (f.kind == kArm || f.kind == kChain && f.link == "") && (f.typ == s.name || g.holds(g.byName[f.typ], s.name, map[string]bool{})) {
 			bad("a type that holds itself, so no maximum")
 		}
@@ -442,6 +448,20 @@ func (g *gen) check(s *strct) {
 			if _, err := strconv.ParseUint(a.cas, 0, 8*d.n); err != nil && !a.def {
 				g.errorf(a.pos, s.name+"."+a.name, "a case its integer discriminant cannot hold, %q", a.cas)
 			}
+		}
+	}
+	if len(arms) == 0 || d == nil {
+		return
+	}
+	def := arms[len(arms)-1]
+	for _, k := range def.known {
+		if d.kind == kInt {
+			if _, err := strconv.ParseUint(k, 0, 8*d.n); err != nil {
+				g.errorf(def.pos, s.name+"."+def.name, "a known value its integer discriminant cannot hold, %q", k)
+			}
+		}
+		if slices.ContainsFunc(arms, func(a *field) bool { return a.cas == k }) {
+			g.errorf(def.pos, s.name+"."+def.name, "a known value an arm takes, %q", k)
 		}
 	}
 }

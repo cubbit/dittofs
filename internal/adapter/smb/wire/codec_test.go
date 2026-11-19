@@ -459,6 +459,105 @@ func TestCodecContextDataLength(t *testing.T) {
 	}
 }
 
+// Past the default arm's maximum a context's data is dropped only when the
+// server does not know the context, a negotiate context's and a create
+// context's alike. An unknown one's is kept up to that maximum and past it
+// ignored, kept as no bytes, and the context after it still decodes: MS-SMB2
+// 3.3.5.4 has a server ignore a negotiate context it does not know, and RFC
+// 22 section 16 any unknown context. A known one with no struct of its own, a
+// SecD or the signing context, is kept as bytes and past that maximum refuses
+// the request, so nothing the server acts on is lost silently. A known one
+// with a struct still decodes to it, 3.3.5.4 failing one only when shorter
+// than its structure.
+func TestCodecContextPastItsMaximum(t *testing.T) {
+	netname := NegotiateContext{ContextType: 5, Data: units('1', '2', '7', '.', '0', '.', '0', '.', '1')}
+	alsi := CreateContext{Name: []byte("AlSi"), AllocationSize: AllocationSize{AllocationSize: 1 << 20}}
+	// context is a create context named name holding data, padded to the next
+	// one's 8-byte alignment, its Next 0.
+	context := func(name string, data []byte) []byte {
+		b := append(le32(0), 16, 0, 4, 0, 0, 0, 24, 0) // NameOffset 16, NameLength 4, Reserved, DataOffset 24
+		b = append(append(b, le32(uint32(len(data)))...), name+"\x00\x00\x00\x00"...)
+		return append(append(b, data...), make([]byte, (8-len(data)%8)%8)...)
+	}
+	for _, n := range []int{1024, 1025} {
+		data := bytes.Repeat([]byte{0xab}, n)
+		var kept []byte
+		if n <= 1024 {
+			kept = data
+		}
+		// negotiate is the request whose third context is of type typ with n
+		// bytes of data; create is a CREATE of no name whose contexts, at 120,
+		// are one named name with n bytes of data and an AlSi.
+		negotiate := func(typ uint16) []byte {
+			b := spliced(golden(t, "negotiate-request"), 192, 200, append(data, make([]byte, (8-n%8)%8)...)...)
+			return patched(b, 184, append(le16(typ), le16(uint16(n))...)...)
+		}
+		create := func(name string) []byte {
+			first, last := context(name, data), context("AlSi", binary.LittleEndian.AppendUint64(nil, 1<<20))
+			copy(first, le32(uint32(len(first))))
+			b := patched(golden(t, "create-request")[:56], 110, 0, 0)
+			b = patched(b, 112, append(le32(120), le32(uint32(len(first)+len(last)))...)...)
+			return append(append(b, first...), last...)
+		}
+
+		neg := negotiate(0x99)
+		var r NegotiateRequest
+		if got, err := r.DecodeWire(neg, 0x311); err != nil || got != len(neg) || len(r.Contexts) != 4 {
+			t.Fatalf("an unknown negotiate context of %d bytes: %d of %d bytes read into %d contexts: %v", n, got, len(neg), len(r.Contexts), err)
+		}
+		if want := []NegotiateContext{{ContextType: 0x99, Data: kept}, netname}; !reflect.DeepEqual(r.Contexts[2:], want) {
+			t.Errorf("an unknown negotiate context of %d bytes: read\n  %+v\nwant\n  %+v", n, r.Contexts[2:], want)
+		}
+
+		cr := create("ZZZZ")
+		var c CreateRequest
+		if got, err := c.DecodeWire(cr, 0x311); err != nil || got != len(cr) {
+			t.Fatalf("an unknown create context of %d bytes: %d of %d bytes read: %v", n, got, len(cr), err)
+		}
+		if want := []CreateContext{{Name: []byte("ZZZZ"), Data: kept}, alsi}; !reflect.DeepEqual(c.Contexts, want) {
+			t.Errorf("an unknown create context of %d bytes: read\n  %+v\nwant\n  %+v", n, c.Contexts, want)
+		}
+
+		var sig NegotiateRequest
+		_, err := sig.DecodeWire(negotiate(8), 0x311)
+		if n > 1024 {
+			if err == nil {
+				t.Errorf("a signing context of %d bytes is accepted, past its maximum", n)
+			}
+		} else if err != nil || !reflect.DeepEqual(sig.Contexts[2:], []NegotiateContext{{ContextType: 8, Data: data}, netname}) {
+			t.Errorf("a signing context of %d bytes: read\n  %+v: %v", n, sig.Contexts, err)
+		}
+
+		var sd CreateRequest
+		_, err = sd.DecodeWire(create("SecD"), 0x311)
+		if n > 1024 {
+			if err == nil {
+				t.Errorf("a SecD of %d bytes is accepted, past its maximum", n)
+			}
+		} else if err != nil || !reflect.DeepEqual(sd.Contexts, []CreateContext{{Name: []byte("SecD"), Data: data}, alsi}) {
+			t.Errorf("a SecD of %d bytes: read\n  %+v: %v", n, sd.Contexts, err)
+		}
+
+		// The first negotiate context, a known one with a struct, followed by
+		// zeros up to n bytes of data.
+		req := golden(t, "negotiate-request")
+		pre := span(req, 120, 158)
+		pre = append(bytes.Clone(pre), make([]byte, n-len(pre))...)
+		known := spliced(req, 120, 160, append(pre, make([]byte, (8-n%8)%8)...)...)
+		known = patched(known, 114, le16(uint16(n))...)
+		var k NegotiateRequest
+		if got, err := k.DecodeWire(known, 0x311); err != nil || got != len(known) || len(k.Contexts) != 4 {
+			t.Fatalf("a known negotiate context of %d bytes: %d of %d bytes read into %d contexts: %v", n, got, len(known), len(k.Contexts), err)
+		}
+		if want := []NegotiateContext{
+			{ContextType: 1, Preauth: PreauthIntegrityCapabilities{HashAlgorithms: []uint16{1}, Salt: span(req, 126, 158)}},
+			{ContextType: 2, Encryption: EncryptionCapabilities{Ciphers: []uint16{2, 1, 4, 3}}},
+		}; !reflect.DeepEqual(k.Contexts[:2], want) {
+			t.Errorf("a known negotiate context of %d bytes: read\n  %+v\nwant\n  %+v", n, k.Contexts[:2], want)
+		}
+	}
+}
+
 // A refusal of a claimed length or count costs less than 1 KiB, within RFC 20
 // section 5.2's 4 KiB: it is checked against the bytes left before anything
 // is made, where 16 negotiate contexts made first would take 1.7 KB.
@@ -487,11 +586,11 @@ func TestCodecClaimedLengths(t *testing.T) {
 	}
 }
 
-// A value the peer's decoder would refuse is refused on encode, and its output
-// is left as it was: a name, a count or a context past its maximum, contexts
-// past the bytes their chain may take, a name that is not WTF-8, an offset
-// its two bytes cannot hold, and a context naming one arm while another
-// holds a value.
+// A value past its tags' maxima, or one the peer's decoder would refuse, is
+// refused on encode, and its output is left as it was: a name, a count or a
+// context past its maximum, contexts past the bytes their chain may take, a
+// name that is not WTF-8, an offset its two bytes cannot hold, and a context
+// naming one arm while another holds a value.
 func TestCodecEncodeRefusals(t *testing.T) {
 	big := CreateContext{Name: []byte("MxAc"), Data: make([]byte, 1000)}
 	for _, c := range []struct {

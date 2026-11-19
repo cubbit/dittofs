@@ -122,11 +122,11 @@ func gate(b *bytes.Buffer, f *field, x bool) string {
 }
 
 // region is where a variable field's bytes lie, decoded, refused past limit.
-func region(f *field, limit int) string {
+func region(f *field, limit string) string {
 	if f.offset != "" {
-		return fmt.Sprintf("d.At(l%s, l%s, %d, %d)", f.offset, f.length, limit, f.align)
+		return fmt.Sprintf("d.At(l%s, l%s, %s, %d)", f.offset, f.length, limit, f.align)
 	}
-	return fmt.Sprintf("d.Next(l%s, %d)", f.length, limit)
+	return fmt.Sprintf("d.Next(l%s, %s)", f.length, limit)
 }
 
 // discriminant is the expression a union's switch reads, and how a case
@@ -184,9 +184,9 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 		case f.kind == kFixed:
 			fmt.Fprintf(b, "d.Bytes(x.%s[:])\n", f.name)
 		case f.kind == kBytes && !f.def:
-			fmt.Fprintf(b, "x.%s = %s\n", f.name, region(f, f.max))
+			fmt.Fprintf(b, "x.%s = %s\n", f.name, region(f, strconv.Itoa(f.max)))
 		case f.kind == kString:
-			fmt.Fprintf(b, "x.%s = d.UTF16(%s)\n", f.name, region(f, f.max))
+			fmt.Fprintf(b, "x.%s = d.UTF16(%s)\n", f.name, region(f, strconv.Itoa(f.max)))
 		case f.kind == kUint16s:
 			fmt.Fprintf(b, "x.%s = d.Uint16s(l%s, %d)\n", f.name, f.count, f.max)
 		case f.kind == kChain && f.link != "":
@@ -202,7 +202,7 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 		x.%s = append(x.%s, el)
 	}
 }
-`, region(f, f.max), f.typ, f.name, f.name)
+`, region(f, strconv.Itoa(f.max)), f.typ, f.name, f.name)
 		case f.kind == kChain:
 			fmt.Fprintf(b, `if at := d.Chain(l%s, l%s, %d, %d); at >= 0 {
 	x.%s = make([]%s, l%s)
@@ -214,9 +214,24 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 }
 `, f.offset, f.count, f.max, least(g.byName[f.typ]), f.name, f.typ, f.count, f.name, f.name)
 		default: // a union's arms, at its first
+			// A union's bytes are bounded by the bytes holding them alone, not
+			// by its default's max: an arm reads its own struct from them; a
+			// known value with no arm keeps them within the default's max and
+			// past it refuses the request, as the server acts on it; and any
+			// other value's are kept within that max and past it none, so an
+			// unknown context too long to keep is ignored, not the request
+			// refused (MS-SMB2 3.3.5.4; RFC 22 section 16). None rather than
+			// all, so a decoded value still encodes within its maxima.
+			//
+			// decision: an unknown value's bytes past the default's max are
+			// dropped, not refused, which fails open: safe only while every
+			// value a handler reads from the default's bytes is listed in
+			// known=, and its name is kept, so a handler can still refuse it by
+			// name. Overturned if a handler acts on a value's bytes without
+			// adding it to known=.
 			def := arms[len(arms)-1]
 			expr, lit := discriminant(disc)
-			fmt.Fprintf(b, "{\nr := %s\nswitch %s {\n", region(def, def.max), expr)
+			fmt.Fprintf(b, "{\nr := %s\nswitch %s {\n", region(def, "len(d.B)"), expr)
 			for _, a := range arms[:len(arms)-1] {
 				take := "Join"
 				if a.exact {
@@ -224,7 +239,14 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 				}
 				fmt.Fprintf(b, "case %s:\nsub := d.Sub(r)\nx.%s.decodeSMB2(&sub, v)\nd.%s(&sub)\n", lit(a.cas), a.name, take)
 			}
-			fmt.Fprintf(b, "default:\nx.%s = r\n}\n}\n", def.name)
+			if len(def.known) > 0 {
+				lits := make([]string, len(def.known))
+				for i, k := range def.known {
+					lits[i] = lit(k)
+				}
+				fmt.Fprintf(b, "case %s:\nsub := d.Sub(r)\nx.%s = sub.Next(len(r), %d)\nd.Join(&sub)\n", strings.Join(lits, ", "), def.name, def.max)
+			}
+			fmt.Fprintf(b, "default:\nif len(r) <= %d {\nx.%s = r\n}\n}\n}\n", def.max, def.name)
 		}
 		b.WriteString(end)
 	}

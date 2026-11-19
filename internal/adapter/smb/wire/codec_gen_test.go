@@ -167,7 +167,7 @@ func (x *CreateContext) decodeSMB2(d *wire.Decoder, v uint32) {
 	lDataLength = int(d.Uint32())
 	x.Name = d.At(lNameOffset, lNameLength, 16, 1)
 	{
-		r := d.At(lDataOffset, lDataLength, 1024, 8)
+		r := d.At(lDataOffset, lDataLength, len(d.B), 8)
 		switch string(x.Name) {
 		case "DH2Q":
 			sub := d.Sub(r)
@@ -177,8 +177,14 @@ func (x *CreateContext) decodeSMB2(d *wire.Decoder, v uint32) {
 			sub := d.Sub(r)
 			x.AllocationSize.decodeSMB2(&sub, v)
 			d.Exact(&sub)
+		case "DHnQ", "DHnC", "DH2C", "RqLs", "QFid", "SecD", "ExtA", "TWrp", "MxAc", "E\xbc\xa6j\xef\xa7\xf7J\x90\b\xfaF.\x14Mt", "\xb9\x82з;V\aO\xa0{RJ\x81\x16\xa0\x10":
+			sub := d.Sub(r)
+			x.Data = sub.Next(len(r), 1024)
+			d.Join(&sub)
 		default:
-			x.Data = r
+			if len(r) <= 1024 {
+				x.Data = r
+			}
 		}
 	}
 }
@@ -473,7 +479,7 @@ func (x *NegotiateContext) decodeSMB2(d *wire.Decoder, v uint32) {
 	lDataLength = int(d.Uint16())
 	d.Skip(4)
 	{
-		r := d.Next(lDataLength, 1024)
+		r := d.Next(lDataLength, len(d.B))
 		switch x.ContextType {
 		case 1:
 			sub := d.Sub(r)
@@ -483,8 +489,14 @@ func (x *NegotiateContext) decodeSMB2(d *wire.Decoder, v uint32) {
 			sub := d.Sub(r)
 			x.Encryption.decodeSMB2(&sub, v)
 			d.Join(&sub)
+		case 5, 8:
+			sub := d.Sub(r)
+			x.Data = sub.Next(len(r), 1024)
+			d.Join(&sub)
 		default:
-			x.Data = r
+			if len(r) <= 1024 {
+				x.Data = r
+			}
 		}
 	}
 }

@@ -29,7 +29,10 @@
 //     (create contexts);
 //   - union on a []byte or integer discriminant, case=V on each arm, a struct
 //     whose bytes the discriminant's value V chooses, and default on one
-//     []byte arm, the bytes of any other: the arms share one offset and len;
+//     []byte arm, the bytes of any other, kept up to its max and none past
+//     it: the arms share one offset and len, bounded by the bytes holding
+//     them alone; known=V|V on the default, the values the server knows with
+//     no arm of their own, whose bytes past its max refuse the message;
 //   - exact on an arm: its data is refused unless its struct takes every byte
 //     of it (MS-SMB2 3.3.5.9's create contexts);
 //   - since=D: on the wire from dialect D on;
