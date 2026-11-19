@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -60,6 +61,11 @@ func TestDomainControllerConformance(t *testing.T) {
 	if out, err := adDockerExec("samba-tool", "domain", "passwordsettings", "set", "--account-lockout-threshold=100"); err != nil {
 		t.Fatalf("set the lockout threshold: %v\n%s", err, out)
 	}
+	t.Cleanup(func() {
+		if out, err := adDockerExec("samba-tool", "domain", "passwordsettings", "set", "--account-lockout-threshold=0"); err != nil {
+			t.Errorf("set the lockout threshold back to 0: %v\n%s", err, out)
+		}
+	})
 	port := netlogonTCPPort(ctx, t, dcIP)
 	seed := &sambaDCSeeder{conn: adminLDAP(t, dcIP, ca)}
 
@@ -544,6 +550,18 @@ func (s *sambaDCSeeder) redirect(t testing.TB, dn string) {
 	if err := s.conn.Modify(mod); err != nil {
 		t.Fatalf("redirect the Computers container to %s: %v", dn, err)
 	}
+}
+
+// Unreachable is a sambaDC at a local port nothing listens on.
+func (s *sambaDCSeeder) Unreachable(t testing.TB) netlogon.DC {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for a free port: %v", err)
+	}
+	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+	_ = l.Close()
+	return &sambaDC{ip: "127.0.0.1", binding: "ncacn_ip_tcp:127.0.0.1[" + port + "]"}
 }
 
 func (s *sambaDCSeeder) MoveComputersContainer(t testing.TB, ou string) {

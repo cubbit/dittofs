@@ -12,7 +12,9 @@ import (
 )
 
 // ErrHold, as a fault's Err, holds the dial or call until its context ends, and
-// then fails it with the context's error: a directory that never answers.
+// then fails it with the context's error: a directory that never answers. In
+// FaultyDomainController it holds the call until Release sends it, or until
+// its context ends.
 var ErrHold = errors.New("identitytest: held until the context ends")
 
 // FaultyDirectory wraps a directory.Dialer and every Conn it returns. Each

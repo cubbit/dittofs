@@ -3,6 +3,7 @@ package identitytest
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
@@ -77,6 +78,10 @@ func call[T any](ctx context.Context, f *FaultyDomainController, op, key string,
 	}
 	v, err := send()
 	if ferr != nil {
+		// A channel the fault's answer loses is closed, so it holds no connection.
+		if c, ok := any(v).(io.Closer); ok && err == nil {
+			_ = c.Close()
+		}
 		return zero, ferr
 	}
 	return v, err

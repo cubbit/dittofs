@@ -53,6 +53,7 @@ type DomainController struct {
 
 	mu        sync.Mutex
 	dcs       []*controller // in the order Lookup answers them
+	dialled   *controller   // the one the seeder acts at: the last dialled, the first before any dial
 	users     map[string]*dcUser
 	computers string // the Computers container wellKnownObjects names
 	ous       map[string]bool
@@ -107,6 +108,7 @@ func NewDomainController(netbios, realm, base string, addrs ...string) *DomainCo
 	for _, a := range addrs {
 		d.dcs = append(d.dcs, &controller{addr: a, accounts: map[string]*dcAccount{}, badPwd: map[string]int{}})
 	}
+	d.dialled = d.dcs[0]
 	d.users["administrator"] = &dcUser{dn: "CN=Administrator,CN=Users," + base, rid: 500, password: []byte(adminPasswordDC)}
 	return d
 }
@@ -206,8 +208,9 @@ func (d *DomainController) Lookup(ctx context.Context, realm, _ string) ([]strin
 	return addrs, nil
 }
 
-// Dial is a netlogon.Dialer's, opening the controller at addr; rec is not
-// read. An address the domain has no controller at could not be asked.
+// Dial is a netlogon.Dialer's, opening the controller at addr, which the
+// seeder then acts at; rec is not read. An address the domain has no
+// controller at could not be asked.
 func (d *DomainController) Dial(ctx context.Context, _ directory.Record, addr string) (netlogon.DC, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -216,6 +219,7 @@ func (d *DomainController) Dial(ctx context.Context, _ directory.Record, addr st
 	defer d.mu.Unlock()
 	for _, c := range d.dcs {
 		if c.addr == addr {
+			d.dialled = c
 			return &memDC{d: d, c: c}, nil
 		}
 	}
@@ -238,6 +242,12 @@ var errDCClosed = errors.New("identitytest: the domain controller connection is 
 func (m *memDC) check(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	m.d.mu.Lock()
+	gone := !slices.Contains(m.d.dcs, m.c)
+	m.d.mu.Unlock()
+	if gone {
+		return fmt.Errorf("identitytest: no domain controller answers at %s", m.c.addr)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -322,6 +332,11 @@ func (m *memDC) Create(ctx context.Context, admin identity.JoinCredential, c net
 	if !d.ous[strings.ToLower(ou)] {
 		return fmt.Errorf("identitytest: no such object %q", ou)
 	}
+	// ponytail: the name is checked at this controller alone, so while
+	// replication is held a second Create of one name at another controller
+	// succeeds and replaces the first account at every controller not held.
+	// Check the held controllers' pending writes too when a test creates one
+	// name at two controllers.
 	if _, ok := m.c.accounts[strings.ToLower(c.Name)]; ok {
 		return fmt.Errorf("%s$: %w", c.Name, fs.ErrExist)
 	}
@@ -485,29 +500,35 @@ func (d *DomainController) AddUser(_ testing.TB, name string, password []byte) s
 	return d.sidOf(u.rid)
 }
 
-// BadPwdCount is the user's badPwdCount at the first controller.
+// BadPwdCount is the user's badPwdCount at the controller last dialled.
 func (d *DomainController) BadPwdCount(_ testing.TB, name string) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.dcs[0].badPwd[strings.ToLower(name)]
+	return d.dialled.badPwd[strings.ToLower(name)]
 }
 
-// StageComputer creates a computer account at the first controller, as an
-// administrator creates one by hand, in CN=Computers.
+// StageComputer creates a computer account at the controller last dialled,
+// as an administrator creates one by hand, in CN=Computers.
 func (d *DomainController) StageComputer(_ testing.TB, c StagedComputer) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.putAccount(d.dcs[0], c.Name, "CN="+c.Name+",CN=Computers,"+d.base, c.Password, c.EncTypes, slices.Clone(c.SPNs))
+	d.putAccount(d.dialled, c.Name, "CN="+c.Name+",CN=Computers,"+d.base, c.Password, c.EncTypes, slices.Clone(c.SPNs))
 }
 
-// SetComputerPassword sets an account's password at the first controller,
-// as its creator may.
+// SetComputerPassword sets an account's password at the controller last
+// dialled, as its creator may.
 func (d *DomainController) SetComputerPassword(t testing.TB, name string, password []byte) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if err := d.setPassword(d.dcs[0], name, password); err != nil {
+	if err := d.setPassword(d.dialled, name, password); err != nil {
 		t.Fatalf("set %s$'s password: %v", name, err)
 	}
+}
+
+// Unreachable is an opened controller that has gone from the domain, which
+// every call fails as one that could not be asked.
+func (d *DomainController) Unreachable(testing.TB) netlogon.DC {
+	return &memDC{d: d, c: &controller{addr: "gone:135", accounts: map[string]*dcAccount{}, badPwd: map[string]int{}}}
 }
 
 // MoveComputersContainer creates the organisational unit ou and makes it the

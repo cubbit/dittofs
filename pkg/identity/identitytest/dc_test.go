@@ -26,12 +26,17 @@ func dial(t *testing.T, d netlogon.Dialer, addr string) netlogon.DC {
 	return dc
 }
 
-// The in-memory domain controller answers as the suite holds a real one to.
+// The in-memory domain controller answers as the suite holds a real one to,
+// at each of its controllers, so the seeder acts at the one dialled.
 func TestDomainControllerConformance(t *testing.T) {
-	identitytest.DomainControllerConformance(t, func(t *testing.T) (netlogon.DC, identitytest.DCSeeder) {
-		d := newDomain()
-		return dial(t, d, "dc1:135"), d
-	})
+	for _, addr := range []string{"dc1:135", "dc2:135"} {
+		t.Run(addr, func(t *testing.T) {
+			identitytest.DomainControllerConformance(t, func(t *testing.T) (netlogon.DC, identitytest.DCSeeder) {
+				d := newDomain()
+				return dial(t, d, addr), d
+			})
+		})
+	}
 }
 
 // Lookup answers the controllers in the order built; a controller whose
@@ -56,6 +61,11 @@ func TestDomainControllerReplication(t *testing.T) {
 	}
 	if _, err := dc2.Channel(ctx, "HOST1", next); !errors.Is(err, netlogon.ErrRejected) {
 		t.Errorf("held dc2, the new password: err %v, want ErrRejected", err)
+	}
+	if ch, err := dc2.Channel(ctx, "HOST1", old); err != nil {
+		t.Errorf("held dc2, the old password: %v, want accepted", err)
+	} else {
+		_ = ch.Close()
 	}
 	if a, err := dc1.Account(ctx, d.Admin(), "HOST1"); err != nil || a.KeyVersion != 2 {
 		t.Errorf("dc1: key version %d, %v; want 2", a.KeyVersion, err)

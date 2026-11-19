@@ -46,6 +46,9 @@ type DCSeeder interface {
 	StageComputer(t testing.TB, c StagedComputer)
 	// SetComputerPassword sets an account's password as its creator may.
 	SetComputerPassword(t testing.TB, name string, password []byte)
+	// Unreachable is a connection to a controller of the domain that cannot
+	// be reached.
+	Unreachable(t testing.TB) netlogon.DC
 	// MoveComputersContainer creates the organisational unit ou and makes it
 	// the domain's Computers container, as redircmp does.
 	MoveComputersContainer(t testing.TB, ou string)
@@ -319,6 +322,11 @@ func DomainControllerConformance(t *testing.T, open func(t *testing.T) (netlogon
 		_ = dc.Close()
 		if _, err := dc.Channel(ctx, name, pw); err == nil || errors.Is(err, netlogon.ErrRejected) {
 			t.Errorf("probe on a closed connection: err %v, want an error that is not ErrRejected", err)
+		}
+		gone := s.Unreachable(t)
+		t.Cleanup(func() { _ = gone.Close() })
+		if _, err := gone.Channel(ctx, name, pw); err == nil || errors.Is(err, netlogon.ErrRejected) {
+			t.Errorf("probe at a controller that cannot be reached: err %v, want an error that is not ErrRejected", err)
 		}
 	})
 }
