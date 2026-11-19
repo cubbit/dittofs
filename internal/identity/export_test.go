@@ -38,3 +38,26 @@ func (c *replayCache) Len() int {
 	defer c.mu.Unlock()
 	return len(c.entries)
 }
+
+// HoldHashSlots takes every password verification's slot and returns their
+// release.
+func (s *Server) HoldHashSlots() (release func()) {
+	for range cap(s.hashing) {
+		s.hashing <- struct{}{}
+	}
+	return func() {
+		for range cap(s.hashing) {
+			<-s.hashing
+		}
+	}
+}
+
+// HashSlot takes a hashing slot as a password verification does, and gives
+// it back at once.
+func (s *Server) HashSlot(ctx context.Context) error {
+	release, err := s.hashSlot(ctx)
+	if err == nil {
+		release()
+	}
+	return err
+}

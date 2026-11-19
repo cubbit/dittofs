@@ -100,6 +100,14 @@ func TestDigest(t *testing.T) {
 	}
 }
 
+func TestPrincipalUserPart(t *testing.T) {
+	for _, name := range []string{"alice", "ALICE", `CORP\alice`, "alice@CORP.EXAMPLE", `corp\Alice@corp.example`} {
+		if got := PrincipalUserPart(name); got != FoldPrincipalName("alice") {
+			t.Errorf("PrincipalUserPart(%q) = %q, want %q", name, got, FoldPrincipalName("alice"))
+		}
+	}
+}
+
 const goldenDigest = 0x2ca3e6cfaac30e45
 
 func TestFoldPrincipalName(t *testing.T) {
