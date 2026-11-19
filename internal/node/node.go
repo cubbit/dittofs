@@ -72,6 +72,11 @@ type Node struct {
 	nfs      *slot[settings.NFS]
 	smb      *slot[settings.SMB]
 	sidecars *sidecar.Runner
+	// drains is what every adapter's drain runs under, a pass's included:
+	// reconcile's stop does not end it, and stop step 2 ends it, through
+	// endDrains, at its drain deadline.
+	drains    context.Context
+	endDrains context.CancelFunc
 	// adapting is set by start step 9: from then on apply calls the slots.
 	// Written before reconcile's loop starts, and read by apply alone.
 	adapting bool
@@ -197,8 +202,9 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node.ID, cfg.Logger, steps)
 	n.watchdog = health.NewWatchdog(cfg.Clock)
 	n.sidecars = sidecar.New()
+	n.drains, n.endDrains = context.WithCancel(context.Background())
 	n.nfs, n.smb = newSlots(adapterDeps(n.fs, n.budgets, cfg.Metrics, cfg.Logger, n.watchdog), n.sidecars, addrs,
-		[]uint16{listenPort(cfg.Bootstrap.API.Listen[0]), listenPort(cfg.Bootstrap.Metrics.Listen)}, cfg.Clock)
+		[]uint16{listenPort(cfg.Bootstrap.API.Listen[0]), listenPort(cfg.Bootstrap.Metrics.Listen)}, cfg.Clock, n.drains)
 	n.life.ready.Store(readyStarting)
 	// decision: the API gets no TLS, local socket, signing key or tracer,
 	// and in production no Authenticate, because nothing the node is handed

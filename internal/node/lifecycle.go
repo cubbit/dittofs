@@ -400,10 +400,10 @@ func (n *Node) startRunner(context.Context) error {
 // startAdapters is start step 9 (RFC 23 §2.2): each slot is called with
 // what it is to run, at the settings generation the first full reconcile
 // read, and from here apply calls the slots. A refusal does not fail the
-// start: it joins the refusals that pass recorded, so the next pass reads
-// its retry flag and retries it on reconcile's backoff as its own (RFC 20
-// §3.7, RFC 23 §2.3). The adapters' part uses the filesystem and the zero
-// check, so a drain past its bound leaves both open.
+// start: it joins the refusals that pass recorded, and one to retry starts
+// reconcile's loop on its backoff, as a pass's own does (RFC 20 §3.7, RFC 23
+// §2.3). The adapters' part uses the filesystem and the zero check, so a
+// drain past its bound leaves both open.
 //
 // decision: apply calls the slots only once this step has run. It runs
 // twice before, at step 4 and in the first full reconcile, and an adapter
@@ -415,42 +415,50 @@ func (n *Node) startAdapters(ctx context.Context) error {
 	n.adapting = true
 	// Nothing runs yet, so no call drains, and none is handed a loop.
 	refusals := n.applyAdapters(ctx, nil, n.rec.seen.Settings)
-	n.rec.mu.Lock()
-	n.rec.applied = append(n.rec.applied, refusals...)
-	n.rec.mu.Unlock()
+	r := &n.rec
+	r.again = r.again || slices.ContainsFunc(refusals, func(f refusal) bool { return f.retry })
+	r.mu.Lock()
+	r.applied = append(r.applied, refusals...)
+	r.mu.Unlock()
 	n.life.parts = append(n.life.parts, &part{name: stepAdapters, stop: n.stopAdapters,
-		uses: []string{stepFilesystem, partBudgets}, bound: func() time.Duration {
-			_, longest := n.adaptersHeld()
-			return longest + onCloseBound
-		}})
+		uses: []string{stepFilesystem, partBudgets}, bound: n.drainBound})
 	return nil
 }
 
-// stopAdapters is stop step 2 (RFC 23 §2.2): every sidecar is synced with
-// the empty set, then every adapter the slots hold is stopped at once,
-// under one context that ends at the drain deadline, and then the runner
-// closes. An adapter a rebuild or a disable was still draining when
-// reconcile stopped is among them, so its drain is joined.
+// drainBound is stop step 2's bound, the drain deadline plus 30 s, which
+// halt reads as the step starts (RFC 23 §2.2). It sets the deadline there,
+// the step's start plus the longest drain_timeout of the adapters the slots
+// hold, and ends the drains' context at it on the node's clock.
 //
-// decision: the drain deadline is the step's start plus the longest
-// drain_timeout of the adapters it stops, so no adapter's drain is cut
-// shorter than its own; RFC 23 §2.2 bounds the step by the deadline plus
-// 30 s but sets no deadline. The context ends at it on the node's clock, as
-// a share removal's step 3 ends its own, and carries no Deadline, which an
-// adapter would read on the runtime's clock. Overturned if RFC 23 §2.2
-// comes to set the deadline.
-func (n *Node) stopAdapters(ctx context.Context) error {
-	held, longest := n.adaptersHeld()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+// decision: the deadline is the step's start plus the longest
+// drain_timeout, so no adapter's drain is cut shorter than its own; RFC 23
+// §2.2 bounds the step by the deadline plus 30 s but sets no deadline. It
+// ends the drains' context on the node's clock, as a share removal's step 3
+// ends its own, rather than giving it a Deadline, which an adapter would
+// read on the runtime's clock. Overturned if RFC 23 §2.2 comes to set the
+// deadline.
+func (n *Node) drainBound() time.Duration {
+	_, longest := n.adaptersHeld()
 	go func(deadline <-chan struct{}) {
 		select {
 		case <-deadline:
-			cancel()
-		case <-ctx.Done():
+			n.endDrains()
+		case <-n.drains.Done():
 		}
 	}(n.cfg.Clock.After(longest))
-	err := n.sidecars.StopAll(ctx, held)
+	return longest + onCloseBound
+}
+
+// stopAdapters is stop step 2 (RFC 23 §2.2): every sidecar is synced with
+// the empty set, then every adapter the slots hold is stopped at once under
+// the drains' context, which drainBound ends at the drain deadline, and then
+// the runner closes. An adapter a rebuild or a disable was still draining
+// when reconcile stopped is among them, its drain under the same context,
+// so it is joined and ends by the same deadline.
+func (n *Node) stopAdapters(context.Context) error {
+	held, _ := n.adaptersHeld()
+	err := n.sidecars.StopAll(n.drains, held)
+	n.endDrains()
 	n.sidecars.Close()
 	return err
 }

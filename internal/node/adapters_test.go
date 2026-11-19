@@ -101,18 +101,55 @@ func (h heldStop) Stop(ctx context.Context) error {
 }
 
 // deadlineStop is a real adapter whose Stop stops the adapter, says so on
-// stopped, then holds until its context ends, as a drain with a request
-// still running holds until the drain deadline.
+// stopped, then drains until its context ends, as a drain with a request
+// still running does until the drain deadline, and sends on ended how far
+// the node's clock had moved when it did.
 type deadlineStop struct {
 	adapter.Adapter
+	clock   *sim.TestClock
 	stopped chan<- struct{}
+	ended   chan<- time.Duration
 }
 
 func (d deadlineStop) Stop(ctx context.Context) error {
 	err := d.Adapter.Stop(ctx)
 	d.stopped <- struct{}{}
 	<-ctx.Done()
+	d.ended <- d.clock.Elapsed()
 	return err
+}
+
+// endedAt is how far past start a held drain ended, failing the test if
+// none has 10 s after the clock passed its deadline.
+func endedAt(t *testing.T, ended <-chan time.Duration, start time.Duration) time.Duration {
+	t.Helper()
+	select {
+	case at := <-ended:
+		return at - start
+	case <-time.After(10 * time.Second):
+		t.Fatal("no held drain ended within 10 s of the clock reaching its deadline")
+		return 0
+	}
+}
+
+// waitingSidecar serves both adapters with a fault on cue: while cue is set,
+// the next Sync says so on entered and returns only once its context ends,
+// as a sidecar that cannot be brought to match.
+type waitingSidecar struct {
+	cue     atomic.Bool
+	entered chan struct{}
+}
+
+func (*waitingSidecar) Name() string       { return "waiting" }
+func (*waitingSidecar) Adapters() []string { return []string{"nfs", "smb"} }
+
+func (s *waitingSidecar) Sync(ctx context.Context, _ []adapter.Serving) error {
+	if s.cue.CompareAndSwap(true, false) {
+		s.entered <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
 }
 
 // holdingSidecar serves both adapters with a fault on cue: while cue is set,
@@ -214,10 +251,18 @@ func TestAnAdapterListensOnlyFromTheAdaptersStep(t *testing.T) {
 // An adapter refused at start, its port held, does not fail the start: the
 // node is ready, NFS serves, and the refusal names SMB's record at the
 // settings generation the first full reconcile read. It is retried on
-// reconcile's backoff, with no counter moving, and SMB serves once the port
-// is freed, the refusal gone (RFC 20 §3.7, RFC 23 §2.2, §2.3, §2.4).
+// reconcile's backoff, with no counter moving: once the port is freed and the
+// clock advances 1 s, SMB serves and the refusal is gone (RFC 20 §3.7, RFC 23
+// §2.2, §2.3, §2.4).
 func TestAnAdapterRefusedAtStartIsRetriedUntilItServes(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
+	waiting := make(chan struct{}, 1)
+	h.Node().OnReconcileWait(func() {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	})
 	configure(t, h, storeA) // a settings generation above zero for the refusal to carry
 	held, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -243,15 +288,23 @@ func TestAnAdapterRefusedAtStartIsRetriedUntilItServes(t *testing.T) {
 	}
 
 	_ = held.Close()
-	deadline := time.Now().Add(10 * time.Second)
-	for len(h.Node().Refused()) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("refused after 10 s of turns with the port freed: %s, want none", describe(h.Node().Refused()))
-		}
-		turn(h)
+	select {
+	case <-waiting: // reconcile's first wait after Start is set on the clock
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconcile's loop set no wait within 10 s of Start")
+	}
+	moved := h.Node().Moved()
+	h.Clock().Advance(time.Second)
+	select {
+	case <-moved:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no reconcile pass within 10 s of the clock advancing 1 s")
+	}
+	if got := h.Node().Refused(); len(got) != 0 {
+		t.Errorf("refused after the port was freed and the clock advanced 1 s: %s, want none", describe(got))
 	}
 	if !listens(port) {
-		t.Errorf("SMB's port %d, freed, takes no dial once its refusal is gone", port)
+		t.Errorf("SMB's port %d, freed, takes no dial after the clock advanced 1 s", port)
 	}
 }
 
@@ -353,18 +406,28 @@ func TestADrainPastItsBoundLeavesTheFilesystemOpen(t *testing.T) {
 	}
 }
 
-// The adapters drain under one context that ends on the node's clock at the
-// drain deadline, the step's start plus the longest drain_timeout, 100 s
-// here: an adapter whose drain runs until then lets Stop go on once the
-// clock reaches it, inside the step's bound (RFC 23 §2.2).
-func TestTheAdaptersDrainEndsAtTheDeadline(t *testing.T) {
+// The adapters drain until the drain deadline, the step's start plus the
+// longest drain_timeout, 100 s here, on the node's clock, and no sooner: SMB,
+// draining until its context ends, still drains 31 s in, past the 30 s every
+// other part is given, and 99 s in, the filesystem's part not stopped, and
+// ends at 100 s, when Stop goes on inside the step's bound (RFC 23 §2.2).
+// Each move of the clock waits for the operation runner's turn it wakes, so
+// what else the move woke has had that long to run.
+func TestTheAdaptersDrainUntilTheDeadline(t *testing.T) {
 	var h *nodetest.Harness
 	s := newSteps(t, &h)
 	h = nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewStepping(s.stepped)))
-	stoppedSMB := make(chan struct{}, 1)
+	turned := make(chan struct{}, 1)
+	h.Node().OnRunnerTurn(func() {
+		select {
+		case turned <- struct{}{}:
+		default:
+		}
+	})
+	stoppedSMB, ended := make(chan struct{}, 1), make(chan time.Duration, 1)
 	h.Node().OnAdapter(func(protocol string, a adapter.Adapter) adapter.Adapter {
 		if protocol == "smb" {
-			return deadlineStop{a, stoppedSMB}
+			return deadlineStop{a, h.Clock(), stoppedSMB, ended}
 		}
 		return a
 	})
@@ -378,11 +441,34 @@ func TestTheAdaptersDrainEndsAtTheDeadline(t *testing.T) {
 
 	stopped := make(chan error, 1)
 	go func() { stopped <- h.Node().Stop(context.Background()) }()
-	waitFor(t, s.waits, "adapters")
-	hears(t, stoppedSMB, "the adapters' part") // the deadline is armed before any Stop is called
-	h.Clock().Advance(100 * time.Second)
+	waitFor(t, s.waits, "adapters") // the deadline is set as the step starts
+	hears(t, stoppedSMB, "the adapters' part")
+	start := h.Clock().Elapsed()
+	for _, d := range []time.Duration{31 * time.Second, 68 * time.Second} {
+		select {
+		case <-turned:
+		default:
+		}
+		h.Clock().Advance(d)
+		select {
+		case <-turned:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%v into the step the operation runner has not turned, want it running past the adapters' part", h.Clock().Elapsed()-start)
+		}
+		if slices.Contains(s.reported(), "stop filesystem") {
+			t.Fatalf("%v into the step the filesystem's part has stopped, want it open while SMB drains", h.Clock().Elapsed()-start)
+		}
+	}
+	h.Clock().Advance(time.Second)
+	if got := endedAt(t, ended, start); got != 100*time.Second {
+		t.Errorf("SMB's drain ended %v into the step, want at the deadline, 100 s", got)
+	}
 	if err := answered(t, stopped); err != nil {
 		t.Errorf("Stop with SMB draining until the deadline: got %v, want nil", err)
+	}
+	want := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners", "stop store"}
+	if got := stopsIn(s.reported()); !slices.Equal(got, want) {
+		t.Errorf("parts stopped: got %v, want %v", got, want)
 	}
 }
 
@@ -417,23 +503,28 @@ func TestARebuildWaitingOnADrainKeepsTheNodeLive(t *testing.T) {
 	}
 }
 
-// A Stop while a pass waits on a rebuild's held drain stops reconcile within
-// its bound, the clock still, and leaves the old adapter's drain to the
-// adapters' part, which joins it: it stops that adapter again and waits on
-// it (RFC 23 §2.2).
+// A Stop while a pass waits on a rebuild's drain stops reconcile within its
+// bound, the clock still, and does not cut the drain short: the old adapter
+// drains on to stop step 2's deadline, 90 s, its drain_timeout, and the
+// adapters' part joins it, stopping that adapter again (RFC 23 §2.2, RFC 20
+// §3.4).
 func TestAStopJoinsTheDrainOfARebuild(t *testing.T) {
 	var h *nodetest.Harness
 	s := newSteps(t, &h)
 	h = nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewStepping(s.stepped)))
-	stoppedSMB, release := make(chan struct{}, 4), make(chan struct{})
-	h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return heldStop{a, stoppedSMB, release} })
+	stoppedSMB, ended := make(chan struct{}, 2), make(chan time.Duration, 2)
+	var first atomic.Bool
+	h.Node().OnAdapter(func(protocol string, a adapter.Adapter) adapter.Adapter {
+		if protocol == "smb" && first.CompareAndSwap(false, true) { // the adapter the rebuild replaces
+			return deadlineStop{a, h.Clock(), stoppedSMB, ended}
+		}
+		return a
+	})
 	from, to := freePort(t), freePort(t)
 	h.Node().SetSMB(true, smbAt(from))
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	end := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(end)
 
 	rebuild(t, h, to)
 	hears(t, stoppedSMB, "the rebuild")
@@ -441,9 +532,58 @@ func TestAStopJoinsTheDrainOfARebuild(t *testing.T) {
 	go func() { stopped <- h.Node().Stop(context.Background()) }()
 	waitFor(t, s.waits, "adapters")
 	hears(t, stoppedSMB, "the adapters' part")
-	end()
+	start := h.Clock().Elapsed()
+	for _, d := range []time.Duration{31 * time.Second, 58 * time.Second, time.Second} {
+		h.Clock().Advance(d)
+	}
+	for range 2 {
+		if got := endedAt(t, ended, start); got != 90*time.Second {
+			t.Errorf("a Stop of the rebuild's old adapter ended its drain %v into stop step 2, want at its deadline, 90 s", got)
+		}
+	}
 	if err := answered(t, stopped); err != nil {
 		t.Errorf("Stop during the rebuild: got %v, want nil", err)
+	}
+}
+
+// A sidecar Sync that a rebuild's drain holds, one that returns only once its
+// context ends, ends with stop step 2's drain deadline and holds the step no
+// longer: once the clock reaches the deadline Stop finishes inside the step's
+// bound, NFS and both of SMB's ports stopped (RFC 23 §2.2, RFC 20 §3.5).
+func TestARebuildsSyncEndsByTheDrainDeadline(t *testing.T) {
+	var h *nodetest.Harness
+	s := newSteps(t, &h)
+	h = nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewStepping(s.stepped)))
+	side := &waitingSidecar{entered: make(chan struct{}, 1)}
+	h.Node().SetSidecar(side)
+	nfs, from, to := freePort(t), freePort(t), freePort(t)
+	h.Node().SetNFS(true, nfsAt(nfs))
+	h.Node().SetSMB(true, smbAt(from))
+	if err := h.Node().Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	side.cue.Store(true)
+	rebuild(t, h, to)
+	select {
+	case <-side.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the rebuild synced no sidecar within 10 s")
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- h.Node().Stop(context.Background()) }()
+	waitFor(t, s.waits, "adapters") // the deadline is set as the step starts
+	h.Clock().Advance(90 * time.Second)
+	if err := answered(t, stopped); err != nil {
+		t.Errorf("Stop with the rebuild's Sync held: got %v, want nil", err)
+	}
+	for _, p := range []struct {
+		name string
+		port uint16
+	}{{"NFS's", nfs}, {"SMB's old", from}, {"SMB's new", to}} {
+		if listens(p.port) {
+			t.Errorf("after Stop %s port %d takes a dial", p.name, p.port)
+		}
 	}
 }
 

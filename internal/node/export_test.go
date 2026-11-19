@@ -94,6 +94,10 @@ func (n *Node) OnEndLiveState(ending func(entity.ShareID)) { n.ending = ending }
 // Call it before Start.
 func (n *Node) OnApply(applying func(kvstore.Counters)) { n.rec.applying = applying }
 
+// OnReconcileWait has reconcile's loop call waiting once each of its waits
+// is set on the node's clock. Call it before Start.
+func (n *Node) OnReconcileWait(waiting func()) { n.rec.waiting = waiting }
+
 // Applied is the wait a write on this node makes.
 func (n *Node) Applied(ctx context.Context) error { return n.applied(ctx) }
 

@@ -42,11 +42,13 @@ type reconciler struct {
 	// paused, when set, is called with the counters each pass read, before
 	// the pass acts on them; binding, when set, with each share before
 	// reconcile binds it, and bound once the engine bound it; applying, when
-	// set, with the counters each apply acts on.
+	// set, with the counters each apply acts on; waiting, when set, once each
+	// wait of the loop is set on the node's clock.
 	paused   func(kvstore.Counters)
 	binding  func(entity.Share)
 	bound    func(entity.Share)
 	applying func(kvstore.Counters)
+	waiting  func()
 
 	// Read and written by Start's steps and then by the loop alone.
 	seen  kvstore.Counters // the counters the last pass acted on
@@ -479,10 +481,14 @@ func (n *Node) reconcileLoop(ctx context.Context, loop *health.Loop) {
 	var wait time.Duration // the backoff's last wait, zero while no pass needs one
 	for {
 		wait = backoff(wait, r.again)
+		next := n.cfg.Clock.After(cmp.Or(wait, reconcileInterval))
+		if r.waiting != nil {
+			r.waiting()
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-n.cfg.Clock.After(cmp.Or(wait, reconcileInterval)):
+		case <-next:
 		case <-r.wake:
 		}
 		loop.Idle()

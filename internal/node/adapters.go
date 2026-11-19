@@ -141,9 +141,10 @@ type slot[S shape] struct {
 	build  func(adapter.Deps, S) (adapter.Adapter, error) // the protocol's New
 	deps   adapter.Deps
 	runner *sidecar.Runner
-	addrs  []netip.Addr // adapters.listen, resolved: what every adapter binds
-	taken  []uint16     // the API's and the metrics listener's ports
-	clock  engine.Clock // what a drain's idle reports wait on
+	addrs  []netip.Addr    // adapters.listen, resolved: what every adapter binds
+	taken  []uint16        // the API's and the metrics listener's ports
+	clock  engine.Clock    // what a drain's idle reports wait on
+	drains context.Context // what a drain runs under: the node's, which stop step 2 ends
 
 	// want is what apply hands the slot, nil while nothing sets it: the
 	// adapter disabled.
@@ -172,10 +173,10 @@ func (s *slot[S]) applyWanted(ctx context.Context, loop *health.Loop) *refusal {
 }
 
 // newSlots builds the node's slot for each protocol, nfs and smb, over one
-// Deps and one runner (RFC 20 §3.4, §3.5).
-func newSlots(d adapter.Deps, r *sidecar.Runner, addrs []netip.Addr, taken []uint16, clock engine.Clock) (*slot[settings.NFS], *slot[settings.SMB]) {
-	return &slot[settings.NFS]{name: "nfs", build: nfs.New, deps: d, runner: r, addrs: addrs, taken: taken, clock: clock},
-		&slot[settings.SMB]{name: "smb", build: smb.New, deps: d, runner: r, addrs: addrs, taken: taken, clock: clock}
+// Deps and one runner (RFC 20 §3.4, §3.5), each drain under drains.
+func newSlots(d adapter.Deps, r *sidecar.Runner, addrs []netip.Addr, taken []uint16, clock engine.Clock, drains context.Context) (*slot[settings.NFS], *slot[settings.SMB]) {
+	return &slot[settings.NFS]{name: "nfs", build: nfs.New, deps: d, runner: r, addrs: addrs, taken: taken, clock: clock, drains: drains},
+		&slot[settings.SMB]{name: "smb", build: smb.New, deps: d, runner: r, addrs: addrs, taken: taken, clock: clock, drains: drains}
 }
 
 // apply moves the adapter to what enabled and next say, next's Addrs the
@@ -260,9 +261,10 @@ func (s *slot[S]) start(ctx context.Context, next S) error {
 	return nil
 }
 
-// stop drains and stops the running adapter through the runner, reporting
-// loop idle every drainIdle on the node's clock until its Stop returns, or
-// until ctx ends: the drain then goes on, its adapter still the slot's.
+// stop drains and stops the running adapter through the runner, its
+// sidecar syncs included, under the slot's drains, reporting loop idle
+// every drainIdle on the node's clock until its Stop returns, or until ctx
+// ends: the drain then goes on, its adapter still the slot's.
 //
 // decision: the call waits on the drain itself, up to drain_timeout plus
 // 30 s, reporting its loop idle meanwhile, since RFC 25 §3.5 counts a
@@ -271,15 +273,18 @@ func (s *slot[S]) start(ctx context.Context, next S) error {
 // adapter at a time (RFC 23 §3.4). Overturned if a drain must not hold back
 // other records.
 //
-// decision: the drain runs under a context that ctx's end does not cancel, and
-// the call stops waiting on it once ctx ends, as reconcile's stop ends it:
-// waiting on would hold reconcile's stop past its bound, and cancelling
-// would cut the drain short. The adapter stays the slot's, so stop step 2
+// decision: the drain runs under the node's drains, not ctx, and the call
+// stops waiting on it once ctx ends, as reconcile's stop ends it: waiting on
+// would hold reconcile's stop past its bound, and ending the drain with ctx
+// would cut it short. Stop step 2 ends the drains at its drain deadline, so
+// this drain and a sidecar Sync it holds end by then, never sooner, and
+// cannot hold step 2 past its bound. The adapter stays the slot's, so step 2
 // stops it with the others, and its Stop, called again, returns once the
-// first has stopped it (RFC 20 §3.4, RFC 23 §2.2).
+// first has stopped it (RFC 20 §3.4, RFC 23 §2.2). Overturned if a drain
+// must end with the change that started it.
 func (s *slot[S]) stop(ctx context.Context, loop *health.Loop) error {
 	done := make(chan error, 1)
-	go func(a adapter.Adapter) { done <- s.runner.Stop(context.WithoutCancel(ctx), s.name, a) }(s.running)
+	go func(a adapter.Adapter) { done <- s.runner.Stop(s.drains, s.name, a) }(s.running)
 	for {
 		select {
 		case err := <-done:

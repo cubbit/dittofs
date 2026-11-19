@@ -122,7 +122,7 @@ func newRig(t *testing.T, taken ...uint16) *rig {
 	rg.runner = sidecar.New(rg.side)
 	log := slog.New(slog.NewTextHandler(rg.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	d := adapterDeps(memory.New(t), b, rg.reg, log, rg.watchdog)
-	rg.nfs, rg.smb = newSlots(d, rg.runner, []netip.Addr{loopback}, taken, rg.clock)
+	rg.nfs, rg.smb = newSlots(d, rg.runner, []netip.Addr{loopback}, taken, rg.clock, context.Background())
 	t.Cleanup(func() {
 		rg.side.cue.Store(false)
 		if r := rg.nfs.apply(context.Background(), rg.loop, false, settings.NFS{}); r != nil {
