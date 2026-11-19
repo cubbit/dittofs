@@ -102,13 +102,6 @@
   reason: 'The same settled answer as its retry-later sibling for the destination''s share: the destination''s journal limit refusal reads an ended-unreclaimed figure of zero once the refusal''s two repack passes have cycled the share''s live bytes, and answers no space where the row wants the retry-later that outlives the refusal. The row waits on the same two rulings the sibling''s entry names.'
   issue: '#4206'
 
-- test: TestRFC8A_CapacityScopedRepack
-  message: 'unreclaimed bytes are gone: the repack was journal-wide'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Over the real repack the row stops past its writes at the assertion over the other share: B'': B''s superseded plain figure reads zero once the second share''s refusal cycle ran, so the row''s expectation — the other shares'' superseded bytes surviving a scoped repack beside them — no longer holds against the answer the settled refusal makes. Waits with the cluster on the RFC 8 ruling the PR text carries; the follow-up re-derives what a scoped pass owes the shares its scope does not name.'
-  issue: '#4206'
 - test: TestRFC8A_CapacityRacingRefusals
   message: 'the share limit has nothing left to free'
   status: fail
@@ -124,7 +117,7 @@
   reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two rulings the PR text carries: whether a share''s live dirty bytes with the store put-healthy keep the first row''s retry-later answer (RFC 8 section 10.2), and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker.'
   issue: '#4206'
 - test: TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved
-  message: 'the refused write is still parked on the seal'': the capacity answer waited on the caller''s own fsync'
+  message: 'the refused write is still parked on the seal''s sync: the capacity answer waited on the caller''s own fsync'
   status: fail
   fix: planned
   category: feature
@@ -160,7 +153,7 @@
   reason: 'a committed hole reads zeros and a synced record the journal lost reads Lost after the restart. The row gets past the restart, but the lost extent serves the bytes it held before, superseded ones, and answers no error instead of ErrLost. Cause: after the restart the open cuts the corrupted record, the stream''s last synced record with nothing after it to prove it synced, as an unproven tail, and a loss counts only when a recorded mark proves it; the engine''s journal open passes nil marks (pkg/block/engine/enginewire.go), so no mark proves it. The row waits on the open being handed the recorded marks.'
   issue: '#4711'
 - test: TestRFC8B_SharedJournal
-  message: 'the filling write'': engine: the share limit has nothing left to free'
+  message: 'the filling write: engine: the share limit has nothing left to free'
   status: fail
   fix: planned
   category: feature
