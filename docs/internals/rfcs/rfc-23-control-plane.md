@@ -282,22 +282,29 @@ running the same binary ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20ty
 a single-node installation is one node over an embedded metadata store; a
 cluster is several over one replicated store.
 
-**The start command does four things, and nothing else.**
+**The start command does five things, and nothing else.**
 
 1. It reads the host's bootstrap — the facts needed before the metadata store
    can be reached, and only those ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) —
    from the host's file or environment.
-2. It builds the `Config` (§2.1) from it: the bootstrap, the key-value store the
-   metadata store opens on, the transport (none on one node), the clock, the
-   fault seam, the metrics registry and the logger.
-3. It calls `node.New(cfg)`, then `Start`. An error from either is printed,
+2. It calls `node.Preflight` (§2.1), the start check, before anything opens:
+   over the store directory and journal devices the bootstrap names (**(cluster)**: a
+   cluster node's store has no directory), it refuses, naming the reason, and
+   nothing was opened.
+3. It builds the `Config` (§2.1) from the bootstrap: the bootstrap, the key-value
+   store the metadata store opens on, the transport (none on one node), the
+   clock, the fault seam, the metrics registry and the logger.
+4. It calls `node.New(cfg)`, then `Start`. An error from either is printed,
    naming the step that failed, and the process exits non-zero.
-4. On a termination signal it calls `Stop` and exits: zero when every stop step
+5. On a termination signal it calls `Stop` and exits: zero when every stop step
    completed, non-zero naming the step that missed its bound (§2.2).
 
 ```go
 func run(ctx context.Context) error {
 	boot := config.LoadBootstrap()               // the host's file or environment
+	if err := node.Preflight(ctx, boot.Store, boot.V1Root(), boot.Devices(), systemClock{}); err != nil {
+		return err                               // nothing was opened: the start check refused
+	}
 	n, err := node.New(node.Config{Bootstrap: boot, KV: kv.Open(boot.Store),
 		Transport: transportFor(boot), Clock: systemClock{}, ...}) // the one production clock: time.Now, a monotonic origin, time.After
 	if err != nil {
@@ -463,6 +470,15 @@ func New(cfg Config) (*Node, error)
 func (n *Node) Start(ctx context.Context) error // §2.2's start, then reconcile until Stop
 func (n *Node) Stop(ctx context.Context) error  // §2.2's stop: the components in reverse build order
 
+// Preflight is the start check the host runs before it opens the metadata
+// store's KV. Over the store directory and the journal devices the bootstrap
+// names — **(cluster)**: a cluster node's store has no directory — and a
+// pre-journal (v1) layout on a device or at the configured pre-journal root,
+// it refuses naming what it found, and creates nothing. A first start meets
+// two of its refusals most often: a store never initialised, and a bootstrap
+// with no journal device.
+func Preflight(ctx context.Context, storeDir string, v1dir string, devices []string, clock Clock, opts ...journal.Option) error
+
 // Config is what the host supplies and the node cannot build.
 type Config struct {
 	Bootstrap config.Bootstrap // RFC 13 §2.2
@@ -495,12 +511,14 @@ The node exports no status call. Readiness and conditions come from
 hands the API, so the API never calls the node and the node, which holds the
 API, forms no cycle with it.
 
-> decision: the node exports `New`, `Start` and `Stop` only, and is not
-> restartable: a second `Start` is an error. Reconcile's calls are unexported,
-> so no caller, the API included, can change a component by a second path.
-> Overturned if something other than the server's start command and the test
-> harness must drive a node, and then by a second root, not by exporting the
-> calls.
+> decision: the node exports `New`, `Start`, `Stop` and `Preflight` only,
+> and is not restartable: a second `Start` is an error. Reconcile's calls are
+> unexported, so no caller, the API included, can change a component by a
+> second path. `Preflight` is exported because its probes read the
+> storage the node's own configuration names: a package of its own for one
+> function would add a boundary and gain nothing. Overturned if the check
+> ever needs a second caller, and then by moving it beside that caller, not by
+> exporting more of the node.
 
 ### 2.2 Start and stop
 
@@ -2129,7 +2147,7 @@ in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi
 | --- | --- | --- |
 | §2.1 | one composition root, `node.New` | the start command composes the node; a second, partial root in `pkg/controlplane/controlplane.go` builds store, runtime and API only and has no importer; the adapter and NFSv3 handler test fixtures build their own |
 | §2.1, RFC 20 §3.4 | adapters hold the filesystem service only; the node drives them | adapters are handed the whole runtime by `SetRuntime(rt any)`, and 22 adapter files (16 internal, 6 public) import the runtime; the runtime knows protocols by name (`GetNFSSettings`, `GetSMBSettings`, `SetNFSExportPolicy`, an NFS mount tracker, an SMB oplock-breaker hook) |
-| §2.1 | the node exports `New`, `Start` and `Stop` | `*Runtime` exports 156 methods, in 23 of the package's 35 files, and hosts GC, the snapshot scheduler, trash and integrity scans, which are their components' own |
+| §2.1 | the node exports `New`, `Start`, `Stop` and `Preflight` | `*Runtime` exports 156 methods, in 23 of the package's 35 files, and hosts GC, the snapshot scheduler, trash and integrity scans, which are their components' own |
 | §2.1, §2.3 | the API writes records, the node applies them | handlers write the database and then call the runtime directly — `AddShare`, `UpdateShare`, `RebindShareBlockStore`, adapter start and stop; a runtime failure after the write is logged as a warning and the request still succeeds (a share whose `AddShare` fails returns `201` and loads at the next restart); share create builds the runtime's share configuration field by field in the handler |
 | §2.2 | start: store, content, the filesystem, API, adapters; stop the reverse with the API after adapters | start opens the control-plane database, seeds the admin, default groups and default adapters, opens metadata stores, loads shares, then serves; inside `Serve` the settings watcher and adapters start before the API; shutdown stops adapters, closes stores and then the API |
 | §2.3, §8 | every node reconciles by generation, once a second | changes are applied in-process by direct calls and change callbacks; only adapter settings are polled, every 10 s; there are no node records, so a second node sharing the database sees shares, adapters and users only after a restart |
