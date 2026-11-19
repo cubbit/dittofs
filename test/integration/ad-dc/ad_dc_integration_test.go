@@ -284,6 +284,7 @@ func setupADDC(t *testing.T) (dcIP string) {
 		"--network", network,
 		"--hostname", adDCHostname,
 		"-e", fmt.Sprintf("RPC_PORT_RANGE=%d-%d", adRPCPortLow, adRPCPortHigh),
+		"-e", "LDB_NOSYNC=true", // the container dies with the test, so nothing need survive a crash
 		adImage,
 	); err != nil {
 		t.Fatalf("docker run failed: %v\n%s", err, out)

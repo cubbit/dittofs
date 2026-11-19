@@ -5,6 +5,7 @@ import (
 	"context"
 	"iter"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -174,8 +175,13 @@ func setState(from, to entity.ShareState) func(context.Context, request[none], s
 // names none.
 func deleteShare(_ context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
 	var d entity.SnapshotDisposition
-	if v, ok := rq.Query["snapshots"]; ok && (len(v) != 1 || d.UnmarshalText([]byte(v[0])) != nil) {
-		return none{}, rq.ID, &fieldError{field: "snapshots", detail: "one of refuse, delete or detach"}
+	if v, ok := rq.Query["snapshots"]; ok {
+		if len(v) == 1 {
+			d, ok = valueNamed(dispositions, v[0])
+		}
+		if len(v) != 1 || !ok {
+			return none{}, rq.ID, &fieldError{field: "snapshots", detail: "one of " + strings.Join(names(dispositions), ", ")}
+		}
 	}
 	return none{}, rq.ID, tx.DeleteShare(entity.ShareID(rq.ID), d, rq.Expect)
 }
@@ -271,6 +277,18 @@ var shares = listing[shareRow, apiv1.Share]{
 	},
 }
 
+// shareFilters describe GET /shares's filters.
+var shareFilters = []param{
+	{name: "name", desc: "The share of this name: a list of zero or one."},
+	{name: "namespace", format: "uuid", desc: "The shares counted in this namespace, in ID order."},
+}
+
+// dispositions is what DELETE /shares/{id}'s ?snapshots= takes.
+var dispositions = []entity.SnapshotDisposition{entity.SnapshotsRefuse, entity.SnapshotsDelete, entity.SnapshotsDetach}
+
+// snapshotsParam describes DELETE /shares/{id}'s ?snapshots=.
+var snapshotsParam = param{name: "snapshots", enum: names(dispositions), desc: "What the delete does with the share's snapshots; refuse when left out."}
+
 // shareRead is a share as its GET answers it, its state, and whether it is
 // serving: at least one node is registered, and every one serves it, or
 // one refuses it.
@@ -321,8 +339,10 @@ func readShare(ctx context.Context, d Deps, rq request[none]) (shareRead, error)
 // again, so the wait is refused 409 stale. Overturned if a client needs to
 // wait through a quiesce for the resume.
 var share = watching[shareRead]{
-	read: readShare,
-	tag:  func(s shareRead) uint64 { return s.Generation },
+	read:    readShare,
+	tag:     func(s shareRead) uint64 { return s.Generation },
+	words:   []param{{name: "serving", desc: "until the share serves on every registered node, or one refuses it, for at most " + maxWait.String() + "; a quiesced share answers at once, and one being removed is refused 409 stale"}},
+	refuses: []error{entity.ErrStale},
 	until: func(w string) (time.Duration, func(first, now shareRead) (bool, error), error) {
 		if w == "serving" {
 			return maxWait, func(_, now shareRead) (bool, error) {

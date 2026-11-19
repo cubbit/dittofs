@@ -15,10 +15,12 @@ import (
 
 const base = "DC=corp,DC=example"
 
-// The in-memory directory answers as the suite holds a real one to.
+// The in-memory directory answers as the suite holds a real one to. Every
+// connection is to one directory, as every connection to a domain controller
+// is.
 func TestDirectoryConformance(t *testing.T) {
+	d := identitytest.NewDirectory(base)
 	identitytest.DirectoryConformance(t, func(t *testing.T) (directory.Conn, identitytest.Seeder) {
-		d := identitytest.NewDirectory(base)
 		c, err := d.Dial(context.Background(), directory.Record{})
 		if err != nil {
 			t.Fatal(err)
@@ -27,8 +29,8 @@ func TestDirectoryConformance(t *testing.T) {
 	})
 }
 
-// The filters, paging and attributes the in-memory directory cannot answer
-// are refused, not answered wrongly.
+// The filters and attributes the in-memory directory cannot answer are
+// refused, not answered wrongly.
 func TestDirectoryRefusesWhatItCannotRead(t *testing.T) {
 	ctx := context.Background()
 	d := identitytest.NewDirectory(base)
@@ -39,18 +41,18 @@ func TestDirectoryRefusesWhatItCannotRead(t *testing.T) {
 	}
 	for _, filter := range []string{
 		"(cn~=x)", "(uidNumber>=1)", "(uidNumber<=1)",
-		"(member:1.2.840.113556.1.4.1941:=CN=x)",
+		"(member:1.2.840.113556.1.4.1803:=2)", "(member:dn:=CN=x)", "(member:1.2.840.113556.1.4.1941:=CN=x)",
 		"(cn=x", "cn=x", "(cn=a**b)", "(cn=x)(cn=y)", `(cn=\4)`,
 	} {
 		if _, err := c.Search(ctx, directory.Request{Base: base, Scope: directory.ScopeSubtree, Filter: filter}); err == nil {
 			t.Errorf("filter %q answered, want it refused", filter)
 		}
 	}
-	if _, err := c.Search(ctx, directory.Request{Base: base, Scope: directory.ScopeSubtree,
-		Filter: "(cn=*)", PageSize: 10}); err == nil {
-		t.Error("a paged search answered, want it refused")
+	if res, err := c.Search(ctx, directory.Request{Base: base, Scope: directory.ScopeSubtree,
+		Filter: "(cn=*)", Attrs: []string{"tokenGroups"}}); err == nil {
+		t.Errorf("a subtree search asking for tokenGroups answered %d entries, want it refused", len(res.Entries))
 	}
-	for _, attr := range []string{"tokenGroups", "TOKENGROUPS", "tokenGroupsGlobalAndUniversal", "tokenGroupsNoGCAcceptable", "*", "+", "1.1"} {
+	for _, attr := range []string{"tokenGroupsGlobalAndUniversal", "tokenGroupsNoGCAcceptable", "*", "+", "1.1"} {
 		if res, err := c.Search(ctx, directory.Request{Base: name, Scope: directory.ScopeBase,
 			Filter: "(objectClass=*)", Attrs: []string{"cn", attr}}); err == nil {
 			t.Errorf("a search asking for %q answered %v, want it refused", attr, res.Entries)

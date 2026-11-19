@@ -457,14 +457,18 @@ func TestImportRules(t *testing.T) {
 // component's implementation, the entity and wire packages holding data
 // types only, the metadata store's and filesystem's packages of error values,
 // which the API answers by name, KV, of which errorsOnly admits only the
-// error values, and the TLS library the API's listeners load their
-// certificate with; nodetest, which imports Badger, is not allowed. Everything
+// error values, the TLS library the API's listeners load their
+// certificate with, the settings table's package, which imports only the
+// entity package and whose table the node hands in, and the secret
+// provider's refusals, apart from the provider, which the node hands in
+// behind an interface the API declares; nodetest, which imports Badger, is not allowed. Everything
 // else it reaches through an interface it declares or a value the node hands
 // it.
 func componentAllowed(rel string) bool {
 	switch rel {
 	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1",
-		"pkg/metadata/errors", "pkg/metadata/kv", "pkg/vfs/vfserr", "internal/tlsconfig":
+		"pkg/metadata/errors", "pkg/metadata/kv", "pkg/vfs/vfserr", "internal/tlsconfig",
+		"pkg/settings", "pkg/secrets/secreterr":
 		return true
 	}
 	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
@@ -1073,13 +1077,14 @@ func apiExports(dir, path string) ([]string, error) {
 	return slices.Sorted(maps.Keys(seen)), nil
 }
 
-// The api package exports New, Deps and Server, and Server's Start and Stop,
-// and its auth package Caller, CallerFrom, the With its authentication step
-// calls, the local socket's mark, WithLocal and Local, the role table's
-// Right, its rights and Allowed, and the ResetAccount the break-glass reset
-// calls, and nothing else; a planted extra method is caught.
+// The api package exports New, Deps and Server, Server's Start and Stop, and
+// OpenAPI, the document cmd/genopenapi writes; and its auth package Caller,
+// CallerFrom, the With its authentication step calls, the local socket's
+// mark, WithLocal and Local, the role table's Right, its rights and Allowed,
+// and the ResetAccount the break-glass reset calls, and nothing else; a
+// planted extra method is caught.
 func TestAPIExports(t *testing.T) {
-	want := []string{"Deps", "New", "Server", "Server.Start", "Server.Stop"}
+	want := []string{"Deps", "New", "OpenAPI", "Server", "Server.Start", "Server.Stop"}
 	for _, tc := range []struct {
 		dir, path string
 		want      []string
@@ -1183,5 +1188,43 @@ func TestNodeComposesOnce(t *testing.T) {
 		if deps != tc.deps {
 			t.Errorf("%s: engine.Deps literals %d, want %d", tc.dir, deps, tc.deps)
 		}
+	}
+}
+
+// apiClosureBanned are the module's packages the management API's import
+// closure must not reach: the metadata store's implementation, which it
+// reaches only through the interfaces it declares, and the key providers,
+// which only the node builds and hands to the secret provider.
+var apiClosureBanned = []string{"pkg/metadata/kvstore", "pkg/keyprovider"}
+
+// The management API's packages, followed through every import of the
+// module's own, its non-test files', reach no package apiClosureBanned
+// names: a direct import the import rule refuses, and this catches one an
+// allowed package brings in, as the secret provider would.
+func TestAPIClosure(t *testing.T) {
+	seen := map[string]string{} // each package reached, and the one that imported it
+	var walk func(imp, from string)
+	walk = func(imp, from string) {
+		if _, ok := seen[imp]; ok || !strings.HasPrefix(imp, module) {
+			return
+		}
+		seen[imp] = from
+		p, err := gobuild.Import(imp, ".", 0)
+		if err != nil {
+			t.Fatalf("import %s: %v", imp, err)
+		}
+		for _, i := range p.Imports {
+			walk(i, imp)
+		}
+	}
+	walk(module+"internal/node/api", "")
+	walk(module+"internal/node/api/auth", "")
+	for _, b := range apiClosureBanned {
+		if from, ok := seen[module+b]; ok {
+			t.Errorf("the API's closure reaches %s, imported by %s", b, from)
+		}
+	}
+	if len(seen) < 5 {
+		t.Fatalf("walked %d packages, want the API's whole closure", len(seen))
 	}
 }

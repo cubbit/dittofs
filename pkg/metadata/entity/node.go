@@ -71,7 +71,36 @@ type NodeStatus struct {
 	RestartPending []ResourceRef // records whose restart-class field changed since it started
 	Secrets        []SecretVersion
 	Conditions     []byte // its health conditions
+	Adapters       []AdapterStatus
 }
+
+// AdapterStatus is one of a node's adapters as the node reports it: its
+// protocol, its state, and the settings generation it runs.
+type AdapterStatus struct {
+	Protocol   string
+	State      AdapterState
+	Generation uint64
+}
+
+// AdapterState is one of an adapter's states. Its value is stored, so a new
+// state is appended and none is renumbered; the zero state names none.
+type AdapterState uint8
+
+const (
+	AdapterConfigured AdapterState = iota + 1
+	AdapterServing
+	AdapterDraining
+	AdapterStopped
+)
+
+var adapterStates = []string{
+	AdapterConfigured: "configured", AdapterServing: "serving",
+	AdapterDraining: "draining", AdapterStopped: "stopped",
+}
+
+func (s AdapterState) String() string                { return enumString(adapterStates, s) }
+func (s AdapterState) MarshalText() ([]byte, error)  { return enumMarshal(adapterStates, s) }
+func (s *AdapterState) UnmarshalText(b []byte) error { return enumUnmarshal(adapterStates, s, b) }
 
 // RefusedRecord is a record a node did not apply: the generation it
 // refused and why.

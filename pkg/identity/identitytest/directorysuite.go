@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // Seeder puts the entries a row of DirectoryConformance needs into the
@@ -25,6 +26,11 @@ type Seeder interface {
 	// password, so that a directory that refuses an enabled account without
 	// one accepts it.
 	AddUser(t testing.TB, name string, attrs map[string][][]byte) string
+	// AddGroup adds a global security group named name, at most 20
+	// characters of letters and digits, its account name and cn, with attrs
+	// set on it, member among them, and returns its DN; a groupType in attrs
+	// makes it another kind of group.
+	AddGroup(t testing.TB, name string, attrs map[string][][]byte) string
 	// Account is a name and password the directory accepts in a simple bind,
 	// whose bind may read every entry AddUser adds.
 	Account() (name string, password []byte)
@@ -38,10 +44,14 @@ var _ Seeder = (*Directory)(nil)
 // controller in integration tests, so the in-memory one stands in only where
 // both answer alike.
 func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn, Seeder)) {
-	// A directory that stops answering fails the suite at a minute; a domain
-	// controller passes it in under a second.
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
+	// call bounds one call to the directory: a directory that stops answering
+	// fails it at a minute, and the seeding before it, however long, takes
+	// none of that minute.
+	call := func(t *testing.T) context.Context {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		t.Cleanup(cancel)
+		return ctx
+	}
 
 	// bound opens a connection and binds it as the seeder's account.
 	bound := func(t *testing.T) (directory.Conn, Seeder) {
@@ -49,14 +59,14 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		c, s := open(t)
 		t.Cleanup(func() { _ = c.Close() })
 		name, pw := s.Account()
-		if err := c.Bind(ctx, name, pw); err != nil {
+		if err := c.Bind(call(t), name, pw); err != nil {
 			t.Fatalf("bind as the seeder's account %q: %v", name, err)
 		}
 		return c, s
 	}
 	search := func(t *testing.T, c directory.Conn, req directory.Request) directory.Result {
 		t.Helper()
-		res, err := c.Search(ctx, req)
+		res, err := c.Search(call(t), req)
 		if err != nil {
 			t.Fatalf("search %+v: %v", req, err)
 		}
@@ -100,10 +110,10 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		c, s := open(t)
 		defer func() { _ = c.Close() }()
 		name, pw := s.Account()
-		if err := c.Bind(ctx, name, append(slices.Clone(pw), 'x')); err == nil {
+		if err := c.Bind(call(t), name, append(slices.Clone(pw), 'x')); err == nil {
 			t.Errorf("bind as %q with a wrong password: accepted, want refused", name)
 		}
-		if err := c.Bind(ctx, name, pw); err != nil {
+		if err := c.Bind(call(t), name, pw); err != nil {
 			t.Errorf("bind as %q with its password: %v", name, err)
 		}
 	})
@@ -116,11 +126,11 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		defer func() { _ = c.Close() }()
 		name, _ := s.Account()
 		for _, pw := range [][]byte{nil, {}} {
-			if err := c.Bind(ctx, name, pw); err == nil {
+			if err := c.Bind(call(t), name, pw); err == nil {
 				t.Errorf("bind as %q with password %#v: accepted, want refused", name, pw)
 			}
 		}
-		res, err := c.Search(ctx, directory.Request{Base: naming(t, c), Scope: directory.ScopeSubtree, Filter: "(objectClass=user)"})
+		res, err := c.Search(call(t), directory.Request{Base: naming(t, c), Scope: directory.ScopeSubtree, Filter: "(objectClass=user)"})
 		if err == nil && len(res.Entries) > 0 {
 			t.Errorf("a subtree search after binds with an empty password returned %d entries, want it refused", len(res.Entries))
 		}
@@ -131,7 +141,7 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		defer func() { _ = c.Close() }()
 		nc := naming(t, c) // read before any bind, as a client finds the directory
 		name, pw := s.Account()
-		if err := c.Bind(ctx, name, pw); err != nil {
+		if err := c.Bind(call(t), name, pw); err != nil {
 			t.Fatal(err)
 		}
 		res := search(t, c, directory.Request{Base: nc, Scope: directory.ScopeBase, Filter: "(objectClass=*)",
@@ -149,7 +159,7 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 	t.Run("a search on a closed connection fails ErrClosed", func(t *testing.T) {
 		c, _ := bound(t)
 		_ = c.Close()
-		if _, err := c.Search(ctx, directory.Request{Scope: directory.ScopeBase, Filter: "(objectClass=*)"}); !errors.Is(err, directory.ErrClosed) {
+		if _, err := c.Search(call(t), directory.Request{Scope: directory.ScopeBase, Filter: "(objectClass=*)"}); !errors.Is(err, directory.ErrClosed) {
 			t.Errorf("a search on a closed connection = %v, want ErrClosed", err)
 		}
 	})
@@ -158,7 +168,7 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		c, _ := open(t)
 		defer func() { _ = c.Close() }()
 		nc := naming(t, c)
-		res, err := c.Search(ctx, directory.Request{Base: nc, Scope: directory.ScopeSubtree, Filter: "(objectClass=user)"})
+		res, err := c.Search(call(t), directory.Request{Base: nc, Scope: directory.ScopeSubtree, Filter: "(objectClass=user)"})
 		if err == nil && len(res.Entries) > 0 {
 			t.Errorf("an unbound subtree search returned %d entries, want it refused", len(res.Entries))
 		}
@@ -179,7 +189,7 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		if got := dns(t, c, "(description="+escape([]byte(upper))+")"); !slices.Equal(got, lower(want)) {
 			t.Errorf("escaped %q, the value's case changed, matched %v, want only %s", upper, got, want)
 		}
-		if _, err := c.Search(ctx, directory.Request{Base: naming(t, c), Scope: directory.ScopeSubtree,
+		if _, err := c.Search(call(t), directory.Request{Base: naming(t, c), Scope: directory.ScopeSubtree,
 			Filter: `(description=\zz)`}); err == nil {
 			t.Error(`a filter holding the escape \zz was answered, want it refused`)
 		}
@@ -222,7 +232,7 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 	t.Run("a search based outside the naming context is refused", func(t *testing.T) {
 		c, _ := bound(t)
 		const base = "DC=elsewhere,DC=example"
-		res, err := c.Search(ctx, directory.Request{Base: base, Scope: directory.ScopeSubtree, Filter: "(objectClass=*)"})
+		res, err := c.Search(call(t), directory.Request{Base: base, Scope: directory.ScopeSubtree, Filter: "(objectClass=*)"})
 		if err == nil {
 			t.Errorf("search based at %s: answered %d entries and referrals %q, want it refused", base, len(res.Entries), res.Referrals)
 		}
@@ -319,6 +329,259 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 				t.Errorf("(%s=%x) matched %v, want only %s", attr, v, got, dn)
 			}
 		}
+	})
+
+	// sidOf reads the objectSid of the entry at dn.
+	sidOf := func(t *testing.T, c directory.Conn, dn string) []byte {
+		t.Helper()
+		res := search(t, c, directory.Request{Base: dn, Scope: directory.ScopeBase, Filter: "(objectClass=*)",
+			Attrs: []string{"objectSid"}})
+		if len(res.Entries) != 1 || len(one(res.Entries[0], "objectSid")) == 0 {
+			t.Fatalf("%s: %d entries, want 1 holding an objectSid", dn, len(res.Entries))
+		}
+		return one(res.Entries[0], "objectSid")
+	}
+	// nested adds a user three levels deep, in g1, g1 in g2, g2 in g3, and a
+	// group the user is not in; it returns the user's DN and the four groups'.
+	nested := func(t *testing.T, s Seeder) (user string, g [3]string, decoy string) {
+		t.Helper()
+		tok := token()
+		user = s.AddUser(t, "nu"+tok, nil)
+		g[0] = s.AddGroup(t, "ng1"+tok, map[string][][]byte{"member": {[]byte(user)}})
+		g[1] = s.AddGroup(t, "ng2"+tok, map[string][][]byte{"member": {[]byte(g[0])}})
+		g[2] = s.AddGroup(t, "ng3"+tok, map[string][][]byte{"member": {[]byte(g[1])}})
+		decoy = s.AddGroup(t, "ngx"+tok, nil)
+		return user, g, decoy
+	}
+
+	// tokenGroupsOf reads the user's tokenGroups.
+	tokenGroupsOf := func(t *testing.T, c directory.Conn, user string) []string {
+		t.Helper()
+		res := search(t, c, directory.Request{Base: user, Scope: directory.ScopeBase, Filter: "(objectClass=*)",
+			Attrs: []string{"tokenGroups"}})
+		if len(res.Entries) != 1 {
+			t.Fatalf("%s: %d entries, want 1", user, len(res.Entries))
+		}
+		var got []string
+		for k, vs := range res.Entries[0].Attrs {
+			if strings.EqualFold(k, "tokenGroups") {
+				for _, v := range vs {
+					got = append(got, string(v))
+				}
+			}
+		}
+		return got
+	}
+
+	// tokenGroups is read with base scope; it holds the primary group, which
+	// member never names, as well as every level.
+	t.Run("tokenGroups holds every level of nesting and the primary group", func(t *testing.T) {
+		c, s := bound(t)
+		user, g, decoy := nested(t, s)
+		got := tokenGroupsOf(t, c, user)
+		domain := sidOf(t, c, naming(t, c))
+		primary := append(slices.Clone(domain), 0x01, 0x02, 0, 0) // RID 513, Domain Users
+		primary[1]++
+		for _, want := range []struct {
+			what string
+			sid  []byte
+		}{{"level 1", sidOf(t, c, g[0])}, {"level 2", sidOf(t, c, g[1])}, {"level 3", sidOf(t, c, g[2])}, {"the primary group", primary}} {
+			if !slices.Contains(got, string(want.sid)) {
+				t.Errorf("%s: tokenGroups %x lacks %s, %x", user, got, want.what, want.sid)
+			}
+		}
+		if d := sidOf(t, c, decoy); slices.Contains(got, string(d)) {
+			t.Errorf("%s: tokenGroups holds %x, a group it is not in", user, d)
+		}
+	})
+
+	// A distribution group (groupType 2, global, no security bit) is never
+	// in a security token, nor is a security group reached only through one:
+	// pu is in pdirect and in the distribution group pdg, pdg is in psg, and
+	// tokenGroups holds pdirect but neither pdg nor psg. The client's closure
+	// holds tokenGroups' SIDs both when it reads tokenGroups and, with
+	// tokenGroups unread, when it walks security groups level by level from
+	// the user and its primary group (RFC 18 §2.5).
+	t.Run("the closure is tokenGroups', read or walked through security groups", func(t *testing.T) {
+		c, s := bound(t)
+		tok := token()
+		user := s.AddUser(t, "pu"+tok, nil)
+		direct := s.AddGroup(t, "pdirect"+tok, map[string][][]byte{"member": {[]byte(user)}})
+		dist := s.AddGroup(t, "pdg"+tok, map[string][][]byte{"member": {[]byte(user)}, "groupType": {[]byte("2")}})
+		sec := s.AddGroup(t, "psg"+tok, map[string][][]byte{"member": {[]byte(dist)}})
+		want := tokenGroupsOf(t, c, user)
+		slices.Sort(want)
+		if d := sidOf(t, c, direct); !slices.Contains(want, string(d)) {
+			t.Errorf("%s: tokenGroups %x lacks its security group pdirect, %x", user, want, d)
+		}
+		for _, g := range []struct{ what, dn string }{{"its distribution group pdg", dist}, {"psg, reached only through pdg", sec}} {
+			if sid := sidOf(t, c, g.dn); slices.Contains(want, string(sid)) {
+				t.Errorf("%s: tokenGroups holds %s, %x", user, g.what, sid)
+			}
+		}
+
+		name, pw := s.Account()
+		nc := naming(t, c)
+		clock := sim.NewTestClock(time.Unix(0, 0))
+		for _, unread := range []bool{false, true} {
+			var rules []sim.Rule
+			if unread {
+				rules = append(rules, sim.Rule{Op: "search", Key: "(objectClass=user)", Action: sim.FaultAction{TearAfter: 1}})
+			}
+			sched, err := sim.NewSchedule(1, clock, rules...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := NewFaultyDirectory(func(context.Context, directory.Record) (directory.Conn, error) {
+				conn, _ := open(t)
+				return conn, nil
+			}, sched)
+			f.TearAttr("tokenGroups", "tokenGroupsUnread")
+			cl := directory.NewClient(directory.Record{Address: "ldap://suite", Base: nc, BindName: name}, f.Dial,
+				func(context.Context) ([]byte, error) { return pw, nil }, clock, nil)
+			got, err := cl.Groups(call(t), directory.Answer{DN: user})
+			cl.Close()
+			var sids []string
+			for _, g := range got {
+				sids = append(sids, string(g.SID))
+			}
+			slices.Sort(sids)
+			if err != nil || !slices.Equal(sids, want) {
+				t.Errorf("Groups(%s), tokenGroups unread %v = SIDs %x, %v; want tokenGroups' %x", user, unread, sids, err, want)
+			}
+		}
+	})
+
+	// One set of 3 000 users serves both rows: the first 2 500 are paged
+	// through, and a group holds all of them as members.
+	t.Run("3000 entries", func(t *testing.T) {
+		c, s := bound(t)
+		tok := token()
+		var paged, members []string
+		for i := range 3000 {
+			mark := tok + "rest"
+			if i < 2500 {
+				mark = tok + "page"
+			}
+			dn := s.AddUser(t, fmt.Sprintf("p%s%04d", tok, i), map[string][][]byte{"description": {[]byte(mark)}})
+			if i < 2500 {
+				paged = append(paged, dn)
+			}
+			members = append(members, dn)
+		}
+		var vals [][]byte
+		for _, m := range members {
+			vals = append(vals, []byte(m))
+		}
+		big := s.AddGroup(t, "big"+tok, map[string][][]byte{"member": vals})
+		nc := naming(t, c)
+
+		t.Run("a paged search returns every entry once", func(t *testing.T) {
+			req := directory.Request{Base: nc, Scope: directory.ScopeSubtree, Filter: "(description=" + tok + "page)",
+				Attrs: []string{"cn"}, PageSize: 1000}
+			var got []string
+			pages := 0
+			for {
+				res := search(t, c, req)
+				pages++
+				if len(res.Entries) > 1000 {
+					t.Errorf("page %d: %d entries, want at most 1000", pages, len(res.Entries))
+				}
+				for _, e := range res.Entries {
+					got = append(got, strings.ToLower(e.DN))
+				}
+				if len(res.Cookie) == 0 || pages == 10 {
+					break
+				}
+				req.Cookie = res.Cookie
+			}
+			slices.Sort(got)
+			if want := lower(slices.Clone(paged)...); !slices.Equal(got, want) || pages < 3 {
+				t.Errorf("paged search: %d entries in %d pages, want each of the %d once in at least 3 pages",
+					len(got), pages, len(want))
+			}
+		})
+
+		// A directory holds a paged search's state per connection.
+		t.Run("a paged search's cookie is refused on another connection", func(t *testing.T) {
+			req := directory.Request{Base: nc, Scope: directory.ScopeSubtree, Filter: "(description=" + tok + "page)",
+				Attrs: []string{"cn"}, PageSize: 1000}
+			res := search(t, c, req)
+			if len(res.Cookie) == 0 {
+				t.Fatal("the first page of 2 500 entries handed out no cookie")
+			}
+			other, _ := bound(t)
+			req.Cookie = res.Cookie
+			if res, err := other.Search(call(t), req); err == nil {
+				t.Errorf("the second page asked on another connection answered %d entries, want it refused", len(res.Entries))
+			}
+		})
+
+		// rng reads one range of big's member values: the attribute's name
+		// as returned and its values.
+		rng := func(t *testing.T, asked string) (string, []string) {
+			t.Helper()
+			res := search(t, c, directory.Request{Base: big, Scope: directory.ScopeBase, Filter: "(objectClass=group)",
+				Attrs: []string{asked}})
+			if len(res.Entries) != 1 || len(res.Entries[0].Attrs) != 1 {
+				t.Fatalf("%s of %s: %d entries, want 1 holding one attribute", asked, big, len(res.Entries))
+			}
+			for k, vs := range res.Entries[0].Attrs {
+				var got []string
+				for _, v := range vs {
+					got = append(got, strings.ToLower(string(v)))
+				}
+				return k, got
+			}
+			return "", nil
+		}
+
+		t.Run("member is read in ranges", func(t *testing.T) {
+			var all []string
+			for _, tc := range []struct{ asked, named string }{
+				{"member;range=0-999", "member;range=0-999"},
+				{"member;range=1000-1999", "member;range=1000-1999"},
+				{"member;range=2000-2999", "member;range=2000-*"},
+			} {
+				name, got := rng(t, tc.asked)
+				if !strings.EqualFold(name, tc.named) || len(got) != 1000 {
+					t.Errorf("%s: %d values under %q, want 1000 under %q", tc.asked, len(got), name, tc.named)
+				}
+				all = append(all, got...)
+			}
+			slices.Sort(all)
+			if want := lower(slices.Clone(members)...); !slices.Equal(all, want) {
+				t.Errorf("the three ranges hold %d values, want each of the %d members once", len(all), len(want))
+			}
+		})
+
+		// Asked to its end, a directory may answer in one part or several,
+		// each starting where it was asked, the last ending in *.
+		t.Run("member read to its end", func(t *testing.T) {
+			var all []string
+			for lo, parts := 0, 0; ; parts++ {
+				if parts == 10 {
+					t.Fatalf("member;range=%d-*: no last part after 10", lo)
+				}
+				name, got := rng(t, fmt.Sprintf("member;range=%d-*", lo))
+				r, ok := directory.ParseRange(name)
+				if !ok || r.Lo != lo || !strings.EqualFold(r.Attr, "member") {
+					t.Fatalf("member;range=%d-*: answered under %q, want a range of member from %d", lo, name, lo)
+				}
+				all = append(all, got...)
+				if r.Hi < 0 {
+					break
+				}
+				if len(got) != r.Hi-r.Lo+1 {
+					t.Fatalf("%s: %d values", name, len(got))
+				}
+				lo = r.Hi + 1
+			}
+			slices.Sort(all)
+			if want := lower(slices.Clone(members)...); !slices.Equal(all, want) {
+				t.Errorf("member read to its end: %d values, want each of the %d members once", len(all), len(want))
+			}
+		})
 	})
 }
 

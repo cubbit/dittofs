@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io/fs"
 	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -83,15 +85,24 @@ func verifyWrite(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID, im
 // the greatest segment, then the greatest offset, the order appends follow,
 // so a re-appended record answers with its copy, never the ended segment's
 // original. It is the record a Sync naming the file marks.
+//
+// A live journal moves its own segments while the scan runs: the holds park
+// the two ways a listed segment file vanishes mid-read — a recycle renames
+// its name away, a retirement unlinks it — so the listing and the reads see
+// one directory; both releases are deferred. A name that still answers no
+// image is skipped, as segmentImage says.
 func locateWrite(t *testing.T, f *journaltest.Fixture, id journal.FileID, p []byte, live bool) foundRecord {
 	t.Helper()
+
+	defer f.Seam.Hold(t, kit.OpRename, "*.seg").Release()
+	defer f.Seam.Hold(t, kit.OpRemove, "*.seg").Release()
 
 	var best foundRecord
 	found := false
 	for _, name := range segmentFiles(t, f) {
-		img := liveBytes(t, f, name)
-		if !live {
-			img = durable(t, f, name)
+		img, ok := segmentImage(t, f, name, live)
+		if !ok {
+			continue
 		}
 		seg := idOf(t, name)
 		for at := 0; ; {
@@ -113,6 +124,41 @@ func locateWrite(t *testing.T, f *journaltest.Fixture, id journal.FileID, p []by
 	return best
 }
 
+// segmentImage returns the image of the segment file name, live when live is
+// set and durable otherwise, or false when the name holds none to read now:
+// either a segment the journal moved between the listing and the read — a
+// removal the scan's holds let through only by having already passed the
+// seam's hold point when they were made, and one the journal settles, its
+// records re-appended or synced elsewhere, before moving — or, answered by
+// Durable alone, a listed name the crash view of the last SyncDir holds no
+// file for, a segment listed before its publishing SyncDir ran. A name of
+// either kind holds no copy of the record the scan is for — the one a Sync
+// proves durable sits in a published segment — so the skip leaves the
+// answer unchanged.
+func segmentImage(t *testing.T, f *journaltest.Fixture, name string, live bool) ([]byte, bool) {
+	t.Helper()
+
+	if live {
+		b, err := liveImage(f, name)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false
+		}
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return b, true
+	}
+
+	b, err := f.Seam.Durable(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return b, true
+}
+
 // streamOf returns the append stream the header of segment seg names, from
 // its live image when live is set and its durable one otherwise. A SyncMark
 // names its stream rather than relying on its position, so the header is
@@ -122,8 +168,10 @@ func streamOf(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID, live 
 	t.Helper()
 
 	name := segmentName(seg)
-	b := liveBytes(t, f, name)
-	if !live {
+	var b []byte
+	if live {
+		b = liveBytes(t, f, name)
+	} else {
 		b = durable(t, f, name)
 	}
 	if len(b) < raw.SegmentHeaderSize {

@@ -424,7 +424,7 @@ func TestTheCredentials(t *testing.T) {
 		{"17 groups", nullCall(progNFS, 3, 0, wire.AuthSys, authSys("h", 0, 0, make([]uint32, 17)...), wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
 		{"a 256-byte name", nullCall(progNFS, 3, 0, wire.AuthSys, authSys(string(make([]byte, 256)), 0, 0), wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
 		{"an AUTH_NONE credential with a body", nullCall(progNFS, 3, 0, wire.AuthNone, []byte{1, 2, 3, 4}, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
-		{"an AUTH_SYS verifier", nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthSys, authSys("h", 0, 0), nil), errAuthVerf, "deny-auth-badverf"},
+		{"an empty AUTH_SYS verifier", nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthSys, nil, nil), errAuthVerf, "deny-auth-badverf"},
 		{"an AUTH_NONE verifier with a body", nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, []byte{1, 2, 3, 4}, nil), errAuthVerf, "deny-auth-badverf"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

@@ -49,6 +49,14 @@ var audit = listing[auditRow, apiv1.AuditRecord]{
 	item: func(a auditRow, _ perPage) apiv1.AuditRecord { return auditRecordOf(a.AuditRecord) },
 }
 
+// auditFilters describe GET /audit's filters.
+var auditFilters = []param{
+	{name: "from", format: "date-time", desc: "Records stored at or after this time."},
+	{name: "to", format: "date-time", desc: "Records stored before this time."},
+	{name: "actor", example: apiv1.ScheduleKind, desc: "Records of one account, as kind:id, or of the schedule, as schedule."},
+	{name: "target", example: "share:0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b", desc: "Records of one resource, as kind:id."},
+}
+
 // auditFilter is the filter q's parameters name, refusing one that does not
 // parse, naming it.
 func auditFilter(q map[string]string) (f entity.AuditFilter, err error) {

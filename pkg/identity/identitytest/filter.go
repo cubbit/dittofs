@@ -4,22 +4,27 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+
+	"github.com/cubbit/dittofs/internal/identity/directory"
 )
 
 // filter is a parsed RFC 4515 search filter.
 type filter struct {
-	op    byte     // '&', '|', '!', '=' (equality), '*' (presence) or 's' (substrings)
+	op    byte     // '&', '|', '!', '=' (equality), '*' (presence), 's' (substrings) or 'b' (bit and)
 	subs  []filter // the operands of '&', '|' and '!'
 	attr  string
 	value []byte   // equality's value
 	parts [][]byte // substrings' pieces: initial, any..., final; an empty first or last is absent
+	mask  uint64   // the bits bit and's integer must hold
 }
 
 // parseFilter parses s, which must be one whole filter. It reads equality,
-// presence, substrings, and, or and not, with \xx escapes, and refuses
-// anything else, approximate, ordering and extensible matches among it, as an
-// error rather than an answer the in-memory directory cannot give.
+// presence, substrings, and, or and not, with \xx escapes, and the
+// extensible match LDAP_MATCHING_RULE_BIT_AND, attr:<directory.BitAnd>:=n; it refuses
+// anything else, approximate, ordering and other extensible matches among
+// it, as an error rather than an answer the in-memory directory cannot give.
 func parseFilter(s string) (filter, error) {
 	f, rest, err := parseOne(s)
 	if err != nil {
@@ -84,6 +89,13 @@ func parseItem(s string) (filter, error) {
 		return filter{}, fmt.Errorf("item %q has no attribute and =", s)
 	}
 	attr, raw := s[:eq], s[eq+1:]
+	if a, ok := strings.CutSuffix(attr, ":"+directory.BitAnd+":"); ok && a != "" && !strings.ContainsAny(a, "~<>:(\\*") {
+		n, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return filter{}, fmt.Errorf("item %q: a bit mask that is not a decimal number: %w", s, err)
+		}
+		return filter{op: 'b', attr: a, mask: n}, nil
+	}
 	if strings.ContainsAny(attr, "~<>:(\\*") || strings.TrimSpace(attr) != attr {
 		return filter{}, fmt.Errorf("item %q: approximate, ordering and extensible matches, and attribute %q, are not read", s, attr)
 	}
@@ -153,27 +165,36 @@ func hexDigit(c byte) (byte, bool) {
 	return 0, false
 }
 
-// match reports whether e satisfies f.
-func (f filter) match(e *entry) bool {
+// match reports whether e, an entry of d, satisfies f; d.mu is held.
+func (f filter) match(e *entry, d *Directory) bool {
 	switch f.op {
 	case '&':
 		for _, s := range f.subs {
-			if !s.match(e) {
+			if !s.match(e, d) {
 				return false
 			}
 		}
 		return true
 	case '|':
 		for _, s := range f.subs {
-			if s.match(e) {
+			if s.match(e, d) {
 				return true
 			}
 		}
 		return false
 	case '!':
-		return !f.subs[0].match(e)
+		return !f.subs[0].match(e, d)
 	case '*':
 		return len(e.get(f.attr)) > 0
+	case 'b':
+		for _, v := range e.get(f.attr) {
+			// An integer attribute is signed, as groupType is; its bits
+			// are its two's complement.
+			if n, err := strconv.ParseInt(string(v), 10, 64); err == nil && uint64(n)&f.mask == f.mask {
+				return true
+			}
+		}
+		return false
 	}
 	fold := !binaryAttr(f.attr)
 	for _, v := range e.get(f.attr) {

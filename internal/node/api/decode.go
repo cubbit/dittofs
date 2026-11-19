@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -115,7 +116,10 @@ func walk(dec *json.Decoder, t reflect.Type, path []string, depth int) error {
 	case json.Delim('{'):
 		var fields map[string]reflect.Type
 		if t != nil && t.Kind() == reflect.Struct {
-			fields = jsonFields(t, map[string]reflect.Type{})
+			fields = map[string]reflect.Type{}
+			for _, f := range wireFields(t, nil) {
+				fields[f.name] = f.typ
+			}
 		}
 		seen := map[string]bool{}
 		for dec.More() {
@@ -163,23 +167,33 @@ func walk(dec *json.Decoder, t reflect.Type, path []string, depth int) error {
 	return nil
 }
 
-// jsonFields adds to out each field of struct t by the name encoding/json
-// reads it under, an untagged embedded struct's fields as t's own.
-func jsonFields(t reflect.Type, out map[string]reflect.Type) map[string]reflect.Type {
+// wireField is a field of a struct as encoding/json reads and writes it: its
+// name, its type, and whether omitempty or omitzero leaves it out when
+// empty.
+type wireField struct {
+	name     string
+	typ      reflect.Type
+	optional bool
+}
+
+// wireFields appends to out each field of struct t, in order, by the name
+// encoding/json reads it under, an untagged embedded struct's fields as t's
+// own.
+func wireFields(t reflect.Type, out []wireField) []wireField {
 	for i := range t.NumField() {
 		f := t.Field(i)
 		tag := f.Tag.Get("json")
 		if tag == "-" {
 			continue
 		}
-		name, _, _ := strings.Cut(tag, ",")
+		name, opts, _ := strings.Cut(tag, ",")
 		ft := f.Type
 		if f.Anonymous && name == "" {
 			for ft.Kind() == reflect.Pointer {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
-				jsonFields(ft, out)
+				out = wireFields(ft, out)
 				continue
 			}
 		}
@@ -189,7 +203,8 @@ func jsonFields(t reflect.Type, out map[string]reflect.Type) map[string]reflect.
 		if name == "" {
 			name = f.Name
 		}
-		out[name] = f.Type
+		optional := slices.ContainsFunc(strings.Split(opts, ","), func(o string) bool { return o == "omitempty" || o == "omitzero" })
+		out = append(out, wireField{name, f.Type, optional})
 	}
 	return out
 }

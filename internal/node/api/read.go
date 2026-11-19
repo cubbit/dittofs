@@ -6,6 +6,7 @@ import (
 	"iter"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 
@@ -56,6 +57,13 @@ type reads interface {
 	AuditRecords(ctx context.Context, f entity.AuditFilter, after []byte) iter.Seq2[entity.AuditRecord, error]
 	// AuditPosition is a record's position, which AuditRecords resumes after.
 	AuditPosition(a entity.AuditRecord) []byte
+	// Namespaces lists the namespaces in ID order, after the ID after;
+	// Namespace is one namespace's record, false when there is none.
+	Namespaces(ctx context.Context, after entity.NamespaceID) iter.Seq2[entity.Namespace, error]
+	Namespace(ctx context.Context, id entity.NamespaceID) (entity.Namespace, bool, error)
+	// Secret is one version of a secret, still sealed, version 0 its
+	// current one; one never written is not found.
+	Secret(ctx context.Context, id entity.SecretRef, version uint64) (entity.Secret, error)
 }
 
 // errNoStore refuses a call on a node that holds no control-plane store.
@@ -137,7 +145,7 @@ func (p perPage) applied(ref entity.ResourceRef, at uint64, through func(entity.
 // its size, and handed to each item, but for a local listing, which reads
 // none and needs no store.
 func list[E, T any](l listing[E, T]) adapter {
-	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
+	return adapter{form: formList, out: reflect.TypeFor[apiv1.Page[T]](), filters: l.filters, run: func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
 		limit, after, filter := defaultLimit, []byte(nil), map[string]string{}
 		q := r.URL.Query()
 		for _, k := range slices.Sorted(maps.Keys(q)) {
@@ -192,5 +200,5 @@ func list[E, T any](l listing[E, T]) adapter {
 			last = l.key(e)
 		}
 		return jsonAnswer(http.StatusOK, page)
-	}
+	}}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"time"
 
@@ -35,11 +36,15 @@ type clock interface {
 // which reads it from the server's Deps; tag, its tag, which the answer carries as its ETag; and
 // until, which parses ?wait=, answering how long the call may park, above
 // zero, and done, whether a read now answers the wait, first being the read
-// the call began with, or the error the wait is refused with instead.
+// the call began with, or the error the wait is refused with instead; and,
+// for the API's OpenAPI document, the words until takes beside a duration
+// and the errors done may refuse the wait with.
 type watching[R any] struct {
-	read  func(context.Context, Deps, request[none]) (R, error)
-	tag   func(R) uint64
-	until func(wait string) (time.Duration, func(first, now R) (bool, error), error)
+	read    func(context.Context, Deps, request[none]) (R, error)
+	tag     func(R) uint64
+	until   func(wait string) (time.Duration, func(first, now R) (bool, error), error)
+	words   []param
+	refuses []error
 }
 
 // changes is the ?wait= of a record a client waits on to change: a duration
@@ -72,7 +77,7 @@ func changes[R any](differ func(first, now R) bool) func(string) (time.Duration,
 // first served, so one account can hold every parked slot; upgrade to a
 // per-account share of the set when accounts contend for it.
 func watch[R any](w watching[R]) adapter {
-	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
+	return adapter{form: formWatch, out: reflect.TypeFor[R](), words: w.words, refuses: w.refuses, run: func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
 		var wait time.Duration
 		var done func(first, now R) (bool, error)
 		q := r.URL.Query()
@@ -92,7 +97,7 @@ func watch[R any](w watching[R]) adapter {
 		if s.d.Store == nil {
 			return answer{}, errNoStore
 		}
-		rq := request[none]{ID: id, Sub: r.PathValue("sub")}
+		rq := request[none]{ID: id, Sub: r.PathValue("sub"), d: s.d}
 		first, err := w.read(ctx, s.d, rq)
 		if err != nil || wait == 0 {
 			return w.answer(first, err)
@@ -131,7 +136,7 @@ func watch[R any](w watching[R]) adapter {
 				}
 			}
 		}}, nil
-	}
+	}}
 }
 
 // answer is 200 with v and its tag as the ETag, or err.

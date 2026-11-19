@@ -297,6 +297,18 @@ func TestRoles(t *testing.T) {
 		{entity.RoleViewer, http.MethodPut, "/api/v1/shares/" + api.TestID + "/quota", http.StatusForbidden},
 		{entity.RoleViewer, http.MethodPut, "/api/v1/netgroups/labs", http.StatusForbidden},
 		{entity.RoleViewer, http.MethodDelete, "/api/v1/netgroups/labs", http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPost, "/api/v1/stores", http.StatusForbidden},
+		{entity.RoleViewer, http.MethodDelete, "/api/v1/stores/" + api.TestID, http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/stores/" + api.TestID + "/credential", http.StatusForbidden},
+		{entity.RoleViewer, http.MethodDelete, "/api/v1/stores/" + api.TestID + "/credential", http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPost, "/api/v1/namespaces", http.StatusForbidden},
+		{entity.RoleViewer, http.MethodDelete, "/api/v1/namespaces/" + api.TestID, http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/adapters/smb", http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/settings/gc.schedule", http.StatusForbidden},
+		{entity.RoleViewer, http.MethodDelete, "/api/v1/nodes/" + api.TestID + "/settings/gc.schedule", http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/namespaces/" + api.TestID + "/settings/gc.schedule", http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/stores/" + api.TestID + "/settings/gc.schedule", http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/shares/" + api.TestID + "/settings/gc.schedule", http.StatusForbidden},
 	} {
 		role.Store(uint32(tc.role))
 		r := s.do(t, tc.method, tc.path, "")

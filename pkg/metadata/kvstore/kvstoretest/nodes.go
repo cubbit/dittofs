@@ -69,6 +69,24 @@ func testNodeEpochAcrossStarts(t *testing.T, kvo Opener) {
 	}
 }
 
+// A status reporting an adapter with no state, or one outside the set, is
+// refused and writes nothing, so no read of the statuses meets a value it
+// refuses.
+func testAdapterStateRefused(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	nodes := s.Nodes()
+	id := entity.NodeID(uuid.New())
+	for name, state := range map[string]entity.AdapterState{"no state": 0, "outside the set": 200} {
+		st := entity.NodeStatus{Node: id, Settings: 1, Adapters: []entity.AdapterStatus{{Protocol: "nfs", State: state}}}
+		if err := nodes.PutNodeStatus(ctx, st); !invalid(err) {
+			t.Errorf("node status with an adapter reporting %s: %v, want invalid argument", name, err)
+		}
+	}
+	for st, err := range nodes.NodeStatuses(ctx, entity.NodeID{}) {
+		t.Errorf("node status listed after refused writes: %+v, %v; want none", st, err)
+	}
+}
+
 // A node write that names no node is refused and writes nothing.
 func testZeroNodeRefused(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
@@ -124,6 +142,7 @@ func testNodeStatuses(t *testing.T, kvo Opener) {
 		RestartPending: []entity.ResourceRef{{Kind: entity.ResourceAdapter, ID: []byte("smb")}, entity.SettingRef(entity.SettingScope{Kind: entity.ScopeShare, ID: uuid.New()}, "a")},
 		Secrets:        []entity.SecretVersion{{Secret: entity.SecretRef{2}, Version: 7}, {Secret: entity.SecretRef{1}, Version: 8}},
 		Conditions:     []byte("ready"),
+		Adapters:       []entity.AdapterStatus{{Protocol: "smb", State: entity.AdapterServing, Generation: 3}, {Protocol: "nfs", State: entity.AdapterStopped}},
 	}, {Node: ids[1], Settings: 9}}
 	for _, id := range ids {
 		_, err := s.RaiseNodeEpoch(ctx, id)
@@ -171,6 +190,14 @@ func testRegisteredStatuses(t *testing.T, kvo Opener) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("registered statuses:\n got %+v\nwant %+v", got, want)
 	}
+	read(t, s.ControlPlane(), func(tx entity.ControlPlaneTx) error {
+		for id, want := range map[entity.NodeID]bool{reporting: true, silent: true, removed: false} {
+			if n, ok, err := tx.Node(id); err != nil || ok != want || ok && n.ID != id {
+				t.Errorf("node %v read in a write: %+v, found %v, %v; want found %v", id, n, ok, err, want)
+			}
+		}
+		return nil
+	})
 }
 
 // Node records list in node ID order, each once, beside the statuses and

@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -107,6 +108,26 @@ func (s *sambaSeeder) AddUser(t testing.TB, name string, attrs map[string][][]by
 	return dn
 }
 
+func (s *sambaSeeder) AddGroup(t testing.TB, name string, attrs map[string][][]byte) string {
+	t.Helper()
+	dn := "CN=" + name + ",CN=Users," + adBaseDN
+	add := ldap.NewAddRequest(dn, nil)
+	add.Attribute("objectClass", []string{"top", "group"})
+	add.Attribute("sAMAccountName", []string{name})
+	for k, vs := range attrs {
+		var ss []string
+		for _, v := range vs {
+			ss = append(ss, string(v))
+		}
+		add.Attribute(k, ss)
+	}
+	if err := s.conn.Add(add); err != nil {
+		t.Fatalf("add %s: %v", dn, err)
+	}
+	t.Cleanup(func() { _ = s.conn.Del(ldap.NewDelRequest(dn, nil)) })
+	return dn
+}
+
 func (s *sambaSeeder) Account() (string, []byte) { return adBindDN, []byte(adAdminPassword) }
 
 // unicodePwd is AD's encoding of a password set over LDAP: the quoted
@@ -176,5 +197,19 @@ func TestDirectoryClient(t *testing.T) {
 	}
 	if b, ok, err := c.Lookup(ctx, directory.ByEntryID, a.EntryID); err != nil || !ok || !strings.EqualFold(b.DN, dn) {
 		t.Errorf("Lookup by its objectGUID = %q, %v, %v; want %q", b.DN, ok, err, dn)
+	}
+
+	// Its groups, nested, through tokenGroups and the SIDs looked up in
+	// batches: both levels and Domain Users, its primary group.
+	g1 := seed.AddGroup(t, name+"g1", map[string][][]byte{"member": {[]byte(dn)}})
+	g2 := seed.AddGroup(t, name+"g2", map[string][][]byte{"member": {[]byte(g1)}})
+	groups, err := c.Groups(ctx, a)
+	if err != nil {
+		t.Fatalf("Groups(%s): %v", name, err)
+	}
+	for _, want := range []string{g1, g2, "CN=Domain Users,CN=Users," + adBaseDN} {
+		if !slices.ContainsFunc(groups, func(g directory.Answer) bool { return strings.EqualFold(g.DN, want) }) {
+			t.Errorf("Groups(%s) lacks %s", name, want)
+		}
 	}
 }

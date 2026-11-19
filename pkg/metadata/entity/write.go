@@ -173,6 +173,9 @@ type ControlPlaneTx interface {
 	RemoveMember(m Membership) error
 
 	Namespace(id NamespaceID) (Namespace, bool, error)
+	// Node is a node's record; false for a node never registered or since
+	// removed.
+	Node(id NodeID) (Node, bool, error)
 	// StoreNamed reports whether any namespace names the remote store,
 	// tracked over the store's whole index, so a namespace created on it
 	// concurrently conflicts.
