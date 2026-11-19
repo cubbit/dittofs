@@ -205,6 +205,7 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 	n.drains, n.endDrains = context.WithCancel(context.Background())
 	n.nfs, n.smb = newSlots(adapterDeps(n.fs, n.budgets, cfg.Metrics, cfg.Logger, n.watchdog), n.sidecars, addrs,
 		[]uint16{listenPort(cfg.Bootstrap.API.Listen[0]), listenPort(cfg.Bootstrap.Metrics.Listen)}, cfg.Clock, n.drains)
+	n.health.Add(&adapterConditions{n})
 	n.life.ready.Store(readyStarting)
 	// decision: the API gets no TLS, local socket, signing key or tracer,
 	// and in production no Authenticate, because nothing the node is handed
@@ -218,7 +219,7 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 	// each from the bootstrap, the secret store, sign-in and the host's
 	// tracer as they land.
 	n.api = api.New(api.Deps{
-		Ready:        n.life.readiness,
+		Ready:        n.readiness,
 		Served:       n.life.served.Load,
 		Live:         n.watchdog.Live,
 		Addr:         cfg.Bootstrap.API.Listen[0],

@@ -154,6 +154,20 @@ type slot[S shape] struct {
 	runs    S               // what running serves with: the last settings that served
 	refused S               // what refusal refused
 	refusal *refusal        // the last call's, nil once a call applied
+
+	// last is what the last call left, which the node's health reads from
+	// other goroutines; nil before the first call. A call in flight leaves
+	// it as the call before left it, so a rebuild waiting on a drain reads
+	// as the adapter it replaces.
+	last atomic.Pointer[outcome]
+}
+
+// outcome is what a slot's call left: the adapter running, nil when none,
+// and, while the adapter is enabled and nothing serves it, the error that
+// refused it.
+type outcome struct {
+	running adapter.Adapter
+	refused error
 }
 
 // desired is what a slot is to run: whether its adapter is enabled, and its
@@ -183,13 +197,20 @@ func newSlots(d adapter.Deps, r *sidecar.Runner, addrs []netip.Addr, taken []uin
 // slot's own (RFC 20 §3.6), and returns its refusal, nil when it applied
 // (RFC 23 §2.3). Settings it refused while an adapter served on are refused
 // again, untouched, so a call repeated on the same records does nothing; with
-// nothing serving, a repeated call tries again.
+// nothing serving, a repeated call tries again. Every other call leaves its
+// outcome in last.
 func (s *slot[S]) apply(ctx context.Context, loop *health.Loop, enabled bool, next S) *refusal {
 	next = withAddrs(next, s.addrs)
 	if enabled && s.running != nil && s.refusal != nil && reflect.DeepEqual(next, s.refused) {
 		return s.refusal
 	}
-	if err := s.move(ctx, loop, enabled, next); err != nil {
+	err := s.move(ctx, loop, enabled, next)
+	o := outcome{running: s.running}
+	if enabled && s.running == nil {
+		o.refused = err
+	}
+	s.last.Store(&o)
+	if err != nil {
 		s.refused, s.refusal = next, s.refuse(err)
 		return s.refusal
 	}
@@ -349,4 +370,48 @@ func (n *Node) adaptersHeld() (map[string]adapter.Adapter, time.Duration) {
 		held[n.smb.name], longest = a, max(longest, n.smb.runs.DrainTimeout)
 	}
 	return held, longest
+}
+
+// conditionListenerLost is the condition an adapter's Health names for a
+// lost listener (RFC 20 §3.7).
+const conditionListenerLost = "adapter_listener_lost"
+
+// lost reports whether the adapter the slot runs names
+// adapter_listener_lost in its Health now (RFC 20 §3.7).
+func (s *slot[S]) lost() bool {
+	o := s.last.Load()
+	return o != nil && o.running != nil && slices.Contains(o.running.Health().Conditions, conditionListenerLost)
+}
+
+// conditions appends the slot's conditions to dst, each on the node and
+// naming the adapter: adapter_listener_lost while lost, and adapter_refused
+// while its last call left it refused, its cause that call's error (RFC 20
+// §3.7, RFC 25 §3.9).
+func (s *slot[S]) conditions(dst []health.Condition, node health.Subject) []health.Condition {
+	node.Name = s.name
+	if s.lost() {
+		dst = append(dst, health.Condition{Name: conditionListenerLost, Subject: node})
+	}
+	if o := s.last.Load(); o != nil && o.refused != nil {
+		dst = append(dst, health.Condition{Name: "adapter_refused", Subject: node, Cause: o.refused})
+	}
+	return dst
+}
+
+// adapterConditions is the adapters' conditions as the health evaluator
+// reads them, derived at each evaluation: each slot's, and sidecar_failed on
+// the node naming each sidecar whose last Sync failed (RFC 20 §3.5, §3.7;
+// RFC 25 §3.9).
+type adapterConditions struct{ n *Node }
+
+func (c *adapterConditions) Conditions(dst []health.Condition) []health.Condition {
+	node := c.n.subject()
+	dst = c.n.nfs.conditions(dst, node)
+	dst = c.n.smb.conditions(dst, node)
+	for _, name := range c.n.sidecars.Failed() {
+		sub := node
+		sub.Name = name
+		dst = append(dst, health.Condition{Name: "sidecar_failed", Subject: sub})
+	}
+	return dst
 }
