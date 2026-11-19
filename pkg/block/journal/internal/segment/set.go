@@ -947,6 +947,15 @@ func (s *Set) ForgetTag(tag core.ShareTag) {
 		// The segment's records are still there: only the tag's share of the
 		// accounting moves, so the totals the Check walk reconciles — the
 		// segment's own held bytes against its per-tag entries — stay whole.
+		// A segment that takes no further append — sealed or ended — held
+		// the tag's bytes in the no-append measures, and the release takes
+		// them out of those measures here: the retirement that later
+		// subtracts the emptied maps cannot be their second door.
+		if e.state != Active {
+			s.c.NoAppendBytes -= n
+			s.c.NoAppendOverBytes -= e.over[tag]
+			s.noAppendTag[tag] -= n
+		}
 		e.held -= n
 		delete(e.tags, tag)
 		delete(e.over, tag)
@@ -956,6 +965,12 @@ func (s *Set) ForgetTag(tag core.ShareTag) {
 		delete(s.tags, tag)
 	}
 	delete(s.over, tag)
+	// The tag's no-append share fell with its segments, and a figure that
+	// reaches nothing leaves the ledger bounded by live state the way every
+	// other per-tag map is. A negative leftover stays for Check to report.
+	if s.noAppendTag[tag] == 0 {
+		delete(s.noAppendTag, tag)
+	}
 }
 
 // ShareBytes returns the record bytes of the share's tag still held in
@@ -1263,11 +1278,17 @@ func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 	}
 	if e.state != Active {
 		// The segment's leaving takes the no-append measures with it: an
-		// active one never entered them.
+		// active one never entered them. A per-tag figure that reaches
+		// nothing leaves the ledger bounded by live state, the way the
+		// shares' own maps are; a negative leftover stays for Check.
 		s.c.NoAppendBytes -= tagSum(e.tags)
 		s.c.NoAppendOverBytes -= overSum(e.over)
 		for tag, n := range e.tags {
-			s.noAppendTag[tag] -= n
+			if left := s.noAppendTag[tag] - n; left == 0 {
+				delete(s.noAppendTag, tag)
+			} else {
+				s.noAppendTag[tag] = left
+			}
 		}
 	}
 	s.c.Segments--
@@ -1325,7 +1346,13 @@ func (s *Set) Check() error {
 		sum      int64
 		segments int64
 		sealed   int64
+		noApp    int64
+		noAppOv  int64
 	)
+	// The per-tag no-append figures beside the two totals, so the counters
+	// answer a walk the way the shares' figures do — a leak a release leaves
+	// behind shows here rather than in a caller's Stats.
+	noAppTag := make(map[core.ShareTag]int64)
 	for id, e := range s.segs {
 		// The total and its own per-tag map are two statements of one fact: a
 		// drifted total admits a record that does not fit, so the check sums
@@ -1339,11 +1366,47 @@ func (s *Set) Check() error {
 			return fmt.Errorf("%w: segment %d holds %d record bytes, its entries make %d and it is accounted at %d",
 				ErrMismatch, uint64(id), e.held, tot, e.size)
 		}
+		// The no-append measures are the same two statements over the
+		// segments that take no further append — the sealed and the ended
+		// alike — so an active segment's bytes never enter them.
+		if e.state != Active {
+			for tag, n := range e.tags {
+				noApp += n
+				noAppTag[tag] += n
+			}
+			for _, n := range e.over {
+				noAppOv += n
+			}
+		}
 		sum += e.size
 		segments++
 		if e.state == Sealed {
 			sealed++
 		}
+	}
+	if s.c.NoAppendBytes != noApp {
+		return fmt.Errorf("%w: the no-append record bytes are %d, the sealed and ended segments' entries make %d",
+			ErrMismatch, s.c.NoAppendBytes, noApp)
+	}
+	if s.c.NoAppendOverBytes != noAppOv {
+		return fmt.Errorf("%w: the no-append overhead bytes are %d, the sealed and ended segments' entries make %d",
+			ErrMismatch, s.c.NoAppendOverBytes, noAppOv)
+	}
+	// Zero-valued keys count as absent on either side: a figure that
+	// reached nothing is no share the ledger knows, wherever an edge left
+	// the key behind.
+	live := func(m map[core.ShareTag]int64) map[core.ShareTag]int64 {
+		out := make(map[core.ShareTag]int64, len(m))
+		for tag, n := range m {
+			if n != 0 {
+				out[tag] = n
+			}
+		}
+		return out
+	}
+	if !maps.Equal(live(s.noAppendTag), live(noAppTag)) {
+		return fmt.Errorf("%w: the per-tag no-append bytes do not match the sealed and ended segments' entries: %v vs %v",
+			ErrMismatch, s.noAppendTag, noAppTag)
 	}
 	for range s.spares {
 		sum += s.cap

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // TestSeedReplay replays the fuzz target's seed corpus, the same table
@@ -95,5 +96,53 @@ func TestSeedReplay(t *testing.T) {
 				t.Errorf("%s: %d spares dropped, want %d", sd.name, drops, sd.drops)
 			}
 		})
+	}
+}
+
+// TestForgetTagTakesTheNoAppendMeasures checks the tag's release against
+// the no-append population: a forgotten tag's records leave the sealed and
+// ended segments' measures too, or their retirement — subtracting the maps
+// the release already emptied — leaves the counters carrying the dead tag's
+// bytes for ever.
+func TestForgetTagTakesTheNoAppendMeasures(t *testing.T) {
+	set := NewSet(1<<20, nil)
+	const tag = core.ShareTag(7)
+	id := core.SegmentID(3)
+	if err := set.AddSpare(id, int64(1<<20)); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.Take(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.AddRecord(id, tag, 100, 40); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.Seal(id, true); err != nil {
+		t.Fatal(err)
+	}
+	c := set.Counters()
+	if c.NoAppendBytes != 100 || c.NoAppendOverBytes != 40 {
+		t.Fatalf("the sealed segment's charges read %d/%d, want 100/40", c.NoAppendBytes, c.NoAppendOverBytes)
+	}
+
+	set.ForgetTag(tag)
+	st, full, err := set.ClaimRetirement(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st
+	_ = full
+	if _, err := set.Retire(id); err != nil {
+		t.Fatal(err)
+	}
+	c = set.Counters()
+	if c.NoAppendBytes != 0 || c.NoAppendOverBytes != 0 {
+		t.Fatalf("after the forget and the retirement the no-append counters read %d/%d, want 0/0: the dead tag's bytes leaked", c.NoAppendBytes, c.NoAppendOverBytes)
+	}
+	if got := set.NoAppendBytesOf(tag); got != 0 {
+		t.Fatalf("after the forget and the retirement the tag's no-append bytes read %d, want 0", got)
+	}
+	if err := set.Check(); err != nil {
+		t.Fatalf("Check after the forget and the retirement: %v", err)
 	}
 }
