@@ -20,10 +20,9 @@ type userDoc struct {
 // principal, one holding a directory entry's ID, whose address the
 // directory supplies. An empty address is none.
 //
-// decision: the directory principal's refusal is inert while no record holds
-// a dir spelling, which the store refuses on a user today; it starts to
-// refuse once identity's directory work mints directory principals with
-// one. Withdraw it only if a directory stops supplying addresses.
+// decision: a directory principal's address is refused here because the
+// directory supplies it, and a later answer would overwrite an edit.
+// Withdraw it only if a directory stops supplying addresses.
 func emailFor(u entity.User, email string) error {
 	if email == "" {
 		return nil
