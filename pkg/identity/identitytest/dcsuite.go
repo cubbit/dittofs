@@ -104,7 +104,7 @@ func DomainControllerConformance(t *testing.T, open func(t *testing.T) (netlogon
 		_, _ = rand.Read(challenge[:])
 		_, _ = rand.Read(client[:])
 		dom := s.Domain().NetBIOS
-		nt, lm, key := ntlmv2Response(pw, user, dom, challenge, client, 0x01dc000000000000)
+		nt, lm, key := NTLMv2Response(pw, user, dom, challenge, client)
 		r, err := ch.Logon(ctx, netlogon.LogonRequest{Domain: dom, User: user, Workstation: "DCTWS",
 			Challenge: challenge, NTResponse: nt, LMResponse: lm})
 		return r, key, err

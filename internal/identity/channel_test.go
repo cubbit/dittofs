@@ -90,11 +90,11 @@ func (fx *chanFixture) signIn(t *testing.T, addr string, version uint64) {
 }
 
 // noSignIn wants alice's logon to answer ErrUnavailable with no channel set
-// up.
+// up, never ErrRejected, which would read as alice's password refused.
 func (fx *chanFixture) noSignIn(t *testing.T) {
 	t.Helper()
-	if err := fx.logon(context.Background(), "alice", alicePW); !errors.Is(err, vfserr.ErrUnavailable) {
-		t.Errorf("alice's logon: %v, want ErrUnavailable", err)
+	if err := fx.logon(context.Background(), "alice", alicePW); !errors.Is(err, vfserr.ErrUnavailable) || errors.Is(err, netlogon.ErrRejected) {
+		t.Errorf("alice's logon: %v, want ErrUnavailable alone, not ErrRejected", err)
 	}
 	if a, v, ok := fx.s.ChannelAt(); ok {
 		t.Errorf("channel at %q with version %d, want none", a, v)
@@ -182,9 +182,9 @@ func TestChannelHandedOver(t *testing.T) {
 
 // A record naming a controller's address is that controller alone: dc2,
 // named and refusing the version, is not passed over for dc1, which would
-// accept it.
+// accept it, and the domain's controllers are never looked up.
 func TestChannelNamedController(t *testing.T) {
-	fx := newChannelServer(t)
+	fx := newChannelServer(t, sim.Rule{Op: "lookup", Key: "*", Action: sim.FaultAction{Err: errDown}}) // never asked
 	fx.d.HoldReplication(dc2)
 	fx.d.SetComputerPassword(t, "NAS", []byte(pw3)) // at dc1
 	fx.apply(t, dc2, 3, ver(3, 3, pw3, false))
@@ -231,14 +231,21 @@ func TestChannelRetention(t *testing.T) {
 	fx.noSignIn(t)
 }
 
-// A new principals generation alone keeps the channel, and a change to the
-// machine password sets it up again: every set-up after the first fails here.
+// A new principals generation, or a failed rotation's step, keeps the channel,
+// and a change to the machine password sets it up again: every set-up after
+// the first fails here.
 func TestChannelKeptAcrossGenerations(t *testing.T) {
 	fx := newChannelServer(t, sim.Rule{Op: "channel", Key: "*", From: 2, Action: sim.FaultAction{Err: errDown}})
 	fx.apply(t, "", 2, ver(2, 2, pw2, false))
 	fx.signIn(t, dc1, 2)
 	st := joinedState(2, ver(2, 2, pw2, false))
 	st.Generation = 2
+	if err := fx.s.Apply(st); err != nil {
+		t.Fatal(err)
+	}
+	fx.signIn(t, dc1, 2)
+	st.Join.LastRotation.At = mt0.Add(time.Hour) // a failed rotation's step
+	st.Join.LastRotation.Failed = true
 	if err := fx.s.Apply(st); err != nil {
 		t.Fatal(err)
 	}
@@ -277,13 +284,16 @@ func recv(t *testing.T, ch <-chan error, what string) error {
 // return, a twelfth signs in.
 func TestChannelBounds(t *testing.T) {
 	fx := newChannelServer(t, sim.Rule{Op: "logon", Key: "held*", Action: sim.FaultAction{Err: identitytest.ErrHold}})
-	fx.apply(t, "", 2, ver(2, 2, pw2, false))
+	fx.apply(t, dc1, 2, ver(2, 2, pw2, false)) // one controller: its set-up arms no controller's bound
 	ctx := context.Background()
 	ten := make(chan error, 10)
 	for i := range 10 {
 		go func() { ten <- fx.logon(ctx, fmt.Sprintf("held%d", i), alicePW) }()
 	}
-	wait(t, "ten held logons", func() bool { return fx.f.Holding() == 10 && fx.clock.Pending() == 10 })
+	wait(t, "ten held logons", func() bool { return fx.f.Holding() == 10 })
+	if n := fx.clock.Pending(); n != 10 {
+		t.Fatalf("timers pending with ten held logons = %d, want 10: one call bound each", n)
+	}
 
 	fx.clock.Advance(time.Second)
 	eleventh := make(chan error, 1)
@@ -331,7 +341,176 @@ func TestChannelStop(t *testing.T) {
 	if err := fx.s.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := recv(t, done, "the held logon after Stop"); err == nil {
-		t.Errorf("held logon after Stop answered, want an error")
+	// The bounded wait is the assertion: nothing but Stop ends the hold, and
+	// no clock bounds it.
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("held logon after Stop: %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Errorf("held logon still running 10 s after Stop, want it ended")
+	}
+}
+
+// A call that read the State before Stop, and reaches the channel only after
+// it, sets up no channel. The race is run twenty times, since without the
+// check under the channel's lock the call's context could still end first.
+func TestChannelStopRace(t *testing.T) {
+	fx := newChannelServer(t)
+	ctx := context.Background()
+	for i := range 20 {
+		fx.apply(t, dc1, 2, ver(2, 2, pw2, false))
+		reached, resume := make(chan struct{}), make(chan struct{})
+		fx.s.OnSlotTaken(func() { close(reached); <-resume })
+		done := make(chan error, 1)
+		go func() { done <- fx.logon(ctx, "alice", alicePW) }()
+		<-reached
+		if err := fx.s.Stop(ctx); err != nil {
+			t.Fatal(err)
+		}
+		close(resume)
+		if err := recv(t, done, "the logon resumed after Stop"); !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("run %d: logon resumed after Stop: %v, want ErrUnavailable", i, err)
+		}
+		if a, _, ok := fx.s.ChannelAt(); ok {
+			t.Fatalf("run %d: channel to %q open after Stop, want none", i, a)
+		}
+	}
+}
+
+// A State that leaves the domain, or drops its record, closes the channel and
+// clears machine_account_unhealthy.
+func TestChannelLeave(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		leave func(*identity.State)
+	}{
+		{"not joined", func(st *identity.State) { st.Join.Joined = false }},
+		{"no record", func(st *identity.State) { st.Directory = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newChannelServer(t, sim.Rule{Op: "dial", Key: dc1, Count: 1, Action: sim.FaultAction{Err: errDown}})
+			leave := joinedState(2, ver(2, 2, pw2, false))
+			tc.leave(&leave)
+			fx.apply(t, dc1, 2, ver(2, 2, pw2, false))
+			fx.noSignIn(t)
+			if err := fx.s.Apply(leave); err != nil {
+				t.Fatal(err)
+			}
+			if unhealthy(fx.s) {
+				t.Errorf("left: machine_account_unhealthy still raised")
+			}
+			fx.apply(t, dc1, 2, ver(2, 2, pw2, false))
+			fx.signIn(t, dc1, 2)
+			if err := fx.s.Apply(leave); err != nil {
+				t.Fatal(err)
+			}
+			if a, v, ok := fx.s.ChannelAt(); ok {
+				t.Errorf("left: channel at %q with version %d, want none", a, v)
+			}
+		})
+	}
+}
+
+// A set-up its caller hangs up on raises no condition, and a call its caller
+// hangs up on leaves the channel to the others.
+func TestChannelCallerHangsUp(t *testing.T) {
+	fx := newChannelServer(t,
+		sim.Rule{Op: "dial", Key: dc1, Count: 1, Action: sim.FaultAction{Err: identitytest.ErrHold}},
+		sim.Rule{Op: "logon", Key: "held*", Action: sim.FaultAction{Err: identitytest.ErrHold}})
+	fx.apply(t, dc1, 2, ver(2, 2, pw2, false))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- fx.logon(ctx, "alice", alicePW) }()
+	wait(t, "the held dial", func() bool { return fx.f.Holding() == 1 })
+	cancel()
+	if err := recv(t, done, "the hung-up logon"); !errors.Is(err, context.Canceled) {
+		t.Errorf("hung-up logon: %v, want context.Canceled", err)
+	}
+	wait(t, "the hung-up set-up's end", func() bool { return fx.s.PassThroughs() == 0 })
+	if unhealthy(fx.s) {
+		t.Errorf("a set-up its caller hung up on raised machine_account_unhealthy")
+	}
+
+	fx.signIn(t, dc1, 2)
+	ctx, cancel = context.WithCancel(context.Background())
+	go func() { done <- fx.logon(ctx, "held1", alicePW) }()
+	wait(t, "the held logon", func() bool { return fx.f.Holding() == 1 })
+	cancel()
+	if err := recv(t, done, "the hung-up held logon"); !errors.Is(err, context.Canceled) {
+		t.Errorf("hung-up held logon: %v, want context.Canceled", err)
+	}
+	wait(t, "the hung-up logon's end", func() bool { return fx.s.PassThroughs() == 0 })
+	if a, v, ok := fx.s.ChannelAt(); !ok || a != dc1 || v != 2 {
+		t.Errorf("after a hung-up logon: channel at %q with version %d (open %v), want %q with version 2", a, v, ok, dc1)
+	}
+}
+
+// A controller that goes silent during a set-up is passed over at its bound
+// for the next one; when the last is silent too, the call's bound ends the
+// set-up and raises machine_account_unhealthy.
+func TestChannelSilentController(t *testing.T) {
+	hold := func(addr string) sim.Rule {
+		return sim.Rule{Op: "dial", Key: addr, Action: sim.FaultAction{Err: identitytest.ErrHold}}
+	}
+	ctx := context.Background()
+	done := make(chan error, 1)
+
+	t.Run("dc2 healthy", func(t *testing.T) {
+		fx := newChannelServer(t, hold(dc1))
+		fx.apply(t, "", 2, ver(2, 2, pw2, false))
+		go func() { done <- fx.logon(ctx, "alice", alicePW) }()
+		wait(t, "the held dial to dc1", func() bool { return fx.f.Holding() == 1 })
+		if n := fx.clock.Pending(); n != 2 {
+			t.Fatalf("timers pending at the held dial = %d, want 2: the call's bound and dc1's", n)
+		}
+		fx.clock.Advance(identity.ChannelAttempt)
+		if err := recv(t, done, "the logon past dc1"); err != nil {
+			t.Errorf("dc1 silent, dc2 healthy: logon %v, want answered", err)
+		}
+		if a, _, ok := fx.s.ChannelAt(); !ok || a != dc2 {
+			t.Errorf("dc1 silent: channel at %q (open %v), want %q", a, ok, dc2)
+		}
+		if unhealthy(fx.s) {
+			t.Errorf("signed in on dc2: machine_account_unhealthy raised")
+		}
+	})
+
+	t.Run("both silent", func(t *testing.T) {
+		fx := newChannelServer(t, hold(dc1), hold(dc2))
+		fx.apply(t, "", 2, ver(2, 2, pw2, false))
+		go func() { done <- fx.logon(ctx, "alice", alicePW) }()
+		wait(t, "the held dial to dc1", func() bool { return fx.f.Holding() == 1 })
+		if n := fx.clock.Pending(); n != 2 {
+			t.Fatalf("timers pending at the held dial = %d, want 2: the call's bound and dc1's", n)
+		}
+		fx.clock.Advance(identity.ChannelAttempt)
+		fx.clock.Advance(5*time.Second - identity.ChannelAttempt)
+		if err := recv(t, done, "the logon at its bound"); !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("both silent: logon %v, want ErrUnavailable", err)
+		}
+		// No clock bounds the set-up's end once the bound has fired, so the
+		// bounded wait is the assertion.
+		wait(t, "machine_account_unhealthy raised by the set-up the bound ended", func() bool { return unhealthy(fx.s) })
+	})
+}
+
+// A channel replaced while a call runs on it stays open until that call
+// returns.
+func TestChannelReplacedUnderCall(t *testing.T) {
+	fx := newChannelServer(t, sim.Rule{Op: "logon", Key: "held*", Action: sim.FaultAction{Err: identitytest.ErrHold}})
+	ctx := context.Background()
+	fx.d.AddUser(t, "held1", alicePW)
+	fx.apply(t, dc1, 2, ver(2, 2, pw2, false))
+	done := make(chan error, 1)
+	go func() { done <- fx.logon(ctx, "held1", alicePW) }()
+	wait(t, "the held logon", func() bool { return fx.f.Holding() == 1 })
+	fx.apply(t, dc1, 3, ver(3, 3, pw3, false), ver(2, 2, pw2, false)) // dc1 refuses 3 and takes 2 again
+	fx.signIn(t, dc1, 2)
+	fx.f.Release()
+	if err := recv(t, done, "the held logon on the replaced channel"); err != nil {
+		t.Errorf("held logon on the replaced channel: %v, want answered", err)
 	}
 }

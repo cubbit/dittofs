@@ -24,6 +24,10 @@ var ErrNotApplied = errNotApplied
 // State, before its first store read, so a test can Apply in between.
 func (s *Server) OnStateLoaded(f func()) { s.loaded = f }
 
+// OnSlotTaken has every pass-through call run f just after it takes its
+// slot, before it reaches the node's channel.
+func (s *Server) OnSlotTaken(f func()) { s.slotTaken = f }
+
 // Mint runs the mint path over plan.
 func (s *Server) Mint(ctx context.Context, plan func(context.Context) (entity.MintBatch, int, error)) error {
 	return s.mint(ctx, plan)
@@ -113,3 +117,11 @@ func (s *Server) ChannelAt() (addr string, version uint64, ok bool) {
 	}
 	return s.node.addr, s.node.version, true
 }
+
+// PassThroughs is how many pass-through calls hold a slot: those running and
+// those that answered at their bound but whose call underneath has not
+// returned.
+func (s *Server) PassThroughs() int { return len(s.slots) }
+
+// ChannelAttempt is how long a set-up waits on each controller but the last.
+const ChannelAttempt = channelAttempt

@@ -133,19 +133,22 @@ var errNotApplied = errors.New("identity: started before any State was applied")
 // calling identity, leaving the filesystem its only consumer; identity then
 // folds into it.
 type Server struct {
-	deps     Deps
-	state    atomic.Pointer[State] // nil until the first Apply, and again after Stop
-	mu       sync.Mutex            // Apply's: held across its load, compare, serial and store
-	serial   uint64                // the last serial Apply handed out, under mu; Stop keeps it
-	loaded   func()                // a test's pause just after Resolve loads the State; nil in production
-	tracer   trace.Tracer
-	logger   *slog.Logger
-	refusals *prometheus.CounterVec // by reason
-	mints    *prometheus.CounterVec // by kind
-	unnamed  *prometheus.CounterVec // by kind
-	unmapped *prometheus.CounterVec // by scheme
-	hashing  chan struct{}          // the password verifications' slots, GOMAXPROCS of them
-	holds    holds                  // the joins' administrator credentials
+	deps   Deps
+	state  atomic.Pointer[State] // nil until the first Apply, and again after Stop
+	mu     sync.Mutex            // Apply's: held across its load, compare, serial and store
+	serial uint64                // the last serial Apply handed out, under mu; Stop keeps it
+	loaded func()                // a test's pause just after Resolve loads the State; nil in production
+	// slotTaken is a test's pause just after a pass-through call takes its
+	// slot, before it reaches the channel; nil in production.
+	slotTaken func()
+	tracer    trace.Tracer
+	logger    *slog.Logger
+	refusals  *prometheus.CounterVec // by reason
+	mints     *prometheus.CounterVec // by kind
+	unnamed   *prometheus.CounterVec // by kind
+	unmapped  *prometheus.CounterVec // by scheme
+	hashing   chan struct{}          // the password verifications' slots, GOMAXPROCS of them
+	holds     holds                  // the joins' administrator credentials
 
 	slots     chan struct{}      // the pass-through's, channelSlots of them
 	chMu      sync.Mutex         // held across the channel's set-up
@@ -264,6 +267,9 @@ func (s *Server) Apply(st State) error {
 	s.state.Store(&st)
 	if cur != nil && cur.dir != st.dir && cur.dir != nil {
 		cur.dir.Close()
+	}
+	if !st.Join.Joined || st.Directory == nil {
+		s.closeChannel() // the channel is held only while joined, with a record
 	}
 	return nil
 }
