@@ -168,9 +168,11 @@ func streamOf(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID, live 
 	t.Helper()
 
 	name := segmentName(seg)
-	b := durable(t, f, name)
+	var b []byte
 	if live {
 		b = liveBytes(t, f, name)
+	} else {
+		b = durable(t, f, name)
 	}
 	if len(b) < raw.SegmentHeaderSize {
 		t.Fatalf("%s is %d bytes, too short for a segment header of %d", name, len(b), raw.SegmentHeaderSize)
