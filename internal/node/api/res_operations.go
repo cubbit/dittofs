@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
@@ -123,11 +124,6 @@ var operation = watching[opRead]{
 // ponytail: a state filter reads the whole running index for each page and
 // sorts it by ID, O(running). Index running operations by state and ID when
 // the running count makes a page's read show in a profile.
-// operationFilters describe GET /operations's filters.
-var operationFilters = []param{
-	{name: "state", enum: []string{"pending", "running", "cancelling"}, desc: "The operations that have not ended in this state, in ID order."},
-}
-
 var operations = listing[opRead, apiv1.Operation]{
 	filters: []string{"state"},
 	records: func(ctx context.Context, d Deps, after []byte, f map[string]string) iter.Seq2[opRead, error] {
@@ -135,10 +131,10 @@ var operations = listing[opRead, apiv1.Operation]{
 		copy(from[:], after)
 		ops := d.Store.Operations(ctx, from)
 		if name, ok := f["state"]; ok {
-			var state entity.OpState
-			if state.UnmarshalText([]byte(name)) != nil || state.Ended() {
+			state, ok := valueNamed(unended, name)
+			if !ok {
 				return func(yield func(opRead, error) bool) {
-					yield(opRead{}, &fieldError{field: "state", detail: "not the state of an operation that has not ended: pending, running or cancelling"})
+					yield(opRead{}, &fieldError{field: "state", detail: "not the state of an operation that has not ended: " + strings.Join(names(unended), ", ")})
 				}
 			}
 			ops = running(ctx, d, state, after)
@@ -157,6 +153,15 @@ var operations = listing[opRead, apiv1.Operation]{
 	},
 	key:  func(o opRead) []byte { return o.id[:] },
 	item: func(o opRead, _ perPage) apiv1.Operation { return o.Operation },
+}
+
+// unended is the states of an operation that has not ended, which ?state=
+// takes.
+var unended = []entity.OpState{entity.OpPending, entity.OpRunning, entity.OpCancelling}
+
+// operationFilters describe GET /operations's filters.
+var operationFilters = []param{
+	{name: "state", enum: names(unended), desc: "The operations that have not ended in this state, in ID order."},
 }
 
 // running is every operation in state, from the running index, in ID

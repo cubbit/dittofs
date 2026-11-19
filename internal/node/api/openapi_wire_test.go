@@ -6,11 +6,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/api"
+	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/google/uuid"
 )
 
@@ -117,6 +120,10 @@ func TestOpenAPIDescribesAnswers(t *testing.T) {
 		{method: http.MethodGet, docPath: "/api/v1/shares", path: func() string { return "/api/v1/shares" }, want: 200},
 		{method: http.MethodPatch, docPath: "/api/v1/shares/{id}", path: func() string { return share },
 			body: `{"spec":{"path":"/docs2"}}`, hdr: func() []string { return []string{"If-Match", `"999"`} }, want: 412},
+		{method: http.MethodPatch, docPath: "/api/v1/shares/{id}", path: func() string { return share },
+			body: `null`, hdr: func() []string { return []string{"If-Match", etag} }, want: 400},
+		{method: http.MethodPatch, docPath: "/api/v1/shares/{id}", path: func() string { return share },
+			hdr: func() []string { return []string{"If-Match", etag} }, want: 400},
 		{method: http.MethodPatch, docPath: "/api/v1/shares/{id}", path: func() string { return share },
 			body: `{"spec":{"path":"/docs2"}}`, hdr: func() []string { return []string{"If-Match", etag} }, want: 200, always: []string{"ETag"},
 			then: func(r reply) { etag = r.header.Get("ETag") }},
@@ -308,4 +315,66 @@ func TestOpenAPIDescribesWaitsAndRefusals(t *testing.T) {
 		t.Fatalf("%s: answered %d %s, want the settings table's 400", r.req, r.status, r.body)
 	}
 	conforms(t, doc, http.MethodPut, "/api/v1/settings/{sub}", r)
+}
+
+// A viewer's cancel of a share's deletion is refused 403, as the document
+// says: the call needs the role that starts the operation's kind, which its
+// operation marks, not the viewer its row asks.
+func TestOpenAPIDescribesRoleByKind(t *testing.T) {
+	var role atomic.Uint32
+	role.Store(uint32(entity.RoleAdmin))
+	s := serve(t, func(r *http.Request) (auth.Caller, error) { return as(entity.APIRole(role.Load()), false)(r) })
+	doc := openAPIDoc(t)
+	path := "/api/v1/operations/{id}:cancel"
+	if got := at(doc, "paths", path, "post", "x-dittofs-role-by-kind"); got != true {
+		t.Fatalf("POST %s: x-dittofs-role-by-kind %v, want true", path, got)
+	}
+	if got := at(doc, "paths", path, "post", "x-dittofs-role"); got != "viewer" {
+		t.Fatalf("POST %s: x-dittofs-role %v, want viewer", path, got)
+	}
+	op := s.putOp(t, newOp(apiv1.OpShareDelete, entity.Principal{}), 0)
+	role.Store(uint32(entity.RoleViewer))
+	r := s.do(t, http.MethodPost, opPath(op.ID)+":cancel", "", "Idempotency-Key", "cancel")
+	if r.status != http.StatusForbidden {
+		t.Fatalf("%s as a viewer: answered %d %s, want 403", r.req, r.status, r.body)
+	}
+	conforms(t, doc, http.MethodPost, path, r)
+}
+
+// Every value of every closed set a query parameter documents is one the
+// server takes: a listing's filter is not refused 400 naming it, nor is a
+// delete's ?snapshots= on a share that exists.
+func TestOpenAPIEnumsAreTaken(t *testing.T) {
+	s := serve(t, as(entity.RoleAdmin, false))
+	doc := openAPIDoc(t)
+	ns := s.namespace(t)
+	sent := 0
+	operations(doc, func(method, path string, op map[string]any) {
+		for _, p := range params(op) {
+			values, _ := at(p, "schema", "enum").([]any)
+			if p["in"] != "query" || values == nil {
+				continue
+			}
+			name := p["name"].(string)
+			for _, v := range values {
+				sent++
+				var r reply
+				switch {
+				case method == http.MethodGet:
+					r = s.do(t, method, filled(path, op)+"?"+name+"="+v.(string), "")
+				case method == http.MethodDelete && path == "/api/v1/shares/{id}":
+					_, loc, sh := s.post(t, newShare("enum"+strconv.Itoa(sent), ns))
+					r = s.do(t, method, loc+"?"+name+"="+v.(string), "", "If-Match", `"`+strconv.FormatUint(sh.Generation, 10)+`"`, "Idempotency-Key", "enum-"+strconv.Itoa(sent))
+				default:
+					t.Fatalf("%s %s: documents the closed set ?%s=, which this test sends nowhere", method, path, name)
+				}
+				if r.status == http.StatusBadRequest && r.problem(t).Field == name {
+					t.Errorf("%s: refused ?%s=%v, which %s %s documents: %s", r.req, name, v, method, path, r.body)
+				}
+			}
+		}
+	})
+	if sent == 0 {
+		t.Error("the document names no closed set to send")
+	}
 }

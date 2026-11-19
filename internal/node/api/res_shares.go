@@ -5,6 +5,7 @@ import (
 	"context"
 	"iter"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -174,8 +175,13 @@ func setState(from, to entity.ShareState) func(context.Context, request[none], s
 // names none.
 func deleteShare(_ context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
 	var d entity.SnapshotDisposition
-	if v, ok := rq.Query["snapshots"]; ok && (len(v) != 1 || d.UnmarshalText([]byte(v[0])) != nil) {
-		return none{}, rq.ID, &fieldError{field: "snapshots", detail: "one of refuse, delete or detach"}
+	if v, ok := rq.Query["snapshots"]; ok {
+		if len(v) == 1 {
+			d, ok = valueNamed(dispositions, v[0])
+		}
+		if len(v) != 1 || !ok {
+			return none{}, rq.ID, &fieldError{field: "snapshots", detail: "one of " + strings.Join(names(dispositions), ", ")}
+		}
 	}
 	return none{}, rq.ID, tx.DeleteShare(entity.ShareID(rq.ID), d, rq.Expect)
 }
@@ -217,15 +223,6 @@ type shareRow struct {
 // ?namespace= the shares counted in that namespace, in ID order, a share
 // being removed left out as the name order leaves it out; both together, the
 // named share when it is counted in that namespace.
-// shareFilters describe GET /shares's filters.
-var shareFilters = []param{
-	{name: "name", desc: "The share of this name: a list of zero or one."},
-	{name: "namespace", format: "uuid", desc: "The shares counted in this namespace, in ID order."},
-}
-
-// snapshotsParam describes DELETE /shares/{id}'s ?snapshots=.
-var snapshotsParam = param{name: "snapshots", enum: []string{"refuse", "delete", "detach"}, desc: "What the delete does with the share's snapshots; refuse when left out."}
-
 var shares = listing[shareRow, apiv1.Share]{
 	filters: []string{"name", "namespace"},
 	records: func(ctx context.Context, d Deps, after []byte, f map[string]string) iter.Seq2[shareRow, error] {
@@ -279,6 +276,18 @@ var shares = listing[shareRow, apiv1.Share]{
 		return v
 	},
 }
+
+// shareFilters describe GET /shares's filters.
+var shareFilters = []param{
+	{name: "name", desc: "The share of this name: a list of zero or one."},
+	{name: "namespace", format: "uuid", desc: "The shares counted in this namespace, in ID order."},
+}
+
+// dispositions is what DELETE /shares/{id}'s ?snapshots= takes.
+var dispositions = []entity.SnapshotDisposition{entity.SnapshotsRefuse, entity.SnapshotsDelete, entity.SnapshotsDetach}
+
+// snapshotsParam describes DELETE /shares/{id}'s ?snapshots=.
+var snapshotsParam = param{name: "snapshots", enum: names(dispositions), desc: "What the delete does with the share's snapshots; refuse when left out."}
 
 // shareRead is a share as its GET answers it, its state, and whether it is
 // serving: at least one node is registered, and every one serves it, or

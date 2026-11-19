@@ -248,13 +248,11 @@ func docOperation(rt *route, id string, sc *schemas) (map[string]any, error) {
 		if p.key {
 			add("header", "Idempotency-Key", true, map[string]any{"type": "string", "maxLength": maxKey}, "At most "+strconv.Itoa(maxKey)+" bytes; a retry with the same key and request answers what the first answered.")
 		}
-		// A record that always exists is never created, so its PUT's
-		// If-None-Match: * only ever answers 412 and is left out.
 		switch {
-		case p.create && !a.exists:
+		case p.create:
 			add("header", "If-Match", false, str, "The ETag the write expects; the request carries it or If-None-Match.")
 			add("header", "If-None-Match", false, map[string]any{"const": "*"}, "A PUT creating its record.")
-		case p.match || p.create:
+		case p.match:
 			add("header", "If-Match", true, str, "The ETag the write expects.")
 		}
 	}
@@ -262,15 +260,20 @@ func docOperation(rt *route, id string, sc *schemas) (map[string]any, error) {
 		op["parameters"] = params
 	}
 	if a.body != nil && a.body != reflect.TypeFor[none]() {
-		ct, m, required := "application/json", modeIn, true
+		ct, m := "application/json", modeIn
 		if rt.method == http.MethodPatch {
-			ct, m, required = "application/merge-patch+json", modePatch, false
+			ct, m = "application/merge-patch+json", modePatch
 		}
 		s, err := sc.of(a.body, m)
 		if err != nil {
 			return nil, err
 		}
-		op["requestBody"] = map[string]any{"required": required, "content": map[string]any{ct: map[string]any{"schema": s}}}
+		if m == modePatch {
+			// A patch is a JSON object, though the values in it may be
+			// null: its write refuses a null or an empty body.
+			s["type"] = "object"
+		}
+		op["requestBody"] = map[string]any{"required": true, "content": map[string]any{ct: map[string]any{"schema": s}}}
 	}
 	responses := map[string]any{}
 	for _, st := range problemStatuses(rt) {
@@ -447,6 +450,9 @@ func (sc *schemas) of(t reflect.Type, m mode) (map[string]any, error) {
 	return nil, fmt.Errorf("%s has no JSON schema here", t)
 }
 
+// object is struct t's schema in mode m. An answer's object is open: a
+// field added to it is no change a client must refuse.
+//
 // object is struct t's schema in mode m: a reference to its component when
 // it has one, and the schema of the one struct it embeds when it is
 // unexported and adds no field of its own to it.

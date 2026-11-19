@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -68,6 +69,27 @@ var (
 	subProtocol  = &param{enum: protocols, desc: "The adapter's protocol."}
 	subSetting   = &param{example: "identity.ntlm", desc: "The setting's key, of 1 to " + strconv.Itoa(maxSettingKey) + " bytes."}
 )
+
+// names is the names of vs, the values of a closed set a query parameter
+// takes, which its parse and the API's OpenAPI document both read.
+func names[E fmt.Stringer](vs []E) []string {
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		out[i] = v.String()
+	}
+	return out
+}
+
+// valueNamed is the value of vs named s, false when none is.
+func valueNamed[E fmt.Stringer](vs []E, s string) (E, bool) {
+	for _, v := range vs {
+		if v.String() == s {
+			return v, true
+		}
+	}
+	var zero E
+	return zero, false
+}
 
 // hasID reports whether the row's path names a record by {id}.
 func (rt *route) hasID() bool { return strings.Contains(rt.pattern, "{id}") }

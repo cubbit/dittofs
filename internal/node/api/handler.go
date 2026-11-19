@@ -64,8 +64,7 @@ type answer struct {
 // from: its form; the request body's type and the success answer's, nil for
 // none; a listing's filters; the words a watched read's ?wait= takes beside
 // a duration, and the errors its wait refuses with; for a write, whether a
-// POST action changes the spec, whether its record always exists, so a PUT
-// never creates it, whether its answer is recorded under its idempotency
+// POST action changes the spec, whether its answer is recorded under its idempotency
 // key, and whether it waits for the node to apply it; and whether the right
 // the call needs is the one that starts the kind of operation it names.
 type adapter struct {
@@ -76,7 +75,6 @@ type adapter struct {
 	words       []param
 	refuses     []error
 	changesSpec bool
-	exists      bool
 	replays     bool
 	raises      bool
 	roleByKind  bool

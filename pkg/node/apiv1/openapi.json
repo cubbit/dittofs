@@ -2060,14 +2060,11 @@
                     "$ref": "#/components/schemas/GroupSpecPatch"
                   }
                 },
-                "type": [
-                  "object",
-                  "null"
-                ]
+                "type": "object"
               }
             }
           },
-          "required": false
+          "required": true
         },
         "responses": {
           "200": {
@@ -5124,14 +5121,11 @@
                     "$ref": "#/components/schemas/ShareSpecPatch"
                   }
                 },
-                "type": [
-                  "object",
-                  "null"
-                ]
+                "type": "object"
               }
             }
           },
-          "required": false
+          "required": true
         },
         "responses": {
           "200": {
@@ -5325,14 +5319,11 @@
                     "$ref": "#/components/schemas/ExportPolicySpecPatch"
                   }
                 },
-                "type": [
-                  "object",
-                  "null"
-                ]
+                "type": "object"
               }
             }
           },
-          "required": false
+          "required": true
         },
         "responses": {
           "200": {
@@ -5421,12 +5412,19 @@
             }
           },
           {
-            "description": "The ETag the write expects.",
+            "description": "The ETag the write expects; the request carries it or If-None-Match.",
             "in": "header",
             "name": "If-Match",
-            "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "description": "A PUT creating its record.",
+            "in": "header",
+            "name": "If-None-Match",
+            "schema": {
+              "const": "*"
             }
           }
         ],
@@ -8202,14 +8200,11 @@
                     "$ref": "#/components/schemas/UserSpecPatch"
                   }
                 },
-                "type": [
-                  "object",
-                  "null"
-                ]
+                "type": "object"
               }
             }
           },
-          "required": false
+          "required": true
         },
         "responses": {
           "200": {

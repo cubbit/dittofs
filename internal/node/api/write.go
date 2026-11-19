@@ -34,8 +34,7 @@ const appliedWait = time.Second
 // tracked in the write's transaction, as the body a PUT of it sends, with
 // its tag, ok false when there is none; whether its commit raises the principals or settings
 // generation; whether the row is a POST action that changes the spec, and so
-// carries If-Match as a PUT does; whether the record always exists, so a PUT
-// never creates it, which the API's OpenAPI document says; secret, which names the fields of the
+// carries If-Match as a PUT does; secret, which names the fields of the
 // body whose values its audit record holds only as "set", nil for none; and
 // auditAs, the name its audit record's change gives the body's spec, empty
 // keeping spec, for a record written as part of another resource's.
@@ -49,7 +48,6 @@ type writing[B any] struct {
 	hidden      func(ctx context.Context, tx entity.ControlPlaneTx, id [16]byte) (bool, error)
 	raises      bool
 	changesSpec bool
-	exists      bool
 	secret      func(path string) bool
 	auditAs     string
 }
@@ -89,7 +87,7 @@ type writing[B any] struct {
 // transaction of its own. After a commit that raises the principals or
 // settings generation, the answer waits for the node to apply it.
 func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) (I, error), h func(context.Context, request[B], I, entity.ControlPlaneTx) (R, [16]byte, error)) adapter {
-	return adapter{form: formWrite, body: reflect.TypeFor[B](), out: reflect.TypeFor[R](), changesSpec: w.changesSpec, exists: w.exists, replays: true, raises: w.raises, run: func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (a answer, err error) {
+	return adapter{form: formWrite, body: reflect.TypeFor[B](), out: reflect.TypeFor[R](), changesSpec: w.changesSpec, replays: true, raises: w.raises, run: func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (a answer, err error) {
 		if s.d.Store == nil {
 			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
 		}

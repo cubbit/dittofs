@@ -29,14 +29,6 @@ type auditRow struct {
 // audit is GET /audit, in store-time order: from and to bound the records'
 // store time, RFC 3339, to excluded; actor names an account as kind:id, or
 // schedule; target names a resource as kind:id.
-// auditFilters describe GET /audit's filters.
-var auditFilters = []param{
-	{name: "from", format: "date-time", desc: "Records stored at or after this time."},
-	{name: "to", format: "date-time", desc: "Records stored before this time."},
-	{name: "actor", example: apiv1.ScheduleKind, desc: "Records of one account, as kind:id, or of the schedule, as schedule."},
-	{name: "target", example: "share:0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b", desc: "Records of one resource, as kind:id."},
-}
-
 var audit = listing[auditRow, apiv1.AuditRecord]{
 	filters: []string{"from", "to", "actor", "target"},
 	records: func(ctx context.Context, d Deps, after []byte, q map[string]string) iter.Seq2[auditRow, error] {
@@ -55,6 +47,14 @@ var audit = listing[auditRow, apiv1.AuditRecord]{
 	},
 	key:  func(a auditRow) []byte { return a.pos },
 	item: func(a auditRow, _ perPage) apiv1.AuditRecord { return auditRecordOf(a.AuditRecord) },
+}
+
+// auditFilters describe GET /audit's filters.
+var auditFilters = []param{
+	{name: "from", format: "date-time", desc: "Records stored at or after this time."},
+	{name: "to", format: "date-time", desc: "Records stored before this time."},
+	{name: "actor", example: apiv1.ScheduleKind, desc: "Records of one account, as kind:id, or of the schedule, as schedule."},
+	{name: "target", example: "share:0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b", desc: "Records of one resource, as kind:id."},
 }
 
 // auditFilter is the filter q's parameters name, refusing one that does not

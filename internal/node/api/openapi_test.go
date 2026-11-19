@@ -221,9 +221,9 @@ func TestOpenAPIOperationIDs(t *testing.T) {
 }
 
 // A request body's schema requires no field the server defaults and admits
-// no field its type lacks; a merge patch admits null at every depth and may
-// be left out; an answer's schema requires every field the wire always
-// writes.
+// no field its type lacks; a merge patch is an object, required, whose
+// values may be null; an answer's schema requires every field the wire
+// always writes.
 func TestOpenAPIBodies(t *testing.T) {
 	doc := document(t, routes)
 	body := func(path, method, ct string) any {
@@ -240,7 +240,7 @@ func TestOpenAPIBodies(t *testing.T) {
 	}{
 		{"a patch setting one field", patch, `{"spec":{"path":"/x"}}`, true},
 		{"a patch resetting one field", patch, `{"spec":{"name":null}}`, true},
-		{"a patch of null", patch, `null`, true},
+		{"a patch of null", patch, `null`, false},
 		{"a patch naming no field of the type", patch, `{"spec":{"bogus":1}}`, false},
 		{"a policy naming one field", put, `{"spec":{"flavors":["sys"]}}`, true},
 		{"a policy naming no field of the type", put, `{"spec":{"read_only":true,"x":1}}`, false},
@@ -258,14 +258,16 @@ func TestOpenAPIBodies(t *testing.T) {
 			t.Errorf("%s: %s validates with %v, want valid %v", tc.name, tc.value, err, tc.ok)
 		}
 	}
-	if got := dig(doc, "paths", "/api/v1/shares/{id}", "patch", "requestBody", "required"); got != false {
-		t.Errorf("PATCH /shares/{id}: requestBody.required %v, want false", got)
+	if got := dig(doc, "paths", "/api/v1/shares/{id}", "patch", "requestBody", "required"); got != true {
+		t.Errorf("PATCH /shares/{id}: requestBody.required %v, want true", got)
 	}
 }
 
 // Validate checks v against schema, resolving references in doc, for the
 // keywords the document uses: $ref, anyOf, const, enum, type, properties,
-// required, additionalProperties false and items.
+// required, additionalProperties false and items. An object schema that
+// names its properties and says nothing of others is held closed, so an
+// answer carrying a field the document leaves out fails.
 func Validate(doc map[string]any, schema, v any) error { return validate(doc, schema, v, "$") }
 
 func validate(doc map[string]any, schema, v any, at string) error {
@@ -312,7 +314,7 @@ func validate(doc map[string]any, schema, v any, at string) error {
 		for k, x := range v {
 			ps, ok := props[k]
 			if !ok {
-				if s["additionalProperties"] == false {
+				if s["additionalProperties"] == false || s["additionalProperties"] == nil && props != nil {
 					return fmt.Errorf("%s: %s is no property of the schema", at, k)
 				}
 				continue
