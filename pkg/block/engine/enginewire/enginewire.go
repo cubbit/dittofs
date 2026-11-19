@@ -13,6 +13,7 @@ package enginewire
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 
@@ -21,6 +22,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/openstate"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Params is what the composition takes from its caller.
@@ -30,6 +34,11 @@ type Params struct {
 	Store   *kvstore.Store
 	Clock   engine.Clock
 	Logger  *slog.Logger
+	// Tracer is the host's tracer, nil when tracing is off. Composed into
+	// each journal's Tracer option over the journal's own identity, so no
+	// option is passed and the journal's nil-guarded emitters pay nothing
+	// while it is nil. The engine's own Deps.Tracer stays noTrace.
+	Tracer trace.Tracer
 	// Journal are the options each device's journal opens with, after one
 	// reading Clock.
 	//
@@ -52,12 +61,11 @@ func Compose(p Params) (*openstate.Table, engine.Deps, error) {
 	if err != nil {
 		return nil, engine.Deps{}, err
 	}
-	opts := append([]journal.Option{journal.WithClock(p.Clock)}, p.Journal...)
 	return open, engine.Deps{
 		Node:    p.Node,
 		Devices: p.Devices,
 		Open: func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
-			j, err := journal.Open(ctx, dir, floor, expect, nil, opts...)
+			j, err := journal.Open(ctx, dir, floor, expect, nil, journalOptions(p, expect)...)
 			if err != nil {
 				return nil, err
 			}
@@ -75,6 +83,83 @@ func Compose(p Params) (*openstate.Table, engine.Deps, error) {
 
 func noTrace(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
 	return ctx, func(error) {}
+}
+
+// journalOptions adds to the options every journal opens with the two the
+// identity the open resolved carries: the tracer adapted to the journal's
+// own, and the logger naming this journal — each only when the caller
+// supplied it, so an untraced or unlogged journal passes neither option and
+// the journal's nil-guarded emitters pay nothing.
+func journalOptions(p Params, expect journal.JournalID) []journal.Option {
+	opts := append([]journal.Option{journal.WithClock(p.Clock)}, p.Journal...)
+	if p.Tracer != nil {
+		opts = append(opts, journal.WithTracer(journalTracer(p.Tracer, expect)))
+	}
+	if p.Logger != nil {
+		opts = append(opts, journal.WithLogger(p.Logger.With("journal", hex.EncodeToString(expect[:]))))
+	}
+	return opts
+}
+
+// journalTracer adapts the host's OpenTelemetry tracer to the journal's own
+// Tracer: each span is named journal.<op>, the journal's prefix on the op the
+// journal chose, and carries the journal's identity as an attribute, built
+// once here, when the adapter is built. The span ends with the operation's
+// error, recorded and surfaced as the span's failure.
+//
+// decision: the adapter starts a span for every op the journal names, with no
+// IsSampled check on the parent, so RFC 25 §6.1's sampled-parent rule is
+// knowingly unapplied: a request-path journal op — a reserve_refused, a fill
+// — is always traced as a root of its own, and a traced call allocates a
+// span whatever its parent. It holds because only the dev
+// DITTOFS_OTLP_ENDPOINT gate ever supplies a tracer, no adapter or request
+// span exists on the node yet, and a request context the SDK built without a
+// sampled parent is rooted by the provider's ParentBased(AlwaysSample)
+// anyway. Withdraw it when a request span reaches the node: the journal marks
+// its background contexts, the adapter gates the request-path ops on
+// IsSampled, and the engine's own Deps.Tracer takes the same adaptation.
+func journalTracer(t trace.Tracer, id journal.JournalID) journal.Tracer {
+	ident := attribute.String("journal", hex.EncodeToString(id[:]))
+	return func(ctx context.Context, op journal.SpanOp, attrs ...slog.Attr) (context.Context, func(err error)) {
+		kvs := make([]attribute.KeyValue, 0, len(attrs)+1)
+		kvs = append(kvs, ident)
+		for _, a := range attrs {
+			if kv, ok := otel(a); ok {
+				kvs = append(kvs, kv)
+			}
+		}
+		c, s := t.Start(ctx, "journal."+string(op), trace.WithAttributes(kvs...))
+		return c, func(err error) {
+			if err != nil {
+				s.RecordError(err)
+				s.SetStatus(codes.Error, err.Error())
+			}
+			s.End()
+		}
+	}
+}
+
+// otel is a slog.Attr as the span attribute of its value, the four value
+// shapes the journal's spans carry — string, bool and both integer kinds.
+// Anything else answers none, keeping the span's attributes the closed set
+// the journal's own emitters pass.
+func otel(a slog.Attr) (attribute.KeyValue, bool) {
+	k := attribute.Key(a.Key)
+	switch a.Value.Kind() {
+	case slog.KindString:
+		return k.String(a.Value.String()), true
+	case slog.KindBool:
+		return k.Bool(a.Value.Bool()), true
+	case slog.KindInt64:
+		return k.Int64(a.Value.Int64()), true
+	case slog.KindUint64:
+		// decision: the uint64 figure narrows to int64, so a value at or
+		// above 2^63 wraps negative. No figure the journal puts on a span —
+		// a stream number, segment count, moved or freed bytes — can reach
+		// it. Switch to a string attribute if one ever could.
+		return k.Int64(int64(a.Value.Uint64())), true
+	}
+	return attribute.KeyValue{}, false
 }
 
 // Start starts open state with sink and order, which raises the node epoch,

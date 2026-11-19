@@ -80,6 +80,21 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	if err := node.Preflight(ctx, cfg.Metadata.Badger.Path, cfg.Blockstore.Journal.Path, devices, clock); err != nil {
 		return fmt.Errorf("the start check: %w", err)
 	}
+	// The tracing provider is built after the start's refusals, so a refused
+	// start builds no exporter, and before the KV opens: node.New owns the KV
+	// from openKV on — a New that fails closes it — so a start refused on its
+	// endpoint must refuse before the KV exists, not leak one.
+	tracer, stopTracing, err := devTracing()
+	if err != nil {
+		return fmt.Errorf("building the tracing provider: %w", err)
+	}
+	if stopTracing != nil {
+		defer func() {
+			if err := stopTracing(context.Background()); err != nil {
+				slog.Warn("dfs: the trace provider did not shut down clean", "err", err)
+			}
+		}()
+	}
 	kv, err := openKV(cfg, clock)
 	if err != nil {
 		return fmt.Errorf("opening the metadata store: %w", err)
@@ -90,6 +105,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		Clock:     clock,
 		Metrics:   metrics.New(Version, Commit),
 		Logger:    slog.Default(),
+		Tracer:    tracer,
 	})
 	if err != nil {
 		return fmt.Errorf("building the node: %w", err)

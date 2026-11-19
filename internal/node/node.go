@@ -29,6 +29,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Config is what the host supplies and the node cannot build itself.
@@ -44,6 +45,10 @@ type Config struct {
 	Metrics *metrics.Registry
 	// Logger is where the node logs.
 	Logger *slog.Logger
+	// Tracer is the host's tracer, nil when tracing is off. Each journal
+	// the engine opens starts its spans below it, naming the journal by its
+	// identity; nil opens every journal without one, tracing nothing.
+	Tracer trace.Tracer
 	// Journal are options for every journal the node opens, after one
 	// reading Clock: the engine's and the one Start reads each device's
 	// identity with. A test passes journaltest.SuitableMount here, so the
@@ -221,6 +226,7 @@ func build(cfg Config, in apiInputs) (_ *Node, err error) {
 		Store:   n.meta,
 		Clock:   cfg.Clock,
 		Logger:  cfg.Logger,
+		Tracer:  cfg.Tracer,
 		Journal: cfg.Journal,
 	})
 	if err != nil {
@@ -278,13 +284,14 @@ func build(cfg Config, in apiInputs) (_ *Node, err error) {
 	// names them and the API serves TLS on every address but loopback; nor
 	// a signing key or tracer, and in production no Authenticate, as the API
 	// takes neither the access tokens the node builds nor the signing key's
-	// value, and Config names no tracer. So a start on an address but loopback is
-	// refused for want of a certificate even when api.tls names one, no
-	// local socket is served, every call but a public row's answers 401,
-	// every POST and DELETE, which must carry an Idempotency-Key, answers
-	// 503 or 428, and spans go to the no-op tracer. Fill each from the
-	// bootstrap, the secret store, sign-in and the host's tracer as they
-	// land.
+	// value, and Config's tracer is the journals', not the API's: the API's
+	// own tracer is RFC 23's own wiring, fed from Config once it lands. So a
+	// start on an address but loopback is refused for want of a certificate
+	// even when api.tls names one, no local socket is served, every call but
+	// a public row's answers 401, every POST and DELETE, which must carry an
+	// Idempotency-Key, answers 503 or 428, and the API's spans go to the
+	// no-op tracer. Fill each from the bootstrap, the secret store, sign-in
+	// and the host's tracer as they land.
 	n.api = api.New(api.Deps{
 		Ready:        n.readiness,
 		Served:       n.life.served.Load,

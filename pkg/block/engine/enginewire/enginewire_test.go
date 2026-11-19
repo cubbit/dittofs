@@ -2,6 +2,7 @@ package enginewire_test
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/sim"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Compose over a real store and an initialised journal directory, its
@@ -101,6 +105,12 @@ type wiring struct {
 // caller passing no clock to the journal, and the engine built from it.
 func composed(t *testing.T) wiring {
 	t.Helper()
+	return composedWith(t, nil)
+}
+
+// composedWith is composed over the host's tracer, nil for none.
+func composedWith(t *testing.T, tr trace.Tracer) wiring {
+	t.Helper()
 	fs := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
 		db, err := badgerkv.Open(badgerkv.Options{})
 		if err != nil {
@@ -121,6 +131,7 @@ func composed(t *testing.T) wiring {
 		Clock:   sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Journal: []journal.Option{journaltest.SuitableMount()},
+		Tracer:  tr,
 	})
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
@@ -302,5 +313,72 @@ func TestStartOverARecoveryRefusal(t *testing.T) {
 			}
 
 		})
+	}
+}
+
+// Compose over a tracer adapts it into the journal's Tracer option: a write,
+// a commit and a repack pass each reach the recorder as one span named
+// journal.<op>, and every span carries the journal as its identity attribute —
+// the hex of the identity the open resolved expect to. With no tracer,
+// TestCompose covers the same composition: the journal opens with no tracer
+// at all, and its drives work.
+func TestComposeAdaptsTheTracerToTheJournal(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr)).Tracer("dittofs")
+
+	w := composedWith(t, tracer)
+	j, err := w.deps.Open(t.Context(), w.dir, journal.Version{}, w.id)
+	if err != nil {
+		t.Fatalf("Open of the journal under its own identity: got %v, want it opened", err)
+	}
+	t.Cleanup(func() { _ = j.Close() })
+
+	// The journal issues no version until its first limit, as the fixture
+	// sets one on every open of its own.
+	if err := j.SetVersionLimit(journal.Version{Counter: 1 << 20}); err != nil {
+		t.Fatalf("SetVersionLimit of the composed journal: %v", err)
+	}
+	h, err := j.Share(journal.ShareTag(1), 0, journal.Version{})
+	if err != nil {
+		t.Fatalf("Share of the opened journal: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	file := journal.NewFileID([16]byte{'t'})
+	// A fresh open fills its spare pool in the background, so the first
+	// write retries until the pool has one, as the journal's own fixtures do.
+	if err := journaltest.RetrySpare(func() error {
+		_, err := h.WriteAt(t.Context(), file, 0, []byte("the traced write"), 0)
+		return err
+	}); err != nil {
+		t.Fatalf("WriteAt through the composed journal: %v", err)
+	}
+	if _, err := h.Sync(t.Context(), file); err != nil {
+		t.Fatalf("Sync through the composed journal: %v", err)
+	}
+	if _, err := j.Repack(t.Context(), journaltest.FixtureSegmentCap, journal.RepackScope{}); err != nil && !errors.Is(err, journal.ErrNotImplemented) {
+		t.Fatalf("Repack through the composed journal: %v", err)
+	}
+
+	var counts map[string]int
+	var ident string
+	for _, s := range sr.Ended() {
+		if !strings.HasPrefix(s.Name(), "journal.") {
+			continue
+		}
+		if counts == nil {
+			counts = map[string]int{}
+		}
+		counts[s.Name()]++
+		for _, a := range s.Attributes() {
+			if string(a.Key) == "journal" {
+				ident = a.Value.AsString()
+			}
+		}
+	}
+	if len(counts) == 0 {
+		t.Fatal("the journal opened over a tracer recorded no journal span, want the drive's sync, repack and write")
+	}
+	if want := hex.EncodeToString(w.id[:]); ident != want {
+		t.Errorf("the journal spans name the journal %s, want the hex of the identity Open resolved, %s", ident, want)
 	}
 }

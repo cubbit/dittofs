@@ -45,6 +45,15 @@ var allowed = map[string][]string{
 	module + "pkg/metadata/kv/kvtest":            {"enginetest", unitTests},
 	module + "pkg/metadata/kvstore/kvstoretest":  {"enginetest", unitTests, wireTests},
 	module + "pkg/sim":                           {"enginetest", unitTests, internalTests, wireTests},
+	// enginewire adapts the host's tracer to each journal's own Tracer
+	// option, so its spans and log lines name the journal by one identity;
+	// the node hands the composition the only tracer the engine sees. Its
+	// test drives the same adapter over the real SDK's in-memory recorder.
+	"go.opentelemetry.io/otel/trace":               {"enginewire", wireTests},
+	"go.opentelemetry.io/otel/attribute":           {"enginewire"},
+	"go.opentelemetry.io/otel/codes":               {"enginewire"},
+	"go.opentelemetry.io/otel/sdk/trace":           {wireTests},
+	"go.opentelemetry.io/otel/sdk/trace/tracetest": {wireTests},
 }
 
 // unitTests names the engine's external test package, whose unit
