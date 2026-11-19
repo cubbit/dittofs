@@ -440,6 +440,19 @@ func TestCodecOddStructureSize(t *testing.T) {
 	}
 }
 
+// A nil reply writes nothing, whatever its struct holds: an SMB2 failure's
+// body is the header codec's ERROR response, and core hands an encoder no
+// reply for a request it refused (RFC 22 section 16.5, RFC 20 section 4.7).
+func TestCodecNilEncodesNothing(t *testing.T) {
+	for _, c := range []codec{&CloseRequest{}, &CreateRequest{}, &NegotiateRequest{}, &NegotiateResponse{}, &WriteRequest{}, &EchoRequest{}} {
+		var out resources.Buf
+		nilOf := reflect.Zero(reflect.TypeOf(c)).Interface().(codec)
+		if err := nilOf.EncodeWire(0x311, &out); err != nil || len(out.B) != 0 {
+			t.Errorf("%T: nil wrote %x, %v; want nothing", c, out.B, err)
+		}
+	}
+}
+
 // A create context's data is its struct's bytes, none past them, as MS-SMB2
 // 3.3.5.9 has a server refuse any other; a negotiate context's may run past
 // its struct, which reads its fields alone (MS-SMB2 2.2.3.1).

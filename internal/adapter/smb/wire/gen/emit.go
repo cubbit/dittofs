@@ -47,6 +47,10 @@ func (g *gen) emit(pkg string, files []string) ([]byte, error) {
 		if odd := carried(s); odd > 0 {
 			n = fmt.Sprintf("max(d.N, %d)", odd)
 		}
+		// A nil reply writes nothing: a failure's body is the header codec's
+		// ERROR response, and core hands an encoder no reply for a request it
+		// refused or a handler that failed with none (RFC 20 section 4.7, RFC 22
+		// section 16.5).
 		if !held[s.name] {
 			fmt.Fprintf(&b, `
 func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {
@@ -56,6 +60,9 @@ func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		return nil
+	}
 	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
 	x.encodeSMB2(&e, v)
 	if e.Err != nil {

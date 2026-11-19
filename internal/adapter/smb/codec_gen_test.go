@@ -14,6 +14,9 @@ func (x *echoRequest) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *echoRequest) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		return nil
+	}
 	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
 	x.encodeSMB2(&e, v)
 	if e.Err != nil {
@@ -49,6 +52,9 @@ func (x *echoResponse) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *echoResponse) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		return nil
+	}
 	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
 	x.encodeSMB2(&e, v)
 	if e.Err != nil {
