@@ -293,7 +293,7 @@ Full docs live in [`docs/`](docs/), split by audience.
 - [NFS protocol](docs/internals/nfs-protocol.md) · [SMB protocol](docs/internals/smb-protocol.md) — wire format, dispatch, internals
 - [ACL design](docs/internals/acl-design.md) · [Security model](docs/internals/security-model.md) · [Encryption design](docs/internals/encryption-design.md)
 - [Implementing Stores](docs/internals/implementing-stores.md) — metadata/block store contracts
-- [Testing](docs/internals/testing.md): running, reading and adding tests with `dt`, the conformance suites, and the Windows checklists
+- [Testing](docs/internals/testing.md): running, reading and adding tests with `dt`, and the conformance suites; the Windows checklists are in [testing-windows.md](docs/internals/testing-windows.md)
 - [Debugging](docs/internals/debugging.md) — protocol interop and pcap-diff playbook
 - [Issue priority triage](docs/internals/priorities.md) — how board items get their priority
 - [Contributing](docs/internals/contributing.md) · [Releasing](docs/internals/releasing.md)
@@ -308,12 +308,13 @@ Full docs live in [`docs/`](docs/), split by audience.
 test/harness/bin/dt run unit                     # the Go tests
 test/harness/bin/dt services up postgres kmip localstack   # the services integration and e2e need
 test/harness/bin/dt run integration
-test/harness/bin/dt run e2e                      # Linux, a kernel NFS client and passwordless sudo
+test/harness/bin/dt run e2e                      # Linux and root; dt doctor says what else is missing
 ```
 
 [docs/internals/testing.md](docs/internals/testing.md) is the guide: what each suite needs, how to
-run and read a run, the conformance suites and the Windows checklists. See also
-[test/e2e/](test/e2e/) and, for the benchmarks, [bench/README.md](bench/README.md).
+run and read a run, and the conformance suites. The Windows checklists are in
+[testing-windows.md](docs/internals/testing-windows.md). See also [test/e2e/](test/e2e/) and, for
+the benchmarks, [bench/README.md](bench/README.md).
 
 ## Security
 

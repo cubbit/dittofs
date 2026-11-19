@@ -419,8 +419,9 @@ Log appropriately:
 
 ## CI Workflows
 
-Every test workflow is [`tests.yml`](../../.github/workflows/tests.yml), driven by `dt`: which cells
-each event's tier runs, its retries, the merge queue and the checks a merge requires are
+The suites of [`test/suites.yaml`](../../test/suites.yaml) run in
+[`tests.yml`](../../.github/workflows/tests.yml), driven by `dt`: which cells each event's tier
+runs, its retries, the merge queue and the checks a merge requires are
 [docs/internals/testing.md](testing.md#ci)'s.
 
 ### Combined-tree checks
