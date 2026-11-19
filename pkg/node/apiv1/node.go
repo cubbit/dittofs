@@ -1,5 +1,7 @@
 package apiv1
 
+import "time"
+
 // Node is one node as a resource.
 type Node = Resource[NodeSpec, NodeStatus]
 
@@ -24,4 +26,15 @@ type Reconciled struct {
 	Settings   uint64 `json:"settings"`
 	ShareList  uint64 `json:"share_list"`
 	Principals uint64 `json:"principals"`
+}
+
+// Connection is one connection open on a node, as GET
+// /api/v1/nodes/{id}/connections lists it (RFC 23 §4.2): the protocol it
+// speaks, the client's address, the protocol's session it carries, empty
+// where it carries none, and when it was accepted.
+type Connection struct {
+	Protocol string    `json:"protocol"`
+	Remote   string    `json:"remote"`
+	Session  string    `json:"session"`
+	Since    time.Time `json:"since"`
 }

@@ -83,6 +83,17 @@ type Deps struct {
 	// Health is the node's health conditions, its own and the
 	// installation's; nil, it holds none.
 	Health conditions
+	// Connections is the connections open on this node now, as each of its
+	// adapters lists them, which GET /nodes/{id}/connections pages through
+	// (RFC 23 §4.2).
+	//
+	// ponytail: only this node's connections are read: an ID naming another
+	// node is answered 404, as a node that never registered is, so in a
+	// cluster a node's connections are read through that node's own API.
+	// The answer for another node's ID belongs to RFC 23, not RFC 15, whose
+	// forwarding carries vfs calls only, and §4.2 does not give it yet;
+	// replace the 404 with it once an installation runs a second node.
+	Connections func() []apiv1.Connection
 	// Clock is the API's time, which a parked poll waits on; nil, a read
 	// that would park answers 503.
 	Clock clock

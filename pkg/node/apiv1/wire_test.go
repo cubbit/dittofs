@@ -67,6 +67,8 @@ func TestWireBodies(t *testing.T) {
 			[]string{"address", "binary", "domain", "lapsed", "reconciled"}},
 		{"reconciled", Reconciled{Settings: 7, ShareList: 3, Principals: 2}, new(Reconciled),
 			[]string{"principals", "settings", "share_list"}},
+		{"connection", Connection{Protocol: "smb", Remote: "192.0.2.7:51234", Since: at}, new(Connection),
+			[]string{"protocol", "remote", "session", "since"}},
 		{"audit record", AuditRecord{
 			ID: "au_1", Time: at, Actor: Principal{Kind: "user", ID: "us_1"}, ActorName: "eli", Credential: "session-1",
 			Node: "n_1", Source: "10.0.0.9:51234", Request: json.RawMessage(`{"method":"PUT"}`),

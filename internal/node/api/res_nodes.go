@@ -1,8 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"iter"
+	"net/http"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -65,6 +69,58 @@ func node(ctx context.Context, d Deps, rq request[none]) (apiv1.Node, error) {
 		return apiv1.Node{}, err
 	}
 	return nodeOf(n, statuses), nil
+}
+
+// nodeConnections is GET /nodes/{id}/connections: the connections listing,
+// for this node's ID alone; any other ID is 404 before any adapter is read,
+// as GET /nodes/{id} answers a node that never registered.
+func nodeConnections(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (answer, error) {
+	if entity.NodeID(id) != s.d.Node {
+		return answer{}, errNotFound
+	}
+	return list(connections)(ctx, s, r, rt, id)
+}
+
+// connRow is a connection with its key.
+type connRow struct {
+	apiv1.Connection
+	key []byte
+}
+
+// connections is the connections open on this node now, in key order,
+// resuming after the key after: a local listing, read from the node's
+// adapters and never from the store (RFC 23 §4.2), so a store refusing every
+// call does not refuse it.
+var connections = listing[connRow, apiv1.Connection]{
+	local: true,
+	records: func(_ context.Context, d Deps, after []byte, _ map[string]string) iter.Seq2[connRow, error] {
+		var rows []connRow
+		for _, c := range d.Connections() {
+			if k := connKey(c); bytes.Compare(k, after) > 0 {
+				rows = append(rows, connRow{c, k})
+			}
+		}
+		slices.SortFunc(rows, func(a, b connRow) int { return bytes.Compare(a.key, b.key) })
+		return func(yield func(connRow, error) bool) {
+			for _, r := range rows {
+				if !yield(r, nil) {
+					return
+				}
+			}
+		}
+	},
+	key:  func(r connRow) []byte { return r.key },
+	item: func(r connRow, _ perPage) apiv1.Connection { return r.Connection },
+}
+
+// connKey is c's key, which orders connections by Since, then Remote, then
+// Protocol: Since's Unix nanoseconds, big endian, which order as the times
+// do, an accept time being after 1970; Remote's text, ended by a zero byte,
+// which no address's text holds; then Protocol.
+func connKey(c apiv1.Connection) []byte {
+	k := binary.BigEndian.AppendUint64(nil, uint64(c.Since.UnixNano()))
+	k = append(append(k, c.Remote...), 0)
+	return append(k, c.Protocol...)
 }
 
 // conditions is the node's health conditions, its own and the
