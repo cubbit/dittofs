@@ -21,14 +21,32 @@ const (
 	journalKnown = "test/journal/known.yaml"
 )
 
-// openOwners maps each issue a known failure may carry to what it names. An
-// epic whose code lands leaves this table, and its rows leave known.yaml in
-// the same change; this test is what holds both to that.
+// openOwners maps each issue a known failure may carry to what it names. The
+// test runs with no network and no second source of truth, so this set is
+// itself what enforces the open-owner rule: it holds exactly the open epics,
+// and a row carrying any other issue fails on it.
+//
+// decision: the change that lands 7b or 9b removes that epic's issue here and
+// clears its rows from known.yaml in the same change — nothing else fires
+// when an issue closes. A row 7b or 9b turns green fails the run through the
+// harness's own rule that a listed test passing fails it, while a row the
+// epics leave red would name a closed issue, and that leak is what this
+// marker points at.
 var openOwners = map[string]string{
 	"#3596": "epic 7b",
 	"#3379": "epic 9b",
 	"#3395": "epic 12 (T12.2)",
 }
+
+// openOwnerList names each open owner with its issue, so a failure that
+// rejects a row's owner says what the row may carry instead.
+var openOwnerList = func() string {
+	var out []string
+	for _, issue := range slices.Sorted(maps.Keys(openOwners)) {
+		out = append(out, openOwners[issue]+" ("+issue+")")
+	}
+	return strings.Join(out, ", ")
+}()
 
 // classOwner maps the call a `stub: <Call>` message names to the open epic
 // that writes it. Repack, Forget and repack_copy are landed code on this
@@ -208,8 +226,8 @@ func TestKnownFilesClassified(t *testing.T) {
 			continue // a wontfix row carries no owner
 		}
 		if _, ok := openOwners[e.Issue]; !ok {
-			t.Errorf("%s: %s names %q, which is not an open owner of a known failure",
-				journalKnown, e.Test, e.Issue)
+			t.Errorf("%s: %s names %q, which is not an open owner of a known failure; carry one of %s",
+				journalKnown, e.Test, e.Issue, openOwnerList)
 			continue
 		}
 		want, ok := owner(e)
