@@ -21,7 +21,7 @@ type userDoc struct {
 // directory supplies. An empty address is none.
 //
 // decision: a directory principal's address is refused here because the
-// directory supplies it, and a later answer would overwrite an edit.
+// directory supplies it, and RFC 18 §5.1's later answers update it.
 // Withdraw it only if a directory stops supplying addresses.
 func emailFor(u entity.User, email string) error {
 	if email == "" {

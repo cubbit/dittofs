@@ -213,7 +213,7 @@ func (s *Server) find(ctx context.Context, sp identity.Spelling, o identity.Find
 		sid.EncodeSID(&b, &sp.SID)
 		p, err := found(pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: entity.SchemeSID, Value: b.String()}))
 		if errors.Is(err, vfserr.ErrUnknownPrincipal) {
-			return s.findDirectorySID(ctx, sp.SID, o.Mint)
+			return s.findDirectorySID(ctx, s.state.Load(), b.Bytes(), o.Mint)
 		}
 		return p, err
 	case identity.SchemeGroupName:

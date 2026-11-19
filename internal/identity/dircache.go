@@ -110,6 +110,7 @@ type dirCache struct {
 	mu      sync.Mutex
 	entries map[dirKey]*list.Element // of *dirEntry
 	recent  *list.List               // most recently used first
+	sid     []byte                   // the domain SID, once read
 }
 
 // newDirCache is a cache of c's answers, observed through d's clock,
@@ -164,12 +165,6 @@ func question(by directory.Key) string {
 		return "entry_id"
 	}
 	return "unknown"
-}
-
-// directoryLookup answers "who holds this" through the applied State's
-// directory cache, as dirLookup does.
-func (s *Server) directoryLookup(ctx context.Context, by directory.Key, value []byte, fresh bool) (directory.Answer, bool, error) {
-	return s.state.Load().dirLookup(ctx, by, value, fresh)
 }
 
 // dirLookup answers "who holds this" through st's directory cache, under its
@@ -266,12 +261,72 @@ func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, g
 	return directory.Answer{}, false, r.Err
 }
 
-// query asks the directory k once, in a slot of its own, under a span of the
-// context that opened it, and stores the answer. A query that waits
-// dirSlotWait for a slot fails ErrUnavailable unsent, so an outage of many
-// distinct names neither parks a goroutine each without bound nor sends their
-// queries after every caller has left.
+// query asks the directory k once, in a slot of its own, and stores the
+// answer. Its failure raises the outage, and its answer clears it.
 func (c *dirCache) query(ctx context.Context, k dirKey, q string, value []byte) (*dirEntry, error) {
+	var e *dirEntry
+	err := c.run(ctx, q, func(ctx context.Context) error {
+		start := c.clock.Now()
+		ans, found, err := c.client.Lookup(ctx, k.by, value)
+		if err != nil && !errors.Is(err, directory.ErrAmbiguous) {
+			if c.out.raise(start, err) {
+				go c.probe(k, q)
+			}
+			return err
+		}
+		// An answer, ambiguous or not, is the directory's.
+		c.out.clear(c.clock.Now())
+		if err != nil {
+			return err
+		}
+		e = &dirEntry{key: k, ans: ans, found: found, at: c.clock.Now()}
+		c.put(e)
+		return nil
+	})
+	return e, err
+}
+
+// groups is user's closure, asked of the directory in a slot of its own and
+// not cached: a mint asks it once per user it mints.
+func (c *dirCache) groups(ctx context.Context, user directory.Answer) ([]directory.Answer, error) {
+	var out []directory.Answer
+	err := c.run(ctx, "groups", func(ctx context.Context) (err error) {
+		out, err = c.client.Groups(ctx, user)
+		return err
+	})
+	return out, err
+}
+
+// domainSID is the directory's domain SID, asked in a slot of its own the
+// first time and held from then on: the client reads it once and never again.
+func (c *dirCache) domainSID(ctx context.Context) ([]byte, error) {
+	c.mu.Lock()
+	sid := c.sid
+	c.mu.Unlock()
+	if sid != nil {
+		return sid, nil
+	}
+	err := c.run(ctx, "domain_sid", func(ctx context.Context) (err error) {
+		sid, err = c.client.DomainSID(ctx)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	c.sid = sid
+	c.mu.Unlock()
+	return sid, nil
+}
+
+// run runs f, the question q, in one of the dirInFlight slots, under a span
+// of ctx and timed in identity_directory_seconds. A question that waits
+// dirSlotWait for a slot, or whose ctx ends first, fails ErrUnavailable
+// unsent, so an outage of many distinct names neither parks a goroutine each
+// without bound nor sends their queries after every caller has left. A
+// closure's searches run one after another in its one slot, so the slots
+// still bound the searches in flight.
+func (c *dirCache) run(ctx context.Context, q string, f func(context.Context) error) error {
 	select {
 	case c.slots <- struct{}{}:
 	default:
@@ -281,10 +336,11 @@ func (c *dirCache) query(ctx context.Context, k dirKey, q string, value []byte) 
 		case c.slots <- struct{}{}:
 			got = true
 		case <-c.clock.After(dirSlotWait):
+		case <-ctx.Done():
 		}
 		c.waiting.Add(-1)
 		if !got {
-			return nil, fmt.Errorf("%w: identity: no directory query slot within %v", vfserr.ErrUnavailable, dirSlotWait)
+			return fmt.Errorf("%w: identity: no directory query slot within %v", vfserr.ErrUnavailable, dirSlotWait)
 		}
 	}
 	defer func() { <-c.slots }()
@@ -292,25 +348,12 @@ func (c *dirCache) query(ctx context.Context, k dirKey, q string, value []byte) 
 	ctx, span := c.tracer.Start(ctx, "identity.directory.query", trace.WithAttributes(attribute.String("identity.question", q)))
 	defer span.End()
 	start := c.clock.Now()
-	ans, found, err := c.client.Lookup(ctx, k.by, value)
+	err := f(ctx)
 	c.seconds.Observe(c.clock.Now().Sub(start).Seconds())
 	if err != nil {
 		span.SetStatus(codes.Error, "directory unavailable")
-		if !errors.Is(err, directory.ErrAmbiguous) {
-			if c.out.raise(start, err) {
-				go c.probe(k, q)
-			}
-			return nil, err
-		}
 	}
-	// An answer, ambiguous or not, is the directory's.
-	c.out.clear(c.clock.Now())
-	if err != nil {
-		return nil, err
-	}
-	e := &dirEntry{key: k, ans: ans, found: found, at: c.clock.Now()}
-	c.put(e)
-	return e, nil
+	return err
 }
 
 // probe is the probe loop raise started: while the outage is raised it asks

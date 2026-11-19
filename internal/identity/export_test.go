@@ -81,7 +81,7 @@ func (s *Server) HeldCredential(id entity.OperationID) (identity.JoinCredential,
 // DirectoryLookup asks the applied State's directory cache a "who holds
 // this" question: ErrUnavailable with no record or no Deps.Directory.
 func (s *Server) DirectoryLookup(ctx context.Context, by directory.Key, value []byte) (directory.Answer, bool, error) {
-	return s.directoryLookup(ctx, by, value, false)
+	return s.state.Load().dirLookup(ctx, by, value, false)
 }
 
 // VerifyAPReq verifies an AP-REQ under the applied State at now.
@@ -144,7 +144,13 @@ func (c *dirCache) Conditions(dst []health.Condition) []health.Condition {
 
 // UseDirectoryCache puts c in place of the applied State's directory cache,
 // so a test reaches the directory through a client whose bind password it
-// passes in, where Apply's client resolves it through Deps.Secrets.
+// passes in.
+//
+// ponytail: this replaces the cache Apply builds, whose client resolves its
+// bind password through Deps.Secrets.Resolve, which no secrets provider
+// implements yet, so these tests run on a client production never builds.
+// Delete it, and drive Apply with the real secrets provider, once Resolve
+// is implemented.
 func (s *Server) UseDirectoryCache(c *DirectoryCache) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

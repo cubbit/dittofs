@@ -1,11 +1,13 @@
 package identity_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -37,6 +39,7 @@ type dirPrincipals struct {
 	fault *switched
 	clock *sim.TestClock
 	reg   *metrics.Registry
+	cache *identity.DirectoryCache
 }
 
 // dirStore is a memory KV store initialised with a fresh installation ID.
@@ -78,9 +81,9 @@ func newDirPrincipals(t *testing.T, st *kvstore.Store, inst uuid.UUID, schema st
 	}
 	c := directory.NewClient(rec, e.f.Dial, func(context.Context) ([]byte, error) { return pw, nil }, e.clock, nil)
 	t.Cleanup(c.Close)
-	dc := identity.NewDirectoryCache(c, identity.Deps{Clock: e.clock, Metrics: e.reg})
-	t.Cleanup(dc.Close)
-	e.s.UseDirectoryCache(dc)
+	e.cache = identity.NewDirectoryCache(c, identity.Deps{Clock: e.clock, Metrics: e.reg})
+	t.Cleanup(e.cache.Close)
+	e.s.UseDirectoryCache(e.cache)
 	return e
 }
 
@@ -267,12 +270,13 @@ func TestDirectoryMintRemapsReservedIDs(t *testing.T) {
 			t.Errorf("identity_mints_remapped_total{kind=%s} after the 2000 mint %v, want 0", kind, got)
 		}
 	}
-	for _, name := range []string{"zero", "anon", "dave"} {
+	for _, name := range []string{"zero", "anon"} {
 		p := e.mustFind(t, sidOf(t, e.entry(t, directory.ByUserName, name)), true)
 		if got := e.num(t, p, pid.SchemeUID); got == 0 || got == 65534 {
 			t.Errorf("%s's uid %d, want an allocated one", name, got)
 		}
 	}
+	e.mustFind(t, sidOf(t, e.entry(t, directory.ByUserName, "dave")), true) // mints nogroup
 	g := e.mustFind(t, sidOf(t, e.entry(t, directory.ByGroupName, "nogroup")), false)
 	if got := e.num(t, g, pid.SchemeGID); got == 65534 {
 		t.Errorf("nogroup's gid %d, want an allocated one", got)
@@ -458,51 +462,240 @@ func TestKerberosLinkSIDIsFreshOnly(t *testing.T) {
 
 // A cold Find with Mint of a user in 300 groups, every search delayed 4
 // seconds, fails ErrUnavailable at 20 seconds on the injected clock, having
-// written nothing.
+// written nothing, whether the user is spelled by qualified name or by SID.
 func TestFindDirectoryStopsAtTwentySeconds(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	synctest.Test(t, func(t *testing.T) {
-		st, inst := dirStore(t)
-		e := newDirPrincipals(t, st, inst, directory.SchemaAD)
-		alice := e.d.AddUser(t, "alice", nil)
-		for i := range 300 {
-			e.d.AddGroup(t, fmt.Sprintf("g%03d", i), map[string][][]byte{"member": attr(alice)})
+	for _, by := range []string{"qualified", "sid"} {
+		t.Run(by, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				st, inst := dirStore(t)
+				e := newDirPrincipals(t, st, inst, directory.SchemaAD)
+				alice := e.d.AddUser(t, "alice", nil)
+				for i := range 300 {
+					e.d.AddGroup(t, fmt.Sprintf("g%03d", i), map[string][][]byte{"member": attr(alice)})
+				}
+				sp := pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\alice`}
+				if by == "sid" {
+					sp = sidOf(t, e.entry(t, directory.ByUserName, "alice")) // her SID lookup stays cold
+				}
+				before := e.pgen(t)
+				e.fail(t, sim.Rule{Op: "search", Key: "*", Action: sim.FaultAction{Delay: 4 * time.Second}})
+				start := e.clock.Now()
+				done := make(chan error, 1)
+				go func() {
+					_, err := e.s.Find(context.Background(), sp, pid.FindOpts{Mint: true})
+					done <- err
+				}()
+				var err error
+			wait:
+				for {
+					synctest.Wait()
+					select {
+					case err = <-done:
+						break wait
+					default:
+					}
+					if e.clock.Now().Sub(start) > time.Minute {
+						t.Fatal("Find still running a minute in")
+					}
+					e.clock.Advance(time.Second)
+				}
+				if took := e.clock.Now().Sub(start); took != 20*time.Second {
+					t.Errorf("Find returned at %v, want 20s", took)
+				}
+				if !errors.Is(err, vfserr.ErrUnavailable) {
+					t.Errorf("Find = %v, want ErrUnavailable", err)
+				}
+				if got := e.pgen(t); got != before {
+					t.Errorf("PGEN %d, want %d: the bounded Find wrote", got, before)
+				}
+				// The searches the bound left behind finish on the clock.
+				for range 60 {
+					e.clock.Advance(time.Second)
+					synctest.Wait()
+				}
+			})
+		})
+	}
+}
+
+// A directory that refuses every search, with nothing cached, makes Find of a
+// directory name ErrUnavailable with and without Mint, never
+// ErrUnknownPrincipal, which would read as "no such account".
+func TestFindDirectoryDownIsUnavailable(t *testing.T) {
+	e := newAD(t)
+	e.d.AddUser(t, "alice", nil)
+	e.fail(t, sim.Rule{Op: "search", Key: "*", Action: sim.FaultAction{Err: errors.New("injected directory fault")}})
+	for _, mint := range []bool{false, true} {
+		if _, err := e.find(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\alice`}, mint); !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf(`Find(KORP\alice, mint %v) with the directory down = %v, want ErrUnavailable`, mint, err)
 		}
-		before := e.pgen(t)
-		e.fail(t, sim.Rule{Op: "search", Key: "*", Action: sim.FaultAction{Delay: 4 * time.Second}})
-		start := e.clock.Now()
-		done := make(chan error, 1)
-		go func() {
-			_, err := e.s.Find(context.Background(), pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\alice`}, pid.FindOpts{Mint: true})
-			done <- err
-		}()
-		var err error
-	wait:
-		for {
-			synctest.Wait()
-			select {
-			case err = <-done:
-				break wait
-			default:
+	}
+}
+
+// A user's mint mints only the groups of the directory's own domain: a
+// builtin group and another domain's group in her closure are skipped and
+// counted, and a builtin group found by name is not minted either, so no
+// record holds a well-known SID or the builtin names.
+func TestDirectoryMintSkipsGroupsOfOtherDomains(t *testing.T) {
+	e := newAD(t)
+	ctx := context.Background()
+	alice := e.d.AddUser(t, "alice", nil)
+	e.d.AddGroup(t, "eng", map[string][][]byte{"member": attr(alice)})
+	e.d.AddGroup(t, "Users", map[string][][]byte{"member": attr(alice), "objectSid": {sidBytes("S-1-5-32-545")}})
+	e.d.AddGroup(t, "Partners", map[string][][]byte{"member": attr(alice), "objectSid": {sidBytes("S-1-5-21-9-9-9-1200")}})
+
+	e.mustFind(t, sidOf(t, e.entry(t, directory.ByUserName, "alice")), true)
+	if got := e.counter(t, "identity_mints_total", "kind", "group"); got != 2 {
+		t.Errorf("identity_mints_total{kind=group} %v, want 2: eng and Domain Users", got)
+	}
+	for _, name := range []string{"Users", "Partners"} {
+		if p, err := e.st.Principals().ByName(ctx, entity.PrincipalGroup, name); err == nil {
+			t.Errorf("group %s minted as %v, want none: its SID is not of the directory's domain", name, p)
+		}
+	}
+	for reason, want := range map[string]float64{"builtin": 1, "other_domain": 1} {
+		if got := e.counter(t, "identity_directory_groups_skipped_total", "reason", reason); got != want {
+			t.Errorf("identity_directory_groups_skipped_total{reason=%s} %v, want %v", reason, got, want)
+		}
+	}
+	before := e.pgen(t)
+	if _, err := e.find(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\Users`}, true); !errors.Is(err, vfserr.ErrUnknownPrincipal) {
+		t.Errorf(`Find(KORP\Users, mint) = %v, want ErrUnknownPrincipal`, err)
+	}
+	if got := e.pgen(t); got != before {
+		t.Errorf(`PGEN after Find(KORP\Users) %d, want %d: it minted the builtin group`, got, before)
+	}
+}
+
+// sidBytes is the binary form of the SID s.
+func sidBytes(s string) []byte {
+	var b bytes.Buffer
+	sid.EncodeSID(&b, sid.ParseSIDMust(s))
+	return b.Bytes()
+}
+
+// A machine account is never minted as a file user (RFC 18 §2.4): not by its
+// SID, not by its qualified name, and a Kerberos name ending in $ is refused
+// before the directory is asked.
+func TestDirectoryMachineAccountIsNotMinted(t *testing.T) {
+	e := newAD(t)
+	ctx := context.Background()
+	e.d.AddUser(t, "BUILD01$", map[string][][]byte{"objectClass": {
+		[]byte("top"), []byte("person"), []byte("organizationalPerson"), []byte("user"), []byte("computer")}})
+	a := e.entry(t, directory.ByUserName, "BUILD01$")
+	before := e.pgen(t)
+	for _, sp := range []pid.Spelling{sidOf(t, a), {Scheme: pid.SchemeQualified, Text: `KORP\BUILD01$`}} {
+		if p, err := e.find(t, sp, true); !errors.Is(err, vfserr.ErrUnknownPrincipal) {
+			t.Errorf("Find(%+v, mint) of a computer = %v, %v; want ErrUnknownPrincipal", sp, p, err)
+		}
+	}
+	sent := len(e.f.Queries())
+	if _, err := e.s.ByKerberosName(ctx, "BUILD02$", "CORP.EXAMPLE", true); !errors.Is(err, vfserr.ErrUnknownPrincipal) {
+		t.Errorf("ByKerberosName(BUILD02$) = %v, want ErrUnknownPrincipal", err)
+	}
+	if got := len(e.f.Queries()); got != sent {
+		t.Errorf("searches after ByKerberosName(BUILD02$) %d, want %d: a machine name was asked of the directory", got, sent)
+	}
+	if got := e.pgen(t); got != before {
+		t.Errorf("PGEN %d, want %d: a machine account was minted", got, before)
+	}
+}
+
+// A uidNumber or gidNumber another principal holds, in the store or earlier
+// in the same batch, is replaced by an allocated one and counted, so one
+// clashing group does not refuse its members' mint.
+func TestDirectoryMintRemapsHeldIDs(t *testing.T) {
+	e := newAD(t)
+	ctx := context.Background()
+	if err := e.st.Minter().Create(ctx, entity.MintBatch{
+		Users: []entity.MintUser{{User: entity.User{Principal: entity.NewUser(), Name: "local",
+			IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "2000"}}}, Alloc: entity.Alloc{RID: true}}},
+		Groups: []entity.MintGroup{{Group: entity.Group{Principal: entity.NewGroup(), Name: "localg",
+			IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: "5000"}}}, Alloc: entity.Alloc{RID: true}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	alice := e.d.AddUser(t, "alice", map[string][][]byte{"uidNumber": attr("2000")})
+	e.d.AddGroup(t, "eng", map[string][][]byte{"gidNumber": attr("5000"), "member": attr(alice)})
+	e.d.AddGroup(t, "ops", map[string][][]byte{"gidNumber": attr("6000"), "member": attr(alice)})
+	e.d.AddGroup(t, "dev", map[string][][]byte{"gidNumber": attr("6000"), "member": attr(alice)})
+
+	p := e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\alice`}, true)
+	if got := e.num(t, p, pid.SchemeUID); got == 2000 {
+		t.Errorf("alice's uid %d, want an allocated one: the local user holds 2000", got)
+	}
+	gid := func(name string) uint32 {
+		return e.num(t, e.mustFind(t, sidOf(t, e.entry(t, directory.ByGroupName, name)), false), pid.SchemeGID)
+	}
+	if got := gid("eng"); got == 5000 {
+		t.Errorf("eng's gid %d, want an allocated one: the local group holds 5000", got)
+	}
+	if ops, dev := gid("ops"), gid("dev"); (ops == 6000) == (dev == 6000) {
+		t.Errorf("ops's gid %d and dev's %d, want exactly one of them 6000", ops, dev)
+	}
+	for kind, want := range map[string]float64{"user": 1, "group": 2} {
+		if got := e.counter(t, "identity_mints_remapped_total", "kind", kind); got != want {
+			t.Errorf("identity_mints_remapped_total{kind=%s} %v, want %v", kind, got, want)
+		}
+	}
+}
+
+// A mint's closure query and its domain SID read each take one of the
+// cache's 64 query slots: with all 64 held, a Find with Mint waits for one
+// rather than going around the cap. Every other answer the Find needs is
+// fresh in the cache, so only the question under test can wait.
+func TestDirectoryMintQueriesTakeASlot(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	for _, tc := range []struct {
+		name string
+		find func(t *testing.T, e *dirPrincipals) pid.Spelling
+	}{
+		{"closure", func(t *testing.T, e *dirPrincipals) pid.Spelling {
+			// The domain SID, read by an earlier mint, and alice's answer.
+			e.d.AddUser(t, "seed", nil)
+			e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\seed`}, true)
+			e.entry(t, directory.ByUserName, "alice")
+			return pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\alice`}
+		}},
+		{"domain SID", func(t *testing.T, e *dirPrincipals) pid.Spelling {
+			// eng's SID answer; a group's mint asks no closure.
+			a := e.entry(t, directory.ByGroupName, "eng")
+			if _, _, err := e.s.DirectoryLookup(context.Background(), directory.BySID, a.SID); err != nil {
+				t.Fatal(err)
 			}
-			if e.clock.Now().Sub(start) > time.Minute {
-				t.Fatal("Find still running a minute in")
-			}
-			e.clock.Advance(time.Second)
-		}
-		if took := e.clock.Now().Sub(start); took != 20*time.Second {
-			t.Errorf("Find returned at %v, want 20s", took)
-		}
-		if !errors.Is(err, vfserr.ErrUnavailable) {
-			t.Errorf("Find = %v, want ErrUnavailable", err)
-		}
-		if got := e.pgen(t); got != before {
-			t.Errorf("PGEN %d, want %d: the bounded Find wrote", got, before)
-		}
-		// The searches the bound left behind finish on the clock.
-		for range 60 {
-			e.clock.Advance(time.Second)
-			synctest.Wait()
-		}
-	})
+			return sidOf(t, a)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				st, inst := dirStore(t)
+				e := newDirPrincipals(t, st, inst, directory.SchemaAD)
+				ctx := context.Background()
+				e.d.AddUser(t, "alice", nil)
+				e.d.AddGroup(t, "eng", nil)
+				sp := tc.find(t, e)
+				e.fail(t, sim.Rule{Op: "search", Key: userSearches, Count: 64, Action: sim.FaultAction{Delay: time.Second}})
+				var wg sync.WaitGroup
+				for i := range 64 {
+					wg.Go(func() { _, _, _ = e.s.DirectoryLookup(ctx, directory.ByUserName, []byte(fmt.Sprintf("u%d", i))) })
+				}
+				synctest.Wait()
+				done := make(chan error, 1)
+				go func() {
+					_, err := e.s.Find(ctx, sp, pid.FindOpts{Mint: true})
+					done <- err
+				}()
+				synctest.Wait()
+				if got := e.cache.Waiting(); got != 1 {
+					t.Errorf("queries waiting for a slot %d, want 1: the mint's", got)
+				}
+				e.clock.Advance(time.Second)
+				wg.Wait()
+				if err := <-done; err != nil {
+					t.Errorf("Find(%+v, mint) once a slot freed = %v", sp, err)
+				}
+			})
+		})
+	}
 }

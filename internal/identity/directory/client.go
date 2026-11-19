@@ -60,7 +60,10 @@ type Answer struct {
 	// Enabled is false for a user whose userAccountControl holds the
 	// disable bit or whose accountExpires has passed; always true for a
 	// group.
-	Enabled  bool
+	Enabled bool
+	// Computer is a user entry whose objectClass holds computer: a machine's
+	// account, which Active Directory also files as a user.
+	Computer bool
 	Mail     string  // "" when the entry has none
 	UID, GID *uint32 // uidNumber and gidNumber, nil when the entry has none
 }
@@ -223,12 +226,18 @@ func (c *Client) closeIdle() {
 
 // bounded is ctx capped at the query timeout on the client's clock.
 func (c *Client) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	return Bounded(ctx, c.clock, queryTimeout, errTimeout)
+}
+
+// Bounded is ctx ended with cause once d has passed on clock: the client's
+// query timeout, and a caller's own bound over several questions.
+func Bounded(ctx context.Context, clock Clock, d time.Duration, cause error) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancelCause(ctx)
-	fired := c.clock.After(queryTimeout)
+	fired := clock.After(d)
 	go func() {
 		select {
 		case <-fired:
-			cancel(errTimeout)
+			cancel(cause)
 		case <-ctx.Done():
 		}
 	}()
@@ -496,6 +505,9 @@ func (c *Client) answer(e Entry) Answer {
 	for _, oc := range values(e, "objectClass") {
 		if strings.EqualFold(string(oc), "group") || strings.EqualFold(string(oc), "posixGroup") {
 			a.Group = true
+		}
+		if strings.EqualFold(string(oc), "computer") {
+			a.Computer = true
 		}
 	}
 	if a.Group {
