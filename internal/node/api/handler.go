@@ -230,7 +230,7 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 			// Named as the row's adapter names it, so an applied and a
 			// refused write of one record share a target.
 			sid, perr := entity.ParseShareID(rawID)
-			if hasID := strings.Contains(rt.pattern, "{id}"); hasID && perr == nil || !hasID && rt.target != nil {
+			if hasID := strings.Contains(rt.pattern, "{id}"); (hasID && perr == nil) || (!hasID && rt.target != nil) {
 				rec.Target.ID = rt.ref(sid, r.PathValue("sub"))
 			}
 			s.refuse(ctx, rec, err)

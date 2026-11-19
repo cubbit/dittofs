@@ -28,9 +28,14 @@ func (w *switchable) authenticate(*http.Request) (auth.Caller, error) { return *
 // etagOf is a generation as an ETag.
 func etagOf(gen uint64) string { return `"` + strconv.FormatUint(gen, 10) + `"` }
 
-// An operator may not disable, rename or delete an account holding an API
-// role: each is refused 403 and the account is as it was. An admin may.
-func TestOperatorCannotChangeARoleHolder(t *testing.T) {
+// ptr is a pointer to v.
+func ptr[T any](v T) *T { return &v }
+
+// A user holding an API role is hidden from a caller that is not admin: its
+// GET is 404, the listing and ?name= leave it out, and every write naming
+// it, under its own tag or a stale one, is 404 as for an ID naming no user,
+// the account left as it was. An admin reads and writes it.
+func TestRoleHoldersAreHiddenFromNonAdmins(t *testing.T) {
 	var w switchable
 	w.set(entity.NewUser(), entity.RoleOperator)
 	s := serve(t, w.authenticate)
@@ -39,23 +44,132 @@ func TestOperatorCannotChangeARoleHolder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put the admin: %v", err)
 	}
+	s.createUser(t, apiv1.UserSpec{Name: "alice"}, "c1")
 	path := "/api/v1/users/" + uuid.UUID(root.ID).String()
-	for _, tc := range []struct{ method, body string }{
-		{http.MethodPatch, `{"spec":{"disabled":true}}`},
-		{http.MethodPut, `{"spec":{"name":"renamed","disabled":false}}`},
-		{http.MethodDelete, ""},
+	missing := "/api/v1/users/" + uuid.NewString()
+	listed := func() []string {
+		t.Helper()
+		var out []string
+		for _, q := range []string{"", "?name=root"} {
+			var page apiv1.Page[apiv1.User]
+			if r := s.do(t, http.MethodGet, "/api/v1/users"+q, ""); r.status != http.StatusOK || json.Unmarshal(r.body, &page) != nil {
+				t.Fatalf("GET /users%s: answered %d %s", q, r.status, r.body)
+			}
+			for _, u := range page.Items {
+				out = append(out, q+u.Spec.Name)
+			}
+		}
+		return out
+	}
+	for _, role := range []entity.APIRole{entity.RoleViewer, entity.RoleOperator} {
+		w.set(entity.NewUser(), role)
+		if r := s.do(t, http.MethodGet, path, ""); r.status != http.StatusNotFound {
+			t.Errorf("%s GETs the admin: answered %d %s, want 404", role, r.status, r.body)
+		}
+		if got := listed(); !slices.Equal(got, []string{"alice"}) {
+			t.Errorf("%s lists %v, want alice alone and no ?name=root", role, got)
+		}
+	}
+	w.set(entity.NewUser(), entity.RoleOperator)
+	for _, tc := range []struct{ method, body, tag string }{
+		{http.MethodPatch, `{"spec":{"disabled":true}}`, etagOf(gen)},
+		{http.MethodPatch, `{"spec":{"disabled":true}}`, `"1"`},
+		{http.MethodPut, `{"spec":{"name":"renamed","disabled":false}}`, etagOf(gen)},
+		{http.MethodDelete, "", etagOf(gen)},
+		{http.MethodDelete, "", `"1"`},
 	} {
-		r := s.do(t, tc.method, path, tc.body, "If-Match", etagOf(gen), "Idempotency-Key", "k-"+tc.method)
-		if p := r.problem(t); r.status != http.StatusForbidden || p.Code != apiv1.CodeForbidden {
-			t.Errorf("%s the admin as an operator: answered %d %q, want 403 forbidden", tc.method, r.status, p.Code)
+		for _, p := range []string{path, missing} {
+			r := s.do(t, tc.method, p, tc.body, "If-Match", tc.tag, "Idempotency-Key", "k-"+tc.method+tc.tag+p)
+			if r.status != http.StatusNotFound {
+				t.Errorf("%s %s under %s as an operator: answered %d %s, want 404, as for no user", tc.method, p, tc.tag, r.status, r.body)
+			}
 		}
 	}
 	if u, ok := s.userRecord(t, uuid.UUID(root.ID).String()); !ok || u.Disabled || u.Name != "root" || u.Generation != gen {
 		t.Fatalf("store's admin after the operator's writes: %+v, %v; want it unchanged", u, ok)
 	}
 	w.set(entity.NewUser(), entity.RoleAdmin)
+	if got := listed(); !slices.Equal(got, []string{"alice", "root", "?name=rootroot"}) {
+		t.Errorf("an admin lists %v, want alice and root, and root by name", got)
+	}
+	if r := s.do(t, http.MethodGet, path, ""); r.status != http.StatusOK {
+		t.Errorf("an admin GETs the admin: answered %d %s, want 200", r.status, r.body)
+	}
+}
+
+// The last enabled admin may neither disable nor delete itself: each is
+// refused 409 last_admin and nothing is written. With a second admin, one
+// may go.
+func TestLastAdmin(t *testing.T) {
+	var w switchable
+	s := serve(t, w.authenticate)
+	putAdmin := func(name string) (entity.Principal, uint64) {
+		t.Helper()
+		p := entity.NewUser()
+		gen, err := s.store.PutUser(t.Context(), entity.User{Principal: p, Name: name, Role: entity.RoleAdmin}, 0, entity.Alloc{})
+		if err != nil {
+			t.Fatalf("put admin %s: %v", name, err)
+		}
+		return p, gen
+	}
+	root, gen := putAdmin("root")
+	w.set(root, entity.RoleAdmin)
+	path := "/api/v1/users/" + uuid.UUID(root.ID).String()
+	for _, tc := range []struct{ method, body string }{
+		{http.MethodPatch, `{"spec":{"disabled":true}}`},
+		{http.MethodDelete, ""},
+	} {
+		r := s.do(t, tc.method, path, tc.body, "If-Match", etagOf(gen), "Idempotency-Key", "k-"+tc.method)
+		if p := r.problem(t); r.status != http.StatusConflict || p.Code != apiv1.CodeLastAdmin {
+			t.Errorf("%s the last admin: answered %d %q, want 409 last_admin", tc.method, r.status, p.Code)
+		}
+	}
+	if u, ok := s.userRecord(t, uuid.UUID(root.ID).String()); !ok || u.Disabled || u.Generation != gen {
+		t.Fatalf("store's last admin after the refusals: %+v, %v; want it unchanged", u, ok)
+	}
+	putAdmin("second")
 	if r := s.do(t, http.MethodPatch, path, `{"spec":{"disabled":true}}`, "If-Match", etagOf(gen)); r.status != http.StatusOK {
-		t.Errorf("PATCH the admin as an admin: answered %d %s, want 200", r.status, r.body)
+		t.Errorf("disable one of two admins: answered %d %s, want 200", r.status, r.body)
+	}
+}
+
+// A user's uid and a group's name and gid change by an edit, read back
+// from the store; a create or an edit naming uid or gid 0 is refused 400
+// naming the field.
+func TestPrincipalEdits(t *testing.T) {
+	s := serve(t, as(entity.RoleOperator, false))
+	u, tag := s.createUser(t, apiv1.UserSpec{Name: "alice"}, "c1")
+	if r := s.do(t, http.MethodPatch, "/api/v1/users/"+u.ID, `{"spec":{"uid":4242}}`, "If-Match", tag); r.status != http.StatusOK {
+		t.Fatalf("PATCH alice's uid: answered %d %s, want 200", r.status, r.body)
+	}
+	if rec, _ := s.userRecord(t, u.ID); uidOf(rec) != "4242" {
+		t.Errorf("store's alice after the uid PATCH: %+v, want uid 4242", rec)
+	}
+	g := s.createGroup(t, apiv1.GroupSpec{Name: "staff"}, "g1")
+	r := s.do(t, http.MethodPut, "/api/v1/groups/"+g.ID, `{"spec":{"name":"crew","gid":4343}}`, "If-Match", etagOf(g.Generation))
+	if r.status != http.StatusOK {
+		t.Fatalf("PUT staff renamed with a gid: answered %d %s, want 200", r.status, r.body)
+	}
+	pid, _ := entity.ParsePrincipalID(g.ID)
+	rec, ok, err := s.store.Group(t.Context(), entity.Principal{Kind: entity.PrincipalGroup, ID: pid})
+	gid := ""
+	for _, id := range rec.IDs {
+		if id.Scheme == entity.SchemeGID {
+			gid = id.Value
+		}
+	}
+	if err != nil || !ok || rec.Name != "crew" || gid != "4343" {
+		t.Errorf("store's group after the PUT: %+v, %v, %v; want crew holding gid 4343", rec, ok, err)
+	}
+	for _, tc := range []struct{ method, path, body, field string }{
+		{http.MethodPost, "/api/v1/users", `{"spec":{"name":"zero","uid":0}}`, "spec.uid"},
+		{http.MethodPost, "/api/v1/groups", `{"spec":{"name":"zero","gid":0}}`, "spec.gid"},
+		{http.MethodPut, "/api/v1/groups/" + g.ID, `{"spec":{"name":"crew","gid":0}}`, "spec.gid"},
+	} {
+		r := s.do(t, tc.method, tc.path, tc.body, "Idempotency-Key", "z-"+tc.path, "If-Match", r.header.Get("ETag"))
+		if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != tc.field {
+			t.Errorf("%s %s naming 0: answered %d %+v, want 400 naming %s", tc.method, tc.path, r.status, p, tc.field)
+		}
 	}
 }
 
@@ -142,6 +256,8 @@ func TestNetgroupValidation(t *testing.T) {
 		{"a name that is not UTF-8", "/api/v1/netgroups/%FF", `{"spec":{"members":[]}}`},
 		{"a 70k name", "/api/v1/netgroups/" + long, `{"spec":{"members":[]}}`},
 		{"a member that is no host", "/api/v1/netgroups/labs", `{"spec":{"members":["10.0.0.1","bad host!"]}}`},
+		{"a mistyped address", "/api/v1/netgroups/labs", `{"spec":{"members":["1.2.3.999"]}}`},
+		{"a label starting with a hyphen", "/api/v1/netgroups/labs", `{"spec":{"members":["-lab"]}}`},
 	} {
 		r := s.do(t, http.MethodPut, tc.path, tc.body, "If-None-Match", "*")
 		if r.status != http.StatusBadRequest {
@@ -157,8 +273,8 @@ func TestNetgroupValidation(t *testing.T) {
 			refused++
 		}
 	}
-	if refused != 3 {
-		t.Errorf("netgroup refusals audited: %d, want 3", refused)
+	if refused != 5 {
+		t.Errorf("netgroup refusals audited: %d, want 5", refused)
 	}
 	ok := s.do(t, http.MethodPut, "/api/v1/netgroups/labs", `{"spec":{"members":["10.0.0.1","10.0.0.0/8","build-1.example.com"]}}`, "If-None-Match", "*")
 	if ok.status != http.StatusOK {

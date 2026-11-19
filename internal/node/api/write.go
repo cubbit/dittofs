@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/hkdf"
 	"crypto/hmac"
@@ -35,8 +36,12 @@ const maxKey = 255
 // keeping spec, for a record written as part of another resource's.
 // The operation a write starts, if any, is its row's.
 type writing[B any] struct {
-	kind        entity.ResourceKind
-	read        func(tx entity.ControlPlaneTx, id [16]byte, sub string) (doc B, tag uint64, ok bool, err error)
+	kind entity.ResourceKind
+	read func(tx entity.ControlPlaneTx, id [16]byte, sub string) (doc B, tag uint64, ok bool, err error)
+	// hidden, when set, reports a record the caller ctx carries may not
+	// know of, read tracked in tx: a write naming it is answered 404, ahead
+	// of its precondition, as one naming no record would be.
+	hidden      func(ctx context.Context, tx entity.ControlPlaneTx, id [16]byte) (bool, error)
 	raises      bool
 	changesSpec bool
 	secret      func(path string) bool
@@ -158,6 +163,11 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		}
 		err = s.d.Store.Write(ctx, entity.WriteMeta{Audit: &rec, Idempotency: idem}, func(tx entity.ControlPlaneTx) error {
 			rq := rq
+			if w.hidden != nil && !created {
+				if hide, err := w.hidden(ctx, tx, id); err != nil || hide {
+					return cmp.Or(err, errNotFound)
+				}
+			}
 			doc, tag, ok, err := w.read(tx, id, sub)
 			if err != nil {
 				return err

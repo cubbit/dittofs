@@ -96,16 +96,16 @@ func TestUserCreate(t *testing.T) {
 	a, tag := s.createUser(t, apiv1.UserSpec{Name: "alice", Email: "alice@example.com"}, "c-alice")
 	b, _ := s.createUser(t, apiv1.UserSpec{Name: "bob"}, "c-bob")
 	for _, u := range []apiv1.User{a, b} {
-		if u.Spec.UID < 5000 || u.Spec.UID > 5999 {
-			t.Errorf("created %s: uid %d, want one in identity.id_range [5000, 5999]", u.Spec.Name, u.Spec.UID)
+		if u.Spec.UID == nil || *u.Spec.UID < 5000 || *u.Spec.UID > 5999 {
+			t.Fatalf("created %s: uid %v, want one in identity.id_range [5000, 5999]", u.Spec.Name, u.Spec.UID)
 		}
 		rec, ok := s.userRecord(t, u.ID)
-		if !ok || rec.Name != u.Spec.Name || strconv.FormatUint(uint64(u.Spec.UID), 10) != uidOf(rec) {
-			t.Errorf("store's %s: %+v, %v; want it holding uid %d", u.Spec.Name, rec, ok, u.Spec.UID)
+		if !ok || rec.Name != u.Spec.Name || strconv.FormatUint(uint64(*u.Spec.UID), 10) != uidOf(rec) {
+			t.Errorf("store's %s: %+v, %v; want it holding uid %d", u.Spec.Name, rec, ok, *u.Spec.UID)
 		}
 	}
-	if a.Spec.UID == b.Spec.UID {
-		t.Errorf("alice and bob both got uid %d, want two", a.Spec.UID)
+	if *a.Spec.UID == *b.Spec.UID {
+		t.Errorf("alice and bob both got uid %d, want two", *a.Spec.UID)
 	}
 	if rec, _ := s.userRecord(t, a.ID); rec.Email != "alice@example.com" || tag != `"`+strconv.FormatUint(rec.Generation, 10)+`"` {
 		t.Errorf("alice: stored %+v, answered ETag %s; want the address as given and the record's generation", rec, tag)
@@ -124,6 +124,7 @@ func TestUserCreate(t *testing.T) {
 		{"an invalid address", apiv1.UserSpec{Name: "dave", Email: "not an address"}, http.StatusBadRequest},
 		{"an address with a display name", apiv1.UserSpec{Name: "erin", Email: "Erin <erin@example.com>"}, http.StatusBadRequest},
 		{"no name", apiv1.UserSpec{}, http.StatusBadRequest},
+		{"uid 0", apiv1.UserSpec{Name: "frank", UID: ptr(uint32(0))}, http.StatusBadRequest},
 	} {
 		r := s.do(t, http.MethodPost, "/api/v1/users", jsonOf(t, map[string]any{"spec": tc.spec}), "Idempotency-Key", "c-"+tc.spec.Name)
 		if r.status != tc.code {
@@ -163,7 +164,7 @@ func TestUserEdit(t *testing.T) {
 	if err := json.Unmarshal(got.body, &read); err != nil || got.status != http.StatusOK {
 		t.Fatalf("GET the user: answered %d %s (%v)", got.status, got.body, err)
 	}
-	if !read.Spec.Disabled || read.Spec.Email != "" || read.Spec.UID != u.Spec.UID || got.header.Get("ETag") != r.header.Get("ETag") {
+	if !read.Spec.Disabled || read.Spec.Email != "" || *read.Spec.UID != *u.Spec.UID || got.header.Get("ETag") != r.header.Get("ETag") {
 		t.Errorf("GET the user: %+v ETag %s, want it disabled, with no address, its uid %d kept, ETag %s", read, got.header.Get("ETag"), u.Spec.UID, r.header.Get("ETag"))
 	}
 	if rec, _ := s.userRecord(t, u.ID); !rec.Disabled || rec.Email != "" {
@@ -209,7 +210,7 @@ func TestGroupMembers(t *testing.T) {
 	s.setIDRange(t, entity.IDRange{Lo: 7000, Hi: 7999})
 	u, _ := s.createUser(t, apiv1.UserSpec{Name: "alice"}, "c1")
 	g := s.createGroup(t, apiv1.GroupSpec{Name: "staff"}, "g1")
-	if g.Spec.GID < 7000 || g.Spec.GID > 7999 {
+	if g.Spec.GID == nil || *g.Spec.GID < 7000 || *g.Spec.GID > 7999 {
 		t.Errorf("created staff: gid %d, want one in [7000, 7999]", g.Spec.GID)
 	}
 	path := "/api/v1/groups/" + g.ID + "/members/" + u.ID

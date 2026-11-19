@@ -22,7 +22,7 @@ func TestPrincipalAccessors(t *testing.T) {
 	ctx := t.Context()
 
 	u, err := c.Users().Create(ctx, apiv1.UserSpec{Name: "alice"})
-	if err != nil || u.ID == "" || u.Spec.UID == 0 || u.ETag == "" {
+	if err != nil || u.ID == "" || u.Spec.UID == nil || u.ETag == "" {
 		t.Fatalf("Users().Create: %+v err %v, want alice with an allocated uid and an ETag", u, err)
 	}
 	if got, err := c.Users().Get(ctx, u.ID); err != nil || got.Spec.Name != "alice" || got.ETag != u.ETag {
@@ -44,7 +44,7 @@ func TestPrincipalAccessors(t *testing.T) {
 	}
 
 	g, err := c.Groups().Create(ctx, apiv1.GroupSpec{Name: "staff"})
-	if err != nil || g.Spec.GID == 0 {
+	if err != nil || g.Spec.GID == nil {
 		t.Fatalf("Groups().Create: %+v err %v, want staff with an allocated gid", g, err)
 	}
 	m, err := c.Members(g.ID).Put(ctx, u.ID, struct{}{}, "*")

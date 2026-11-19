@@ -40,9 +40,10 @@ func netgroupRef(_ [16]byte, name string) ([]byte, error) {
 
 // hostName reports whether s is a DNS host name: dot-separated labels of
 // 1 to 63 letters, digits and hyphens, no label starting or ending with a
-// hyphen, 253 bytes at most.
+// hyphen, 253 bytes at most, and the last label not all digits, which is a
+// mistyped address rather than a name.
 func hostName(s string) bool {
-	if s == "" || len(s) > 253 {
+	if s == "" || len(s) > 253 || strings.Trim(s[strings.LastIndexByte(s, '.')+1:], "0123456789") == "" {
 		return false
 	}
 	for _, l := range strings.Split(s, ".") {

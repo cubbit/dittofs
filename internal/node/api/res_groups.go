@@ -37,10 +37,13 @@ func createGroup(_ context.Context, rq request[groupDoc], _ struct{}, tx entity.
 	if err := newName(sp.Name); err != nil {
 		return apiv1.Group{}, rq.ID, err
 	}
-	g := entity.Group{Principal: entity.NewGroup(), Name: sp.Name, IDs: withNumber(nil, entity.SchemeGID, sp.GID)}
-	a := entity.Alloc{GID: sp.GID == 0, RID: true}
+	ids, err := withNumber(nil, entity.SchemeGID, sp.GID, "spec.gid")
+	if err != nil {
+		return apiv1.Group{}, rq.ID, err
+	}
+	g := entity.Group{Principal: entity.NewGroup(), Name: sp.Name, IDs: ids}
+	a := entity.Alloc{GID: sp.GID == nil, RID: true}
 	if a.GID {
-		var err error
 		if a.Range, err = idRange(tx); err != nil {
 			return apiv1.Group{}, g.Principal.ID, err
 		}
@@ -48,7 +51,7 @@ func createGroup(_ context.Context, rq request[groupDoc], _ struct{}, tx entity.
 	if _, err := tx.PutGroup(g, 0, a); err != nil {
 		return apiv1.Group{}, g.Principal.ID, err
 	}
-	g, _, err := tx.Group(g.Principal)
+	g, _, err = tx.Group(g.Principal)
 	return groupOf(g), g.Principal.ID, err
 }
 
@@ -66,7 +69,10 @@ func putGroup(_ context.Context, rq request[groupDoc], _ struct{}, tx entity.Con
 	if err := named(g.Name, rq.Body.Spec.Name); err != nil {
 		return apiv1.Group{}, rq.ID, err
 	}
-	g.Name, g.IDs = rq.Body.Spec.Name, withNumber(g.IDs, entity.SchemeGID, rq.Body.Spec.GID)
+	if g.IDs, err = withNumber(g.IDs, entity.SchemeGID, rq.Body.Spec.GID, "spec.gid"); err != nil {
+		return apiv1.Group{}, rq.ID, err
+	}
+	g.Name = rq.Body.Spec.Name
 	if g.Generation, err = tx.PutGroup(g, rq.Expect, entity.Alloc{}); err != nil {
 		return apiv1.Group{}, rq.ID, err
 	}

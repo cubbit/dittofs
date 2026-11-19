@@ -13,6 +13,7 @@ import (
 // it was written from, so a renamed or dropped tag fails here.
 func TestWireBodies(t *testing.T) {
 	at := time.Date(2026, 11, 16, 9, 30, 0, 0, time.UTC)
+	uid, gid := uint32(5000), uint32(7000)
 	full := Problem{
 		Status: 409, Code: CodeOperationRunning, Title: "an operation is running",
 		Detail: "share.delete runs on sh_1", Field: "spec.name", Rule: "unique",
@@ -96,10 +97,10 @@ func TestWireBodies(t *testing.T) {
 			[]string{"continuously_available", "encrypt", "hidden"}},
 		{"condition", Condition{Name: "store_unreachable", Scope: "store", ID: "rs_1", Subject: "s3", Cause: "dial tcp: refused", Detail: "3 failures"}, new(Condition),
 			[]string{"cause", "detail", "id", "name", "scope", "subject"}},
-		{"user spec", UserSpec{Name: "alice", UID: 5000, Email: "alice@example.com", Disabled: true}, new(UserSpec),
+		{"user spec", UserSpec{Name: "alice", UID: &uid, Email: "alice@example.com", Disabled: true}, new(UserSpec),
 			[]string{"disabled", "email", "name", "uid"}},
 		{"user spec with no uid or address", UserSpec{Name: "bob"}, new(UserSpec), []string{"disabled", "name"}},
-		{"group spec", GroupSpec{Name: "staff", GID: 7000}, new(GroupSpec), []string{"gid", "name"}},
+		{"group spec", GroupSpec{Name: "staff", GID: &gid}, new(GroupSpec), []string{"gid", "name"}},
 		{"grant spec", GrantSpec{Access: "none"}, new(GrantSpec), []string{"access"}},
 		{"netgroup spec", NetgroupSpec{Members: []string{"10.0.0.0/8"}}, new(NetgroupSpec), []string{"members"}},
 		{"quota spec", QuotaSpec{Hard: Limit{Bytes: 1}, Soft: Limit{Files: 2}, GraceSeconds: 60, Advisory: Limit{Bytes: 3}}, new(QuotaSpec),

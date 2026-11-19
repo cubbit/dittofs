@@ -73,25 +73,30 @@ func userAt(id [16]byte) entity.Principal {
 var users = writing[userDoc]{kind: entity.ResourceUser, raises: true, read: func(tx entity.ControlPlaneTx, id [16]byte, _ string) (userDoc, uint64, bool, error) {
 	u, ok, err := tx.User(userAt(id))
 	return userDoc{userSpecOf(u)}, u.Generation, ok, err
+}, hidden: func(ctx context.Context, tx entity.ControlPlaneTx, id [16]byte) (bool, error) {
+	u, ok, err := tx.User(userAt(id))
+	return !ok || hiddenFrom(ctx, u), err
 }}
 
 // createUser is POST /users: a user of the spec's name, its uid the one the
 // spec names or, when it names none, one allocated from identity.id_range,
 // and its SID allocated, in the create's transaction. A name or uid another
-// principal holds is refused by the store.
+// principal holds is refused by the store, and a uid of 0 here.
 func createUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
 	sp := rq.Body.Spec
-	u := entity.User{Principal: entity.NewUser(), Name: sp.Name, Email: sp.Email, Disabled: sp.Disabled,
-		IDs: withNumber(nil, entity.SchemeUID, sp.UID)}
+	ids, err := withNumber(nil, entity.SchemeUID, sp.UID, "spec.uid")
+	if err != nil {
+		return apiv1.User{}, rq.ID, err
+	}
+	u := entity.User{Principal: entity.NewUser(), Name: sp.Name, Email: sp.Email, Disabled: sp.Disabled, IDs: ids}
 	if err := newName(sp.Name); err != nil {
 		return apiv1.User{}, u.Principal.ID, err
 	}
 	if err := emailFor(u, sp.Email); err != nil {
 		return apiv1.User{}, u.Principal.ID, err
 	}
-	a := entity.Alloc{UID: sp.UID == 0, RID: true}
+	a := entity.Alloc{UID: sp.UID == nil, RID: true}
 	if a.UID {
-		var err error
 		if a.Range, err = idRange(tx); err != nil {
 			return apiv1.User{}, u.Principal.ID, err
 		}
@@ -99,7 +104,7 @@ func createUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.Co
 	if _, err := tx.PutUser(u, 0, a); err != nil {
 		return apiv1.User{}, u.Principal.ID, err
 	}
-	u, _, err := tx.User(u.Principal)
+	u, _, err = tx.User(u.Principal)
 	return userOf(u), u.Principal.ID, err
 }
 
@@ -107,63 +112,65 @@ func createUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.Co
 // disabled flag as the spec states them, under the generation If-Match
 // names, every other field and spelling kept. Its uid is removed only with
 // its SID, which never changes, so the store refuses a spec naming none. A
-// user that does not exist is 404, If-None-Match: * included: a user is
-// created only by POST.
-func putUser(ctx context.Context, rq request[userDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
+// user that does not exist, or that the caller may not know of, is 404
+// before its precondition: a user is created only by POST. Disabling the
+// last enabled admin is refused.
+func putUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
 	sp := rq.Body.Spec
-	u, ok, err := tx.User(userAt(rq.ID))
-	switch {
-	case err != nil:
-		return apiv1.User{}, rq.ID, err
-	case !ok:
-		return apiv1.User{}, rq.ID, errNotFound
-	}
-	if err := mayWrite(ctx, u); err != nil {
+	u, _, err := tx.User(userAt(rq.ID))
+	if err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
+	was := u
 	if err := named(u.Name, sp.Name); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
 	if err := emailFor(u, sp.Email); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
-	u.Name, u.Email, u.Disabled, u.IDs = sp.Name, sp.Email, sp.Disabled, withNumber(u.IDs, entity.SchemeUID, sp.UID)
+	if u.IDs, err = withNumber(u.IDs, entity.SchemeUID, sp.UID, "spec.uid"); err != nil {
+		return apiv1.User{}, rq.ID, err
+	}
+	u.Name, u.Email, u.Disabled = sp.Name, sp.Email, sp.Disabled
 	if u.Generation, err = tx.PutUser(u, rq.Expect, entity.Alloc{}); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
-	return userOf(u), rq.ID, nil
+	return userOf(u), rq.ID, lastAdmin(tx, was)
 }
 
 // deleteUser is DELETE /users/{id}: DeleteUser's mark under the generation
 // If-Match names, from which the user is found by no name or ID and
-// admitted nowhere; the operation the row starts drops the rest.
-func deleteUser(ctx context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
-	u, ok, err := tx.User(userAt(rq.ID))
+// admitted nowhere; the operation the row starts drops the rest. Deleting
+// the last enabled admin is refused.
+func deleteUser(_ context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
+	u, _, err := tx.User(userAt(rq.ID))
 	if err != nil {
 		return none{}, rq.ID, err
 	}
-	if ok {
-		if err := mayWrite(ctx, u); err != nil {
-			return none{}, rq.ID, err
-		}
+	if err := tx.DeleteUser(userAt(rq.ID), rq.Expect); err != nil {
+		return none{}, rq.ID, err
 	}
-	return none{}, rq.ID, tx.DeleteUser(userAt(rq.ID), rq.Expect)
+	return none{}, rq.ID, lastAdmin(tx, u)
 }
 
 // usersList is GET /users, every named user in name order; ?name= answers
-// the one user of that name, or none.
+// the one user of that name, or none. A user the caller may not know of is
+// left out.
 var usersList = listing[entity.User, apiv1.User]{
 	filters: []string{"name"},
 	records: func(ctx context.Context, d Deps, after []byte, f map[string]string) iter.Seq2[entity.User, error] {
 		return func(yield func(entity.User, error) bool) {
 			if name, ok := f["name"]; ok {
 				u, found, err := d.Store.UserNamed(ctx, name)
-				if err != nil || found {
+				if err != nil || found && !hiddenFrom(ctx, u) {
 					yield(shown(ctx, u), err)
 				}
 				return
 			}
 			for u, err := range d.Store.Users(ctx, string(after)) {
+				if err == nil && hiddenFrom(ctx, u) {
+					continue
+				}
 				if !yield(shown(ctx, u), err) || err != nil {
 					return
 				}
@@ -174,13 +181,14 @@ var usersList = listing[entity.User, apiv1.User]{
 	item: func(u entity.User, _ perPage) apiv1.User { return userOf(u) },
 }
 
-// user is GET /users/{id}, 404 for one that does not exist or is marked
-// deleted; ?wait= returns once its generation changes.
+// user is GET /users/{id}, 404 for one that does not exist, is marked
+// deleted or that the caller may not know of; ?wait= returns once its
+// generation changes.
 var user = watching[apiv1.User]{
 	read: func(ctx context.Context, d Deps, rq request[none]) (apiv1.User, error) {
 		u, ok, err := d.Store.User(ctx, userAt(rq.ID))
-		if err == nil && !ok {
-			err = errNotFound
+		if err == nil && (!ok || hiddenFrom(ctx, u)) {
+			return apiv1.User{}, errNotFound
 		}
 		return userOf(shown(ctx, u)), err
 	},
