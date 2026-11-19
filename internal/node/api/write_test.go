@@ -194,6 +194,9 @@ func TestPreconditions(t *testing.T) {
 	if r := s.do(t, http.MethodPut, k, `{"spec":{"value":"a","turns":2}}`, "If-None-Match", "*"); r.status != http.StatusOK {
 		t.Fatalf("create: answered %d %s", r.status, r.body)
 	}
+
+	g := s.firstGen(t, id, "knob")
+	cur, stale := etagOf(g), etagOf(g+1)
 	long := strings.Repeat("k", 256)
 	for _, tc := range []struct {
 		name, method, path string
@@ -206,20 +209,20 @@ func TestPreconditions(t *testing.T) {
 		{"PUT without If-Match", http.MethodPut, k, nil, 428, apiv1.CodePreconditionRequired, "", nil},
 		{"PATCH without If-Match", http.MethodPatch, k, nil, 428, apiv1.CodePreconditionRequired, "", nil},
 		{"DELETE without If-Match", http.MethodDelete, k, []string{"Idempotency-Key", "d1"}, 428, apiv1.CodePreconditionRequired, "", nil},
-		{"DELETE without a key", http.MethodDelete, k, []string{"If-Match", `"1"`}, 428, apiv1.CodePreconditionRequired, "", nil},
-		{"action without a key", http.MethodPost, k + ":turn", []string{"If-Match", `"1"`}, 428, apiv1.CodePreconditionRequired, "", nil},
+		{"DELETE without a key", http.MethodDelete, k, []string{"If-Match", cur}, 428, apiv1.CodePreconditionRequired, "", nil},
+		{"action without a key", http.MethodPost, k + ":turn", []string{"If-Match", cur}, 428, apiv1.CodePreconditionRequired, "", nil},
 		{"action without If-Match", http.MethodPost, k + ":turn", []string{"Idempotency-Key", "a1"}, 428, apiv1.CodePreconditionRequired, "", nil},
-		{"PUT with a stale tag", http.MethodPut, k, []string{"If-Match", `"9"`}, 412, apiv1.CodeGenerationMismatch, "", []string{`"1"`}},
-		{"PUT with an unquoted tag", http.MethodPut, k, []string{"If-Match", "1"}, 412, apiv1.CodeGenerationMismatch, "", []string{`"1"`}},
-		{"PUT If-None-Match on a record", http.MethodPut, k, []string{"If-None-Match", "*"}, 412, apiv1.CodeGenerationMismatch, "", []string{`"1"`}},
-		{"PUT If-Match on no record", http.MethodPut, knobAt(uuid.NewString()), []string{"If-Match", `"1"`}, 412, apiv1.CodeGenerationMismatch, "", nil},
-		{"action with a stale tag", http.MethodPost, k + ":turn", []string{"If-Match", `"9"`, "Idempotency-Key", "a2"}, 412, apiv1.CodeGenerationMismatch, "", []string{`"1"`}},
-		{"a key of 256 bytes", http.MethodPost, k + ":turn", []string{"If-Match", `"1"`, "Idempotency-Key", long}, 400, "invalid", "Idempotency-Key", nil},
-		{"If-Match beside If-None-Match", http.MethodPut, k, []string{"If-Match", `"1"`, "If-None-Match", "*"}, 400, "invalid", "If-Match", nil},
+		{"PUT with a stale tag", http.MethodPut, k, []string{"If-Match", stale}, 412, apiv1.CodeGenerationMismatch, "", []string{cur}},
+		{"PUT with an unquoted tag", http.MethodPut, k, []string{"If-Match", strconv.FormatUint(g, 10)}, 412, apiv1.CodeGenerationMismatch, "", []string{cur}},
+		{"PUT If-None-Match on a record", http.MethodPut, k, []string{"If-None-Match", "*"}, 412, apiv1.CodeGenerationMismatch, "", []string{cur}},
+		{"PUT If-Match on no record", http.MethodPut, knobAt(uuid.NewString()), []string{"If-Match", cur}, 412, apiv1.CodeGenerationMismatch, "", nil},
+		{"action with a stale tag", http.MethodPost, k + ":turn", []string{"If-Match", stale, "Idempotency-Key", "a2"}, 412, apiv1.CodeGenerationMismatch, "", []string{cur}},
+		{"a key of 256 bytes", http.MethodPost, k + ":turn", []string{"If-Match", cur, "Idempotency-Key", long}, 400, "invalid", "Idempotency-Key", nil},
+		{"If-Match beside If-None-Match", http.MethodPut, k, []string{"If-Match", cur, "If-None-Match", "*"}, 400, "invalid", "If-Match", nil},
 		{"If-Match of *", http.MethodPut, k, []string{"If-Match", "*"}, 400, "invalid", "If-Match", nil},
-		{"If-Match of a list", http.MethodPut, k, []string{"If-Match", `"1", "2"`}, 400, "invalid", "If-Match", nil},
-		{"If-Match on two lines", http.MethodPut, k, []string{"If-Match", `"1"`, "If-Match", `"9"`}, 400, "invalid", "If-Match", nil},
-		{"If-Match on two lines, the stale first", http.MethodPut, k, []string{"If-Match", `"9"`, "If-Match", `"1"`}, 400, "invalid", "If-Match", nil},
+		{"If-Match of a list", http.MethodPut, k, []string{"If-Match", cur + ", " + stale}, 400, "invalid", "If-Match", nil},
+		{"If-Match on two lines", http.MethodPut, k, []string{"If-Match", cur, "If-Match", stale}, 400, "invalid", "If-Match", nil},
+		{"If-Match on two lines, the stale first", http.MethodPut, k, []string{"If-Match", stale, "If-Match", cur}, 400, "invalid", "If-Match", nil},
 	} {
 		body := `{"spec":{"value":"b"}}`
 		if tc.method == http.MethodPost || tc.method == http.MethodDelete {
@@ -234,8 +237,9 @@ func TestPreconditions(t *testing.T) {
 			t.Errorf("%s: answered %q field %q names %q, want %q field %q names %q", tc.name, p.Code, p.Field, p.Names, tc.code, tc.field, tc.names)
 		}
 	}
-	if got := s.knob(t, id); got.Generation != 1 {
-		t.Errorf("knob after the refusals: generation %d, want 1", got.Generation)
+
+	if got := s.knob(t, id); got.Generation != g {
+		t.Errorf("knob after the refusals: generation %d, want %d", got.Generation, g)
 	}
 	for kind, want := range map[string]float64{"missing": 6, "generation": 5, "idempotency": 0} {
 		if got := sample(t, s.reg, "dittofs_api_precondition_failures_total", map[string]string{"kind": kind}); got != want {
@@ -247,11 +251,11 @@ func TestPreconditions(t *testing.T) {
 		hdr                      []string
 		tag, spec                string
 	}{
-		{"PUT", http.MethodPut, k, `{"spec":{"value":"c","turns":2}}`, []string{"If-Match", `"1"`}, `"2"`, `{"value":"c","turns":2}`},
-		{"PATCH a field", http.MethodPatch, k, `{"spec":{"value":"d"}}`, []string{"If-Match", `"2"`}, `"3"`, `{"value":"d","turns":2}`},
-		{"PATCH a null", http.MethodPatch, k, `{"spec":{"turns":null}}`, []string{"If-Match", `"3"`}, `"4"`, `{"value":"d"}`},
-		{"action", http.MethodPost, k + ":turn", "", []string{"If-Match", `"4"`, "Idempotency-Key", strings.Repeat("k", 255)}, `"5"`, `{"value":"d","turns":1}`},
-		{"DELETE", http.MethodDelete, k, "", []string{"If-Match", `"5"`, "Idempotency-Key", "d2"}, "", ""},
+		{"PUT", http.MethodPut, k, `{"spec":{"value":"c","turns":2}}`, []string{"If-Match", etagOf(g)}, etagOf(g + 1), `{"value":"c","turns":2}`},
+		{"PATCH a field", http.MethodPatch, k, `{"spec":{"value":"d"}}`, []string{"If-Match", etagOf(g + 1)}, etagOf(g + 2), `{"value":"d","turns":2}`},
+		{"PATCH a null", http.MethodPatch, k, `{"spec":{"turns":null}}`, []string{"If-Match", etagOf(g + 2)}, etagOf(g + 3), `{"value":"d"}`},
+		{"action", http.MethodPost, k + ":turn", "", []string{"If-Match", etagOf(g + 3), "Idempotency-Key", strings.Repeat("k", 255)}, etagOf(g + 4), `{"value":"d","turns":1}`},
+		{"DELETE", http.MethodDelete, k, "", []string{"If-Match", etagOf(g + 4), "Idempotency-Key", "d2"}, "", ""},
 	} {
 		r := s.do(t, step.method, step.path, step.body, step.hdr...)
 		if r.status != http.StatusOK || r.header.Get("ETag") != step.tag {
@@ -267,7 +271,7 @@ func TestPreconditions(t *testing.T) {
 			tags = append(tags, [2]uint64{a.Before, a.After})
 		}
 	}
-	if want := [][2]uint64{{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 0}}; !slices.Equal(tags, want) {
+	if want := [][2]uint64{{0, g}, {g, g + 1}, {g + 1, g + 2}, {g + 2, g + 3}, {g + 3, g + 4}, {g + 4, 0}}; !slices.Equal(tags, want) {
 		t.Errorf("applied audit records' tags before and after: got %v, want %v", tags, want)
 	}
 }
@@ -282,6 +286,8 @@ func TestBodyRefused(t *testing.T) {
 	if r := s.do(t, http.MethodPut, knobAt(id), `{"spec":{"value":"a"}}`, "If-None-Match", "*"); r.status != http.StatusOK {
 		t.Fatalf("create: answered %d %s", r.status, r.body)
 	}
+
+	g := s.firstGen(t, id, "knob")
 	for _, tc := range []struct {
 		name, method, body, field string
 	}{
@@ -293,7 +299,7 @@ func TestBodyRefused(t *testing.T) {
 		{"PATCH of null", http.MethodPatch, `null`, ""},
 		{"PATCH with no body", http.MethodPatch, ``, ""},
 	} {
-		r := s.do(t, tc.method, knobAt(id), tc.body, "If-Match", `"9"`)
+		r := s.do(t, tc.method, knobAt(id), tc.body, "If-Match", etagOf(g+1))
 		if r.status != http.StatusBadRequest {
 			t.Errorf("%s: answered %d %s, want 400", tc.name, r.status, r.body)
 			continue
@@ -302,8 +308,9 @@ func TestBodyRefused(t *testing.T) {
 			t.Errorf("%s: answered %q field %q, want invalid naming %q", tc.name, p.Code, p.Field, tc.field)
 		}
 	}
-	if got := s.knob(t, id); got.Generation != 1 || string(got.Value) != `{"value":"a"}` {
-		t.Errorf("knob after the refused bodies: %s at %d, want {\"value\":\"a\"} at 1", got.Value, got.Generation)
+
+	if got := s.knob(t, id); got.Generation != g || string(got.Value) != `{"value":"a"}` {
+		t.Errorf("knob after the refused bodies: %s at %d, want {\"value\":\"a\"} at %d", got.Value, got.Generation, g)
 	}
 }
 
@@ -447,8 +454,13 @@ func TestReplay(t *testing.T) {
 	first, again := create(), create()
 	id, ok := strings.CutPrefix(first.header.Get("Location"), "/api/v1/knobs/")
 	sid, err := entity.ParseShareID(id)
-	if first.status != http.StatusCreated || !ok || err != nil || first.header.Get("ETag") != `"1"` {
-		t.Fatalf("create: answered %d %s Location %q ETag %q, want 201 naming /api/v1/knobs/{id} with ETag \"1\"", first.status, first.body, first.header.Get("Location"), first.header.Get("ETag"))
+	if first.status != http.StatusCreated || !ok || err != nil {
+		t.Fatalf("create: answered %d %s Location %q, want 201 naming /api/v1/knobs/{id}", first.status, first.body, first.header.Get("Location"))
+	}
+
+	g := s.firstGen(t, id, "knob")
+	if first.header.Get("ETag") != etagOf(g) {
+		t.Fatalf("create: ETag %q, want %s", first.header.Get("ETag"), etagOf(g))
 	}
 	if again.status != first.status || !bytes.Equal(again.body, first.body) {
 		t.Errorf("replay: answered %d %s, want the first answer %d %s", again.status, again.body, first.status, first.body)
@@ -458,17 +470,18 @@ func TestReplay(t *testing.T) {
 			t.Errorf("replay's %s: %q, want the first answer's %q", h, again.header.Get(h), first.header.Get(h))
 		}
 	}
-	if got := s.knob(t, id); got.Generation != 1 || string(got.Value) != `{"value":"a"}` {
-		t.Errorf("knob the Location names: %s at %d, want the body at 1", got.Value, got.Generation)
+
+	if got := s.knob(t, id); got.Generation != g || string(got.Value) != `{"value":"a"}` {
+		t.Errorf("knob the Location names: %s at %d, want the body at %d", got.Value, got.Generation, g)
 	}
 	recs := s.audits(t)
 	if len(recs) != 1 || recs[0].Target.Kind != entity.ResourceSetting || !bytes.Equal(recs[0].Target.ID, sid[:]) {
 		t.Fatalf("audit records after a create and its replay: %+v, want one targeting the created knob", recs)
 	}
-	if r := s.do(t, http.MethodDelete, knobAt(id), "", "If-Match", `"9"`, "Idempotency-Key", "d1"); r.status != http.StatusPreconditionFailed {
+	if r := s.do(t, http.MethodDelete, knobAt(id), "", "If-Match", etagOf(g+1), "Idempotency-Key", "d1"); r.status != http.StatusPreconditionFailed {
 		t.Errorf("DELETE with a stale tag: answered %d %s, want 412", r.status, r.body)
 	}
-	if r := s.do(t, http.MethodDelete, knobAt(id), "", "If-Match", `"1"`, "Idempotency-Key", "d1"); r.status != http.StatusOK {
+	if r := s.do(t, http.MethodDelete, knobAt(id), "", "If-Match", etagOf(g), "Idempotency-Key", "d1"); r.status != http.StatusOK {
 		t.Errorf("corrected DELETE under the refused request's key: answered %d %s, want 200", r.status, r.body)
 	}
 	for name, want := range map[string]float64{"dittofs_api_idempotent_replays_total": 1, "dittofs_api_idempotency_records_written_total": 2} {
@@ -648,9 +661,10 @@ func TestWriterWaitsASecondOnTheClock(t *testing.T) {
 	hold := api.NewHold(nil)
 	s := serve(t, caller, func(d *api.Deps) { d.Applied = hold.Applied })
 	base := s.clock.Pending()
+	id := uuid.NewString()
 	answered := make(chan polled, 1)
 	go func() {
-		r, err := s.send(t.Context(), http.MethodPut, knobAt(uuid.NewString()), `{"spec":{"value":"a"}}`, "If-None-Match", "*")
+		r, err := s.send(t.Context(), http.MethodPut, knobAt(id), `{"spec":{"value":"a"}}`, "If-None-Match", "*")
 		answered <- polled{r, err}
 	}()
 	await(t, hold.Reached, "the node's Applied")
@@ -658,8 +672,9 @@ func TestWriterWaitsASecondOnTheClock(t *testing.T) {
 	s.clock.Advance(time.Second)
 	select {
 	case r := <-answered:
-		if r.err != nil || r.status != http.StatusOK || r.header.Get("ETag") != `"1"` {
-			t.Errorf("PUT knob once a second passed: answered %d %s ETag %q err %v, want the commit's 200 with ETag \"1\"", r.status, r.body, r.header.Get("ETag"), r.err)
+		g := s.firstGen(t, id, "knob")
+		if r.err != nil || r.status != http.StatusOK || r.header.Get("ETag") != etagOf(g) {
+			t.Errorf("PUT knob once a second passed: answered %d %s ETag %q err %v, want the commit's 200 with ETag %s", r.status, r.body, r.header.Get("ETag"), r.err, etagOf(g))
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("PUT knob: no answer in 10s once a second passed on the API's clock")
@@ -682,9 +697,7 @@ func TestWriterWaits(t *testing.T) {
 	}
 	answered := s.async(t, http.MethodPut, knobAt(id), `{"spec":{"value":"a"}}`, "If-None-Match", "*", "Idempotency-Key", "w1")
 	await(t, hold.Reached, "the node's Applied")
-	if got := s.knob(t, id); got.Generation != 1 {
-		t.Errorf("knob when Applied is reached: %+v, want it committed at 1", got)
-	}
+	g := s.firstGen(t, id, "knob")
 	// No event marks an answer that is never sent, so a bounded wait is the
 	// assertion here: an answer not held arrives well inside it.
 	select {
@@ -699,8 +712,8 @@ func TestWriterWaits(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("PUT knob: no answer in 10s once Applied returned")
 	}
-	if r.status != http.StatusOK || r.header.Get("ETag") != `"1"` || string(r.body) != `{"spec":{"value":"a"}}` {
-		t.Errorf("PUT with Applied failing: answered %d %s ETag %q, want the commit's 200 with ETag \"1\"", r.status, r.body, r.header.Get("ETag"))
+	if r.status != http.StatusOK || r.header.Get("ETag") != etagOf(g) || string(r.body) != `{"spec":{"value":"a"}}` {
+		t.Errorf("PUT with Applied failing: answered %d %s ETag %q, want the commit's 200 with ETag %s", r.status, r.body, r.header.Get("ETag"), etagOf(g))
 	}
 	for _, tc := range []struct {
 		name   string

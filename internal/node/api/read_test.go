@@ -181,10 +181,12 @@ func TestSecretReadsAsReference(t *testing.T) {
 	if r := s.do(t, http.MethodPut, "/api/v1/vaults/"+id, `{"spec":{"password":"`+secret+`"}}`, "If-None-Match", "*"); r.status != http.StatusOK {
 		t.Fatalf("PUT vault: answered %d %s", r.status, r.body)
 	}
+
+	g := s.firstGen(t, id, "vault")
 	r := s.do(t, http.MethodGet, "/api/v1/vaults/"+id, "")
 	if r.status != http.StatusOK || bytes.Contains(r.body, []byte(secret)) ||
-		!bytes.Contains(r.body, []byte(`"password":"sealed:`)) || !bytes.Contains(r.body, []byte(`"generation":1`)) {
-		t.Errorf("GET vault: answered %d %s, want 200 with the sealed reference at generation 1 and never the password", r.status, r.body)
+		!bytes.Contains(r.body, []byte(`"password":"sealed:`)) || !bytes.Contains(r.body, []byte(`"generation":`+strconv.FormatUint(g, 10)+`,`)) {
+		t.Errorf("GET vault: answered %d %s, want 200 with the sealed reference at generation %d and never the password", r.status, r.body, g)
 	}
 }
 
@@ -230,15 +232,25 @@ func answered(t *testing.T, what string, ch <-chan polled) polled {
 	}
 }
 
-func (s *served) putKnob(t *testing.T, id, value string, expect uint64) {
+func (s *served) putKnob(t *testing.T, id, value string, expect uint64) uint64 {
 	t.Helper()
 	sid, err := entity.ParseShareID(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.store.PutSetting(t.Context(), entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeNode, ID: sid}, Key: "knob", Value: []byte(`{"value":"` + value + `"}`)}, expect); err != nil {
+
+	setting := entity.Setting{
+		Scope: entity.SettingScope{Kind: entity.ScopeNode, ID: sid},
+		Key:   "knob",
+		Value: []byte(`{"value":"` + value + `"}`),
+	}
+
+	g, err := s.store.PutSetting(t.Context(), setting, expect)
+	if err != nil {
 		t.Fatal(err)
 	}
+
+	return g
 }
 
 // A parked poll re-reads once a second on the API's clock: a change made
@@ -247,26 +259,33 @@ func (s *served) putKnob(t *testing.T, id, value string, expect uint64) {
 func TestParkedPollAnswersOnTheClock(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	id := uuid.NewString()
-	s.putKnob(t, id, "a", 0)
+	g := s.putKnob(t, id, "a", 0)
 	base := s.clock.Pending()
 
 	ch := s.poll(t.Context(), knobAt(id)+"?wait=30s")
 	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
-	s.putKnob(t, id, "b", 1)
+	b := s.putKnob(t, id, "b", g)
 	select {
 	case p := <-ch:
 		t.Fatalf("poll answered %d %s before the clock moved, want it parked", p.status, p.body)
 	default:
 	}
 	s.clock.Advance(time.Second)
-	if p := answered(t, "poll after the change and a second", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":2,"spec":{"value":"b"}}` {
-		t.Errorf("poll after the change: answered %d %s err %v, want 200 at generation 2", p.status, p.body, p.err)
+
+	want := fmt.Sprintf(`{"generation":%d,"spec":{"value":"b"}}`, b)
+
+	p := answered(t, "poll after the change and a second", ch)
+	if p.err != nil || p.status != http.StatusOK || string(p.body) != want {
+		t.Errorf("poll after the change: answered %d %s err %v, want 200 at generation %d",
+			p.status, p.body, p.err, b)
 	}
 
 	ch = s.poll(t.Context(), knobAt(id)+"?wait=5s")
 	eventually(t, "the second poll parks", func() bool { return s.clock.Pending() == base+1 })
 	s.clock.Advance(5 * time.Second)
-	if p := answered(t, "poll past its wait", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":2,"spec":{"value":"b"}}` {
+
+	p = answered(t, "poll past its wait", ch)
+	if p.err != nil || p.status != http.StatusOK || string(p.body) != want {
 		t.Errorf("poll past its wait: answered %d %s err %v, want 200 with the unchanged knob", p.status, p.body, p.err)
 	}
 }
@@ -276,13 +295,14 @@ func TestParkedPollAnswersOnTheClock(t *testing.T) {
 func TestParkedPollReReadsAsItsCaller(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	id := uuid.NewString()
-	s.putKnob(t, id, "a", 0)
+	g := s.putKnob(t, id, "a", 0)
 	base := s.clock.Pending()
 	ch := s.poll(t.Context(), "/api/v1/readers/"+id+"?wait=30s")
 	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
-	s.putKnob(t, id, "b", 1)
+	b := s.putKnob(t, id, "b", g)
 	s.clock.Advance(time.Second)
-	const want = `{"generation":2,"spec":{"value":"b"},"role":"viewer"}`
+
+	want := fmt.Sprintf(`{"generation":%d,"spec":{"value":"b"},"role":"viewer"}`, b)
 	if p := answered(t, "poll after the change", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != want {
 		t.Errorf("poll answered by a re-read: answered %d %s err %v, want 200 %s", p.status, p.body, p.err, want)
 	}
@@ -377,7 +397,7 @@ func TestParkedPollOutlivesTimeouts(t *testing.T) {
 		srv.ShortenReadTimeout(timeout)
 	})
 	id := uuid.NewString()
-	s.putKnob(t, id, "a", 0)
+	g := s.putKnob(t, id, "a", 0)
 	base := s.clock.Pending()
 	ch := s.poll(t.Context(), knobAt(id)+"?wait=30s")
 	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
@@ -385,10 +405,15 @@ func TestParkedPollOutlivesTimeouts(t *testing.T) {
 	// clock moves: this bounded wait is the assertion that the parked poll
 	// is still held past them.
 	<-time.After(3 * timeout)
-	s.putKnob(t, id, "b", 1)
+
+	b := s.putKnob(t, id, "b", g)
 	s.clock.Advance(time.Second)
-	if p := answered(t, "poll past the timeouts", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":2,"spec":{"value":"b"}}` {
-		t.Errorf("poll parked past the timeouts: answered %d %s err %v, want 200 at generation 2", p.status, p.body, p.err)
+
+	want := fmt.Sprintf(`{"generation":%d,"spec":{"value":"b"}}`, b)
+	if p := answered(t, "poll past the timeouts", ch); p.err != nil ||
+		p.status != http.StatusOK || string(p.body) != want {
+		t.Errorf("poll parked past the timeouts: answered %d %s err %v, want 200 at generation %d",
+			p.status, p.body, p.err, b)
 	}
 }
 
@@ -420,11 +445,29 @@ func TestReadOnAnotherNode(t *testing.T) {
 	if r := other.do(t, http.MethodGet, knobAt(id), ""); r.status != http.StatusOK || string(r.body) != `{"generation":0,"spec":{"value":""}}` {
 		t.Fatalf("GET knob on the second node before the write: answered %d %s, want 200 at generation 0", r.status, r.body)
 	}
-	if r := first.do(t, http.MethodPut, knobAt(id), `{"spec":{"value":"on"}}`, "If-None-Match", "*"); r.status != http.StatusOK {
+
+	r := first.do(t, http.MethodPut, knobAt(id), `{"spec":{"value":"on"}}`, "If-None-Match", "*")
+	if r.status != http.StatusOK {
 		t.Fatalf("PUT knob on the first node: answered %d %s", r.status, r.body)
 	}
-	if r := other.do(t, http.MethodGet, knobAt(id), ""); r.status != http.StatusOK || string(r.body) != `{"generation":1,"spec":{"value":"on"}}` {
-		t.Errorf("GET knob on the second node: answered %d %s, want 200 at generation 1", r.status, r.body)
+	// The PUT answers the written record's tag as its ETag, and the tag a
+	// read hands out is the generation.
+	quoted, err := strconv.Unquote(r.header.Get("ETag"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := strconv.ParseUint(quoted, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := fmt.Sprintf(`{"generation":%d,"spec":{"value":"on"}}`, g)
+
+	r = other.do(t, http.MethodGet, knobAt(id), "")
+	if r.status != http.StatusOK || string(r.body) != want {
+		t.Errorf("GET knob on the second node: answered %d %s, want 200 at generation %d",
+			r.status, r.body, g)
 	}
 }
 
@@ -433,10 +476,13 @@ func TestReadOnAnotherNode(t *testing.T) {
 func TestReadETag(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	id := uuid.NewString()
-	s.putKnob(t, id, "a", 0)
+	g := s.putKnob(t, id, "a", 0)
 	r := s.do(t, http.MethodGet, knobAt(id), "")
-	if r.status != http.StatusOK || r.header.Get("ETag") != `"1"` {
-		t.Fatalf("GET knob: answered %d %s ETag %q, want 200 ETag \"1\"", r.status, r.body, r.header.Get("ETag"))
+
+	want := fmt.Sprintf(`"%d"`, g)
+	if r.status != http.StatusOK || r.header.Get("ETag") != want {
+		t.Fatalf("GET knob: answered %d %s ETag %q, want 200 ETag %s",
+			r.status, r.body, r.header.Get("ETag"), want)
 	}
 	if p := s.do(t, http.MethodPut, knobAt(id), `{"spec":{"value":"b"}}`, "If-Match", r.header.Get("ETag")); p.status != http.StatusOK {
 		t.Errorf("PUT knob with the ETag GET read: answered %d %s, want 200", p.status, p.body)
@@ -448,21 +494,31 @@ func TestReadETag(t *testing.T) {
 func TestWaitAlreadyDone(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	id := uuid.NewString()
-	s.putKnob(t, id, api.KnobOn, 0)
+	g := s.putKnob(t, id, api.KnobOn, 0)
 	base := s.clock.Pending()
 	p := s.settle(t, "GET knob?wait=on with the knob on", s.poll(t.Context(), knobAt(id)+"?wait="+api.KnobOn), base)
-	if p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":1,"spec":{"value":"on"}}` || s.clock.Pending() != base {
-		t.Fatalf("GET knob?wait=on with the knob on: answered %d %s err %v, %d waits on the clock; want 200 at generation 1 and %d waits", p.status, p.body, p.err, s.clock.Pending(), base)
+
+	wantOn := fmt.Sprintf(`{"generation":%d,"spec":{"value":"on"}}`, g)
+	if p.err != nil || p.status != http.StatusOK || string(p.body) != wantOn ||
+		s.clock.Pending() != base {
+		t.Fatalf("GET knob?wait=on with the knob on: answered %d %s err %v, "+
+			"%d waits on the clock; want 200 at generation %d and %d waits",
+			p.status, p.body, p.err, s.clock.Pending(), g, base)
 	}
 
 	other := uuid.NewString()
-	s.putKnob(t, other, "off", 0)
+	off := s.putKnob(t, other, "off", 0)
 	ch := s.poll(t.Context(), knobAt(other)+"?wait="+api.KnobOn)
 	eventually(t, "the poll on the knob that is off parks", func() bool { return s.clock.Pending() == base+1 })
-	s.putKnob(t, other, api.KnobOn, 1)
+	on := s.putKnob(t, other, api.KnobOn, off)
 	s.clock.Advance(time.Second)
-	if p := answered(t, "poll once the knob is on", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":2,"spec":{"value":"on"}}` {
-		t.Errorf("GET knob?wait=on once the knob turned on: answered %d %s err %v, want 200 at generation 2", p.status, p.body, p.err)
+
+	wantTurnedOn := fmt.Sprintf(`{"generation":%d,"spec":{"value":"on"}}`, on)
+	if p := answered(t, "poll once the knob is on", ch); p.err != nil ||
+		p.status != http.StatusOK || string(p.body) != wantTurnedOn {
+		t.Errorf("GET knob?wait=on once the knob turned on: answered %d %s err %v, "+
+			"want 200 at generation %d",
+			p.status, p.body, p.err, on)
 	}
 }
 
@@ -472,7 +528,7 @@ func TestStopAnswersParkedPoll(t *testing.T) {
 	var srv *api.Server
 	s := serveWith(t, as(entity.RoleViewer, false), func(v *api.Server) { srv = v })
 	id := uuid.NewString()
-	s.putKnob(t, id, "a", 0)
+	g := s.putKnob(t, id, "a", 0)
 	base := s.clock.Pending()
 	ch := s.poll(t.Context(), knobAt(id)+"?wait=30s")
 	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
@@ -483,7 +539,10 @@ func TestStopAnswersParkedPoll(t *testing.T) {
 	if err := srv.Stop(ctx); err != nil {
 		t.Errorf("Stop with a parked poll: %v, want nil", err)
 	}
-	if p := answered(t, "the parked poll on Stop", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":1,"spec":{"value":"a"}}` {
+
+	wantA := fmt.Sprintf(`{"generation":%d,"spec":{"value":"a"}}`, g)
+	if p := answered(t, "the parked poll on Stop", ch); p.err != nil ||
+		p.status != http.StatusOK || string(p.body) != wantA {
 		t.Errorf("parked poll on Stop: answered %d %s err %v, want 200 with its last read", p.status, p.body, p.err)
 	}
 }

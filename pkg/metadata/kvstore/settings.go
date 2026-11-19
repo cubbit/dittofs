@@ -97,10 +97,27 @@ func (c ControlPlane) Settings(ctx context.Context, scope entity.SettingScope) i
 	})
 }
 
+// raiseCfgGen raises the one settings generation every write of a setting or
+// a secret moves in its own transaction, and every node polls to re-read
+// settings, so each such write costs every node one reconcile walk.
+//
+// ponytail: one generation for every settings and secret write. This helper
+// serves the setting writes: the secret write, the principal removal and the
+// share removal raise the counter directly until the secrets work unifies
+// them. Upgrade to a generation per section, or secrets off CFGGEN with
+// their own counter, when the commit rate of the secret-write benchmark
+// under this contention falls under half the rate of the same run without
+// the raise.
+func raiseCfgGen(tx kv.Txn) (uint64, error) {
+	return raise(tx, cfgGenKey)
+}
+
 // PutSetting writes one setting, the generation expect names or zero for a
 // new one, raising its generation and the settings generation every node
 // polls, in one transaction. A share's setting is refused while the share is
-// being removed, and once it is gone.
+// being removed, and once it is gone. The generation never repeats a value a
+// removed row already held, or a writer that read the row before its removal
+// matches the tag back and overwrites the new row.
 func (c ControlPlane) PutSetting(ctx context.Context, s entity.Setting, expect uint64) (uint64, error) {
 	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutSetting(s, expect) })
 }
@@ -128,16 +145,22 @@ func (c controlTx) PutSetting(s entity.Setting, expect uint64) (uint64, error) {
 	if err := expected(old.Generation, expect); err != nil {
 		return 0, err
 	}
-	s.Generation = old.Generation + 1
-	if s.Position, err = raise(c.tx, cfgGenKey); err != nil {
+
+	if s.Position, err = raiseCfgGen(c.tx); err != nil {
 		return 0, err
 	}
+
+	// Position, the settings generation this write raises, never repeats, so
+	// a row created again after a delete never hands out a generation a
+	// writer before the delete already holds.
+	s.Generation = max(old.Generation+1, s.Position)
+
 	return s.Generation, c.tx.Set(key, encodeSetting(s))
 }
 
 // DeleteSetting removes the setting at scope whose generation expect names,
-// so the wider scope's value is effective, raising the settings generation
-// as a put does.
+// so the wider scope's value is effective, raising the settings generation as
+// a put does.
 func (c ControlPlane) DeleteSetting(
 	ctx context.Context,
 	scope entity.SettingScope,

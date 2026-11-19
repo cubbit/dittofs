@@ -354,8 +354,10 @@ func TestMustChangeMapsNoRoute(t *testing.T) {
 func TestWrite(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	r := s.do(t, http.MethodPut, knobPath, `{"spec":{"value":"on"}}`, "If-None-Match", "*")
-	if r.status != http.StatusOK || string(r.body) != `{"spec":{"value":"on"}}` || r.header.Get("ETag") != `"1"` {
-		t.Fatalf("PUT knob: answered %d %s ETag %q, want 200 with its spec and ETag \"1\"", r.status, r.body, r.header.Get("ETag"))
+
+	g := s.firstGen(t, api.TestID, "knob")
+	if r.status != http.StatusOK || string(r.body) != `{"spec":{"value":"on"}}` || r.header.Get("ETag") != etagOf(g) {
+		t.Fatalf("PUT knob: answered %d %s ETag %q, want 200 with its spec and ETag %s", r.status, r.body, r.header.Get("ETag"), etagOf(g))
 	}
 	r = s.do(t, http.MethodPut, "/api/v1/knobs/"+otherID, `{"spec":{"value":"x","colour":"red"}}`, "If-None-Match", "*")
 	p := r.problem(t)
@@ -371,8 +373,9 @@ func TestWrite(t *testing.T) {
 			t.Errorf("problem %s: no key %q", r.body, k)
 		}
 	}
-	if got := s.knob(t, api.TestID); string(got.Value) != `{"value":"on"}` || got.Generation != 1 {
-		t.Errorf("knob held: %q at %d, want {\"value\":\"on\"} at 1", got.Value, got.Generation)
+
+	if got := s.knob(t, api.TestID); string(got.Value) != `{"value":"on"}` || got.Generation != g {
+		t.Errorf("knob held: %q at %d, want {\"value\":\"on\"} at %d", got.Value, got.Generation, g)
 	}
 	if got := s.knob(t, otherID); got.Generation != 0 {
 		t.Errorf("knob held after the refused PUT: %+v, want none", got)
@@ -383,6 +386,21 @@ const (
 	knobPath = "/api/v1/knobs/" + api.TestID
 	otherID  = "1d6f3c2a-4b5e-4f7a-8c9d-0e1f2a3b4c5d"
 )
+
+// firstGen is the generation the first write of the setting key under id
+// left, which is the settings counter's position that write raised: never
+// 1 once the node's install has raised the counter. It fails the test unless
+// the setting holds a generation and is at that position.
+func (s *served) firstGen(t *testing.T, id, key string) uint64 {
+	t.Helper()
+
+	got := s.setting(t, id, key)
+	if got.Generation == 0 || got.Generation != got.Position {
+		t.Fatalf("setting %s of %s: generation %d at counter position %d, want its first generation to be the position", key, id, got.Generation, got.Position)
+	}
+
+	return got.Generation
+}
 
 // knob is the setting the knob id names holds, its zero value when it holds
 // none.
