@@ -312,7 +312,10 @@ one of the grant's opens: each open keeps the session it was made or last
 reconnected on (`Session`, §2.2), that session signed in as the opener, and a
 durable reconnect re-attaches an open only for its opener's principal
 ([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens), MS-SMB2 3.3.5.9.12).
-When every open of the grant is disconnected, the break goes only to a session
+When every open of the grant is disconnected and none is persistent, the break
+is sent nowhere and those opens close, since a reconnect after an undelivered
+break is refused (MS-SMB2 3.3.4.7, 3.3.5.9.7). When every open is disconnected
+and one is persistent, the break goes only to a session
 of that client signed in as one of the openers, which the adapter on the node
 holding it picks from its own session table
 ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); when there is none, it is sent nowhere and asked again
@@ -1939,7 +1942,9 @@ grants, and grace then signals the loss as a lost shard's state (§4.4).
 **What a timeout does depends on what the grant covers.** A grant is defined by
 its kind and by the opens it covers (§2.4). A grant that covers opens — an SMB
 lease under its key, an oplock over its open — is cut to none at 35 s, and the
-opens stay. A grant that covers no open — an NFS delegation — is revoked at one
+opens stay, but for its disconnected durable opens that are not persistent,
+which close, a durable open being kept only under handle caching (MS-SMB2
+3.3.5.9.7). A grant that covers no open, an NFS delegation, is revoked at one
 lease period, and later I/O under it is refused.
 
 **An administrator's revoke follows the same path.** It releases every open,
@@ -2005,10 +2010,12 @@ for it: each still ends within its own deadline when anything conflicts.
 such a grant not acknowledged by its deadline sets the grant to none and
 proceeds, and a later acknowledgement is `ErrNoRecall` (§2.4); the opens it
 covered stay open, with their locks and deny modes, and
-the holder may keep writing through them. A grant that covers no open is
+the holder may keep writing through them; its disconnected durable opens that
+are not persistent close. A grant that covers no open is
 revoked instead: its later writes are refused.
 
-> decision: a timed-out grant that covers opens keeps the holder's opens, as
+> decision: a timed-out grant that covers opens keeps the holder's opens, its
+> disconnected durable opens that are not persistent aside, as
 > the clients of such grants expect, rather than invalidating them.
 > Invalidating them would close a stalled machine's profile container
 > mid-session, which Windows never does. The cost is the one Windows accepts:
@@ -2439,11 +2446,12 @@ ID (`Durable.Instance`) that an open of the same file already holds closes that
 open first, releasing its locks, deny mode and lease, and then proceeds —
 unless that open carries a version and the create's is not higher, a create
 carrying none included, when the create is refused `ErrInstanceVersion`,
-which `errors.Is` `ErrShareViolation`. The
-matching open is closed only if it belongs to another client and
-the caller's maximal access to the file includes read; otherwise the create
-proceeds as if no instance matched and meets the existing open's deny mode like
-any other. The check runs in the open's own step at the file's primary, so no
+which `errors.Is` `ErrShareViolation`. The version is judged against a matching
+open of another client whatever the caller's access (MS-SMB2 3.3.5.9.13). Only
+such an open is closed, and only if the caller's maximal access to the file
+includes read;
+otherwise the create proceeds as if no instance matched, but for the version,
+and meets the existing open's deny mode like any other. The check runs in the open's own step at the file's primary, so no
 other open lands between the close and the grant
 ([RFC 22 §6.4](rfc-22-smb.md#6.4%20Durable%20and%20persistent%20handles)
 holds the reasons).
@@ -3340,7 +3348,7 @@ Deleted numbers are not reused.
 | L29b | A completion ends only the grace instances the client was shown. | Fail shard A over, let the client reclaim; fail shard B over inside the status cache window and deliver `ReclaimComplete` naming A's instance: B's grace is not ended for the client, and its next renewal shows `ReclaimNeeded` for B. With B in grace and A's instance finished, reclaim A's opens again: each is returned as A holds it, never `ErrNoGrace`, and the client's reclaims in B are granted after. |
 | L30 | Only a persistent open survives its primary's restart or failover, and every write through one, or through any open on a continuously available share, is stable before it is acknowledged. | Open SMB durable v2, write unstable, restart, reconnect: no open (`ErrNoReclaim`; RFC 22 §18 asserts the wire status). Repeat persistent on a continuously available share: the reconnect succeeds and every acknowledged write reads back. |
 | L30b | A new primary installs every persistent and clone source open of a shard before it answers anything there. | Fail over under a persistent deny-write open with a 300 s `Timeout`; let grace end at 90 s with no reconnect: a write open from another client at 120 s is `ErrShareViolation`, and an NFSv3 write across the open's lock is refused. |
-| L33 | An SMB break that times out cuts the grant to none and keeps the opens; a revoked NFS delegation's writes are refused. | A write delegation's holder never answers a recall; open conflictingly: the open proceeds after the deadline and the holder's later writes are `ErrRevoked`. Repeat with an SMB read-write-handle lease: the open proceeds at 35 s, the lease is none, and the holder's open still exists and its next write is accepted. |
+| L33 | An SMB break that times out cuts the grant to none and keeps the opens, but for its disconnected durable opens that are not persistent, which close; a revoked NFS delegation's writes are refused. | A write delegation's holder never answers a recall; open conflictingly: the open proceeds after the deadline and the holder's later writes are `ErrRevoked`. Repeat with an SMB read-write-handle lease: the open proceeds at 35 s, the lease is none, and the holder's open still exists and its next write is accepted. |
 | L34 | A deferred delete runs as the principal that marked the file, never as the last closer. | P with delete access opens delete-on-close; Q without opens too; P closes, then Q: the name is removed. Q cannot set delete pending: `ErrAccess`. An open asking delete on close without delete access: `ErrInvalid`, no open made. |
 | L35 | (cluster) A recursive watch whose subtree crosses into another shard is completed with enumerate-directory when a change there matches it. | Register a recursive watch above a child shard on another primary; create a file in the child: the watch completes with enumerate-directory. |
 | L36 | Deny modes are judged per stream, and across a file and its streams only for delete; an open of a named stream keeps its base file alive, and cannot delete on close, set the disposition or rename; no open suspends the change time. | Open a stream deny-write over SMB; open the base for write over NFS: granted, since deny modes are per stream; with the stream's open still held, an NFSv3 `WRITE` to the base: accepted, since an anonymous write is judged only against the base file's opens; unlink the base's name: the stream open keeps the file alive. On a second file, open a stream sharing read and write but not delete: an NFS `REMOVE` and `RENAME` of the base's name, and an SMB open of the base asking delete, each `ErrShareViolation`. On a third file, open the base asking delete, then a stream that does not share delete: `ErrShareViolation`. On a fourth file, open the base for read sharing read and write but not delete, then a stream asking delete: granted; with both closed, open a stream asking delete, then the base for read sharing read and write but not delete: granted. Open a stream with delete access and delete on close: `ErrInvalid`, no open made. Through a stream open holding delete access, set, then clear, the disposition: `ErrInvalid` both times, and its close unlinks nothing; through it, a rename's `CheckChange`: `ErrInvalid`, and the base file keeps its name. Suspend the change time on an SMB open and write: the change attribute advanced. |

@@ -509,7 +509,7 @@ flight.
   pipe `READ` of more than 4 KiB is a test row (§16.6).
 - **A connection puts at most 511 requests pending**, held and parked together,
   a drain's refusals aside,
-  one fewer than the credit target, as SMB's `Stages.MaxPending` will bound
+  one fewer than the credit target, as SMB's `Stages.MaxPending` bounds
   them ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)); past it a
   new one is answered `STATUS_INSUFFICIENT_RESOURCES` at once.
   A call still in the service when its interim goes out is not refused while
@@ -1193,8 +1193,8 @@ The hold and the re-run are the pipeline mechanism of
   3.3.6.5), and the waiting request is re-run. The holder's opens stay open,
   but for its disconnected durable opens that are not persistent, which
   close, as a durable open that is not persistent is kept only under handle
-  caching (MS-SMB2
-  3.3.5.9.7). Those that stay keep their deny modes and locks, and the
+  caching (MS-SMB2 3.3.5.9.7,
+  [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)). Those that stay keep their deny modes and locks, and the
   holder's later reads and writes through them are served as ordinary
   I/O on an open that holds no caching. The client — the machine (§4.4) — is
   fenced from caching: it is offered no new lease or oplock for 90 s after the
@@ -1333,18 +1333,19 @@ principal differs.
 first, unless that open carries an app instance version and the create's is
 not higher, a create carrying none included, when the create is refused
 ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). The
-primary applies it, in the open's own step, only when both hold, from the
-call's `ClientGuid` and the caller's maximal access, which the service
-computes:
+version is judged against a matching open of a different client whatever the
+caller's access, as MS-SMB2 3.3.5.9.13 orders it. The primary closes the
+earlier open, in the open's own step, only when both hold, from the call's
+`ClientGuid` and the caller's maximal access, which the service computes:
 
 - the matching open belongs to a different client (its `ClientGuid` differs
   from the connection's); and
 - the caller's maximal access to the target includes read
   (`FILE_READ_DATA`).
 
-Otherwise the create **MUST** proceed as if no open matched: it neither closes
-the earlier open nor is refused for it, and meets that open's deny mode and
-lease like any other create.
+Otherwise the create **MUST** proceed as if no open matched, but for the
+version: it does not close the earlier open, and meets that open's deny mode
+and lease like any other create.
 
 > decision: takeover is gated on a different client and on read access, as
 > Windows servers gate it. A same-client match is that client's own open,
@@ -2649,7 +2650,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrNoSpace` — a permanent capacity refusal, as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes it | `STATUS_DISK_FULL` at once |
 | `ErrQuota` — a logical quota, its scope named ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_DISK_FULL` at once for a share-wide or project quota, the volume the client sees; `STATUS_DISK_QUOTA_EXCEEDED` at once for a user or group one |
 | `ErrGrace` — a new open or lock in a shard in grace | held pending until grace ends, then re-run; at grace's end plus 35 s, `STATUS_FILE_NOT_AVAILABLE` |
-| `ErrInvalid` — a name RFC 7 refuses; a copy or clone of overlapping ranges of one file, or a duplicate-extents request longer than `clone_max_len` (§10) | `STATUS_OBJECT_NAME_INVALID` for the name; `STATUS_REQUEST_NOT_ACCEPTED` or `STATUS_INVALID_OPLOCK_PROTOCOL` for a break acknowledgement (§6.2); `STATUS_INVALID_PARAMETER` at once otherwise |
+| `ErrInvalid`: a name RFC 7 refuses; a copy or clone of overlapping ranges of one file, or a duplicate-extents request longer than `clone_max_len` (§10) | `STATUS_OBJECT_NAME_INVALID` for the name; `STATUS_REQUEST_NOT_ACCEPTED` or `STATUS_INVALID_OPLOCK_PROTOCOL` for a break acknowledgement, decided by the `OPLOCK_BREAK` handler as for `NoRecall` (§6.2); `STATUS_INVALID_PARAMETER` at once otherwise |
 | `ErrInvalid` on a `SET_INFO` rename or disposition through a named stream's open holding `DELETE` (§12.1; [RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)) | `STATUS_NOT_SUPPORTED` at once: the request is valid and declined |
 | `ErrReadOnly` — a mutation where only reading is admitted ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_MEDIA_WRITE_PROTECTED` at once |
 | `ErrNameTooLong` — a name past the share's length limit | `STATUS_OBJECT_NAME_INVALID` at once |
@@ -2676,8 +2677,8 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrDeletePending` | `STATUS_DELETE_PENDING` |
 | `ErrPastEnd` — not reached: `QUERY_ALLOCATED_RANGES` clamps its range to the file's size before calling `Seek` | `STATUS_SUCCESS` with no ranges, should it ever be reached |
 | `ErrLogonFailure`: a credential or account `SignIn` refuses at `SESSION_SETUP` (§4.1) | `STATUS_LOGON_FAILURE`, the protocol's logon failure ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface), [RFC 20 §4.4](rfc-20-adapters.md#4.4%20Identity)) |
-| `ErrUnknownPrincipal` in a security descriptor (§11): a deleted principal `Spell` cannot spell, or a SID `Find` finds no principal for | none on a query, which shows the deleted principal as the null SID `S-1-0-0` (§16.3); on a set, `STATUS_INVALID_OWNER` or `STATUS_INVALID_PRIMARY_GROUP` for the owner or group, and `STATUS_INVALID_SECURITY_DESCR` for an entry (§11) |
-| `ErrState` (`NoRecall`): a lease or oplock acknowledgement with no break in flight (§6.2) | `STATUS_UNSUCCESSFUL` for a lease, `STATUS_INVALID_DEVICE_STATE` for an oplock (§6.2) |
+| `ErrUnknownPrincipal` in a security descriptor (§11): a deleted principal `Spell` cannot spell, or a SID `Find` finds no principal for | decided by the descriptor's handler in its own translation, outside this table, since the answer turns on where the principal stands ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)): none on a query, which shows the deleted principal as the null SID `S-1-0-0` (§16.3); on a set, `STATUS_INVALID_OWNER` or `STATUS_INVALID_PRIMARY_GROUP` for the owner or group, and `STATUS_INVALID_SECURITY_DESCR` for an entry (§11) |
+| `ErrState` (`NoRecall`): a lease or oplock acknowledgement with no break in flight (§6.2) | decided by the `OPLOCK_BREAK` handler in its own translation, outside this table, since both acknowledgements are that one command ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)): `STATUS_UNSUCCESSFUL` for a lease, `STATUS_INVALID_DEVICE_STATE` for an oplock (§6.2) |
 | `ErrState` (`ClientInUse`) | never met: it refuses a client name whose record names another owner, and an SMB record names none (§16.4); the fault, `STATUS_INTERNAL_ERROR`, should one arrive |
 | `ErrState` (`ClientBusy`) | never met: only `Destroy` answers it, and no SMB command calls `Destroy` (Appendix G); the fault, as for `ClientInUse` |
 | `ErrState` (`RecordChanged`) | never met: only `AddSession` answers it, and SMB never calls it, its node being listed by `Connect` ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client), §16.4); the fault, as for `ClientInUse` |
@@ -2753,7 +2754,7 @@ built; the totality test fails until they have rows.
 of the request's flags it keeps only `SMB2_FLAGS_RELATED_OPERATIONS`,
 `SMB2_FLAGS_PRIORITY_MASK`, `SMB2_FLAGS_DFS_OPERATIONS` and
 `SMB2_FLAGS_REPLAY_OPERATION`. The reply to a request the server puts off
-will take the async form, with the async ID the server chose.
+takes the async form, with the async ID the server chose.
 
 **A status's body.** A reply whose status is not success is MS-SMB2 2.2.2's
 error response, which the header codec writes after the header, and a command's
