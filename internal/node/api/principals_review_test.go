@@ -255,6 +255,8 @@ func TestNetgroupValidation(t *testing.T) {
 	for _, tc := range []struct{ what, path, body string }{
 		{"a name that is not UTF-8", "/api/v1/netgroups/%FF", `{"spec":{"members":[]}}`},
 		{"a 70k name", "/api/v1/netgroups/" + long, `{"spec":{"members":[]}}`},
+		{"a name holding a newline", "/api/v1/netgroups/a%0Ab", `{"spec":{"members":[]}}`},
+		{"a name with a leading space", "/api/v1/netgroups/%20lab", `{"spec":{"members":[]}}`},
 		{"a member that is no host", "/api/v1/netgroups/labs", `{"spec":{"members":["10.0.0.1","bad host!"]}}`},
 		{"a mistyped address", "/api/v1/netgroups/labs", `{"spec":{"members":["1.2.3.999"]}}`},
 		{"a label starting with a hyphen", "/api/v1/netgroups/labs", `{"spec":{"members":["-lab"]}}`},
@@ -273,8 +275,8 @@ func TestNetgroupValidation(t *testing.T) {
 			refused++
 		}
 	}
-	if refused != 5 {
-		t.Errorf("netgroup refusals audited: %d, want 5", refused)
+	if refused != 7 {
+		t.Errorf("netgroup refusals audited: %d, want 7", refused)
 	}
 	ok := s.do(t, http.MethodPut, "/api/v1/netgroups/labs", `{"spec":{"members":["10.0.0.1","10.0.0.0/8","build-1.example.com"]}}`, "If-None-Match", "*")
 	if ok.status != http.StatusOK {
@@ -410,5 +412,55 @@ func TestPairAndNameTargets(t *testing.T) {
 		if len(got) != 2 || !bytes.Equal(got[0], want) || !bytes.Equal(got[1], want) {
 			t.Errorf("%s audit targets %x, want the refused and the applied write both at %x", kind, got, want)
 		}
+	}
+}
+
+// A user or group name no protocol can carry as given is refused 400
+// naming spec.name, on create and on edit, and nothing is written: invalid
+// UTF-8, a control character, NUL among them, white space leading or
+// trailing, and more than 255 bytes. An address over 254 bytes is refused
+// naming spec.email.
+func TestNameAndEmailBounds(t *testing.T) {
+	s := serve(t, as(entity.RoleOperator, false))
+	u, tag := s.createUser(t, apiv1.UserSpec{Name: "alice"}, "c1")
+	g := s.createGroup(t, apiv1.GroupSpec{Name: "staff"}, "g1")
+	for _, name := range []string{"nul\x00z", "x\ny", " ", " lead", "trail\t", strings.Repeat("a", 256), strings.Repeat("a", 5000)} {
+		body := jsonOf(t, map[string]any{"spec": map[string]any{"name": name}})
+		for _, tc := range []struct{ method, path string }{
+			{http.MethodPost, "/api/v1/users"},
+			{http.MethodPost, "/api/v1/groups"},
+			{http.MethodPatch, "/api/v1/users/" + u.ID},
+			{http.MethodPatch, "/api/v1/groups/" + g.ID},
+		} {
+			tag := tag
+			if strings.Contains(tc.path, "groups/") {
+				tag = etagOf(g.Generation)
+			}
+			r := s.do(t, tc.method, tc.path, body, "Idempotency-Key", "k-"+tc.method+tc.path+strconv.Itoa(len(name))+name[:1], "If-Match", tag)
+			if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "spec.name" {
+				t.Errorf("%s %s named %.20q: answered %d %+v, want 400 naming spec.name", tc.method, tc.path, name, r.status, p)
+			}
+		}
+	}
+	long := strings.Repeat("a", 243) + "@example.com" // 255 bytes
+	r := s.do(t, http.MethodPost, "/api/v1/users", jsonOf(t, map[string]any{"spec": apiv1.UserSpec{Name: "bob", Email: long}}), "Idempotency-Key", "long")
+	if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "spec.email" {
+		t.Errorf("POST a 255-byte address: answered %d %+v, want 400 naming spec.email", r.status, p)
+	}
+	if n := s.userCount(t); n != 1 {
+		t.Errorf("users stored after the refusals: %d, want alice alone", n)
+	}
+	if rec, _ := s.userRecord(t, u.ID); rec.Name != "alice" || etagOf(rec.Generation) != tag {
+		t.Errorf("store's alice after the refused edits: %+v, want her unchanged", rec)
+	}
+	var groups []string
+	for g, err := range s.store.Groups(t.Context(), "") {
+		if err != nil {
+			t.Fatal(err)
+		}
+		groups = append(groups, g.Name)
+	}
+	if !slices.Equal(groups, []string{"staff"}) {
+		t.Errorf("groups after the refusals: %v, want staff alone", groups)
 	}
 }

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"slices"
 	"strconv"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -24,6 +27,27 @@ func idRange(tx entity.ControlPlaneTx) (entity.IDRange, error) {
 	}
 	var r entity.IDRange
 	return r, json.Unmarshal(s.Value, &r)
+}
+
+// maxName bounds a user's, group's or netgroup's name, in bytes.
+const maxName = 255
+
+// validName refuses, naming field, a name a protocol cannot carry as given:
+// not valid UTF-8, holding a control character, NUL among them, with white
+// space leading or trailing, or longer than maxName bytes. Names reach NFSv4
+// owner strings and NTLM sign-in names. An empty name is the caller's rule.
+func validName(field, name string) error {
+	switch {
+	case len(name) > maxName:
+		return &fieldError{field: field, detail: "longer than " + strconv.Itoa(maxName) + " bytes"}
+	case !utf8.ValidString(name):
+		return &fieldError{field: field, detail: "not valid UTF-8"}
+	case strings.ContainsFunc(name, unicode.IsControl):
+		return &fieldError{field: field, detail: "holds a control character"}
+	case strings.TrimFunc(name, unicode.IsSpace) != name:
+		return &fieldError{field: field, detail: "starts or ends with white space"}
+	}
+	return nil
 }
 
 // spelling is the value of ids' spelling in scheme, and false when it has

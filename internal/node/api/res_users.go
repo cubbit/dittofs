@@ -4,6 +4,7 @@ import (
 	"context"
 	"iter"
 	"net/mail"
+	"strconv"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -27,6 +28,9 @@ func emailFor(u entity.User, email string) error {
 	if email == "" {
 		return nil
 	}
+	if len(email) > maxEmail {
+		return &fieldError{field: "spec.email", detail: "longer than " + strconv.Itoa(maxEmail) + " bytes"}
+	}
 	if _, dir := spelling(u.IDs, entity.SchemeDir); dir {
 		return &fieldError{field: "spec.email", detail: "a directory principal's address is the directory's"}
 	}
@@ -36,23 +40,30 @@ func emailFor(u entity.User, email string) error {
 	return nil
 }
 
-// named refuses a name a write may not give: none on a create, and none
-// in place of one on an edit, since the API's principals are found by
-// name. A principal minted with no name keeps none.
+// named refuses a name an edit may not give: none in place of one, since
+// the API's principals are found by name, and a new one validName refuses.
+// A principal minted with no name keeps none, and a stored name is kept as
+// it is.
 func named(old, name string) error {
-	if name == "" && old != "" {
+	switch {
+	case name == "" && old != "":
 		return &fieldError{field: "spec.name", detail: "a user or group keeps its name"}
+	case name != old:
+		return validName("spec.name", name)
 	}
 	return nil
 }
 
-// newName refuses a create naming no one.
+// newName refuses a create naming no one, or a name validName refuses.
 func newName(name string) error {
 	if name == "" {
 		return &fieldError{field: "spec.name", detail: "a user or group is created with a name"}
 	}
-	return nil
+	return validName("spec.name", name)
 }
+
+// maxEmail bounds an address, in bytes, as SMTP's path limit does.
+const maxEmail = 254
 
 func userSpecOf(u entity.User) apiv1.UserSpec {
 	return apiv1.UserSpec{Name: u.Name, UID: numberOf(u.IDs, entity.SchemeUID), Email: u.Email, Disabled: u.Disabled}

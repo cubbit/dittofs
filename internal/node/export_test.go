@@ -168,7 +168,15 @@ func (n *Node) OnSweep(turned func([]kvstore.Swept)) { n.sweep.turned = turned }
 // NewAuthenticating is New with authenticate as the API's Authenticate,
 // which New leaves unset.
 func NewAuthenticating(authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
-	return func(cfg Config) (*Node, error) { return newNode(cfg, authenticate) }
+	return func(cfg Config) (*Node, error) { return newNode(cfg, apiInputs{authenticate: authenticate}) }
+}
+
+// NewSigning is NewAuthenticating with signingKey as the API's SigningKey,
+// which New leaves unset, so writes carrying an Idempotency-Key are served.
+func NewSigning(authenticate func(*http.Request) (auth.Caller, error), signingKey func(context.Context) ([]byte, error)) func(Config) (*Node, error) {
+	return func(cfg Config) (*Node, error) {
+		return newNode(cfg, apiInputs{authenticate: authenticate, signingKey: signingKey})
+	}
 }
 
 // SetNFS has apply hand the NFS slot enabled and s, as the adapter's

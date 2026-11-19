@@ -112,22 +112,28 @@ type Node struct {
 // registry is refused as a duplicate registration; the test harness gives
 // each build a fresh registry. Unregister in Stop when an in-process
 // rebuild on one registry is needed.
-func New(cfg Config) (*Node, error) { return newNode(cfg, nil) }
+func New(cfg Config) (*Node, error) { return newNode(cfg, apiInputs{}) }
 
-// newNode is New with authenticate as the API's Authenticate, which only a
-// test sets.
-func newNode(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*Node, error) {
+// apiInputs is what only a test hands the API yet: its Authenticate and
+// its SigningKey, each nil in production.
+type apiInputs struct {
+	authenticate func(*http.Request) (auth.Caller, error)
+	signingKey   func(context.Context) ([]byte, error)
+}
+
+// newNode is New with the API's inputs in, which only a test sets.
+func newNode(cfg Config, in apiInputs) (*Node, error) {
 	if cfg.KV == nil {
 		return nil, errors.New("node: Config.KV is missing")
 	}
-	n, err := build(cfg, authenticate)
+	n, err := build(cfg, in)
 	if err != nil {
 		return nil, errors.Join(err, cfg.KV.Close())
 	}
 	return n, nil
 }
 
-func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*Node, error) {
+func build(cfg Config, in apiInputs) (*Node, error) {
 	if cfg.Metrics == nil {
 		return nil, errors.New("node: Config.Metrics is missing")
 	}
@@ -226,7 +232,8 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 		MetricsAddr:  cfg.Bootstrap.Metrics.Listen,
 		Metrics:      cfg.Metrics,
 		Logger:       cfg.Logger,
-		Authenticate: authenticate,
+		Authenticate: in.authenticate,
+		SigningKey:   in.signingKey,
 		Store:        n.meta.ControlPlane(),
 		Nodes:        n.meta.Nodes(),
 		Progress:     n.runner.progressOf,

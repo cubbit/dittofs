@@ -6,7 +6,6 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -25,15 +24,14 @@ func netgroupOf(g entity.Netgroup) apiv1.Netgroup {
 	return apiv1.Netgroup{ID: g.Name, Generation: g.Version, Spec: apiv1.NetgroupSpec{Members: members}}
 }
 
-// maxNetgroupName bounds a netgroup's name, in bytes, so its key and its
-// audit records' target stay small.
-const maxNetgroupName = 255
-
 // netgroupRef is the target of a netgroup's row: its name, which must be
-// valid UTF-8 of 1 to maxNetgroupName bytes.
+// one validName admits, and not empty.
 func netgroupRef(_ [16]byte, name string) ([]byte, error) {
-	if name == "" || len(name) > maxNetgroupName || !utf8.ValidString(name) {
-		return nil, &fieldError{field: "name", detail: "a netgroup's name is valid UTF-8 of 1 to " + strconv.Itoa(maxNetgroupName) + " bytes"}
+	if name == "" {
+		return nil, &fieldError{field: "name", detail: "a netgroup has a name"}
+	}
+	if err := validName("name", name); err != nil {
+		return nil, err
 	}
 	return []byte(name), nil
 }
