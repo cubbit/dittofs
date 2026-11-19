@@ -1724,6 +1724,15 @@ This epic waits for an SMB adapter serving through the node (S3).
 
 What the plan knowingly does not build. Each row cites the section that defers it.
 
+Rows of RFC 20's plan's deferral ledger and its epic documents that name this plan:
+
+| Row of RFC 20's plan's deferral ledger | Here |
+| --- | --- |
+| the authenticator: keytab, PAC, NTLMv2, NETLOGON, LDAP, consolidated as `internal/identity` | S2 (E3, E4), E5 to E7 |
+| identity-mapping config, deleted by RFC 20's T1.1 | E3 (squash); uid and gid mapping not here: §6.1, RFC 21 plan (O2) |
+| `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos` and `internal/auth/kerberos`, deleted by RFC 20's T1.1 for having no importer | E5, which lifts from `develop`'s history what rule 7 keeps of them: the replay cache and AP-REQ handling |
+| the share-policy gates (epic 1's §9, its D23): flavor and Kerberos-level policy, the netgroup allowlist and root's admin bypass at the share gate, re-derived in `internal/vfs/admit` | the root bypass: dropped (§1.1, ID6); the flavor and Kerberos-level policy and the netgroup allowlist: not here, unowned in §6.1 |
+
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
 | The CHALLENGE's AV pairs, `MsvAvNbComputerName` from `identity.netbios_name`, and the seam that hands `gss` those names | O3: an RFC 22 amendment | RFC 22 plan (#3911) | its session epic |
@@ -1743,6 +1752,8 @@ What the plan knowingly does not build. Each row cites the section that defers i
 | Leaving the domain | O5: RFC 18 states no rule for it | RFC 18 | RFC 18 defines leaving the domain |
 | Interop against a Windows Server domain controller: online and offline join, pass-through, a Windows client's ticket | O11: CI has only Samba AD (§1.5 rule 8) | unowned | v1.0's release candidate is cut |
 | "roles grant nothing" | §1.4: RFC 23 §12's row | RFC 23 plan (#4050) | its epic that runs RFC 23 §12 |
+| The share gate's flavor and Kerberos-level policy and its netgroup allowlist, deleted by RFC 20's epic 1 (its D23), to be re-derived in `internal/vfs/admit` | §6's RFC 20 rows: no epic of this plan builds them | unowned | their owner is ruled on |
+| the v1 NTLM and service-principal switches, which RFC 13's rows do not carry (RFC 20's epic 1, its §9) | NTLM through pass-through is this plan's S2; nothing on the branch reads the switches | this plan | claimed or dropped before the cutover (stage 7) |
 | Listing every user or group record: machines, unnamed users and unnamed groups, which `ControlPlane.Users` and `ControlPlane.Groups` leave out because they walk the name index (RFC 16 §3; RFC 18 §2.4 gives a machine no name, §5.1 leaves a directory group without one) | E2: no RFC asks for it, and no RFC 23 endpoint lists them; T2.3's `UnnamedPrincipals` conformance case pins the subset | RFC 23 plan (#4050) | an RFC 23 endpoint that lists machines, unnamed users or unnamed groups, which brings an RFC 16 §3 amendment for a walk of the `U‖` and `G‖` records |
 
 ## 7. RFC coverage

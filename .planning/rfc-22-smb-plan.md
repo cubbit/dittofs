@@ -136,7 +136,7 @@ and E5 to E8, for sign-in (§3.2).
 | Connection, signing, credits, replay | inline in one connection loop in `pkg/adapter/smb` | `core`'s pipeline; SMB's `Security`, `Flow`, `Replay` and `HoldCodec` stages in `smb/protocol` |
 | Sign-in | `SESSION_SETUP` decodes Kerberos itself and runs NETLOGON pass-through to the domain controller | `gss`'s mechanisms (RFC 20 §4.4); every secret behind `SignIn` (RFC 18) |
 | Held requests | per-handler pending code | `core`'s hold and park, with SMB's bounds by cause (RFC 22 §16.5) |
-| Codecs | split between `smbenc`, `header` and handlers | `smb/wire`, pure, one file per command, golden vectors and fuzz targets |
+| Codecs | split between `smbenc`, `header` and handlers | one codec, pure, generated from each command's tagged structs in `smb/ops/<cmd>.go` over `smb/wire`'s runtime; golden vectors and fuzz targets |
 | Durable and lease state | in the adapter's session tables | RFC 14's records at the file's primary; the adapter keeps only a connection's state |
 | Dialects | 2.0.2 among them | 2.1, 3.0, 3.0.2, 3.1.1; SMB1 and 2.0.2 refused (RFC 22 §3.1) |
 | Witness | not served | (cluster) by amendment A1, deferred to the cluster stage (§6.2, point 13) |
@@ -623,7 +623,7 @@ internal/adapter/
   smb/
     smb.go                    RFC 20's E6: New; builds the stages and the tables
     callbacks.go              E1 type; E9 (RecallGrant, Revoked), E11 (LockWaitOver, Notify)
-    wire/                     RFC 20's E6: NetBIOS framer, header; then one file per command, in its epic
+    wire/                     RFC 20's E6: NetBIOS framer, header, codec generator and runtime
       transform.go            E3
       names.go                E8: RFC 22 Appendix B's mapping
     protocol/                 RFC 20's E6: Router; E1: State, Session, Tree, FileIds, Caps
@@ -632,7 +632,8 @@ internal/adapter/
       window.go               E3: Replay, the message-ID window
       hold.go                 E3: HoldCodec
       sessions.go             E5: the session registry
-    ops/                      E1: Handlers and the table; one file per command, in its epic
+    ops/                      E1: Handlers and the table; <cmd>.go per command, in its epic
+      codec_gen.go            generated from the commands' tagged structs; each command's epic regenerates it
       errors.go               E3: RFC 22 §16.5's table
       ioctl/                  E1 table; one file per control code: E3, E5, E6, E8, E13
     dcerpc/                   E6: NDR, PDUs, interfaces by opnum; imports no SMB package
@@ -647,25 +648,30 @@ them.
 
 ### 4.1 Code sketch
 
-The sketch is illustrative: `core.Bind`, `core.Op`, `core.Request` and `vfs.OpenRequest` are as
-`feat/storage-v2` has them, and the SMB names are planned, for the epic documents to decide. A
-handler is decode, one `vfs.Service` call, translate and encode (RFC 20 §4.3); `core.Bind` joins
-them into the `Decode` of the `CREATE` row (E1's table, E7's row):
+The sketch is illustrative: `core.Row` is RFC 20 §4.7's, `core.Request` and `vfs.OpenRequest`
+are as `feat/storage-v2` has them, and the SMB names are planned, for the epic documents to
+decide. A command is one file, `ops/<cmd>.go`: its request and reply structs, tagged for SMB2's
+generated codec, and its handler, which never sees a byte (RFC 20 §4.3, §5.1). Its row is one
+`core.Row` line of the table (E1's table, E7's row):
 
 ```go
-// smb/ops/create.go (planned: E1's row, E7's body; E9 and E10 add their contexts)
-func (h *Handlers) createOp() *core.Op {
-	return &core.Op{
-		Code: wire.Create, Name: "CREATE", Versions: dialects, Needs: core.NeedsTree,
-		Decode: core.Bind(wire.DecodeCreate, wire.CreateBound, nil, nil, nil, h.Create, wire.EncodeCreate),
-	}
+// smb/ops/create.go (planned: E7's structs and body; E9 and E10 add their contexts)
+type CreateRequest struct { // MS-SMB2 2.2.13, abridged
+	DesiredAccess     uint32
+	ShareAccess       uint32
+	CreateDisposition uint32
+	Name              string          `smb2:"offset=NameOffset,len=NameLength,utf16"`
+	Contexts          []CreateContext `smb2:"chain"`
 }
+type CreateResponse struct{ /* ... */ }
 
-func (h *Handlers) Create(ctx context.Context, r *core.Request, req *wire.CreateRequest) (*wire.CreateResponse, error) {
+func (h *Handlers) Create(
+	ctx context.Context, r *core.Request, req CreateRequest,
+) (CreateResponse, error) {
 	st := r.State.(*protocol.State)            // the session, the tree and the FileId table (T1.1)
 	dir, name, err := h.walk(ctx, r, req.Name) // read-only Lookups from the tree's root (T7.3)
 	if err != nil {
-		return nil, err
+		return CreateResponse{}, err
 	}
 	res, err := h.VFS.Open(ctx, r.Call, vfs.OpenRequest{ // the one mutating call
 		Dir: dir, Name: name,
@@ -674,13 +680,16 @@ func (h *Handlers) Create(ctx context.Context, r *core.Request, req *wire.Create
 		Deny:        translate.Deny(req.ShareAccess),
 	})
 	if err != nil {
-		return nil, err // the error table answers it (RFC 22 §16.5), never the handler
+		return CreateResponse{}, err // the error table answers it (RFC 22 §16.5), never the handler
 	}
-	return &wire.CreateResponse{
+	return CreateResponse{
 		FileId: st.Files.Add(res.Ref), File: res.File, // the volatile half in the session's table (T7.2)
 		Grant: res.Grant, MaximalAccess: res.MaximalAccess, // as the service answered them; MxAc by A3
 	}, nil
 }
+
+// smb/ops/table.go (planned: E1's table, E7's row)
+core.Row(wire.Create, "CREATE", core.NeedsTree, h.Create)
 ```
 
 A handler whose call answers `ErrState` (`Revoked`) for a `FileId` calls `FreeState` once for
@@ -782,9 +791,9 @@ RFC sections: §3.1, §3.2, §3.3's credits and pending ceiling, §4.1's signing
 `VALIDATE_NEGOTIATE_INFO`; Appendix G's `NEGOTIATE`, `ECHO` and `CANCEL`; RFC 20 §4.5, §4.7's
 `Security`, `Flow`, `Replay` and `HoldCodec`, §5.5, §7.3.
 
-- T3.1 `NEGOTIATE` codecs: request, response and negotiate contexts (preauthentication, encryption,
-  signing, netname read and not checked; compression, RDMA and transport capabilities not offered);
-  an SMB1 negotiate recognised; golden vectors and fuzz targets.
+- T3.1 `NEGOTIATE`'s tagged structs: request, response and negotiate contexts (preauthentication,
+  encryption, signing, netname read and not checked; compression, RDMA and transport capabilities
+  not offered); an SMB1 negotiate recognised; its golden vectors in the codec's suite.
 - T3.2 `NEGOTIATE`: the highest of 3.1.1, 3.0.2, 3.0 and 2.1; SMB1 answered with the multi-protocol
   response or closed; 2.0.2 alone `STATUS_NOT_SUPPORTED`; capabilities exactly as §3.1's table, "if
   asked" bits only when asked; `SIGNING_REQUIRED` always; 8 MiB sizes; `Caps`; the `ClientGuid` kept
@@ -889,7 +898,7 @@ RFC sections: §4.1 (session setup, keyless sessions, re-authentication, expiry,
 client rows; Appendix G's `SESSION_SETUP` and `LOGOFF`; RFC 20 §3.2's cleanup per session, §4.7's
 `Established`; RFC 14 §2.1's `Reach.Sessions` and its plan's L52 cases; RFC 18 §3.8.
 
-- T5.1 `SESSION_SETUP` and `LOGOFF` codecs.
+- T5.1 `SESSION_SETUP`'s and `LOGOFF`'s tagged structs; their golden vectors in the codec's suite.
 - T5.2 The session registry: sessions over channels, named by node, node epoch and session ID, IDs
   counted from 1 per process; each session's cleanup completed before a reconnect of it is served;
   `Disconnect` at a session's last channel.
@@ -967,8 +976,8 @@ open rows and `Adapter` bytes, §16.5's read-only narrowing paragraph; Appendix 
 Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4; RFC 17 §3.4's
 `FileId` codec; RFC 20 §5.3, §6.10's `READ` and `WRITE` gates.
 
-- T7.1 `CREATE` and `CLOSE` codecs, with every create context of Appendix D decoded and the response
-  contexts encoded.
+- T7.1 `CREATE`'s and `CLOSE`'s tagged structs, with every create context of Appendix D decoded and
+  the response contexts encoded.
 - T7.2 `FileId`s: the persistent half from the open's `OpenID` and shard, through `pkg/vfs`'s codec;
   the volatile half in the session's table, never reissued while held (RFC 20 §2.2); a related
   member's current open; a `FileId` answered `STATUS_FILE_CLOSED` for `ErrState` (`Revoked`), then
@@ -1019,7 +1028,8 @@ Appendix F's reparse codes; RFC 20 §4.9's `Fit`, §6.10's `QUERY_INFO` gate.
   name of 300 characters refused); a trailing space or period sent over SMB stored on a `posix`
   share and refused on a `windows` one; `CONIN$` and `CON .txt` refused; on a `posix` share,
   U+F029 U+F029, which converts back to `..`, refused.
-- T8.2 Information-class codecs (Appendix E), with the `QUERY_INFO` 0-allocation gate.
+- T8.2 The information classes' tagged structs (Appendix E), with the `QUERY_INFO` 0-allocation
+  gate.
 - T8.3 `QUERY_INFO`, file and file-system classes: §16.3's attribute bits and times, allocation from
   `Charged`, derived file IDs never the `FileID`, the volume serial, `NTFS` and Appendix E.2's
   flags, Appendix E.3's answers.
@@ -1054,7 +1064,8 @@ bounds by cause; Appendix D's `RqLs`; Appendix G's `OPLOCK_BREAK`; RFC 20 §3.3'
 `Revoked`, §4.6's SMB bounds, §6.2's order; RFC 17 §3.2, §5.9's `WithHold`; RFC 14 §2.4, §5.3,
 §11.3's `Grants.Openers`.
 
-- T9.1 Lease and oplock codecs: break notifications and acknowledgements in both forms.
+- T9.1 The lease's and oplock's tagged structs: break notifications and acknowledgements in both
+  forms.
 - T9.2 Caching requests on `CREATE`: lease key, parent, epoch and version, oplock levels as grant
   kinds; none for a guest or null session; the join test through `OpenRequest.Conn` (plan gap
   18); the service grants none on a directory (RFC 22 §6.2; plan gap 23, T2.5) and refuses the
@@ -1120,8 +1131,8 @@ RFC sections: §6.5's lock sequences, §7, §8, §16.4's lock and watch rows; Ap
 `CHANGE_NOTIFY` and `CANCEL` rows; RFC 20 §4.7's `Park`, §6.5; RFC 14 §2.10; RFC 17 §3.2's
 `LockWaitOver` and `Notify`.
 
-- T11.1 `LOCK` and `CHANGE_NOTIFY` codecs: every element's flags checked at decode, a mixed list
-  refused; the notification entries.
+- T11.1 `LOCK`'s and `CHANGE_NOTIFY`'s tagged structs: every element's flags checked at decode, a
+  mixed list refused; the notification entries.
 - T11.2 `LOCK`: one `Lock` or `Unlock` with every range; `FAIL_IMMEDIATELY`, and a list of several
   without it refused; the open as a stacking lock owner; the lock sequence of a durable v2 or
   persistent open on 3.x; an unlock as a release.
@@ -1172,8 +1183,8 @@ Explorer's Previous Versions tab lists.
 RFC sections: §10, §15, Appendix F (but the codes other epics own); Appendix G's `IOCTL` rows;
 RFC 17 §5.2, §5.9; RFC 12 §2.5, §2.10.
 
-- T13.1 The control codes' payload codecs (the `IOCTL` command's own is T3.5's), and Appendix F's
-  refusals (ODX, resiliency, compression, trim, integrity, shared virtual disks).
+- T13.1 The control codes' payloads as tagged structs (the `IOCTL` command's own is T3.5's), and
+  Appendix F's refusals (ODX, resiliency, compression, trim, integrity, shared virtual disks).
 - T13.2 Server-side copy: the resume key in this node's table, copychunk as one `Copy` within
   Appendix F's limits and possibly short, duplicate-extents as one `Clone`; the service's
   `ErrInvalid` and `ErrCross`, mapped; I/O held behind a running clone.
@@ -1608,6 +1619,10 @@ thread is named.
 
 ### 6.4 RFC 20's ledger rows for SMB
 
+Each row is one of [RFC 20's plan](rfc-20-adapters-plan.md)'s deferral ledger (its §6.2), or, where
+the row names it, of the open points (§9) of RFC 20's [epic 2](rfc-20-adapters-epic2.md) or
+[epic 6](rfc-20-adapters-epic6.md) document.
+
 | Row of RFC 20's plan's deferral ledger | Here |
 | --- | --- |
 | SMB 2.1 to 3.1.1 commands and `ioctl/` | E3, E5 to E13, one row per command of Appendix G |
@@ -1631,6 +1646,17 @@ thread is named.
 | the `/durable-handles` listing | not here: unowned, §6.5's deferral ledger (plan gap 13) |
 | `test/required-tests.json` pins for SMB's authorization gates | E16 |
 | SMB's suites skipped by the V2 filter | E15 (turned on), E16 (green) |
+| `ConnInfo.Session`: the `Conn` call that names the session a connection carries (RFC 20 §3.4) | E5, with the session registry (T5.2) |
+| a `FlowControl` conformance check in `adaptertest` that each protocol's `Flow` passes: under an ended context `Admit` takes a free place or returns at once (RFC 20's epic 5, its D8) | E3, with `Flow` (T3.6) |
+| RFC 20 §10.1's `adapter_translation_refused_total`, `adapter_record_decode_failures_total` and `adapter_record_replays_total` | with `translate` (E7, E8, E12) and the client record (T5.4) |
+| `internal/mfsymlink`, deleted by RFC 20's T1.1 for having no importer | not here: unowned, §6.5's deferral ledger |
+| the import test's cases for the packages two protocols share: a protocol may import `translate` and `gss`, `translate` imports only neutral types, `gss`'s own clause, `smb/dcerpc` imports no SMB package (epic 2's §9) | each with its package's first commit: `gss` in E4, `dcerpc` in E6, `translate` in E7 |
+| a command added to a table without a vector in its protocol's suite fails the suite, a check in `internal/adapter/smb` (epic 6's §9) | E3, with the first command |
+| each request's `vfs.Call` and its `Identity`, built from SMB's session (RFC 20 §4.4, RFC 22 §16.1; epic 6's §9) | E5 (§7's §16.1 row) |
+| an `IOCTL` buffer decoded by its control code (RFC 22 §16; epic 6's §9) | T3.5 |
+| a buffer decoded by its information class (RFC 22 §16; epic 6's §9) | T8.2 |
+| a security descriptor's self-relative offsets (RFC 22 §16, §11; epic 6's §9) | T12.1 |
+| the encoder's `resources.Buf` segment (RFC 20 §5.3), once RFC 20 names the call (epic 6's §9) | T7.6 |
 
 ### 6.5 Deferral ledger
 
@@ -1645,6 +1671,8 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | `/durable-handles`, v1's listing of durable opens, which RFC 20's plan's ledger gives this plan (plan gap 13, §6.4) | RFC 23 defines no endpoint or record for it, and RFC 23's plan (#4050) builds none | unowned | RFC 23 adds an endpoint over RFC 14 §8.1's durable opens |
 | T13.4, Previous Versions, with §18's §15 rows (E13; §6.2, point 9) | `Snapshots` answers an empty list until RFC 12's store view, which #3119 leaves for later; kept in E13, it would stall track C on RFC 12 | the stage that builds RFC 12's store view, running T13.4 as written here | RFC 12's store view answers `Snapshots` |
 | T16.1's remote outage on reads on the composed node, §18's §16.5 row (E16; §7) | a journal-only node has no remote tier to fail; the row's `memory.New` half, through `vfstest.Faults`, stands in T7.6 and T9.5 | RFC 8's second part, the remote tier (stage 3 of #3119, planned separately) | a composed node with a remote tier |
+| `internal/mfsymlink`, Minshall+French symlinks, which RFC 20's plan's ledger gives this plan (§6.4) | RFC 22 names no Minshall+French symlink, so no epic builds it | unowned | RFC 22 states them, or a recorded decision drops them |
+| the v1 SMB switches and settings RFC 13's rows do not carry: the signing, encryption and guest switches, and the sizes and credits knobs (RFC 20's epic 1, its §9) | v1 behaviour a first customer's SMB setup may rely on; nothing on this branch reads them | this plan | claimed or dropped before the cutover (stage 7) |
 
 ## 7. RFC coverage
 
