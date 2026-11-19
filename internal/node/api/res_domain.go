@@ -194,9 +194,16 @@ func prepareRotate(ctx context.Context, rq request[none]) (opStart, error) {
 // as a new version of the machine password, in a write of its own committed
 // before the operation's, whose version the operation's params name, and
 // its start is refused 409 unless that version is still the current one.
-// Neither credential reaches the params.
+// Neither credential reaches the params, and a refusal before the hold or
+// the seal clears the password.
 func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, error) {
 	p, cred := apiv1.JoinDomainParams{JoinDomainSpec: rq.Body.Spec}, rq.Body.Credential
+	owned := false // the hold or handOver clears it from there
+	defer func() {
+		if !owned {
+			clear(cred.Password)
+		}
+	}()
 	switch {
 	case len(p.Account) > maxDirectoryName:
 		return opStart{}, tooLong("spec.account")
@@ -224,6 +231,7 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 			return opStart{}, err
 		}
 		id := entity.OperationID(entity.NewShareID())
+		owned = true
 		return opStart{id: id, params: b, check: notRotating,
 			release: rq.d.Joins.HoldJoinCredential(id, identity.JoinCredential{User: cred.User, Password: cred.Password})}, nil
 	case apiv1.JoinOffline:
@@ -239,6 +247,7 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 		case rq.d.Sealer == nil:
 			return opStart{}, errNoSealer
 		}
+		owned = true
 		ref, err := handOver(ctx, rq, cred.Password)
 		if err != nil {
 			return opStart{}, err

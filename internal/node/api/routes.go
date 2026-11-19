@@ -217,6 +217,7 @@ var baseRoutes = []route{
 	{method: http.MethodPut, pattern: "/api/v1/stores/{id}/credential", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(credentials, storeCredentials.seal, storeCredentials.put)},
 	{method: http.MethodDelete, pattern: "/api/v1/stores/{id}/credential", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(tagsOf(credentials), nil, storeCredentials.remove)},
 	{method: http.MethodPut, pattern: "/api/v1/installation/keytab", kind: entity.ResourceInstallation, right: auth.Installation, serve: write(keytabWrites, keytabs.seal, keytabs.put)},
+	{method: http.MethodDelete, pattern: "/api/v1/installation/keytab", kind: entity.ResourceInstallation, right: auth.Installation, serve: write(tagsOf(keytabWrites), nil, keytabs.remove)},
 	{method: http.MethodGet, pattern: "/api/v1/namespaces", kind: entity.ResourceNamespace, right: auth.View, serve: list(namespaceList)},
 	{method: http.MethodPost, pattern: "/api/v1/namespaces", kind: entity.ResourceNamespace, right: auth.Stores, serve: write(namespaces, nil, createNamespace)},
 	{method: http.MethodGet, pattern: "/api/v1/namespaces/{id}", kind: entity.ResourceNamespace, right: auth.View, serve: watch(namespace)},

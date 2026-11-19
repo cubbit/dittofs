@@ -16,6 +16,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/google/uuid"
+	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
+	"github.com/jcmturner/gokrb5/v8/keytab"
 )
 
 type protocolSealer struct{ p *secrets.Provider }
@@ -93,5 +95,56 @@ func TestOfflineJoinStartsOnlyOnItsVersion(t *testing.T) {
 	}
 	if err := check(second); err != nil {
 		t.Errorf("the second join's start on the current version: %v, want admitted", err)
+	}
+}
+
+// A computer account's names written after the keytab's pre-write check
+// passed are caught by its check in the write's transaction, which reads the
+// installation tracked.
+func TestKeytabNamesCheckedInTheWrite(t *testing.T) {
+	cp := ntlmStore(t)
+	kt := keytab.New()
+	if err := kt.AddEntry("host/dfs.ad.example", "AD.EXAMPLE", "pw", time.Unix(1, 0), 1, etypeID.AES256_CTS_HMAC_SHA1_96); err != nil {
+		t.Fatal(err)
+	}
+	b, err := kt.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inTx, err := keytabs.check(t.Context(), Deps{Store: cp}, b)
+	if err != nil {
+		t.Fatalf("the check before any join: %v, want admitted", err)
+	}
+	j := entity.MachineJoin{Joined: true, Account: "DFS$", Names: []string{"host/dfs.ad.example"}}
+	if err := cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetMachineJoin(j) }); err != nil {
+		t.Fatal(err)
+	}
+	err = cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return inTx(tx) })
+	if p, _ := problemOf(err); p.Status != 400 || p.Field != "spec.value" {
+		t.Errorf("the check in the write, the join since naming the key: %v, want 400 naming spec.value", err)
+	}
+}
+
+// Every refusal of a join before its hold or its seal clears the password
+// the request carried.
+func TestJoinRefusalClearsThePassword(t *testing.T) {
+	cp := ntlmStore(t)
+	for _, tc := range []struct {
+		name string
+		spec apiv1.JoinDomainSpec
+		user string
+	}{
+		{"online, an OU outside the base", apiv1.JoinDomainSpec{Mode: apiv1.JoinOnline, OU: "OU=x,DC=other"}, "Administrator"},
+		{"online, no identity", apiv1.JoinDomainSpec{Mode: apiv1.JoinOnline}, "Administrator"},
+		{"offline, no identity", apiv1.JoinDomainSpec{Mode: apiv1.JoinOffline, Account: "DFS$"}, ""},
+	} {
+		pw := []byte("s3cret")
+		rq := request[apiv1.JoinDomain]{Body: apiv1.JoinDomain{Spec: tc.spec, Credential: apiv1.JoinCredential{User: tc.user, Password: pw}}, d: Deps{Store: cp}}
+		if _, err := prepareJoin(t.Context(), rq); err == nil {
+			t.Fatalf("%s: prepared, want refused", tc.name)
+		}
+		if string(pw) != "\x00\x00\x00\x00\x00\x00" {
+			t.Errorf("%s: password after the refusal %q, want zeroed", tc.name, pw)
+		}
 	}
 }

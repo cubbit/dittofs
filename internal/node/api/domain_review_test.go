@@ -251,6 +251,7 @@ func TestKeytabRoute(t *testing.T) {
 	}
 	rc4 := keytabOf(t, "cifs/nas.ad.example", etypeID.RC4_HMAC)
 	held := keytabOf(t, "host/dfs.ad.example", etypeID.AES256_CTS_HMAC_SHA1_96)
+	account := keytabOf(t, "dfs$", etypeID.AES256_CTS_HMAC_SHA1_96)
 	var replies []reply
 	for _, tc := range []struct {
 		name   string
@@ -260,6 +261,7 @@ func TestKeytabRoute(t *testing.T) {
 	}{
 		{"an RC4 keytab", rc4, http.StatusBadRequest, "invalid"},
 		{"a keytab for a name the join holds", held, http.StatusBadRequest, "invalid"},
+		{"a keytab for the computer account's own name", account, http.StatusBadRequest, "invalid"},
 		{"a good keytab, refused by the empty table", good, http.StatusBadRequest, "unknown_key"},
 	} {
 		r := d.do(t, http.MethodPut, keytabPath, putKeytab(tc.b), "If-None-Match", "*")
@@ -269,7 +271,7 @@ func TestKeytabRoute(t *testing.T) {
 		}
 	}
 	var secrets []string
-	for _, b := range [][]byte{good, rc4, held} {
+	for _, b := range [][]byte{good, rc4, held, account} {
 		secrets = append(secrets, string(b[len(b)-32:])) // each keytab's key
 	}
 	if l := d.leaks(t, replies, secrets...); len(l) != 0 {
@@ -332,5 +334,38 @@ func TestJoinModeIsAnEnum(t *testing.T) {
 	got := at(openAPIDoc(t), "components", "schemas", "JoinDomainSpecRequest", "properties", "mode", "enum")
 	if vs, ok := got.([]any); !ok || !slices.Equal(vs, []any{string(apiv1.JoinOnline), string(apiv1.JoinOffline)}) {
 		t.Errorf("join mode's enum %v, want [online offline]", got)
+	}
+}
+
+// The keytab's DELETE is the installation's write, refused to an operator
+// (above); for an admin, 412 while no keytab is named, as no record holds the tag, and, with one named, judged by
+// the settings table, whose empty table refuses it, the refusal audited
+// against the installation's ID.
+func TestKeytabDeleteRefusedToAnOperator(t *testing.T) {
+	op := serve(t, as(entity.RoleOperator, false))
+	if r := op.do(t, http.MethodDelete, keytabPath, "", "If-Match", `"1"`, "Idempotency-Key", "del"); r.status != http.StatusForbidden {
+		t.Errorf("an operator's DELETE: answered %d %s, want 403", r.status, r.body)
+	}
+}
+
+func TestKeytabDelete(t *testing.T) {
+	s := serve(t, as(entity.RoleAdmin, false))
+	if r := s.do(t, http.MethodDelete, keytabPath, "", "If-Match", `"1"`, "Idempotency-Key", "del-none"); r.status != http.StatusPreconditionFailed {
+		t.Errorf("a DELETE with no keytab: answered %d %s, want 412, no record holding the tag", r.status, r.body)
+	}
+	ref := entity.SecretRef(uuid.New())
+	s.putSetting(t, installation, "identity.keytab", strconv.Quote(uuid.UUID(ref).String()))
+	if err := s.store.PutSecret(t.Context(), entity.Secret{ID: ref, Kind: entity.SecretKeytab, Version: 1,
+		Owner: entity.SecretOwner{Scope: installation, Key: "identity.keytab"}, Value: []byte("sealed")}, 0); err != nil {
+		t.Fatal(err)
+	}
+	r := s.do(t, http.MethodDelete, keytabPath, "", "If-Match", `"1"`, "Idempotency-Key", "del-one")
+	if r.status != http.StatusBadRequest || r.problem(t).Code != "unknown_key" || r.problem(t).Field != "identity.keytab" {
+		t.Errorf("a DELETE of the keytab: answered %d %s, want 400 unknown_key naming identity.keytab", r.status, r.body)
+	}
+	in := s.installationRecord(t)
+	audits := s.audits(t)
+	if last := audits[len(audits)-1]; last.Target.Kind != entity.ResourceInstallation || !bytes.Equal(last.Target.ID, in.ID[:]) {
+		t.Errorf("the refusal's audit %+v, want it naming the installation %x", last.Target, in.ID)
 	}
 }
