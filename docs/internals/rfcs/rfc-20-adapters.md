@@ -69,8 +69,9 @@ service suite tests a path the NFS adapter does not take.
 With this RFC:
 
 1. The NFS adapter's packages import the service and their own wire and session
-   code, and nothing else. A handler that reached for the engine would not
-   build, and a test says so (§2.3).
+   code, and nothing else. A handler that reached for the engine would still
+   build, and the import test would fail, naming its file and the import
+   (§2.3).
 2. The NFSv3 `WRITE` handler is handed the arguments the protocol's one codec
    decoded, builds an anonymous open from the caller's identity, makes **one**
    call, `Write`, and returns what comes back (§4.3).
@@ -189,8 +190,10 @@ Windows user hits it.
 - Every adapter has one lifecycle — configured, serving, draining, stopped — and
   one pipeline: frame, decode, admit, replay check, resolve, call, map, encode,
   send.
-- The node (`node.New`) builds each adapter once from its `Deps`; handlers are
-  methods on per-version handler sets that hold the service. A protocol version
+- The node builds each adapter with its protocol's `New`, from the one `Deps`
+  `node.New` builds, each time reconcile starts one
+  ([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders));
+  handlers are methods on per-version handler sets that hold the service. A protocol version
   is an operation table, chosen from the request's header, never a branch in a
   handler.
 - A handler makes at most one mutating service call, beside the few §4.3
@@ -333,7 +336,8 @@ only caching there is.
 ### 2.3 What an adapter may import
 
 An adapter imports, of the core, `pkg/vfs`, its own public surface in
-`pkg/adapter`, `pkg/resources` and `pkg/metrics`, and nothing else. Its
+`pkg/adapter`, `pkg/resources`, `pkg/metrics` and `internal/tlsconfig`, and
+nothing else. Its
 packages **MUST** import only:
 
 - the service's interface and value types ([RFC 17 §3](rfc-17-vfs.md#3.%20Interface)),
@@ -443,7 +447,10 @@ thin with four rules:
 4. **An interface only where there are two implementations.** `vfs.Service`
    (the filesystem, the gateway, the fault wrapper, the null service), the authenticator (the
    local store, a domain), a protocol and its stages (NFS's RPC
-   protocol, SMB), a sidecar (§3.5). Everything else is a concrete type.
+   protocol, SMB), a sidecar (§3.5). One exception: `adapter.Adapter`, which
+   `*core.Server` alone implements, since the node may not import the
+   implementation under `internal/adapter/` and names the contract instead
+   (§3.4). Everything else is a concrete type.
 
 ```mermaid
 flowchart TB
@@ -471,7 +478,7 @@ flowchart TB
     svc["pkg/vfs — vfs.Service (RFC 17)"]
     translate["internal/adapter/translate"]
   end
-  root -- "nfs.New / smb.New (Deps)" --> core
+  cp -- "nfs.New / smb.New (Deps)" --> core
   root --> cp
   cp -- "Start · Reconfigure · Stop" --> core
   side["internal/sidecar<br/>mDNS · WS-Discovery · port mapper<br/>rpcbind"]
@@ -502,9 +509,12 @@ flowchart TB
 - **`internal/adapter/`** holds every line of implementation: `core`, each
   protocol, their codecs and stages. Only the two constructors in
   `pkg/adapter/nfs` and `pkg/adapter/smb` import a protocol's implementation,
-  and no other package under `pkg/` imports anything under
-  `internal/adapter/`; the implementation imports `pkg/adapter` and
-  `pkg/adapter/settings`, never a constructor package.
+  but for a sidecar that speaks a protocol's encoding, which imports that
+  protocol's `wire` (§3.5), and a test file outside `pkg/` and
+  `internal/adapter/`. No other package under `pkg/`, its test files
+  included, imports anything under `internal/adapter/`; the implementation
+  imports `pkg/adapter` and `pkg/adapter/settings`, never a constructor
+  package.
 
 The import test of §7.1 checks both directions.
 
@@ -513,25 +523,32 @@ pkg/vfs/                    the service interface (RFC 17)
 pkg/vfs/vfstest/            the in-memory service, its fault wrapper, the null service
 pkg/resources/              RFC 24's budgets and pooled buffers, shared by every component (§6.8)
 pkg/adapter/                the public surface, as pkg/vfs is the service's:
-  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, ErrPortChanged, Sidecar, Serving, Socket, Loop (§3.4, §3.5)
-  deps.go                   Deps (§3.4)
+  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, ErrPortChanged, Sidecar, Serving, Socket (§3.4, §3.5)
+  deps.go                   Deps, Loop (§3.4)
   traceid.go                StartRequestSpan, TraceIDFromContext: a request span's trace ID, for the root's ID generator and sampler (§10.2)
   settings/                 the settings shapes, their defaults and Settings (§3.6): a leaf
   nfs/  smb/                New: one public constructor each, a call into the implementation
 internal/adapter/
   core/                     one package, a file per concern; imports no protocol:
-    server.go               Server: lifecycle, listeners, accept, drain, health (§3); implements adapter.Adapter
-    conn.go                 Conn: reader, writer, write deadline (§6.1, §6.2)
+    server.go               Server, Listener, NewServer: lifecycle, listeners, drain, health (§3); implements adapter.Adapter
+    accept.go               the accept loop: the connection count and charge, the backoff, a lost listener, Deps.Watch (§3.2, §6.4)
+    reconfigure.go          Reconfigure (§3.1, §3.6)
+    conn.go                 Conn: Send, Established, Keep, Settings, Close, the teardown, the handshake and idle deadlines (§3.2, §4.7, §6.4)
+    reader.go               the reader: the record cut and reserved, fragments, the frame deadline (§6.1, §6.4)
+    writer.go               the writer: its bounded queue, gathered writes, the write deadline (§6.2)
+    tcp.go                  the socket options, with tcp_linux.go and tcp_other.go (§6.7)
     protocol.go             Protocol, Framer, Stages: what a protocol plugs in (§4.7)
     pipeline.go             the stages, in §4.1's order
     dispatch.go             OpTable, Op, Invocation, Bind: operation code to handler (§4.2, §4.7)
     compound.go             the compound runner (§4.3)
-    hold.go                 held requests (§4.6)
+    chain.go                the chain runner: chained messages in one record (§4.7)
+    hold.go                 held and parked requests (§4.6, §4.7)
     middleware.go           the middleware chain (§4.7)
+    metrics.go              the series core records (§10.1)
     errors.go               ErrorTable and its totality check (§4.5)
   translate/                ACL, access-mask, time and attribute translation: neutral types only
   gss/                      the wire side of authentication: Kerberos, NTLM and SPNEGO mechanisms, exchanges, per-request Identity (§4.4); test initiators. Secrets and directories are internal/identity's (RFC 18 §2.7)
-  adaptertest/              import test; testproto/, the test-only protocol `core` is proven on (§7); golden/, golden-vector and capture helpers
+  adaptertest/              import test; the leak check and a test server's Budgets; testproto/, the test-only protocol `core` is proven on (§7); golden/, golden-vector and capture helpers
   nfs/  smb/                one shape for both protocols:
     nfs.go | smb.go         New: builds the stages, handler sets and operation tables; returns *core.Server
     wire/                   the protocol's one codec, shared by every command (§5): record framing, the hand-written RPC or SMB2 header codec, the generated codecs' runtime, the generator (wire/gen/) and its output for shared body types; no file per command
@@ -560,9 +577,11 @@ beyond the standard library and `pkg/resources`'s buffers, which the import
 test checks (§7.1). The protocol's golden-vector suite and fuzz target are
 there, one of each for every command (§5.4). What holds state — a GSS context,
 a session, a credit window — is in `protocol/`, the protocol's stages.
-The one exception to `wire`'s imports is `<protocol>/wire/gen`, the generator:
-it may import `os` to write its file, and no other package that does I/O, still
-from the standard library alone.
+The one exception to `wire`'s imports, beside its test files, which read their
+vectors from files, is `<protocol>/wire/gen`, the generator, a main package in
+no adapter's build: it reads its input files and writes its own, so it may
+import `os`, and none of `io/ioutil`, `net`, `syscall` or `plugin`, still from
+the standard library alone.
 
 > ponytail: a line count, not a complexity measure. A 500-line file of table
 > rows is fine and a 300-line handler that composes is not; §4.3 and §7.2 catch
@@ -642,10 +661,11 @@ Every adapter runs through the same four states, driven by the node
   whose refusal has a reply (`NFS4ERR_MOVED`) runs to it and is answered there
   (§4.7).
   Requests already handed to the service run to their answer, and their
-  replies are sent. A parked request — a waiting lock, a change notification —
-  is cancelled as draining begins and answered as its table answers the drain's
-  error, or success if it took effect, so none waits for the deadline (§4.7's
-  `Park`). Draining ends when none is left
+  replies are sent. A parked request (a waiting lock, a change notification)
+  is cancelled as draining begins and answered as its table answers
+  `ErrDraining`, asked of no `MoveTarget`, since the filehandles it named went
+  with its record, or success if it took effect, so none waits for the
+  deadline (§4.7's `Park`). Draining ends when none is left
   or at the drain deadline, whichever is first. The drain deadline is the
   earlier of `Stop`'s context deadline and `drain_timeout` from the drain's
   start; `drain_timeout` is at least the break deadline (35 s) plus the request
@@ -1030,8 +1050,9 @@ package adapter // pkg/adapter
 
 // Deps is what an adapter is handed by node.New. It builds no other component (RFC 23 §2.1).
 // A field is an interface where it has two implementations, a concrete type
-// where it has one. Only VFS and Budgets are required, and New refuses a
-// missing one by name; every other field has a working zero value.
+// where it has one. Only VFS and Budgets, its Conns included, are required,
+// and New refuses a missing one by name; every other field has a working
+// zero value.
 type Deps struct {
 	VFS     vfs.Service         // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
 	Budgets *resources.Budgets  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold, and the node's connection count (§3.6)
@@ -1271,9 +1292,10 @@ and a floating-address takeover, which adds the address the node took over.
 The node hands them to the adapter in `settings.Adapter.Addrs`, from the host's
 bootstrap and the addresses it took over, never from the settings record, and
 the adapter binds each of its listeners on each of them (§4.7's `Listener`).
-An IPv4-mapped IPv6 address is bound as its IPv4 address, on the IPv4 network
-(`tcp4` for a TCP listener), as `Validate` already counts it, and `Addrs`
-reports it as the settings name it.
+Each address is bound on its family's network, `tcp4` or `tcp6`, never as one
+dual-stack socket, so `::` serves IPv6 alone; an IPv4-mapped IPv6 address is
+bound as its IPv4 address, on `tcp4`, as `Validate` already counts it, and
+`Addrs` reports it as the settings name it.
 
 > decision: `Addrs` is supplied by the node and is live, though RFC 13 marks a
 > host's listen addresses restart-only: a takeover must add an address to a
@@ -1291,14 +1313,14 @@ package settings // pkg/adapter/settings: a leaf
 // Adapter is what every adapter reads; core reads only this. Each adapter
 // record carries its own copy, under adapters.<protocol>.
 type Adapter struct {
-	Addrs              []netip.Addr  `json:"-"`                   // supplied by the node, live (below); a record naming it is refused as an unknown field
-	Port               uint16        `json:"port"`                // restart-class (above); 12049 for NFS and 12445 for SMB (RFC 13 Appendix B), and 0 lets the system pick, for tests
-	DrainTimeout       time.Duration `json:"drain_timeout"`       // 90 s; at least the break deadline plus the request deadline, 65 s
-	IdleTimeout        time.Duration `json:"idle_timeout"`        // 15 min
-	WriteTimeout       time.Duration `json:"write_timeout"`       // 60 s
-	HandshakeTimeout   time.Duration `json:"handshake_timeout"`   // 30 s
-	ReadTimeout        time.Duration `json:"read_timeout"`        // 30 s: the rest of a request once its first byte arrived
-	DisabledOperations []string      `json:"disabled_operations"` // none
+	Addrs              []netip.Addr  `json:"-"`                                // supplied by the node, live (below); a record naming it is refused as an unknown field
+	Port               uint16        `json:"port" class:"restart"`             // restart-class (above); 12049 for NFS and 12445 for SMB (RFC 13 Appendix B), and 0 lets the system pick, for tests
+	DrainTimeout       time.Duration `json:"drain_timeout" class:"live"`       // 90 s; at least the break deadline plus the request deadline, 65 s
+	IdleTimeout        time.Duration `json:"idle_timeout" class:"live"`        // 15 min
+	WriteTimeout       time.Duration `json:"write_timeout" class:"live"`       // 60 s
+	HandshakeTimeout   time.Duration `json:"handshake_timeout" class:"live"`   // 30 s
+	ReadTimeout        time.Duration `json:"read_timeout" class:"live"`        // 30 s: the rest of a request once its first byte arrived
+	DisabledOperations []string      `json:"disabled_operations" class:"live"` // none
 }
 
 // Common returns the Adapter, promoted into NFS and SMB.
@@ -1324,15 +1346,15 @@ type VersionRange struct {
 
 type NFS struct {
 	Adapter
-	TLS      TLS          `json:"tls"`
-	Versions VersionRange `json:"versions"` // "3", "4.0", "4.1", "4.2"; 3 to 4.2. "3" is NFSv3 with MOUNT v3, NLM v4 and NSM v1
+	TLS      TLS          `json:"tls" class:"live"`
+	Versions VersionRange `json:"versions" class:"live"` // "3", "4.0", "4.1", "4.2"; 3 to 4.2. "3" is NFSv3 with MOUNT v3, NLM v4 and NSM v1
 }
 
 type SMB struct {
 	Adapter
-	Dialects       VersionRange  `json:"dialects"`        // "2.1", "3.0", "3.0.2", "3.1.1"; 2.1 to 3.1.1
-	PendingTimeout time.Duration `json:"pending_timeout"` // 10 min: longest a request refused for a transient cause is held
-	RecallTimeout  time.Duration `json:"recall_timeout"`  // 60 s: longest a request held on a recall; must exceed the 35 s break deadline
+	Dialects       VersionRange  `json:"dialects" class:"live"`        // "2.1", "3.0", "3.0.2", "3.1.1"; 2.1 to 3.1.1
+	PendingTimeout time.Duration `json:"pending_timeout" class:"live"` // 10 min: longest a request refused for a transient cause is held
+	RecallTimeout  time.Duration `json:"recall_timeout" class:"live"`  // 60 s: longest a request held on a recall; must exceed the 35 s break deadline
 }
 
 // DefaultNFS and DefaultSMB hold every default in one reviewed function; the
@@ -1356,9 +1378,13 @@ type Settings interface {
 }
 ```
 
-- **Every field names its key** with a `json:"…"` tag. Every adapter key is
-  `adapters.<protocol>.<field>` — `adapters.smb.idle_timeout`,
-  `adapters.nfs.tls.mode`, `adapters.smb.pending_timeout` — and the least
+- **Every field names its key** with a `json:"…"` tag, and each field of a
+  shape its binding class with a `class:"…"` tag, `restart` on `Port` and
+  `live` on the rest, as RFC 13 Appendix B records them, `Addrs`, which no
+  record names, carrying neither; `pkg/settings`' `Of` reads both and refuses
+  a field without its class. Every adapter key is
+  `adapters.<protocol>.<field>`: `adapters.smb.idle_timeout`,
+  `adapters.nfs.tls.mode`, `adapters.smb.pending_timeout`, and the least
   configuration is `adapters: {nfs: {enabled: true}, smb: {enabled: true}}`.
 - **Defaults are code**, in `DefaultNFS` and `DefaultSMB`: the loader runs
   `s := settings.DefaultNFS(); decode(&s)`.
@@ -1422,7 +1448,7 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 	s.settings.Store(&next)                  // read by the next accept
 	off := s.listeners.close(removed(addrs)) // their sockets, under s.mu
 	s.mu.Unlock()
-	off.wait(ctx) // their accept loops and connections (§3.1), outside s.mu: a hand-over registers and a teardown unregisters under it
+	off.wait() // their accept loops and connections (§3.1), outside s.mu: a hand-over registers and a teardown unregisters under it; not bounded by ctx: a loop ends at its socket's close, a teardown once its OnClose has returned, at most 30 s from the close (§4.7)
 	return nil
 }
 ```
@@ -1452,7 +1478,7 @@ An adapter contributes three things, all from `core`, none from protocol code:
 | Answer | What the adapter supplies |
 | --- | --- |
 | **liveness** ([RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)) | each accept loop reports a turn through `Deps.Watch`, or reports idle; a loop that does neither for 60 s fails liveness. A connection's reader legitimately blocks on its socket and is not watched. Nothing else the adapter does can fail it |
-| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node is ready for clients when every enabled adapter is serving or was refused at configured. A refused adapter has no `Health`: the node raises `adapter_refused` from the error `New` or `Start` returned, and the others keep serving |
+| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node turns ready for clients once its start has started every enabled adapter, each serving or refused at configured; from then on only an adapter's lost listener turns it not ready, so an adapter refused, rebuilt for a `port` change or enabled after the start leaves it ready. A refused adapter has no `Health`: the node raises `adapter_refused` from the error `New` or `Start` returned, and the others keep serving |
 | **conditions** ([RFC 25 §3.1](rfc-25-observability.md#3.1%20Conditions)) | `adapter_listener_lost`, a listener whose `Accept` has kept failing for 60 s while serving (§6.4), `unhealthy`; `adapter_refused`, raised by the node for an adapter whose `New` or `Start` failed, `unhealthy` with the error; `sidecar_failed` (§3.5), `degraded`; `adapter_record_unreadable`, naming the protocol, `degraded` while `Adapter` bytes fail to decode (the usual cause a rolling upgrade across record versions), raising a ticket at once. Each derived from current evidence and cleared when it no longer holds |
 
 A refused setting is not readiness either: it is refused on every node that reads it, so steering clients elsewhere helps none of them, and an unready node would take the management API that can fix the setting out of service with it. A sidecar's failure and a single client's trouble are not readiness: a node
@@ -1471,7 +1497,8 @@ in three groups:
 
 ![The pipeline: frame, decode header, admit, replay check, decode args and resolve IDs, each with its protocol-only refusal; then the one stage that calls the service; then map error, encode and send; an NFSv4 compound's next operation re-enters at its row checks, before resolve IDs, an SMB chain's next member at its own decode header, and a held SMB request at resolve IDs](img/rfc20-pipeline.svg)
 
-1. **Protocol only** — touch no file, call no service operation. A request
+1. **Protocol only**: touch no file, call no service operation but
+   `MoveTarget`, which the drain asks (§3.1). A request
    refused here is refused for protocol reasons and leaves no trace at the
    primary.
    - **frame** — read one record (RPC record mark, NetBIOS header). Its length
@@ -1493,8 +1520,16 @@ in three groups:
    - **replay check** — NFSv4.1 slot and sequence; the SMB message-ID window.
      SMB's `ChannelSequence` is the open's, checked at the primary
      ([RFC 22 §6.5](rfc-22-smb.md#6.5%20Replay)).
+   - **route**: the header to its version's table and its operation's row,
+     then the row's checks (§4.2): an operation the table lacks or the
+     operator switched off, its versions, its `needs` and its current
+     filehandle.
    - **decode args** — the operation's arguments, into its request struct,
      through the protocol's one generated codec (§5.1). No handler decodes.
+     The request's reply is then reserved, the row's reply bound and the
+     header's `ReplyLen` taken from the reply pool before any ID resolves,
+     waiting at most until the attempt's deadline (§4.3, §6.4), which §10.1
+     times as `reply_wait`.
    - **resolve IDs** — wire IDs to service values: a tree ID to its root
      handle, a `FileId`'s volatile half from the session's table. A client-held
      name — a stateid, a `FileId`'s persistent half, a cookie — is decoded into
@@ -1534,7 +1569,8 @@ NOT** each write their own: a stage missing in one is the drift §1 describes.
 Each protocol registers one table from operation code to handler. An operation
 the table lacks is answered the protocol's not-supported status, by the
 pipeline, before argument decoding. An operator may also switch operations off
-by name, a live setting of the adapter (§3.6); the pipeline answers a switched-off
+by name, case aside, a live setting of the adapter read by each connection at
+accept (§3.6); the pipeline answers a switched-off
 operation as one the table lacks, so no handler checks the setting. Version and dialect gating — an NFSv4.2
 operation in a 4.1 compound, an SMB 3.x command on a 2.1 connection — is a
 column of the table, not a check in the handler.
@@ -1572,8 +1608,9 @@ A handler that panics **MUST** be answered with the protocol's server-fault
 status and counted in `adapter_handler_panics_total` (§10.1), and **MUST NOT**
 take down the connection's other requests. Its line, at error with the
 operation and the stack, is a noisy subject's: written at most once a minute
-per table operation and the frame that panicked, so one FSCTL's panic does not
-hide another's, the next one carrying the count held back
+per protocol and operation, as `adapter_handler_panics_total` counts it, and
+per frame that panicked, so one FSCTL's panic does not hide another's, the
+next one carrying the count held back
 ([RFC 25 §5.2](rfc-25-observability.md#5.2%20Volume%20is%20bounded%20per%20incident%2C%20not%20per%20request)).
 The frame is the first outside the Go runtime and the standard library (an
 import path whose first element has no dot), so a decode helper several
@@ -1896,9 +1933,11 @@ every request is:
 
 1. the **Router** stage asks `gss.Identity` for the request's `Identity` from
    the session's or GSS context's `gss.Context` — one function for both — and
-   builds `r.Call` from it. For an NFSv4 `COMPOUND` and an SMB2 chain this and
-   the `needs` check run once per member, through the compound row's
-   `Op.Members` (§4.7), so a member is checked against its own row;
+   builds `r.Call` from it. For an SMB2 chain this and the `needs` check run
+   once per member, each a request of its own; for an NFSv4 `COMPOUND` the
+   Router runs once, its members passing its `r.Call`, and the `needs` check
+   once per member, through the compound row's `Op.Members` (§4.7), so a
+   member is checked against its own row;
 2. the pipeline's check (§4.7) refuses with `ErrExpired` a request whose
    `Evidence` has expired, except the calls RFC 18 §3.8 lets through. It runs
    after `Resolve`, so it can let through a request that releases state
@@ -2002,8 +2041,10 @@ version:
   ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)),
   answers the second as its own kind,
   `&vfs.StateError{Kind: vfs.StateNoGrace}`, mapped by its own row;
-- expected refusals — `ErrNotFound`, `ErrExist`, `ErrAccess` and the like — are
-  logged at debug, unexpected ones at error.
+- an error a row maps, `ErrNotFound`, `ErrExist`, `ErrAccess` or any other, is
+  logged at debug, since the service logs its own faults, and a refusal at
+  unwrap only once per connection, at warning (§10.3); one no row maps, and a
+  handler's panic (§4.2), at error.
 
 Who writes which rows: a protocol RFC states the rows whose answer is a
 protocol choice — which status makes a client retry, reclaim or give up
@@ -2056,12 +2097,12 @@ it holds — the service counts nothing about holds:
   (§10.1). A call still in the service when its interim goes out is counted
   and not refused while it runs, as below. The count lives and dies
   with the connection, so it needs no key across processes;
-- **the interim response is the adapter's timer.** An SMB request still
-  unanswered a short interval after it reached the service — a call waiting
-  behind a clone — or answered an error whose row has a `Hold` gets its
-  interim `STATUS_PENDING` from the adapter's own timer, so nothing crosses
-  into the service to announce a hold. A call still in the service gets its
-  interim only in a buffer the reply pool has at once (`BufPool.TryGet`), tried
+- **the interim response is the adapter's.** An SMB request still in the
+  service 1 s after it reached it, a call waiting behind a clone, gets its
+  interim `STATUS_PENDING` from the adapter's own timer, and one answered an
+  error whose row has a `Hold` gets it at once, as its hold starts, so nothing
+  crosses into the service to announce a hold. A call still in the service
+  gets its interim only in a buffer the reply pool has at once (`BufPool.TryGet`), tried
   once; with none, it goes on unannounced and is answered as any other call;
 - each attempt re-runs the held `Invocation`'s `Resolve` and `Call` (§4.7), with
   a fresh 30 s attempt deadline inside the hold's bound (§6.4) —
@@ -2145,7 +2186,9 @@ it holds — the service counts nothing about holds:
 ### 4.7 Wiring: what a protocol plugs into `core`
 
 **Who builds what.** `node.New` builds the service, the
-authenticator and the pools, then each adapter with `New(Deps, Settings)`
+authenticator and the pools, and the one `Deps` that holds them; the node
+builds each adapter from it with `New(Deps, Settings)`, each time reconcile
+starts one
 (§3.4). `New` builds the protocol's stages, its handler sets — one per program
 and version for NFS, one for SMB — each holding `Deps.VFS`, and their
 tables, and returns a `*core.Server` that runs them. Nothing is looked up
@@ -2227,7 +2270,7 @@ type Stages struct {
 	Security Security    // §5.5; nil: messages pass unchanged
 	Flow     FlowControl // §6.3; nil: the fixed cap of 64
 	Replay   ReplayCache // nil: no replay check
-	Hold     HoldCodec   // §4.6; required where a table Holds, nil elsewhere
+	Hold     HoldCodec   // §4.6; nil: none, and a table that Holds, routed on stages without one, closes the connection as a wiring fault (§10.1)
 	MaxPending int       // requests pending per connection, held and parked together (§4.6); 0: none pend
 	// OnClose drops the connection's state. ctx is not cancelled by the
 	// connection's close, and ends 30 s from the close, the request deadline
@@ -2314,8 +2357,10 @@ type Security interface {
 }
 type FlowControl interface {
 	// Admit waits within ctx for a slot, a credit or the cap's place; under a
-	// ctx already ended it tries once, as RFC 24 §2.5's Reserve does, so a
-	// chain member learns it would wait before it waits (below).
+	// ctx already ended it tries once, as RFC 24 §2.5's Reserve does, and where
+	// it would wait returns an error wrapping ctx's error, so a chain member
+	// learns it would wait before it waits (below). Any other error is a
+	// refusal, which Stages.Errors maps.
 	Admit(ctx context.Context, h Header) (release func(), err error) // slot, credit or cap; the reader waits here
 }
 type ReplayCache interface {
@@ -2467,7 +2512,8 @@ type Invocation struct {
 	// are known. nil on every other row. A compound row whose Decode returns
 	// no EncodeHead is the protocol's wiring at fault: core closes the
 	// connection with an error naming the row, as nothing could write the
-	// reply's head.
+	// reply's head; an EncodeHead that fails, or writes the head again at
+	// another size, closes it as a wiring fault too.
 	EncodeHead func(out *Buf, s Status, n int, v Version) error
 	// Role says what this request does to state: an SMB LOCK whose elements
 	// unlock releases it, a WRITE to an open under a break flushes it, an
@@ -2560,16 +2606,19 @@ type Hooks[Req any] struct {
 }
 
 // NewOpTable builds a table and checks it: codes unique; names, lower-cased,
-// unique (READ and Read are one name) and of lower-case letters, digits and
-// underscores only, each refused naming the row (§10.1's op); ranges well
-// formed, no ErrorRow.Hold unless
+// unique (READ and Read are one name), not empty and of lower-case letters,
+// digits and underscores only, each refused naming the row (§10.1's op);
+// ranges well formed, no ErrorRow.Hold unless
 // holds, and, where it holds, a row answering
 // ErrCancelled for every operation and version (one naming neither Ops nor
 // Versions that replies at once with a status other than the fault or
 // success) and no row for it, whatever its Ops or Versions, that holds, sends
 // no reply or answers the fault or success, since a cancel ends a hold or a
-// park of any operation and is answered (§6.5).
-// Where a row has Members, it also demands a MaxMembers on it, and rows of
+// park of any operation and is answered (§6.5). As in NewErrorTable, a
+// protocol's typed row for a cancel value of its own, which the bare
+// ErrCancelled does not match, is not checked.
+// Where a row has Members, it also demands a MaxMembers on it, a ReadOp and an
+// EncodeResult on its Members, and rows of
 // errs for ErrTooLong and ErrReplyTooBig naming neither Ops nor Versions,
 // since the runner refuses a compound with either (§4.3). Where it holds, it
 // also demands a typed row for &vfs.Delay{Cause: vfs.DelayResources} naming
@@ -2605,8 +2654,9 @@ const (
 type Status uint32
 
 // ErrorTable maps a service error to a Status (§4.5). Map takes the most
-// specific row that matches, in a total order: a row whose Err is a typed
-// value before one whose Err is a sentinel; then, among those, a row naming
+// specific row that matches, in a total order: a row whose Err has an Is
+// method, as the service's typed values do, before one whose Err is a plain
+// value, a sentinel; then, among those, a row naming
 // Ops and Versions, Ops alone, Versions alone, neither. A NotFailure row is
 // taken only where no other row matches (Map). NewErrorTable refuses
 // two rows equal in that order that can match the same error, operation and
@@ -2615,7 +2665,9 @@ type Status uint32
 // a status other than the fault or success), or with a row for it, whatever
 // its Ops or Versions, that holds, sends no reply or answers the fault or
 // success: a header's decode error has no operation, and a client's garbage
-// must reach neither the fault status (§10.1) nor success. A zero Status is
+// must reach neither the fault status (§10.1) nor success. A protocol's typed
+// row for a decode value of its own, which the bare ErrDecode does not match,
+// is not checked: it wins for that value alone (§4.5). A zero Status is
 // success in every protocol here, and a row marked NotFailure answers a
 // status its protocol counts as no failure for the operations it names.
 // Every other status is a failure, which ends a compound there and fails the
@@ -2743,7 +2795,12 @@ to `encode` per member, `Unwrap`, `Admit` and `Lookup` among them, since each
 is signed over its own bytes and charged credits on its own. It hands
 `Unwrap` and `Route` the member before a related
 one, so the IDs it inherits are resolved before its signature is checked and
-its handles carry over. A member's failure, as §4.3 defines it, ends a compound
+its handles carry over. A replay hit and a cancel build no request: a related
+member after a related hit is handed the request from before the hit, which
+the cached reply's call started from, and one after an unrelated hit or after
+a cancel is handed none; a cancel also ends the failure of the member before
+it, so the related members after the cancel are not answered that failure.
+A member's failure, as §4.3 defines it, ends a compound
 there and fails the related members of a chain after it; a status its row marks
 `NotFailure` does neither. A compound row's reply is one buffer: the runner
 writes the compound's `Invocation.EncodeHead` first, then each member's result as
@@ -2987,7 +3044,8 @@ type Conn struct{ /* unexported */ }
 // encrypting session is sealed. before is the HoldCodec.Key of the request
 // whose reply it must precede (§6.2), 0 for none; core keys every request of
 // a table that Holds that way. Send owns msg on every path: an error releases
-// it, and a Send after Close is dropped, returning net.ErrClosed. Wrap's
+// it, and a Send after Close, or inside NewConn before the connection's
+// pipeline exists, is dropped, returning net.ErrClosed. Wrap's
 // refusal is returned and leaves the connection open, the caller deciding; a
 // reply's closes it, since its request has no other answer.
 func (c *Conn) Send(h Header, msg *Buf, before uint64) error
@@ -3021,7 +3079,10 @@ func (c *Conn) Close(err error)
 // pending requests share one, since the replay check refuses a message ID
 // already used (§4.1; MS-SMB2 3.3.5.2.3). The interim, like every
 // reply, passes Security.Wrap, so an encrypting session sends nothing in clear.
-// Cancels is asked after Unwrap, so an unverified cancel ends no hold. A
+// Cancels is asked after Unwrap, so an unverified cancel ends no hold. core
+// finds a cancel's target by its key alone, within the connection, and
+// compares no session: a protocol that must refuse one session's cancel of
+// another's request puts the verified session into its key. A
 // cancel that ends no hold or park with its key, which includes one that
 // finds its target's attempt running, is remembered for at most 5 s, and at most
 // MaxPending per connection, the oldest dropped first; the first request with
@@ -3071,15 +3132,19 @@ var ErrParked = errors.New("core: parked")
 // reports a wait (a waiting lock's ErrBlocked, a watch set): the service has
 // registered the waiter by then. Park refuses a member before the last of a
 // chain with ErrNotLast, a request not yet pending on a connection at
-// Stages.MaxPending with ErrTooManyPending, a draining connection with the
-// drain's error (ErrDraining or ErrMoved), and, when the request's own reply
+// Stages.MaxPending with ErrTooManyPending, a draining connection with
+// ErrDraining, the drain's error decided with no filehandle, as for a park the
+// drain cancels (below), and, when the request's own reply
 // reservation is larger than the small class, a reply pool that cannot take a
 // small-class one at once with ErrDelay of DelayResources, answered at once in
 // the reservation the request still holds (§6.3); Park sends no interim, a
 // request already pending having had its own, and the
 // handler withdraws its waiter (CancelLock, Unwatch; §4.3) and returns the
 // error for its table to map, or success if CancelLock reports the lock
-// granted (§6.5). A callback that fires before Park returns is kept by the
+// granted (§6.5). A request of a table that does not Hold cannot park, since
+// no HoldCodec could send its interim or key its cancel: Park refuses it with
+// an error no row maps, answered the fault status and logged at error. A
+// callback that fires before Park returns is kept by the
 // handler and passed to done once it has it. On a connection already closed,
 // Park calls cancel at once and done's reply is dropped, as a close would.
 //
@@ -3093,7 +3158,10 @@ var ErrParked = errors.New("core: parked")
 // The reply keeps a small-class reply reservation: the request's own when it
 // is of that class, else one taken before the request's own is released
 // (RFC 24 §3.3); a reply that would not fit is answered as its protocol
-// answers an overflow (RFC 22 §3.3). A request already pending past its
+// answers an overflow (RFC 22 §3.3): its encoder returns the protocol's
+// error, which the table maps, and the status goes out alone; an encoder that
+// writes past the buffer with no error is answered the fault status and
+// logged at error. A request already pending past its
 // interim (a LOCK re-driven after a hold, then blocked) gets no second
 // interim: its slot moves from held to parked. A parked request holds no
 // worker and no record and is not counted against the hold floor (§4.6):
@@ -3156,9 +3224,11 @@ func Errors() []error
 // NewServer returns the adapter New hands back: each listener bound on each
 // of the settings' Addrs, all or none at Start (§3.1); Reconfigure binds them
 // on an added address the same way (§3.6). s is the protocol's whole shape,
-// which New was given; core reads its Adapter. It refuses an empty listener
-// set, which only a programming error gives, since every protocol names at
-// least one; a listener naming no service, an empty one or one twice; two
+// which New was given; core reads its Adapter. It refuses no settings, a
+// typed nil among them; Deps with no Budgets, or Budgets with no Conns; an
+// empty listener set, which only a programming error gives, since every
+// protocol names at least one; a listener naming no Protocol, a typed nil
+// among them, or no service, an empty one or one twice; two
 // listeners naming the same Socket or the same network and nonzero port;
 // a listener whose Protocol's NewConn(nil) returns stages accept would
 // refuse; and tables its protocols' Tables list that §10.1's op rule
@@ -3171,7 +3241,12 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 
 // Listener is one protocol on one port, bound on each of the settings' Addrs.
 // Addrs reports it under one Socket per service it names, on its network,
-// each address at the port bound there.
+// each address at the port bound there. A port the system picked that a later
+// address's family holds is picked again for the whole group, at most twice;
+// a configured port that is taken is a refusal. An address Reconfigure adds
+// binds the port the listener already holds, or, where it holds none, one
+// picked for the addresses added together; a taken one is a refusal, since
+// picking again would drop the connections a takeover keeps.
 //
 // decision: a listener names its services rather than holding a Socket,
 // because one port carries several: NFS's carries NFS, MOUNT, NLM and NSM,
@@ -3479,21 +3554,24 @@ enforces as it parses (§5.2), and nothing else:
 | where a variable field lies | an SMB2 offset and length pair: `smb2:"offset=NameOffset,len=NameLength,utf16"` |
 | padding | XDR's 4-byte padding; SMB2's 8-byte alignment between chained structures |
 | a choice of arms | an XDR discriminated union; XDR optional data (`*T`) |
-| a chain | SMB2 create contexts and negotiate contexts, each found from the one before it: `smb2:"chain"` |
+| a chain | SMB2 create contexts, each linked to the next by its `Next`: `smb2:"chain=Next"`; negotiate contexts, counted, each after the one before it: `smb2:"chain"` |
 | the versions a field is on the wire in | an NFSv4 minor version, an SMB2 dialect, or the dialects a NEGOTIATE request offers |
 
 A protocol rule — one that relates two fields or gives a value its meaning —
 is the handler's, checked before its service call (§4.3), never the decoder's:
 SMB2's `GENERIC_*` access bits mapped to entry rights, a `LOCK`'s elements all
 locks or all unlocks, a flag combination the specification does not list. The
-decoder refuses only bytes that cannot be the struct.
+decoder refuses only bytes that cannot be the struct, and, in SMB2, a field
+located by an offset that lies before the bytes already read, those of the
+fields its struct declares ahead of it: any order but the struct's, not only
+an overlap, so a decoded value encodes back within its maxima.
 
 **Where the generated code lives.** The generator, the runtime its output
-calls, and its output for shared body types, credential bodies and XDR's
-primitives, are in the protocol's `wire/` (§2.5), beside the RPC and SMB2
-header codecs, which are written by hand: the RPC call and reply envelope with
-each credential's and verifier's `opaque_auth`, and the SMB2 and transform
-headers. The methods it writes for a command's structs go in one generated file per `ops` package,
+calls, and its output for shared body types, are in the protocol's `wire/`
+(§2.5), beside the codecs written by hand: the RPC call and reply envelope
+with each credential's and verifier's `opaque_auth` and the `AUTH_SYS`
+credential's body, and the SMB2 and transform headers. The methods it writes
+for a command's structs go in one generated file per `ops` package,
 `codec_gen.go`, since Go puts a method beside its type; that file calls only
 the runtime in `wire/`, and the import test holds it to `wire/`'s imports
 (§7.1). Generated code is checked in, and a check fails a change whose
@@ -3809,9 +3887,10 @@ client whose request caused it — the callback is queued ahead of that request'
 reply, so the client never sees an answer before the break it depends on. The
 callback goes ahead of its request's reply when it is queued while that reply
 still waits; one queued once the reply is being written lands behind it. A
-chain's joined record is queued under its last member's key, so a callback
-goes ahead of it only when its request is the last member; one whose request
-is an earlier member, queued once the record waits, lands behind it. A
+chain's joined record is queued under the least and the greatest of its
+members' keys, so a callback queued while the record waits goes ahead of it
+when its request is any member, or when its key falls between those two
+without naming one. A
 break that needs an acknowledgement holds its request until the break ends
 ([RFC 22 §6.3](rfc-22-smb.md#6.3%20Breaks)), so it is always queued first. That
 is the only order the writer keeps between messages; every other reply goes out
@@ -3927,8 +4006,10 @@ does with the reply depends on which it was:
 - **A closed connection or an expired drain abandons.** There is no one to
   answer, or no answer that is safe (§3.1): the adapter stops waiting and drops
   the reply. A chain whose held member the close ends goes on to its next
-  member, which is dropped at admission; `OnClose` runs only once nothing
-  runs, so that member's `Unwrap` never reads state `OnClose` has dropped.
+  member, which is dropped at admission; `OnClose` runs once nothing runs, or
+  30 s from the close with a request still running, logged at error (§4.7),
+  so until then that member's `Unwrap` never reads state `OnClose` has
+  dropped.
 
 Either way, a mutation that the service applied after the cancel is applied:
 the adapter **MUST NOT** report to the client that it was not.
@@ -3942,8 +4023,9 @@ each buys:
    flight on one connection are matched to their replies by XID, slot or
    message ID. The adapter runs them concurrently up to the flow-control bound
    (§6.3) and replies as each completes. It **MUST NOT** serialise a connection's
-   requests beyond what the protocol requires — SMB related operations of one
-   compound, and one NFSv4.1 slot's sequence. Order between requests on one file
+   requests beyond one NFSv4.1 slot's sequence and the members of one SMB2
+   chain, related or not, each admitted once the reply of the one before it is
+   encoded (§4.7). Order between requests on one file
    is the service's ([RFC 17 §4.8](rfc-17-vfs.md#4.8%20One%20primary%20per%20file)).
 2. **Many connections per client.** Clients open several connections for
    bandwidth — NFS clients with several connections per mount, NFSv4.1 trunking
@@ -4040,7 +4122,7 @@ package resources // pkg/resources (RFC 24 §2.8): shared by every component
 // member's between Join and its release (RFC 24 §2.5).
 type Buf struct {
 	B []byte // len is the record's or reply's; cap is the class's capacity (RFC 24 §3.1), or a joined record's n
-	// unexported: its class, its reference count and its Reservation, or the several a joined record took over; the segments Attach lent it
+	// unexported: its class, its reference count and its Reservation, for a joined record its members' charges summed into one; the segments Attach lent it
 }
 
 var ErrTooLarge error // RFC 24 §2.5: what a WaitBudget's Reserve, and so Get, wraps when it refuses a charge past the ceiling at once
@@ -4091,11 +4173,14 @@ func (b *Buf) Attach(seg *Buf)                               // §5.3: ends b's 
   borrower reading after release sees garbage in the test and not in
   production. A second `Release` past zero panics.
 
-> ponytail: `sync.Pool` per class behind the reservation counter. Garbage
-> collection still scans and frees idle pooled buffers. Replace with a
-> fixed-size slab per class, allocated once at start, only when a profile on
-> the reference box shows collection time from transfer-class buffers limiting
-> throughput.
+> ponytail: `sync.Pool` per class behind the reservation counter, so
+> collection frees idle pooled buffers, and until it does a free list keeps
+> bytes no budget counts: resident memory can pass the ceiling by each class's
+> recent peak. A `[]byte` holds no pointers, so collection does not scan it; a
+> dropped buffer costs the next `Get` a fresh allocation and its zeroing.
+> Replace it with a fixed-size slab per class, allocated once at start, only
+> when a profile on the reference box shows allocation from transfer-class
+> buffers limiting throughput.
 
 ### 6.9 Concurrency, in code
 
@@ -4104,7 +4189,7 @@ The rules of §6.1–§6.6 come to a small set of mechanisms:
 | Concern | Mechanism | Ceiling, and what replaces it |
 | --- | --- | --- |
 | requests in flight per connection | a goroutine per admitted request, and per refused header waiting for its status's buffer, which keeps its record; the reader blocks in `Admit` (§4.7) on a slot, a credit or a counting semaphore of 64 | node-wide count bounded by the receive pool ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)) |
-| replies | one writer goroutine per connection draining its queue, which never blocks the worker that queues (§6.2); on each wake it takes every queued message into one `net.Buffers` and writes once | one system call per burst; a deeper queue only if a profile shows writers blocked with the socket idle |
+| replies | one writer goroutine per connection draining its queue, which never blocks the worker that queues (§6.2); on each wake it writes what is queued in gathered `net.Buffers` writes, each the first message queued and those behind it within the protocol's record cap (§6.6) | one system call per record cap's worth of a burst; a deeper queue only if a profile shows writers blocked with the socket idle |
 | per-connection ID tables (`FileId`, stateid, tree ID) | a map under the connection's mutex, held for the lookup only, never across the service call | one connection's requests contend with each other only |
 | node-wide tables (sessions, connection registry) | a map under a read-write mutex, read without holding it across the service call | shard by session ID when a mutex profile shows it |
 | NFSv4.1 slots, SMB message IDs | owned by the session; each slot's entry is touched only by the request in that slot | none needed: the protocol serialises a slot |
@@ -4126,7 +4211,7 @@ Three, each per protocol:
 | Benchmark | Measures | Runs | Gate |
 | --- | --- | --- | --- |
 | **codec micro**: `BenchmarkDecode*`, `BenchmarkEncode*` per message | ns and allocations per message | per change, in a non-race cell of its own: allocation gates skip under `-race` ([RFC 29 §4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs)) | `READ`, `WRITE`, `GETATTR`, SMB `READ`/`WRITE`/`QUERY_INFO` decode and encode at **0 allocations**, asserted with `testing.AllocsPerRun` |
-| **pipeline micro**: the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, ns and allocations, with no storage underneath | nightly, as above | allocations per request, a chain's per record it sends, asserted ≤ a checked-in number that may only fall, with tracing off; at ratio 0.01, with `Deps.TraceIDs` returning only IDs the ratio rule rejects (bit 63 of the low eight bytes set), warm-up included, `testing.AllocsPerRun(N, …)` asserted equal to tracing off's (§10.2). In `core`'s run, `testproto`'s `Create`, whose handler returns a zero-size reply on either answer, run at a level that drops every line once with the call answered success and once through a wrapper around the null service, declared in the test, that answers every call one `ErrDelay` of `DelayResources`, which both of `testproto`'s tables map to `StatusDelay` at once, an expected refusal logged at debug (§4.5), arming nothing per call: the two counts asserted equal (§10.3). ns per request reported, with no gate until a baseline is checked in |
+| **pipeline micro**: the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, ns and allocations, with no storage underneath | per change, as above | allocations per request, a chain's per record it sends, asserted equal to a checked-in number that may only fall, a count below it failing until the number is lowered, with tracing off; at ratio 0.01, with `Deps.TraceIDs` returning only IDs the ratio rule rejects (bit 63 of the low eight bytes set), warm-up included, `testing.AllocsPerRun(N, …)` asserted equal to tracing off's (§10.2). In `core`'s run, `testproto`'s `Create`, whose handler returns a zero-size reply on either answer, run at a level that drops every line once with the call answered success and once through a wrapper around the null service, declared in the test, that answers every call one `ErrDelay` of `DelayResources`, which both of `testproto`'s tables map to `StatusDelay` at once, an expected refusal logged at debug (§4.5), arming nothing per call: the two counts asserted equal (§10.3). ns per request reported, with no gate until a baseline is checked in |
 | **end to end**: the composed node with its real stores | small operations (`GETATTR`, `LOOKUP`, SMB `QUERY_INFO`) per second on one connection and on the node; 1 MiB sequential read and write on one and four connections; p99 of a 4 KiB write at half the request budget | nightly, dedicated host | tracked; three nights below the 7-day median adds a note to the develop-status issue (RFC 29 §4.10) |
 
 The gates cover the served path and the mapped refusal above; a request
@@ -4153,11 +4238,11 @@ the ones above it cannot, and none stands in for another:
 | --- | --- | --- | --- |
 | codec | bytes ↔ fields, as the specification and the reference server have them | one golden-vector suite and one fuzz target per protocol, covering every command; round trips (§5.4) | per change |
 | stages | each protocol stage alone (§4.7): header codecs and security on golden and specification vectors; flow control and replay caches as state machines; routers on a table of versions | unit tests, no socket | per change |
-| `core` | lifecycle, drain, reconfigure, connection limit, flow control, writer order, slow-client isolation, panic recovery, cancellation, no buffer leaked | `adaptertest`'s test-only protocol over loopback against the **in-memory service** (§7.2), its delays given by the fault wrapper, driven over a plain connection; it has a handshake, session levels, kept state, held and parked requests, a cancel and chained messages, so every type of §4.7 is exercised | per change |
+| `core` | lifecycle, drain, reconfigure, connection limit, flow control, writer order, slow-client isolation, panic recovery, cancellation, no buffer leaked | `adaptertest`'s test-only protocol against the **in-memory service** (§7.2), its delays given by the fault wrapper: each part of the pipeline at its seam with the connection, handed the records a reader would and its replies read from a recorder in the writer's place, and what only a socket decides on a connection over loopback; it has a handshake, session levels, kept state, held and parked requests, a cancel and chained messages, so every type of §4.7 is exercised | per change |
 | handler | translation: the request reaches the service with the right arguments, and the right reply for each answer; one mutating call (§4.3) | the in-memory service, with faults injected (§7.2) | per change |
 | boundary | imports, error-table totality | §7.1, §7.3 | per change |
 | in-process | an adapter on the real service and in-memory stores, driven by §8.2's scripted client over loopback; no root, no kernel client | Go tests | per change |
-| conformance | the protocol as third-party clients see it: pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest | [RFC 21 §13](rfc-21-nfs.md#13.%20Conformance), [RFC 22 §18](rfc-22-smb.md#18.%20Conformance), run by [RFC 29](rfc-29-test-harness.md#4.3%20Tiers) | per change on the production profile, after merge on every profile |
+| conformance | the protocol as third-party clients see it: pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest | [RFC 21 §13](rfc-21-nfs.md#13.%20Conformance), [RFC 22 §18](rfc-22-smb.md#18.%20Conformance), run by [RFC 29](rfc-29-test-harness.md#4.3%20Tiers) | per change, on the production profile alone; `nfstest` nightly and smbtorture's Kerberos option after merge |
 | end to end | the scenarios of this RFC with kernel clients on a composed node (§7.5) | `test/e2e` | after merge and nightly |
 | wire diff | field-by-field agreement with reference servers | §8 | nightly |
 
@@ -4180,8 +4265,9 @@ does, both do with ranges that overlap, or one sets an inverted range, as
 two listeners accepted and checked once; and a table `Route` returns that no
 listener listed, or for a version outside its `OpTable.Versions`, each of
 which closes its connection as `wiring`. The
-null service of §6.10 serves the allocation gate (`unit/adapter-allocs`) and
-the benchmarks only; nothing asserts on its answers.
+null service of §6.10 serves the allocation gate (`unit/adapter-allocs`), the
+benchmarks, and the tests whose requests never reach the service, as their
+required `Deps.VFS`; nothing asserts on its answers.
 
 **Translations are tested as pure functions.** Each protocol's translations
 ([RFC 21 §11](rfc-21-nfs.md#11.%20Translation), [RFC 22 §16](rfc-22-smb.md#16.%20Translation)), open state's
@@ -4205,27 +4291,46 @@ package and the import, on anything §2.3 forbids: any core package but
 `pkg/vfs`, `pkg/adapter`, `pkg/adapter/settings`, `pkg/resources`,
 `pkg/metrics` and `internal/tlsconfig`, both identity packages included — `pkg/identity` and
 `internal/identity` — since an adapter takes identity types only as `pkg/vfs`
-aliases. It is seeded with one
-deliberate violation in its own test data and must report it, so a check that
-silently matches nothing is caught. The same test lists adapter files over 800
+aliases. It is seeded in its own test data with deliberate violations, at
+least one per rule, each of which it must report exactly once, and with
+imports the rules allow, which it must not report, so a check that silently
+matches nothing, or one written too wide, is caught. The same test lists adapter files over 800
 lines and fails on one not in its allowlist (§2.5), fails a `wire` package that
 imports anything but the standard library and `pkg/resources`, or a standard
-package that does file or network I/O, `<protocol>/wire/gen` alone excepted,
-which may import `os` to write its file (§2.5), a
+package that does file or network I/O (but `os` in `<protocol>/wire/gen`,
+§2.5, and any in a `wire` package's test files, which read their vectors
+from files), a
 generated `codec_gen.go` that imports more than those and its protocol's
-`wire`, and an `ops` file other than `codec_gen.go` that imports `wire`'s
-runtime or `encoding/binary`, since a command file touches no bytes (§5.1), and
+`wire`, and an `ops` file other than `codec_gen.go` that names its protocol's
+`wire.Decoder` or `wire.Encoder` or imports `encoding/binary`, since a command
+file touches no bytes (§5.1; an `ops` package's test files are held by
+neither rule), and
 fails a call of an entry method — `Root`, `SecInfo`, `ListShares` — outside
 the entry handlers of §4.10. It also fails, in both directions, a package
 under `pkg/` other than the two constructors `pkg/adapter/nfs` and
 `pkg/adapter/smb` that imports anything under `internal/adapter/`, and an
-implementation package that imports a constructor. It starts with no
+implementation package that imports a constructor. Beside these, it fails a
+constructor that imports anything under `internal/adapter/` but its own
+protocol's, or the other constructor; a non-test file outside `pkg/` and
+`internal/adapter/` that imports an implementation, but a sidecar importing a
+protocol's `wire` (§3.5); `pkg/adapter`'s non-test files importing past the
+standard library, `pkg/vfs`, `pkg/metrics`, `pkg/resources`,
+`pkg/adapter/settings` and the tracing API, and `pkg/adapter/settings`'s past
+the standard library; a non-test
+file outside `adaptertest` that imports `adaptertest` or `testproto`; and any
+package at a path the first adapters used (`pkg/controlplane/runtime/adapters`,
+`internal/adapter/common`, `pool`, `testruntime`, `auth`, `nfs/rpc`,
+`smb/session`, `smb/handlers`). It starts with no
 allowlist: today's adapters are deleted rather than moved, so nothing is
 grandfathered in. The walk reads each package's own imports; its `_test.go`
 files may also import `pkg/vfs/vfstest` and `adaptertest`, whose in-memory
 service builds the real filesystem, and `internal/prof`, a profiler importing
 only the standard library; `adaptertest`'s own files may import
-`pkg/vfs/vfstest` and `internal/prof`.
+`pkg/vfs/vfstest` and `internal/prof`. From outside the module an adapter
+imports only what the test's list names, each entry added with its reason:
+the tracing API `Deps.Tracer` names and its span attributes, and in its test
+files also the tracing SDK, its span recorder, the no-op tracer and a diff
+library.
 Nothing else the list forbids is allowed, so no forbidden package reaches an
 adapter's build. The other direction, that the service imports no adapter,
 stays with the service's own architecture check
@@ -4480,7 +4585,7 @@ end-to-end benchmark.
 
 | # | Invariant |
 | --- | --- |
-| A1 | An adapter imports, of the core, only what §2.3 lists — `pkg/vfs`, its own `pkg/adapter` surface, `pkg/resources` and `pkg/metrics` — and holds no metadata view, open state, engine, routing or identity component. |
+| A1 | An adapter imports, of the core, only what §2.3 lists (`pkg/vfs`, its own `pkg/adapter` surface, `pkg/resources`, `pkg/metrics` and `internal/tlsconfig`) and holds no metadata view, open state, engine, routing or identity component. |
 | A2 | Nothing an adapter holds is written to the metadata store or replicated; everything a client can present back after its connection ends is held below the service. |
 | A3 | An adapter caches nothing the service returned beyond the request that read it. |
 | A4 | Every request passes the pipeline's stages in §4.1's order, through one implementation shared by every adapter. |
@@ -4543,7 +4648,7 @@ measures only what happens before and after the service call.
 | Label | Values |
 | --- | --- |
 | `stage` | the pipeline's stages in their order, each §4.1 name with its spaces as underscores, `route` from its refusal table among them, and two this table defines, `reply_wait` and `reply_too_big`: `frame`, `decode_header`, `unwrap`, `admit`, `replay_check`, `route` (where `Route` chooses the table and the pipeline checks the operation's row, §4.2), `decode_args`, `reply_wait` (the request's own reply reservation, between decoding and resolving), `resolve_ids`, `call_service`, `map_error`, `encode`, `wrap`, `send`; and `reply_too_big`, which only a refusal takes. `frame` and `call_service` name §4.1's steps but are no series' value (the two rows below) |
-| `stage`, of a refusal | the stage that refused it: §4.1's table names most, and this row the rest. `route`: an operation the table lacks or an operator switched off, a version outside the row's, a need not met, and a `Route` that finds no table; a compound member whose code its table lacks among them, which the runner finds while decoding (§4.7) and counts where a request alone's would be. `decode_args`: a compound past its cap, refused before any member decodes, and a single-reply compound the drain refuses, judged whole once every member decodes and before any resolves its IDs (§4.7). `resolve_ids`: an expired credential and every other request the drain refuses before its call, both checked once its IDs are resolved. `replay_check`: the replay cache's copy, whose reply reservation answered `ErrDelay` with `DelayResources`. `reply_wait`: a request's own reply reservation that answered `ErrDelay` with `DelayResources` at its deadline. `adapter_connection_closes_total`'s `reply_wait` is another event of the same name: a connection closed because a reply carrying a status alone found no reply buffer within 30 s. `reply_too_big`: a request refused before it runs, its reply past a bound: the reply pool's ceiling, a quarter of it for §4.3's compound, or, for an NFSv4.1 operation, what is left of its session's reply size or cached reply size (§4.3). `map_error`: a refusal `core` makes once the call has returned, as the answer is mapped: `Park`'s `ErrNotLast`, `ErrTooManyPending`, drain error and small-class `ErrDelay` with `DelayResources` (§4.7), a parked request the drain ends, a hold refused at `Stages.MaxPending` (§4.6), and the `ErrNotLast` that answers a held error before a chain's last member; the hold pool's refusal is `adapter_hold_refusals_total`'s alone, its one owner ([RFC 25 §2.7](rfc-25-observability.md#2.7%20One%20event%2C%20one%20owner)). `ErrCancelled` (§6.5) counts under no stage: the client ended its own request, and `core` refused nothing. `frame` and `send` refuse by closing the connection, which `adapter_connection_closes_total` counts, so neither is a refusal's stage; so does `decode_header` for a header that did not decode far enough to address a reply, which counts no refusal. `encode` and `wrap`, which §4.1's table does not list, are no refusal's stage: they run once the answer is chosen |
+| `stage`, of a refusal | the stage that refused it: §4.1's table names most, and this row the rest. `route`: an operation the table lacks or an operator switched off, a version outside the row's, a need not met, and a `Route` that finds no table; a compound member whose code its table lacks among them, which the runner finds while decoding (§4.7) and counts where a request alone's would be. `decode_args`: a compound past its cap, refused before any member decodes, and a single-reply compound the drain refuses, judged whole once every member decodes and before any resolves its IDs (§4.7). `resolve_ids`: an expired credential and every other request the drain refuses before its call, both checked once its IDs are resolved. `replay_check`: the replay cache's copy, whose reply reservation answered `ErrDelay` with `DelayResources`. `reply_wait`: a request's own reply reservation that answered `ErrDelay` with `DelayResources` at its deadline. `adapter_connection_closes_total`'s `reply_wait` is another event of the same name: a connection closed because a reply carrying a status alone found no reply buffer within 30 s. `reply_too_big`: a request refused before it runs, its reply past a bound: the reply pool's ceiling; for §4.3's compound, a quarter of it or the protocol's record cap, a member left less than one byte of room within that cap among them; or, for an NFSv4.1 operation, what is left of its session's reply size or cached reply size (§4.3). `map_error`: a refusal `core` makes once the call has returned, as the answer is mapped: `Park`'s `ErrNotLast`, `ErrTooManyPending`, drain error and small-class `ErrDelay` with `DelayResources` (§4.7), a parked request the drain ends, a hold refused at `Stages.MaxPending` (§4.6), and the `ErrNotLast` that answers a held error before a chain's last member; the hold pool's refusal is `adapter_hold_refusals_total`'s alone, its one owner ([RFC 25 §2.7](rfc-25-observability.md#2.7%20One%20event%2C%20one%20owner)). `ErrCancelled` (§6.5) counts under no stage: the client ended its own request, and `core` refused nothing. `frame` and `send` refuse by closing the connection, which `adapter_connection_closes_total` counts, so neither is a refusal's stage; so does `decode_header` for a header that did not decode far enough to address a reply, which counts no refusal. `encode` and `wrap`, which §4.1's table does not list, are no refusal's stage: they run once the answer is chosen |
 | `stage`, of `adapter_wire_seconds` | the stages from `decode_header` to `send`, `call_service` excepted: `decode_header`, `unwrap`, `admit`, `replay_check`, `route`, `decode_args`, `reply_wait`, `resolve_ids`, `map_error`, `encode`, `wrap` and `send`. `frame` mostly waits on the client, and the call's latency is the service's ([RFC 17 §7](rfc-17-vfs.md#7.%20Observability)). One observation is one request's time in a stage, so a stage's count is the requests that ran it, each member of an SMB chain being a request (§10.2). A stage its connection's `Stages` leave nil (§4.7), `unwrap`, `admit` or `replay_check`, runs `core`'s default and is neither timed nor observed, so the default's time, such as the cap's wait for a place (§6.3), counts under no stage, and its count is the requests a protocol's own stage ran. A stage a request runs more than once is observed once, its runs summed (the decision below). An NFSv4 compound runs the stages before its first member once, `decode_args` decoding every member before any runs (§4.7) and `reply_wait` taking its one reservation (§4.3); then `route` (each member's row checks), `resolve_ids`, `map_error` and `encode` once per member, as its runner repeats them, each run adding to its sum; then `wrap` and `send` once. A chain's members share `wrap` and `send`, observed once per record it sends, joined or split (§4.7), so their counts are records, but a record holding only an interim observes neither, as an interim alone does not. Each run is timed from the end of the step before it. The pipeline times and observes every stage; the metrics middleware (§4.7) only marks the call's start, which ends `resolve_ids`, and the call's end, from which `map_error` is timed. A parked request's `map_error` is timed from `done` (§4.7's `Park`): the wait between `Park` and `done` is the park's, never a stage's. A request refused before its call times the stage that refused it, where that stage is timed, and `map_error` from there. A status's wait, for the connection's one status wait and then for its buffer, counts under `encode`, whether a refusal's, a chain member's or a request's answered with a status alone (§4.7). Each attempt of a held request (§4.6) times its own stages from the attempt's start, adding to its sums; the wait between attempts is the hold's, which `adapter_held_requests` shows, never a stage's |
 | `error` | one value per sentinel of the service's closed error set ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), spelled as [RFC 25 §2.4](rfc-25-observability.md#2.4%20Labels) spells an error label, such as `not_found`, `exist`, `name_too_long` or `io`: a list kept by hand, which §7.3's test keeps whole. A typed error counts under its sentinel, the only one it matches (RFC 17 §4.3). Core's own refusals are not among them: `adapter_refusals_total` counts each by its stage. An `ErrDelay` with `DelayResources` that `core` builds itself, at a reply reservation's deadline, in `Park` or at a full hold pool, is the service's sentinel and counts under `delay`. That is a second event, not the refusal counted twice ([RFC 25 §2.7](rfc-25-observability.md#2.7%20One%20event%2C%20one%20owner)): this label counts the status that reaches the wire, and the refusal is counted where `core` decided it, under its stage, or, for the hold pool's, which comes after the call, by `adapter_hold_refusals_total`. An error no row maps (§4.5) takes no value: `adapter_unmapped_errors_total` counts it. A `NoReply` row counts nothing here, since nothing reaches the wire; a refusal it answers still counts under its stage |
 | `op` | the operation's name in its table, lower-cased, such as `read` or `create_session`. Lower-cased, it is lower-case letters, digits and underscores only, and unique within its table; `NewOpTable` refuses a row that breaks either, naming it. One `protocol` and `op` pair is one series, so rows that share it count as one operation. `NewServer` refuses two tables its protocols list, of one `OpTable.Protocol`, that both hold a row name, so `New` fails at configured, not on a request (§4.7's `Protocol.Tables`), but for two cases of one operation reached two ways: two tables that both set `OpTable.Versions`, to ranges that do not overlap, as `testproto`'s two version tables do, and a compound row's `Members`, which take the compound's table's `OpTable.Protocol` and `OpTable.Versions` and whose rows may share a name with that table alone, as `testproto`'s do (the decision on comparing tables, below). NFS sets no `Versions`, so all its tables of one label compare, and its auxiliary programs name their rows apart with their program's name first, as `mount_null` and `nlm_lock`. A table two listeners list is one table, known by its pointer, so NFS's NLM and NSM tables, listed over TCP and UDP (§4.8), are checked once |
@@ -4690,7 +4795,8 @@ adapter.nfs4.COMPOUND              request span: frame → send, opened by the p
   whose row holds, whose `result` is that error (§4.7);
   `request_bytes` and `reply_bytes`, a reply the writer never takes, its
   connection closed or its wrap refused, leaving `status` and `reply_bytes`
-  off; `stage`, the stage that refused. `result` never takes an error's text, which
+  off, and a replay hit, whose copy's status the pipeline never reads,
+  leaving `status` off; `stage`, the stage that refused. `result` never takes an error's text, which
   can carry a path. Never a
   path, a name, a principal or a client address
   ([RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)).
@@ -4726,16 +4832,16 @@ So a line below the adapter carries it only for a sampled request, from the
 span in its context, as RFC 25 §5.3's decision has it.
 The ID is added to a line as the line is written, never through a
 per-request `Logger.With`, which allocates on every request whether a line
-is written or not. A request's line is built only once `Logger.Enabled`
-reports its level on: an argument boxed into an `any`, as a trace ID passed
+is written or not. A request's debug line is built only once
+`Logger.Enabled` reports debug on: an argument boxed into an `any`, as a trace ID passed
 to `Debug` or to `slog.Any` is, allocates at the call whether the line is
 written or not, so a refusal logged at debug would allocate on every refused
 request with debug off. §6.10's gate counts `testproto`'s `Create` refused
 with `ErrDelay` of `DelayResources`, which its tables map to `StatusDelay`, an
 expected refusal, at a level that drops every line, against its
 own successful run, so a debug line on that path that allocates fails it.
-Expected refusals log at debug,
-unexpected errors at error (§4.5); a misbehaving client is logged once per
+An error a row maps logs at debug, one no row maps at error (§4.5); a
+misbehaving client is logged once per
 connection, not once per request
 ([RFC 25 §5.2](rfc-25-observability.md#5.2%20Volume%20is%20bounded%20per%20incident%2C%20not%20per%20request)).
 
@@ -4743,7 +4849,8 @@ A connection's close is logged once, at its reason's level (§10.1): debug for
 `client`, `idle`, `drain`, `removed` and `stop`; error for `wiring`; warning
 for every other. A close at accept names a noisy subject, so its line is
 rate-limited as RFC 25 §5.2 says: once a minute per reason, and for
-`per_address` per address
+`per_address` per address, up to 1,024 addresses, past which an address
+shares the reason's minute
 ([RFC 24 §10](rfc-24-resources.md#10.%20Observability)).
 
 ## 11. Open questions
@@ -4768,8 +4875,11 @@ rate-limited as RFC 25 §5.2 says: once a minute per reason, and for
 4. **SMB2's answer to a request that does not decode.** §4.2 answers every
    command `STATUS_INVALID_PARAMETER`. To be confirmed per command against
    captures of Windows and Samba (§8) before the row is fixed.
-5. **The tag syntax.** §5.1 lists what a tag states; the spelling of each,
-   beyond `offset=`, `len=`, `utf16` and `chain`, is the generator's to fix.
+5. **The tag syntax.** *Settled:* each protocol's generator fixes its tag's
+   spelling and refuses a key it does not know: SMB2's `smb2` tag takes
+   `empty`, `size`, `name`, `offset`, `len`, `count`, `max`, `align`, `utf16`,
+   `chain`, `union`, `case`, `default`, `exact` and `since`; XDR's `xdr` tag
+   takes `max`, `since`, `union`, `default`, `arm` and `case` (§5.1).
 6. **`Row`'s hooks.** `Row(code, name, needs, handler)` takes `Bound`,
    `Resolve`, `Role` and `Handle` through an optional `Hooks[Req]`, and the
    other columns are set on the `*Op` it returns (§4.7). Whether those
