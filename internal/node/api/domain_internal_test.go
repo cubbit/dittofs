@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -153,37 +152,18 @@ func TestOfflineJoinStartRefusedByARotationSinceItsHandOver(t *testing.T) {
 	}
 }
 
-// A rotation's start is refused 409 naming the machine password while its
-// current version was handed to an offline join no join has confirmed, as
-// one whose operation's write was refused leaves it; it is admitted once
-// the join confirms that version.
-func TestRotationRefusedOnAnUnconfirmedHandOver(t *testing.T) {
+// A rotation's start is admitted while the machine password's current
+// version is an orphan hand-over, one handed to an offline join whose
+// operation never started: the rotation supersedes it.
+func TestRotationAdmittedOverAnOrphanHandOver(t *testing.T) {
 	e := newJoinEnv(t)
 	e.offline(t, []byte("pw-1")) // the hand-over commits; its operation is never started
 	rotate, err := prepareRotate(t.Context(), request[none]{d: e.d})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p, _ := problemOf(e.check(t, rotate)); p.Status != http.StatusConflict || p.Field != machinePassword {
-		t.Errorf("a rotation on the unconfirmed hand-over: %+v, want 409 naming %s", p, machinePassword)
-	}
-	if err := e.cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-		in, err := tx.Installation()
-		if err != nil {
-			return err
-		}
-		cur, _, err := tx.Secret(in.MachinePassword, 0)
-		if err != nil {
-			return err
-		}
-		j := in.Join
-		j.Joined, j.LastRotation.Version = true, cur.Version
-		return tx.SetMachineJoin(j)
-	}); err != nil {
-		t.Fatal(err)
-	}
 	if err := e.check(t, rotate); err != nil {
-		t.Errorf("a rotation once the join confirmed the version: %v, want admitted", err)
+		t.Errorf("a rotation's start over the orphan hand-over: %v, want admitted", err)
 	}
 }
 

@@ -13,7 +13,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
-	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // directory is identity's directory as the API asks it before a write. A
@@ -178,35 +177,15 @@ func identityDrives(_ context.Context, rq request[none]) (opStart, error) {
 
 // prepareRotate is rotate-machine-password's pre-write step: refused 503
 // while the node holds no identity service, and, at its start, 409 while a
-// join runs, so a join and a rotation never run at once, and 409 while the
-// machine password's current version is one handed to an offline join that
-// no join has confirmed (notHandedOver).
+// join runs, so a join and a rotation never run at once. A version handed
+// to an offline join that no join took is superseded by the rotation, which
+// seals a new version and never uses the handed-over one.
 func prepareRotate(ctx context.Context, rq request[none]) (opStart, error) {
 	st, err := identityDrives(ctx, rq)
 	st.check = func(tx entity.ControlPlaneTx, in entity.Installation) error {
-		if err := noneRunning(tx, in, apiv1.OpJoinDomain); err != nil {
-			return err
-		}
-		return notHandedOver(tx, in)
+		return noneRunning(tx, in, apiv1.OpJoinDomain)
 	}
 	return st, err
-}
-
-// notHandedOver refuses, 409 naming the machine password, while its current
-// version, read tracked in tx, is one an offline join was handed and the
-// last join or rotation has not confirmed: a hand-over whose operation's
-// write was refused, or a join that failed, leaves such a version current,
-// and a rotation would run on a password no join confirmed. Another offline
-// join supersedes it.
-func notHandedOver(tx entity.ControlPlaneTx, in entity.Installation) error {
-	if in.MachinePassword == (entity.SecretRef{}) {
-		return nil
-	}
-	cur, ok, err := tx.Secret(in.MachinePassword, 0)
-	if err != nil || !ok || !cur.HandedOver || cur.Version == in.Join.LastRotation.Version {
-		return err
-	}
-	return &componentError{field: machinePassword, detail: "the current version was handed to an offline join no join has confirmed; join again before rotating", err: vfserr.ErrExist}
 }
 
 // prepareJoin is join-domain's pre-write step. Either mode is refused 503
