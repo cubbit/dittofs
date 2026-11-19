@@ -106,6 +106,19 @@ func TestWireBodies(t *testing.T) {
 		{"quota spec", QuotaSpec{Hard: Limit{Bytes: 1}, Soft: Limit{Files: 2}, GraceSeconds: 60, Advisory: Limit{Bytes: 3}}, new(QuotaSpec),
 			[]string{"advisory", "grace_seconds", "hard", "soft"}},
 		{"limit", Limit{Bytes: 1, Files: 2}, new(Limit), []string{"bytes", "files"}},
+		{"setting spec", SettingSpec{Value: json.RawMessage(`12445`)}, new(SettingSpec), []string{"value"}},
+		{"setting status", SettingStatus{Applied: &Applied{Nodes: 1, Of: 2}}, new(SettingStatus), []string{"applied"}},
+		{"secret reference", SecretRef{Ref: "se_1", Version: 2}, new(SecretRef), []string{"ref", "version"}},
+		{"credential", Credential{Spec: CredentialSpec{Value: []byte("k")}}, new(Credential), []string{"spec"}},
+		{"credential spec", CredentialSpec{Value: []byte("k")}, new(CredentialSpec), []string{"value"}},
+		{"store spec", StoreSpec{Settings: map[string]json.RawMessage{"remote.endpoint": json.RawMessage(`"s3.example"`)}, Credential: &SecretRef{Ref: "se_1", Version: 1}},
+			new(StoreSpec), []string{"credential", "settings"}},
+		{"namespace spec", NamespaceSpec{Store: "rs_1", Settings: map[string]json.RawMessage{"namespace.prefix": json.RawMessage(`"a/"`)}},
+			new(NamespaceSpec), []string{"settings", "store"}},
+		{"adapter spec", AdapterSpec{Enabled: true, Settings: map[string]json.RawMessage{"port": json.RawMessage(`12445`)}}, new(AdapterSpec),
+			[]string{"enabled", "settings"}},
+		{"adapter status", AdapterStatus{Nodes: []AdapterOnNode{{Node: "n_1", State: "serving", Generation: 4}}}, new(AdapterStatus), []string{"nodes"}},
+		{"adapter on a node", AdapterOnNode{Node: "n_1", State: "serving", Generation: 4}, new(AdapterOnNode), []string{"generation", "node", "state"}},
 	} {
 		b, err := json.Marshal(tc.in)
 		if err != nil {

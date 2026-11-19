@@ -105,6 +105,14 @@ type Deps struct {
 	Applied func(ctx context.Context) error
 	// Tracer opens each call's span; nil, the no-op tracer.
 	Tracer trace.Tracer
+	// Settings is the settings table, which judges every write of a
+	// setting; nil, the empty table, under which every key is refused.
+	Settings settingsTable
+	// Sealer seals a secret's value before the write that stores it; nil,
+	// every write of a secret answers 503. A typed nil, a nil pointer in the
+	// interface, must not be handed in: it is not nil here, and its Seal
+	// would be called.
+	Sealer sealer
 }
 
 // controlPlane is the metadata store's control plane as the API reaches it:

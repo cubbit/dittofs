@@ -191,6 +191,7 @@ func Run(t *testing.T, open Opener) {
 		{"NodeEpochAcrossStarts", testNodeEpochAcrossStarts},
 		{"RegisterNodeRefuses", testRegisterNodeRefuses},
 		{"ZeroNodeRefused", testZeroNodeRefused},
+		{"AdapterStateRefused", testAdapterStateRefused},
 		{"NodeStatuses", testNodeStatuses},
 		{"RegisteredStatuses", testRegisteredStatuses},
 		{"NodeRecords", testNodeRecords},

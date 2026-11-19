@@ -56,6 +56,13 @@ type reads interface {
 	AuditRecords(ctx context.Context, f entity.AuditFilter, after []byte) iter.Seq2[entity.AuditRecord, error]
 	// AuditPosition is a record's position, which AuditRecords resumes after.
 	AuditPosition(a entity.AuditRecord) []byte
+	// Namespaces lists the namespaces in ID order, after the ID after;
+	// Namespace is one namespace's record, false when there is none.
+	Namespaces(ctx context.Context, after entity.NamespaceID) iter.Seq2[entity.Namespace, error]
+	Namespace(ctx context.Context, id entity.NamespaceID) (entity.Namespace, bool, error)
+	// Secret is one version of a secret, still sealed, version 0 its
+	// current one; one never written is not found.
+	Secret(ctx context.Context, id entity.SecretRef, version uint64) (entity.Secret, error)
 }
 
 // errNoStore refuses a call on a node that holds no control-plane store.

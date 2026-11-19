@@ -38,6 +38,7 @@ type request[B any] struct {
 	Body   B
 	Expect uint64
 	Query  url.Values // a write's query, holding only parameters its row takes
+	d      Deps       // the serving server's, which every adapter sets, for a handler and a pre-write step
 }
 
 // none is the body of a request that carries none.
@@ -66,7 +67,7 @@ type adapter func(ctx context.Context, s *Server, r *http.Request, rt *route, id
 // ETag.
 func read[R any](h func(context.Context, Deps, request[none]) (R, error)) adapter {
 	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
-		return jsonOr(h(ctx, s.d, request[none]{ID: id, Sub: r.PathValue("sub")}))
+		return jsonOr(h(ctx, s.d, request[none]{ID: id, Sub: r.PathValue("sub"), d: s.d}))
 	}
 }
 
@@ -74,11 +75,12 @@ func read[R any](h func(context.Context, Deps, request[none]) (R, error)) adapte
 // answer. If it writes, it does so through a function of package auth, the
 // one place besides the write adapter that calls the store's Write.
 func call[B any](h func(context.Context, request[B]) (answer, error)) adapter {
-	return func(ctx context.Context, _ *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
+	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
 		rq, err := decodeRequest[B](r, id)
 		if err != nil {
 			return answer{}, err
 		}
+		rq.d = s.d
 		return h(ctx, rq)
 	}
 }
@@ -159,7 +161,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 		}
 		a, _ = jsonAnswer(p.Status, p) // a Problem always encodes
 		a.header.Set("Content-Type", apiv1.MediaTypeProblem)
-		if wait := retryAfter(err, p.Status); wait > 0 {
+		if wait := retryAfter(err, p.Status, p.Retryable); wait > 0 {
 			a.header.Set("Retry-After", strconv.FormatInt(int64((wait+time.Second-1)/time.Second), 10))
 		}
 	}
@@ -176,13 +178,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 
 // retryAfter is how long a caller refused with err, answered status, should
 // wait before trying again: the wait err carries, none when it carries a
-// negative one, or else one second for a 503 and none for any other status.
-func retryAfter(err error, status int) time.Duration {
+// negative one, or else one second for a retryable 503 and none for any
+// other answer.
+func retryAfter(err error, status int, retryable bool) time.Duration {
 	var w interface{ RetryAfter() time.Duration }
 	if errors.As(err, &w) && w.RetryAfter() != 0 {
 		return max(w.RetryAfter(), 0)
 	}
-	if status == http.StatusServiceUnavailable {
+	if status == http.StatusServiceUnavailable && retryable {
 		return time.Second
 	}
 	return 0

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -64,7 +65,7 @@ func (rt *route) op() string {
 // every row is parsed as an ID, and a name there is 404. A name is found by a
 // listing's filter. Overturned only if a resource ever lacks a stable ID,
 // which no record of the metadata store does.
-var routes = []route{
+var baseRoutes = []route{
 	{method: http.MethodGet, pattern: "/api/version", right: auth.Public, beforeReady: true, serve: read(version)},
 	{method: http.MethodGet, pattern: "/api/v1/health", kind: entity.ResourceNode, right: auth.View, beforeReady: true, serve: read(healthOf)},
 	{method: http.MethodGet, pattern: "/api/v1/operations", kind: entity.ResourceOperation, right: auth.View, serve: list(operations)},
@@ -114,7 +115,22 @@ var routes = []route{
 	{method: http.MethodGet, pattern: "/api/v1/netgroups/{sub}", kind: entity.ResourceNetgroup, right: auth.View, target: netgroupRef, serve: watch(netgroup)},
 	{method: http.MethodPut, pattern: "/api/v1/netgroups/{sub}", kind: entity.ResourceNetgroup, right: auth.Stores, target: netgroupRef, serve: write(netgroups, nil, putNetgroup)},
 	{method: http.MethodDelete, pattern: "/api/v1/netgroups/{sub}", kind: entity.ResourceNetgroup, right: auth.Stores, target: netgroupRef, serve: write(tagsOf(netgroups), nil, deleteNetgroup)},
+	{method: http.MethodPost, pattern: "/api/v1/stores", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(stores, nil, createStore)},
+	{method: http.MethodGet, pattern: "/api/v1/stores/{id}", kind: entity.ResourceRemoteStore, right: auth.View, serve: watch(store)},
+	{method: http.MethodDelete, pattern: "/api/v1/stores/{id}", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(tagsOf(stores), settingKeys(storeScope), deleteStore)},
+	{method: http.MethodPut, pattern: "/api/v1/stores/{id}/credential", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(credentials, sealCredential, putCredential)},
+	{method: http.MethodDelete, pattern: "/api/v1/stores/{id}/credential", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(tagsOf(credentials), nil, deleteCredential)},
+	{method: http.MethodGet, pattern: "/api/v1/namespaces", kind: entity.ResourceNamespace, right: auth.View, serve: list(namespaceList)},
+	{method: http.MethodPost, pattern: "/api/v1/namespaces", kind: entity.ResourceNamespace, right: auth.Stores, serve: write(namespaces, nil, createNamespace)},
+	{method: http.MethodGet, pattern: "/api/v1/namespaces/{id}", kind: entity.ResourceNamespace, right: auth.View, serve: watch(namespace)},
+	{method: http.MethodDelete, pattern: "/api/v1/namespaces/{id}", kind: entity.ResourceNamespace, right: auth.Stores, serve: write(tagsOf(namespaces), settingKeys(namespaceScope), deleteNamespace)},
+	{method: http.MethodGet, pattern: "/api/v1/adapters/{sub}", kind: entity.ResourceAdapter, right: auth.View, target: adapterRef, serve: watch(adapterRead)},
+	{method: http.MethodPut, pattern: "/api/v1/adapters/{sub}", kind: entity.ResourceAdapter, right: auth.Stores, target: adapterRef, serve: write(adapters, adapterFieldsStep, putAdapter)},
 }
+
+// routes is the whole table: the rows above, and the generic setting
+// resource's rows at each scope.
+var routes = slices.Concat(baseRoutes, settingRoutes())
 
 // version answers the API's major versions and nothing else.
 func version(context.Context, Deps, request[none]) (apiv1.Version, error) {

@@ -185,6 +185,13 @@ func (n Nodes) PutNodeStatus(ctx context.Context, s entity.NodeStatus) error {
 	if s.Node == (entity.NodeID{}) {
 		return errZeroNode()
 	}
+	// A state the decoder refuses would make every read of the statuses
+	// fail, so it is refused here, with the node that wrote it.
+	for _, a := range s.Adapters {
+		if a.State.String() == "" {
+			return merrs.NewInvalidArgumentError("node status: adapter " + a.Protocol + " reports no state")
+		}
+	}
 	return n.s.kv.Update(ctx, func(tx kv.Txn) error {
 		return tx.Set(nodeStatusKey(s.Node), encodeNodeStatus(s))
 	})
@@ -503,8 +510,18 @@ func decodeNode(id entity.NodeID, b []byte) (entity.Node, error) {
 	return n, nil
 }
 
+// nodeStatusV2 is the node status's layout with its adapters' list after
+// its conditions; a version 1 status ends at its conditions and reports no
+// adapter.
+const nodeStatusV2 = 2
+
 func encodeNodeStatus(s entity.NodeStatus) []byte {
-	w := codec.NewWriter(v1).Uint64(s.Settings).Uint64(s.ShareList).Uint64(s.Principals).Uint64(s.Claims)
+	// decision: version 2 is written under store format 1, which is not
+	// raised, since no release has written format 1 and so no older reader
+	// of it can meet version 2. Once a release ships, a new codec version is
+	// written only under a store format that names it (RFC 16 §4.6), which
+	// needs the format gate.
+	w := codec.NewWriter(nodeStatusV2).Uint64(s.Settings).Uint64(s.ShareList).Uint64(s.Principals).Uint64(s.Claims)
 	w.Len(len(s.Refused))
 	for _, rr := range s.Refused {
 		putResource(w, rr.Record).Uint64(rr.Generation).Bytes(rr.Error)
@@ -517,11 +534,15 @@ func encodeNodeStatus(s entity.NodeStatus) []byte {
 	for _, sv := range s.Secrets {
 		w.Fixed(sv.Secret[:]).Uint64(sv.Version)
 	}
-	return w.Bytes(s.Conditions).Encode()
+	w.Bytes(s.Conditions).Len(len(s.Adapters))
+	for _, a := range s.Adapters {
+		w.String(a.Protocol).Uint8(uint8(a.State)).Uint64(a.Generation)
+	}
+	return w.Encode()
 }
 
 func decodeNodeStatus(node entity.NodeID, b []byte) (entity.NodeStatus, error) {
-	r, err := open(b)
+	r, ver, err := codec.NewReader(b, v1, nodeStatusV2)
 	if err != nil {
 		return entity.NodeStatus{}, err
 	}
@@ -547,6 +568,16 @@ func decodeNodeStatus(node entity.NodeID, b []byte) (entity.NodeStatus, error) {
 		}
 	}
 	s.Conditions = cloneOrNil(r.Bytes())
+	if ver == nodeStatusV2 {
+		if k := r.Len(); k > 0 {
+			s.Adapters = make([]entity.AdapterStatus, k)
+		}
+		for i := range s.Adapters {
+			a := entity.AdapterStatus{Protocol: r.String(), State: entity.AdapterState(r.Uint8()), Generation: r.Uint64()}
+			known = known && a.State.String() != ""
+			s.Adapters[i] = a
+		}
+	}
 	if err := r.Done(); err != nil {
 		return s, err
 	}

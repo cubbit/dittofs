@@ -92,7 +92,7 @@ func watch[R any](w watching[R]) adapter {
 		if s.d.Store == nil {
 			return answer{}, errNoStore
 		}
-		rq := request[none]{ID: id, Sub: r.PathValue("sub")}
+		rq := request[none]{ID: id, Sub: r.PathValue("sub"), d: s.d}
 		first, err := w.read(ctx, s.d, rq)
 		if err != nil || wait == 0 {
 			return w.answer(first, err)
