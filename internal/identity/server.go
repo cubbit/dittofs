@@ -152,6 +152,8 @@ type Server struct {
 	skipped   *prometheus.CounterVec // by reason
 	unmapped  *prometheus.CounterVec // by scheme
 	hashing   chan struct{}          // the password verifications' slots, GOMAXPROCS of them
+	dummy     []byte                 // the hash a password is verified against for an account that cannot sign in
+	verified  func(phc []byte)       // a test's view of each hash VerifyPassword verified against; nil in production
 	holds     holds                  // the joins' administrator credentials
 
 	slots     chan struct{}      // the pass-through's, channelSlots of them
@@ -200,6 +202,11 @@ func New(d Deps) (*Server, error) {
 	}
 	s := &Server{deps: d, tracer: d.Tracer, logger: d.Logger, hashing: make(chan struct{}, runtime.GOMAXPROCS(0)),
 		slots: make(chan struct{}, channelSlots)}
+	h, err := identity.NewHashes(entity.User{}, []byte("dummy"), identity.NTLMSetting{})
+	if err != nil {
+		return nil, fmt.Errorf("identity: dummy password hash: %w", err)
+	}
+	s.dummy = h.Password
 	s.life, s.end = context.WithCancel(context.Background())
 	if s.logger == nil {
 		s.logger = slog.New(slog.DiscardHandler)

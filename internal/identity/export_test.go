@@ -63,6 +63,17 @@ func (s *Server) HoldHashSlots(free int) (release func()) {
 	}
 }
 
+// OnVerify has every VerifyPassword call deliver f the hash it verified the
+// password against.
+func (s *Server) OnVerify(f func(phc []byte)) { s.verified = f }
+
+// ParsePHC reads an argon2id PHC string into its memory, passes, lanes, salt
+// and key.
+func ParsePHC(b []byte) (memory, time uint32, threads uint8, salt, key []byte, err error) {
+	h, err := parsePHC(b)
+	return h.memory, h.time, h.threads, h.salt, h.key, err
+}
+
 // HashSlot takes a hashing slot as a password verification does, and gives
 // it back at once.
 func (s *Server) HashSlot(ctx context.Context) error {

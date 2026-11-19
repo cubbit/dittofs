@@ -1,7 +1,9 @@
 package identity
 
 import (
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"runtime"
@@ -9,7 +11,9 @@ import (
 
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -68,6 +72,38 @@ func FuzzAPReq(f *testing.F) {
 		}
 		if !reflect.DeepEqual(req, req2) {
 			t.Fatalf("decode∘encode changed the AP-REQ:\n%+v\nto\n%+v", req, req2)
+		}
+	})
+}
+
+// FuzzParsePHC holds a stored password hash's decode to its invariants: it
+// never panics; what it accepts stays within the cost bounds; and what it
+// decodes, written back in the PHC form, decodes to the same value.
+func FuzzParsePHC(f *testing.F) {
+	h, err := identity.NewHashes(entity.User{}, []byte("Password"), identity.NTLMSetting{})
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(h.Password)
+	f.Add([]byte("$argon2id$v=19$m=4294967295,t=2,p=1$c2FsdA$a2V5"))
+	f.Add([]byte("$argon2id$v=19$m=19456,t=4294967295,p=1$c2FsdA$a2V5"))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		got, err := parsePHC(b)
+		if err != nil {
+			return
+		}
+		if got.memory > phcMaxMemory || got.time > phcMaxTime || got.time == 0 || got.threads == 0 {
+			t.Fatalf("parsePHC accepted m=%d t=%d p=%d, outside its bounds", got.memory, got.time, got.threads)
+		}
+		b64 := base64.RawStdEncoding
+		again := fmt.Appendf(nil, "$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s",
+			got.memory, got.time, got.threads, b64.EncodeToString(got.salt), b64.EncodeToString(got.key))
+		got2, err := parsePHC(again)
+		if err != nil {
+			t.Fatalf("a re-encoded hash %q does not decode: %v", again, err)
+		}
+		if !reflect.DeepEqual(got, got2) {
+			t.Fatalf("decode∘encode changed the hash:\n%+v\nto\n%+v", got, got2)
 		}
 	})
 }
