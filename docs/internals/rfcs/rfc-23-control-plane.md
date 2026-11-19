@@ -282,22 +282,29 @@ running the same binary ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20ty
 a single-node installation is one node over an embedded metadata store; a
 cluster is several over one replicated store.
 
-**The start command does four things, and nothing else.**
+**The start command does five things, and nothing else.**
 
 1. It reads the host's bootstrap — the facts needed before the metadata store
    can be reached, and only those ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) —
    from the host's file or environment.
-2. It builds the `Config` (§2.1) from it: the bootstrap, the key-value store the
+2. It calls `node.Preflight` (§2.1), the start check, before anything opens:
+   over the store directory and journal devices the bootstrap names (**(cluster)**: a
+   cluster node's store has no directory), it refuses naming what it found, and
+   nothing was opened.
+3. It builds the `Config` (§2.1) from it: the bootstrap, the key-value store the
    metadata store opens on, the transport (none on one node), the clock, the
    fault seam, the metrics registry and the logger.
-3. It calls `node.New(cfg)`, then `Start`. An error from either is printed,
+4. It calls `node.New(cfg)`, then `Start`. An error from either is printed,
    naming the step that failed, and the process exits non-zero.
-4. On a termination signal it calls `Stop` and exits: zero when every stop step
+5. On a termination signal it calls `Stop` and exits: zero when every stop step
    completed, non-zero naming the step that missed its bound (§2.2).
 
 ```go
 func run(ctx context.Context) error {
 	boot := config.LoadBootstrap()               // the host's file or environment
+	if err := node.Preflight(ctx, boot.Store, boot.V1Root(), boot.Devices(), systemClock{}); err != nil {
+		return err                               // nothing was opened: the start check refused
+	}
 	n, err := node.New(node.Config{Bootstrap: boot, KV: kv.Open(boot.Store),
 		Transport: transportFor(boot), Clock: systemClock{}, ...}) // the one production clock: time.Now, a monotonic origin, time.After
 	if err != nil {
@@ -464,13 +471,13 @@ func (n *Node) Start(ctx context.Context) error // §2.2's start, then reconcile
 func (n *Node) Stop(ctx context.Context) error  // §2.2's stop: the components in reverse build order
 
 // Preflight is the start check the host runs before it opens the metadata
-// store's KV: over the store directory and journal devices it finds, it
-// refuses naming what it found — a pre-journal (v1) layout, a journal naming
-// an installation with no store, storage it cannot identify — and creates
-// nothing. It belongs here because Config.KV arrives already open, and the
-// backend's own open creates what the check reads, so New and Start are both
-// too late to tell an absent store from a present one.
-func Preflight(ctx context.Context, storeDir string, v1dir string, devices []string, clock Clock) error
+// store's KV. Over the store directory and the journal devices the bootstrap
+// names — **(cluster)**: a cluster node's store has no directory — and a
+// pre-journal (v1) layout on a device or at the configured pre-journal root,
+// it refuses naming what it found, and creates nothing. A first start meets
+// two of its refusals most often: a store never initialised, and a bootstrap
+// with no journal device.
+func Preflight(ctx context.Context, storeDir string, v1dir string, devices []string, clock Clock, opts ...journal.Option) error
 
 // Config is what the host supplies and the node cannot build.
 type Config struct {
@@ -507,12 +514,11 @@ API, forms no cycle with it.
 > decision: the node exports `New`, `Start`, `Stop` and `Preflight` only,
 > and is not restartable: a second `Start` is an error. Reconcile's calls are
 > unexported, so no caller, the API included, can change a component by a
-> second path. `Preflight` is exported because the start check must run before
-> the host opens the KV store, so no other root can own it; a package of its
-> own for one function would add a boundary and gain nothing, since its
-> probes read the storage the node's own configuration names. Overturned if
-> the check ever needs a second caller, and then by moving it beside that
-> caller, not by exporting more of the node.
+> second path. `Preflight` is exported because its probes read the
+> storage the node's own configuration names: a package of its own for one
+> function would add a boundary and gain nothing. Overturned if the check
+> ever needs a second caller, and then by moving it beside that caller, not by
+> exporting more of the node.
 
 ### 2.2 Start and stop
 

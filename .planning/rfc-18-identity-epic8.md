@@ -241,7 +241,7 @@ epic's test holds it.
   which reads no `_test.go` file; `nodetest` imports nothing of identity. Prior art: Go's
   `export_test.go` convention.
 - **D5, in-process rows reach the node's identity and filesystem through `export_test.go`.** The
-  node exports `New`, `Start` and `Stop` only (RFC 23 §2.1's decision), and no adapter serves
+  node exports `New`, `Start`, `Stop` and `Preflight` only (RFC 23 §2.1's decision), and no adapter serves
   before S3. So `internal/node`'s `export_test.go` gives its tests `(*Node).Service() vfs.Service`,
   the value the adapters will be handed, `(*Node).Accounts() identity.APISignIn`, the value the API
   is handed; they compile only into the package's tests, and the export pin reads non-test files.

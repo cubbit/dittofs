@@ -407,8 +407,8 @@ internal/node/
   `cmd/gendocs` tests, which fail on any invocation this subtask leaves naming a removed command or
   flag (R5, R7); and `internal/node/arch_test.go`'s export pin (R9, D10): `internal/node`'s exported
   package-level declarations are exactly `New`, `Node`, `Config` and `Preflight` and `*Node`'s
-  exported methods exactly `Start` and `Stop`, run over the package and over `testdata/arch/exports/` with one
-  planted extra export. It lands here because `internal/node` is new in this subtask and
+  exported methods exactly `Start` and `Stop`, run over the package and over the planted
+  trees under `testdata/arch/`, each holding one violation. It lands here because `internal/node` is new in this subtask and
   `lint-repo`'s `test/new-package-tests.sh` refuses a new package with no `_test.go`.
 
 ### T1.4 The daemon flags' other callers, and the reference test
