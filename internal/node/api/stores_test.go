@@ -371,20 +371,20 @@ func TestGenericSettingGuards(t *testing.T) {
 	for _, tc := range []struct {
 		name, path string
 		status     int
-		field      string
+		field, via string
 	}{
-		{"a store's endpoint", "/api/v1/stores/" + uuid.NewString() + "/settings/remote.endpoint", http.StatusBadRequest, "remote.endpoint"},
-		{"a store's credential", "/api/v1/stores/" + st.String() + "/settings/remote.credential", http.StatusBadRequest, "remote.credential"},
-		{"the keytab", "/api/v1/settings/identity.keytab", http.StatusBadRequest, "identity.keytab"},
-		{"an unknown node's", "/api/v1/nodes/" + uuid.NewString() + "/settings/adapters.nfs.port", http.StatusNotFound, ""},
-		{"an unknown namespace's", "/api/v1/namespaces/" + uuid.NewString() + "/settings/namespace.prefix", http.StatusNotFound, ""},
-		{"an unknown store's", "/api/v1/stores/" + uuid.NewString() + "/settings/remote.bucket", http.StatusNotFound, ""},
-		{"an overlong key", "/api/v1/settings/" + strings.Repeat("k", 256), http.StatusBadRequest, "key"},
+		{"a store's endpoint", "/api/v1/stores/" + uuid.NewString() + "/settings/remote.endpoint", http.StatusBadRequest, "remote.endpoint", "POST /api/v1/stores"},
+		{"a store's credential", "/api/v1/stores/" + st.String() + "/settings/remote.credential", http.StatusBadRequest, "remote.credential", "PUT /api/v1/stores/{id}/credential"},
+		{"the keytab", "/api/v1/settings/identity.keytab", http.StatusBadRequest, "identity.keytab", "PUT /api/v1/installation/keytab"},
+		{"an unknown node's", "/api/v1/nodes/" + uuid.NewString() + "/settings/adapters.nfs.port", http.StatusNotFound, "", ""},
+		{"an unknown namespace's", "/api/v1/namespaces/" + uuid.NewString() + "/settings/namespace.prefix", http.StatusNotFound, "", ""},
+		{"an unknown store's", "/api/v1/stores/" + uuid.NewString() + "/settings/remote.bucket", http.StatusNotFound, "", ""},
+		{"an overlong key", "/api/v1/settings/" + strings.Repeat("k", 256), http.StatusBadRequest, "key", ""},
 	} {
 		before := s.written(t, installation)
 		r := s.do(t, http.MethodPut, tc.path, `{"spec":{"value":"x"}}`, "If-None-Match", "*")
-		if p := r.problem(t); r.status != tc.status || p.Field != tc.field {
-			t.Errorf("PUT %s: answered %d %s, want %d naming %q", tc.name, r.status, r.body, tc.status, tc.field)
+		if p := r.problem(t); r.status != tc.status || p.Field != tc.field || !strings.Contains(p.Detail, tc.via) {
+			t.Errorf("PUT %s: answered %d %s, want %d naming %q and the route %q", tc.name, r.status, r.body, tc.status, tc.field, tc.via)
 		}
 		if after := s.written(t, installation); after != before {
 			t.Errorf("PUT %s: the store changed:\n got %s\nwant %s", tc.name, after, before)
