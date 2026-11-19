@@ -4307,11 +4307,12 @@ package that does file or network I/O (but `os` in `<protocol>/wire/gen`,
 §2.5, and any in a `wire` package's test files, which read their vectors
 from files), a
 generated `codec_gen.go` that imports more than those and its protocol's
-`wire`, and an `ops` file other than `codec_gen.go` that calls a function or
-method of its protocol's `wire` that reads or writes bytes (it may name
-`wire`'s types only) or imports `encoding/binary`, since a command file
-touches no bytes (§5.1; an `ops` package's test files are held by
-neither rule), and
+`wire`, and an `ops` file other than `codec_gen.go` that names its protocol's
+`wire.Decoder` or `wire.Encoder` or imports `encoding/binary`, since a command
+file touches no bytes (§5.1; an `ops` package's test files are held by
+neither rule). It will also fail an `ops` file that calls any other function
+or method of its protocol's `wire` that reads or writes bytes (it may name
+`wire`'s types only), once the plan's ledger row for it lands. It
 fails a call of an entry method — `Root`, `SecInfo`, `ListShares` — outside
 the entry handlers of §4.10. It also fails, in both directions, a package
 under `pkg/` other than the two constructors `pkg/adapter/nfs` and
