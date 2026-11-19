@@ -30,7 +30,7 @@ var errSealInjected = errors.New("secrets test: injected store fault")
 
 // sealKeys writes one real key file per role in a temporary directory and
 // opens both, closed when the test ends.
-func sealKeys(t *testing.T) map[Role]keyprovider.KeyProvider {
+func sealKeys(t testing.TB) map[Role]keyprovider.KeyProvider {
 	t.Helper()
 
 	const passphrase = "seal test passphrase"
@@ -74,7 +74,7 @@ func sealKeys(t *testing.T) map[Role]keyprovider.KeyProvider {
 
 // sealStore initialises a control-plane store over db, closed when the test
 // ends. An empty dir keeps the store in memory.
-func sealStore(t *testing.T, dir string) kv.KV {
+func sealStore(t testing.TB, dir string) kv.KV {
 	t.Helper()
 
 	db, err := badgerkv.Open(badgerkv.Options{Dir: dir})
@@ -89,7 +89,7 @@ func sealStore(t *testing.T, dir string) kv.KV {
 	return db
 }
 
-func sealControlPlane(t *testing.T, db kv.KV) kvstore.ControlPlane {
+func sealControlPlane(t testing.TB, db kv.KV) kvstore.ControlPlane {
 	t.Helper()
 
 	ctx := context.Background()
@@ -106,7 +106,7 @@ func sealControlPlane(t *testing.T, db kv.KV) kvstore.ControlPlane {
 }
 
 func sealProvider(
-	t *testing.T,
+	t testing.TB,
 	cp kvstore.ControlPlane,
 	keys map[Role]keyprovider.KeyProvider,
 ) *Provider {
@@ -120,7 +120,7 @@ func sealProvider(
 	return p
 }
 
-func sealRef(t *testing.T) entity.SecretRef {
+func sealRef(t testing.TB) entity.SecretRef {
 	t.Helper()
 
 	var ref entity.SecretRef
