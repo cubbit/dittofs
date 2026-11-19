@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -25,13 +26,25 @@ const (
 // host-byte-order format no current tool writes, is refused. Overturned if
 // RFC 18 §3.3 ever admits an encryption type beside AES.
 func CheckKeytab(b []byte) error {
+	_, err := keytabEntries(b)
+	return err
+}
+
+// KeytabNames is the service name of each key b holds, its principal's
+// components joined by "/" without the realm, as a computer account's names
+// are spelled, once per key; it refuses what CheckKeytab refuses.
+func KeytabNames(b []byte) ([]string, error) { return keytabEntries(b) }
+
+// keytabEntries checks b as CheckKeytab says and returns each key's service
+// name.
+func keytabEntries(b []byte) ([]string, error) {
 	if len(b) < 2 || b[0] != 5 || b[1] != 2 {
-		return fmt.Errorf("%w: not a version 2 keytab", vfserr.ErrInvalid)
+		return nil, fmt.Errorf("%w: not a version 2 keytab", vfserr.ErrInvalid)
 	}
-	keys := 0
+	var names []string
 	for n := 2; n < len(b); {
 		if len(b)-n < 4 {
-			return fmt.Errorf("%w: keytab ends inside a record length", vfserr.ErrInvalid)
+			return nil, fmt.Errorf("%w: keytab ends inside a record length", vfserr.ErrInvalid)
 		}
 		l := int64(int32(binary.BigEndian.Uint32(b[n:])))
 		n += 4
@@ -43,32 +56,33 @@ func CheckKeytab(b []byte) error {
 			size = -l // a hole left by a deleted entry
 		}
 		if size > int64(len(b)-n) {
-			return fmt.Errorf("%w: keytab record of %d bytes past its end", vfserr.ErrInvalid, size)
+			return nil, fmt.Errorf("%w: keytab record of %d bytes past its end", vfserr.ErrInvalid, size)
 		}
 		if l > 0 {
-			etype, err := entryEtype(b[n : n+int(l)])
+			name, etype, err := entry(b[n : n+int(l)])
 			if err != nil {
-				return fmt.Errorf("%w: keytab entry: %w", vfserr.ErrInvalid, err)
+				return nil, fmt.Errorf("%w: keytab entry: %w", vfserr.ErrInvalid, err)
 			}
 			if etype != etypeAES128 && etype != etypeAES256 {
-				return fmt.Errorf("%w: keytab holds a key of encryption type %d, not AES", vfserr.ErrInvalid, etype)
+				return nil, fmt.Errorf("%w: keytab holds a key of encryption type %d, not AES", vfserr.ErrInvalid, etype)
 			}
-			keys++
+			names = append(names, name)
 		}
 		n += int(size)
 	}
-	if keys == 0 {
-		return fmt.Errorf("%w: keytab holds no key", vfserr.ErrInvalid)
+	if len(names) == 0 {
+		return nil, fmt.Errorf("%w: keytab holds no key", vfserr.ErrInvalid)
 	}
-	return nil
+	return names, nil
 }
 
 var errShort = errors.New("entry ends early")
 
-// entryEtype reads one entry, its principal, timestamp, key version number
-// and key, and returns the key's encryption type. Every length is a signed
-// 16-bit field and a negative one is refused.
-func entryEtype(e []byte) (uint16, error) {
+// entry reads one entry, its principal, timestamp, key version number and
+// key, and returns its service name, the principal's components joined by
+// "/", and the key's encryption type. Every length is a signed 16-bit field
+// and a negative one is refused.
+func entry(e []byte) (string, uint16, error) {
 	p := 0
 	u16 := func() (int, error) {
 		if len(e)-p < 2 {
@@ -90,33 +104,38 @@ func entryEtype(e []byte) (uint16, error) {
 	}
 	comps, err := u16()
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
-	for range comps + 1 { // the realm, then each component
+	var parts []string
+	for i := range comps + 1 { // the realm, then each component
 		l, err := u16()
 		if err != nil {
-			return 0, err
+			return "", 0, err
 		}
+		at := p
 		if err := skip(l); err != nil {
-			return 0, err
+			return "", 0, err
+		}
+		if i > 0 {
+			parts = append(parts, string(e[at:p]))
 		}
 	}
 	if err := skip(4 + 4 + 1); err != nil { // name type, timestamp, key version number
-		return 0, err
+		return "", 0, err
 	}
 	etype, err := u16()
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 	l, err := u16()
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 	if l == 0 {
-		return 0, errors.New("empty key")
+		return "", 0, errors.New("empty key")
 	}
 	if err := skip(l); err != nil {
-		return 0, err
+		return "", 0, err
 	}
-	return uint16(etype), nil
+	return strings.Join(parts, "/"), uint16(etype), nil
 }
