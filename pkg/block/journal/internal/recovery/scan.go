@@ -728,6 +728,7 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	// pieces the collapse kept in a segment the open ends or saw fail, and
 	// nothing before it changes where a fed copy sits.
 	ks.repointCopies(ix, tl)
+	ks.keepDuplicates()
 	out := rebuilt{Index: ix, Counters: ctr, Scans: scans}
 	resyncs := 0
 	byCatalog := 0

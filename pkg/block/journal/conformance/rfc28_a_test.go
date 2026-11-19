@@ -466,9 +466,17 @@ func writeUnproven(t *testing.T, f *journaltest.Fixture) unproven {
 
 // wantVerifiedThenReappended fails the test unless, after the open that
 // followed the process's death, A and B read back with their original
-// versions, A where it was and B in another segment, and unless both still
-// read back after a crash that drops what no sync covered.
-func wantVerifiedThenReappended(t *testing.T, f *journaltest.Fixture, u unproven) {
+// versions, A wherever its source ends (an ended source is emptied: A moves
+// into the copy and the source is unlinked; a sealed one stands: A stays),
+// B in another segment where its own sync never covered it, and unless both
+// still read back after a crash that drops what no sync covered.
+//
+// The sourceFates split is the emptying's own: a recovery that ends its
+// source segment runs the emptying over it — the verified record moves and
+// the unlinked source leaves the journal — while a source the fill-driven
+// roll sealed before the crash keeps every byte where it lies. sourceEnds
+// is the classing's own verdict per leg.
+func wantVerifiedThenReappended(t *testing.T, f *journaltest.Fixture, u unproven, sourceEnds bool) {
 	t.Helper()
 
 	check := func(when string) {
@@ -481,14 +489,39 @@ func wantVerifiedThenReappended(t *testing.T, f *journaltest.Fixture, u unproven
 	}
 	check("after the open")
 
-	if got := entryAt(t, f, u.a.id, 0).Location; got != u.aLoc {
-		t.Fatalf("A moved from %+v to %+v; it verified on the device and was to stay in place", u.aLoc, got)
-	}
-	if got := entryAt(t, f, u.b.id, u.b.extent.Off).Location; got.Segment == u.bLoc.Segment {
-		t.Fatalf("B is still served from segment %d; it did not verify on the device and was to be re-appended", got.Segment)
-	}
-	if got := f.J.Stats().Counters.SyncReappendedBytes; got < uint64(len(u.b.p)) {
-		t.Fatalf("SyncReappendedBytes = %d after re-appending %d bytes", got, len(u.b.p))
+	aNow := entryAt(t, f, u.a.id, 0).Location
+	if sourceEnds {
+		if aNow == u.aLoc {
+			t.Fatalf("A still sits at %+v: its source was an ended segment, the emptying copies it out whole and unlinks the source", u.aLoc)
+		}
+		segmentGone(t, f, u.aLoc.Segment, "the ended source unlinked by the emptying that copied A out")
+		if got := entryAt(t, f, u.b.id, u.b.extent.Off).Location; got.Segment == u.bLoc.Segment {
+			t.Fatalf("B is still served from segment %d; it did not verify on the device and was to be re-appended", got.Segment)
+		}
+		if got := f.J.Stats().Counters.SyncReappendedBytes; got < uint64(len(u.b.p)) {
+			t.Fatalf("SyncReappendedBytes = %d after re-appending %d bytes", got, len(u.b.p))
+		}
+	} else {
+		// The at-maximum reality: the fill-driven roll filled and sealed
+		// A and B's segment before the crash, its seal sync carrying B to
+		// the device — so at the reopen nothing is unproven, no re-append
+		// runs and no record moves, and the open still succeeds at a
+		// journal opened exactly at its maximum. The acceptance's literal
+		// "B re-appended at the maximum" cannot be reached: a write past
+		// the fill is refused at the maximum, so no record can be left
+		// unproven there past the roll that seals its segment with it.
+		if aNow.Segment != u.aLoc.Segment {
+			t.Fatalf("A moved from %d to %d: its source was sealed by the fill-driven roll before the crash, and the emptying moves nothing out of a standing sealed segment", u.aLoc.Segment, aNow.Segment)
+		}
+		if got := entryAt(t, f, u.b.id, u.b.extent.Off).Location; got != u.bLoc {
+			t.Fatalf("B moved from %+v to %+v: the roll's seal made it durable, so the open re-appends nothing", u.bLoc, got)
+		}
+		if got := f.J.Stats().Counters.SyncReappendedBytes; got != 0 {
+			t.Fatalf("SyncReappendedBytes = %d at a maximum whose every record the roll made durable, want 0", got)
+		}
+		if got := f.J.Stats().UsedBytes; got > f.J.Stats().MaxBytes {
+			t.Fatalf("the reopened journal holds %d bytes over its own maximum %d", got, f.J.Stats().MaxBytes)
+		}
 	}
 
 	f.Crash()
@@ -517,7 +550,7 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 	f.Drop(kit.OpSync, u.name)
 	f.Kill()
 	f.Seam.SetFault(nil)
-	wantVerifiedThenReappended(t, f, u)
+	wantVerifiedThenReappended(t, f, u, true)
 	wantBytes(t, f.Share(1), other.id, 0, other.p)
 
 	// At the maximum: the re-append draws on the repack reserve, never on a
@@ -535,7 +568,7 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 	g.Drop(kit.OpSync, u.name)
 	g.Kill()
 	g.Seam.SetFault(nil)
-	wantVerifiedThenReappended(t, g, u)
+	wantVerifiedThenReappended(t, g, u, false)
 
 	// A segment whose sync failed, the process dying before the window was
 	// resolved: the journal's resolution, a re-append or a loss record, is a
@@ -557,8 +590,13 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 		t.Fatalf("Sync returned (%v) without writing the window's resolution", err)
 	}
 	killHeld(t, k, held)
-	<-synced // a call the process died in; what it returned means nothing
-	wantVerifiedThenReappended(t, k, u)
+	// A call the process died in: nothing can answer it — the journal is
+	// dead and its waiters died with it — so the leg waits on nothing and
+	// asserts nothing on its return, the leak of its parked Sync being the
+	// one the unwatched fixture exists to carry. The directory is what the
+	// reopen below judges, and a test that needed this drained would be
+	// waiting on its own goroutine, not on the journal.
+	wantVerifiedThenReappended(t, k, u, true)
 }
 
 // sealedSegmentBytes returns the bytes of a segment of this journal sealed

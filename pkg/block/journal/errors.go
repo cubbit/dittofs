@@ -2,7 +2,6 @@ package journal
 
 import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
-	"github.com/cubbit/dittofs/pkg/block/journal/internal/recovery"
 )
 
 // The journal's errors, declared in internal/core so the internal packages can
@@ -49,15 +48,6 @@ type (
 	NotOffloadedError     = core.NotOffloadedError
 	ReadOnlyState         = core.ReadOnlyState
 	UnreadableRangesError = core.UnreadableRangesError
-
-	// LostPastReserveError is the open's past-reserve refusal, the type
-	// Open wraps its ErrOpenRefused with when corrupt losses would run past
-	// the records the headroom keeps for the open. Its declaration and
-	// contract live with the loss pass that answers it
-	// (internal/recovery/seal.go), which never passes a core boundary; the
-	// alias hands the error's value to a caller that reads the count it
-	// carries, most often to name the operator's remedy.
-	LostPastReserveError = recovery.LostPastReserveError
 )
 
 // The limits a NoSpaceError names; see Limit.

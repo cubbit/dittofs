@@ -107,6 +107,16 @@ type OpenState struct {
 	// from, so a file nothing seeded answers unlisted until a write of its
 	// own lands.
 	Dirty []index.HeldDelta
+	// Spares holds the spares the open re-adopted, each with the class the
+	// pool draws it from: the pool adopts them before it starts, so its
+	// refill counts them and makes no spare in their place.
+	Spares []AdoptedSpare
+}
+
+// AdoptedSpare is one spare the open re-adopted and the class it fills.
+type AdoptedSpare struct {
+	ID    core.SegmentID
+	Class segment.Class
 }
 
 // coreOptions are the test-only adjustments newCore applies before the layers
@@ -565,6 +575,18 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		c.pool.SetRecorder(c.rec)
 		c.cache.SetRecorder(c.rec)
 	}
+	// The re-adopted spares reach the pool before Start, the order Adopt
+	// holds every spare to: the open's directory sync has already proven
+	// their names. A refusal is an id the set already owns, which no open
+	// hands over; nothing has started yet, so the open fails with no worker
+	// to stop.
+	if state.Open != nil {
+		for _, a := range state.Open.Spares {
+			if err := c.pool.Adopt(a.ID, a.Class); err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	// The admission every appending call asks once: its injected facts are
 	// the plain reads and takes of the layers it consults, and its counters
@@ -787,6 +809,19 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 // Index returns the placement index.
 func (c *Core) Index() *index.Index { return c.index }
 
+// Liveness returns the segment liveness tracker the open's registrations
+// filled: the one answer of an attached segment the open's own emptying asks
+// before it retires anything.
+func (c *Core) Liveness() *reclaim.Tracker { return c.liveness }
+
+// Retire runs one retirement through the executor the core runs — the same
+// recycle-or-unlink path, refill included, a reclaim worker's hand-over
+// takes — so an open-time retiree and a running journal's own answer one
+// path.
+func (c *Core) Retire(id core.SegmentID, reason segment.Reason) (segment.Retirement, error) {
+	return c.retirer.Retire(id, reason)
+}
+
 // Durability returns the durability layer.
 func (c *Core) Durability() *durability.Durability { return c.dur }
 
@@ -882,6 +917,11 @@ func (c *Core) retiredSegment(id core.SegmentID) {
 	c.cap.RetiredEverySeeded()
 }
 
+// AfterRetirementTick makes the retirement worker call fn after each tick's
+// scan and pass. It has no production caller: a test waits on the worker's
+// own events through it, where the worker's real timer allows no clock.
+func (c *Core) AfterRetirementTick(fn func()) { c.retiring.AfterTick(fn) }
+
 // WaitSpares blocks until the pool has readied every spare the open's own
 // targets name, or reports the pool's word for why it stopped filling. It is
 // the core half of the hook Open hands its caller's SparesReady callback: the
@@ -897,12 +937,34 @@ func (c *Core) WaitRecordSpares(ctx context.Context, n int) error {
 	return c.pool.WaitRecordSpares(ctx, n)
 }
 
+// TakeReserve draws one spare of the pool's repack reserve whose id is above
+// floor for the open's own copy (Pool.TakeReserveAbove), waiting for the pool's settle when the class is short — a wait for
+// the reserve class alone, as the open's loss records wait for their own
+// spares and not the pool's whole goal, so an open whose emptying draws first
+// past a refill that has not landed blocks on the pool rather than failing,
+// and a maximum that leaves the content class short does not refuse a copy
+// whose reserve spare is ready — and returning the pool's
+// error when none can be made and the refill stopped. It is the one shape the
+// open hands the emptying step's copies: the drawn spare enters the set as
+// the segment the copy makes of it, sealed by the step that took it.
+func (c *Core) TakeReserve(ctx context.Context, floor core.SegmentID) (core.SegmentID, error) {
+	id, err := c.pool.TakeReserveAbove(floor)
+	if err == nil || !errors.Is(err, core.ErrNoSpace) {
+		return id, err
+	}
+	if werr := c.pool.WaitReserveSpare(ctx); werr != nil {
+		return 0, werr
+	}
+	return c.pool.TakeReserveAbove(floor)
+}
+
 // Continue builds the core over a set continued from a recovery's open
-// payload, runs beforeRetire — the open's loss pass, the one step that must
-// land between the core and its retirement worker — and only then starts the
-// worker: the tick's scan answers a segment holding only corrupt drops, and
-// starting it ahead of the pass would unlink such a segment while the mask
-// the pass has not yet made durable is its only gate. A core built over an
+// payload, runs beforeRetire — the open's loss pass and the emptying that
+// gates on it, the steps that must land between the core and its retirement
+// worker — and only then starts the worker: the tick's scan answers a
+// segment holding only corrupt drops, and starting it ahead of the pass
+// would unlink such a segment while the mask the pass has not yet made
+// durable is its only gate. A core built over an
 // open payload is never returned with its worker unstarted. A failure of
 // beforeRetire closes the core and answers the failure; a set that carried no
 // open payload is refused and closed, for its records hold no registration

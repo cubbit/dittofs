@@ -91,6 +91,25 @@ const (
 	LossAcknowledged LossReason = 5 // an operator acknowledged the record unreadable
 )
 
+// LossReasonOf maps a loss reason to the number its loss record carries. It
+// panics on a reason that names none, which is a caller bug: the layer that
+// owns the registry refused one at Lose already.
+func LossReasonOf(r core.LossReason) LossReason {
+	switch r {
+	case core.LossCorrupt:
+		return LossCorrupt
+	case core.LossStale:
+		return LossStale
+	case core.LossFailedWindow:
+		return LossFailedSync
+	case core.LossSuperseded:
+		return LossSuperseded
+	case core.LossAcknowledged:
+		return LossAcknowledged
+	}
+	panic(fmt.Sprintf("format: loss reason %d names no reason", r))
+}
+
 // known reports whether r is a reason a loss record can name.
 func (r LossReason) known() bool {
 	return r >= LossCorrupt && r <= LossAcknowledged

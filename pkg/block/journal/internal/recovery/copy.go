@@ -26,9 +26,11 @@ type copyInput struct {
 	Version core.Version
 }
 
-// copier writes whole records, keeping their numbers, into a spare drawn from
-// the repack reserve — never a share's limit, never a content or headroom
-// spare, which the classes never lend — and seals the target.
+// copier writes whole records, keeping their numbers, into a spare the draw
+// closure hands back — the pool's repack reserve through the emptying, the
+// spares the spares phase adopted through the re-append; never a share's
+// limit, never a content or headroom spare, which the classes never lend —
+// and seals the target.
 //
 // decision: the tail's re-appends and the emptying's copies share this one
 // copier, whose target is sealed, so a second crash never reads a copy back
@@ -39,20 +41,22 @@ type copier struct {
 	deps     Deps
 	identity core.JournalID
 
-	// reserve holds the ids of the spares the spares phase adopted into the
-	// repack reserve, ascending, drawn front-first: the one class a
-	// re-appending open may take from, the running journal's repack rolls'
-	// own.
-	reserve []core.SegmentID
+	// draw hands back one spare this copy may take. Its error answers a
+	// shortage — no spare ready and none to be made — or the device's own
+	// word for why none may be taken, and is the answer the copy returns
+	// when no attempt before it refused one.
+	draw func() (core.SegmentID, error)
 
 	// taken holds every spare the copier drew — the target the records
 	// landed in and every failed one before it — so the phase answers the
-	// adoptions no later pool wiring may receive again.
+	// adoptions no later pool wiring may receive again, and the emptying
+	// ends a failed one's row in the ledger its pool took it into.
 	taken []core.SegmentID
 }
 
-// copy writes recs into one spare drawn from the repack reserve, seals it, and
-// returns the target's id. The records land whole and in order, contiguous
+// copy writes recs into one spare the draw closure hands back, seals it, and
+// returns the target's id with at, the offsets the records landed at, aligned
+// with recs. The records land whole and in order, contiguous
 // from the first record slot, each re-encoded under the target's segment and
 // its own offset there while keeping the sequence number, version, kind, file,
 // extent and tag its source header carried. No spare is drawn before every
@@ -66,36 +70,36 @@ type copier struct {
 // error — the refusal the failing attempt answered with, where one ran, the
 // spare refusal where none did — and leaves the source in place, for the
 // caller ends no source before its copy holds.
-func (c *copier) copy(ctx context.Context, recs []copyInput) (target core.SegmentID, err error) {
+func (c *copier) copy(ctx context.Context, recs []copyInput) (target core.SegmentID, at []int64, err error) {
 	if len(recs) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	whole := make([]format.RecordHeader, 0, len(recs))
 	bodies := make([]format.RecordBody, 0, len(recs))
 	end := int64(format.SegmentHeaderSize)
 	for _, r := range recs {
 		if len(r.Bytes) < format.RecordHeaderSize {
-			return 0, fmt.Errorf("the record of seq %d at %d of segment %d kept %d bytes, want its %d-byte header at least", r.Seq, r.At, r.Segment, len(r.Bytes), format.RecordHeaderSize)
+			return 0, nil, fmt.Errorf("the record of seq %d at %d of segment %d kept %d bytes, want its %d-byte header at least", r.Seq, r.At, r.Segment, len(r.Bytes), format.RecordHeaderSize)
 		}
 		h, derr := format.DecodeRecordHeader(r.Bytes[:format.RecordHeaderSize], c.identity, r.Segment, r.At)
 		if derr != nil {
-			return 0, fmt.Errorf("the record of seq %d at %d of segment %d does not decode as the copier's input: %w", r.Seq, r.At, r.Segment, derr)
+			return 0, nil, fmt.Errorf("the record of seq %d at %d of segment %d does not decode as the copier's input: %w", r.Seq, r.At, r.Segment, derr)
 		}
 		if h.Seq != r.Seq || h.Version != r.Version {
-			return 0, fmt.Errorf("the record of seq %d version %v at %d of segment %d names the seq %d version %v it was handed", r.Seq, r.Version, r.At, r.Segment, h.Seq, h.Version)
+			return 0, nil, fmt.Errorf("the record of seq %d version %v at %d of segment %d names the seq %d version %v it was handed", r.Seq, r.Version, r.At, r.Segment, h.Seq, h.Version)
 		}
 		// The body is judged only on the bytes the input actually kept: a
 		// slice naming bytes past their end would decide on bytes no read
 		// returned, so a short input is refused for its own length.
 		if int64(len(r.Bytes)) < format.RecordHeaderSize+h.BodySize() {
-			return 0, fmt.Errorf("the record of seq %d at %d of segment %d kept %d bytes, want its %d-byte header and the %d-byte body it names", r.Seq, r.At, r.Segment, len(r.Bytes), format.RecordHeaderSize, h.BodySize())
+			return 0, nil, fmt.Errorf("the record of seq %d at %d of segment %d kept %d bytes, want its %d-byte header and the %d-byte body it names", r.Seq, r.At, r.Segment, len(r.Bytes), format.RecordHeaderSize, h.BodySize())
 		}
 		body, verr := format.VerifyRecordBody(r.Bytes[format.RecordHeaderSize:format.RecordHeaderSize+h.BodySize()], c.identity, h)
 		if verr != nil {
-			return 0, fmt.Errorf("the record of seq %d at %d of segment %d does not verify as the copier's input: %w", r.Seq, r.At, r.Segment, verr)
+			return 0, nil, fmt.Errorf("the record of seq %d at %d of segment %d does not verify as the copier's input: %w", r.Seq, r.At, r.Segment, verr)
 		}
 		whole = append(whole, h)
 		bodies = append(bodies, body)
@@ -118,7 +122,7 @@ func (c *copier) copy(ctx context.Context, recs []copyInput) (target core.Segmen
 	// loop that seals a full target and draws another.
 	need := end + format.SealMarkerSize + int64(len(recs))*format.CatalogEntrySize + format.TrailerSize
 	if need > c.deps.SegmentCap {
-		return 0, fmt.Errorf("the copy of %d records needing %d bytes cannot fit one spare of the %d-byte cap", len(recs), need, c.deps.SegmentCap)
+		return 0, nil, fmt.Errorf("%w: the copy of %d records needing %d bytes cannot fit one spare of the %d-byte cap", core.ErrOpenRefused, len(recs), need, c.deps.SegmentCap)
 	}
 
 	var refused error
@@ -127,41 +131,35 @@ func (c *copier) copy(ctx context.Context, recs []copyInput) (target core.Segmen
 		// an already-landed cancellation answers here and no spare is drawn
 		// into a write a caller already ended.
 		if err := ctx.Err(); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
-		id, ok := c.draw()
-		if !ok {
+		// decision: a draw's error is returned as the pool answered it and
+		// never as an open refusal: a spare the reserve lacks is a state of
+		// the pool a retry may find changed, where the refusals of this open
+		// are the ones that repeat identically on the same directory. Withdrawn
+		// if a reserve that can never refill is ruled a refusal of the open.
+		id, derr := c.draw()
+		if derr != nil {
 			if refused != nil {
 				// The refusal in a row is the write's or the sync's own —
-				// the device's word for why the open stops — for a spare
-				// count names a shortage the failing device already answered
+				// the device's word for why the open stops — for a draw's
+				// error names a shortage the failing device already answered
 				// for.
-				return 0, refused
+				return 0, nil, refused
 			}
-			return 0, &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
+			return 0, nil, derr
 		}
-		err := c.writeTarget(id, whole, bodies)
+		c.taken = append(c.taken, id)
+		at, err := c.writeTarget(id, whole, bodies)
 		if err == nil {
-			return id, nil
+			return id, at, nil
 		}
 		if isContextErr(err) {
-			return 0, err
+			return 0, nil, err
 		}
 		refused = err
 	}
-	return 0, refused
-}
-
-// draw takes the oldest spare of the copier's reserve, naming it among the
-// taken; the caller keeps the answer's whole.
-func (c *copier) draw() (core.SegmentID, bool) {
-	if len(c.reserve) == 0 {
-		return 0, false
-	}
-	id := c.reserve[0]
-	c.reserve = c.reserve[1:]
-	c.taken = append(c.taken, id)
-	return id, true
+	return 0, nil, refused
 }
 
 // writeTarget writes the encoded records into the spare id, which no stream
@@ -175,17 +173,18 @@ func (c *copier) draw() (core.SegmentID, bool) {
 // this write builds, whose end never reaches the rebuilt state — and the
 // phase ends it in the rebuilt fates once its retry lands, before the error
 // answers — a failed segment, never sealed — for a segment whose bytes the
-// device never took whole is one no marker may speak for.
-func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodies []format.RecordBody) error {
+// device never took whole is one no marker may speak for. at answers the
+// offset each record landed at, aligned with recs.
+func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodies []format.RecordBody) ([]int64, error) {
 	// The ledger the seal writer hands its steps: a spare accounted at its
 	// cap, taken as the segment it becomes for this one write, and ended by
 	// the seal writer itself where a step fails.
 	set := segment.NewSet(c.deps.SegmentCap, c.deps.Log)
 	if err := set.AdoptSpare(id); err != nil {
-		return err
+		return nil, err
 	}
 	if err := set.Take(id); err != nil {
-		return err
+		return nil, err
 	}
 
 	// The whole batch as one buffer, the shape the packing loop spells: the
@@ -194,9 +193,11 @@ func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodi
 	// answer for — then each record re-encoded at the offset it lands at.
 	buf := format.AppendSegmentHeader(nil, format.SegmentHeader{Identity: c.identity, ID: id})
 	entries := make([]format.CatalogEntry, 0, len(recs))
+	at := make([]int64, len(recs))
 	for i := range recs {
 		h := recs[i]
 		h.Segment, h.Offset = id, int64(len(buf))
+		at[i] = h.Offset
 		// A copy's header names no point a sync completed in the target, for
 		// none had when each record was written: the first sync the target's
 		// bytes reach is the seal writer's own first step.
@@ -213,7 +214,7 @@ func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodi
 	ref, aerr := cache.Acquire(id)
 	if aerr != nil {
 		_ = cache.Shutdown() // no file opened: the release only drops the cache's bookkeeping
-		return aerr
+		return nil, aerr
 	}
 	err := error(nil)
 	if n, werr := ref.WriteAt(buf, 0); werr != nil {
@@ -231,7 +232,7 @@ func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodi
 	if serr := cache.Shutdown(); err == nil {
 		err = serr
 	}
-	return err
+	return at, err
 }
 
 // runReappend is the SpanOpenReappend phase of the open: the records the
@@ -280,32 +281,69 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	// — for such a copy may be the warm answer of a cache alone and is
 	// worth nothing the next crash, so the record still draws and the copy
 	// the seal writes stands in for it. A write or fill whose sealed copy
-	// the index's equal-numbers collapse does not serve draws too, for the
-	// phase moves the pieces it copies and nothing else may. Upgrade to
+	// the index's equal-numbers collapse does not serve draws too, for
+	// the phase moves the pieces it copies and nothing else may. Upgrade to
 	// trusting the duplicate where it sits, and to a placement answer that
 	// finds the collapsed-away copies, when a warm-cache duplicate ever
 	// burns spares in the field.
+	//
+	// A record handed over more than once — the source's own and the unsealed
+	// copies a failed earlier attempt left in targets that never sealed — is
+	// written once, from its greatest placement, so a retry never seals a
+	// record twice into one segment.
+	type recKey struct {
+		kind   format.Kind
+		file   core.FileID
+		seq    core.Seq
+		extent core.Extent
+	}
 	pending := make([]tailRecord, 0, len(st.Proof.Reappends))
+	slot := make(map[recKey]int, len(st.Proof.Reappends))
 	for _, rec := range st.Proof.Reappends {
 		if sealedCopy(st, rec.Header) {
 			continue
 		}
+		k := recKey{rec.Header.Kind, rec.Header.File, rec.Header.Seq, rec.Header.Extent}
+		if i, dup := slot[k]; dup {
+			if rec.Segment > pending[i].Segment || (rec.Segment == pending[i].Segment && rec.At > pending[i].At) {
+				pending[i] = rec
+			}
+			continue
+		}
+		slot[k] = len(pending)
 		pending = append(pending, rec)
 	}
 	if len(pending) == 0 {
 		return nil
 	}
 
-	c := &copier{deps: deps, identity: expect, reserve: reserveSpares(st)}
+	// The repack reserve the spares phase adopted, drawn front-first: the one
+	// class a re-appending open may take from, the running journal's repack
+	// rolls' own.
+	reserve := reserveSpares(st)
+	c := &copier{deps: deps, identity: expect, draw: func() (core.SegmentID, error) {
+		if len(reserve) == 0 {
+			return 0, &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
+		}
+		id := reserve[0]
+		reserve = reserve[1:]
+		return id, nil
+	}}
 	recs := make([]copyInput, len(pending))
 	for i, rec := range pending {
 		recs[i] = copyInput{Bytes: rec.First, Segment: rec.Segment, At: rec.At, Seq: rec.Header.Seq, Version: rec.Header.Version}
 	}
-	target, err := c.copy(ctx, recs)
+	target, at, err := c.copy(ctx, recs)
 	if err != nil {
 		return err
 	}
 	st.Proof.ReappendTarget = target
+	// The bytes the phase wrote back, the figure the served journal reports
+	// beside its own syncs' re-appends: the pending list alone, for the
+	// sealed copies the skip filtered out wrote nothing here.
+	for _, rec := range pending {
+		st.Proof.ReappendedBytes += int64(rec.Header.BodySize())
+	}
 	// The drawn spares are segments now — sealed targets and failed ones —
 	// so the adoptions they came from answer to no pool wiring later.
 	st.Spares.Adopted = slices.DeleteFunc(st.Spares.Adopted, func(a AdoptedSpare) bool {
@@ -324,26 +362,24 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 		}
 	}
 
-	// The repoint, record by record at the placement the copier packed it
-	// into: only the payload kinds hold pieces the index serves, so only they
+	// The repoint, record by record at the placement the copier answered for
+	// it: only the payload kinds hold pieces the index serves, so only they
 	// move; every other kind's placement stays at its source, whose bytes the
 	// ended cut keeps below it on disk until the emptying unlinks the
 	// segment — a marker, a loss registration or a clone spec is metadata,
 	// never a served byte, and served bytes are what the device lost.
-	at := int64(format.SegmentHeaderSize)
 	var sources []core.SegmentID
-	for _, rec := range pending {
+	for i, rec := range pending {
 		if h := rec.Header; h.Kind == format.KindWrite || h.Kind == format.KindFill {
 			if _, _, rerr := st.Rebuilt.Index.RepointRecord(h.File,
 				index.RecordAt{Segment: rec.Segment, Offset: uint32(rec.At)},
-				index.RecordAt{Segment: target, Offset: uint32(at)}); rerr != nil {
+				index.RecordAt{Segment: target, Offset: uint32(at[i])}); rerr != nil {
 				return fmt.Errorf("repointing the re-appended record of seq %d: %w", h.Seq, rerr)
 			}
 		}
 		if !slices.Contains(sources, rec.Segment) {
 			sources = append(sources, rec.Segment)
 		}
-		at += rec.Header.Size()
 	}
 
 	// The sources: the tail's proof already ended every segment it handed

@@ -369,6 +369,51 @@ func (s *Set) AddSpare(id core.SegmentID, max int64) error {
 	return nil
 }
 
+// RenameSpare moves spare old to the id fresh, the name its file was renamed
+// to: the footprint and the spare count do not change, for the file is the
+// same cap under a new name. It refuses an old that is no spare and a fresh
+// the ledger already owns.
+func (s *Set) RenameSpare(old, fresh core.SegmentID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if fresh == 0 {
+		return ErrBadID
+	}
+	if _, ok := s.spares[old]; !ok {
+		return ErrNotInSet
+	}
+	if s.ownsLocked(fresh) {
+		return ErrDuplicateID
+	}
+	delete(s.spares, old)
+	s.spares[fresh] = struct{}{}
+	return nil
+}
+
+// RefusesSpare answers under the ledger's own mutex whether a spare whose
+// making AddSpare has not yet attempted would be refused by the journal
+// maximum max, and the NoSpaceError that refusal owes when it would: the
+// same critical section and the same figures as AddSpare's own, read with no
+// id drawn, no counter moved and no spare added. A roll the pool cannot
+// serve reads it to answer the journal's maximum rather than the pool's own
+// `spare`, which names a shortage the pool clears on its own.
+func (s *Set) RefusesSpare(max int64) (*core.NoSpaceError, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// The overflow-safe form of AddSpare's own check, over every max its
+	// callers reach: a max below the cap refuses here without a wraparound.
+	if s.cap > max || s.c.UsedBytes > max-s.cap {
+		return &core.NoSpaceError{
+			Limit:   core.LimitJournal,
+			Missing: s.c.UsedBytes + s.cap - max,
+			Unit:    core.UnitBytes,
+		}, true
+	}
+	return nil, false
+}
+
 // AdoptSpare accounts a spare the journal finds at open: a segment file the
 // directory already holds, allocated at its cap, which the caller has decided
 // is a spare — the scan that finds it and the decision are the caller's, and

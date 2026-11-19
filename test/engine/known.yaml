@@ -157,12 +157,12 @@
   reason: 'the journal''s Repack: repack draws on the reserve, so a third share is served. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
   issue: '#4206'
 - test: TestV26/journal/a_clone_of_a_lost_run_reads_lost_there
-  message: 'the open ends segment 3, and its emptying is not built'
+  message: 'the destination over the source''s lost run: <nil>, want ErrLost'
   status: fail
   fix: planned
   category: feature
-  reason: 'the open''s ended segments, emptied into spares: a clone of a source whose synced run the journal lost reads ErrLost at the destination and the source''s bytes elsewhere. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal the clone''s source reopens ends segment 3 and refuses to serve, and its emptying is not built, until the open empties an ended segment into a spare before it serves.'
-  issue: '#4033'
+  reason: 'sync marks reaching the engine''s journal open: a clone of a source whose synced run the journal lost reads ErrLost at the destination and the source''s bytes elsewhere. Init and Open work, and the open now empties the ended segment and serves, but the engine opens its journal with no sync marks (pkg/block/engine/enginewire/enginewire.go), so nothing proves the rotted record synced: the open reads it as a torn tail, cuts it, empties segment 3 without recording the loss, and the source and the destination read zeros over the lost run with a nil error, until the engine reads its recorded sync marks and hands them to the open.'
+  issue: '#4711'
 - test: TestContentSuiteOverTheJournal/ALossChangesTheVerifierAndRaisesTheLossSequence
   message: 'the Content under test cannot be made to lose a write'
   status: skip

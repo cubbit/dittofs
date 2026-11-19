@@ -444,6 +444,66 @@ func TestRFC28C_Rebuild(t *testing.T) {
 	}
 }
 
+// TestRFC28C_AFailedWindowAtTheMaximumIsFailedWhole checks the running
+// journal's failed window at the journal's exact maximum: a re-append there
+// needs a spare, the pool can make none at the maximum and a roll takes no
+// spare of the headroom or reserve classes, and the
+// read-only transition cannot fire without a spare a stream took to leave the
+// failed segment. A failed window settles by one of two resolutions and
+// the journal must not wait for space — the engine's own Release, Offload and Repack
+// are what free it — so the window is failed whole: its records are lost with
+// the generation raised, the file is told once by its Sync, and the file is
+// not wedged, a later Sync of it reporting nothing.
+func TestRFC28C_AFailedWindowAtTheMaximumIsFailedWhole(t *testing.T) {
+	g := journaltest.NewUnwatched(t)
+	filled := fillUntilRefused(t, g, []int{1}, 2, 256<<10)
+	for _, w := range filled {
+		syncFiles(t, g.Share(1), w.id)
+	}
+	if s := g.J.Stats(); s.UsedBytes != s.MaxBytes {
+		t.Fatalf("UsedBytes = %d of the maximum %d, want the journal refusing at exactly it", s.UsedBytes, s.MaxBytes)
+	}
+
+	// The record lands in the active segment's free tail: the only place a
+	// write still fits at the maximum, and a place a failed sync leaves
+	// stranded behind a segment whose resolution needs a new one.
+	r := writeRec(t, g, 0, 0, 4<<20, 64<<10)
+	before := g.J.Stats().LossGeneration
+	g.FailNext(kit.OpSync, "*.seg", 1)
+	synced := make(chan error, 1)
+	go func() {
+		_, err := g.Share(0).Sync(t.Context(), r.id)
+		synced <- err
+	}()
+	// decision: the bound is the assertion's own backstop, generous on a
+	// loaded box for a resolution the worker runs once, and the test never
+	// reaches it when the journal behaves: a window parked on a re-append no
+	// spare can ever be made for reaches it, which is the wedge the row
+	// exists to catch.
+	select {
+	case err := <-synced:
+		var se *journal.SyncError
+		if !errors.As(err, &se) {
+			t.Fatalf("the Sync of a failed window at the maximum returned %v, want its whole-window failure", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the Sync of a failed window at the maximum is still parked after 30s: the pool can make no spare for its re-append, and the journal must not wait for one")
+	}
+
+	wantExtentMissing(t, g.Share(0), r.id, r.extent)
+	if gen := g.J.Stats().LossGeneration; gen <= before {
+		t.Fatalf("the loss generation is %d after a window failed whole, want it above its %d", gen, before)
+	}
+	losses := g.J.Stats().Losses
+	if len(losses) != 1 || losses[0].File != r.id || losses[0].Extent != r.extent || losses[0].Reason != journal.LossFailedWindow {
+		t.Fatalf("losses of the failed window: %+v, want the record of file %v at %+v failed", losses, r.id, r.extent)
+	}
+
+	// The window ended: a Sync of the file names nothing pending and
+	// returns, so the failure did not wedge the file.
+	syncFiles(t, g.Share(0), r.id)
+}
+
 // TestRFC28C_TornTailCutOff checks that a torn record at the end of the
 // newest segment is cut off and the segment sealed, so the next write lands
 // in a new segment and a second crash cannot lose it behind the torn bytes.
@@ -461,9 +521,10 @@ func TestRFC28C_TornTailCutOff(t *testing.T) {
 	if got := f.J.Stats().Counters.TornTails; got != 1 {
 		t.Fatalf("TornTails = %d after a torn record, want 1", got)
 	}
-	if !ownedSegment(t, f, xSeg).Sealed {
-		t.Fatalf("the torn segment %d was not sealed", xSeg)
-	}
+	// The cut leaves the segment sealed with nothing held — the write it
+	// ended on was the only record it carried — so the open's retire step
+	// unlinks it right there: the journal's segments answer no row for it.
+	segmentGone(t, f, xSeg, "the sealed empty cut retired at the open")
 	wantExtentMissing(t, f.Share(0), id, x.extent)
 
 	a := writeSynced(t, f, 0, 0, 64<<10, 64<<10)
@@ -899,8 +960,16 @@ func TestRFC28C_ASealMarkerOnlyTheCacheHolds(t *testing.T) {
 	if got := f.Seam.CallsFor(kit.OpReadDirect, name); got < 1 {
 		t.Fatalf("the reopen read %s past the cache %d times, want at least once: a seal marker no successor names is proven on the device", name, got)
 	}
-	if ownedSegment(t, f, seg).Sealed {
-		t.Fatalf("segment %d is sealed after a reopen whose marker did not verify on the device; a segment is not taken as sealed until its own seal of it is durable", seg)
+	// The marker that failed on the device is part of the segment's torn
+	// tail: the segment is not ended and not emptied, the open cuts the tail
+	// and seals it again, and it stands in the directory until a seal of its
+	// own is durable. Its record reads back through that segment.
+	names, lerr := f.Seam.List()
+	if lerr != nil {
+		t.Fatalf("list the journal's directory: %v", lerr)
+	}
+	if !slices.Contains(names, name) {
+		t.Fatalf("segment %d is gone from the directory after the reopen, want it standing: its marker is a torn tail the open cuts and seals again, never an ended segment", seg)
 	}
 	if bytes.Contains(durable(t, f, name), []byte("DJS1")) {
 		t.Fatalf("the reopen made the marker of segment %d durable through a sync that wrote nothing", seg)
@@ -1289,6 +1358,9 @@ func poolNow(t *testing.T, f *journaltest.Fixture) pool {
 func wantReadopted(t *testing.T, f *journaltest.Fixture, before pool) {
 	t.Helper()
 
+	// The pool is settled before it is counted, so a refill the open started
+	// is counted whole rather than racing the read.
+	f.WaitSpares()
 	now := poolNow(t, f)
 	for _, name := range before.spares {
 		if !slices.Contains(now.spares, name) {

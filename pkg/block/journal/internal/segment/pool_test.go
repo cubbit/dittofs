@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
@@ -86,6 +87,32 @@ func assertSpareRefusal(t *testing.T, where string, err error, missing int64) {
 	}
 	if ns.Unit != core.UnitSegments {
 		t.Fatalf("%s counted %s, want %s", where, ns.Unit, core.UnitSegments)
+	}
+}
+
+// assertJournalRefusal fails t unless err is the answer a roll draws when no
+// spare is ready and the journal's own maximum refuses to make one: the
+// ErrNoSegmentForTheRoll sentinel carrying the spare-class take's NoSpaceError
+// with the missing bytes the reservation lacked, never the pool's own `spare`,
+// and a spare-refusal counter the answer never raises.
+func assertJournalRefusal(t *testing.T, where string, err error, missing int64) {
+	t.Helper()
+
+	if !errors.Is(err, segment.ErrNoSegmentForTheRoll) {
+		t.Fatalf("%s: %v, want the ErrNoSegmentForTheRoll the refusing maximum answers with", where, err)
+	}
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) {
+		t.Fatalf("%s: %v, want a *core.NoSpaceError", where, err)
+	}
+	if ns.Limit != core.LimitJournal {
+		t.Fatalf("%s named the %s limit, want %s", where, ns.Limit, core.LimitJournal)
+	}
+	if ns.Missing != missing {
+		t.Fatalf("%s said %d missing, want %d", where, ns.Missing, missing)
+	}
+	if ns.Unit != core.UnitBytes {
+		t.Fatalf("%s counted %s, want %s", where, ns.Unit, core.UnitBytes)
 	}
 }
 
@@ -2551,4 +2578,133 @@ func TestPoolWaitRecordSparesAsksNoMoreThanThePoolKeeps(t *testing.T) {
 		t.Fatalf("the wait for 4 spares over a pool keeping 2 returned %v, want the filled pool", err)
 	}
 	p.Stop()
+}
+
+// TestPoolWaitReserveSpareAnswersTheReserveAlone: a pool whose maximum lets
+// it make its headroom and reserve spares and no content spare settles short
+// of its whole goal, yet the wait for one reserve spare answers nil, for the
+// spare the open's copy draws is ready. A wait for the whole goal refuses
+// here with the content class short.
+func TestPoolWaitReserveSpareAnswersTheReserveAlone(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, _, _, p := poolOf(t, segment.Targets{Headroom: 1, Reserve: 1, Content: 1}, 2*segCap, 0, nil)
+	p.Start()
+	defer p.Stop()
+
+	if err := p.WaitReserveSpare(t.Context()); err != nil {
+		t.Fatalf("the wait for one reserve spare over a pool whose maximum holds the headroom and the reserve returned %v, want nil", err)
+	}
+	if c := p.Counters(); c.Spares != 0 {
+		t.Fatalf("the pool made %d content spares past a maximum of two caps, want 0: the case needs the content class short", c.Spares)
+	}
+	if _, err := p.Take(segment.Reserve); err != nil {
+		t.Fatalf("Take(Reserve) after the wait answered: %v, want the ready reserve spare", err)
+	}
+}
+
+// TestPoolTakeReserveAboveRenamesALowSpare: at a maximum of one cap, a
+// reserve whose one ready spare is an adopted id below the floor answers the
+// take with that spare under a fresh id above the seed — its file renamed,
+// the footprint unchanged — where a make would need a cap the maximum
+// refuses.
+func TestPoolTakeReserveAboveRenamesALowSpare(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, set, p := lowReservePool(t)
+	defer p.Stop()
+
+	id, err := p.TakeReserveAbove(5)
+	if err != nil || id <= 10 {
+		t.Fatalf("TakeReserveAbove(5) over a reserve holding only spare 3 at a one-cap maximum = %d, %v, want the spare renamed above the seed 10", id, err)
+	}
+	if _, err := seam.Durable(format.SegmentName(3)); err == nil {
+		t.Errorf("the low spare's old name %s is still durable, want it renamed", format.SegmentName(3))
+	}
+	if _, err := seam.Durable(format.SegmentName(id)); err != nil {
+		t.Errorf("the renamed spare %s is not durable: %v", format.SegmentName(id), err)
+	}
+	if got := set.Counters().UsedBytes; got != segCap {
+		t.Errorf("the footprint after the floored take = %d, want the one cap %d: a rename allocates nothing", got, segCap)
+	}
+	if st, err := set.State(id); err != nil || st != segment.Active {
+		t.Errorf("the taken spare %d is %v (%v) in the ledger, want Active", id, st, err)
+	}
+}
+
+// lowReservePool is a started pool at a one-cap maximum, seeded at 10, whose
+// one ready reserve spare is the adopted 3, its file on disk at the cap.
+func lowReservePool(t *testing.T) (*kit.Seam, *segment.Set, *segment.Pool) {
+	t.Helper()
+	seam, set, _, p := poolOf(t, segment.Targets{Reserve: 1}, segCap, 10, nil)
+	f, err := seam.Create(format.SegmentName(3))
+	if err != nil {
+		t.Fatalf("create the adopted spare's file: %v", err)
+	}
+	if err := errors.Join(f.Truncate(segCap), f.Sync(), f.Close(), seam.SyncDir()); err != nil {
+		t.Fatalf("write the adopted spare's file: %v", err)
+	}
+	if err := p.Adopt(3, segment.Reserve); err != nil {
+		t.Fatalf("Adopt(3, Reserve): %v", err)
+	}
+	p.Start()
+	return seam, set, p
+}
+
+// TestPoolTakeReserveAboveFailedRenameStrandsNothing: a floored take whose
+// rename or directory sync fails answers the failure with the spare still
+// accounted — the footprint one cap, one spare — out of every ready list, and
+// its file under exactly one of its two names, for the next open to re-adopt.
+func TestPoolTakeReserveAboveFailedRenameStrandsNothing(t *testing.T) {
+	for _, op := range []string{kit.OpRename, kit.OpSyncDir} {
+		t.Run(op, func(t *testing.T) {
+			seam, set, p := lowReservePool(t)
+			defer p.Stop()
+			if err := seam.Schedule(kit.Failing(op, "*", 1, syscall.EIO)); err != nil {
+				t.Fatalf("schedule the %s fault: %v", op, err)
+			}
+			if _, err := p.TakeReserveAbove(5); err == nil {
+				t.Fatalf("TakeReserveAbove under a failing %s answered nil, want the failure", op)
+			}
+			if c := set.Counters(); c.UsedBytes != segCap || c.Spares != 1 {
+				t.Errorf("the ledger after the failed %s holds %d bytes and %d spares, want %d and 1", op, c.UsedBytes, c.Spares, segCap)
+			}
+			if got := p.Counters().RepackReserveBytes; got != 0 {
+				t.Errorf("the pool's ready reserve after the failed %s holds %d bytes, want 0: the spare is out of every ready list", op, got)
+			}
+			var names int
+			for _, id := range []core.SegmentID{3, 11} {
+				if f, err := seam.Open(format.SegmentName(id)); err == nil {
+					names++
+					_ = f.Close()
+				}
+			}
+			if names != 1 {
+				t.Errorf("the spare's file stands under %d of its two names after the failed %s, want exactly 1", names, op)
+			}
+		})
+	}
+}
+
+// TestSetRenameSpareRefusals pins the re-key's three refusals.
+func TestSetRenameSpareRefusals(t *testing.T) {
+	s := segment.NewSet(segCap, nil)
+	for _, id := range []core.SegmentID{1, 2} {
+		if err := s.AddSpare(id, noMax); err != nil {
+			t.Fatalf("AddSpare(%d): %v", id, err)
+		}
+	}
+	for _, tc := range []struct {
+		name       string
+		old, fresh core.SegmentID
+		want       error
+	}{
+		{"a zero fresh id", 1, 0, segment.ErrBadID},
+		{"an old id that is no spare", 9, 10, segment.ErrNotInSet},
+		{"a fresh id the ledger owns", 1, 2, segment.ErrDuplicateID},
+	} {
+		if err := s.RenameSpare(tc.old, tc.fresh); !errors.Is(err, tc.want) {
+			t.Errorf("%s: RenameSpare(%d, %d) = %v, want %v", tc.name, tc.old, tc.fresh, err, tc.want)
+		}
+	}
 }

@@ -2127,13 +2127,16 @@ func TestRFC1A_ReappendKeepsItsNumbers(t *testing.T) {
 		// the record and reads as a crash that never kept the original. The
 		// truncate and the copy are synced, so they are durable whatever the
 		// draw keeps.
-		f.Crash(kit.Reordered(404))
-
-		// The crash is observed by what it left, not by what it was handed:
-		// the file's own bytes say whether the original came through it. A
-		// segment left without the original means the draw spent its early
-		// keeps elsewhere, and the remainder of this leg reads as the plain
-		// crash the decision at the head names.
+		//
+		// The loss is taken and observed before the reopen, not inside it:
+		// the crash is observed by what it left, not by what it was handed —
+		// the file's own bytes say whether the original came through it — and
+		// the open reading the directory retires the failed segment, for the
+		// truncate superseded its one record and nothing holds it, so the
+		// file its bytes sat in does not outlive the open.
+		if err := f.Seam.Crash(kit.Reordered(404)); err != nil {
+			t.Fatalf("share %d: the reorder crash: %v", k, err)
+		}
 		file, oerr := f.Seam.Open(segmentName(seg))
 		stub(t, "Open", oerr)
 		if oerr != nil {
@@ -2145,6 +2148,9 @@ func TestRFC1A_ReappendKeepsItsNumbers(t *testing.T) {
 		stub(t, "ReadAt/Close", errors.Join(rerr, cerr))
 		if (rerr != nil && !errors.Is(rerr, io.EOF)) || cerr != nil {
 			t.Fatalf("share %d: the failed segment's file after the crash (read %v, close %v)", k, rerr, cerr)
+		}
+		if err := f.TryCrash(); err != nil {
+			t.Fatalf("share %d: the reopen after the crash: %v", k, err)
 		}
 		// decision: a segment image without the original is the seed's doing,
 		// not the journal's, so what follows has no original to keep and no

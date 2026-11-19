@@ -114,7 +114,7 @@ rfc1 / 9.4 / B / "headroom is allocated":
 rfc1 / 9.4 / B / "pinned segments bounded":
   tests: [TestRFC1B_PinnedSegmentsBounded]
 rfc1 / 9.4 / B / "a failed window does not wedge":
-  tests: [TestRFC1B_FailedWindowDoesNotWedge]
+  tests: [TestRFC1B_FailedWindowDoesNotWedge, TestRFC28C_AFailedWindowAtTheMaximumIsFailedWhole]
 rfc1 / 9.4 / B / "floor buckets":
   tests: [TestRFC1B_FloorBuckets]
 rfc1 / 9.4 / B / "bounds":
@@ -388,7 +388,20 @@ rfc28 / 4.2 / C / "an ended segment is emptied once":
 rfc28 / 4.2 / C / "an open at an exhausted headroom":
   tests: [TestRFC28C_AnOpenAtAnExhaustedHeadroom]
   owner: epic 7
-  reason: 'the test checks the sealed-segment half. The ended-segment half is owed by the emptying of ended segments: the deferral of losses past the reserve, the repack of deferred segments and the read-only reopen of the failed list'
+  reason: >-
+    The test asserts only part of the row; the row stays uncertified until the rest is added.
+    Asserted: an open at an exhausted headroom succeeds.
+    One synced loss record on the open reserve names the corrupt record of a sealed segment.
+    The superseded content is never served, and a second open appends no second loss record.
+    Asserted only by the journal's package tests: the corrupt records past the reserve defer;
+    an ended holder's emptying writes the deferred loss record into its target;
+    a sealed segment holding failed records past the reserve is emptied without them.
+    Not built, epic 7: ending a sealed holder's deferral. It never ends in-process and stands
+    across restarts, each open re-detecting and re-deferring it.
+    Not built, epic 7: the emptying of an unsealed segment holding failed records past the reserve.
+    Not built, epic 9: the repack of the segments holding deferred records, whose targets carry
+    their loss records; the copier has no production caller.
+    Not checked: Files and Since listing a deferred loss before Settle.
 rfc1 / 9.4 / B / "a closed writer forgets its error":
   owner: epic 5
   reason: 'the descriptor cache does not keep a writer''s error past its close yet'

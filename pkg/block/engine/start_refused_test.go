@@ -187,10 +187,9 @@ func TestARefusedReopenIsRetriedToTheSameRefusal(t *testing.T) {
 	}
 }
 
-// The other details the refusal conditions name from the error's value: the
-// past-reserve refusal wrapped as Open wraps it names the setting that sizes
-// the reserve, and an unreadable format file, which carries no ranges, names
-// the file rather than an empty list.
+// The other details the refusal conditions name from the error's value: an
+// unreadable format file, which carries no ranges, names the file rather than
+// an empty list.
 func TestRefusalConditionsNameTheirRemedy(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -198,15 +197,6 @@ func TestRefusalConditionsNameTheirRemedy(t *testing.T) {
 		condition string
 		want      string
 	}{
-		{
-			name: "corrupt losses past the open reserve",
-			refusal: fmt.Errorf("%w: %s: %w", journal.ErrOpenRefused, startDevice,
-				&journal.LostPastReserveError{N: 2, Seg: 944}),
-			condition: "journal_open_refused",
-			want: "the open would defer 2 corrupt losses past its reserve, the first against segment 944; " +
-				"raise journal.headroom_records to hold them; " +
-				"the device's shares are not attached; the open is retried every 30s",
-		},
 		{
 			name:      "an unreadable format file",
 			refusal:   &journal.UnreadableRangesError{Format: true},

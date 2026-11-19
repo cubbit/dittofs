@@ -584,14 +584,6 @@
   issue: '#3596'
   message: 'the failed write''s zero slot was reported as damage or a torn tail'
 
-- test: TestRFC28C_TornTailCutOff
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The recovery cuts and seals the torn tail; its cut ends the segment, and the open refuses naming it until the emptying that unlinks ended segments and copies out their survivors is built.'
-  issue: '#4033'
-  message: 'the open ends segment'
-
 - test: TestRFC28C_TruncatedSealedSegment
   status: fail
   fix: planned
@@ -624,14 +616,6 @@
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
-- test: TestRFC28A_UnprovenTailVerifiedAtOpen
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens and the tail proof verifies the lost record, but its source takes an ended fate, so the open refuses naming it: serving an open that ends a segment waits on the emptying that unlinks the ended segments and copies out their survivors.'
-  issue: '#4033'
-  message: 'the open ends segment'
-
 - test: TestRFC28C_SourcesAgree
   status: fail
   fix: planned
@@ -647,14 +631,6 @@
   reason: 'The journal opens; the check fails on a stub call. Needs catalogs, recovery by scan and Verify.'
   issue: '#3596'
   message: 'segment 3 is not among the journal'
-
-- test: TestRFC28C_ASealMarkerOnlyTheCacheHolds
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens over the directory holding segments; the reopen seals the segment the cache-only marker names, and the mark the probe reads back names the open''s emptying as its next wall: the row stops there, and the assemble the emptying''s fate reads reaches the emptying last.'
-  issue: '#4033'
-  message: "segment 3 is not among the journal's"
 
 - test: TestRFC28A_FooterIsNotAuthoritative
   status: fail
@@ -692,9 +668,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs spares made ahead, recovery that re-adopts them and the reserves accounted.'
+  reason: 'The journal opens and its re-adopted spares reach the pool, so the half where every spare must be on disk passes. The other half fails: a segment a stream took and never synced does not come back as a spare after the crash. Needs recovery that gives a taken record-less segment back to the pool.'
   issue: '#3814'
-  message: 'the open created 4 and allocated 4 segments; every spare was on disk'
+  message: 'taken and never synced, is not a spare again after the crash'
 
 - test: TestRFC28C_SpareIsWholeOrAbsent/create
   status: fail

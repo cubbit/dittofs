@@ -228,12 +228,10 @@ func namesIdentity(fs storage.FS, id JournalID) bool {
 // nothing.
 //
 // A recovery that cannot be answered over the directory as it stands — a
-// lost synced tail, a range or a record it cannot feed, a segment the open
-// would end, corrupt losses past the open reserve — fails with
+// lost synced tail, a range or a record it cannot feed — fails with
 // ErrOpenRefused, leaving the directory for the next open, which answers the
-// same until the directory or the settings change; the past-reserve refusal
-// also carries a LostPastReserveError. Bytes no bounded read completed fail
-// with an UnreadableRangesError, matched by ErrUnreadable.
+// same until the directory or the settings change. Bytes no bounded read
+// completed fail with an UnreadableRangesError, matched by ErrUnreadable.
 //
 // decision: Open returns while the spare pool is still making its first
 // spares, so the journal a caller holds may have none ready yet. Until one
@@ -318,7 +316,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			return nil, err
 		}
 		started := cfg.Clock.Elapsed()
-		st, err := recovery.Run(ctx, recovery.Deps{
+		recoveryDeps := recovery.Deps{
 			FS:           cfg.Storage,
 			Clock:        cfg.Clock,
 			Tracer:       cfg.Tracer,
@@ -327,26 +325,13 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			ExtentLimit:  s.ExtentLimit,
 			SegmentCap:   core.SegmentCapOf(s),
 			SpareTargets: buildTargets(s),
-		}, floor, expect, marks)
+			Dir:          dir,
+		}
+		st, err := recovery.Run(ctx, recoveryDeps, floor, expect, marks)
 		if err != nil {
 			return nil, err
 		}
 		found := openedFigures{reporting: st.Reporting(), took: cfg.Clock.Elapsed() - started}
-		// decision: an open that ends a segment — a torn slot, a torn header
-		// or a failed marker window the classing gave an ending — is refused
-		// with ErrOpenRefused naming the lowest segment it ends, not yet
-		// recovered: the ended rows take no append and no seal, and the
-		// emptying that unlinks their files and copies out their survivors
-		// is the phase this checkpoint draws the line at. The phases before
-		// this refusal have all run, so the refusal's directory reads back
-		// each of their answers and re-decides them — a cut the emptying
-		// later takes as it stands, a seal as the marker it verifies — and
-		// one of them has already truncated the segment at its fate's cut:
-		// the ended-whole fate alone is refused with the directory exactly
-		// as the attach pass read it. Withdrawn by the emptying.
-		if ended := st.EndedSegments(); len(ended) > 0 {
-			return nil, fmt.Errorf("%w: %s: the open ends segment %d, and its emptying is not built", ErrOpenRefused, dir, ended[0])
-		}
 		deps, state := continueFrom(st, datapath.Deps{
 			FS:            cfg.Storage,
 			Clock:         cfg.Clock,
@@ -369,14 +354,6 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// so the set answers the segment what the file's own marker
 		// proves, and no later seal, recycle or stats read takes it for a
 		// segment that appends.
-		//
-		// decision: this seal is unreachable while the refusal above it
-		// stands. The re-append ends every source segment it copies from,
-		// so a non-zero target always arrives beside ended segments and
-		// the refusal answers for them first. The emptying — the phase
-		// whose copy-out withdraws that refusal, and with it the seam this
-		// seal keeps — is what reaches here; the branch is held for that
-		// withdrawal, not for any open this one can answer.
 		if t := st.Proof.ReappendTarget; t != 0 {
 			if err := state.Set.Seal(t, true); err != nil {
 				return nil, err
@@ -389,27 +366,53 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// the pass waits for that many spares, not the pool's whole goal,
 		// before the first record it appends, and never
 		// for a pass the disk answers whole with found records, keeping
-		// every clean reopen off the pool's refill entirely. A pass whose corrupt drops would run past
-		// the open reserve refuses here, before any of its records appends
-		// (the refusal and its reasoning live with the pass itself), so a
-		// retry over a journal whose reserve holds the drops answers whole.
-		// Continue runs the pass between the core and its retirement worker
-		// and closes the core on any failure, leaving the directory to the
-		// next open: every record the pass landed is durable, and every
-		// failure the answer costs is on the directory's failed list.
+		// every clean reopen off the pool's refill entirely. The corrupt
+		// drops past the open reserve defer (the reasoning lives with the
+		// pass itself): the emptying below owes each deferred record its
+		// copy, and the retire step's registry read keeps its holder
+		// standing. Continue runs the pass and the emptying between the core
+		// and its retirement worker and closes the core on any failure,
+		// leaving the directory to the next open: every record the pass
+		// landed is durable, and every failure the answer costs is on the
+		// directory's failed list.
 		c, err := datapath.Continue(deps, state, func(c *datapath.Core) error {
-			return recovery.OpenLosses(ctx, st, c.Durability(), s.HeadroomRecords, func(n int) error {
+			if err := recovery.OpenLosses(ctx, &st, c.Durability(), s.HeadroomRecords, func(n int) error {
 				return c.WaitRecordSpares(ctx, n)
-			})
+			}); err != nil {
+				return err
+			}
+			// The emptying: every attached segment the journal's liveness
+			// tracker answers not held retires here, after the loss records
+			// the pass above made durable — the order the emptying gates on,
+			// for a retiree may hold the only copy of a record the crash
+			// corrupted and the loss record that masks its older copies must
+			// be on disk before the segment's unlink takes it — and then every
+			// segment the open ended is copied out into sealed spares of the
+			// pool's repack reserve and unlinked with a synced removal, its
+			// served pieces repointed to the copies; the takes a durable
+			// unlink frees are the copies' own spares. All of it runs before
+			// the retirement worker starts, so the open's own retirements and
+			// emptyings are under the open's control and never race a
+			// worker's hand-over. Each retirement recycles or unlinks as the
+			// retirement itself decides and refills the pool behind itself.
+			recoveryDeps.Liveness = c.Liveness()
+			recoveryDeps.Retire = c.Retire
+			recoveryDeps.DrawReserve = func(floor core.SegmentID) (core.SegmentID, error) {
+				return c.TakeReserve(ctx, floor)
+			}
+			recoveryDeps.EndDeferral = func(seg core.SegmentID, l durability.Loss) bool {
+				ended := c.Durability().EndDeferral(seg, l)
+				if ended {
+					c.Liveness().SetDeferred(seg, false)
+				}
+				return ended
+			}
+			if err := recovery.Emptying(ctx, recoveryDeps, &st, expect, floor, marks); err != nil {
+				return err
+			}
+			return holdDeferredHolders(c, dir, expect)
 		})
 		if err != nil {
-			var pastReserve *recovery.LostPastReserveError
-			if errors.As(err, &pastReserve) {
-				// Both wrapped: the sentinel tells the engine the open refused
-				// itself, the value carries the count an operator sizes
-				// journal.headroom_records against.
-				return nil, fmt.Errorf("%w: %s: %w", ErrOpenRefused, dir, pastReserve)
-			}
 			return nil, err
 		}
 		if cfg.SparesReady != nil {
@@ -462,6 +465,35 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 	return newJournal(c), nil
 }
 
+// holdDeferredHolders raises the tracker's deferred count, once per registry
+// entry, on each segment the emptying left standing under a deferral. The
+// retirement worker the core starts next decides on the tracker's Held answer
+// alone, and a holder of a deferred loss may carry no live record of its own:
+// without the count the worker unlinks it within a tick, taking the dropped
+// record the deferral still owes a loss record, and a reopen then serves the
+// older bytes over the synced write. An entry naming a segment the set no
+// longer holds raises nothing: the tracker answers no state for it.
+//
+// ponytail: a deferral held here ends only through EndDeferral, which the
+// emptying calls for an ended holder, or a sealed one holding a failed record
+// past the open reserve, alone. Any other sealed holder's deferral therefore
+// never ends in this process, its loss is never recorded, and the next open
+// re-defers it, so it stands across restarts too. Upgrade to an emptying that copies sealed
+// holders, ending the deferral in the copy, when a holder standing this way
+// shows up in the disk accounting.
+func holdDeferredHolders(c *datapath.Core, dir string, id core.JournalID) error {
+	deferred, err := durability.DeferredFor(dir, id)
+	if err != nil {
+		return err
+	}
+	for seg, losses := range deferred {
+		for range losses {
+			c.Liveness().SetDeferred(seg, true)
+		}
+	}
+	return nil
+}
+
 // continueFrom is the core an assembled recovery continues as: the deps the
 // core is made from, with LastSegment raised to the highest segment id the
 // directory holds — so the spare maker draws its first spare above every
@@ -480,10 +512,14 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 // the one mapping.
 func continueFrom(st recovery.State, deps datapath.Deps) (datapath.Deps, datapath.State) {
 	deps.LastSegment = st.Attached.MaxID
+	spares := make([]datapath.AdoptedSpare, len(st.Spares.Adopted))
+	for i, a := range st.Spares.Adopted {
+		spares[i] = datapath.AdoptedSpare{ID: a.ID, Class: a.Class}
+	}
 	return deps, datapath.State{
 		Index: st.Rebuilt.Index, Counters: st.Rebuilt.Counters, Set: st.Assembled.Set,
 		Open: &datapath.OpenState{Live: st.Assembled.Live, Forgets: st.Assembled.Forgets,
-			Unsynced: st.Assembled.Unsynced, Dirty: dirtySeed(st.Rebuilt.Index)},
+			Unsynced: st.Assembled.Unsynced, Dirty: dirtySeed(st.Rebuilt.Index), Spares: spares},
 	}
 }
 

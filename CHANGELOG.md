@@ -117,13 +117,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no tear and appends behind none. The open also records what the crash
   corrupted: every corrupt drop and every record a failed window left
   unrecorded gets a loss record, drawn on a reserve the headroom keeps for
-  the open. An open whose corrupt losses would run past that reserve is
-  refused before any record is appended, for their deferral needs the
-  segment-emptying that is not built; an open whose recovery ends a segment
-  is refused the same way. These refusals answer `ErrOpenRefused`: the
-  engine leaves the device's shares unattached under `journal_open_refused`
-  and retries the open, and a refusal past the reserve names
-  `journal.headroom_records` as the setting to raise.
+  the open. A sealed segment holding more failed records than that reserve
+  takes is copied out without them and unlinked instead, so no record is owed
+  for them. Corrupt losses past that reserve defer: the open serves and the
+  segment holding each deferred drop stays in place. When the open ends that
+  segment, or empties it for its failed records, the loss record is written
+  into the copy the emptying makes. Any other sealed segment holding a
+  deferred drop stays held and its loss is never recorded: the deferral
+  never ends in the process that made it, and it stands across restarts,
+  since each open finds the drop again and defers it again. A segment the
+  recovery ends is copied out whole into a sealed spare and unlinked before
+  the journal serves, its served pieces repointed to the copy. An open still
+  refuses what it cannot settle, such as a copy that needs more than one
+  segment: it answers `ErrOpenRefused`, the engine leaves the device's shares
+  unattached under `journal_open_refused` and retries the open.
+  Known gap: the engine opens its journal with no sync marks, so nothing
+  proves a record in an unproven tail was synced. With the ended-segment
+  refusal gone, a synced record that rotted there now reads through the
+  engine as a torn tail: the open cuts it and empties the segment without
+  recording the loss, and the extent reads zeros with no error. Handing the
+  engine's recorded sync marks to the open closes it (#4711).
 
 ## [0.36.0] — 2026-10-19
 

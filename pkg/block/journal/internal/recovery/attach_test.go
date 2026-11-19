@@ -27,6 +27,10 @@ type rig struct {
 	t    *testing.T
 	seam *kit.Seam
 
+	// dir is the directory the seam serves, the identity-keyed registries
+	// the per-directory readers of the layers answer by.
+	dir string
+
 	clk kit.DrivenClock
 
 	// faults holds the rules the rig's fault helpers have collected,
@@ -44,7 +48,7 @@ func newRig(t *testing.T) *rig {
 		t.Fatalf("fixture: new seam: %v", err)
 	}
 	t.Cleanup(seam.Abandon)
-	return &rig{t: t, seam: seam, clk: kit.NewStopwatchClock()}
+	return &rig{t: t, seam: seam, dir: dir, clk: kit.NewStopwatchClock()}
 }
 
 // write makes the file name from whole bytes, as a synced writer would have

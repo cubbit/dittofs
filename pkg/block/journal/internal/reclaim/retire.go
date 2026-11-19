@@ -80,6 +80,10 @@ type Worker struct {
 	// afterClaim runs right after the worker's claim of a candidate,
 	// whatever the claim answered; set only from tests, before Start.
 	afterClaim func(core.SegmentID)
+
+	// afterTick, under mu, runs on the worker's goroutine once each tick's
+	// scan and pass have completed.
+	afterTick func()
 }
 
 // offer is one queued candidate: the segment, the locations its movers
@@ -169,6 +173,20 @@ func (w *Worker) Prompt(seg core.SegmentID) {
 	w.kickWorker()
 }
 
+// AfterTick makes the worker call fn each time a tick's scan and pass have
+// completed, so a caller that must show a segment stays after the worker has
+// had its chances waits on those events instead of on time.
+//
+// decision: the only callers are tests, which reach the worker through the
+// core; the method is here because the worker is built inside the core and
+// no test seam crosses the package boundary. Withdrawn when the worker
+// reports its passes in the journal's Stats.
+func (w *Worker) AfterTick(fn func()) {
+	w.mu.Lock()
+	w.afterTick = fn
+	w.mu.Unlock()
+}
+
 // Start launches the worker, idempotent; after Stop it is a no-op. Offers
 // collected before Start are drained by the first pass.
 func (w *Worker) Start() {
@@ -240,6 +258,12 @@ func (w *Worker) worker() {
 		case <-t.C:
 			w.scan()
 			w.pass()
+			w.mu.Lock()
+			fn := w.afterTick
+			w.mu.Unlock()
+			if fn != nil {
+				fn()
+			}
 		}
 	}
 }

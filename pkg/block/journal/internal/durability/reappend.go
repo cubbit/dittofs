@@ -49,15 +49,21 @@ func (d *Durability) resolveWindows(st *stream) {
 }
 
 // reappendWindow re-appends the window's records in the order they were
-// tracked, stops at the first the stream refuses, and fails the content
-// records whose re-read did not verify, once, with the generation raised for
-// the window unless an earlier pass or a Corrupt already raised it. It
-// reports whether the stream refused a record.
+// tracked, stops at the first the stream refuses, fails the content records
+// whose re-read did not verify, and fails whole the content records whose
+// re-append drew ErrNoSegmentForTheRoll — no spare is or can be made for
+// them, so keeping them for a later pass would be waiting for the engine's
+// own reclamation, which the journal must not do, and the window takes its
+// second resolution, the failed one. Both failures drop the
+// records once, with the generation raised for the window unless an earlier
+// pass or a Corrupt already raised it. It reports whether the stream
+// refused a record.
 func (d *Durability) reappendWindow(st *stream, w *window) (refused bool) {
 	st.mu.Lock()
 	rest := slices.Clone(w.entries)
 	st.mu.Unlock()
 	var unverified []entry
+	var noSegment []entry
 	for _, e := range rest {
 		err := d.reappendEntry(st, w, e)
 		if err == nil {
@@ -66,6 +72,17 @@ func (d *Durability) reappendWindow(st *stream, w *window) (refused bool) {
 		if errors.Is(err, errUnverified) {
 			d.log.Error("journal could not verify a failed window's record on re-read", "stream", st.no, "window", w.id, "seq", e.w.Seq, "err", err)
 			unverified = append(unverified, e)
+			continue
+		}
+		if errors.Is(err, segment.ErrNoSegmentForTheRoll) {
+			// The record is failed, not retried: the shortage the roll named
+			// is the engine's to drain, and a window parked on it would park
+			// every Sync that waits on it. A header-only record never reaches
+			// this answer — it draws the headroom, never the journal's limit
+			// — so it keeps its rule of being re-appended, never failed,
+			// and stays for the passes a spare can serve again.
+			d.log.Error("journal failed a failed window's record: no segment can be had for its re-append", "stream", st.no, "window", w.id, "seq", e.w.Seq, "kind", e.w.Kind, "err", err)
+			noSegment = append(noSegment, e)
 			continue
 		}
 		// A record the stream keeps refusing is logged at Error once and at
@@ -79,6 +96,9 @@ func (d *Durability) reappendWindow(st *stream, w *window) (refused bool) {
 		}
 		refused = true
 		break
+	}
+	if len(noSegment) != 0 {
+		unverified = append(unverified, noSegment...)
 	}
 	d.failEntries(st, w, unverified)
 	return refused

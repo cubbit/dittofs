@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
 
@@ -372,6 +374,71 @@ func (p *Pool) Take(c Class) (core.SegmentID, error) {
 	return id, nil
 }
 
+// TakeReserveAbove returns a spare of the repack reserve whose id is above
+// floor, into the set as the segment a copy writes: the oldest ready one that
+// clears it, the ready ones below it left in place, else — when the class
+// holds only spares below the floor — the oldest of those under a fresh id,
+// above every id the directory held. A class with no ready spare answers the
+// spare refusal Take gives, the caller's to wait on; a floor of zero is Take
+// of the reserve.
+//
+// decision: a low spare is renamed, never made anew: the rename to the
+// Maker's next id, the ledger's re-key so the ledger follows the file's
+// name, then the directory sync that makes the rename durable — the
+// recycle's own rename and sync — so the take
+// needs no byte past the footprint and a journal at its maximum still
+// draws. A spare's header and trailer slots are already zero, so nothing is
+// rewritten. A crash before the sync leaves the file under either name,
+// whole and record-less, which the next open re-adopts as a spare. A failed
+// step leaves the spare accounted under the name the ledger holds and out
+// of every ready list, which the next open re-adopts too: nothing is lost,
+// nor handed out twice. Overturned by a rebuild that verifies payloads,
+// which would let a copy below its twin win and the floor go.
+func (p *Pool) TakeReserveAbove(floor core.SegmentID) (core.SegmentID, error) {
+	defer p.Kick()
+
+	p.mu.Lock()
+	if p.stopped {
+		p.mu.Unlock()
+		return 0, core.ErrClosed
+	}
+	if !p.started || len(p.ready[Reserve]) == 0 {
+		p.mu.Unlock()
+		return 0, &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
+	}
+	var id core.SegmentID
+	for i, r := range p.ready[Reserve] {
+		if r > floor {
+			id = r
+			p.ready[Reserve] = slices.Delete(p.ready[Reserve], i, i+1)
+			break
+		}
+	}
+	low := core.SegmentID(0)
+	if id == 0 {
+		low = p.popLocked(Reserve)
+	}
+	p.mu.Unlock()
+
+	if low != 0 {
+		fresh := p.m.drawID()
+		if err := p.m.fs.Rename(format.SegmentName(low), format.SegmentName(fresh)); err != nil {
+			return 0, fmt.Errorf("segment: renaming spare %d to %d: %w", uint64(low), uint64(fresh), err)
+		}
+		if err := p.m.set.RenameSpare(low, fresh); err != nil {
+			return 0, fmt.Errorf("segment: renaming spare %d to %d: ledger: %w", uint64(low), uint64(fresh), err)
+		}
+		if err := p.m.fs.SyncDir(); err != nil {
+			return 0, fmt.Errorf("segment: renaming spare %d to %d: sync_dir: %w", uint64(low), uint64(fresh), err)
+		}
+		id = fresh
+	}
+	if err := p.m.set.Take(id); err != nil {
+		return 0, fmt.Errorf("segment: the pool took spare %d: %w", uint64(id), err)
+	}
+	return id, nil
+}
+
 // Hold reserves n content spares for a reservation — "the spare segments its
 // own bytes roll into, one per cap they can cross plus one, taken from the
 // pool for the reservation" — holding them ahead of need: the spares it holds
@@ -672,6 +739,43 @@ func (p *Pool) DeviceFull() bool {
 	return p.deviceFull
 }
 
+// journalRefuses answers the NoSpaceError the journal's own maximum owes a
+// spare the maker has not yet drawn, or nil when making one is affordable:
+// the maker's reservation read in its own critical section, so the roll that
+// finds no spare ready names the limit that cannot be refilled rather than
+// the pool's own `spare`, which clears on the pool's own.
+//
+// decision: the answer is given only while the content class holds nothing
+// the pool can still serve or refill on its own — a spare owed to an open
+// hold is one the hold's release, its rolls or a Replace can hand back, and
+// an outstanding ask a refused Hold recorded is one the refill owes, so a
+// shortage that owes spares to itself is named `spare` however tight the
+// journal. Overturned by a hold or an ask whose spares can never be served
+// back, which would strand its holders retried on the journal's name.
+//
+// decision: the answer is read at one instant and trades liveness for data
+// the way the caller's fail-whole does. A retirement already queued that
+// would free the bytes the maximum lacks, a short sealed segment the worker
+// is about to unlink rather than a full-size one it would recycle, counts for
+// nothing here, because the caller's recycle test sees only full-size
+// retirees: a window can fail whole at the maximum a moment before that
+// unlink would have let its roll through. Overturned if windows failed at
+// the maximum show up while the retirer's queue holds such a segment, which
+// would ask the check to wait on the queue's unlinks instead.
+func (p *Pool) journalRefuses() *core.NoSpaceError {
+	p.mu.Lock()
+	callable := len(p.ready[Content]) > 0 || p.held > 0 || p.pending > 0
+	p.mu.Unlock()
+	if callable {
+		return nil
+	}
+	ns, refused := p.m.set.RefusesSpare(p.m.max)
+	if !refused {
+		return nil
+	}
+	return ns
+}
+
 // countSpareRefusal raises the spare-refusal counter. The pool never calls
 // it: only a roll that drew its final answer `spare` does, for a missed
 // content take that a fallback served is no refusal.
@@ -766,6 +870,23 @@ func (p *Pool) WaitRecordSpares(ctx context.Context, n int) error {
 	return p.wait(ctx, func() bool { return p.recordShortLocked(n) }, func() int64 {
 		return int64(n - p.recordReadyLocked())
 	})
+}
+
+// WaitReserveSpare blocks until the pool holds a ready spare of the repack
+// reserve, and answers as WaitSpares does otherwise: the spare refusal naming
+// LimitSpare and one segment missing once the pool stands idle with none,
+// ErrClosed once it stopped, the context's error once it is done.
+//
+// decision: the open's copies wait here rather than for the pool's whole
+// goal, for each draws one reserve spare and no other class: a device whose
+// maximum leaves the content class short after the headroom and the reserve
+// are made still opens, where a wait for the goal refused the copy over a
+// reserve spare already ready. The wait promises the spare is ready when it
+// returns, not that the take lands — a take racing it can claim the spare,
+// and the take's own refusal answers then. Overturned by a copy that draws
+// from a class other than the reserve.
+func (p *Pool) WaitReserveSpare(ctx context.Context) error {
+	return p.wait(ctx, func() bool { return len(p.ready[Reserve]) < 1 }, func() int64 { return 1 })
 }
 
 // recordReadyLocked is the spares a header-only roll can take: the content
