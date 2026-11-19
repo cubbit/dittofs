@@ -130,10 +130,7 @@ func TestDevTracingShutsDownWithinItsBound(t *testing.T) {
 	}
 }
 
-// A refused endpoint stops dfs start over an initialised installation, with
-// the tracing provider's own refusal: the start check passes first, then the
-// provider is built before the metadata store opens, so the refusal leaves no
-// open store behind.
+// A bad endpoint refuses the start, naming the tracing provider.
 func TestStartRefusesABadOTLPEndpoint(t *testing.T) {
 	t.Setenv("DITTOFS_OTLP_ENDPOINT", "localhost:4318")
 	code, out := runChild(t, installed(t, t.TempDir()))

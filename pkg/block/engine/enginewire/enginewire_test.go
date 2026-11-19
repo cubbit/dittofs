@@ -360,7 +360,6 @@ func TestComposeAdaptsTheTracerToTheJournal(t *testing.T) {
 	}
 
 	counts := map[string]int{}
-	var unnamed int
 	var ident string
 	for _, s := range sr.Ended() {
 		if !strings.HasPrefix(s.Name(), "journal.") {
@@ -377,7 +376,6 @@ func TestComposeAdaptsTheTracerToTheJournal(t *testing.T) {
 			}
 		}
 		if !named {
-			unnamed++
 			t.Errorf("span %s carries no journal attribute, want every journal span to name its journal", s.Name())
 		}
 	}
