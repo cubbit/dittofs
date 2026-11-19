@@ -151,14 +151,14 @@ type liveCounters struct {
 // decision: the set, the footprint and the spare counts sit under the
 // capacity lock domain of RFC 1 §8.2 — store-wide counters, no I/O under the
 // mutex, nothing acquired while holding it but the leaf mutex a per-tag
-// figure takes to add a tag it has not seen (see core.TagTally), and never
+// figure takes to add a tag it has not seen (see core.TagCells), and never
 // held across anything but map and counter work. Overturning this splits the counting by domain,
 // not the ledger itself, and fails only if the lock recorder of record ever
 // finds a plain lock held above it.
 type Set struct {
 	// decision: mu is the capacity domain and is Init'ed as a leaf: nothing
 	// is acquired while it is held, in order or out, except the leaf mutex of
-	// a core.TagTally when a tag first appears, which holds no I/O and takes
+	// a core.TagCells when a tag first appears, which holds no I/O and takes
 	// nothing (its own decision gives why), and the recorder
 	// reports the first acquisition made under it — which the rank rules
 	// alone could not, for an in-order take under it names no violation.
@@ -1285,7 +1285,7 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 // its accounted size from the footprint, its claim (which dies with the
 // entry), and each of its per-tag record bytes from the share it was
 // accounted to; a share's figure that reaches zero keeps its entry in the
-// per-tag tally (see the ponytail on core.TagTally). The caller holds mu and
+// per-tag tally (see the ponytail on core.TagCells). The caller holds mu and
 // has already found the entry in the set.
 func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 	delete(s.segs, id)
@@ -1299,7 +1299,7 @@ func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 		// The segment's leaving takes the no-append measures with it: an
 		// active one never entered them. A per-tag figure that reaches
 		// nothing keeps its entry in the tally (see the ponytail on
-		// core.TagTally); a negative leftover stays for Check.
+		// core.TagCells); a negative leftover stays for Check.
 		s.c.NoAppendBytes.Add(-(tagSum(e.tags)))
 		s.c.NoAppendOverBytes.Add(-(overSum(e.over)))
 		for tag, n := range e.tags {

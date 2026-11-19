@@ -172,7 +172,7 @@ type Capacity struct {
 	// decision: mu is the capacity domain, rank capacity in the lock order —
 	// the one domain held while no other lock of it exists — and it guards
 	// every field below. The one lock taken inside it is the leaf mutex of
-	// reservedTagged when a tag first appears (see core.TagTally), which holds
+	// reservedTagged when a tag first appears (see core.TagCells), which holds
 	// no I/O and takes nothing.
 	mu lockorder.Mutex
 
