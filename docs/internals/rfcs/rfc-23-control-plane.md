@@ -702,6 +702,9 @@ when a value changed:
 - the records whose restart-class field has changed since it started — its
   restart-pending set;
 - its health conditions, as [RFC 25](rfc-25-observability.md) derives them;
+- each adapter, by protocol: its state (configured, serving, draining or
+  stopped) and the settings generation it runs, so §3.4's status shows it per
+  node;
 - the version of each secret it holds, so that an old version is deleted only
   once every node that resolves the secret holds the new one
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)).
