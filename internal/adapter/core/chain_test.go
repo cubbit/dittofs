@@ -1076,15 +1076,20 @@ func TestAChainBehindAWaiterGoesOutOneRecordPerMember(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		waiter := func() context.CancelFunc {
+		// A waiter leaves once its goroutine has ended: a release can grant
+		// it the room before it runs to see its cancel, and it holds that
+		// room until it runs.
+		waiter := func() (leave func()) {
 			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
 			go func() {
+				defer close(done)
 				if r, err := s.budgets.Reply.Reserve(ctx, other, budget); err == nil {
 					r.Release()
 				}
 			}()
 			synctest.Wait()
-			return cancel
+			return func() { cancel(); <-done }
 		}
 		ahead := waiter()
 		echo := func(id uint64) testproto.Msg { return testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: id} }
