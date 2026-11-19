@@ -10,6 +10,3 @@
 - { suite: engine-conformance, test: TestRFC8A_CapacityScopedRepack, issue: "#4874", expires: 2027-02-15 }
 - { suite: engine-soak, test: TestSoak/seed=1, issue: "#4711", expires: 2027-02-15 }
 - { suite: engine-soak, test: TestSoak/seed=2, issue: "#4711", expires: 2027-02-15 }
-- { suite: unit, test: TestACloseThatMeetsTheFiredRetryTimerOpensNothing/0, issue: "#5028", expires: 2027-02-15 }
-- { suite: unit, test: TestACloseThatMeetsTheFiredRetryTimerOpensNothing/1, issue: "#5028", expires: 2027-02-15 }
-- { suite: unit, test: TestACloseThatMeetsTheFiredRetryTimerOpensNothing/2, issue: "#5028", expires: 2027-02-15 }
