@@ -305,7 +305,7 @@ go test -race ./...              # with the race detector
 cd test/e2e && sudo ./run-e2e.sh
 ```
 
-See [test/e2e/](test/e2e/) (and [test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md)) and [docs/internals/contributing.md](docs/internals/contributing.md).
+See [test/e2e/](test/e2e/), [bench/README.md](bench/README.md) for the benchmarks, and [docs/internals/contributing.md](docs/internals/contributing.md).
 
 ## Security
 
