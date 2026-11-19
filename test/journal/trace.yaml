@@ -186,7 +186,7 @@ rfc1 / 9.4 / C / "unclaimed tag reported":
 rfc1 / 9.4 / C / "a file is its share's":
   tests: [TestRFC1C_FileIsItsSharesShare]
 rfc1 / 9.4 / C / "stranded tag salvaged after serving":
-  owner: epic 11
+  owner: 'RFC 8''s second part'
   reason: 'needs the store, a recovery import, salvage.path and the master key'
 rfc1 / 9.4 / C / "clone target survives a crash":
   tests: [TestRFC1C_CloneTargetSurvivesCrash]
@@ -377,12 +377,12 @@ rfc1 / 9.1 / "Model-based":
           TestModel_RepackAndForget]
 
 rfc0 / 1.4 / "clock bound":
-  owner: epic 11
+  owner: 'RFC 8''s second part'
   reason: 'a wait on another clock''s timeout; the journal has none'
 
 rfc8 / 15 / "one clock":
   tests: [TestClock_WallJumpMovesNoTimer]
-  owner: epic 11
+  owner: 'RFC 8''s second part'
   reason: 'the node half: two TestClocks across every component of a node; the journal''s half is the test'
 rfc1 / 9.4 / A / "a read's `asOf` against a change in flight":
   pending: 2.7
