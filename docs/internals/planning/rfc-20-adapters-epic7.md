@@ -146,7 +146,7 @@ cited by number and title, and how it applies here or why it does not.
 | rule 4, leaks and allocations | T7.1 to T7.6 | every node test that starts an adapter stops the node and passes T7.1's zero check, under `nodetest.Watch` for goroutines; the slot's tests end with `adaptertest.CheckLeaks`. No allocation gate: nothing here is on a request's path |
 | rule 5, v2 ignores v1 | all | nothing is lifted. Appendix B's "the client registry fed by `core`: replace with `Connections()`" is T7.5 |
 | rule 6, nothing deferred is lost | T7.1, T7.2, T7.4, T7.6 | the rows §9 proposes: alert rules, `Deps.Retry`, an adapter's per-node state until it is written, the listener's address, `Detect` and `SplitFor`'s new trigger |
-| rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | all | each decision of §4 leaves the marker it names, and so does each open point's default where §9 names one; O3's fixed figures leave a `ponytail:`. A marker names what it waits for in code terms, never an epic, a subtask or a synchronisation point. None of RFC 20's own notes that the rule lists is this epic's |
+| rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | all | each decision of §4 leaves the marker it names, and so does each §9 decision where it names one; O3's fixed figures leave a `ponytail:`. A marker names what it waits for in code terms, never an epic, a subtask or a synchronisation point. None of RFC 20's own notes that the rule lists is this epic's |
 | rule 8, a test must be able to fail ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests)) | all | each test in §6 names the change that fails it |
 | rule 9, a symbol is exported only if RFC 20's interface uses it | T7.3, T7.5, T7.6 | `node` exports nothing new (`TestNodeExports`); `internal/sidecar` gains `Runner.StopAll`, internal to the module (D2); `pkg/node/apiv1` gains the listing's wire type, RFC 23 §4.2's fields; `api.Deps` gains one field; `pkg/adapter/settings` does not change: `enabled` is the node's section type's (O1) |
 | rule 10, each subtask creates only what it declares | all | no retrier (O6), no sidecar package, no alert-rule file (O5), no `Detect` or `SplitFor` (O3); the budgets land with their first consumer, the adapters' `Deps` (T7.1 and T7.2 together, §8) |
@@ -184,7 +184,7 @@ cited by number and title, and how it applies here or why it does not.
 | --- | --- | --- | --- | --- |
 | R14 | Step 9 starts each enabled adapter, from configured to serving as the records say, after the first full reconcile (step 8) completes and before reconcile's loop (step 10); no adapter listens before the first full reconcile completes | MUST | §3.1; RFC 23 §2.2, §12's "§2.2 order" | T7.3 |
 | R15 | An adapter refused at configured does not fail the start: the others serve, and readiness turns true once every enabled adapter is serving or was refused | MUST | §3.7; RFC 23 §2.2, §8.1; RFC 25 §3.6 | T7.3 |
-| R16 | Stop step 2, after readiness turns false and reconcile stops: the sidecars are synced with the empty set, then every adapter is stopped, concurrently, under one drain deadline, read as §9's O2 says; the step's bound is that deadline plus 30 s; a step that misses it leaves open what the adapters call | MUST | §3.1, §3.5; RFC 23 §2.2 | T7.3 |
+| R16 | Stop step 2, after readiness turns false and reconcile stops: the sidecars are synced with the empty set, then every adapter is stopped, concurrently, under one context whose deadline is the step's start plus the longest `drain_timeout` of the adapters stopped (§9's O2); the step's bound is that deadline plus 30 s; a step that misses it leaves open what the adapters call | MUST | §3.1, §3.5; RFC 23 §2.2 | T7.3 |
 | R17 | Stop is the reverse of start: the adapters stop before the operation runner, the filesystem and the API, and the API outlives them | invariant | RFC 23 §2.2, §10's CP4 | T7.3 |
 
 **Health and the listing**
@@ -347,7 +347,7 @@ are unexported, in package `node`. `node`'s exports and `pkg/adapter/settings` d
 
 - **Track:** team. **Depends on:** T7.1.
 - **Needs E6:** T6.3b and T6.4b, the bodies of `smb.New` and `nfs.New`.
-- **Waits for:** §9's O10, for the parse of `adapters.listen`.
+- **Decided:** §9's O10 sets the parse of `adapters.listen`.
 - **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R9, R10 (the refusals and their retry flag), R11,
   R12.
 - **Deliverables:**
@@ -406,14 +406,14 @@ are unexported, in package `node`. `node`'s exports and `pkg/adapter/settings` d
   - The API's port (catches the clash bound on another address and served, R9).
   - `CheckLeaks` (catches a rebuilt adapter's connections left charged).
 - **Rules:** rule 1: real adapters over loopback, `memory.New`; rule 4: `CheckLeaks`; rule 7:
-  D3's `decision:` and O10's default's.
+  D3's `decision:` and O10's `decision:`.
 
 ### T7.3 Start step 9 and stop step 2
 
 **Subtask T7.3 estimate: 2.75 man-days.**
 
 - **Track:** team. **Depends on:** T7.2.
-- **Waits for:** §9's O2, the part's own bound.
+- **Decided:** §9's O2 sets the part's own bound.
 - **Covers:** R10 (the retry through the loop), R12 (`StopAll`), R14, R15, R16, R17.
 - **Deliverables:**
   - In `reconcile.go` and `lifecycle.go`, `Start`'s reconcile step split in three: the first
@@ -422,10 +422,10 @@ are unexported, in package `node`. `node`'s exports and `pkg/adapter/settings` d
     starts reconcile's loop, the status writer and the sweep.
   - `apply` calling the slots only once step 9 has run, with their refusals beside its own
     (D1, D4), and the pass handing them the reconcile loop's `health.Loop` (D3).
-  - The `adapters` part. Its stop calls `Runner.StopAll` (D2) with no deadline of its own, then
-    `Runner.Close`. It uses the filesystem's part and the zero check's, so a drain that misses
-    its bound leaves both open (RFC 23 §2.2). Its bound is the one O2 gives, which a `part` now
-    carries for itself; every other part keeps `stopBound`.
+  - The `adapters` part. Its stop calls `Runner.StopAll` (D2) under the one context O2 gives,
+    then `Runner.Close`. It uses the filesystem's part and the zero check's, so a drain that
+    misses its bound leaves both open (RFC 23 §2.2). Its bound is that context's deadline plus
+    30 s, which a `part` now carries for itself; every other part keeps `stopBound`.
   - In `internal/sidecar/runner.go`, `StopAll` (D2).
   - Hooks in `export_test.go`: setting what `apply` hands the slots (D4); handing the runner a
     sidecar declared in the test; wrapping each adapter the slots build; and `AdapterAddrs`,
@@ -475,7 +475,7 @@ are unexported, in package `node`. `node`'s exports and `pkg/adapter/settings` d
 **Subtask T7.4 estimate: 1.25 man-days.**
 
 - **Track:** team. **Depends on:** T7.3.
-- **Waits for:** §9's O11, for the readiness half.
+- **Decided:** §9's O11 sets the readiness half.
 - **Covers:** R18, R19, R20, R21, R22.
 - **Deliverables:**
   - In `adapters.go`, a `health.Source` added in `node.New`. For each slot whose running
@@ -504,7 +504,7 @@ are unexported, in package `node`. `node`'s exports and `pkg/adapter/settings` d
   - The failing sidecar (catches a sidecar failure that turns the node unready or stops an
     adapter, R20).
 - **Rules:** rule 1: the two kind 3 wrappers; rule 3: conditions through the evaluator; rule 7:
-  O11's default's `decision:`.
+  O11's `decision:`.
 
 ### T7.5 The connection listing
 
@@ -550,7 +550,7 @@ are unexported, in package `node`. `node`'s exports and `pkg/adapter/settings` d
 **Subtask T7.6 estimate: 2.25 man-days.**
 
 - **Track:** team. **Depends on:** T7.3.
-- **Needs:** X3, and §9's O1 and O4 settled.
+- **Needs:** X3; §9's O1 and O4 are decided, O4's declaration waiting on Victor's #4844 answer.
 - **Covers:** R6, R7 and R8 (from records), R13; RFC 13 §9's "§5 adapter port".
 - **Deliverables:**
   - Each adapter's section type, its protocol's shape with `enabled` beside it (O1), for the
@@ -592,14 +592,11 @@ flowchart TD
   E6(["E6's T6.3b and T6.4b: smb.New and nfs.New"]):::sync --> T7_2["T7.2 Deps and the slot's rows"]
   T7_1 --> T7_2
   T7_2 --> T7_3["T7.3 start step 9, stop step 2"]
-  O2(["O2: a part's own bound"]):::sync --> T7_3
   T7_3 --> T7_4["T7.4 conditions and readiness"]
   T7_3 --> T7_5["T7.5 the connection listing"]
   T7_3 --> T7_6["T7.6 the rows on X3's snapshot"]
   X3(["X3, the RFC 13 plan's epic 5"]):::sync --> T7_6
-  O1(["O1 and O4: enabled, connection_limit"]):::sync --> T7_6
-  O10(["O10: adapters.listen's default"]):::sync --> T7_2
-  O11(["O11: readiness through a rebuild"]):::sync --> T7_4
+  V4844(["Victor's #4844: prefix-less sections"]):::sync --> T7_6
   T7_4 & T7_5 & T7_6 --> E8["E8, partly; RFC 23's plan's S3"]
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
@@ -608,8 +605,8 @@ flowchart TD
 | --- | --- | --- |
 | from S4, written now, landing with T7.2 | T7.1 | 1.5 |
 | once E6's T6.3b and T6.4b have landed | T7.2 | 3.5 |
-| then, once O2 is settled | T7.3, then T7.4 and T7.5 side by side | 5.75 |
-| once X3 has landed and O1 and O4 are settled | T7.6 | 2.25 |
+| then | T7.3, then T7.4 and T7.5 side by side | 5.75 |
+| once X3 has landed and Victor answers on #4844 | T7.6 | 2.25 |
 
 **The critical path** is E6's T6.3b and T6.4b, then T7.2 and T7.3, 6.25 man-days of this epic,
 then X3 for T7.6, whose date is the RFC 13 plan's. T7.4 and T7.5 fill the wait for X3. The least
@@ -622,80 +619,116 @@ lifecycle and reconcile loop.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T7.1, T7.2 | 5 | E6's T6.3b and T6.4b | the budgets land with their first consumer, the adapters' `Deps`, and the rows with the tests that run them |
-| 2 | T7.3, T7.4 | 4 | PR 1, O2 | the adapters in the node's start, stop and health: what RFC 23 §2.2 orders |
+| 2 | T7.3, T7.4 | 4 | PR 1 | the adapters in the node's start, stop and health: what RFC 23 §2.2 orders |
 | 3 | T7.5 | 1.75 | PR 2's T7.3 | the listing route, beside PR 2's health |
-| 4 | T7.6 | 2.25 | PR 2, X3, O1, O4 | a settings generation reaches the adapters |
+| 4 | T7.6 | 2.25 | PR 2, X3, and Victor's answer on #4844 | a settings generation reaches the adapters |
 
 A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-Each open point has a default this document follows until its owner answers.
+Each open point was decided on 19 Nov. Each entry below says what the decision changed; a rule the decision settles belongs in the RFC, not in a plan, so those lines are findings for the RFC lines pull request, and the entry points at it.
 
 - **O1, the adapter's `enabled` (RFC gap; the RFC 13 plan's table).** RFC 23 §3.4 gives
   `/adapters/{protocol}` "`enabled` and the protocol's settings", RFC 23 §2.3 and RFC 20 §3.7 act
   on "an adapter enabled", and RFC 20 §3.6 calls `adapters: {nfs: {enabled: true}, smb:
   {enabled: true}}` the least configuration. RFC 13 Appendix B has no row for it, and RFC 20
   §3.6's shapes, as `pkg/adapter/settings/settings.go` holds them, have no field, so a section
-  declared over `settings.SMB` alone would refuse the key as unknown. **Default:** each
-  adapter's section is a node-side type, its protocol's shape with `Enabled bool`
-  (`json:"enabled"`) beside it, which `settings.Of` takes as it takes any type with a
-  `Validate`; `enabled` is off by default (RFC 23's plan's D11: a node with no enabled adapter
-  serves only the API), live, at installation scope with a node override, as a sidecar's
-  enabled flag is; RFC 13 Appendix B gains its row; `pkg/adapter/settings` and RFC 20 §3.6 do
-  not change, since no adapter reads it. Blocks T7.6.
+  declared over `settings.SMB` alone would refuse the key as unknown.
+  **Decided 19 Nov.** Each adapter's section is a node-side type embedding the protocol's
+  shape, `Enabled bool` (`json:"enabled" class:"live"`) beside it, off by default (RFC 23's
+  plan's D11: a node with no enabled adapter serves only the API), live, at installation
+  scope with a node override (`OverrideOnly("Port", "Enabled")`), which `settings.Of` takes
+  as it takes any type with a `Validate`; `pkg/adapter/settings` and RFC 20 §3.6 do not
+  change, since no adapter reads the key and the shapes carry no field, which is why open
+  #4844's one-prefix-per-section rule needs the wrapper. The RFC 13 Appendix B row and the
+  RFC 20 §3.6 sentence are findings for the RFC lines pull request (Victor confirms).
 - **O2, the adapters' stop bound (cross-owner: RFC 23's node).** RFC 23 §2.2's stop step 2 is
   bounded by the drain deadline plus 30 s; `internal/node/lifecycle.go` bounds every part by
   `stopBound`, 30 s, as RFC 23's plan's epic 3 document decided (its D14). With `drain_timeout`
   at its default 90 s, a drain past 30 s leaves the filesystem and the store open and fails the
-  stop. RFC 23 does not say which deadline is "one drain deadline" when each adapter has its own.
-  **Default:** each adapter's `Stop` gets no deadline of its own, so each drains under its own
-  `drain_timeout`; a `part` carries its own bound, the adapters' part the longest
-  `drain_timeout` of the adapters it stops plus 30 s, every other part `stopBound`; that D14
-  amended. Blocks T7.3.
+  stop.
+  **Decided 19 Nov.** RFC 23 §2.2's step 2, as merged (#4533, 17 Nov), gives every `Stop` one
+  context, its deadline the step's start plus the longest `drain_timeout` of the adapters
+  stopped, which supersedes D14 (#4336, Marco's) and `lifecycle.go`'s `stopBound` note; the
+  adapters' part is bounded by that deadline plus 30 s, and every other part keeps
+  `stopBound`. T7.3 adds what the rows need: a rebuild's draining old adapter does not hold
+  reconcile's pass more than 30 s past its bound, and step 2's `StopAll` joins the drains
+  under the one context. The RFC 23 §2.2 drain-deadline sentence is a finding for the RFC
+  lines pull request.
 - **O3, the budgets' figures without `Detect` and `SplitFor` (RFC 24 has no plan).** RFC 24
   §2.7 sizes the budgets from L and its split, and `pkg/resources/budget.go` has neither
   `Detect` nor `SplitFor` (its package comment's `ponytail:`); the ledger's row names the RFC 24
-  plan, triggered "when the node budgets memory", which this epic is. **Default:** RFC 24 §2.3's
-  fractions of a fixed L of 8 GiB, the example RFC 24 §2.3 works, so 512 MiB each for receive,
-  reply, connection state and hold, and `connection_limit` 4,096, RFC 24 §4.4's derived figure
-  for that node, without the open-file half; one `ponytail:` naming `Detect`, `SplitFor`,
-  `memory_limit_bytes`, `memory_limit_below_floors` and the open-file half as the upgrade; the
-  ledger row's trigger moved to "before the cutover serves its first client". Blocks T7.1.
+  plan, triggered "when the node budgets memory", which this epic is.
+  **Decided 19 Nov.** The figures stand: RFC 24 §2.3's fractions of a fixed L of 8 GiB, the
+  example RFC 24 §2.3 works, so 512 MiB each for receive, reply, connection state and hold,
+  and `connection_limit` 4,096, RFC 24 §4.4's derived figure for that node, without the
+  open-file half; nothing built from them calls `debug.SetMemoryLimit`; one `ponytail:`
+  naming `Detect`, `SplitFor`, `memory_limit_bytes`, `memory_limit_below_floors` and the
+  open-file half as the upgrade, and `pkg/resources`' package comment may say "with their
+  first caller" of `Detect` and `SplitFor` instead; the ledger row to #3119 (no RFC 24 plan),
+  its trigger "before the cutover serves its first client".
 - **O4, `connection_limit`'s section (cross-owner: the RFC 13 plan).** RFC 13 Appendix B makes
   it a live node setting and RFC 24 §2.7 has the root check it, but no plan declares its
   section: the RFC 13 plan's epic 5 declares the adapters' and "every other section declared by
-  then". **Default:** the node declares it in T7.6, as the component that reads it, its
-  validator refusing a value above O3's bound, listed in the RFC 13 plan's one table. Blocks
-  T7.6's limit half.
+  then".
+  **Decided 19 Nov.** The node declares it in T7.6, as the component that reads it, at node
+  scope, unset meaning derived; its `Validate` checks shape only, an integer at least 1, and
+  the node checks the value against this node's derived bound at start and on each change
+  (R13; RFC 24 §2.7, RFC 13 Appendix B), since an API node cannot see the target host. This
+  differs from the draft: the bound check moves out of the validator. Its declaration needs a
+  section: open #4844 cannot declare a prefix-less key today (`upload_workers`,
+  `existence_age`, `clone_max_len`, `atime` the same), so Victor's answer is owed; the RFC 13
+  §6 sentence and the Appendix B row's wording are findings for the RFC lines pull request.
 - **O5, the alert rules (cross-owner: RFC 25's plan).** RFC 20 §10.1 and RFC 25 §7 ticket
   `adapter_unmapped_errors_total` and `adapter_handler_panics_total`, and the program's
   description of this epic builds their rules; the repository holds no alert rule, and RFC 23's
-  plan leaves its own to RFC 25's plan for that reason. **Default:** not built here; a ledger
-  row beside RFC 23's plan's, owner RFC 25's plan.
+  plan leaves its own to RFC 25's plan for that reason.
+  **Decided 19 Nov.** Not built here; the ledger row is owned by RFC 25's plan, its trigger
+  "an alert-rule home exists", copied to #3119 by T8.2; the program plan's epic 7 description
+  and its §7 coverage cell drop the rules, the edits the last section of this document proposes.
 - **O6, `Deps.Retry` and the node's retrier (cross-owner: the RFC 22 plan).** RFC 20 §3.2 and
   §3.4 name it, RFC 23 §2.2 stops it after the adapters, and the epic 4 document calls it this
   epic's; `pkg/adapter/deps.go` has no `Retry` field, and its only caller is a protocol's session
-  registry handing it a `Disconnect`. **Default:** neither the field nor the retrier is built
-  here (rule 10); a ledger row, owner the RFC 22 plan, whose SMB session registry is the first
-  caller, building the field, the retrier and its stop after the adapters together.
+  registry handing it a `Disconnect`.
+  **Decided 19 Nov.** Neither the field nor the retrier is built here (rule 10: no caller;
+  only a session registry hands it a `Disconnect`). The ledger row: the field, the retrier
+  and its stop after the adapters land in one pull request with the first session registry
+  that calls it (the RFC 22 plan's T5.2/T5.4, or RFC 21's `DESTROY_SESSION`), on top of T7.3,
+  and only once Marco's queue bound is settled (his open "should" on #4533, 17 Nov: RFC 24
+  §5.1's row, suggested "one pending Disconnect per client record per adapter"). The merged
+  epic 4 document still calls the retrier E7's, and the RFC 22 plan names no `Retry`; the
+  RFC 20 §3.2 sentence on the single node and RFC 24 §5.1's row are findings for the RFC
+  lines pull request.
 - **O7, an adapter's per-node state and generation (cross-owner: RFC 23's plan).** RFC 23 §3.4:
   "The status of an adapter shows, per node, its state and the generation it runs". RFC 23's
   plan's epic 4 document builds `/adapters/{protocol}` with that per-node status, read from the
   node statuses (its R40 and T4.9); `NodeStatus` in `pkg/metadata/entity/node.go` has no field
-  for it yet, and only the node can write it from its slots. **Default:** the field and its read
-  are that T4.9's; the status writer's write of each slot's state and the settings generation
-  it runs is this epic's, a follow-up of T7.4 of about 0.5 man-days once the field exists,
-  outside this epic's total until then; a ledger row naming this epic meanwhile.
+  for it yet, and only the node can write it from its slots.
+  **Decided 19 Nov.** The split the draft made stands: the field and its per-node read are
+  RFC 23's plan's T4.9's (Marco); the status writer's write of each slot's state and the
+  settings generation it runs is this epic's, a follow-up of T7.4 of about 0.5 man-days once
+  the field merges, outside this epic's total until then; a ledger row naming this epic
+  meanwhile. The gap this found: RFC 23 §3.4 promises per-node state and generation, but RFC
+  23 §2.4 and RFC 16 §2.3's `NodeStatus` carry no field, and `RefusedRecord` cannot derive the
+  running generation; the RFC 23 §2.4 bullet and RFC 16 §2.3's `Adapters` field are findings
+  for the RFC lines pull request.
 - **O8, `adapter_listener_lost`'s subject (RFC gap).** RFC 25 §3.9 names the adapter and the
   address; `adapter.Health.Conditions` holds names only (RFC 20 §3.4), and `core`'s `Health`
-  reports the name alone. **Default:** the node names the adapter; the address waits for an RFC
-  20 §3.4 amendment giving a condition its subject, a ledger row for E4's owner.
+  reports the name alone.
+  **Decided 19 Nov.** T7.4 names the adapter only. The address is a conflict between RFC 25
+  §3.9 ("naming the adapter and address") and RFC 20 §3.4 (`Health` carries names only): the
+  ledger row is owned by the RFC 20 plan, its trigger RFC 15's floating addresses, or a fold
+  now of about 0.25 man-days; the RFC 20 §3.4 amendment giving `Health` a `Lost
+  []netip.AddrPort` is a finding for the RFC lines pull request.
 - **O9, another node's connections (RFC gap).** RFC 23 §4.2 reads a node's connections "from
-  that node", and says nothing of a request for them made on another node. **Default:** on one
-  node, an ID other than this node's is answered `404`, as `GET /nodes/{id}` answers a node that
-  never registered; a `ponytail:` naming a cluster's forward to the named node (RFC 15) as the
-  upgrade.
+  that node", and says nothing of a request for them made on another node.
+  **Decided 19 Nov.** On one node, an ID other than this node's is answered `404 not_found`,
+  before any adapter is read, as `GET /nodes/{id}` answers a node that never registered (RFC 23
+  §4.2, §4.7, §8; release 1 is one node; T4.6's node read already 404s). A `ponytail:` on the
+  listing's `Deps` names RFC 23 as the owner of the cluster answer, not RFC 15, which forwards
+  only vfs calls; the RFC 23 §4.2 sentence is a finding for the RFC lines pull request (Marco
+  confirms the wording).
 - **O10, the default of `adapters.listen` (cross-owner: the RFC 13 plan's `pkg/bootstrap`).**
   RFC 13 Appendix C gives the key the default "every interface"; `pkg/bootstrap/config.go` reads
   it as strings with no default and no parse, and `pkg/bootstrap` is the RFC 13 plan's epic 2.
@@ -703,20 +736,28 @@ Each open point has a default this document follows until its owner answers.
   (`internal/adapter/core/server.go`'s `bind`), so the two wildcards together are every
   interface, and `Validate` accepts one per family. On a host booted with IPv6 off, binding `::`
   fails, and a partial bind is a failed start, so every adapter would be refused there.
-  **Default:** `node.New` reads an unset `adapters.listen` as `0.0.0.0` and `::`, parses each
-  literal and refuses one that does not parse, naming the key and its index but never the value,
-  as `node.go` names `api.listen` (RFC 13 §6); an IPv6-less host sets `adapters.listen` to
-  `0.0.0.0`; `decision:` at the parse; moved into `pkg/bootstrap`'s defaults when the RFC 13
-  plan's epic 2 takes it, so `dfs config show` prints what the node binds. Blocks T7.2's parse.
+  **Decided 19 Nov.** An unset `adapters.listen` resolves in `node.New` to `0.0.0.0`, plus `::`
+  only when a TCP6 socket opens on `[::]:0`; an explicit list is bound as written; each literal
+  still parses, and one that does not is refused, naming the key and its index but never the
+  value, as `node.go` names `api.listen` (RFC 13 §6). This differs from the draft: the probe
+  replaces "always both", which would refuse every adapter on an IPv6-less host (a partial
+  bind is a failed start, RFC 20 §3.1) and regress v1. `decision:` at the parse; moved into
+  `pkg/bootstrap`'s defaults when the RFC 13 plan's epic 2 takes it, so `dfs config show`
+  prints what the node binds. The RFC 13 Appendix C default's rewording is a finding for the
+  RFC lines pull request (Victor confirms).
 - **O11, readiness while an adapter is rebuilt (RFC gap).** RFC 20 §3.7 has "the node is ready
   for clients when every enabled adapter is serving or was refused at configured", and RFC 25
   §3.6 the same; read literally, a node whose SMB adapter is rebuilt for a `port` change, its old
   one draining and its new one configured, is not ready for up to its `drain_timeout`. RFC 25
   §3.6's table of states names no rebuild, and RFC 23 §3.4 rebuilds "one adapter at a time on a
   node, so a change to SMB never drops an NFS client", which an unready node, steered away from
-  by its load balancer, would. **Default:** after start, the adapters turn the node unready only
-  for a lost listener, RFC 25 §3.6's row; a rebuild leaves it ready. `decision:` at readiness;
-  RFC 25 §3.6 and RFC 20 §3.7 amended to say so. Blocks T7.4's readiness half.
+  by its load balancer, would.
+  **Decided 19 Nov.** After start, the adapters turn the node unready only for a lost listener;
+  a port rebuild or a later enable leaves it ready (RFC 23 §2.2's start gate, RFC 25 §3.6's
+  row, RFC 23 §3.4's one adapter at a time, each adapter's own Services). `decision:` at
+  readiness. The RFC 20 §3.7 sentence and RFC 25 §3.6's rebuild row are findings for the RFC
+  lines pull request; Marco confirms, alongside his open #4533 thread r4596935057 on a
+  no-address adapter.
 
 **Settled, recorded here for the reader:**
 
@@ -746,14 +787,18 @@ Each open point has a default this document follows until its owner answers.
 **Edits this document proposes to the program's implementation plan**, for the coordinator's
 pull request:
 
-- epic 7's row in §2, its estimate line and its description: 6 subtasks, 13 man-days; the alert
-  rules, the retrier and `adapter_record_unreadable` out (O5, O6, §1.2); the plan's total grows by
-  the same;
-- the ledger: new rows for the alert rules (O5), `Deps.Retry` (O6), an adapter's per-node state
-  (O7) and the listener's address (O8); the row "RFC 24's turns, `Reclaim`, `ShareCap`,
-  `Detect`, `Split`" with O3's new trigger; the `/clients` row's listing moved to this epic; the
-  row "concrete sidecars" naming their enabled settings, `Runner.SetEnabled`'s caller and the
-  port mapper's half of RFC 13 §6's port rule.
+- epic 7's row in §2, its estimate line, its description and its §7 coverage cell: 6 subtasks,
+  13 man-days; the alert rules, the retrier and `adapter_record_unreadable` out (O5, O6, §1.2);
+  the plan's total grows by the same;
+- the ledger: new rows for the alert rules (owner RFC 25's plan, trigger "an alert-rule home
+  exists", copied to #3119 by T8.2; O5), `Deps.Retry` (the field, the retrier and its stop with the
+  first session registry that calls it, on top of T7.3, once Marco's queue bound is settled;
+  O6), an adapter's per-node state (this epic's follow-up of T7.4, once RFC 23's plan's T4.9
+  lands the field; O7) and the listener's address (owner the RFC 20 plan, trigger RFC 15's
+  floating addresses; O8); the row "RFC 24's turns, `Reclaim`, `ShareCap`, `Detect`, `Split`"
+  with O3's new trigger; the `/clients` row's listing moved to this epic; the row "concrete
+  sidecars" naming their enabled settings, `Runner.SetEnabled`'s caller and the port mapper's
+  half of RFC 13 §6's port rule.
 
 **Against the epic's first description.** It had no subtasks and no estimate. Of what it lists,
 three items are not built here: the alert rules (O5), and of "`core`'s conditions",
