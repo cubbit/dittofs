@@ -54,15 +54,16 @@ func checkNTLMv2(password []byte, user, domain string, challenge [8]byte, nt []b
 	return hmacMD5(key, proof), true
 }
 
-// ntlmv2Response answers challenge for user in domain with password: the NT
-// and LM responses, and the session base key a controller derives from them.
-// The blob carries the domain's NetBIOS name and timestamp, a FILETIME.
-func ntlmv2Response(password []byte, user, domain string, challenge, client [8]byte, timestamp uint64) (nt, lm, session []byte) {
+// NTLMv2Response answers challenge for user in domain with password, as a
+// client does: the NT and LM responses, and the session base key a
+// controller derives from them. The blob carries the domain's NetBIOS name
+// and a fixed timestamp, a FILETIME.
+func NTLMv2Response(password []byte, user, domain string, challenge, client [8]byte) (nt, lm, session []byte) {
 	key := ntowfv2(password, user, domain)
 	name := utf16le(domain)
 	blob := make([]byte, 0, 28+4+len(name)+4+4)
 	blob = append(blob, 1, 1, 0, 0, 0, 0, 0, 0)
-	blob = binary.LittleEndian.AppendUint64(blob, timestamp)
+	blob = binary.LittleEndian.AppendUint64(blob, 0x01dc000000000000)
 	blob = append(blob, client[:]...)
 	blob = append(blob, 0, 0, 0, 0)
 	blob = binary.LittleEndian.AppendUint16(blob, 2) // MsvAvNbDomainName

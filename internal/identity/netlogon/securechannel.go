@@ -251,14 +251,22 @@ type channel struct {
 	cfg     *nlssp.Config
 	machine credential.Credential
 
-	mu   sync.Mutex
-	cred *nlssp.SecureCredential // the authenticator chain NetrServerPasswordSet2 advances
-	as   *assoc                  // nil once torn, until the next call binds another
+	mu     sync.Mutex
+	cred   *nlssp.SecureCredential // the authenticator chain NetrServerPasswordSet2 advances
+	as     *assoc                  // nil once torn, until the next call binds another
+	closed bool                    // set by Close: no association is bound again
 }
 
+// errChannelClosed is a call on a closed channel.
+var errChannelClosed = errors.New("netlogon: secure channel closed")
+
 // association is the channel's sealed association, binding a new one when
-// the last was torn. Nothing of a call is written before it returns.
+// the last was torn, none once the channel is closed. Nothing of a call is
+// written before it returns.
 func (c *channel) association(ctx context.Context) (*assoc, error) {
+	if c.closed {
+		return nil, errChannelClosed
+	}
 	if c.as == nil {
 		as, err := c.dc.seal(ctx, c.cfg, c.machine)
 		if err != nil {
@@ -277,9 +285,12 @@ func (c *channel) drop() {
 	}
 }
 
+// Close closes the channel's association, and a call queued behind Close
+// answers errChannelClosed rather than binding another.
 func (c *channel) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.closed = true
 	c.drop()
 	return nil
 }

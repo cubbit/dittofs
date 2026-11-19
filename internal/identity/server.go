@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -42,6 +43,9 @@ type Deps struct {
 	// Directory dials the directory State.Directory names; nil, as with no
 	// record, answers every directory question ErrUnavailable.
 	Directory directory.Dialer
+	// DomainController opens the domain's controllers; New does not require
+	// it, and while it is nil pass-through answers ErrUnavailable.
+	DomainController netlogon.Dialer
 }
 
 // SecretProvider is the secret provider's one call the server makes.
@@ -129,19 +133,30 @@ var errNotApplied = errors.New("identity: started before any State was applied")
 // calling identity, leaving the filesystem its only consumer; identity then
 // folds into it.
 type Server struct {
-	deps     Deps
-	state    atomic.Pointer[State] // nil until the first Apply, and again after Stop
-	mu       sync.Mutex            // Apply's: held across its load, compare, serial and store
-	serial   uint64                // the last serial Apply handed out, under mu; Stop keeps it
-	loaded   func()                // a test's pause just after Resolve loads the State; nil in production
-	tracer   trace.Tracer
-	logger   *slog.Logger
-	refusals *prometheus.CounterVec // by reason
-	mints    *prometheus.CounterVec // by kind
-	unnamed  *prometheus.CounterVec // by kind
-	unmapped *prometheus.CounterVec // by scheme
-	hashing  chan struct{}          // the password verifications' slots, GOMAXPROCS of them
-	holds    holds                  // the joins' administrator credentials
+	deps   Deps
+	state  atomic.Pointer[State] // nil until the first Apply, and again after Stop
+	mu     sync.Mutex            // Apply's: held across its load, compare, serial and store
+	serial uint64                // the last serial Apply handed out, under mu; Stop keeps it
+	loaded func()                // a test's pause just after Resolve loads the State; nil in production
+	// slotTaken is a test's pause just after a pass-through call takes its
+	// slot, before it reaches the channel; nil in production.
+	slotTaken func()
+	tracer    trace.Tracer
+	logger    *slog.Logger
+	refusals  *prometheus.CounterVec // by reason
+	mints     *prometheus.CounterVec // by kind
+	unnamed   *prometheus.CounterVec // by kind
+	unmapped  *prometheus.CounterVec // by scheme
+	hashing   chan struct{}          // the password verifications' slots, GOMAXPROCS of them
+	holds     holds                  // the joins' administrator credentials
+
+	slots     chan struct{}      // the pass-through's, channelSlots of them
+	chMu      sync.Mutex         // held across the channel's set-up
+	node      *nodeChannel       // the node's secure channel, under chMu; nil until a call sets one up
+	unhealthy atomic.Bool        // the last set-up failed at every controller
+	lifeMu    sync.Mutex         // life's and end's
+	life      context.Context    // ended by Stop, ending every call in flight
+	end       context.CancelFunc // ends life
 }
 
 // refusalsSpec counts the calls resolution refuses, by the reason refused.
@@ -172,7 +187,9 @@ func New(d Deps) (*Server, error) {
 	if d.Clock == nil {
 		return nil, errors.New("identity: Deps.Clock is nil")
 	}
-	s := &Server{deps: d, tracer: d.Tracer, logger: d.Logger, hashing: make(chan struct{}, runtime.GOMAXPROCS(0))}
+	s := &Server{deps: d, tracer: d.Tracer, logger: d.Logger, hashing: make(chan struct{}, runtime.GOMAXPROCS(0)),
+		slots: make(chan struct{}, channelSlots)}
+	s.life, s.end = context.WithCancel(context.Background())
 	if s.logger == nil {
 		s.logger = slog.New(slog.DiscardHandler)
 	}
@@ -251,6 +268,9 @@ func (s *Server) Apply(st State) error {
 	if cur != nil && cur.dir != st.dir && cur.dir != nil {
 		cur.dir.Close()
 	}
+	if !st.Join.Joined || st.Directory == nil {
+		s.closeChannel() // the channel is held only while joined, with a record
+	}
 	return nil
 }
 
@@ -326,9 +346,10 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 // Stop drops every in-memory table, the applied State and the held join
-// credentials among them, so a restart needs an Apply before its Start, and
-// closes its directory client once the questions running on it return. It
-// closes nothing it was handed.
+// credentials among them, so a restart needs an Apply before its Start, ends
+// every call to a domain controller in flight, closes the node's secure
+// channel, and closes its directory client once the questions running on it
+// return. It closes nothing it was handed.
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -336,5 +357,6 @@ func (s *Server) Stop(ctx context.Context) error {
 		old.dir.Close()
 	}
 	s.dropHolds()
+	s.closeChannel()
 	return nil
 }

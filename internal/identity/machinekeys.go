@@ -10,6 +10,8 @@ import (
 	"github.com/jcmturner/gokrb5/v8/crypto/common"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/types"
+
+	"github.com/cubbit/dittofs/pkg/secrets"
 )
 
 // s2kIterations is RFC 3962's default PBKDF2 iteration count, the one Active
@@ -56,12 +58,9 @@ func stringToKey(etype int32, password []byte, salt string, iterations uint32) (
 	return types.EncryptionKey{KeyType: etype, KeyValue: k}, nil
 }
 
-// buildMachineRing derives the machine password's keys from st: none while
-// the installation is not joined or has no directory, whose realm the keys
-// are in; none from a version marked HandedOver; none from a version below
-// the newest one under the one the last join or rotation confirmed; and that
-// newest one below expires the retention plus the clock skew after that
-// confirm.
+// buildMachineRing derives the machine password's keys from st, from each of
+// machineVersions: none while the installation is not joined or has no
+// directory, whose realm the keys are in.
 //
 // decision: the computer account's names are derived rather than imported,
 // because their key and the machine password are one key; rotating them apart
@@ -85,39 +84,60 @@ func buildMachineRing(st *State, log *slog.Logger) machineRing {
 		m.names[foldASCII(n)] = true
 	}
 	salt := machineSalt(m.realm, j.Account)
-	var prev uint64 // the newest version below the confirmed one
-	for _, v := range st.Machine {
-		if v.Number < j.LastRotation.Version && v.Number > prev {
-			prev = v.Number
-		}
-	}
-	for _, v := range st.Machine {
-		if v.Meta.HandedOver {
-			continue
-		}
-		var notAfter time.Time
-		// decision: during the retention only the version just below the
-		// confirmed one stays usable, and older ones derive no key, so a run
-		// of rotations within the retention never keeps an older password
-		// usable past the one rotation the retention covers. Overturned by a
-		// deployment whose controllers lag more than one rotation behind
-		// within the retention.
-		if v.Number < j.LastRotation.Version {
-			if v.Number != prev {
-				continue
-			}
-			notAfter = j.LastRotation.Confirmed.Add(retention + clockSkew)
-		}
+	for _, v := range machineVersions(st) {
 		for _, et := range machineEtypes {
 			k, err := stringToKey(et, v.Value, salt, s2kIterations)
 			if err != nil { // only an unknown etype fails, and machineEtypes are known
 				log.Error("identity: machine password version derives no key", "version", v.Number, "err", err)
 				continue
 			}
-			m.keys[et] = append(m.keys[et], machineKey{k, v.Meta.KeyVersion, notAfter})
+			m.keys[et] = append(m.keys[et], machineKey{k, v.Meta.KeyVersion, v.notAfter})
 		}
 	}
 	return m
+}
+
+// liveVersion is a machine password version that may sign in, with the time
+// past which it no longer may; zero for none.
+type liveVersion struct {
+	secrets.Version
+	notAfter time.Time
+}
+
+// machineVersions are the versions of st.Machine that derive keys and sign in
+// the secure channel, current first: none marked HandedOver, none below the
+// newest one under the one the last join or rotation confirmed, and that
+// newest one below expiring the retention plus the clock skew after that
+// confirm.
+//
+// decision: during the retention only the version just below the confirmed
+// one stays usable, and older ones derive no key and sign in no channel, so a
+// run of rotations within the retention never keeps an older password usable
+// past the one rotation the retention covers. Overturned by a deployment
+// whose controllers lag more than one rotation behind within the retention.
+func machineVersions(st *State) []liveVersion {
+	j := &st.Join
+	var prev uint64 // the newest version below the confirmed one
+	for _, v := range st.Machine {
+		if v.Number < j.LastRotation.Version && v.Number > prev {
+			prev = v.Number
+		}
+	}
+	var out []liveVersion
+	for _, v := range st.Machine {
+		if v.Meta.HandedOver {
+			continue
+		}
+		var notAfter time.Time
+		if v.Number < j.LastRotation.Version {
+			if v.Number != prev {
+				continue
+			}
+			notAfter = j.LastRotation.Confirmed.Add(retention + clockSkew)
+		}
+		out = append(out, liveVersion{v, notAfter})
+	}
+	return out
 }
 
 // holds reports whether name in realm is one of the computer account's.

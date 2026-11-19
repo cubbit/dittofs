@@ -30,6 +30,7 @@ type FaultyDomainController struct {
 
 	mu      sync.Mutex
 	release chan struct{}
+	holding int // calls ErrHold is holding now
 }
 
 // NewFaultyDomainController wraps next with fault.
@@ -45,20 +46,34 @@ func (f *FaultyDomainController) Release() {
 	f.release = make(chan struct{})
 }
 
+// Holding is how many calls ErrHold is holding now, so a test waits for
+// them to arrive before it moves on.
+func (f *FaultyDomainController) Holding() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.holding
+}
+
 // at consults the fault for op on key: whether to send the call, and the
 // error to answer with once it is sent, or instead of sending it. A hold
 // waits for Release, then sends the call and answers it, or for the context's
 // end, which answers its error unsent. A tear or a loss is a mistake in the
 // test, and panics.
 func (f *FaultyDomainController) at(ctx context.Context, op, key string) (send bool, err error) {
-	f.mu.Lock()
-	release := f.release
-	f.mu.Unlock()
 	_, tearAfter, err := f.fault.At(op, []byte(key))
 	if tearAfter != 0 {
 		panic("identitytest: a tear or loss of the domain controller op " + op + ": none takes one")
 	}
 	if errors.Is(err, ErrHold) {
+		f.mu.Lock()
+		release := f.release
+		f.holding++
+		f.mu.Unlock()
+		defer func() {
+			f.mu.Lock()
+			f.holding--
+			f.mu.Unlock()
+		}()
 		select {
 		case <-release:
 			return true, nil

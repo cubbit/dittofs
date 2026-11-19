@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
@@ -22,6 +23,10 @@ var ErrNotApplied = errNotApplied
 // OnStateLoaded has every Resolve pass call f just after it loads the
 // State, before its first store read, so a test can Apply in between.
 func (s *Server) OnStateLoaded(f func()) { s.loaded = f }
+
+// OnSlotTaken has every pass-through call run f just after it takes its
+// slot, before it reaches the node's channel.
+func (s *Server) OnSlotTaken(f func()) { s.slotTaken = f }
 
 // Mint runs the mint path over plan.
 func (s *Server) Mint(ctx context.Context, plan func(context.Context) (entity.MintBatch, int, error)) error {
@@ -96,3 +101,27 @@ func StringToKey(etype int32, password []byte, salt string, iterations uint32) (
 	k, err := stringToKey(etype, password, salt, iterations)
 	return k.KeyValue, err
 }
+
+// Logon passes r through the node's secure channel, as a pass-through does.
+func (s *Server) Logon(ctx context.Context, r netlogon.LogonRequest) (netlogon.Reply, error) {
+	return s.logon(ctx, r)
+}
+
+// ChannelAt is the controller the node's secure channel is set up to and the
+// machine password version it signed in with; ok false when none is.
+func (s *Server) ChannelAt() (addr string, version uint64, ok bool) {
+	s.chMu.Lock()
+	defer s.chMu.Unlock()
+	if s.node == nil {
+		return "", 0, false
+	}
+	return s.node.addr, s.node.version, true
+}
+
+// PassThroughs is how many pass-through calls hold a slot: those running and
+// those that answered at their bound but whose call underneath has not
+// returned.
+func (s *Server) PassThroughs() int { return len(s.slots) }
+
+// ChannelAttempt is how long a set-up waits on each controller but the last.
+const ChannelAttempt = channelAttempt
