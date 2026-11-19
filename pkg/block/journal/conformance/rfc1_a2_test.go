@@ -1845,14 +1845,27 @@ func TestRFC1A_ReappendTrustsNoPageCache(t *testing.T) {
 // the other window checks, and asserts the loss record's version only on
 // the failed path.
 func TestRFC1A_LossByExactRecord(t *testing.T) {
-	f := journaltest.New(t)
 	const size = 64 << 10
 	e := ext(0, size)
 
 	for k := range 2 {
+		// A fresh fixture per share, so the idle sealer holds the only timer
+		// besides the bound's: a crashed journal's timers stay pending on a
+		// shared clock, and a reopened sealer arms its own whenever its
+		// worker gets there, so no count would name the bound's timer. The
+		// first fixture's watch covers the second.
+		newFixture := journaltest.New
+		if k > 0 {
+			newFixture = journaltest.NewUnwatched
+		}
+		f := newFixture(t)
 		h, id := f.Share(k), journaltest.File(k)
 		write(t, h, id, 0, distinct(k, size))
 		syncFile(t, h, id)
+		// The worker may have armed a timer for the synced write before the
+		// Sync reached it; this advance releases it, so the write below is
+		// the only one the stream's next timer can be armed for.
+		f.Advance(journal.SyncBound)
 		v10 := write(t, h, id, 0, distinct(20+k, size))
 
 		// The timer's sync is what fails, so the write made no Sync call of
@@ -1862,6 +1875,13 @@ func TestRFC1A_LossByExactRecord(t *testing.T) {
 		seg := segmentOf(t, f, id, 0)
 		failures := f.J.Stats().Counters.SyncFailures
 		failWindow(t, f, seg)
+		// The worker arms the bound's timer only once it observes the write,
+		// not when the write answers, and the bound runs from that
+		// observation: an advance landing first fires nothing, and the timer
+		// armed then is due a whole bound past the advanced clock, which the
+		// one advance below never reaches. A pending count of two is the idle
+		// sealer's timer and the write's.
+		eventually(t, fmt.Sprintf("share %d: the sync bound's timer of the write is armed", k), func() bool { return f.Pending() == 2 })
 		f.Advance(journal.SyncBound)
 		eventually(t, fmt.Sprintf("share %d: the write the timer was to sync never gained a failed sync of segment %d", k, seg), func() bool {
 			return f.J.Stats().Counters.SyncFailures > failures
