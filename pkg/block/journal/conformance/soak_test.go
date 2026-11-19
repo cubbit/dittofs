@@ -5,8 +5,10 @@ package conformance
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -21,10 +23,16 @@ import (
 // of pressure fit a temporary directory. Segments keep the fixture's own
 // 1 MiB cap; the maximum drops from the fixture's 64 MiB to 16 MiB, whole
 // segments, so the run's writes meet the journal's limit long before the
-// disk does, and no operation the soak runs needs the offload and the
-// release, which a later step of the epic owns: the space this run reclaims
-// it makes with overwrites — the superseded halves of a churned live set —
-// and the repack that frees them.
+// disk does, and the space this run reclaims it makes with overwrites — the
+// superseded halves of a churned live set — and the repack that frees them.
+//
+// decision: no operation of the mix runs an offload or a release, though the
+// soak's load names both beside the writes: neither call is wired into the
+// journal yet, so no mix could run them. The rule holds until the offload
+// and the release are wired into the journal — the one change that restores
+// them to the mix, alongside the space they alone can reclaim, and with it
+// this marker goes; until then the writes' superseded live set is the only
+// source of reclaimable space the journal answers for.
 const (
 	// soakMaxBytes is the journal's maximum: whole segments, far below what a
 	// run writes, and above the live set below.
@@ -62,9 +70,11 @@ const (
 	soakWarmupWindows = 4
 
 	// soakCrashWindows is how many windows pass between a simulated power
-	// loss and the reopen that follows: one crash every sixteen windows, a
-	// slow period beside the writes that carry the load.
-	soakCrashWindows = 16
+	// loss and the reopen that follows: one crash every eight windows, a
+	// slow period beside the writes that carries the run — short enough that
+	// even a sanity-length run crosses one and has its recovery checked,
+	// which the reach assertions below require.
+	soakCrashWindows = 8
 
 	// soakRepackWindows is how many windows pass between two repacks of the
 	// soak's own pacing; a write refused at capacity also repacks, inside
@@ -82,6 +92,15 @@ const (
 	// finding: each attempt spends the repack reserve, and beyond a bounded
 	// handful the refusal is one the journal cannot relieve.
 	soakReclaimAttempts = 16
+
+	// soakOrphanBytes is the planted footprint leak: eight segments' worth,
+	// over the churn the directory's own spare-making and crashing swings
+	// (two to three segments a window), so what the plant adds is a rise the
+	// byte total's floor sees above the noise. That noise is the gauge's
+	// honest sensitivity - a single orphaned segment rides inside it, and
+	// only a drift of two or three accumulates past it - which is why the
+	// plant stands for a leak's accumulation, not its first segment.
+	soakOrphanBytes = 8 << 20
 
 	// soakClockStep is how far each operation advances the fixture's clock:
 	// one group-commit bound, so a bounded write's sync window resolves
@@ -128,6 +147,20 @@ var soakFlats = []soakFlat{
 	{"OpenDescriptors", func(s *soakSample) int64 { return int64(s.OpenDescriptors) }, 10, 2},           // band 6..10, halves 6/6
 	{"Descriptors", func(s *soakSample) int64 { return int64(s.ProcessFds - s.OpenDescriptors) }, 8, 0}, // neutralised: band 3..8, halves 4/4
 	{"HeapBytes", func(s *soakSample) int64 { return int64(s.Heap) }, 24 << 20, -1},                     // band 3.3..9.2 MB across the cells, converging
+	{"UsedBytes", func(s *soakSample) int64 { return s.UsedBytes }, 8 << 20, 2 << 20},                   // band 10.5..13.6 MiB, halves' medians flat; the floor's
+	// two segments of slack are the accounting's own quantum, so a rise of
+	// more than that is a drift the books never gave back
+	{"DirFiles", func(s *soakSample) int64 { return int64(s.DirFiles) }, 8, -1}, // band 11..16 through the churn
+	// No floor on the count: a reopen's spare-making swings it wider than
+	// one leaked file, so the count's flatness is a width-and-drift bound
+	// alone, and the byte total below is what leaked storage answers to.
+	{"DirBytes", func(s *soakSample) int64 { return s.DirBytes }, 16 << 20, 2 << 20}, // band 10.5..14.7 MiB; the
+	// floor allows what a reopen's settle leaves holding - measured a
+	// segment at the five-minute churn and two at the two-minute, whose
+	// single crash landed its spares in the run's second half - so the
+	// floor still sees a leak from the planted five segments up, while the
+	// width bound stays loose against the crash churn on purpose: the
+	// floor, not the width, is the criterion that sees a leak
 }
 
 // soakSample is one window's counters, taken at a loop edge with every
@@ -141,6 +174,16 @@ type soakSample struct {
 	OpenDescriptors int
 	ProcessFds      int
 	Heap            uint64
+
+	// UsedBytes is the journal's accounted local storage, and DirFiles and
+	// DirBytes the files and bytes its directory holds on the real
+	// filesystem - the footprint the disk answers for, as distinct from
+	// the heap above: a retire path that drops a segment from the journal's
+	// books and never unlinks its file answers to these two, not to the
+	// heap and not, alone, to the accounting.
+	UsedBytes int64
+	DirFiles  int
+	DirBytes  int64
 }
 
 // soakLog is what one run did: the operation counts, for the report a green
@@ -156,6 +199,15 @@ type soakLog struct {
 	// closed; nil on a run without one. It is the caller's to close, so the
 	// fixture's own watch never sees the fault it was made to catch.
 	planted *os.File
+
+	// orphan is the file the run wrote into the journal's directory at its
+	// plant edge and never removed, as a footprint leak to be caught; empty
+	// on a run without one. The temp directory's own cleanup removes it, and
+	// the name is not segment-shaped on purpose: a stray the open cannot
+	// classify as a segment or a spare it refuses closed, and the leak this
+	// plant stands for — storage the journal stopped accounting and never
+	// gave back — is the same leak whatever the stray's name is.
+	orphan string
 }
 
 // soakCfg bounds one run. A duration, with zero maxOps, runs for the wall
@@ -166,9 +218,11 @@ type soakCfg struct {
 	maxOps   int
 
 	// plantOp, on a run that names one, is after which operation the run
-	// opens one descriptor and never closes it, as a leak to be caught. It
-	// falls on a window edge, so the plant sits whole between two samples.
-	plantOp int
+	// plants its leak, on a window edge so the plant sits whole between two
+	// samples. The leak is one descriptor, opened and never closed, unless
+	// plantDisk is set, when it is one unaccounted file instead.
+	plantOp   int
+	plantDisk bool
 }
 
 // soakDuration returns how long the soak runs: DITTOFS_SOAK_DURATION, parsed
@@ -212,6 +266,21 @@ func TestJournalSoak(t *testing.T) {
 
 	t.Logf("soak: %d ops over %d windows: %d writes (%d refused at capacity, %d reclaimed), %d syncs, %d settles, %d repacks (%v, %d bytes freed), %d crashes",
 		log.ops, len(log.samples), log.writes, log.refused, log.reclaimed, log.syncs, log.settles, log.repacks, log.repackWall, log.freed, log.crashes)
+
+	// What the run reached, as the model's sweeps reach-assert: a run that
+	// wrote no more than the journal's maximum held no pressure, one whose
+	// repacks freed nothing never reclaimed, and one that crossed no crash
+	// checked no recovery — a degenerate pass of any of the three is a rig
+	// fault, not a green soak.
+	if log.written <= soakMaxBytes {
+		t.Errorf("soak: reached: %d bytes written, want over the %d-byte maximum: a run that never met the journal's limit holds no pressure", log.written, soakMaxBytes)
+	}
+	if log.refused == 0 && log.freed == 0 {
+		t.Errorf("soak: reached: %d capacity refusals and %d bytes freed, want one of them above zero: a run that never reclaimed checked no reclamation", log.refused, log.freed)
+	}
+	if log.crashes == 0 {
+		t.Errorf("soak: reached: %d crashes, want the run to have crossed and recovered a simulated power loss", log.crashes)
+	}
 
 	// The flat checks run after the last window, over the whole run's band:
 	// every gauge the run snapshots stays flat — the end within its
@@ -307,6 +376,60 @@ func TestJournalSoakFindsPlantedDescriptor(t *testing.T) {
 	}
 }
 
+// TestJournalSoakFindsPlantedFootprint proves the footprint gauges catch
+// what they claim to: eight segments' worth of bytes, written into the
+// journal's directory mid-run by the test itself and never removed — a
+// remnant the journal's own accounting does not carry, as a retire path
+// that drops a segment from its books and never unlinks its file leaves —
+// must fail the directory-bytes check *on it*. The plant is fault
+// injection on the same measurement the soak reads, like the descriptor
+// leg beside it, not a stub in front of the journal; the count gauge
+// carries no floor - the reopen's spare-making swings the count wider
+// than one file - so the byte total is the gauge this leg proves.
+//
+// The check it faces is the production one, through soakGaugeOf: the
+// DirBytes gauge the main soak runs, whose floor the orphan's one-segment
+// step must trip through the medians. The run's crashes land inside the
+// band too — they remove spares no sync covered and so drop the count,
+// which the median of either half sits under, and which never lifts a
+// half — so what the leg catches, a never-removed remnant does, at every
+// duration the main run allows.
+func TestJournalSoakFindsPlantedFootprint(t *testing.T) {
+	plant := soakCfg{maxOps: soakWindowOps * 24, plantOp: soakWindowOps * 13, plantDisk: true}
+	log := soakRun(t, plant)
+	if log.orphan == "" {
+		t.Fatalf("the run planted no orphaned file, so this leg checks nothing")
+	}
+
+	bytes := soakGaugeOf("DirBytes")
+	bseries := make([]int64, len(log.samples))
+	for i := range log.samples {
+		bseries[i] = bytes.get(&log.samples[i])
+	}
+	err := soakWantFlat("DirBytes", bseries, bytes.threshold, bytes.floor)
+	if err == nil {
+		t.Fatalf("the byte-total check passed with an orphaned file planted at op %d and never removed: the directory's bytes over the windows %v, want the check to fail on the plant", plant.plantOp, bseries)
+	}
+	t.Logf("the planted footprint was caught by the production gauge's check:\n%v", err)
+
+	// The orphan is the whole never-returns rise on the byte series, so the
+	// failure the check reports is the plant's own arithmetic; the count
+	// gauge beside it is a width-and-drift bound alone, a reopen's
+	// spare-making swinging the count wider than one file, so the byte
+	// total is the gauge the plant answers to.
+	if !strings.Contains(err.Error(), "the second half's median") {
+		t.Fatalf("the byte-total check failed with:\n%v\nwant it to fail on the median criterion exactly, the one criterion a never-returns rise trips", err)
+	}
+	// The medians move in the churn's own quantum - whole segments, a MiB
+	// at a time - so the plant's exact arithmetic reads through it as the
+	// orphan's eight segments within the three the churn swings.
+	med := len(bseries) / 2
+	rise := soakMedian(bseries[med:]) - soakMedian(bseries[soakWarmupWindows:med])
+	if d := rise - soakOrphanBytes; d < -3<<20 || d > 3<<20 {
+		t.Fatalf("the directory's bytes moved by %d between the halves' medians, want the %d-byte orphan within the churn's three segments: %v", rise, soakOrphanBytes, bseries)
+	}
+}
+
 // soakGaugeOf returns the flat entry the named gauge runs with, so a leg
 // reads the same gauge, thresholds and floors the main soak runs rather
 // than spelling its own; its name comes from the gauge table.
@@ -334,9 +457,11 @@ func soakMedian(vals []int64) int64 {
 
 // soakWantFlat checks that vals, one sample per window, are flat: the end
 // within threshold of the band the samples past the warm-up span, the band
-// no wider than that, and — where floor is not negative — the band's second
-// half resting no more than floor above its first by the two halves'
-// medians. That median criterion is what a permanent rise fails: a leak
+// no wider than that (the drift read in absolute value - a fall is as
+// much drift as a rise, and the accounting that drops a segment its
+// directory still holds is the down direction of the same leak), and —
+// where floor is not negative — the band's second half resting no more
+// than floor above its first by the two halves' medians. That median criterion is what a permanent rise fails: a leak
 // lifts every window after it, so the second half's middle sits a whole
 // unit above the first's, while a transient opens and closes and puts the
 // count right back; the width and the drift alone cannot see one
@@ -356,8 +481,8 @@ func soakWantFlat(name string, vals []int64, threshold, floor int64) error {
 	if width := high - low; width > threshold {
 		return fmt.Errorf("%s got %v..%v, want flat within %d: the %d windows past the warm-up span %v..%v, wider than the calibrated band", name, first, last, threshold, len(band), low, high)
 	}
-	if drift := last - first; drift > threshold {
-		return fmt.Errorf("%s got %v..%v, want flat within %d: the end of the run sits %d above where its band began, over the calibrated threshold", name, first, last, threshold, drift)
+	if drift := max(last-first, first-last); drift > threshold {
+		return fmt.Errorf("%s got %v..%v, want flat within %d: the end of the run sits %d from where its band began, over the calibrated threshold", name, first, last, threshold, drift)
 	}
 	if floor >= 0 {
 		half := len(band) / 2
@@ -498,11 +623,23 @@ func soakRun(t *testing.T, cfg soakCfg) *soakLog {
 		log.samples = append(log.samples, soakSampleOf(t, f))
 
 		if op == cfg.plantOp {
-			leaked, err := os.Open(f.Dir)
-			if err != nil {
-				t.Fatalf("soak: plant a leaked descriptor: %v", err)
+			if cfg.plantDisk {
+				name := filepath.Join(f.Dir, "orphan-soak")
+				// Written whole and closed, as a remnant the journal never
+				// owned again: the leak is the file's presence, not any
+				// handle held on it, so the bytes count the moment the
+				// write returns.
+				if err := os.WriteFile(name, pattern("orphan", soakOrphanBytes), 0o644); err != nil {
+					t.Fatalf("soak: plant an orphaned file: %v", err)
+				}
+				log.orphan = name
+			} else {
+				leaked, err := os.Open(f.Dir)
+				if err != nil {
+					t.Fatalf("soak: plant a leaked descriptor: %v", err)
+				}
+				log.planted = leaked
 			}
-			log.planted = leaked
 		}
 
 		if len(log.samples)%soakCrashWindows == 0 {
@@ -709,6 +846,30 @@ func soakSampleOf(t *testing.T, f *journaltest.Fixture) soakSample {
 
 	st := f.J.Stats()
 	fds, _ := prof.Descriptors()
+
+	// The directory's real files and bytes, the footprint the disk answers
+	// for: read off the real filesystem beside the journal's own accounting,
+	// so a divergence between the two books is the sample's to hold. A name
+	// that vanished between the listing and its stat is churn the window
+	// caught mid-move - a spare renamed into the set, a retire's unlink - and
+	// counts for nothing: what is not on the disk any more is not footprint.
+	files, bytes := int64(0), int64(0)
+	entries, err := os.ReadDir(f.Dir)
+	if err != nil {
+		t.Fatalf("soak: read the journal's directory: %v", err)
+	}
+	for _, e := range entries {
+		info, err := e.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("soak: stat %s: %v", e.Name(), err)
+		}
+		files++
+		bytes += info.Size()
+	}
+
 	return soakSample{
 		ExtentCount:     st.ExtentCount,
 		Segments:        st.Segments,
@@ -716,5 +877,8 @@ func soakSampleOf(t *testing.T, f *journaltest.Fixture) soakSample {
 		OpenDescriptors: st.OpenDescriptors,
 		ProcessFds:      fds,
 		Heap:            prof.LiveHeap(),
+		UsedBytes:       st.UsedBytes,
+		DirFiles:        int(files),
+		DirBytes:        bytes,
 	}
 }

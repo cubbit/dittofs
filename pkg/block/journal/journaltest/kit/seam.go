@@ -85,10 +85,12 @@ type Seam struct {
 	// first, bounded by callsForCap: the per-name records the seam keeps
 	// are what an hours-long soak's churn would grow past the profiler's
 	// heap slack, since every retired-and-remade segment is a name the
-	// journal retires and another one it mints. The cap evicts a name no
-	// call touched in the oldest callsForCap names, so a count an existing
-	// check asserts is lost only past the cap itself — 16,384 names churned
-	// between the counting and the reading.
+	// journal retires and another one it mints. The cap evicts the
+	// oldest-inserted name whatever it touched last - insertion order, not
+	// touch order, so a name counted recently can go while one long
+	// untouched stays - so a count an existing check asserts is lost only
+	// past the cap itself, 16,384 names churned between the counting and
+	// the reading.
 	callsForOrder [][2]string
 	stashed       int
 	holds         []*Hold
