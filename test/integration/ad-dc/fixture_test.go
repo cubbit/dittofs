@@ -313,8 +313,10 @@ func rotateMachinePassword(t *testing.T, newPassword string) {
 }
 
 // ntlmResponseFor computes a deterministic NTLMv2 NT/LM response for the
-// AD user against a fixed 8-byte server challenge.
-func ntlmResponseFor(ctx context.Context, t *testing.T, user, pass string, serverChallenge [8]byte) (nt, lm []byte) {
+// AD user against a fixed 8-byte server challenge, as a client answers a
+// server named computer. Samba refuses a pass-through whose response names a
+// computer other than the secure channel's account with STATUS_LOGON_FAILURE.
+func ntlmResponseFor(ctx context.Context, t *testing.T, computer, user, pass string, serverChallenge [8]byte) (nt, lm []byte) {
 	t.Helper()
 	clientNonce := []byte{0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA}
 	v2 := &ntlm.V2{Config: &ntlm.Config{}}
@@ -322,7 +324,7 @@ func ntlmResponseFor(ctx context.Context, t *testing.T, user, pass string, serve
 		ServerChallenge: serverChallenge[:],
 		TargetInfo: ntlm.AttrValues{
 			ntlm.AttrNetBIOSDomainName:   &ntlm.Value{NetBIOSDomainName: adDomain},
-			ntlm.AttrNetBIOSComputerName: &ntlm.Value{NetBIOSComputerName: adDomain},
+			ntlm.AttrNetBIOSComputerName: &ntlm.Value{NetBIOSComputerName: computer},
 		},
 	}
 	cred := credential.NewFromPassword(adDomain+"\\"+user, pass)

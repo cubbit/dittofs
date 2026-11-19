@@ -58,7 +58,7 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 
 	logonReq := func(t *testing.T) *logon.SAMLogonExRequest {
 		challenge := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
-		nt, lm := ntlmResponseFor(ctx, t, adUserAlice, adUserPass, challenge)
+		nt, lm := ntlmResponseFor(ctx, t, strings.TrimSuffix(machineAccountName, "$"), adUserAlice, adUserPass, challenge)
 		return &logon.SAMLogonExRequest{
 			LogonServer: logonServer, ComputerName: "DITTOFS",
 			LogonLevel: logon.LogonInfoClassNetworkTransitiveInformation,

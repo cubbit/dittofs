@@ -15,10 +15,6 @@ import (
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
 )
 
-// opAuthenticate3 is NetrServerAuthenticate3's operation number (MS-NRPC
-// §3.5.4).
-const opAuthenticate3 = 26
-
 // secureChannelRefusesZeroReply sets up netlogon's secure channel as DITTOFS$
 // with machineAccountPass on the controller at dcIP, through a connection
 // that zeroes the server challenge or the server credential in the
@@ -107,10 +103,10 @@ type zeroReplyConn struct {
 // The connection-oriented PDU header (C706 §12.6.3): ptype at 2, frag_len at
 // 8, auth_len at 10; a request's opnum at 22; a response's stub at 24.
 const (
-	pduRequest  = 0
-	pduResponse = 2
-	pduHeader   = 16
-	pduStub     = 24
+	pduRequest      = 0
+	pduResponse     = 2
+	pduCommonHeader = 16
+	pduStub         = 24
 )
 
 func (c *zeroReplyConn) Write(b []byte) (int, error) {
@@ -131,16 +127,16 @@ func (c *zeroReplyConn) Write(b []byte) (int, error) {
 
 func (c *zeroReplyConn) Read(b []byte) (int, error) {
 	if len(c.buf) == 0 {
-		pdu := make([]byte, pduHeader)
+		pdu := make([]byte, pduCommonHeader)
 		if _, err := io.ReadFull(c.Conn, pdu); err != nil {
 			return 0, err
 		}
 		n := int(binary.LittleEndian.Uint16(pdu[8:]))
-		if n < pduHeader {
+		if n < pduCommonHeader {
 			return 0, io.ErrUnexpectedEOF
 		}
-		pdu = append(pdu, make([]byte, n-pduHeader)...)
-		if _, err := io.ReadFull(c.Conn, pdu[pduHeader:]); err != nil {
+		pdu = append(pdu, make([]byte, n-pduCommonHeader)...)
+		if _, err := io.ReadFull(c.Conn, pdu[pduCommonHeader:]); err != nil {
 			return 0, err
 		}
 		if c.stubLen >= 8 && pdu[2] == pduResponse && binary.LittleEndian.Uint16(pdu[10:]) == 0 && n == pduStub+c.stubLen {
