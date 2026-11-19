@@ -2092,3 +2092,46 @@ func TestSyncReappendedBytesCountsWhatWasReappended(t *testing.T) {
 		t.Errorf("ReappendedBytes = %d, want %d (the content record %d and the removal %d, not the failed %d)", got, want, a.Len, del.Len, b.Len)
 	}
 }
+
+// TestWaitCopyAnswersWhatTheDurableWaitFollows is the differential a copy
+// wait owes over the durability wait it is carved from: one record, failed by
+// a window whose resolution re-appended it to a place its caller cannot name,
+// asked both ways on the same old place — the copy wait answers the failure,
+// for the place a pass holds is dead wherever the record went, while the
+// durability wait follows the re-append to the record's new place and returns
+// nil. Either waiter answering like the other loses a distinction the pass
+// depends on: a dead copy left unpublished, or a carried record followed.
+func TestWaitCopyAnswersWhatTheDurableWaitFollows(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr := newFailRig(t, nil)
+	f := file(1)
+	a := fr.appendWrite(t, f, 0, "a copy whose window failed and re-appended")
+	// The re-append's segment's sync is held, so the re-appended record stays
+	// in the move table: the place the waits below ask about stays dead, the
+	// move is still the only word for where the record went.
+	hold := fr.holdNewSegmentSync(t, a.Segment)
+	// The segment's pages stay readable, so the window the failed sync opens
+	// resolves by re-appending the record rather than failing it. The Sync
+	// that meets the fault answers nil over the re-append, and the resolution
+	// announces the segment while the re-appended record park at the held
+	// sync keeps its move from completing.
+	fr.failSyncKeepingPages(t, a.Segment, errors.New("sync boom"))
+	sync := fr.syncAsync(context.Background(), f)
+	fr.awaitResolved(t)
+	eventually(t, "the failed window's re-append to land the record elsewhere", func() bool { return fr.movedLen(0) > 0 })
+
+	// Called before the durability wait, which ends the move it follows, and
+	// while the re-append's held sync keeps the move alive.
+	if err := fr.d.WaitCopy(a); err == nil {
+		t.Errorf("WaitCopy on the copy whose window failed = nil, want the window's failure: the copy's place is dead though the record went on")
+	}
+	// The release ends the re-append's parked sync, which the failing Sync's
+	// own await then counts as the durability its answer waited on.
+	hold.Release()
+	if err := mustReturn(t, "the failed Sync over its re-append", sync); err != nil {
+		t.Fatalf("the Sync over the faulted pages = %v, want nil over the re-append", err)
+	}
+	if err := fr.d.WaitDurable(a); err != nil {
+		t.Errorf("WaitDurable on the same dead place = %v, want nil: the durability wait follows the re-append the copy wait refuses", err)
+	}
+}
