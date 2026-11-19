@@ -1390,7 +1390,11 @@ removing it, then writing it again.
 
 A written name has one `@`, a non-empty user part and realm, and no
 whitespace or control character. Its realm is stored with its ASCII letters
-upper-cased, and its user part as given, matched byte for byte.
+upper-cased, and its user part as given, matched byte for byte. The
+upper-casing assumes an Active Directory realm, which is always upper case. A
+directory of the `rfc2307` schema may name a realm with lower-case letters,
+and realms are compared case and all, so a name in such a realm does not
+match its directory's realm.
 
 ### 4.3 uid and gid
 

@@ -1048,7 +1048,7 @@ them and decides nothing about identity:
   join or rotation did not take becomes current under it. A crash between the
   two writes, or a refusal of the second, leaves an audited version no join
   uses; it derives no key and the secure channel never signs in with it ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2),
-  as the RFC 18 plan amends it), and the next join supersedes it. The
+  as the RFC 18 plan amends it), and the next join or rotation supersedes it. The
   operation's write is refused `409` `operation_running` unless the version
   its own hand-over wrote is still the current one, so a join never runs on a
   password another join's hand-over has replaced. Neither join keeps an
@@ -1063,9 +1063,7 @@ them and decides nothing about identity:
   previous one applied, in
   [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)'s order
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). A rotation is refused
-  `409` while a join runs, and while the current version is one handed to an
-  offline join that no join has confirmed, so it never rotates a password no
-  join confirmed. Leaving the domain has
+  `409` while a join runs. Leaving the domain has
   no action until RFC 18 defines it. `test-directory` checks that every node reaches the
   directory the record names, and reports each node's answer. The join's
   state is the installation record's `Join` ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities), as the RFC 18 plan
