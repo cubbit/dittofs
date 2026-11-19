@@ -193,6 +193,16 @@ func Run(t *testing.T, open Opener) {
 		{"NodeRecords", testNodeRecords},
 		{"ListReconciledRecords", testListReconciledRecords},
 		{"ListSharesAcrossRename", testListSharesAcrossRename},
+		{"SecretReadsByVersion", testSecretReadsByVersion},
+		{"SecretPutExpect", testSecretPutExpect},
+		{"SecretPutRace", testSecretPutRace},
+		{"SecretVersionNumber", testSecretVersionNumber},
+		{"SecretKeepsKindAndOwner", testSecretKeepsKindAndOwner},
+		{"SecretRaisesSettingsGeneration", testSecretRaisesSettingsGeneration},
+		{"SecretPutIsOneTransaction", testSecretPutIsOneTransaction},
+		{"SecretTxPutRollsBack", testSecretTxPutRollsBack},
+		{"SecretRefusedTxPutRaisesNothing", testSecretRefusedTxPutRaisesNothing},
+		{"SecretTxReadTracked", testSecretTxReadTracked},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}

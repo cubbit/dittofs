@@ -1,5 +1,7 @@
 package entity
 
+import "bytes"
+
 // Secret is one credential: a password hash, an NT hash, a key. The value
 // is envelope-encrypted under a key held outside the KV, so a copy of the
 // store alone reveals nothing. Referenced by SecretRef from User and Setting.
@@ -36,11 +38,21 @@ type Secret struct {
 // the installation's signing key and machine password, under "signing_key"
 // and "machine_password") or a setting's key (a keytab, the directory's bind
 // credential, an OpenID Connect client's secret). Encoded with the version,
-// as the Secret's other fields are, and compared whole.
+// as the Secret's other fields are, and compared through its Equal method,
+// the record ID with bytes.Equal.
 type SecretOwner struct {
 	Record ResourceRef  // the record's kind and ID; zero for a setting
 	Scope  SettingScope // the setting's scope; zero for a record
 	Key    string       // the record's field name, or the setting's key
+}
+
+// Equal reports whether o and x name the same owner, comparing every field;
+// ResourceRef.ID is a slice, so it is compared with bytes.Equal.
+func (o SecretOwner) Equal(x SecretOwner) bool {
+	return o.Record.Kind == x.Record.Kind &&
+		bytes.Equal(o.Record.ID, x.Record.ID) &&
+		o.Scope == x.Scope &&
+		o.Key == x.Key
 }
 
 // SecretKind is what a secret holds. Its value is stored, so a new kind is
