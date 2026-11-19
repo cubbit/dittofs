@@ -187,7 +187,11 @@ func (s *sambaDCSeeder) BadPwdCount(t testing.TB, name string) int {
 	if err != nil || len(res.Entries) != 1 {
 		t.Fatalf("read %s's badPwdCount: %v", name, err)
 	}
-	n, _ := strconv.Atoi(res.Entries[0].GetAttributeValue("badPwdCount"))
+	v := res.Entries[0].GetAttributeValue("badPwdCount")
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		t.Fatalf("%s's badPwdCount %q: %v", name, v, err)
+	}
 	return n
 }
 

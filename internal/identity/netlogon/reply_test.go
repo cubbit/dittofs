@@ -1,12 +1,15 @@
 package netlogon
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"reflect"
 	"runtime"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/oiweiwei/go-msrpc/dcerpc"
 	"github.com/oiweiwei/go-msrpc/msrpc/dtyp"
@@ -122,6 +125,25 @@ func TestMachineCredentialNTHash(t *testing.T) {
 	}
 	if got, want := hex.EncodeToString(h.NTHash()), "a4f49c406510bdcab6824ee7c30fd852"; got != want {
 		t.Errorf("NT hash of \"Password\" = %s, want %s", got, want)
+	}
+}
+
+// utf16le encodes as utf16.Encode over the password's runes does, invalid
+// bytes as U+FFFD and astral runes as surrogate pairs, in a buffer it never
+// grows past twice the password's length.
+func TestUTF16LE(t *testing.T) {
+	for _, in := range []string{"", "Password", "p\u00e4ssw\u00f6rd", "\u5bc6\u7801", "\U0001F600x", "\xff\xfe", "a\xe2\x82"} {
+		var want []byte
+		for _, u := range utf16.Encode([]rune(in)) {
+			want = binary.LittleEndian.AppendUint16(want, u)
+		}
+		got := utf16le([]byte(in))
+		if !bytes.Equal(got, want) {
+			t.Errorf("utf16le(%q) = %x, want %x", in, got, want)
+		}
+		if cap(got) != 2*len(in) {
+			t.Errorf("utf16le(%q)'s capacity = %d, want %d: the buffer grew", in, cap(got), 2*len(in))
+		}
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/oiweiwei/go-msrpc/dcerpc"
 	"github.com/oiweiwei/go-msrpc/msrpc/dcetypes"
 	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
+	nlssp "github.com/oiweiwei/go-msrpc/ssp/netlogon"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -247,5 +248,46 @@ func TestCreateVerifiesThePinnedController(t *testing.T) {
 				t.Errorf("Create to 127.0.0.1 with a certificate for dc.other.example: the server read %d bytes, want a refused handshake", n)
 			}
 		})
+	}
+}
+
+// logonServer drops a port and answers an IP address as given, and a host
+// name's first label in upper case.
+func TestLogonServer(t *testing.T) {
+	for _, tc := range []struct{ addr, want string }{
+		{"10.0.0.1", `\\10.0.0.1`},
+		{"10.0.0.1:135", `\\10.0.0.1`},
+		{"dc1.example.com", `\\DC1`},
+		{"dc1.example.com:135", `\\DC1`},
+		{"fd00::1", `\\fd00::1`},
+		{"[fd00::1]:135", `\\fd00::1`},
+	} {
+		if got := logonServer(tc.addr); got != tc.want {
+			t.Errorf("logonServer(%q) = %q, want %q", tc.addr, got, tc.want)
+		}
+	}
+}
+
+// A SetPassword that fails spends the channel: the next answers errSpent
+// without dialling the controller again.
+func TestSetPasswordSpent(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+	_ = l.Close() // nothing listens: the association's dial fails
+	machine, err := machineCredential("NODE", "EXAMPLE.COM", []byte("pw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &channel{dc: &dc{dial: (&net.Dialer{}).DialContext}, binding: "ncacn_ip_tcp:127.0.0.1[" + port + "]",
+		cfg: &nlssp.Config{Capabilities: offered, Credential: machine}, machine: machine}
+	ctx := context.Background()
+	if err := c.SetPassword(ctx, []byte("pw")); err == nil || errors.Is(err, errSpent) {
+		t.Fatalf("first SetPassword = %v, want the dial's error", err)
+	}
+	if err := c.SetPassword(ctx, []byte("pw")); !errors.Is(err, errSpent) {
+		t.Errorf("SetPassword after a failed one = %v, want errSpent", err)
 	}
 }

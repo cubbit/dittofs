@@ -128,7 +128,11 @@ func netlogonPort(ctx context.Context, dial dialFunc, addr string) (string, erro
 	if err := invoke(ctx, cli.Conn(), &epm.LookupRequest{
 		InquiryType: 1, // RPC_C_EP_MATCH_BY_IF
 		InterfaceID: &dcetypes.InterfaceID{UUID: dtyp.GUIDFromUUID(logon.LogonSyntaxUUID), VersMajor: 1},
-		MaxEntries:  500,
+		// ponytail: one EPM page of up to 500 entries, with no continuation
+		// through the reply's entry handle, so an endpoint past the first page
+		// goes unseen; Samba's and AD's endpoint counts sit far below it.
+		// Follow the handle when a controller answers a full page.
+		MaxEntries: 500,
 	}, resp); err != nil {
 		return "", err
 	}
@@ -171,10 +175,13 @@ func netlogonEndpoint(tower *dcetypes.Tower) (port string, ok bool) {
 }
 
 // logonServer is the controller's name as NETLOGON's calls carry it: the
-// first label of a host name in upper case, or an address as given. The
-// controller authenticates the caller by the channel's credential, not by
-// this name.
+// first label of a host name in upper case, or an IP address as given, any
+// port dropped. The controller authenticates the caller by the channel's
+// credential, not by this name.
 func logonServer(addr string) string {
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		addr = h
+	}
 	if net.ParseIP(addr) != nil {
 		return `\\` + addr
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/oiweiwei/go-msrpc/dcerpc"
 	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
@@ -114,11 +116,7 @@ func (d *dc) Channel(ctx context.Context, account string, password []byte) (Chan
 // machineCredential is the computer account name$ keyed by its NT hash, so no
 // string holds the password.
 func machineCredential(name, realm string, password []byte) (credential.Credential, error) {
-	codes := utf16.Encode([]rune(string(password)))
-	b := make([]byte, 0, 2*len(codes))
-	for _, c := range codes {
-		b = append(b, byte(c), byte(c>>8))
-	}
+	b := utf16le(password)
 	hash, err := crypto.MD4(b)
 	clear(b)
 	if err != nil {
@@ -126,6 +124,25 @@ func machineCredential(name, realm string, password []byte) (credential.Credenti
 	}
 	// The schannel bind carries the domain, which Samba requires.
 	return credential.NewFromNTHashBytes(name+"$", hash, credential.Workstation(name), credential.Domain(realm)), nil
+}
+
+// utf16le is password, UTF-8, encoded UTF-16LE with no rune slice or string
+// in between, so clearing the result and the caller's slice leaves no copy.
+// An invalid byte encodes as U+FFFD, as []rune(string(password)) has it. No
+// UTF-8 sequence takes more than twice its length in UTF-16LE, so the buffer
+// is never grown and leaves no unzeroed copy behind.
+func utf16le(password []byte) []byte {
+	b := make([]byte, 0, 2*len(password))
+	for i := 0; i < len(password); {
+		r, n := utf8.DecodeRune(password[i:])
+		i += n
+		if hi, lo := utf16.EncodeRune(r); hi != utf8.RuneError {
+			b = binary.LittleEndian.AppendUint16(b, uint16(hi))
+			r = lo
+		}
+		b = binary.LittleEndian.AppendUint16(b, uint16(r))
+	}
+	return b
 }
 
 // authenticate runs the challenge and NetrServerAuthenticate3 as name on an
@@ -297,6 +314,7 @@ type channel struct {
 	cred   *nlssp.SecureCredential // the authenticator chain NetrServerPasswordSet2 advances
 	as     *assoc                  // nil once torn, until the next call binds another
 	closed bool                    // set by Close: no association is bound again
+	spent  bool                    // a SetPassword failed: the chain may be ahead of the controller's
 }
 
 // errChannelClosed is a call on a closed channel.
