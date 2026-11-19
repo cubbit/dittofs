@@ -102,6 +102,13 @@
   reason: 'The same settled answer as its retry-later sibling for the destination''s share: the destination''s journal limit refusal reads an ended-unreclaimed figure of zero once the refusal''s two repack passes have cycled the share''s live bytes, and answers no space where the row wants the retry-later that outlives the refusal. The row waits on the same two rulings the sibling''s entry names.'
   issue: '#4206'
 
+- test: TestRFC8A_CapacityScopedRepack
+  message: 'unreclaimed bytes are gone: the repack was journal-wide'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Over the real repack the row stops past its writes at the assertion over the other share: B'': B''s superseded plain figure reads zero once the second share''s refusal cycle ran, so the row''s expectation — the other shares'' superseded bytes surviving a scoped repack beside them — no longer holds against the answer the settled refusal makes. Waits with the cluster on the RFC 8 ruling the PR text carries; the follow-up re-derives what a scoped pass owes the shares its scope does not name.'
+  issue: '#4206'
 - test: TestRFC8A_CapacityRacingRefusals
   message: 'the share limit has nothing left to free'
   status: fail
@@ -152,6 +159,13 @@
   category: feature
   reason: 'a committed hole reads zeros and a synced record the journal lost reads Lost after the restart. The row gets past the restart, but the lost extent serves the bytes it held before, superseded ones, and answers no error instead of ErrLost. Cause: after the restart the open cuts the corrupted record, the stream''s last synced record with nothing after it to prove it synced, as an unproven tail, and a loss counts only when a recorded mark proves it; the engine''s journal open passes nil marks (pkg/block/engine/enginewire.go), so no mark proves it. The row waits on the open being handed the recorded marks.'
   issue: '#4711'
+- test: TestRFC8B_SharedJournal
+  message: 'the filling write'': engine: the share limit has nothing left to free'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The one journal share at its own limit takes the settled no-space answer where the row wants the refusal-later that never becomes no space while another share is healthy: the share''s bytes, none superseded, sit in a single active segment, so each refusal''s scoped pass seals and recycles that one segment whole and the candidacy the settled answer reads is left with nothing. The share rides the same ruling the no-space cluster does — the live dirty bytes with the store put-healthy that keep retry-later, and the seal that owes no caller-side fsync. At the base line it only passed the interim retry-later of the not-built repack.'
+  issue: '#4206'
 - test: TestRFC8B_JournalFullOnAFullDevice
   message: 'answered vfs: retry shortly: capacity, want the device''s ErrNoSpace'
   status: fail
