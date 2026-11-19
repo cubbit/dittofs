@@ -1485,17 +1485,24 @@ directory (§4.10).
 
 **Metrics.** `metrics` reads numbers, not results: `fio-json` takes bandwidth, IOPS and latency
 per job from fio's JSON, and fails a job whose `error` field is non-zero, a failed verify
-included. `dfsbench-json` takes dfsbench's per-cell results. Numbers are recorded for `dt history`
-and never grade a run on their own (§4.10). `fio-json` reads the report fio writes to
+included. `dfsbench-json` takes dfsbench's per-cell results. `go-bench` takes `go test -bench`'s
+per-benchmark figures. Numbers are recorded for `dt history` and never grade a run on their own
+(§4.10). A reader dt runs reads each test's own numbers, so it needs `format: exit` and a `tests`
+list. `fio-json` reads the report fio writes to
 `{out}/{test}.json`, and records each job's `bw_bytes`, `iops` and mean `lat_ns` for each direction
 it did I/O in, in its test's `extra.metrics`, keyed `JOB/DIRECTION/NAME`, as
 `seq-write/write/bw_bytes`. A job whose `error` isn't 0 fails its test even when fio exits 0, as it
 does for a job that continues on errors, which logs them in the report's file before the report. A
 test that passes without a report has no numbers, which is lost coverage: its cell is not run, exit
-2. `go-bench` reads the benchmark lines `go test -bench` writes to `{out}/{test}.txt`, and records
-each benchmark's number for each unit, keyed `NAME UNIT` with the `-GOMAXPROCS` suffix left out, as
-`BenchmarkAppend/4KiB ns/op`; a benchmark run more than once, by `-count`, records the median of its
-runs. A test that passes without benchmark lines has no numbers either: its cell is not run, exit 2.
+2. `go-bench` reads what `go test -bench` writes to `{out}/{test}.txt`, and records each benchmark's
+number for each unit, keyed `NAME UNIT` as `BenchmarkAppend/4KiB ns/op`, without the `-N` suffix
+`go test` adds for the GOMAXPROCS it ran at, the cell env's or the host's, which it leaves off at 1;
+a name that only ends in digits keeps them. A benchmark that prints has its figures read from the
+line after its output. A benchmark run more than once, by `-count`, records the median of its runs;
+the samples stay in the file for `benchstat`. The command runs at one GOMAXPROCS, with no `-cpu`
+list. A `--- FAIL` line, as a failed benchmark behind a `tee` leaves, or one name in two packages,
+whose figures would merge, fails its test. A test that passes without benchmark lines has no numbers
+either: its cell is not run, exit 2.
 `dt` doesn't read `dfsbench-json` yet: it comes with the tracked runs (§8 step 6).
 
 **Grades in CTRF and JUnit.** `dt` grades each result of each test, and writes the grade in

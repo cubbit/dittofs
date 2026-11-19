@@ -124,6 +124,12 @@ func checkUnit(root string, u *Suite) []error {
 	if u.Metrics != "" && !metrics[u.Metrics] {
 		fail("metrics %q is not fio-json, dfsbench-json or go-bench", u.Metrics)
 	}
+	// dt reads a test's own numbers, after an exit-format test: a reader on
+	// another format or without tests records nothing. dt doesn't read
+	// dfsbench-json yet.
+	if (u.Metrics == "fio-json" || u.Metrics == "go-bench") && (u.Format != "exit" || !u.Tests.Set()) {
+		fail("metrics %q needs format exit and a tests list", u.Metrics)
+	}
 	if !isTier(u.Tier) {
 		fail("tier %q is not one of %s", u.Tier, strings.Join(Tiers, ", "))
 	}

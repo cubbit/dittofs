@@ -612,9 +612,8 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			if r.timedOut {
 				tc.Grade = report.New // a hang, which no entry excuses
 			}
-			// decision: dt reads fio-json and go-bench. dfsbench-json's
-			// numbers are for the tracked benchmark runs, and aren't recorded
-			// until then.
+			// decision: dfsbench-json's numbers are for the tracked benchmark
+			// runs, and aren't recorded until then.
 			switch c.Unit.Metrics {
 			case "fio-json":
 				// A job that continues on errors exits 0, so its report
@@ -630,8 +629,13 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 				}
 				tc.Metrics = numbers
 			case "go-bench":
-				numbers, err := readGoBench(filepath.Join(out, cmp.Or(paths[test], test)+".txt"))
-				if err != nil && tc.Status == report.Passed {
+				// A failed benchmark behind a tee exits 0, so its lines
+				// decide too, as fio's report does.
+				numbers, failed, err := readGoBench(filepath.Join(out, cmp.Or(paths[test], test)+".txt"), gomaxprocs(t.env))
+				switch {
+				case len(failed) > 0:
+					tc.Status, tc.Message = report.Failed, strings.TrimSuffix(strings.Join(append(failed, r.note), "; "), "; ")
+				case err != nil && tc.Status == report.Passed:
 					// A test that passed without benchmark lines has no
 					// numbers either: its cell isn't run, as for fio.
 					why = append(why, prefix+"go's benchmark output: "+err.Error())

@@ -4,54 +4,96 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 )
 
-// procs is the -GOMAXPROCS suffix go test adds to a benchmark's name.
-var procs = regexp.MustCompile(`-\d+$`)
-
-// readGoBench reads the benchmark lines go test wrote to path, as
-// "BenchmarkAppend/4KiB-8  3  1234 ns/op  56 B/op  7 allocs/op": each
-// benchmark's number for each unit, by "NAME UNIT", as
-// "BenchmarkAppend/4KiB ns/op", the -GOMAXPROCS suffix left out.
+// readGoBench reads what go test -bench wrote to path, run at GOMAXPROCS
+// procs: each benchmark's number for each unit, by "NAME UNIT", as
+// "BenchmarkAppend/4KiB ns/op", the -procs suffix go test adds past one CPU
+// left out, and why the file shows a failure: a --- FAIL line, or one
+// benchmark name in two packages, whose figures would merge. A benchmark
+// that prints has its name and its figures on separate lines.
 //
 // decision: a benchmark run more than once, by -count, keeps the median of
-// its runs, which one slow run doesn't move.
-func readGoBench(path string) (map[string]float64, error) {
+// its runs, which one slow run doesn't move. The samples stay in the file for
+// benchstat; the median is for history.
+func readGoBench(path string, procs int) (map[string]float64, []string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	suffix := "-" + strconv.Itoa(procs)
+	if procs == 1 {
+		suffix = ""
 	}
 	runs := map[string][]float64{}
+	pkgOf := map[string]string{}
+	var failed []string
+	var pkg, name string
 	for line := range strings.Lines(string(data)) {
 		f := strings.Fields(line)
-		if len(f) < 4 || len(f)%2 != 0 || !strings.HasPrefix(f[0], "Benchmark") {
+		switch {
+		case len(f) == 0:
+			continue
+		case strings.HasPrefix(line, "--- FAIL: "):
+			failed = append(failed, strings.TrimSpace(line))
+			continue
+		case len(f) == 2 && f[0] == "pkg:":
+			pkg = f[1]
+			continue
+		case strings.HasPrefix(f[0], "Benchmark"):
+			name = strings.TrimSuffix(f[0], suffix)
+			if p, ok := pkgOf[name]; ok && p != pkg {
+				failed = append(failed, fmt.Sprintf("%s ran in %s and %s", name, p, pkg))
+			}
+			pkgOf[name], f = pkg, f[1:]
+		}
+		if name == "" || len(f) < 3 || len(f)%2 == 0 {
 			continue
 		}
-		if _, err := strconv.Atoi(f[1]); err != nil {
+		if _, err := strconv.Atoi(f[0]); err != nil {
 			continue
 		}
-		name := procs.ReplaceAllString(f[0], "")
-		for i := 2; i < len(f); i += 2 {
+		for i := 1; i < len(f); i += 2 {
 			if v, err := strconv.ParseFloat(f[i], 64); err == nil {
 				runs[name+" "+f[i+1]] = append(runs[name+" "+f[i+1]], v)
 			}
 		}
 	}
 	if len(runs) == 0 {
-		return nil, fmt.Errorf("%s holds no benchmark lines", filepath.Base(path))
+		return nil, failed, fmt.Errorf("%s holds no benchmark lines", filepath.Base(path))
 	}
 	numbers := make(map[string]float64, len(runs))
 	for key, vs := range runs {
-		slices.Sort(vs)
-		mid := len(vs) / 2
-		numbers[key] = vs[mid]
-		if len(vs)%2 == 0 {
-			numbers[key] = (vs[mid-1] + vs[mid]) / 2
+		numbers[key] = median(vs)
+	}
+	return numbers, failed, nil
+}
+
+// median is the middle of vs, sorted in place, or the mean of the two in the
+// middle.
+func median(vs []float64) float64 {
+	slices.Sort(vs)
+	m := len(vs) / 2
+	if len(vs)%2 == 1 {
+		return vs[m]
+	}
+	return (vs[m-1] + vs[m]) / 2
+}
+
+// gomaxprocs is the GOMAXPROCS a command run with env takes: the last
+// GOMAXPROCS=N in env, else this process's, which a go test run on this host
+// takes too.
+func gomaxprocs(env []string) int {
+	for _, kv := range slices.Backward(env) {
+		if v, ok := strings.CutPrefix(kv, "GOMAXPROCS="); ok {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				return n
+			}
 		}
 	}
-	return numbers, nil
+	return runtime.GOMAXPROCS(0)
 }

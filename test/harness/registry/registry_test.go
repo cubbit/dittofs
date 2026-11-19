@@ -55,6 +55,8 @@ func TestLoadRules(t *testing.T) {
 		{"groups name existing suites", ok + "groups: { g: [nope] }\nsuites:\n  a: { cmd: true }\n", `no suite "nope"`},
 		{"commands aren't blank", ok + "suites:\n  a: { cmd: [\"true\", \"\"] }\n", "a command is blank"},
 		{"go-json begins with go test", ok + "suites:\n  a: { cmd: make test, format: go-json }\n", "begins with go test"},
+		{"a read metric needs tests", ok + "suites:\n  a: { cmd: 'go test -bench . > {out}/b.txt', metrics: go-bench }\n", `metrics "go-bench" needs format exit and a tests list`},
+		{"a read metric needs format exit", ok + "suites:\n  a: { cmd: 'go test -json -bench .', tests: [b], format: go-json, metrics: fio-json }\n", `metrics "fio-json" needs format exit and a tests list`},
 		{"every matrix axis is used", ok + "suites:\n  a: { cmd: true, matrix: { profile: [memory] } }\n", `axis "profile" is used by no command`},
 		{"unknown placeholders are refused", ok + "suites:\n  a: { cmd: 'run {nope}' }\n", "unknown placeholder {nope}"},
 		{"placeholders side by side are each checked", ok + "suites:\n  a: { cmd: 'run {out}{nope}' }\n", "unknown placeholder {nope}"},
