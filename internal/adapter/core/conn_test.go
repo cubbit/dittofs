@@ -1773,6 +1773,7 @@ func TestTheIdleDeadlineCountsUnderIdle(t *testing.T) {
 	clk := newManualClock()
 	core.SetServerClock(srv, clk)
 	conn, peer := servedConn(t, srv, &l)
+	idleCurrent := core.WatchIdleArms(conn)
 	c := testproto.NewClient(peer)
 	for _, msg := range []testproto.Msg{
 		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
@@ -1785,6 +1786,14 @@ func TestTheIdleDeadlineCountsUnderIdle(t *testing.T) {
 			t.Fatalf("over the full protocol: %+v (%v)", rs, err)
 		}
 	}
+	// A reply received is not the deadline armed: the request's own
+	// goroutine re-arms the idle deadline when it ends. A clock advanced
+	// before that arm fires the stale one, which closes nothing, and the
+	// arm then lands a deadline past the frozen clock's now, which the
+	// advance that follows never reaches.
+	waitsFor(t, "the idle deadline to re-arm", func() bool {
+		return idleCurrent() && core.Runs(core.ConnPipeline(conn)) == 0 && !core.RecordHeld(conn)
+	})
 	_, idle := deadlines(conn)
 	values, _ := scrape(t, m)
 	if got := values["adapter_connections{protocol="+testproto.Name+",state=established}"]; got != 1 {
