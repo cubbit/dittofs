@@ -25,36 +25,8 @@ test/harness/bin/dt run pjdfstest/badger-s3/4 chmod/00.t   # one test file
 It needs Linux, the kernel NFS client and passwordless sudo; on macOS, run it in the Linux
 container, `test/harness/bin/dtc run pjdfstest/badger-s3/3`.
 
-### Manual Setup
-
-If you prefer manual setup:
-
-```bash
-# Terminal 1: Start DittoFS server
-./dfs start --config test/posix/configs/config.yaml
-
-# Terminal 2: Configure via API (server generates admin password on first start)
-# Check server output for the generated password
-ADMIN_PASSWORD="<from-server-output>"
-
-# Login
-./dfsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASSWORD"
-
-# Create stores
-./dfsctl store metadata add --name default --in-memory
-./dfsctl store block add --name default --type memory
-
-# Create share
-./dfsctl share create --name /export --metadata default --block-store default
-
-# Enable NFS adapter
-./dfsctl adapter update nfs --enabled true --port 12049
-
-# Mount NFS share
-sudo mkdir -p /tmp/dittofs-test
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,nolock \
-  localhost:/export /tmp/dittofs-test
-```
+To run a server and mount it by hand instead, run `test/harness/bin/dt stack up` and then
+`test/harness/bin/dt stack mount`: see [Running DittoFS by hand](../../docs/internals/testing.md#running-dittofs-by-hand).
 
 ## NFSv4 Testing
 
@@ -128,9 +100,6 @@ See `known.yaml` for the expected failures, each with its reason and the NFS ver
 test/posix/
 ├── README.md                # This file
 ├── known.yaml               # Expected failures with reasons, graded by dt
-├── Dockerfile.pjdfstest     # pjdfstest container, for a mount made by hand
-├── configs/                 # Configuration files
-│   └── config.yaml          # Single config (paths set via env vars)
 └── results/                 # Test results (not committed)
 ```
 

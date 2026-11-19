@@ -254,137 +254,6 @@
             };
           };
 
-        # Helper script to start PostgreSQL for testing
-        dfs-postgres-start = pkgs.writeShellScriptBin "dfs-postgres-start" ''
-          container_name="dittofs-postgres-test"
-
-          # Check if docker is available
-          if ! command -v docker &>/dev/null; then
-            echo "Error: docker not found in PATH."
-            exit 1
-          fi
-
-          # Docker Desktop and a rootless daemon answer to the invoking user;
-          # a system daemon usually does not. Probe before reaching for sudo,
-          # so the script neither demands a password it does not need nor
-          # loses, to sudo's secure_path, the docker it just found.
-          DOCKER=(docker)
-          docker info &>/dev/null || DOCKER=(sudo "$(command -v docker)")
-          if ! "''${DOCKER[@]}" info &>/dev/null; then
-            echo "Error: Cannot connect to Docker daemon."
-            echo "Start it first (Linux: sudo systemctl start docker)."
-            exit 1
-          fi
-
-          # Check if container already exists
-          if "''${DOCKER[@]}" ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
-            # Check if it's running
-            if "''${DOCKER[@]}" ps --format '{{.Names}}' | grep -q "^$container_name$"; then
-              echo "PostgreSQL container already running"
-              exit 0
-            else
-              echo "Starting existing PostgreSQL container..."
-              "''${DOCKER[@]}" start "$container_name"
-            fi
-          else
-            echo "Creating PostgreSQL container for DittoFS testing..."
-            "''${DOCKER[@]}" run -d \
-              --name "$container_name" \
-              -e POSTGRES_USER=dittofs \
-              -e POSTGRES_PASSWORD=dittofs \
-              -e POSTGRES_DB=dittofs_test \
-              -p 5432:5432 \
-              postgres:16-alpine
-          fi
-
-          echo "Waiting for PostgreSQL to be ready..."
-          for _ in $(seq 1 30); do
-            if "''${DOCKER[@]}" exec "$container_name" pg_isready -U dittofs -d dittofs_test &>/dev/null; then
-              echo "PostgreSQL is ready!"
-              echo ""
-              echo "Connection details:"
-              echo "  Host:     localhost"
-              echo "  Port:     5432"
-              echo "  User:     dittofs"
-              echo "  Password: dittofs"
-              echo "  Database: dittofs_test"
-              echo ""
-              echo "Control-plane store tests: DITTOFS_TEST_POSTGRES_DSN=postgres://dittofs:dittofs@localhost:5432/dittofs_test?sslmode=disable"
-              exit 0
-            fi
-            sleep 1
-          done
-
-          echo "Error: PostgreSQL failed to start within 30 seconds"
-          exit 1
-        '';
-
-        # Helper script to stop PostgreSQL test container
-        dfs-postgres-stop = pkgs.writeShellScriptBin "dfs-postgres-stop" ''
-          container_name="dittofs-postgres-test"
-
-          DOCKER=(docker)
-          docker info &>/dev/null || DOCKER=(sudo "$(command -v docker)")
-
-          if "''${DOCKER[@]}" ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
-            echo "Stopping PostgreSQL container..."
-            "''${DOCKER[@]}" stop "$container_name" 2>/dev/null || true
-            echo "Removing PostgreSQL container..."
-            "''${DOCKER[@]}" rm "$container_name" 2>/dev/null || true
-            echo "PostgreSQL container removed"
-          else
-            echo "PostgreSQL container not found"
-          fi
-
-          echo "Cleanup complete"
-        '';
-
-        # Helper script for running e2e tests with sudo
-        dfs-e2e = pkgs.writeShellScriptBin "dfs-e2e" ''
-          # E2E tests require sudo for NFS mounting
-          # This script preserves the nix shell's PATH for go binary access
-
-          # Get the directory of the dittofs project (assume we're in it)
-          PROJECT_DIR="$(pwd)"
-
-          # Verify we're in the right directory
-          if [[ ! -f "$PROJECT_DIR/go.mod" ]] || ! grep -q "dittofs" "$PROJECT_DIR/go.mod"; then
-            echo "Error: Must run from dittofs project root"
-            exit 1
-          fi
-
-          echo "Running DittoFS E2E tests..."
-          echo "Project: $PROJECT_DIR"
-          echo ""
-
-          # Build first (without sudo)
-          echo "Building dfs..."
-          go build -o "$PROJECT_DIR/dfs" "$PROJECT_DIR/cmd/dfs/main.go" || exit 1
-          echo ""
-
-          # Run e2e tests with sudo, preserving PATH for go binary
-          # Also preserve GOPATH, GOMODCACHE, GOCACHE for go test to work
-          if [[ $# -gt 0 ]]; then
-            # Run specific test pattern
-            sudo env \
-              PATH="$PATH" \
-              GOPATH="$GOPATH" \
-              GOMODCACHE="$GOMODCACHE" \
-              GOCACHE="$GOCACHE" \
-              HOME="$HOME" \
-              go test -tags=e2e -v -timeout 30m "$@" ./test/e2e/...
-          else
-            # Run all e2e tests
-            sudo env \
-              PATH="$PATH" \
-              GOPATH="$GOPATH" \
-              GOMODCACHE="$GOMODCACHE" \
-              GOCACHE="$GOCACHE" \
-              HOME="$HOME" \
-              go test -tags=e2e -v -timeout 30m ./test/e2e/...
-          fi
-        '';
-
         # Common build inputs for both development and CI
         commonBuildInputs = with pkgs; [
           # Shell
@@ -400,19 +269,11 @@
           gnumake
           git
 
-          # SMB conformance test dependencies
-          gettext # envsubst for ptfconfig template rendering
-          xmlstarlet # TRX result parsing
-          curl # health checks in bootstrap/local mode
+          curl # Localstack's health check in test/harness/env.sh
 
           # NFSv4 conformance suite. Pure Python speaking NFSv4 over TCP, so it
           # needs no kernel mount and runs on every platform.
           pynfs
-
-          # PostgreSQL test container helpers. They only drive the docker CLI,
-          # which exists on macOS too.
-          dfs-postgres-start
-          dfs-postgres-stop
         ];
 
         # Platform-specific inputs
@@ -435,18 +296,16 @@
             pjdfstest
             # Docker client for PostgreSQL testing (daemon must be running on host)
             docker-client
-            # Helper scripts that need the Linux NFS client, /proc/mounts or
-            # pjdfstest. The docker-only helpers live in commonBuildInputs.
+            # Helper scripts that need the Linux NFS client.
             dfs-mount
             dfs-umount
-            dfs-e2e
           ];
 
         darwinInputs =
           with pkgs;
           lib.optionals stdenv.isDarwin [
             # macOS uses built-in NFS client
-            # For pjdfstest on macOS, use Docker: see test/posix/README.md
+            # For pjdfstest on macOS, use dtc: see test/posix/README.md
           ];
 
         # Go cache locations, shared by every shell.
@@ -477,9 +336,9 @@
               echo "NFS mount (macOS):"
               echo "  sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport,nolock localhost:/export /tmp/dittofs-test"
               echo ""
-              echo "POSIX compliance testing (via Docker):"
-              echo "  docker build -t dfs-pjdfstest -f test/posix/Dockerfile.pjdfstest ."
-              echo "  docker run --rm -v /tmp/dittofs-test:/mnt/test dfs-pjdfstest"
+              echo "POSIX compliance testing (pjdfstest; dt runs it in the dtc container):"
+              echo "  test/harness/bin/dt services up localstack"
+              echo "  test/harness/bin/dt run pjdfstest/badger-s3/3"
             else
               echo "NFS helper commands:"
               echo "  dfs-mount [path]            Mount NFS (default: /tmp/dittofs-test)"
@@ -488,14 +347,12 @@
               echo "POSIX compliance testing (pjdfstest, through the harness):"
               echo "  test/harness/bin/dt run pjdfstest"
               echo ""
-              echo "E2E testing (requires sudo for NFS mounts):"
-              echo "  dfs-e2e                     Run all E2E tests"
-              echo "  dfs-e2e -run TestName       Run specific test"
+              echo "E2E testing (dt runs it through passwordless sudo):"
+              echo "  test/harness/bin/dt run e2e [TestName]"
               echo ""
             fi
-            echo "PostgreSQL testing:"
-            echo "  dfs-postgres-start          Start PostgreSQL container"
-            echo "  dfs-postgres-stop           Stop and remove container"
+            echo "PostgreSQL for the integration tests:"
+            echo "  test/harness/bin/dt services up postgres"
             echo ""
             echo "NFSv4 protocol conformance (no mount, no root):"
             echo "  pynfs-4.0 / pynfs-4.1       pynfs test client"
