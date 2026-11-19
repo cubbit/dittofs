@@ -884,6 +884,7 @@ type NodeStatus struct {
 	RestartPending []RecordRef
 	Secrets        []SecretVersion // each secret reference it resolves, and the version it holds (RFC 13 §7)
 	Conditions     []byte // the node's health conditions (RFC 25)
+	Adapters       []AdapterStatus // RFC 23 §2.4: each protocol's state and the settings generation it runs
 }
 
 // AdapterStatus is one of a node's adapters as the node reports it.
