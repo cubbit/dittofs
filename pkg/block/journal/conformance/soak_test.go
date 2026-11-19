@@ -55,8 +55,8 @@ const (
 	soakWindowOps = 128
 
 	// soakWindowSecs is how much wall time passes between two snapshots of
-	// the main run: a fourth of a minute, an hour's band reading 1,800
-	// samples and a five-minute calibration reading 75. A duration shorter
+	// the main run: a fourth of a minute, a two-hour band reading 1,800
+	// samples and a five-minute calibration reading twenty. A duration shorter
 	// than twelve windows scales it down to a twelfth of the run, so a
 	// short sanity run still reads a band the checks can judge — the loop
 	// caps at the floor of one second, the shortest window whose samples
@@ -202,11 +202,17 @@ type soakLog struct {
 
 	// orphan is the file the run wrote into the journal's directory at its
 	// plant edge and never removed, as a footprint leak to be caught; empty
-	// on a run without one. The temp directory's own cleanup removes it, and
-	// the name is not segment-shaped on purpose: a stray the open cannot
-	// classify as a segment or a spare it refuses closed, and the leak this
-	// plant stands for — storage the journal stopped accounting and never
-	// gave back — is the same leak whatever the stray's name is.
+	// on a run without one. The temp directory's own cleanup removes it.
+	// The name is plain prose, not the journal's .seg or .spare.tmp shapes,
+	// so a stray in a debug session or a directory diff reads as the
+	// harness's own, never as the journal's: the open tolerates a stray
+	// whatever it is named — probed with three segment-shaped files planted
+	// beside a live journal, the reopen after a crash ran on unattached
+	// (RejectedSegments unmoved) and writes continued — so nothing about
+	// the plant's survival across the leg's crashes hangs on the name, and
+	// the leak this plant stands for — storage the journal stopped
+	// accounting and never gave back — is the same leak whatever the
+	// stray's name is.
 	orphan string
 }
 
