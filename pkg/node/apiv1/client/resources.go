@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"iter"
 	"net/http"
 	"net/url"
@@ -100,4 +101,70 @@ func (c *Client) Audit(ctx context.Context, filter url.Values) iter.Seq2[apiv1.A
 // Health reads the node's readiness and the health conditions it holds.
 func (c *Client) Health(ctx context.Context) (apiv1.Health, error) {
 	return get[apiv1.Health](ctx, c, "/api/v1/health")
+}
+
+// Stores is the remote stores: Create is POST /stores, Get is GET
+// /stores/{id} and Delete is DELETE /stores/{id}; no route serves List, Put
+// or Patch. A store's settings are each a setting at its scope, and its
+// credential is set by SetStoreCredential.
+func (c *Client) Stores() Resource[apiv1.StoreSpec, struct{}] {
+	return Resource[apiv1.StoreSpec, struct{}]{c: c, path: "/api/v1/stores"}
+}
+
+// SetStoreCredential is PUT /stores/{id}/credential: it seals value as the
+// first credential of the remote store id names, etag "*", and returns the
+// credential's reference and version and its tag. A store that holds a
+// credential is refused.
+func (c *Client) SetStoreCredential(ctx context.Context, id string, value []byte, etag string) (apiv1.SecretRef, string, error) {
+	rp, err := c.write(ctx, http.MethodPut, "/api/v1/stores/"+url.PathEscape(id)+"/credential", apiv1.Credential{Spec: apiv1.CredentialSpec{Value: value}}, etag, nil)
+	if err != nil {
+		return apiv1.SecretRef{}, "", err
+	}
+	var ref apiv1.SecretRef
+	return ref, rp.header.Get("ETag"), json.Unmarshal(rp.body, &ref)
+}
+
+// DeleteStoreCredential is DELETE /stores/{id}/credential: it removes the
+// credential of the remote store id names, whose credential's tag is etag.
+func (c *Client) DeleteStoreCredential(ctx context.Context, id, etag string) error {
+	_, err := c.write(ctx, http.MethodDelete, "/api/v1/stores/"+url.PathEscape(id)+"/credential", nil, etag, nil)
+	return err
+}
+
+// Namespaces is the namespaces: List, Create, Get and Delete are GET and
+// POST /namespaces and GET and DELETE /namespaces/{id}; no route serves Put
+// or Patch.
+func (c *Client) Namespaces() Resource[apiv1.NamespaceSpec, struct{}] {
+	return Resource[apiv1.NamespaceSpec, struct{}]{c: c, path: "/api/v1/namespaces"}
+}
+
+// Adapters is the adapters, each named by its protocol: Get and Put are GET
+// and PUT /adapters/{protocol}, a first Put naming the tag "0" its Get
+// answered; no route serves the others.
+func (c *Client) Adapters() Resource[apiv1.AdapterSpec, apiv1.AdapterStatus] {
+	return Resource[apiv1.AdapterSpec, apiv1.AdapterStatus]{c: c, path: "/api/v1/adapters"}
+}
+
+// Scope is the scope a setting is written at: the installation, or the
+// node, namespace, remote store or share an ID names.
+type Scope string
+
+const (
+	ScopeInstallation Scope = ""
+	ScopeNode         Scope = "nodes"
+	ScopeNamespace    Scope = "namespaces"
+	ScopeStore        Scope = "stores"
+	ScopeShare        Scope = "shares"
+)
+
+// Settings is the settings at scope, each named by its key: the
+// installation's, id unused, or those of the node, namespace, remote store
+// or share id names. Get, Put and Delete are GET, PUT and DELETE of
+// .../settings/{key}; no route serves List, Create or Patch.
+func (c *Client) Settings(scope Scope, id string) Resource[apiv1.SettingSpec, apiv1.SettingStatus] {
+	path := "/api/v1/settings"
+	if scope != ScopeInstallation {
+		path = "/api/v1/" + string(scope) + "/" + url.PathEscape(id) + "/settings"
+	}
+	return Resource[apiv1.SettingSpec, apiv1.SettingStatus]{c: c, path: path}
 }

@@ -56,6 +56,15 @@ func (c ControlPlane) Namespaces(ctx context.Context, after entity.NamespaceID) 
 	}
 }
 
+// Namespace reads one namespace's record.
+func (c ControlPlane) Namespace(ctx context.Context, id entity.NamespaceID) (n entity.Namespace, ok bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		n, ok, err = namespaceIn(r, id)
+		return err
+	})
+	return n, ok, err
+}
+
 // PutNamespace creates a namespace, expect zero, or replaces the one whose
 // generation expect names, raising its generation. The record and its key
 // in the store index are written together. A namespace naming no remote
@@ -140,6 +149,11 @@ func (c controlTx) DeleteNamespace(id entity.NamespaceID, expect uint64) error {
 // Namespace reads a namespace's record, tracked.
 func (c controlTx) Namespace(id entity.NamespaceID) (entity.Namespace, bool, error) {
 	return namespaceIn(c.tx, id)
+}
+
+// Node reads a node's record, tracked.
+func (c controlTx) Node(id entity.NodeID) (entity.Node, bool, error) {
+	return nodeIn(c.tx, id)
 }
 
 // StoreNamed reports whether any namespace names the remote store, guarding

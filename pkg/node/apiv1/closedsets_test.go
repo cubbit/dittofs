@@ -38,6 +38,7 @@ func TestClosedSetsAreRFC23s(t *testing.T) {
 		{"OpState", strs(opStates), []string{
 			"pending", "running", "succeeded", "failed", "cancelling", "cancelled",
 		}},
+		{"AdapterState", strs(adapterStates), []string{"configured", "serving", "draining", "stopped"}},
 	} {
 		want := slices.Sorted(slices.Values(tc.want))
 		if got := slices.Sorted(slices.Values(consts[tc.typ])); !slices.Equal(got, want) {

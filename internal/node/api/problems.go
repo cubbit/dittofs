@@ -10,6 +10,8 @@ import (
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/secrets/secreterr"
+	"github.com/cubbit/dittofs/pkg/settings"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -113,6 +115,28 @@ var components = []struct {
 	{vfserr.ErrUnknownPrincipal, answerOf{http.StatusBadRequest, "unknown_principal", false}},
 	{vfserr.ErrFileOpen, answerOf{http.StatusInternalServerError, "file_open", false}},
 
+	// The settings table's refusals of a setting's write.
+	{settings.ErrUnknownKey, answerOf{http.StatusBadRequest, "unknown_key", false}},
+	{settings.ErrWrongScope, answerOf{http.StatusBadRequest, "wrong_scope", false}},
+	{settings.ErrNewerSchema, answerOf{http.StatusConflict, "newer_schema", false}},
+	{settings.ErrForbidden, answerOf{http.StatusForbidden, "forbidden", false}},
+	{settings.ErrRequired, answerOf{http.StatusBadRequest, "required", false}},
+	{settings.ErrInvalid, answerOf{http.StatusBadRequest, "invalid", false}},
+	// A bound setting is refused by the code RFC 23 names it by.
+	{settings.ErrBound, answerOf{http.StatusConflict, "bound_setting", false}},
+	{settings.ErrSecretRef, answerOf{http.StatusBadRequest, "secret_ref", false}},
+	{settings.ErrFormatVersion, answerOf{http.StatusConflict, "format_version", false}},
+	{settings.ErrUnproven, answerOf{http.StatusConflict, "unproven", false}},
+	// The secret provider's refusals of a seal.
+	{secreterr.ErrWrongRole, answerOf{http.StatusInternalServerError, "wrong_role", false}},
+	{secreterr.ErrWrongKind, answerOf{http.StatusConflict, "wrong_kind", false}},
+	{secreterr.ErrKindChanged, answerOf{http.StatusConflict, "kind_changed", false}},
+	{secreterr.ErrUnproven, answerOf{http.StatusConflict, "unproven", false}},
+	// A store or component call whose body is not built yet answers that
+	// the node cannot serve it, and that the same request will not succeed
+	// on this build.
+	{errors.ErrUnsupported, answerOf{http.StatusServiceUnavailable, apiv1.CodeUnavailable, false}},
+
 	// ponytail: the metadata store's codes, and kv's errors below, are
 	// answered here because kvstore passes them up from Write untranslated.
 	// Upgrade by translating them to vfserr or entity errors at Write, after
@@ -190,6 +214,7 @@ func problemOf(err error) (apiv1.Problem, bool) {
 	var r *refusal
 	var f *fieldError
 	var running *entity.OperationRunningError
+	var comp *componentError
 	switch {
 	case !ok:
 		p.Detail = "internal error"
@@ -200,6 +225,8 @@ func problemOf(err error) (apiv1.Problem, bool) {
 		p.Retryable = p.Retryable && r.wait >= 0
 	case errors.As(err, &f):
 		p.Field, p.Detail = f.field, f.detail
+	case errors.As(err, &comp):
+		p.Field, p.Detail = comp.field, comp.detail
 	case errors.As(err, &running):
 		p.Detail, p.Names = "an operation of this kind runs on this target", []string{idString(running.ID)}
 	}

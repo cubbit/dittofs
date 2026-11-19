@@ -33,6 +33,8 @@ var covered = []struct{ dir, alias, prefix string }{
 	{"../../../pkg/vfs/vfserr", "vfserr", "Err"},
 	{"../../../pkg/metadata/errors", "merrs", "Err"},
 	{"../../../pkg/metadata/kv", "kv", "Err"},
+	{"../../../pkg/settings", "settings", "Err"},
+	{"../../../pkg/secrets/secreterr", "secreterr", "Err"},
 }
 
 // answeredAs are the errors whose row answers another code than their own
@@ -40,6 +42,7 @@ var covered = []struct{ dir, alias, prefix string }{
 // says why.
 var answeredAs = map[string]string{
 	"vfserr.ErrLogonFailure": "unauthenticated",
+	"settings.ErrBound":      "bound_setting",
 }
 
 // Every error and code the covered packages declare, read from their source,
@@ -114,6 +117,7 @@ func TestProblemCodeIsTheComponentsName(t *testing.T) {
 		{kv.ErrClosed, http.StatusServiceUnavailable, "closed"},
 		{fmt.Errorf("sign in: %w", vfserr.ErrLogonFailure), http.StatusUnauthorized, "unauthenticated"},
 		{fmt.Errorf("x: %w", vfserr.ErrUnknownPrincipal), http.StatusBadRequest, "unknown_principal"},
+		{fmt.Errorf("delete setting: %w", errors.ErrUnsupported), http.StatusServiceUnavailable, "unavailable"},
 	} {
 		p, _ := problemOf(tc.err)
 		if p.Status != tc.status || string(p.Code) != tc.code {
@@ -178,6 +182,14 @@ func TestProblemStatuses(t *testing.T) {
 		check(string(code), a)
 	}
 	for _, c := range components {
+		if c.err == errors.ErrUnsupported {
+			// The one unavailable answer that is final: no retry reaches a
+			// body this build does not hold.
+			if w := (answerOf{http.StatusServiceUnavailable, apiv1.CodeUnavailable, false}); c.answerOf != w {
+				t.Errorf("%v: answers %+v, want %+v", c.err, c.answerOf, w)
+			}
+			continue
+		}
 		check(c.err.Error(), c.answerOf)
 	}
 }
@@ -190,21 +202,22 @@ func TestProblemAnswers(t *testing.T) {
 	want := map[answerOf][]apiv1.Code{
 		{status: 400}: {"invalid", "invalid_name", "name_too_long", "syntax", "invalid_file", "wrong_share", "not_dir", "is_dir",
 			"past_end", "is_directory", "not_directory", "invalid_argument", "not_supported", "invalid_handle", "cross_share", "too_large",
-			"unknown_principal"},
+			"unknown_principal", "unknown_key", "wrong_scope", "required", "secret_ref"},
 		{status: 401}: {"unauthenticated"},
 		{status: 403}: {"forbidden", "password_change_required", "access", "perm", "wrong_security", "access_denied", "auth_required",
 			"permission_denied", "privilege_required"},
 		{status: 404}: {"not_found"},
 		{status: 409}: {"managed", "not_cancellable", "last_admin", "not_a_copy", "stale", "cross_project", "tags_exhausted", "exist",
 			"not_empty", "read_only", "no_space", "quota", "range_not_locked", "delete_pending", "state", "cross", "incomplete",
-			"already_exists", "quota_exceeded", "stale_handle", "lock_not_found"},
+			"already_exists", "quota_exceeded", "stale_handle", "lock_not_found", "newer_schema", "bound_setting", "format_version",
+			"unproven", "wrong_kind", "kind_changed"},
 		{status: 409, retryable: true}: {"operation_running", "delay", "moving", "rehoming", "locked", "share_violation", "blocked",
 			"deadlock", "lock_limit_exceeded", "lock_conflict", "conflict"},
 		{status: 412}:                  {"generation_mismatch"},
 		{status: 422}:                  {"idempotency_mismatch"},
 		{status: 428}:                  {"precondition_required"},
 		{status: 429, retryable: true}: {"throttled"},
-		{status: 500}:                  {"inconsistent", "bad_row", "lost", "corrupt", "io", "file_open", "io_error", "uncommitted_version"},
+		{status: 500}:                  {"inconsistent", "bad_row", "lost", "corrupt", "io", "file_open", "io_error", "uncommitted_version", "wrong_role"},
 		{status: 503, retryable: true}: {"starting", "unavailable", "grace", "grace_period", "connection_limit_reached", "closed"},
 	}
 	byCode := map[apiv1.Code]answerOf{}
@@ -227,6 +240,14 @@ func TestProblemAnswers(t *testing.T) {
 		check(string(code), a)
 	}
 	for _, c := range components {
+		if c.err == errors.ErrUnsupported {
+			// The one unavailable answer that is final: no retry reaches a
+			// body this build does not hold.
+			if w := (answerOf{http.StatusServiceUnavailable, apiv1.CodeUnavailable, false}); c.answerOf != w {
+				t.Errorf("%v: answers %+v, want %+v", c.err, c.answerOf, w)
+			}
+			continue
+		}
 		check(c.err.Error(), c.answerOf)
 	}
 	for c := range byCode {

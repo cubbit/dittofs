@@ -172,6 +172,14 @@ func testRegisteredStatuses(t *testing.T, kvo Opener) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("registered statuses:\n got %+v\nwant %+v", got, want)
 	}
+	read(t, s.ControlPlane(), func(tx entity.ControlPlaneTx) error {
+		for id, want := range map[entity.NodeID]bool{reporting: true, silent: true, removed: false} {
+			if n, ok, err := tx.Node(id); err != nil || ok != want || ok && n.ID != id {
+				t.Errorf("node %v read in a write: %+v, found %v, %v; want found %v", id, n, ok, err, want)
+			}
+		}
+		return nil
+	})
 }
 
 // Node records list in node ID order, each once, beside the statuses and

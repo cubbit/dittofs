@@ -114,6 +114,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			return answer{}, &fieldError{field: "Idempotency-Key", detail: "longer than " + strconv.Itoa(maxKey) + " bytes"}
 		}
 		rq := request[B]{ID: id, Sub: sub, Query: r.URL.Query()}
+		rq.d = s.d
 		if err := decode(bytes.NewReader(body), &rq.Body); err != nil {
 			return answer{}, err
 		}

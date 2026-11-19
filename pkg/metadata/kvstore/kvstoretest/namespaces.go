@@ -76,7 +76,13 @@ func testNamespaceStoreIndex(t *testing.T, kvo Opener) {
 	if got := all(t, cp.Namespaces(ctx, other.ID)); !reflect.DeepEqual(got, []entity.Namespace{n}) {
 		t.Errorf("namespaces after %v: got %+v, want %+v", other.ID, got, []entity.Namespace{n})
 	}
+	if got, ok, err := cp.Namespace(ctx, n.ID); err != nil || !ok || !reflect.DeepEqual(got, n) {
+		t.Errorf("namespace %v: got %+v, %v, %v; want %+v", n.ID, got, ok, err, n)
+	}
 	must(t, cp.DeleteNamespace(ctx, other.ID, 1))
+	if _, ok, err := cp.Namespace(ctx, other.ID); err != nil || ok {
+		t.Errorf("namespace %v after its deletion: found %v, %v; want absent", other.ID, ok, err)
+	}
 
 	gen, err = cp.PutNamespace(ctx, n, gen)
 	must(t, err)
