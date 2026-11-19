@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -143,5 +144,76 @@ func TestNTLMOn(t *testing.T) {
 		if got := ntlmOn(entity.Setting{Value: []byte(tc.value)}, tc.ok); got != tc.want {
 			t.Errorf("ntlmOn(%q, %v) = %v, want %v", tc.value, tc.ok, got, tc.want)
 		}
+	}
+}
+
+// ntlmWrite over the store, its write a put of identity.ntlm in the same
+// transaction and its start the operation's real start: a turn-off from the
+// default sets Off to the generation the put raised and starts the
+// deletion; a second turn-off, with that one running, starts nothing; and a
+// write leaving no record reads as on, refused while the deletion runs.
+func TestNTLMWrite(t *testing.T) {
+	cp := ntlmStore(t)
+	scope := entity.SettingScope{Kind: entity.ScopeInstallation}
+	run := func(write func(tx entity.ControlPlaneTx) error) (started []apiv1.OpKind, err error) {
+		err = cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+			started = nil
+			return ntlmWrite(tx, func(k apiv1.OpKind, target entity.ResourceRef) error {
+				started = append(started, k)
+				_, err := start(t.Context(), tx, k, target, opStart{})
+				return err
+			}, scope, ntlmKey, func() error { return write(tx) })
+		})
+		return started, err
+	}
+	putOff := func(tx entity.ControlPlaneTx) error {
+		old, _, err := tx.Setting(scope, ntlmKey)
+		if err != nil {
+			return err
+		}
+		_, err = tx.PutSetting(entity.Setting{Scope: scope, Key: ntlmKey, Value: []byte("false")}, old.Generation)
+		return err
+	}
+	readBack := func() (entity.Installation, entity.Setting) {
+		var in entity.Installation
+		var s entity.Setting
+		if err := cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) (err error) {
+			if in, err = tx.Installation(); err != nil {
+				return err
+			}
+			s, _, err = tx.Setting(scope, ntlmKey)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return in, s
+	}
+
+	started, err := run(putOff)
+	if err != nil || !slices.Equal(started, []apiv1.OpKind{apiv1.OpNTHashDelete}) {
+		t.Fatalf("turn-off from on: started %v (%v), want the NT-hash deletion", started, err)
+	}
+	in, s := readBack()
+	if in.NTLMOff.Off == 0 || in.NTLMOff.Off != s.Position {
+		t.Errorf("Off %d, want the position the put raised, %d", in.NTLMOff.Off, s.Position)
+	}
+	if started, err = run(putOff); err != nil || len(started) != 0 {
+		t.Errorf("turn-off while off with the deletion running: started %v (%v), want none", started, err)
+	}
+	if again, _ := readBack(); again.NTLMOff != in.NTLMOff {
+		t.Errorf("NTLMOff after the second turn-off: %+v, want %+v", again.NTLMOff, in.NTLMOff)
+	}
+	// A write leaving no record, as a delete does, reads as on: with Off set
+	// and no deletion completed, it is refused. The store cannot delete a
+	// setting yet, so the write here leaves a record that never existed.
+	fresh := ntlmStore(t)
+	if err := fresh.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetNTLMOff(4) }); err != nil {
+		t.Fatal(err)
+	}
+	err = fresh.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		return ntlmWrite(tx, func(apiv1.OpKind, entity.ResourceRef) error { return nil }, scope, ntlmKey, func() error { return nil })
+	})
+	if p, _ := problemOf(err); p.Code != apiv1.CodeOperationRunning {
+		t.Errorf("a write leaving no record with NTLM off and no deletion completed: %v, want 409 operation_running", err)
 	}
 }

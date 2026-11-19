@@ -262,6 +262,24 @@ func TestDomainRoutesRefusedWithoutTheirInterface(t *testing.T) {
 	}
 }
 
+// An offline join is refused 503 while the node holds no identity service
+// to drive it, even with a sealer, and seals and writes no machine password.
+func TestOfflineJoinRefusedWithoutIdentity(t *testing.T) {
+	disk := newOnDisk(t)
+	p := provider(t, disk.cp)
+	s := serve(t, as(entity.RoleAdmin, false), disk.use, func(d *api.Deps) { d.Sealer = p })
+	r := s.do(t, http.MethodPost, joinPath, offlineJoin("DFS$", "c0mputer-pw"))
+	if r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
+		t.Errorf("an offline join with a sealer and no identity: answered %d %s, want 503 unavailable", r.status, r.body)
+	}
+	if in := s.installationRecord(t); in.MachinePassword != (entity.SecretRef{}) {
+		t.Errorf("machine password named: %v, want none", in.MachinePassword)
+	}
+	if ops := s.operations(t); len(ops) != 0 {
+		t.Errorf("operations written: %+v, want none", ops)
+	}
+}
+
 // An online join is refused 400 with an Idempotency-Key, an organisational
 // unit outside the directory's base, or a host name that is not a DNS name,
 // each holding no credential and writing no operation; with neither given
@@ -511,7 +529,13 @@ func TestKerberosNameKeptWithoutTheDirectory(t *testing.T) {
 // store holds it.
 func TestInstallationRead(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
+	at, confirmed := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 3, 1, 0, 1, 0, 0, time.UTC)
+	j := entity.MachineJoin{Joined: true, Account: "DFS$", Names: []string{"host/dfs.ad.example"}}
+	j.LastRotation.At, j.LastRotation.Failed, j.LastRotation.Version, j.LastRotation.Confirmed = at, true, 4, confirmed
 	if err := s.store.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		if err := tx.SetMachineJoin(j); err != nil {
+			return err
+		}
 		return tx.SetNTLMOff(7)
 	}); err != nil {
 		t.Fatal(err)
@@ -525,8 +549,13 @@ func TestInstallationRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := s.installationRecord(t)
-	if got.ID != uuid.UUID(in.ID).String() || got.Status.Join.Joined || got.Status.NTLMOff != (apiv1.NTLMOff{Off: 7}) {
-		t.Errorf("installation %+v, want ID %v, not joined, NTLM off at 7", got, uuid.UUID(in.ID))
+	if got.ID != uuid.UUID(in.ID).String() || got.Status.NTLMOff != (apiv1.NTLMOff{Off: 7}) {
+		t.Errorf("installation %+v, want ID %v, NTLM off at 7", got, uuid.UUID(in.ID))
+	}
+	gj := got.Status.Join
+	if !gj.Joined || gj.Account != "DFS$" || !slices.Equal(gj.Names, j.Names) || gj.LastRotation == nil ||
+		*gj.LastRotation != (apiv1.Rotation{At: at, Failed: true, Version: 4, Confirmed: confirmed}) {
+		t.Errorf("join %+v (last rotation %+v), want joined as DFS$ with its names and the failed rotation at version 4", gj, gj.LastRotation)
 	}
 	if strings.Contains(string(r.body), "machine_password") {
 		t.Errorf("answer %s names the machine password", r.body)
