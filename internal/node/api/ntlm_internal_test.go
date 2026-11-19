@@ -153,8 +153,8 @@ func TestNTLMOn(t *testing.T) {
 
 // ntlmWrite over the store, its write a put of identity.ntlm in the same
 // transaction and its start the operation's real start: a turn-off from the
-// default sets Off to the settings generation the put raised, not the
-// record's own, and starts the deletion; a second turn-off, with that one
+// default sets Off to the settings generation the put raised, which the
+// record's generation equals, and starts the deletion; a second turn-off, with that one
 // running, starts nothing; and a write leaving no record reads as on,
 // refused while the deletion runs. A false at another scope, or of another
 // key, runs no rule.
@@ -227,8 +227,9 @@ func TestNTLMWrite(t *testing.T) {
 		}
 	})
 
-	// Another setting first, so the settings generation and the record's
-	// own generation differ.
+	// Another setting first, so the settings generation the turn-off raises
+	// is ahead of the record's old generation plus one: the record's
+	// generation is that settings generation, as Off is.
 	if err := cp.Write(t.Context(), entity.WriteMeta{}, put(scope, "identity.netbios_name", `"NAS"`)); err != nil {
 		t.Fatal(err)
 	}
@@ -240,8 +241,8 @@ func TestNTLMWrite(t *testing.T) {
 		t.Fatalf("turn-off from on: operations %+v, want the NT-hash deletion", ops)
 	}
 	in, s := readBack(cp)
-	if in.NTLMOff.Off == 0 || in.NTLMOff.Off != s.Position || s.Position == s.Generation {
-		t.Errorf("Off %d, want the settings generation the put raised, %d, not the record's %d", in.NTLMOff.Off, s.Position, s.Generation)
+	if in.NTLMOff.Off == 0 || in.NTLMOff.Off != s.Position || s.Generation != s.Position {
+		t.Errorf("Off %d, record generation %d, want both the settings generation the put raised, %d", in.NTLMOff.Off, s.Generation, s.Position)
 	}
 	if err := run(cp, scope, ntlmKey, putOff); err != nil {
 		t.Errorf("turn-off while off with the deletion running: %v", err)
