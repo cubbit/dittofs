@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -116,4 +117,50 @@ func TestEngineConditionsIsAPointerSource(t *testing.T) {
 // advances: no fetch of these collectors can run past its deadline.
 func testSnapshot(stats func() engine.Stats) *snapshot {
 	return newSnapshot(stats, sim.NewTestClock(startish), newPartialCounter())
+}
+
+// A fetch past its deadline raises one node-scope condition naming the
+// unavailability, so a health pass cannot read as clean over a wedge: the
+// status writer's next consumption of the evaluator names the omission,
+// while the export omits the series and counts the scrape.
+func TestEngineConditionsDeadlinedRaisesUnavailability(t *testing.T) {
+	block := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	clock := sim.NewTestClock(startish)
+	snap := newSnapshot(func() engine.Stats {
+		once.Do(func() { close(entered) })
+		<-block
+		return engine.Stats{}
+	}, clock, newPartialCounter())
+	e := &engineConditions{snap}
+
+	got := make(chan []health.Condition, 1)
+	go func() { got <- e.Conditions(nil) }()
+	select {
+	case <-entered: // the flight is led, its watcher armed
+	case <-time.After(10 * time.Second):
+		t.Fatal("the conditions fetch never reached the snapshot")
+	}
+	// The deadline waits on the injected clock alone: no advance, no omit.
+	clock.Advance(6 * time.Second)
+	var conds []health.Condition
+	select {
+	case conds = <-got:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the conditions fetch never returned past its deadline")
+	}
+	if len(conds) != 1 {
+		t.Fatalf("a deadlined fetch yielded %d conditions (%+v), want the one naming the unavailability", len(conds), conds)
+	}
+	want := health.Condition{
+		Name:    "engine_stats_unavailable",
+		Subject: health.Subject{Scope: health.ScopeNode},
+		Cause:   errStatsUnavailable,
+		Detail:  "the engine's statistics did not answer within their deadline; the export omits its series and this condition names the omission",
+	}
+	if conds[0] != want {
+		t.Errorf("a deadlined fetch raised %+v, want %+v", conds[0], want)
+	}
+	close(block)
 }

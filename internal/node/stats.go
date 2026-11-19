@@ -2,6 +2,7 @@ package node
 
 import (
 	"encoding/hex"
+	"errors"
 	"sort"
 	"strconv"
 	"sync"
@@ -28,17 +29,16 @@ const statsDeadline = 5 * time.Second
 // the settings name one.
 const topShares = 20
 
+// statsFunc is the seam production and a fault-injecting test both write:
+// production hands the engine's own Stats, a test one it controls.
+type statsFunc func() engine.Stats
+
 // snapshot serves one deadlined, single-flight fetch of the engine's Stats
 // to every collector and the health evaluator: the engine series, the
 // journal series and the engine's conditions all read it, where each once
 // called Engine.Stats on its own. The deadline waits on the injected clock
 // alone, never wall time, so a test controls it; single flight keeps a
 // wedged journal from leaking one in-flight fetch per scrape.
-
-// statsFunc is the seam production and a fault-injecting test both write:
-// production hands the engine's own Stats, a test one it controls.
-type statsFunc func() engine.Stats
-
 type snapshot struct {
 	// stats is a pointer so a test can swap the seam while a scrape's fetch
 	// is in flight: the swap must be atomic against the reading goroutine,
@@ -143,11 +143,10 @@ func (s *snapshot) watch(f *fetch) {
 	case <-f.done:
 	case <-f.after:
 		// A second look at done keeps a fetch that landed while the fired
-		// timer woke this watcher from counting as an omission.
+		// timer woke this watcher from being answered as expired.
 		select {
 		case <-f.done:
 		default:
-			s.partial.WithLabelValues("engine").Inc()
 			close(f.expired)
 		}
 	}
@@ -204,9 +203,14 @@ func (e engineSeries) Collect(ch chan<- prometheus.Metric) {
 	s, ok := e.snap.get()
 	if !ok {
 		// decision: a fetch past its deadline omits the engine's own series
-		// with the journal's, not their zero values: the scrape answers, and
-		// the partial counter names the omission. Withdraw when Collect
-		// carries a context a caller can cancel instead.
+		// with the journal's, not their zero values, and this scrape counts
+		// in the partial counter: RFC 25's row is exports that omitted a
+		// component, so the count is per omitting scrape, not per deadlined
+		// flight — the journal collector never counts, and a wedged flight
+		// re-omitted by every later scrape keeps the counter's rate honest.
+		// Withdraw when Collect carries a context a caller can cancel
+		// instead.
+		e.snap.partial.WithLabelValues("engine").Inc()
 		return
 	}
 	counter := func(d *prometheus.Desc, v int64, labels ...string) {
@@ -233,6 +237,10 @@ func (e engineSeries) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
+// errStatsUnavailable is the cause of the condition a deadlined stats
+// fetch raises: the node picked it, so nothing below the engine names it.
+var errStatsUnavailable = errors.New("the engine's stats did not answer within 5 s")
+
 // engineConditions is the engine's conditions as the health evaluator reads
 // them: its node's, each journal's and each share's, from the same deadlined
 // snapshot as the series.
@@ -241,10 +249,22 @@ type engineConditions struct{ snap *snapshot }
 func (e *engineConditions) Conditions(dst []health.Condition) []health.Condition {
 	s, ok := e.snap.get()
 	if !ok {
-		// decision: a fetch past its deadline leaves this pass's conditions
-		// out with its series: the evaluator reads a pass without the
-		// engine's, and the partial counter names the omission, rather than
-		// wait on the wedge that failed the export.
+		// decision: a fetch past its deadline raises one node-scope
+		// condition, because leaving the pass empty would read as health
+		// while the status writer answers fresh-looking statuses over a
+		// wedge: the export names the omission, the condition names the
+		// wedge's effect on the node's own health report. The condition is
+		// generic — it names no journal to avoid an unwedged peer looking
+		// implicated — and its ceiling is single-flight weighting: while
+		// any pass can omit the engine's conditions, this is the one honest
+		// signal it reads. Withdraw when the engine raises its own condition
+		// for a stats deadline, which this then defers to.
+		dst = append(dst, health.Condition{
+			Name:    "engine_stats_unavailable",
+			Subject: health.Subject{Scope: health.ScopeNode},
+			Cause:   errStatsUnavailable,
+			Detail:  "the engine's statistics did not answer within their deadline; the export omits its series and this condition names the omission",
+		})
 		return dst
 	}
 	dst = append(dst, s.Node.Conditions...)
@@ -257,13 +277,14 @@ func (e *engineConditions) Conditions(dst []health.Condition) []health.Condition
 	return dst
 }
 
-// journalPrefix builds the journal series' full name.
+// journalDesc builds one journal series' descriptor: the dittofs_journal_
+// prefix, its help and its labels.
 func journalDesc(name, help string, labels ...string) *prometheus.Desc {
 	return prometheus.NewDesc("dittofs_journal_"+name, help, labels, nil)
 }
 
-// counterSpec is one of the journal's cumulative counters (RFC 1 §3.9), read
-// off the snapshot the engine carries whole (T13.1).
+// counterSpec is one of the journal's cumulative counters, read off the
+// Statsthe engine carries whole.
 type counterSpec struct {
 	field string // the Counters field it answers, by its Go name
 	name  string // the series' name, without the dittofs_journal_ prefix
@@ -329,6 +350,11 @@ var journalGauges = []gaugeSpec{
 	{"Sealed", "sealed", "Sealed segments.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Sealed) }},
 	{"Spares", "spares", "Content spare segments the pool holds, ready for a stream to take.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Spares) }},
 	{"UnreclaimedBytes", "unreclaimed_bytes", "Storage in segments not yet unlinked that backs no held or retained extent and no live record: what repack can recover.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.UnreclaimedBytes) }},
+	// decision: UnreclaimedEndedBytes reads zero until Repack seals — the
+	// journal's own ponytail names the unmaintained counter — and a zero
+	// here is honest: "nothing left to free" is what the journal documents
+	// for a journal of clean held content. The series lands with the
+	// counter's source, unchanged here.
 	{"UnreclaimedEndedBytes", "unreclaimed_ended_bytes", "The unreclaimed bytes in segments that take no further append.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.UnreclaimedEndedBytes) }},
 	{"HeadroomBytes", "headroom_bytes", "Reserved headroom for records without bytes.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.HeadroomBytes) }},
 	{"RepackReserveBytes", "repack_reserve_bytes", "The repack reserve, as allocated now.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.RepackReserveBytes) }},
@@ -374,6 +400,12 @@ type shareGaugeSpec struct {
 // journalShareGauges is every figure a share is measured by, each tie-named
 // for its source.
 var journalShareGauges = []shareGaugeSpec{
+	// decision: share_limit is ranked largest-first as though it were a
+	// backlog and summed as though it were additive, because the worst-n
+	// table serves every per-share figure the same way; a limit is neither,
+	// and the sum of limits answers nothing an operator asks. The labelled
+	// rows are the useful half. Revisit if a dashboard ever needs a total
+	// limit, which would want its own name and kind.
 	{"Limit", "share_limit", "The share's local journal limit.", func(s engine.JournalShareStats) float64 { return float64(s.Limit) }, func(s journal.ShareStats) float64 { return float64(s.Limit) }},
 	{"UsedBytes", "share_used_bytes", "Record bytes of the share's records still on disk.", func(s engine.JournalShareStats) float64 { return float64(s.UsedBytes) }, func(s journal.ShareStats) float64 { return float64(s.UsedBytes) }},
 	{"HeldBytes", "share_held_bytes", "The share's held extent bytes.", func(s engine.JournalShareStats) float64 { return float64(s.HeldBytes) }, func(s journal.ShareStats) float64 { return float64(s.HeldBytes) }},
@@ -439,6 +471,46 @@ var journalExcluded = map[string]exclusion{
 	"HeadroomSparesShort":             {absent: true, reason: "absent from journal.Stats; nothing maintains a source yet"},
 	"Counters.DescriptorOverruns":     {absent: true, reason: "absent from journal.Counters; nothing maintains a source yet"},
 	"Counters.DescriptorOpenFailures": {absent: true, reason: "absent from journal.Counters; nothing maintains a source yet"},
+
+	// decision: the read-only state's own fields carry the diagnosis behind
+	// the flag, and an export keeps no error text and no check identity: the
+	// probe's findings are read by the journal_read_only condition, which
+	// names the failing check as its cause.
+	"ReadOnlyState.Err":       {reason: "the error that made the journal read-only is excluded text; the read_only flag carries the state"},
+	"ReadOnlyState.SpareMade": {reason: "whether a spare was made after the journal went read-only is the probe's figure for the read-only condition, not a series"},
+	"ReadOnlyState.Check":     {reason: "the check a probe found failing names the read-only condition's cause; no check identity is exported"},
+
+	// decision: the failed sync's error text and time are the tracer's and
+	// the downtime tooling's; the export keeps only the flag, never the
+	// error text (RFC 25 §2.8).
+	"SyncFailure.Err": {reason: "the sync error's text is excluded; the last_sync_error flag carries whether one failed"},
+	"SyncFailure.At":  {reason: "when the sync failed is the tracer's and alerting window's; the flag carries whether one failed"},
+
+	// decision: every per-event and per-file field below needs the file
+	// label, which R8 forbids an export to carry; the bounded list these
+	// fields belong to is served per event to the tracer, and the counts
+	// (tag_conflicts, loss_generation) are the exported figures.
+	"TagConflict.File":    {reason: "a file label is forbidden in an export; tag_conflicts counts the conflicts"},
+	"TagConflict.Tags":    {reason: "the two tags are journal-internal identities; tag_conflicts carries the count alone"},
+	"LossEvent.SeqNum":    {reason: "the event's sequence number needs the event's file label, which the export forbids"},
+	"LossEvent.Share":     {reason: "the lost extent's share is a label the export forbids per event; the count alone is exported"},
+	"LossEvent.File":      {reason: "a file label is forbidden in an export; loss_generation carries every loss past"},
+	"LossEvent.Extent":    {reason: "the lost extent's range needs a file label, which the export forbids"},
+	"LossEvent.Version":   {reason: "the lost write's version needs the file label, which the export forbids"},
+	"LossEvent.Reason":    {reason: "the drop's reason per event needs the file label, which the export forbids"},
+	"LossEvent.Offloaded": {reason: "the extent's bit per event needs the file label, which the export forbids"},
+	"LossEvent.Synced":    {reason: "per-event sync state needs the file label, which the export forbids"},
+	"LossEvent.AtOpen":    {reason: "per-event open state needs the file label, which the export forbids"},
+	"LossEvent.Deferred":  {reason: "per-event deferral needs the file label, which the export forbids"},
+
+	// decision: the recovery remainder the RFC's row names — the
+	// reconciliation a recovered journal owes, and the byte ranges no
+	// bounded read completed — live outside journal.Stats: the first in the
+	// engine's open path, the second on the open's refusal, where the
+	// journal_range_unreadable condition reads them. The journal side owns
+	// carrying either if a Stat ever asks for it.
+	"Recovery.ReconcileOwed":    {absent: true, reason: "the reconciliation a recovery owes runs in the engine's open path, not a journal Stat; the journal side owns the figure"},
+	"Recovery.UnreadableRanges": {absent: true, reason: "ranges no bounded read completed ride the open's refusal, where the journal_range_unreadable condition reads them; the journal side owns carrying them in a Stat"},
 }
 
 // corruptExtentsName is the one labelled counter's series: extents dropped
@@ -447,8 +519,9 @@ const corruptExtentsName = "dittofs_journal_corrupt_extents_total"
 
 var corruptExtents = journalDesc("corrupt_extents_total", "Extents dropped as corrupt; any data_loss is an alert.", "journal", "outcome")
 
-// syncSeconds reads the journal's sync duration histogram.
-var syncSeconds = journalDesc("sync_seconds", "Time each sync took.", "journal")
+// syncSeconds reads the journal's sync duration histogram, named after the
+// field it answers (Stats.SyncDuration), seconds its unit.
+var syncSeconds = journalDesc("sync_duration_seconds", "Time each sync took.", "journal")
 
 // journalDeps declares every series the collector emits, once, for the
 // registry's consistency check.
@@ -467,7 +540,7 @@ func journalDeps() map[string]*prometheus.Desc {
 	for _, m := range journalSyncMarks {
 		out["dittofs_journal_"+m.name] = journalDesc(m.name, m.help, "journal", "stream")
 	}
-	out["dittofs_journal_sync_seconds"] = syncSeconds
+	out["dittofs_journal_sync_duration_seconds"] = syncSeconds
 	return out
 }
 
@@ -481,7 +554,6 @@ var journalDescs = journalDeps()
 // decision: markers inside record what it deliberately omits.
 type journalSeries struct {
 	snap *snapshot
-	ids  func(dir string) (string, bool) // the device's journal identity, hex
 }
 
 func (c *journalSeries) Describe(ch chan<- *prometheus.Desc) {
@@ -506,7 +578,7 @@ func (c *journalSeries) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 	now := c.snap.now()
-	for dir, js := range st.Journals {
+	for _, js := range st.Journals {
 		s := js.Stats
 		if s == nil {
 			// decision: a journal no open is behind — refused at Start or
@@ -515,12 +587,14 @@ func (c *journalSeries) Collect(ch chan<- prometheus.Metric) {
 			// carry the refusal.
 			continue
 		}
-		id, ok := c.ids(dir)
-		if !ok {
-			// decision: a journal whose identity the store cannot resolve
-			// serves no series: the journal label is the identity, never a
-			// path, and an unresolved device names no identity at all.
-			// Never reached while the engine opens recorded journals only.
+		id := hex.EncodeToString(js.ID[:])
+		if js.ID == (journal.JournalID{}) {
+			// decision: a journal with no identity serves no series: the
+			// journal label is the identity, never a device path, and the
+			// engine fills it where the snapshot is filled, so an open
+			// journal's label is the same identity its conditions name. A
+			// zero here names a journal that never opened, whose entry
+			// carries no snapshot anyway.
 			continue
 		}
 		for _, spec := range journalCounters {
@@ -602,6 +676,12 @@ func (c *journalSeries) shareGauges(ch chan<- prometheus.Metric, js engine.Journ
 // — while the exposition serves every `le` bucket cumulatively, so the
 // running total is what a bucket names: Counts[i] accrued over
 // Counts[:i+1], the last count left as the overflow.
+//
+// decision: the buckets are the journal's own bounds, not one of the
+// export's fixed bucket sets, so they drift from every other duration
+// histogram a node exports. Move to the shared set — which costs redefining
+// the journal's bounds on the journal side, the one place that keeps them —
+// when the journal's bounds are redefined. withdrawal is that change.
 func (c *journalSeries) syncHistogram(ch chan<- prometheus.Metric, s *journal.Stats, id string) {
 	h := s.SyncDuration
 	if len(h.Counts) < len(h.Bounds) {
@@ -619,29 +699,4 @@ func (c *journalSeries) syncHistogram(ch chan<- prometheus.Metric, s *journal.St
 		count += n
 	}
 	ch <- prometheus.MustNewConstHistogram(syncSeconds, count, h.Sum.Seconds(), buckets, id)
-}
-
-// journalIdentity resolves a device's journal identity once per device, hex,
-// as the journal label names it: never the device path.
-func journalIdentity(lookup func(dir string) (id [16]byte, ok bool)) func(dir string) (string, bool) {
-	resolved := map[string]string{}
-	var mu sync.Mutex
-	return func(dir string) (string, bool) {
-		mu.Lock()
-		defer mu.Unlock()
-		if id, ok := resolved[dir]; ok {
-			return id, true
-		}
-		// decision: one store read per device, at the first scrape that
-		// names it, keeps the metric path off the store for every later
-		// scrape; the identity is recorded at initialisation and never
-		// changes while the node runs.
-		id, ok := lookup(dir)
-		if !ok {
-			return "", false
-		}
-		hexed := hex.EncodeToString(id[:])
-		resolved[dir] = hexed
-		return hexed, true
-	}
 }

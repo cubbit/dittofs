@@ -111,7 +111,7 @@ func answeredBy(t *testing.T) map[string]string {
 	// The containers themselves are answered by the series their nested
 	// shapes each cover, which the walk reads field by field; the histogram
 	// is one series of its own.
-	add("SyncDuration", "dittofs_journal_sync_seconds")
+	add("SyncDuration", "dittofs_journal_sync_duration_seconds")
 	for _, g := range journalShareGauges {
 		add("ShareStats."+g.field, "dittofs_journal_"+g.name)
 		if g.getEngine != nil {
@@ -121,6 +121,7 @@ func answeredBy(t *testing.T) map[string]string {
 	for _, m := range journalSyncMarks {
 		add("SyncMark."+m.field, "dittofs_journal_"+m.name)
 	}
+	add("ReadOnlyState.ReadOnly", "dittofs_journal_read_only")
 	return out
 }
 
@@ -137,6 +138,10 @@ func absentField(key string) bool {
 		{reflect.TypeFor[journal.SyncMark](), "SyncMark."},
 		{reflect.TypeFor[journal.RecoveryStats](), "Recovery."},
 		{reflect.TypeFor[engine.JournalShareStats](), "EngineShares."},
+		{reflect.TypeFor[journal.ReadOnlyState](), "ReadOnlyState."},
+		{reflect.TypeFor[journal.SyncFailure](), "SyncFailure."},
+		{reflect.TypeFor[journal.TagConflict](), "TagConflict."},
+		{reflect.TypeFor[journal.LossEvent](), "LossEvent."},
 	}
 	for _, shape := range shapes {
 		name := strings.TrimPrefix(key, shape.prefix)
@@ -164,6 +169,10 @@ func TestJournalStatsEveryFieldHasASeries(t *testing.T) {
 		{reflect.TypeFor[journal.SyncMark](), "SyncMark."},
 		{reflect.TypeFor[journal.RecoveryStats](), "Recovery."},
 		{reflect.TypeFor[engine.JournalShareStats](), "EngineShares."},
+		{reflect.TypeFor[journal.ReadOnlyState](), "ReadOnlyState."},
+		{reflect.TypeFor[journal.SyncFailure](), "SyncFailure."},
+		{reflect.TypeFor[journal.TagConflict](), "TagConflict."},
+		{reflect.TypeFor[journal.LossEvent](), "LossEvent."},
 	}
 	// The container fields Stats packs its nested shapes in are walked
 	// below by those shapes themselves; every other field needs a series
@@ -280,22 +289,43 @@ func newShareIDs() []entity.ShareID {
 	return ids
 }
 
-// collector builds the journal collector over a snapshot answering s, on a
-// clock reading startish.
-func collectorFor(st engine.Stats, hexID string) *journalSeries {
-	return &journalSeries{
-		snap: newSnapshot(func() engine.Stats { return st }, sim.NewTestClock(startish), newPartialCounter()),
-		ids:  func(dir string) (string, bool) { return hexID, true },
-	}
+// collectorFor builds the journal collector over a snapshot answering st,
+// on a clock that reads startish and never advances.
+func collectorFor(st engine.Stats) *journalSeries {
+	return &journalSeries{snap: newSnapshot(func() engine.Stats { return st }, sim.NewTestClock(startish), newPartialCounter())}
 }
+
+// journalID is the identity journalHex names, the label the series carry
+// when a snapshot's journals hold it.
+var journalID = [16]byte{0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa}
 
 // oneJournal wraps the journal snapshot of one attached share in an engine
 // Stats, the engine's own share figures deliberately unlike the journal's,
 // so a figure read from the wrong copy fails below.
 func oneJournal(s *journal.Stats) engine.Stats {
-	js := engine.JournalStats{Stats: s, TagShares: map[journal.ShareTag]entity.ShareID{1: shareIDs[0]}}
+	js := engine.JournalStats{ID: journalID, Stats: s, TagShares: map[journal.ShareTag]entity.ShareID{1: shareIDs[0]}}
 	js.Shares = map[entity.ShareID]engine.JournalShareStats{shareIDs[0]: {Limit: 301, UsedBytes: 302, HeldBytes: 303, UnreclaimedBytes: 304}}
 	return engine.Stats{Journals: map[string]engine.JournalStats{"/dev/test": js}}
+}
+
+// expect fails unless series holds exactly one sample over one journal,
+// equal to want.
+func expect(t *testing.T, scr map[string]map[string]float64, series string, want float64) {
+	t.Helper()
+	vals, ok := scr[series]
+	if !ok {
+		t.Errorf("the scrape has no series %s", series)
+		return
+	}
+	if len(vals) != 1 {
+		t.Errorf("series %s holds %d samples over one journal, want 1", series, len(vals))
+		return
+	}
+	for _, got := range vals {
+		if got != want {
+			t.Errorf("series %s = %v, want %v", series, got, want)
+		}
+	}
 }
 
 // Every counter, gauge and operator series of one journal reads its field
@@ -303,7 +333,7 @@ func oneJournal(s *journal.Stats) engine.Stats {
 // error and read-only figures carry stays out of the labels.
 func TestJournalSeriesReadTheirFields(t *testing.T) {
 	s := statsSnapshot()
-	c := collectorFor(oneJournal(s), journalHex)
+	c := collectorFor(oneJournal(s))
 	scr := scrapeOf(t, c)
 	answered := answeredBy(t)
 
@@ -327,8 +357,19 @@ func TestJournalSeriesReadTheirFields(t *testing.T) {
 		}
 	}
 
-	// One spot value per figure shape, proving a series reads its own field
-	// and not a neighbour's.
+	// The whole table, checked: every scalar figure's sample equals what its
+	// own spec reads off the same snapshot, so a series wired to the wrong
+	// getter or the wrong descriptor fails on its neighbour's sentinel —
+	// the sentinels in statsSnapshot are distinct per field.
+	for _, spec := range journalCounters {
+		expect(t, scr, "dittofs_journal_"+spec.name, spec.get(s.Counters))
+	}
+	for _, spec := range journalGauges {
+		expect(t, scr, "dittofs_journal_"+spec.name, spec.get(s, startish))
+	}
+
+	// One named value per figure shape too, for the reader: the flags, the
+	// counts, and the operator's five.
 	want := map[string]float64{
 		"dittofs_journal_written_bytes_total":       201,
 		"dittofs_journal_sync_failures_total":       211,
@@ -375,7 +416,7 @@ func TestJournalSeriesReadTheirFields(t *testing.T) {
 	// journal keeps one count per interval — at or below its bound and
 	// above the bound before it — while the exposition's each `le` bucket
 	// is cumulative: 1 below 1 s, 3 at or below 2 s, and 6 samples in all.
-	buckets, count := histogramOf(t, c, "dittofs_journal_sync_seconds")
+	buckets, count := histogramOf(t, c, "dittofs_journal_sync_duration_seconds")
 	for le, want := range map[float64]uint64{1: 1, 2: 3} {
 		if got := buckets[le]; got != want {
 			t.Errorf("sync_seconds_bucket{le=%v} = %d, want the cumulative %d", le, got, want)
@@ -453,7 +494,7 @@ func cutLabels(labels, n string) (string, bool) {
 // figure, and for an unattached tag the sum alone.
 func TestJournalSeriesSharesWorstNAndSum(t *testing.T) {
 	s := statsSnapshot()
-	js := engine.JournalStats{Stats: s}
+	js := engine.JournalStats{ID: journalID, Stats: s}
 	// Attached shares numbered with the index, each holding i+1 dirty KiB;
 	// the journal's used-figures deliberately unlike the engine's own copies.
 	var dirtySum, usedSum float64
@@ -479,7 +520,7 @@ func TestJournalSeriesSharesWorstNAndSum(t *testing.T) {
 	s.Shares[unattached] = journal.ShareStats{UsedBytes: 777, DirtyBytes: 300}
 	st := engine.Stats{Journals: map[string]engine.JournalStats{"d": js}}
 
-	scr := scrapeOf(t, collectorFor(st, journalHex))
+	scr := scrapeOf(t, collectorFor(st))
 
 	// Dirty bytes, read from the journal's map: the twenty worst attached
 	// shares, and a sum over everyone's.
@@ -522,7 +563,7 @@ func TestJournalSeriesSharesWorstNAndSum(t *testing.T) {
 	sh0 := s.Shares[journal.ShareTag(1)]
 	sh0.DirtyBytes = 26 << 10
 	s.Shares[journal.ShareTag(1)] = sh0
-	scr = scrapeOf(t, collectorFor(st, journalHex))
+	scr = scrapeOf(t, collectorFor(st))
 	seen = shareSet(t, shareRows(t, scr, "dittofs_journal_share_dirty_bytes"), "dittofs_journal_share_dirty_bytes")
 	if !seen[shareIDs[0].String()] {
 		t.Error("dirty_bytes misses share 0 after it became the dirtiest: the worst set was picked once and kept")
@@ -558,9 +599,9 @@ func shareSet(t *testing.T, rows []shareSample, series string) map[string]bool {
 // healthy, so the nil entry is skipped whole.
 func TestJournalSeriesClosedJournalExportsNothing(t *testing.T) {
 	st := engine.Stats{Journals: map[string]engine.JournalStats{
-		"refused": {Stats: nil, TagShares: map[journal.ShareTag]entity.ShareID{}},
+		"refused": {ID: journalID, Stats: nil, TagShares: map[journal.ShareTag]entity.ShareID{}},
 	}}
-	scr := scrapeOf(t, collectorFor(st, journalHex))
+	scr := scrapeOf(t, collectorFor(st))
 	for series := range scr {
 		if strings.HasPrefix(series, "dittofs_journal_") {
 			t.Errorf("a closed journal exported the series %s, want none", series)

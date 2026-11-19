@@ -78,6 +78,11 @@ const (
 
 // JournalStats is one device's journal, as Stats reports it.
 type JournalStats struct {
+	// ID is the journal's identity, as the store records it: the hex of
+	// the ID is the journal_ series' journal label and the subject of its
+	// conditions, one identity for both. Zero on a refusal that names no
+	// journal it opened.
+	ID journal.JournalID
 	// Stats is the journal's own snapshot, one copy per Engine.Stats call.
 	// nil when no journal is open behind this entry — a device refused at
 	// Start or after Close — so no zero snapshot can read as healthy.

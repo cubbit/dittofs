@@ -608,24 +608,42 @@ func TestSnapshotDeadlineOmitsAndCounts(t *testing.T) {
 			t.Errorf("the scrape served %s from a snapshot past its deadline, want the whole snapshot omitted", series)
 		}
 	}
-	// The registry gathers its collectors in parallel, so the counter of the
-	// very scrape whose fetch ran past the deadline can land after the
-	// counter's own pass within it: the deadlined fetch is asserted at the
-	// next scrape instead — once ever, one wedged flight for every scrape
-	// that joins it.
-	after := jscrape(t, h)
-	if v, ok := after["dittofs_health_export_partial_total"]["component=engine,"]; !ok || v != 1 {
-		t.Errorf("dittofs_health_export_partial_total{component=engine} = %v (sample present %v) after a deadlined fetch, want 1", v, ok)
+	// Each omitting scrape counts once — RFC 25's row is exports that
+	// omitted a component, not deadlined flights — so the counter rises by
+	// one per scrape however wedged the one flight they all join stays.
+	// Scrapes 2 to 101 here follow the wedged scrape above, so the value at
+	// the i-th owes one per scrape before it (i of them) and may show its
+	// own (the registry gathers collectors in parallel, so a scrape's
+	// increment can land after the counter's pass within that same scrape):
+	// every reading is i or i+1, moving by exactly one.
+	seen := 0.0
+	for i := 1; i <= 100; i++ {
+		v := seen
+		if n, ok := jscrape(t, h)["dittofs_health_export_partial_total"]["component=engine,"]; ok {
+			v = n
+		}
+		// The wedged scrape above plus the i-1 before this one count i in
+		// all; this one's own increment may show (the parallel gather) or
+		// not, and the counter never reads below what a scrape showed.
+		if v != float64(i) && v != float64(i+1) || v < seen {
+			t.Fatalf("the partial counter read %v at the %d-th scrape of the wedge, want exactly one count per omitting scrape (%d or its own not yet landed, %d)", v, i, i, i+1)
+		}
+		seen = max(seen, v)
+	}
+	// One more scrape: the hundred and one before it have all landed; its
+	// own increment may have landed within its own gather too (the parallel
+	// gather shows it about half the time), so the reading is 101 or 102.
+	// A double-counting collector reads twice that; a stuck counter is
+	// caught by the loop's absolute readings above.
+	if v := jscrape(t, h)["dittofs_health_export_partial_total"]["component=engine,"]; v != 101 && v != 102 {
+		t.Errorf("the partial counter = %v after 101 omitting scrapes and one more, want 101 (its own scrape's count may land within it, 102): every omitting scrape counts exactly once", v)
 	}
 
-	// A hundred more scrapes of the same wedged fetch add no goroutine: the
-	// in-flight fetch is one, and each scrape only joins it and times out.
+	// A hundred more scrapes of the same wedged flight add no goroutine:
+	// the in-flight fetch is one, and each scrape only joins it and omits.
 	before := runtime.NumGoroutine()
 	for range 100 {
-		out := jscrape(t, h)
-		if v := out["dittofs_health_export_partial_total"]["component=engine,"]; v != 1 {
-			t.Fatalf("the partial counter = %v over a scrape of one wedged fetch, want it still 1: a joining scrape never counts its own", v)
-		}
+		jscrape(t, h)
 	}
 	// One goroutine of tolerance covers a background connection settling
 	// or a worker between states; a leak per scrape would add hundreds.

@@ -373,6 +373,7 @@ func (e *Engine) Stats() Stats {
 		dir := e.d.Devices[0]
 		st := j.j.Stats()
 		js := s.Journals[dir]
+		js.ID = id
 		js.Stats = &st
 		js.TagShares = map[journal.ShareTag]entity.ShareID{}
 		js.Shares = map[entity.ShareID]JournalShareStats{}

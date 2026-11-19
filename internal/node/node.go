@@ -195,10 +195,7 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 	if err := reg.Register(engineSeries{snap}); err != nil {
 		return nil, fmt.Errorf("node: engine series: %w", err)
 	}
-	if err := reg.Register(&journalSeries{snap: snap, ids: journalIdentity(func(dir string) (id [16]byte, ok bool) {
-		id, err := n.meta.Lifecycle().JournalID(context.Background(), cfg.Bootstrap.Node.ID, entity.JournalDir(dir))
-		return id, err == nil
-	})}); err != nil {
+	if err := reg.Register(&journalSeries{snap: snap}); err != nil {
 		return nil, fmt.Errorf("node: journal series: %w", err)
 	}
 	n.budgets, n.pools = newBudgets()
