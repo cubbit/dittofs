@@ -468,7 +468,7 @@
   status: skip
   fix: wontfix
   category: env
-  reason: 'Counts allocations, which -race changes; runs in unit/journal-conformance-norace instead.'
+  reason: 'Counts allocations, which -race changes; runs in the unit.options.journal-conformance-norace job instead, which enforces RFC 1 9.7''s counted-allocation checks.'
   issue: '#3395'
   message: 'the race detector changes allocation counts'
 
@@ -476,7 +476,7 @@
   status: skip
   fix: wontfix
   category: env
-  reason: 'Counts allocations, which -race changes; runs in unit/journal-conformance-norace instead.'
+  reason: 'Counts allocations, which -race changes; runs in the unit.options.journal-conformance-norace job instead, which enforces RFC 1 9.7''s counted-allocation checks.'
   issue: '#3395'
   message: 'the race detector changes allocation counts'
 
@@ -1245,7 +1245,7 @@
   status: skip
   fix: wontfix
   category: env
-  reason: 'Counts allocations, which -race changes; runs in unit/journal-conformance-norace instead.'
+  reason: 'Counts allocations, which -race changes; runs in the unit.options.journal-conformance-norace job instead, which enforces RFC 1 9.7''s counted-allocation checks.'
   issue: '#3395'
   message: 'the race detector changes allocation counts'
 
@@ -1253,6 +1253,6 @@
   status: skip
   fix: wontfix
   category: env
-  reason: 'Counts allocations, which -race changes; runs in unit/journal-conformance-norace instead.'
+  reason: 'Counts allocations, which -race changes; runs in the unit.options.journal-conformance-norace job instead, which enforces RFC 1 9.7''s counted-allocation checks.'
   issue: '#3395'
   message: 'the race detector changes allocation counts'

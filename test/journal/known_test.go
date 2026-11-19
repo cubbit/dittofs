@@ -102,6 +102,46 @@ func owner(e known.Entry) (string, bool) {
 	return issue, ok
 }
 
+// fixState says how the journal's ownership tables treat a row's fix value:
+// a planned row owes its failure to an open epic, a wontfix row is exempt,
+// and any other value is unknown. The parse layer refuses every other value
+// already, so an unknown one reaching these tables means the two layers have
+// drifted apart, and the classifier reports it rather than exempting the row.
+func fixState(fix string) (exempt, unknown bool) {
+	switch fix {
+	case "planned":
+		return false, false
+	case "wontfix":
+		return true, false
+	default:
+		return false, true
+	}
+}
+
+// TestFixState holds the fix classifier to exactly two states: only a
+// wontfix row is exempt from owning its failure, and only a planned row
+// owns one.
+func TestFixState(t *testing.T) {
+	for _, c := range []struct{ fix, want string }{
+		{"planned", "owned"},
+		{"wontfix", "exempt"},
+		{"typo", "unknown"},
+		{"", "unknown"},
+	} {
+		exempt, unknown := fixState(c.fix)
+		got := "owned"
+		if exempt {
+			got = "exempt"
+		}
+		if unknown {
+			got = "unknown"
+		}
+		if got != c.want {
+			t.Errorf("fix %q: got %s, want %s", c.fix, got, c.want)
+		}
+	}
+}
+
 // TestKnownFilesClassified holds the journal's known failures to one owner.
 // Every row of every known file the registry lists names its failure, since a
 // bare `stub:` matches any stub failure and the registry grades by Contains.
@@ -128,6 +168,13 @@ func TestKnownFilesClassified(t *testing.T) {
 
 	for _, path := range slices.Sorted(maps.Keys(reg.Known)) {
 		for _, e := range reg.Known[path] {
+			// decision: the bare-message check compares after trim, not by
+			// Contains like the registry, because a message that merely
+			// mentions `stub:` names one specific stub and so is not bare, and
+			// `stub:Offload` without the trailing space is a different message.
+			// The ceiling is that a new bare message worded differently, not
+			// one of the two exact texts, passes unnamed; widen only when such
+			// a row exists, never to silence a naming failure.
 			if m := strings.TrimSpace(e.Message); m == "stub:" || m == "journal: not implemented" {
 				t.Errorf("%s (%s): %s: got %q in %s, want a message that names its failure",
 					strings.TrimSpace(by[path]), path, e.Test, m, path)
@@ -139,7 +186,11 @@ func TestKnownFilesClassified(t *testing.T) {
 	// another plan's to re-point, overturned if it is still red once its
 	// issues close, and then it joins by name.
 	for _, e := range reg.Known[journalKnown] {
-		if e.Fix != "planned" {
+		if exempt, unknown := fixState(e.Fix); unknown {
+			t.Errorf("%s: %s carries fix: %q, which is neither planned nor wontfix, so it can neither own its failure nor be exempt from owning one",
+				journalKnown, e.Test, e.Fix)
+			continue
+		} else if exempt {
 			continue // a wontfix row carries no owner
 		}
 		if _, ok := openOwners[e.Issue]; !ok {
