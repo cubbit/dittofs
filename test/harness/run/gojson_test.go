@@ -225,8 +225,13 @@ func TestGoPackages(t *testing.T) {
 // The integration suite runs the KMIP key provider's live tests: its packages
 // include the key provider's, and it needs the KMIP service, without which
 // those tests skip. A tag dropped from their file, or the need from the
-// registry, would leave them out of every run with nothing going red.
+// registry, would leave them out of every run with nothing going red. The
+// listing runs with no module cache, no proxy and the toolchain running the
+// test, as on a runner whose cache is cold and whose every download fails.
 func TestIntegrationRunsTheKMIPTests(t *testing.T) {
+	t.Setenv("GOMODCACHE", t.TempDir())
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOTOOLCHAIN", "local")
 	r, err := registry.Load("../../..")
 	if err != nil {
 		t.Fatal(err)

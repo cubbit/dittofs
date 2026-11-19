@@ -549,9 +549,11 @@ func goPackages(root, tag string) ([]string, error) {
 	return pkgs, nil
 }
 
-// testFiles maps each package of the module at root to its test files.
+// testFiles maps each package of the module at root to its test files. go list
+// still resolves the imports, downloading what the module cache lacks, but
+// -find leaves them out of the listing, so a download that fails can't fail it.
 func testFiles(root string, flags ...string) (map[string]string, error) {
-	out, err := output(root, "go", slices.Concat([]string{"list"}, flags, []string{"-f", "{{.ImportPath}}\t{{.TestGoFiles}} {{.XTestGoFiles}}", "./..."})...)
+	out, err := output(root, "go", slices.Concat([]string{"list", "-find"}, flags, []string{"-f", "{{.ImportPath}}\t{{.TestGoFiles}} {{.XTestGoFiles}}", "./..."})...)
 	if err != nil {
 		return nil, fmt.Errorf("go list %s: %w", strings.Join(flags, " "), err)
 	}
