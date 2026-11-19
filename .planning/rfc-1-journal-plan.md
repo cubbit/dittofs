@@ -1194,7 +1194,7 @@ soak's offload load are epic 9b's (§5, epic 9).
 
 Broken down in [rfc-1-journal-epic13.md](rfc-1-journal-epic13.md). What RFC 1 §3.9 and §3.7 require and
 nothing else builds: the `journal_` series over the journal's full `Stats`, the adapter from the
-engine's tracer to the journal's, and `Stats` served without a walk or a write lock, which means none of the six locks it shares with writes.
+engine's tracer to the journal's, and `Stats` served without a walk or a write lock, which means none of the nine locks it shares with writes.
 
 ---
 
