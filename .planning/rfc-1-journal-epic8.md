@@ -105,8 +105,8 @@ format, no recovery and no reclamation.
   metadata, and passing no mark with a non-zero epoch to `SetVersionLimit`: the engine
   (epic 11). This epic refuses such a mark.
 - Wiring settings (`MaxBytes`, `ExtentLimit`, `HeadroomRecords`, `Streams`) to configuration:
-  epic 11.
-- The `Metrics` export: epic 11 adapts `Stats`. This epic only maintains the fields.
+  the journal-configuration row of the plan's deferral ledger.
+- The `Metrics` export: epic 13 adapts `Stats`. This epic only maintains the fields.
 
 ### 1.3 Names used here
 
@@ -126,8 +126,8 @@ format, no recovery and no reclamation.
 - **E7**, epic 7, recovery and identity: `Init`, `Open`, rebuild.
 - **E8**, this epic.
 - **E9**, epic 9, offload, reclamation, holds and tags.
-- **E10**, epic 10, start and initialisation: the start check and the device configuration.
-- **E11**, epic 11, the engine on the RFC 16 store: the caller of every operation here.
+- **E10**, epic 10, the start check: the refusals at start.
+- **E11**, epic 11, the engine on the RFC 16 store (superseded: RFC 8's journal-only engine plan owns it): the caller of every operation here.
 - **E12**, epic 12, e2e green: the burn-down of the known-failure list.
 - **S1**, interfaces frozen: E1's exported surface no longer changes.
 - **S2**, red suite in CI: E2's suite runs in CI from every pull request.
@@ -169,7 +169,7 @@ format, no recovery and no reclamation.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
-   checks only whether v1 state exists, to refuse it at start (E10), and never reads
+   checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory

@@ -50,7 +50,7 @@ It implements no behaviour. Every function body is a stub. At the end of the epi
   components store and compare (1.2), and the `Is` relation of the typed errors (1.3).
 - The test components themselves: the crash seam, the reference model, the
   known-failure list and the profiler all belong to epic 2.
-- Wiring v2 into DittoFS, configuration keys and exporters. Those are epics 10 and 11.
+- Wiring v2 into DittoFS, configuration keys and exporters. Exporters are epic 13; the configuration keys are a row of the plan's deferral ledger; the engine is RFC 8's.
 - Cluster-only surface (RFC 10): no extension kinds, no non-zero epoch, no
   `ErrForgotten`.
 
@@ -92,7 +92,7 @@ is named with the reason.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
-   checks only whether v1 state exists, to refuse it at start (E10), and never reads
+   checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
@@ -155,7 +155,7 @@ The PR that deleted v1 (#3645) renamed `journalv2` to `journal`, and `enginev2` 
   share a binary, so it would always read `v2`.
 - *Applies in this epic to:* the `SpanOp` string values in `trace.go` and the `slog`
   attribute keys. None of them carries a version. The `Stats` field names carry none
-  either, so epic 11's exporters can name metrics from them directly.
+  either, so epic 13's exporters can name metrics from them directly.
 
 **D2. Value types live in a leaf package, `internal/core`, and the public package
 re-exports them as type aliases.**
@@ -596,7 +596,7 @@ rule, not where the rule came from.
 - **Done when:**
   - every row of the RFC 1 §3.7 and §3.9 tables maps to exactly one field. The map is
     filled into §6 of this file;
-  - epic 11's exporters can name the metric set from these fields alone.
+  - epic 13's exporters can name the metric set from these fields alone.
 - **Rules:**
   - 3: this subtask *is* the metrics and tracing contract.
   - 9: the D7 `decision:` marker sits on `Tracer`.

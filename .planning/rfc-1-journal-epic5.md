@@ -76,7 +76,7 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
   `Release`, and handing a segment over for retirement only once the records that left it not
   held (its release records included) are durable: epic 9. This epic provides what they call:
   the retirement executor, the claim and the durable-unlink signal.
-- Wiring the pool target, the stream count and the descriptor limit to configuration: epic 11.
+- Wiring the pool target, the stream count and the descriptor limit to configuration: the journal-configuration row of the plan's deferral ledger.
 - A footer for a segment sealed by a previous process (a MAY): not taken (D4).
 - Compressing the `FileID` column of the footer (a MAY): not taken, the layout defines none.
 
@@ -92,8 +92,8 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
 - **E7**, epic 7, recovery and identity: `Init`, `Open`, rebuild, spare re-adoption.
 - **E8**, epic 8, data path and capacity: `WriteAt`, `ReadAt`, reservations, `Stats`.
 - **E9**, epic 9, offload, reclamation, holds and tags: `Release`, `Repack`, pins.
-- **E10**, epic 10, start and initialisation: the start check and the device configuration.
-- **E11**, epic 11, the engine on the RFC 16 store: the wiring of configuration.
+- **E10**, epic 10, the start check: the refusals at start.
+- **E11**, epic 11, the engine on the RFC 16 store (superseded: RFC 8's journal-only engine plan owns it): the wiring of configuration.
 - **S1**, interfaces frozen: E1's exported surface no longer changes.
 - **S2**, red suite in CI: E2's suite runs in CI from every pull request.
 - **S3**, walking skeleton: this epic's streams with the spare pool, the seal, the roll and the
@@ -136,7 +136,7 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
-   checks only whether v1 state exists, to refuse it at start (E10), and never reads
+   checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory

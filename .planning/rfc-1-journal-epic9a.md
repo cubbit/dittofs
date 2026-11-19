@@ -138,7 +138,7 @@ epic leaves.
 - The retirement executor itself (close, unlink or recycle, the directory sync, the double-retire
   count), the descriptor drain, the seal and the reserve-class roll: epic 5. This epic decides
   *when* a segment is retired and hands it over.
-- Repack's write amplification (J8) and reclamation under load (J5): epic 12.
+- Repack's write amplification (J8) and reclamation under load (J5): epic 9b, once its offload and release calls exist.
 - The cluster parts of RFC 1 §3 (per-shard forget records, replicas, takeover): outside the
   journal's single-node scope.
 
@@ -174,9 +174,8 @@ epic leaves.
   remote tier: retirement, `Repack`, `Forget` and `Strand`.
 - **E9b**, epic 9b, the rest of epic 9: offers, `report`, pins, `MarkOffloaded`, `Unmark`,
   `Release` and snapshot holds.
-- **E10**, epic 10, start and initialisation: the device configuration, the start check and the
-  journal side of initialisation.
-- **E11**, epic 11, the engine on the RFC 16 store: the caller of `Repack`, `Forget` and `Strand`.
+- **E10**, epic 10, the start check: the refusals at start.
+- **E11**, epic 11, the engine on the RFC 16 store (superseded: RFC 8's journal-only engine plan owns it): the caller of `Repack`, `Forget` and `Strand`.
 - **E12**, epic 12, E2E green: the known-failure burn-down, soak and benchmarks.
 - **S1**, interfaces frozen: E1's exported surface no longer changes.
 - **S2**, red suite in CI: E2's conformance suite runs on every pull request, listed whole as
@@ -221,7 +220,7 @@ epic leaves.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
-   checks only whether v1 state exists, to refuse it at start (E10), and never reads
+   checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
@@ -253,7 +252,7 @@ epic leaves.
 | 3 Metrics and tracing | T9.2, T9.3, T9.7, T9.9, T9.10 | `repacked_bytes` (T9.7), the suspect-segment gauge (T9.3) and the per-segment unreclaimed bytes (T9.9) are maintained at the event; `freed_bytes` is E5's, raised by its executor, and `Repack`'s `freed` is summed from the same reports (T9.7); `UnreclaimedBytes` is E8's counter, which T9.2, T9.7 and T9.10 feed through E8's account function; `DropRanges` is E4's. One span, `repack_pass`, per pass (T9.7). No span for `Forget` or for a retirement, which rule 3 does not name |
 | 4 Profiling | all | every test runs under E2's profiler. T9.2's worker and T9.7's pass are where goroutines could leak; T9.1 asserts zero allocations per liveness update outside `-race`, since it runs on every index change. No hot path of rule 4 is this epic's |
 | 5 Interface and internals | all | tests go through `Repack`, `Forget`, `Strand`, `Inspector.Segments` and `Stats`, and through `ReadAt` after a pass or a reopen: the read is the consumer of a repoint, a drop and a forget. `-race` on every concurrent case. Reverting a fix fails on its assertion |
-| 6 Known failures | T9.7, T9.10, T9.12 | each row leaves `test/journal/known.yaml` in the change that turns it green: the repack and crash rows in T9.7, the forget rows in T9.10; T9.12 only re-points the rows that need epic 9b's calls |
+| 6 Known failures | T9.7, T9.10, T9.12 | each row leaves `test/journal/known.yaml` in the change that turns it green: the repack and crash rows in T9.7, the forget rows in T9.10; T9.12 only re-points the rows that need epic 9b's calls. A row that now fails further, on another message, is retagged in the same change to the owner of that message; until epic 12's T12.1 test exists, this change re-runs the classification by hand, in `test/journal/known.yaml` (the engine's file is RFC 8's), and uses the test after |
 | 7 v2 ignores v1 | none | nothing here reads anything outside v2 |
 | 8 Real storage | T9.2, T9.7, T9.10, T9.12 | crash cases (mid-pass, an unlink not yet durable, a forget not yet synced) run on real storage through E2's crash-simulating seam, never an in-memory filesystem. T9.1, T9.4 and T9.6's drop test are pure logic and may run in memory |
 | 9 Markers | T9.1, T9.2, T9.3, T9.4, T9.5, T9.6, T9.7, T9.9, T9.10 | T9.1 places D2's and D4's `ponytail:` and D3's and D20's `decision:`; T9.2 the RFC's `ponytail:` on whole-segment freeing at the hand-over (D5); T9.3 D21's `ponytail:`; T9.4 RFC 28 §3.3's `decision:` that a dead unread content record pins nothing; T9.5 D7's and D18's `decision:`; T9.6 RFC 1 §6's `ponytail:` on a carried loss record's size; T9.7 D8's `decision:`; T9.9 D16's `ponytail:` and the share seal's `decision:`; T9.10 D10's `decision:`. T9.8 and T9.11 place none. §4 lists every marker with its ceiling |
