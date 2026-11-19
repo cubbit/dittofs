@@ -11,6 +11,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -19,7 +20,7 @@ import (
 // scrapes shows at the second.
 func TestEngineSeriesReadAtScrape(t *testing.T) {
 	s := engine.Stats{Reads: map[string]int64{}, RemovalRuns: map[string]int64{}}
-	c := engineSeries{func() engine.Stats { return s }}
+	c := engineSeries{snap: testSnapshot(func() engine.Stats { return s })}
 	scrape := func(n int) string {
 		return strings.ReplaceAll(`# HELP dittofs_engine_group_commit_splits_total Group commit batches split.
 # TYPE dittofs_engine_group_commit_splits_total counter
@@ -83,7 +84,7 @@ func TestEngineConditions(t *testing.T) {
 		}}},
 	}
 	var e health.Evaluator
-	src := &engineConditions{func() engine.Stats { return s }}
+	src := &engineConditions{snap: testSnapshot(func() engine.Stats { return s })}
 	e.Add(src)
 	want := []health.Condition{
 		{Name: "node_fenced", Subject: health.Subject{Scope: health.ScopeNode, ID: "n1"}, Cause: cause, Detail: "fenced"},
@@ -109,4 +110,10 @@ func TestEngineConditionsIsAPointerSource(t *testing.T) {
 	if !reflect.TypeFor[*engineConditions]().Implements(src) {
 		t.Error("*engineConditions does not implement health.Source")
 	}
+}
+
+// testSnapshot builds a snapshot answering stats on a clock that never
+// advances: no fetch of these collectors can run past its deadline.
+func testSnapshot(stats func() engine.Stats) *snapshot {
+	return newSnapshot(stats, sim.NewTestClock(startish), newPartialCounter())
 }

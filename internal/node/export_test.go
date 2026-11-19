@@ -231,3 +231,12 @@ func (n *Node) Reserve(ctx context.Context, pool string, bytes int64) (resources
 	}
 	return resources.Reservation{}, fmt.Errorf("node: no budget %q", pool)
 }
+
+// StatsThrough points the node's snapshot at f: the one seam the engine's
+// series, the journal's and the health evaluator read at every scrape.
+// Production hands the engine's own Stats; a test hands a fault on the same
+// seam, one it controls.
+func StatsThrough(n *Node, f func() engine.Stats) {
+	fn := statsFunc(f)
+	n.snap.stats.Store(&fn)
+}
