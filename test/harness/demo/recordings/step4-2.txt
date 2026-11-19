@@ -1,0 +1,17 @@
+# test/harness/bin/dt run clients/macos; echo "dt exit: $?" | 2026-11-16 16:57 CET | f02e02620
+[dt] $ go build -o <worktree>/test/harness/results/20261116T155740Z-f02e0262/bin/ ./cmd/dfs ./cmd/dfsctl
+[dt] fixture: dfs started, pid 94369, its API at http://127.0.0.1:53526, its output in <worktree>/test/harness/results/20261116T155740Z-f02e0262/clients-macos/dfs.log
+[dt] fixture: SMB serves /export at <lan-ip>:53528
+[dt] fixture: $ mount_smbfs -N -o nobrowse //dt-user:{password}@<lan-ip>:53528/export /tmp/dt854706221
+[dt] fixture: SMB 3.1.1 mounted at /tmp/dt854706221, as dt-user
+[dt] $ test/clients/files.sh /tmp/dt854706221
+FAIL: file.txt reads back other content
+[dt] $ test/clients/xattr.sh /tmp/dt854706221
+com.apple.metadata:_kMDItemUserTags: taggz
+user.dittofs.test: hello-xattr
+PASS: xattr round-trip + remount
+[dt] clients/macos: failed test/clients/files.sh: `test/clients/files.sh /tmp/dt854706221` exited 1
+CELL           RESULT  TIME  NOTE
+clients/macos  failed  14s   test/clients/files.sh: `test/clients/files.sh /tmp/dt854706221` exited 1
+results: <worktree>/test/harness/results/20261116T155740Z-f02e0262
+dt exit: 1

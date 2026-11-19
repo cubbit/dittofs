@@ -1,0 +1,5 @@
+- test: test/clients/files.sh
+  status: fail
+  fix: wontfix
+  category: env
+  reason: 'demo: the read-back check expects a trailing "!"'

@@ -1,0 +1,5 @@
+# test/harness/bin/dt plan --tier nightly | awk 'NR==1 || $2=="dedicated"' | 2026-11-16 16:59 CET | f02e02620
+CELL                            PLACE      BLOCKING  TIMEOUT  NOTE
+perf-night                      dedicated  true      185m     cell timeout raised from 60m to 3h5m: the sum of its tests' limits plus 5m for the fixture
+system                          dedicated  true      186m     cell timeout raised from 90m to 3h6m: the sum of its tests' limits plus 5m for the fixture
+system/dedicated                dedicated  true      307m     cell timeout raised from 90m to 5h7m: the sum of its tests' limits plus 5m for the fixture

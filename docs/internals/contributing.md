@@ -193,105 +193,17 @@ standard-library issues usually means an older toolchain is active.
 
 ## Testing
 
-Before you write or change a test, read "Writing tests" in [CLAUDE.md](../../CLAUDE.md):
-the test doubles it allows, waiting on events rather than time, and fixing a flake rather than
-retrying it.
-
-### Unit Tests
-
-```bash
-# Run all tests
-go test ./...
-
-# Run with coverage
-go test -cover ./...
-
-# Run with race detection
-go test -race ./...
-
-# Run specific package
-go test ./pkg/metadata/store/badger/
-```
-
-### Integration Tests
-
-Integration tests carry the `integration` build tag and need the services `test/suites.yaml`
-lists for them: a KMIP server for the key provider. Don't add a Postgres test: the stores are
-Badger, and FoundationDB for a cluster. The suite still starts Postgres for the control-plane
-store's existing tests, until RFC 23 moves the control plane into the one store. `dt` starts the
-services and runs the suite as CI does:
-
-```bash
-test/harness/bin/dt services up postgres kmip
-test/harness/bin/dt run integration
-```
-
-Run by hand, both the tag and `-p 1` are required; without the tag the tests compile out:
-
-```bash
-go test -tags=integration -p 1 ./...
-```
-
-### E2E Testing Framework
-
-DittoFS includes a comprehensive end-to-end testing framework that validates real-world NFS operations by:
-
-- **Starting a real DittoFS server** with configurable backends
-- **Mounting the NFS filesystem** using platform-native mount commands
-- **Executing real file operations** using standard Go `os` package functions
-- **Testing all combinations** of adapters and storage backends
-
-Test suites cover:
-
-- Basic file operations (create, read, write, delete)
-- Directory operations (mkdir, readdir, rename)
-- Symbolic and hard links
-- File attributes and permissions
-- Idempotency guarantees
-- Edge cases and boundary conditions
-
-Run these commands from the repository root. `dt` supplies the `e2e` build tag and runs the
-suite as root through `sudo`, so it needs passwordless sudo and a kernel NFS client.
-
-```bash
-# Run the E2E tests
-test/harness/bin/dt run e2e
-
-# Run one E2E test
-test/harness/bin/dt run e2e TestNFSv4BasicOperations
-
-# Test the in-memory metadata and block stores
-test/harness/bin/dt run e2e 'TestStoreMatrixOperations/memory/memory'
-```
-
-NFSv4/v4.1 tests are in `internal/adapter/nfs/v4/handlers/` and cover sessions, delegations, ACLs, and Kerberos.
-
-See `test/e2e/` for detailed documentation.
-
-### NFS Client Testing
-
-```bash
-# Mount on Linux
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
-
-# Mount on macOS (requires resvport)
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport localhost:/export /mnt/test
-
-# Test operations
-cd /mnt/test
-ls -la
-echo "test" > file.txt
-cat file.txt
-
-# Unmount
-sudo umount /mnt/test
-```
+[docs/internals/testing.md](testing.md) is the guide: the harness, what each suite needs, how to run
+and read a run, CI, and how to write a test. Before you write or change one, read its "Writing tests"
+section and "Writing tests" in [CLAUDE.md](../../CLAUDE.md).
 
 ## Benchmarking
 
-`bench-smoke` runs on pull requests, non-blocking; every other benchmark suite is in the
-`manual` tier of `test/suites.yaml` (RFC 29 §4.3). [`bench/README.md`](../../bench/README.md)
-covers how to run them: `dfsbench` and the components' `go test -bench`.
+On storage-v2, `tests.yml` drops `bench-smoke` and `fio-verify`, as it does every suite that
+hasn't moved to storage-v2 yet. Go's `-bench`, `dfsbench`'s full runs and the `manual` tier's
+`engine-bench`, `reconcile-bench` and `version-limit-probe-bench` are run by hand (RFC 29 §4.3).
+[`bench/README.md`](../../bench/README.md) covers how to run `dfsbench` and the components'
+`go test -bench`.
 
 To compare a change, run the same benchmark with `-count=10` before and after it on one machine
 and compare the two with `benchstat`; never against a number from another host. Call
@@ -517,26 +429,14 @@ Log appropriately:
 
 ## CI Workflows
 
-DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, comprehensive validation on push, and full matrix testing weekly.
-
-### Workflow Overview
-
-| Workflow | Trigger | Purpose | Duration |
-| ---------- | --------- | --------- | ---------- |
-| `tests.yml` | PR, push, nightly, manual | The suites of `test/suites.yaml` through `dt`, decided by one `gate` check: lint, unit (Windows too), integration, operator, pjdfstest, pynfs, WPTS, smbtorture, with its Kerberos option, cthon04, nfstest (nightly), the SMB clients of Linux, macOS and Windows, and e2e (non-blocking on PRs) so far. Dispatched at the `manual` tier with suite `pynfs`, it also runs pynfs against Linux knfsd, the evidence for pynfs's known failures | ~20 min |
-| `combined-tree.yml` | scheduled | Builds the tree two green PRs would produce | seconds when idle |
-
-### Conformance suites
-
-Every suite's profiles, variants, tier and known file live in the test registry,
-[`test/suites.yaml`](../../test/suites.yaml). `test/harness/bin/dt docs` renders them as the table
-in [testing.md](testing.md#conformance-test-suites), and Repo Checks fails while it is stale.
-A suite runs beside others under `dt run --parallel` only once it says `parallel: true`, and
-[testing-parallel.md](testing-parallel.md) says how to check whether it may.
+The suites of [`test/suites.yaml`](../../test/suites.yaml) run in
+[`tests.yml`](../../.github/workflows/tests.yml), driven by `dt`: which cells each event's tier
+runs, its retries, the merge queue and the checks a merge requires are
+[docs/internals/testing.md](testing.md#ci)'s.
 
 ### Combined-tree checks
 
-Every workflow above tests one tree per pull request: that head merged into
+`tests.yml` tests one tree per pull request: that head merged into
 `develop` as `develop` stood when the matrix ran. The tree that reaches
 `develop` after two such pull requests land in sequence is tested by none of
 them, and `mergeable` does not cover the gap -- it reports whether the texts
@@ -555,85 +455,6 @@ The exact selection rules, and the ceilings they carry, are documented at the
 top of [`.github/scripts/combined-tree.sh`](../../.github/scripts/combined-tree.sh)
 -- the one place they can drift out of agreement with the code that applies
 them is a second prose copy here.
-
-### What Runs on PR (Fast, Must-Pass Before Merge)
-
-These workflows gate pull request merges and should complete in under 5 minutes:
-
-- **tests.yml** -- Through `dt`: lint, unit tests with the race detector (on Windows too, non-blocking), integration, operator, and pjdfstest, pynfs, WPTS, smbtorture (over two runners) and cthon04 on badger-s3
-- **e2e**, in tests.yml -- its Kerberos tests, and its cross-protocol tests (one file through NFS and SMB), each on the PRs that can affect them; the whole suite after a merge, and with the stress tests nightly. Non-blocking until it has a quiet week on develop
-
-### What Runs on Push to Develop (Comprehensive)
-
-These run after merging to develop and should complete in under 30 minutes:
-
-- Everything from PR checks
-- **tests.yml** -- the `merge` tier, with smbtorture's Kerberos option
-
-### What Runs Weekly (Full Matrix)
-
-The weekly cron runs the complete test matrix (Sunday evenings UTC):
-
-- Everything from push checks
-- Auto-creates GitHub issues for regressions
-
-### How to Manually Trigger Workflows
-
-All workflows support `workflow_dispatch` for manual triggering:
-
-```bash
-# Trigger via GitHub CLI
-gh workflow run tests.yml -f tier=merge
-gh workflow run tests.yml -f tier=nightly
-gh workflow run tests.yml -f tier=nightly -f suite=nfstest --ref my-branch   # one suite's cells
-```
-
-Or use the GitHub Actions UI: navigate to the workflow, click "Run workflow", and select options.
-
-### Interpreting Conformance Test Results
-
-When a conformance test fails in CI:
-
-1. **Check the step summary** -- `dt report` gives each cell's new and known failures and unexpected skips
-2. **Download artifacts** -- each cell's results, with its tool's own output (WPTS's TRX, smbtorture's log), are uploaded as artifacts
-3. **Check the suite's known file** -- the `known` file `test/suites.yaml` names; a test listed there was expected to fail
-4. **For new failures:**
-   - If the failure is in a genuinely unimplemented feature, add it to the suite's known file, with its reason
-   - If the failure is in an implemented feature, it is a regression and needs fixing
-   - Use `--keep` flag locally to leave containers running for debugging
-
-### How to Add New CI Jobs
-
-Follow this template pattern for new workflow jobs:
-
-```yaml
-  new-job:
-    name: Descriptive Job Name
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [badger-s3]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run tests
-        run: ./your-test-script.sh --profile ${{ matrix.profile }}
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: results-${{ matrix.profile }}
-          path: results/
-          retention-days: 30
-```
-
-Key guidelines:
-- Use a matrix strategy; conformance runs the production profile, `badger-s3`, in every tier
-- Always set `timeout-minutes` to prevent runaway jobs
-- Use `fail-fast: false` so one profile failure does not cancel others
-- Upload artifacts with `if: always()` so results are available even on failure
-- Add concurrency groups to prevent duplicate runs
 
 ## Submitting Changes
 

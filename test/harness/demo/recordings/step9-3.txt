@@ -1,0 +1,2 @@
+# jq -c '[.results.tests[] | .extra.grade // .status] | group_by(.) | map({(.[0]): length}) | add' "test/harness/demo/nightly-run/summary.json" | 2026-11-16 16:59 CET | f02e02620
+{"known":13,"passed":26}
