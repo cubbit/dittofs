@@ -385,6 +385,32 @@ func TestAnEchoRowIsServed(t *testing.T) {
 	}
 }
 
+func failedEcho(context.Context, *core.Request, echoRequest) (echoResponse, error) {
+	return echoResponse{}, errors.New("failed")
+}
+
+// A row whose handler fails with no reply is answered its status and the
+// ERROR response's body alone, its encoder handed no reply writing nothing
+// (RFC 22 section 16.5), and the connection stays: a second one is answered.
+func TestAFailedRowIsAnsweredTheErrorBodyAlone(t *testing.T) {
+	d := newDeps(t)
+	adaptertest.CheckLeaks(t, d.Budgets)
+	errs := core.NewErrorTable(statusInternalError, core.ErrorRow{Err: core.ErrDecode, Status: statusInvalidParameter})
+	tb := core.NewOpTable(errs, false, core.Row(cmdEcho, "ECHO", core.NeedsNothing, failedEcho))
+	tb.Protocol = "smb"
+	srv, err := core.NewServer(d, loopback(), core.Listener{Services: []string{"smb"}, Network: "tcp", Protocol: protocol.New(tb)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := dial(t, start(t, srv))
+	for id := uint64(5); id <= 6; id++ {
+		send(t, c, request(cmdEcho, 0, 0, id, 4, 0, 0, 0))
+		if rs := recv(t, c); len(rs) != 1 || rs[0].status != statusInternalError || rs[0].id != id || string(rs[0].body) != string(errorBody) {
+			t.Errorf("a failed ECHO was answered %+v; want STATUS_INTERNAL_ERROR under message ID %d with the ERROR body alone, % x", rs, id, errorBody)
+		}
+	}
+}
+
 // refusals is each adapter_refusals_total series of m that counted a
 // refusal, keyed by its protocol and stage labels as protocol/stage.
 func refusals(t *testing.T, m *metrics.Registry) map[string]float64 {

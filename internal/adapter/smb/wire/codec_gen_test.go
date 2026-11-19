@@ -16,6 +16,9 @@ func (x *CloseRequest) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *CloseRequest) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		return nil
+	}
 	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
 	x.encodeSMB2(&e, v)
 	if e.Err != nil {
@@ -56,6 +59,9 @@ func (x *CreateRequest) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *CreateRequest) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		return nil
+	}
 	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
 	x.encodeSMB2(&e, v)
 	if e.Err != nil {
@@ -288,6 +294,9 @@ func (x *NegotiateRequest) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *NegotiateRequest) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		return nil
+	}
 	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
 	x.encodeSMB2(&e, v)
 	if e.Err != nil {
@@ -375,6 +384,9 @@ func (x *NegotiateResponse) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *NegotiateResponse) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		return nil
+	}
 	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
 	x.encodeSMB2(&e, v)
 	if e.Err != nil {
@@ -611,6 +623,9 @@ func (x *WriteRequest) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *WriteRequest) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		return nil
+	}
 	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
 	x.encodeSMB2(&e, v)
 	if e.Err != nil {
@@ -686,6 +701,9 @@ func (x *EchoRequest) DecodeWire(b []byte, v uint32) (int, error) {
 }
 
 func (x *EchoRequest) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		return nil
+	}
 	e := wire.Encoder{B: out.B, Origin: len(out.B) - wire.HeaderLen}
 	x.encodeSMB2(&e, v)
 	if e.Err != nil {
