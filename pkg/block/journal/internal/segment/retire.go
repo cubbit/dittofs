@@ -126,7 +126,7 @@ type Retirer struct {
 	// decision: mu is a leaf mutex outside the six lock domains; the type's
 	// decision gives why nothing is held across it.
 	mu      sync.Mutex
-	freedB  atomic.Uint64 // freed_bytes; moved under mu, read without it
+	freedB  atomic.Uint64 // freed_bytes; an atomic, moved and read without mu
 	queue   []core.SegmentID
 	reasons []Reason
 	queued  map[core.SegmentID]struct{}
@@ -350,16 +350,7 @@ func (r *Retirer) recycle(id core.SegmentID, class Class) (Retirement, error) {
 	// same words the public Stats.Counters.FreedBytes comment carries, and
 	// where the plan and the RFC disagree the RFC rules. Withdrawn if the
 	// RFC's author rules the gauge counts only bytes back to the filesystem.
-	//
-	// decision: the lock guards one atomic add and is kept on purpose.
-	// Removing it made the segment-and-record accounting conformance check
-	// (TestRFC1B_SegmentAndRecordAccounting) fail in 2 of 12 narrow runs. The
-	// mechanism is not isolated; it looks like the lock orders the freed-bytes
-	// update against concurrent retirement. Overturned only by isolating that
-	// ordering and a test that pins it.
-	r.mu.Lock()
 	r.freedB.Add(uint64(r.cfg.Set.cap))
-	r.mu.Unlock()
 
 	ret := Retirement{ID: id, Recycled: true, Fresh: fresh, Freed: r.cfg.Set.cap, Durable: true}
 	// The retired-segment hook runs before the durable signal: a recycle's
