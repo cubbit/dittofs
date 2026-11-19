@@ -747,7 +747,7 @@ suites:
 | `cmd` | A command, or a list of commands, from the repository root or inside `image`. Every command of a list runs, in order, and the cell fails if any of them failed, so one run reports every problem, as the lint jobs do today. A command is a string, split into arguments at spaces, and never passes through a shell; `{ sh: "..." }` runs one through `sh -c` (Git Bash on Windows) when it needs pipes or `$(...)`. Its placeholders are below | required, unless the image provides one |
 | `dir` | The directory the commands run in, such as `{mount}`. With `image`, the commands run in the container, so `dir` is a directory inside it, given to `docker run -w` | the repository root; with `image`, the image's own working directory |
 | `format` | How each test's result is read: `exit`, `go-json`, `junit`, `tap`, `subunit`, `trx`, `nfstest` (§4.6) | `exit` |
-| `metrics` | A reader of numbers the tool reports: `fio-json`, `dfsbench-json` (§4.6) | none |
+| `metrics` | A reader of numbers the tool reports: `fio-json`, `dfsbench-json`, `go-bench` (§4.6) | none |
 | `tier` | The smallest tier that runs the suite (§4.3) | `merge` |
 | `blocking` | `false`: results are recorded and reported, but never fail the gate. May be per tier | `true` |
 | `timeout` | `test`: each test's limit; `cell`: the whole cell's, including the fixture. The two keys are set separately: an option, suite or default that sets one keeps the other from the level above. `test: size` takes it from a scenario's size class (below). A `.txt` test list may give a test its own | `{ test: 30m, cell: 60m }` |
@@ -1492,7 +1492,11 @@ it did I/O in, in its test's `extra.metrics`, keyed `JOB/DIRECTION/NAME`, as
 `seq-write/write/bw_bytes`. A job whose `error` isn't 0 fails its test even when fio exits 0, as it
 does for a job that continues on errors, which logs them in the report's file before the report. A
 test that passes without a report has no numbers, which is lost coverage: its cell is not run, exit
-2. `dt` doesn't read `dfsbench-json` yet: it comes with the tracked runs (§8 step 6).
+2. `go-bench` reads the benchmark lines `go test -bench` writes to `{out}/{test}.txt`, and records
+each benchmark's number for each unit, keyed `NAME UNIT` with the `-GOMAXPROCS` suffix left out, as
+`BenchmarkAppend/4KiB ns/op`; a benchmark run more than once, by `-count`, records the median of its
+runs. A test that passes without benchmark lines has no numbers either: its cell is not run, exit 2.
+`dt` doesn't read `dfsbench-json` yet: it comes with the tracked runs (§8 step 6).
 
 **Grades in CTRF and JUnit.** `dt` grades each result of each test, and writes the grade in
 `extra.grade`:

@@ -23,7 +23,7 @@ var Tiers = []string{"pr", "merge", "nightly", "manual"}
 
 var (
 	formats    = set("exit", "go-json", "junit", "tap", "subunit", "trx", "nfstest")
-	metrics    = set("fio-json", "dfsbench-json")
+	metrics    = set("fio-json", "dfsbench-json", "go-bench")
 	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "smbclient", "nfs4-acl-tools", "kerberos", "dm-flakey", "fio", "host:dedicated")
 	// Placeholders every cell may use; a cell's matrix axes add their own.
 	placeholders = set("test", "test-args", "args", "names", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "bucket", "share", "user", "user2", "password", "realm", "krb5-conf", "client2")
@@ -122,7 +122,7 @@ func checkUnit(root string, u *Suite) []error {
 		fail("format %q is not one of exit, go-json, junit, tap, subunit, trx, nfstest", u.Format)
 	}
 	if u.Metrics != "" && !metrics[u.Metrics] {
-		fail("metrics %q is not fio-json or dfsbench-json", u.Metrics)
+		fail("metrics %q is not fio-json, dfsbench-json or go-bench", u.Metrics)
 	}
 	if !isTier(u.Tier) {
 		fail("tier %q is not one of %s", u.Tier, strings.Join(Tiers, ", "))

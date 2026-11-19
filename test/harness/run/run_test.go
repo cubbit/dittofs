@@ -735,6 +735,33 @@ func TestFioJSON(t *testing.T) {
 	}
 }
 
+// metrics: go-bench records each benchmark's number for each unit from the
+// output go test wrote to {out}/{test}.txt, in summary.json too: by name and
+// unit, the -GOMAXPROCS suffix left out, the median of a -count run's lines.
+// A test that passes without benchmark lines leaves its cell not run.
+func TestGoBench(t *testing.T) {
+	root, r := repo(t, `suites:
+  s: { cmd: "sh {test} {out}/{test}.txt", tests: "w/*.sh", metrics: go-bench }
+`, map[string]string{
+		"w/a.sh": "cat > \"$1\" <<'EOF'\ngoos: linux\nBenchmarkJ1/4KiB-8   3   300 ns/op   64 B/op   2 allocs/op\n" +
+			"BenchmarkJ1/4KiB-8   3   100 ns/op   64 B/op   2 allocs/op\nBenchmarkJ1/4KiB-8   3   200 ns/op   64 B/op   2 allocs/op\n" +
+			"BenchmarkJ2-8   5   10 ns/op\nBenchmarkJ2-8   5   30 ns/op\nPASS\nok  \tjournal\t1.2s\nEOF\n",
+		"w/c.sh": "true\n",
+	})
+	rep, out := runTarget(t, root, r, "s", false)
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || !strings.Contains(o.Note, "w/c.sh: go's benchmark output: ") {
+		t.Errorf("%+v\n%s", o, out)
+	}
+	want := map[string]float64{"BenchmarkJ1/4KiB ns/op": 200, "BenchmarkJ1/4KiB B/op": 64, "BenchmarkJ1/4KiB allocs/op": 2, "BenchmarkJ2 ns/op": 20}
+	sum, err := report.Read(rep.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sum.Cells[0].Tests[0]; got.Name != "w/a.sh" || got.Status != report.Passed || !reflect.DeepEqual(got.Metrics, want) {
+		t.Errorf("in summary.json: %+v", got)
+	}
+}
+
 // An annotation's text can't end it early or break it: %, CR and LF are
 // escaped, and in its title : and , too.
 func TestAnnotation(t *testing.T) {
