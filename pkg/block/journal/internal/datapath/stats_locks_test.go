@@ -1,7 +1,9 @@
 package datapath
 
 import (
+	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -20,17 +22,19 @@ const statsBackstop = 5 * time.Second
 // holding it cannot stall a write. A lock on Stats' path that is on neither
 // this list nor removed from the path fails the test below by name.
 var statsAllowed = map[string]string{
-	"dur.lmu": "a leaf: it holds a loss's raise, counters and ring publish as one section, " +
-		"never across an append, a sync or a marker write",
-	"dur.dir.mu": "a leaf under dur.lmu that guards the directory's generation and failed list, " +
-		"never held across I/O",
+	"dur.lmu": "held by a loss for its raise, counters and ring publish as one section, and by " +
+		"Stats for the ring copy and the generation read; no I/O under it, and the one lock " +
+		"taken inside it is dur.dir.mu",
+	"dur.dir.mu": "a leaf taken inside dur.lmu that guards the directory's generation and failed " +
+		"list, never held across I/O",
 }
 
-// minStatsLocks is the count of mutexes the components Stats reads own. It is
-// a floor, not a target: the twelve locks Stats once took are all present, and
-// the test fails if the walk below finds fewer, which would mean it stopped
-// reaching a component. More is fine.
-const minStatsLocks = 12
+// minStatsLocks is the count of mutexes the walk finds on the components Stats
+// reads today: the twelve locks Stats once took, the nested leaves, the
+// index's 64 shard locks and the rest. A lower count means a root or a lock
+// vanished, and the walk is no longer reaching what it did: the test needs a
+// look, not the number. A higher count is fine.
+const minStatsLocks = 95
 
 var mutexTypes = map[reflect.Type]bool{
 	reflect.TypeFor[sync.Mutex]():        true,
@@ -59,26 +63,39 @@ func field(t *testing.T, v reflect.Value, name string) reflect.Value {
 }
 
 // locksOf returns a locker for every mutex of the struct v points at, named
-// root.field, including mutexes nested in struct-valued fields (named
-// root.field.sub). It reads the mutexes through their address, so a lock added
-// to the struct later is found without a line here. Pointer fields are not
-// followed; statsLocks names the pointers worth following as roots.
+// root.field, including mutexes nested in struct-valued fields (root.field.sub)
+// and in array elements (root.field[i].sub). It reads the mutexes through their
+// address, so a lock added to the struct later is found without a line here.
+//
+// What it does not follow: slices, maps, pointer fields that statsLocks does
+// not name as a root, and *sync.Mutex fields. A component Stats begins to read
+// must therefore be added to statsLocks as a root, or a lock it takes is not
+// found by this test.
 func locksOf(root string, v reflect.Value) []namedLock {
-	var out []namedLock
-	st := v.Elem()
-	for i := range st.NumField() {
-		ft := st.Type().Field(i)
-		name := root + "." + ft.Name
-		f := st.Field(i)
-		switch {
-		case mutexTypes[ft.Type]:
-			p := reflect.NewAt(ft.Type, unsafe.Pointer(f.UnsafeAddr()))
-			out = append(out, namedLock{name, p.Interface().(sync.Locker)})
-		case ft.Type.Kind() == reflect.Struct:
-			out = append(out, locksOf(name, reflect.NewAt(ft.Type, unsafe.Pointer(f.UnsafeAddr())))...)
+	return walkLocks(root, v.Elem())
+}
+
+// walkLocks returns the lockers inside the addressable value v: v itself when
+// it is a mutex, and those inside it when it is a struct or an array.
+func walkLocks(name string, v reflect.Value) []namedLock {
+	switch {
+	case mutexTypes[v.Type()]:
+		p := reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr()))
+		return []namedLock{{name, p.Interface().(sync.Locker)}}
+	case v.Kind() == reflect.Struct:
+		var out []namedLock
+		for i := range v.NumField() {
+			out = append(out, walkLocks(name+"."+v.Type().Field(i).Name, v.Field(i))...)
 		}
+		return out
+	case v.Kind() == reflect.Array:
+		var out []namedLock
+		for i := range v.Len() {
+			out = append(out, walkLocks(fmt.Sprintf("%s[%d]", name, i), v.Index(i))...)
+		}
+		return out
 	}
-	return out
+	return nil
 }
 
 // statsLocks returns every mutex of every component Stats reads.
@@ -107,9 +124,24 @@ func statsLocks(t *testing.T, c *Core) []namedLock {
 	roots["files"] = fs
 	roots["conflicts"] = field(t, fs, "conflicts")
 
+	// A mutex reachable from two roots (a component's field and the same
+	// component named as a root of its own) is one lock: it is kept once, under
+	// the lexically first name, so a subtest and an allow-list entry name it
+	// the same way every run.
+	names := make([]string, 0, len(roots))
+	for name := range roots {
+		names = append(names, name)
+	}
+	slices.Sort(names)
 	var out []namedLock
-	for name, v := range roots {
-		out = append(out, locksOf(name, v)...)
+	seen := map[sync.Locker]bool{}
+	for _, name := range names {
+		for _, nl := range locksOf(name, roots[name]) {
+			if !seen[nl.l] {
+				seen[nl.l] = true
+				out = append(out, nl)
+			}
+		}
 	}
 	return out
 }

@@ -334,13 +334,18 @@ type Durability struct {
 	count     int
 	nextEvent uint64
 
-	// dmu guards damaged and unproduced.
+	// dmu guards damaged, unproduced and the publish of damagedView.
 	//
 	// decision: dmu is a leaf mutex over the damaged rows and the count of held
-	// records each segment cannot produce, held only for a map access and
-	// never across an index call, an Append or any other lock, so Stats reads
-	// the damage without a lock a write needs. A hold's count changes under a
-	// stream's mu, which takes dmu inside it.
+	// records each segment cannot produce, never held across an index call, an
+	// Append or any other lock. Under it a change also rebuilds, sorts and
+	// allocates the published report (publishDamagedLocked), which is more
+	// than a map access, and a hold's count changes under a stream's mu, which
+	// takes dmu inside it. Stats no longer takes dmu: it reads damagedView. The
+	// rebuild under dmu is acceptable because only damage events and holds of
+	// a damaged segment reach it, which are rare, and its cost is the ponytail
+	// at publishDamagedLocked. Overturned if a path that runs per write ever
+	// takes dmu.
 	dmu     sync.Mutex
 	damaged map[core.SegmentID]*damagedRow
 	// unproduced counts, per segment, the held records the index may still

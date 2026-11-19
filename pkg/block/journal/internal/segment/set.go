@@ -912,13 +912,15 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n, overhead int64)
 }
 
 // TagFigures returns copies of the record bytes and the non-payload bytes held
-// per share tag, both taken in one hold of the set's lock, so a record
-// charged between two reads cannot show in one map and not the other.
+// per share tag. The two are read one after the other without the set's lock,
+// so a move between the reads shows in one map and not the other.
 func (s *Set) TagFigures() (bytes, overhead map[core.ShareTag]int64) {
 	// The overhead is read first: a record's bytes are added before its
 	// overhead, so a record landing between the two reads shows its bytes
 	// without its overhead, which reads the unreclaimed figure high for one
-	// operation in flight, never low.
+	// operation in flight. That holds for additions only: a retirement or a
+	// forget lowers the bytes before the overhead, so a read between the two
+	// steps can show the figure low, which the caller's clamp at zero catches.
 	overhead = s.over.Snapshot()
 	return s.tags.Snapshot(), overhead
 }
