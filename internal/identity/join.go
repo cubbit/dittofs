@@ -19,12 +19,17 @@ type holds struct {
 // until release is called or the server stops. release drops the hold and
 // zeroes cred.Password, the caller's slice, which the hold keeps rather than
 // copies; it is safe to call more than once. A second hold under the same id
-// replaces the first, and the first's release then leaves the second alone.
+// replaces the first and zeroes its password, unless both share one slice, so
+// a forgotten release cannot leave it in memory; the first's release then
+// leaves the second alone.
 func (s *Server) HoldJoinCredential(id entity.OperationID, cred identity.JoinCredential) (release func()) {
 	c := &cred
 	s.holds.mu.Lock()
 	if s.holds.m == nil {
 		s.holds.m = make(map[entity.OperationID]*identity.JoinCredential)
+	}
+	if old := s.holds.m[id]; old != nil && !samePassword(old.Password, c.Password) {
+		clear(old.Password)
 	}
 	s.holds.m[id] = c
 	s.holds.mu.Unlock()
@@ -32,13 +37,25 @@ func (s *Server) HoldJoinCredential(id entity.OperationID, cred identity.JoinCre
 	return func() {
 		once.Do(func() {
 			s.holds.mu.Lock()
-			if s.holds.m[id] == c {
+			cur := s.holds.m[id]
+			if cur == c {
 				delete(s.holds.m, id)
 			}
+			// A live hold over the same buffer keeps it: zeroing it here
+			// would clear the password that hold still answers.
+			shared := cur != nil && cur != c && samePassword(cur.Password, c.Password)
 			s.holds.mu.Unlock()
-			clear(c.Password)
+			if !shared {
+				clear(c.Password)
+			}
 		})
 	}
+}
+
+// samePassword reports whether a and b are the same slice, so replacing a
+// hold with one over the caller's same buffer does not zero the new hold.
+func samePassword(a, b []byte) bool {
+	return len(a) > 0 && len(b) > 0 && &a[0] == &b[0]
 }
 
 // heldCredential is the credential held under id. The caller uses it for one
