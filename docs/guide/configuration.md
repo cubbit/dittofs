@@ -87,9 +87,15 @@ logging:
 
 ### 2. Observability
 
-DittoFS has **no OpenTelemetry / distributed-tracing subsystem**. Observability is
-provided by an opt-in Prometheus `/metrics` endpoint on a dedicated listener. See
-[Metrics (Prometheus)](#metrics-prometheus) below for the full configuration.
+DittoFS has **no in-file tracing configuration**. The one tracing switch is the
+`DITTOFS_OTLP_ENDPOINT` environment variable, a development gate: while it is
+set, `dfs start` exports the journals' spans over OTLP/HTTP to the endpoint it
+names, as plain, unauthenticated OTLP/HTTP, so point it only at a collector you
+trust; unset, the node runs untraced. See
+[Viewing metrics and traces](../internals/debugging.md#viewing-metrics-and-traces)
+for the development runbook, and [Metrics (Prometheus)](#metrics-prometheus)
+below for the metrics listener's configuration.
+
 ### 3. Server Settings
 
 Application-wide server configuration:
