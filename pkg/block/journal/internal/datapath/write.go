@@ -212,9 +212,15 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			// spare the pool cannot make: a full device's ENOSPC still refuses
 			// a reserved write here, as RFC 1 §6's ponytail records.
 			// The remaining cases after that are failures of the medium
-			// itself, which no reservation can predict. Overturned by
-			// returning the version with the error, if the caller can then
-			// record the partial write.
+			// itself, which no reservation can predict. Returning the drawn
+			// version with the error would overturn this only together with
+			// three more changes: WriteAt would report the extent it
+			// published (the done this loop already computes) beside the
+			// version, through Handle.WriteAt and Reservation.WriteAt; the
+			// engine would need a way to record a partially published write,
+			// which it drops with the error today; and the model would need a
+			// rule for a refused write that publishes pieces. Until then the
+			// zero version on every error stays, as WriteAt's doc says.
 			return core.Version{}, done, err
 		}
 		if pl.N <= 0 {

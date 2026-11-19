@@ -288,6 +288,7 @@ func (c *Core) appendRemoval(ctx context.Context, s *Share, id core.FileID, spec
 		return core.Version{}, segment.Location{}, err
 	}
 	c.headroom.Drawn(draw)
+	c.cap.Landed(s.Tag, pl.Loc.Len)
 	// Header-only records are registered with the liveness tracker before
 	// the removal is applied, so a segment whose last content this record's
 	// marker cuts is still answered held by the record's own registration

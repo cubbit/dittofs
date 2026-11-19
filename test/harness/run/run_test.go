@@ -491,13 +491,25 @@ func TestInterruptIsNotRun(t *testing.T) {
 suites:
   slow: { cmd: "sh {test}", tests: "t/*.sh" }
   next: { cmd: "true" }
-`, map[string]string{"t/a.sh": "sleep 30\n", "t/b.sh": "exit 0\n"})
+`, map[string]string{"t/a.sh": "touch started\nsleep 30\n", "t/b.sh": "exit 0\n"})
 	cells, err := Select(root, r, "g", "", "pr", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(300*time.Millisecond, cancel)
+	// The script touches started before it sleeps, so the cancel lands on a
+	// running test. The deadline is a backstop: reaching it is the failure,
+	// the script never having started.
+	go func() {
+		defer cancel()
+		deadline := time.Now().Add(time.Minute)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(filepath.Join(root, "started")); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
 	rep, err := Run(ctx, cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &bytes.Buffer{}})
 	if err != nil {
 		t.Fatal(err)

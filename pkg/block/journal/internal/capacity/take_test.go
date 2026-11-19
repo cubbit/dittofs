@@ -1742,3 +1742,213 @@ func TestGettersReservedByTag(t *testing.T) {
 		t.Fatalf("ReservedByTag[tag1] after Release = %d, want 0", got)
 	}
 }
+
+// landedAsk is the ask every Landed test measures the tally with: a payload
+// whose record costs exactly 1000 bytes, so a limit is the tally plus 1000
+// exactly when the ask fits.
+const landedAsk = 896
+
+// admitsAt reports whether a plain take of landedAsk against limit is admitted,
+// releasing the grant it got.
+func (r *rig) admitsAt(t *testing.T, limit int64) (missing int64, admitted bool) {
+	t.Helper()
+	q := req()
+	q.Payload = landedAsk
+	q.ShareLimit = limit
+	g, err := r.c.Take(context.Background(), q)
+	if err == nil {
+		g.Release()
+		return 0, true
+	}
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) || ns.Limit != core.LimitShare {
+		t.Fatalf("Take against limit %d = %v, want admitted or the share's refusal", limit, err)
+	}
+	return ns.Missing, false
+}
+
+// seedTally seeds tag1's figure from the set with a take that fits any limit,
+// the way a share's first write does.
+func (r *rig) seedTally(t *testing.T) {
+	t.Helper()
+	q := req()
+	q.Payload = 1
+	r.grant(t, q).Release()
+}
+
+// TestTake_LandedEntersTheTallyAndRetiredRefundsIt lands a record under the
+// tag with no grant, the way durability's re-append does, and follows it
+// through the figure: while its segment stands the tally holds its bytes, and
+// once the segment retires Retired takes exactly them back, leaving the seed.
+// Without Landed the tally never held them, and the retirement drove it below
+// the set's own figure.
+func TestTake_LandedEntersTheTallyAndRetiredRefundsIt(t *testing.T) {
+	r := newRig(t, std())
+	r.seed(t, landedAsk) // a 1000-byte record
+	r.seal(t)
+	r.seedTally(t)
+
+	p := r.append(t, segment.Roll{}, tag1, 404) // a 508-byte record in the next segment
+	r.c.Landed(tag1, p.Loc.Len)
+	rec := p.Loc.Len
+
+	// The tally is 1000+rec: an ask of 1000 fits a limit of 2000+rec and misses one below by one.
+	if missing, ok := r.admitsAt(t, 1999+rec); ok || missing != 1 {
+		t.Fatalf("while the landed record stands, a take one below the fit: admitted=%v missing=%d, want refused missing 1", ok, missing)
+	}
+	if _, ok := r.admitsAt(t, 2000+rec); !ok {
+		t.Fatal("while the landed record stands, a take at the fit was refused, want admitted")
+	}
+
+	// Its segment retires: the set's retired figure rises by the record and
+	// Retired takes it from the tally, which is back at the seed's 1000.
+	r.seal(t)
+	r.retire(t, p.Loc.Segment)
+	r.c.Retired(tag1)
+	if missing, ok := r.admitsAt(t, 1999); ok || missing != 1 {
+		t.Fatalf("after the retirement, a take at limit 1999: admitted=%v missing=%d, want refused missing 1 (the tally fell below the set's figure)", ok, missing)
+	}
+	if _, ok := r.admitsAt(t, 2000); !ok {
+		t.Fatal("after the retirement, a take at limit 2000 was refused, want admitted")
+	}
+}
+
+// TestTake_LandedAfterTheSeedReadItStandsHigh pins the seed window: a record
+// whose Landed arrives after the seed already read it in the set's settled
+// figure is counted twice, the tally standing high by exactly the record,
+// which the record's retirement does not lower: it fails closed until the
+// journal reopens and reseeds. (A Landed before the seed adds nothing
+// observable, for the seed replaces the figure.)
+func TestTake_LandedAfterTheSeedReadItStandsHigh(t *testing.T) {
+	r := newRig(t, std())
+	r.seed(t, landedAsk)
+	r.seal(t)
+	p := r.append(t, segment.Roll{}, tag1, 404)
+	r.seedTally(t) // the seed's settled figure already holds the record
+	rec := p.Loc.Len
+	r.c.Landed(tag1, rec)
+	// Standing high by the record: 1000+2*rec; an ask of 1000 fits 2000+2*rec.
+	if missing, ok := r.admitsAt(t, 1999+2*rec); ok || missing != 1 {
+		t.Fatalf("a take one below the doubled fit: admitted=%v missing=%d, want refused missing 1 (the lag overcounts by the record)", ok, missing)
+	}
+	if _, ok := r.admitsAt(t, 2000+2*rec); !ok {
+		t.Fatal("a take at the doubled fit was refused, want admitted")
+	}
+
+	// The retirement subtracts the record once: the tally stays high by it,
+	// for nothing clears a tag's seed in-process.
+	r.seal(t)
+	r.retire(t, p.Loc.Segment)
+	r.c.Retired(tag1)
+	if missing, ok := r.admitsAt(t, 1999+rec); ok || missing != 1 {
+		t.Fatalf("after the retirement, a take at limit %d: admitted=%v missing=%d, want refused missing 1 (the tally stays high by the record)", 1999+rec, ok, missing)
+	}
+	if _, ok := r.admitsAt(t, 2000+rec); !ok {
+		t.Fatalf("after the retirement, a take at limit %d was refused, want admitted", 2000+rec)
+	}
+}
+
+// TestTake_LandedInsideTheSeedReadIsCounted pins the seed's read window: a
+// record the set counts after the seed's read but whose Landed runs before the
+// seed stores its figure is in neither the stale figure nor a seeded tally, so
+// the seed has to take it in as a pending figure. Without that the tally never
+// holds it and its segment's retirement drives the figure below the set's.
+func TestTake_LandedInsideTheSeedReadIsCounted(t *testing.T) {
+	r := newRig(t, std())
+	r.seed(t, landedAsk) // a 1000-byte record
+	r.seal(t)
+	var p segment.Placed
+	read := r.c.cfg.ShareFigures
+	r.c.cfg.ShareFigures = func(tag core.ShareTag) (settled, retired int64) {
+		// Read first, then land the record and report it: the stale figure
+		// the seed receives does not hold a record its Landed has counted.
+		settled, retired = read(tag)
+		p = r.append(t, segment.Roll{}, tag1, 404)
+		r.c.Landed(tag1, p.Loc.Len)
+		return settled, retired
+	}
+	r.seedTally(t)
+	r.c.cfg.ShareFigures = read
+	rec := p.Loc.Len
+
+	// The tally holds the seed and the record: an ask of 1000 fits 2000+rec.
+	if missing, ok := r.admitsAt(t, 1999+rec); ok || missing != 1 {
+		t.Fatalf("with the record standing, a take one below the fit: admitted=%v missing=%d, want refused missing 1 (the tally undercounts by the record)", ok, missing)
+	}
+
+	// Its segment retires and Retired takes the record back: the tally is the seed.
+	r.seal(t)
+	r.retire(t, p.Loc.Segment)
+	r.c.Retired(tag1)
+	if missing, ok := r.admitsAt(t, 1999); ok || missing != 1 {
+		t.Fatalf("after the retirement, a take at limit 1999: admitted=%v missing=%d, want refused missing 1 (the tally fell below the set's figure)", ok, missing)
+	}
+}
+
+// refusedBeside is refused for a take made while another grant is open: the
+// same check as refused, without its test that nothing is reserved.
+func (r *rig) refusedBeside(t *testing.T, rq Request, want core.Limit) *core.NoSpaceError {
+	t.Helper()
+	g, err := r.c.Take(context.Background(), rq)
+	if err == nil {
+		g.Release()
+		t.Fatalf("Take(%+v) was granted, want a refusal naming %s", rq, want)
+	}
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) || ns.Limit != want {
+		t.Fatalf("Take(%+v) = %v, want a NoSpaceError naming %s", rq, err, want)
+	}
+	return ns
+}
+
+// TestTake_SecondTakeAtTheLastEntryIsRefusedAtAdmission pins that an admitted
+// take holds the one entry the index has left: a second write, whose own
+// pre-check still passes against the unmoved count, is refused naming the
+// index at its take, before any I/O, and counted; releasing the first gives
+// the entry back.
+func TestTake_SecondTakeAtTheLastEntryIsRefusedAtAdmission(t *testing.T) {
+	o := std()
+	o.indexBound = 1
+	r := newRig(t, o)
+	r.seed(t, 0)
+
+	g := r.grant(t, req())
+	before := r.c.RefusedCount()
+	ns := r.refusedBeside(t, req(), core.LimitIndex)
+	if ns.Missing != 1 || ns.Unit != core.UnitEntries {
+		t.Fatalf("the second take's refusal = %d %s, want one entry", ns.Missing, ns.Unit)
+	}
+	if got := r.c.RefusedCount(); got != before+1 {
+		t.Fatalf("RefusedCount went %d -> %d, want +1", before, got)
+	}
+	g.Release()
+	g2 := r.grant(t, req())
+	g2.Release()
+}
+
+// TestTake_SecondTakeAtTheLastVersionIsRefusedAndCounted pins that the check
+// and the draw are one section: with one version left, the first take draws
+// it and the second is refused naming the version limit at its take, counted
+// once, not refused later at a draw.
+func TestTake_SecondTakeAtTheLastVersionIsRefusedAndCounted(t *testing.T) {
+	r := newRig(t, std())
+	r.seed(t, 0)
+	// Leave exactly one version: the counters' limit sits one past the next draw.
+	if err := r.ctr.SetVersionLimit(core.Version{Counter: r.ctr.NextVersion().Counter + 1}); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	if left := r.c.cfg.VersionsLeft(); left != 1 {
+		t.Fatalf("precondition: %d versions left, want 1", left)
+	}
+
+	g := r.grant(t, req())
+	defer g.Release()
+	before := r.c.RefusedCount()
+	ns := r.refusedBeside(t, req(), core.LimitVersion)
+	if ns.Missing != 1 || ns.Unit != core.UnitVersions {
+		t.Fatalf("the second take's refusal = %d %s, want one version", ns.Missing, ns.Unit)
+	}
+	if got := r.c.RefusedCount(); got != before+1 {
+		t.Fatalf("RefusedCount went %d -> %d, want +1", before, got)
+	}
+}

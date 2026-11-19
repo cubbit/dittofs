@@ -9,12 +9,13 @@ import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 // that limit. This is a deferral ledger for the share tally alone; the repack
 // reserve's bound is the pool's ready spares and does not read it.
 //
-// ponytail: the count is made when the unit's copies have all landed, not at
-// each append, so a tag seeded in that window reads the copies in its settled
-// figure and counts them again when they transfer: the tally stands high by
-// that unit's copy bytes, failing closed, until the tally is next reseeded.
-// Upgrade to counting at the append when a share's first write racing a pass
-// over its records shows in the field.
+// ponytail: the count is made once per unit, after its Copy and Carry calls
+// return, over the copies and records already appended, including a failed
+// unit's partial output, which is handed over at once. It is not made at
+// each append, so a tag seeded while the unit appends can count the copies
+// twice, failing closed; see seedFor for the bound. Upgrade to counting at
+// the append when a share's first write racing a pass over its records shows
+// in the field.
 func (c *Capacity) CopyLanded(src core.SegmentID, tag core.ShareTag, n int64) {
 	if n <= 0 {
 		return
@@ -38,15 +39,19 @@ func (c *Capacity) CopyLanded(src core.SegmentID, tag core.ShareTag, n int64) {
 // the share's tally takes the bytes, for the source's own retirement lowers it
 // by the source's bytes by the same step and the share holds the copies in
 // their place. It runs before that lowering, so the tally only ever stands
-// above the truth, never below it. A tag whose figure is not seeded takes
-// nothing: its seed reads the set's settled figure, which already holds the
-// copies. Safe to call for a segment nothing was counted against.
+// above the truth, never below it. A tag whose figure is not seeded and
+// whose seed has not begun takes nothing: its seed reads the set's settled
+// figure, which already holds the copies. A tag mid-seed takes them into the
+// pending figure the seed adds in, which can count them twice, never zero
+// times; see seedFor. Safe to call for a segment nothing was counted against.
 func (c *Capacity) CopiesTransfer(src core.SegmentID) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for tag, n := range c.copies[src] {
 		if c.seeded[tag] {
 			c.shareTally[tag] += n
+		} else if c.seeding[tag] {
+			c.seedPending[tag] += n
 		}
 		c.copyHeld[tag] -= n
 		if c.copyHeld[tag] <= 0 {
@@ -66,4 +71,15 @@ func (c *Capacity) CopyHeldBytes() int64 {
 		n += v
 	}
 	return n
+}
+
+// ShareFigure returns the share's record-byte figure the admission decides
+// on: zero for a tag no take has seeded.
+//
+// decision: reachable only from tests, which compare the figure with the set's
+// own settled bytes; no interface holds its signature up.
+func (c *Capacity) ShareFigure(tag core.ShareTag) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.shareTally[tag]
 }

@@ -191,6 +191,7 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 		return err
 	}
 	c.headroom.Drawn(draw)
+	c.cap.Landed(tag, pl.Loc.Len)
 
 	// The forget record's liveness, registered the moment its bytes landed:
 	// the registration's own contract counts the record before its segment

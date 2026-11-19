@@ -189,6 +189,9 @@ func (d *Durability) appendAgain(st *stream, h format.RecordHeader, body format.
 		return segment.Placed{}, err
 	}
 	st.reappended.Add(uint64(p.Loc.Len))
+	if d.landed != nil {
+		d.landed(nh.Tag, p.Loc.Len)
+	}
 	if d.afterAppend != nil {
 		d.afterAppend()
 	}

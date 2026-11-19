@@ -3,6 +3,7 @@ package datapath
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
@@ -19,10 +20,12 @@ import (
 // share figures a tagged write waits on. These tests drive a real retirement
 // through Core.Retirer's executor over the assembled core.
 //
-// Both tests seal the stream's segment and then roll the stream onto a
-// successor with one more write before retiring: a seal leaves the segment's
-// descriptor to the stream until its next roll, and the retirer's Cache
-// drain would otherwise wait on a ref nothing but that roll releases.
+// Every row seals the stream's segment before its retirement: the seal
+// itself releases the write reference the stream held, so the retirer's
+// Cache drain meets no stream ref of the sealed segment to wait on. The
+// rolls the rows make after their seal give the successor its predecessor
+// name and exercise the normal path — they are not what lets the drain
+// through, which the sealed-but-never-rolled row below pins.
 
 // TestRetirement_ThroughExecutorLeavesNoCopyEntry covers the executor's
 // Retired hook: a sealed segment that held a record a corrupt read dropped,
@@ -45,10 +48,11 @@ func TestRetirement_ThroughExecutorLeavesNoCopyEntry(t *testing.T) {
 	seg := placed.Record.Segment
 
 	// Seal the segment the record lives in, so a retirement can claim it:
-	// its records are durable once the seal has synced them. The write below
-	// rolls the stream onto a successor, releasing the sealed segment's
-	// descriptor — the drain the retirer's Close runs would otherwise wait on
-	// the ref the stream keeps until its next roll.
+	// its records are durable once the seal has synced them, and the seal
+	// releases the write reference itself. The write below rolls the stream
+	// onto a successor, giving it its predecessor name and exercising the
+	// normal path — the drain the retirer's Close runs waits on no ref of
+	// the stream's, with or without that roll.
 	if _, err := c.Streams().For(f).Seal(false); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -118,6 +122,66 @@ func TestRetirement_ThroughExecutorLeavesNoCopyEntry(t *testing.T) {
 	if p.DamagedSegments != 1 {
 		t.Fatalf("the damaged count = %d after the retirement, want the retired row still counted as 1", p.DamagedSegments)
 	}
+}
+
+// TestRetirement_TakesASegmentTheStreamSealedButNeverRolledAwayFrom pins the
+// seal's own release of the write reference: a stream that seals its segment
+// and never appends again stays on the sealed segment for the journal's life,
+// and no roll can ever come to release the ref the stream held — the seal
+// must. The row retires such a segment through the executor and asserts the
+// retirement runs to its durable signal, not to a drain parked forever.
+func TestRetirement_TakesASegmentTheStreamSealedButNeverRolledAwayFrom(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	ctx := context.Background()
+	f := testFile(1)
+	if _, err := c.WriteAt(ctx, s, f, 0, []byte("w"), 1); err != nil {
+		t.Fatalf("the write: %v", err)
+	}
+	placed, ok := c.Index().Lookup(f, 0)
+	if !ok {
+		t.Fatal("the write is not in the index")
+	}
+	seg := placed.Record.Segment
+
+	// Seal the segment and never write through the stream again: the stream
+	// stays on the sealed segment holding nothing but the ref the seal
+	// releases itself.
+	if _, err := c.Streams().For(f).Seal(false); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	// The retirement's durable signal is what the row observes: a forget
+	// record whose snapshot names the sealed segment, undroppable until the
+	// tracker hears the segment's durable retirement. Its home write goes to
+	// the other stream, so it rolls nothing.
+	rec := witnessOn(t, c, s, otherStreamFile(c, f), seg)
+
+	// The bounded wait is the assertion: without the seal releasing the write
+	// reference itself, the retirer's descriptor drain parks here forever —
+	// nothing but a roll, which never comes, would release the ref.
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Retirer().Retire(seg, segment.NotHeld)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Retire(%d): %v", seg, err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("Retire(%d) never returned: the retirer's descriptor drain is parked on the write reference the seal itself must release", seg)
+	}
+
+	// The retirement completed: the segment is out of the set, and the
+	// durable signal reached the tracker, releasing the witness.
+	if inSet(c, seg) {
+		t.Fatalf("the sealed segment %v is still in the set after its retirement, want it retired", seg)
+	}
+	waitIn(t, 8*time.Second, "the retired segment's durable signal to release the witness", func() bool {
+		return c.liveness.Droppable(rec)
+	})
 }
 
 // TestRetirement_ThroughExecutorLowersTheShareFigure covers the other half
