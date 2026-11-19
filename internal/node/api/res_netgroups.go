@@ -24,18 +24,27 @@ func netgroupOf(g entity.Netgroup) apiv1.Netgroup {
 	return apiv1.Netgroup{ID: g.Name, Generation: g.Version, Spec: apiv1.NetgroupSpec{Members: members}}
 }
 
-// netgroupRef is the target of a netgroup's row: its name, which must be
-// one entity.CheckLocalName admits, and not empty. A netgroup is no
-// principal, so the store holds no name rule for it and the check is here.
+// netgroupRef is the target of a netgroup's row: its name, not empty and at
+// most maxNetgroupRef bytes, so a netgroup stored before putNetgroup's name
+// rule stays readable and deletable.
+//
+// decision: the target is bounded far above the name rule's 255 bytes, not
+// by the rule, because a refused request's audit record holds its target and
+// a target of tens of kilobytes is past what one transaction carries, which
+// would leave the refusal unaudited. Lower it to the rule only once no stored
+// netgroup can hold a name the rule refuses.
 func netgroupRef(_ [16]byte, name string) ([]byte, error) {
-	if name == "" {
+	switch {
+	case name == "":
 		return nil, &fieldError{field: "name", detail: "a netgroup has a name"}
-	}
-	if err := entity.CheckLocalName(name); err != nil {
-		return nil, &fieldError{field: "name", detail: err.Error()}
+	case len(name) > maxNetgroupRef:
+		return nil, &fieldError{field: "name", detail: "longer than " + strconv.Itoa(maxNetgroupRef) + " bytes"}
 	}
 	return []byte(name), nil
 }
+
+// maxNetgroupRef bounds the name a netgroup's path may name, in bytes.
+const maxNetgroupRef = 4096
 
 // hostName reports whether s is a DNS host name: dot-separated labels of
 // 1 to 63 letters, digits and hyphens, no label starting or ending with a
@@ -66,8 +75,13 @@ var netgroups = writing[netgroupDoc]{kind: entity.ResourceNetgroup,
 
 // putNetgroup is PUT /netgroups/{sub}: the netgroup sub names, created
 // under If-None-Match: * or replaced whole under the version If-Match
-// names. Each member is an address, a CIDR or a host name.
+// names. Its name is one entity.CheckLocalName admits, checked here since the
+// store keeps a netgroup's name opaque. Each member is an address, a CIDR or
+// a host name.
 func putNetgroup(_ context.Context, rq request[netgroupDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Netgroup, [16]byte, error) {
+	if err := entity.CheckLocalName(rq.Sub); err != nil {
+		return apiv1.Netgroup{}, rq.ID, &fieldError{field: "name", detail: err.Error()}
+	}
 	for i, m := range rq.Body.Spec.Members {
 		if _, err := netip.ParseAddr(m); err == nil {
 			continue

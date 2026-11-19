@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -264,6 +265,8 @@ func TestNetgroupValidation(t *testing.T) {
 		r := s.do(t, http.MethodPut, tc.path, tc.body, "If-None-Match", "*")
 		if r.status != http.StatusBadRequest {
 			t.Errorf("PUT %s: answered %d %.200s, want 400", tc.what, r.status, r.body)
+		} else if p := r.problem(t); strings.HasPrefix(tc.what, "a name") && p.Field != "name" {
+			t.Errorf("PUT %s: refused naming field %q, want name", tc.what, p.Field)
 		}
 	}
 	for g, err := range s.store.Netgroups(t.Context(), "") {
@@ -281,6 +284,28 @@ func TestNetgroupValidation(t *testing.T) {
 	ok := s.do(t, http.MethodPut, "/api/v1/netgroups/labs", `{"spec":{"members":["10.0.0.1","10.0.0.0/8","build-1.example.com"]}}`, "If-None-Match", "*")
 	if ok.status != http.StatusOK {
 		t.Errorf("PUT an address, a CIDR and a host name: answered %d %s, want 200", ok.status, ok.body)
+	}
+}
+
+// A netgroup stored with a name the PUT now refuses stays readable and
+// deletable: only a write is held to the name rule.
+func TestNetgroupStoredBeforeTheNameRule(t *testing.T) {
+	s := serve(t, as(entity.RoleOperator, false))
+	for _, name := range []string{"lab ", strings.Repeat("a", 256)} {
+		v, err := s.store.PutNetgroup(t.Context(), entity.Netgroup{Name: name, Members: []string{"10.0.0.1"}}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := "/api/v1/netgroups/" + url.PathEscape(name)
+		if r := s.do(t, http.MethodGet, path, ""); r.status != http.StatusOK {
+			t.Errorf("GET netgroup %.20q: answered %d %.200s, want 200", name, r.status, r.body)
+		}
+		if r := s.do(t, http.MethodDelete, path, "", "If-Match", etagOf(v), "Idempotency-Key", "d"+strconv.Itoa(len(name))); r.status/100 != 2 {
+			t.Errorf("DELETE netgroup %.20q: answered %d %.200s, want 2xx", name, r.status, r.body)
+		}
+		if _, ok, err := s.store.Netgroup(t.Context(), name); err != nil || ok {
+			t.Errorf("netgroup %.20q after its DELETE: found %v, %v; want gone", name, ok, err)
+		}
 	}
 }
 
@@ -424,7 +449,7 @@ func TestNameAndEmailBounds(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	u, tag := s.createUser(t, apiv1.UserSpec{Name: "alice"}, "c1")
 	g := s.createGroup(t, apiv1.GroupSpec{Name: "staff"}, "g1")
-	for _, name := range []string{"nul\x00z", "x\ny", " ", " lead", "trail\t", strings.Repeat("a", 256), strings.Repeat("a", 5000)} {
+	for _, name := range []string{"nul\x00z", "x\ny", " ", " lead", "trail\t", strings.Repeat("a", 256), strings.Repeat("a", 5000), "bob@corp"} {
 		body := jsonOf(t, map[string]any{"spec": map[string]any{"name": name}})
 		for _, tc := range []struct{ method, path string }{
 			{http.MethodPost, "/api/v1/users"},

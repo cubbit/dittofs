@@ -315,7 +315,7 @@ func testPrincipalNameCase(t *testing.T, kvo Opener) {
 // A user's or group's name no protocol carries is refused invalid argument
 // on create, on rename and on a mint, and nothing is written: the rule is
 // the store's, so every path writing a name holds it. A name of exactly 255
-// bytes is accepted.
+// bytes is accepted, on create and on rename.
 func testPrincipalNameChars(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp, p := s.ControlPlane(), s.Principals()
@@ -332,6 +332,8 @@ func testPrincipalNameChars(t *testing.T, kvo Opener) {
 		"leading space": " lead",
 		"trailing tab":  "trail\t",
 		"256 bytes":     strings.Repeat("a", 256),
+		"at":            "bob@corp",
+		"backslash":     `CORP\bob`,
 	}
 	refused := func(what, name string, err error) {
 		t.Helper()
@@ -372,6 +374,14 @@ func testPrincipalNameChars(t *testing.T, kvo Opener) {
 	}
 	if _, err := cp.PutGroup(ctx, group(long), 0, entity.Alloc{}); err != nil {
 		t.Errorf("creating a group named %d bytes: %v, want accepted", len(long), err)
+	}
+	long = strings.Repeat("b", entity.MaxLocalName)
+	alice.Name, staff.Name = long, long
+	if _, err := cp.PutUser(ctx, alice, ugen, entity.Alloc{}); err != nil {
+		t.Errorf("renaming a user to %d bytes: %v, want accepted", len(long), err)
+	}
+	if _, err := cp.PutGroup(ctx, staff, ggen, entity.Alloc{}); err != nil {
+		t.Errorf("renaming a group to %d bytes: %v, want accepted", len(long), err)
 	}
 }
 

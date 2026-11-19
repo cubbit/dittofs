@@ -29,13 +29,13 @@ func idRange(tx entity.ControlPlaneTx) (entity.IDRange, error) {
 }
 
 // nameField is err with the store's refusal of a user's or group's name
-// answered as a *fieldError naming spec.name, since the store's own refusal
+// answered as a *fieldError naming field, since the store's own refusal
 // names no field. The store holds the name rule, so every path that writes
 // a name, not the API's alone, is refused it.
-func nameField(err error) error {
+func nameField(field string, err error) error {
 	var se *merrs.StoreError
 	if errors.As(err, &se) && errors.Is(se.Cause, entity.ErrLocalName) {
-		return &fieldError{field: "spec.name", detail: se.Cause.Error()}
+		return &fieldError{field: field, detail: se.Cause.Error()}
 	}
 	return err
 }

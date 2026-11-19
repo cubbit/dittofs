@@ -15,19 +15,18 @@ var (
 	ErrInvalidName = errors.New("entity: invalid name")
 	// ErrNameTooLong is a name longer than the share allows.
 	ErrNameTooLong = errors.New("entity: name too long")
-	// ErrLocalName is a local user's, group's or netgroup's name that
-	// CheckLocalName, or the store's rule for a principal's name, refuses.
-	ErrLocalName = errors.New("not a name every protocol carries")
+	// ErrLocalName is a local name CheckLocalName or CheckPrincipalName
+	// refuses.
+	ErrLocalName = errors.New("entity: not a name every protocol carries")
 )
 
 // MaxLocalName bounds a local user's, group's or netgroup's name, in bytes.
 const MaxLocalName = 255
 
-// CheckLocalName refuses, wrapping ErrLocalName, a local name a protocol
-// cannot carry as given: not valid UTF-8, holding a control character, NUL
-// among them, with white space leading or trailing, or longer than
-// MaxLocalName bytes. Such names reach NFSv4 owner strings and NTLM sign-in
-// names. An empty name passes: whether one is needed is the caller's rule.
+// CheckLocalName is the bound principals and netgroups share, wrapping
+// ErrLocalName: valid UTF-8, no control character, NUL among them, no white
+// space leading or trailing, at most MaxLocalName bytes. An empty name
+// passes: whether one is needed is the caller's rule.
 func CheckLocalName(name string) error {
 	var detail string
 	switch {
@@ -43,6 +42,21 @@ func CheckLocalName(name string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: %s", ErrLocalName, detail)
+}
+
+// CheckPrincipalName refuses, wrapping ErrLocalName, a local user's or
+// group's name that CheckLocalName refuses, since such names reach NFSv4
+// owner strings and NTLM sign-in names, or that holds @ or \: a sign-in name
+// with @ always names a directory principal, and a DOMAIN\name spelling,
+// whose prefix a lookup strips, names one principal.
+func CheckPrincipalName(name string) error {
+	if err := CheckLocalName(name); err != nil {
+		return err
+	}
+	if strings.ContainsAny(name, `@\`) {
+		return fmt.Errorf("%w: holds @ or \\", ErrLocalName)
+	}
+	return nil
 }
 
 // NameRule decides which names a share accepts, for every protocol.

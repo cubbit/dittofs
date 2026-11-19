@@ -60,7 +60,11 @@ var components = []struct {
 	{entity.ErrIdempotencyMismatch, answerOf{http.StatusUnprocessableEntity, "idempotency_mismatch", false}},
 	{entity.ErrOperationRunning, answerOf{http.StatusConflict, apiv1.CodeOperationRunning, true}},
 	{entity.ErrInvalidName, answerOf{http.StatusBadRequest, "invalid_name", false}},
-	{entity.ErrLocalName, answerOf{http.StatusBadRequest, "local_name", false}},
+	// decision: a local name the store's name rule refuses answers the
+	// generic invalid code rather than one of its own, as a refused field
+	// does: the API answers it through nameField naming the field, and no
+	// caller needs to tell the store's rule from the API's checks.
+	{entity.ErrLocalName, answerOf{http.StatusBadRequest, "invalid", false}},
 	{entity.ErrNameTooLong, answerOf{http.StatusBadRequest, "name_too_long", false}},
 	{entity.ErrSyntax, answerOf{http.StatusBadRequest, "syntax", false}},
 	{entity.ErrInvalidFile, answerOf{http.StatusBadRequest, "invalid_file", false}},

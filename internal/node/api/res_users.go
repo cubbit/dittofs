@@ -110,7 +110,7 @@ func createUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.Co
 		}
 	}
 	if _, err := tx.PutUser(u, 0, a); err != nil {
-		return apiv1.User{}, u.Principal.ID, nameField(err)
+		return apiv1.User{}, u.Principal.ID, nameField("spec.name", err)
 	}
 	u, _, err = tx.User(u.Principal)
 	return userOf(u), u.Principal.ID, err
@@ -141,7 +141,7 @@ func putUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.Contr
 	}
 	u.Name, u.Email, u.Disabled = sp.Name, sp.Email, sp.Disabled
 	if u.Generation, err = tx.PutUser(u, rq.Expect, entity.Alloc{}); err != nil {
-		return apiv1.User{}, rq.ID, nameField(err)
+		return apiv1.User{}, rq.ID, nameField("spec.name", err)
 	}
 	return userOf(u), rq.ID, lastAdmin(tx, was)
 }

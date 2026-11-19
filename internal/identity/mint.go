@@ -115,15 +115,19 @@ func createErr(err error) error {
 	return fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
 }
 
-// unnameHeld marks Unnamed each record of b whose name another principal of
-// its kind holds under the principal fold: one the name index holds, or an
-// earlier record of its kind in b. It returns how many it marked that marked
-// did not hold, and records each one's holder in marked.
+// unnameHeld marks Unnamed each record of b whose name the store refuses
+// (entity.CheckPrincipalName), since a name never fails a mint, and each
+// whose name another principal of its kind holds under the principal fold:
+// one the name index holds, or an earlier record of its kind in b. It
+// returns how many held names it marked that marked did not hold, and
+// records each one's holder in marked; a refused name is unnamed alike on
+// every run, so it is neither counted nor recorded.
 func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch, marked map[string]entity.Principal) (int, error) {
 	users, groups := map[string]entity.Principal{}, map[string]entity.Principal{}
 	n := 0
 	for i := range b.Users {
 		r := &b.Users[i]
+		r.Unnamed = r.Unnamed || entity.CheckPrincipalName(r.User.Name) != nil
 		holder, held, err := s.held(ctx, entity.PrincipalUser, r.User.Principal, r.User.Name, r.Unnamed, users)
 		if err != nil {
 			return 0, err
@@ -135,6 +139,7 @@ func (s *Server) unnameHeld(ctx context.Context, b *entity.MintBatch, marked map
 	}
 	for i := range b.Groups {
 		r := &b.Groups[i]
+		r.Unnamed = r.Unnamed || entity.CheckPrincipalName(r.Group.Name) != nil
 		holder, held, err := s.held(ctx, entity.PrincipalGroup, r.Group.Principal, r.Group.Name, r.Unnamed, groups)
 		if err != nil {
 			return 0, err
