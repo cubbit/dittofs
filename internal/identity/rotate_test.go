@@ -791,6 +791,86 @@ func TestRotationPruneGate(t *testing.T) {
 	}
 }
 
+// racingPrune is the real provider with race run once, right after its first
+// Prune: a seal another write commits while the rotation's prune runs.
+type racingPrune struct {
+	*secrets.Provider
+	race  func()
+	raced bool
+}
+
+func (f *racingPrune) Prune(
+	ctx context.Context,
+	tx entity.ControlPlaneTx,
+	kind entity.SecretKind,
+	owner entity.SecretOwner,
+	ref entity.SecretRef,
+) error {
+	err := f.Provider.Prune(ctx, tx, kind, owner, ref)
+	if err != nil {
+		return err
+	}
+
+	if !f.raced {
+		f.raced = true
+		f.race()
+	}
+
+	return nil
+}
+
+// The prune commits with the rotation's first write or not at all: a seal
+// that commits while the prune runs makes that write run again, its prune
+// dropped with it, and the rerun finds the current version unconfirmed and
+// prunes nothing. A prune through a write of its own would commit and drop
+// the confirmed version.
+func TestRotationPruneDroppedWithItsWrite(t *testing.T) {
+	fx := newRotation(t)
+	fx.seal(t, pw3, secrets.Meta{KeyVersion: 2}, func(tx entity.ControlPlaneTx) error {
+		in, err := tx.Installation()
+		if err != nil {
+			return err
+		}
+
+		j := in.Join
+		j.LastRotation.At, j.LastRotation.Confirmed = tx.Now(), tx.Now()
+		j.LastRotation.Tag, j.LastRotation.Read, j.LastRotation.Version = 2, 2, 2
+
+		return tx.SetMachineJoin(j)
+	})
+	p := &racingPrune{
+		Provider: fx.p,
+		race: func() {
+			fx.seal(t, pw4, secrets.Meta{KeyVersion: 3}, nil)
+		},
+	}
+	fx.restart(t, p)
+	fx.clock.Advance(11 * time.Hour)
+	op := fx.op()
+	fx.runs(t, op)
+
+	if !p.raced {
+		t.Fatal("the rotation's first turn never called Prune")
+	}
+
+	if got := fx.phase(op); got != "pin" {
+		t.Errorf("first turn: phase %q, want pin", got)
+	}
+
+	var got []uint64
+	for _, v := range fx.versions(t) {
+		got = append(got, v.Number)
+	}
+
+	if !slices.Equal(got, []uint64{3, 2, 1}) {
+		t.Errorf("versions %v, want [3 2 1]: the prune dropped with its write", got)
+	}
+
+	if rotationFailed(fx.s) {
+		t.Error("machine_password_rotation_failed raised by a prune that reran")
+	}
+}
+
 // A rotation started while a join runs on the installation is refused at its
 // first turn, naming the join, with nothing written.
 func TestRotationRefusedDuringJoin(t *testing.T) {
