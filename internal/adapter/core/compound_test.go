@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -182,6 +184,17 @@ type served struct {
 // at once, its stages changed by edit.
 func newServed(t *testing.T, reply int64, d adapter.Deps, edit ...func(*core.Stages)) *served {
 	t.Helper()
+	return newServedOn(t, reply, d, func(p core.Protocol) core.Protocol {
+		for _, e := range edit {
+			p = edited{p, e}
+		}
+		return p
+	})
+}
+
+// newServedOn is newServed on the protocol wrap makes of testproto's.
+func newServedOn(t *testing.T, reply int64, d adapter.Deps, wrap func(core.Protocol) core.Protocol) *served {
+	t.Helper()
 	svc := memory.New(t)
 	root, _, err := svc.Root(t.Context(), svc.Admin(), vfs.ShareRef{Name: svc.Store.Share.Name})
 	if err != nil {
@@ -189,10 +202,7 @@ func newServed(t *testing.T, reply int64, d adapter.Deps, edit ...func(*core.Sta
 	}
 	faults := vfstest.Faults(svc)
 	d.VFS = faults
-	var proto core.Protocol = testproto.New(d).WithCall(svc.Admin())
-	for _, e := range edit {
-		proto = edited{proto, e}
-	}
+	proto := wrap(testproto.New(d).WithCall(svc.Admin()))
 	s := &served{seam: newSeamWith(t, proto, reply, d), svc: svc, faults: faults, root: root, proto: proto}
 	for _, m := range []testproto.Msg{
 		{Op: testproto.OpNegotiate, Version: 1},
@@ -1028,5 +1038,465 @@ func TestAMemberWhoseResolveFailsIsCounted(t *testing.T) {
 	s.read()
 	if got, _ := scrape(t, m); got["adapter_refusals_total{protocol="+testproto.Name+",stage=resolve_ids}"] != 1 {
 		t.Errorf("a member whose Resolve failed counted %v at resolve_ids, want 1", got["adapter_refusals_total{protocol="+testproto.Name+",stage=resolve_ids}"])
+	}
+}
+
+// echoMember is p with each Echo its compounds carry handed to edit as it
+// decodes: a protocol the test declares, the member's own hooks held or
+// failed on cue, not a double.
+func echoMember(edit func(core.Invocation) core.Invocation) func(core.Protocol) core.Protocol {
+	return func(p core.Protocol) core.Protocol {
+		return retable(p, func(op *core.Op, member bool) {
+			if !member || op.Code != testproto.OpEcho {
+				return
+			}
+			dec := op.Decode
+			op.Decode = func(b []byte, v core.Version) (core.Invocation, int, error) {
+				inv, n, err := dec(b, v)
+				if err == nil {
+					inv = edit(inv)
+				}
+				return inv, n, err
+			}
+		})
+	}
+}
+
+// heldWrap is the stages' Security whose Wrap, once armed, is held until
+// open is closed: a delay injected on cue.
+type heldWrap struct {
+	core.Security
+	armed atomic.Bool
+	open  chan struct{}
+}
+
+func (w *heldWrap) Wrap(h core.Header, reply *resources.Buf) error {
+	if w.armed.Load() {
+		<-w.open
+	}
+	return w.Security.Wrap(h, reply)
+}
+
+// wireSince is how many times m observed each stage of adapter_wire_seconds
+// since before, a scrape of it, and the seconds it observed.
+func wireSince(t *testing.T, m *metrics.Registry, before map[string]float64) (counts, sums map[string]float64) {
+	t.Helper()
+	after, _ := scrape(t, m)
+	was, wasSum := wireSeconds(before)
+	counts, sums = wireSeconds(after)
+	for st := range counts {
+		counts[st] -= was[st]
+		sums[st] -= wasSum[st]
+	}
+	return counts, sums
+}
+
+// A compound observes each stage it runs once, its members' runs summed, and
+// a chain each stage once per member but wrap and send, which its members
+// share, once per record it sends: a compound of a PutFH and an Echo, every
+// stage; one whose only member names a code its table lacks, every stage but
+// resolve_ids, since that member is answered its error with no call; one
+// past its cap, every stage but reply_wait and resolve_ids, since
+// decode_args refuses it before either; one the drain refuses whole, the
+// stages to reply_wait, the drain judging it once its reply is reserved, and
+// map_error, since it gets no reply; one whose only member's Resolve refuses,
+// every stage; a chain of two Echo sent as one record; a chain of an Echo and
+// a second whose version the router refuses, the status finding no room at
+// once, split in two records; a chain whose second header the codec refuses,
+// its refusal in a record of its own, which Wrap never sees; and a chain whose
+// first member the drain refuses, its interim alone in its record, which
+// answers no request and so times no wrap or send, as an interim alone does
+// (RFC 20 §10.1).
+func TestEachStageOfACompoundOrAChainIsObservedOnce(t *testing.T) {
+	_, wire := core.StageNames()
+	order := orderedValues(wire)
+	each := func(n float64, but map[string]float64) map[string]float64 {
+		want := map[string]float64{}
+		for _, st := range order {
+			want[st] = n
+		}
+		maps.Copy(want, but)
+		return want
+	}
+	for _, c := range []struct {
+		name  string
+		serve func(t *testing.T, d adapter.Deps) (s *served, send func())
+		want  map[string]float64
+	}{
+		{"a compound of a PutFH and an Echo", func(t *testing.T, d adapter.Deps) (*served, func()) {
+			s := newServed(t, 1<<20, d)
+			return s, func() {
+				s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, echo)
+				s.results()
+			}
+		}, each(1, nil)},
+		{"a compound whose only member names a code its table lacks", func(t *testing.T, d adapter.Deps) (*served, func()) {
+			s := newServed(t, 1<<20, d)
+			return s, func() {
+				s.compound(1, testproto.Msg{Op: 99})
+				s.results()
+			}
+		}, each(1, map[string]float64{"resolve_ids": 0})},
+		{"a compound past its cap", func(t *testing.T, d adapter.Deps) (*served, func()) {
+			s := newServed(t, 1<<20, d)
+			return s, func() {
+				s.compound(1, slices.Repeat([]testproto.Msg{echo}, 9)...)
+				s.read()
+			}
+		}, each(1, map[string]float64{"reply_wait": 0, "resolve_ids": 0})},
+		{"a compound the drain refuses whole", func(t *testing.T, d adapter.Deps) (*served, func()) {
+			s := newServed(t, 1<<20, d)
+			return s, func() {
+				s.p.Drain()
+				none := echo
+				none.Role = core.RoleNone
+				s.compound(1, none)
+			}
+		}, each(1, map[string]float64{"resolve_ids": 0, "encode": 0, "wrap": 0, "send": 0})},
+		{"a compound whose only member's Resolve refuses", func(t *testing.T, d adapter.Deps) (*served, func()) {
+			s := newServedOn(t, 1<<20, d, echoMember(func(inv core.Invocation) core.Invocation {
+				inv.Resolve = func(*core.Request) error { return vfs.ErrStale }
+				return inv
+			}))
+			return s, func() {
+				s.compound(1, echo)
+				s.results()
+			}
+		}, each(1, nil)},
+		{"a chain of two Echo in one record", func(t *testing.T, d adapter.Deps) (*served, func()) {
+			s := newChained(t, 1<<20, d)
+			return s, func() {
+				s.serve(echoIn(1, 7), echoIn(2, 7))
+				if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
+					t.Fatalf("the chain is answered %+v, %v: want one record of both", rs, err)
+				}
+			}
+		}, each(2, map[string]float64{"wrap": 1, "send": 1})},
+		{"a chain split in two records", func(t *testing.T, d adapter.Deps) (*served, func()) {
+			s := newChained(t, 1<<20, d)
+			return s, func() {
+				free := fillBut(t, s, true)
+				refused := echoIn(2, 7)
+				refused.Version = 3
+				s.serve(echoIn(1, 7), refused)
+				synctest.Wait()
+				free()
+				if r := s.recvOne(); r.ID != 1 {
+					t.Errorf("the first record is %+v, want the first Echo", r)
+				}
+				if r := s.recvOne(); r.ID != 2 || r.Status != testproto.StatusVersion {
+					t.Errorf("the second record is %+v, want the version refused", r)
+				}
+			}
+		}, each(2, map[string]float64{"decode_args": 1, "reply_wait": 1, "resolve_ids": 1})},
+		{"a chain whose second header the codec refuses", func(t *testing.T, d adapter.Deps) (*served, func()) {
+			codec := &refusesAt{off: -1}
+			s := newChained(t, 1<<20, d, func(st *core.Stages) {
+				codec.HeaderCodec = st.Header
+				st.Header = codec
+			})
+			return s, func() {
+				b, offs := chainOf(s.f, echoIn(1, 7), echoIn(2, 7))
+				codec.off = offs[1]
+				s.serveBody(b)
+				s.recvOne()
+				s.recvOne()
+			}
+		}, each(1, map[string]float64{"decode_header": 2, "map_error": 2, "encode": 2, "send": 2})},
+		{"a chain whose first member the drain refuses", func(t *testing.T, d adapter.Deps) (*served, func()) {
+			s := newChained(t, 1<<20, d)
+			return s, func() {
+				s.p.Drain()
+				refused := echoIn(1, 7)
+				refused.Role = core.RoleNone
+				s.serve(refused, echoIn(2, 7))
+				if r := s.recvOne(); !r.Interim {
+					t.Errorf("the chain is answered %+v, want the first member's interim alone", r)
+				}
+			}
+		}, each(1, map[string]float64{"encode": 0, "wrap": 0, "send": 0})},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := metrics.New("v", "c")
+				s, send := c.serve(t, adapter.Deps{Metrics: m})
+				synctest.Wait() // the setup's requests ended
+				before, _ := scrape(t, m)
+				send()
+				if err := s.p.Wait(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				counts, _ := wireSince(t, m, before)
+				for _, st := range order {
+					if counts[st] != c.want[st] {
+						t.Errorf("%s observed %v times, want %v", st, counts[st], c.want[st])
+					}
+				}
+			})
+		})
+	}
+}
+
+// On a clock that moves 1 ms at each read, a compound of a PutFH and an Echo
+// sums each stage's runs, each timed from the end of the step before it, so
+// each run reads 1 ms: route 3 ms, the compound's own row checks and each
+// member's; resolve_ids, map_error and encode 2 ms, one run per member; and
+// every other stage 1 ms (RFC 20 §10.1).
+func TestACompoundSumsItsMembersRuns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, clk := metrics.New("v", "c"), newManualClock()
+		clk.step = time.Millisecond
+		s := newServed(t, 1<<20, adapter.Deps{Metrics: m})
+		synctest.Wait() // the setup's requests ended
+		core.SetClock(s.sh, clk)
+		before, _ := scrape(t, m)
+		s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, echo)
+		s.results()
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		_, sums := wireSince(t, m, before)
+		_, wire := core.StageNames()
+		for _, st := range orderedValues(wire) {
+			runs := 1
+			switch st {
+			case "route":
+				runs = 3
+			case "resolve_ids", "map_error", "encode":
+				runs = 2
+			}
+			if want := (time.Duration(runs) * time.Millisecond).Seconds(); math.Abs(sums[st]-want) > 1e-9 {
+				t.Errorf("%s sums %v s, want %v", st, sums[st], want)
+			}
+		}
+	})
+}
+
+// The test moves the server's clock while a compound or a chain is held in
+// one step, and the time lands under that step's stage alone, every other
+// stage observing 0: held in a member's Decode, under decode_args, which the
+// compound's walk ends; a member in its call, under none, so neither
+// map_error, timed from the call's end, nor wrap, timed from the last
+// member's encode for a compound and from its record's start for a chain,
+// holds it; in a member's Bound, then refused past the record cap, under
+// none, since reply_too_big is no timed stage and map_error is timed from the
+// refusal; in a member's Role, then refused by the drain, under map_error,
+// the drain judging it once decode_args and reply_wait are observed; in a
+// member's Resolve, then refused by the drain with a reply, under
+// resolve_ids, the stage that refused it; 30 s in
+// its reply reservation, the reply budget full, under reply_wait, where its
+// deadline refuses it; a chain's first or second member in Admit, under
+// admit; the record a chain's second member splits off, or the refusal's
+// record the next unrelated member sends, in its Wrap, under wrap, the
+// member's own stage timed from the record's end; and a chain's first refused
+// member in its status wait, under encode, as every status's wait is (RFC 20
+// §10.1).
+func TestACompoundOrAChainsStageIsTimedFromTheStepBeforeIt(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		serve func(t *testing.T, d adapter.Deps, open chan struct{}) (s *served, send func() (release func()))
+		moved time.Duration // how far the clock moves while it is held
+		stage string        // where that time lands; none in the call or before a refusal no stage times
+	}{
+		{"held in a member's Decode", func(t *testing.T, d adapter.Deps, open chan struct{}) (*served, func() func()) {
+			s := newServedOn(t, 1<<20, d, echoMember(func(inv core.Invocation) core.Invocation {
+				<-open
+				return inv
+			}))
+			return s, func() func() {
+				s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, echo)
+				return func() { close(open) }
+			}
+		}, time.Second, "decode_args"},
+		{"a compound's member held in its call", func(t *testing.T, d adapter.Deps, _ chan struct{}) (*served, func() func()) {
+			s := newServed(t, 1<<20, d)
+			return s, func() func() {
+				hold := s.faults.Hold(vfs.OpCreate)
+				s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, testproto.Msg{Op: testproto.OpCreate, Name: "a"})
+				return hold.Release
+			}
+		}, time.Second, ""},
+		{"held in a member's Bound, then refused past the record cap", func(t *testing.T, d adapter.Deps, open chan struct{}) (*served, func() func()) {
+			s := newServedOn(t, 1<<20, d, echoMember(func(inv core.Invocation) core.Invocation {
+				inv.Bound = func(*core.Request, int) (int, bool) {
+					<-open
+					return 0, false
+				}
+				return inv
+			}))
+			return s, func() func() {
+				s.compound(1, echo)
+				return func() { close(open) }
+			}
+		}, time.Second, ""},
+		{"held in a member's Role, then refused by the drain", func(t *testing.T, d adapter.Deps, open chan struct{}) (*served, func() func()) {
+			s := newServedOn(t, 1<<20, d, echoMember(func(inv core.Invocation) core.Invocation {
+				inv.Role = func(*core.Request) core.Role {
+					<-open
+					return core.RoleNone
+				}
+				return inv
+			}))
+			return s, func() func() {
+				s.p.Drain()
+				s.compound(1, echo)
+				return func() { close(open) }
+			}
+		}, time.Second, "map_error"},
+		{"held in a member's Resolve, then refused by the drain with a reply", func(t *testing.T, d adapter.Deps, open chan struct{}) (*served, func() func()) {
+			s := newServedOn(t, 1<<20, d, func(p core.Protocol) core.Protocol {
+				r := echoMember(func(inv core.Invocation) core.Invocation {
+					inv.Resolve = func(*core.Request) error {
+						<-open
+						return nil
+					}
+					inv.Role = func(*core.Request) core.Role { return core.RoleNone }
+					return inv
+				})(p).(retabled)
+				answered := core.NewErrorTable(testproto.StatusFault,
+					core.ErrorRow{Err: core.ErrDecode, Status: testproto.StatusDecode},
+					core.ErrorRow{Err: core.ErrDraining, Status: testproto.StatusMoved},
+				)
+				for _, tb := range r.Tables() {
+					if c := tb.Ops[testproto.OpCompound]; c != nil {
+						c.Members.Errors = answered
+					}
+				}
+				return r
+			})
+			return s, func() func() {
+				s.p.Drain()
+				s.compound(1, echo)
+				return func() { close(open) }
+			}
+		}, time.Second, "resolve_ids"},
+		{"held in its reply reservation past its deadline", func(t *testing.T, d adapter.Deps, _ chan struct{}) (*served, func() func()) {
+			// A quarter of 64 KiB clears the compound's charge, so it is not
+			// refused past the ceiling; five small classes fill the rest.
+			s := newServed(t, 64<<10, d)
+			return s, func() func() {
+				var free []func()
+				for range 5 {
+					held, ok := s.reply.TryGet(peer, 0)
+					if !ok {
+						t.Fatalf("the reply budget holds %d small classes, want five", len(free))
+					}
+					free = append(free, held.Release)
+				}
+				s.compound(1, echo)
+				return func() {
+					for _, f := range free {
+						f()
+					}
+				}
+			}
+		}, 30 * time.Second, "reply_wait"},
+		{"a chain's first member held in Admit", func(t *testing.T, d adapter.Deps, open chan struct{}) (*served, func() func()) {
+			s := &served{seam: newSeamWith(t, edited{testproto.New(d), func(st *core.Stages) { st.Flow = heldFlow{st.Flow, open} }}, 1<<20, d)}
+			return s, func() func() {
+				served := start(func() {
+					s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2})
+				})
+				return func() {
+					close(open)
+					<-served.done
+				}
+			}
+		}, time.Second, "admit"},
+		{"a chain's second member held in Admit", func(t *testing.T, d adapter.Deps, _ chan struct{}) (*served, func() func()) {
+			flow := &gatedFlow{gate: make(chan struct{})}
+			s := newChained(t, 1<<20, d, func(st *core.Stages) {
+				flow.FlowControl = st.Flow
+				st.Flow = flow
+			})
+			return s, func() func() {
+				flow.armed.Store(true)
+				s.serve(echoIn(1, 7), echoIn(2, 7))
+				return func() { close(flow.gate) }
+			}
+		}, time.Second, "admit"},
+		{"a chain's second member held in its call", func(t *testing.T, d adapter.Deps, _ chan struct{}) (*served, func() func()) {
+			s := newChained(t, 1<<20, d)
+			return s, func() func() {
+				hold := s.faults.Hold(vfs.OpCreate)
+				s.serve(
+					testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 1, Session: 7, Tree: 1, Handle: s.root},
+					testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 2, Session: inherited, Tree: 1, Name: "one", Related: true},
+				)
+				return hold.Release
+			}
+		}, time.Second, ""},
+		{"the record a chain's second member splits off held in its Wrap", func(t *testing.T, d adapter.Deps, open chan struct{}) (*served, func() func()) {
+			w := &heldWrap{open: open}
+			s := newChained(t, 1<<20, d, func(st *core.Stages) {
+				w.Security = st.Security
+				st.Security = w
+			})
+			return s, func() func() {
+				b, offs := chainOf(s.f, echoIn(1, 7), echoIn(2, 7))
+				b[offs[1]+headerLen+1] ^= 1 // the second member fails Unwrap
+				w.armed.Store(true)
+				s.serveBody(b)
+				return func() { close(open) }
+			}
+		}, time.Second, "wrap"},
+		{"a refusal's record the next unrelated member sends held in its Wrap", func(t *testing.T, d adapter.Deps, open chan struct{}) (*served, func() func()) {
+			w := &heldWrap{open: open}
+			s := newChained(t, 1<<20, d, func(st *core.Stages) {
+				w.Security = st.Security
+				st.Security = w
+			})
+			return s, func() func() {
+				b, _ := chainOf(s.f, echoIn(1, 7), echoIn(2, 7))
+				b[headerLen+1] ^= 1 // the first member fails Unwrap
+				w.armed.Store(true)
+				s.serveBody(b)
+				return func() { close(open) }
+			}
+		}, time.Second, "wrap"},
+		{"a chain's first refused member held in its status wait", func(t *testing.T, d adapter.Deps, _ chan struct{}) (*served, func() func()) {
+			s := newChained(t, 1<<20, d)
+			return s, func() func() {
+				give := s.p.HoldStatusWait()
+				b, _ := chainOf(s.f, echoIn(1, 7), echoIn(2, 7))
+				b[headerLen+1] ^= 1 // the first member fails Unwrap
+				served := start(func() { s.serveBody(b) })
+				return func() {
+					give()
+					<-served.done
+				}
+			}
+		}, time.Second, "encode"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				open, clk, m := make(chan struct{}), newManualClock(), metrics.New("v", "c")
+				s, send := c.serve(t, adapter.Deps{Metrics: m}, open)
+				synctest.Wait() // the setup's requests ended
+				core.SetClock(s.sh, clk)
+				before, _ := scrape(t, m)
+				release := send()
+				synctest.Wait()
+				clk.Advance(c.moved)
+				synctest.Wait()
+				release()
+				if err := s.p.Wait(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				counts, sums := wireSince(t, m, before)
+				if c.stage != "" && counts[c.stage] == 0 {
+					t.Errorf("%s observed nothing, want the %v held there", c.stage, c.moved)
+				}
+				for st, n := range counts {
+					want := 0.0
+					if st == c.stage {
+						want = c.moved.Seconds()
+					}
+					if n > 0 && math.Abs(sums[st]-want) > 1e-9 {
+						t.Errorf("%s observed %v s, want %v", st, sums[st], want)
+					}
+				}
+			})
+		})
 	}
 }

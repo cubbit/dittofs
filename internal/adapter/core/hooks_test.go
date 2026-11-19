@@ -180,9 +180,11 @@ func WithHoldDeadline(ctx context.Context, t time.Time) context.Context {
 func (t *tableSeries) Chain(op *Op) Call { return t.chains[op.Code] }
 
 // SetInvoke and SetResolveStart keep with r what the pipeline keeps there
-// before the chain; CallEnd is the call's end the chain marked.
+// before the chain; CallStart and CallEnd are the call's start and end the
+// chain marked.
 func SetInvoke(r *Request, call Call)          { r.invoke = call }
 func SetResolveStart(r *Request, at time.Time) { r.resolveStart = at }
+func CallStart(r *Request) time.Time           { return r.callStart }
 func CallEnd(r *Request) time.Time             { return r.callEnd }
 
 // OnTheDeadline reports whether ctx is the deadline's own context, as the

@@ -326,40 +326,60 @@ func (f *gatedFlow) Admit(ctx context.Context, h core.Header) (func(), error) {
 	return f.FlowControl.Admit(ctx, h)
 }
 
-// A chain whose second member waits in Admit when the connection closes ends
-// with nothing counted: the close's cancel is no refusal and no error no row
-// maps, and nothing logs at error.
+// A chain whose first or second member waits in Admit when the connection
+// closes ends with nothing counted: the close's cancel is no refusal and no
+// error no row maps, and nothing logs at error.
 func TestAChainMembersAdmissionTheCloseEndsIsNoError(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		m, logs := metrics.New("v", "c"), &logSink{}
-		flow := &gatedFlow{gate: make(chan struct{})}
-		s := newChained(t, 1<<20, adapter.Deps{Metrics: m, Logger: logs.logger()}, func(st *core.Stages) {
-			flow.FlowControl = st.Flow
-			st.Flow = flow
-		})
-		flow.armed.Store(true)
-		s.serve(echoIn(80, 7), echoIn(81, 7))
-		if r := s.recvOne(); r.ID != 80 {
-			t.Fatalf("the first record is %+v, want the first Echo, sent before the second waits", r)
-		}
-		synctest.Wait()
-		s.p.Close()
-		if err := s.p.Wait(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		got, _ := scrape(t, m)
-		for _, k := range []string{
-			"adapter_unmapped_errors_total{protocol=" + testproto.Name + "}",
-			"adapter_refusals_total{protocol=" + testproto.Name + ",stage=admit}",
-		} {
-			if got[k] != 0 {
-				t.Errorf("%s = %v after the close ended a member's admission, want 0", k, got[k])
+	for _, c := range []struct {
+		name  string
+		serve func(s *served)
+	}{
+		{"its second member", func(s *served) {
+			s.serve(echoIn(80, 7), echoIn(81, 7))
+			if r := s.recvOne(); r.ID != 80 {
+				s.t.Fatalf("the first record is %+v, want the first Echo, sent before the second waits", r)
 			}
-		}
-		if e := logs.at(t, "ERROR"); len(e) != 0 {
-			t.Errorf("a member's admission the close ended logged at error: %v", e)
-		}
-	})
+		}},
+		{"its first member", func(s *served) {
+			// A lone Echo takes the one admission that passes.
+			s.serve(echoIn(80, 7))
+			if r := s.recvOne(); r.ID != 80 {
+				s.t.Fatalf("the first record is %+v, want the lone Echo", r)
+			}
+			// The reader's goroutine, which the chain's first admission holds.
+			go s.serve(echoIn(81, 7), echoIn(82, 7))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, logs := metrics.New("v", "c"), &logSink{}
+				flow := &gatedFlow{gate: make(chan struct{})}
+				s := newChained(t, 1<<20, adapter.Deps{Metrics: m, Logger: logs.logger()}, func(st *core.Stages) {
+					flow.FlowControl = st.Flow
+					st.Flow = flow
+				})
+				flow.armed.Store(true)
+				c.serve(s)
+				synctest.Wait()
+				s.p.Close()
+				if err := s.p.Wait(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				got, _ := scrape(t, m)
+				for _, k := range []string{
+					"adapter_unmapped_errors_total{protocol=" + testproto.Name + "}",
+					"adapter_refusals_total{protocol=" + testproto.Name + ",stage=admit}",
+				} {
+					if got[k] != 0 {
+						t.Errorf("%s = %v after the close ended a member's admission, want 0", k, got[k])
+					}
+				}
+				if e := logs.at(t, "ERROR"); len(e) != 0 {
+					t.Errorf("a member's admission the close ended logged at error: %v", e)
+				}
+			})
+		})
+	}
 }
 
 // A chain whose second member would wait in Admit sends the first member's

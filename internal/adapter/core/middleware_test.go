@@ -568,8 +568,8 @@ func TestChainUnsampledAllocatesNothingMore(t *testing.T) {
 // the handler's context is the deadline's own, done at 30 s on the clock
 // while the span is still open; the panic, which recovery turns into
 // ErrPanicked outermost, reaches the span first, which ends with the fault
-// recorded, and the metrics hinge observed resolve_ids at entry and marks
-// the call's end on the way out.
+// recorded, and the metrics hinge marked the member's call's start at entry
+// and marks the call's end on the way out.
 func TestChainOrder(t *testing.T) {
 	tr := newTraced(t, true)
 	reqCtx, _ := tr.tracer.Start(context.Background(), "request")
@@ -590,13 +590,11 @@ func TestChainOrder(t *testing.T) {
 	if len(ended) != 1 || len(ended[0].Events()) != 1 || ended[0].Events()[0].Name != "exception" {
 		t.Errorf("the member's span ended %d times; want once, with the fault recorded", len(ended))
 	}
+	if got := core.CallStart(r); !got.Equal(t0) {
+		t.Errorf("the call's start is marked at %v, want the clock's %v at entry", got, t0)
+	}
 	if got := core.CallEnd(r); !got.Equal(t0.Add(30 * time.Second)) {
 		t.Errorf("the call's end is marked at %v, want the clock's %v", got, t0.Add(30*time.Second))
-	}
-	got, _ := scrape(t, tr.m)
-	k := "adapter_wire_seconds{protocol=" + testproto.Name + ",stage=resolve_ids}"
-	if got[k] != 1 || got["adapter_wire_seconds_sum{protocol="+testproto.Name+",stage=resolve_ids}"] != 0.002 {
-		t.Errorf("resolve_ids observed %v times, summing %v; want once, 2 ms", got[k], got["adapter_wire_seconds_sum{protocol="+testproto.Name+",stage=resolve_ids}"])
 	}
 	if !strings.Contains(tr.logged.String(), `"level":"ERROR"`) {
 		t.Errorf("the panic was not logged at error: %q", tr.logged.String())

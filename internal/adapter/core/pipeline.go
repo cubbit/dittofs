@@ -530,6 +530,21 @@ var errUnwrapNeither = fmt.Errorf("%w and no error", errUnwrapClose)
 // so the connection it closes counts under wiring (§10.1).
 func stageFault(err error) error { return fmt.Errorf("%w: %v", errWiring, err) }
 
+// mapRefusal counts a refusal before Route at stage st, a request alone's or
+// a chain member's, and maps err under h as the stages' table maps it, its
+// map_error timed to here: its status, and whether it is sent.
+func (p *pipeline) mapRefusal(tr *track, h Header, st stage, err error) (Status, bool) {
+	p.refused(tr, st)
+	s, send, _ := p.mapped(tr, p.st.Errors, err, nil, h.Version(), st != stageUnwrap)
+	if st == stageUnwrap && p.misbehaved.CompareAndSwap(false, true) {
+		// A client that sends what Unwrap refuses is logged once per
+		// connection, not once per request (§10.3).
+		p.sh.log.LogAttrs(tr.ctx, slog.LevelWarn, "a message the connection's security refused", tr.attrs(err)...)
+	}
+	p.lap(tr, stageMapError)
+	return s, send
+}
+
 // refuse answers on the reader a refusal at stage st, before Route, as the
 // stages' table maps it, under h, wrapped where wrap, and closes the
 // connection after where closeAfter. Its status's buffer is tried at once;
@@ -539,14 +554,7 @@ func stageFault(err error) error { return fmt.Errorf("%w: %v", errWiring, err) }
 // the reader, for the first to end, its statusWait running from there on
 // through its wait for its buffer.
 func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err error, wrap, closeAfter bool) {
-	p.refused(tr, st)
-	s, send, _ := p.mapped(tr, p.st.Errors, err, nil, h.Version(), st != stageUnwrap)
-	if st == stageUnwrap && p.misbehaved.CompareAndSwap(false, true) {
-		// A client that sends what Unwrap refuses is logged once per
-		// connection, not once per request (§10.3).
-		p.sh.log.LogAttrs(tr.ctx, slog.LevelWarn, "a message the connection's security refused", tr.attrs(err)...)
-	}
-	p.lap(tr, stageMapError)
+	s, send := p.mapRefusal(tr, h, st, err)
 	if !send {
 		p.end(tr, false, 0, 0, err)
 		rec.Release()
@@ -779,22 +787,25 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 	}
 	tr.op = op
 	if err == nil {
-		p.lap(tr, stageRoute)
+		// route's run ends here: observed below, or by a compound with its
+		// members' runs, its decode_args going on through their walk (§10.1).
+		route := p.since(tr)
 		args := p.st.Header.Args(rec, h)
 		var n int
 		inv, n, err = op.Decode(args, h.Version())
 		if err == nil && op.Members != nil && (n < 0 || n > len(args)) {
 			err = fmt.Errorf("a compound's arguments of %d bytes, %d in its message", n, len(args))
 		}
+		if _, ok := a.(alone); ok && err == nil && op.Members != nil {
+			p.compound(tr, h, r, tb, op, inv, args[n:], route, release)
+			return r, false
+		}
+		tr.series().observe(stageRoute, route)
 		p.lap(tr, stageDecodeArgs)
 		if err != nil {
 			err = fmt.Errorf("%w: %v", ErrDecode, err)
 			p.refused(tr, stageDecodeArgs)
 		} else if op.Members != nil {
-			if _, ok := a.(alone); ok {
-				p.compound(tr, h, r, tb, op, inv, args[n:], release)
-				return r, false
-			}
 			// decision: a compound row reached as a chain's member is
 			// refused not supported: its one reply cannot join the chain's
 			// record, and no protocol chains one (NFSv4 does not chain, and
@@ -1033,11 +1044,18 @@ func (p *pipeline) lap(tr *track, st stage) {
 	if tr == nil {
 		return
 	}
-	now := p.sh.clock.Now()
-	if p.times[st] {
-		tr.series().observe(st, now.Sub(tr.mark))
+	if d := p.since(tr); p.times[st] {
+		tr.series().observe(st, d)
 	}
+}
+
+// since ends the request's run of the stage running now: the time since its
+// last step ended, the next stage timed from here.
+func (p *pipeline) since(tr *track) time.Duration {
+	now := p.sh.clock.Now()
+	d := now.Sub(tr.mark)
 	tr.mark = now
+	return d
 }
 
 // lapAttempt is lap for reply_wait and resolve_ids, the stages each attempt
@@ -1056,8 +1074,9 @@ func (p *pipeline) lapAttempt(tr *track, st stage) {
 	tr.mark = now
 }
 
-// sums is a request's time in each stage it runs more than once, its runs
-// summed, so each is observed once (§10.1).
+// sums is a request's time in each stage it runs more than once, over a held
+// request's attempts or a compound's members, its runs summed, so each is
+// observed once (§10.1).
 type sums struct {
 	d   [stages]time.Duration
 	ran [stages]bool
