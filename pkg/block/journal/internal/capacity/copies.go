@@ -9,12 +9,14 @@ import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 // that limit. This is a deferral ledger for the share tally alone; the repack
 // reserve's bound is the pool's ready spares and does not read it.
 //
-// ponytail: the count is made once per unit, after the unit's append loop
-// ends, over the copies that landed even when the unit failed partway, whose
-// copies are then handed over at once. It is not made at each append, so a
-// tag seeded in the loop's window reads the copies in its settled
-// figure and counts them again when they transfer: the tally stands high by
-// that unit's copy bytes, failing closed, until the tally is next reseeded.
+// ponytail: the count is made once per unit, after its Copy and Carry calls
+// return, over the copies and records already appended, including a failed
+// unit's partial output, which is handed over at once. It is not made at
+// each append, so a tag seeded while the unit appends reads the copies in its
+// settled figure and counts them again when they transfer: the tally stands
+// high by that unit's copy bytes until the journal reopens and reseeds, for
+// nothing clears a tag's seed in-process; bounded to the copies in flight at
+// the tag's one seed, failing closed.
 // Upgrade to counting at the append when a share's first write racing a pass
 // over its records shows in the field.
 func (c *Capacity) CopyLanded(src core.SegmentID, tag core.ShareTag, n int64) {

@@ -908,13 +908,18 @@ func (c *Capacity) seedFor(tag core.ShareTag) {
 // retirement per tag race. The pairing closes the window in both
 // directions: a call whose decrement the baseline already saw computes a
 // delta of zero, and the seed seeds against a figure already free of the
-// retirement, so the only error the tally can still carry is the transient
-// AddRecord-to-Wrote lag — a record counted in the settled figure whose
-// grant has not handed its bytes over yet — which the grant's own
-// reserved bytes cover in the admission's figure and which fails closed,
-// never admitting a byte past a limit. Overturned by a reporting layer
-// that names retired bytes non-monotonically, whose arithmetic this
-// baseline could then roll back.
+// retirement, so the only error the tally can still carry is an overcount
+// of a record the seed already read: one counted in the settled figure
+// whose grant has not handed its bytes over yet, a record Landed reports
+// after the seed read it, or a copy a pass counts and transfers after it.
+// None of these is transient: the tally stands high by n until the journal
+// reopens and reseeds, for the retirement subtracts the record once and
+// nothing clears a tag's seed in-process. The excess is bounded to the
+// records in flight at the tag's one seed and fails closed, never admitting
+// a byte past a limit. Overturned by a reporting layer that names retired
+// bytes non-monotonically, whose arithmetic this baseline could then roll
+// back, or by a seed that can be redone while the journal runs, which would
+// heal the excess.
 func (c *Capacity) Retired(tag core.ShareTag) {
 	_, retired := c.cfg.ShareFigures(tag)
 	c.mu.Lock()
@@ -1025,9 +1030,10 @@ func (g *Grant) Wrote(n int64) {
 // A tag whose figure is not seeded takes nothing: its seed reads the set's
 // settled figure, which already holds the record. A tag seeded between the
 // record's count in the set and this call has the record in its seed and
-// takes it again here, so the tally stands high by n until the segment
-// retires, the same lag Wrote leaves between the set's count and the grant's
-// hand-over, failing closed.
+// takes it again here, so the tally stands high by n until the journal
+// reopens and reseeds, for the retirement subtracts the record once and
+// nothing clears a tag's seed in-process. The excess is bounded to the
+// records in flight at the tag's one seed and fails closed.
 //
 // decision: durability's re-appends and loss records, and the removal
 // and forget records, bypass the admission because they must always land, but
