@@ -1077,13 +1077,14 @@ func apiExports(dir, path string) ([]string, error) {
 	return slices.Sorted(maps.Keys(seen)), nil
 }
 
-// The api package exports New, Deps and Server, and Server's Start and Stop,
-// and its auth package Caller, CallerFrom, the With its authentication step
-// calls, the local socket's mark, WithLocal and Local, the role table's
-// Right, its rights and Allowed, and the ResetAccount the break-glass reset
-// calls, and nothing else; a planted extra method is caught.
+// The api package exports New, Deps and Server, Server's Start and Stop, and
+// OpenAPI, the document cmd/genopenapi writes; and its auth package Caller,
+// CallerFrom, the With its authentication step calls, the local socket's
+// mark, WithLocal and Local, the role table's Right, its rights and Allowed,
+// and the ResetAccount the break-glass reset calls, and nothing else; a
+// planted extra method is caught.
 func TestAPIExports(t *testing.T) {
-	want := []string{"Deps", "New", "Server", "Server.Start", "Server.Stop"}
+	want := []string{"Deps", "New", "OpenAPI", "Server", "Server.Start", "Server.Stop"}
 	for _, tc := range []struct {
 		dir, path string
 		want      []string
