@@ -92,10 +92,10 @@ type Node struct {
 // budgets and their series, the operation runner with the steps of the
 // kinds this node drives, the watchdog, the adapters' one Deps, the sidecar
 // runner and a slot per protocol, and the API over the store's control
-// plane and node view, the runner's progress, the health evaluator and the
-// writer's wait. It starts nothing: no journal, goroutine or listener exists
-// until Start, but for the socket an unset adapters.listen opens and closes
-// at once to learn whether tcp6 does.
+// plane and node view, the runner's progress, the health evaluator, the
+// slots' connections and the writer's wait. It starts nothing: no journal,
+// goroutine or listener exists until Start, but for the socket an unset
+// adapters.listen opens and closes at once to learn whether tcp6 does.
 //
 // ponytail: the node both builds and drives its components. Split the
 // builder out when it gains dependencies a multi-node test cannot replace
@@ -231,11 +231,28 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 		Nodes:        n.meta.Nodes(),
 		Progress:     n.runner.progressOf,
 		Health:       n.health,
+		Connections:  n.connections,
 		Clock:        cfg.Clock,
 		Node:         cfg.Bootstrap.Node.ID,
 		Applied:      n.applied,
 	})
 	return n, nil
+}
+
+// connections is every connection open now on the adapters the slots' last
+// calls left running, serving or still draining, each adapter.ConnInfo as
+// the API's Connection, so the API imports no adapter (RFC 23 §10's CP16).
+func (n *Node) connections() []apiv1.Connection {
+	var cs []apiv1.Connection
+	for _, o := range []*outcome{n.nfs.last.Load(), n.smb.last.Load()} {
+		if o == nil || o.running == nil {
+			continue
+		}
+		for c := range o.running.Connections() {
+			cs = append(cs, apiv1.Connection{Protocol: c.Protocol, Remote: c.Remote.String(), Session: c.Session, Since: c.Since})
+		}
+	}
+	return cs
 }
 
 // journalPaths is the directory of each journal device, in order.

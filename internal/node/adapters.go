@@ -155,10 +155,10 @@ type slot[S shape] struct {
 	refused S               // what refusal refused
 	refusal *refusal        // the last call's, nil once a call applied
 
-	// last is what the last call left, which the node's health reads from
-	// other goroutines; nil before the first call. A call in flight leaves
-	// it as the call before left it, so a rebuild waiting on a drain reads
-	// as the adapter it replaces.
+	// last is what the last call left, which the node's health and its
+	// connection listing read from other goroutines; nil before the first
+	// call. A call in flight leaves it as the call before left it, so a
+	// rebuild waiting on a drain reads as the adapter it replaces.
 	last atomic.Pointer[outcome]
 }
 
