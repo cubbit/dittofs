@@ -1567,7 +1567,9 @@ seconds cuts such a sign-in off at the connection instead:
 Each user answer carries the account's enabled state and, when the entry has
 one, its e-mail address (its `mail` attribute, for example). A nested-group
 closure the directory cannot answer in one query is walked level by level, and
-one that cannot be finished fails whole (§2.5).
+one that cannot be finished fails whole (§2.5). In Active Directory the walk
+follows security groups only, from the user and its primary group, so it answers
+what the user's `tokenGroups` holds.
 
 - **A record is minted once**, from the first answer, and holds its
   `PrincipalID`, `dir` entry ID, name, SID, uid and gid from then on. Later
@@ -2178,7 +2180,7 @@ connection-state pool, and past its share:
 | Table | Past its share |
 | --- | --- |
 | caller cache | the least recently used entry is evicted, counted |
-| directory cache | the least recently used entry is evicted; an evicted entry is a miss, never "not found" |
+| directory cache | the least recently used entry is evicted, counted; an evicted entry is a miss, never "not found" |
 | replay cache | holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone; a sign-in that would need one more fails `ErrUnavailable`. One ticket client, by its client name and realm, holds at most a sixty-fourth of the entries, so a holder of one valid ticket cannot fill the cache for everyone: past its share it alone fails `ErrUnavailable` |
 | logon throttle | one client address, the unit a pair is keyed by (an IPv4 address, an IPv6 /64), holds at most a sixty-fourth of the pairs, those with an attempt in flight included. A new pair from an address at its share evicts that address's least recently settled pair below its limit, counted, or else its first to reach the limit once that pair's window has passed; when neither can go, the new pair fails `ErrLogonFailure`, outcome `throttled`, for that address alone. A new pair from an address under its share, when the table is full, evicts the table's least recently settled pair below its limit, from any address, counted; only when no settled pair is below its limit does it evict the table's least recently admitted pair, whatever its count and even with an attempt in flight, counted |
 | directory lookups a `Claimed` caller triggers | at most 100 a minute per client address; past it the call is refused with a retryable error, never mapped to anonymous |
@@ -2410,6 +2412,7 @@ alice's still signs in as alice.
 | Calls refused at resolution | `identity_resolution_refusals_total{reason}`: `disabled` (a disabled or deleted principal, §3.7), `group_cap`, `store_unavailable`, `directory_unavailable`, `anonymous_missing`, `ntlm_off`, `lookup_cap` | counter |
 | Directory lookups by result | `identity_directory_lookups_total{question, result}`: `question` = `name`, `sid`, `uid`, `gid`, `groups`, `group`; `result` = `fresh`, `queried`, `not_found`, `stale`, `refused`, `ambiguous` | counter |
 | Directory query latency | `identity_directory_seconds` | histogram (`request`) |
+| Directory cache entries evicted at its bound (§7.3) | `identity_directory_evictions_total` | counter |
 | ID-token verifications by result | `identity_oidc_verifications_total{result}`: `ok`, `invalid`, `unlinked`, `stale`, `unavailable` | counter |
 | Age of the principals generation served | `config_generation_lag_seconds{kind="principals"}`, RFC 13's gauge | gauge |
 
@@ -2541,7 +2544,7 @@ API's sign-in is tested against the real identity server, called directly
 **Where the in-memory ones stand in.** The in-memory directory parses and
 evaluates RFC 4515 filters, and its suite holds it to the real one on exact
 queries, the escaping of an LDAP filter's special characters, an ambiguous
-name, `LDAP_MATCHING_RULE_IN_CHAIN`, `tokenGroups`, paging, range retrieval,
+name, `LDAP_MATCHING_RULE_BIT_AND` on `groupType`'s security bit, `tokenGroups`, paging, range retrieval,
 and an account disabled by `userAccountControl` or `accountExpires`. The
 in-memory domain controller stands in above the NETLOGON client, answering its
 calls with their results, so the rows that check the client's own wire

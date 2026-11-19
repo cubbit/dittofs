@@ -196,7 +196,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R20 | §10's "exact queries" row | test row | §10 | T6.5 |
 | R21 | Each user answer carries the account's enabled state, from `userAccountControl` or `accountExpires`, and its e-mail address when the entry has one | invariant | §5.1; §10 "Where the in-memory ones stand in" | T6.5 |
 | R22 | A nested-group closure the directory cannot answer in one query is walked level by level, and one that cannot be finished fails whole | MUST | §5.1, §2.5 | T6.6 |
-| R23 | The in-memory directory stands in only because its conformance suite holds it to the real one on exact queries, the escaping of a filter's special characters, an ambiguous name, `LDAP_MATCHING_RULE_IN_CHAIN`, `tokenGroups`, paging, range retrieval, and an account disabled by `userAccountControl` or `accountExpires`; the suite runs against it in `unit` and against a real directory in `integration/ad-dc` | test row | §2.7; §10 "Where the in-memory ones stand in", "Suites"; RFC 29 §4.11 | T6.4, T6.6 |
+| R23 | The in-memory directory stands in only because its conformance suite holds it to the real one on exact queries, the escaping of a filter's special characters, an ambiguous name, `LDAP_MATCHING_RULE_BIT_AND` on `groupType`'s security bit, `tokenGroups`, paging, range retrieval, and an account disabled by `userAccountControl` or `accountExpires`; the suite runs against it in `unit` and against a real directory in `integration/ad-dc` | test row | §2.7; §10 "Where the in-memory ones stand in", "Suites"; RFC 29 §4.11 | T6.4, T6.6 |
 | R24 | `test-directory` checks that every node reaches the directory the record names, and reports each node's answer; identity gives it the call that reaches the directory and its answer | invariant | RFC 23 §3.5 | T6.5 |
 
 **The cache**
@@ -325,12 +325,19 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   and every other lookup is answered from the grace or refused; the probe's answer clears the
   condition. No background loop runs, so `Stop` has nothing to wait for. `decision:` marker at the
   outage branch. Prior art: a circuit breaker's half-open state (from memory).
-- **D10, `tokenGroups` first, `LDAP_MATCHING_RULE_IN_CHAIN` when the bind cannot read it.** An
+- **D10, `tokenGroups` first, a walk of security groups when the bind cannot read it.** An
   `ad` user's closure is one base-scope read of its constructed `tokenGroups`, which includes the
-  primary group `memberOf` omits; a bind account without the right to read it gets an empty
-  attribute, and the client then asks `(member:1.2.840.113556.1.4.1941:=<dn>)` with paging and
-  adds the primary group from `primaryGroupID`. An `rfc2307` directory is walked level by level
-  over `memberUid` and `member`. Prior art: sssd's `ldap_use_tokengroups` with the same fallback
+  primary group `memberOf` omits; more than 1 024 SIDs fail it `ErrUnavailable` before any SID is
+  looked up. A bind account without the right to read it gets an empty attribute, and the client
+  then walks the closure level by level from the user's DN and the DN of the primary group
+  `primaryGroupID` names, asking
+  `(&(objectClass=group)(groupType:1.2.840.113556.1.4.803:=2147483648)(|(member=<dn>)…))` with
+  paging, at most 64 terms to a filter, 64 levels and 1 024 groups. Only security groups are
+  followed, so a distribution group ends its branch and the walk answers what `tokenGroups`
+  would. An unreadable `primaryGroupID` fails the closure `ErrUnavailable`. The SID lookups, the
+  primary group's lookup and the walk run under the domain's `defaultNamingContext`, not the
+  record's base. An `rfc2307` directory is walked level by level over `memberUid` and `member`,
+  under the same bounds. Prior art: sssd's `ldap_use_tokengroups` with the same fallback
   (from memory).
 - **D11, a definite answer is a fresh one.** The cache answers a caller that asks "fresh only"
   from a query or a fresh entry, never a stale one, and fails `ErrUnavailable` otherwise. The
@@ -624,22 +631,29 @@ pkg/settings/
 - **Track:** C. **Depends on:** T6.5.
 - **Covers:** R16, R22, R23.
 - **Deliverables:** the question "what are this principal's groups, nested" as D10 says, each page
-  of an RFC 2696 paged search followed to its end, a `member` value range-retrieved
-  (`member;range=0-1499`, then on), the `member;range=<lo>-<hi|*>` attribute parsed by the client's
+  of an RFC 2696 paged search followed to its end on the connection that answered its first
+  page, restarted once from the first page when that connection is found closed, and a failed
+  later page dropping its connection; a `member` value range-retrieved
+  (`member;range=0-1499`, then on) by the unexported `members`, reached only from tests until a
+  question lists a group's members (a `decision:` marker: no RFC 18 question asks for them), the `member;range=<lo>-<hi|*>` attribute parsed by the client's
   own parser, a range with `lo > hi` or whose next `lo` does not advance past the last `hi` refused
   `ErrUnavailable`, and `FuzzRangeAttr`; a lookup of many SIDs in one OR filter of at most 64 each, with
   D8's `ponytail:`; a closure that cannot be finished, a page or a range that fails, failing whole.
-  `identitytest.Directory` gains the constructed `tokenGroups`, `LDAP_MATCHING_RULE_IN_CHAIN`,
+  `identitytest.Directory` gains the constructed `tokenGroups`, `LDAP_MATCHING_RULE_BIT_AND`,
   paged results with a cookie and range retrieval past a member count the test sets; the suite
   gains a row for each. Consumed by T6.9 and T6.11.
 - **Acceptance criteria:**
   - A closure is returned whole or not at all.
 - **Tests:** in the suite, on both implementations: a user three levels deep in nesting, its
-  `tokenGroups` holding every level and the primary group; the chain rule answering the same
-  groups; a search over 2 500 entries in pages of 1 000 returning every entry once; a group of
-  3 000 members read in ranges (R23). At the client, over the in-memory directory: a bind that
-  cannot read `tokenGroups` gets the same closure through the chain rule and `primaryGroupID`
-  (catches the primary group lost, R22); `identitytest`'s fault wrapper failing the second page:
+  `tokenGroups` holding every level and the primary group; the walk through security groups
+  answering the same groups, a distribution group and a group reached only through it in neither;
+  a search over 2 500 entries in pages of 1 000 returning every entry once; a group of 3 000
+  members read in ranges (R23). At the client, over the in-memory directory: a bind that
+  cannot read `tokenGroups` gets the same closure through the walk and `primaryGroupID`
+  (catches the primary group lost, R22); one that cannot read `primaryGroupID`: `ErrUnavailable`
+  (R22); a record whose base holds none of the user's groups: the whole closure still answered (R22);
+  `tokenGroups` of more than 1 024 SIDs: `ErrUnavailable`, no SID looked up (R16); every page of
+  one search on one connection (R16); `identitytest`'s fault wrapper failing the second page:
   the closure `ErrUnavailable`, never the first page's groups (catches a truncated closure, R22);
   an `rfc2307` user two levels deep through `memberUid` and `member` (R22); the wrapper tearing
   the second range's attribute to `member;range=1500-1499`, and on another run repeating
@@ -995,9 +1009,9 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
 - RFC 18 §5.1's question table lists `uidNumber` and `gidNumber` among "who holds this", and §9.2
   their `uid` and `gid` labels; both serve only §4.3's claimed uid, deferred, so the client builds
   neither (§1.2).
-- RFC 18 §10's "Where the in-memory ones stand in" holds the in-memory directory to the real one on
-  `LDAP_MATCHING_RULE_IN_CHAIN`, while the RFC never says when a client uses it; D10 uses it when
-  `tokenGroups` cannot be read, which an RFC 18 §5.1 sentence should state.
+- RFC 18 §10's "Where the in-memory ones stand in" held the in-memory directory to the real one on
+  `LDAP_MATCHING_RULE_IN_CHAIN`, which no client question uses since D10 walks security groups
+  when `tokenGroups` cannot be read; §10 now names `LDAP_MATCHING_RULE_BIT_AND` instead.
 - RFC 18 §7.1 serves a directory principal's caller 5 minutes after it was built, which lets a
   caller built from an answer 19 minutes old live to minute 24, past ID9's TTL plus grace; T6.11
   bounds `Fresh` by both, and §7.1 should say so.

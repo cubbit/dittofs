@@ -198,7 +198,7 @@ can cite them. Sources are RFC 18 unless named.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R17 | Domain controllers are found from the domain's DNS service records, with fail-over between them, unless the directory record names a domain controller address, and optionally a DNS server, which is then used alone | MUST | §3.5; §5.1 | T7.7, T7.10 |
-| R18 | The channel signs in with the current version once a controller has taken it, else with the previous one, and falls back to the previous one on any controller that refuses the new one until the retention passes: the current version first, then each earlier version in force, newest first; "the previous one" is the newest a controller confirmed | MUST | §3.5; §2.6's table | T7.10 |
+| R18 | The channel signs in with the current version once a controller has taken it, else with the previous one, and falls back to the previous one on any controller that refuses the new one until the retention passes: the current version first, then each earlier version in force, newest first; "the previous one" is the newest a controller confirmed. The channel is set up again only when the machine password versions, the join's account or the directory record change, or its version passes the retention; a replaced channel closes after its last call, and leaving the domain or dropping the record closes it. During a set-up each controller but the last gets 2.5 s of the call's 5 s, and a set-up the call's bound ended raises `machine_account_unhealthy` as one every controller refused does | MUST | §3.5; §2.6's table | T7.10 |
 | R19 | A version marked `HandedOver` backs no previous-version fallback; the secure channel signs in with it only to set an offline join's first closing rotation | MUST NOT | §3.5; RFC 16 §2.3 | T7.10, T7.15 |
 | R20 | `machine_account_unhealthy` is unhealthy while this node's secure channel to every domain controller fails, and cleared by the next channel set up | invariant | §3.5; §9.2; RFC 25 §3.9 | T7.10 |
 
@@ -778,10 +778,14 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   with fail-over (R17's rule, here and not in each `Dialer`); the version chosen per R18 from
   `State.Machine` and `Join.LastRotation.Version`, never a `HandedOver` one, and the previous one
   not past T7.9's not-after; the channel set up again only when `Machine`, `Join` or the directory
-  record changes; the semaphore of 10 with its 5-second wait (D10), and each call bounded at 5 s on
+  record changes or its version passes the not-after, a replaced channel closed after its last
+  call, and the channel closed when an `Apply` leaves the domain or drops the record; during a
+  set-up, each controller but the last bounded at 2.5 s, half the call's bound, so a silent one
+  leaves time to ask the next; the semaphore of 10 with its 5-second wait (D10), and each call bounded at 5 s on
   the injected clock, its slot held until the call underneath returns, so a timed-out call still
   counts towards the 10; `machine_account_unhealthy` in identity's `Conditions` (E6's T6.8's
-  source), raised while every controller fails, cleared by a channel set up; `Stop` closing the
+  source), raised while every controller fails or the call's bound ends the set-up, cleared by a
+  channel set up; `Stop` closing the
   channel. Consumed by T7.11, T7.12 and E8's T8.6.
 - **Acceptance criteria:**
   - A new principals generation alone leaves the channel open.
