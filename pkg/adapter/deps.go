@@ -35,7 +35,13 @@ type Deps struct {
 	// passes beside Tracer: the adapter samples a request on the trace ID it
 	// draws and opens spans only for one it sampled. 0 samples none.
 	SampleRatio float64
-	Logger      *slog.Logger // nil: discards
+	// TraceIDs draws each request's trace ID (RFC 20 §10.2). nil draws from
+	// math/rand/v2's global source; a test passes its own (RFC 29 §4.11).
+	// No caller passes a source fed by a request's bytes. Every request
+	// calls it, concurrently, so it is safe for concurrent use: a test's
+	// source over a *rand.Rand, which takes no lock, holds a mutex.
+	TraceIDs func() trace.TraceID
+	Logger   *slog.Logger // nil: discards
 	// Watch registers a loop with the node's liveness watchdog, which the
 	// loop reports to until it closes the Loop at unbind. nil watches
 	// nothing, as in a test.

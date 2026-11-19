@@ -45,8 +45,9 @@ type shared struct {
 	addressLines map[netip.Addr]*lineLimiter // the per_address close at accept's line, by address, under mu
 	clock        clock
 	log          *slog.Logger
-	tracer       trace.Tracer // nil: no spans
-	sample       uint64       // Deps.SampleRatio as sampled compares it
+	tracer       trace.Tracer         // nil: no spans
+	sample       uint64               // Deps.SampleRatio as sampled compares it
+	traceIDs     func() trace.TraceID // Deps.TraceIDs, or newTraceID where it is nil
 	reply        *resources.BufPool
 	shares       vfs.Shares        // Deps.VFS
 	hold         *resources.Budget // the node's hold pool; nil: none, so the floor bounds every connection's holds
@@ -59,15 +60,18 @@ type shared struct {
 // newShared is a server's shared state over reply, the pool every reply
 // buffer is taken from: its vectors registered on d.Metrics, or recording
 // nothing without one, on the runtime's clock, d.Logger, or a logger that
-// discards, d.Tracer and d.VFS; held requests past a connection's floor of 256
-// requests and 32 MiB go to d.Budgets' hold pool (§4.6).
+// discards, d.Tracer, d.TraceIDs and d.VFS; held requests past a connection's
+// floor of 256 requests and 32 MiB go to d.Budgets' hold pool (§4.6).
 func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), reply: reply, tables: map[*OpTable]*tableSeries{}, panics: map[[2]string]*lineLimiter{}, closes: map[reason]*lineLimiter{}, addressLines: map[netip.Addr]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), traceIDs: d.TraceIDs, reply: reply, tables: map[*OpTable]*tableSeries{}, panics: map[[2]string]*lineLimiter{}, closes: map[reason]*lineLimiter{}, addressLines: map[netip.Addr]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
 	if d.Budgets != nil {
 		sh.hold = d.Budgets.Hold
 	}
 	if sh.log == nil {
 		sh.log = slog.New(slog.DiscardHandler)
+	}
+	if sh.traceIDs == nil {
+		sh.traceIDs = newTraceID
 	}
 	sh.fam, sh.wire = newFamilies(d.Metrics)
 	sh.holdPool = sh.fam[vHoldPoolBytes]()
@@ -969,19 +973,20 @@ type track struct {
 	stage     stage // the stage that refused it
 }
 
-// begin draws a request's trace ID as serve takes its record, which its log
-// lines carry (RFC 25 §5.3), and samples the request on it (RFC 20 §10.2).
-// Only a sampled request calls the tracer, so an unsampled one allocates
-// nothing for tracing (RFC 25 §6.3). Its span, named after the connection's
-// label until Route names its operation, takes the drawn ID through the
-// root's ID generator; with a provider that draws its own, the request's
-// lines carry the span's. The request's context starts its first attempt
-// now, the request's arrival (§6.4).
+// begin draws a request's trace ID from Deps.TraceIDs as serve takes its
+// record, which its log lines carry (RFC 25 §5.3), and samples the request on
+// it (RFC 20 §10.2). Only a sampled request calls the tracer, so an unsampled
+// one allocates nothing for tracing (RFC 25 §6.3). Its span, named after the
+// connection's label until Route names its operation, opens through
+// adapter.StartRequestSpan, so it takes the drawn ID through the root's ID
+// generator; with a provider that draws its own, the request's lines carry
+// the span's. The request's context starts its first attempt now, the
+// request's arrival (§6.4).
 func (p *pipeline) begin(rec *resources.Buf) *track {
-	tr := &track{label: p.label, protocol: p.st.Protocol, bytes: len(rec.B), id: newTraceID()}
+	tr := &track{label: p.label, protocol: p.st.Protocol, bytes: len(rec.B), id: p.sh.traceIDs()}
 	parent := p.ctx
 	if p.sh.tracer != nil && sampled(tr.id, p.sh.sample) {
-		parent, tr.span = p.sh.tracer.Start(adapter.ContextWithTraceID(p.ctx, tr.id), p.name)
+		parent, tr.span = adapter.StartRequestSpan(p.ctx, p.sh.tracer, tr.id, p.name)
 		if id := tr.span.SpanContext().TraceID(); id.IsValid() {
 			tr.id = id
 		}
@@ -1192,9 +1197,9 @@ func sampled(id trace.TraceID, bound uint64) bool {
 	return binary.BigEndian.Uint64(id[8:])>>1 < bound
 }
 
-// newTraceID draws a request's trace ID from math/rand/v2's own source, a
-// per-thread generator seeded by the runtime, which every connection shares
-// without a lock.
+// newTraceID draws a request's trace ID where Deps.TraceIDs is nil, from
+// math/rand/v2's global source, a per-thread generator seeded by the runtime,
+// which every connection shares without a lock.
 func newTraceID() (id trace.TraceID) {
 	binary.BigEndian.PutUint64(id[:8], rand.Uint64())
 	binary.BigEndian.PutUint64(id[8:], rand.Uint64())
