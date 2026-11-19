@@ -357,7 +357,7 @@ func (p *Pool) Take(c Class) (core.SegmentID, error) {
 		// The unreserved take leaves the holds their spares: taking one an
 		// open hold owes would let a reserved write meet the no-spare
 		// refusal the hold exists to keep it from.
-		if int64(len(p.ready[Content])) > int64(int(p.held.Load())) {
+		if int64(len(p.ready[Content])) > p.held.Load() {
 			id = p.popLocked(Content)
 		}
 	default:
@@ -487,8 +487,8 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 	// is re-recorded by its own next refused retry, which is the loop the
 	// level exists to serve.
 	ready := int64(len(p.ready[Content]))
-	if ready-int64(int(p.held.Load())) < int64(n) {
-		missing := int64(n) - (ready - int64(int(p.held.Load())))
+	if ready-p.held.Load() < int64(n) {
+		missing := int64(n) - (ready - p.held.Load())
 		if missing > int64(n) {
 			// A replace can leave held above ready, and the refusal never
 			// blames a shortage past the hold it refuses: capped at n.
