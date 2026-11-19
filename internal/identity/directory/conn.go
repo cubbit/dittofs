@@ -33,15 +33,20 @@ type Conn interface {
 	// Search runs one search. A directory's continuation references, to
 	// parts of the answer it holds elsewhere, are handed back in
 	// Result.Referrals, and a referral, the whole answer elsewhere, is an
-	// error wrapping ErrReferral; neither is followed.
+	// error wrapping errReferral; neither is followed. A search on a
+	// connection that is closed, by either end, fails wrapping ErrClosed.
 	Search(ctx context.Context, req Request) (Result, error)
 	// Close closes the connection.
 	Close() error
 }
 
-// ErrReferral is a search the directory answered with a referral, an
+// errReferral is a search the directory answered with a referral, an
 // LDAPResult of code 10 naming another server for the whole answer.
-var ErrReferral = errors.New("identity.directory: a referral to another server")
+var errReferral = errors.New("identity.directory: a referral to another server")
+
+// ErrClosed is a call on a connection that is closed: by this end, or by the
+// directory, as Active Directory closes one idle past its MaxConnIdleTime.
+var ErrClosed = errors.New("identity.directory: the connection is closed")
 
 // Dialer opens a connection to the directory rec names. DialTLS is the
 // production one.
@@ -264,10 +269,14 @@ func searchRequest(req Request) (*ldap.SearchRequest, *ldap.ControlPaging) {
 		req.Filter, req.Attrs, controls), paging
 }
 
-// searchError is a failed search's error, a referral's wrapping ErrReferral.
+// searchError is a failed search's error, a referral's wrapping errReferral
+// and go-ldap's network error, a connection either end closed, ErrClosed.
 func searchError(err error) error {
-	if ldap.IsErrorWithCode(err, ldap.LDAPResultReferral) {
-		return fmt.Errorf("%w: %w", ErrReferral, err)
+	switch {
+	case ldap.IsErrorWithCode(err, ldap.LDAPResultReferral):
+		return fmt.Errorf("%w: %w", errReferral, err)
+	case ldap.IsErrorWithCode(err, ldap.ErrorNetwork):
+		return fmt.Errorf("%w: %w", ErrClosed, err)
 	}
 	return err
 }

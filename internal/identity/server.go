@@ -26,7 +26,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/secrets"
-	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // Deps is what the server is built over. The node starts and stops each of
@@ -249,15 +248,6 @@ func (s *Server) newDirectoryClient(rec *directory.Record) *directory.Client {
 		return s.deps.Secrets.Resolve(ctx, secrets.Protocol, entity.SecretDirectoryCredential,
 			entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}, ref)
 	}, s.deps.Clock, s.logger)
-}
-
-// dirClient is st's directory client: ErrUnavailable with no record or no
-// Deps.Directory.
-func (st *State) dirClient() (*directory.Client, error) {
-	if st == nil || st.dir == nil {
-		return nil, fmt.Errorf("%w: identity: no directory", vfserr.ErrUnavailable)
-	}
-	return st.dir, nil
 }
 
 // validate refuses settings or a directory record that fail their Validate,

@@ -32,6 +32,8 @@ type FaultyDirectory struct {
 	fault sim.Fault
 
 	mu       sync.Mutex
+	dials    []string
+	conns    []directory.Conn
 	queries  []directory.Request
 	tearFrom string
 	tearTo   string
@@ -60,8 +62,33 @@ func (f *FaultyDirectory) Queries() []directory.Request {
 	return slices.Clone(f.queries)
 }
 
+// Dials returns the address of every dial sent to the wrapped directory, in
+// the order sent.
+func (f *FaultyDirectory) Dials() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.dials)
+}
+
+// DropConns closes every connection the wrapped directory has handed out, as
+// a directory closes connections idle past its limit; a call on one then
+// fails as on any closed connection.
+func (f *FaultyDirectory) DropConns() {
+	f.mu.Lock()
+	conns := f.conns
+	f.conns = nil
+	f.mu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+}
+
 // Dial is a directory.Dialer.
 func (f *FaultyDirectory) Dial(ctx context.Context, rec directory.Record) (directory.Conn, error) {
+	f.mu.Lock()
+	f.dials = append(f.dials, rec.Address)
+	f.mu.Unlock()
+
 	c, err := f.next(ctx, rec)
 	if ferr := f.at(ctx, "dial", rec.Address, nil); ferr != nil {
 		if c != nil {
@@ -72,6 +99,9 @@ func (f *FaultyDirectory) Dial(ctx context.Context, rec directory.Record) (direc
 	if err != nil {
 		return nil, err
 	}
+	f.mu.Lock()
+	f.conns = append(f.conns, c)
+	f.mu.Unlock()
 	return &faultyConn{f: f, next: c}, nil
 }
 

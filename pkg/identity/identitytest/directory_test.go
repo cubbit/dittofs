@@ -117,6 +117,38 @@ func TestFaultyDirectory(t *testing.T) {
 	})
 }
 
+// Dials records every dial's address, a faulted one too, and DropConns
+// closes every connection handed out, so a search on one fails ErrClosed.
+func TestFaultyDirectoryDialsAndDropConns(t *testing.T) {
+	ctx := context.Background()
+	d := identitytest.NewDirectory(base)
+	errDown := errors.New("down")
+	sched, err := sim.NewSchedule(1, sim.NewTestClock(time.Unix(0, 0)),
+		sim.Rule{Op: "dial", Key: "ldaps://b", Action: sim.FaultAction{Err: errDown}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := identitytest.NewFaultyDirectory(d.Dial, sched)
+	c, err := f.Dial(ctx, directory.Record{Address: "ldaps://a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Dial(ctx, directory.Record{Address: "ldaps://b"}); !errors.Is(err, errDown) {
+		t.Fatalf("faulted dial: err %v, want %v", err, errDown)
+	}
+	if got, want := f.Dials(), []string{"ldaps://a", "ldaps://b"}; !slices.Equal(got, want) {
+		t.Errorf("Dials() = %v, want %v", got, want)
+	}
+	req := directory.Request{Scope: directory.ScopeBase, Filter: "(objectClass=*)"}
+	if _, err := c.Search(ctx, req); err != nil {
+		t.Fatalf("search before DropConns: %v", err)
+	}
+	f.DropConns()
+	if _, err := c.Search(ctx, req); !errors.Is(err, directory.ErrClosed) {
+		t.Errorf("search after DropConns: err %v, want ErrClosed", err)
+	}
+}
+
 // A bind the fault fails leaves nothing bound, though the directory accepted
 // it: a search after it, by a caller that ignored the error, finds nothing.
 func TestFaultyDirectoryFailedBindLeavesNothingBound(t *testing.T) {

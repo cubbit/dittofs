@@ -116,11 +116,21 @@ func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool
 	}
 	c.begin()
 	defer c.end()
-	conn, err := c.connect(ctx)
+	req := Request{Base: c.rec.Base, Scope: ScopeSubtree, Filter: filter, Attrs: c.rec.attrs()}
+	conn, fresh, err := c.connect(ctx)
 	if err != nil {
 		return Answer{}, false, err
 	}
-	res, err := c.search(ctx, conn, Request{Base: c.rec.Base, Scope: ScopeSubtree, Filter: filter, Attrs: c.rec.attrs()})
+	res, err := c.search(ctx, conn, req)
+	// A held connection the directory closed while idle fails the first
+	// question on it, so that one is asked again, once, on a new one; a
+	// fresh connection's failure is the directory's answer, not retried.
+	if err != nil && !fresh && errors.Is(err, ErrClosed) {
+		if conn, _, err = c.connect(ctx); err != nil {
+			return Answer{}, false, err
+		}
+		res, err = c.search(ctx, conn, req)
+	}
 	if err != nil {
 		return Answer{}, false, err
 	}
@@ -141,7 +151,7 @@ func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool
 func (c *Client) DomainSID(ctx context.Context) ([]byte, error) {
 	c.begin()
 	defer c.end()
-	if _, err := c.connect(ctx); err != nil {
+	if _, _, err := c.connect(ctx); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
@@ -283,31 +293,39 @@ func (c *Client) open(ctx context.Context) (Conn, error) {
 }
 
 // connect returns the client's connection, opening it when there is none,
-// with the domain SID read for an ad record before it is used.
-func (c *Client) connect(ctx context.Context) (Conn, error) {
+// with the domain SID read for an ad record before it is used, and whether
+// it was opened by this call.
+func (c *Client) connect(ctx context.Context) (Conn, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, unavailable("connect", err)
+		return nil, false, unavailable("connect", err)
 	}
 	select {
 	case c.connecting <- struct{}{}:
 	case <-ctx.Done():
-		return nil, unavailable("connect", ctx.Err())
+		return nil, false, unavailable("connect", ctx.Err())
 	}
-	return detach(ctx, "connect", func(ctx context.Context) (Conn, error) {
+	type opened struct {
+		conn  Conn
+		fresh bool
+	}
+	o, err := detach(ctx, "connect", func(ctx context.Context) (opened, error) {
 		defer func() { <-c.connecting }()
-		return c.establish(ctx)
+		conn, fresh, err := c.establish(ctx)
+		return opened{conn, fresh}, err
 	})
+	return o.conn, o.fresh, err
 }
 
 // establish is connect's work, run while c.connecting is held.
-func (c *Client) establish(ctx context.Context) (Conn, error) {
+func (c *Client) establish(ctx context.Context) (Conn, bool, error) {
 	c.mu.Lock()
 	conn, sid := c.conn, c.sid
 	c.mu.Unlock()
-	if conn == nil {
+	fresh := conn == nil
+	if fresh {
 		var err error
 		if conn, err = c.open(ctx); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		c.mu.Lock()
 		c.conn = conn
@@ -316,13 +334,13 @@ func (c *Client) establish(ctx context.Context) (Conn, error) {
 	if sid == nil && c.rec.IsAD() {
 		sid, err := c.readDomainSID(ctx, conn)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		c.mu.Lock()
 		c.sid = sid
 		c.mu.Unlock()
 	}
-	return conn, nil
+	return conn, fresh, nil
 }
 
 // readDomainSID reads the objectSid of the entry the root DSE's

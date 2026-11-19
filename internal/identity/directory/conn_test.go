@@ -425,3 +425,14 @@ func TestSearchErrorReferral(t *testing.T) {
 		t.Errorf("a code-32 result = %v, want it not ErrReferral", err)
 	}
 }
+
+// A search go-ldap fails with its network error, a connection either end
+// closed, fails with ErrClosed; a refusal the directory answered does not.
+func TestSearchErrorClosed(t *testing.T) {
+	if err := directory.SearchError(ldap.NewError(ldap.ErrorNetwork, errors.New("ldap: connection closed"))); !errors.Is(err, directory.ErrClosed) {
+		t.Errorf("a network error = %v, want ErrClosed", err)
+	}
+	if err := directory.SearchError(ldap.NewError(ldap.LDAPResultNoSuchObject, errors.New("no such object"))); errors.Is(err, directory.ErrClosed) {
+		t.Errorf("a code-32 result = %v, want it not ErrClosed", err)
+	}
+}

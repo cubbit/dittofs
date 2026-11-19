@@ -22,33 +22,10 @@ import (
 
 const base = "DC=corp,DC=example"
 
-// dialLog passes each dial through to next and keeps the address it was
-// sent to.
-type dialLog struct {
-	mu    sync.Mutex
-	addrs []string
-}
-
-func (l *dialLog) wrap(next directory.Dialer) directory.Dialer {
-	return func(ctx context.Context, rec directory.Record) (directory.Conn, error) {
-		l.mu.Lock()
-		l.addrs = append(l.addrs, rec.Address)
-		l.mu.Unlock()
-		return next(ctx, rec)
-	}
-}
-
-func (l *dialLog) dials() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return slices.Clone(l.addrs)
-}
-
-// env is a client over an in-memory directory, its dials logged.
+// env is a client over an in-memory directory.
 type env struct {
 	d     *identitytest.Directory
 	clock *sim.TestClock
-	dials *dialLog
 	rec   directory.Record
 	pw    []byte
 	logs  *bytes.Buffer
@@ -61,7 +38,6 @@ func newEnv(t *testing.T) *env {
 	return &env{
 		d:     d,
 		clock: sim.NewTestClock(time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)),
-		dials: &dialLog{},
 		rec:   directory.Record{Address: "ldaps://dc.corp.example", Base: base, BindName: name, Realm: "CORP.EXAMPLE"},
 		pw:    pw,
 		logs:  &bytes.Buffer{},
@@ -72,7 +48,7 @@ func newEnv(t *testing.T) *env {
 func (e *env) client(dial directory.Dialer) *directory.Client {
 	pw := e.pw
 	log := slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	return directory.NewClient(e.rec, e.dials.wrap(dial), func(context.Context) ([]byte, error) { return pw, nil }, e.clock, log)
+	return directory.NewClient(e.rec, dial, func(context.Context) ([]byte, error) { return pw, nil }, e.clock, log)
 }
 
 // faulty wraps e's directory in a fault wrapper running rules.
@@ -164,7 +140,7 @@ func TestLookupReferralIsUnavailableAndNotFollowed(t *testing.T) {
 	if !errors.Is(err, vfserr.ErrUnavailable) || ok {
 		t.Errorf("Lookup answered by a referral = %q, %v, %v; want ErrUnavailable", a.DN, ok, err)
 	}
-	if got := e.dials.dials(); !slices.Equal(got, []string{e.rec.Address}) {
+	if got := f.Dials(); !slices.Equal(got, []string{e.rec.Address}) {
 		t.Errorf("dials %v, want only the record's %s", got, e.rec.Address)
 	}
 }
@@ -316,14 +292,15 @@ func TestEmptyCredentialRefusedBeforeDial(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
 			e.d.AddUser(t, "alice", nil)
-			c := directory.NewClient(e.rec, e.dials.wrap(e.d.Dial), resolve, e.clock, nil)
+			f := e.faulty(t)
+			c := directory.NewClient(e.rec, f.Dial, resolve, e.clock, nil)
 			if _, _, err := c.Lookup(context.Background(), directory.ByUserName, []byte("alice")); !errors.Is(err, vfserr.ErrUnavailable) {
 				t.Errorf("Lookup = %v, want ErrUnavailable", err)
 			}
 			if _, err := c.Test(context.Background()); !errors.Is(err, vfserr.ErrUnavailable) {
 				t.Errorf("Test = %v, want ErrUnavailable", err)
 			}
-			if got := e.dials.dials(); len(got) != 0 {
+			if got := f.Dials(); len(got) != 0 {
 				t.Errorf("dials %v, want none", got)
 			}
 		})
@@ -396,7 +373,7 @@ func TestNewClientDialsNothing(t *testing.T) {
 		f := e.faulty(t, sim.Rule{Op: "dial", Key: "*", Action: sim.FaultAction{Err: identitytest.ErrHold}})
 		c := e.client(f.Dial)
 		synctest.Wait()
-		if got := e.dials.dials(); len(got) != 0 {
+		if got := f.Dials(); len(got) != 0 {
 			t.Errorf("dials %v after NewClient, want none", got)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -433,7 +410,7 @@ func TestCloseWaitsForQuestionsInFlight(t *testing.T) {
 		if _, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice")); err != nil {
 			t.Errorf("Lookup after Close = %v, want it answered", err)
 		}
-		if got := e.dials.dials(); len(got) != 2 {
+		if got := f.Dials(); len(got) != 2 {
 			t.Errorf("%d dials, want 2: the connection closed once the first question returned", len(got))
 		}
 	})
@@ -489,7 +466,8 @@ func TestCancelledCallerLeavesConnection(t *testing.T) {
 				e := newEnv(t)
 				e.d.AddUser(t, "alice", nil)
 				bob := e.d.AddUser(t, "bob", nil)
-				c := e.client(e.faulty(t, rule).Dial)
+				f := e.faulty(t, rule)
+				c := e.client(f.Dial)
 				if name == "search" { // the connection is open before alice's search
 					if _, _, err := c.Lookup(context.Background(), directory.ByUserName, []byte("bob")); err != nil {
 						t.Fatal(err)
@@ -521,7 +499,7 @@ func TestCancelledCallerLeavesConnection(t *testing.T) {
 				if r.err != nil || r.dn != bob {
 					t.Errorf("the other Lookup = %q, %v; want %q", r.dn, r.err, bob)
 				}
-				if got := e.dials.dials(); len(got) != 1 {
+				if got := f.Dials(); len(got) != 1 {
 					t.Errorf("%d dials, want 1: the cancelled caller dropped the shared connection", len(got))
 				}
 				e.clock.Advance(5 * time.Second) // the held search ends
@@ -551,7 +529,7 @@ func TestPasswordUnderQueryTimeout(t *testing.T) {
 			}
 			return e.pw, nil
 		}
-		c := directory.NewClient(e.rec, e.dials.wrap(e.d.Dial), password, e.clock, nil)
+		c := directory.NewClient(e.rec, e.d.Dial, password, e.clock, nil)
 		held := make(chan error, 1)
 		go func() {
 			_, _, err := c.Lookup(context.Background(), directory.ByUserName, []byte("alice"))
@@ -589,4 +567,42 @@ func TestPasswordUnderQueryTimeout(t *testing.T) {
 			t.Errorf("the queued Lookup = %q, %v; want %q", r.dn, r.err, dn)
 		}
 	})
+}
+
+// A held connection the directory has since closed, as Active Directory
+// closes one idle past its MaxConnIdleTime, costs the next question one
+// redial, not its answer.
+func TestLookupRedialsOnceAfterIdleClose(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	dn := e.d.AddUser(t, "alice", nil)
+	f := e.faulty(t)
+	c := e.client(f.Dial)
+	if _, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice")); err != nil {
+		t.Fatal(err)
+	}
+	f.DropConns()
+	if a, ok, err := c.Lookup(ctx, directory.ByUserName, []byte("alice")); err != nil || !ok || a.DN != dn {
+		t.Errorf("Lookup on a connection the directory closed = %q, %v, %v; want %q", a.DN, ok, err, dn)
+	}
+	if got := f.Dials(); len(got) != 2 {
+		t.Errorf("%d dials, want 2: the first, and one redial", len(got))
+	}
+}
+
+// A connection that fails as closed the moment it is dialled is not dialled
+// again: only a held one is retried, so a directory that drops every
+// connection costs each question one dial.
+func TestLookupFreshConnectionClosedIsNotRetried(t *testing.T) {
+	e := newEnv(t)
+	e.d.AddUser(t, "alice", nil)
+	f := e.faulty(t, sim.Rule{Op: "search", Key: "(&(objectClass=user)(sAMAccountName=alice))",
+		Action: sim.FaultAction{Err: directory.ErrClosed}})
+	a, ok, err := e.client(f.Dial).Lookup(context.Background(), directory.ByUserName, []byte("alice"))
+	if !errors.Is(err, vfserr.ErrUnavailable) || ok {
+		t.Errorf("Lookup on a fresh connection closed under it = %q, %v, %v; want ErrUnavailable", a.DN, ok, err)
+	}
+	if got := f.Dials(); len(got) != 1 {
+		t.Errorf("%d dials, want 1: a fresh connection's failure is not retried", len(got))
+	}
 }

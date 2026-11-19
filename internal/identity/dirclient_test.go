@@ -3,7 +3,6 @@ package identity_test
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,12 +23,15 @@ func dirState(d *identitytest.Directory) identity.State {
 	return st
 }
 
-// countDials passes each dial through to next and counts it.
-func countDials(n *atomic.Int32, next directory.Dialer) directory.Dialer {
-	return func(ctx context.Context, rec directory.Record) (directory.Conn, error) {
-		n.Add(1)
-		return next(ctx, rec)
+// passThrough wraps d's dials in a fault wrapper that injects nothing, so a
+// test can read the dials it was sent.
+func passThrough(t *testing.T, d *identitytest.Directory) *identitytest.FaultyDirectory {
+	t.Helper()
+	sched, err := sim.NewSchedule(1, sim.NewTestClock(time.Unix(0, 0)))
+	if err != nil {
+		t.Fatal(err)
 	}
+	return identitytest.NewFaultyDirectory(d.Dial, sched)
 }
 
 // With no Deps.Directory, or no record, New and Start succeed and every
@@ -37,13 +39,13 @@ func countDials(n *atomic.Int32, next directory.Dialer) directory.Dialer {
 func TestNoDirectoryAnswersUnavailable(t *testing.T) {
 	d := identitytest.NewDirectory("DC=corp,DC=example")
 	d.AddUser(t, "alice", nil)
-	var dials atomic.Int32
+	f := passThrough(t, d)
 	for name, tc := range map[string]struct {
 		dial directory.Dialer
 		st   identity.State
 	}{
 		"no dialer": {nil, dirState(d)},
-		"no record": {countDials(&dials, d.Dial), state(1)},
+		"no record": {f.Dial, state(1)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, err := identity.New(identity.Deps{Store: newStore(t), Clock: sim.NewTestClock(time.Unix(0, 0)), Directory: tc.dial})
@@ -61,8 +63,8 @@ func TestNoDirectoryAnswersUnavailable(t *testing.T) {
 			}
 		})
 	}
-	if n := dials.Load(); n != 0 {
-		t.Errorf("%d dials, want none", n)
+	if got := f.Dials(); len(got) != 0 {
+		t.Errorf("dials %v, want none", got)
 	}
 }
 
@@ -77,9 +79,9 @@ func TestDirectoryCredentialUnresolvedDialsNothing(t *testing.T) {
 		"provider unbuilt": &secrets.Provider{},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var dials atomic.Int32
+			f := passThrough(t, d)
 			s, err := identity.New(identity.Deps{Store: newStore(t), Clock: sim.NewTestClock(time.Unix(0, 0)),
-				Secrets: provider, Directory: countDials(&dials, d.Dial)})
+				Secrets: provider, Directory: f.Dial})
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
@@ -89,8 +91,8 @@ func TestDirectoryCredentialUnresolvedDialsNothing(t *testing.T) {
 			if _, _, err := s.DirectoryLookup(context.Background(), directory.ByUserName, []byte("alice")); !errors.Is(err, vfserr.ErrUnavailable) {
 				t.Errorf("lookup = %v, want ErrUnavailable", err)
 			}
-			if n := dials.Load(); n != 0 {
-				t.Errorf("%d dials, want none", n)
+			if got := f.Dials(); len(got) != 0 {
+				t.Errorf("dials %v, want none", got)
 			}
 		})
 	}

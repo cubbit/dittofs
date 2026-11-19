@@ -159,8 +159,8 @@ var _ directory.Dialer = (*Directory)(nil).Dial
 // compute, and the selectors, which selected would read as names no entry has.
 var unread = []string{"tokenGroups", "tokenGroupsGlobalAndUniversal", "tokenGroupsNoGCAcceptable", "*", "+", "1.1"}
 
-// errClosed is a call on a closed connection.
-var errClosed = errors.New("identitytest: the connection is closed")
+// errClosed is a call on a closed connection, as a real one fails it.
+var errClosed = fmt.Errorf("%w: identitytest", directory.ErrClosed)
 
 // memConn is one connection to a Directory.
 type memConn struct {

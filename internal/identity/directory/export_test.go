@@ -23,3 +23,6 @@ func SearchRequest(req Request) *ldap.SearchRequest {
 
 // SearchError is a failed search's error as Search returns it.
 var SearchError = searchError
+
+// ErrReferral is a search the directory answered with a referral.
+var ErrReferral = errReferral
