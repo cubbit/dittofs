@@ -499,7 +499,7 @@ flight.
   3.3.4.2 allows when asynchronous processing would exceed the server's
   resources, and nothing is held for it. Waiting locks (§7), change
   notifications and `READ`s of an empty named pipe are not counted against the
-  floor: they hold no write data and no worker, and end only as RFC 14's waiter,
+  floor: they keep no request record and no worker, and end only as RFC 14's waiter,
   the watch or the pipe does. They are parked instead
   ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
   `Park`), and keep at most a small-class reply: a notification whose changes
@@ -1192,7 +1192,8 @@ The hold and the re-run are the pipeline mechanism of
   At the deadline the lease or oplock is set to none (MS-SMB2 3.3.6.1,
   3.3.6.5), and the waiting request is re-run. The holder's opens stay open,
   but for its disconnected durable opens that are not persistent, which
-  close, as a durable open is kept only under handle caching (MS-SMB2
+  close, as a durable open that is not persistent is kept only under handle
+  caching (MS-SMB2
   3.3.5.9.7). Those that stay keep their deny modes and locks, and the
   holder's later reads and writes through them are served as ordinary
   I/O on an open that holds no caching. The client — the machine (§4.4) — is
@@ -2387,8 +2388,8 @@ are checked against; an SMB session carries no claims.
   guest or anonymous, is `authenticated`
   ([RFC 18 §6.5](rfc-18-identity.md#6.5%20What%20the%20proof%20proved%3A%20authenticated%2C%20admin%2C%20privileged));
   SIDs a ticket's PAC marks `SE_GROUP_USE_FOR_DENY_ONLY` are carried in its
-  `Evidence`'s `DenyOnly`, apart from its `SIDs`, and resolution maps each to
-  one of the caller's deny-only principals
+  `Evidence`'s `DenyOnly`, apart from its `SIDs`, and resolution maps each that
+  a principal holds to one of the caller's deny-only principals
   ([RFC 18 §3.4](rfc-18-identity.md#3.4%20The%20PAC)).
 - **The credential's group.** An SMB session carries no group, so a new file
   takes the principal's primary group
@@ -2533,7 +2534,7 @@ mapping it needs is here.
 | `Client.Name` | `ClientGuid` | — | indexed with the protocol; one record per machine (§4.4) |
 | `Client.Boot` | unused, zero | — | a `ClientGuid` carries no boot instance; a restarted machine reconnects its handles under the same record |
 | `Client.Owner`, `Client.Protect` | zero, false | — | principals bind per session and per open (§4.4) |
-| `Client.Reach.Sessions` | the nodes holding an authenticated session of the `ClientGuid`, each added by `Connect` at its first one and again at each new node epoch or when the `Connect` a session skipped behind failed; removed by the `Disconnect` that ends the node's last one, or with the node's loss or restart ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | — | the nodes asked to pick a session for a break whose opens are all disconnected (§4.4); the record is not released while any remains (RFC 14 §2.1) |
+| `Client.Reach.Sessions` | the nodes holding an authenticated session of the `ClientGuid`, each added by `Connect` at its first one and again at each new node epoch or when the `Connect` a session skipped behind failed; removed by the `Disconnect` that ends the node's last one, or with the node's loss or restart ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | none | the nodes asked to pick a session for a break whose opens are all disconnected and one persistent (§4.4); the record is not released while any remains (RFC 14 §2.1) |
 | `Client.Pending` | never set | — | an SMB client is confirmed in one step, at its first authenticated `SESSION_SETUP` |
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
 | `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` passed as `vfs.MaximumAllowed`, which the service resolves to the granted mask (§11) |
@@ -2628,7 +2629,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrNotDir`, `ErrIsDir` | `STATUS_NOT_A_DIRECTORY`, `STATUS_FILE_IS_A_DIRECTORY` |
 | `ErrAccess` | `STATUS_ACCESS_DENIED` |
 | `ErrAccess` with cause `ReadOnly` — the read-only marker refused a delete ([RFC 7 §7.9](rfc-7-namespace-metadata.md#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)) | `STATUS_CANNOT_DELETE` |
-| a handle of another share than the one asked, [RFC 7 §6.3](rfc-7-namespace-metadata.md#6.3%20Staleness%20is%20reported%2C%20never%20guessed)'s `ErrWrongShare`, which the service returns as `ErrStale` | `STATUS_OBJECT_NAME_NOT_FOUND`, as `ErrStale` for a released file (below) |
+| a handle of another share than the one asked, [RFC 7 §6.3](rfc-7-namespace-metadata.md#6.3%20Staleness%20is%20reported%2C%20never%20guessed)'s `ErrWrongShare`, which the service returns as `ErrStale` | as `ErrStale` (the rows below), which it cannot be told from |
 | `ErrStale` — a released file | `STATUS_OBJECT_NAME_NOT_FOUND`: an open holds its file, so only a durable reconnect meets it (§6.4) |
 | `ErrCross` (`CrossShare`) | `STATUS_NOT_SAME_DEVICE`; it does not arise from a rename, whose target is resolved within the tree |
 | `ErrDelay` — a break or recall in progress, or a clone holding the range | held pending; re-run when it ends. A break that reaches its deadline is forced (§6.3) and the request proceeds with the re-run's own result; one still delayed by a further break or recall at `recall_timeout` is `STATUS_FILE_NOT_AVAILABLE`, the status a held freeze or grace ends with. I/O held by a running clone past its own deadline is `STATUS_FILE_LOCK_CONFLICT`, unless the `Delay` carries `DelayCommit` or `DelayCapacity`, or the call meets `ErrUnavailable` — the clone itself held up by a stalled store, by space it waits for (a clone resumed at start included) or by a remote outage — and the request is then held and answered as that cause's row says, so a clone slowed by a stalled store ends `STATUS_UNEXPECTED_IO_ERROR` at `pending_timeout`, and one waiting for space `STATUS_DISK_FULL` there, never a lock conflict at `recall_timeout`. A `CREATE` of a clone's destination not yet served while its clone waits for space is answered the same way, as capacity ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)) |
@@ -2662,6 +2663,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrState` (`ReclaimConflict`) — a reclaim that conflicts with one already reclaimed in the same grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | not met: a reconnect reclaims a persistent open its durable record holds, which no other reclaim can hold; were it met, `STATUS_OBJECT_NAME_NOT_FOUND` as for `NoReclaim` |
 | `ErrState` (`StaleState`) — a FileId whose open was lost with its shard's open state ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED` |
 | `ErrState` (`Revoked`) — a FileId whose open an administrator revoked, its client kept ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED`: SMB has no revoked status, and the client reopens. The handler that so answers a FileId then calls `FreeState` for it ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)), as SMB has no `FREE_STATEID`, a call outside the one-call rule ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)); a later use is `ErrState` (`BadState`) |
+| `ErrState` (`Revoked`) at a recall's deadline | never met: every SMB grant covers opens, and at its deadline is cut to none, never revoked ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)); the fault, as for `ClientInUse` |
 | `ErrState` (`BadState`) — a FileId whose open is gone: closed, a removed share's, or never issued ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED`; a durable reconnect naming it is `ErrState` (`NoReclaim`), below |
 | `ErrState` (`StaleClient`) — the client's record expired, or was marked by a loss of a shard's open state ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) | `STATUS_FILE_CLOSED` for an open of that client |
 | `ErrState` (`CreateInUse`) — a create naming a create ID another open of the client holds, not marked as a replay, a replay of a disconnected open, or a replay on another session than the open's ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) | `STATUS_DUPLICATE_OBJECTID` |
@@ -3283,7 +3285,7 @@ What each method then calls below is
 | Command | Method | Notes |
 | --- | --- | --- |
 | `NEGOTIATE` | none (adapter only) | the `ClientGuid` is kept with the connection; the client is registered at its first authenticated `SESSION_SETUP` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)) |
-| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid` on this node, again after the node's entry was removed or at each new node epoch or when the `Connect` it skipped behind failed, storing the `Gen` each returns and, if the node then holds no session of the `ClientGuid`, a session counted from the step that decides its `Connect` or skips it — the setup's connection dropped, or a re-list landed after the last `LOGOFF` — sending `Disconnect` with `Last` and that `Gen`; a counted setup that ends before it reaches the session table is uncounted under the per-client step; a setup that skipped its `Connect` answers only once a `Connect` has listed the node ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | a break with every open disconnected is sent from the adapter's session table ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); a failed re-authentication's teardown ends the session as `LOGOFF` does |
+| `SESSION_SETUP` | RFC 18's authenticator, then `Connect` at the first one that completes for the connection's `ClientGuid` on this node, again after the node's entry was removed or at each new node epoch or when the `Connect` it skipped behind failed, storing the `Gen` each returns and, if the node then holds no session of the `ClientGuid`, a session counted from the step that decides its `Connect` or skips it (the setup's connection dropped, or a re-list landed after the last `LOGOFF`), sending `Disconnect` with `Last` and that `Gen`; a counted setup that ends before it reaches the session table is uncounted under the per-client step; a setup that skipped its `Connect` answers only once a `Connect` has listed the node ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | a break with every open disconnected and one persistent is sent from the adapter's session table ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)); a failed re-authentication's teardown ends the session as `LOGOFF` does |
 | `LOGOFF` | `Disconnect` with `Logoff`, which closes every open of the session, durable and persistent ones included, running delete on close and orphan releases through `Sink.Closed` as a `CLOSE` runs them, and `Last` with the node entry's latest `Gen` when it was the node's last session of the `ClientGuid`, repeated at the newer `Gen` it returns while the node still holds none; `ErrStaleClient` counts as success | MS-SMB2 3.3.5.6 closes every open of the session; a lost connection's `Disconnect`, without `Logoff`, keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
 | `TREE_CONNECT` | `Root` with the name; `\IPC$`: none | `IPC$` is the adapter's RPC endpoint, not a share, and reaches no file |
 | `TREE_DISCONNECT` | none (adapter only) | |

@@ -2405,8 +2405,8 @@ sessions alone and a restarted node may number one again.
 
 **A reconnect matches an open only when all of these do:** the client, the
 principal (`Caller`), the share the reconnect arrived on, the open's
-`Durable.Create` when it has one, and the lease key when the open has a lease
-(`ReconnectMatch`). Anything else is refused as if the open did not exist. A
+`Durable.Create` when it has one, and the lease key, none for an open with
+none (`ReconnectMatch`). Anything else is refused as if the open did not exist. A
 reconnect that matches rebinds the open's `Session`
 to the reconnecting session in the step that answers it, durably for a
 persistent open, so a later disconnect of that session times it.
