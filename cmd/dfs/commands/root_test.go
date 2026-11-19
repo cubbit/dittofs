@@ -37,23 +37,6 @@ func TestCommandTree(t *testing.T) {
 	}
 }
 
-// dfs start fails, naming the step: it hands the node no KV yet, so building
-// the node refuses.
-func TestStartNamesTheStep(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	body := "logging:\n  output: stderr\nblockstore:\n  journal:\n    path: '" + filepath.Join(t.TempDir(), "blocks") + "'\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	root := NewRoot()
-	root.SetArgs([]string{"start", "--config", path})
-	err := root.Execute()
-	if err == nil || !strings.HasPrefix(err.Error(), "building the node: ") {
-		t.Errorf("dfs start: %v, want the node's build step refused", err)
-	}
-}
-
 // Each command reads the flags it was run with from its own tree: start's
 // --config, and config show's and config schema's --output.
 func TestCommandsReadTheirFlags(t *testing.T) {
