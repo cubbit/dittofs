@@ -1259,6 +1259,9 @@ func openEnding(t *testing.T, d *driven, at func(endingOpen) bool) (parked, endi
 
 	other := d.writeSynced(1, 1, 0, 64<<10)
 	a := d.write(0, 0, 0, pattern("a", 64<<10))
+	// The record is acknowledged, so the model holds it and a copy leg whose
+	// emptying retires the segment before the copy is durable sees it lost.
+	d.sync(0, a.id)
 	s := endingOpen{u: segmentName(entryAt(t, d.f, a.id, 0).Location.Segment), other: segmentName(entryAt(t, d.f, other.id, 0).Location.Segment), a: a.p}
 	deviceSync(t, d.f, s.u)
 	d.write(0, 0, 64<<10, pattern("b", 64<<10))

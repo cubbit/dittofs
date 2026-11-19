@@ -196,9 +196,10 @@ func TestDamage_RefusedOpenNamesAndServesNothing(t *testing.T) {
 			t.Fatalf("the open over a synced tail the device lost returned %v, want ErrOpenRefused", err)
 		}
 
-		// The segment's scan refuses the range below the acknowledged mark.
-		if want := fmt.Sprintf("segment %d: a refused range at [%d,", seg, loc.Offset); !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "below a mark's Through") {
-			t.Fatalf("the refusal is %q, want it to name segment %d and a range below the mark's Through", err, seg)
+		// The segment's scan refuses the range from the lost record to the end
+		// of the segment file, below the acknowledged mark.
+		if want := fmt.Sprintf("segment %d: a refused range at [%d,%d) below a mark's Through", seg, loc.Offset, journaltest.FixtureSegmentCap); !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal is %q, want it to contain %q", err, want)
 		}
 
 		nothingServed(t, f, writes)
