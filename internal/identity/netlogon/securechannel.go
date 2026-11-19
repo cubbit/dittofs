@@ -32,6 +32,40 @@ var errNoAES = errors.New("netlogon: the domain controller negotiated no AES")
 // from, or something altered its reply.
 var errServerCredential = errors.New("netlogon: the domain controller's server credential does not verify")
 
+// errServerChallenge is a NetrServerReqChallenge reply whose server challenge
+// is missing, not 8 bytes, or all zero.
+var errServerChallenge = errors.New("netlogon: NetrServerReqChallenge answered no usable server challenge")
+
+// checkServerChallenge refuses a server challenge that is not 8 bytes or is
+// all zero. The session-key negotiation (MS-NRPC §3.1.4.1) computes the
+// session key (§3.1.4.3) and both credentials (§3.1.4.4) from it, so the
+// client refuses an all-zero one before computing any of them.
+func checkServerChallenge(c *logon.Credential) error {
+	if c == nil || len(c.Data) != 8 || allZero(c.Data) {
+		return errServerChallenge
+	}
+	return nil
+}
+
+// checkServerCredential refuses a server credential that is not want, the
+// one the client computed (MS-NRPC §3.1.4.4), and refuses an all-zero one
+// even when want is all zero too.
+func checkServerCredential(want []byte, got *logon.Credential) error {
+	if got == nil || allZero(got.Data) || !hmac.Equal(want, got.Data) {
+		return errServerCredential
+	}
+	return nil
+}
+
+func allZero(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // checkNegotiated refuses the flags a NetrServerAuthenticate3 reply
 // negotiated unless they hold AES.
 func checkNegotiated(flags uint32) error {
@@ -113,8 +147,8 @@ func (d *dc) authenticate(ctx context.Context, name string, machine credential.C
 	if chal.Return != 0 {
 		return nil, nil, Status(uint32(chal.Return))
 	}
-	if chal.ServerChallenge == nil || len(chal.ServerChallenge.Data) != 8 {
-		return nil, nil, errors.New("netlogon: NetrServerReqChallenge answered no server challenge")
+	if err := checkServerChallenge(chal.ServerChallenge); err != nil {
+		return nil, nil, err
 	}
 	cfg.ServerChallenge = chal.ServerChallenge.Data
 	cred, err := nlssp.NewSecureCredential(ctx, cfg)
@@ -142,8 +176,8 @@ func (d *dc) authenticate(ctx context.Context, name string, machine credential.C
 	if err != nil {
 		return nil, nil, err
 	}
-	if auth3.ServerCredential == nil || !hmac.Equal(want, auth3.ServerCredential.Data) {
-		return nil, nil, errServerCredential
+	if err := checkServerCredential(want, auth3.ServerCredential); err != nil {
+		return nil, nil, err
 	}
 	if err := checkNegotiated(auth3.NegotiateFlags); err != nil {
 		return nil, nil, err

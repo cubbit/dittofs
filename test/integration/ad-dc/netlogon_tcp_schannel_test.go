@@ -48,6 +48,9 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 	defer cancel()
 
 	waitForMachinePassword(t, dcIP, "dittofs", machineAccountPass)
+	t.Run("netlogon's channel refuses an all-zero server challenge or credential", func(t *testing.T) {
+		secureChannelZeroRows(ctx, t, dcIP)
+	})
 
 	port := netlogonTCPPort(ctx, t, dcIP)
 	binding := "ncacn_ip_tcp:" + dcIP + "[" + port + "]"
