@@ -124,8 +124,8 @@ ticket's sign-in, captured; `FuzzPAC` and `FuzzAPReq`.
 - **E8**, the integration epic: identity composed into the node, and the rows several epics meet in.
 - **E9**, E2E green: RFC 18 §10's Tier 2 rows over SMB.
 - **S1**, the identity surface frozen, which E1 delivers.
-- **RFC 23's plan's epic 4** is that plan's management API: its T4.9 serves the secret route, its
-  T4.11 the `krb` link's write.
+- **RFC 23's plan's epic 4** is that plan's management API: its T4.11 serves the keytab secret
+  route and the `krb` link's write.
 
 ## 2. How the general rules apply
 
@@ -158,7 +158,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | The keytab is a `Secret` of kind keytab, loaded only through `Apply`: the versions in force are `State.Keytab`, current first, and a new version takes effect at the `Apply` that delivers it, with no restart | invariant | §2.6, §3.3 | T5.2 |
-| R2 | The keytab holds AES128 and AES256 keys only, and a keytab import holding a DES or RC4 key is refused whole | MUST | §3.3; §10 "AES only" | T5.2; RFC 23 plan epic 4's T4.9 (the import's refusal, once D3 settles) |
+| R2 | The keytab holds AES128 and AES256 keys only, and a keytab import holding a DES or RC4 key is refused whole | MUST | §3.3; §10 "AES only" | T5.2; RFC 23 plan epic 4's T4.11 (the import's refusal at its keytab secret route, once D3 settles) |
 | R3 | Every keytab version `Apply` hands identity is accepted and a version it no longer hands is refused, a restart included, so tickets under the old and the new key are both accepted while the rotation keeps both, and a retired key is refused once the rotation prunes it (R4) | invariant | §3.3, §2.6; RFC 13 §7; §10 "keytab rollover" | T5.2 |
 | R4 | Withdrawn: keeping the previous version for one maximum ticket lifetime, 10 hours plus the clock skew, and removing it then are RFC 23 §3.3's credential rotation, which deletes it with `tx.PruneSecret` inside an audited `Write` (D13). The report that the old key may be revoked at its service is the control plane's (RFC 13 §7), and RFC 23 §3.3 does not name it yet (§9) | — | §3.3; RFC 13 §7; RFC 16 §3 (`tx.PruneSecret`); RFC 23 §3.3 | RFC 23 §3.3's credential rotation; the revocation report pending the RFC 23 §3.3 amendment (§9) |
 
@@ -265,7 +265,7 @@ record are E6's and E8's to drive, on the rule this epic builds.
   keytab format itself rather than through gokrb5, since `pkg/identity` is a leaf whose code
   imports no gokrb5; `FuzzCheckKeytab` holds it to gokrb5's decoder, which `Apply` runs after it on
   each version. Only version 2 is accepted: version 1, the host-byte-order format no current tool
-  writes, is refused. The route's call is RFC 23's plan's epic 4's: its T4.9 secret route calls it
+  writes, is refused. The route's call is RFC 23's plan's epic 4's: its T4.11 keytab secret route calls it
   in the keytab's pre-write step once this is settled, and until then seals what it is given. A
   `decision:` marker at `CheckKeytab` names the refusal whole, version 1's refusal, and the same
   check `Apply` runs on each version.
@@ -903,7 +903,7 @@ the version this document was written against.
   identity.CheckKeytab(v); err != nil { return ErrInvalid }`, answered `400`); (b) `Apply` refuses the `State`, too late
   to refuse the write and, refusing the whole `State`, it would hold a disable back too; (c) an
   `APISignIn`-like interface method handed to the API. Recommended: (a). Written in place in T5.2.
-  RFC 23's plan's epic 4 calls it from its T4.9 secret route once this is settled.
+  RFC 23's plan's epic 4 calls it from its T4.11 keytab secret route once this is settled.
 - **Who declares `require_pac` (D14).** The RFC 18 plan gives the record to E6, whose T6.3
   declares it with the schema, the realm and the `ad` realm refusal; `require_pac`'s first reader
   is T5.8b. Options: (a) T5.8b adds `RequirePAC` to T6.3's record and waits for T6.3, a cross-track

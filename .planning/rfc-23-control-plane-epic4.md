@@ -784,8 +784,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   `res_secrets.go`, the store's write-only credential (`PUT` and `DELETE
   /stores/{id}/credential`) authorized as the store's write, its value sealed by the pre-write step
   through `Deps.Sealer` (D17), refused `503` while `Sealer` is nil, and a set over an existing
-  credential refused `409` until rotation exists as an operation; no other secret route, so the
-  identity-owned keytab's is not built here (§6.1 of RFC 23's plan); `res_adapters.go`,
+  credential refused `409` until rotation exists as an operation; no other secret route: the
+  identity-owned keytab's is T4.11's; `res_adapters.go`,
   `/adapters/{protocol}` with `enabled`, its settings and the per-node read of each node's adapter
   state, from `NodeStatus.Adapters`, which this subtask adds (RFC 20's plan's epic 7, O7; the
   node-side write is that plan's T7.7); `res_settings.go`, the generic setting resource (RFC 23's
@@ -876,7 +876,12 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   and the `krb` link's stored SID on its epic 5's T5.8a (`entity.ProtocolID.Linked`)
   and X1.
 - **Covers:** R3, R22, R44, R49, R50, R51, R61, R63, R64.
-- **Deliverables:** `res_domain.go`: a user's `krb` spelling, the SID asked of `Deps.Directory` before
+- **Deliverables:** the identity-owned keytab secret route, a write of `identity.keytab`'s `Secret`
+  authorized as the installation's, its value sealed by the pre-write step through `Deps.Sealer`
+  (D17) and refused `503` while `Sealer` is nil; until the RFC 18 plan's epic 5 settles its D3 it
+  seals the keytab unchecked, then runs `pkg/identity.CheckKeytab` as its pre-write step before
+  `Seal`; the RFC 18 plan's epic 8's T8.4 needs it, writing `identity.keytab` through the node's
+  API; `res_domain.go`: a user's `krb` spelling, the SID asked of `Deps.Directory` before
   the transaction (D17); `resolve-principal`, `test-directory`, `join-domain` (online and offline,
   no idempotency record) and `rotate-machine-password` as operation kinds; the offline join's version
   sealed before the transaction and written in its own audited write, refused while a join or
@@ -890,7 +895,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   join's secret version; no credential field) and `ResolvePrincipalParams` (a name or a SID), the
   `Operation.Params` these routes write and identity's steps decode (RFC 16's "encoded by that
   kind"), consumed by the RFC 18 plan's epic 7's T7.5 and T7.14; with
-  `Installation.Join.Names`, which E2's T2.4 stores and that epic's D6 fills, the keytab's pre-write step, on the identity-owned keytab secret route T4.9 did not build (§6.1 of RFC 23's plan), also refusing `400` `ErrInvalid` a key
+  `Installation.Join.Names`, which E2's T2.4 stores and that epic's D6 fills, this subtask's keytab pre-write step also refusing `400` `ErrInvalid` a key
   for a name in it, with no `Secret` version written (RFC 18 §3.3, that epic's R27); each refusing `503` `unavailable` while its
   interface is nil (D13); `ntlm.go`, the rule (D14), called by the settings route; the
   installation's wire type; the import rule extended with `pkg/identity`, for `JoinCredential`. Consumed by
@@ -978,9 +983,8 @@ Other open points:
   plan's epic 5 settles `pkg/identity.CheckKeytab(b []byte) error` (its D3), the keytab's
   pre-write step calls it before `Seal`, a failure answered `400` `ErrInvalid`, `pkg/identity`
   joins D20's import allow-list, and a keytab with one AES and one RC4 key is tested refused with
-  no `Secret` version written. T4.9 built no keytab secret route, only the remote store's
-  credential, so the route, its pre-write step and that test wait on §6.1's row of RFC 23's plan,
-  and RFC 18 §3.3's import refusal is held by no test. A keytab version's retention is RFC 23 §3.3's, inside
+  no `Secret` version written. T4.11 builds the route and seals unchecked until then, so RFC 18
+  §3.3's import refusal is held by no test before D3 settles. A keytab version's retention is RFC 23 §3.3's, inside
   the rotation operation, so no ledger row is needed; only if the RFC 18 plan's epic 5's D13 picks
   a `retire-keytab-version` action do its route row and `OpKind` join T4.11, with an RFC 23 §3.3
   amendment.
