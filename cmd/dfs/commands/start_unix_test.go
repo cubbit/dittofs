@@ -5,14 +5,20 @@ package commands
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 // apiAddr matches the record naming the API's bound address.
@@ -93,4 +99,62 @@ func readiness(t *testing.T, addr string) string {
 	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	return strings.TrimSpace(string(b))
+}
+
+// installedNoDevice is an installation with no journal device: the store
+// initialized as installed leaves it, and a bootstrap that names no journal.
+func installedNoDevice(t *testing.T) (store string, config string) {
+	t.Helper()
+	ctx := t.Context()
+	dir := t.TempDir()
+	store = filepath.Join(dir, "store")
+	install := [16]byte{'s', 't', 'a', 'r', 't'}
+	db, err := badgerkv.Open(badgerkv.Options{Dir: store, NodeID: testNode})
+	if err != nil {
+		t.Fatalf("open the KV: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close the KV: %v", err)
+		}
+	}()
+	if err := kvstore.Init(ctx, db, install); err != nil {
+		t.Fatalf("store init: %v", err)
+	}
+	return store, bootstrapFile{store: store, node: nodeUUID}.write(t, dir)
+}
+
+// dfs start over a bootstrap that names no journal device refuses naming it,
+// whatever else it finds: the refusal reads no storage.
+func TestStartRefusesNoJournalDevice(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T) (store string, config string)
+	}{
+		{"without a store directory", func(t *testing.T) (string, string) {
+			dir := t.TempDir()
+			store := filepath.Join(dir, "store")
+			return store, bootstrapFile{store: store, node: nodeUUID}.write(t, dir)
+		}},
+		{"over a store", func(t *testing.T) (string, string) {
+			return installedNoDevice(t)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, config := tc.prepare(t)
+			code, out := runChild(t, config)
+			if code == 0 || !strings.Contains(out, "no journal device") {
+				t.Fatalf("dfs start with no journal device (%s): exit %d, output:\n%s\nwant non-zero naming the start check's no-journal-device refusal", tc.name, code, out)
+			}
+			if _, err := os.Stat(store); !errors.Is(err, os.ErrNotExist) && tc.name == "without a store directory" {
+				t.Errorf("the store directory %s exists after the refusal (%v), want none: the refusal creates nothing", store, err)
+			} else if err == nil {
+				// Over a planted store: the refusal opened nothing, so the
+				// store still holds exactly the files planted.
+				if entries, err := os.ReadDir(store); err != nil || len(entries) == 0 {
+					t.Errorf("the store directory %s after the refusal: %d entries (%v), want the planted store untouched", store, len(entries), err)
+				}
+			}
+		})
+	}
 }

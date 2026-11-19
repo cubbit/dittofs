@@ -168,6 +168,12 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		return nil, fmt.Errorf("node: metadata store: %w", err)
 	}
+	// An empty journal list is a missing wiring piece, not an empty store
+	// question: it is refused by name before any component is composed over
+	// zero devices.
+	if len(cfg.Bootstrap.Journals) == 0 {
+		return nil, fmt.Errorf("node: %w", errNoDevice)
+	}
 	open, deps, err := enginewire.Compose(enginewire.Params{
 		Node:    cfg.Bootstrap.Node.ID,
 		Devices: journalPaths(cfg.Bootstrap.Journals),

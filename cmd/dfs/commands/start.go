@@ -40,9 +40,10 @@ Examples:
 	}
 }
 
-// runStart reads the bootstrap, refuses v1's control-plane database, opens
-// the metadata store's KV, builds and starts the node, and stops it on
-// SIGINT or SIGTERM. Each error names the step that failed.
+// runStart reads the bootstrap, runs the start check over the store and
+// journals it finds, refuses v1's control-plane database, opens the metadata
+// store's KV, builds and starts the node, and stops it on SIGINT or SIGTERM.
+// Each error names the step that failed.
 func runStart(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 	// The handler is installed first, so a signal while the store opens or
@@ -65,6 +66,13 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		configPath = bootstrap.GetDefaultConfigPath()
 	}
 	clock := newSystemClock()
+	devices := make([]string, 0, len(cfg.Journals))
+	for _, j := range cfg.Journals {
+		devices = append(devices, j.Path)
+	}
+	if err := node.Preflight(ctx, cfg.Metadata.Badger.Path, devices, clock); err != nil {
+		return fmt.Errorf("the start check: %w", err)
+	}
 	v1 := append([]string{filepath.Join(filepath.Dir(configPath), "controlplane.db")}, v1Databases()...)
 	kv, err := openKV(cfg, clock, v1...)
 	if err != nil {

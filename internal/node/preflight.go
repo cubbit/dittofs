@@ -5,9 +5,15 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
 
+	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
@@ -49,6 +55,138 @@ var (
 	errStoreLost       = errors.New("the metadata store is lost")
 	errNotInitialised  = errors.New("the node is not initialised")
 )
+
+// The wiring errors, answered before any storage is read: a start whose own
+// caller misconfigured it names the missing piece, never a storage verdict,
+// which over storage it never looked at would mislead.
+var (
+	errNoClock = errors.New("the start check's clock is missing")
+	// errNoDevice answers a start whose bootstrap names no journal device.
+	errNoDevice   = errors.New("no journal device: the bootstrap names none, and a node keeps its journals on a device of its own")
+	errNoStoreDir = errors.New("the store's directory is not set")
+)
+
+// manifestName is Badger's MANIFEST, the mark of a store Open created.
+const manifestName = "MANIFEST"
+
+// probeV1State returns the path of the first pre-journal (v1) local layout
+// under root: a shares/<name> directory holding a populated journal, blobs or
+// logs directory. "" is none. Listing errors read as none: the store and
+// device probes name their errors, and a root nothing can list is refused
+// there.
+func probeV1State(root string) string {
+	shares, err := os.ReadDir(filepath.Join(root, "shares"))
+	if err != nil {
+		return ""
+	}
+	for _, share := range shares {
+		for _, leaf := range [...]string{"journal", "blobs", "logs"} {
+			dir := filepath.Join(root, "shares", share.Name(), leaf)
+			if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
+				return dir
+			}
+		}
+	}
+	return ""
+}
+
+// probeStore stats the store directory: present, absent, unidentifiable.
+// fs.ErrNotExist or an empty directory means absent; a directory holding
+// MANIFEST means present; any other directory or stat error means
+// unidentifiable, returned with the error.
+//
+// ponytail: a MANIFEST with no format record is left to the store's own
+// Open and Init to refuse. Upgrade to a read-only open, once the backend
+// tolerates one after an unclean close.
+func probeStore(storeDir string) (storeState, error) {
+	fi, err := os.Stat(storeDir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return storeAbsent, nil
+	case err != nil:
+		return storeUnidentifiable, err
+	case !fi.IsDir():
+		return storeUnidentifiable, fmt.Errorf("%s is not a directory", storeDir)
+	}
+	entries, err := os.ReadDir(storeDir)
+	if err != nil {
+		return storeUnidentifiable, err
+	}
+	if len(entries) == 0 {
+		// An empty directory is a volume mounted late: no store is there
+		// yet, the same refusal a missing one takes.
+		return storeAbsent, nil
+	}
+	if _, err := os.Stat(filepath.Join(storeDir, manifestName)); err == nil {
+		return storePresent, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return storeUnidentifiable, err
+	}
+	return storeUnidentifiable, nil
+}
+
+// Preflight checks, before anything opens, that the store and the journal
+// devices a start finds are the ones its installation wrote: a pre-journal
+// (v1) local layout is refused naming the path; a present Badger store passes;
+// an absent store with the journals that name an installation is the store
+// lost; nothing else is initialised or identifiable. It creates, changes and
+// removes nothing, and builds no component.
+func Preflight(ctx context.Context, storeDir string, devices []string, clock engine.Clock) error {
+	switch {
+	case ctx.Err() != nil:
+		// A canceled context is the caller's answer, never a device verdict:
+		// the probes would misread its cancellation as an unidentifiable one.
+		return ctx.Err()
+	case clock == nil:
+		// The wiring errors are answered before the probes because the
+		// probes would misread them: an open without a clock calls every
+		// device unidentifiable, and an empty store directory is the root
+		// of the very filesystem the caller configured.
+		return errNoClock
+	case storeDir == "":
+		return errNoStoreDir
+	case len(devices) == 0:
+		// decision: the no-device refusal is answered before the probes, so
+		// it does not depend on what storage a deviceless start has no
+		// business of its own reading: a start refusing for a missing wiring
+		// piece must not consult the storage it is about to refuse over.
+		return errNoDevice
+	}
+	facts := startFacts{StoreDir: storeDir}
+	roots := append(slices.Clone(devices), filepath.Dir(storeDir), filepath.Join(filepath.Dir(storeDir), "blocks"))
+	for _, root := range roots {
+		if p := probeV1State(root); p != "" {
+			facts.V1 = p
+			break
+		}
+	}
+	state, err := probeStore(storeDir)
+	switch state {
+	case storePresent:
+		// A present store already identifies the node's storage: no device
+		// probe runs, so a start over an installed store reads none of its
+		// devices.
+		facts.Store = storePresent
+		return decide(facts)
+	case storeUnidentifiable:
+		// The device probes cannot change this verdict, so they do not run.
+		facts.Store, facts.StoreErr = storeUnidentifiable, err
+		return decide(facts)
+	}
+	for _, dir := range devices {
+		_, err := journal.Open(ctx, dir, journal.Version{}, journal.JournalID{}, nil, journal.WithClock(clock))
+		// A zero expected identity makes Open read and answer the journal's
+		// own format and nothing else: no recovery runs, and no byte is
+		// written.
+		fact := deviceFacts{Dir: dir, OpenErr: err}
+		var id *journal.IdentityError
+		if errors.As(err, &id) {
+			fact.Segments = id.Segments
+		}
+		facts.Devices = append(facts.Devices, fact)
+	}
+	return decide(facts)
+}
 
 // decision: the severity order below is deliberate — an unidentifiable store
 // outranks a lost one, because an operator who runs dfs init over storage

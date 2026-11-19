@@ -38,7 +38,7 @@ func nodeExports(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	want := map[string]bool{"New": false, "Node": false, "Config": false, "Node.Start": false, "Node.Stop": false}
+	want := map[string]bool{"New": false, "Node": false, "Config": false, "Preflight": false, "Node.Start": false, "Node.Stop": false}
 	var bad []string
 	note := func(name string) {
 		if _, ok := want[name]; ok {
@@ -142,12 +142,12 @@ func TestNodeExports(t *testing.T) {
 		want []string
 	}{
 		{".", nil},
-		{"extra-func", []string{"extra export: Extra"}},
-		{"extra-method", []string{"extra export: Node.Pause"}},
-		{"embedded", []string{"embedded field in Node"}},
-		{"exported-field", []string{"exported field: Node.State"}},
-		{"config-field", []string{"Config fields Bootstrap,KV,Clock,Metrics,Logger,Journal,Fault"}},
-		{"generic", []string{"unresolved receiver of Open"}},
+		{"extra-func", []string{"extra export: Extra", "missing export: Preflight"}},
+		{"extra-method", []string{"extra export: Node.Pause", "missing export: Preflight"}},
+		{"embedded", []string{"embedded field in Node", "missing export: Preflight"}},
+		{"exported-field", []string{"exported field: Node.State", "missing export: Preflight"}},
+		{"config-field", []string{"Config fields Bootstrap,KV,Clock,Metrics,Logger,Journal,Fault", "missing export: Preflight"}},
+		{"generic", []string{"missing export: Preflight", "unresolved receiver of Open"}},
 	} {
 		dir := tc.dir
 		if dir != "." {

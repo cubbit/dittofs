@@ -12,11 +12,13 @@ import (
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/sim"
+	"github.com/google/uuid"
 )
 
 // New starts nothing: a node built and stopped without a Start leaves no
@@ -152,5 +154,36 @@ func TestEngineSeriesRegistered(t *testing.T) {
 		if !slices.Contains(got, want) {
 			t.Errorf("series after New: %s missing from %v", want, got)
 		}
+	}
+}
+
+// New refuses a bootstrap that names no journal device, and closes the KV it
+// was handed.
+func TestNewRefusesNoJournalDevice(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	db, err := badgerkv.Open(badgerkv.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := kvstore.Init(t.Context(), db, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	b := listening("127.0.0.1:0", "127.0.0.1:0")
+	b.Node.ID = entity.NodeID(uuid.New())
+	_, err = node.New(
+		node.Config{
+			Bootstrap: b,
+			KV:        db,
+			Clock:     sim.NewTestClock(time.Unix(0, 0)),
+			Metrics:   metrics.New("test", "test"),
+			Logger:    slog.New(slog.NewTextHandler(t.Output(), nil)),
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "no journal device") {
+		t.Fatalf("New over a bootstrap with no journals: got %v, want refused for naming no journal device", err)
+	}
+	if err := db.View(t.Context(), func(kv.Reader) error { return nil }); err == nil {
+		t.Error("the KV after a refused New: a View succeeded, want it closed")
 	}
 }
