@@ -96,21 +96,22 @@ func Init(ctx context.Context, db kv.KV, install [16]byte) error {
 		} else if !errors.Is(err, kv.ErrNotFound) {
 			return err
 		}
-		// decision: Init accepts a store holding only the clock ceiling, so a v1
-		// store that Open has already written the ceiling into is still refused,
-		// because it holds v1 keys. The ceiling: a store holding no key at all
-		// would pass; it holds none only when empty. Overturned if v1 can leave
-		// an empty store that matters.
+		// decision: Init refuses every key but the clock ceiling a store's
+		// own Open leaves in whatever directory it opened — v1's text keys
+		// and this format's records alike — because Init, the
+		// initialisation step, would otherwise write a new Installation over
+		// storage it can no longer name. A store holding nothing but the
+		// ceiling is one whose records went wholesale, which is what the
+		// initialisation step exists to recover. Overturned when a store
+		// can name its records without opening: a read-only open the backend
+		// tolerates after an unclean close.
 		for k, err := range tx.Scan(nil, nil) {
 			if err != nil {
 				return err
 			}
-			kind := byte(0xFF)
-			if len(k.Key) > 0 {
-				kind = k.Key[0]
-			}
-			if !slices.Contains(keys.Kinds, kind) {
-				return fmt.Errorf("%w: key %q, kind 0x%02x, is not one this format writes", ErrForeignStore, k.Key, kind)
+			ceil := k.Key
+			if len(ceil) != 1+keys.IDLen+1 || ceil[0] != keys.KindN || ceil[len(ceil)-1] != keys.NClk {
+				return fmt.Errorf("%w: key %q names a record a new installation must not overwrite", ErrForeignStore, k.Key)
 			}
 		}
 		in := entity.Installation{ID: install, Instance: uuid.New()}

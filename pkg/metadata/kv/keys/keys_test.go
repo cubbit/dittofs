@@ -5,8 +5,13 @@ import (
 	"cmp"
 	"encoding/hex"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"math/rand/v2"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -159,35 +164,50 @@ func TestDescribeNamesEveryCode(t *testing.T) {
 	}
 }
 
-// Kinds holds every key kind, exactly once, and every kind is below the ASCII
-// range, so none of them can pass for the leading byte of another backend's
-// text key: the store's foreign-key check reads Kinds as the complete set of
-// this format's kinds, so a kind left out of it would refuse a store of its
-// own, and a kind that doubles as v1's ASCII would let a v1 store through.
+// Every key kind, collected from keys.go's own source so a constant no
+// hand-written list carries cannot stay out, is distinct and below the
+// ASCII range: none can be the lowercase first byte of another backend's
+// text key, which is what the store's foreign-key refusal of v1 stores
+// leans on.
 func TestKinds(t *testing.T) {
-	want := []byte{KindStore, KindF, KindS, KindC, KindCR, KindB, KindBR, KindBD, KindBC, KindI, KindNS,
-		KindU, KindG, KindM, KindMR, KindGR, KindNX, KindNP, KindNG, KindSL, KindIN, KindNSM, KindPX,
-		KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP, KindIDS,
-		KindPGEN, KindOP, KindOPR, KindIK, KindXP, KindAU, KindAUX, KindJD, KindUA, KindNSR,
-		KindSS, KindSSH, KindAT, KindATH, KindATA, KindSF, KindSSA}
-	if !slices.Equal(Kinds, want) {
-		t.Errorf("Kinds = % x, want % x: every kind exactly once, in the constant declaration order", Kinds, want)
+	f, err := parser.ParseFile(token.NewFileSet(), "keys.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, sub := range []struct {
-		name     string
-		check    func(k byte) bool
-		violated string
-	}{
-		{"every kind below 0x61, the ASCII range", func(k byte) bool { return k >= 0x61 },
-			"kind 0x%02x is not below 0x61, so it can pass for the leading byte of another backend's text key"},
-		{"no v1 key prefix among the kinds", func(k byte) bool {
-			return k == 'f' || k == 'p' || k == 'c' || k == 'l'
-		}, "kind %q is a v1 key's prefix, so a v1 store would read as this format's own"},
-	} {
-		for _, k := range Kinds {
-			if violated := sub.check(k); violated {
-				t.Errorf(sub.violated, k)
+	seen := map[byte]string{}
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range vs.Names {
+				if len(vs.Values) == 0 || !strings.HasPrefix(name.Name, "Kind") {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.INT {
+					t.Fatalf("kind %s: its value is not an integer literal, which the pin needs", name.Name)
+				}
+				v, err := strconv.ParseUint(lit.Value, 0, 16)
+				if err != nil {
+					t.Fatalf("kind %s: %v", name.Name, err)
+				}
+				if v >= 0x61 {
+					t.Errorf("kind %s = 0x%02x is not below 0x61, so it can pass for the lowercase first byte of another backend's text key", name.Name, v)
+				}
+				if other, dup := seen[byte(v)]; dup {
+					t.Errorf("kinds %s and %s share 0x%02x, which a prefix check cannot tell apart", other, name.Name, v)
+				}
+				seen[byte(v)] = name.Name
 			}
 		}
+	}
+	if len(seen) < 10 {
+		t.Fatalf("collected %d kind constants from keys.go: the pin found too little to be the kind list", len(seen))
 	}
 }
