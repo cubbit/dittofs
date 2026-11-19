@@ -1,12 +1,15 @@
 package netlogon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
 	"strconv"
 	"testing"
 
+	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
+	"github.com/oiweiwei/go-msrpc/ssp/credential"
 	nlssp "github.com/oiweiwei/go-msrpc/ssp/netlogon"
 )
 
@@ -40,4 +43,77 @@ func TestChannelClosedBindsNoAssociation(t *testing.T) {
 	if c.as != nil {
 		t.Errorf("association after Close: bound, want none")
 	}
+}
+
+// The server challenge is refused when missing, short or all zero, before
+// any session key is computed from it.
+func TestCheckServerChallenge(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		c    *logon.Credential
+		want error
+	}{
+		{"nonzero", &logon.Credential{Data: []byte{0, 0, 0, 0, 0, 0, 0, 1}}, nil},
+		{"all zero", &logon.Credential{Data: make([]byte, 8)}, errServerChallenge},
+		{"short", &logon.Credential{Data: []byte{1, 2, 3, 4, 5, 6, 7}}, errServerChallenge},
+		{"long", &logon.Credential{Data: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9}}, errServerChallenge},
+		{"missing", nil, errServerChallenge},
+	} {
+		if err := checkServerChallenge(tc.c); !errors.Is(err, tc.want) {
+			t.Errorf("%s: checkServerChallenge = %v, want %v", tc.name, err, tc.want)
+		}
+	}
+}
+
+// The server credential must equal the one the client computed, and an
+// all-zero one is refused even when the computed one is all zero too.
+func TestCheckServerCredential(t *testing.T) {
+	cred := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	zero := make([]byte, 8)
+	for _, tc := range []struct {
+		name string
+		want []byte
+		got  *logon.Credential
+		err  error
+	}{
+		{"matches", cred, &logon.Credential{Data: cred}, nil},
+		{"differs", cred, &logon.Credential{Data: []byte{1, 2, 3, 4, 5, 6, 7, 9}}, errServerCredential},
+		{"all zero, computed all zero", zero, &logon.Credential{Data: zero}, errServerCredential},
+		{"all zero, computed nonzero", cred, &logon.Credential{Data: zero}, errServerCredential},
+		{"all zero, computed all zero from a repeated-byte challenge", zeroComputedCredential(t), &logon.Credential{Data: zero}, errServerCredential},
+		{"missing", cred, nil, errServerCredential},
+	} {
+		if err := checkServerCredential(tc.want, tc.got); !errors.Is(err, tc.err) {
+			t.Errorf("%s: checkServerCredential = %v, want %v", tc.name, err, tc.err)
+		}
+	}
+}
+
+// zeroComputedCredential returns a server credential the client computes as
+// all zero: under AES-CFB8 with a zero IV, a server challenge of 8 copies of
+// the first byte of the session key's encryption of zero encrypts to zero. It
+// walks client challenges in order, so the pair it finds is the same each run.
+func zeroComputedCredential(t *testing.T) []byte {
+	ctx := context.Background()
+	machine := credential.NewFromPassword("DITTOFS$", "password", credential.Workstation("DITTOFS"), credential.Domain("EXAMPLE"))
+	for i := range 1 << 16 {
+		client := []byte{byte(i), byte(i >> 8), 1, 2, 3, 4, 5, 6}
+		for c := range 256 {
+			cfg := &nlssp.Config{Capabilities: offered, Credential: machine,
+				ClientChallenge: client, ServerChallenge: bytes.Repeat([]byte{byte(c)}, 8)}
+			cred, err := nlssp.NewSecureCredential(ctx, cfg)
+			if err != nil {
+				t.Fatalf("NewSecureCredential: %v", err)
+			}
+			want, err := cred.Encrypt(ctx, cfg.ServerChallenge)
+			if err != nil {
+				t.Fatalf("Encrypt: %v", err)
+			}
+			if allZero(want) {
+				return want
+			}
+		}
+	}
+	t.Fatal("no repeated-byte server challenge computed an all-zero credential")
+	return nil
 }
