@@ -2,12 +2,17 @@ package journal
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform/platformtest"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // deferralSettings are the small-segment settings the deferral legs run
@@ -37,11 +42,17 @@ var deferralInst = InstallationID{'d', 'i', 't', 't', 'o', 'f', 's'}
 // seam beside the small-cap settings and a clock of its own; the spares wait
 // parks Open on the pool's own settle, so every write the legs make finds its
 // spares ready.
-func deferralOpts(t *testing.T, seam *kit.Seam) []Option {
+func deferralOpts(t *testing.T, seam *kit.Seam, dir string, clock core.Clock) []Option {
 	t.Helper()
 	return []Option{
 		WithStorage(seam.FS()),
-		WithClock(kit.NewStopwatchClock()),
+		WithClock(clock),
+		// The probe source the platform-aware tests use, so the journal's
+		// own barrier check reads an answer for the directory rather than
+		// the host's mount table — the same option the seam's open tests
+		// take, without which a host whose temporary directory refuses the
+		// check (a barrierless mount) refuses Init here too.
+		WithMountProbe(platformtest.SuitableGather(dir)),
 		WithSettings(deferralSettings()),
 		WithSparesReady(func(w core.SparesWait) {
 			if err := w.WaitSpares(context.Background()); err != nil {
@@ -56,18 +67,19 @@ func deferralOpts(t *testing.T, seam *kit.Seam) []Option {
 // later open of the same directory — a crash and reopen included — takes
 // the same options, so the reopen sees the same segmentation the writes set
 // up.
-func openDeferralJournal(t *testing.T) (*Journal, *kit.Seam, string, JournalID) {
+func openDeferralJournal(t *testing.T) (*Journal, *kit.Seam, string, JournalID, *sim.TestClock) {
 	t.Helper()
 	dir := t.TempDir()
+	clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	seam, err := kit.NewSeam(dir)
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
-	id, err := Init(t.Context(), dir, deferralInst, deferralOpts(t, seam)...)
+	id, err := Init(t.Context(), dir, deferralInst, deferralOpts(t, seam, dir, clock)...)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	return reopenDeferralJournal(t, seam, dir, id), seam, dir, id
+	return reopenDeferralJournal(t, seam, dir, id, clock), seam, dir, id, clock
 }
 
 // reopenDeferralJournal opens dir through fresh options — the seam's FS is a
@@ -75,9 +87,9 @@ func openDeferralJournal(t *testing.T) (*Journal, *kit.Seam, string, JournalID) 
 // its own — raising a generous version limit so the legs write without
 // naming one. id is the identity Init answered, what every open expects
 // whatever crash preceded it.
-func reopenDeferralJournal(t *testing.T, seam *kit.Seam, dir string, id JournalID) *Journal {
+func reopenDeferralJournal(t *testing.T, seam *kit.Seam, dir string, id JournalID, clock core.Clock) *Journal {
 	t.Helper()
-	j, err := Open(t.Context(), dir, Version{}, id, nil, deferralOpts(t, seam)...)
+	j, err := Open(t.Context(), dir, Version{}, id, nil, deferralOpts(t, seam, dir, clock)...)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -112,6 +124,25 @@ func deferralWrite(t *testing.T, h *Handle, id FileID, off int64, n int, step by
 	if _, err := h.Sync(t.Context(), id); err != nil {
 		t.Fatalf("the sync after the write: %v", err)
 	}
+}
+
+// sealedSegOf answers the lowest sealed segment whose entries hold tag's
+// records, or the error that none stands — the try shape the clock-driven
+// rows poll. It never fails the test itself.
+func sealedSegOf(j *Journal, tag ShareTag) (SegmentID, error) {
+	var best SegmentID
+	found := false
+	for _, row := range j.core.Set().Snapshot() {
+		if row.State != segment.Active && row.Tags[tag] > 0 {
+			if !found || row.ID < best {
+				best, found = row.ID, true
+			}
+		}
+	}
+	if !found {
+		return 0, errors.New("no sealed segment of the tag stands")
+	}
+	return best, nil
 }
 
 // sealedSegmentOf answers the lowest sealed segment whose entries hold tag's
@@ -204,15 +235,16 @@ func TestForgetCoversADeferredLossTheSetDoesNotName(t *testing.T) {
 	// registry's entry standing: the registry is the directory's own state,
 	// which survives the reopen.
 	type st struct {
-		j    *Journal
-		seam *kit.Seam
-		dir  string
-		id   JournalID
-		su   SegmentID
+		j     *Journal
+		seam  *kit.Seam
+		dir   string
+		id    JournalID
+		su    SegmentID
+		clock core.Clock
 	}
 	setup := func(t *testing.T, tagContent bool) st {
 		t.Helper()
-		j, seam, dir, id := openDeferralJournal(t)
+		j, seam, dir, id, clock := openDeferralJournal(t)
 		th, err := j.Share(tags[0], 0, Version{})
 		if err != nil {
 			t.Fatalf("attach the forgotten tag: %v", err)
@@ -247,7 +279,7 @@ func TestForgetCoversADeferredLossTheSetDoesNotName(t *testing.T) {
 			t.Fatalf("close the other tag's handle: %v", err)
 		}
 		crashDeferralJournal(t, seam, j)
-		return st{j: reopenDeferralJournal(t, seam, dir, id), seam: seam, dir: dir, id: id, su: su}
+		return st{j: reopenDeferralJournal(t, seam, dir, id, clock), seam: seam, dir: dir, id: id, su: su, clock: clock}
 	}
 
 	// The forgotten-tag check: after the forget, a pass over the
@@ -271,7 +303,7 @@ func TestForgetCoversADeferredLossTheSetDoesNotName(t *testing.T) {
 			t.Fatalf("the repack left the deferral's segment in the set: the carry never ran")
 		}
 		crashDeferralJournal(t, s.seam, s.j)
-		s.j = reopenDeferralJournal(t, s.seam, s.dir, s.id)
+		s.j = reopenDeferralJournal(t, s.seam, s.dir, s.id, s.clock)
 		uh, err := s.j.Share(tags[1], 0, Version{})
 		if err != nil {
 			t.Fatalf("attach the other tag after the crash: %v", err)
@@ -311,4 +343,26 @@ func TestForgetCoversADeferredLossTheSetDoesNotName(t *testing.T) {
 		}
 		forgotten(t, s)
 	})
+}
+
+// TestTheProbeOptionCarriesTheBarrierCheck pins the fixture's own
+// platform-aware option: the barrier rule the journal's check enforces
+// refuses a mount whose cache flushes are off, and the option is what lets
+// the check read an answer for the temporary directory at all. The refusal
+// this drives with the check's own test input is the proof the option is
+// consulted — the failure the wide-diff runner saw is the same refusal from
+// the host's real mount table, which a host whose temporary directory
+// passes the check cannot reproduce any other way.
+func TestTheProbeOptionCarriesTheBarrierCheck(t *testing.T) {
+	dir := t.TempDir()
+	seam, err := kit.NewSeam(dir)
+	if err != nil {
+		t.Fatalf("the seam could not be made: %v", err)
+	}
+	nobarrier := func(string) (storage.Probe, error) {
+		return platformtest.NoBarrierMount(dir), nil
+	}
+	if _, err := Init(t.Context(), dir, deferralInst, WithStorage(seam.FS()), WithMountProbe(nobarrier)); err == nil {
+		t.Fatalf("Init over a mount the barrier rule refuses succeeded, want the refusal the check is consulted for")
+	}
 }
