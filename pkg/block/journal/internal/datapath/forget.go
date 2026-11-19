@@ -203,14 +203,15 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 	// segment that held the tag's records below it remains, so no retirement
 	// frees the record's own segment early, and every later error path — a
 	// refused drop, a marks refusal — still finds the record registered.
-	c.liveness.RegisterForget(reclaim.Rec{
+	forgetRec := reclaim.Rec{
 		Kind: format.KindForget,
 		Seg:  pl.Loc.Segment,
 		Pair: index.Numbers{Seq: seq},
 		Seq:  seq,
 		Tag:  tag,
 		Loc:  pl.Loc,
-	}, below)
+	}
+	c.liveness.RegisterForget(forgetRec, below)
 
 	// decision: nothing is dropped before the record is durable, so a
 	// failed window — the record unsynced, its segment ended — answers the
@@ -221,6 +222,20 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 	// appended-but-unsynced header-only record, which would allow a drop
 	// beside a failed one and a re-issuable forget in the same window.
 	if err := c.dur.WaitDurable(pl.Loc); err != nil {
+		// The refusal takes the registration back with it: the record drew
+		// live the moment its bytes landed, but a caller answered with a
+		// failure owns nothing it told the tag left whole. What a leaked
+		// registration would cost is its home — the failure ends the
+		// segment, and the read-only fence a persistent failure raises
+		// stops every pass for the journal's life, so a live count nothing
+		// resolves stays held for ever. The failed record answers droppable
+		// once unregistered — its snapshot left with the registration — so
+		// the re-learn a later unit runs keeps it dead, and the home retires
+		// with the record's bytes uncarried once the journal serves again.
+		// Overturned by a failure that leaves the record durable: then it
+		// binds on disk whatever the caller was told, and the answer is an
+		// undo of the durable record, not of the registration.
+		c.liveness.Unregister(forgetRec)
 		return err
 	}
 
