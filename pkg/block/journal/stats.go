@@ -7,12 +7,9 @@ import (
 )
 
 // Stats returns the journal's statistics: journal-wide, with a per-share
-// breakdown. It is served from counters the journal maintains: it neither
-// walks the placement index nor blocks a write, and it is safe to call
-// concurrently with every other operation — UnreclaimedEndedBytes the one
-// exception, which reads the segment set's snapshot and the index's
-// per-segment counters exactly, O(segments) with no I/O, as its walk's own
-// decision records. After Close it
+// breakdown. It is served from counters the journal maintains: it walks
+// neither the placement index nor the segment set, blocks no write, and is
+// safe to call concurrently with every other operation. After Close it
 // returns the zero Stats, since it has no error to return.
 //
 // decision: fields whose source belongs to a later step (the offload and
@@ -169,7 +166,12 @@ type Stats struct {
 	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
 	// take no further append: sealed ones, and ones a failed sync or append
 	// ended, whether or not their window has resolved; a segment a running
-	// repack has selected counts until it is retired. Kind: gauge.
+	// repack has selected counts until it is retired. It is served from
+	// figures maintained at the events that move them — the set's counts of
+	// the segments' accounted bytes at each state change, less the live
+	// bytes the index still backs in them — with the pair off by at most
+	// one operation in flight, clamped so the bias never answers below
+	// zero. Kind: gauge.
 	UnreclaimedEndedBytes int64
 
 	// HeadroomBytes is the reserved headroom for records without bytes, and
@@ -278,11 +280,15 @@ type ShareStats struct {
 	// of its records, as the journal's UnreclaimedBytes defines it.
 	UnreclaimedBytes int64
 
-	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
-	// take no further append, counted to the share as UnreclaimedBytes is:
-	// the whole figure of every such segment holding the share's record
-	// bytes, so a share-scoped pass that retires any of them is what the
-	// figure names.
+	// UnreclaimedEndedBytes is the share's record bytes in segments that
+	// take no further append, counted as the set's own per-tag bytes are
+	// at each state change, charge and removal. It is the candidate
+	// measure a share-scoped pass — which selects by the same membership —
+	// reads: zero iff no such pass has a segment holding the share's
+	// bytes to free. It is not the byte figure itself; the journal-wide
+	// UnreclaimedEndedBytes is that figure, and the share's byte
+	// attribution would need live counters per open segment per tag —
+	// machinery the classification does not owe.
 	UnreclaimedEndedBytes int64
 }
 

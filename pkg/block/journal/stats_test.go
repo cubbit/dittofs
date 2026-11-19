@@ -225,10 +225,11 @@ func TestStatsFromDistinct(t *testing.T) {
 }
 
 // TestStats_ServesTheEndedUnreclaimedFigure checks that the journal serves the
-// unreclaimed bytes of the segments that take no further append: superseded
-// bytes in a sealed segment count, journal-wide and charged to the share
-// whose segment they sit in, and nothing counts while the segment stays
-// active and takes appends.
+// unreclaimed bytes of the segments that take no further append from
+// maintained figures: the journal-wide figure counts the superseded bytes a
+// sealed segment holds, while the share's field is its record bytes in the
+// same segments — the candidate measure a share-scoped pass reads — and
+// nothing counts while the segment stays active and takes appends.
 func TestStats_ServesTheEndedUnreclaimedFigure(t *testing.T) {
 	j := newTestJournal(t)
 	withLimit(t, j)
@@ -259,14 +260,15 @@ func TestStats_ServesTheEndedUnreclaimedFigure(t *testing.T) {
 	}
 
 	// A write too big for the room the segment has left rolls the stream and
-	// seals it: the segment now takes no further append, and the unreclaimed
-	// bytes it holds enter the ended figure, the share's own included.
+	// seals it: the segment now takes no further append, its unreclaimed
+	// bytes enter the journal-wide figure, and its records raise the
+	// share's candidate measure a share-scoped pass reads.
 	writeAtReady(t, h, id, 40<<10, bytes.Repeat([]byte{'c'}, 40<<10))
 	st := j.Stats()
 	if st.UnreclaimedEndedBytes < 16<<10 {
 		t.Fatalf("journal-wide UnreclaimedEndedBytes = %d after the roll sealed the superseding segment, want at least the superseded %d bytes", st.UnreclaimedEndedBytes, 16<<10)
 	}
-	if got := st.Shares[1].UnreclaimedEndedBytes; got != st.UnreclaimedEndedBytes {
-		t.Fatalf("the share's UnreclaimedEndedBytes = %d, want the journal-wide %d: the sealed segment holds this share's bytes alone", got, st.UnreclaimedEndedBytes)
+	if got := st.Shares[1].UnreclaimedEndedBytes; got <= 0 {
+		t.Fatalf("the share's UnreclaimedEndedBytes = %d after the roll, want its records' bytes in the segment no append reaches; a share-scoped pass reads exactly this candidacy", got)
 	}
 }

@@ -6,8 +6,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
-	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
-	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
 // ShareStats is one share's figures; see the journal package's ShareStats.
@@ -144,10 +142,6 @@ func (c *Core) Stats() Stats {
 		SpareRefusals: uint64(pc.SpareRefusals), DoubleRetires: sc.DoubleRetires,
 	}
 
-	// ended holds, per tag, the unreclaimed bytes of the segments that take
-	// no further append, charged the same way the walk below names.
-	ended := map[core.ShareTag]int64{}
-
 	// One entry per tag with an open handle or a record on disk, tag 0 (the
 	// journal's own records) excepted.
 	figs := c.shareFigures()
@@ -164,43 +158,45 @@ func (c *Core) Stats() Stats {
 		}
 	}
 	delete(s.Shares, 0)
-	// The unreclaimed bytes of the segments that take no further append —
-	// the sealed ones and the failed ones, a running repack's selected among
-	// them until they are retired. A share is charged the whole figure of
-	// every such segment holding its record bytes: a share-scoped pass
-	// retires one whole, so the figure names what the pass could free, and
-	// the approximation's cost is the second count a segment holding two
-	// shares' bytes carries in each of their figures.
-	//
-	// decision: this is the one figure Stats walks for. Its honest
-	// maintenance would spread a hook across every release, settle, repoint,
-	// retention, retirement and seal in the index and the set, for a figure
-	// only the engine's capacity refusals read, so it is served exact from
-	// the set's snapshot and the index's per-segment counters — O(segments),
-	// no I/O, no lock held across a read. The walk stands until a poll of a
-	// journal of many segments shows it in a profile.
-	for _, r := range c.set.Snapshot() {
-		if r.State != segment.Sealed && r.State != segment.Ended {
-			continue
-		}
-		b := c.index.SegmentBytes(r.ID)
-		u := reclaim.Unreclaimed(r.Size, b.Held+b.Retained)
-		if u == 0 {
-			continue
-		}
-		s.UnreclaimedEndedBytes += u
-		for tag, rec := range r.Tags {
-			if rec > 0 {
-				ended[tag] += u
-			}
+	// The journal-wide half of the unreclaimed bytes of the segments that
+	// take no further append — the sealed ones and the failed ones, a
+	// running repack's selected among them until they are retired — served
+	// from maintained figures, never a walk: the accounted bytes the set
+	// counts per state change, less the live bytes those segments still
+	// back. The live half rides the identity that the shares' held and
+	// retained figures sum every segment's live bytes, so the no-append
+	// side is that sum less the bytes still backed by the segments an
+	// append can reach — one per stream, a fixed count. The live figures
+	// and the per-segment counters they ride move at the same edges the
+	// index publishes, so the pair is off by at most one operation in
+	// flight, the bias the rest of Stats documents; the clamp keeps an
+	// in-flight publishing read from answering below zero.
+	liveAll := int64(0)
+	for _, f := range figs {
+		liveAll += f.Held + f.Retained
+	}
+	for i := range c.streams.Len() {
+		if id, ok := c.streams.Stream(i).OpenSegment(); ok {
+			b := c.index.SegmentBytes(id)
+			liveAll -= b.Held + b.Retained
 		}
 	}
+	s.UnreclaimedEndedBytes = max(0, sc.NoAppendBytes-liveAll)
 	for t, ss := range s.Shares {
 		ss.UsedBytes = used[t]
 		ss.HeldBytes, ss.DirtyBytes = figs[t].Held, figs[t].Dirty
 		ss.ReservedBytes = reservedBy[t]
 		ss.UnreclaimedBytes = unreclaimed(used[t], over[t], figs[t])
-		ss.UnreclaimedEndedBytes = ended[t]
+		// The share's half is the record bytes its records hold in the
+		// segments no append can reach — the set maintains it beside its
+		// own per-tag bytes at each state change, charge and removal. It
+		// is the candidate measure a share-scoped pass reads: zero iff no
+		// such pass has a segment holding the share's bytes to free, and
+		// never the byte figure itself, which the per-share bookkeeping
+		// below this loop's shapes would need live counters per open
+		// segment per tag. positive answers the retry-later the
+		// journal-wide figure's byte answer stays for.
+		ss.UnreclaimedEndedBytes = c.set.NoAppendBytesOf(t)
 		s.UnreclaimedBytes += ss.UnreclaimedBytes
 		s.Shares[t] = ss
 	}
