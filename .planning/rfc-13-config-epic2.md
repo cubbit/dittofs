@@ -53,7 +53,7 @@ versions overlap the installation's.
 The loader and its refusals; the environment scan and its allowed names; the node identity and the
 `node-id` file; the single-node version gate and its three series; the drift test and the launchers;
 `dfs config show`, `validate` and `schema` on the bootstrap; the configuration guide; `dfsbench` on
-`dfs init`.
+`dfs init`; the shared strict size and duration parser, which `Load` and epic 3's decode use.
 
 ### 1.2 Out of scope
 
@@ -101,7 +101,7 @@ title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | files under `t.TempDir()`, the environment passed to the loader as a slice (D2), real journal directories made by the journal's own `Init`, Badger under `t.TempDir()` for the store; no double |
-| rule 2, fuzz every decoder of untrusted bytes | T2.1, T2.2 | `FuzzLoad` over the file's bytes, `FuzzNodeID` over the `node-id` file's, each asserting no panic and, for a parse that succeeds, a re-encode that parses to the same value |
+| rule 2, fuzz every decoder of untrusted bytes | T2.1, T2.2 | `FuzzLoad` over the file's bytes, the shared parser's fuzz target over a size or a duration string, `FuzzNodeID` over the `node-id` file's, each asserting no panic and, for a parse that succeeds, a re-encode that parses to the same value |
 | rule 3, observability follows RFC 25 | T2.8 | `format_active_version`, `format_supported_min` and `format_supported_max`, gauges labelled by format, set at start; no label carries a record or a secret |
 | rule 4, profiling | all | every test runs under the leak check |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T2.1, T2.7, T2.8 | refusals are asserted on the text the operator reads, through `dfs config validate`'s output; the version gate through its entry point over a store that refuses, not through the comparison |
@@ -327,6 +327,7 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
 pkg/bootstrap/load.go                  T2.1  Load, LoadWithSources, the report, unknown and setting keys, paths
 pkg/bootstrap/load_fuzz_test.go        T2.1  FuzzLoad
 internal/<pkg>/<pkg>.go                T2.1  the shared strict size and duration parser, its name a placeholder
+internal/<pkg>/<pkg>_fuzz_test.go      T2.1  the parser's fuzz target, with its own table test
 pkg/bootstrap/nodeid.go                T2.2  the node-id codec, NodeID, InitNodeID, WriteMissingNodeIDs
 pkg/bootstrap/nodeid_fuzz_test.go      T2.2  FuzzNodeID
 pkg/block/journal/                     T2.2  ReadFormat, the exported format read (D4)
@@ -366,8 +367,10 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   placeholder), created here for `Load` and for epic 3's T3.3, with a file mode that
   refuses a bare integer and a record mode for a JSON number, an integer of bytes kept exact; its
   result is a `uint64`, so the largest size is `2^64 - 1` bytes, and each refusal is an error
-  naming its cause (not a number, unknown unit, fraction, overflow); epic 3's T3.3 imports both
-  size modes and the duration grammar. `FuzzLoad`.
+  naming its cause (not a number, no unit, unknown unit, fraction, overflow) and carrying only the
+  cause, never the input, since a value of the environment reaches it before the decode (R4); epic
+  3's T3.3 imports both size modes and the duration grammar. `FuzzLoad`, and the parser's own fuzz
+  target.
 - **Acceptance criteria:**
   - A file with two unknown keys, one setting key and a relative journal path yields one error with
     four lines, each in §6's shape.
@@ -390,7 +393,26 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   `metadata.badger.path` beside `metadata.backend: foundationdb` refuses (catches a decode that
   reads both metadata blocks); `keys.protocol.local.file` beside `keys.protocol.kind: kmip` refuses naming `kind`; R35's rows, one each, with `DITTOFS_JOURNALS=/data/j1,`, `DITTOFS_JOURNALS=` and `api.listen: :8080` among them and `metrics.listen: off` loading with no certificate (catches a bound left to the type, and a certificate check that reads `off` as a host); `metadata.backend: sqlite` beside a `metadata.badger.path` refuses once, on `metadata.backend`, and not also for the block's key (R36; catches a relation rule run over a key that failed its own, which cascades); one key from the file, one from a variable and one defaulted each carry their source in
   `Loaded` (catches a source copied from a second precedence walk, which drifts from the decode);
-  R4's rows: `logging.rotation.max_backups: s3cr3t` in the file (a string where an integer goes) refuses naming the key, and `s3cr3t` is not in the report (the decoder's own error, which R4 rewords, since the environment's strings are parsed by the scan before the decode, D10); a PEM block pasted into `api.tls.key_file` refuses naming the key and the PEM is not in the report (epic 1 R2's credential canary, through the path check, not the decoder); `pasword: s3cr3t` and `controlplane.jwt.secret: s3cr3t` in the file (RFC 13 §6's own keys, with a value) each refuse, and `s3cr3t` appears nowhere in the report (catches a decoder's error printed as it comes); `logging.rotation.max_age: 7` and `logging.rotation.max_size: 1.5` each refuse naming the key (catches a number decoded into a duration or a size, which turning weak typing off does not stop, D10); the shared parser's size grammar: `max_size: 100` refused in file mode as a bare integer, `1.5GiB` refused, a value past `uint64` (`18446744073709551616`) refused, a size whose product passes `2^64 - 1` (`17179869184GiB`) refused in file mode, `"512B"` accepted and the string `"512"` refused in file mode, and in record mode the JSON numbers `9223372036854775808` (2⁶³), `18446744073709551615` (2⁶⁴-1) and `9007199254740993` (2⁵³+1) accepted exact; each refusal's cause: `abc` not a number, `1kb` unknown unit, `1.5GiB` fraction, `17179869184GiB` overflow; the duration grammar: `"0s"` and `"1h30m"` accepted, `"-5s"`, `"1.5s"`, `"30S"` and `"5µs"` refused (T3.3 repeats them through its decode); `FuzzLoad` seeded with each row.
+  R4's rows: `logging.rotation.max_backups: s3cr3t` in the file (a string where an integer goes) refuses naming the key, and `s3cr3t` is not in the report (the decoder's own error, which R4 rewords, since the environment's strings are parsed by the scan before the decode, D10); a PEM block pasted into `api.tls.key_file` refuses naming the key and the PEM is not in the report (epic 1 R2's credential canary, through the path check, not the decoder); `pasword: s3cr3t` and `controlplane.jwt.secret: s3cr3t` in the file (RFC 13 §6's own keys, with a value) each refuse, and `s3cr3t` appears nowhere in the report (catches a decoder's error printed as it comes); `logging.rotation.max_age: 7` and `logging.rotation.max_size: 1.5` each refuse naming the key (catches a number decoded into a duration or a size, which turning weak typing off does not stop, D10); `DITTOFS_LOGGING_ROTATION_MAX_SIZE=s3cr3t` and `DITTOFS_LOGGING_ROTATION_MAX_AGE=s3cr3t` each refuse naming the key, and `s3cr3t` is in neither report (catches a parser error that quotes its input, as `internal/bytesize` does with `%q`, which R4's rewording of the decoder's error never sees); `FuzzLoad` seeded with each row.
+  - The shared parser has its own table test and fuzz target in `internal/<pkg>`, not through
+    `Load`, since the bootstrap's one size key, `logging.rotation.max_size`, takes only a whole
+    MiB of at least `1MiB` (R35) and a YAML file never reaches record mode. Each row names its
+    cause, taken in this order: text that does not start with a digit is not a number, digits
+    alone have no unit, digits then a dot are a fraction, digits then anything but a listed unit
+    are an unknown unit, and a product past `2^64 - 1` is an overflow. File mode: `"512B"`
+    accepted exact; `abc`, `MiB`, `""` and `-1` refused (not a number); the string `"512"` and a
+    bare integer refused (no unit); `1.5GiB` and `4.1GB` refused (fraction); `1kb`, `1Gi`, `10m`,
+    `1g`, `100mib`, `1 MiB` and `1e3` refused (unknown unit); `17179869184GiB` and
+    `18446744073709551616B` refused (overflow); `18446744073709551615B` accepted exact. Record
+    mode: the JSON numbers `9223372036854775808` (2⁶³), `18446744073709551615` (2⁶⁴-1) and
+    `9007199254740993` (2⁵³+1) accepted exact, `-1` and `1e3` refused (not a number, since a
+    record's size is an integer of bytes written as digits), and `18446744073709551616` refused
+    (overflow). The duration grammar: `"0s"`
+    and `"1h30m"` accepted, `"-5s"`, `"1.5s"`, `"30S"` and `"5µs"` refused (T3.3 repeats them
+    through its decode). The fuzz target checks each size against a `math/big` product, as T3.3's
+    `FuzzDecode` does, so an overflow check written as "multiply, then divide back" fails it.
+  - The pull request that lands T2.1 names the `internal/` package, which epic 3's T3.3 then
+    imports.
 
 ### T2.2 The node identity
 

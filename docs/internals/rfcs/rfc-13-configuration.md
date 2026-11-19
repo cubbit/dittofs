@@ -1136,9 +1136,10 @@ host's file, so a value valid in one place is valid in all:
   refused. In a record an integer of bytes, written as a JSON number, is also
   accepted, exact (the string `"512"` is refused), but a bare integer in the
   host's file is refused, since an older file's `max_size: 100`
-  meant megabytes; a value past `2^64 - 1` bytes is refused, in a record too
-  (`18446744073709551616` refused, `18446744073709551615` the largest
-  accepted, exact);
+  meant megabytes; a value past `2^64 - 1` bytes is refused, in a record and in
+  the file (in a record `18446744073709551616` is refused and
+  `18446744073709551615` is the largest accepted, exact; in the file
+  `18446744073709551616B` is refused and `18446744073709551615B` accepted);
 - a boolean is `true` or `false`, and nothing else: `yes`, `on` and `1` are
   refused;
 - a list and a map are JSON's in a record and YAML's in the host's file; in the

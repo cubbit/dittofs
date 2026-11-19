@@ -414,6 +414,8 @@ pkg/metadata/entity/        + Secret; Installation's active versions; ranges on 
 pkg/metadata/kvstore/       settings: delete, newer schema refused;                         E3, E4
                             secrets (SEC)
 internal/node/settings.go   the one settings table, naming every declared section           E5
+internal/<pkg>/             the shared strict size and duration parser, its name a          E2 (T2.1), E3
+                            placeholder until T2.1 names it
 ```
 
 ### 4.2 Decisions
@@ -1128,6 +1130,9 @@ value; D7's drift test passes.
 **Expected content:**
 - `Load` on the renamed loader: the default path, `--config` and `DITTOFS_CONFIG`, unknown keys
   refused from `Metadata.Unused` once the v1 keys among them are named (D7); the file's fuzz target.
+- The shared strict size and duration parser of RFC 13 Appendix B's grammar, in an `internal/`
+  package T2.1 creates and names, with its own table test and fuzz target, which epic 3's decode
+  imports.
 - The refused v1 keys, through `checkRenamedKeys` and its table (§1.1's list), and the scan of the
   environment that refuses their `DITTOFS_*` forms and any other non-bootstrap name but D7's
   allowed ones, with a test that each allowed name and prefix passes and a v1 name refuses, naming
@@ -1221,7 +1226,8 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   `null` into a non-pointer field, a duplicate key and invalid UTF-8. A size follows RFC 13 Appendix
   B's grammar, decoded through the shared strict parser of the `internal/` package epic 2's T2.1
   creates and names (`internal/<pkg>`, a placeholder until it does): a string is a whole number and
-  a unit written as listed, decimal `KB` to `TB`, binary `KiB` to `TiB` or `B` (`512MiB`), and a
+  a unit written as listed, with no space between them, decimal `KB` to `TB`, binary `KiB` to
+  `TiB` or `B` (`512MiB`), and a
   JSON number an integer of bytes, exact; the string `"512"`, a fraction (`1.5GiB`, `0.1KiB`), a
   unit written another way (`1Gi`, `10m`, `1g`, `1kb`, `100mib`), a product past `uint64`
   (`17179869184GiB`) and an integer past `uint64` (`18446744073709551616`) are refused, pinned by a

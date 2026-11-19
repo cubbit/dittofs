@@ -422,17 +422,19 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   accepts `-5s`, `1.5s` and `µs`; sizes decoded through the shared strict parser of RFC 13
   Appendix B's grammar, the `internal/` package epic 2's T2.1 creates and names (`internal/<pkg>`,
   a placeholder until it does): a JSON string goes to its file mode, a whole number and a unit
-  written as listed, `B`, decimal `KB` to `TB` or binary `KiB` to `TiB`, a bare integer refused;
+  written as listed with no space between them, `B`, decimal `KB` to `TB` or binary `KiB` to
+  `TiB`, a bare integer refused;
   a JSON number goes to its record mode, an integer of bytes, exact; a product past `uint64`
-  refused; each refusal names its cause (not a number, unknown unit, fraction,
-  overflow); `FuzzDecode`.
+  refused; each refusal names its cause (not a number, no unit, unknown unit, fraction,
+  overflow) and carries only the cause, never the input; `FuzzDecode`.
 - **Acceptance criteria:** each refusal names the field and the rule, never the decoder's own
   text, which quotes its input (D4).
 - **Tests:** a table over RFC 13 Appendix B's size grammar through the shared parser (a JSON
   string in its file mode, a JSON number in its record mode), one row per form: `512MiB`, `1B`, `1KB`, `1MB`, `1GB`, `1TB`, `1KiB`, `1MiB`, `1GiB` and
   `1TiB` accepted exact; refused: `1.5GiB`, `4.1GB`, `0.1KiB`, `1Gi`, `1Mi`, `10m`, `1g`,
   `100mib`, `1kb`, `1kib`, `16EiB` (a unit outside the grammar), an integer of bytes past `uint64`
-  (`18446744073709551616`), a product past `uint64` (`17179869184GiB`), a unit with no number
+  (`18446744073709551616`, and in file mode `18446744073709551616B`), a product past `uint64`
+  (`17179869184GiB`), a unit with no number
   (`MiB`), whitespace inside (`1 MiB`), a Kelvin sign (U+212A) in place of `K` in `KiB` and the
   string `"512"` (an integer of bytes as a string), with `"512B"` accepted; the JSON numbers
   `9007199254740993` (2⁵³+1) and `18446744073709551615` accepted exactly, never through a float,
