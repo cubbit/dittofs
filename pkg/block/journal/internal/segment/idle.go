@@ -119,6 +119,13 @@ func (w *IdleSealer) Stop() {
 // deadline on the clock, until Stop closes done. The done check at the top of
 // each turn keeps a worker that was stopped while its previous wait was in
 // flight from starting a pass a Stop already waited past.
+//
+// The wait is armed for what is left of the deadline when the pass returns,
+// not for a span measured at the pass's readings: the clock may move while a
+// pass seals, and a span armed from where it then stands would fall past the
+// deadline. A clock that crosses the deadline between that reading and the
+// arming would still set the timer late, so the worker reads it once more
+// after arming and walks again at once when the deadline has passed.
 func (w *IdleSealer) run() {
 	defer w.wg.Done()
 	for {
@@ -127,18 +134,22 @@ func (w *IdleSealer) run() {
 			return
 		default:
 		}
-		wait := w.pass()
+		deadline := w.pass()
+		wake := w.clock.After(deadline - w.clock.Elapsed())
+		if w.clock.Elapsed() >= deadline {
+			continue
+		}
 		select {
 		case <-w.done:
 			return
-		case <-w.clock.After(wait):
+		case <-wake:
 		}
 	}
 }
 
-// pass walks every stream once and returns how long the worker should wait
-// before its next walk. A stream past both bounds — idle for the age, holding
-// more than the threshold beyond its last catalogued point — is sealed early
+// pass walks every stream once and returns the clock reading at which the
+// worker should walk again. A stream past both bounds — idle for the age,
+// holding more than the threshold beyond its last catalogued point — is sealed early
 // unless the read-only check refuses it; a stream not due names the wait until
 // it is.
 //
@@ -156,8 +167,9 @@ func (w *IdleSealer) run() {
 // show up in footer writes. The core constant itself is where whoever
 // retunes it will look first; this marker carries what overturns it.
 //
-// The fallback wait is core.IdleSealAge, never 0, so a refusing check or a
-// failed seal cannot spin the worker on After(0). It is safe as a bound too:
+// The fallback is core.IdleSealAge past the pass's first reading, never that
+// reading itself, so a refusing check or a failed seal cannot spin the worker.
+// It is safe as a bound too:
 // a stream that is not a candidate now can only become one through an append
 // that stamped some time t of the clock, and a stamp can predate this pass's
 // reading only by the span its own append spent waiting — a lock, a drain
@@ -170,19 +182,20 @@ func (w *IdleSealer) run() {
 // unmeasured constant the decision comment above names, whose bound this
 // argument holds by.
 func (w *IdleSealer) pass() time.Duration {
-	next := core.IdleSealAge
+	next := w.clock.Elapsed() + core.IdleSealAge
 
 	for i := 0; i < w.streams.Len(); i++ {
 		s := w.streams.Stream(i)
 		// Each stream is read against the clock as the pass reaches it, not
 		// against one reading held for the whole pass: a seal this pass runs
-		// for an earlier stream spends real time the later streams' waits
-		// must not carry, for the pass arms them only when it returns.
+		// for an earlier stream spends time a later stream's due verdict must
+		// see. Its deadline is that reading plus its wait, so it holds
+		// however long the rest of the pass takes.
 		now := w.clock.Elapsed()
 		due, wait := s.idleDue(now, w.threshold)
 		if !due {
 			if wait > 0 {
-				next = min(next, wait)
+				next = min(next, now+wait)
 			}
 			continue
 		}

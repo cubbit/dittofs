@@ -599,6 +599,41 @@ func TestStopWaitsForASealInFlight(t *testing.T) {
 	}
 }
 
+// TestTheClockMovingDuringAPassLosesNoDeadline checks that a wait the pass
+// computed stays anchored to the reading it was computed from: stream 0 is
+// read not yet due, then the clock passes its deadline while the same pass
+// is held inside stream 1's seal. The worker must walk again at once and seal
+// stream 0, with no further move of the clock. A worker that arms the
+// remaining wait from wherever the clock stands once the pass returns sets
+// it past a deadline the clock has already crossed, and on a driven clock
+// that deadline is lost until something moves the clock again.
+func TestTheClockMovingDuringAPassLosesNoDeadline(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := idleRigOver(t, 2, 64<<10, 8, nil).start()
+	s0, s1 := r.stream(0), r.stream(1)
+	w1 := idleAppend(t, s1, 64, 0)
+	r.advance(t, core.IdleSealAge/2)
+	idleAppend(t, s0, 64, 0)
+
+	held := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(w1.Loc.Segment))
+	// The fallback wait armed at the origin fires: the pass reads stream 0
+	// half an age idle, then seals stream 1 and is held there.
+	r.advance(t, core.IdleSealAge/2)
+	select {
+	case <-held.Reached():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the worker never reached stream 1's seal")
+	}
+	r.clock.Advance(2 * core.IdleSealAge)
+	held.Release()
+
+	r.sealed(t, 2)
+	if state := idleState(s0); state != sealSealed {
+		t.Fatalf("stream 0, idle past its age once the held pass returned: %v, want sealed", state)
+	}
+}
+
 // TestAFailingSealDoesNotKillTheWorker checks the worker's error half: a seal
 // whose every sync fails at the seam ends its segment — the stream's next
 // Sync answers ErrSegmentEnded — and the same worker goes on to seal that
