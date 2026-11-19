@@ -129,6 +129,13 @@ func (n Nodes) PutNodeStatus(ctx context.Context, s entity.NodeStatus) error {
 	if s.Node == (entity.NodeID{}) {
 		return errZeroNode()
 	}
+	// A state the decoder refuses would make every read of the statuses
+	// fail, so it is refused here, with the node that wrote it.
+	for _, a := range s.Adapters {
+		if a.State.String() == "" {
+			return merrs.NewInvalidArgumentError("node status: adapter " + a.Protocol + " reports no state")
+		}
+	}
 	return n.s.kv.Update(ctx, func(tx kv.Txn) error {
 		return tx.Set(nodeStatusKey(s.Node), encodeNodeStatus(s))
 	})

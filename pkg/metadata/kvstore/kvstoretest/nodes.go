@@ -69,6 +69,24 @@ func testNodeEpochAcrossStarts(t *testing.T, kvo Opener) {
 	}
 }
 
+// A status reporting an adapter with no state, or one outside the set, is
+// refused and writes nothing, so no read of the statuses meets a value it
+// refuses.
+func testAdapterStateRefused(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	nodes := s.Nodes()
+	id := entity.NodeID(uuid.New())
+	for name, state := range map[string]entity.AdapterState{"no state": 0, "outside the set": 200} {
+		st := entity.NodeStatus{Node: id, Settings: 1, Adapters: []entity.AdapterStatus{{Protocol: "nfs", State: state}}}
+		if err := nodes.PutNodeStatus(ctx, st); !invalid(err) {
+			t.Errorf("node status with an adapter reporting %s: %v, want invalid argument", name, err)
+		}
+	}
+	for st, err := range nodes.NodeStatuses(ctx, entity.NodeID{}) {
+		t.Errorf("node status listed after refused writes: %+v, %v; want none", st, err)
+	}
+}
+
 // A node write that names no node is refused and writes nothing.
 func testZeroNodeRefused(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)

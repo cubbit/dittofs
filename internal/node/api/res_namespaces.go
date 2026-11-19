@@ -82,6 +82,10 @@ func deleteNamespace(ctx context.Context, rq request[none], keys []string, tx en
 	case rq.d.Settings == nil:
 		return none{}, rq.ID, refusedKey("namespace", settings.ErrUnknownKey)
 	}
+	// ponytail: the record and its settings go at once, while RFC 9 §7.6
+	// drains a namespace no share names under its drain mark, and GC's
+	// first start finds one left undrained by its record. Keep the record
+	// and write the mark instead once GC's drain lands.
 	if err := tx.DeleteNamespace(id, rq.Expect); err != nil {
 		return none{}, rq.ID, err
 	}

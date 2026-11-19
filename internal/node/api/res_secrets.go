@@ -89,8 +89,10 @@ var credentials = writing[apiv1.Credential]{kind: entity.ResourceRemoteStore, ra
 //
 // ponytail: only the refusals run, since the node hands in no sealer and no
 // settings table yet, so no credential is sealed or written through this
-// route and no test reads a sealed version back raw. Test the set end to
-// end, its version read raw holding no value, once the node hands in both.
+// route, no test reads a sealed version back raw, and no test reaches the
+// table's check of the set inside the write (the missing sealer refuses
+// first). Test the set end to end once the node hands in both: the table's
+// refusal of it, and its version read raw holding no value.
 func sealCredential(ctx context.Context, rq request[apiv1.Credential]) (entity.Secret, error) {
 	if rq.d.Store == nil {
 		return entity.Secret{}, errNoStore

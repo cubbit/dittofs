@@ -18,7 +18,8 @@ type AdapterStatus struct {
 }
 
 // AdapterOnNode is the adapter on one node: its state and the settings
-// generation it runs.
+// generation it runs, the counter a node's status.reconciled.settings
+// counts, not comparable with the adapter's own generation.
 type AdapterOnNode struct {
 	Node       string       `json:"node"`
 	State      AdapterState `json:"state"`
