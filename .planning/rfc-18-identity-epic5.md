@@ -419,7 +419,7 @@ internal/identity/
                        T5.11  alice's captured AP-REQ, its keytab and the time it was made
   testdata/fuzz/       T5.3, T5.6  crashers, if any
 pkg/identity/
-  keytab.go            T5.2   CheckKeytab (D3, pending)
+  keytab.go            T5.2   CheckKeytab (D3, pending); KeytabNames and KeytabName, each key's name and realm, which the API's keytab check reads (RFC 23's plan, T4.11)
   identitytest/realm.go  T5.3  Realm: test keys, Ticket, PAC, Keytab (D10)
 pkg/metadata/entity/
   control.go           T5.8a  ProtocolID.Linked (D11)
