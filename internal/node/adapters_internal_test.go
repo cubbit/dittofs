@@ -125,10 +125,10 @@ func newRig(t *testing.T, taken ...uint16) *rig {
 	rg.nfs, rg.smb = newSlots(d, rg.runner, []netip.Addr{loopback}, taken, rg.clock, context.Background())
 	t.Cleanup(func() {
 		rg.side.cue.Store(false)
-		if r := rg.nfs.apply(context.Background(), rg.loop, false, settings.NFS{}); r != nil {
+		if r := rg.nfs.apply(context.Background(), rg.loop, 0, false, settings.NFS{}); r != nil {
 			t.Errorf("stopping nfs at the end: refused %s", r.rec.Error)
 		}
-		if r := rg.smb.apply(context.Background(), rg.loop, false, settings.SMB{}); r != nil {
+		if r := rg.smb.apply(context.Background(), rg.loop, 0, false, settings.SMB{}); r != nil {
 			t.Errorf("stopping smb at the end: refused %s", r.rec.Error)
 		}
 		rg.runner.Close()
@@ -312,7 +312,7 @@ func describe(r *refusal) string {
 // failing every Sync is not failed, so it was not synced (RFC 23 §2.3).
 func TestAnEnabledAdapterServesAndAgainDoesNothing(t *testing.T) {
 	rg := newRig(t)
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(0)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb at port 0: refused %s", r.rec.Error)
 	}
 	port := portOf(t, rg.smb.running, "smb")
@@ -327,7 +327,7 @@ func TestAnEnabledAdapterServesAndAgainDoesNothing(t *testing.T) {
 	}
 
 	rg.side.cue.Store(true)
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(0)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("the same settings again: refused %s", r.rec.Error)
 	}
 	if again := portOf(t, rg.smb.running, "smb"); again != port {
@@ -343,11 +343,11 @@ func TestAnEnabledAdapterServesAndAgainDoesNothing(t *testing.T) {
 // again (RFC 20 §3.1, RFC 23 §2.3).
 func TestADisabledAdapterStopsAndServesAnewWhenEnabled(t *testing.T) {
 	rg := newRig(t)
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(0)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb: refused %s", r.rec.Error)
 	}
 	port := portOf(t, rg.smb.running, "smb")
-	if r := rg.smb.apply(t.Context(), rg.loop, false, smbAt(0)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, false, smbAt(0)); r != nil {
 		t.Fatalf("disable smb: refused %s", r.rec.Error)
 	}
 	if !refuses(port) {
@@ -356,7 +356,7 @@ func TestADisabledAdapterStopsAndServesAnewWhenEnabled(t *testing.T) {
 	if held := rg.side.holding(); len(held) != 0 {
 		t.Errorf("after the disable the sidecar holds %v, want nothing", held)
 	}
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(0)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb again: refused %s", r.rec.Error)
 	}
 	if err := negotiate(dial(t, portOf(t, rg.smb.running, "smb")), 1); err != nil {
@@ -374,7 +374,7 @@ func TestADisabledAdapterStopsAndServesAnewWhenEnabled(t *testing.T) {
 // sidecar is failed (RFC 20 §3.5, RFC 23 §2.3).
 func TestALiveSettingReachesOnlyConnectionsAcceptedAfterIt(t *testing.T) {
 	rg := newRig(t)
-	if r := rg.nfs.apply(t.Context(), rg.loop, true, nfsAt(0)); r != nil {
+	if r := rg.nfs.apply(t.Context(), rg.loop, 0, true, nfsAt(0)); r != nil {
 		t.Fatalf("enable nfs: refused %s", r.rec.Error)
 	}
 	port := portOf(t, rg.nfs.running, "nfs")
@@ -384,7 +384,7 @@ func TestALiveSettingReachesOnlyConnectionsAcceptedAfterIt(t *testing.T) {
 	}
 	next := nfsAt(0)
 	next.Versions.Max = "3"
-	if r := rg.nfs.apply(t.Context(), rg.loop, true, next); r != nil {
+	if r := rg.nfs.apply(t.Context(), rg.loop, 0, true, next); r != nil {
 		t.Fatalf("Versions.Max 3: refused %s", r.rec.Error)
 	}
 	if got := portOf(t, rg.nfs.running, "nfs"); got != port {
@@ -400,14 +400,14 @@ func TestALiveSettingReachesOnlyConnectionsAcceptedAfterIt(t *testing.T) {
 	}
 
 	rg.side.cue.Store(true)
-	if r := rg.nfs.apply(t.Context(), rg.loop, true, next); r != nil {
+	if r := rg.nfs.apply(t.Context(), rg.loop, 0, true, next); r != nil {
 		t.Fatalf("Versions.Max 3 again: refused %s", r.rec.Error)
 	}
 	if failed := rg.runner.Failed(); len(failed) != 0 {
 		t.Errorf("Versions.Max 3 again synced the sidecar: %v failed, want none", failed)
 	}
 	next.Versions.Max = "4.2"
-	if r := rg.nfs.apply(t.Context(), rg.loop, true, next); r != nil {
+	if r := rg.nfs.apply(t.Context(), rg.loop, 0, true, next); r != nil {
 		t.Fatalf("Versions.Max back to 4.2: refused %s", r.rec.Error)
 	}
 	if failed := rg.runner.Failed(); !slices.Equal(failed, []string{"holder"}) {
@@ -421,15 +421,15 @@ func TestALiveSettingReachesOnlyConnectionsAcceptedAfterIt(t *testing.T) {
 // nothing: a connection on the new port stays open (RFC 23 §2.3, §3.4).
 func TestAPortChangeRebuildsThatAdapterAlone(t *testing.T) {
 	rg := newRig(t)
-	if r := rg.nfs.apply(t.Context(), rg.loop, true, nfsAt(0)); r != nil {
+	if r := rg.nfs.apply(t.Context(), rg.loop, 0, true, nfsAt(0)); r != nil {
 		t.Fatalf("enable nfs: refused %s", r.rec.Error)
 	}
 	client := dial(t, portOf(t, rg.nfs.running, "nfs"))
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(0)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb: refused %s", r.rec.Error)
 	}
 	old, port := portOf(t, rg.smb.running, "smb"), freePort(t)
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(port)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(port)); r != nil {
 		t.Fatalf("smb to port %d: refused %s", port, r.rec.Error)
 	}
 	if got := portOf(t, rg.smb.running, "smb"); got != port {
@@ -448,7 +448,7 @@ func TestAPortChangeRebuildsThatAdapterAlone(t *testing.T) {
 	if _, err := null(client, 1, 3); err != nil {
 		t.Errorf("an NFSv3 NULL on the connection opened before the change: %v", err)
 	}
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(port)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(port)); r != nil {
 		t.Fatalf("smb at port %d again: refused %s", port, r.rec.Error)
 	}
 	if err := negotiate(c, 2); err != nil {
@@ -465,10 +465,10 @@ func TestAPortChangeOntoAHeldPortFallsBack(t *testing.T) {
 	rg := newRig(t)
 	port := freePort(t)
 	held, free := heldPort(t)
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(port)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(port)); r != nil {
 		t.Fatalf("enable smb at port %d: refused %s", port, r.rec.Error)
 	}
-	r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(held))
+	r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(held))
 	want := entity.ResourceRef{Kind: entity.ResourceAdapter, ID: []byte("smb")}
 	if r == nil || r.retry || r.rec.Record.Kind != want.Kind || !bytes.Equal(r.rec.Record.ID, want.ID) {
 		t.Fatalf("smb to the held port %d: %s, want smb's adapter record refused without retry", held, describe(r))
@@ -485,7 +485,7 @@ func TestAPortChangeOntoAHeldPortFallsBack(t *testing.T) {
 	}
 
 	rg.side.cue.Store(true)
-	if again := rg.smb.apply(t.Context(), rg.loop, true, smbAt(held)); describe(again) != describe(r) {
+	if again := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(held)); describe(again) != describe(r) {
 		t.Errorf("the held port again: %s, want %s again", describe(again), describe(r))
 	}
 	if failed := rg.runner.Failed(); len(failed) != 0 {
@@ -496,11 +496,11 @@ func TestAPortChangeOntoAHeldPortFallsBack(t *testing.T) {
 	}
 	rg.side.cue.Store(false)
 
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(port)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(port)); r != nil {
 		t.Fatalf("smb back to port %d: refused %s", port, r.rec.Error)
 	}
 	free()
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(held)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(held)); r != nil {
 		t.Errorf("smb to port %d once freed: %s, want applied", held, describe(r))
 	}
 }
@@ -511,14 +511,14 @@ func TestAPortChangeOntoAHeldPortFallsBack(t *testing.T) {
 func TestADisableAfterARefusalStopsTheAdapter(t *testing.T) {
 	rg := newRig(t)
 	held, _ := heldPort(t)
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(0)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb: refused %s", r.rec.Error)
 	}
 	port := portOf(t, rg.smb.running, "smb")
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(held)); r == nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(held)); r == nil {
 		t.Fatalf("smb to the held port %d: applied, want refused", held)
 	}
-	if r := rg.smb.apply(t.Context(), rg.loop, false, smbAt(held)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, false, smbAt(held)); r != nil {
 		t.Fatalf("disable smb: %s, want applied", describe(r))
 	}
 	if !refuses(port) {
@@ -531,11 +531,11 @@ func TestADisableAfterARefusalStopsTheAdapter(t *testing.T) {
 func TestAnEnableOnAHeldPortIsRetried(t *testing.T) {
 	rg := newRig(t)
 	held, free := heldPort(t)
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(held)); r == nil || !r.retry {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(held)); r == nil || !r.retry {
 		t.Fatalf("enable smb on the held port %d: %s, want refused and retried", held, describe(r))
 	}
 	free()
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(held)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(held)); r != nil {
 		t.Fatalf("the retry once port %d is freed: %s, want applied", held, describe(r))
 	}
 	if err := negotiate(dial(t, held), 1); err != nil {
@@ -549,7 +549,7 @@ func TestAnEnableOnAHeldPortIsRetried(t *testing.T) {
 func TestARefusedNewLeavesTheOldAdapterServing(t *testing.T) {
 	rg := newRig(t)
 	port := freePort(t)
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(port)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(port)); r != nil {
 		t.Fatalf("enable smb: refused %s", r.rec.Error)
 	}
 	c := dial(t, port)
@@ -558,7 +558,7 @@ func TestARefusedNewLeavesTheOldAdapterServing(t *testing.T) {
 	}
 	next := smbAt(freePort(t))
 	next.DrainTimeout = time.Second
-	r := rg.smb.apply(t.Context(), rg.loop, true, next)
+	r := rg.smb.apply(t.Context(), rg.loop, 0, true, next)
 	if r == nil || r.retry || !strings.Contains(string(r.rec.Error), "DrainTimeout") {
 		t.Fatalf("a new port with DrainTimeout 1s: %s, want refused naming DrainTimeout, without retry", describe(r))
 	}
@@ -576,12 +576,12 @@ func TestARefusedNewLeavesTheOldAdapterServing(t *testing.T) {
 func TestTheAPIsPortIsRefused(t *testing.T) {
 	api := freePort(t)
 	rg := newRig(t, api)
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(0)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb: refused %s", r.rec.Error)
 	}
 	port := portOf(t, rg.smb.running, "smb")
 	c := dial(t, port)
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(api)); r == nil || r.retry {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(api)); r == nil || r.retry {
 		t.Fatalf("smb to the API's port %d: %s, want refused without retry", api, describe(r))
 	}
 	if got := portOf(t, rg.smb.running, "smb"); got != port {
@@ -625,11 +625,11 @@ func TestADrainWaitKeepsTheLoopLive(t *testing.T) {
 		}
 		return heldStop{a, stopped, release}, nil
 	}
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(0)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb: refused %s", r.rec.Error)
 	}
 	done := make(chan *refusal, 1)
-	go func() { done <- rg.smb.apply(context.Background(), rg.loop, false, smbAt(0)) }()
+	go func() { done <- rg.smb.apply(context.Background(), rg.loop, 0, false, smbAt(0)) }()
 	t.Cleanup(func() {
 		close(release)
 		if r := <-done; r != nil {
@@ -661,7 +661,7 @@ func TestADrainWaitKeepsTheLoopLive(t *testing.T) {
 // from Deps; the test ends long before that.
 func TestAnAdapterReportsThroughTheNode(t *testing.T) {
 	rg := newRig(t)
-	if r := rg.smb.apply(t.Context(), rg.loop, true, smbAt(0)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb: refused %s", r.rec.Error)
 	}
 	c := dial(t, portOf(t, rg.smb.running, "smb"))
@@ -674,7 +674,7 @@ func TestAnAdapterReportsThroughTheNode(t *testing.T) {
 	if rg.watchdog.Live() {
 		t.Error("61 s on, the node is live, want SMB's accept loop, which reports on its own clock, watched and stalled")
 	}
-	if r := rg.smb.apply(t.Context(), rg.loop, false, smbAt(0)); r != nil {
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, false, smbAt(0)); r != nil {
 		t.Fatalf("disable smb: refused %s", r.rec.Error)
 	}
 	if !rg.watchdog.Live() {

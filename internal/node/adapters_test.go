@@ -977,3 +977,110 @@ func TestARebuildLeavesTheNodeReady(t *testing.T) {
 		t.Errorf("readiness while SMB is rebuilt: got %+v, want 200 ready", got)
 	}
 }
+
+// adapterStates is each adapter of s as its protocol and state, in the
+// status's order.
+func adapterStates(s entity.NodeStatus) []string {
+	var out []string
+	for _, a := range s.Adapters {
+		out = append(out, a.Protocol+" "+a.State.String())
+	}
+	return out
+}
+
+// statesAre is a status turn check: the adapters' states are want.
+func statesAre(want ...string) func(statusTurn) bool {
+	return func(tr statusTurn) bool { return slices.Equal(adapterStates(tr.s), want) }
+}
+
+// The node's status carries each adapter's state from its slot, a disabled
+// one's too (RFC 23 §3.4, RFC 20 §3.1): with SMB serving and NFS disabled,
+// NFS stopped and SMB serving; while SMB's disable drains it, SMB draining;
+// once that drain ends, both stopped; and NFS enabled on a port another
+// socket holds, refused with nothing serving it, NFS configured.
+func TestTheStatusCarriesEachAdaptersState(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	stopped, release := make(chan struct{}, 1), make(chan struct{})
+	h.Node().OnAdapter(func(protocol string, a adapter.Adapter) adapter.Adapter {
+		if protocol == "smb" {
+			return heldStop{Adapter: a, stopped: stopped, release: release}
+		}
+		return a
+	})
+	ch := watchStatus(h)
+	h.Node().SetSMB(true, smbAt(freePort(t)))
+	started(t, h)
+	t.Cleanup(func() { close(release) }) // before the node's Stop, which runs after it
+	turnAt(t, h, ch, "SMB serving, NFS disabled", statesAre("nfs stopped", "smb serving"))
+
+	h.Node().SetSMB(false, smbAt(0))
+	configure(t, h, [16]byte{0: 's', 15: 1})
+	h.Node().Wake()
+	hears(t, stopped, "SMB disabled")
+	turnAt(t, h, ch, "SMB's drain held", statesAre("nfs stopped", "smb draining"))
+	release <- struct{}{}
+	caughtUp(t, h)
+	turnAt(t, h, ch, "SMB's drain ended", statesAre("nfs stopped", "smb stopped"))
+
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	h.Node().SetNFS(true, nfsAt(uint16(held.Addr().(*net.TCPAddr).Port)))
+	configure(t, h, [16]byte{0: 's', 15: 2})
+	h.Node().Wake()
+	caughtUp(t, h)
+	turnAt(t, h, ch, "NFS refused on a held port", statesAre("nfs configured", "smb stopped"))
+}
+
+// adapterOf is s's adapter of protocol, the zero one when s has none.
+func adapterOf(s entity.NodeStatus, protocol string) entity.AdapterStatus {
+	for _, a := range s.Adapters {
+		if a.Protocol == protocol {
+			return a
+		}
+	}
+	return entity.AdapterStatus{}
+}
+
+// The node's status carries the settings generation each adapter runs (RFC
+// 23 §3.4): a pass that applies moves it to the generation the pass read; a
+// move to a port another socket holds, the API's, drains the old adapter,
+// fails the new one's start and serves the last settings that served again,
+// so it leaves the generation those run, while the refusal names the newer
+// one (RFC 23 §3.4).
+func TestTheStatusCarriesTheGenerationEachAdapterRuns(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	ch := watchStatus(h)
+	configure(t, h, storeA) // a settings generation above zero
+	h.Node().SetSMB(true, smbAt(freePort(t)))
+	started(t, h)
+	servingAt := func(gen uint64) func(statusTurn) bool {
+		return func(tr statusTurn) bool {
+			return adapterOf(tr.s, "smb") == entity.AdapterStatus{Protocol: "smb", State: entity.AdapterServing, Generation: gen}
+		}
+	}
+	turnAt(t, h, ch, "SMB serving after Start", servingAt(counters(t, h).Settings))
+
+	configure(t, h, [16]byte{0: 's', 15: 3})
+	h.Node().Wake()
+	caughtUp(t, h)
+	runs := counters(t, h).Settings
+	turnAt(t, h, ch, "a pass at a newer settings generation", servingAt(runs))
+
+	api, _ := h.Node().Addrs()
+	h.Node().SetSMB(true, smbAt(netip.MustParseAddrPort(api).Port()))
+	configure(t, h, [16]byte{0: 's', 15: 4})
+	h.Node().Wake()
+	caughtUp(t, h)
+	refusedAt := counters(t, h).Settings
+	tr := turnAt(t, h, ch, "SMB's move to the API's port refused, the last settings serving again", func(tr statusTurn) bool {
+		return slices.ContainsFunc(tr.s.Refused, func(r entity.RefusedRecord) bool {
+			return r.Record.Kind == entity.ResourceAdapter && string(r.Record.ID) == "smb" && r.Generation == refusedAt
+		})
+	})
+	if got, want := adapterOf(tr.s, "smb"), (entity.AdapterStatus{Protocol: "smb", State: entity.AdapterServing, Generation: runs}); got != want {
+		t.Errorf("SMB with its move to generation %d refused and its last settings serving again: got %+v, want %+v, the generation those run", refusedAt, got, want)
+	}
+}
