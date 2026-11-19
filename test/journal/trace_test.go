@@ -171,6 +171,7 @@ func rfcRows(t *testing.T) []string {
 		t.Errorf("%s: no row %q", file, row)
 	}
 	named("rfc1 / 9.1", "rfc-1-journal.md", "### 9.1 ", "Model-based")
+	named("rfc1 / 9.1", "rfc-1-journal.md", "### 9.1 ", "Soak")
 	named("rfc0 / 1.4", "rfc-0-data-lifecycle.md", "### 1.4 ", "clock bound")
 	named("rfc8 / 15", "rfc-8-engine.md", "## 15. ", "one clock")
 	return rows
