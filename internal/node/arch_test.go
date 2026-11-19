@@ -502,8 +502,11 @@ func nonErrorUses(f *ast.File, imp *ast.ImportSpec, p string) []string {
 }
 
 // libraries are the third-party packages a package under internal/node may
-// import: the metrics and tracing APIs, neither of them a component.
+// import: the metrics and tracing APIs and the JWT library the API signs its
+// access tokens with, none of them a component. Only internal/node/api/auth
+// is expected to import the JWT library.
 var libraries = []string{
+	"github.com/golang-jwt/jwt/v5",
 	"github.com/prometheus/client_golang/prometheus",
 	"go.opentelemetry.io/otel/attribute",
 	"go.opentelemetry.io/otel/trace",
@@ -1081,7 +1084,8 @@ func apiExports(dir, path string) ([]string, error) {
 // OpenAPI, the document cmd/genopenapi writes; and its auth package Caller,
 // CallerFrom, the With its authentication step calls, the local socket's
 // mark, WithLocal and Local, the role table's Right, its rights and Allowed,
-// and the ResetAccount the break-glass reset calls, and nothing else; a
+// the ResetAccount the break-glass reset calls, and the SealSigningKey the
+// initialisation step seals the first signing key with, and nothing else; a
 // planted extra method is caught.
 func TestAPIExports(t *testing.T) {
 	want := []string{"Deps", "New", "OpenAPI", "Server", "Server.Start", "Server.Stop"}
@@ -1092,7 +1096,7 @@ func TestAPIExports(t *testing.T) {
 		{"api", "internal/node/api", want},
 		{"api/auth", "internal/node/api/auth", []string{
 			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Drain", "Installation", "Local", "Principals",
-			"Public", "QuotaEvents", "ResetAccount", "Right", "Self", "Shares", "Stores", "View", "With", "WithLocal",
+			"Public", "QuotaEvents", "ResetAccount", "Right", "SealSigningKey", "Self", "Shares", "Stores", "View", "With", "WithLocal",
 		}},
 		{"testdata/arch/api-exports", "internal/node/api", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},
 	} {

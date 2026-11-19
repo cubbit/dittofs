@@ -144,6 +144,9 @@ type ControlPlaneTx interface {
 	// SetMachinePassword names the secret holding the computer account's
 	// password, in the write that seals its version.
 	SetMachinePassword(ref SecretRef) error
+	// SetSigningKey names the secret holding the management API's
+	// access-token signing key, in the write that seals its first version.
+	SetSigningKey(ref SecretRef) error
 	// Now is the transaction's store time, fixed for its life; a retried
 	// attempt gets a new one.
 	Now() time.Time

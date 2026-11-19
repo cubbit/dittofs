@@ -164,6 +164,7 @@ require (
 
 require (
 	github.com/apple/foundationdb/bindings/go v0.0.0-20260416192139-3ea44ce1d900
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/stretchr/testify v1.12.1
