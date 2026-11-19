@@ -512,7 +512,8 @@ pkg/settings/
     from v1's `dialAndBind` from history: TLS verified against the record's trust roots, or the
     system's when it names none, `ServerName` the address's host, the host resolved through the
     record's `DNSServer` when it names one, StartTLS for `ldap://`, no `InsecureSkipVerify`
-    anywhere;
+    anywhere; its `Bind` refusing an empty password before any byte is sent, so no
+    unauthenticated bind leaves (RFC 4513 §5.1.2);
   - `identitytest.Directory`, the in-memory directory (kind 2): entries by DN, a simple bind
     checked against a stored password, no such object (LDAP result 32) for a search based outside
     its naming context, as Samba answers one, and continuation references to the configuration
@@ -534,7 +535,7 @@ pkg/settings/
     answer (Active Directory answers a referral, Samba noSuchObject); a subtree search of the
     naming context handing back the partitions' continuation references; `userAccountControl`'s
     disable bit
-    and a past `accountExpires` read back; `objectSid` and `objectGUID` as binary; the root DSE's
+    and a past `accountExpires` read back; a bind with an empty password refused; `objectSid` and `objectGUID` as binary; the root DSE's
     `defaultNamingContext`;
   - the suite run in `unit` over the in-memory directory and in `integration/ad-dc` over `DialTLS`
     to the fixture, its `Seeder` adding entries over LDAP as the domain administrator there, not
@@ -566,7 +567,8 @@ pkg/settings/
   - the client, `Client` in `internal/identity/directory`, built by `NewClient` and called by
     `internal/identity` through its question methods: one `Conn` dialled at its first
     question, never at `New` or `Start`, redialled after a transport error; the bind credential
-    resolved through `Deps.Secrets` at the dial; the domain SID read from the root DSE's
+    resolved through `Deps.Secrets` at the dial, an empty one refused before the dial, so no
+    unauthenticated bind is sent (RFC 4513 §5.1.2); the domain SID read from the root DSE's
     `defaultNamingContext` entry before the first answer, `ErrUnavailable` while an `ad` client
     cannot read it; a referral in any result refused `ErrUnavailable`, never dialled;
   - the questions "who holds this name, SID or entry ID" and "what is this group's SID and gid",
@@ -599,7 +601,9 @@ pkg/settings/
   every question `ErrUnavailable`, and an `rfc2307` one without it answering (R13); `Apply` of a
   second record while a question's answer is delayed by the fault wrapper: it ends on the first
   directory's answer, the next question on the second's (R8); the bind password, a `Secret`
-  sealed through #4059's provider, never in a captured log line (R11); the attribute list read
+  sealed through #4059's provider, never in a captured log line (R11); an empty resolved
+  credential: refused before dial, no connection made (catches a named bind sent with no
+  password, which a permissive directory answers as anonymous, R11); the attribute list read
   through `export_test.go` holds no `unicodePwd`, `ntPwdHistory` or `sambaNTPassword` (R15). In
   `integration/ad-dc`, the test call and a user's answer against Samba (R24, R21). R16's timeout
   is checked in T6.7, through the fault wrapper. Doubles: the in-memory directory (kind 2), the

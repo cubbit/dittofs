@@ -379,7 +379,8 @@ record are E6's and E8's to drive, on the rule this epic builds.
   `TransportSMB` or `TransportNFS`, so a caller that leaves it at its zero value is refused rather
   than skipping R8. `Service` cannot stand in: RFC 18 §3.3 accepts `host/` tickets,
   and `Host` names no transport, so a `host/` ticket over SMB would skip R8, which RFC 22 §4.1
-  forbids. Amends RFC 18 §3.1's `SignInStep` (§9). A `decision:` marker at the check. Prior art:
+  forbids. A step naming no service is refused `ErrInvalid` too. Both amend RFC 18 §3.1's
+  `SignInStep`, an amendment still pending (§9). A `decision:` marker at the check. Prior art:
   none found.
 - **D16, the first verified PAC links a machine minted without one, an exception to R23.** Where a
   PAC-less ticket is accepted (a keytab realm other than the directory's, or `require_pac` false,
@@ -582,7 +583,9 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   that races its original, R9); a cache of bound 8 and share 2: `carol`'s third authenticator
   `ErrUnavailable` while `alice`'s first is accepted, and once `carol`'s first entry passes its
   time plus the skew, her next is accepted (catches a cache with no per-client cap, and a share
-  never released, R11). The flood through `SignIn` is T5.5's test, where the order lives (R11).
+  never released, R11); the same AP-REQ again with its ticket's service name re-spelled
+  `CIFS/NAS.TEST`, which the ring accepts: refused with outcome `replay` (catches a key on the
+  unfolded name, R9, D5). The flood through `SignIn` is T5.5's test, where the order lives (R11).
 
 ### T5.5 Kerberos sign-in without a PAC
 
@@ -929,7 +932,8 @@ the version this document was written against.
   the RFC's.
 - RFC 18 §3.1's `SignInStep` has no transport, so §9.2's `protocol` label and RFC 22 §4.1's
   SMB-only address check have no source; D15 adds `Transport`, which the RFC 21 and RFC 22 plans'
-  adapters set. T5.3 builds it ahead of the amendment, which is still to be made.
+  adapters set, and refuses a step naming no service `ErrInvalid`. T5.3 builds both ahead of the
+  amendment, which is still to be made.
 - RFC 23 §3.3 keeps the old version for the retention RFC 13 §7 names for a keytab (RFC 18
   §3.3's 10 hours plus the skew after the change at the KDC). The rotation cannot observe that
   event, so a rotation that starts the retention at the nodes' report prunes early, and a KDC
