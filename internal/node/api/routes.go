@@ -70,6 +70,32 @@ var routes = []route{
 	{method: http.MethodGet, pattern: "/api/v1/shares/{id}/export-policy", kind: entity.ResourceShare, right: auth.View, serve: watch(exportPolicy)},
 	{method: http.MethodPut, pattern: "/api/v1/shares/{id}/export-policy", kind: entity.ResourceShare, right: auth.Shares, serve: write(policies, nil, putPolicy)},
 	{method: http.MethodPatch, pattern: "/api/v1/shares/{id}/export-policy", kind: entity.ResourceShare, right: auth.Shares, serve: write(policies, nil, putPolicy)},
+	{method: http.MethodGet, pattern: "/api/v1/shares/{id}/grants/{sub}", kind: entity.ResourceGrant, right: auth.View, serve: watch(grant)},
+	{method: http.MethodPut, pattern: "/api/v1/shares/{id}/grants/{sub}", kind: entity.ResourceGrant, right: auth.Shares, serve: write(grants, nil, putGrant)},
+	{method: http.MethodDelete, pattern: "/api/v1/shares/{id}/grants/{sub}", kind: entity.ResourceGrant, right: auth.Shares, serve: write(grantTags, nil, deleteGrant)},
+	{method: http.MethodGet, pattern: "/api/v1/shares/{id}/quotas/{sub}", kind: entity.ResourceQuota, right: auth.View, serve: watch(quota)},
+	{method: http.MethodPut, pattern: "/api/v1/shares/{id}/quotas/{sub}", kind: entity.ResourceQuota, right: auth.Shares, serve: write(quotas, nil, putQuota)},
+	{method: http.MethodGet, pattern: "/api/v1/users", kind: entity.ResourceUser, right: auth.View, serve: list(usersList)},
+	{method: http.MethodPost, pattern: "/api/v1/users", kind: entity.ResourceUser, right: auth.Principals, serve: write(users, nil, createUser)},
+	{method: http.MethodGet, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.View, serve: watch(user)},
+	{method: http.MethodPut, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, serve: write(users, nil, putUser)},
+	{method: http.MethodPatch, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, serve: write(users, nil, putUser)},
+	{method: http.MethodDelete, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, starts: apiv1.OpUserDelete, serve: write(userTags, nil, deleteUser)},
+	{method: http.MethodGet, pattern: "/api/v1/groups", kind: entity.ResourceGroup, right: auth.View, serve: list(groupsList)},
+	{method: http.MethodPost, pattern: "/api/v1/groups", kind: entity.ResourceGroup, right: auth.Principals, serve: write(groups, nil, createGroup)},
+	{method: http.MethodGet, pattern: "/api/v1/groups/{id}", kind: entity.ResourceGroup, right: auth.View, serve: watch(group)},
+	{method: http.MethodPut, pattern: "/api/v1/groups/{id}", kind: entity.ResourceGroup, right: auth.Principals, serve: write(groups, nil, putGroup)},
+	{method: http.MethodPatch, pattern: "/api/v1/groups/{id}", kind: entity.ResourceGroup, right: auth.Principals, serve: write(groups, nil, putGroup)},
+	{method: http.MethodDelete, pattern: "/api/v1/groups/{id}", kind: entity.ResourceGroup, right: auth.Principals, starts: apiv1.OpGroupDelete, serve: write(groupTags, nil, deleteGroup)},
+	{method: http.MethodPut, pattern: "/api/v1/groups/{id}/members/{sub}", kind: entity.ResourceMembership, right: auth.Principals, serve: write(memberships, nil, addMember)},
+	{method: http.MethodDelete, pattern: "/api/v1/groups/{id}/members/{sub}", kind: entity.ResourceMembership, right: auth.Principals, serve: write(membershipTags, nil, removeMember)},
+	// decision: a netgroup's path names it by name, the one exception to
+	// paths taking IDs: a netgroup has no ID, the store keys it by name and
+	// a client rule names it by name. Overturned once a netgroup has an ID.
+	{method: http.MethodGet, pattern: "/api/v1/netgroups", kind: entity.ResourceNetgroup, right: auth.View, serve: list(netgroupsList)},
+	{method: http.MethodGet, pattern: "/api/v1/netgroups/{sub}", kind: entity.ResourceNetgroup, right: auth.View, serve: watch(netgroup)},
+	{method: http.MethodPut, pattern: "/api/v1/netgroups/{sub}", kind: entity.ResourceNetgroup, right: auth.Stores, serve: write(netgroups, nil, putNetgroup)},
+	{method: http.MethodDelete, pattern: "/api/v1/netgroups/{sub}", kind: entity.ResourceNetgroup, right: auth.Stores, serve: write(netgroupTags, nil, deleteNetgroup)},
 }
 
 // version answers the API's major versions and nothing else.

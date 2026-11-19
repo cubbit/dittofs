@@ -61,21 +61,21 @@ func shareOf(sh entity.Share) apiv1.Share {
 // the info record's generation, which only a share put raises, so a change
 // of state, of namespaces or of the export policy moves no ETag a client
 // holds for the spec.
-var shareSpecs = writing[shareDoc]{kind: entity.ResourceShare, read: func(tx entity.ControlPlaneTx, id [16]byte) (shareDoc, uint64, bool, error) {
+var shareSpecs = writing[shareDoc]{kind: entity.ResourceShare, read: func(tx entity.ControlPlaneTx, id [16]byte, _ string) (shareDoc, uint64, bool, error) {
 	sh, ok, err := tx.Share(entity.ShareID(id))
 	return shareDoc{specOf(sh)}, sh.Generation, ok, err
 }}
 
 // shareTags is shareSpecs for a call that carries no body: quiesce, resume
 // and delete.
-var shareTags = writing[none]{kind: entity.ResourceShare, read: func(tx entity.ControlPlaneTx, id [16]byte) (none, uint64, bool, error) {
+var shareTags = writing[none]{kind: entity.ResourceShare, read: func(tx entity.ControlPlaneTx, id [16]byte, _ string) (none, uint64, bool, error) {
 	sh, ok, err := tx.Share(entity.ShareID(id))
 	return none{}, sh.Generation, ok, err
 }}
 
 // newShares is what the write adapter knows of a share it creates: the
 // spec and the export policy the create wrote, which its audit record holds.
-var newShares = writing[apiv1.NewShare]{kind: entity.ResourceShare, read: func(tx entity.ControlPlaneTx, id [16]byte) (apiv1.NewShare, uint64, bool, error) {
+var newShares = writing[apiv1.NewShare]{kind: entity.ResourceShare, read: func(tx entity.ControlPlaneTx, id [16]byte, _ string) (apiv1.NewShare, uint64, bool, error) {
 	sh, ok, err := tx.Share(entity.ShareID(id))
 	if err != nil || !ok {
 		return apiv1.NewShare{}, 0, false, err

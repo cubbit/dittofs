@@ -18,6 +18,18 @@ import (
 // back on every node.
 type reads interface {
 	Netgroups(ctx context.Context, after string) iter.Seq2[entity.Netgroup, error]
+	Netgroup(ctx context.Context, name string) (entity.Netgroup, bool, error)
+	// Users and Groups list the named users and groups in name order,
+	// after the name after; User and Group read one, false for one marked
+	// deleted.
+	Users(ctx context.Context, after string) iter.Seq2[entity.User, error]
+	User(ctx context.Context, p entity.Principal) (entity.User, bool, error)
+	Groups(ctx context.Context, after string) iter.Seq2[entity.Group, error]
+	Group(ctx context.Context, p entity.Principal) (entity.Group, bool, error)
+	// ShareGrant is the grant naming p's ID on a share; Quotas lists a
+	// share's quotas.
+	ShareGrant(ctx context.Context, share entity.ShareID, p entity.Principal) (entity.ShareGrant, bool, error)
+	Quotas(ctx context.Context, share entity.ShareID) iter.Seq2[entity.Quota, error]
 	Settings(ctx context.Context, scope entity.SettingScope) iter.Seq2[entity.Setting, error]
 	// Share is one share with its state and its export policy, a share
 	// with none stored having the default one; a share never created, or

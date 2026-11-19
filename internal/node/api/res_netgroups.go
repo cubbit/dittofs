@@ -1,0 +1,81 @@
+package api
+
+import (
+	"context"
+	"iter"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
+)
+
+// netgroupDoc is a netgroup as its PUT carries it: its spec alone.
+type netgroupDoc struct {
+	Spec apiv1.NetgroupSpec `json:"spec"`
+}
+
+func netgroupOf(g entity.Netgroup) apiv1.Netgroup {
+	members := g.Members
+	if members == nil {
+		members = []string{}
+	}
+	return apiv1.Netgroup{ID: g.Name, Generation: g.Version, Spec: apiv1.NetgroupSpec{Members: members}}
+}
+
+// netgroups is what the write adapter knows of a netgroup: the path's {sub}
+// is its name, which its audit records name it by, and its tag is its
+// version.
+var netgroups = writing[netgroupDoc]{kind: entity.ResourceNetgroup,
+	ref: func(_ [16]byte, name string) []byte { return []byte(name) },
+	read: func(tx entity.ControlPlaneTx, _ [16]byte, name string) (netgroupDoc, uint64, bool, error) {
+		g, ok, err := tx.Netgroup(name)
+		return netgroupDoc{netgroupOf(g).Spec}, g.Version, ok, err
+	}}
+
+// netgroupTags is netgroups for a delete, which carries no body.
+var netgroupTags = writing[none]{kind: entity.ResourceNetgroup, ref: netgroups.ref,
+	read: func(tx entity.ControlPlaneTx, id [16]byte, name string) (none, uint64, bool, error) {
+		_, tag, ok, err := netgroups.read(tx, id, name)
+		return none{}, tag, ok, err
+	}}
+
+// putNetgroup is PUT /netgroups/{sub}: the netgroup sub names, created
+// under If-None-Match: * or replaced whole under the version If-Match
+// names.
+func putNetgroup(_ context.Context, rq request[netgroupDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Netgroup, [16]byte, error) {
+	g := entity.Netgroup{Name: rq.Sub, Members: rq.Body.Spec.Members}
+	var err error
+	if g.Version, err = tx.PutNetgroup(g, rq.Expect); err != nil {
+		return apiv1.Netgroup{}, rq.ID, err
+	}
+	return netgroupOf(g), rq.ID, nil
+}
+
+// deleteNetgroup is DELETE /netgroups/{sub}: the netgroup removed whole,
+// under the version If-Match names. A client rule naming it then fails
+// closed.
+func deleteNetgroup(_ context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
+	return none{}, rq.ID, tx.DeleteNetgroup(rq.Sub, rq.Expect)
+}
+
+// netgroupsList is GET /netgroups, every netgroup in name order.
+var netgroupsList = listing[entity.Netgroup, apiv1.Netgroup]{
+	records: func(ctx context.Context, d Deps, after []byte, _ map[string]string) iter.Seq2[entity.Netgroup, error] {
+		return d.Store.Netgroups(ctx, string(after))
+	},
+	key:  func(g entity.Netgroup) []byte { return []byte(g.Name) },
+	item: func(g entity.Netgroup, _ perPage) apiv1.Netgroup { return netgroupOf(g) },
+}
+
+// netgroup is GET /netgroups/{sub}, its version the ETag, 404 for a name
+// none holds.
+var netgroup = watching[apiv1.Netgroup]{
+	read: func(ctx context.Context, d Deps, rq request[none]) (apiv1.Netgroup, error) {
+		g, ok, err := d.Store.Netgroup(ctx, rq.Sub)
+		if err == nil && !ok {
+			err = errNotFound
+		}
+		return netgroupOf(g), err
+	},
+	tag:   func(g apiv1.Netgroup) uint64 { return g.Generation },
+	until: changes(func(first, now apiv1.Netgroup) bool { return first.Generation != now.Generation }),
+}

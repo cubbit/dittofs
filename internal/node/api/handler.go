@@ -27,12 +27,14 @@ const maxBody = 1 << 20
 // the caller may not know exists.
 var errNotFound = fmt.Errorf("api: no such resource: %w", vfserr.ErrNotFound)
 
-// request is a handler's decoded request: the ID its path names, its body,
+// request is a handler's decoded request: the ID its path names, the
+// segment its {sub} names below it, empty for none, its body,
 // decoded strictly, and, for a write, the tag its record must have, which the
 // handler passes to the store's write as its expect: the one If-Match names,
 // or zero under If-None-Match: *.
 type request[B any] struct {
 	ID     [16]byte
+	Sub    string
 	Body   B
 	Expect uint64
 	Query  url.Values // a write's query, holding only parameters its row takes
@@ -63,8 +65,8 @@ type adapter func(ctx context.Context, s *Server, r *http.Request, rt *route, id
 // watch, which takes the record's tag, so none of those answers without its
 // ETag.
 func read[R any](h func(context.Context, Deps, request[none]) (R, error)) adapter {
-	return func(ctx context.Context, s *Server, _ *http.Request, _ *route, id [16]byte) (answer, error) {
-		return jsonOr(h(ctx, s.d, request[none]{ID: id}))
+	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
+		return jsonOr(h(ctx, s.d, request[none]{ID: id, Sub: r.PathValue("sub")}))
 	}
 }
 

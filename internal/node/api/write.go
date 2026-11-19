@@ -25,9 +25,10 @@ import (
 const maxKey = 255
 
 // writing is what a write row's adapter knows of the resource it writes:
-// its kind; read, which returns the record id names, tracked in the write's
-// transaction, as the body a PUT of it sends, with its tag, ok false when
-// there is none; whether its commit raises the principals or settings
+// its kind; read, which returns the record id and the path's {sub} name,
+// tracked in the write's transaction, as the body a PUT of it sends, with
+// its tag, ok false when there is none; ref, the ID its audit record names
+// it by, nil naming it by id; whether its commit raises the principals or settings
 // generation; whether the row is a POST action that changes the spec, and so
 // carries If-Match as a PUT does; secret, which names the fields of the
 // body whose values its audit record holds only as "set", nil for none; and
@@ -36,7 +37,8 @@ const maxKey = 255
 // The operation a write starts, if any, is its row's.
 type writing[B any] struct {
 	kind        entity.ResourceKind
-	read        func(tx entity.ControlPlaneTx, id [16]byte) (doc B, tag uint64, ok bool, err error)
+	read        func(tx entity.ControlPlaneTx, id [16]byte, sub string) (doc B, tag uint64, ok bool, err error)
+	ref         func(id [16]byte, sub string) []byte
 	raises      bool
 	changesSpec bool
 	secret      func(path string) bool
@@ -82,11 +84,12 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		if s.d.Store == nil {
 			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
 		}
-		created := r.PathValue("id") == ""
+		created := r.Method == http.MethodPost && r.PathValue("id") == ""
+		sub := r.PathValue("sub")
 		rec := s.auditOf(ctx, r)
 		rec.Target.Kind = w.kind
 		if !created {
-			rec.Target.ID = id[:]
+			rec.Target.ID = w.refOf(id, sub)
 		}
 		refused := rec // as the request arrived, holding nothing a failed attempt set
 		defer func() {
@@ -107,7 +110,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		if len(key) > maxKey {
 			return answer{}, &fieldError{field: "Idempotency-Key", detail: "longer than " + strconv.Itoa(maxKey) + " bytes"}
 		}
-		rq := request[B]{ID: id, Query: r.URL.Query()}
+		rq := request[B]{ID: id, Sub: sub, Query: r.URL.Query()}
 		if err := decode(bytes.NewReader(body), &rq.Body); err != nil {
 			return answer{}, err
 		}
@@ -157,7 +160,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		}
 		err = s.d.Store.Write(ctx, entity.WriteMeta{Audit: &rec, Idempotency: idem}, func(tx entity.ControlPlaneTx) error {
 			rq := rq
-			doc, tag, ok, err := w.read(tx, id)
+			doc, tag, ok, err := w.read(tx, id, sub)
 			if err != nil {
 				return err
 			}
@@ -182,14 +185,14 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			if err != nil {
 				return err
 			}
-			after, afterTag, exists, err := w.read(tx, wrote)
+			after, afterTag, exists, err := w.read(tx, wrote, sub)
 			if err != nil {
 				return err
 			}
 			if rec.Change, err = change(present(doc, ok), present(after, exists), w.auditAs, w.secret); err != nil {
 				return err
 			}
-			rec.Target.ID = wrote[:]
+			rec.Target.ID = w.refOf(wrote, sub)
 			rec.Before, rec.After, rec.Outcome = tag, afterTag, []byte("applied")
 			status, body, location := http.StatusOK, any(resp), ""
 			if created {
@@ -252,6 +255,15 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		}
 		return a, nil
 	}
+}
+
+// refOf is the ID the audit record of a write of the record id and sub
+// name names it by.
+func (w writing[B]) refOf(id [16]byte, sub string) []byte {
+	if w.ref != nil {
+		return w.ref(id, sub)
+	}
+	return id[:]
 }
 
 // start writes, in tx, an operation of kind on target, started by the
