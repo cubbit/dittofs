@@ -4,10 +4,8 @@ package conformance
 
 import (
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // The allocations per operation of RFC 1 §9.7's counted row: one warm WriteAt, one ReadAt of held
@@ -24,8 +22,10 @@ const (
 	// TestCounted_AllocationsPerCall measured it here.
 	maxReadAllocs = 7.0
 	// Exactly what one Stats spent when TestCounted_AllocationsPerCall
-	// measured it here.
-	maxStatsAllocs = 13.0
+	// measured it here: the two above the 13 it spent before the open's
+	// own figures — Recovery with its duration, the extra counters — came
+	// to ride it, which the bound was not retuned for at the time.
+	maxStatsAllocs = 15.0
 )
 
 // allocRig is the fixture the allocation checks measure against, with the
@@ -81,14 +81,7 @@ func newAllocRig(t *testing.T) *allocRig {
 func allocsPerCall(t *testing.T, r *allocRig, op string, call func()) float64 {
 	t.Helper()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for prev := -1; ; time.Sleep(10 * time.Millisecond) {
-		if n := r.f.Seam.Calls(kit.OpWrite); n == prev || time.Now().After(deadline) {
-			break
-		} else {
-			prev = n
-		}
-	}
+	quiet(t, r.f)
 	least := testing.AllocsPerRun(10, call)
 	for range 4 {
 		least = min(least, testing.AllocsPerRun(10, call))

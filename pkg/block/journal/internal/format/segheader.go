@@ -11,6 +11,11 @@ import (
 // follows it.
 const SegmentHeaderSize = 48
 
+// NoStream is the Stream a header carries when no one append stream opened
+// the segment: the copier's targets hold records of several streams, so a
+// reader that attributes a segment to a stream skips one that names this.
+const NoStream uint32 = 1<<32 - 1
+
 // SegmentHeader is the header at offset 0 of every segment: whose journal
 // the segment is, its id, and the segment its stream sealed before it.
 type SegmentHeader struct {

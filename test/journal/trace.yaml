@@ -198,7 +198,7 @@ rfc1 / 9.4 / D / "accounting follows the cap":
 rfc1 / 9.4 / D / "generation never repeats":
   tests: [TestRFC1D_GenerationNeverRepeats]
 rfc1 / 9.4 / D / "stats are cheap":
-  tests: [TestRFC1D_StatsTakeNoWriteLock, TestRFC1D_StatsCostIsFlat]
+  tests: [TestRFC1D_StatsTakeNoWriteLock, TestRFC1D_StatsCostIsFlat, TestStatsAfterOpenWalksNoLock]
   owner: epic 8
   reason: 'the lock a write takes and drops before its storage call needs the lock-order recorder, and a walk that allocates nothing needs a counted hook in the journal: both are internal to the data path; the public half is the tests'
 rfc1 / 9.4 / D / "named inequalities hold":

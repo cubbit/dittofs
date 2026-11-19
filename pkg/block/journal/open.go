@@ -376,6 +376,13 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// landed is durable, and every failure the answer costs is on the
 		// directory's failed list.
 		c, err := datapath.Continue(deps, state, func(c *datapath.Core) error {
+			// The damaged segments the open reports feed the rows the journal
+			// counts until it closes, whatever its own retirements and
+			// emptyings then do with the segments: the rows are marked first,
+			// before any retirement can fire under the open's own steps, so a
+			// retired segment's row keeps the retired flag the count survives
+			// on.
+			c.Durability().DamagedAtOpen(st.Tails.Damaged)
 			if err := recovery.OpenLosses(ctx, &st, c.Durability(), s.HeadroomRecords, func(n int) error {
 				return c.WaitRecordSpares(ctx, n)
 			}); err != nil {
@@ -410,6 +417,13 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			if err := recovery.Emptying(ctx, recoveryDeps, &st, expect, floor, marks); err != nil {
 				return err
 			}
+			// The recovered marks, read at the settle the emptying ends the
+			// open's placements at: every copy the open made is written and
+			// sealed, every source unlinked, and an entry names a segment
+			// still in the ledger — a record the emptying copied out is
+			// named at its copy, and an unlinked segment offers no mark of
+			// its own.
+			found.marks = st.SyncMarks()
 			return holdDeferredHolders(c, dir, expect)
 		})
 		if err != nil {

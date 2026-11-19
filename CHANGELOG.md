@@ -78,6 +78,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The journal's open now reports what it recovered of each append stream.**
+  `Stats.SyncMarks` names, per stream, the end and sequence number of the
+  stream's last verifying record — a record the open re-appended counted at
+  the sealed copy it wrote — so the group commit records the recovered
+  position and a stream that lost its acknowledged tail reads lowered once
+  instead of reporting the loss at every open. The damaged segments the open
+  reports stay counted in `DamagedSegments` under their old ids until the
+  journal closes, also once the open has emptied or retired them, and the
+  emptying's span of the open trace carries how many segments the open read
+  by their catalog and how many by scan.
 - **The journal's open proves its unproven tail on the device.** A seal marker
   only the live view serves no longer seals at open: the marker is re-read on
   the device before it counts. Each tail record no sync or seal proved is

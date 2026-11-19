@@ -75,6 +75,16 @@ type segmentScan struct {
 	// record follows.
 	VerifiedEnd int64
 
+	// LastSeq is the sequence number of the last record the scan kept —
+	// one it fed, an aside whose body verified, or a forget — and LastEnd
+	// where that record's whole on-disk bytes end. Zero seq names a scan
+	// that kept none. The pair is the mark recovery reports a stream from:
+	// the numbers of the segment's last verifying record, named where it
+	// sits. A catalogued scan fills them the same way, its own RecordsEnd
+	// staying zero.
+	LastSeq core.Seq
+	LastEnd int64
+
 	// Dropped holds the entries the tail's classing will judge: the catalogue
 	// read fills it for each record it confines, with Synced set, and the walk
 	// fills it for each clone target whose body did not verify, with Entry
@@ -209,6 +219,10 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 			return sc, fmt.Errorf("%w: a %s record in segment %d", core.ErrNotImplemented, h.Kind, info.ID)
 		}
 		sc.VerifiedEnd = h.Offset + h.Size()
+		// The pair the recovery's stream marks read, kept for every record
+		// the scan kept — a body the walk could not verify drops its record
+		// above, and so reaches none of this.
+		sc.LastSeq, sc.LastEnd = h.Seq, h.Offset+h.Size()
 	}
 	if werr != nil {
 		// The walk's stop: an unknown kind or a non-zero epoch — the

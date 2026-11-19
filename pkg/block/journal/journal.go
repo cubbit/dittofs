@@ -68,6 +68,13 @@ type Journal struct {
 type openedFigures struct {
 	reporting recovery.Reporting
 	took      time.Duration
+
+	// marks answers, one per stream the run recovered records of, the mark
+	// of what it recovered: filled once, at the emptying that settles the
+	// placements the open leaves, and served back by Stats as the figure it
+	// is. Nothing raises it past the open — the running journal's own syncs
+	// answer their marks to the caller that asked for them.
+	marks []SyncMark
 }
 
 // newJournal returns the Journal that serves c.

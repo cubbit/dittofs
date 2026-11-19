@@ -504,6 +504,14 @@
   issue: '#3395'
   message: 'the race detector changes allocation counts'
 
+- test: TestStatsAfterOpenWalksNoLock
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'Counts allocations, which -race changes; runs in unit/journal-conformance-norace instead.'
+  issue: '#3395'
+  message: 'the race detector changes allocation counts'
+
 - test: TestRFC1D_VerificationReports
   status: fail
   fix: planned

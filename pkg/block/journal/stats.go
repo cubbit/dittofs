@@ -37,6 +37,15 @@ func (j *Journal) Stats() Stats {
 	s.Counters.TornTails += uint64(r.TornTails)
 	s.Counters.ScanResyncs += uint64(r.ScanResyncs)
 	s.Counters.SyncReappendedBytes += uint64(r.ReappendedBytes)
+	// The recovered marks, copied per call as every map of the answer is:
+	// one entry per stream, and never a walk of the placements each one
+	// names.
+	if n := len(j.opened.marks); n > 0 {
+		s.SyncMarks = make(map[uint32]SyncMark, n)
+		for _, m := range j.opened.marks {
+			s.SyncMarks[m.Stream] = m
+		}
+	}
 	return s
 }
 
@@ -92,8 +101,8 @@ func statsFrom(c datapath.Stats) Stats {
 // Every map and slice in a Stats belongs to the caller: Stats returns copies
 // and never keeps them.
 //
-// decision: Stats carries no SuspectSegments, SyncMarks or HeadroomSparesShort,
-// and Counters no descriptor_overruns or descriptor_open_failures, though RFC 1
+// decision: Stats carries no SuspectSegments or HeadroomSparesShort, and
+// Counters no descriptor_overruns or descriptor_open_failures, though RFC 1
 // sections 3.7 and 3.9 list them: nothing maintains a source for any of them
 // yet. A zero would claim nothing is suspect or short, so each is left out
 // until its source lands, which overturns this for that field.
@@ -179,6 +188,22 @@ type Stats struct {
 	// DamagedSegments is the number of segments holding records that do not
 	// verify. Kind: gauge.
 	DamagedSegments int
+
+	// SyncMarks holds, per append stream, the mark of what the journal's
+	// open recovered of it: its synced-through offset and the end and
+	// sequence number of the stream's last verifying record, a copy the
+	// open re-appended counted at where that copy verifies now. Kind: value.
+	//
+	// decision: the entry is the open's settle, held as it is until the
+	// journal closes. RFC 1's field names the SyncMark of the stream's last
+	// completed sync, which the group commit reads off this figure between
+	// the open and the stream's next sync — and past that first sync the
+	// running journal does not raise it, for the marks its own Sync returns
+	// belong to the caller that asked for them and nothing maintains a
+	// per-stream figure to fold them into. Withdrawn when the durability
+	// layer keeps the last mark of every stream's completed sync, which the
+	// open seeds with what it recovered.
+	SyncMarks map[uint32]SyncMark
 
 	// LastSyncError is the most recent sync failure; nil when no sync has
 	// failed since open. Kind: value.

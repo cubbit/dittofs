@@ -188,10 +188,11 @@ func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodi
 	}
 
 	// The whole batch as one buffer, the shape the packing loop spells: the
-	// header naming this journal and the target's own id, no predecessor —
-	// the ended sources are never a predecessor a later open would have to
-	// answer for — then each record re-encoded at the offset it lands at.
-	buf := format.AppendSegmentHeader(nil, format.SegmentHeader{Identity: c.identity, ID: id})
+	// header naming this journal and the target's own id, no predecessor and no
+	// stream, for its records come from several — the ended sources are never
+	// a predecessor a later open would have to answer for — then each record
+	// re-encoded at the offset it lands at.
+	buf := format.AppendSegmentHeader(nil, format.SegmentHeader{Identity: c.identity, ID: id, Stream: format.NoStream})
 	entries := make([]format.CatalogEntry, 0, len(recs))
 	at := make([]int64, len(recs))
 	for i := range recs {
@@ -300,7 +301,10 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	pending := make([]tailRecord, 0, len(st.Proof.Reappends))
 	slot := make(map[recKey]int, len(st.Proof.Reappends))
 	for _, rec := range st.Proof.Reappends {
-		if sealedCopy(st, rec.Header) {
+		if seg, end, ok := sealedCopy(st, rec.Header); ok {
+			st.Proof.Superseded = append(st.Proof.Superseded, replacedRecord{
+				Source: rec.Segment, Target: seg, End: end, Seq: rec.Header.Seq,
+			})
 			continue
 		}
 		k := recKey{rec.Header.Kind, rec.Header.File, rec.Header.Seq, rec.Header.Extent}
@@ -338,6 +342,16 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 		return err
 	}
 	st.Proof.ReappendTarget = target
+	// The copies' own numbers, one per record the target took: the stream
+	// marks the open reports read them, for a re-appended record is the last
+	// verifying one its stream has and the entry names the copy, never the
+	// placement the device lost or the emptying unlinks.
+	for i, rec := range pending {
+		st.Proof.Replaced = append(st.Proof.Replaced, replacedRecord{
+			Source: rec.Segment, Target: target,
+			End: at[i] + rec.Header.Size(), Seq: rec.Header.Seq,
+		})
+	}
 	// The bytes the phase wrote back, the figure the served journal reports
 	// beside its own syncs' re-appends: the pending list alone, for the
 	// sealed copies the skip filtered out wrote nothing here.
@@ -406,20 +420,23 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 // record's own sequence number and version, so only a copy the journal
 // issued this record's numbers may stand in for it — and the sealed fate is
 // the proof's own answer, a segment whose marker verified on the device or
-// whose successor's name proved it, never the walk's marker alone.
-func sealedCopy(st *State, h format.RecordHeader) bool {
+// whose successor's name proved it, never the walk's marker alone. It answers
+// where that copy sits: its segment and the end of its whole record.
+func sealedCopy(st *State, h format.RecordHeader) (core.SegmentID, int64, bool) {
 	switch {
 	case h.Kind == format.KindWrite || h.Kind == format.KindFill:
 		p, ok := st.Rebuilt.Index.Lookup(h.File, h.Extent.Off)
-		return ok && p.Seq == h.Seq && p.Version == h.Version &&
-			sealedFate(st, p.Record.Segment)
+		if ok && p.Seq == h.Seq && p.Version == h.Version && sealedFate(st, p.Record.Segment) {
+			return p.Record.Segment, int64(p.Record.Offset) + h.Size(), true
+		}
+		return 0, 0, false
 	case h.Kind <= format.KindUnmark:
 		for _, rc := range st.Kinds.Records {
 			if rc.Pair.Seq == h.Seq && rc.Pair.Version == h.Version && sealedFate(st, rc.Seg) {
-				return true
+				return rc.Seg, rc.Loc.Off + rc.Loc.Len, true
 			}
 		}
-		return false
+		return 0, 0, false
 	default: // the aside kinds, which never feed: their headers stay on the scans
 		for i := range st.Rebuilt.Scans {
 			if !sealedFate(st, st.Rebuilt.Scans[i].ID) {
@@ -427,11 +444,11 @@ func sealedCopy(st *State, h format.RecordHeader) bool {
 			}
 			for _, a := range st.Rebuilt.Scans[i].Aside {
 				if a.Header.Seq == h.Seq && a.Header.Version == h.Version {
-					return true
+					return st.Rebuilt.Scans[i].ID, a.Header.Offset + a.Header.Size(), true
 				}
 			}
 		}
-		return false
+		return 0, 0, false
 	}
 }
 
