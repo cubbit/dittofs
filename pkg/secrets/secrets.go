@@ -54,31 +54,6 @@ func New(cp kvstore.ControlPlane, keys map[Role]keyprovider.KeyProvider) (*Provi
 	}, nil
 }
 
-// Resolve returns the current value of ref, unsealed with role's wrapping
-// key. It fails if the record's kind or owner is not the caller's, so a
-// reference cannot be pointed at another holder's secret.
-func (p *Provider) Resolve(
-	ctx context.Context,
-	role Role,
-	kind entity.SecretKind,
-	owner entity.SecretOwner,
-	ref entity.SecretRef,
-) ([]byte, error) {
-	return nil, unbuilt("Resolve")
-}
-
-// Versions opens every version still held, current first, checked against
-// the caller's kind and owner as Resolve checks the current one.
-func (p *Provider) Versions(
-	ctx context.Context,
-	role Role,
-	kind entity.SecretKind,
-	owner entity.SecretOwner,
-	ref entity.SecretRef,
-) ([]Version, error) {
-	return nil, unbuilt("Versions")
-}
-
 // Prune drops the versions below the lowest one any node reports holding,
 // never the current one, after checking the caller's kind and owner.
 func (p *Provider) Prune(
