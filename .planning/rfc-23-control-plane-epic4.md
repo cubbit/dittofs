@@ -833,8 +833,9 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   does, so a `PUT`, `PATCH` or `DELETE` of a missing user is `404`, not `412`, and no answer tells
   which IDs are accounts; the last enabled admin kept, its disable or delete refused `409`
   `last_admin`, counted in the write's transaction; a uid or gid of 0 refused, an absent one
-  allocated; a user or group name refused when it is invalid UTF-8, holds a control character,
-  begins or ends with white space, or exceeds 255 bytes, and an `email` over 254 bytes; each user, group, membership and spelling row marked as
+  allocated; a user, group or netgroup name refused when it is invalid UTF-8, holds a control
+  character, begins or ends with white space, or exceeds 255 bytes, a user or group created with
+  no name or edited to none refused, and an `email` over 254 bytes refused; each user, group, membership and spelling row marked as
   raising `PGEN`, so T4.4's adapter waits on `Deps.Applied` after its commit (D22), the first
   production rows to do so. Consumed by E5 (the role field, which is its T5.6, `last_admin`,
   `email`'s visibility, and the guard's replacement) and E6.
@@ -863,9 +864,10 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   counters read by E3's per-node pause from `export_test.go`, the same `PATCH` parked until
   `Pending` on the clock counts its wait, then the clock advanced 1 s: the answer is the `PATCH`'s
   own `200`, the user read back committed, and the position still below it (catches an unbounded
-  wait, or a committed write answered as refused, R68); a grant written while reconcile is held
-  answered with the clock untouched (catches a wait on a write that raised neither generation,
-  R68). Doubles: the injected clock (kind 1).
+  wait, or a committed write answered as refused, R68); with reconcile held, a group's and a
+  membership's write each waiting for the clock's second likewise, and a grant's, a quota's and a
+  netgroup's answered with the clock untouched (catches a wait on a write that raised neither
+  generation, or a `PGEN` row left unmarked, R68). Doubles: the injected clock (kind 1).
 
 ### T4.11 The domain's routes and the `identity.ntlm` rule
 
