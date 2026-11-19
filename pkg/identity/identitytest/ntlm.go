@@ -74,3 +74,10 @@ func ntlmv2Response(password []byte, user, domain string, challenge, client [8]b
 	lm = append(hmacMD5(key, challenge[:], client[:]), client[:]...)
 	return nt, lm, hmacMD5(key, proof)
 }
+
+// NTLMv2Response is a client's answer to challenge for user in domain with
+// password, as ntlmv2Response builds it, for a test that passes a logon
+// through a channel: the NT and LM responses and the session base key.
+func NTLMv2Response(password []byte, user, domain string, challenge, client [8]byte) (nt, lm, session []byte) {
+	return ntlmv2Response(password, user, domain, challenge, client, 0x01dc000000000000)
+}

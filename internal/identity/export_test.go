@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
@@ -95,4 +96,20 @@ func (s *Server) VerifyAPReq(b []byte, svc identity.Service, tr identity.Transpo
 func StringToKey(etype int32, password []byte, salt string, iterations uint32) ([]byte, error) {
 	k, err := stringToKey(etype, password, salt, iterations)
 	return k.KeyValue, err
+}
+
+// Logon passes r through the node's secure channel, as a pass-through does.
+func (s *Server) Logon(ctx context.Context, r netlogon.LogonRequest) (netlogon.Reply, error) {
+	return s.logon(ctx, r)
+}
+
+// ChannelAt is the controller the node's secure channel is set up to and the
+// machine password version it signed in with; ok false when none is.
+func (s *Server) ChannelAt() (addr string, version uint64, ok bool) {
+	s.chMu.Lock()
+	defer s.chMu.Unlock()
+	if s.node == nil {
+		return "", 0, false
+	}
+	return s.node.addr, s.node.version, true
 }
