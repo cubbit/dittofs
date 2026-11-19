@@ -7,6 +7,7 @@ package sidecar
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -140,6 +141,42 @@ func (r *Runner) Stop(ctx context.Context, name string, a adapter.Adapter) error
 		_ = r.sync(ctx, sc, func() []adapter.Serving { return r.servs(sc.Adapters()) })
 	}
 	return a.Stop(ctx)
+}
+
+// StopAll carries the stop of every adapter in as, each keyed by the name
+// Start was called with (RFC 23 §2.2's stop step 2): each leaves the serving
+// set, every enabled sidecar serving any of them is synced with the set left,
+// empty once as holds every adapter, and then every adapter's Stop runs at
+// once under ctx. It returns once all have, their errors joined.
+//
+// decision: one call stops every adapter, since Stop per adapter either
+// drains one while a sidecar still advertises another, or, run in turn,
+// drains them one after another; RFC 23 §2.2 syncs the empty set before any
+// drain, and drains every adapter concurrently.
+func (r *Runner) StopAll(ctx context.Context, as map[string]adapter.Adapter) error {
+	r.mu.Lock()
+	for name := range as {
+		delete(r.serving, name)
+	}
+	var syncs []*sidecar
+	for _, sc := range r.sidecars {
+		if sc.enabled && slices.ContainsFunc(sc.Adapters(), func(name string) bool { _, ok := as[name]; return ok }) {
+			syncs = append(syncs, sc)
+		}
+	}
+	r.mu.Unlock()
+	for _, sc := range syncs {
+		_ = r.sync(ctx, sc, func() []adapter.Serving { return r.servs(sc.Adapters()) })
+	}
+	errs := make(chan error, len(as))
+	for _, a := range as {
+		go func() { errs <- a.Stop(ctx) }()
+	}
+	var joined []error
+	for range as {
+		joined = append(joined, <-errs)
+	}
+	return errors.Join(joined...)
 }
 
 // SetEnabled applies a sidecar's live enabled setting: a disabled one is

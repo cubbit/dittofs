@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
@@ -808,4 +809,103 @@ func (n *nilNoting) Sync(ctx context.Context, serving []adapter.Serving) error {
 		}
 	}
 	return n.gating.Sync(ctx, serving)
+}
+
+// parking is the holder with a fault on cue: while gate is set, the next
+// Sync parks until gate closes, then holds its set as the holder does.
+type parking struct {
+	*holder
+	gate chan struct{}
+}
+
+func (p *parking) Sync(ctx context.Context, serving []adapter.Serving) error {
+	if g := p.gate; g != nil {
+		p.gate = nil
+		<-g
+	}
+	return p.holder.Sync(ctx, serving)
+}
+
+// parkedStop is a real adapter whose Stop, on cue, tells began and parks
+// until gate closes, before it stops the adapter.
+type parkedStop struct {
+	adapter.Adapter
+	began func()
+	gate  <-chan struct{}
+}
+
+func (p parkedStop) Stop(ctx context.Context) error {
+	p.began()
+	<-p.gate
+	return p.Adapter.Stop(ctx)
+}
+
+// StopAll syncs the sidecar with the empty set before it calls any adapter's
+// Stop, then calls both at once, and returns once both have stopped (RFC 23
+// §2.2's stop step 2). The servers serve outside a synctest bubble and
+// StopAll runs inside it, its Sync and each Stop parked on cue, so each
+// synctest.Wait reads what StopAll had called by then. A drain started
+// before the empty Sync, Stops run in turn, or a Sync that still advertises
+// an adapter fails the readings.
+func TestStopAllSyncsTheEmptySetBeforeAnyAdapterStops(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	h := &parking{holder: newHolder("holder", "nfs", "smb")}
+	r := sidecar.New(h)
+	t.Cleanup(r.Close)
+	srvs := map[string]*core.Server{}
+	for _, name := range []string{"nfs", "smb"} {
+		srvs[name] = buildServer(t, b, name, on("127.0.0.1"))
+		if err := r.Start(t.Context(), name, srvs[name]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	synctest.Test(t, func(t *testing.T) {
+		syncs, stops := make(chan struct{}), make(chan struct{})
+		h.gate = syncs
+		var mu sync.Mutex
+		began := map[string][]adapter.Serving{} // what the sidecar held as each Stop began
+		as := map[string]adapter.Adapter{}
+		for name, srv := range srvs {
+			as[name] = parkedStop{srv, func() {
+				mu.Lock()
+				defer mu.Unlock()
+				began[name] = h.holding()
+			}, stops}
+		}
+		done := make(chan error, 1)
+		go func() { done <- r.StopAll(context.Background(), as) }()
+
+		synctest.Wait() // StopAll parked in the sidecar's Sync
+		mu.Lock()
+		if len(began) != 0 {
+			t.Errorf("Stops begun while the sidecar's Sync ran: %d, want none before it returns", len(began))
+		}
+		mu.Unlock()
+		close(syncs)
+		synctest.Wait() // every Stop StopAll has called parked
+		mu.Lock()
+		for name, srv := range srvs {
+			held, ok := began[name]
+			if !ok {
+				t.Errorf("%s's Stop had not begun while the other's was parked, want both at once", name)
+			} else if len(held) != 0 {
+				t.Errorf("as %s's Stop began the sidecar held %v, want nothing", name, held)
+			}
+			if got := srv.Health().State; got != adapter.StateServing {
+				t.Errorf("with every Stop parked %s is %s, want still serving", name, got)
+			}
+		}
+		mu.Unlock()
+		close(stops)
+		if err := <-done; err != nil {
+			t.Fatalf("StopAll: %v", err)
+		}
+		for name, srv := range srvs {
+			if got := srv.Health().State; got != adapter.StateStopped {
+				t.Errorf("after StopAll %s is %s, want stopped", name, got)
+			}
+		}
+	})
 }
