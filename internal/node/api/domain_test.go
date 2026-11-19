@@ -479,6 +479,17 @@ func TestKerberosNameKeptWithoutTheDirectory(t *testing.T) {
 		t.Errorf("answer %s: want the Kerberos name %s", r.body, krb.Value)
 	}
 
+	r = s.do(t, http.MethodPatch, path, `{"spec":{"disabled":false}}`, match(back.Generation)...)
+	if r.status != http.StatusOK {
+		t.Fatalf("PATCH leaving the Kerberos name: answered %d %s, want 200", r.status, r.body)
+	}
+	if got, ok := krbOf(); !ok || got != krb {
+		t.Errorf("Kerberos name after the PATCH: %+v, want %+v, its link kept", got, krb)
+	}
+	if err := json.Unmarshal(r.body, &back); err != nil {
+		t.Fatal(err)
+	}
+
 	r = s.do(t, http.MethodPut, path, `{"spec":{"name":"alice","uid":5001,"kerberos":"alice2@AD.EXAMPLE"}}`, match(back.Generation)...)
 	if r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
 		t.Errorf("PUT naming a new Kerberos name: answered %d %s, want 503 unavailable", r.status, r.body)
