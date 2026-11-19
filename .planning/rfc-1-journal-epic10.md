@@ -3,7 +3,7 @@
 **Sources:** [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.4 and §10; [RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md)
 §3.4; [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §2.5 step 1; [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §3.2.
 **Track:** A.
-**Epic 10 estimate: 4 subtasks, 7.5 man-days.**
+**Epic 10 estimate: 4 subtasks, 7.75 man-days.**
 
 What this epic owns:
 
@@ -78,7 +78,7 @@ Not this epic's: a store with no journal, and a journal not recorded for this de
 
 ### T10.2 `node.Preflight`
 
-**Subtask T10.2 estimate: 3.25 man-days.**
+**Subtask T10.2 estimate: 3.5 man-days.**
 
 - **Depends on:** T10.1; the RFC 23 owner's agreement to change the node's export pin (below).
 - **Covers requirements:** R1, R2, R3, R9, R10, R11.
@@ -111,6 +111,7 @@ Not this epic's: a store with no journal, and a journal not recorded for this de
     - Without this, `Init` commits v2 keys beside v1's.
     - `badgerkv.Open` writes the node's clock ceiling before it returns, so a fresh store is never empty: that key is exempt.
     - v1's keys are ASCII prefixes (`f:`, `p:`, `c:`, `lock:`), none starting with a v2 key kind.
+    - decision: `Init` accepts a store holding only the clock ceiling, so a v1 store that `Open` has already written the ceiling into is still refused, because it holds v1 keys. The ceiling: a v1 store holding no key at all would pass; it holds none only when empty. Overturned if v1 can leave an empty store that matters.
     - The refusal is its own error, and `Init`'s transaction writes nothing.
   - A `ponytail:` at the probe:
     - A `MANIFEST` with no format record is left to `kvstore.Open` and `Init` (R11).
@@ -132,7 +133,8 @@ Not this epic's: a store with no journal, and a journal not recorded for this de
   - A nil clock refuses as a wiring error, never as unidentifiable devices.
   - At `kvstore.Init`, over `badgerkv.Open` on a fresh `t.TempDir()`:
     - a store holding only the clock ceiling initialises;
-    - the same with a v1-style key present refuses, and only the ceiling changed.
+    - the same with a v1-style key present refuses, and only the ceiling changed;
+    - every v2 key kind is below `0x61`, so no v1 prefix (`f`, `p`, `c`, `l`) collides with one: a test pins it.
   - v1 rows:
     - a device that is an old v1 root (`shares/<n>/journal/x.seg`);
     - a store directory's parent holding `shares/<n>/blobs/x`;
@@ -185,7 +187,7 @@ Not this epic's: a store with no journal, and a journal not recorded for this de
 ## Order and pull requests
 
 - Order: T10.1, then T10.2, then T10.3 and T10.4.
-- Suggested PR 1: T10.1 to T10.3 (6 md).
+- Suggested PR 1: T10.1 to T10.3 (6.25 md).
 - Suggested PR 2: T10.4 (1.5 md).
 - One PR per subtask works too.
 

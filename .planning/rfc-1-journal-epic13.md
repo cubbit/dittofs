@@ -3,7 +3,7 @@
 **Sources:** [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §3.7 and §3.9; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.5 and
 §2.8; [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §2.6 (`Deps.Tracer`).
 **Track:** B.
-**Epic 13 estimate: 4 subtasks, 13.75 man-days.**
+**Epic 13 estimate: 4 subtasks, 14.75 man-days.**
 
 This is not the old epic 11 ("the engine on the RFC 16 store"), which is superseded.
 
@@ -31,7 +31,7 @@ This is not the old epic 11 ("the engine on the RFC 16 store"), which is superse
 
 `Stats` itself breaks RFC 1 §3.7 today, so R10 has its own subtask (T13.4).
 
-- `Core.Stats` (`datapath/stats.go`) takes nine locks that writes take:
+- `Core.Stats` (`datapath/stats.go`) takes twelve locks that writes take:
   - `dirtyFiles.mu`: `Account` runs on every publish, and `oldestDirty` walks `byTime` under it;
   - `cap.mu`, through `ReservedBytes`, `ReservedByTag` and `RefusedCount`: `Take` holds it on every write and fill;
   - `set.mu`, through `Counters` and `TagFigures`: `AddRecord` holds it;
@@ -40,7 +40,10 @@ This is not the old epic 11 ("the engine on the RFC 16 store"), which is superse
   - `shares.mu`, through `shareFigures`: `Account` holds it on every publish;
   - `Durability.mu`, through `snapshot()`: `Sink` and `WaitDurable` hold it too;
   - `Durability.lmu`: the loss path holds it while it raises and publishes a loss;
-  - `conflictSet.mu`, through `TagConflicts`: `conflictDiff` holds it during an index update.
+  - `conflictSet.mu`, through `TagConflicts`: `conflictDiff` holds it during an index update;
+  - `Headroom.mu`, through `headroom.Draws()`: `Take` reads `BelowHalf` under it on every content write;
+  - `Descriptors.mu`, through `cache.Stats()`: `Acquire` takes it on a segment roll;
+  - `Durability.dmu`, through `damagedReport`, which also walks `d.damaged`.
 - Epic 8 owns the rule as R96 and R97 and has landed, so the fix is owned here.
 
 Deferred, with owners in the plan's ledger:
@@ -116,7 +119,9 @@ Deferred, with owners in the plan's ledger:
     - `ReadOnly`: the 0 or 1 flag. Any text it carries is excluded, because R8 forbids it as a label.
     - `Shares`: per-share gauges, per R3.
     - `SyncMarks`: per append stream, under a `stream` label added to the allow-list (`stats.go` carries it since T7.14).
-    - `SuspectSegments`, `HeadroomSparesShort` and the descriptor counters: excluded, because `journal.Stats` does not carry them yet (`stats.go` says nothing maintains a source). Each gets its series when its source lands, with a `stream` label added to the allow-list for `SyncMarks`. The reflection test fails when the field is added to `Stats` with no series.
+    - `RejectedSegments`: a gauge.
+    - `SuspectSegments`: carried but never set (`stats.go:238`), so excluded by name in the reflection test with a `decision:`: a zero would claim nothing is suspect. It gets its series when its source lands.
+    - `HeadroomSparesShort` and the descriptor counters: excluded, because `journal.Stats` does not carry them yet (`stats.go` says nothing maintains a source). Each gets its series when its source lands. The reflection test fails when the field is added to `Stats` with no series.
 - **Acceptance criteria:**
   - Every `Stats` field and §3.9 counter has a series under its name, or a written reason in the table.
   - Per-share gauges carry at most `metrics.top_shares` `share` values, and an unlabelled total beside them.
@@ -187,30 +192,31 @@ Deferred, with owners in the plan's ledger:
 
 ### T13.4 `Stats` without a walk or a write lock
 
-**Subtask T13.4 estimate: 4.5 man-days.**
+**Subtask T13.4 estimate: 5.5 man-days.**
 
 - **Depends on:** none.
 - **Covers requirements:** R10.
 - **Deliverables:**
   - The oldest dirty write kept as a maintained value, updated where files enter and leave the dirty set.
     - `oldestDirty` no longer walks `byTime` under `dirtyFiles.mu`.
-  - `Stats` takes none of the nine locks listed under R10, or reads its figure as an atomic.
-    - Each lock is either taken out of `Stats`' path or kept with a `decision:` naming why holding it cannot stall a write.
+  - `Stats` takes none of the twelve locks listed under R10, or reads its figure as an atomic.
+    - Each lock is either taken out of `Stats`' path or kept with a `decision:` naming why holding it cannot stall a write, and listed by name in the test's allow-list.
   - `Account` keeps the minimum, so the next-oldest scan moves onto the clean path and off `Stats`.
   - A `ponytail:` at the maintained value if it keeps one-second resolution, as `oldestDirty` does today.
 - **Acceptance criteria:**
   - `Stats` costs the same at 10^3 and 10^5 dirty files.
-  - No lock `Stats` takes is one a write takes: the sets are disjoint, so a lock added later to either path fails the test.
+  - `Stats` returns while a writer holds each of the twelve locks, one at a time, except the locks on the named allow-list.
   - The inequalities `Stats` keeps (RFC 1 §3.7) still hold under concurrent writes.
 - **Tests:**
   - At `Journal.Stats`, the public call.
   - A benchmark at 10^3 and 10^5 dirty files with `b.ReportAllocs()` and setup before `b.ResetTimer()`: flat.
     - `byTime` is keyed by the second, so the files are written over distinct seconds on the injected clock.
     - Ten thousand writes in a tight loop make a handful of keys, and the benchmark cannot fail.
-    - A second benchmark over `Account`, at the same sizes. It passes when flat, with each iteration cleaning the current oldest file: otherwise the next-oldest scan moves onto the write path unnoticed.
-  - One test over every mutex `Stats` reaches, using `internal/lockorder`'s `Recorder`, by rank:
-    - the locks a write takes and the locks `Stats` takes are disjoint;
-    - a lock added later to `Stats`' path fails it.
+    - A second benchmark over `Account`, at the same sizes. It passes when flat, with each iteration cleaning the current oldest file and dirtying a new newest one: otherwise the set drains once `b.N` exceeds its size, and the benchmark reads flat for the wrong reason.
+  - One test per lock, with a writer holding it through an `export_test.go` hook: `Stats` returns.
+    - `internal/lockorder`'s `Recorder` cannot replace them: a rank of 0 is never recorded, and most of these mutexes are plain `sync.Mutex`.
+    - The ranked ones (`cap.mu`, `set.mu`, `pool.mu`) all share the `Capacity` rank, so a rank cannot tell them apart.
+    - The test lists the locks `Stats` reaches: a lock added to its path without a test fails it.
   - The existing Group D check "`Stats` is cheap and keeps its inequalities" still passes.
   - A `-race` run with writers and a `Stats` loop.
 
@@ -219,7 +225,7 @@ Deferred, with owners in the plan's ledger:
 - Order: T13.1, then T13.2. T13.3 and T13.4 are independent.
 - Suggested PR 1: T13.1 and T13.2 (6.25 md).
 - Suggested PR 2: T13.3 (3 md).
-- Suggested PR 3: T13.4 (4.5 md).
+- Suggested PR 3: T13.4 (5.5 md).
 - One PR per subtask works too.
 
 ## Open points

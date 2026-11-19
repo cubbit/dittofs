@@ -265,10 +265,10 @@ run is a failure ([RFC index, test tiers](../docs/internals/rfcs/rfc-index.md)).
 | 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 15 | B | 9a, 9b, 13 |
 | 9a | **Reclamation and tags** | Liveness of records and segments, auto-retire, the journal's unread set, `Repack` (also scoped to a share), `Inspector.Segments`, `Forget`, `Strand` | 12 | B | 7a (T9.1) |
 | 9b | **Offload, release and holds** | `Offload`, `OffloadMany`, pins, `report`, `MarkOffloaded`, `Unmark` and the stale rule, `Release`, snapshot holds | not broken down | B | 13 |
-| 10 | **The start check** | A start over an absent store creates nothing and says what it found: not initialised, store lost, unidentifiable journal, v1 state; a node with no journal device is refused ([epic 10](rfc-1-journal-epic10.md)) | 4 (7.5 md) | A | 12 |
+| 10 | **The start check** | A start over an absent store creates nothing and says what it found: not initialised, store lost, unidentifiable journal, v1 state; a node with no journal device is refused ([epic 10](rfc-1-journal-epic10.md)) | 4 (7.75 md) | A | 12 |
 | 11 | **The engine on the RFC 16 store** | superseded: [the RFC 8 part-1 plan](rfc-8-journal-only-engine-plan.md)'s; offload half and salvage are RFC 8's second part | none | rif's team | |
-| 12 | **E2E green** 🔀 | Re-triage `known.yaml`, burn down what 7a and 9a leave, counted checks outside `-race`, the model on many seeds, a soak and J1–J3 without offload, tier registration, profiling baselines ([epic 12](rfc-1-journal-epic12.md)) | 8 (29 md) | team | release |
-| 13 | **The journal's exports** | The `journal_` collector over the journal's full `Stats`, the tracer and logger wiring, and `Stats` served without a walk ([epic 13](rfc-1-journal-epic13.md)) | 4 (13.75 md) | B | 12 |
+| 12 | **E2E green** 🔀 | Re-triage `known.yaml`, burn down what 7a and 9a leave, counted checks outside `-race`, the model on many seeds, a soak and J1–J3 without offload, tier registration, profiling baselines ([epic 12](rfc-1-journal-epic12.md)) | 8 (23 md) | team | release |
+| 13 | **The journal's exports** | The `journal_` collector over the journal's full `Stats`, the tracer and logger wiring, and `Stats` served without a walk ([epic 13](rfc-1-journal-epic13.md)) | 4 (14.75 md) | B | 12 |
 | | | | **~125 + E7b + E9b** | | |
 
 Epics 7 and 9 are each split in two. Epics 7a and 9a are what a share needs to restart, after a
@@ -1159,7 +1159,7 @@ Run once this epic lands, because each calls `Offload` or `Release`: J4, J5 and 
 `Offload` and `Release` steps of epic 12's model alphabet and of its soak's load, and the pin
 bounds (64 per offer, 256 journal-wide), settled by measurement.
 
-### Epic 10 — The start check (4 subtasks, 7.5 man-days, A)
+### Epic 10 — The start check (4 subtasks, 7.75 man-days, A)
 
 Broken down in [rfc-1-journal-epic10.md](rfc-1-journal-epic10.md). The initialisation step
 (`journal.Init`, `RecordJournal`, the re-run after an interruption) is the RFC 23 plan's epic 5,
@@ -1184,17 +1184,17 @@ team. The offload wiring, salvage, the system e2e rows and the `Content` conform
 second part (§6.1). The number is kept so older documents still read: wherever one of this plan's
 documents says "epic 11", it means that engine work. The journal's exports are epic 13.
 
-### Epic 12 — E2E green 🔀 (8 subtasks, 29 man-days, team)
+### Epic 12 — E2E green 🔀 (8 subtasks, 23 man-days, team)
 
 Broken down in [rfc-1-journal-epic12.md](rfc-1-journal-epic12.md). State: `test/journal/known.yaml`
-holds 185 entries at `9efa0702f`, after 7a's reopen landed, and `test/engine/known.yaml` another 26. 114 of the journal's fail on a 7b or 9b call and stay listed with a recorded decision. 53 are other rows the reopen no longer masks. J4, J5, J8, the model's `Offload` and `Release` steps and the
+holds 185 entries at `9efa0702f`, after 7a's reopen landed, and `test/engine/known.yaml` another 26. 114 of the journal's fail on a 7b or 9b call and stay listed with a recorded decision. 53 are other rows the reopen no longer masks, which T12.1 classifies by test name: most are 9a's, 7a's or 7b's. J4, J5, J8, the model's `Offload` and `Release` steps and the
 soak's offload load are epic 9b's (§5, epic 9).
 
-### Epic 13 — The journal's exports (4 subtasks, 13.75 man-days, B)
+### Epic 13 — The journal's exports (4 subtasks, 14.75 man-days, B)
 
 Broken down in [rfc-1-journal-epic13.md](rfc-1-journal-epic13.md). What RFC 1 §3.9 and §3.7 require and
 nothing else builds: the `journal_` series over the journal's full `Stats`, the adapter from the
-engine's tracer to the journal's, and `Stats` served without a walk or a write lock, which means none of the nine locks it shares with writes.
+engine's tracer to the journal's, and `Stats` served without a walk or a write lock, which means none of the twelve locks it shares with writes.
 
 ---
 
