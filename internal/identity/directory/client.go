@@ -108,7 +108,9 @@ func unavailable(what string, err error) error {
 }
 
 // Lookup answers "who holds this": the one entry below the record's base
-// holding value under by, false when none does. A value more than one entry
+// holding value under by, false when none does; a SID is looked up under the
+// naming context, as LookupSIDs looks it up, since an ad domain's SIDs are
+// the whole domain's whatever the record's base (RFC 18 §5.1). A value more than one entry
 // holds, a refusal, a referral and a timeout each fail ErrUnavailable,
 // never "no such entry"; continuation references in the answer are ignored.
 func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool, error) {
@@ -121,7 +123,13 @@ func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool
 	}
 	c.begin()
 	defer c.end()
-	_, res, err := c.do(ctx, Request{Base: c.rec.Base, Scope: ScopeSubtree, Filter: filter, Attrs: c.rec.attrs()})
+	base := c.rec.Base
+	if by == BySID {
+		if base, _, err = c.domain(ctx); err != nil {
+			return Answer{}, false, err
+		}
+	}
+	_, res, err := c.do(ctx, Request{Base: base, Scope: ScopeSubtree, Filter: filter, Attrs: c.rec.attrs()})
 	if err != nil {
 		return Answer{}, false, err
 	}
@@ -449,6 +457,13 @@ func (c *Client) all(ctx context.Context, req Request) ([]Entry, error) {
 func (c *Client) pages(ctx context.Context, req Request) (out []Entry, later bool, err error) {
 	conn, res, err := c.do(ctx, req)
 	if err != nil {
+		// A first page the caller stopped waiting for runs on, and its answer
+		// would leave the search open on the connection; closing it ends the
+		// search, as on a later page. A search that failed has dropped it
+		// already.
+		if conn != nil && !errors.Is(err, ErrClosed) {
+			c.drop(conn)
+		}
 		return nil, false, err
 	}
 	out = res.Entries

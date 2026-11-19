@@ -41,8 +41,9 @@ func walked(q directory.Request) bool { return strings.Contains(q.Filter, direct
 // that group's own groups, a cycle visited once, through tokenGroups; and the
 // same through a level-by-level walk from the user and primaryGroupID for a
 // bind that cannot read tokenGroups, which member alone would answer without
-// the primary group. A distribution group the user is in is in neither, nor
-// is a security group reached only through it, as tokenGroups holds neither.
+// the primary group. A distribution group is in neither, at the first level
+// or any above it, nor is a security group reached only through one, as
+// tokenGroups holds neither (MS-ADTS 2.2.12).
 func TestGroupsAD(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
@@ -55,6 +56,8 @@ func TestGroupsAD(t *testing.T) {
 	e.d.AddGroup(t, "other", nil)
 	list := e.d.AddGroup(t, "list", map[string][][]byte{"member": {[]byte(user)}, "groupType": {[]byte("2")}})
 	e.d.AddGroup(t, "overlist", map[string][][]byte{"member": {[]byte(list)}})
+	g1list := e.d.AddGroup(t, "g1list", map[string][][]byte{"member": {[]byte(g1)}, "groupType": {[]byte("2")}})
+	e.d.AddGroup(t, "overg1list", map[string][][]byte{"member": {[]byte(g1list)}})
 	want := lowered(g1, g2, g3, du, pgParent)
 
 	for _, hidden := range []bool{false, true} {
@@ -235,6 +238,48 @@ func TestGroupsCallerGoneMidPages(t *testing.T) {
 	})
 }
 
+// A caller whose context ends while the first page is out gets an error,
+// and the connection the paged search is left open on once that page is
+// answered is closed: the next question dials again.
+func TestGroupsCallerGoneOnFirstPage(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t)
+		user := e.d.AddUser(t, "alice", nil)
+		for i := range 2 {
+			e.d.AddGroup(t, fmt.Sprintf("g%d", i), map[string][][]byte{"member": {[]byte(user)}})
+		}
+		e.d.HideTokenGroups()
+		e.d.SetMaxPageSize(1)
+		a, _, err := e.client(e.d.Dial).Lookup(context.Background(), directory.ByUserName, []byte("alice"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		filter := walkFilter(t, e, a)
+
+		// The walk's first page is answered, cookie and all, then held a
+		// second.
+		f := e.faulty(t, sim.Rule{Op: "search", Key: filter, From: 1, Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+		c := e.client(f.Dial)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { _, err := c.Groups(ctx, a); done <- err }()
+		synctest.Wait()
+		cancel()
+		if err := <-done; !errors.Is(err, vfserr.ErrUnavailable) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("Groups(alice), its context ended on the first page = %v; want ErrUnavailable for the canceled context", err)
+		}
+		e.clock.Advance(time.Second)
+		synctest.Wait()
+		dials := len(f.Dials())
+		if _, _, err := c.Lookup(context.Background(), directory.ByUserName, []byte("alice")); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(f.Dials()); n != dials+1 {
+			t.Errorf("%d dials after the next lookup, want %d: the connection left with the search open closed", n, dials+1)
+		}
+	})
+}
+
 // A tokenGroups SID the lookup finds no entry for, as when the bind may not
 // read the group, is kept in the closure by its SID alone.
 func TestGroupsKeepsASIDWithNoEntry(t *testing.T) {
@@ -316,41 +361,50 @@ func TestGroupsADUnderTheNamingContext(t *testing.T) {
 	}
 }
 
-// A closure of more than 1 024 groups fails: from tokenGroups before any of
-// its SIDs is looked up, and from the walk at the level that passes the cap.
+// A closure of exactly 1 024 groups is answered whole, and one of more
+// fails: from tokenGroups before any of its SIDs is looked up, and from the
+// walk at the level that passes the cap.
 func TestGroupsADBound(t *testing.T) {
-	for _, hidden := range []bool{false, true} {
-		t.Run(fmt.Sprintf("tokenGroups hidden %v", hidden), func(t *testing.T) {
-			ctx := context.Background()
-			e := newEnv(t)
-			user := e.d.AddUser(t, "alice", nil)
-			for i := range 1024 { // and Domain Users: 1 025
-				e.d.AddGroup(t, fmt.Sprintf("g%04d", i), map[string][][]byte{"member": {[]byte(user)}})
-			}
-			if hidden {
-				e.d.HideTokenGroups()
-			}
-			f := e.faulty(t)
-			got, err := e.client(f.Dial).Groups(ctx, directory.Answer{DN: user})
-			if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
-				t.Errorf("Groups(alice) in 1 025 groups = %d groups, %v; want none, ErrUnavailable", len(got), err)
-			}
-			lookups, levels := 0, 0
-			for _, q := range f.Queries() {
-				if strings.HasPrefix(q.Filter, "(|(objectSid=") {
-					lookups++
+	for _, n := range []int{1024, 1025} {
+		for _, hidden := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%d groups, tokenGroups hidden %v", n, hidden), func(t *testing.T) {
+				ctx := context.Background()
+				e := newEnv(t)
+				user := e.d.AddUser(t, "alice", nil)
+				for i := range n - 1 { // and Domain Users
+					e.d.AddGroup(t, fmt.Sprintf("g%04d", i), map[string][][]byte{"member": {[]byte(user)}})
 				}
-				if walked(q) {
-					levels++
+				if hidden {
+					e.d.HideTokenGroups()
 				}
-			}
-			// Hidden, the one lookup is the primary group's, and the walk's
-			// first level is two pages of 1 000.
-			want := map[bool][2]int{false: {0, 0}, true: {1, 2}}[hidden]
-			if lookups != want[0] || levels != want[1] {
-				t.Errorf("Groups(alice) in 1 025 groups asked %d SID lookups and %d walk queries, want %d and %d", lookups, levels, want[0], want[1])
-			}
-		})
+				f := e.faulty(t)
+				got, err := e.client(f.Dial).Groups(ctx, directory.Answer{DN: user})
+				if n == 1024 {
+					if err != nil || len(got) != n {
+						t.Errorf("Groups(alice) in 1 024 groups = %d groups, %v; want all 1 024", len(got), err)
+					}
+					return
+				}
+				if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+					t.Errorf("Groups(alice) in 1 025 groups = %d groups, %v; want none, ErrUnavailable", len(got), err)
+				}
+				lookups, levels := 0, 0
+				for _, q := range f.Queries() {
+					if strings.HasPrefix(q.Filter, "(|(objectSid=") {
+						lookups++
+					}
+					if walked(q) {
+						levels++
+					}
+				}
+				// Hidden, the one lookup is the primary group's, and the walk's
+				// first level is two pages of 1 000.
+				want := map[bool][2]int{false: {0, 0}, true: {1, 2}}[hidden]
+				if lookups != want[0] || levels != want[1] {
+					t.Errorf("Groups(alice) in 1 025 groups asked %d SID lookups and %d walk queries, want %d and %d", lookups, levels, want[0], want[1])
+				}
+			})
+		}
 	}
 }
 

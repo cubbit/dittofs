@@ -100,6 +100,32 @@ func TestLookupIsExact(t *testing.T) {
 	}
 }
 
+// A SID is looked up under the naming context, as LookupSIDs looks it up,
+// so an entry outside the record's base answers it, while a name is looked
+// up under the base alone.
+func TestLookupBySIDUnderTheNamingContext(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	dn := e.d.AddUser(t, "alice", nil)
+	a, ok, err := e.client(e.d.Dial).Lookup(ctx, directory.ByUserName, []byte("alice"))
+	if err != nil || !ok {
+		t.Fatalf("Lookup(alice) under the naming context = %v, %v", ok, err)
+	}
+	// A base that holds no entry but its own, as the in-memory directory
+	// holds no organizational unit.
+	e.rec.Base = e.d.AddGroup(t, "people", nil)
+	c := e.client(e.d.Dial)
+	if _, ok, err := c.Lookup(ctx, directory.ByUserName, []byte("alice")); err != nil || ok {
+		t.Errorf("Lookup(alice) under base %s = %v, %v; want no entry: alice is outside it", e.rec.Base, ok, err)
+	}
+	if b, ok, err := c.Lookup(ctx, directory.BySID, a.SID); err != nil || !ok || b.DN != dn {
+		t.Errorf("Lookup by alice's SID under base %s = %q, %v, %v; want %q", e.rec.Base, b.DN, ok, err, dn)
+	}
+	if got, err := c.LookupSIDs(ctx, [][]byte{a.SID}); err != nil || len(got) != 1 || got[0].DN != dn {
+		t.Errorf("LookupSIDs(alice's SID) under base %s = %v, %v; want %q", e.rec.Base, dnsOf(got), err, dn)
+	}
+}
+
 // Two entries answering one name refuse it ErrUnavailable, logged, rather
 // than answer either.
 func TestLookupAmbiguousIsUnavailable(t *testing.T) {
