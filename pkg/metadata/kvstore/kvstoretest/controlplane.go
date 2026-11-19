@@ -972,6 +972,37 @@ func testSpellingHolder(t *testing.T, kvo Opener) {
 	}
 }
 
+// Holder is read tracked in a write, over the spelling's row and the
+// record: a concurrent PutUser claiming the spelling that commits first
+// makes the write run again and see its holder.
+func testHolderInWrite(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
+		t.Run(b.name, func(t *testing.T) {
+			s, h := heldStore(t, b)
+			cp := s.ControlPlane()
+			carol := user("carol", krbAs("carol@AD.EXAMPLE", ""))
+			var seen entity.User
+			var held bool
+			outer, inner := race(h,
+				func() error {
+					return cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+						var err error
+						if seen, held, err = tx.Holder(krbAs("carol@AD.EXAMPLE", "")); err != nil {
+							return err
+						}
+						return errOf(tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0))
+					})
+				},
+				func() error { return errOf(cp.PutUser(ctx, carol, 0, entity.Alloc{})) })
+			must(t, inner)
+			must(t, outer)
+			if !held || seen.Principal != carol.Principal {
+				t.Errorf("Holder read by the attempt that committed: %v held %v, want carol %v", seen.Principal, held, carol.Principal)
+			}
+		})
+	}
+}
+
 // krbAs is the krb spelling name, linked for the binary form of the SID
 // linked spells, or for none when it is empty.
 func krbAs(name, linked string) entity.ProtocolID {

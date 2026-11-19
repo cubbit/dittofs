@@ -165,6 +165,7 @@ func Run(t *testing.T, open Opener) {
 		{"LastAdminRace", testLastAdminRace},
 		{"AdminRenameKeepsCount", testAdminRenameKeepsCount},
 		{"InstallationInWrite", testInstallationInWrite},
+		{"HolderInWrite", testHolderInWrite},
 		{"WriteNow", testWriteNow},
 		{"Idempotency", testIdempotency},
 		{"IdempotencyRace", testIdempotencyRace},

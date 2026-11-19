@@ -361,7 +361,8 @@ func TestCredentialSetOverOneRefused(t *testing.T) {
 }
 
 // The generic setting route writes no key a resource's own route writes,
-// a store's endpoint and credential, 400 naming the key and the route; and
+// a store's endpoint and credential and the keytab, 400 naming the key and
+// the route; and
 // no setting of a node, namespace or store that does not exist, 404. Each
 // is refused before the settings table judges it, and writes nothing.
 func TestGenericSettingGuards(t *testing.T) {
@@ -374,6 +375,7 @@ func TestGenericSettingGuards(t *testing.T) {
 	}{
 		{"a store's endpoint", "/api/v1/stores/" + uuid.NewString() + "/settings/remote.endpoint", http.StatusBadRequest, "remote.endpoint"},
 		{"a store's credential", "/api/v1/stores/" + st.String() + "/settings/remote.credential", http.StatusBadRequest, "remote.credential"},
+		{"the keytab", "/api/v1/settings/identity.keytab", http.StatusBadRequest, "identity.keytab"},
 		{"an unknown node's", "/api/v1/nodes/" + uuid.NewString() + "/settings/adapters.nfs.port", http.StatusNotFound, ""},
 		{"an unknown namespace's", "/api/v1/namespaces/" + uuid.NewString() + "/settings/namespace.prefix", http.StatusNotFound, ""},
 		{"an unknown store's", "/api/v1/stores/" + uuid.NewString() + "/settings/remote.bucket", http.StatusNotFound, ""},

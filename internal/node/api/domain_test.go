@@ -347,6 +347,51 @@ func TestOfflineJoinRefusedWithoutIdentity(t *testing.T) {
 	}
 }
 
+// An offline join is refused 503 while the node holds identity's join hold
+// and no secret provider, naming no machine password and writing no
+// operation.
+func TestOfflineJoinRefusedWithoutASealer(t *testing.T) {
+	d := serveDomain(t, false)
+	r := d.do(t, http.MethodPost, joinPath, offlineJoin("DFS$", "c0mputer-pw"))
+	if r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
+		t.Errorf("an offline join with identity and no sealer: answered %d %s, want 503 unavailable", r.status, r.body)
+	}
+	if in := d.installationRecord(t); in.MachinePassword != (entity.SecretRef{}) {
+		t.Errorf("machine password named: %v, want none", in.MachinePassword)
+	}
+	if ops := d.operations(t); len(ops) != 0 {
+		t.Errorf("operations written: %+v, want none", ops)
+	}
+}
+
+// An online join's organisational unit is placed strictly under the
+// directory record's base: with no base set it is refused 400 naming
+// spec.ou, as is the base itself; a unit under the base whose value holds
+// an escaped comma is admitted. A host name of one label is refused 400
+// naming spec.dns_host_name.
+func TestOnlineJoinUnitUnderTheBase(t *testing.T) {
+	const user, pw = "Administrator@AD.EXAMPLE", "pw"
+	d := serveDomain(t, false)
+	for _, tc := range []struct{ name, spec, field string }{
+		{"an OU with no base set", `,"ou":"OU=Servers,DC=ad,DC=example"`, "spec.ou"},
+		{"a host name of one label", `,"dns_host_name":"dfs"`, "spec.dns_host_name"},
+	} {
+		if r := d.do(t, http.MethodPost, joinPath, onlineJoin(tc.spec, user, pw)); r.status != http.StatusBadRequest || r.problem(t).Field != tc.field {
+			t.Errorf("%s: answered %d %s, want 400 naming %s", tc.name, r.status, r.body, tc.field)
+		}
+	}
+	d.putSetting(t, installation, "identity.directory.base", `"DC=ad,DC=example"`)
+	if r := d.do(t, http.MethodPost, joinPath, onlineJoin(`,"ou":"DC=AD, DC=example"`, user, pw)); r.status != http.StatusBadRequest || r.problem(t).Field != "spec.ou" {
+		t.Errorf("the base itself: answered %d %s, want 400 naming spec.ou", r.status, r.body)
+	}
+	if ops := d.operations(t); len(ops) != 0 {
+		t.Fatalf("operations after the refusals: %+v, want none", ops)
+	}
+	if r := d.do(t, http.MethodPost, joinPath, onlineJoin(`,"ou":"OU=a\\,b,DC=ad,DC=example"`, user, pw)); r.status != http.StatusAccepted {
+		t.Errorf("an OU with an escaped comma under the base: answered %d %s, want 202", r.status, r.body)
+	}
+}
+
 // An online join is refused 400 with an Idempotency-Key, an organisational
 // unit outside the directory's base, or a host name that is not a DNS name,
 // each holding no credential and writing no operation; with neither given
