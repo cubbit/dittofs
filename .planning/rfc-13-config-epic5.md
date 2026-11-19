@@ -400,7 +400,7 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 - **Covers:** R1, R2.
 - **Deliverables:** `apisettings` split into `Settings` and `Audit` with `json` and `class` tags
   (D1); `internal/node/settings.go`, the one `settings.Table` with the `api` and `audit` sections,
-  both `admin`-only; the table built in `node.New` and kept for reconcile. Consumed by T5.2 and
+  both `admin`-only; the table built in `node.New` and kept for reconcile, given the node's registry through E3's `(Table).WithMetrics`. The call lands with T5.9, which depends on T3.9. T5.9's `series_test.go` asserts it. Consumed by T5.2 and
   T5.4, which hands it to the API; RFC 20's T7.6 and the RFC 18 plan's T8.1 add their rows to it.
   It is not handed to `api.Deps.Settings` here: under `holdsContent`'s answer, a handed-in table
   refuses every store and namespace delete until T5.4's scope removal lands.
@@ -663,7 +663,8 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 - **Deliverables:** `BenchmarkReconcile` (#4688) grown with a case at 10⁴ shares' settings, E3's
   sparse fixture over the node's table and test sections, and 16 references for the secrets pass,
   timed from the commit to the end of the pass; its figure in the pull request against the 100 ms
-  ceiling, and the one-walk marker's trigger fired there if it is past it; `series_test.go`
+  ceiling, and the one-walk marker's trigger fired there if it is past it; the call
+  `(Table).WithMetrics(registry)` on the node's table, built in `node.New`; `series_test.go`
   reading the node's registry after a start.
 - **Acceptance criteria:**
   - The benchmark fails itself when the pass reports a refused section or a position below the
@@ -671,6 +672,8 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
   - Every RFC 13 §8 series but `config_provisioning_applied` and
     `config_provisioning_refused_total` is registered, and none has a label outside its closed
     set.
+  - A table built by `node.New` raises `config_refused_total` on the node's registry after a
+    refused write.
 - **Tests:** the benchmark, once per change in the `pr` tier with `-benchtime=1x`, the `manual`
   figures by `benchstat` over `-count=10`; the series test, failing when a series is missing or a
   label set carries a record ID (catches an owner's series never registered on the node, R30).
