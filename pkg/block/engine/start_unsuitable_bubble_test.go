@@ -443,12 +443,45 @@ func TestAnOpenThatFailsAfterCloseBeganLeavesTheCauseAsItWas(t *testing.T) {
 	})
 }
 
-// A Close that meets the retry's timer already fired leaves nothing open and
-// attaches nothing. The retry either sees the closed state before it opens the
-// directory, opening nothing, or, with more than one CPU, gets past that check
-// first and is overtaken: its handle and journal are closed, in that order,
-// as TestALateAttachThatCloseOvertook pins. A bubble fixes the order only on
-// one CPU, so the row accepts either outcome and no other.
+// A retry that attached the share before Close began left an attached share,
+// which Close closes as any other: its handle, then its journal.
+func TestARetryThatAttachedBeforeCloseIsClosedByIt(t *testing.T) {
+	fs, _ := bubbleFS(t)
+
+	synctest.Test(t, func(t *testing.T) {
+		b, s := refusedBubble(t, fs)
+		b.openFn = nil
+
+		b.clock.Advance(retryEvery)
+		synctest.Wait()
+
+		if err := b.e.Close(context.Background()); err != nil {
+			t.Fatalf("Close = %v", err)
+		}
+
+		if got := b.ev.list(); !slices.Equal(got, []string{handleClose(s), "journal close"}) {
+			t.Errorf(
+				"events %v, want the attached share's handle and journal closed, in that order",
+				got,
+			)
+		}
+
+		if got := b.e.Stats().Shares[s.ID].Refused; got != nil {
+			t.Errorf("share refused with %v, want it attached by the retry before Close", got)
+		}
+	})
+}
+
+// A Close that meets the retry's timer already fired leaves nothing open, and
+// the retry attaches nothing once Close began. The retry either sees the
+// closed state before it opens the directory, opening nothing, or, with more
+// than one CPU, gets past that check first and is overtaken: its handle and
+// journal are closed, in that order, as TestALateAttachThatCloseOvertook
+// pins, and the share stays refused. Or the retry attaches the share before
+// Close begins, and Close closes it as
+// TestARetryThatAttachedBeforeCloseIsClosedByIt pins: the same closes, with
+// the share attached. A bubble fixes the order only on one CPU, so the row
+// accepts these three outcomes and no other.
 func TestACloseThatMeetsTheFiredRetryTimerOpensNothing(t *testing.T) {
 	for i := range 3 {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
@@ -464,13 +497,29 @@ func TestACloseThatMeetsTheFiredRetryTimerOpensNothing(t *testing.T) {
 					t.Fatalf("Close = %v", err)
 				}
 
-				overtaken := []string{handleClose(s), "journal close"}
-				if got := b.ev.list(); len(got) != 0 && !slices.Equal(got, overtaken) {
-					t.Errorf("events %v after Close, want none, or %v when the retry was overtaken", got, overtaken)
-				}
+				closes := []string{handleClose(s), "journal close"}
+				got := b.ev.list()
+				refused := b.e.Stats().Shares[s.ID].Refused
 
-				if got := b.e.Stats().Shares[s.ID].Refused; got == nil {
-					t.Error("the share is attached after Close")
+				switch {
+				case len(got) == 0:
+					if !errors.Is(refused, journal.ErrUnsuitableStorage) {
+						t.Errorf(
+							"share refused with %v after a retry that opened nothing, "+
+								"want ErrUnsuitableStorage",
+							refused,
+						)
+					}
+				case slices.Equal(got, closes):
+					if refused != nil && !errors.Is(refused, journal.ErrUnsuitableStorage) {
+						t.Errorf(
+							"share refused with %v after Close, want ErrUnsuitableStorage "+
+								"when the retry was overtaken, or nil when it attached first",
+							refused,
+						)
+					}
+				default:
+					t.Errorf("events %v after Close, want none, or %v", got, closes)
 				}
 			})
 		})
