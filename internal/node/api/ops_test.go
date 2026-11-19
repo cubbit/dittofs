@@ -208,6 +208,24 @@ func TestCancel(t *testing.T) {
 	}
 }
 
+// :cancel refuses, 400 naming If-Match, an If-Match of * or of a list and
+// one beside If-None-Match, as every write does, before it reads the
+// operation.
+func TestCancelRefusesMalformedConditions(t *testing.T) {
+	s := serve(t, as(entity.RoleAdmin, false))
+	id := s.putOp(t, newOp(apiv1.OpShareDelete, entity.Principal{}), 0).ID
+	for _, hdr := range [][]string{
+		{"If-Match", "*"},
+		{"If-Match", `"1", "2"`},
+		{"If-Match", `"1"`, "If-None-Match", "*"},
+	} {
+		r := s.do(t, http.MethodPost, opPath(id)+":cancel", "", append([]string{"Idempotency-Key", uuid.NewString()}, hdr...)...)
+		if r.status != http.StatusBadRequest || r.problem(t).Field != "If-Match" {
+			t.Errorf("cancel with %q: answered %d %s, want 400 naming If-Match", hdr, r.status, r.body)
+		}
+	}
+}
+
 // An operation the schedule started, written with the zero Account as
 // identity's loop writes it, reads through both routes with the account
 // {"kind":"schedule"}, the spelling the audit's actor filter takes, never as
