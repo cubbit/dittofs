@@ -124,6 +124,7 @@ func testNodeStatuses(t *testing.T, kvo Opener) {
 		RestartPending: []entity.ResourceRef{{Kind: entity.ResourceAdapter, ID: []byte("smb")}, entity.SettingRef(entity.SettingScope{Kind: entity.ScopeShare, ID: uuid.New()}, "a")},
 		Secrets:        []entity.SecretVersion{{Secret: entity.SecretRef{2}, Version: 7}, {Secret: entity.SecretRef{1}, Version: 8}},
 		Conditions:     []byte("ready"),
+		Adapters:       []entity.AdapterStatus{{Protocol: "smb", State: entity.AdapterServing, Generation: 3}, {Protocol: "nfs", State: entity.AdapterStopped}},
 	}, {Node: ids[1], Settings: 9}}
 	for _, id := range ids {
 		_, err := s.RaiseNodeEpoch(ctx, id)

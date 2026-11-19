@@ -117,7 +117,13 @@ func codecCases() []codecCase {
 	status := entity.NodeStatus{Node: node.ID, Settings: 1, ShareList: 2, Principals: 3, Claims: 4,
 		Refused:        []entity.RefusedRecord{{Record: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{9}}, Generation: 5, Error: []byte("e")}},
 		RestartPending: []entity.ResourceRef{{Kind: entity.ResourceSetting, ID: []byte{8}}},
-		Secrets:        []entity.SecretVersion{{Secret: entity.SecretRef{15: 7}, Version: 6}}, Conditions: []byte("c")}
+		Secrets:        []entity.SecretVersion{{Secret: entity.SecretRef{15: 7}, Version: 6}}, Conditions: []byte("c"),
+		Adapters: []entity.AdapterStatus{{Protocol: "smb", State: entity.AdapterServing, Generation: 8}}}
+	oldStatus := status
+	oldStatus.Adapters = nil
+	oldStatusHex := "01" + "0000000000000001" + "0000000000000002" + "0000000000000003" + "0000000000000004" +
+		"01" + "05" + "0109" + "0000000000000005" + "0165" + "01" + "0c" + "0108" +
+		"01" + "00000000000000000000000000000007" + "0000000000000006" + "0163"
 	set := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "k", Value: []byte("v"), Generation: 6, Schema: 1, Position: 14}
 	return []codecCase{
 		{"user", user, encodeUser(user),
@@ -202,9 +208,9 @@ func codecCases() []codecCase {
 				"01" + "00000001" + "00000001" + "02" + "00000003" + "00000004" + "01",
 			func(b []byte) (any, error) { return decodeNode(node.ID, b) }},
 		{"node status", status, encodeNodeStatus(status),
-			"01" + "0000000000000001" + "0000000000000002" + "0000000000000003" + "0000000000000004" +
-				"01" + "05" + "0109" + "0000000000000005" + "0165" + "01" + "0c" + "0108" +
-				"01" + "00000000000000000000000000000007" + "0000000000000006" + "0163",
+			"02" + oldStatusHex[2:] + "01" + "03736d62" + "02" + "0000000000000008",
+			func(b []byte) (any, error) { return decodeNodeStatus(node.ID, b) }},
+		{"node status before adapters", oldStatus, mustHex(oldStatusHex), oldStatusHex,
 			func(b []byte) (any, error) { return decodeNodeStatus(node.ID, b) }},
 		{"counter", uint64(7), encodeCounter(7), "01" + "0000000000000007",
 			func(b []byte) (any, error) { return decodeCounter(b) }},
@@ -247,7 +253,7 @@ func TestCodecs(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(got, c.value) {
 				t.Fatalf("round trip: %+v, %v", got, err)
 			}
-			if _, err := c.dec(append([]byte{2}, c.enc[1:]...)); !errors.Is(err, codec.ErrVersion) {
+			if _, err := c.dec(append([]byte{0xff}, c.enc[1:]...)); !errors.Is(err, codec.ErrVersion) {
 				t.Errorf("unknown version: %v", err)
 			}
 			if _, err := c.dec(append(c.enc, 0)); !errors.Is(err, codec.ErrTrailing) {
@@ -325,7 +331,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 	for _, c := range append(codecCases(), fileCodecCases()...) {
 		switch c.name {
 		case "user", "user linked", "group", "share", "setting", "quota", "installation", "audit", "idempotency", "namespace",
-			"session", "api token", "sign-in failures", "operation", "node", "node status", "state":
+			"session", "api token", "sign-in failures", "operation", "node", "node status", "node status before adapters", "state":
 			decoders[c.name] = c.dec
 			f.Add(c.enc)
 			f.Add(c.enc[:len(c.enc)/2])
@@ -333,23 +339,24 @@ func FuzzControlPlaneValues(f *testing.F) {
 		}
 	}
 	encoders := map[string]func(any) []byte{
-		"user":             func(v any) []byte { return encodeUser(v.(entity.User)) },
-		"user linked":      func(v any) []byte { return encodeUser(v.(entity.User)) },
-		"group":            func(v any) []byte { return encodeGroup(v.(entity.Group)) },
-		"share":            func(v any) []byte { return encodeShareInfo(v.(entity.Share)) },
-		"setting":          func(v any) []byte { return encodeSetting(v.(entity.Setting)) },
-		"operation":        func(v any) []byte { return encodeOperation(v.(entity.Operation)) },
-		"node":             func(v any) []byte { return encodeNode(v.(entity.Node)) },
-		"node status":      func(v any) []byte { return encodeNodeStatus(v.(entity.NodeStatus)) },
-		"quota":            func(v any) []byte { return encodeQuota(v.(entity.Quota)) },
-		"installation":     func(v any) []byte { return encodeInstallation(v.(entity.Installation)) },
-		"audit":            func(v any) []byte { return encodeAudit(v.(entity.AuditRecord)) },
-		"idempotency":      func(v any) []byte { return encodeIdempotency(v.(entity.IdempotencyRecord)) },
-		"namespace":        func(v any) []byte { return encodeNamespace(v.(entity.Namespace)) },
-		"session":          func(v any) []byte { return encodeSession(v.(entity.Session)) },
-		"api token":        func(v any) []byte { return encodeToken(v.(entity.APIToken)) },
-		"sign-in failures": func(v any) []byte { return encodeSignIn(v.(entity.SignInFailures)) },
-		"state":            func(v any) []byte { return encodeState(v.(shareState)) },
+		"user":                        func(v any) []byte { return encodeUser(v.(entity.User)) },
+		"user linked":                 func(v any) []byte { return encodeUser(v.(entity.User)) },
+		"group":                       func(v any) []byte { return encodeGroup(v.(entity.Group)) },
+		"share":                       func(v any) []byte { return encodeShareInfo(v.(entity.Share)) },
+		"setting":                     func(v any) []byte { return encodeSetting(v.(entity.Setting)) },
+		"operation":                   func(v any) []byte { return encodeOperation(v.(entity.Operation)) },
+		"node":                        func(v any) []byte { return encodeNode(v.(entity.Node)) },
+		"node status":                 func(v any) []byte { return encodeNodeStatus(v.(entity.NodeStatus)) },
+		"node status before adapters": func(v any) []byte { return encodeNodeStatus(v.(entity.NodeStatus)) },
+		"quota":                       func(v any) []byte { return encodeQuota(v.(entity.Quota)) },
+		"installation":                func(v any) []byte { return encodeInstallation(v.(entity.Installation)) },
+		"audit":                       func(v any) []byte { return encodeAudit(v.(entity.AuditRecord)) },
+		"idempotency":                 func(v any) []byte { return encodeIdempotency(v.(entity.IdempotencyRecord)) },
+		"namespace":                   func(v any) []byte { return encodeNamespace(v.(entity.Namespace)) },
+		"session":                     func(v any) []byte { return encodeSession(v.(entity.Session)) },
+		"api token":                   func(v any) []byte { return encodeToken(v.(entity.APIToken)) },
+		"sign-in failures":            func(v any) []byte { return encodeSignIn(v.(entity.SignInFailures)) },
+		"state":                       func(v any) []byte { return encodeState(v.(shareState)) },
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
 		for name, dec := range decoders {
@@ -366,4 +373,23 @@ func FuzzControlPlaneValues(f *testing.F) {
 			}
 		}
 	})
+}
+
+func mustHex(h string) []byte {
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// A node status naming an adapter state no AdapterState names is refused,
+// never read as some other state.
+func TestNodeStatusUnknownAdapterState(t *testing.T) {
+	for _, st := range []entity.AdapterState{0, entity.AdapterStopped + 1} {
+		b := encodeNodeStatus(entity.NodeStatus{Adapters: []entity.AdapterStatus{{Protocol: "nfs", State: st}}})
+		if _, err := decodeNodeStatus(entity.NodeID{}, b); !errors.Is(err, errMalformed) {
+			t.Errorf("adapter state %d: %v, want %v", st, err, errMalformed)
+		}
+	}
 }
