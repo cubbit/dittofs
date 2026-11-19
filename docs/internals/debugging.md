@@ -102,8 +102,8 @@ Then start the node with the gate:
 DITTOFS_OTLP_ENDPOINT=http://localhost:4318 dfs start
 ```
 
-The export is plain, unauthenticated OTLP/HTTP to whatever the variable names,
-and every span carries the journal's identity: point it only at a collector you
+The export is unauthenticated OTLP/HTTP to whatever the variable names, in
+clear for an `http` URL, and every span carries the journal's identity: point it only at a collector you
 trust, on a network you control.
 
 What to look for, in Grafana's Explore:

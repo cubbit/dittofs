@@ -90,7 +90,7 @@ logging:
 DittoFS has **no in-file tracing configuration**. The one tracing switch is the
 `DITTOFS_OTLP_ENDPOINT` environment variable, a development gate: while it is
 set, `dfs start` exports the journals' spans over OTLP/HTTP to the endpoint it
-names, as plain, unauthenticated OTLP/HTTP, so point it only at a collector you
+names, as unauthenticated OTLP/HTTP (in clear for an `http` URL), so point it only at a collector you
 trust; unset, the node runs untraced. See
 [Viewing metrics and traces](../internals/debugging.md#viewing-metrics-and-traces)
 for the development runbook, and [Metrics (Prometheus)](#metrics-prometheus)
