@@ -1365,8 +1365,9 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
 - "§5.5 dead node" (single-node part);
 - "§5 propagation" (single-node part).
 
-Outside those rows, the built image's `HEALTHCHECK` on `localhost:8080/health/ready`, over
-`http` until RFC 23's plan's epic 4 serves the API over TLS and over `https` after, reports healthy
+Outside those rows, the built image's `HEALTHCHECK` on `https://localhost:8080/health/live`,
+unverified, since RFC 23's plan's epic 4 serves the API over TLS on every address but loopback
+(`docker-compose.yml`'s probes `/health/ready`), reports healthy
 on its first start after `docker run … init`, with the certificate and key it starts with (RFC 23's plan's D13
 and its §6.1 row naming this epic). No `dt` suite builds the image, so it is checked by
 `docker compose up` on `docker-compose.yml` until a suite does (§6.1).
@@ -1506,7 +1507,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | RFC 13 §6's port rule at start: a port equal to the API's or metrics port taking that adapter or the port mapper out (epic 5, O1) | needs a serving adapter | RFC 20 plan, epic 7 | RFC 20's epic 7 lands |
 | `Delete`'s body: RFC 16 §3's whole-secret delete, asked for on `ControlPlaneTx` only, run inside the caller's audited `Write` with D9's tracked read that no store record names the credential, and its kind and owner check, `Delete` then taking the caller's `ControlPlaneTx` in place of RFC 13 §7's frozen signature (epic 4, D9) | RFC 16 §3, as #4050 amends it, carries `Secret`, `PutSecret` and `PruneSecret` only; no caller deletes a secret but a user's, which kvstore's `DeleteUser` deletes itself | RFC 16 | a caller must delete a secret other than a user's, such as a remote store's or a directory's removal |
 | `DITTOFS_ENCRYPTION_PASSPHRASE` in the process environment, readable in `/proc/<pid>/environ`, and no check of the bootstrap's and key files' mode or owner (§4.3's `ponytail:`) | `keyprovider`'s local provider reads it today; neither is new here | unowned | a deployment needs the passphrase out of the environment, or a key file is found readable by another user |
-| The image's `HEALTHCHECK` on its first start after `init`, in a `dt` suite (epic 6's **Done when:**), `http` until RFC 23's plan's epic 4 adds TLS, unverified `https` after | no suite builds the image | unowned | a suite builds the image |
+| The image's `HEALTHCHECK` on its first start after `init`, in a `dt` suite (epic 6's **Done when:**), on unverified `https`: the image's `/health/live`, `docker-compose.yml`'s `/health/ready` | no suite builds the image | unowned | a suite builds the image |
 | The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate checks the active versions only and gains the namespace comparison when the key exists, and epic 3's unit test declares one of its own until then | RFC 4 | a plan of RFC 4 declares the key |
 | the settings table's adapters' section and `Check`, wired into reconcile and the settings routes, which RFC 20's plan's deferral ledger gives this plan | needs `internal/node` and `pkg/settings` | this plan, epic 5 | that epic |
 

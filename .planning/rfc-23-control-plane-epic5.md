@@ -460,7 +460,7 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 **Subtask T5.6 estimate: 2.5 man-days.**
 
 - **Track:** C. **Depends on:** T5.5; E2 (`EnabledAdmins`).
-- **Covers:** R3, R4, R5, R6, R7, R13, R15, R35, R40, R41.
+- **Covers:** R3, R4, R5, R6, R7, R13, R15, R35, R40, R41; E4's R42 (the API-only account).
 - **Deliverables:** in `check.go`: `Authenticate`'s check, `verify` then `APISignIn.Account`, the
   session's revocation and `NotBefore`, the caller's `MustChange`, which E4's row flag reads;
   `checkLastAdmin(tx, before, after)` reading `EnabledAdmins` in the write's transaction, and the

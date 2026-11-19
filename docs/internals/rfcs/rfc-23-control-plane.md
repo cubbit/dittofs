@@ -1171,8 +1171,10 @@ serves:
 
 - **Operation IDs** are the path's fixed segments below the prefix, then the
   action, joined by `_`, each `-` made `_`. The action is the `:verb`; else
-  `list` or `get` for a `GET`, `create` for a `POST` on a collection, or the
-  method. An ID changes only when its call's method, path or verb does.
+  `list` for a `GET` that serves a listing and `get` for any other `GET`, so a
+  share's quota is `shares_quota_get` and its grants `shares_grants_list`;
+  `create` for a `POST` on a collection; or the method. Version discovery is
+  `version_get`. An ID changes only when its call's method, path or verb does.
 - **`x-dittofs-role`** is the least §5.2 role holding the call's right, `none`
   for a public call.
 - **`x-dittofs-starts`** is the operation kind (§4.6) a write starts, answered
