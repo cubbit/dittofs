@@ -3,6 +3,7 @@ package client_test
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"slices"
 	"testing"
 
@@ -65,6 +66,16 @@ func TestPrincipalAccessors(t *testing.T) {
 	if got, err := c.Grants(sh.ID).Get(ctx, u.ID); err != nil || got.Spec.Access != "none" || got.ETag != gr.ETag {
 		t.Errorf("Grants().Get: %+v err %v, want the none grant under ETag %s", got, err, gr.ETag)
 	}
+	var listed []string
+	for it, err := range c.Grants(sh.ID).List(ctx, nil) {
+		if err != nil {
+			t.Fatalf("Grants().List: %v", err)
+		}
+		listed = append(listed, it.ID)
+	}
+	if !slices.Equal(listed, []string{u.ID}) {
+		t.Errorf("Grants().List: %v, want alice's alone", listed)
+	}
 	if op, err := c.Grants(sh.ID).Delete(ctx, u.ID, gr.ETag); err != nil || op != nil {
 		t.Errorf("Grants().Delete: operation %+v err %v, want it removed in the call", op, err)
 	}
@@ -74,6 +85,34 @@ func TestPrincipalAccessors(t *testing.T) {
 	}
 	if got, err := c.Quotas(sh.ID).Get(ctx, u.ID); err != nil || got.ETag != q.ETag {
 		t.Errorf("Quotas().Get: %+v err %v, want it under ETag %s", got, err, q.ETag)
+	}
+
+	var quotas []string
+	for it, err := range c.Quotas(sh.ID).List(ctx, nil) {
+		if err != nil {
+			t.Fatalf("Quotas().List: %v", err)
+		}
+		quotas = append(quotas, it.ID)
+	}
+	if !slices.Equal(quotas, []string{u.ID}) {
+		t.Errorf("Quotas().List: %v, want alice's alone", quotas)
+	}
+	sq, err := c.ShareQuotas().Put(ctx, sh.ID, apiv1.QuotaSpec{Hard: apiv1.Limit{Bytes: 1 << 20}}, "*")
+	if err != nil || sq.ID != sh.ID || sq.Spec.Hard.Bytes != 1<<20 {
+		t.Fatalf("ShareQuotas().Put: %+v err %v, want the share's 1 MiB quota named by the share", sq, err)
+	}
+	if got, err := c.ShareQuotas().Get(ctx, sh.ID); err != nil || got.ETag != sq.ETag {
+		t.Errorf("ShareQuotas().Get: %+v err %v, want it under ETag %s", got, err, sq.ETag)
+	}
+	var named []string
+	for it, err := range c.Users().List(ctx, url.Values{"name": {"alice"}}) {
+		if err != nil {
+			t.Fatalf("Users().List name=alice: %v", err)
+		}
+		named = append(named, it.ID)
+	}
+	if !slices.Equal(named, []string{u.ID}) {
+		t.Errorf("Users().List name=alice: %v, want alice alone", named)
 	}
 
 	n, err := c.Netgroups().Put(ctx, "labs", apiv1.NetgroupSpec{Members: []string{"a", "b"}}, "*")

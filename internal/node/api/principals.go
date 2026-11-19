@@ -124,3 +124,10 @@ func shown(ctx context.Context, u entity.User) entity.User {
 	}
 	return u
 }
+
+// after16 is a principal ID cursor as the listing decoded it, the zero ID
+// for none.
+func after16(after []byte) (id [16]byte) {
+	copy(id[:], after)
+	return id
+}

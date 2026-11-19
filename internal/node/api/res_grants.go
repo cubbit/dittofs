@@ -95,10 +95,3 @@ var grantsList = listing[entity.ShareGrant, apiv1.Grant]{
 	key:  func(g entity.ShareGrant) []byte { return g.Principal.ID[:] },
 	item: func(g entity.ShareGrant, _ perPage) apiv1.Grant { return grantOf(g) },
 }
-
-// after16 is a principal ID cursor as the listing decoded it, the zero ID
-// for none.
-func after16(after []byte) (id [16]byte) {
-	copy(id[:], after)
-	return id
-}
