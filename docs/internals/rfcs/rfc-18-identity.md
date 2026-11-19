@@ -1568,6 +1568,8 @@ one that cannot be finished fails whole (§2.5).
   skipping verification is refused at validation. A referral to any other host
   is not followed, so the bind credential goes nowhere else. The bind
   credential is a `Secret` ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)).
+  An empty bind credential is refused, and no unauthenticated bind is sent
+  (RFC 4513 §5.1.2).
 
 > ponytail: one directory, read directly over LDAP: no forest trusts, no global
 > catalogue, no second directory; NTLM pass-through and SID lookups reach only
