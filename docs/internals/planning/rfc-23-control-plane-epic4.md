@@ -217,7 +217,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R42 | A user or group is created by `POST` with an idempotency key and edited by `PUT` or `PATCH` with `If-Match`; a protocol spelling is checked unique in its scheme and never defaulted; an account created with a role and no spelling gets none | MUST | RFC 23 §3.5 | T4.10; the API-only account's test E5's T5.6 |
 | R43 | `email` is optional, never defaulted, refused with `ErrInvalid` unless a syntactically valid address, stored as given, refused on a directory principal, and offered no filter; who may read it is E5's | MUST | RFC 23 §3.5 | T4.10 |
-| R44 | Writing a user's Kerberos name stores the directory user SID the link is made for, asked of the directory before the transaction and taken from a fresh answer only, never one served stale: one that cannot answer, or serves only a stale answer, refuses it `ErrUnavailable`, one with no such entry refuses it naming the name, and a name in another realm stores none; a machine's spelling moved to a user keeps its stored SID and the directory is not asked | MUST | RFC 23 §3.5, §4.3 (as amended here); RFC 18 §4.2 | T4.11 |
+| R44 | Writing a user's Kerberos name stores the directory user SID the link is made for, asked of the directory before the transaction and taken from a fresh answer only, never one served stale: one that cannot answer, or serves only a stale answer, refuses it `ErrUnavailable`, one with no such entry refuses it naming the name, and a name in another realm stores none; a machine's spelling moved to a user keeps its stored SID and the directory is not asked, the move made only by a caller with the installation right (any other refused `409` on `spec.kerberos`), marking the machine deleted in the same write and starting its `user.delete`, answered `202`; a name the user already holds, restated, keeps its link and the directory is not asked | MUST | RFC 23 §3.5, §4.3 (as amended here); RFC 18 §4.2 | T4.11 |
 | R45 | Deleting a user or group is an operation, answered `202` after the mark | MUST | RFC 23 §3.5 | T4.10 |
 | R46 | A grant is `PUT /shares/{id}/grants/{principal}` with `If-None-Match: *` or `If-Match`, `none` included and stored apart from no grant; `DELETE` removes it through `DeleteGrant`; a grant naming a machine principal is refused `ErrInvalid`; a grant takes the principal's ID only | MUST | RFC 23 §3.5 | T4.10 |
 | R47 | Netgroups are put and deleted whole; a quota is set | MUST | RFC 23 §3.5, §3.1 | T4.10 |
@@ -229,7 +229,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R49 | An offline `join-domain` writes the password as a new version of the machine password's `Secret`, marked `HandedOver`, in its own write audited as a `set` of the reference and committed before the operation, refused `409` `operation_running` while a `join-domain` or `rotate-machine-password` runs; an online one never puts the administrator credential in the operation's record: the route picks the operation's ID and hands the credential to identity under it before the write that creates the operation, and the hold ends with the request when that write is refused, by the release the hold returned | MUST | RFC 23 §3.5, §4.5 | T4.11 |
 | R50 | `resolve-principal`, `test-directory`, `join-domain` and `rotate-machine-password` are operations the runner drives through identity; the API writes their records only, except the scheduled `rotate-machine-password` identity's own loop creates with the zero `Account` and the schedule as its audit actor | MUST | RFC 23 §3.5, §4.1, §4.6 | T4.11 |
-| R51 | A write turning `identity.ntlm` off from on sets `Installation.NTLMOff`'s `Off` to the settings generation and clears `Deleted`, and one setting it off while already off changes neither; the settings route is the only writer of `Off`. Turning it on (a put of on, or the delete of the installation's `identity.ntlm` record) is refused `409` `operation_running` while `Off` is set and `Deleted` is zero, naming the deletion running or the last one failed. Turning it off starts an `identity.nt-hash-delete` unless one runs, and while already off starts one only when `Deleted` is zero and none runs. The route reads `NTLMOff` and the running index tracked in the write's transaction, and a write starting one answers `202`, its target the installation | MUST | RFC 23 §4.1 | T4.11 |
+| R51 | A write turning `identity.ntlm` off from on sets `Installation.NTLMOff`'s `Off` to the settings generation and clears `Deleted`, and one setting it off while already off changes neither; the settings route is the only writer of `Off`. Turning it on (a put of on, or the delete of the installation's `identity.ntlm` record) is refused `409` `operation_running` while `Off` is set and `Deleted` is zero, naming the deletion while one runs; after a failed one, with none running, it names no operation. Turning it off starts an `identity.nt-hash-delete` unless one runs, and while already off starts one only when `Deleted` is zero and none runs. The route reads `NTLMOff` and the running index tracked in the write's transaction, and a write starting one answers `202`, its target the installation | MUST | RFC 23 §4.1 | T4.11 |
 
 **The audit**
 
@@ -889,7 +889,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   authorized as the installation's, its value sealed by the pre-write step through `Deps.Sealer`
   (D17) and refused `503` while `Sealer` is nil; until the RFC 18 plan's epic 5 settles its D3 it
   seals the keytab unchecked, then runs `pkg/identity.CheckKeytab` as its pre-write step before
-  `Seal`; the RFC 18 plan's epic 8's T8.4 needs it, writing `identity.keytab` through the node's
+  `Seal` (as built, it calls `pkg/identity.KeytabNames`, which refuses what `CheckKeytab` refuses
+  and returns each key's `KeytabName`, its name and realm, for the account check below); the RFC 18 plan's epic 8's T8.4 needs it, writing `identity.keytab` through the node's
   API; `res_domain.go`: a user's `krb` spelling, the SID asked of `Deps.Directory` before
   the transaction (D17); `resolve-principal`, `test-directory`, `join-domain` (online and offline,
   no idempotency record) and `rotate-machine-password` as operation kinds; the offline join's version
@@ -897,7 +898,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   rotation runs; the online join's pre-write step picking the operation's ID and calling
   `Deps.Joins.HoldJoinCredential` under it, the write using that ID, and the returned release called
   when the write is refused; before that hold, an online join's organisational unit that is not a
-  distinguished name under the directory record's base, or host name that is not a DNS name,
+  distinguished name strictly under the directory record's base, the base itself refused, or
+  host name that is not a DNS name of two labels or more,
   refused `400` `ErrInvalid` with nothing written (RFC 18 §3.5, the RFC 18 plan's epic 7's R30; the
   defaults stay identity's first step's); `pkg/node/apiv1`'s `JoinDomainParams` (online or
   offline; the account name; the online join's `OU`, `DNSHostName` and `Takeover`; the offline
@@ -905,7 +907,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   `Operation.Params` these routes write and identity's steps decode (RFC 16's "encoded by that
   kind"), consumed by the RFC 18 plan's epic 7's T7.5 and T7.14; with
   `Installation.Join.Names`, which E2's T2.4 stores and that epic's D6 fills, this subtask's keytab pre-write step also refusing `400` `ErrInvalid` a key
-  for a name in it, with no `Secret` version written (RFC 18 §3.3, that epic's R27); each refusing `503` `unavailable` while its
+  for a name in it or the account's own name, in the realm `identity.directory.realm` records or
+  in every realm when none is recorded, checked again inside the write, with no `Secret` version written (RFC 18 §3.3, that epic's R27); each refusing `503` `unavailable` while its
   interface is nil (D13); `ntlm.go`, the rule (D14), called by the settings route; the
   installation's wire type; the import rule extended with `pkg/identity`, for `JoinCredential`. Consumed by
   the RFC 18 plan's epic 7 and E7.
@@ -1026,7 +1029,9 @@ Other open points:
   joins D20's import allow-list, and a keytab with one AES and one RC4 key is tested refused with
   no `Secret` version written. T4.11 builds the route and seals unchecked until then, so RFC 18
   §3.3's import refusal is held by no test before D3 settles. A keytab version's retention is RFC 23 §3.3's, inside
-  the rotation operation, so no ledger row is needed; only if the RFC 18 plan's epic 5's D13 picks
+  the rotation operation, which the plan's §6.1 ledger defers: until it is built, a keytab set
+  over an existing one is refused `409`, and a keytab is replaced by a `DELETE`, then a `PUT`,
+  the `DELETE` dropping every imported key at once. Only if the RFC 18 plan's epic 5's D13 picks
   a `retire-keytab-version` action do its route row and `OpKind` join T4.11, with an RFC 23 §3.3
   amendment.
 - What this epic reads from E3: `internal/node/api` and `New(Deps)`, `Deps.Ready` and `Deps.Live`,
