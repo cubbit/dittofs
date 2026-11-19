@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"slices"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -138,9 +137,8 @@ func (r *rig) readIn(t *testing.T, s entity.ShareID, f entity.FileID, off int64,
 // A clone a crash cut short before its phase 1 is rebuilt from its journal
 // marker: both extents are registered before Start serves a file, so a write
 // into the source extent and a read of the destination's answer ErrDelay;
-// the copies the journal holds are kept, only the others made again through
-// a reservation of their size, the first of them waking the version limit's
-// raise as a live copy does; and the clone finishes with the destination
+// the copies the journal holds are kept, only the others made again, the
+// first of them waking the version limit's raise as a live copy does; and the clone finishes with the destination
 // reading the source at its asOf, never zeros where it held bytes, as a
 // marker applied as a plain removal would leave it.
 func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
@@ -155,14 +153,6 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m := newMarkerCrash(t, c.copies)
 			m.e.TrackRaisesForTest()
-			var reserved atomic.Int64 // the journal's reserved bytes at a sync of the destination that saw any
-			m.j.onSync.Store(new(func(ids []journal.FileID) {
-				if slices.Contains(ids, journal.NewFileID(m.dst)) {
-					if n := m.j.Stats().ReservedBytes; n > 0 {
-						reserved.Store(n)
-					}
-				}
-			}))
 			m.begin(t)
 			// The version limit's raise falls due on the next version issued,
 			// and on none before: the first copy made again wakes it.
@@ -183,9 +173,6 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 				t.Error("the rebuilt clone's destination does not read the source at its asOf")
 			}
 			remade := 2 - c.copies
-			if n, want := reserved.Load(), int64(remade)*engine.RecordBytes(runLen); n != want {
-				t.Errorf("reserved %d bytes while the copies were made, want %d", n, want)
-			}
 			// The copies kept are the first c.copies runs: the others the
 			// destination holds were made again.
 			var copies []journal.Version

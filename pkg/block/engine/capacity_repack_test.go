@@ -1416,3 +1416,42 @@ func TestAReservationInFlightSettlesADelay(t *testing.T) {
 		})
 	}
 }
+
+// A reservation every write of which has landed holds nothing further: like
+// the real journal's, the fake's reserved figure falls as the reservation
+// fills, so a fully-written-but-unclosed reservation reads no reserved bytes
+// and the settled answer is the no-space of the empty scope, not the delay an
+// unwritten part would hold for.
+func TestAFullyWrittenReservationSettlesNoSpace(t *testing.T) {
+	s := newSegUnit(t, 100, 0)
+
+	f := s.create(t, "f")
+	s.must(t, s.a, f, 0, 40, 'a')
+
+	h, err := s.j.Share(s.a.Tag, 100, journal.Version{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = h.Close() }()
+
+	res, err := h.Reserve(40, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Close() }()
+
+	if _, err := res.WriteAt(context.Background(), journal.NewFileID(f), 40, bytes.Repeat([]byte{'r'}, 40), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := s.j.Stats().Shares[s.a.Tag].ReservedBytes; got != 0 {
+		t.Fatalf("the fully-written reservation holds %d reserved bytes, want 0: the figure falls as the reservation fills", got)
+	}
+
+	s.refuse(t, journal.LimitShare)
+
+	err = s.put(bounded(t), s.a, f, 80, 1, 'x')
+	if !errors.Is(err, vfserr.ErrNoSpace) {
+		t.Errorf("a refusal over a share whose reservation fully landed: %v, want ErrNoSpace", err)
+	}
+}
