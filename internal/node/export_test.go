@@ -78,6 +78,11 @@ func NewPausing(paused func(read kvstore.Counters)) func(Config) (*Node, error) 
 	}
 }
 
+// OnReconcileRead has each reconcile pass call paused with the counters it
+// read, before it acts on them, as NewPausing does; the pass waits for it.
+// Call it before Start.
+func (n *Node) OnReconcileRead(paused func(read kvstore.Counters)) { n.rec.paused = paused }
+
 // OnBind has reconcile call binding with each share before it binds it. Call
 // it before Start.
 func (n *Node) OnBind(binding func(entity.Share)) { n.rec.binding = binding }
