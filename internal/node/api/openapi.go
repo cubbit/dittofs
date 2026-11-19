@@ -450,12 +450,10 @@ func (sc *schemas) of(t reflect.Type, m mode) (map[string]any, error) {
 	return nil, fmt.Errorf("%s has no JSON schema here", t)
 }
 
-// object is struct t's schema in mode m. An answer's object is open: a
-// field added to it is no change a client must refuse.
-//
 // object is struct t's schema in mode m: a reference to its component when
 // it has one, and the schema of the one struct it embeds when it is
-// unexported and adds no field of its own to it.
+// unexported and adds no field of its own to it. An answer's object is
+// open: a field added to it is no change a client must refuse.
 func (sc *schemas) object(t reflect.Type, m mode) (map[string]any, error) {
 	name := t.Name()
 	component := name != "" && t.PkgPath() != "" && !strings.Contains(name, "[") && name[0] >= 'A' && name[0] <= 'Z'
