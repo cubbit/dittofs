@@ -101,7 +101,7 @@ func TestApplyNetBIOSNameAgainstDirectory(t *testing.T) {
 			if (err != nil) != tc.refuse {
 				t.Fatalf("%s: Apply with netbios_name %q, netbios_domain %q = %v, want refused %t", tc.name, tc.netbios, tc.domain, err, tc.refuse)
 			}
-			if got := s.Applied(); tc.refuse && *got != want {
+			if got := s.Applied(); tc.refuse && !reflect.DeepEqual(*got, want) {
 				t.Errorf("%s: State after a refused Apply = %+v, want the last applied %+v", tc.name, got, want)
 			}
 			if got := s.Applied(); !tc.refuse && *got.Directory != *st.Directory {
