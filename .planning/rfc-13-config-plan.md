@@ -576,12 +576,12 @@ closed. The MVP (#4053) has no remote store, so it loses nothing. Each code site
 `decision:` note naming the rule and its overturn: both pieces built.
 
 The refusal sits at both places a change can enter:
-- **The endpoint, bucket, prefix and credential reference, at `Check`.** This goes past RFC 13 §5.1
+- **The endpoint, bucket, prefix and credential reference, at `Check`,** the fields a section's `location:"store"` struct tag marks. This goes past RFC 13 §5.1
   for the bucket and the prefix, which it refuses only while content exists: here they are refused
   with no content too, since a store with none can be deleted and created again. RFC 13 §4.2 lists the
   credential reference with the location, and §5.2 proves a new credential the same way, so
   repointing the reference at a freshly sealed `remote credential` is a change like any other. A
-  store location's first value, written when the store is created, is no change and passes; a
+  store location's first value, written when the store is created, has no value before it (no row and no default) and passes; a
   later put, or a delete that changes the effective value, is refused.
 - **The credential, at `Seal`.** `Seal` reads the kind off the stored record, never the caller's: a
   record already there with the `remote credential` kind refuses a new version, and a reseal under
@@ -834,7 +834,10 @@ var Settings = settings.Table{
 // not guard (RFC 13 §6; RFC 18's plan's E2 refusing an identity.id_range at or below the ID counters'
 // marks); FormatVersion, the field whose key holds the block format version, which Check refuses
 // past this node's range (RFC 13 §5.4; epic 3's D6, the one option added after epic 1's freeze).
-// Of panics on a missing or unknown class, a field with no explicit json name (its key is the
+// A field's `location:"store"` tag, beside its `class` tag, marks an endpoint, bucket, prefix or
+// credential reference, which Check refuses to change (D9); no option and no export is added for it.
+// Of panics on a missing or unknown class, an unknown `location` value, a FormatVersion field that is
+// not an integer, a field with no explicit json name (its key is the
 // field's Go name, not a lower-case setting key), a duplicate field name, or a Required,
 // SecretRef or FormatVersion name that is not a field of T, so a typo fails the table's first
 // test instead of making a restart or bound key live.
@@ -880,38 +883,38 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, h
 	if rank(caller) < rank(sec.writeRole) { // an explicit rank, never the names; an empty or unknown role ranks lowest, and Of panics on an unknown WriteRole
 		return ErrForbidden // admin-only sections, identity.directory among them, its first value included (RFC 13 Appendix B, A1)
 	}
-	s, err := sec.decodeAfter(tx, w) // a put's row, or what a delete leaves
+	eff, err := sec.decodeAfter(tx, w) // the effective value after the write: a put's row, or what a delete leaves
 	if err != nil {
 		// strict decode, keys matched exactly as declared, over the defaults and the wider row,
 		// required keys; the refusal prints no undeclared key's value and no decoder's own text
 		// (epic 3's R31)
 		return err
 	}
-	if err := sec.checkSecretRefs(tx, s); err != nil {
+	if err := sec.checkSecretRefs(tx, eff); err != nil {
 		// D10: a reference to a secret of another kind or owner, or to none. Before Validate, so a
 		// plaintext typed into a reference never reaches a Validate that prints it (epic 3's T3.5).
 		return err
 	}
-	if err := sec.validate(s); err != nil {
+	if err := sec.validate(eff); err != nil {
 		// the section's own Validate, which prints no SecretRef field's value (epic 3's R31); it
 		// may print another field's value, as RFC 13 §6's "got 70000" does
 		return err
 	}
-	if err := sec.checkTx(tx, w, s); err != nil { // the section's CheckTx, if any: RFC 18's plan's E2 refuses an id_range here
+	if err := sec.checkTx(tx, w, eff); err != nil { // the section's CheckTx, if any: RFC 18's plan's E2 refuses an id_range here
 		return err
 	}
 	if sec.class(key) == Bound && sec.isChange(tx, w) { // a put rewriting the same value is no change (RFC 13 §5.1)
 		// holds is E1's frozen func(scope); the route builds it inside Write as a closure over the
 		// write's tx, so its read is tracked and conflicts with the first content write (epic 3)
-		has, err := holds(s.Scope)
+		has, err := holds(w.Scope)
 		if err != nil {
 			return err // a store error, not a refusal: config_bound_refusals_total does not count it
 		}
 		if has {
-			return refuseBound(s) // RFC 13 §5.1
+			return refuseBound(w) // RFC 13 §5.1
 		}
 	}
-	if storeLocation(s.Key) && sec.isChange(tx, w) { // endpoint, bucket, prefix and credential reference; a first value is no change
+	if sec.isStoreLocation(key) && sec.isChange(tx, w) { // a field marked by the `location` tag; a first value, with no value before it, is no change
 		// decision: D9. Refused until the capability check finds the claim
 		// (RFC 13 §5.2); withdraw when both are built.
 		return ErrUnproven

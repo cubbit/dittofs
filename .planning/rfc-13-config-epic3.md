@@ -64,7 +64,7 @@ epic.
 - The node's table, reconcile, the API's settings routes and `HoldsContent`'s implementation: E5.
   The route builds `holds` inside `Write` as a closure over the write's `tx`, so E1's frozen
   signature, `func(scope entity.SettingScope) (bool, error)`, stays without a `tx` parameter (the
-  plan's sketch calls `holds(s.Scope)`), and the closure makes it a
+  plan's sketch calls `holds(w.Scope)`), and the closure makes it a
   tracked point
   read through the write's transaction, so the first content write conflicts with a bound change
   (T3.6).
@@ -150,7 +150,7 @@ Every obligation RFC 13, RFC 16 and RFC 23 place on this epic, and those RFC 13'
 | R7 | A setting has a default or is required; a snapshot or a write that leaves a required key unset is refused | MUST | RFC 13 §4.2 | T3.2, T3.4, T3.5 |
 | R8 | Every field of a section declares its class: live, restart, next write or bound; one left unclassified panics at `Of` | MUST | RFC 13 §5 | T3.2 |
 | R9 | The sections Appendix B gives to `admin` alone (`identity.oidc`, `api.oidc_role_map`, `api.password_sign_in`, `identity.directory`, `audit.retention`, `api.session_lifetime`, `api.token_max_lifetime`) are written by `admin` only, first value included; roles compare by an explicit rank, an empty or unknown one ranking lowest | MUST | RFC 13 Appendix B; RFC 23 §5.2; RFC 13's plan, A1 | T3.2, T3.5 |
-| R10 | `Of` panics on a field without a class tag, on a class that is not one of the four (`class:"restar"`), on a field with no explicit `json` name, on two fields that share a name after flattening, and on a `Required`, `SecretRef`, `OverrideOnly` or `FormatVersion` name that is no field and on `OverrideOnly` outside an `Override` scope (E1's D9; the plan's `Of` sketch), and on an unknown write role; `Table` panics on two sections declaring the same prefix and on a section whose prefix consumes a field key another section generates, as an `identity` section's field `oidc` beside an `identity.oidc` section, which the longest-prefix match would make unreachable; a key belongs to the longest section prefix on a dot boundary | invariant | RFC 13's plan, epic 3; E1's D9 for the class tag and the field names | T3.2, T3.6 (`FormatVersion`) |
+| R10 | `Of` panics on a field without a class tag, on a class that is not one of the four (`class:"restar"`), on a field with no explicit `json` name, on two fields that share a name after flattening, and on a `Required`, `SecretRef`, `OverrideOnly` or `FormatVersion` name that is no field, on a `FormatVersion` field that is not an integer, on an unknown `location` tag value and on `OverrideOnly` outside an `Override` scope (E1's D9; the plan's `Of` sketch), and on an unknown write role; `Table` panics on two sections declaring the same prefix and on a section whose prefix consumes a field key another section generates, as an `identity` section's field `oidc` beside an `identity.oidc` section, which the longest-prefix match would make unreachable; a key belongs to the longest section prefix on a dot boundary | invariant | RFC 13's plan, epic 3; E1's D9 for the class tag and the field names | T3.2, T3.6 (`FormatVersion`, `location`) |
 
 **Decoding a value**
 
@@ -604,7 +604,7 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
 - **Deliverables:** the bound refusal on `holds`, for a put and for a delete, a put of the same
   value and a delete that leaves the same effective value passing, values compared decoded and
   not by bytes, since a row keeps what the operator wrote (R21, R22); D9's refusal of a
-  store location's change, its first value passing, with its `decision:` note; the block format
+  store location's change, its first value passing, on the fields a `location:"store"` struct tag marks (beside `class`, no export), with its `decision:` note; the block format
   version past this node's range refused (D6): `Of`'s `FormatVersion` option added with the gate
   and to E1's `pkg/settings` export pin, and `Check` refusing with E1's frozen `ErrFormatVersion`
   on the key it marks; D11's `decision:` note, which says that a rollback before the raise meets
@@ -629,8 +629,9 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   deleted, changing what the effective value leaves, refused as its put is (D9's delete path),
   while a delete that leaves the same bucket passes; a block format version one past the range
   refused and the newest one accepted, on a section the test declares with `Of`'s `FormatVersion`
-  option (D6), written through `Check`; `Of` with a `FormatVersion` name that is no field
-  panics, naming it (R10).
+  option (D6), written through `Check`; `Of` with a `FormatVersion` name that is no field,
+  with a `FormatVersion` field that is not an integer, or with a `location` tag value other
+  than `store` panics, naming it (R10).
 
 ### T3.7 Secret references
 
