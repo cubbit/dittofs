@@ -331,7 +331,9 @@ func testPrincipalNameChars(t *testing.T, kvo Opener) {
 		"newline":       "x\ny",
 		"leading space": " lead",
 		"trailing tab":  "trail\t",
-		"256 bytes":     strings.Repeat("a", 256),
+		"256 bytes":     strings.Repeat("\u00e9", 128),
+		"DEL":           "del\x7f",
+		"trailing NBSP": "nbsp\u00a0",
 		"at":            "bob@corp",
 		"backslash":     `CORP\bob`,
 	}
