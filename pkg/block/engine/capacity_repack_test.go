@@ -44,6 +44,22 @@ func newSegUnit(t *testing.T, aLimit, max int64, deps ...func(*engine.Deps)) *se
 	return &segUnit{unit: u, a: a}
 }
 
+// newSegUnitWith is newSegUnit over a handle wrap, so a unit can park the
+// scope's own sync.
+func newSegUnitWith(t *testing.T, aLimit, max int64, wrap func(engine.Handle) engine.Handle) *segUnit {
+	t.Helper()
+
+	u := newUnitWith(t, unitConfig{wrap: wrap})
+	u.j.SegmentCap(segBytes, max)
+
+	a := enginetest.AddShare(t, u.fs.Store, "a", aLimit)
+	if err := u.e.Bind(t.Context(), a); err != nil {
+		t.Fatal(err)
+	}
+
+	return &segUnit{unit: u, a: a}
+}
+
 // put writes n bytes of c at off of file f of share sh under ctx.
 func (s *segUnit) put(
 	ctx context.Context,
@@ -1237,6 +1253,165 @@ func TestJournalFullCauses(t *testing.T) {
 					c.limit,
 					c.want,
 				)
+			}
+		})
+	}
+}
+
+// A deadline that passes inside the scope sync answers retry-later, never the
+// figures' no space: the caller's deadline ends the wait, not the cause, and
+// a delay that outlasts the deadline stays a delay (RFC 0 section 10.3). The
+// scope is held at its sync while the engine's clock passes the deadline, and
+// the release lets the sync finish: the answer must be the delay either way.
+func TestADeadlinePassingInTheScopeSyncIsADelay(t *testing.T) {
+	hold := &repackSyncHold{entered: make(chan struct{}), release: make(chan struct{})}
+	wrap := func(h engine.Handle) engine.Handle {
+		hold.Handle = h
+
+		return hold
+	}
+
+	s := newSegUnitWith(t, 100, 0, wrap)
+	f := s.create(t, "f")
+	s.write(t, f, 0, []byte("x"))
+	s.refuse(t, journal.LimitShare)
+
+	ctx := &endsAtCtx{Context: t.Context(), now: s.clock.Now(), done: make(chan struct{})}
+	got := make(chan error, 1)
+
+	go func() {
+		got <- s.put(ctx, s.a, f, 0, 1, 'x')
+	}()
+
+	within(t, "the refusal reaching its scope sync", hold.entered)
+	s.clock.Advance(2 * time.Hour)
+	close(hold.release)
+
+	err := within(t, "the held write's answer", got)
+	if !isDelay(err, vfserr.DelayCapacity) || errors.Is(err, vfserr.ErrNoSpace) {
+		t.Errorf("a deadline passing inside the scope sync: %v, want ErrDelay(DelayCapacity)", err)
+	}
+}
+
+// budgetRecorder is a journal whose Repack pass-through records the budget
+// each relief step hands it: the share-figures' empty read is what charges a
+// pass with no bytes, and the rows below pin each figure that refuses that
+// charge by naming the budget its pass ran at.
+type budgetRecorder struct {
+	engine.Journal
+	mu      sync.Mutex
+	budgets []int64
+}
+
+func (r *budgetRecorder) Repack(ctx context.Context, budget int64, scope journal.RepackScope) (int64, error) {
+	r.mu.Lock()
+	r.budgets = append(r.budgets, budget)
+	r.mu.Unlock()
+
+	return r.Journal.Repack(ctx, budget, scope)
+}
+
+func (r *budgetRecorder) firstBudget() (int64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.budgets) == 0 {
+		return 0, false
+	}
+
+	return r.budgets[0], true
+}
+
+func recordBudgets(out **budgetRecorder) func(*engine.Deps) {
+	return func(d *engine.Deps) {
+		open := d.Open
+
+		d.Open = func(
+			ctx context.Context,
+			dir string,
+			floor journal.Version,
+			id journal.JournalID,
+		) (engine.Journal, error) {
+			j, err := open(ctx, dir, floor, id)
+
+			*out = &budgetRecorder{Journal: j}
+
+			return *out, err
+		}
+	}
+}
+
+// A reservation still in flight keeps the relief's first pass at the full
+// repack reserve — the reservation's room may reach the caller by landing or
+// rolling back without a free, so the figures never read empty while one
+// holds, and the pass an empty reading would charge with no bytes runs whole
+// instead. The row whose first pass flips when the reservation condition
+// leaves the figures' read.
+func TestAReservationInFlightKeepsTheFirstPassWhole(t *testing.T) {
+	var rec *budgetRecorder
+
+	s := newSegUnit(t, 100, 0, recordBudgets(&rec))
+	f := s.create(t, "f")
+	s.must(t, s.a, f, 0, 40, 'a')
+
+	h, err := s.j.Share(s.a.Tag, 100, journal.Version{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = h.Close() }()
+
+	if _, err := h.Reserve(40, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	s.refuse(t, journal.LimitShare)
+
+	if err := s.put(bounded(t), s.a, f, 40, 1, 'x'); err == nil {
+		t.Fatal("the write was served under its share limit arithmetic")
+	}
+
+	got, ok := rec.firstBudget()
+	if !ok || got == 0 {
+		t.Errorf("the first pass ran at budget %d (of %d passes), want the full repack reserve: a reservation in flight keeps the figures from reading empty", got, len(rec.budgets))
+	}
+}
+
+// The settled answer of a share holding an open reservation is a delay, at
+// whatever step the relief ends: the reservation's room may reach the caller
+// by landing or rolling back without a free, so the no-space of an empty
+// scope would answer ahead of a path the caller is still on. The row whose
+// answer flips when the reservation compose leaves the settled step.
+func TestAReservationInFlightSettlesADelay(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		heldBytes int64
+	}{
+		{"nothing else held", 0},
+		{"content beside it", 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newSegUnit(t, 100, 0)
+
+			f := s.create(t, "f")
+			if c.heldBytes > 0 {
+				s.must(t, s.a, f, 0, 1, 'a')
+			}
+
+			h, err := s.j.Share(s.a.Tag, 100, journal.Version{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = h.Close() }()
+
+			if _, err := h.Reserve(40, 1); err != nil {
+				t.Fatal(err)
+			}
+
+			s.refuse(t, journal.LimitShare)
+
+			err = s.put(bounded(t), s.a, f, 40, 1, 'x')
+			if !isDelay(err, vfserr.DelayCapacity) || errors.Is(err, vfserr.ErrNoSpace) {
+				t.Errorf("a refusal with a reservation in flight: %v, want ErrDelay(DelayCapacity)", err)
 			}
 		})
 	}

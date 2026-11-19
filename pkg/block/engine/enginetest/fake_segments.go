@@ -302,6 +302,7 @@ func (j *FakeJournal) segStats(s *journal.Stats) {
 	for _, h := range j.handles {
 		st := shares[h.tag]
 		st.Limit = h.limit
+		st.ReservedBytes = j.reservedTag[h.tag]
 		shares[h.tag] = st
 	}
 
