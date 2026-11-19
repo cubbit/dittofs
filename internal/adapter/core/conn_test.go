@@ -2828,3 +2828,149 @@ func TestASendInsideNewConnIsDropped(t *testing.T) {
 		t.Errorf("a Send inside NewConn = %v, want net.ErrClosed", sendErr)
 	}
 }
+
+// heldWrite is a pipe end whose first write waits for release: a fault
+// injection that holds the writer mid-record while its connection closes.
+type heldWrite struct {
+	net.Conn
+	release chan struct{}
+	once    sync.Once
+}
+
+func (h *heldWrite) Write(b []byte) (int, error) {
+	h.once.Do(func() { <-h.release })
+	return h.Conn.Write(b)
+}
+
+// A chain's bad step closes its connection once the records before it are
+// sent: held mid-write as the close comes, the writer still sends the first
+// Echo's reply and the second's decode refusal, and only then does the
+// connection close (RFC 20 §4.7).
+func TestABadStepClosesOnceTheRecordsBeforeItAreSent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		srv, l := testServer(t, adapter.Deps{Budgets: b}, settings.DefaultNFS())
+		nc, peer := net.Pipe()
+		held := &heldWrite{Conn: nc, release: make(chan struct{})}
+		conn := core.ServeConn(srv, held, &l)
+		t.Cleanup(func() { _ = peer.Close() })
+		f := l.Protocol.Framer()
+		body, offs := chainOf(f,
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("xy")},
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Payload: []byte("xy")})
+		binary.BigEndian.PutUint32(body[offs[1]:], 3) // the second's next, behind it
+		if _, err := peer.Write(append(f.Frame(nil, len(body)), body...)); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait() // the chain has closed the connection, its writer held
+		close(held.release)
+		c := testproto.NewClient(peer)
+		var got []testproto.Reply
+		for range 2 {
+			rs, err := c.Recv()
+			if err != nil {
+				t.Fatalf("after %+v: %v; want the second reply before the close", got, err)
+			}
+			got = append(got, rs...)
+		}
+		if len(got) != 2 || got[0].ID != 1 || got[0].Status != testproto.StatusOK || got[1].ID != 2 || got[1].Status != testproto.StatusDecode {
+			t.Errorf("before the close: %+v; want the first Echo answered, then the second's decode refusal", got)
+		}
+		<-core.ConnDone(conn)
+	})
+}
+
+// gatedAt is the stages' HeaderCodec whose Decode of the header at off waits
+// for gate: a hold injected at one step of a chain.
+type gatedAt struct {
+	core.HeaderCodec
+	off  int
+	gate chan struct{}
+}
+
+func (h gatedAt) Decode(rec *resources.Buf, off int) (core.Header, error) {
+	if off == h.off {
+		<-h.gate
+	}
+	return h.HeaderCodec.Decode(rec, off)
+}
+
+// A close that came first keeps its own teardown past a bad step after it:
+// closed for a violation while a chain waits at its second step, which then
+// turns out bad, the connection ends at once, the replies its peer never read
+// dropped, and counts under violation, the first close's reason (RFC 20
+// §4.7, §6.5).
+func TestAnEarlierCloseIsNotHeldByALaterBadStep(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		m := metrics.New("v", "c")
+		inner := testproto.New(adapter.Deps{}).Bare()
+		body, offs := chainOf(inner.Framer(),
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Payload: []byte("xy")},
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Payload: []byte("xy")})
+		binary.BigEndian.PutUint32(body[offs[1]:], 3) // the second's next, behind it
+		gate := make(chan struct{})
+		p := edited{inner, func(st *core.Stages) { st.Header = gatedAt{st.Header, offs[1], gate} }}
+		srv, l := protoServer(t, adapter.Deps{Budgets: b, Metrics: m}, settings.DefaultNFS(), p)
+		core.Serving(srv)
+		nc, peer := net.Pipe()
+		conn := core.ServeConn(srv, nc, &l)
+		t.Cleanup(func() { _ = peer.Close() })
+		// An Echo whose reply the peer never reads holds the writer.
+		if err := testproto.NewClient(peer).Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("hi")}); err != nil {
+			t.Fatal(err)
+		}
+		f := l.Protocol.Framer()
+		if _, err := peer.Write(append(f.Frame(nil, len(body)), body...)); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait() // the chain waits at its second step
+		start := time.Now()
+		conn.Close(errors.New("a protocol violation"))
+		close(gate)
+		<-core.ConnDone(conn)
+		if d := time.Since(start); d != 0 {
+			t.Errorf("the first close's teardown took %v, held by the bad step after it; want 0", d)
+		}
+		counted(t, m, "violation")
+	})
+}
+
+// A bad step's teardown, its peer reading nothing and no write_timeout set,
+// ends at the close's 30 s grace, OnClose run first with its context live:
+// the wait for the records before the bad step never outlasts the grace, nor
+// takes OnClose's share of it (RFC 20 §4.7).
+func TestABadStepsTeardownEndsAtTheGraceAfterOnClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		snap := settings.DefaultNFS()
+		snap.WriteTimeout = 0
+		var live bool
+		p := withOnClose{testproto.New(adapter.Deps{}).Bare(), func(ctx context.Context) { live = ctx.Err() == nil }}
+		srv, l := protoServer(t, adapter.Deps{Budgets: b}, snap, p)
+		core.Serving(srv)
+		nc, peer := net.Pipe()
+		conn := core.ServeConn(srv, nc, &l)
+		t.Cleanup(func() { _ = peer.Close() })
+		f := l.Protocol.Framer()
+		body, offs := chainOf(f,
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("xy")},
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Payload: []byte("xy")})
+		binary.BigEndian.PutUint32(body[offs[1]:], 3) // the second's next, behind it
+		if _, err := peer.Write(append(f.Frame(nil, len(body)), body...)); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait() // the bad step has closed; the writer holds the first reply
+		start := time.Now()
+		<-core.ConnDone(conn)
+		if d := time.Since(start); d != 30*time.Second {
+			t.Errorf("the teardown took %v, want the close's 30 s grace", d)
+		}
+		if !live {
+			t.Error("OnClose ran with its context already ended, want its share of the grace")
+		}
+	})
+}

@@ -269,8 +269,11 @@ type link struct {
 	record int               // the protocol's record cap, Framer.MaxRecord's bytes: a chain's record and a compound's reply stay within it
 	out    func(msg *resources.Buf, lo, hi, before uint64) error
 	close  func(err error)
-	idle   func() // called at each moment nothing runs any more
-	turn   func() // called when a request starts or ends, under the pipeline's mutex, so a connection's idle deadline knows its arm was superseded
+	// closeAfterSent is close, the records already handed to out sent
+	// first: a chain's bad step's (§4.7).
+	closeAfterSent func(err error)
+	idle           func() // called at each moment nothing runs any more
+	turn           func() // called when a request starts or ends, under the pipeline's mutex, so a connection's idle deadline knows its arm was superseded
 }
 
 // The stages a protocol leaves nil, filled once at accept so the pipeline

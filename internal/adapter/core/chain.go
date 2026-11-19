@@ -186,7 +186,7 @@ func (c *chain) next(e *entry) bool {
 	if next <= e.off || next >= len(c.rec.B) {
 		c.flush(splits, nil)
 		if !c.stopped {
-			c.p.l.close(fmt.Errorf("%w: %w: a chain's step from %d to %d, in a record of %d bytes", errWalk, ErrDecode, e.off, next, len(c.rec.B)))
+			c.p.l.closeAfterSent(fmt.Errorf("%w: %w: a chain's step from %d to %d, in a record of %d bytes", errWalk, ErrDecode, e.off, next, len(c.rec.B)))
 		}
 		return false
 	}

@@ -235,7 +235,7 @@ var (
 )
 
 func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, set settings.Settings, record int, out func(*resources.Buf, uint64, uint64, uint64) error, close func(error)) *Pipeline {
-	return newPipeline(sh, st, link{ctx: ctx, remote: remote, set: set, record: record, out: out, close: close})
+	return newPipeline(sh, st, link{ctx: ctx, remote: remote, set: set, record: record, out: out, close: close, closeAfterSent: close})
 }
 
 func (p *pipeline) Serve(rec *resources.Buf)       { p.serve(rec) }
