@@ -196,7 +196,7 @@ func (fx *rotFixture) restart(t *testing.T, secrets identity.SecretProvider) {
 	}
 	fx.reg = metrics.New("test", "test")
 	s, err := identity.New(identity.Deps{Store: fx.store, Clock: fx.clock, Secrets: secrets, Metrics: fx.reg,
-		DomainController: identitytest.NewFaultyDomainController(fx.d, fx.faults)})
+		DomainController: identitytest.NewFaultyDomainController(fx.d, fx.faults), ControlPlane: fx.cp})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,19 +690,67 @@ func TestRotationConditionClearedByCompletion(t *testing.T) {
 	}
 }
 
-// A prune failing with any error but the unbuilt provider's fails the
-// rotation at its first turn, nothing sealed.
-func TestRotationPruneFailure(t *testing.T) {
-	fx := newRotation(t)
-	fx.restart(t, failingPrune{fx.p, errors.New("prune: store unavailable")})
-	fx.clock.Advance(11 * time.Hour)
-	op := fx.op()
-	done, err := fx.turn(t, op)
-	if _, fails := step.Failure(err); !done || !fails || !strings.Contains(err.Error(), "store unavailable") {
-		t.Fatalf("first turn: done %v, err %v; want the prune's error failing it", done, err)
-	}
-	if vs := fx.versions(t); len(vs) != 1 {
-		t.Errorf("versions %v, want nothing sealed", vs)
+// The prune runs at the first turn only once the current version is the
+// confirmed one, the last rotation did not fail and the retention since the
+// confirm has passed: a Prune failing with a marker shows where it ran. Where
+// it runs, its error fails the rotation, recorded and raised, nothing sealed;
+// elsewhere the turn moves on to pin.
+func TestRotationPruneGate(t *testing.T) {
+	const pruned = "PRUNE-CALLED"
+	for _, tc := range []struct {
+		name    string
+		advance time.Duration
+		setup   func(t *testing.T, fx *rotFixture)
+		prunes  bool
+	}{
+		{name: "past the retention", advance: 11 * time.Hour, prunes: true},
+		{name: "before the retention", advance: 10*time.Hour + 4*time.Minute},
+		{name: "current version unconfirmed", advance: 11 * time.Hour, setup: func(t *testing.T, fx *rotFixture) {
+			fx.seal(t, pw3, secrets.Meta{KeyVersion: 2}, nil)
+		}},
+		{name: "after a failed rotation", advance: 11 * time.Hour, setup: func(t *testing.T, fx *rotFixture) {
+			// A rotation failed at the previous version's wait: nothing
+			// sealed, so the current version is still the confirmed one.
+			if err := fx.cp.Write(context.Background(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+				in, err := tx.Installation()
+				if err != nil {
+					return err
+				}
+				j := in.Join
+				j.LastRotation.At, j.LastRotation.Failed = tx.Now(), true
+				return tx.SetMachineJoin(j)
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newRotation(t)
+			if tc.setup != nil {
+				tc.setup(t, fx)
+			}
+			fx.restart(t, failingPrune{fx.p, errors.New(pruned)})
+			fx.clock.Advance(tc.advance)
+			before := fx.versions(t)
+			op := fx.op()
+			if !tc.prunes {
+				fx.runs(t, op)
+				if got := fx.phase(op); got != "pin" {
+					t.Errorf("first turn: phase %q, want pin with nothing pruned", got)
+				}
+				return
+			}
+			fx.wantFailed(t, op, pruned)
+			if vs := fx.versions(t); len(vs) != len(before) {
+				t.Errorf("versions %v, want nothing sealed", vs)
+			}
+			if j := fx.join(t); !j.LastRotation.Failed || !atStore(j.LastRotation.At, fx.clock.Now()) {
+				t.Errorf("last rotation %+v, want failed now", j.LastRotation)
+			}
+			if !rotationFailed(fx.s) {
+				t.Error("machine_password_rotation_failed not raised by the prune's failure")
+			}
+		})
 	}
 }
 

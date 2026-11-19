@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
@@ -215,14 +214,11 @@ func (s *Server) setUp(ctx context.Context, st *State, now time.Time) (*nodeChan
 	if len(versions) == 0 {
 		return nil, errors.New("no machine password version may sign in")
 	}
-	addrs := []string{rec.DCAddress}
-	if rec.DCAddress == "" {
-		var err error
-		if addrs, err = s.deps.DomainController.Lookup(ctx, rec.Realm, rec.DNSServer); err != nil {
-			return nil, fmt.Errorf("find the domain controllers: %w", err)
-		}
+	addrs, err := s.controllers(ctx, rec)
+	if err != nil {
+		return nil, err
 	}
-	account := strings.TrimSuffix(st.Join.Account, "$")
+	account := accountName(st.Join.Account)
 	var errs []error
 	for i, addr := range addrs {
 		c, err := s.attempt(ctx, rec, addr, account, versions, i < len(addrs)-1)
@@ -235,6 +231,20 @@ func (s *Server) setUp(ctx context.Context, st *State, now time.Time) (*nodeChan
 		return nil, errors.New("no domain controller found")
 	}
 	return nil, errors.Join(errs...)
+}
+
+// controllers are the domain controllers to ask: the record's controller
+// address alone when it names one, else those the domain's DNS service
+// records answer, in order.
+func (s *Server) controllers(ctx context.Context, rec *directory.Record) ([]string, error) {
+	if rec.DCAddress != "" {
+		return []string{rec.DCAddress}, nil
+	}
+	addrs, err := s.deps.DomainController.Lookup(ctx, rec.Realm, rec.DNSServer)
+	if err != nil {
+		return nil, fmt.Errorf("find the domain controllers of %s: %w", rec.Realm, err)
+	}
+	return addrs, nil
 }
 
 // attempt signs in to the controller at addr, bounded by channelAttempt when

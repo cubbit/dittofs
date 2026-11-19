@@ -28,6 +28,11 @@ const clockSkew = 5 * time.Minute
 // verifies until it expires.
 const retention = 10 * time.Hour
 
+// unanswered is how long a pinned domain controller may go unanswered, and
+// how long the rotation waits for this node to hold the previous version,
+// before the rotation fails.
+const unanswered = time.Hour
+
 // ticket is what a verified AP-REQ yields: the request with its ticket's
 // encrypted part and its authenticator decrypted, the service key that
 // decrypted the ticket, and the keys the adapter's mechanism needs.

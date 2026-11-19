@@ -47,6 +47,9 @@ type Deps struct {
 	// DomainController opens the domain's controllers; New does not require
 	// it, and while it is nil pass-through answers ErrUnavailable.
 	DomainController netlogon.Dialer
+	// ControlPlane is the store's ControlPlane(), the rotation's control-plane
+	// calls; New does not require it, and while it is nil a rotation fails.
+	ControlPlane ControlPlane
 }
 
 // SecretProvider is the secret provider's calls the server makes: Resolve
@@ -63,16 +66,24 @@ var _ SecretProvider = (*secrets.Provider)(nil)
 
 // Store is the store's calls the server makes: the principals and their
 // records, a group's record, the one write that mints principals, and the
-// installation record and the control-plane writes the rotation makes.
-// Declaring it here keeps a change to the store's write calls inside the
-// store.
+// installation record the rotation reads. Declaring it here keeps a change
+// to the store's write calls inside the store.
 type Store interface {
 	Principals() kvstore.Principals
 	Records() kvstore.Records
 	Minter() kvstore.Minter
 	Installation(ctx context.Context) (entity.Installation, error)
-	ControlPlane() kvstore.ControlPlane
 }
+
+// ControlPlane is the control-plane store's calls the rotation makes: the
+// machine password's sealed version, and the writes that refuse a running
+// join, record a sealed version and record the last rotation.
+type ControlPlane interface {
+	Write(ctx context.Context, meta entity.WriteMeta, fn func(entity.ControlPlaneTx) error) error
+	Secret(ctx context.Context, id entity.SecretRef, version uint64) (entity.Secret, error)
+}
+
+var _ ControlPlane = kvstore.ControlPlane{}
 
 // Clock is the server's source of time.
 type Clock interface {

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
@@ -21,11 +20,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
-
-// unanswered is how long a pinned domain controller may go unanswered, and
-// how long the rotation waits for this node to hold the previous version,
-// before the rotation fails; kerberos.go's ponytail names it a constant.
-const unanswered = time.Hour
 
 // conditionRotationFailed is raised while the installation's last rotation
 // is recorded failed (RFC 18 §9.2).
@@ -103,8 +97,8 @@ func (s *Server) RotateStep(ctx context.Context, op entity.Operation) (step.Step
 	if st == nil {
 		return step.StepResult{}, errNotApplied
 	}
-	if s.deps.Secrets == nil || s.deps.DomainController == nil {
-		return step.StepResult{}, fmt.Errorf("%w: no secret provider or domain controller", step.ErrStepFailed)
+	if s.deps.Secrets == nil || s.deps.DomainController == nil || s.deps.ControlPlane == nil {
+		return step.StepResult{}, fmt.Errorf("%w: no secret provider, domain controller or control plane", step.ErrStepFailed)
 	}
 	in, err := s.deps.Store.Installation(ctx)
 	if err != nil {
@@ -159,10 +153,14 @@ func problem(status int, code apiv1.Code, detail string) *apiv1.Problem {
 }
 
 // start refuses a join running on the installation and prunes the versions
-// below the current one once the retention has passed since its confirm, in
-// one write, so a join started since makes it run again.
+// below the current one once the retention has passed since its confirm. The
+// refusal is one write, so a join started since makes it run again; the prune
+// runs inside it but commits on its own until the provider's Prune takes tx,
+// so a conflict that reruns the write may call it more than once.
 func (r *rotation) start(ctx context.Context, target entity.ResourceRef) error {
-	err := r.s.deps.Store.ControlPlane().Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+	var pruneErr error
+	err := r.s.deps.ControlPlane.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		pruneErr = nil
 		if op, ok, err := tx.RunningOperation(string(apiv1.OpJoinDomain), target); err != nil {
 			return err
 		} else if ok {
@@ -181,14 +179,16 @@ func (r *rotation) start(ctx context.Context, target entity.ResourceRef) error {
 		}
 		lr := in.Join.LastRotation
 		// The prune keeps the current version, so it runs only once that is
-		// the confirmed one and the retention since its confirm has passed,
-		// when every node holds it (RFC 18 §3.5, RFC 13 §7).
+		// the confirmed one, the last rotation did not fail and the retention
+		// since the confirm has passed, when every node holds it (RFC 18 §3.5,
+		// RFC 13 §7). A failed rotation may have failed because a node lacks
+		// the current version, so the prune waits for one that completes.
 		//
 		// ponytail: a previous version's sealed value stays in the store,
 		// used by no key and no channel, until the next rotation prunes it, at
 		// most the schedule's period. Prune at the retention's end when a
 		// sealed value's life past its use is shown to matter.
-		if !ok || cur.Version != lr.Version || tx.Now().Before(lr.Confirmed.Add(retention+clockSkew)) {
+		if !ok || lr.Failed || cur.Version != lr.Version || tx.Now().Before(lr.Confirmed.Add(retention+clockSkew)) {
 			return nil
 		}
 		// ponytail: the provider's Prune is not built yet and answers
@@ -196,12 +196,19 @@ func (r *rotation) start(ctx context.Context, target entity.ResourceRef) error {
 		// stay held. Drop the tolerance, pass tx and audit the versions
 		// dropped when the provider fills Prune.
 		if err := r.s.deps.Secrets.Prune(ctx, entity.SecretMachinePassword, machineOwner(in), in.MachinePassword); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-			return fmt.Errorf("%w: prune the machine password: %w", step.ErrStepFailed, err)
+			pruneErr = err
 		}
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+	// decision: a prune error fails the rotation, recorded, rather than being
+	// retried: RFC 18 §3.5 reports failed a rotation that cannot start by its
+	// schedule, and the next scheduled one prunes again. Overturned if a
+	// transient provider error is shown to fail rotations a retry would save.
+	if pruneErr != nil {
+		return r.fail(ctx, fmt.Sprintf("prune the machine password: %v", pruneErr))
 	}
 	r.c.Phase = phasePin
 	return nil
@@ -213,12 +220,9 @@ func (r *rotation) pin(ctx context.Context) error {
 	ctx, done := r.s.bounded(ctx)
 	defer done()
 	rec := r.st.Directory
-	addrs := []string{rec.DCAddress}
-	if rec.DCAddress == "" {
-		var err error
-		if addrs, err = r.s.deps.DomainController.Lookup(ctx, rec.Realm, rec.DNSServer); err != nil {
-			return r.noAnswer(ctx, fmt.Errorf("find the domain controllers of %s: %w", rec.Realm, err))
-		}
+	addrs, err := r.s.controllers(ctx, rec)
+	if err != nil {
+		return r.noAnswer(ctx, err)
 	}
 	var errs []error
 	for _, a := range addrs {
@@ -244,7 +248,7 @@ func (r *rotation) holds(n uint64) bool {
 // ponytail: "every node" is this node: the rotation waits for this node's
 // State alone. Wait on every registered node's status with the cluster.
 func (r *rotation) previous(ctx context.Context) error {
-	cur, err := r.s.deps.Store.ControlPlane().Secret(ctx, r.in.MachinePassword, 0)
+	cur, err := r.s.deps.ControlPlane.Secret(ctx, r.in.MachinePassword, 0)
 	if err != nil {
 		return err
 	}
@@ -267,7 +271,7 @@ func (r *rotation) previous(ctx context.Context) error {
 // one unconfirmed version is in force; otherwise it seals a new version
 // tagged with the pinned controller's key version number plus one.
 func (r *rotation) seal(ctx context.Context) error {
-	cp := r.s.deps.Store.ControlPlane()
+	cp := r.s.deps.ControlPlane
 	ref := r.in.MachinePassword
 	cur, err := cp.Secret(ctx, ref, 0)
 	if err != nil {
@@ -340,27 +344,16 @@ func (r *rotation) value(vs []secrets.Version) ([]byte, error) {
 // not accepted only records the attempt, so the attempt is durable before
 // the controller sees the password.
 func (r *rotation) set(ctx context.Context) error {
-	vs, err := r.versions(ctx)
-	if err != nil {
-		return err
-	}
-	pw, err := r.value(vs)
-	if err != nil {
-		return err
-	}
 	ctx, done := r.s.bounded(ctx)
 	defer done()
-	dc, err := r.s.deps.DomainController.Dial(ctx, *r.st.Directory, r.c.DC)
+	p, err := r.probeSealed(ctx)
 	if err != nil {
-		return r.noAnswer(ctx, err)
+		return err
 	}
-	defer func() { _ = dc.Close() }()
-	account := strings.TrimSuffix(r.in.Join.Account, "$")
-	accepted, err := probe(ctx, dc, account, pw)
+	defer func() { _ = p.dc.Close() }()
+	vs, pw, dc, account := p.vs, p.pw, p.dc, accountName(r.in.Join.Account)
 	switch {
-	case err != nil:
-		return r.noAnswer(ctx, err)
-	case accepted:
+	case p.accepted:
 		r.c.Phase = phaseConfirm
 		return nil
 	case !r.c.Attempted:
@@ -398,6 +391,40 @@ func (r *rotation) set(ctx context.Context) error {
 	return nil
 }
 
+// sealedProbe is what probeSealed answers: the machine password's versions,
+// the sealed version's password among them, the pinned controller still open
+// and whether it accepts that password.
+type sealedProbe struct {
+	vs       []secrets.Version
+	pw       []byte
+	dc       netlogon.DC
+	accepted bool
+}
+
+// probeSealed opens the pinned controller and asks whether it accepts the
+// sealed version; the caller closes the controller. A controller that cannot
+// be asked answers noAnswer's error.
+func (r *rotation) probeSealed(ctx context.Context) (sealedProbe, error) {
+	vs, err := r.versions(ctx)
+	if err != nil {
+		return sealedProbe{}, err
+	}
+	pw, err := r.value(vs)
+	if err != nil {
+		return sealedProbe{}, err
+	}
+	dc, err := r.s.deps.DomainController.Dial(ctx, *r.st.Directory, r.c.DC)
+	if err != nil {
+		return sealedProbe{}, r.noAnswer(ctx, err)
+	}
+	accepted, err := probe(ctx, dc, accountName(r.in.Join.Account), pw)
+	if err != nil {
+		_ = dc.Close()
+		return sealedProbe{}, r.noAnswer(ctx, err)
+	}
+	return sealedProbe{vs: vs, pw: pw, dc: dc, accepted: accepted}, nil
+}
+
 // probe asks dc whether it accepts password for account: an error only when
 // it could not be asked.
 func probe(ctx context.Context, dc netlogon.DC, account string, password []byte) (bool, error) {
@@ -417,29 +444,17 @@ func probe(ctx context.Context, dc netlogon.DC, account string, password []byte)
 // other than the tag is logged and counted, and the rotation completes
 // either way, writing the last rotation and the account's names as it ends.
 func (r *rotation) confirm(ctx context.Context) (step.StepResult, error) {
-	vs, err := r.versions(ctx)
-	if err != nil {
-		return step.StepResult{}, err
-	}
-	pw, err := r.value(vs)
-	if err != nil {
-		return step.StepResult{}, err
-	}
-	bctx, done := r.s.bounded(ctx)
+	ctx, done := r.s.bounded(ctx)
 	defer done()
-	dc, err := r.s.deps.DomainController.Dial(bctx, *r.st.Directory, r.c.DC)
+	p, err := r.probeSealed(ctx)
 	if err != nil {
-		return step.StepResult{}, r.noAnswer(ctx, err)
+		return step.StepResult{}, err
 	}
-	defer func() { _ = dc.Close() }()
-	accepted, err := probe(bctx, dc, strings.TrimSuffix(r.in.Join.Account, "$"), pw)
-	if err != nil {
-		return step.StepResult{}, r.noAnswer(ctx, err)
-	}
-	if !accepted {
+	defer func() { _ = p.dc.Close() }()
+	if !p.accepted {
 		return step.StepResult{}, r.fail(ctx, fmt.Sprintf("domain controller %s no longer accepts the machine password's version %d", r.c.DC, r.c.Version))
 	}
-	acct, err := r.accountAt(bctx, dc)
+	acct, err := r.accountAt(ctx, p.dc)
 	if err != nil {
 		return step.StepResult{}, r.noAnswer(ctx, err)
 	}
@@ -496,7 +511,7 @@ func (r *rotation) accountAt(ctx context.Context, dc netlogon.DC) (netlogon.Acco
 		return netlogon.Account{}, err
 	}
 	defer clear(pw)
-	return dc.Account(ctx, identity.JoinCredential{User: r.st.Directory.BindName, Password: pw}, strings.TrimSuffix(r.in.Join.Account, "$"))
+	return dc.Account(ctx, identity.JoinCredential{User: r.st.Directory.BindName, Password: pw}, accountName(r.in.Join.Account))
 }
 
 // errUnanswered ends a turn whose controller did not answer within the
@@ -532,7 +547,7 @@ func (r *rotation) noAnswer(ctx context.Context, err error) error {
 // the operation.
 func (r *rotation) fail(ctx context.Context, detail string) error {
 	// The turn's bound may have ended ctx; the record is still written.
-	err := r.s.deps.Store.ControlPlane().Write(context.WithoutCancel(ctx), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+	err := r.s.deps.ControlPlane.Write(context.WithoutCancel(ctx), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
 		in, err := tx.Installation()
 		if err != nil {
 			return err
