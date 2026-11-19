@@ -82,6 +82,19 @@ type State struct {
 	// keys is the ring Apply builds from Keytab; whatever the caller
 	// passes is replaced.
 	keys keyRing
+	// Machine is the machine password's versions in force, opened, current
+	// first. While Join.Joined, Apply derives each one's keys for the names
+	// in Join.Names, but for a version marked HandedOver.
+	Machine []secrets.Version
+	// Join is the machine account's state as of this Apply; zero while the
+	// installation is not joined.
+	Join entity.MachineJoin
+	// machine is the ring Apply derives from Machine and Join; whatever the
+	// caller passes is replaced.
+	machine machineRing
+	// dropped is the imported keys Apply removed for the computer account's
+	// names; whatever the caller passes is replaced.
+	dropped map[ringKey]bool
 	// Directory is the identity.directory section as of this Apply; nil
 	// when the installation has no directory.
 	Directory *directory.Record
@@ -210,9 +223,16 @@ func (s *Server) Apply(st State) error {
 		return err
 	}
 	st.keys = buildRing(st.Keytab, s.logger)
+	st.machine = buildMachineRing(&st, s.logger)
+	st.dropped = st.keys.dropMachineNames(&st.machine)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur := s.state.Load()
+	for k := range st.dropped {
+		if cur == nil || !cur.dropped[k] {
+			s.logger.Error("identity: imported key for a computer account's name skipped", "name", k.name, "realm", k.realm, "kvno", k.kvno)
+		}
+	}
 	if cur != nil {
 		st.Serial = cur.Serial
 		st.dir = cur.dir
