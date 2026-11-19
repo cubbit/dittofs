@@ -99,6 +99,8 @@ func newReport() *cobra.Command {
 	cmd.Flags().StringSliceVar(&planned, "post", nil, "post the new failures of a tier run of develop, whose planned cells are CELL,..., to the develop-status issue, and give a test failing 2 runs in a row an issue of its own, with the token in GITHUB_TOKEN; a planned cell with no run didn't run")
 	cmd.Flags().StringVar(&status, "commit-status", "", "set the commit status NAME on a run of develop's merge or nightly tier: success, failure or error from its exit status, with its test counts, with the token in GITHUB_TOKEN")
 	cmd.Flags().StringVar(&results, "results", "", "where the runs are, relative to the checkout's root (default test/harness/results)")
+	cmd.ValidArgsFunction = completeRuns
+	_ = cmd.RegisterFlagCompletionFunc("format", fixed(report.Formats...))
 	return cmd
 }
 

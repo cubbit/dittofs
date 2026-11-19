@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -28,23 +29,24 @@ import (
 // prune need a longer window by default.
 const lastRuns = 10
 
-// historyFlags are the flags of the commands that read past runs: --ci and
-// --last.
-func historyFlags(cmd *cobra.Command, ci *bool, last *int) {
-	cmd.Flags().BoolVar(ci, "ci", false, "read the last N develop runs of tests.yml, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs")
+// historyFlags are the flags of the commands that read past runs: --ci,
+// --last and --branch.
+func historyFlags(cmd *cobra.Command, ci *bool, last *int, branch *string) {
+	cmd.Flags().BoolVar(ci, "ci", false, "read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs")
 	cmd.Flags().IntVar(last, "last", lastRuns, "read the last N runs")
+	cmd.Flags().StringVar(branch, "branch", "develop", "with --ci, the branch whose runs of tests.yml are read")
 }
 
 // pastRuns are the runs dt history reads, oldest first: this checkout's last
-// ones, or with ci develop's, each with the cells of its jobs' first attempt.
-// With suite, only develop's artifacts of its cells are read, and warn says
+// ones, or with ci those of branch, each with the cells of its jobs' first attempt.
+// With suite, only the artifacts of its cells are read, and warn says
 // which couldn't be.
-func pastRuns(ctx context.Context, suite string, ci bool, last int, warn io.Writer) ([]report.Run, error) {
+func pastRuns(ctx context.Context, suite string, ci bool, last int, branch string, warn io.Writer) ([]report.Run, error) {
 	if last < 1 {
 		return nil, fmt.Errorf("--last %d: expected 1 or more", last)
 	}
 	if ci {
-		return history.CI(ctx, suite, last, warn)
+		return history.CI(ctx, suite, last, branch, warn)
 	}
 	root, err := repoRoot()
 	if err != nil {
@@ -56,13 +58,14 @@ func pastRuns(ctx context.Context, suite string, ci bool, last int, warn io.Writ
 func newHistory() *cobra.Command {
 	var ci bool
 	var last int
+	var branch string
 	cmd := &cobra.Command{
 		Use:   "history [SUITE[/TEST]]",
 		Short: "Pass, fail, skip and flaky counts over past runs, with p50 and p90 durations: per suite, per test of SUITE, and each result of TEST",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			suite, test, _ := strings.Cut(first(args), "/")
-			runs, err := pastRuns(cmd.Context(), suite, ci, last, cmd.ErrOrStderr())
+			runs, err := pastRuns(cmd.Context(), suite, ci, last, branch, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -99,8 +102,10 @@ func newHistory() *cobra.Command {
 			}
 			return table(out, rows)
 		},
+		ValidArgsFunction: completeSuite,
 	}
-	historyFlags(cmd, &ci, &last)
+	historyFlags(cmd, &ci, &last, &branch)
+	cmd.AddCommand(newHistoryDiff())
 	return cmd
 }
 
@@ -154,6 +159,7 @@ func duration(d time.Duration) string {
 func newKnownPrune() *cobra.Command {
 	var ci bool
 	var last int
+	var branch string
 	cmd := &cobra.Command{
 		Use:   "prune SUITE",
 		Short: "Remove the known entries that matched no failing or skipping test in the runs dt history reads",
@@ -167,7 +173,7 @@ func newKnownPrune() *cobra.Command {
 			if s == nil {
 				return fmt.Errorf("no suite %q", args[0])
 			}
-			runs, err := pastRuns(cmd.Context(), s.Name, ci, last, cmd.ErrOrStderr())
+			runs, err := pastRuns(cmd.Context(), s.Name, ci, last, branch, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -240,7 +246,178 @@ func newKnownPrune() *cobra.Command {
 			}
 			return nil
 		},
+		ValidArgsFunction: completeKnownSuite,
 	}
-	historyFlags(cmd, &ci, &last)
+	historyFlags(cmd, &ci, &last, &branch)
 	return cmd
+}
+
+// diffFloor and diffTop are what dt history diff keeps unless --floor and
+// --top say otherwise.
+//
+// decision: 100 ms, ten times the 10 ms a Go test's time is rounded to, so
+// rounding and run-to-run noise don't fill the list; lower it when a suite of
+// short tests is what's being searched.
+const (
+	diffFloor = 100 * time.Millisecond
+	diffTop   = 30
+)
+
+func newHistoryDiff() *cobra.Command {
+	var last, top int
+	var branch string
+	var floor time.Duration
+	cmd := &cobra.Command{
+		Use:   "diff [A B]",
+		Short: "Which cells and tests took longer or shorter between two runs of tests.yml, by workflow run ID, or between the older and the newer half of the last N on --branch, each test's median",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 0 && len(args) != 2 {
+				return fmt.Errorf("expected two workflow run IDs, A and B, or none with --last; got %d", len(args))
+			}
+			if len(args) == 2 && cmd.Flags().Changed("last") {
+				return errors.New("two workflow run IDs and --last both say which runs to compare; give one")
+			}
+			for _, a := range args {
+				if _, err := strconv.ParseInt(a, 10, 64); err != nil {
+					return fmt.Errorf("%q is not a workflow run ID", a)
+				}
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var a, b []report.Run
+			var err error
+			if len(args) == 2 {
+				ids := [2]int64{}
+				for i, arg := range args {
+					ids[i], _ = strconv.ParseInt(arg, 10, 64)
+				}
+				if a, err = history.Workflow(cmd.Context(), "", ids[0], cmd.ErrOrStderr()); err == nil {
+					b, err = history.Workflow(cmd.Context(), "", ids[1], cmd.ErrOrStderr())
+				}
+			} else {
+				var runs []report.Run
+				if runs, err = history.CI(cmd.Context(), "", last, branch, cmd.ErrOrStderr()); err == nil {
+					a, b, err = halves(runs)
+				}
+			}
+			if err != nil {
+				return err
+			}
+			if err := bothRan(a, b); err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if _, err := fmt.Fprintf(out, "A: %s\nB: %s\n\n", sideName(a), sideName(b)); err != nil {
+				return err
+			}
+			return writeDiff(out, history.Diff(a, b, floor, top))
+		},
+	}
+	cmd.Flags().IntVar(&last, "last", lastRuns, "without run IDs, compare the median of the older half of the last N runs with the newer half's")
+	cmd.Flags().StringVar(&branch, "branch", "develop", "without run IDs, the branch whose runs of tests.yml are compared")
+	cmd.Flags().DurationVar(&floor, "floor", diffFloor, "leave out tests whose time changed by less than this")
+	cmd.Flags().IntVar(&top, "top", diffTop, "show at most N tests, the ones that took longer first; 0 shows all")
+	return cmd
+}
+
+// bothRan is an error when a side has no runs, as when its artifacts expired
+// or the run isn't one of the tests workflow's: compared with nothing, every
+// result of the other side would read as new.
+func bothRan(a, b []report.Run) error {
+	for _, side := range []struct {
+		name string
+		runs []report.Run
+	}{{"A", a}, {"B", b}} {
+		if len(side.runs) == 0 {
+			return fmt.Errorf("run %s has no results to read: its artifacts are expired, or it isn't a run of tests.yml", side.name)
+		}
+	}
+	return nil
+}
+
+// sideName names the workflow runs a side holds: the run's name, or the first
+// and the last with how many, and the tier, which two sides may not share;
+// runs is not empty, which bothRan has checked.
+func sideName(runs []report.Run) string {
+	var names []string
+	for _, r := range runs {
+		if !slices.Contains(names, r.Name) {
+			names = append(names, r.Name)
+		}
+	}
+	name := names[0]
+	if len(names) > 1 {
+		name = fmt.Sprintf("%s .. %s, median of %d runs", names[0], names[len(names)-1], len(names))
+	}
+	if t := runs[0].Tier; t != "" {
+		name += " (" + t + ")"
+	}
+	return name
+}
+
+// halves splits runs, oldest first, which are each workflow run's jobs one
+// after another, into the older half of the workflow runs and the newer half,
+// the newer taking the odd one, of those of the last run's tier: another tier
+// runs other cells, which would all read as new or gone. Fewer than two
+// workflow runs have nothing to compare, which is an error.
+func halves(runs []report.Run) (older, newer []report.Run, err error) {
+	if len(runs) > 0 {
+		tier := runs[len(runs)-1].Tier
+		runs = slices.DeleteFunc(slices.Clone(runs), func(r report.Run) bool { return r.Tier != tier })
+	}
+	var names []string
+	for _, r := range runs {
+		if len(names) == 0 || names[len(names)-1] != r.Name {
+			names = append(names, r.Name)
+		}
+	}
+	if len(names) < 2 {
+		return nil, nil, fmt.Errorf("found %d workflow runs, and comparing needs 2; raise --last or check --branch", len(names))
+	}
+	old := names[:len(names)/2]
+	for _, r := range runs {
+		if slices.Contains(old, r.Name) {
+			older = append(older, r)
+		} else {
+			newer = append(newer, r)
+		}
+	}
+	return older, newer, nil
+}
+
+// writeDiff writes the cells and then the tests of d: each with its time in A
+// and in B, and how much longer it took, and which side it's missing from.
+func writeDiff(out io.Writer, d history.Delta) error {
+	rows := [][]string{{"CELL", "A", "B", "DELTA"}}
+	for _, c := range d.Cells {
+		rows = append(rows, diffRow(c, c.Cell))
+	}
+	rows = append(rows, nil, []string{"TEST", "CELL", "A", "B", "DELTA"})
+	for _, c := range d.Tests {
+		rows = append(rows, append([]string{c.Test}, diffRow(c, c.Cell)...))
+	}
+	return table(out, rows)
+}
+
+// diffRow is a change's cell, its times and its delta, marked new or gone
+// when it's in one run only.
+func diffRow(c history.Change, first string) []string {
+	at := func(d time.Duration, in bool) string {
+		if !in {
+			return "-"
+		}
+		return duration(d)
+	}
+	delta := duration(c.Delta())
+	if c.Delta() >= 0 {
+		delta = "+" + delta
+	}
+	switch {
+	case !c.InA:
+		delta += " (new)"
+	case !c.InB:
+		delta += " (gone)"
+	}
+	return []string{first, at(c.A, c.InA), at(c.B, c.InB), delta}
 }

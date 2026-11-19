@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/test/harness/history"
 	"github.com/cubbit/dittofs/test/harness/report"
 )
 
@@ -197,6 +199,150 @@ func TestPlanEstimate(t *testing.T) {
 	for _, flags := range [][]string{{"--ci"}, {"--last", "2"}} {
 		if _, err := dt(t, append([]string{"plan", "--tier", "pr"}, flags...)...); err == nil {
 			t.Errorf("%s accepted without --estimate", flags[0])
+		}
+	}
+}
+
+// halves splits runs, which are a workflow run's jobs one after another, into
+// the older half of the workflow runs and the newer, of the last run's tier,
+// and needs two of them.
+func TestHalves(t *testing.T) {
+	names := func(runs []report.Run) string {
+		var out []string
+		for _, r := range runs {
+			out = append(out, r.Name)
+		}
+		return strings.Join(out, " ")
+	}
+	job := func(tier string, ns ...string) []report.Run {
+		var runs []report.Run
+		for _, n := range ns {
+			runs = append(runs, report.Run{Name: n, Tier: tier})
+		}
+		return runs
+	}
+	for _, c := range []struct {
+		name         string
+		runs         []report.Run
+		older, newer string
+	}{
+		{"two", job("", "r1", "r2"), "r1", "r2"},
+		{"five, the newer takes the odd one", job("", "r1", "r2", "r3", "r4", "r5"), "r1 r2", "r3 r4 r5"},
+		{"jobs of a run stay together", job("", "r1", "r1", "r2", "r3", "r3"), "r1 r1", "r2 r3 r3"},
+		// The newest run is a merge run: the nightly one before it is no side of
+		// the comparison, or its nightly-only cells would all read as gone.
+		{"another tier is left out", append(job("nightly", "r1"), job("merge", "r2", "r3")...), "r2", "r3"},
+	} {
+		older, newer, err := halves(c.runs)
+		if err != nil || names(older) != c.older || names(newer) != c.newer {
+			t.Errorf("%s: got %q and %q, %v; want %q and %q", c.name, names(older), names(newer), err, c.older, c.newer)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		runs []report.Run
+		want string
+	}{
+		{"one run", job("", "r1", "r1"), "found 1"},
+		{"none", nil, "found 0"},
+		{"one of the tier", append(job("nightly", "r1"), job("merge", "r2")...), "found 1"},
+	} {
+		if _, _, err := halves(c.runs); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got %v, want an error containing %q", c.name, err, c.want)
+		}
+	}
+}
+
+// sideName gives one run's name, or the first and last of several and how many,
+// and the tier.
+func TestSideName(t *testing.T) {
+	for _, c := range []struct {
+		runs []report.Run
+		want string
+	}{
+		{[]report.Run{{Name: "r1", Tier: "merge"}, {Name: "r1", Tier: "merge"}}, "r1 (merge)"},
+		{[]report.Run{{Name: "r1"}, {Name: "r2"}, {Name: "r2"}, {Name: "r3"}}, "r1 .. r3, median of 3 runs"},
+	} {
+		if got := sideName(c.runs); got != c.want {
+			t.Errorf("sideName: got %q, want %q", got, c.want)
+		}
+	}
+}
+
+// dt history diff shows the cells and then the tests, each with its time in
+// both runs and the change, and marks a test in one run only.
+func TestWriteDiff(t *testing.T) {
+	s := time.Second
+	var out strings.Builder
+	err := writeDiff(&out, history.Delta{
+		Cells: []history.Change{{Cell: "unit", A: 60 * s, B: 90 * s, InA: true, InB: true}},
+		Tests: []history.Change{
+			{Cell: "unit", Test: "TestGrew", A: 1 * s, B: 3 * s, InA: true, InB: true},
+			{Cell: "unit", Test: "TestNew", B: 5 * s, InB: true},
+			{Cell: "unit", Test: "TestGone", A: 4 * s, InA: true},
+			{Cell: "unit", Test: "TestShrank", A: 3 * s, B: 1 * s, InA: true, InB: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Fields(out.String())
+	for _, want := range []string{
+		"CELL A B DELTA", "unit 1m0s 1m30s +30s",
+		"TEST CELL A B DELTA",
+		"TestGrew unit 1s 3s +2s",
+		"TestNew unit - 5s +5s (new)",
+		"TestGone unit 4s - -4s (gone)",
+		"TestShrank unit 3s 1s -2s",
+	} {
+		if !strings.Contains(strings.Join(got, " "), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Index(out.String(), "CELL") > strings.Index(out.String(), "TEST") {
+		t.Errorf("cells should come before tests:\n%s", out.String())
+	}
+}
+
+// A side with no runs is an error that says which, not an empty run every
+// result of the other side is new against.
+func TestBothRan(t *testing.T) {
+	some := []report.Run{{Name: "r"}}
+	for _, c := range []struct {
+		a, b []report.Run
+		want string
+	}{{nil, some, "run A"}, {some, nil, "run B"}, {nil, nil, "run A"}} {
+		if err := bothRan(c.a, c.b); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("a %d runs, b %d runs: got %v, want an error naming %q", len(c.a), len(c.b), err, c.want)
+		}
+	}
+	if err := bothRan(some, some); err != nil {
+		t.Errorf("both sides ran: got %v, want nil", err)
+	}
+}
+
+// dt history diff takes two run IDs or --last, not both, and not one ID. Each
+// is refused for its own reason before anything is read: with no token set, a
+// call that got past the arguments would fail on the token instead.
+func TestHistoryDiffArgs(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"1"}, "expected two workflow run IDs"},
+		{[]string{"1", "2", "3"}, "expected two workflow run IDs"},
+		{[]string{"1", "2", "--last", "5"}, "give one"},
+		{[]string{"one", "2"}, "not a workflow run ID"},
+		{[]string{"1", "2"}, "GITHUB_TOKEN"}, // accepted: it got as far as the token
+		{nil, "GITHUB_TOKEN"},
+	} {
+		cmd := newHistoryDiff()
+		cmd.SetArgs(c.args)
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("dt history diff %v: got %v, want an error containing %q", c.args, err, c.want)
 		}
 	}
 }

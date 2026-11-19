@@ -28,7 +28,7 @@ while [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 	cmd := &cobra.Command{}
 	cmd.SetOut(io.Discard)
 	done := make(chan error, 1)
-	go func() { done <- dtc(cmd, root, nil) }()
+	go func() { done <- dtc(cmd, io.Discard, root, nil) }()
 	for i := 0; ; i++ {
 		if _, err := os.Stat(filepath.Join(bin, "started")); err == nil {
 			break
