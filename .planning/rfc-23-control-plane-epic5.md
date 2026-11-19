@@ -465,8 +465,11 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   session's revocation and `NotBefore`, the caller's `MustChange`, which E4's row flag reads;
   `checkLastAdmin(tx, before, after)` reading `EnabledAdmins` in the write's transaction, and the
   role-raise rule, for E4's user handlers; a role on a machine principal refused; `nodetest`'s
-  signed-in caller of each role; the role field on E4's user routes, replacing T4.10's guard that
-  refuses a caller below `admin` any write of a user holding a role. Consumed by every E4 route,
+  signed-in caller of each role; the role field on E4's user routes, with R42's API-only account:
+  one created with a role and no spelling gets none, so its create allocates no uid and no RID,
+  where T4.10's `createUser` always allocates both today; this check replaces T4.10's hiding of a
+  user holding a role from a caller below `admin` (`404` on read and write, left out of listings).
+  Consumed by every E4 route,
   E6 and E7.
 - **Acceptance criteria:**
   - Disabling an account refuses its next call with its access token unexpired.

@@ -827,9 +827,14 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   read through E2's `ControlPlane.ShareGrant`; the share's grant listing), `res_netgroups.go` (put
   and delete whole, keyed by name, since a netgroup has no ID), `res_quotas.go` (a quota per user
   or group, the share's own at `/shares/{id}/quota`, and the share's quota listing; project quotas
-  are §6.1's); their wire types; until E5's per-call account check, a guard refusing `403` a write
-  of a user holding an API role by a caller below `admin`, so an operator cannot edit, disable or
-  delete an admin; each user, group, membership and spelling row marked as
+  are §6.1's of RFC 23's plan); their wire types; until E5's per-call account check, a user holding
+  an API role hidden from a caller below `admin`: its read answers `404`, the listing and `?name=`
+  leave it out, and a write naming it answers `404` ahead of its precondition, as one naming no user
+  does, so a `PUT`, `PATCH` or `DELETE` of a missing user is `404`, not `412`, and no answer tells
+  which IDs are accounts; the last enabled admin kept, its disable or delete refused `409`
+  `last_admin`, counted in the write's transaction; a uid or gid of 0 refused, an absent one
+  allocated; a user or group name refused when it is invalid UTF-8, holds a control character,
+  begins or ends with white space, or exceeds 255 bytes, and an `email` over 254 bytes; each user, group, membership and spelling row marked as
   raising `PGEN`, so T4.4's adapter waits on `Deps.Applied` after its commit (D22), the first
   production rows to do so. Consumed by E5 (the role field, which is its T5.6, `last_admin`,
   `email`'s visibility, and the guard's replacement) and E6.
@@ -841,8 +846,10 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   one in `identity.id_range`, and a second create a different one (R42); an invalid address and a directory
   principal's address refused (R43); a delete answered `202` after the mark (R45); a `none` grant
   read back apart from no grant, `DELETE` falling through to a group's grant, a machine principal
-  refused (R46); a netgroup replaced whole, a quota set (R47); `disabled` read back (R48); an
-  operator's write of a user holding a role refused `403`; the grant and quota listings and `?name=`
+  refused (R46); a netgroup replaced whole, a quota set (R47); `disabled` read back (R48); a
+  user holding a role read, listed and written by an operator, each answered `404` or left out,
+  and a write of a missing user `404`; the last enabled admin's disable and delete refused `409`
+  `last_admin`; a uid and a gid of 0 refused; each name and address refusal; the grant and quota listings and `?name=`
   read back. The API-only account's test, created with no spelling and holding none (R42), is E5's,
   with the role field (T5.6). In
   `internal/node`'s `node_test`, over `nodetest` with a real node, `Deps.Applied` E3's and the clock

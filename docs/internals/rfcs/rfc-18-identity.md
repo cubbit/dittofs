@@ -1486,6 +1486,9 @@ and RFC 21 carries it on the wire.
   a directory user (§3.5), and no local name is ambiguous with the
   `<NetBIOS name>\<name>` spelling below, whose domain `APISignIn.Lookup` strips
   (§8.1): a local `CORP\alice` would be one string naming two principals.
+- A local user or group name **MUST** be valid UTF-8 of at most 255 bytes,
+  hold no control character, and neither begin nor end with white space; a
+  creation or rename naming another is refused `ErrInvalid`.
 - A user and a group may share a name
   ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)); a
   name lookup always says which kind it wants.
@@ -1495,9 +1498,8 @@ and RFC 21 carries it on the wire.
 
 > ponytail: a name is stored as given, folded for comparison by case only. No
 > Unicode normalisation is applied, so two names identical after normalisation
-> are two names, and a name holding a control character is not refused. Refuse
-> control characters and compare after NFC normalisation at a creation or rename
-> once two names that look alike are reported.
+> are two names. Compare after NFC normalisation at a creation or rename once two
+> names that look alike are reported.
 
 ## 5. Directory integration
 
