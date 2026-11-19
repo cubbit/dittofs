@@ -45,6 +45,7 @@ func Run(t *testing.T, open Opener) {
 		{"UserRenameAndIDsMoveTheirRows", testUserRenameAndIDsMoveTheirRows},
 		{"UserAPIFields", testUserAPIFields},
 		{"KrbLinkedSID", testKrbLinkedSID},
+		{"SpellingHolder", testSpellingHolder},
 		{"PrincipalUniqueness", testPrincipalUniqueness},
 		{"WellKnownUserRefused", testWellKnownUserRefused},
 		{"ReservedIDsRefused", testReservedIDsRefused},

@@ -33,6 +33,32 @@ func (c ControlPlane) Installation(ctx context.Context) (entity.Installation, er
 	return c.s.Installation(ctx)
 }
 
+// Holder is the user or machine whose record holds the spelling id; false
+// when none does or a group does.
+func (c ControlPlane) Holder(ctx context.Context, id entity.ProtocolID) (u entity.User, ok bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		u, ok, err = holderIn(r, id)
+		return err
+	})
+	return u, ok, err
+}
+
+func (c controlTx) Holder(id entity.ProtocolID) (entity.User, bool, error) { return holderIn(c.tx, id) }
+
+// holderIn reads the spelling id's row and the user or machine record it
+// names.
+func holderIn(r kv.Reader, id entity.ProtocolID) (entity.User, bool, error) {
+	b, ok, err := get(r, protocolKey(id))
+	if err != nil || !ok {
+		return entity.User{}, false, err
+	}
+	p, _, err := decodeProtocolRow(id.Scheme, b)
+	if err != nil || p.Kind == entity.PrincipalGroup {
+		return entity.User{}, false, err
+	}
+	return userIn(r, p)
+}
+
 // Users lists users in name order, resuming after the name after. It walks the
 // name index, so a user with no name, a machine among them, is not listed:
 // such a record is read by its ID or a protocol ID.
