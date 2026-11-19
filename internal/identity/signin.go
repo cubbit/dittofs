@@ -69,19 +69,19 @@ func (s *Server) signIn(ctx context.Context, step identity.SignInStep) (identity
 	// is an outage, so neither counts: an outage never locks a right
 	// password out. Overturned if a refusal is ever found to count a
 	// client's legitimate retries against it.
-	k, now := throttleKeyOf(a.User, step.Client), s.deps.Clock.Now()
-	if s.throttle.throttled(k, now) {
+	settle, ok := s.throttle.reserve(throttleKeyOf(a.User, step.Client), s.deps.Clock.Now())
+	if !ok {
 		return identity.SignInResult{}, outcomeThrottled, vfserr.ErrLogonFailure
 	}
+	failed := false
+	defer func() { settle(failed) }() // on every return and a panic, so no slot stays reserved
 	st := s.state.Load()
 	if st == nil {
 		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: no State applied", vfserr.ErrUnavailable)
 	}
 	res, oc, err := s.signInNTLM(ctx, st, step)
 	if err != nil {
-		if errors.Is(err, vfserr.ErrLogonFailure) {
-			s.throttle.fail(k, now)
-		}
+		failed = errors.Is(err, vfserr.ErrLogonFailure)
 		return identity.SignInResult{}, oc, err
 	}
 	return res, oc, nil

@@ -3,8 +3,10 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	pid "github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -70,6 +73,53 @@ func TestThrottleRefusesBeforeTheCredential(t *testing.T) {
 	}
 	r.fail(t, "*", "*")
 	r.signsIn(t, "the right password after 10 wrong ones, every read failing", right, true)
+}
+
+// Wrong passwords for one pair sent at once have at most 10 credentials
+// checked: every attempt that reaches the check is held there until each
+// of the others has either reached it too or been answered, so all of them
+// are in flight together. Catches the check and the count taken apart.
+func TestThrottleReservesConcurrentAttempts(t *testing.T) {
+	r, p := ntlmServer(t, "NAS01")
+	r.ntlmUser(t, p, "alice", "1500", alicePassword)
+	const n = 50
+	var checked atomic.Int32
+	arrived, gate := make(chan struct{}, n), make(chan struct{})
+	r.srv.OnNTHash(func([16]byte) {
+		checked.Add(1)
+		arrived <- struct{}{}
+		<-gate
+	})
+	done := make(chan error, n)
+	for range n {
+		go func() {
+			_, err := r.srv.SignIn(context.Background(), wrong(addrA)())
+			done <- err
+		}()
+	}
+	var errs []error
+	for held := 0; held+len(errs) < n; {
+		select {
+		case <-arrived:
+			held++
+		case err := <-done:
+			errs = append(errs, err)
+		case <-time.After(time.Minute):
+			t.Fatalf("after a minute %d attempts were held and %d answered, want %d in all", held, len(errs), n)
+		}
+	}
+	close(gate)
+	for len(errs) < n {
+		errs = append(errs, <-done)
+	}
+	for i, err := range errs {
+		if !errors.Is(err, vfserr.ErrLogonFailure) {
+			t.Errorf("attempt %d: SignIn = %v, want %v", i+1, err, vfserr.ErrLogonFailure)
+		}
+	}
+	if got := checked.Load(); got > 10 {
+		t.Errorf("%d wrong passwords sent at once had %d credentials checked, want at most 10", n, got)
+	}
 }
 
 // The refusals decided from the message count, since the throttle is asked
@@ -192,20 +242,13 @@ func TestThrottleWindowPasses(t *testing.T) {
 	r.signsIn(t, "the right password once the oldest failure is 10 minutes old", right, false)
 }
 
-// A full table evicts its oldest pair, counted: alice's throttled pair is
-// the first of 65 537, and once evicted she signs in from it. A 64 KiB name
-// costs the table no more than a short one.
-func TestThrottleEvictsTheOldestPair(t *testing.T) {
-	r, p := ntlmServer(t, "NAS01")
-	r.ntlmUser(t, p, "alice", "1500", alicePassword)
-	reg := metrics.New("test", "test")
-	var err error
-	if r.srv, err = identity.New(identity.Deps{Store: r.st, Clock: r.clock, Secrets: p, Metrics: reg}); err != nil {
-		t.Fatal(err)
-	}
-	r.reg = reg
-	r.applyNTLM(t, "NAS01", true)
-	r.fails(t, 10, wrong(addrA), vfserr.ErrLogonFailure)
+// A full table evicts the least recently counted pair below its limit,
+// counted: alice, 9 failures from A, is the first of 65 537 pairs, and once
+// evicted her count starts again, so one more wrong password leaves her right
+// one signing in. A 64 KiB name costs the table no more than a short one.
+func TestThrottleEvictsAPairUnderItsLimit(t *testing.T) {
+	r, _ := evictionServer(t)
+	r.fails(t, 9, wrong(addrA), vfserr.ErrLogonFailure)
 
 	short := r.srv.ThrottleFootprint()
 	long := strings.Repeat("x", 64<<10)
@@ -225,7 +268,67 @@ func TestThrottleEvictsTheOldestPair(t *testing.T) {
 		t.Errorf("evictions after %d pairs = %v, want 1", identity.ThrottleBound+1, got)
 	}
 	r.applyNTLM(t, "NAS01", true)
-	r.signsIn(t, "alice from A once her pair is evicted", from(ntlmStep(alicePassword, "alice", "", false), addrA), false)
+	r.fails(t, 1, wrong(addrA), vfserr.ErrLogonFailure)
+	r.signsIn(t, "alice from A, evicted at 9 failures, after 1 more", from(ntlmStep(alicePassword, "alice", "", false), addrA), false)
+}
+
+// A pair at its limit is never evicted: 10 wrong passwords for alice from A,
+// then 65 536 NTLMv1 attempts with junk names from A, each a new pair, and
+// her right password is still throttled, while the junk pairs evict one
+// another, counted. Catches eviction that frees a throttled pair.
+func TestThrottleKeepsAPairAtItsLimit(t *testing.T) {
+	r, _ := evictionServer(t)
+	r.fails(t, 10, wrong(addrA), vfserr.ErrLogonFailure)
+	junk := from(ntlmStep("wrong", "alice", "", false), addrA)
+	junk.NTLM.NTResponse = junk.NTLM.NTResponse[:24]
+	for i := range identity.ThrottleBound {
+		junk.NTLM.User = fmt.Sprintf("junk%d", i)
+		r.fails(t, 1, func() pid.SignInStep { return junk }, vfserr.ErrLogonFailure)
+	}
+	if got := r.total(t, "identity_logon_throttle_evictions_total"); got != 1 {
+		t.Errorf("evictions after %d junk pairs = %v, want 1", identity.ThrottleBound, got)
+	}
+	r.signsIn(t, "alice from A after 65 536 junk names", from(ntlmStep(alicePassword, "alice", "", false), addrA), true)
+}
+
+// A table whose every pair is at its limit refuses a new pair, throttled,
+// its credential unchecked, until the first throttled pair's window passes;
+// the new pair then evicts it, counted. Here the table holds 2 pairs.
+// Catches a new pair admitted past the bound, and a table that stays shut
+// once its pairs age out.
+func TestThrottleRefusesANewPairWhenAllAreAtTheLimit(t *testing.T) {
+	r, p := evictionServer(t)
+	r.srv.BoundThrottle(2)
+	r.ntlmUser(t, p, "carol", "1502", alicePassword)
+	r.fails(t, 10, wrong(addrA), vfserr.ErrLogonFailure)
+	r.fails(t, 10, wrong(addrB), vfserr.ErrLogonFailure)
+	carol := from(ntlmStep(alicePassword, "carol", "", false), addrA)
+	var checked int
+	r.srv.OnNTHash(func([16]byte) { checked++ })
+	r.signsIn(t, "carol from A while every pair is at its limit", carol, true)
+	if checked != 0 {
+		t.Errorf("a new pair refused for a full table had %d credentials checked, want 0", checked)
+	}
+	r.clock.Advance(10 * time.Minute)
+	r.signsIn(t, "carol from A once the first pair's window has passed", carol, false)
+	if got := r.total(t, "identity_logon_throttle_evictions_total"); got != 1 {
+		t.Errorf("evictions = %v, want 1", got)
+	}
+}
+
+// evictionServer is a signing fixture with alice and a metrics registry.
+func evictionServer(t *testing.T) (*resolving, *secrets.Provider) {
+	t.Helper()
+	r, p := ntlmServer(t, "NAS01")
+	r.ntlmUser(t, p, "alice", "1500", alicePassword)
+	reg := metrics.New("test", "test")
+	var err error
+	if r.srv, err = identity.New(identity.Deps{Store: r.st, Clock: r.clock, Secrets: p, Metrics: reg}); err != nil {
+		t.Fatal(err)
+	}
+	r.reg = reg
+	r.applyNTLM(t, "NAS01", true)
+	return r, p
 }
 
 // total is the named counter's value, summed over its labels.

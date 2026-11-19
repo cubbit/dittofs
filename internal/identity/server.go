@@ -256,7 +256,7 @@ func New(d Deps) (*Server, error) {
 	s.skipped = counter(d.Metrics, skippedSpec)
 	s.unmapped = counter(d.Metrics, unmappedSpec)
 	s.mismatches = counter(d.Metrics, mismatchesSpec)
-	s.throttle = newThrottle(counter(d.Metrics, evictionsSpec).WithLabelValues())
+	s.throttle = newThrottle(throttleBound, counter(d.Metrics, evictionsSpec).WithLabelValues())
 	return s, nil
 }
 

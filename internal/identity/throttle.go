@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"container/list"
 	"crypto/sha256"
 	"net/netip"
 	"sync"
@@ -59,14 +60,28 @@ var evictionsSpec = metrics.Spec{
 // whose oldest is at next once it is full. Each is in Unix seconds, a uint32
 // good until 2106, so the full table takes half what int64 times would.
 type throttlePair struct {
-	fails [throttleLimit]uint32
-	n     uint8 // the failures held, up to throttleLimit
-	next  uint8 // where the next failure goes
+	fails   [throttleLimit]uint32
+	n       uint8  // the failures held, up to throttleLimit
+	next    uint8  // where the next failure goes
+	pending uint16 // the attempts reserved and not yet settled
+	key     throttleKey
+	at      *list.Element // the pair in under or full; nil while pending
 }
 
-// throttle counts each pair's logon failures and refuses a pair past its
-// limit before its credential is checked. It runs no goroutine: a pair's
-// window slides as its own failures are counted.
+// counted is how many of p's failures are under throttleWindow old at now.
+func (p *throttlePair) counted(now time.Time) int {
+	n := 0
+	for _, f := range p.fails[:p.n] {
+		if now.Unix()-int64(f) < int64(throttleWindow/time.Second) {
+			n++
+		}
+	}
+	return n
+}
+
+// throttle counts each pair's logon failures and refuses a pair at its limit
+// before its credential is checked. It runs no goroutine: a pair's window
+// slides as its own failures are counted.
 //
 // ponytail: throttling is in memory, per node. A restart forgets it, each node
 // counts alone, and a guesser who spreads one name across many addresses, or
@@ -74,66 +89,126 @@ type throttlePair struct {
 // or add a per-address limit across names, when the logon stream shows a spray
 // that this rule did not slow.
 //
-// ponytail: a full throttle evicts its oldest pair, which frees a guesser who
-// can fill it — but one who can fill it can more cheaply rotate addresses, which
-// the in-memory note above already concedes. Refuse new pairs while every pair
-// is at its limit when the logon stream shows a spray that eviction let through.
-//
-// ponytail: the bound, 65 536 pairs, about 12 MiB with their times, is a
-// fixed count. Charge the table to RFC 24's connection-state pool once it can
-// be charged.
+// ponytail: the bound, 65 536 pairs, is a fixed count. Charge the table to
+// RFC 24's connection-state pool once it can be charged.
 type throttle struct {
-	mu        sync.Mutex
-	pairs     map[throttleKey]throttlePair
-	order     []throttleKey // the pairs as first counted, a ring from head once full
-	head      int
+	mu    sync.Mutex
+	pairs map[throttleKey]*throttlePair
+	under list.List // the settled pairs below their limit, least recently settled first
+	full  list.List // the settled pairs that reached their limit, in the order they did
+	bound int       // the most pairs held, throttleBound but in a test
+	// evictions counts the pairs a full table dropped.
 	evictions prometheus.Counter
 }
 
-func newThrottle(evictions prometheus.Counter) *throttle {
-	return &throttle{pairs: map[throttleKey]throttlePair{}, evictions: evictions}
+func newThrottle(bound int, evictions prometheus.Counter) *throttle {
+	return &throttle{pairs: map[throttleKey]*throttlePair{}, bound: bound, evictions: evictions}
 }
 
-// throttled reports whether k has throttleLimit counted failures, the oldest
-// under throttleWindow old at now.
-func (t *throttle) throttled(k throttleKey, now time.Time) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	p := t.pairs[k]
-	return p.n == throttleLimit && now.Unix()-int64(p.fails[p.next]) < int64(throttleWindow/time.Second)
-}
-
-// fail counts one failure of k at now. A pair new to a full table evicts the
-// pair first counted, counted.
+// reserve admits one attempt of k at now, or refuses it when k's counted
+// failures and its attempts in flight reach throttleLimit. An admitted
+// attempt must call settle once its credential check returns, with whether
+// it failed ErrLogonFailure; until then it holds one of k's throttleLimit
+// slots, so attempts sent at once cannot all pass.
 //
 // decision: only an attempt whose credential was checked, or refused for its
 // mechanism, is counted; a throttled one is not, since counting it would keep
 // a client that retries refused for ever, the lockout RFC 18 §3.1 rules out.
 // A success does not reset the count. Overturned if a guesser is seen pacing
 // attempts just inside the window.
-func (t *throttle) fail(k throttleKey, now time.Time) {
+func (t *throttle) reserve(k throttleKey, now time.Time) (settle func(failed bool), ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	p, ok := t.pairs[k]
-	if !ok {
-		if len(t.order) < throttleBound {
-			t.order = append(t.order, k)
-		} else {
-			delete(t.pairs, t.order[t.head])
-			t.order[t.head] = k
-			t.head = (t.head + 1) % throttleBound
-			t.evictions.Inc()
+	p := t.pairs[k]
+	switch {
+	case p == nil:
+		if len(t.pairs) >= t.bound && !t.evict(now) {
+			return nil, false
+		}
+		p = &throttlePair{key: k}
+		t.pairs[k] = p
+	case p.counted(now)+int(p.pending) >= throttleLimit:
+		return nil, false
+	default:
+		t.unlist(p)
+	}
+	p.pending++
+	return func(failed bool) { t.settle(p, failed, now) }, true
+}
+
+// unlist takes p out of whichever of under and full holds it.
+func (t *throttle) unlist(p *throttlePair) {
+	if p.at != nil {
+		t.under.Remove(p.at) // a no-op on the list p.at is not in
+		t.full.Remove(p.at)
+		p.at = nil
+	}
+}
+
+// settle ends one attempt of p admitted at now, counting it when it failed.
+// A pair with no attempt in flight and no failure held leaves the table, so a
+// success takes no slot; one dropped meanwhile is not put back.
+func (t *throttle) settle(p *throttlePair, failed bool, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.pairs[p.key] != p {
+		return
+	}
+	p.pending--
+	if failed {
+		p.fails[p.next] = uint32(now.Unix())
+		p.next = (p.next + 1) % throttleLimit
+		p.n = min(p.n+1, throttleLimit)
+	}
+	switch {
+	case p.pending > 0:
+	case p.n == 0:
+		delete(t.pairs, p.key)
+	case p.counted(now) >= throttleLimit:
+		p.at = t.full.PushBack(p)
+	default:
+		p.at = t.under.PushBack(p)
+	}
+}
+
+// evict drops one pair to make room for a new one, counted: the least
+// recently settled pair below its limit, or else the first to reach its
+// limit once its window has passed. It reports false, dropping nothing, when
+// every pair is at its limit or has an attempt in flight.
+//
+// decision: a pair at its limit is never evicted, so no stream of new pairs,
+// junk names from one address among them, frees a throttled name (RFC 18
+// §3.1). A full table of throttled pairs instead refuses every new pair,
+// throttled, until one's window passes: that takes 655 360 failures within
+// the window at the full bound, and it denies new pairs, never a counted one. Overturned if the
+// logon stream shows a client filling the table that way, which needs a
+// per-address share of it.
+//
+// ponytail: only the front of full is checked, though a pair behind it may
+// have aged out first, since full is ordered by when a pair reached its limit,
+// not by when its oldest failure leaves the window; a new pair is then refused
+// until the front ages out, at most one window later. Scan full, or order it
+// by expiry, when a refusal is seen while a throttled pair had aged out.
+func (t *throttle) evict(now time.Time) bool {
+	e := t.under.Front()
+	if e == nil {
+		e = t.full.Front()
+		if e == nil || e.Value.(*throttlePair).counted(now) >= throttleLimit {
+			return false
 		}
 	}
-	p.fails[p.next] = uint32(now.Unix())
-	p.next = (p.next + 1) % throttleLimit
-	p.n = min(p.n+1, throttleLimit)
-	t.pairs[k] = p
+	p := e.Value.(*throttlePair)
+	t.unlist(p)
+	delete(t.pairs, p.key)
+	t.evictions.Inc()
+	return true
 }
 
 // drop forgets every pair.
 func (t *throttle) drop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.pairs, t.order, t.head = map[throttleKey]throttlePair{}, nil, 0
+	t.pairs = map[throttleKey]*throttlePair{}
+	t.under.Init()
+	t.full.Init()
 }
