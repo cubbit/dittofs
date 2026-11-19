@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"slices"
 	"strings"
 	"syscall"
@@ -70,8 +71,23 @@ func (f *assembledJournal) rotHeader(t *testing.T, name string, off int64) {
 
 // lossRecords answers the dropped record each loss record on disk names, in
 // the order the scan read them: the order the streams appended them in.
+//
+// The holds park the two ways a live journal's retirement worker makes a
+// listed segment file vanish mid-read — a recycle renames its name away, a
+// retirement unlinks it — so the listings and the reads see one directory.
+// Both releases are deferred, and the kit's own test-end backstop re-releases
+// after t.Fatalf, before the cleanup closing a still-open journal.
+//
+// Durable answers the crash view of the last SyncDir, not the live directory
+// the listing walked, so a listed name can name a segment whose publishing
+// SyncDir the live journal has not run yet — a fresh spare or the open's own
+// new segment. The open syncs every loss record it appends before it returns,
+// so such a name holds no loss record, and the skip below leaves the answer
+// unchanged; with the holds in place ErrNotExist is never a removal.
 func (f *assembledJournal) lossRecords(t *testing.T) []core.Seq {
 	t.Helper()
+	defer f.seam.Hold(t, kit.OpRename, "*.seg").Release()
+	defer f.seam.Hold(t, kit.OpRemove, "*.seg").Release()
 	var out []core.Seq
 	for _, name := range f.segmentFileNames(t) {
 		kind, id := format.ClassifyName(name)
@@ -79,6 +95,9 @@ func (f *assembledJournal) lossRecords(t *testing.T) []core.Seq {
 			continue
 		}
 		b, err := f.seam.Durable(name)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
