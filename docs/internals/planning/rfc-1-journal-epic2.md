@@ -55,7 +55,7 @@ At the end of the epic:
 - `test/journal/`: the known-failure file and the traceability map with its check.
 - `test/suites.yaml`: the `journal-conformance` suite, the `journal` group, and the new
   build tag added to `lint-go`'s vet line.
-- The catalogue of system scenarios, as §7 of this file, for epics 10 and 11 to write.
+- The catalogue of system scenarios, as §7 of this file, for epic 10 and RFC 8's second part to write.
 
 ### 1.2 Out of scope
 
@@ -108,7 +108,7 @@ is named with the reason.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
-   checks only whether v1 state exists, to refuse it at start (E10), and never reads
+   checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
@@ -370,7 +370,7 @@ it, so a system test written now could only fail at start. What a system test ne
 already exists: the `e2e` suite and its framework start a real `dfs`, mount NFS and SMB,
 and `dt` grades the suite against a known file once e2e opts in (RFC 29 §9). The fixtures
 specific to the journal (several journal devices, a full device, a moved disk) would have
-no caller here, so they land with epic 10's first test (rule 12). The catalogue is §7 of
+no caller here, so they land with the first e2e test that uses them (RFC 8's second part, rule 12). The catalogue is §7 of
 this file.
 
 **D12. The profiler uses the standard library only.**
@@ -938,8 +938,8 @@ every supported filesystem, and CI runs ext4 only; no tier provisions another ye
 
 ## 7. System scenario catalogue
 
-These cover what only the composed system shows. **Epic 10 writes the start-check and
-initialisation rows; epic 11 writes the rest**, each listed as a known failure in its
+These cover what only the composed system shows. **Epic 10 writes the start-check
+rows; RFC 8's second part writes the rest**, each listed as a known failure in its
 suite's known file until it passes. The journal-specific fixtures land with the first
 test that uses them (D11).
 
@@ -987,13 +987,10 @@ and the verifier) as well. Epic 10's rows need only a `dfs` that starts.
 - **Start and devices:** start is refused with `storage` but no journal devices; a disk
   moved to another installation, or a journal directory swapped, refused by `expect` and
   the installation ID.
-- **Start and initialisation (epic 10):** each row of the start check (normal start, the
-  two refusals with their messages); a refused start writes nothing, leaving stores,
-  devices and any v1 state byte-identical; a crash between journal init and the store's
-  init, after which a start reports the store lost and a re-run of initialisation wipes
-  the devices and succeeds; a crash between the store's init and the journal records,
-  after which a start refuses the devices as not recorded, never as the store lost, and
-  once a re-run of initialisation completes the records, the next start serves.
+- **Start check (epic 10):** each row of the start check (normal start, and the
+  refusals with their messages: no device, not initialised, store lost, unidentifiable, v1
+  state); a refused start writes nothing, leaving the store directory and the devices
+  byte-identical. The initialisation step's own crash rows are the RFC 23 plan's epic 5.
 - **Process death against power loss:** `SIGKILL` and a power cut kept distinct, and a
   long soak with capacity below the data written (the soak itself is epic 12's).
 
@@ -1098,5 +1095,5 @@ test/journal   ──► standard library, gopkg.in/yaml.v3 (reads trace.yaml, t
   checks at 10⁶ extents pass, its duration is measured with `dt history`, and epic 12
   moves the heavy checks to `merge` or `nightly` with expected-skip entries if the `pr`
   budget needs it.
-- **The `e2e` known file.** The system tests of epics 10 and 11 need the `e2e` suite to
-  have opted in to a known file (RFC 29 §9). If it has not by then, epic 10 creates it.
+- **The `e2e` known file.** The system tests of RFC 8's second part need the `e2e` suite to
+  have opted in to a known file (RFC 29 §9). Epic 10 writes no e2e test.

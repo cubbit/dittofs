@@ -111,7 +111,7 @@ turns no conformance test green and adds none to `known.yaml`.
 - Compressing the `FileID` column, a **MAY**: skipped, layout version 1 defines no
   compressed form (RFC 28 §2.5: "An implementation **MAY** compress or dictionary-encode the
   `FileID` column").
-- Fuzzing beyond the seed corpus: RFC 29 defines no fuzz tier; epic 12 or a new tier.
+- Fuzzing beyond the seed corpus: RFC 29 defines no fuzz tier; a deferral-ledger row of the journal plan (`unowned`).
 - Scrub (RFC 28 §5: "**Scrub.** Verification on read never checks content that is never
   read"): after v1, with RFC 10's replication work (#3392).
 
@@ -206,7 +206,7 @@ Copied verbatim from [the plan](rfc-1-journal-plan.md) §1.5, as its instruction
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
    v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
-   checks only whether v1 state exists, to refuse it at start (E10), and never reads
+   checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
 8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
    about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory

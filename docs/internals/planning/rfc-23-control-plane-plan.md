@@ -1696,12 +1696,9 @@ runs RFC 23's e2e rows.
   is the RFC 13 plan's: `pkg/bootstrap` with the refused keys and the node identity, `pkg/settings`
   with its write check, classes and series, and `pkg/secrets`. Epics 1 to 5 keep only the strip of
   `pkg/config`, the node, the API's routes and `dfs init`, and consume the rest.
-- **O12. `dfs init`'s order disagrees with the RFC 1 plan's epic 10.** That epic runs `journal.Init`
-  before `kvstore.Init`, says nothing of `node-id`, and lets a rerun wipe and re-initialise a device
-  whose `format` names an installation with no store. This plan runs `kvstore.Init` first, so no
-  device ever names an installation without a store, the wipe has nothing to act on, and no
-  `node-id` copy a rerun adopts can be wiped. Epic 5 follows this order; the RFC 1 plan's epic 10
-  aligns with it when it is broken down, its journal side (`Init` and the start check) unchanged.
+- **O12. `dfs init`'s order: resolved.** The RFC 1 plan's epic 10 aligned with this plan's order
+  (journal plan, epics 10 to 13 breakdown): the store's `Init` runs first, so no device names an
+  installation without a store, and epic 10's wipe is retired. Epic 10 keeps only the start check.
 
 ### 6.1 Deferral ledger
 
