@@ -375,10 +375,14 @@ func (e *Engine) Stats() Stats {
 		js.ID = id
 		// The snapshot a close leaves out stays nil (JournalStats.Stats's
 		// own doc): a closed journal answers its zero Stats, and no caller
-		// may read that as an open, empty journal exporting zeros.
-		var st journal.Stats
+		// may read that as an open, empty journal exporting zeros. The
+		// journal is read first, the flag after: a false read after it
+		// proves the journal was open through the read, and a true read
+		// drops the snapshot, so a Close racing this call leaves either
+		// the open journal's figures or none, never the closed journal's
+		// zeros.
+		st := j.j.Stats()
 		if !e.closed.Load() {
-			st = j.j.Stats()
 			js.Stats = &st
 		}
 		js.TagShares = map[journal.ShareTag]entity.ShareID{}
