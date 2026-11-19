@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -20,10 +22,12 @@ import (
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	pid "github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -39,7 +43,6 @@ type dirPrincipals struct {
 	fault *switched
 	clock *sim.TestClock
 	reg   *metrics.Registry
-	cache *identity.DirectoryCache
 }
 
 // dirStore is a memory KV store initialised with a fresh installation ID.
@@ -62,6 +65,31 @@ func dirStore(t *testing.T) (*kvstore.Store, uuid.UUID) {
 	return st, inst
 }
 
+// protocolSecrets is a secrets provider over st holding a protocol-role key
+// from a key file under a temporary directory, closed when the test ends.
+func protocolSecrets(t *testing.T, st *kvstore.Store) *secrets.Provider {
+	t.Helper()
+	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", "directory test passphrase")
+	b, err := keyprovider.GenerateKeyFile("directory test passphrase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "protocol.key")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kp, err := keyprovider.NewProvider(context.Background(), keyprovider.Config{Kind: keyprovider.KindLocal, File: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = kp.Close() })
+	p, err := secrets.New(st.ControlPlane(), map[secrets.Role]keyprovider.KeyProvider{secrets.Protocol: kp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // newDirPrincipals builds the server over st and a directory of schema,
 // whose NetBIOS domain is KORP and realm CORP.EXAMPLE.
 func newDirPrincipals(t *testing.T, st *kvstore.Store, inst uuid.UUID, schema string) *dirPrincipals {
@@ -69,21 +97,29 @@ func newDirPrincipals(t *testing.T, st *kvstore.Store, inst uuid.UUID, schema st
 	e := &dirPrincipals{st: st, inst: inst, d: identitytest.NewDirectory("DC=corp,DC=example"), fault: &switched{},
 		clock: sim.NewTestClock(time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)), reg: metrics.New("test", "test")}
 	e.f = identitytest.NewFaultyDirectory(e.d.Dial, e.fault)
-	var err error
-	if e.s, err = identity.New(identity.Deps{Store: st, Clock: e.clock, Metrics: e.reg}); err != nil {
+	name, pw := e.d.Account()
+	p := protocolSecrets(t, st)
+	owner := entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}
+	var ref entity.SecretRef
+	ref[0] = 1
+	sec, err := p.Seal(context.Background(), secrets.Protocol, entity.SecretDirectoryCredential, owner, ref, pw, secrets.Meta{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	name, pw := e.d.Account()
+	if err := st.ControlPlane().Write(context.Background(), entity.WriteMeta{Audit: &entity.AuditRecord{
+		Target: entity.ResourceRef{Kind: entity.ResourceSecret, ID: sec.ID[:]}, Change: []byte("set")}},
+		func(tx entity.ControlPlaneTx) error { return tx.PutSecret(sec, sec.Version-1) }); err != nil {
+		t.Fatal(err)
+	}
+	if e.s, err = identity.New(identity.Deps{Store: st, Clock: e.clock, Metrics: e.reg, Secrets: p, Directory: e.f.Dial}); err != nil {
+		t.Fatal(err)
+	}
 	rec := directory.Record{Schema: schema, Address: "ldaps://dc.corp.example", Base: "DC=corp,DC=example", BindName: name,
-		Realm: "CORP.EXAMPLE", NetBIOSDomain: "KORP"}
+		BindCredential: ref, Realm: "CORP.EXAMPLE", NetBIOSDomain: "KORP"}
 	if err := e.s.Apply(identity.State{Settings: identity.DefaultSettings(), Directory: &rec}); err != nil {
 		t.Fatal(err)
 	}
-	c := directory.NewClient(rec, e.f.Dial, func(context.Context) ([]byte, error) { return pw, nil }, e.clock, nil)
-	t.Cleanup(c.Close)
-	e.cache = identity.NewDirectoryCache(c, identity.Deps{Clock: e.clock, Metrics: e.reg})
-	t.Cleanup(e.cache.Close)
-	e.s.UseDirectoryCache(e.cache)
+	t.Cleanup(func() { _ = e.s.Stop(context.Background()) })
 	return e
 }
 
@@ -687,7 +723,7 @@ func TestDirectoryMintQueriesTakeASlot(t *testing.T) {
 					done <- err
 				}()
 				synctest.Wait()
-				if got := e.cache.Waiting(); got != 1 {
+				if got := e.s.DirectoryWaiting(); got != 1 {
 					t.Errorf("queries waiting for a slot %d, want 1: the mint's", got)
 				}
 				e.clock.Advance(time.Second)

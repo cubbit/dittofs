@@ -142,22 +142,9 @@ func (c *dirCache) Conditions(dst []health.Condition) []health.Condition {
 	return c.out.conditions(dst)
 }
 
-// UseDirectoryCache puts c in place of the applied State's directory cache,
-// so a test reaches the directory through a client whose bind password it
-// passes in.
-//
-// ponytail: this replaces the cache Apply builds, whose client resolves its
-// bind password through Deps.Secrets.Resolve, which no secrets provider
-// implements yet, so these tests run on a client production never builds.
-// Delete it, and drive Apply with the real secrets provider, once Resolve
-// is implemented.
-func (s *Server) UseDirectoryCache(c *DirectoryCache) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st := *s.state.Load()
-	st.dir = c
-	s.state.Store(&st)
-}
+// DirectoryWaiting is the number of queries waiting for one of the applied
+// State's directory cache's 64 slots.
+func (s *Server) DirectoryWaiting() int { return s.state.Load().dir.Waiting() }
 
 // ByKerberosName maps user@realm through the directory, as a Kerberos
 // sign-in's third step does, minting with mint.
