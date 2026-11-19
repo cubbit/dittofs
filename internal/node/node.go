@@ -48,6 +48,12 @@ type Config struct {
 	// Tracer is the host's tracer, nil when tracing is off. Each journal
 	// the engine opens starts its spans below it, naming the journal by its
 	// identity; nil opens every journal without one, tracing nothing.
+	//
+	// decision: the host builds the tracing provider and hands it here, and
+	// only the journals take the tracer; the root building the provider from
+	// the tracing settings and handing the tracer to every component is not
+	// built. This field goes once the root builds the provider from those
+	// settings.
 	Tracer trace.Tracer
 	// Journal are options for every journal the node opens, after one
 	// reading Clock: the engine's and the one Start reads each device's

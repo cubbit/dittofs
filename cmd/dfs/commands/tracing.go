@@ -24,9 +24,9 @@ const shutdownBound = 5 * time.Second
 // — and that provider's shutdown, for when the start unwinds, bounded at
 // shutdownBound so an unreachable collector cannot hold the exit. An
 // endpoint that is no http(s) URL is refused rather than let the exporter
-// fall back to its own default silently. Unset, both tracer and shutdown are
-// nil and the node runs untraced: Config's nil tracer opens every journal
-// without one.
+// fall back to its own default silently. Unset, the tracer is nil and the
+// shutdown a no-op, and the node runs untraced: Config's nil tracer opens
+// every journal without one.
 //
 // ponytail: the endpoint is an environment gate for development, read outside
 // the bootstrap and outside its own tracing settings, with the SDK's own
@@ -36,7 +36,7 @@ const shutdownBound = 5 * time.Second
 func devTracing() (trace.Tracer, func(context.Context) error, error) {
 	endpoint := os.Getenv("DITTOFS_OTLP_ENDPOINT")
 	if endpoint == "" {
-		return nil, nil, nil
+		return nil, func(context.Context) error { return nil }, nil
 	}
 	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, nil, fmt.Errorf("the OTLP endpoint %q is no http(s) URL", endpoint)

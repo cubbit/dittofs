@@ -88,13 +88,11 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("building the tracing provider: %w", err)
 	}
-	if stopTracing != nil {
-		defer func() {
-			if err := stopTracing(context.Background()); err != nil {
-				slog.Warn("dfs: the trace provider did not shut down clean", "err", err)
-			}
-		}()
-	}
+	defer func() {
+		if err := stopTracing(context.Background()); err != nil {
+			slog.Warn("dfs: the trace provider did not shut down clean", "err", err)
+		}
+	}()
 	kv, err := openKV(cfg, clock)
 	if err != nil {
 		return fmt.Errorf("opening the metadata store: %w", err)

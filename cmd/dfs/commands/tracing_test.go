@@ -2,12 +2,9 @@ package commands
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,7 +12,7 @@ import (
 )
 
 // With no DITTOFS_OTLP_ENDPOINT, the start's tracing wiring is off: no tracer
-// and nothing to shut down, so the node runs untraced.
+// and a shutdown that does nothing, so the node runs untraced.
 func TestDevTracingUnsetIsOff(t *testing.T) {
 	t.Setenv("DITTOFS_OTLP_ENDPOINT", "")
 	tracer, stop, err := devTracing()
@@ -25,8 +22,11 @@ func TestDevTracingUnsetIsOff(t *testing.T) {
 	if tracer != nil {
 		t.Errorf("devTracing with the endpoint unset handed a tracer, want nil")
 	}
-	if stop != nil {
-		t.Errorf("devTracing with the endpoint unset handed a shutdown, want nil")
+	if stop == nil {
+		t.Fatal("devTracing with the endpoint unset handed no shutdown, want a no-op the start can call unguarded")
+	}
+	if err := stop(context.Background()); err != nil {
+		t.Errorf("the no-op shutdown of the unset wiring: got %v, want nil", err)
 	}
 }
 
@@ -130,18 +130,14 @@ func TestDevTracingShutsDownWithinItsBound(t *testing.T) {
 	}
 }
 
-// A refused endpoint stops dfs start before the metadata store opens: node.New
-// owns the KV from openKV on, so a start refused on its tracing must refuse
-// before any store exists, not leave one behind.
+// A refused endpoint stops dfs start over an initialised installation, with
+// the tracing provider's own refusal: the start check passes first, then the
+// provider is built before the metadata store opens, so the refusal leaves no
+// open store behind.
 func TestStartRefusesABadOTLPEndpoint(t *testing.T) {
 	t.Setenv("DITTOFS_OTLP_ENDPOINT", "localhost:4318")
-	dir := t.TempDir()
-	store := filepath.Join(dir, "store")
-	code, out := runChild(t, bootstrapFile{store: store, journal: filepath.Join(dir, "device"), node: nodeUUID}.write(t, dir))
+	code, out := runChild(t, installed(t, t.TempDir()))
 	if code == 0 || !strings.Contains(out, "Error: building the tracing provider: the OTLP endpoint") {
 		t.Fatalf("dfs start over localhost:4318 as the OTLP endpoint: exit %d, output:\n%s\nwant non-zero naming the tracing provider", code, out)
-	}
-	if _, err := os.Stat(store); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("store directory %s after the refused start: %v, want none created", store, err)
 	}
 }

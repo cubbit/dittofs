@@ -316,10 +316,10 @@ func TestStartOverARecoveryRefusal(t *testing.T) {
 	}
 }
 
-// Compose over a tracer adapts it into the journal's Tracer option: a write,
-// a commit and a repack pass each reach the recorder as one span named
-// journal.<op>, and every span carries the journal as its identity attribute —
-// the hex of the identity the open resolved expect to. With no tracer,
+// Compose over a tracer adapts it into the journal's Tracer option: a commit
+// and a repack pass each reach the recorder as a span named
+// journal.<op>, and every journal span, whatever its op, carries the journal
+// as its identity attribute — the hex of the identity the open resolved. With no tracer,
 // TestCompose covers the same composition: the journal opens with no tracer
 // at all, and its drives work.
 func TestComposeAdaptsTheTracerToTheJournal(t *testing.T) {
@@ -359,26 +359,34 @@ func TestComposeAdaptsTheTracerToTheJournal(t *testing.T) {
 		t.Fatalf("Repack through the composed journal: %v", err)
 	}
 
-	var counts map[string]int
+	counts := map[string]int{}
+	var unnamed int
 	var ident string
 	for _, s := range sr.Ended() {
 		if !strings.HasPrefix(s.Name(), "journal.") {
 			continue
 		}
-		if counts == nil {
-			counts = map[string]int{}
-		}
 		counts[s.Name()]++
+		named := false
 		for _, a := range s.Attributes() {
 			if string(a.Key) == "journal" {
-				ident = a.Value.AsString()
+				ident, named = a.Value.AsString(), true
+				if want := hex.EncodeToString(w.id[:]); ident != want {
+					t.Errorf("span %s names the journal %s, want the hex of the identity Open resolved, %s", s.Name(), ident, want)
+				}
 			}
 		}
+		if !named {
+			unnamed++
+			t.Errorf("span %s carries no journal attribute, want every journal span to name its journal", s.Name())
+		}
 	}
-	if len(counts) == 0 {
-		t.Fatal("the journal opened over a tracer recorded no journal span, want the drive's sync, repack and write")
+	for _, name := range []string{"journal.sync", "journal.repack_pass"} {
+		if counts[name] < 1 {
+			t.Errorf("no %s span after the drives, want at least the one the commit or the repack pass ran (spans seen: %v)", name, counts)
+		}
 	}
-	if want := hex.EncodeToString(w.id[:]); ident != want {
-		t.Errorf("the journal spans name the journal %s, want the hex of the identity Open resolved, %s", ident, want)
+	if ident == "" {
+		t.Fatalf("no journal span carried the journal attribute (spans seen: %v)", counts)
 	}
 }

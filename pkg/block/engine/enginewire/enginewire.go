@@ -107,6 +107,12 @@ func journalOptions(p Params, expect journal.JournalID) []journal.Option {
 // once here, when the adapter is built. The span ends with the operation's
 // error, recorded and surfaced as the span's failure.
 //
+// decision: the failure's status message is the raw error, which can carry the
+// journal directory's absolute path, though a span is meant to hold no path.
+// It holds because that path is the operator's bootstrap setting, not one a
+// user chose, and spans leave only to the operator's own collector. Set the
+// status from the error's class alone once spans leave to anyone else.
+//
 // decision: the adapter starts a span for every op the journal names, with no
 // IsSampled check on the parent, so RFC 25 §6.1's sampled-parent rule is
 // knowingly unapplied: a request-path journal op — a reserve_refused, a fill
@@ -124,7 +130,7 @@ func journalTracer(t trace.Tracer, id journal.JournalID) journal.Tracer {
 		kvs := make([]attribute.KeyValue, 0, len(attrs)+1)
 		kvs = append(kvs, ident)
 		for _, a := range attrs {
-			if kv, ok := otel(a); ok {
+			if kv, ok := otelAttr(a); ok {
 				kvs = append(kvs, kv)
 			}
 		}
@@ -139,11 +145,11 @@ func journalTracer(t trace.Tracer, id journal.JournalID) journal.Tracer {
 	}
 }
 
-// otel is a slog.Attr as the span attribute of its value, the four value
+// otelAttr is a slog.Attr as the span attribute of its value, the four value
 // shapes the journal's spans carry — string, bool and both integer kinds.
 // Anything else answers none, keeping the span's attributes the closed set
 // the journal's own emitters pass.
-func otel(a slog.Attr) (attribute.KeyValue, bool) {
+func otelAttr(a slog.Attr) (attribute.KeyValue, bool) {
 	k := attribute.Key(a.Key)
 	switch a.Value.Kind() {
 	case slog.KindString:

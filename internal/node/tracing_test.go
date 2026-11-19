@@ -18,6 +18,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -160,6 +161,26 @@ func TestTheJournalTracesItsOperations(t *testing.T) {
 	if missing > 0 {
 		t.Errorf("%d of the %d journal spans carry no journal attribute, want every span of the journal's prefix to name its journal", missing, len(journalSpans(t, sr)))
 	}
+	var refusals int
+	for _, s := range journalSpans(t, sr) {
+		if s.Name() != "journal.reserve_refused" {
+			continue
+		}
+		refusals++
+		if s.Status().Code != codes.Error {
+			t.Errorf("a journal.reserve_refused span ended with status %v, want Error: the span ends with the refusal", s.Status().Code)
+		}
+		var excepted bool
+		for _, e := range s.Events() {
+			excepted = excepted || e.Name == "exception"
+		}
+		if !excepted {
+			t.Errorf("a journal.reserve_refused span recorded no exception event, want the refusal recorded on it")
+		}
+	}
+	if refusals == 0 {
+		t.Error("no journal.reserve_refused span to hold to the refusal, want the fill's")
+	}
 	for _, name := range []string{"journal.sync", "journal.reserve_refused", "journal.repack_pass"} {
 		if seen[name] < 1 {
 			t.Errorf("no span of op %s after the drives, want at least the one each of them ran", name)
@@ -176,9 +197,8 @@ func TestTheJournalTracesItsOperations(t *testing.T) {
 	}
 }
 
-// With tracing off — no Config.Tracer — the same drives run to their own
-// outcomes and no call blocks: the journal engages no tracer, and its
-// emitters' nil guards keep every span's cost at nothing.
+// With Config.Tracer nil, the same drives run to their own outcomes: the
+// commit returns and the fill reaches its first refusal.
 func TestTheJournalRunsUntracedWithoutATracer(t *testing.T) {
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		cfg.Journal = append(cfg.Journal, journal.WithSettings(fillSettings(4<<20)))
