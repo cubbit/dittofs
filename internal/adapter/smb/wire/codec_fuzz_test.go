@@ -3,6 +3,7 @@ package wire_test
 import (
 	"reflect"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/adapter/smb/wire"
@@ -293,7 +294,10 @@ func u16s(r *sr, n, limit int) []uint16 {
 	return s
 }
 
-func readNegotiateRequest(r *sr, _ uint32) NegotiateRequest { // 2.2.3
+// readNegotiateRequest reads 2.2.3, whose negotiate contexts are on the wire
+// when its dialects hold 3.1.1, their offset and count ClientStartTime,
+// ignored, when they do not.
+func readNegotiateRequest(r *sr, _ uint32) NegotiateRequest {
 	var n NegotiateRequest
 	r.size(36, 36)
 	dialects := int(r.u16())
@@ -304,7 +308,9 @@ func readNegotiateRequest(r *sr, _ uint32) NegotiateRequest { // 2.2.3
 	offset, count := int(r.u32()), int(r.u16())
 	r.next(2)
 	n.Dialects = u16s(r, dialects, 64)
-	n.Contexts = negotiateContexts(r, offset, count)
+	if slices.Contains(n.Dialects, 0x311) {
+		n.Contexts = negotiateContexts(r, offset, count)
+	}
 	return n
 }
 

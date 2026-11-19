@@ -29,6 +29,7 @@ func TestGenerateRefuses(t *testing.T) {
 		union  = "D uint16 `smb2:\"union\"`\n_ uint16 `smb2:\"name=L\"`\n"
 		def    = "X []byte `smb2:\"len=L,max=4,default\"`\n"
 		arm    = "type T struct{ A uint32 }\n"
+		chain  = "_ uint32 `smb2:\"name=O\"`\n_ uint16 `smb2:\"name=C\"`\n_ uint16 `smb2:\"name=N\"`\n"
 	)
 	for _, c := range []struct{ src, want string }{
 		{"type S struct {\n" + layout + "B []byte `smb2:\"len=L\"`\n}", "S.B: a variable-length field with no maximum"},
@@ -73,6 +74,9 @@ func TestGenerateRefuses(t *testing.T) {
 		{"type S struct {\n" + union + "A T8 `smb2:\"len=L,case=1\"`\n" + def + "}\ntype T8 struct{ A uint64 }", "S.A: an arm whose maximum 8 exceeds its union's default 4"},
 		{"type S struct {\n" + layout + "B []byte `smb2:\"len=L,max=4\"`\nA uint32\n}", "S.A: a fixed field after a variable one"},
 		{"type S struct {\n" + layout + "_ uint16 `smb2:\"name=U\"`\nB []byte `smb2:\"len=L,max=4\"`\n}", "S._: a layout field no field uses"},
+		{"type S struct {\n" + chain + "D []uint16 `smb2:\"count=N,max=4\"`\nM []T `smb2:\"offset=O,count=C,max=2,chain,if=D\"`\n}\n" + arm, "S.M: tag if=D is not L:V, a field and the uint16 it may hold"},
+		{"type S struct {\n" + chain + "B []byte `smb2:\"len=N,max=4\"`\nM []T `smb2:\"offset=O,count=C,max=2,chain,if=B:0x311\"`\n}\n" + arm, "S.M: if=B names no []uint16 field before it"},
+		{"type S struct {\n" + chain + "M []T `smb2:\"offset=O,count=C,max=2,chain,if=D:0x311\"`\nD []uint16 `smb2:\"count=N,max=4\"`\n}\n" + arm, "S.M: if=D names no []uint16 field before it"},
 	} {
 		t.Run(c.want, func(t *testing.T) {
 			src, err := generateFrom(t, c.src)

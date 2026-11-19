@@ -3,6 +3,8 @@
 package wire_test
 
 import (
+	"slices"
+
 	"github.com/cubbit/dittofs/internal/adapter/smb/wire"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
@@ -301,12 +303,14 @@ func (x *NegotiateRequest) decodeSMB2(d *wire.Decoder, v uint32) {
 	lNegotiateContextCount = int(d.Uint16())
 	d.Skip(2)
 	x.Dialects = d.Uint16s(lDialectCount, 64)
-	if at := d.Chain(lNegotiateContextOffset, lNegotiateContextCount, 16, 8); at >= 0 {
-		x.Contexts = make([]NegotiateContext, lNegotiateContextCount)
-		for i := range x.Contexts {
-			sub, start := d.Member(at)
-			x.Contexts[i].decodeSMB2(&sub, v)
-			at = d.After(&sub, start)
+	if slices.Contains(x.Dialects, 0x311) {
+		if at := d.Chain(lNegotiateContextOffset, lNegotiateContextCount, 16, 8); at >= 0 {
+			x.Contexts = make([]NegotiateContext, lNegotiateContextCount)
+			for i := range x.Contexts {
+				sub, start := d.Member(at)
+				x.Contexts[i].decodeSMB2(&sub, v)
+				at = d.After(&sub, start)
+			}
 		}
 	}
 }
@@ -328,16 +332,18 @@ func (x *NegotiateRequest) encodeSMB2(e *wire.Encoder, v uint32) {
 		}
 		e.Len(pDialectCount, 2, len(x.Dialects), 64)
 	}
-	{
-		begin, at := e.Begin(8)
-		for i := range x.Contexts {
-			e.Begin(8)
-			sub := e.Sub()
-			x.Contexts[i].encodeSMB2(&sub, v)
-			e.Join(&sub)
+	if slices.Contains(x.Dialects, 0x311) {
+		{
+			begin, at := e.Begin(8)
+			for i := range x.Contexts {
+				e.Begin(8)
+				sub := e.Sub()
+				x.Contexts[i].encodeSMB2(&sub, v)
+				e.Join(&sub)
+			}
+			e.Len(pNegotiateContextCount, 2, len(x.Contexts), 16)
+			e.Off(pNegotiateContextOffset, 4, begin, at)
 		}
-		e.Len(pNegotiateContextCount, 2, len(x.Contexts), 16)
-		e.Off(pNegotiateContextOffset, 4, begin, at)
 	}
 }
 

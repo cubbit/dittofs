@@ -32,7 +32,10 @@
 //     []byte arm, the bytes of any other: the arms share one offset and len;
 //   - exact on an arm: its data is refused unless its struct takes every byte
 //     of it (MS-SMB2 3.3.5.9's create contexts);
-//   - since=D: on the wire from dialect D on.
+//   - since=D: on the wire from dialect D on;
+//   - if=L:V on a chain: on the wire only when L, a []uint16 field before it,
+//     holds V (a NEGOTIATE request's negotiate contexts, there when its
+//     Dialects hold 0x0311).
 //
 // []byte, string, []uint16 (with count), []T and an arm T take tags; a field
 // the generator cannot honour fails generation, naming the field, and nothing

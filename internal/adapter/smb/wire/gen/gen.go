@@ -43,7 +43,7 @@ var allowed = map[kind][]string{
 	kBytes:   {"offset", "len", "max", "align", "union", "default", "since"},
 	kString:  {"offset", "len", "max", "align", "utf16", "since"},
 	kUint16s: {"count", "max", "since"},
-	kChain:   {"offset", "len", "count", "max", "align", "chain", "since"},
+	kChain:   {"offset", "len", "count", "max", "align", "chain", "since", "if"},
 	kArm:     {"offset", "len", "align", "case", "exact", "since"},
 }
 
@@ -68,6 +68,7 @@ type field struct {
 	def                   bool
 	since                 string // the dialect a field is on the wire from, as written; "" for every one
 	from                  int    // since's dialect, 0 for every one
+	ifList, ifValue       string // if=L:V: on the wire only when the []uint16 field L holds V
 }
 
 // variable reports whether f follows the fixed part.
@@ -300,6 +301,12 @@ func (g *gen) field(st string, f *ast.Field) *field {
 		case "since":
 			fl.from = num(0)
 			fl.since = v
+		case "if":
+			l, val, _ := strings.Cut(v, ":")
+			if _, err := strconv.ParseUint(val, 0, 16); l == "" || err != nil {
+				g.errorf(fl.pos, where, "tag if=%s is not L:V, a field and the uint16 it may hold", v)
+			}
+			fl.ifList, fl.ifValue = l, val
 		default:
 			g.errorf(fl.pos, where, "a tag it does not know, %q", k)
 			continue
@@ -312,12 +319,19 @@ func (g *gen) field(st string, f *ast.Field) *field {
 // check fails each field of s whose tags the generator cannot honour.
 func (g *gen) check(s *strct) {
 	labels := map[string]*field{}
-	users := map[string]*field{} // the field each label locates or sizes
+	users := map[string]*field{}  // the field each label locates or sizes
+	before := map[string]*field{} // the named fields before this one
 	unions := 0
 	pastVariable := false
 	for _, f := range s.fields {
 		where := s.name + "." + f.name
 		bad := func(format string, args ...any) { g.errorf(f.pos, where, format, args...) }
+		// The list an if= reads is decoded before it, or the field would
+		// never be read.
+		if l := f.ifList; l != "" && (before[l] == nil || before[l].kind != kUint16s) {
+			bad("if=%s names no []uint16 field before it", l)
+		}
+		before[f.name] = f
 		// A fixed field after a variable one would decode from wherever the
 		// variable field ended, not from its place in the struct's order.
 		if pastVariable && !f.variable() {

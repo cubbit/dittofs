@@ -23,8 +23,14 @@ import (
 // half to the first READ. Overturned when section 4.7 or 6.8 names the call.
 func (g *gen) emit(pkg string, files []string) ([]byte, error) {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "%s%s; DO NOT EDIT.\n\npackage %s\n\nimport (\n\t%q\n\t%q\n)\n",
-		header, strings.Join(files, " "), pkg, wirePath, resourcesPath)
+	std := "" // the standard library's imports: slices for an if= gate
+	for _, s := range g.structs {
+		if slices.ContainsFunc(s.fields, func(f *field) bool { return f.ifList != "" }) {
+			std = "\t\"slices\"\n\n"
+		}
+	}
+	fmt.Fprintf(&b, "%s%s; DO NOT EDIT.\n\npackage %s\n\nimport (\n%s\t%q\n\t%q\n)\n",
+		header, strings.Join(files, " "), pkg, std, wirePath, resourcesPath)
 	// A struct another holds, as an arm or a chain's member, is read and
 	// written through its holder alone: its offsets count from its own first
 	// byte, not from a header, so it has no DecodeWire or EncodeWire.
@@ -91,12 +97,28 @@ func width(s *strct, l string) int {
 	return 0
 }
 
-// gate opens f's dialect check, if it has one, and returns what closes it.
-func gate(b *bytes.Buffer, f *field) string {
-	if f.since == "" {
+// gate opens f's checks, if it has any, and returns what closes them: the
+// dialect it is on the wire from, and, where a value x is at hand, the value
+// its if= list must hold. MaxWire has no value: it counts such a field.
+//
+// decision: a request's own list gates its field, not the dialect v, since a
+// NEGOTIATE request is read before any dialect is chosen: its negotiate
+// contexts are on the wire when its Dialects hold 0x0311, and the same eight
+// bytes are otherwise ClientStartTime, which the server ignores (MS-SMB2
+// 2.2.3). Overturned when RFC 20 section 5.1 names another way for a
+// request's own field to place another on the wire.
+func gate(b *bytes.Buffer, f *field, x bool) string {
+	var conds []string
+	if f.since != "" {
+		conds = append(conds, "v >= "+f.since)
+	}
+	if x && f.ifList != "" {
+		conds = append(conds, fmt.Sprintf("slices.Contains(x.%s, %s)", f.ifList, f.ifValue))
+	}
+	if len(conds) == 0 {
 		return ""
 	}
-	fmt.Fprintf(b, "if v >= %s {\n", f.since)
+	fmt.Fprintf(b, "if %s {\n", strings.Join(conds, " && "))
 	return "}\n"
 }
 
@@ -146,7 +168,7 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 		if (f.kind == kArm || f.def) && f != arms[0] {
 			continue
 		}
-		end := gate(b, f)
+		end := gate(b, f, true)
 		switch {
 		case f.empty:
 			fmt.Fprintf(b, "d.Size(%d, %d)\n", f.size, f.size-1)
@@ -250,7 +272,7 @@ func (g *gen) encode(b *bytes.Buffer, s *strct) {
 		if (f.kind == kArm || f.def) && f != arms[0] {
 			continue
 		}
-		end := gate(b, f)
+		end := gate(b, f, true)
 		if !f.variable() {
 			switch {
 			case f.size > 0:
@@ -347,7 +369,7 @@ func (g *gen) maxWire(b *bytes.Buffer, s *strct) {
 		default:
 			n = fmt.Sprintf("%d", f.align-1+f.max)
 		}
-		end := gate(&rest, f)
+		end := gate(&rest, f, false)
 		fmt.Fprintf(&rest, "n += %s\n%s", n, end)
 	}
 	fmt.Fprintf(b, "\nfunc (*%s) MaxWire(v uint32) int {\nn := %d\n%sreturn n\n}\n", s.name, fixed, rest.String())
