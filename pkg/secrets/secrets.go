@@ -64,15 +64,3 @@ func (p *Provider) Prune(
 ) error {
 	return unbuilt("Prune")
 }
-
-// Delete destroys every version of the secret; a later Resolve of ref
-// fails. Provisional: it gains the caller's transaction when it is filled,
-// so that it can refuse a credential a store record still names.
-func (p *Provider) Delete(
-	ctx context.Context,
-	kind entity.SecretKind,
-	owner entity.SecretOwner,
-	ref entity.SecretRef,
-) error {
-	return unbuilt("Delete")
-}
