@@ -3555,7 +3555,7 @@ enforces as it parses (§5.2), and nothing else:
 | padding | XDR's 4-byte padding; SMB2's 8-byte alignment between chained structures |
 | a choice of arms | an XDR discriminated union; XDR optional data (`*T`) |
 | a chain | SMB2 create contexts, each linked to the next by its `Next`: `smb2:"chain=Next"`; negotiate contexts, counted, each after the one before it: `smb2:"chain"` |
-| the versions a field is on the wire in | an NFSv4 minor version, an SMB2 dialect, or the dialects a NEGOTIATE request offers |
+| the versions a field is on the wire in | an NFSv4 minor version, an SMB2 dialect, or the dialects a NEGOTIATE request offers: `smb2:"if=Dialects:0x311"`, which decides which bytes are on the wire, not what they mean |
 
 A protocol rule — one that relates two fields or gives a value its meaning —
 is the handler's, checked before its service call (§4.3), never the decoder's:
@@ -4858,15 +4858,18 @@ shares the reason's minute
 1. **Generated SMB codecs.** *Settled:* SMB2's codec is generated from struct
    tags on each command's structs, as the RPC programs' is (§5.1); MS-SMB2 §2.2
    is read once, into the tags, and no machine-readable definition is written.
-2. **Duplicate-request caches for NFSv3 and NFSv4.0.** Today both keep one in
-   adapter memory, keyed by client address, XID and a checksum of the call, so
-   a retransmitted `REMOVE` or `CREATE` on a hard mount is not answered
-   `NOENT` or `EXIST`. The service's dedup table covers forwarded calls
+2. **Duplicate-request caches for NFSv3 and NFSv4.0.** The first adapters kept
+   one in adapter memory, keyed by client address, XID and a checksum of the
+   call, so a retransmitted `REMOVE` or `CREATE` on a hard mount is not
+   answered `NOENT` or `EXIST`; the adapters keep none yet (the plan's
+   deferral ledger holds it). The service's dedup table covers forwarded calls
    ([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)),
    not a single node's. For parity §4.7's `Replay` stage carries such a cache
    for both; whether the service's dedup should cover it instead is RFC 21's
    to settle.
-3. **NLM and NSM over UDP.** Served today, and needed by clients that send lock
+3. **NLM and NSM over UDP.** Served by the first adapters, not yet by these
+   (the plan's deferral ledger holds the datagram listener), and needed by
+   clients that send lock
    requests only over UDP; [RFC 21 §2.2](rfc-21-nfs.md#2.2%20TCP%20only) forbids
    it. Parity keeps it until RFC 21 decides which clients lose locking.
    MOUNT over UDP is not kept: RFC 21 §2.2 serves MOUNT over TCP only. A
