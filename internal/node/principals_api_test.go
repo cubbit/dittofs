@@ -160,3 +160,136 @@ func TestUserWriteWaitsASecondThenAnswersItsCommit(t *testing.T) {
 		t.Errorf("PUT a grant with reconcile held: answered %d %s, want 200 at its commit", g.status, g.body)
 	}
 }
+
+// With reconcile held after it read the counters, each write raising the
+// principals generation, a user's, a group's or a membership's, answers
+// only once the node's clock passes the writer's second, and each write
+// raising neither, a grant's, a quota's or a netgroup's, answers with the
+// clock untouched.
+func TestWhichWritesWaitForTheNode(t *testing.T) {
+	signing := func(context.Context) ([]byte, error) { return []byte("installation"), nil }
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewSigning(admin, signing)))
+	var holding atomic.Bool
+	held, release := make(chan struct{}, 1), make(chan struct{})
+	h.Node().OnReconcileRead(func(kvstore.Counters) {
+		if !holding.Load() {
+			return
+		}
+		select {
+		case held <- struct{}{}:
+		default:
+		}
+		<-release
+	})
+	awaited := make(chan struct{}, 16)
+	h.Node().OnAwaited(func() { awaited <- struct{}{} })
+	sh := addShare(t, h)
+	started(t, h)
+	t.Cleanup(func() { holding.Store(false); close(release) })
+	addr, _ := h.Node().Addrs()
+	holding.Store(true)
+
+	keys := 0
+	write := func(what string, raises bool, method, path, body, tag string) sent {
+		t.Helper()
+		keys++
+		hdr := []string{"Idempotency-Key", "k" + strconv.Itoa(keys)}
+		switch tag {
+		case "":
+		case "*":
+			hdr = append(hdr, "If-None-Match", "*")
+		default:
+			hdr = append(hdr, "If-Match", tag)
+		}
+		ch := send(t.Context(), addr, method, path, body, hdr...)
+		if !raises {
+			return answeredIn(t, what+" with the node's clock untouched", ch)
+		}
+		select {
+		case <-awaited:
+		case r := <-ch:
+			t.Fatalf("%s answered %d %s without waiting for the node", what, r.status, r.body)
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: its wait for the node never started within 10 s", what)
+		}
+		// No event marks an answer that is never sent, so a bounded wait is
+		// the assertion here: an answer not held arrives well inside it.
+		select {
+		case r := <-ch:
+			t.Fatalf("%s answered %d %s with the node's clock short of the writer's second", what, r.status, r.body)
+		case <-time.After(200 * time.Millisecond):
+		}
+		h.Clock().Advance(time.Second)
+		return answeredIn(t, what+" once a second passed", ch)
+	}
+	want := func(what string, r sent, status int) {
+		t.Helper()
+		if r.status != status {
+			t.Fatalf("%s: answered %d %s, want %d", what, r.status, r.body, status)
+		}
+	}
+	idOf := func(r sent) string {
+		t.Helper()
+		var v struct {
+			ID         string `json:"id"`
+			Generation uint64 `json:"generation"`
+		}
+		if err := json.Unmarshal(r.body, &v); err != nil {
+			t.Fatalf("decode %s: %v", r.body, err)
+		}
+		return v.ID
+	}
+	tagOf := func(r sent) string {
+		t.Helper()
+		var v struct {
+			Generation uint64 `json:"generation"`
+		}
+		if err := json.Unmarshal(r.body, &v); err != nil {
+			t.Fatalf("decode %s: %v", r.body, err)
+		}
+		return `"` + strconv.FormatUint(v.Generation, 10) + `"`
+	}
+	r := write("POST /users", true, http.MethodPost, "/api/v1/users", `{"spec":{"name":"alice"}}`, "")
+	want("POST /users", r, http.StatusCreated)
+	select {
+	case <-held: // the pass the create woke is held, so no later write is applied
+	case <-time.After(10 * time.Second):
+		t.Fatal("no reconcile pass read the counters within 10 s of the create")
+	}
+	user := "/api/v1/users/" + idOf(r)
+	r = write("PATCH /users/{id}", true, http.MethodPatch, user, `{"spec":{"disabled":true}}`, tagOf(r))
+	want("PATCH /users/{id}", r, http.StatusOK)
+	userTag, uid := tagOf(r), idOf(r)
+	r = write("POST /groups", true, http.MethodPost, "/api/v1/groups", `{"spec":{"name":"staff"}}`, "")
+	want("POST /groups", r, http.StatusCreated)
+	group := "/api/v1/groups/" + idOf(r)
+	var created apiv1.Group
+	if err := json.Unmarshal(r.body, &created); err != nil || created.Spec.GID == nil {
+		t.Fatalf("POST /groups: body %s (%v), want the group with its gid", r.body, err)
+	}
+	r = write("PUT /groups/{id}", true, http.MethodPut, group, `{"spec":{"name":"crew","gid":`+strconv.FormatUint(uint64(*created.Spec.GID), 10)+`}}`, tagOf(r))
+	want("PUT /groups/{id}", r, http.StatusOK)
+	groupTag := tagOf(r)
+	r = write("PUT /groups/{id}/members/{sub}", true, http.MethodPut, group+"/members/"+uid, `{"spec":{}}`, "*")
+	want("PUT /groups/{id}/members/{sub}", r, http.StatusOK)
+	r = write("DELETE /groups/{id}/members/{sub}", true, http.MethodDelete, group+"/members/"+uid, "", `"1"`)
+	want("DELETE /groups/{id}/members/{sub}", r, http.StatusOK)
+
+	shares := "/api/v1/shares/" + sh.ID.String()
+	r = write("PUT /shares/{id}/grants/{sub}", false, http.MethodPut, shares+"/grants/"+uid, `{"spec":{"access":"read"}}`, "*")
+	want("PUT /shares/{id}/grants/{sub}", r, http.StatusOK)
+	r = write("DELETE /shares/{id}/grants/{sub}", false, http.MethodDelete, shares+"/grants/"+uid, "", tagOf(r))
+	want("DELETE /shares/{id}/grants/{sub}", r, http.StatusOK)
+	r = write("PUT /shares/{id}/quotas/{sub}", false, http.MethodPut, shares+"/quotas/"+uid,
+		`{"spec":{"hard":{"bytes":1,"files":0},"soft":{"bytes":0,"files":0},"grace_seconds":0,"advisory":{"bytes":0,"files":0}}}`, "*")
+	want("PUT /shares/{id}/quotas/{sub}", r, http.StatusOK)
+	r = write("PUT /netgroups/{sub}", false, http.MethodPut, "/api/v1/netgroups/labs", `{"spec":{"members":["10.0.0.0/8"]}}`, "*")
+	want("PUT /netgroups/{sub}", r, http.StatusOK)
+	r = write("DELETE /netgroups/{sub}", false, http.MethodDelete, "/api/v1/netgroups/labs", "", tagOf(r))
+	want("DELETE /netgroups/{sub}", r, http.StatusOK)
+
+	r = write("DELETE /users/{id}", true, http.MethodDelete, user, "", userTag)
+	want("DELETE /users/{id}", r, http.StatusAccepted)
+	r = write("DELETE /groups/{id}", true, http.MethodDelete, group, "", groupTag)
+	want("DELETE /groups/{id}", r, http.StatusAccepted)
+}

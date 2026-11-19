@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/google/uuid"
@@ -374,64 +373,4 @@ func TestNetgroupsAndQuotas(t *testing.T) {
 	if err := json.Unmarshal(got.body, &read); err != nil || read.Spec != spec || got.header.Get("ETag") != q.header.Get("ETag") {
 		t.Errorf("GET alice's quota: answered %d %s ETag %s, want %+v under ETag %s", got.status, got.body, got.header.Get("ETag"), spec, q.header.Get("ETag"))
 	}
-}
-
-// Each write of a user, a group or a membership raises the principals
-// generation, so its answer waits for the node to apply it; a grant, a
-// quota and a netgroup raise neither generation and answer at commit.
-func TestPrincipalWritesWaitForTheNode(t *testing.T) {
-	hold := api.NewHold(nil)
-	close(hold.Release) // every wait returns at once; the test reads which writes waited
-	s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) { d.Applied = hold.Applied })
-	waited := func(what string, want bool) {
-		t.Helper()
-		select {
-		case <-hold.Reached:
-			if !want {
-				t.Errorf("%s waited for the node, want it answered at its commit", what)
-			}
-		default:
-			if want {
-				t.Errorf("%s answered without waiting for the node, want a wait after its commit", what)
-			}
-		}
-	}
-	u, tag := s.createUser(t, apiv1.UserSpec{Name: "alice"}, "c1")
-	waited("POST /users", true)
-	pr := s.do(t, http.MethodPatch, "/api/v1/users/"+u.ID, `{"spec":{"disabled":true}}`, "If-Match", tag)
-	if pr.status != http.StatusOK {
-		t.Fatalf("PATCH the user: answered %d %s", pr.status, pr.body)
-	}
-	waited("PATCH /users/{id}", true)
-	g := s.createGroup(t, apiv1.GroupSpec{Name: "staff"}, "g1")
-	waited("POST /groups", true)
-	if r := s.do(t, http.MethodPut, "/api/v1/groups/"+g.ID+"/members/"+u.ID, `{"spec":{}}`, "If-None-Match", "*"); r.status != http.StatusOK {
-		t.Fatalf("PUT the member: answered %d %s", r.status, r.body)
-	}
-	waited("PUT /groups/{id}/members/{sub}", true)
-	_, loc := s.createShare(t, "builds", s.namespace(t))
-	if r := s.do(t, http.MethodPut, loc+"/grants/"+u.ID, `{"spec":{"access":"read"}}`, "If-None-Match", "*"); r.status != http.StatusOK {
-		t.Fatalf("PUT the grant: answered %d %s", r.status, r.body)
-	}
-	waited("PUT /shares/{id}/grants/{sub}", false)
-	if r := s.do(t, http.MethodPut, loc+"/quotas/"+u.ID, `{"spec":{"hard":{"bytes":1,"files":0},"soft":{"bytes":0,"files":0},"grace_seconds":0,"advisory":{"bytes":0,"files":0}}}`, "If-None-Match", "*"); r.status != http.StatusOK {
-		t.Fatalf("PUT the quota: answered %d %s", r.status, r.body)
-	}
-	waited("PUT /shares/{id}/quotas/{sub}", false)
-	if r := s.do(t, http.MethodPut, "/api/v1/netgroups/labs", `{"spec":{"members":["a"]}}`, "If-None-Match", "*"); r.status != http.StatusOK {
-		t.Fatalf("PUT the netgroup: answered %d %s", r.status, r.body)
-	}
-	waited("PUT /netgroups/{sub}", false)
-	if r := s.do(t, http.MethodDelete, "/api/v1/groups/"+g.ID+"/members/"+u.ID, "", "If-Match", `"1"`, "Idempotency-Key", "dm"); r.status != http.StatusOK {
-		t.Fatalf("DELETE the member: answered %d %s", r.status, r.body)
-	}
-	waited("DELETE /groups/{id}/members/{sub}", true)
-	if r := s.do(t, http.MethodDelete, "/api/v1/users/"+u.ID, "", "If-Match", pr.header.Get("ETag"), "Idempotency-Key", "du"); r.status != http.StatusAccepted {
-		t.Fatalf("DELETE the user: answered %d %s", r.status, r.body)
-	}
-	waited("DELETE /users/{id}", true)
-	if r := s.do(t, http.MethodDelete, "/api/v1/groups/"+g.ID, "", "If-Match", `"`+strconv.FormatUint(g.Generation, 10)+`"`, "Idempotency-Key", "dg"); r.status != http.StatusAccepted {
-		t.Fatalf("DELETE the group: answered %d %s", r.status, r.body)
-	}
-	waited("DELETE /groups/{id}", true)
 }
