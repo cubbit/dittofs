@@ -1,0 +1,113 @@
+package client_test
+
+import (
+	"context"
+	"net/http"
+	"slices"
+	"testing"
+
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
+)
+
+// Each principal accessor reaches its routes: a user created, read,
+// patched, listed and deleted by an operation; a group created and a member
+// added and removed; a grant and a quota put and read on a share; a
+// netgroup created under *, refused a second create 412, replaced under its
+// tag, listed and deleted.
+func TestPrincipalAccessors(t *testing.T) {
+	s := serve(t, admin())
+	clock := newClock()
+	c := dial(t, s.url, clock)
+	ctx := t.Context()
+
+	u, err := c.Users().Create(ctx, apiv1.UserSpec{Name: "alice"})
+	if err != nil || u.ID == "" || u.Spec.UID == 0 || u.ETag == "" {
+		t.Fatalf("Users().Create: %+v err %v, want alice with an allocated uid and an ETag", u, err)
+	}
+	if got, err := c.Users().Get(ctx, u.ID); err != nil || got.Spec.Name != "alice" || got.ETag != u.ETag {
+		t.Errorf("Users().Get: %+v err %v, want alice under ETag %s", got, err, u.ETag)
+	}
+	patched, err := c.Users().Patch(ctx, u.ID, map[string]any{"spec": map[string]any{"disabled": true}}, u.ETag)
+	if err != nil || !patched.Spec.Disabled {
+		t.Fatalf("Users().Patch disabled: %+v err %v, want her disabled", patched, err)
+	}
+	var names []string
+	for it, err := range c.Users().List(ctx, nil) {
+		if err != nil {
+			t.Fatalf("Users().List: %v", err)
+		}
+		names = append(names, it.Spec.Name)
+	}
+	if !slices.Equal(names, []string{"alice"}) {
+		t.Errorf("Users().List: %v, want alice alone", names)
+	}
+
+	g, err := c.Groups().Create(ctx, apiv1.GroupSpec{Name: "staff"})
+	if err != nil || g.Spec.GID == 0 {
+		t.Fatalf("Groups().Create: %+v err %v, want staff with an allocated gid", g, err)
+	}
+	m, err := c.Members(g.ID).Put(ctx, u.ID, struct{}{}, "*")
+	if err != nil || m.ID != u.ID || m.ETag == "" {
+		t.Fatalf("Members().Put *: %+v err %v, want alice's membership with an ETag", m, err)
+	}
+	if op, err := c.Members(g.ID).Delete(ctx, u.ID, m.ETag); err != nil || op != nil {
+		t.Errorf("Members().Delete: operation %+v err %v, want it removed in the call", op, err)
+	}
+
+	sh, err := c.CreateShare(ctx, newShare("builds", s.namespace(t)))
+	if err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+	gr, err := c.Grants(sh.ID).Put(ctx, u.ID, apiv1.GrantSpec{Access: "none"}, "*")
+	if err != nil || gr.Spec.Access != "none" {
+		t.Fatalf("Grants().Put none: %+v err %v, want a none grant", gr, err)
+	}
+	if got, err := c.Grants(sh.ID).Get(ctx, u.ID); err != nil || got.Spec.Access != "none" || got.ETag != gr.ETag {
+		t.Errorf("Grants().Get: %+v err %v, want the none grant under ETag %s", got, err, gr.ETag)
+	}
+	if op, err := c.Grants(sh.ID).Delete(ctx, u.ID, gr.ETag); err != nil || op != nil {
+		t.Errorf("Grants().Delete: operation %+v err %v, want it removed in the call", op, err)
+	}
+	q, err := c.Quotas(sh.ID).Put(ctx, u.ID, apiv1.QuotaSpec{Hard: apiv1.Limit{Files: 10}}, "*")
+	if err != nil || q.Spec.Hard.Files != 10 {
+		t.Fatalf("Quotas().Put: %+v err %v, want a hard limit of 10 files", q, err)
+	}
+	if got, err := c.Quotas(sh.ID).Get(ctx, u.ID); err != nil || got.ETag != q.ETag {
+		t.Errorf("Quotas().Get: %+v err %v, want it under ETag %s", got, err, q.ETag)
+	}
+
+	n, err := c.Netgroups().Put(ctx, "labs", apiv1.NetgroupSpec{Members: []string{"a", "b"}}, "*")
+	if err != nil || n.ID != "labs" {
+		t.Fatalf("Netgroups().Put *: %+v err %v, want labs", n, err)
+	}
+	err = settled(t, "Netgroups().Put * on labs again", clock, func(ctx context.Context) error {
+		_, err := c.Netgroups().Put(ctx, "labs", apiv1.NetgroupSpec{Members: []string{"c"}}, "*")
+		return err
+	})
+	if p := problem(t, "Netgroups().Put * on labs again", err); p.Status != http.StatusPreconditionFailed {
+		t.Errorf("Netgroups().Put * on labs again: %d %q, want 412", p.Status, p.Code)
+	}
+	n, err = c.Netgroups().Put(ctx, "labs", apiv1.NetgroupSpec{Members: []string{"c"}}, n.ETag)
+	if err != nil || !slices.Equal(n.Spec.Members, []string{"c"}) {
+		t.Fatalf("Netgroups().Put under its tag: %+v err %v, want c alone", n, err)
+	}
+	var groups []string
+	for it, err := range c.Netgroups().List(ctx, nil) {
+		if err != nil {
+			t.Fatalf("Netgroups().List: %v", err)
+		}
+		groups = append(groups, it.ID)
+	}
+	if !slices.Equal(groups, []string{"labs"}) {
+		t.Errorf("Netgroups().List: %v, want labs alone", groups)
+	}
+	if _, err := c.Netgroups().Delete(ctx, "labs", n.ETag); err != nil {
+		t.Errorf("Netgroups().Delete: %v", err)
+	}
+
+	op, err := c.Users().Delete(ctx, u.ID, patched.ETag)
+	if err != nil || op == nil || op.Kind != apiv1.OpUserDelete {
+		t.Fatalf("Users().Delete: operation %+v err %v, want a user.delete", op, err)
+	}
+	checkKeys(t, s.front)
+}

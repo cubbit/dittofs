@@ -96,6 +96,15 @@ func TestWireBodies(t *testing.T) {
 			[]string{"continuously_available", "encrypt", "hidden"}},
 		{"condition", Condition{Name: "store_unreachable", Scope: "store", ID: "rs_1", Subject: "s3", Cause: "dial tcp: refused", Detail: "3 failures"}, new(Condition),
 			[]string{"cause", "detail", "id", "name", "scope", "subject"}},
+		{"user spec", UserSpec{Name: "alice", UID: 5000, Email: "alice@example.com", Disabled: true}, new(UserSpec),
+			[]string{"disabled", "email", "name", "uid"}},
+		{"user spec with no uid or address", UserSpec{Name: "bob"}, new(UserSpec), []string{"disabled", "name"}},
+		{"group spec", GroupSpec{Name: "staff", GID: 7000}, new(GroupSpec), []string{"gid", "name"}},
+		{"grant spec", GrantSpec{Access: "none"}, new(GrantSpec), []string{"access"}},
+		{"netgroup spec", NetgroupSpec{Members: []string{"10.0.0.0/8"}}, new(NetgroupSpec), []string{"members"}},
+		{"quota spec", QuotaSpec{Hard: Limit{Bytes: 1}, Soft: Limit{Files: 2}, GraceSeconds: 60, Advisory: Limit{Bytes: 3}}, new(QuotaSpec),
+			[]string{"advisory", "grace_seconds", "hard", "soft"}},
+		{"limit", Limit{Bytes: 1, Files: 2}, new(Limit), []string{"bytes", "files"}},
 	} {
 		b, err := json.Marshal(tc.in)
 		if err != nil {

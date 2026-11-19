@@ -25,6 +25,42 @@ func (c *Client) ExportPolicies() Singleton[apiv1.ExportPolicySpec] {
 	return Singleton[apiv1.ExportPolicySpec]{c: c, path: "/api/v1/shares", sub: "/export-policy"}
 }
 
+// Users is the users. A delete starts an operation.
+func (c *Client) Users() Resource[apiv1.UserSpec, struct{}] {
+	return Resource[apiv1.UserSpec, struct{}]{c: c, path: "/api/v1/users"}
+}
+
+// Groups is the groups. A delete starts an operation.
+func (c *Client) Groups() Resource[apiv1.GroupSpec, struct{}] {
+	return Resource[apiv1.GroupSpec, struct{}]{c: c, path: "/api/v1/groups"}
+}
+
+// Members is the members of the group whose ID is group, each named by the
+// member's ID: put under "*" to add one, deleted to remove it. They are not
+// listed.
+func (c *Client) Members(group string) Resource[struct{}, struct{}] {
+	return Resource[struct{}, struct{}]{c: c, path: "/api/v1/groups/" + url.PathEscape(group) + "/members"}
+}
+
+// Grants is the grants on the share whose ID is share, each named by its
+// principal's ID: put, read and deleted one at a time, not listed.
+func (c *Client) Grants(share string) Resource[apiv1.GrantSpec, struct{}] {
+	return Resource[apiv1.GrantSpec, struct{}]{c: c, path: "/api/v1/shares/" + url.PathEscape(share) + "/grants"}
+}
+
+// Quotas is the quotas on the share whose ID is share, each named by its
+// user's or group's ID: put and read one at a time, not listed. A put of no
+// limit deletes it.
+func (c *Client) Quotas(share string) Resource[apiv1.QuotaSpec, struct{}] {
+	return Resource[apiv1.QuotaSpec, struct{}]{c: c, path: "/api/v1/shares/" + url.PathEscape(share) + "/quotas"}
+}
+
+// Netgroups is the netgroups, each named by its name, created by a put
+// under "*".
+func (c *Client) Netgroups() Resource[apiv1.NetgroupSpec, struct{}] {
+	return Resource[apiv1.NetgroupSpec, struct{}]{c: c, path: "/api/v1/netgroups"}
+}
+
 // Nodes is the nodes, read only.
 func (c *Client) Nodes() Resource[apiv1.NodeSpec, apiv1.NodeStatus] {
 	return Resource[apiv1.NodeSpec, apiv1.NodeStatus]{c: c, path: "/api/v1/nodes"}
