@@ -36,7 +36,7 @@ const limitCount = uint64(1) << 40
 // writing without naming one; a State that carries its own Counters gets none,
 // and the noLimit option keeps the fresh core limitless too, so a test can hold
 // a core that issues nothing until it sets a limit itself.
-func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *kit.Seam) {
+func newTestCore(t testing.TB, opts ...func(*coreOptions)) (*Core, *kit.Seam) {
 	t.Helper()
 	var o coreOptions
 	for _, f := range opts {
@@ -55,7 +55,7 @@ func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *kit.Seam) {
 
 // buildCore is newTestCore before the limit is set: the core and the seam it
 // is built over, closed when the test ends, with its spares awaited.
-func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
+func buildCore(t testing.TB, o coreOptions) (*Core, *kit.Seam) {
 	t.Helper()
 	dir := t.TempDir()
 	if o.dir != "" {
@@ -126,7 +126,7 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 // (maxBytes, from Deps or the options, zero meaning unbounded) can never
 // ready the usual two spares a stream: the wait then asks for the spares the
 // maximum leaves it.
-func awaitSpares(t *testing.T, c *Core, maxBytes int64) {
+func awaitSpares(t testing.TB, c *Core, maxBytes int64) {
 	t.Helper()
 	want := int64(2 * testStreams)
 	if n := c.contentTarget; n > 0 {

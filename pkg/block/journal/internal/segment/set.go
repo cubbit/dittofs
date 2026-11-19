@@ -35,6 +35,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
@@ -137,6 +138,13 @@ type Counters struct {
 	DoubleRetires uint64
 }
 
+// liveCounters is Counters as the set keeps it: atomics, moved under mu with
+// the state they count and read without it.
+type liveCounters struct {
+	UsedBytes, Segments, Sealed, NoAppendOverBytes, NoAppendBytes, Spares atomic.Int64
+	DoubleRetires                                                         atomic.Uint64
+}
+
 // Set is the ledger of the segments the journal owns and of every byte they
 // occupy.
 //
@@ -166,11 +174,11 @@ type Set struct {
 	log    *slog.Logger
 	segs   map[core.SegmentID]*entry
 	spares map[core.SegmentID]struct{}
-	tags   map[core.ShareTag]int64
+	tags   core.TagTally
 	// over is each share tag's record bytes that are not payload — headers,
 	// padding and the whole of every payload-free record — kept beside tags
 	// and folded back by the same retirement.
-	over map[core.ShareTag]int64
+	over core.TagTally
 	// retired is each share tag's cumulative record bytes released by
 	// retirements and recycles — the monotone figure of what left, never
 	// lowered, read beside tags by the journal's admission seed. The two
@@ -183,7 +191,7 @@ type Set struct {
 	// in the segments that take no further append — the sealed and the
 	// ended alike — moved under mu beside the entries' own per-tag bytes at
 	// each state change, charge and removal.
-	noAppendTag map[core.ShareTag]int64
+	noAppendTag core.TagTally
 
 	// untaken holds the segments whose end event has not been taken by its
 	// consumer yet: the end itself is made synchronously in the step that
@@ -194,8 +202,8 @@ type Set struct {
 	untaken map[core.SegmentID]struct{}
 
 	// c holds the counters of Counters above, maintained at each event that
-	// moves one and never rebuilt: every read is one lock and a copy.
-	c Counters
+	// moves one under mu and never rebuilt: every read is a set of atomic loads.
+	c liveCounters
 
 	// onSeal and onRetire are the observers registered through OnSeal and
 	// OnRetire, guarded by obs: the delivery lock, which every
@@ -286,15 +294,12 @@ func NewSet(segCap int64, log *slog.Logger) *Set {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Set{
-		cap:         segCap,
-		log:         log,
-		segs:        make(map[core.SegmentID]*entry),
-		spares:      make(map[core.SegmentID]struct{}),
-		tags:        make(map[core.ShareTag]int64),
-		over:        make(map[core.ShareTag]int64),
-		retired:     make(map[core.ShareTag]int64),
-		noAppendTag: make(map[core.ShareTag]int64),
-		untaken:     make(map[core.SegmentID]struct{}),
+		cap:     segCap,
+		log:     log,
+		segs:    make(map[core.SegmentID]*entry),
+		spares:  make(map[core.SegmentID]struct{}),
+		retired: make(map[core.ShareTag]int64),
+		untaken: make(map[core.SegmentID]struct{}),
 	}
 }
 
@@ -412,16 +417,16 @@ func (s *Set) AddSpare(id core.SegmentID, max int64) error {
 	// callers reach: NewMaker refuses a max <= 0, so max-s.cap and the
 	// Missing below cannot wrap on this side. A max below the cap refuses
 	// here without any wraparound of its own.
-	if s.cap > max || s.c.UsedBytes > max-s.cap {
+	if s.cap > max || s.c.UsedBytes.Load() > max-s.cap {
 		return &core.NoSpaceError{
 			Limit:   core.LimitJournal,
-			Missing: s.c.UsedBytes + s.cap - max,
+			Missing: s.c.UsedBytes.Load() + s.cap - max,
 			Unit:    core.UnitBytes,
 		}
 	}
 	s.spares[id] = struct{}{}
-	s.c.UsedBytes += s.cap
-	s.c.Spares++
+	s.c.UsedBytes.Add(s.cap)
+	s.c.Spares.Add(1)
 	return nil
 }
 
@@ -460,10 +465,10 @@ func (s *Set) RefusesSpare(max int64) (*core.NoSpaceError, bool) {
 
 	// The overflow-safe form of AddSpare's own check, over every max its
 	// callers reach: a max below the cap refuses here without a wraparound.
-	if s.cap > max || s.c.UsedBytes > max-s.cap {
+	if s.cap > max || s.c.UsedBytes.Load() > max-s.cap {
 		return &core.NoSpaceError{
 			Limit:   core.LimitJournal,
-			Missing: s.c.UsedBytes + s.cap - max,
+			Missing: s.c.UsedBytes.Load() + s.cap - max,
 			Unit:    core.UnitBytes,
 		}, true
 	}
@@ -494,8 +499,8 @@ func (s *Set) AdoptSpare(id core.SegmentID) error {
 		return ErrDuplicateID
 	}
 	s.spares[id] = struct{}{}
-	s.c.UsedBytes += s.cap
-	s.c.Spares++
+	s.c.UsedBytes.Add(s.cap)
+	s.c.Spares.Add(1)
 	return nil
 }
 
@@ -591,10 +596,10 @@ func (s *Set) AdoptRebuilt(id core.SegmentID, size int64, st State, full bool, t
 		tags:  maps.Clone(tags),
 		over:  holds,
 	}
-	s.c.UsedBytes += size
-	s.c.Segments++
+	s.c.UsedBytes.Add(size)
+	s.c.Segments.Add(1)
 	if st == Sealed {
-		s.c.Sealed++
+		s.c.Sealed.Add(1)
 	}
 	if st != Active {
 		// An adopted segment joins the no-append measures its state names —
@@ -602,17 +607,17 @@ func (s *Set) AdoptRebuilt(id core.SegmentID, size int64, st State, full bool, t
 		// arrives accounting for, so its later removal lowers them by what
 		// it entered with. An entry raised here is the same one Seal and End
 		// raise on the running journal.
-		s.c.NoAppendBytes += tagSum(tags)
-		s.c.NoAppendOverBytes += overSum(holds)
+		s.c.NoAppendBytes.Add(tagSum(tags))
+		s.c.NoAppendOverBytes.Add(overSum(holds))
 		for tag, n := range tags {
-			s.noAppendTag[tag] += n
+			s.noAppendTag.Add(tag, n)
 		}
 	}
 	for tag, n := range tags {
-		s.tags[tag] += n
+		s.tags.Add(tag, n)
 	}
 	for tag, n := range holds {
-		s.over[tag] += n
+		s.over.Add(tag, n)
 	}
 	return nil
 }
@@ -638,8 +643,8 @@ func (s *Set) Take(id core.SegmentID) error {
 		return ErrNotInSet
 	}
 	delete(s.spares, id)
-	s.c.Spares--
-	s.c.Segments++
+	s.c.Spares.Add(-1)
+	s.c.Segments.Add(1)
 	s.segs[id] = &entry{state: Active, size: s.cap}
 	return nil
 }
@@ -682,11 +687,11 @@ func (s *Set) Seal(id core.SegmentID, full bool) error {
 	}
 	e.state = Sealed
 	e.full = full
-	s.c.Sealed++
-	s.c.NoAppendBytes += tagSum(e.tags)
-	s.c.NoAppendOverBytes += overSum(e.over)
+	s.c.Sealed.Add(1)
+	s.c.NoAppendBytes.Add(tagSum(e.tags))
+	s.c.NoAppendOverBytes.Add(overSum(e.over))
 	for tag, n := range e.tags {
-		s.noAppendTag[tag] += n
+		s.noAppendTag.Add(tag, n)
 	}
 	s.mu.Unlock()
 	// No lock of the ledger's is held while the observer runs, and the seal
@@ -721,10 +726,10 @@ func (s *Set) End(id core.SegmentID) error {
 		return ErrWrongState
 	}
 	e.state = Ended
-	s.c.NoAppendBytes += tagSum(e.tags)
-	s.c.NoAppendOverBytes += overSum(e.over)
+	s.c.NoAppendBytes.Add(tagSum(e.tags))
+	s.c.NoAppendOverBytes.Add(overSum(e.over))
 	for tag, n := range e.tags {
-		s.noAppendTag[tag] += n
+		s.noAppendTag.Add(tag, n)
 	}
 	return nil
 }
@@ -826,7 +831,7 @@ func (s *Set) Shrink(id core.SegmentID, size int64) error {
 	if size < e.held {
 		return ErrBadSize
 	}
-	s.c.UsedBytes -= e.size - size
+	s.c.UsedBytes.Add(-(e.size - size))
 	e.size = size
 	return nil
 }
@@ -885,20 +890,20 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n, overhead int64)
 	}
 	e.held += n
 	e.tags[tag] += n
-	s.tags[tag] += n
+	s.tags.Add(tag, n)
 	if e.state == Ended {
 		// A record completing against an ended segment joins the measures
 		// its end took; a sealed one is refused above, and an active one
 		// has not entered them yet.
-		s.c.NoAppendBytes += n
+		s.c.NoAppendBytes.Add(n)
 		if overhead > 0 {
-			s.c.NoAppendOverBytes += overhead
+			s.c.NoAppendOverBytes.Add(overhead)
 		}
-		s.noAppendTag[tag] += n
+		s.noAppendTag.Add(tag, n)
 	}
 	if overhead > 0 {
 		e.over[tag] += overhead
-		s.over[tag] += overhead
+		s.over.Add(tag, overhead)
 	}
 	return nil
 }
@@ -907,9 +912,12 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n, overhead int64)
 // per share tag, both taken in one hold of the set's lock, so a record
 // charged between two reads cannot show in one map and not the other.
 func (s *Set) TagFigures() (bytes, overhead map[core.ShareTag]int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return maps.Clone(s.tags), maps.Clone(s.over)
+	// The overhead is read first: a record's bytes are added before its
+	// overhead, so a record landing between the two reads shows its bytes
+	// without its overhead, which reads the unreclaimed figure high for one
+	// operation in flight, never low.
+	overhead = s.over.Snapshot()
+	return s.tags.Snapshot(), overhead
 }
 
 // ForgetTag releases tag's record bytes from the whole set's accounting, as
@@ -952,25 +960,19 @@ func (s *Set) ForgetTag(tag core.ShareTag) {
 		// them out of those measures here: the retirement that later
 		// subtracts the emptied maps cannot be their second door.
 		if e.state != Active {
-			s.c.NoAppendBytes -= n
-			s.c.NoAppendOverBytes -= e.over[tag]
-			s.noAppendTag[tag] -= n
+			s.c.NoAppendBytes.Add(-(n))
+			s.c.NoAppendOverBytes.Add(-(e.over[tag]))
+			s.noAppendTag.Add(tag, -n)
 		}
 		e.held -= n
 		delete(e.tags, tag)
 		delete(e.over, tag)
 	}
-	if n := s.tags[tag]; n != 0 {
+	if n := s.tags.Get(tag); n != 0 {
 		s.retired[tag] += n
-		delete(s.tags, tag)
+		s.tags.Set(tag, 0)
 	}
-	delete(s.over, tag)
-	// The tag's no-append share fell with its segments, and a figure that
-	// reaches nothing leaves the ledger bounded by live state the way every
-	// other per-tag map is. A negative leftover stays for Check to report.
-	if s.noAppendTag[tag] == 0 {
-		delete(s.noAppendTag, tag)
-	}
+	s.over.Set(tag, 0)
 }
 
 // ShareBytes returns the record bytes of the share's tag still held in
@@ -978,7 +980,7 @@ func (s *Set) ForgetTag(tag core.ShareTag) {
 func (s *Set) ShareBytes(tag core.ShareTag) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.tags[tag]
+	return s.tags.Get(tag)
 }
 
 // ShareBytesAndRetired reads, under the set's one lock, the tag's settled
@@ -992,7 +994,7 @@ func (s *Set) ShareBytes(tag core.ShareTag) int64 {
 func (s *Set) ShareBytesAndRetired(tag core.ShareTag) (settled, retired int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.tags[tag], s.retired[tag]
+	return s.tags.Get(tag), s.retired[tag]
 }
 
 // Row is one segment of the set as Snapshot reads it. Tags is the row's own
@@ -1100,7 +1102,7 @@ func (s *Set) ClaimRetirement(id core.SegmentID) (st State, full bool, err error
 			s.mu.Unlock()
 			return 0, false, ErrWrongState
 		}
-		s.c.DoubleRetires++
+		s.c.DoubleRetires.Add(1)
 		s.mu.Unlock()
 		s.log.Warn(absentMessage, "segment", uint64(id), "op", "retire")
 		return 0, false, ErrNotInSet
@@ -1136,14 +1138,14 @@ func (s *Set) DropSpare(id core.SegmentID) (freed int64, err error) {
 			s.mu.Unlock()
 			return 0, ErrWrongState
 		}
-		s.c.DoubleRetires++
+		s.c.DoubleRetires.Add(1)
 		s.mu.Unlock()
 		s.log.Warn(absentMessage, "segment", uint64(id), "op", "drop")
 		return 0, ErrNotInSet
 	}
 	delete(s.spares, id)
-	s.c.Spares--
-	s.c.UsedBytes -= s.cap
+	s.c.Spares.Add(-1)
+	s.c.UsedBytes.Add(-(s.cap))
 	s.mu.Unlock()
 	return s.cap, nil
 }
@@ -1178,7 +1180,7 @@ func (s *Set) Retire(id core.SegmentID) (freed int64, err error) {
 			s.mu.Unlock()
 			return 0, ErrWrongState
 		}
-		s.c.DoubleRetires++
+		s.c.DoubleRetires.Add(1)
 		s.mu.Unlock()
 		s.log.Warn(absentMessage, "segment", uint64(id), "op", "retire")
 		return 0, ErrNotInSet
@@ -1223,7 +1225,7 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 			s.mu.Unlock()
 			return ErrWrongState
 		}
-		s.c.DoubleRetires++
+		s.c.DoubleRetires.Add(1)
 		s.mu.Unlock()
 		s.log.Warn(absentMessage, "segment", uint64(old), "op", "recycle")
 		return ErrNotInSet
@@ -1255,8 +1257,8 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 	// whole: the footprint unmoved and the fresh id owned.
 	s.removeLocked(old, e)
 	s.spares[fresh] = struct{}{}
-	s.c.UsedBytes += s.cap
-	s.c.Spares++
+	s.c.UsedBytes.Add(s.cap)
+	s.c.Spares.Add(1)
 	s.mu.Unlock()
 	s.retireSeen(old)
 	return nil
@@ -1274,61 +1276,53 @@ func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 	// did, the segment's leaving is the reader's later word.
 	delete(s.untaken, id)
 	if e.state == Sealed {
-		s.c.Sealed--
+		s.c.Sealed.Add(-1)
 	}
 	if e.state != Active {
 		// The segment's leaving takes the no-append measures with it: an
 		// active one never entered them. A per-tag figure that reaches
 		// nothing leaves the ledger bounded by live state, the way the
 		// shares' own maps are; a negative leftover stays for Check.
-		s.c.NoAppendBytes -= tagSum(e.tags)
-		s.c.NoAppendOverBytes -= overSum(e.over)
+		s.c.NoAppendBytes.Add(-(tagSum(e.tags)))
+		s.c.NoAppendOverBytes.Add(-(overSum(e.over)))
 		for tag, n := range e.tags {
-			if left := s.noAppendTag[tag] - n; left == 0 {
-				delete(s.noAppendTag, tag)
-			} else {
-				s.noAppendTag[tag] = left
-			}
+			s.noAppendTag.Add(tag, -n)
 		}
 	}
-	s.c.Segments--
-	s.c.UsedBytes -= e.size
+	s.c.Segments.Add(-1)
+	s.c.UsedBytes.Add(-(e.size))
 	for tag, n := range e.tags {
 		s.retired[tag] += n
-		left := s.tags[tag] - n
-		if left == 0 {
-			delete(s.tags, tag)
-		} else {
-			// A negative leftover can only be a release the totals never
-			// held: left in place for Check to report rather than deleted.
-			s.tags[tag] = left
-		}
+		// A negative leftover can only be a release the totals never held:
+		// left in place for Check to report rather than cleared.
+		s.tags.Add(tag, -n)
 	}
 	for tag, n := range e.over {
-		if left := s.over[tag] - n; left == 0 {
-			delete(s.over, tag)
-		} else {
-			s.over[tag] = left
-		}
+		s.over.Add(tag, -n)
 	}
 }
 
 // NoAppendBytesOf returns the record bytes tag's records hold in the
 // segments that take no further append — the sealed and the ended alike —
-// one map read the set maintains at each state change, charge and removal,
-// allocating nothing.
+// one atomic read of the figure the set maintains at each state change, charge
+// and removal, taking no lock and allocating nothing.
 func (s *Set) NoAppendBytesOf(tag core.ShareTag) int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.noAppendTag[tag]
+	return s.noAppendTag.Get(tag)
 }
 
-// Counters returns the ledger's maintained counters. One lock, one struct
-// copy, no walk of the set and no allocation.
+// Counters returns the ledger's maintained counters: atomic loads, taking no
+// lock, no walk of the set and no allocation. The fields are read one after
+// another, so a move between two reads shows in one and not the other.
 func (s *Set) Counters() Counters {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.c
+	return Counters{
+		UsedBytes:         s.c.UsedBytes.Load(),
+		Segments:          s.c.Segments.Load(),
+		Sealed:            s.c.Sealed.Load(),
+		NoAppendOverBytes: s.c.NoAppendOverBytes.Load(),
+		NoAppendBytes:     s.c.NoAppendBytes.Load(),
+		Spares:            s.c.Spares.Load(),
+		DoubleRetires:     s.c.DoubleRetires.Load(),
+	}
 }
 
 // Check walks the set and reports whether the accounted footprint is the sum
@@ -1384,13 +1378,13 @@ func (s *Set) Check() error {
 			sealed++
 		}
 	}
-	if s.c.NoAppendBytes != noApp {
+	if s.c.NoAppendBytes.Load() != noApp {
 		return fmt.Errorf("%w: the no-append record bytes are %d, the sealed and ended segments' entries make %d",
-			ErrMismatch, s.c.NoAppendBytes, noApp)
+			ErrMismatch, s.c.NoAppendBytes.Load(), noApp)
 	}
-	if s.c.NoAppendOverBytes != noAppOv {
+	if s.c.NoAppendOverBytes.Load() != noAppOv {
 		return fmt.Errorf("%w: the no-append overhead bytes are %d, the sealed and ended segments' entries make %d",
-			ErrMismatch, s.c.NoAppendOverBytes, noAppOv)
+			ErrMismatch, s.c.NoAppendOverBytes.Load(), noAppOv)
 	}
 	// Zero-valued keys count as absent on either side: a figure that
 	// reached nothing is no share the ledger knows, wherever an edge left
@@ -1404,9 +1398,9 @@ func (s *Set) Check() error {
 		}
 		return out
 	}
-	if !maps.Equal(live(s.noAppendTag), live(noAppTag)) {
+	if !maps.Equal(live(s.noAppendTag.Snapshot()), live(noAppTag)) {
 		return fmt.Errorf("%w: the per-tag no-append bytes do not match the sealed and ended segments' entries: %v vs %v",
-			ErrMismatch, s.noAppendTag, noAppTag)
+			ErrMismatch, s.noAppendTag.Snapshot(), noAppTag)
 	}
 	for range s.spares {
 		sum += s.cap
@@ -1433,26 +1427,26 @@ func (s *Set) Check() error {
 		}
 	}
 	spares := int64(len(s.spares))
-	tagsMatch, overMatch := maps.Equal(held, s.tags), maps.Equal(overs, s.over)
-	if s.c.UsedBytes == sum &&
-		s.c.Segments == segments &&
-		s.c.Sealed == sealed &&
-		s.c.Spares == spares &&
+	tagsMatch, overMatch := maps.Equal(held, s.tags.Snapshot()), maps.Equal(overs, s.over.Snapshot())
+	if s.c.UsedBytes.Load() == sum &&
+		s.c.Segments.Load() == segments &&
+		s.c.Sealed.Load() == sealed &&
+		s.c.Spares.Load() == spares &&
 		tagsMatch && overMatch {
 		return nil
 	}
-	if s.c.UsedBytes != sum {
+	if s.c.UsedBytes.Load() != sum {
 		return fmt.Errorf("%w: accounted %d, the set's sizes make %d",
-			ErrMismatch, s.c.UsedBytes, sum)
+			ErrMismatch, s.c.UsedBytes.Load(), sum)
 	}
 	if !tagsMatch {
 		return fmt.Errorf("%w: the shares' record bytes do not match the segments' entries: %v vs %v",
-			ErrMismatch, s.tags, held)
+			ErrMismatch, s.tags.Snapshot(), held)
 	}
 	if !overMatch {
 		return fmt.Errorf("%w: the shares' overhead bytes do not match the segments' entries: %v vs %v",
-			ErrMismatch, s.over, overs)
+			ErrMismatch, s.over.Snapshot(), overs)
 	}
 	return fmt.Errorf("%w: the counts do not match the set: %d segments vs %d, %d sealed vs %d, %d spares vs %d",
-		ErrMismatch, s.c.Segments, segments, s.c.Sealed, sealed, s.c.Spares, spares)
+		ErrMismatch, s.c.Segments.Load(), segments, s.c.Sealed.Load(), sealed, s.c.Spares.Load(), spares)
 }

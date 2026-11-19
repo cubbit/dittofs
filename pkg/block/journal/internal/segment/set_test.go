@@ -892,7 +892,7 @@ func TestRetireKeepsADroppedShareTotalForTheCheck(t *testing.T) {
 	// total that ends a release below zero exercises the branch that keeps
 	// it; a positive leftover is kept by any implementation of the rule.
 	s.mu.Lock()
-	s.tags[tag] -= segCap // far below both segments' bytes together
+	s.tags.Add(tag, -segCap) // far below both segments' bytes together
 	s.mu.Unlock()
 
 	// The retire of the smaller holder takes its share of the tag negative,
@@ -901,7 +901,7 @@ func TestRetireKeepsADroppedShareTotalForTheCheck(t *testing.T) {
 	if _, err := s.Retire(two); err != nil {
 		t.Fatalf("the retire of the smaller holder: %v", err)
 	}
-	_, kept := s.tags[tag]
+	kept := s.tags.Get(tag) < 0
 	if !kept {
 		t.Fatal("the negative share total was deleted by the retire's release, want it kept for the check")
 	}
@@ -1004,7 +1004,7 @@ func TestCheckComparesTheEntriesHeldWithTheirTags(t *testing.T) {
 	e.held = e.size + 1
 	e.tags[tag] = e.size + 1
 	s.segs[id] = e
-	s.tags[tag] = e.size + 1
+	s.tags.Set(tag, e.size+1)
 	s.mu.Unlock()
 	if err := s.Check(); err == nil {
 		t.Fatal("a held total above the size was not reported")
@@ -1068,15 +1068,15 @@ func TestCheckComparesEveryMaintainedCountWithTheSet(t *testing.T) {
 		// names the drifted figure, not just any mismatch it can find.
 		says string
 	}{
-		{"footprint", func(s *Set) { s.c.UsedBytes -= segCap }, "the set's sizes make"},
-		{"segment count", func(s *Set) { s.c.Segments-- }, "counts do not match"},
-		{"sealed count", func(s *Set) { s.c.Sealed++ }, "counts do not match"},
-		{"spare count", func(s *Set) { s.c.Spares++ }, "counts do not match"},
+		{"footprint", func(s *Set) { s.c.UsedBytes.Add(-segCap) }, "the set's sizes make"},
+		{"segment count", func(s *Set) { s.c.Segments.Add(-1) }, "counts do not match"},
+		{"sealed count", func(s *Set) { s.c.Sealed.Add(1) }, "counts do not match"},
+		{"spare count", func(s *Set) { s.c.Spares.Add(1) }, "counts do not match"},
 		// no entry charges it, so only the shares' totals comparison can
 		// report it
-		{"share total", func(s *Set) { s.tags[core.ShareTag(9)] = 1 }, "shares' record bytes"},
+		{"share total", func(s *Set) { s.tags.Set(core.ShareTag(9), 1) }, "shares' record bytes"},
 		// likewise for the overhead totals
-		{"share overhead", func(s *Set) { s.over[core.ShareTag(9)] = 1 }, "overhead bytes"},
+		{"share overhead", func(s *Set) { s.over.Set(core.ShareTag(9), 1) }, "overhead bytes"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			drift(c.name, c.says, c.corrupt)

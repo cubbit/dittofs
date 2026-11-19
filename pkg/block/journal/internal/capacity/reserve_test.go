@@ -789,7 +789,7 @@ func TestDrawClampedStraddleKeepsTheShareTallyExact(t *testing.T) {
 func TestCountersReturnToRest(t *testing.T) {
 	rest := func(t *testing.T, r *rig, what string) {
 		t.Helper()
-		if got := r.c.reserved; got != 0 {
+		if got := r.c.reserved.Load(); got != 0 {
 			t.Fatalf("%s: reserved = %d, want 0", what, got)
 		}
 		if got := r.c.heldEntries; got != 0 {

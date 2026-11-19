@@ -310,6 +310,13 @@ type Stream struct {
 	// finishes on the reference it holds.
 	readClosed atomic.Bool
 
+	// openSeg is the id of the segment the stream appends to while it takes
+	// appends, zero otherwise. It is stored under appendMu at the only edges
+	// that move it, a segment taking over (set), a seal's start, an end and
+	// the close (cleared), so OpenSegment reads it without the lock a write
+	// holds across its append.
+	openSeg atomic.Uint64
+
 	// idleClock is the clock the idle sealer installed, boxed so the
 	// pointer's loads and stores are lock-free reads before a sealer exists.
 	// It is read before appendMu is taken — the decision comment there says
@@ -1315,6 +1322,7 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	s.entries = nil
 	s.tracker.reset(format.SegmentHeaderSize)
 	s.sealState = sealOpen
+	s.openSeg.Store(uint64(id))
 	// The new segment's own second-refusal state: the roll left a segment
 	// the stream ended — the one this segment replaces, whatever ended it,
 	// its own failure or its own seal's — so a failure in the new one
@@ -1665,6 +1673,7 @@ func (s *Stream) sealLocked(early bool) (SealResult, error) {
 	defer s.inflight.Done()
 	sealedID, sealedRef := s.id, s.ref
 	s.sealState = sealSealing
+	s.openSeg.Store(0)
 
 	// The drain: every append reserved below the seal has left, and every
 	// sync that started before it or alongside it too, so every record the
@@ -1957,13 +1966,12 @@ func (s *Stream) AcquireRead(seg core.SegmentID) (Ref, error) {
 // OpenSegment returns the segment the stream appends to, when it takes
 // appends: false for a stream that has not taken a segment, a closed one, or
 // one whose segment is sealing, sealed or ended.
+//
+// It is one atomic load and takes no lock, so it never waits on an append in
+// flight; the answer is a snapshot, as it was once the lock was released.
 func (s *Stream) OpenSegment() (core.SegmentID, bool) {
-	s.appendMu.Lock()
-	defer s.appendMu.Unlock()
-	if s.closed || s.id == 0 || s.sealState != sealOpen {
-		return 0, false
-	}
-	return s.id, true
+	id := core.SegmentID(s.openSeg.Load())
+	return id, id != 0
 }
 
 // Identity returns the journal identity the stream seeds its records'
@@ -2001,6 +2009,7 @@ func (s *Stream) beginClose() (ref Ref, began bool) {
 		return Ref{}, false
 	}
 	s.closed = true
+	s.openSeg.Store(0)
 	s.readClosed.Store(true)
 	ref = s.ref
 	s.ref = Ref{}

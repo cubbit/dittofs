@@ -2,6 +2,7 @@ package capacity
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
@@ -136,8 +137,8 @@ type Headroom struct {
 	// lands.
 	drawn int64
 	// draws is the headroom_draws counter, records appended while the
-	// journal was at its limit; guarded by mu.
-	draws uint64
+	// journal was at its limit. An atomic, so Stats reads it without mu.
+	draws atomic.Uint64
 }
 
 // NewHeadroom returns a Headroom over cfg. A nil injected func is a wiring
@@ -269,9 +270,7 @@ func (h *Headroom) Drawn(d Draw) {
 	if !d.drew {
 		return
 	}
-	h.mu.Lock()
-	h.draws++
-	h.mu.Unlock()
+	h.draws.Add(1)
 }
 
 // Refund returns one admission's draw when the append it admitted failed:
@@ -304,9 +303,19 @@ func (h *Headroom) atLimit() bool {
 // Draws returns the headroom_draws counter: the records appended while the
 // journal was at its limit.
 func (h *Headroom) Draws() uint64 {
+	return h.draws.Load()
+}
+
+// Spent returns the bytes of the headroom currently drawn.
+//
+// decision: this method is reached only from the datapath's recorded-lock
+// fixture, which needs one entry point that takes the headroom's mutex with
+// no precondition on the journal's footprint to prove its recorder is wired.
+// Nothing holds its signature up but that probe; withdraw it with the probe.
+func (h *Headroom) Spent() int64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.draws
+	return h.drawn
 }
 
 // BelowHalf reports whether the headroom's drawing side has fallen below

@@ -179,7 +179,7 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 	// grants hold, and this ask's record bytes, must fit. A footer entry is
 	// the journal's, not the share's (RFC 1 §6).
 	if r.ShareLimit > 0 {
-		if held := c.shareTally[r.Tag] + c.reservedTagged[r.Tag] + r.Bytes; held > r.ShareLimit {
+		if held := c.shareTally[r.Tag] + c.reservedTagged.Get(r.Tag) + r.Bytes; held > r.ShareLimit {
 			missing := held - r.ShareLimit
 			c.mu.Unlock()
 			return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitShare, Missing: missing, Unit: core.UnitBytes})
@@ -221,8 +221,8 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 	c.heldEntries += idx
 	c.heldVersions += versions
 	c.reservedAsk += r.Bytes + footer
-	c.reserved += r.Bytes
-	c.reservedTagged[r.Tag] += r.Bytes
+	c.reserved.Add(r.Bytes)
+	c.reservedTagged.Add(r.Tag, r.Bytes)
 	c.mu.Unlock()
 
 	// The spares, held after the section released. A refused hold gives the
@@ -526,8 +526,8 @@ func (r *Reservation) Release() {
 	r.released = true
 	bytes, entries, versions := r.leftBytes, r.leftEntries, r.leftVersions
 	r.leftBytes, r.leftEntries, r.leftVersions = 0, 0, 0
-	r.c.reserved -= bytes
-	r.c.reservedTagged[r.tag] -= bytes
+	r.c.reserved.Add(-bytes)
+	r.c.reservedTagged.Add(r.tag, -bytes)
 	r.c.reservedAsk -= r.bytesAsk
 	r.c.heldEntries -= entries
 	r.c.heldVersions -= versions
@@ -544,8 +544,8 @@ func (r *Reservation) Release() {
 // a reservation's ask is given back.
 func (c *Capacity) releaseAsk(tag core.ShareTag, bytes, bytesAsk, entries int64, versions uint64) {
 	c.mu.Lock()
-	c.reserved -= bytes
-	c.reservedTagged[tag] -= bytes
+	c.reserved.Add(-bytes)
+	c.reservedTagged.Add(tag, -bytes)
 	c.reservedAsk -= bytesAsk
 	c.heldEntries -= entries
 	c.heldVersions -= versions

@@ -347,6 +347,10 @@ type Durability struct {
 	// name at a corrupt place in it (pinLocked).
 	unproduced map[core.SegmentID]int
 
+	// damagedView is the report of the rows above, replaced under dmu at every
+	// change and read without it.
+	damagedView atomic.Pointer[damagedSnap]
+
 	// copyMu guards copies, the table of other copies of re-appended records.
 	//
 	// decision: copyMu is a leaf mutex outside the six lock domains, held for
@@ -418,10 +422,13 @@ type Durability struct {
 	// lock inside it, and nothing takes mu while holding that lock. That is
 	// an unranked lock held above a ranked one, which the lock recorder
 	// cannot see.
-	mu      sync.Mutex
-	made    map[uint32]*stream
-	started bool
-	stopped bool
+	mu   sync.Mutex
+	made map[uint32]*stream
+	// madeView is the list of made, replaced by Sink under mu and read
+	// without it.
+	madeView atomic.Pointer[[]*stream]
+	started  bool
+	stopped  bool
 
 	// afterSync, when set by a test, runs in the worker after a stream sync
 	// returns and before the worker takes the stream's lock.
@@ -748,6 +755,11 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 	}
 	st := newStream(d, no)
 	d.made[no] = st
+	list := make([]*stream, 0, len(d.made))
+	for _, s := range d.made {
+		list = append(list, s)
+	}
+	d.madeView.Store(&list)
 	return segment.Sink{
 		Track: func(w segment.Written) {
 			st.mu.Lock()
@@ -998,6 +1010,16 @@ func (d *Durability) Stats() Part {
 		p.LastSyncError = &sf
 	}
 
+	// decision: Stats still takes lmu, the one lock left on its path. The ring
+	// and the generation must be read as one step, so a snapshot never holds a
+	// raise without its event, and the loss path keeps them together under
+	// lmu. The hold cannot stall a write: lmu is a leaf, held by a Lose only
+	// for the raise, the counters and the ring push, and never across an
+	// append, a sync or a marker write, so a Stats waiting on it waits on
+	// memory work alone and a write never waits on Stats, which holds lmu
+	// only to copy the ring. Overturned if a section is ever added under lmu
+	// that does I/O or takes another lock, which a published copy of the ring
+	// would then replace.
 	d.lmu.Lock()
 	// This instance's ring and the directory's generation are read in one
 	// section, and lmu holds the raise and the publish of a Lose together,
@@ -1426,14 +1448,14 @@ func (st *stream) movedCopyErrorLocked(at, now segment.Location) error {
 	return fmt.Errorf("durability: the record placed at %+v moved to %+v behind its failed window", at, now)
 }
 
+// snapshot returns the streams made so far, in no order, from the list Sink
+// publishes with each new stream. It takes no lock, so the stats read of it
+// never waits on d.mu.
 func (d *Durability) snapshot() []*stream {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	made := make([]*stream, 0, len(d.made))
-	for _, st := range d.made {
-		made = append(made, st)
+	if v := d.madeView.Load(); v != nil {
+		return slices.Clone(*v)
 	}
-	return made
+	return nil
 }
 
 // targetsOf returns, for each id, the last record of that file in each

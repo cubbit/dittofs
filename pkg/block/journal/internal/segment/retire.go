@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -125,7 +126,7 @@ type Retirer struct {
 	// decision: mu is a leaf mutex outside the six lock domains; the type's
 	// decision gives why nothing is held across it.
 	mu      sync.Mutex
-	freedB  uint64 // freed_bytes; guarded by mu
+	freedB  atomic.Uint64 // freed_bytes; moved under mu, read without it
 	queue   []core.SegmentID
 	reasons []Reason
 	queued  map[core.SegmentID]struct{}
@@ -350,7 +351,7 @@ func (r *Retirer) recycle(id core.SegmentID, class Class) (Retirement, error) {
 	// where the plan and the RFC disagree the RFC rules. Withdrawn if the
 	// RFC's author rules the gauge counts only bytes back to the filesystem.
 	r.mu.Lock()
-	r.freedB += uint64(r.cfg.Set.cap)
+	r.freedB.Add(uint64(r.cfg.Set.cap))
 	r.mu.Unlock()
 
 	ret := Retirement{ID: id, Recycled: true, Fresh: fresh, Freed: r.cfg.Set.cap, Durable: true}
@@ -468,7 +469,7 @@ func (r *Retirer) unlink(id core.SegmentID, st State) (Retirement, error) {
 	// held on the directory sync still sees the old figure.
 	r.mu.Lock()
 	delete(r.extra, id)
-	r.freedB += uint64(freed)
+	r.freedB.Add(uint64(freed))
 	r.mu.Unlock()
 
 	// The hook runs after the ledger gave the segment up, holding no executor
@@ -640,9 +641,7 @@ func (r *Retirer) Stop() {
 
 // Counters returns the executor's counters, read without a walk.
 func (r *Retirer) Counters() RetireCounters {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return RetireCounters{FreedBytes: r.freedB}
+	return RetireCounters{FreedBytes: r.freedB.Load()}
 }
 
 // worker drains the queue: one goroutine, woken by a coalesced kick or by

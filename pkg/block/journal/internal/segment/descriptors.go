@@ -78,9 +78,9 @@ type Descriptors struct {
 	entries map[core.SegmentID]*descEntry
 	idle    list.List // LRU of idle descriptors: front is the most recently used
 
-	open      int    // descriptors this cache holds open
-	reopens   uint64 // reads that reopened a closed segment
-	totalRefs int    // references outstanding across the cache, for Shutdown's wait
+	open      atomic.Int64  // descriptors this cache holds open; moved under mu, read without it
+	reopens   atomic.Uint64 // reads that reopened a closed segment; same
+	totalRefs int           // references outstanding across the cache, for Shutdown's wait
 	shut      bool
 	shutDone  chan struct{} // closed by the Release that brings totalRefs to zero after Shutdown
 	// shutFinished is made by the first Shutdown and closed when it returns,
@@ -334,9 +334,9 @@ func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 	}
 
 	e.file = f
-	c.open++
+	c.open.Add(1)
 	if e.everOpen {
-		c.reopens++
+		c.reopens.Add(1)
 	}
 	e.everOpen = true
 	if e.opening == op {
@@ -615,7 +615,7 @@ func (c *Descriptors) reclaimOne() bool {
 	file := victim.file
 	victim.file = nil
 	c.idleRemove(victim)
-	c.open--
+	c.open.Add(-1)
 	// The close runs with no lock held, so a Close of this very segment can
 	// reach the entry meanwhile and see no file. The reference taken here is
 	// what makes that Close wait: the drain it starts sleeps until this close
@@ -717,7 +717,7 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 	file := e.file
 	if file != nil {
 		e.file = nil
-		c.open--
+		c.open.Add(-1)
 		// The reference held across the close is what makes a second
 		// Close of this segment — or the cache's Shutdown — wait it out:
 		// without it, a caller that reaches the entry while the close runs
@@ -862,7 +862,7 @@ func (c *Descriptors) Shutdown() error {
 		files = append(files, e.file)
 		entries = append(entries, e)
 		e.file = nil
-		c.open--
+		c.open.Add(-1)
 		e.refs++
 		c.totalRefs++
 	}
@@ -888,11 +888,9 @@ func (c *Descriptors) Shutdown() error {
 // the reads that reopened a closed segment. They are counters the cache
 // maintains, never a walk of its entries (R60).
 func (c *Descriptors) Stats() DescriptorStats {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	return DescriptorStats{
-		Open:    c.open,
+		Open:    int(c.open.Load()),
 		Limit:   c.budget.Limit(),
-		Reopens: c.reopens,
+		Reopens: c.reopens.Load(),
 	}
 }

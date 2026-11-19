@@ -15,8 +15,8 @@ package capacity
 import (
 	"context"
 	"errors"
-	"maps"
 	"math"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -175,12 +175,14 @@ type Capacity struct {
 	mu lockorder.Mutex
 
 	// reserved is the record bytes open grants hold and their records have
-	// not yet filled — the ReservedBytes gauge (RFC 1 §3.7).
-	reserved int64
+	// not yet filled — the ReservedBytes gauge (RFC 1 §3.7). It moves under mu
+	// with the admission checks that read it, and is an atomic so a stats
+	// read takes no lock; the same holds for reservedTagged and refused.
+	reserved atomic.Int64
 
 	// reservedTagged is reserved broken down by share tag, so a refusal
 	// can say what this write's share still holds in flight.
-	reservedTagged map[core.ShareTag]int64
+	reservedTagged core.TagTally
 
 	// shareTally is the share's record-byte figure this package owns,
 	// seeded once per tag from the set's settled bytes and moved only
@@ -223,7 +225,7 @@ type Capacity struct {
 	// refused is the reservation_refused counter: every refusal Take
 	// returns, its own and the injected checks', counted exactly once
 	// each.
-	refused uint64
+	refused atomic.Uint64
 
 	// heldEntries is the placement index entries open reservations hold and
 	// no write of theirs has drawn yet: Take and Reserve size their own asks
@@ -297,14 +299,13 @@ func New(cfg Config) *Capacity {
 		panic("capacity: a segment cap of nothing divides the spares by zero")
 	}
 	return &Capacity{
-		cfg:            cfg,
-		reservedTagged: make(map[core.ShareTag]int64),
-		shareTally:     make(map[core.ShareTag]int64),
-		seeded:         make(map[core.ShareTag]bool),
-		seeding:        make(map[core.ShareTag]bool),
-		seedPending:    make(map[core.ShareTag]int64),
-		retiredSeen:    make(map[core.ShareTag]int64),
-		grantedRoom:    make(map[int]int64),
+		cfg:         cfg,
+		shareTally:  make(map[core.ShareTag]int64),
+		seeded:      make(map[core.ShareTag]bool),
+		seeding:     make(map[core.ShareTag]bool),
+		seedPending: make(map[core.ShareTag]int64),
+		retiredSeen: make(map[core.ShareTag]int64),
+		grantedRoom: make(map[int]int64),
 	}
 }
 
@@ -721,7 +722,7 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// charge. Overturned by a stream that can promise the room it
 	// measured, which no interleaving caller can.
 	if r.ShareLimit > 0 {
-		if held := c.shareTally[r.Tag] + c.reservedTagged[r.Tag] + bytes; held > r.ShareLimit {
+		if held := c.shareTally[r.Tag] + c.reservedTagged.Get(r.Tag) + bytes; held > r.ShareLimit {
 			missing := held - r.ShareLimit
 			c.mu.Unlock()
 			return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitShare, Missing: missing, Unit: core.UnitBytes})
@@ -802,8 +803,8 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 		h()
 	}
 	c.grantedRoom[r.Stream] += roomPart
-	c.reserved += bytes
-	c.reservedTagged[r.Tag] += bytes
+	c.reserved.Add(bytes)
+	c.reservedTagged.Add(r.Tag, bytes)
 	c.pendingSeats += seats
 	// The entries this write's pieces will publish are held from now: a
 	// reservation taken before this write publishes sees them spent, so its own
@@ -1034,8 +1035,8 @@ func (g *Grant) Wrote(n int64) {
 	// what the grant held.
 	g.c.mu.Lock()
 	g.left -= left
-	g.c.reserved -= left
-	g.c.reservedTagged[g.tag] -= left
+	g.c.reserved.Add(-left)
+	g.c.reservedTagged.Add(g.tag, -left)
 	g.c.shareTally[g.tag] += n
 	// The room the landing consumed — the record's bytes and the footer
 	// entry it also takes from Room, the two the claim covers — leaves the
@@ -1049,7 +1050,7 @@ func (g *Grant) Wrote(n int64) {
 		g.roomPart -= eat
 	}
 	if h := g.c.wroteHook; h != nil {
-		h(g.stream, n, g.c.reserved)
+		h(g.stream, n, g.c.reserved.Load())
 	}
 	g.c.mu.Unlock()
 }
@@ -1140,8 +1141,8 @@ func (g *Grant) releaseDrawn() {
 	if back := g.left; back > 0 {
 		g.left = 0
 		if g.reservation.released {
-			g.c.reserved -= back
-			g.c.reservedTagged[g.tag] -= back
+			g.c.reserved.Add(-back)
+			g.c.reservedTagged.Add(g.tag, -back)
 		} else {
 			g.reservation.leftBytes += back
 		}
@@ -1264,8 +1265,8 @@ func (c *Capacity) releaseReservation(tag core.ShareTag, stream int, room, bytes
 	}
 	c.mu.Lock()
 	c.grantedRoom[stream] -= room
-	c.reserved -= bytes
-	c.reservedTagged[tag] -= bytes
+	c.reserved.Add(-bytes)
+	c.reservedTagged.Add(tag, -bytes)
 	c.mu.Unlock()
 }
 
@@ -1290,9 +1291,7 @@ func (c *Capacity) clearSeats(seats int) {
 // ReservedBytes returns what open reservations hold and their records have
 // not yet filled — the gauge a caller reads to see the writes in flight.
 func (c *Capacity) ReservedBytes() int64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.reserved
+	return c.reserved.Load()
 }
 
 // DrawVersion issues the version a caller outside a reservation carries — a
@@ -1335,18 +1334,14 @@ func (c *Capacity) PendingEntries() int64 {
 // ReservedByTag returns a copy of what open reservations hold per share tag,
 // taken under the capacity's lock — no walk.
 func (c *Capacity) ReservedByTag() map[core.ShareTag]int64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return maps.Clone(c.reservedTagged)
+	return c.reservedTagged.Snapshot()
 }
 
 // RefusedCount returns the reservation_refused counter: how many
 // reservations Take refused, by every limit it names, since the Capacity
 // was built.
 func (c *Capacity) RefusedCount() uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.refused
+	return c.refused.Load()
 }
 
 // refuse counts one refusal — the reservation_refused counter and one
@@ -1355,9 +1350,7 @@ func (c *Capacity) RefusedCount() uint64 {
 // count and the span are of the reservation the caller refused, not of
 // any state another take is moving.
 func (c *Capacity) refuse(ctx context.Context, ns core.NoSpaceError) *core.NoSpaceError {
-	c.mu.Lock()
-	c.refused++
-	c.mu.Unlock()
+	c.refused.Add(1)
 	e := &ns
 	if c.cfg.Tracer != nil {
 		_, end := c.cfg.Tracer(ctx, core.SpanReserveRefused)

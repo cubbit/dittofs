@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
@@ -31,42 +32,71 @@ type Conflict struct {
 // file.
 type conflictSet struct {
 	// decision: mu is a leaf mutex outside the six lock domains: it is the
-	// last lock taken, held only for a map access, and released before any
-	// other lock is acquired.
+	// last lock taken, held only for a list edit, and released before any
+	// other lock is acquired. Only mark and drop take it; a reader loads
+	// view instead.
 	mu sync.Mutex
-	m  map[core.FileID][2]core.ShareTag
+	// view is the rivalled files in FileID byte order, an immutable slice
+	// replaced whole by mark and drop under mu.
+	//
+	// ponytail: an edit copies the slice, O(rivalled files) per mark or drop.
+	// Rivalled files come only from a fault and a rebuild over damaged
+	// records, so the list stays short. Upgrade to a persistent tree when a
+	// rebuild that marks thousands of files shows the copying in a profile.
+	view atomic.Pointer[[]Conflict]
+}
+
+func (c *conflictSet) locate(list []Conflict, id core.FileID) (int, bool) {
+	b := id.Bytes()
+	return slices.BinarySearchFunc(list, b, func(x Conflict, b [16]byte) int {
+		xb := x.File.Bytes()
+		return bytes.Compare(xb[:], b[:])
+	})
 }
 
 // mark records id as rivalled, owned by tag with rival marking its records.
 func (c *conflictSet) mark(id core.FileID, owner, rival core.ShareTag) {
 	c.mu.Lock()
-	if c.m == nil {
-		c.m = make(map[core.FileID][2]core.ShareTag)
+	defer c.mu.Unlock()
+	var list []Conflict
+	if v := c.view.Load(); v != nil {
+		list = *v
 	}
-	c.m[id] = [2]core.ShareTag{owner, rival}
-	c.mu.Unlock()
+	i, found := c.locate(list, id)
+	e := Conflict{File: id, Tags: [2]core.ShareTag{owner, rival}}
+	var next []Conflict
+	if found {
+		next = slices.Clone(list)
+		next[i] = e
+	} else {
+		next = slices.Insert(slices.Clone(list), i, e)
+	}
+	c.view.Store(&next)
 }
 
 // drop removes id from the set, whether or not it is a member.
 func (c *conflictSet) drop(id core.FileID) {
 	c.mu.Lock()
-	delete(c.m, id)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	v := c.view.Load()
+	if v == nil {
+		return
+	}
+	i, found := c.locate(*v, id)
+	if !found {
+		return
+	}
+	next := slices.Delete(slices.Clone(*v), i, i+1)
+	c.view.Store(&next)
 }
 
-// snapshot returns one Conflict per rivalled file, ordered by FileID bytes.
+// snapshot returns one Conflict per rivalled file, ordered by FileID bytes,
+// a copy the caller owns. It takes no lock.
 func (c *conflictSet) snapshot() []Conflict {
-	c.mu.Lock()
-	out := make([]Conflict, 0, len(c.m))
-	for id, tags := range c.m {
-		out = append(out, Conflict{File: id, Tags: tags})
+	if v := c.view.Load(); v != nil {
+		return slices.Clone(*v)
 	}
-	c.mu.Unlock()
-	slices.SortFunc(out, func(a, b Conflict) int {
-		ab, bb := a.File.Bytes(), b.File.Bytes()
-		return bytes.Compare(ab[:], bb[:])
-	})
-	return out
+	return []Conflict{}
 }
 
 // CheckTag refuses a call through tag that names id, as every file-naming
