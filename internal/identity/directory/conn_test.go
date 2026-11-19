@@ -228,8 +228,8 @@ func TestDialTLSEndsWithItsContext(t *testing.T) {
 		t.Fatalf("DialTLS ended before it sent StartTLS: %v", err)
 	}
 	cancel()
-	// The bound is the assertion: go-ldap's own timeout, a minute, is what
-	// ends a StartTLS nothing closed, and no clock reaches it.
+	// The bound is the assertion: go-ldap sets no request timeout of its own,
+	// so only the context ends a StartTLS, and the ceiling is past the bound.
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
@@ -237,5 +237,156 @@ func TestDialTLSEndsWithItsContext(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Error("DialTLS outlived its context by 10s, want it ended with the context")
+	}
+}
+
+// A dial or call whose context sets no deadline ends at the ceiling with the
+// context's error when the directory never answers: the ldaps:// handshake
+// and the ldap:// StartTLS to a listener that never accepts, where the
+// system completes the connection and nothing answers, and a bind once
+// connected to a server that never answers it.
+func TestCallsEndAtTheCeiling(t *testing.T) {
+	const ceiling = 100 * time.Millisecond
+	// endsAtCeiling runs call, which dials or calls under ceiling; the 10s
+	// bound only stops one that never ends.
+	endsAtCeiling := func(t *testing.T, call func() error) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- call() }()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("err %v, want %v", err, context.DeadlineExceeded)
+			}
+		case <-time.After(10 * time.Second):
+			t.Errorf("still running 10s past a ceiling of %v, want it ended at the ceiling", ceiling)
+		}
+	}
+	for _, tc := range []struct{ name, scheme string }{
+		{"ldaps handshake", "ldaps://"},
+		{"ldap StartTLS", "ldap://"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			endsAtCeiling(t, func() error {
+				c, err := directory.DialTLSWithin(context.Background(), directory.Record{Address: tc.scheme + ln.Addr().String()}, ceiling)
+				if err == nil {
+					_ = c.Close()
+				}
+				return err
+			})
+		})
+	}
+	t.Run("bind once connected", func(t *testing.T) {
+		ca := newCert(t, nil)
+		addr, _, _ := serve(t, newCert(t, ca, "localhost"))
+		c, err := directory.DialTLSWithin(context.Background(), directory.Record{Address: addr, TrustRoots: ca.pem}, ceiling)
+		if err != nil {
+			t.Fatalf("DialTLS: %v", err)
+		}
+		defer func() { _ = c.Close() }()
+		endsAtCeiling(t, func() error {
+			return c.Bind(context.Background(), "CN=someone,DC=example,DC=com", []byte("password"))
+		})
+	})
+}
+
+// holdLast passes the server's writes through but the last byte of its
+// second, a TLS 1.2 server's final flight, which it hands to held as a func
+// that sends it.
+type holdLast struct {
+	net.Conn
+	writes int
+	held   chan<- func()
+}
+
+func (c *holdLast) Write(b []byte) (int, error) {
+	c.writes++
+	if c.writes != 2 {
+		return c.Conn.Write(b)
+	}
+	if _, err := c.Conn.Write(b[:len(b)-1]); err != nil {
+		return 0, err
+	}
+	last := b[len(b)-1]
+	c.held <- func() { _, _ = c.Conn.Write([]byte{last}) }
+	return len(b), nil
+}
+
+// A DialTLS whose context ends as StartTLS's handshake completes returns a
+// connection or the context's error, and nothing closes the connection while
+// go-ldap swaps in the TLS one; only the race detector, which the unit tests
+// run under, sees such a Close. Over TLS 1.2 the server speaks last, so each
+// round holds back the last byte of its final flight, sends it, and cancels
+// at once, as the client completes its handshake.
+func TestDialTLSEndsAsStartTLSCompletes(t *testing.T) {
+	ca := newCert(t, nil)
+	leaf := newCert(t, ca, "localhost")
+	cfg := &tls.Config{MaxVersion: tls.VersionTLS12,
+		Certificates: []tls.Certificate{{Certificate: [][]byte{leaf.cert.Raw}, PrivateKey: leaf.key}}}
+	// The success reply to message 1, go-ldap's first: StartTLS.
+	startTLSOK := []byte{0x30, 0x0c, 0x02, 0x01, 0x01, 0x78, 0x07, 0x0a, 0x01, 0x00, 0x04, 0x00, 0x04, 0x00}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	held := make(chan func(), 1)
+	go func() {
+		for {
+			raw, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = raw.Close() }()
+				// The StartTLS request, short enough that its second byte is
+				// the length of the rest.
+				hdr := make([]byte, 2)
+				if _, err := io.ReadFull(raw, hdr); err != nil {
+					return
+				}
+				if _, err := io.ReadFull(raw, make([]byte, hdr[1])); err != nil {
+					return
+				}
+				if _, err := raw.Write(startTLSOK); err != nil {
+					return
+				}
+				if tls.Server(&holdLast{Conn: raw, held: held}, cfg).Handshake() == nil {
+					_, _ = io.Copy(io.Discard, raw)
+				}
+			}()
+		}
+	}()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	rec := directory.Record{Address: "ldap://localhost:" + port, TrustRoots: ca.pem}
+
+	// With more than one P, a round lands on the swap one time in two or three.
+	for round := range 50 {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			c, err := directory.DialTLS(ctx, rec)
+			if err == nil {
+				_ = c.Close()
+			}
+			done <- err
+		}()
+		select {
+		case release := <-held:
+			release()
+			cancel()
+		case err := <-done:
+			cancel()
+			t.Fatalf("round %d: DialTLS ended before the server's last byte: %v", round, err)
+		}
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("round %d: DialTLS cancelled as StartTLS completes: err %v, want a connection or %v", round, err, context.Canceled)
+		}
 	}
 }

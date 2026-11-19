@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"testing"
+	"time"
 	"unicode/utf16"
 
 	"github.com/go-ldap/ldap/v3"
@@ -43,7 +44,9 @@ func TestDirectoryConformance(t *testing.T) {
 		t.Run(addr, func(t *testing.T) {
 			rec := directory.Record{Address: addr, Base: adBaseDN, TrustRoots: string(ca), Realm: adRealm, DNSServer: dcIP}
 			identitytest.DirectoryConformance(t, func(t *testing.T) (directory.Conn, identitytest.Seeder) {
-				c, err := directory.DialTLS(context.Background(), rec)
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				c, err := directory.DialTLS(ctx, rec)
 				if err != nil {
 					t.Fatalf("DialTLS %s: %v", addr, err)
 				}

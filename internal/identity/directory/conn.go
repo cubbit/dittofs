@@ -8,9 +8,20 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"time"
 
 	"github.com/go-ldap/ldap/v3"
 )
+
+// ceiling bounds each dial and call whose context sets no earlier deadline, so
+// one to a directory that accepts and never answers still ends.
+//
+// decision: a real-clock backstop at RFC 18 §5.1's 20-second bound, above its
+// 5-second query timeout: a caller's context carries those and ends no later,
+// and the ceiling bounds a caller whose context carries none. v1 bounded each
+// request at 10 s and each dial at 60 s. It is a constant; tests dial with a
+// lower one through the package's test hook.
+const ceiling = 20 * time.Second
 
 // Conn is a connection to the directory: the two calls identity makes of it.
 // Its types are the package's own, so a directory that is not LDAP, such as
@@ -81,12 +92,20 @@ type Entry struct {
 // against the address's host. When rec.DNSServer is set, the host is resolved
 // through it rather than the host's resolver.
 //
-// A call whose context ends while it runs closes the connection, which is
-// then of no further use.
+// A call ends when its context does or ceiling passes, whichever is first,
+// and one ended so closes the connection, which is then of no further use.
 func DialTLS(ctx context.Context, rec Record) (Conn, error) {
+	return dialTLS(ctx, rec, ceiling)
+}
+
+// dialTLS is DialTLS with the ceiling bounding the dial and each call on the
+// connection it returns.
+func dialTLS(ctx context.Context, rec Record, ceiling time.Duration) (Conn, error) {
 	if err := rec.Validate(); err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(ctx, ceiling)
+	defer cancel()
 	u, err := url.Parse(rec.Address)
 	if err != nil {
 		return nil, err
@@ -128,27 +147,38 @@ func DialTLS(ctx context.Context, rec Record) (Conn, error) {
 		}
 		l := ldap.NewConn(tc, true)
 		l.Start()
-		return &ldapConn{l: l}, nil
+		return &ldapConn{l: l, ceiling: ceiling}, nil
 	}
 
 	l := ldap.NewConn(raw, false)
 	l.Start()
-	c := &ldapConn{l: l}
-	err = c.during(ctx, func() error { return l.StartTLS(cfg) })
+	// decision: StartTLS is ended by a deadline on the socket, never by a
+	// Close from another goroutine: once its handshake is done, go-ldap's
+	// StartTLS swaps in the TLS connection without a lock, and Close reads it.
+	stop := context.AfterFunc(ctx, func() { _ = raw.SetDeadline(time.Now()) })
+	err = l.StartTLS(cfg)
+	if !stop() {
+		err = ctx.Err()
+	}
 	if err != nil {
 		_ = l.Close()
 		return nil, fmt.Errorf("identity.directory: StartTLS to %s: %w", rec.Address, err)
 	}
-	return c, nil
+	return &ldapConn{l: l, ceiling: ceiling}, nil
 }
 
 // ldapConn is a Conn over go-ldap.
-type ldapConn struct{ l *ldap.Conn }
+type ldapConn struct {
+	l       *ldap.Conn
+	ceiling time.Duration // bounds each call whose context sets no earlier deadline
+}
 
 // during runs f, which go-ldap gives no context, closing the connection if
-// ctx ends first, so a call never outlives its context; the error is then
-// ctx's.
+// ctx ends or the ceiling passes first, so a call outlives neither; the error
+// is then the context's.
 func (c *ldapConn) during(ctx context.Context, f func() error) error {
+	ctx, cancel := context.WithTimeout(ctx, c.ceiling)
+	defer cancel()
 	stop := context.AfterFunc(ctx, func() { _ = c.l.Close() })
 	err := f()
 	if !stop() {
