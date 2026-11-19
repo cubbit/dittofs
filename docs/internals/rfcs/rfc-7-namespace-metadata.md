@@ -2577,7 +2577,7 @@ clients and logs at `Debug`.
 Every refusal this component makes is one of the values below. Where
 [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values) declares the value, this component returns that value unchanged;
 `ErrCrossProject` and `ErrCrossShare` are surfaced by the filesystem service as
-its `ErrCross`, with the matching kind. No protocol status is returned or named
+its `ErrCross`, with the matching kind, and `ErrWrongShare` as its `ErrStale`. No protocol status is returned or named
 here. Each adapter maps every row through its one error table
 ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)): [RFC 21 §11.3](rfc-21-nfs.md#11.3%20Namespace) and [RFC 22 §16.3](rfc-22-smb.md#16.3%20Namespace).
 
