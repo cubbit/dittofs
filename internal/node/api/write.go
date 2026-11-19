@@ -55,6 +55,9 @@ type writing[B any] struct {
 	// reaches, such as the installation's, which its audit records and its
 	// handler's request name.
 	self func(context.Context, Deps) ([16]byte, error)
+	// starting is set by action alone, whose pre-write step's result is the
+	// opStart naming the operation the row starts.
+	starting bool
 }
 
 // write adapts a write. Its checks run in this order: a query parameter its
@@ -96,14 +99,11 @@ type writing[B any] struct {
 // with the change; a refused request records no key and is audited in a
 // transaction of its own. After a commit that raises the principals or
 // settings generation, the answer waits for the node to apply it.
+//
+// An action's step, whose result is an opStart (see action), names the
+// operation the row starts: its ID, its params and the release of what the
+// step holds under it.
 func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) (I, error), h func(context.Context, request[B], I, entity.ControlPlaneTx) (R, [16]byte, error)) adapter {
-	return writeWith(w, prepare, h, nil)
-}
-
-// writeWith is write whose pre-write step's result also names, through
-// starting, the operation the row starts: its ID, its params and the
-// release of what the step holds under it.
-func writeWith[B, I, R any](w writing[B], prepare func(context.Context, request[B]) (I, error), h func(context.Context, request[B], I, entity.ControlPlaneTx) (R, [16]byte, error), starting func(I) opStart) adapter {
 	return adapter{form: formWrite, body: reflect.TypeFor[B](), out: reflect.TypeFor[R](), changesSpec: w.changesSpec, replays: true, raises: w.raises, run: func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (a answer, err error) {
 		if s.d.Store == nil {
 			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
@@ -205,8 +205,8 @@ func writeWith[B, I, R any](w writing[B], prepare func(context.Context, request[
 			}
 		}
 		var st opStart
-		if starting != nil {
-			st = starting(in)
+		if w.starting {
+			st = any(in).(opStart) // set only by action, whose step returns an opStart
 		}
 		committed := false
 		defer func() {

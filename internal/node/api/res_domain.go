@@ -83,18 +83,18 @@ func installationID(ctx context.Context, d Deps) ([16]byte, error) {
 // check; the write starts it, on the installation, once check admits it in
 // the same transaction. Its audit records name the installation by its ID.
 func action[B any](prep func(context.Context, request[B]) (opStart, error)) adapter {
-	w := writing[B]{kind: entity.ResourceInstallation, self: installationID,
+	w := writing[B]{kind: entity.ResourceInstallation, self: installationID, starting: true,
 		read: func(entity.ControlPlaneTx, [16]byte, string) (B, uint64, bool, error) {
 			var b B
 			return b, 0, false, nil
 		}}
-	return writeWith(w, prep, func(_ context.Context, rq request[B], st opStart, tx entity.ControlPlaneTx) (none, [16]byte, error) {
+	return write(w, prep, func(_ context.Context, rq request[B], st opStart, tx entity.ControlPlaneTx) (none, [16]byte, error) {
 		in, err := tx.Installation()
 		if err == nil && st.check != nil {
 			err = st.check(tx, in)
 		}
 		return none{}, rq.ID, err
-	}, func(st opStart) opStart { return st })
+	})
 }
 
 // noneRunning refuses, 409 operation_running naming it, while an operation of
