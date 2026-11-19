@@ -2,6 +2,7 @@ package entity
 
 import (
 	"encoding/binary"
+	"strings"
 	"unicode/utf8"
 
 	"lukechampine.com/blake3"
@@ -103,6 +104,19 @@ func FoldPrincipalName(name string) string {
 		name = name[n:]
 	}
 	return string(out)
+}
+
+// PrincipalUserPart is the user part of a name as presented, without a
+// DOMAIN\ prefix or an @realm suffix, folded as FoldPrincipalName folds it,
+// so every spelling of one account gives one key.
+func PrincipalUserPart(name string) string {
+	if _, user, ok := strings.Cut(name, `\`); ok {
+		name = user
+	}
+	if i := strings.LastIndexByte(name, '@'); i >= 0 {
+		name = name[:i]
+	}
+	return FoldPrincipalName(name)
 }
 
 // DigestKeyLen is the length of a share's digest key.

@@ -69,7 +69,7 @@ func newResolving(t *testing.T) *resolving {
 	// under an unsampled parent is recorded and the test can see it.
 	r.tp = sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()), sdktrace.WithSpanProcessor(r.spans))
 	t.Cleanup(func() { _ = r.tp.Shutdown(context.Background()) })
-	if r.srv, err = identity.New(identity.Deps{Store: st, Metrics: r.reg, Tracer: r.tp.Tracer("test"), Logger: slog.New(slog.NewJSONHandler(r.logs, nil))}); err != nil {
+	if r.srv, err = identity.New(identity.Deps{Store: st, Clock: sim.NewTestClock(time.Unix(0, 0)), Metrics: r.reg, Tracer: r.tp.Tracer("test"), Logger: slog.New(slog.NewJSONHandler(r.logs, nil))}); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	return r

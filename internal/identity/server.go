@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,6 +60,7 @@ type Store interface {
 // Clock is the server's source of time.
 type Clock interface {
 	Now() time.Time
+	After(d time.Duration) <-chan struct{} // fires after d on the monotonic clock
 }
 
 // State is everything Apply delivers, swapped in as one snapshot: a call
@@ -119,6 +121,7 @@ type Server struct {
 	mints    *prometheus.CounterVec // by kind
 	unnamed  *prometheus.CounterVec // by kind
 	unmapped *prometheus.CounterVec // by scheme
+	hashing  chan struct{}          // the password verifications' slots, GOMAXPROCS of them
 }
 
 // refusalsSpec counts the calls resolution refuses, by the reason refused.
@@ -146,7 +149,10 @@ func New(d Deps) (*Server, error) {
 	if v := reflect.ValueOf(d.Store); v.Kind() == reflect.Pointer && v.IsNil() {
 		return nil, errors.New("identity: Deps.Store is a nil pointer")
 	}
-	s := &Server{deps: d, tracer: d.Tracer, logger: d.Logger}
+	if d.Clock == nil {
+		return nil, errors.New("identity: Deps.Clock is nil")
+	}
+	s := &Server{deps: d, tracer: d.Tracer, logger: d.Logger, hashing: make(chan struct{}, runtime.GOMAXPROCS(0))}
 	if s.logger == nil {
 		s.logger = slog.New(slog.DiscardHandler)
 	}

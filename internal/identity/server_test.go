@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // newStore opens an initialised in-memory metadata store, closed at the
@@ -40,7 +42,7 @@ func newStore(t *testing.T) *kvstore.Store {
 func newServer(t *testing.T) *identity.Server {
 	t.Helper()
 	prof.Watch(t, prof.Options{})
-	s, err := identity.New(identity.Deps{Store: newStore(t)})
+	s, err := identity.New(identity.Deps{Store: newStore(t), Clock: sim.NewTestClock(time.Unix(0, 0))})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -52,16 +54,18 @@ func state(gen uint64) identity.State {
 	return identity.State{Generation: gen, Settings: identity.DefaultSettings()}
 }
 
-func TestNewRefusesNoStore(t *testing.T) {
+func TestNewRefusesMissingDeps(t *testing.T) {
+	clock := sim.NewTestClock(time.Unix(0, 0))
 	for _, tc := range []struct {
-		name  string
-		store identity.Store
+		name string
+		deps identity.Deps
 	}{
-		{"nil", nil},
-		{"typed nil", (*kvstore.Store)(nil)},
+		{"nil store", identity.Deps{Clock: clock}},
+		{"typed nil store", identity.Deps{Store: (*kvstore.Store)(nil), Clock: clock}},
+		{"nil clock", identity.Deps{Store: newStore(t)}},
 	} {
-		if s, err := identity.New(identity.Deps{Store: tc.store}); err == nil {
-			t.Errorf("New with a %s store = %v, nil; want an error", tc.name, s)
+		if s, err := identity.New(tc.deps); err == nil {
+			t.Errorf("New with a %s = %v, nil; want an error", tc.name, s)
 		}
 	}
 }
