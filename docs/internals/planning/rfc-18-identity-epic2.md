@@ -212,7 +212,7 @@ spells it `merrs.NewInvalidArgumentError`, as RFC 23's plan's epic 2 does (its D
 | R19 | `qualified` spells a local principal `<NetBIOS name>\<name>` from `identity.netbios_name`, and a name in that form maps back by name; a principal minted without a name has no name spelling, so `qualified` answers it unmapped | invariant | §4.1, §4.6 | T2.5 |
 | R20 | Well-known SIDs map to §2.1's well-known principals both ways, and root's and anonymous's uid and gid to root and anonymous | invariant | §2.1, §4.4 | T2.5 |
 | R21 | A SID with no principal behind it is `ErrUnknownPrincipal` from `Find`; `Find` never returns an API-only account | invariant | §2.4, §4.4 | T2.5 |
-| R22 | An unmapped uid, gid or SID is counted in `identity_unmapped_total{scheme}`, labelled by scheme only | invariant | §9.2 | T2.5 |
+| R22 | An unmapped uid, gid or SID is counted in `identity_unmapped_total{scheme}`, labelled by scheme only; narrowed to `Find`'s misses until §9's row on what it counts is settled | invariant | §9.2 | T2.5 |
 | R23 | `FuzzSID` never panics, never allocates past the input's size times a constant, and decode∘encode is the identity on what decodes | test row | §10 Fuzz | T2.5 |
 
 **Accounts**
@@ -583,7 +583,7 @@ internal/identity/
   is `DITTOFS\alice`, after an `Apply` naming `NAS01` it is `NAS01\alice` (catches a name read at
   `New`, R19), and `Find` of `nas01\ALICE` is alice (R19); an `Unnamed` group, written through
   T2.3's `Create`: `qualified` `ErrUnknownPrincipal` (R19); well-known SIDs and uid 0 and 65534 both
-  ways (R20); an unknown domain SID, and an API-only account by name: `ErrUnknownPrincipal` (R21);
+  ways (R20); `Spell(root, SID)` is `S-1-22-1-0` and `Find` of it is root (D9, R20); an unknown domain SID, and an API-only account by name: `ErrUnknownPrincipal` (R21);
   through `kvtest`'s fault wrapper failing the `PX‖` read: the injected error, not
   `ErrUnknownPrincipal` (catches an outage read as "nobody", R18); `identity_unmapped_total` read
   from the registry after an unknown uid: `uid` 1 (R22). `FuzzSID`, seeded with well-known and domain

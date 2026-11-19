@@ -1135,7 +1135,10 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
   refuses a workstation's previous password at `NetrServerAuthenticate3`, after an administrator's
   reset and after a set over the channel alike, and its in-memory controller follows Samba with a
   `decision:` at `Channel`; and that Samba counts `badPwdCount` only under a lockout threshold,
-  which the fixture's domain leaves unset. Open; nothing in §3.5's reasoning, D7 or D14 changes
+  which the fixture's domain leaves unset. T7.3's own run setting 100 through `samba-tool` is
+  settled; what is open is the fixture's threshold, which #4625 proposes T7.2's `entrypoint.sh` set
+  above 10, so R12's "throttled at 10" rows hold without locking the account out, folded in with
+  T7.7 unless Marco wants it sooner. Open; nothing in §3.5's reasoning, D7 or D14 changes
   here until it is answered. `Prune`'s shape stays open as the gap below states.
 
 **What T7.1 found** (#4759, run against the fixture's Samba 4.17 with `go-msrpc` v1.6.4):
