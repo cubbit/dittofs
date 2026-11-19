@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
@@ -91,22 +93,57 @@ func refused(err error) bool {
 	return errors.As(err, &delay) && delay.Cause == vfserr.DelayCapacity || errors.Is(err, vfserr.ErrNoSpace)
 }
 
-// fillUntilRefused writes chunks of 256 KiB at file until a write is refused,
-// never longer than 128 writes into a journal of 4 MiB.
+// fillUntilRefused writes chunks of 256 KiB at file until the journal itself
+// refuses a reservation at its limit, never longer than 128 chunks into a
+// journal of 4 MiB. A capacity answer is not that refusal by its shape: a
+// pool still making its next spare answers the same retry-later, so the
+// journal's own refused-reservation counter, read from the node's listener,
+// says when the limit was reached, and a chunk refused before it is written
+// again. The bound on the wait is a real-time backstop, never the assertion.
 func fillUntilRefused(t *testing.T, h *nodetest.Harness, shID entity.ShareID, fileID entity.FileID) {
 	t.Helper()
 	const chunk = 256 << 10
-	for i := range 128 {
+	deadline := time.Now().Add(60 * time.Second)
+	for i := 0; i < 128; {
 		err := jwrite(t, h, shID, fileID, int64(i)*chunk, pattern(fmt.Sprint("fill", i), chunk))
 		if err == nil {
+			i++
 			continue
 		}
 		if !refused(err) {
 			t.Fatalf("write %d into the journal: %v", i, err)
 		}
-		return
+		if v, _ := at(t, jscrape(t, h), "dittofs_journal_reservation_refused_total"); v >= 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("write %d was refused for want of a spare for 60s, want the pool to make one: %v", i, err)
+		}
 	}
 	t.Fatal("128 writes of 256 KiB into a journal of 4 MiB were never refused, want the fill to reach the journal's limit")
+}
+
+// writeSpared is the first write into a started node: the journal's pool
+// makes its first spare segment in the background, so a write that reaches
+// the journal before it is answered retry-later for want of a spare. The
+// write is made again on that answer, until the pool has made one; any other
+// outcome is the write's own. The bound is a real-time backstop, never the
+// assertion.
+func writeSpared(t *testing.T, h *nodetest.Harness, s entity.ShareID, f entity.FileID, p []byte) error {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		err := jwrite(t, h, s, f, 0, p)
+		var delay *vfserr.Delay
+		if !errors.As(err, &delay) || delay.Cause != vfserr.DelayCapacity {
+			return err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the first write was refused for want of a spare for 60s, want the pool to make one: %v", err)
+		}
+		runtime.Gosched()
+		time.Sleep(time.Millisecond) // a pause between polls of the real condition
+	}
 }
 
 // A write the caller commits, a repack pass and a refused reservation each
@@ -121,7 +158,7 @@ func TestTheJournalTracesItsOperations(t *testing.T) {
 	file := createFiles(t, h, sh, 1)[0]
 	caughtUp(t, h)
 
-	if err := jwrite(t, h, sh.ID, file.ID, 0, pattern("trace", 4096)); err != nil {
+	if err := writeSpared(t, h, sh.ID, file.ID, pattern("trace", 4096)); err != nil {
 		t.Fatal(err)
 	}
 	if err := jcommit(t, h, sh.ID, file.ID); err != nil {
@@ -208,7 +245,7 @@ func TestTheJournalRunsUntracedWithoutATracer(t *testing.T) {
 	sh := addShare(t, h)
 	file := createFiles(t, h, sh, 1)[0]
 	caughtUp(t, h)
-	if err := jwrite(t, h, sh.ID, file.ID, 0, pattern("untraced", 4096)); err != nil {
+	if err := writeSpared(t, h, sh.ID, file.ID, pattern("untraced", 4096)); err != nil {
 		t.Fatal(err)
 	}
 	if err := jcommit(t, h, sh.ID, file.ID); err != nil {
@@ -235,7 +272,7 @@ func TestTheJournalLoggerNamesTheJournal(t *testing.T) {
 	sh := addShare(t, h)
 	file := createFiles(t, h, sh, 1)[0]
 	caughtUp(t, h)
-	if err := jwrite(t, h, sh.ID, file.ID, 0, pattern("logged", 4096)); err != nil {
+	if err := writeSpared(t, h, sh.ID, file.ID, pattern("logged", 4096)); err != nil {
 		t.Fatal(err)
 	}
 	if err := jcommit(t, h, sh.ID, file.ID); err != nil {
