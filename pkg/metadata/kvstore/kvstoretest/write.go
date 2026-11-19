@@ -364,6 +364,11 @@ func testInstallationInWrite(t *testing.T, kvo Opener) {
 			if in.MachinePassword != pw {
 				t.Errorf("machine password read back: got %x, want %x", in.MachinePassword, pw)
 			}
+			sk := entity.SecretRef{15: 0x5D}
+			must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetSigningKey(sk) }))
+			if in, err = s.Installation(ctx); err != nil || in.SigningKey != sk || in.MachinePassword != pw {
+				t.Errorf("signing key read back: got %x, machine password %x, %v; want %x and %x", in.SigningKey, in.MachinePassword, err, sk, pw)
+			}
 			must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetMachinePassword(pw) }))
 			if in, err = s.Installation(ctx); err != nil || !reflect.DeepEqual(in.Join, j) || in.NTLMOff.Off != 5 {
 				t.Errorf("after a password write: join %+v, NTLM off %d, %v; want %+v and 5", in.Join, in.NTLMOff.Off, err, j)

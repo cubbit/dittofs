@@ -263,4 +263,8 @@ func (c controlTx) SetMachinePassword(ref entity.SecretRef) error {
 	return c.setInstallation(func(in *entity.Installation) { in.MachinePassword = ref })
 }
 
+func (c controlTx) SetSigningKey(ref entity.SecretRef) error {
+	return c.setInstallation(func(in *entity.Installation) { in.SigningKey = ref })
+}
+
 func (c controlTx) Now() time.Time { return c.tx.Now() }
