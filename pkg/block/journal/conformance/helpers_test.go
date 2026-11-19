@@ -248,14 +248,25 @@ func durable(t *testing.T, f *journaltest.Fixture, name string) []byte {
 func liveBytes(t *testing.T, f *journaltest.Fixture, name string) []byte {
 	t.Helper()
 
-	file, err := f.Seam.Open(name)
+	b, err := liveImage(f, name)
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
+	}
+	return b
+}
+
+// liveImage is liveBytes returning the error instead of failing the test: a
+// name the journal moved since the caller listed it answers one matching
+// fs.ErrNotExist.
+func liveImage(f *journaltest.Fixture, name string) ([]byte, error) {
+	file, err := f.Seam.Open(name)
+	if err != nil {
+		return nil, err
 	}
 
 	size, err := file.Size()
 	if err != nil {
-		t.Fatalf("read %s: %v", name, err)
+		return nil, errors.Join(err, file.Close())
 	}
 
 	b := make([]byte, size)
@@ -265,10 +276,10 @@ func liveBytes(t *testing.T, f *journaltest.Fixture, name string) []byte {
 	}
 
 	if err = errors.Join(err, file.Close()); err != nil {
-		t.Fatalf("read %s: %v", name, err)
+		return nil, err
 	}
 
-	return b
+	return b, nil
 }
 
 // readAt reads n bytes at off of file id through h into a buffer filled with
