@@ -204,6 +204,15 @@ type Set struct {
 	// beside the set's state under mu.
 	untaken map[core.SegmentID]struct{}
 
+	// recycleSpy is a test seam that runs in Recycle, under mu, after the
+	// footprint was raised and again after the old segment was removed, told
+	// which, so a test reads the lock-free counters at each point of the
+	// change.
+	//
+	// decision: it is nil outside tests, as the core's stepSpy is; the cost is
+	// two nil comparisons per recycle, which is not a hot path.
+	recycleSpy func(step int)
+
 	// c holds the counters of Counters above, maintained at each event that
 	// moves one under mu and never rebuilt: every read is a set of atomic loads.
 	c liveCounters
@@ -1274,7 +1283,13 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 	// need a lock or a sequence it retries on.
 	s.c.UsedBytes.Add(s.cap)
 	s.c.Spares.Add(1)
+	if s.recycleSpy != nil {
+		s.recycleSpy(1)
+	}
 	s.removeLocked(old, e)
+	if s.recycleSpy != nil {
+		s.recycleSpy(2)
+	}
 	s.spares[fresh] = struct{}{}
 	s.mu.Unlock()
 	s.retireSeen(old)

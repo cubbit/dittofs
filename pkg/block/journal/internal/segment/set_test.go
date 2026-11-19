@@ -3,6 +3,7 @@ package segment
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"math"
@@ -298,14 +299,51 @@ func TestRecycleAfterRetireAddsNoSpare(t *testing.T) {
 	}
 }
 
-// TestRecycleNeverShowsALowerFootprint: Counters takes no lock, so a reader
-// polling it while one segment cycles through take, record, seal and recycle
-// sees the footprint in the middle of each recycle. The storage is one cap
-// the whole time, so a read below it would let a limit gate admit what the
-// journal maximum does not have; a read above it, during the change, is the
-// safe direction. The poller stops when the cycling does, and the cycling is
-// bounded.
-func TestRecycleNeverShowsALowerFootprint(t *testing.T) {
+// TestRecycleFootprintIsNeverLowAtAnyStep: a recycle moves the footprint in
+// two steps, and Counters takes no lock, so a reader can land between them.
+// The storage is one cap throughout, so a read below it would let a limit gate
+// admit what the journal maximum does not have; a read above it is the safe
+// direction. The seam reads the counters after each step, single-goroutine,
+// so the check does not depend on the scheduler.
+func TestRecycleFootprintIsNeverLowAtAnyStep(t *testing.T) {
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	var steps []int
+	var failures []string
+	s.recycleSpy = func(step int) {
+		steps = append(steps, step)
+		if used := s.Counters().UsedBytes; used < segCap {
+			failures = append(failures, fmt.Sprintf("step %d read UsedBytes %d", step, used))
+		}
+	}
+	if err := s.AddSpare(1, noMax); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	for _, op := range []func() error{
+		func() error { return s.Take(1) },
+		func() error { return s.AddRecord(1, 1, 100, 0) },
+		func() error { return s.Seal(1, true) },
+		func() error { return s.Recycle(1, 2) },
+	} {
+		if err := op(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(steps) != 2 || steps[0] != 1 || steps[1] != 2 {
+		t.Fatalf("the recycle seam ran at steps %v, want [1 2]", steps)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("the footprint read below the one cap %d the storage occupies throughout a recycle: %v", segCap, failures)
+	}
+}
+
+// TestRecycleNeverShowsALowerFootprintToAReader: the same footprint as seen by
+// a real lock-free reader polling while one segment cycles through take,
+// record, seal and recycle. It depends on the scheduler landing the reader
+// inside a recycle, so it is the weaker guard; the seam test above is the one
+// that holds at any CPU count. The poller stops when the cycling does, and
+// the cycling is bounded.
+func TestRecycleNeverShowsALowerFootprintToAReader(t *testing.T) {
 	const (
 		segCap = 4096
 		rounds = 3000
