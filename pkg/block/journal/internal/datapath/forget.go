@@ -310,6 +310,13 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 	// tag's cumulative retired figure once, which the reconciliation this
 	// shares its records with reads next, settling a seeded share's figure to
 	// nothing now rather than at whichever retirement reports first.
+	//
+	// decision: the forget record's own bytes are not taken into the tag's
+	// figure, unlike every other record landed outside a write: ForgetTag
+	// releases all the tag's bytes, the record's among them, and the call
+	// below settles the figure to nothing in the same step, so the figure
+	// and the set end equal at zero whichever way the record was counted.
+	// Overturned by a forget that leaves the tag's bytes in the set.
 	c.set.ForgetTag(tag)
 	c.cap.RetiredEverySeeded()
 	c.unstrand(tag)

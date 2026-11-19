@@ -67,3 +67,14 @@ func (c *Capacity) CopyHeldBytes() int64 {
 	}
 	return n
 }
+
+// ShareFigure returns the share's record-byte figure the admission decides
+// on: zero for a tag no take has seeded.
+//
+// decision: reachable only from tests, which compare the figure with the set's
+// own settled bytes; no interface holds its signature up.
+func (c *Capacity) ShareFigure(tag core.ShareTag) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.shareTally[tag]
+}

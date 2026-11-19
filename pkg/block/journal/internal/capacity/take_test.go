@@ -1742,3 +1742,97 @@ func TestGettersReservedByTag(t *testing.T) {
 		t.Fatalf("ReservedByTag[tag1] after Release = %d, want 0", got)
 	}
 }
+
+// landedAsk is the ask every Landed test measures the tally with: a payload
+// whose record costs exactly 1000 bytes, so a limit is the tally plus 1000
+// exactly when the ask fits.
+const landedAsk = 896
+
+// admitsAt reports whether a plain take of landedAsk against limit is admitted,
+// releasing the grant it got.
+func (r *rig) admitsAt(t *testing.T, limit int64) (missing int64, admitted bool) {
+	t.Helper()
+	q := req()
+	q.Payload = landedAsk
+	q.ShareLimit = limit
+	g, err := r.c.Take(context.Background(), q)
+	if err == nil {
+		g.Release()
+		return 0, true
+	}
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) || ns.Limit != core.LimitShare {
+		t.Fatalf("Take against limit %d = %v, want admitted or the share's refusal", limit, err)
+	}
+	return ns.Missing, false
+}
+
+// seedTally seeds tag1's figure from the set with a take that fits any limit,
+// the way a share's first write does.
+func (r *rig) seedTally(t *testing.T) {
+	t.Helper()
+	q := req()
+	q.Payload = 1
+	r.grant(t, q).Release()
+}
+
+// TestTake_LandedEntersTheTallyAndRetiredRefundsIt lands a record under the
+// tag with no grant, the way durability's re-append does, and follows it
+// through the figure: while its segment stands the tally holds its bytes, and
+// once the segment retires Retired takes exactly them back, leaving the seed.
+// Without Landed the tally never held them, and the retirement drove it below
+// the set's own figure.
+func TestTake_LandedEntersTheTallyAndRetiredRefundsIt(t *testing.T) {
+	r := newRig(t, std())
+	r.seed(t, landedAsk) // a 1000-byte record
+	r.seal(t)
+	r.seedTally(t)
+
+	p := r.append(t, segment.Roll{}, tag1, 404) // a 508-byte record in the next segment
+	r.c.Landed(tag1, p.Loc.Len)
+	rec := p.Loc.Len
+
+	// The tally is 1000+rec: an ask of 1000 fits a limit of 2000+rec and misses one below by one.
+	if missing, ok := r.admitsAt(t, 1999+rec); ok || missing != 1 {
+		t.Fatalf("while the landed record stands, a take one below the fit: admitted=%v missing=%d, want refused missing 1", ok, missing)
+	}
+	if _, ok := r.admitsAt(t, 2000+rec); !ok {
+		t.Fatal("while the landed record stands, a take at the fit was refused, want admitted")
+	}
+
+	// Its segment retires: the set's retired figure rises by the record and
+	// Retired takes it from the tally, which is back at the seed's 1000.
+	r.seal(t)
+	r.retire(t, p.Loc.Segment)
+	r.c.Retired(tag1)
+	if missing, ok := r.admitsAt(t, 1999); ok || missing != 1 {
+		t.Fatalf("after the retirement, a take at limit 1999: admitted=%v missing=%d, want refused missing 1 (the tally fell below the set's figure)", ok, missing)
+	}
+	if _, ok := r.admitsAt(t, 2000); !ok {
+		t.Fatal("after the retirement, a take at limit 2000 was refused, want admitted")
+	}
+}
+
+// TestTake_LandedAfterTheSeedReadItStandsHigh pins the seed window: a record
+// whose Landed arrives after the seed already read it in the set's settled
+// figure is counted twice, the tally standing high by exactly the record,
+// which fails closed. (A Landed before the seed adds nothing observable, for
+// the seed replaces the figure.)
+func TestTake_LandedAfterTheSeedReadItStandsHigh(t *testing.T) {
+	t.Run("landed after the seed read it", func(t *testing.T) {
+		r := newRig(t, std())
+		r.seed(t, landedAsk)
+		r.seal(t)
+		p := r.append(t, segment.Roll{}, tag1, 404)
+		r.seedTally(t) // the seed's settled figure already holds the record
+		rec := p.Loc.Len
+		r.c.Landed(tag1, rec)
+		// Standing high by the record: 1000+2*rec; an ask of 1000 fits 2000+2*rec.
+		if missing, ok := r.admitsAt(t, 1999+2*rec); ok || missing != 1 {
+			t.Fatalf("a take one below the doubled fit: admitted=%v missing=%d, want refused missing 1 (the lag overcounts by the record)", ok, missing)
+		}
+		if _, ok := r.admitsAt(t, 2000+2*rec); !ok {
+			t.Fatal("a take at the doubled fit was refused, want admitted")
+		}
+	})
+}

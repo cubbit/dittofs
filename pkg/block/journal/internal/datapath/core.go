@@ -490,6 +490,12 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// cache — the index, the counters, the domains and Account are all of
 	// the core's own — so nothing downstream constrains this order.
 	d, err := durability.New(durability.Config{
+		// Read at call time: the capacity is built after this layer.
+		Landed: func(tag core.ShareTag, n int64) {
+			if c.cap != nil {
+				c.cap.Landed(tag, n)
+			}
+		},
 		Clock:    deps.Clock,
 		Domains:  domains,
 		Tracer:   deps.Tracer,
@@ -1111,6 +1117,11 @@ func (c *Core) AfterRetirementTick(fn func()) { c.retiring.AfterTick(fn) }
 // way. Drop the method, or give it a production caller, once the figures are
 // exported through Stats.
 func (c *Core) CopyHeldBytes() int64 { return c.cap.CopyHeldBytes() }
+
+// ShareFigure returns the record-byte figure the share's limit is admitted
+// against, zero for a tag no write has seeded. It reports the capacity's own
+// tally, which a test compares with the set's settled bytes.
+func (c *Core) ShareFigure(tag core.ShareTag) int64 { return c.cap.ShareFigure(tag) }
 
 // WaitSpares blocks until the pool has readied every spare the open's own
 // targets name, or reports the pool's word for why it stopped filling. It is

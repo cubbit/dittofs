@@ -33,6 +33,11 @@ type Config struct {
 	// (R19): no record of it is pending any more. It runs on the stream's
 	// worker with no lock held, so it must not wait on a Sync.
 	Resolved func(stream uint32, seg core.SegmentID)
+	// Landed, when set, is told of every record this layer appends under a
+	// share's tag outside a write — a re-append and a loss record — with the
+	// record's placed length, so the share's figure takes its bytes. Nil
+	// means none.
+	Landed func(tag core.ShareTag, n int64)
 
 	// Index is the placement index the layer lifts retained content out of
 	// when a sync completes. It is required.
@@ -383,6 +388,8 @@ type Durability struct {
 
 	// resolved is Config.Resolved: the announcement of a resolved window.
 	resolved func(stream uint32, seg core.SegmentID)
+	// landed is Config.Landed.
+	landed func(tag core.ShareTag, n int64)
 
 	// readOnly is the journal's read-only entry, handed the failure that
 	// stopped a stream. New installs Enter; it is replaceable before Start.
@@ -490,6 +497,7 @@ func New(cfg Config) (*Durability, error) {
 		tracer:   cfg.Tracer,
 		log:      log,
 		resolved: cfg.Resolved,
+		landed:   cfg.Landed,
 		index:    cfg.Index,
 		undo:     cfg.Undo,
 		made:     map[uint32]*stream{},

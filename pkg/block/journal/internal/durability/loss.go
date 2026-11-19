@@ -336,6 +336,9 @@ func (d *Durability) appendRecord(l Loss) (segment.Location, error) {
 	if err != nil {
 		return segment.Location{}, err
 	}
+	if d.landed != nil {
+		d.landed(h.Tag, placed.Loc.Len)
+	}
 	// Registered between the append and the sync, so the record is named
 	// before the segment carrying it can seal.
 	if d.lossRegistered != nil {
