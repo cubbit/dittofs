@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +58,19 @@ type failingPrune struct {
 
 func (f failingPrune) Prune(context.Context, entity.SecretKind, entity.SecretOwner, entity.SecretRef) error {
 	return f.err
+}
+
+// droppedVersion is the real provider with Versions no longer listing
+// version drop: a fault injected around it, as a prune that dropped the
+// version behind a running rotation.
+type droppedVersion struct {
+	*secrets.Provider
+	drop uint64
+}
+
+func (f droppedVersion) Versions(ctx context.Context, role secrets.Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]secrets.Version, error) {
+	vs, err := f.Provider.Versions(ctx, role, kind, owner, ref)
+	return slices.DeleteFunc(vs, func(v secrets.Version) bool { return v.Number == f.drop }), err
 }
 
 // rotFixture is a server over the in-memory store and the real secret
@@ -597,6 +611,22 @@ func TestRotationConfirmNotAccepted(t *testing.T) {
 	fx.wantFailed(t, op, "domain controller "+dc1+" no longer accepts")
 	if !rotationFailed(fx.s) {
 		t.Error("machine_password_rotation_failed not raised")
+	}
+}
+
+// A sealed version no longer held when the set reads it fails the rotation,
+// recorded and raised.
+func TestRotationSealedNoLongerHeld(t *testing.T) {
+	fx := newRotation(t)
+	op := fx.op()
+	fx.until(t, op, "set")
+	fx.restart(t, droppedVersion{fx.p, cursorVersion(t, op)})
+	fx.wantFailed(t, op, "version 2 is no longer held")
+	if j := fx.join(t); !j.LastRotation.Failed || !atStore(j.LastRotation.At, fx.clock.Now()) {
+		t.Errorf("last rotation %+v, want failed now", j.LastRotation)
+	}
+	if !rotationFailed(fx.s) {
+		t.Error("machine_password_rotation_failed not raised by a sealed version no longer held")
 	}
 }
 

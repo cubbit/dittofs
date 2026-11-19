@@ -87,6 +87,12 @@ func (s *Server) RotateStep(ctx context.Context, op entity.Operation) (step.Step
 	if op.Target.Kind != entity.ResourceInstallation {
 		return step.StepResult{}, fmt.Errorf("%w: %s's target %s names no installation", step.ErrStepFailed, op.Kind, op.Target.Kind)
 	}
+	// decision: a cursor that does not decode, or names no phase, ends the
+	// operation as a fault without recording the last rotation failed: it is a
+	// programming or storage fault, not a rotation the controller or this node
+	// refused, so raising machine_password_rotation_failed would misreport it
+	// (RFC 18 §3.5 reports a rotation that cannot complete). Overturned if such
+	// a cursor is shown to arise from a rotation's own course.
 	var c rotateCursor
 	if len(op.Step) > 0 {
 		if err := json.Unmarshal(op.Step, &c); err != nil {
@@ -329,11 +335,12 @@ func (r *rotation) versions(ctx context.Context) ([]secrets.Version, error) {
 	return r.s.deps.Secrets.Versions(ctx, secrets.Protocol, entity.SecretMachinePassword, machineOwner(r.in), r.in.MachinePassword)
 }
 
-// value is the sealed version's password among vs.
-func (r *rotation) value(vs []secrets.Version) ([]byte, error) {
+// value is the sealed version's password among vs. A version no longer held,
+// pruned behind the running rotation, fails it, recorded (RFC 18 §3.5).
+func (r *rotation) value(ctx context.Context, vs []secrets.Version) ([]byte, error) {
 	i := slices.IndexFunc(vs, func(v secrets.Version) bool { return v.Number == r.c.Version })
 	if i < 0 {
-		return nil, fmt.Errorf("%w: the machine password's version %d is no longer held", step.ErrStepFailed, r.c.Version)
+		return nil, r.fail(ctx, fmt.Sprintf("the machine password's version %d is no longer held", r.c.Version))
 	}
 	return vs[i].Value, nil
 }
@@ -409,7 +416,7 @@ func (r *rotation) probeSealed(ctx context.Context) (sealedProbe, error) {
 	if err != nil {
 		return sealedProbe{}, err
 	}
-	pw, err := r.value(vs)
+	pw, err := r.value(ctx, vs)
 	if err != nil {
 		return sealedProbe{}, err
 	}
