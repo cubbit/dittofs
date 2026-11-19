@@ -6,12 +6,15 @@ series, the lag series being RFC 23's node's (D5). [RFC 16](../rfcs/rfc-16-metad
 §2.3's `Setting` record and §3's settings view.
 [RFC 23](../rfcs/rfc-23-control-plane.md) §5.2's `admin`-only settings.
 **Track:** B.
-**Epic 3 estimate: 9 subtasks, 19.5 man-days.**
+**Epic 3 estimate: 9 subtasks, 19 man-days.**
 **Depends on:** S1, the configuration surface frozen by E1 (#4479, merged): `pkg/settings`' types
-with stub bodies, the kvstore view's `DeleteSetting` and `AllSettings` with their transaction
-forms, and `Check`'s signature over the `ControlPlaneTx` that RFC 23's T2.4 (#4362) built on
-`feat/storage-v2` (#4494), so `Check` waits on nothing beyond S1.
-E2's T2.8 (#4518, open), the binary's registered ranges in `pkg/settings/versions.go` (the gate
+with stub bodies, the kvstore view's `DeleteSetting` with its transaction form, `entity.SettingKey`
+and `entity.SettingsReader`, which `Read` takes, and `Check`'s signature over the
+`ControlPlaneTx` that RFC 23's T2.4 (#4362) built on `feat/storage-v2` (#4494), so `Check` waits
+on nothing beyond S1.
+RFC 23's epic 2's T2.8, for T3.4 and T3.9: `Nodes.AllSettings`, the cross-scope read, with the
+`ErrBadRow` pair (D2), owned by #4812 (open).
+E2's T2.8 (#4518, merged), the binary's registered ranges in `pkg/settings/versions.go` (the gate
 itself is `pkg/bootstrap`'s), the settings schema among the `Format` values E2's D6 declares
 there, which T3.1's newer-schema refusal and T3.6's format gate read; the plan's edge and blockers
 row for that dependency came in #4662. S2, a `Secret` sealed by E4, for T3.7 only.
@@ -45,7 +48,7 @@ by the component's own rules before it commits, and classifies each change for r
 
 ### 1.1 In scope
 
-The kvstore settings view's delete, cross-scope read and schema refusal; `Of`, `Table` and their
+The kvstore settings view's delete and schema refusal; `Of`, `Table` and their
 options; the strict decode, the size grammar and the duration codec of E1's D10; `Read`, `Get`,
 `Diff` and `Keep`; `Check` and every gate RFC 13's plan gives it; the two settings series; the
 reconcile benchmark, `Read` and `Diff`; the `decision:` and `ponytail:` markers RFC 13's plan places
@@ -53,10 +56,12 @@ in this epic.
 
 ### 1.2 Out of scope
 
+- The cross-scope read, `Nodes.AllSettings`, and its `ErrBadRow` pair: RFC 23's epic 2's T2.8,
+  #4812 (open). `feat/storage-v2`'s `ControlPlane.AllSettings` stubs went with #4796, merged.
 - The node's table, reconcile, the API's settings routes and `HoldsContent`'s implementation: E5.
   The route builds `holds` inside `Write` as a closure over the write's `tx`, so E1's frozen
   signature, `func(scope entity.SettingScope) (bool, error)`, stays without a `tx` parameter (the
-  plan's sketch still passes `tx`; #4773 merged without that fix, §9), and the closure makes it a
+  plan's sketch calls `holds(s.Scope)`), and the closure makes it a
   tracked point
   read through the write's transaction, so the first content write conflicts with a bound change
   (T3.6).
@@ -114,8 +119,8 @@ title and not copied.
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T3.4, T3.5, T3.6, T3.7 | refusals are asserted through `Check` and `Read`, on the error a caller sees, never on a helper |
 | rule 6, known failures shrink | none | no suite of this epic has a `known.yaml` |
 | rule 7, v2 ignores v1 | T3.1 | the view's existing `Settings` and `PutSetting` are kept; nothing reads v1's GORM settings store |
-| rule 8, real dependencies for properties of those dependencies | T3.1, T3.9 | the generation raise, the scan and the conflict of a tracked read on Badger under `t.TempDir()` |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T3.1, T3.3, T3.4, T3.5, T3.6 | D9's and D11's `decision:` notes at `Check`, the skipped row's at `Read` and the size's truncation at the decode; the `ponytail:` markers of the one-scan reconcile, the one `CFGGEN` key and the rule across components |
+| rule 8, real dependencies for properties of those dependencies | T3.1, T3.4, T3.9 | the generation raise, the scan through `Nodes` and the conflict of a tracked read on Badger under `t.TempDir()` |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T3.1, T3.3, T3.4, T3.5, T3.6 | D9's and D11's `decision:` notes at `Check`, the repair delete's at `lookup`, the skipped row's at `Read` and the size's truncation at the decode; the `ponytail:` markers of the one-scan reconcile, the one `CFGGEN` key and the rule across components |
 | rule 10, a test must be able to fail | all | each gate has a test feeding the refused write and one feeding the write that passes beside it |
 | rule 11, a symbol is exported only if RFC 13's interfaces use it | all | nothing beyond E1's frozen surface is exported but `Of`'s `FormatVersion` option (D6), added to E1's export pin as it lands; `entity.ErrBadRow` (D2) is outside E1's three packages |
 | rule 12, each subtask creates only what it declares | all | the size grammar lands with the decode, the series with T3.9, the gates each with its subtask |
@@ -133,7 +138,7 @@ Every obligation RFC 13, RFC 16 and RFC 23 place on this epic, and those RFC 13'
 | R3 | The effective value is the narrower override if one exists, else the wider value, else the default, per thing where the form is per thing; under an `Override` scope declared with `OverrideOnly`, only the fields it names take the narrower value | invariant | RFC 13 §3; E1's D9 | T3.2, T3.4 |
 | R4 | A record with a schema version the reader does not know is refused whole, never read for the fields it recognises | MUST | RFC 13 §2.3; RFC 16 §2.3 (`Setting.Schema`) | T3.1, T3.4, T3.5 |
 | R5 | A delete removes one row, so the wider value is effective, and raises the settings generation in its transaction as a put does | MUST | RFC 16 §3 (`DeleteSetting`) | T3.1 |
-| R6 | Reconcile reads every scope's rows in one prefix scan | invariant | RFC 13's plan, §4.3; pending #4473 | T3.1 |
+| R6 | Reconcile reads every scope's rows in one `AllSettings` walk, in pages, never one read per scope | invariant | RFC 13's plan, §4.3; the read is RFC 23's epic 2's T2.8 (#4812) | T3.4 |
 
 **Declaring a section**
 
@@ -160,7 +165,7 @@ Every obligation RFC 13, RFC 16 and RFC 23 place on this epic, and those RFC 13'
 | R15 | A value out of range, of the wrong type or naming something absent is refused, naming the field and the rule, in RFC 13 §6's refusal shape | MUST | RFC 13 §6 ("Refused, never replaced") | T3.3, T3.5 |
 | R16 | A value is never clamped, rounded or replaced by a default | MUST NOT | RFC 13 §6 | T3.4, T3.5 |
 | R17 | The write check calls the component's own `Validate` and has no rule of its own to drift | invariant | RFC 13 §6 ("Checked twice") | T3.5 |
-| R18 | A section that does not decode or validate stops only itself, and where its form is per thing only that thing's value (garbage in share A's row leaves share B's value of the section readable): `Read` returns it refused and decodes the rest; a row no section of the table claims, one a newer binary's section or a removed one left, is skipped, neither refused nor counted; a row whose bytes do not decode refuses the section its key names, and is skipped when its key does not parse or no section claims it (D2) | invariant | RFC 13 §6 ("stops only what it configures") | T3.1, T3.4 |
+| R18 | A section that does not decode or validate stops only itself, and where its form is per thing only that thing's value (garbage in share A's row leaves share B's value of the section readable): `Read` returns it refused and decodes the rest; a row no section of the table claims, one a newer binary's section or a removed one left, is skipped, neither refused nor counted; a row whose bytes do not decode refuses the section its key names, and is skipped when its key does not parse or no section claims it (D2) | invariant | RFC 13 §6 ("stops only what it configures") | T3.4 |
 | R19 | A write related to another setting by a rule is validated against that setting's current value, read tracked in the write's transaction; this epic builds the tracked read only, as `Of`'s `CheckTx` option that `Check` runs (R33), the first rule, RFC 13 §6's port rule, being E5's and the RFC 18 plan's epic 6's NetBIOS cross-check routing through it, while the general rule stays a knowingly simple "not built" (RFC 13's plan, §4.3) | MUST | RFC 13 §6 ("A rule across settings"); RFC 13's plan, §4.3, epic 5 and O3 | T3.2, T3.5 |
 
 **The write check**
@@ -227,44 +232,50 @@ leaves the `decision:` note only.
   binary declares, R18's skip covers only a row no section claims, and R11 makes the older binary
   refuse the whole section. Nothing here can stop that write: a field carries a class and no
   version, E1 freezes `Of`'s options, and the call that would refuse a write of a field newer than
-  the active version is the plan's unowned "raise-format" row (its §6.1). So until that row lands, a
+  the active version is the plan's unowned §6.1 row "Refusing a write that sets a field a newer
+  binary added, while it is newer than the active version". So until that row lands, a
   rollback after an added field was set refuses that section, and T3.4 tests it. A newer binary's
   section nested under a prefix an older binary declares is the same case, the older one refusing
   the parent (R11), and the same cost. The refused section is repaired by a delete: `lookup` lets a
-  delete of a key the section does not declare, under a declared prefix, through (the write role
-  still applies), and T3.5 tests it. A put to the section's declared fields commits and leaves it
-  refused, since `Check` reads declared fields only (R32) and `Read` reports the refusal. A row of
-  undecodable bytes has no repair here, §9. Past the raise,
+  delete of a key the section does not declare, under a declared prefix, through, for an `admin`
+  only, whatever the write role of the section the prefix names: `lookup` resolves the key to its
+  longest declared prefix, so an `operator` could otherwise delete a newer binary's `admin`-only
+  key stored under a prefix an `operator` may write, and an undeclared key has no class, so the
+  bound gate never runs on it. T3.5 tests it. A put to the section's declared fields commits and
+  leaves it refused, since `Check` reads declared fields only (R32) and `Read` reports the
+  refusal. A row of undecodable bytes has no repair here, §9. Past the raise,
   every row the newer binary rewrites carries the new version, so an older binary refuses every
   section it rewrote and not only the one that gained the field. That is accepted: D2 and R18 keep
   one bad row to its own section, and a rollback past the raise is the case D11 already leaves
-  unsafe. The plan's D11 carries the one version since #4773, merged. Its caveat on an added field
-  is still to be written, §9. No marker.
+  unsafe. The plan's D11 carries the one version since #4773 and its caveat on an added field since
+  #4809, both merged. The repair delete's `decision:` note is T3.5's, at `lookup`.
 - **D2, the view refuses a newer schema on write, not on read.** `PutSetting` refuses a row whose
-  `Schema` is newer than the binary's. `AllSettings` returns such a row as it is, and `Read`
-  refuses its section only. A refusal in the scan would stop every section on one row, which RFC
-  13 §6's "stops only what it configures" forbids. A row that does not decode follows the same
-  rule. Unlike `Settings`, whose `pages` helper ends the scan at the first row that fails to
-  decode (`kvstore/tx.go:89-92` and `:100-103`), `AllSettings` is not built on that abort: it
-  yields the failure as a pair and goes on. The pair is a row error only when its error is
-  `entity.ErrBadRow`, wrapping the cause (the codec's `ErrVersion`, `ErrTruncated` or
-  `ErrTrailing` from `decodeSetting`, or a key that does not parse), and it carries the
+  `Schema` is newer than the binary's. `Nodes.AllSettings` (RFC 23's epic 2's T2.8, #4812, open)
+  returns such a row as it is, and `Read` refuses its section only. A refusal in the scan would
+  stop every section on one row, which RFC 13 §6's "stops only what it configures" forbids. A row
+  that does not decode follows the same rule. Unlike `Settings`, whose `pages` helper ends the scan
+  at the first row that fails to decode (`kvstore/tx.go:89-92` and `:100-103`),
+  `Nodes.AllSettings` is not built on that abort: it yields the failure as a pair and goes on, as
+  #4843 builds it. The pair is a row error only when its error is `entity.ErrBadRow`, wrapping the
+  cause (the codec's `ErrVersion`, `ErrTruncated` or `ErrTrailing` from `decodeSetting`, or a key
+  that does not parse), and it carries the
   `Setting`'s scope and key when the key parses. Any other error is the scan failing, which the
   plan's reconcile sketch never starts on: `Read` returns it and builds no snapshot. For a row
   error `Read` refuses the section the key names with E1's `ErrInvalid`, never echoing the bytes,
   and skips a pair whose key does not parse or that no section claims, as it skips any row it
   cannot place in a section (R18). `ErrBadRow` is declared in `pkg/metadata/entity`, beside
-  `SettingScope`, and not in kvstore: `pkg/settings` imports no store package (E1's T1.6
-  criterion), and kvstore reads
+  `entity.SettingsReader` (by #4843), and not in kvstore: `pkg/settings` imports no store package (E1's
+  T1.6 criterion), and kvstore reads
   `pkg/settings/versions.go` for T3.1's newer-schema refusal, so an import of kvstore by
   `settings.Read` would close a cycle. It is a new name E1 does not pin (T1.7 pins its three
-  packages only) and leaves the frozen signatures as they are. `AllSettings` pages as `pages`
-  does, one `View` per 256 rows (`kvstore/tx.go:73-93`), and so is not one transaction: a write
-  committed between two pages leaves the snapshot rows of two generations. That is tolerated
-  because `Read` takes the snapshot's generation, `CFGGEN`, before the first page: a write landing
-  mid-scan leaves the
-  store ahead of the generation recorded, and the next poll scans again, so a snapshot is never
-  recorded as newer than the rows it read; T3.9 measures this shape. No marker.
+  packages only) and leaves the frozen signatures as they are. `Nodes.AllSettings` pages in 256s,
+  each page its own read transaction (RFC 23 §2.3), so the walk is not one transaction: a write
+  committed between two pages leaves rows of two generations. So `Read` may return rows from
+  several page transactions, and E5's reconcile discards a walk that `CFGGEN` moved under,
+  reading it before and after `Read` (RFC 23 §2.3, the plan's reconcile sketch); the frozen
+  `Read` cannot read `CFGGEN`, its `SettingsReader` having `AllSettings` alone. T3.9 measures this
+  shape, and the plan's epic 5 tests a write landing between two pages, the discarded walk. No
+  marker.
 - **D3, the benchmark measures `Read` and `Diff`; E5 adds the rest.** Reconcile runs `Read` (RFC
   13's plan's reconcile sketch) and then `Diff`, so `Read` is measured, each section's strict
   decode and `Validate` included, not the raw scan alone. RFC 13's plan lists the
@@ -315,7 +326,7 @@ leaves the `decision:` note only.
 ## 5. Target tree
 
 ```text
-pkg/metadata/kvstore/settings.go        T3.1  DeleteSetting, AllSettings, the schema refusal
+pkg/metadata/kvstore/settings.go        T3.1  DeleteSetting, the schema refusal
 pkg/settings/section.go                 T3.2  Of, its options, the class tags, the rank
 pkg/settings/table.go                   T3.2  Table, lookup on a dot boundary
 pkg/settings/decode.go                  T3.3  the strict decode, durations, sizes
@@ -334,30 +345,21 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
 
 ### T3.1 The kvstore settings view
 
-**Subtask T3.1 estimate: 1.5 man-days.**
+**Subtask T3.1 estimate: 1 man-day.**
 
 - **Track:** B. **Depends on:** S1; E2's T2.8 (the settings schema format's registered range).
-- **Covers:** R4, R5, R6, R18.
+- **Covers:** R4, R5.
 - **Deliverables:** `DeleteSetting` and its transaction form, deleting the row its `expect` names
-  and raising `CFGGEN` in the same transaction; `AllSettings`, one prefix scan of `CFG` across
-  every scope, not built on `pages`' abort at the first bad row, a row that does not decode
-  yielded as a pair with `ErrBadRow` wrapping the cause, the `Setting`'s scope and key set when
-  the key parses, and the scan going on (D2); `PutSetting` refusing a newer `Schema` (D2); the
+  and raising `CFGGEN` in the same transaction; `PutSetting` refusing a newer `Schema` (D2); the
   `ponytail:` marker of the one `CFGGEN` key at its raise (RFC 13's plan, §4.3); the `setting` row
   of `kvstoretest/expect.go` gaining its `del`, so the stale-`expect` delete check runs on every
   kv backend, not on Badger alone.
 - **Acceptance criteria:**
   - A delete with a stale `expect` returns `ErrGenerationMismatch` and deletes nothing.
-  - `AllSettings` returns the rows of all five scopes in one scan, a newer-schema row among them,
-    and goes past a row it cannot decode.
 - **Tests:** on Badger under `t.TempDir()`: a delete raises the settings generation by one; a
-  delete of a share's row while the share is being removed is refused as `PutSetting`'s is; a scan
-  over rows at every scope returns each once; raw garbage put under a declared key's `CFG` row and
-  another under a key that does not parse each come back as an `ErrBadRow` pair, with the scope
-  and key on the first and none on the second, and every valid row after them still comes (catches
-  a scan that stops at the first bad row, as `Settings` does); a store read failing mid-scan,
-  through a fault wrapper, yields an error that is not `ErrBadRow`; a put with `Schema` one past
-  the binary's is refused and the row unchanged (catches a check on read only).
+  delete of a share's row while the share is being removed is refused as `PutSetting`'s is; a put
+  with `Schema` one past the binary's is refused and the row unchanged (catches a check on read
+  only).
 
 ### T3.2 `Of`, the table and their options
 
@@ -447,9 +449,10 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
 
 **Subtask T3.4 estimate: 2 man-days.**
 
-- **Track:** B. **Depends on:** T3.1, T3.3.
-- **Covers:** R1, R3, R4, R7, R16, R18, R31.
-- **Deliverables:** `Read(ctx, cp, table, node)`: one `AllSettings` scan, each section decoded on
+- **Track:** B. **Depends on:** T3.1, T3.3; RFC 23's epic 2's T2.8 (`Nodes.AllSettings`, #4812).
+- **Covers:** R1, R3, R4, R6, R7, R16, R18, R31.
+- **Deliverables:** `Read(ctx, r, table, node)`, `r` the `entity.SettingsReader` E1 froze, which
+  `Nodes` satisfies: one `AllSettings` scan, each section decoded on
   its own from its installation value, then the narrower override, only for the fields
   `OverrideOnly` names when the section declares it, a narrower row of another field skipped,
   neither refused nor counted, under the same `decision:` note as a row no section claims, since
@@ -475,25 +478,26 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   - One bad row refuses its section and no other.
   - `Get` on a refused section returns its error, never the default.
   - A row no section claims changes no snapshot value and no refusal.
-- **Tests:** a node override wins over the installation's value, and a delete of the override
-  brings it back; on a section declared with `OverrideOnly("Port")`, a node row of the port wins
-  and a node row of another field changes no value and refuses nothing (R3); a per-journal value
-  read for two journals; a required key unset refuses the
+- **Tests:** read through `Nodes`: a node override wins over the installation's value, and a
+  delete of the override brings it back; on a section declared with `OverrideOnly("Port")`, a node
+  row of the port wins and a node row of another field changes no value and refuses nothing (R3); a
+  per-journal value read for two journals; a required key unset refuses the
   section (RFC 13 §9's "§6 refused" at the library's layer); an invalid value refuses and no
   default is returned for it; a
-  newer-schema row refuses its section (RFC 13 §9's "§2.3 schema"); a row written at an older
+  newer-schema row, which the scan returns as it is (D2), refuses its section only (RFC 13 §9's
+  "§2.3 schema"); a row written at an older
   schema version, before a field was added, reads with that field at its default (D1); a row under
   a key no section claims, and one under the prefix of a section the test's table lacks, beside
   valid sections: every section decodes, none is refused and the snapshot holds no value for those
   keys; raw garbage put under a declared section's key refuses that section only, and raw garbage
   under a key that does not parse is skipped, every section still decoding and no error returned
   (R18); garbage in share A's row of a per-share section refuses A's value of it and share B's
-  reads (R18); a write committed between two pages, by a fault wrapper around the store that
-  fires it after the first page, leaves the snapshot's generation below the store's `CFGGEN`, so
-  the next poll scans again (D2); a store read failing mid-scan, through a fault wrapper around the
+  reads (R18); a store read failing mid-scan, through a fault wrapper around the
   store, makes `Read`
   return the error and no snapshot, no section skipped (catches a scan error taken for a bad row);
-  a row under a declared section's prefix whose key the section has no field for, as an older
+  more than 256 settings across all five scopes, every section decoding and every row read (R6;
+  catches a `Read` that stops after the first page); a row under a declared section's prefix whose
+  key the section has no field for, as an older
   binary meets a field a newer one added (D1), refuses that section and no other; a plaintext
   marker put through a `SecretRef` field of a stored row never appears in a `Read` refusal for a
   section whose `Validate` obeys `Of`'s contract (`Read` has no reference gate, R31).
@@ -524,7 +528,15 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   and a write of a key the section does not guard returns at once; `CheckTx` runs after the
   reference gate, so it never meets a plaintext in a reference field; an unknown key is printed
   with `%q` (D4); a delete of a key the section does not declare under a declared prefix passes
-  `lookup`, the role gate still applying, so a refused section is repaired (D1); a stored sibling
+  `lookup` for an `admin` only, whatever the write role of the section the prefix names, so a
+  refused section is repaired, with a `decision:` note at `lookup`: that delete skips the class
+  and bound gates, an undeclared key having no class, so during a rollback an `admin` can delete a
+  newer binary's bound key under existing content, and the key reads as the wider value or its default when the newer
+  binary returns (R5), the accepted cost; withdraw the delete-through itself, not only its
+  `admin` rule, once the plan's §6.1 row "Refusing a write that sets a field a newer binary
+  added, while it is newer than the active version" lands (D1), which names a field and not a
+  newer binary's section nested under a declared prefix, so the delete stays for that case; a
+  stored sibling
   row of a newer schema refuses
   the write with `ErrNewerSchema`, as `Read` refuses its section (R4); the `ponytail:` marker of
   the rule across components (RFC 13's plan, §4.3).
@@ -552,8 +564,10 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   passing for an `admin`; on a section declared with `OverrideOnly("Port")`, a node put of the
   port passing and a node put of another field refused with `ErrWrongScope`; a row of a key the
   section does not declare, stored under a declared
-  prefix, makes `Read` refuse the section, and an `operator`'s delete of that key passes
-  `Check` and the next `Read` reads the section, while a `viewer`'s is refused; an
+  prefix, makes `Read` refuse the section, and an `admin`'s delete of that key passes
+  `Check` and the next `Read` reads the section, while an `operator`'s, though the section is one
+  an `operator` may write, a `viewer`'s, an empty role's and an unknown one's, are refused with
+  `ErrForbidden`; an
   `operator`'s write to
   `identity.oidc.audience` refused beside an `identity` section an `operator` may write; a
   marker value in a refused write of an undeclared key, or of a value a size decode refuses, never
@@ -590,8 +604,9 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   version past this node's range refused (D6): `Of`'s `FormatVersion` option added with the gate
   and to E1's `pkg/settings` export pin, and `Check` refusing with E1's frozen `ErrFormatVersion`
   on the key it marks; D11's `decision:` note, which says that a rollback before the raise meets
-  no row it cannot decode except a field a newer binary added, which the unowned "raise-format"
-  row refuses (D1).
+  no row it cannot decode except a field a newer binary added, which the plan's unowned §6.1 row
+  "Refusing a write that sets a field a newer binary added, while it is newer than the active
+  version" refuses (D1).
 - **Acceptance criteria:** a store error from `holds` is returned as itself, never counted as a
   bound refusal. `holds` is E5's: it is a closure over the write's `tx`, so the signature stays as
   E1 froze it, and a tracked point read, so the first content write conflicts with a bound change
@@ -668,10 +683,11 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   23's node's, D5): `reason` is a name of E1's closed error list, `component` the declared section
   prefix the key's `lookup` found, and an unknown key, which has none, one fixed value, never the
   caller's key or a part of D4's printed line, so a write of an unknown key creates no series (RFC
-  25 §2.4); `BenchmarkReconcileScan`: `Read` and `Diff` at 10⁴ shares' settings on Badger under
-  `t.TempDir()`, in the `manual` tier with `ReportAllocs` (D3), the fixture seeded before
-  `b.ResetTimer()`. Rows are stored per key, so the fixture states its rows: the share's index
-  modulo 5 gives 0 to 4 share-scope sections, from typed structs the benchmark declares with five
+  25 §2.4); `BenchmarkReconcileScan`: `Read`, through `Nodes`, and `Diff` at 10⁴ shares'
+  settings on Badger under `t.TempDir()`, in the `manual` tier with `ReportAllocs` (D3), the
+  fixture seeded before `b.ResetTimer()`. Rows are stored per key, so the fixture states its
+  rows: the share's index modulo 5 gives 0 to 4 share-scope sections, from typed structs the
+  benchmark declares with five
   fields each, every field set, so a share holds 10 rows on average and 20 at most (RFC 13
   Appendix B has 19 share-scope rows) and the fixture about 10⁵ rows, and each struct's `Validate`
   has a real body, a range check per field. A dense case beside it: every share sets every field of
@@ -706,6 +722,7 @@ flowchart TD
   S1 --> T3_2["T3.2 Of, table, options"]
   T2_8(["E2's T2.8, the binary's registered ranges"]):::sync --> T3_1
   T2_8 --> T3_6
+  N2_8(["RFC 23's T2.8, Nodes.AllSettings"]):::sync --> T3_4
   T3_2 --> T3_3["T3.3 Strict decode"]
   T3_1 & T3_3 --> T3_4["T3.4 Snapshot, Read, Get"]
   T3_1 & T3_2 & T3_3 --> T3_5["T3.5 Check"]
@@ -719,15 +736,15 @@ flowchart TD
 ```
 
 T3.1 and T3.2 start at once. Checkpoint after T3.4: a section reads end to end, enough for E5 to
-build the node's table. Three subtasks wait outside the epic: T3.1 and T3.6 on E2's T2.8, and
-T3.7 on E4's S2.
+build the node's table. Four subtasks wait outside the epic: T3.1 and T3.6 on E2's T2.8, T3.4 on
+RFC 23's T2.8 and T3.7 on E4's S2.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T3.1, T3.2, T3.3 | 7 | S1, T3.1 behind E2's T2.8 | the view, the declarations and the decode, each reviewable alone |
-| 2 | T3.4, T3.8 | 3.5 | PR 1 | the read side, what reconcile calls |
+| 1 | T3.1, T3.2, T3.3 | 6.5 | S1, T3.1 behind E2's T2.8 | the view, the declarations and the decode, each reviewable alone |
+| 2 | T3.4, T3.8 | 3.5 | PR 1, RFC 23's T2.8 | the read side, what reconcile calls |
 | 3 | T3.5, T3.6, T3.9 | 7.5 | PR 2 | the write check, its gates and the series and benchmark over the finished code |
 | 4 | T3.7 | 1.5 | PR 3, S2 | the secret references once E4 seals |
 
@@ -736,19 +753,13 @@ A suggestion only: one pull request per subtask works as well.
 ## 9. Open points
 
 - **The refusal shape (D4)** is RFC 13 §6's, merged in #4486, with the two differences D4 names.
-- **The one-scan read's name and owner.** RFC 16 §3 has no read of every scope's settings; T3.1
-  builds it as E1 names it, `AllSettings`, on `ControlPlane`. Pending #4473. Open #4491 moves it:
-  a paged `Nodes.AllSettings(ctx, after SettingKey)` behind `entity.SettingsReader`, which
-  `Read` takes, built by RFC 23's epic 2 (D7, T2.8), and "no `ControlPlane` method repeats" it.
-  Open: if #4491 merges so, the `ErrBadRow` pair and D2's paging shape ride on `Nodes.AllSettings`
-  or are asked of RFC 23's epic 2, T3.1 shrinks to the delete and the schema refusal, and the
-  estimate moves; if #4491 drops the move, T3.1 stands as written.
-- **Amendments #4773 merged without.** The plan's D11 still says a newer binary writes "without
-  the field" and its `Check` sketch note says a rollback before the raise "meets no row it cannot
-  decode", both against D1 here; the sketch still passes `tx` to `holds`, against E1's frozen
-  `func(scope)`; and the "raise-format" ledger row covers the raise call, not refusing a write of a
-  field newer than the active version, which D1 and T3.6 lean on. A follow-up docs PR on the
-  plan, not opened yet, amends the three and widens that row or adds an `unowned` one beside it.
+- **The one-scan read's owner (#4491, merged).** RFC 16 §3 has no read of every scope's settings.
+  #4491 gave it to RFC 23's epic 2: a paged `Nodes.AllSettings(ctx, after SettingKey)` behind
+  `entity.SettingsReader`, which `Read` takes, and "no `ControlPlane` method repeats" it. So T3.1
+  keeps the delete and the schema refusal, and `Read`, T3.4 and T3.9 read through `Nodes`. The
+  `ErrBadRow` pair (D2) is #4812's (open); #4796, merged, removed `feat/storage-v2`'s
+  `ControlPlane.AllSettings` stubs. Open: until #4812 merges, T3.4's tests that read a scan, and
+  T3.9, wait on it.
 - **A row of undecodable bytes.** A put over it fails in the store, which reads the row to check
   `expect` (`PutSetting`, `kvstore/settings.go:107-118` on `feat/storage-v2`), and the delete
   `T3.1` builds needs the row's generation for `expect` too. How such a row is repaired is not
@@ -766,10 +777,12 @@ A suggestion only: one pull request per subtask works as well.
   the correction. Open: which epic builds it, if T2.9 keeps it.
 - **The secret kinds of the bind credential and the client secret** come from #4491, which adds
   them to RFC 16 §2.3; T3.7's test uses them.
-- **The estimate.** 19.5 man-days, the plan's figure since #4662 lifted it to the same 9 subtasks
-  and 19.5. The secret references wait for S2, so they are a subtask of their own: T3.7's 1.5 is
-  one gate, the reference check over `Secret` records read through `tx`, and six tests over sealed
-  secrets. The strict decode is tighter than its first figure, so T3.3 gains half a day. T3.9 also
+- **The estimate.** 19 man-days. #4662 lifted the plan's figure to the same 9 subtasks and 19.5,
+  and T3.1 then lost half a day, since #4491 moved `AllSettings` out of it (the one-scan read's
+  point above): 1.5 became 1, and the plan's epic 3 row and total moved with it. The secret references
+  wait for S2, so they are a subtask of their own: T3.7's 1.5 is one gate, the reference check over
+  `Secret` records read through `tx`, and six tests over sealed secrets. The strict decode is
+  tighter than its first figure, so T3.3 gains half a day. T3.9 also
   gains half a day, after the secrets pass left it for E5 (D3): its work is the benchmark's `Read`
   over every section of every share, which a fixture of several share-scope sections per share and
   the first-reconcile case make larger than the raw scan, and the closed labels of the two series.
