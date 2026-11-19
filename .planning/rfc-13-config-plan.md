@@ -868,9 +868,12 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, h
 	if err != nil {
 		return err
 	}
-	// lookup lets a delete of a key the section does not declare, under a declared prefix,
-	// through; Check takes it here, before the rank below: admin-only whatever sec.writeRole,
-	// and it skips the class and bound gates (epic 3's D1, T3.5).
+	if w.deletes() && !sec.declares(key) { // decision: the repair delete, admin-only (epic 3's D1, T3.5)
+		if rank(caller) < rank(entity.RoleAdmin) {
+			return ErrForbidden // whatever sec.writeRole: an operator could otherwise delete a newer binary's admin-only key
+		}
+		// no class for an undeclared key, so the class and bound gates below never run on it
+	}
 	if rank(caller) < rank(sec.writeRole) { // an explicit rank, never the names; an empty or unknown role ranks lowest, and Of panics on an unknown WriteRole
 		return ErrForbidden // admin-only sections, identity.directory among them, its first value included (RFC 13 Appendix B, A1)
 	}
@@ -1494,7 +1497,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | A remote store's endpoint, bucket, prefix or credential change, refused, the bucket and prefix even with no content, past RFC 13 §5.1's "no content, accepted"; "§5.2 same content" (D9, O1, §1.4) | needs the capability check (RFC 4 §4.11) and the claim (RFC 27 §2.1) | RFC 4 and RFC 27; RFC 23 plan (#4050) for its credential rotation and proven endpoint | both pieces built |
 | "§2.2 explicit initialisation"'s clause recording a new identity by a recovery import (O1, §1.4) | needs RFC 26's recovery import | RFC 26 plan | RFC 26's plan builds the import |
 | The call that raises an active version, `raise-format` (RFC 13 §5.5), and with it D11's write of the settings format's newer schema version (header, §4.3's `ponytail:`, D11, O1) | each format has one version | unowned | a format gains a second version |
-| Refusing a write that sets a field a newer binary added, while it is newer than the active version (D11's caveat; epic 3's D1, T3.4 and T3.6) | the raise call only raises the version, it does not refuse this write | unowned | a release adds a field to a section |
+| Refusing a write that sets a field a newer binary added, while it is newer than the active version (D11's caveat; epic 3's D1, T3.4, T3.5 and T3.6) | the raise call only raises the version, it does not refuse this write | unowned | a release adds a field to a section |
 | "§7 rotation"'s wrapping-key half and its reseal pass (§4.3's `ponytail:`, O1, §1.4) | a retired role key keeps every secret open | unowned | an operator must remove a role key, or a role key is compromised |
 | The namespace key table; "§5.1 encryption bound", "§7 namespace keys", "§7 chunk-ID key", "§7 key table" (header, O1, §1.4) | RFC 13 §7's material bullets are RFC 5's | RFC 5 plan | RFC 5's plan |
 | "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys |

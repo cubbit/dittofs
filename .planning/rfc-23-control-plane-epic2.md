@@ -705,8 +705,10 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   ```
   `RaiseNodeEpoch` raises `N‖node`'s `Epoch` and `idNodeEpoch` goes, with its `ponytail:` (D15).
   `AllSettings` yields a row that does not decode as a pair whose error wraps `entity.ErrBadRow`,
-  declared beside `entity.SettingsReader`, and goes on; the RFC 13 plan's epic 3 relies on it (its
-  D2). Being built in #4812 (open).
+  declared beside `entity.SettingsReader`, and goes on; the pair carries the setting's scope and key
+  when the key parses and neither when it does not, and any other error, a store read failing
+  mid-scan, is yielded as it is and not as `ErrBadRow`; the RFC 13 plan's epic 3 relies on all
+  three (its D2). Being built in #4843 (open), for #4812.
   Consumed by E3 (registration at start, the status writer, reconcile's listings), E4 (`applied`,
   the node resource) and the RFC 13 plan (its version gate writes the ranges, its `Prune` reads the
   secret versions).
@@ -724,7 +726,9 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   still finding the rest; the zero `entity.SettingKey` starting at the first (catches a cursor that
   skips or repeats); and a row that does not decode, among valid rows, yielded as a pair whose error
   wraps `entity.ErrBadRow` while the walk goes on, so one bad row stops only its own section (RFC 13
-  §6, the RFC 13 plan's epic 3 D2). R38 is held by the compiler:
+  §6, the RFC 13 plan's epic 3 D2), with the scope and key on the pair when the key parses and
+  neither when it does not, and a store read failing mid-scan, through a fault wrapper, yielded as
+  that error and not as `ErrBadRow`. R38 is held by the compiler:
   `ControlPlane` has no write of a status. No double.
 
 ### T2.9 Sessions, API tokens and sign-in counts
