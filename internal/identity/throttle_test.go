@@ -75,6 +75,19 @@ func TestThrottleRefusesBeforeTheCredential(t *testing.T) {
 	r.signsIn(t, "the right password after 10 wrong ones, every read failing", right, true)
 }
 
+// The limit's lower edge: after 9 wrong passwords the right one still signs
+// in, its credential checked, and one more wrong one then throttles the pair,
+// since a success does not reset the count. Catches a limit below 10.
+func TestThrottleChecksTheTenthAttempt(t *testing.T) {
+	r, p := ntlmServer(t, "NAS01")
+	r.ntlmUser(t, p, "alice", "1500", alicePassword)
+	right := from(ntlmStep(alicePassword, "alice", "", false), addrA)
+	r.fails(t, 9, wrong(addrA), vfserr.ErrLogonFailure)
+	r.signsIn(t, "the right password after 9 wrong ones", right, false)
+	r.fails(t, 1, wrong(addrA), vfserr.ErrLogonFailure)
+	r.signsIn(t, "the right password after 10 wrong ones and a success", right, true)
+}
+
 // Wrong passwords for one pair sent at once have at most 10 credentials
 // checked: every attempt that reaches the check is held there until each
 // of the others has either reached it too or been answered, so all of them
