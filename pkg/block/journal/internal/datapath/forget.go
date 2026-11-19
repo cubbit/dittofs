@@ -127,6 +127,13 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 	// since the set is memory the caller's next start re-makes. Overturned
 	// by a caller the journal owes a durable receipt of the forget to.
 	files := c.index.FilesClaimedBy(tag)
+	// decision: the one census taken here serves both the emptiness check
+	// above and the deferral sweep below, sound only while the open's own
+	// loss pass is the registry's single writer: no path beside it raises a
+	// deferral while a core runs, so the answer cannot go stale between
+	// its two consumers. Overturned by a second writer of the registry —
+	// any path that defers a loss outside the open's loss pass — when each
+	// consumer must take its own read.
 	deferred := c.dur.DeferredOfTag(tag)
 	if len(files) == 0 && c.set.ShareBytes(tag) == 0 && len(deferred) == 0 {
 		c.unstrand(tag)
