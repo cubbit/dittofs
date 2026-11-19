@@ -304,6 +304,18 @@ func (c *Core) appendRemoval(ctx context.Context, s *Share, id core.FileID, spec
 		// ends when its marker settles, so the loss-only flags stay zero.
 		Pair: index.Numbers{Version: v, Seq: seq},
 		Seq:  seq,
+		// Tag is part of the key of every registry the registration enters
+		// — the marker carries the share's own, and the carry that notes
+		// the record through its placement reaches for the one the tag's
+		// index check refuses a registration of zero.
+		Tag: s.Tag,
+		// The placement its append reported: a carry reaches the record
+		// through the registry, and one registered without its place fails
+		// the unit over it, for it can neither read nor move the record. A
+		// removal outlives its segment — its marker is carried forward by
+		// whatever pass reclaims that segment — so the registration must
+		// carry the record's own place for that carry to reach it.
+		Loc: pl.Loc,
 	})
 	// decision: the removal is applied to the index whatever the allowance
 	// says, past its ceiling if it must be. The pre-check above answers the

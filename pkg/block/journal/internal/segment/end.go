@@ -127,6 +127,12 @@ func (s *Stream) endLocked(cause EndCause, err error) (core.SegmentID, bool) {
 	if s.ending == nil {
 		s.ending = &endRec{id: id, cause: cause, err: err, next: s.next, stopped: s.stopped != nil}
 		s.inflight.Add(1)
+		// The owed end is recorded here, in the step that owns the end and
+		// starts the notifier, not by the notifier: the window this end
+		// opens is the consumer's to describe, but from the end itself
+		// until the take a reader of the segment cannot see any of it, so
+		// the set carries the end until then.
+		s.set.OweEnd(id)
 		return id, true
 	}
 	return id, false

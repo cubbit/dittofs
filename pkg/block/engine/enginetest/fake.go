@@ -47,6 +47,7 @@ type FakeJournal struct {
 	held          map[journal.ShareTag]int64 // held bytes per tag
 	used          map[journal.ShareTag]int64 // record bytes appended per tag, never given back
 	reservedBytes int64                      // bytes held by reservations not yet closed
+	reservedTag   map[journal.ShareTag]int64 // the same per share, the real journal's ReservedByTag
 	offloaded     map[journal.ShareTag]int64 // SetOffloaded's bytes per tag, held and not dirty
 	stranded      []journal.ShareTag         // Strand's tags, in order; forgotten at a reopen
 	losses        []journal.LossEvent
@@ -1175,6 +1176,10 @@ func (h *FakeHandle) Reserve(n int64, writes int) (engine.Reservation, error) {
 		return nil, err
 	}
 	j.reservedBytes += n
+	if j.reservedTag == nil {
+		j.reservedTag = map[journal.ShareTag]int64{}
+	}
+	j.reservedTag[h.tag] += n
 	return &fakeReservation{h: h, left: writes, n: n}, nil
 }
 
@@ -1228,6 +1233,9 @@ func (r *fakeReservation) Close() error {
 	r.closed = true
 	r.h.j.mu.Lock()
 	r.h.j.reservedBytes -= r.n
+	if r.h.j.reservedTag != nil {
+		r.h.j.reservedTag[r.h.tag] -= r.n
+	}
 	r.h.j.mu.Unlock()
 	return nil
 }

@@ -126,15 +126,30 @@ func (e *Engine) scopeOf(b *binding, r refusal) (journal.RepackScope, []*binding
 	return journal.RepackScope{}, bound
 }
 
-// repack runs one repack pass over scope, spending one repack reserve of
-// bytes: the journal sizes it to at least a segment's live payload (RFC 8
-// §10.3). The result of the pass is not read: what is left to free is read
-// from Stats afterwards.
-func (e *Engine) repack(ctx context.Context, b *binding, scope journal.RepackScope) error {
+// repack runs one repack pass over scope. A pass the share-limit figures
+// name empty runs at a budget of no bytes — the journal runs no unit, seals
+// nothing and touches no segment, paying nothing of the caller's deadline,
+// which is why a call that answers nothing can still be worth making — and
+// every other pass runs at one repack reserve of bytes, which the journal
+// sizes to at least a segment's live payload (RFC 8 section 10.3). The result
+// of the pass is not read: what is left to free is read from Stats
+// afterwards.
+func (e *Engine) repack(ctx context.Context, b *binding, r refusal, scope journal.RepackScope) error {
 	b.gc.cap.passes.Add(1)
 	defer b.gc.cap.passes.Add(-1)
 
-	_, err := b.j.Repack(ctx, b.j.Stats().RepackReserveBytes, scope)
+	// The share's own limit charges its first pass with a budget of no
+	// bytes when the pre-sync figures read empty: a scope the figures name
+	// empty is one no pass can relieve, so the pass runs for its own
+	// contract — its error is the ladder's to answer — and seals and copies
+	// for nothing, paying nothing of the caller's deadline. A pass with a
+	// real candidate runs at the repack reserve as before.
+	budget := b.j.Stats().RepackReserveBytes
+	if r.limit == journal.LimitShare && e.figuresEmpty(b, r) {
+		budget = 0
+	}
+
+	_, err := b.j.Repack(ctx, budget, scope)
 
 	return err
 }
@@ -196,11 +211,11 @@ func (e *Engine) relieve(ctx context.Context, b *binding, r refusal, at *step) e
 
 	switch *at {
 	case stepNone:
-		err = e.repack(ctx, b, scope)
+		err = e.repack(ctx, b, r, scope)
 		*at = stepRepack
 	default:
 		if err = e.syncScope(ctx, b, bound); err == nil || ctx.Err() == nil {
-			serr := e.repack(ctx, b, scope)
+			serr := e.repack(ctx, b, r, scope)
 			if err == nil {
 				err = serr
 			}
@@ -215,10 +230,12 @@ func (e *Engine) relieve(ctx context.Context, b *binding, r refusal, at *step) e
 	case errors.Is(err, journal.ErrClosed), ctx.Err() != nil:
 		return err
 	case errors.Is(err, journal.ErrNotImplemented):
-		// ponytail: the journal's Repack is not built and it reports no
-		// UnreclaimedEndedBytes yet (RFC 1 §10 questions 5 and 6), so the refusal
-		// keeps the interim retry-later answer instead of ending no space by a
-		// figure of 0. Withdraw once Repack seals and reports the figure.
+		// decision: a journal that answers ErrNotImplemented from Repack —
+		// a zero Journal, or the fake's unmodelled segment free — serves no
+		// UnreclaimedEndedBytes a settled answer could read, so the refusal
+		// keeps the interim retry-later answer instead of ending no space by
+		// a figure of 0. Withdrawn when every journal that can refuse a
+		// write also reports the figure.
 		return err
 	default:
 		e.stepFailed(b, err)
@@ -264,6 +281,42 @@ func (e *Engine) left(b *binding, r refusal) int64 {
 	}
 
 	return st.UnreclaimedEndedBytes
+}
+
+// figuresEmpty answers whether the share-limit figures of b's journal name
+// nothing the relief could act on, read before the scope's own sync runs
+// and used only to charge the relief's pass: an empty read sends the pass
+// to the journal at a budget of no bytes, a call that keeps the ladder's
+// failing-step and dead-sync contracts without their cost. The figures and
+// what each guards against:
+//
+//   - the share's unreclaimed bytes, beyond zero, name dead weight in any
+//     segment — released extents, superseded records — that a pass could
+//     retire;
+//   - the share's reservations still in flight name bytes whose room the
+//     caller may get by landing or rolling one back without a free, so the
+//     figures cannot yet rule anything freable;
+//   - the share's ended candidacy, the record bytes charged in segments no
+//     append can reach, names the live bytes a pass would cycle;
+//   - the repack reserve below twice the share's live payload means a pass
+//     cannot converge: its copies would stall charged in sealed segments,
+//     the stall a share looping a half-open batch against its own limit
+//     rides.
+//
+// decision: the check answers the share's own limit alone. A journal-wide
+// refusal with its unreclaimed bytes all in active segments is served by the
+// sync-then-repack ladder, so a zero read of the journal's own figure does
+// not predict that verdict; extending the check there needs the journal-side
+// post-sync figure that the active-segments row's serving path itself is the
+// evidence for. Withdrawn when the journal-wide limits share the prediction.
+func (e *Engine) figuresEmpty(b *binding, r refusal) bool {
+	st := b.j.Stats()
+	figs, booked := st.Shares[b.share.Tag]
+	if !booked || figs.UnreclaimedBytes > 0 || figs.ReservedBytes > 0 || e.left(b, r) > 0 ||
+		st.RepackReserveBytes < 2*figs.HeldBytes {
+		return false
+	}
+	return true
 }
 
 // raiseFull raises journal_full for a refusal by r of b's journal, with what

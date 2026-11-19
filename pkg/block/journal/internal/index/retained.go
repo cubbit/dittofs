@@ -182,13 +182,18 @@ func (s *retainedSet) drop(e core.Extent, match func(Retained) bool, out []Retai
 
 // repoint moves the parts inside e of the pieces retained from record from to
 // record to, whose payload holds e's bytes from skip on, keeping their
-// versions, bits and superseders: repack carries a retained record forward
-// like held content, and a re-appended record is the same record in a new
-// place. It returns the number of pieces moved.
-func (s *retainedSet) repoint(e core.Extent, from, to RecordAt, skip uint32) int {
+// versions, bits and superseders, and answering at to under seq, the number
+// the moved parts name there — a fresh one for a repack copy, each part's own
+// for a re-appended record, whose copy is the same record in a new place
+// (held.repoint's rule). repack carries a retained record forward like held
+// content. It returns the number of pieces moved.
+func (s *retainedSet) repoint(e core.Extent, from, to RecordAt, skip uint32, seq core.Seq) int {
 	n := 0
 	s.edit(e, func(r Retained) bool { return r.Record == from }, func(r Retained) (Retained, bool) {
 		r.Record, r.Skip = to, skip+uint32(r.Extent.Off-e.Off)
+		if seq != 0 {
+			r.Seq = seq
+		}
 		n++
 		return r, true
 	})

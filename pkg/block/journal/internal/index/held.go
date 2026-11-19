@@ -489,21 +489,24 @@ func (s *heldSet) unmark(e core.Extent, newest core.Version) int {
 }
 
 // repoint moves the pieces inside e held from record from to record to, whose
-// payload holds e's bytes from skip on, keeping their extents, versions, bits
-// and sequence numbers. A record re-appended after a failed sync is the same
-// record in a new place, so its skips do not change; a repack copy holds only
-// the extents it copies, so they do. Pieces of one record moved into one record
+// payload holds e's bytes from skip on, keeping their extents and versions
+// and skipping to where the move names. seq is the sequence number the moved
+// pieces answer at to — a repack copy carries a fresh number of its own, which
+// a read's header check demands the pieces name; zero keeps each piece's own
+// number, the move of a record re-appended after a failed sync, whose copy is
+// the same record at a new place. Pieces of one record moved into one record
 // join as one entry; pieces of records with other sequence numbers stay apart.
 // Only pieces of from move, so carrying forward a header-only record, which no
 // piece is held from, changes nothing. It returns the number of pieces moved.
-//
-// A repoint keeps each piece's seq because a copy is the same record.
-func (s *heldSet) repoint(e core.Extent, from, to RecordAt, skip uint32) int {
+func (s *heldSet) repoint(e core.Extent, from, to RecordAt, skip uint32, seq core.Seq) int {
 	s.work = s.work[:0]
 	s.visit(e, func(p Piece) bool {
 		if p.Record == from {
 			q := clip(p, e)
 			q.Record, q.Skip = to, skip+uint32(q.Extent.Off-e.Off)
+			if seq != 0 {
+				q.Seq = seq
+			}
 			s.work = append(s.work, q)
 		}
 		return true

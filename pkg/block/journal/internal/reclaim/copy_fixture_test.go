@@ -75,9 +75,24 @@ type copyFixture struct {
 	clock    core.Clock
 }
 
-// newCopyFixture builds the core, waits for its spare pool to settle, and
-// closes it when the test ends.
+// newCopyFixture builds the core with no tracer, waits for its spare pool to
+// settle, and closes it when the test ends.
 func newCopyFixture(t *testing.T) *copyFixture {
+	t.Helper()
+	return newCopyFixtureTraced(t, nil)
+}
+
+// newCopyFixtureTraced is newCopyFixture over a core whose tracer is tracer,
+// for a test that reads the spans the core emits; nil traces nothing.
+func newCopyFixtureTraced(t *testing.T, tracer core.Tracer) *copyFixture {
+	t.Helper()
+	return newCopyFixtureBounded(t, tracer, 0, copyHeadroomRecords)
+}
+
+// newCopyFixtureBounded is newCopyFixtureTraced over a journal whose
+// footprint maximum is maxBytes (zero: unbounded) and whose headroom is
+// headroomRecords records.
+func newCopyFixtureBounded(t *testing.T, tracer core.Tracer, maxBytes int64, headroomRecords int) *copyFixture {
 	t.Helper()
 	dir := t.TempDir()
 	seam, err := kit.NewSeam(dir)
@@ -93,13 +108,14 @@ func newCopyFixture(t *testing.T) *copyFixture {
 	c, err := datapath.New(datapath.Deps{
 		FS:              seam.FS(),
 		Clock:           clock,
+		Tracer:          tracer,
 		Log:             slog.New(slog.DiscardHandler),
 		Dir:             dir,
 		Identity:        copyIdentity,
 		Streams:         copyStreams,
 		SegmentCap:      copySegCap,
-		MaxBytes:        0,
-		HeadroomRecords: copyHeadroomRecords,
+		MaxBytes:        maxBytes,
+		HeadroomRecords: headroomRecords,
 		Targets:         segment.Targets{Content: 1, Reserve: 1, Headroom: 1},
 	}, datapath.State{Index: ix, Counters: counters})
 	if err != nil {
@@ -176,33 +192,60 @@ func (f *copyFixture) plant(t *testing.T, tag core.ShareTag, file core.FileID, p
 	return rec, seq, v
 }
 
-// plantAt appends one write record covering x of file, under the version the
-// caller names, and publishes it through the index the way the writer's path
-// does: the file's append domain held, a sequence number issued, the record
-// appended and its entry retained, the held delta accounted. The set's
-// per-tag ledger needs no hand-planting here: the stream's own append
-// accounts the record's bytes on the share's row.
+// plantAt appends the write covering x of file, under the version the caller
+// names, and publishes it through the index the way the writer's path does:
+// the file's append domain held, a sequence number issued per placement, each
+// record appended and its piece's entry retained, the held deltas accounted.
+// A record the active segment cannot hold whole lands as its own record over
+// the bytes it placed, published for them alone, and the rest appends after
+// the roll — so no planted piece ever names more payload than its record
+// holds. The returned record and sequence number are the first placement's.
+// The set's per-tag ledger needs no hand-planting here: the stream's own
+// append accounts the record's bytes on the share's row.
 func (f *copyFixture) plantAt(t *testing.T, tag core.ShareTag, file core.FileID, x core.Extent, payload []byte, mtime int64, v core.Version) (index.RecordAt, core.Seq) {
 	t.Helper()
 	unlock := f.core.Domains().Lock(file)
 	defer unlock()
-	seq, err := f.counters.NextSeq()
-	if err != nil {
-		t.Fatalf("NextSeq: %v", err)
+	stream := f.core.Streams().For(file)
+	var first index.RecordAt
+	var firstSeq core.Seq
+	// The writer's own split loop: a record that does not fit what remains
+	// of the active segment lands as its own record over the bytes it
+	// placed, published for them alone, and the rest appends after the
+	// roll. A piece published for more than its record holds would have a
+	// later repack stitch it past the payload.
+	var placed int64
+	for placed < int64(len(payload)) {
+		seq, err := f.counters.NextSeq()
+		if err != nil {
+			t.Fatalf("NextSeq: %v", err)
+		}
+		rest := payload[placed:]
+		p, err := stream.Append(format.RecordHeader{
+			Kind: format.KindWrite, File: file,
+			Extent: core.Extent{Off: x.Off + placed, Len: int64(len(rest))},
+			Seq:    seq, Version: v, Tag: tag,
+		}, format.RecordBody{Payload: rest, MTime: mtime})
+		if err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+		if p.N <= 0 {
+			t.Fatalf("Append placed no byte of the remaining %d of the write on file %v", len(rest), file)
+		}
+		rec := index.RecordAt{Segment: p.Loc.Segment, Offset: uint32(p.Loc.Off)}
+		hd, err := f.ix.WriteRetain(tag, file, index.Placed{
+			Extent: core.Extent{Off: x.Off + placed, Len: p.N}, Record: rec, Version: v,
+		}, seq)
+		if err != nil {
+			t.Fatalf("WriteRetain: %v", err)
+		}
+		f.core.Account(hd)
+		if placed == 0 {
+			first, firstSeq = rec, seq
+		}
+		placed += p.N
 	}
-	p, err := f.core.Streams().For(file).Append(format.RecordHeader{
-		Kind: format.KindWrite, File: file, Extent: x, Seq: seq, Version: v, Tag: tag,
-	}, format.RecordBody{Payload: payload, MTime: mtime})
-	if err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	rec := index.RecordAt{Segment: p.Loc.Segment, Offset: uint32(p.Loc.Off)}
-	hd, err := f.ix.WriteRetain(tag, file, index.Placed{Extent: x, Record: rec, Version: v}, seq)
-	if err != nil {
-		t.Fatalf("WriteRetain: %v", err)
-	}
-	f.core.Account(hd)
-	return rec, seq
+	return first, firstSeq
 }
 
 // sealSource seals the segment the file's records landed in the way the

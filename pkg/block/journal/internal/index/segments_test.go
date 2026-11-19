@@ -243,8 +243,8 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 							}
 						}
 						for _, from := range froms {
-							f.held.repoint(whole, from, rec(to, 0), 0)
-							f.retained.repoint(whole, from, rec(to, 0), 0)
+							f.held.repoint(whole, from, rec(to, 0), 0, 0)
+							f.retained.repoint(whole, from, rec(to, 0), 0, 0)
 						}
 						return nil
 					})
@@ -483,8 +483,8 @@ func TestSegmentBytesNeverDropsBelowWalkWhileAMutationRuns(t *testing.T) {
 			default:
 			}
 			_, _ = fs.update(id, func(f *file) error {
-				f.retained.repoint(ext(65536, 8), rec(seg2, 0), rec(seg2, 512), 0)
-				f.retained.repoint(ext(65536, 8), rec(seg2, 512), rec(seg2, 0), 0)
+				f.retained.repoint(ext(65536, 8), rec(seg2, 0), rec(seg2, 512), 0, 0)
+				f.retained.repoint(ext(65536, 8), rec(seg2, 512), rec(seg2, 0), 0, 0)
 				return nil
 			})
 		}

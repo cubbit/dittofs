@@ -301,15 +301,16 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // made, in the same delivery:
 //
 // decision: the set's retire observer — and the retirer's retired hook on
-// the unlink's own path — fires once the segment has left the set but
-// before the directory sync that would make the unlink durable (a recycle
-// has made its removal durable before its hooks run), and a crash that undoes the
-// retirement must find the tracker's registrations intact — the surviving
-// file rebuilds its records, and what a rebuild is owed cannot have been
-// released on an unlink nothing made durable. A drop that preceded the
-// unlink's durability would bring the retired segment back without the
-// removal record that covered it, and a failed directory sync reaches
-// neither half. A caller wiring either earlier hook instead owns a
+// the unlink's own path — fires once the segment has left the set, after
+// the directory sync has returned but whatever it answered: only the
+// durable-retirement signal carries the sync's success, and a crash that
+// undoes the retirement must find the tracker's registrations intact — the
+// surviving file rebuilds its records, and what a rebuild is owed cannot
+// have been released on an unlink nothing made durable (a recycle has
+// made its removal durable before its hooks run). A drop that rode the
+// hook instead of the signal would bring the retired segment back without
+// the removal record that covered it, and a failed directory sync reaches
+// neither half. A caller wiring either signal-less hook instead owns a
 // durability order the observer neither observes nor controls — safe only
 // where that caller has made removal durable before the Retire it rides.
 //

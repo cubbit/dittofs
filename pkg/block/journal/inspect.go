@@ -130,13 +130,28 @@ func dirtySeed(ix *index.Index) []index.HeldDelta {
 	return out
 }
 
-// Segments returns the accounting of every segment the journal owns. Stats
-// gives the totals; this is the breakdown behind them.
+// Segments returns the accounting of every segment the journal owns, in
+// segment order, and after them the damaged segments already retired, each
+// kept until the journal closes. Stats gives the totals; this is the
+// breakdown behind them.
 //
-// decision: the per-segment accounting is not built yet, so Segments answers
-// nil until the step that maintains it lands.
+// decision: the per-segment unreclaimed figure is kept off the rows. RFC 1
+// §4.4 does not list it, so the engine reads a share's figure through Stats.
+// Overturned when §4.4 names it, and then SegmentInfo exports it.
 func (in Inspector) Segments() []SegmentInfo {
-	return nil
+	if in.c.Closed() {
+		return nil
+	}
+	rows := in.c.Segments()
+	out := make([]SegmentInfo, len(rows))
+	for i, r := range rows {
+		out[i] = SegmentInfo{
+			ID: r.ID, Stream: r.Stream, Sealed: r.Sealed, Failed: r.Failed,
+			Allocated: r.Allocated, HeldBytes: r.Held, RetainedBytes: r.Retained,
+			Damaged: r.Damaged, Retired: r.Retired, Suspect: r.Suspect, UnreadRanges: r.Unread,
+		}
+	}
+	return out
 }
 
 // Verify checks the index against the segments and reports what does not
@@ -233,6 +248,18 @@ type SegmentInfo struct {
 
 	// Damaged reports that the segment holds records that do not verify.
 	Damaged bool
+
+	// Retired reports a damaged segment that was retired. Its row stays until
+	// the journal closes, so the damage stays counted; it reports nothing
+	// else.
+	Retired bool
+
+	// Suspect reports that a read of the segment failed and has not read
+	// since, and UnreadRanges are the ranges that failed, each an offset and
+	// a length, in offset order. Both clear when a read of the range
+	// returns.
+	Suspect      bool
+	UnreadRanges []SegmentRange
 }
 
 // VerifyReport is what Verify found.

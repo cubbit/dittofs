@@ -202,6 +202,13 @@ type Capacity struct {
 	// the baseline back.
 	retiredSeen map[core.ShareTag]int64
 
+	// copies is the repack copies' record bytes per source segment and tag,
+	// held out of the share tallies until the source's retirement hands
+	// them to the tag's figure, and copyHeld their sum per tag. Both are
+	// guarded by mu and created on first use; see copies.go.
+	copies   map[core.SegmentID]map[core.ShareTag]int64
+	copyHeld map[core.ShareTag]int64
+
 	// grantedRoom is the room bytes granted per stream and not yet
 	// appended: the room a later take sees is what remains after these.
 	grantedRoom map[int]int64
@@ -868,6 +875,9 @@ func (c *Capacity) seedFor(tag core.ShareTag) {
 	if over := c.retiredSeen[tag] - retired; over > 0 {
 		settled -= over
 	}
+	// The copies a pass has landed and not yet handed over are in the set's
+	// settled figure but are not the share's until their source goes.
+	settled -= c.copyHeld[tag]
 	c.shareTally[tag] = settled
 	if c.retiredSeen[tag] < retired {
 		c.retiredSeen[tag] = retired

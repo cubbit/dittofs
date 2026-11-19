@@ -101,8 +101,12 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 		return SealResult{}, err
 	}
 
-	// Step 1: every record durable.
+	// Step 1: every record durable. An end here owes its event: the caller
+	// hands it over on its own goroutine, so the set carries the end from
+	// this step until the take, and an end recovery owns — which sends no
+	// event — clears it with the removal of its emptied segment instead.
 	if err := ref.Sync(); err != nil {
+		set.OweEnd(id)
 		if unerr := set.End(id); unerr != nil {
 			err = errors.Join(err, unerr)
 		}
@@ -123,12 +127,14 @@ func WriteSeal(set *Set, ref Ref, identity core.JournalID, id core.SegmentID,
 	earlyEnd := footerOff + int64(len(footer)) + format.TrailerSize
 
 	if err := writeSealSteps(ref, markerAndFooter, footer, marker, footerOff, early, set.cap); err != nil {
+		set.OweEnd(id)
 		if unerr := set.End(id); unerr != nil {
 			err = errors.Join(err, unerr)
 		}
 		return SealResult{}, fmt.Errorf("%w: writing the marker, the footer and the trailer: %w", ErrSegmentEnded, recordsDurable{err})
 	}
 	if err := ref.Sync(); err != nil {
+		set.OweEnd(id)
 		if unerr := set.End(id); unerr != nil {
 			err = errors.Join(err, unerr)
 		}

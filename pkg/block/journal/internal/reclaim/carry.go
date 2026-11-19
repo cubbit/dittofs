@@ -16,13 +16,17 @@ import (
 
 // CarriedRec is one header-only record a carry placed: its registration,
 // whose Seg and Loc name the copy's own place, beside the index place of the
-// copy the pass's later repoint and retirement steps read. The Rec the
-// copy registered keeps every field the source carried — the kind, file,
-// extent, pair, sequence number and tag, the loss record's named number and
-// flags — only Seg and Loc moving to the placement.
+// copy the pass's later repoint and retirement steps read. From names the
+// record's original place in the source, whose index entries — none for a
+// header-only kind today, whatever the index holds there tomorrow — the pass's
+// repoint moves to To. The Rec the copy registered keeps every field the
+// source carried — the kind, file, extent, pair, sequence number and tag, the
+// loss record's named number and flags — only Seg and Loc moving to the
+// placement.
 type CarriedRec struct {
-	Rec Rec
-	To  index.RecordAt
+	Rec  Rec
+	From index.RecordAt
+	To   index.RecordAt
 }
 
 // CarryResult is what one Carry placed. A carry appends and registers each
@@ -405,7 +409,11 @@ func (c *Copier) placeCarried(rec Rec, h format.RecordHeader, body format.Record
 			return CarriedRec{}, fmt.Errorf("reclaim: noting the carried record of seq %d: %w", rec.Seq, err)
 		}
 	}
-	return CarriedRec{Rec: cp, To: index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}}, nil
+	return CarriedRec{
+		Rec:  cp,
+		From: index.RecordAt{Segment: rec.Loc.Segment, Offset: uint32(rec.Loc.Off)},
+		To:   index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
+	}, nil
 }
 
 // relearnReleased re-asks, for the pass about to carry seg, every

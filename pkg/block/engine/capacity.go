@@ -378,10 +378,27 @@ func (e *Engine) relieved(
 
 	if *at == stepLast {
 		others := b.gc.cap.passes.Load() > 0
+		answer := settled(r, e.left(b, r), others)
 
-		return e.answeredAs(b, err, r, settled(r, e.left(b, r), others)), false
+		// A reservation still in flight can hand the caller room without a
+		// free — its write lands, or it rolls back — so a share holding one
+		// never settles as no space: the refusal stays a delay until the
+		// reservation's own outcome does something (RFC 8 section 10.2,
+		// the table's first row).
+		if answer.noSpace && r.limit == journal.LimitShare &&
+			b.j.Stats().Shares[b.share.Tag].ReservedBytes > 0 {
+			answer = row{delay: vfserr.DelayCapacity}
+		}
+
+		return e.answeredAs(b, err, r, answer), false
 	}
 
+	// The share's own limit reads the figures between the last step's sync
+	// and its repack: the step's sync runs first — the figures it leaves
+	// empty name nothing a repack could relieve, so the step answers no
+	// space at once and the repack never runs — and its verdict carries the
+	// sync's outcome to the repack's own guard below, keeping the
+	// no-repack-after-a-dead-sync rule.
 	if serr := e.relieve(ctx, b, r, at); serr != nil {
 		if errors.Is(serr, journal.ErrClosed) {
 			return e.journalErr(serr), false

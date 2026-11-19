@@ -269,6 +269,14 @@ func (x *fixtureTarget) Crash(kind model.CrashKind, arg uint64) error {
 		if err != nil {
 			x.tb.Fatalf("fixture: crash: %v", err)
 		}
+		// The sequences are handed the journal as the fixture's own open
+		// hands a test one, its spare pool at its target: a reopen adopts
+		// the spares the disk holds and remakes the ones it does not, and a
+		// sequence run before the remake lands draws on the headroom or the
+		// reserve and is refused a segment the pool is still making — a
+		// capacity state the model has no rule for. The wait is the
+		// target's, not a rule the model owes the journal: no operation the
+		// sequences drive names it.
 		x.f.WaitSpares()
 	}))
 }
@@ -276,6 +284,7 @@ func (x *fixtureTarget) Crash(kind model.CrashKind, arg uint64) error {
 func (x *fixtureTarget) Reopen() error {
 	return reopened(x.tb.guard(func() {
 		x.f.Reopen()
+		// As for a crash: the pool settles before the sequence runs on.
 		x.f.WaitSpares()
 	}))
 }

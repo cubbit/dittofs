@@ -263,7 +263,7 @@ func retainedOps(t *testing.T, data []byte) {
 				break
 			}
 			from, to, skip := kept[i].record, fresh(), uint32(take())
-			f.retained.repoint(e, from, to, skip)
+			f.retained.repoint(e, from, to, skip, 0)
 			for j := range kept {
 				if b := &kept[j]; b.record == from && inside(b.off, e) {
 					b.record, b.at = to, skip+uint32(b.off-e.Off)

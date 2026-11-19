@@ -1237,6 +1237,9 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	if err != nil {
 		return s.endTaken(id, Ref{}, err)
 	}
+	// The set learns whose segment this is outside the append lock: its own
+	// lock ranks above that one's, so it is never taken under it.
+	s.set.SetStream(id, s.no)
 	buf := format.AppendSegmentHeader(nil, format.SegmentHeader{
 		Identity:    s.identity,
 		ID:          id,
@@ -1606,6 +1609,25 @@ func (s *Stream) Seal(early bool) (SealResult, error) {
 	return s.sealLocked(early)
 }
 
+// ErrNotOpenSegment is the refusal of SealOpen when the segment named is not
+// the one the stream appends to: the stream rolled, sealed or ended since the
+// caller looked. Nothing was written.
+var ErrNotOpenSegment = errors.New("segment: the segment is not the stream's open one")
+
+// SealOpen is Seal for a caller that decided on one segment: the check that id
+// is the stream's open segment and the seal's own move to sealing happen under
+// one hold of the append lock, so a roll between the caller's look and this
+// call can never turn the seal onto the successor. Any other segment is
+// refused with ErrNotOpenSegment.
+func (s *Stream) SealOpen(id core.SegmentID, early bool) (SealResult, error) {
+	s.appendMu.Lock()
+	if s.closed || s.id != id || s.sealState != sealOpen {
+		s.appendMu.Unlock()
+		return SealResult{}, ErrNotOpenSegment
+	}
+	return s.sealLocked(early)
+}
+
 // sealLocked is Seal under the append lock: the caller enters holding
 // appendMu and this body releases it on every path, exactly as Seal does,
 // so a caller that has the lock — the idle seal's check-and-take below —
@@ -1930,6 +1952,18 @@ func (s *Stream) AcquireRead(seg core.SegmentID) (Ref, error) {
 		return Ref{}, ErrStreamClosed
 	}
 	return s.cache.Acquire(seg)
+}
+
+// OpenSegment returns the segment the stream appends to, when it takes
+// appends: false for a stream that has not taken a segment, a closed one, or
+// one whose segment is sealing, sealed or ended.
+func (s *Stream) OpenSegment() (core.SegmentID, bool) {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+	if s.closed || s.id == 0 || s.sealState != sealOpen {
+		return 0, false
+	}
+	return s.id, true
 }
 
 // Identity returns the journal identity the stream seeds its records'

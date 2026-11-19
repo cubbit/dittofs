@@ -120,3 +120,10 @@ const SpanOpenSeal SpanOp = "open.seal"
 // the work opens it once more over the work. It ends with the error of the
 // emptying, nil when every ended segment is emptied.
 const SpanOpenEmptying SpanOp = "open.emptying"
+
+// SpanRepackPass covers one repack pass the caller asked for: the units it
+// ran, over one source segment each, from the selection to the retirement.
+// Its attributes name what the pass did — the segments, the bytes its copies
+// moved and the storage its retirements freed — and it ends with the
+// pass's own error, nil when every unit it began completed.
+const SpanRepackPass SpanOp = "repack_pass"

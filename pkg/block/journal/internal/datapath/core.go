@@ -3,6 +3,7 @@ package datapath
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/unread"
 )
 
 // Deps is what a Core is built over: the production wiring only.
@@ -247,13 +249,16 @@ type Core struct {
 	retirer       *segment.Retirer    // the retirement executor
 	liveness      *reclaim.Tracker    // the segment liveness the retirement worker asks
 	retiring      *reclaim.Worker     // the retirement worker that turns liveness into retirements
+	repack        *reclaim.Pass       // the repack pass, over the same pieces the worker serves
 	openPayload   bool                // the set carried the open registration Continue asks the credential of
+	unread        *unread.Set         // the records no read returned, kept for the per-segment rows
 	sealer        *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
 
 	held, dirty, retained atomic.Int64
 	writtenBytes          atomic.Uint64
 	filledBytes           atomic.Uint64
 	fillRefused           atomic.Uint64
+	repackedBytes         atomic.Uint64
 	tracer                core.Tracer
 	accountSpy            func(index.HeldDelta)
 
@@ -344,6 +349,22 @@ type Core struct {
 	// mutex of the strand set's own.
 	strandMu sync.Mutex
 
+	// forgetting is the set of tags whose Forget path is running — the mark
+	// that path sets on the registry before its barrier and clears when it
+	// returns. Its reader, isForgetting, is what the reclamation pass's
+	// copies consult under a file's append domain; the setter belongs to the
+	// Forget path, which does not exist yet, so the set lands empty and
+	// reads that way. See shares.go.
+	forgetting map[core.ShareTag]struct{}
+	// decision: forgettingMu is a leaf. It guards the mark set's lookups and
+	// replacements alone, holding nothing across them and taking nothing
+	// under them: nothing that consults the mark — a copy reading it under
+	// the file's append domain it already holds, the Forget path's setter —
+	// is waited on by it, and no path of the core takes a ranked lock while
+	// it is held. Withdraw it if a creator of the mark ever calls into the
+	// core with the mutex taken.
+	forgettingMu sync.Mutex
+
 	// closedFlag is set the moment Close begins, so a call that takes no
 	// context can refuse at once; the work itself runs under closeOnce.
 	closedFlag atomic.Bool
@@ -429,7 +450,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, shareHook: o.shareHook, afterSwap: o.afterSwap, rec: o.recorder}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, shareHook: o.shareHook, afterSwap: o.afterSwap, rec: o.recorder, forgetting: make(map[core.ShareTag]struct{})}
 	tbl := newFileLocks()
 	if c.rec != nil {
 		tbl.SetRecorder(c.rec)
@@ -477,6 +498,11 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		Counters: c.counters,
 		// The durability layer hands the delta Lose returns to Account itself.
 		MarkLoss: c.index.Lose,
+		// The owed ends: a segment that ended is answered window-open by the
+		// set until this layer takes its event, so a pass that reaches a
+		// newly failed segment between its end and the take declines it.
+		EndOwed: state.Set.EndOwed,
+		TakeEnd: state.Set.TakeEnd,
 		// Each loss record counts live where it landed: a segment holding
 		// one stays held until the record's own liveness ends.
 		LossRegistered: func(l durability.Loss, seq core.Seq, at segment.Location) {
@@ -488,6 +514,13 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 				Pair:  index.Numbers{Version: l.Version, Seq: seq},
 				Seq:   seq,
 				Named: l.Seq,
+				// The share whose content the loss names, part of the key of
+				// every registry the registration enters, and the place its
+				// append reported: a carry reaches the record through the
+				// registry, and one registered without either fails the unit
+				// over it, for it can neither read nor move the record.
+				Tag: l.Share,
+				Loc: at,
 				// The flags that pick the loss's own drop rule.
 				Synced:     l.Synced,
 				Superseded: l.Reason == core.LossSuperseded,
@@ -659,12 +692,13 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		// decision: the retired segment reaches the liveness tracker
 		// through this durable-retirement signal alone, not through the
 		// retirer's retired hook or the set's retire observer: on the
-		// unlink's own path those fire before the unlink's directory sync
-		// (a recycle has made its removal durable before its hooks run)
-		// — and a crash that undoes the retirement must find the
-		// tracker's registrations intact — the
-		// surviving file rebuilds its records, and what a rebuild is owed
-		// cannot have been released on an unlink nothing made durable.
+		// unlink's own path those fire after the unlink's directory sync
+		// has returned, whatever it answered — only this signal carries
+		// the sync's success (a recycle has made its removal durable
+		// before its hooks run) — and a crash that undoes the retirement
+		// must find the tracker's registrations intact — the surviving
+		// file rebuilds its records, and what a rebuild is owed cannot
+		// have been released on an unlink nothing made durable.
 		// Both halves of the tracker's own gate ride the signal: the
 		// files the call carries are the index's own, not the tracker's
 		// registry fill — the registry names only files with registered
@@ -708,6 +742,76 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		return err == nil
 	})
 	state.Set.OnSeal(tr.SealObserved)
+
+	// The repack pass over the core's own pieces: the selector claims the
+	// candidates a pass runs over, the copier copies and carries under the
+	// same liveness tracker and the same streams the retirement worker
+	// serves, and the retirer is the same executor a worker's hand-over
+	// reaches — a pass's retirements run synchronously in its own
+	// goroutines, one claim at a time. A deferred loss the durability layer
+	// holds against a segment reaches the carry as the registry entry
+	// mapped field by field, and once the pass has the record durable the
+	// deferral ends through the same registry, matched back by its mapped
+	// entry — the registry entry is its own identity, and the map keeps
+	// package reclaim off the layer that owns it. Every repoint's held
+	// delta runs through Account as any other index change does.
+	// The pins keep the protocol that pins segments out of selection — the
+	// running offers' — wired to the selector alone: a pass excludes its own
+	// stayed sources by holding their claims, never by touching a pin, so
+	// nothing a pass does can delete an offer's.
+	pun := unread.New(deps.Clock)
+	c.unread = pun
+	pins := reclaim.NewPins()
+	c.repack = reclaim.NewPass(reclaim.PassConfig{
+		Selector: reclaim.NewSelector(state.Set, state.Index, pun, d, pins),
+		Copier: reclaim.NewCopier(state.Index, state.Counters, c.streams, pun, tr, c.domains, c.isForgetting,
+			func(ctx context.Context, bad reclaim.BadSource) (reclaim.CorruptOutcome, error) {
+				out, err := d.Corrupt(ctx, durability.Corruption{
+					Share: bad.Tag, File: bad.File, Record: bad.Record,
+					Seq: bad.Seq, Version: bad.Version, Extent: bad.Extent, DomainHeld: true,
+				})
+				if err != nil {
+					return 0, err
+				}
+				switch out.Kind {
+				case durability.CorruptDropped:
+					return reclaim.CorruptDropped, nil
+				case durability.CorruptUseCopy:
+					return reclaim.CorruptUseCopy, nil
+				}
+				return 0, fmt.Errorf("datapath: the durability layer answered corrupt with an outcome %d no mapping names", out.Kind)
+			},
+			deps.Clock, deps.Log,
+			func(seg core.SegmentID) []reclaim.DeferredLoss {
+				var out []reclaim.DeferredLoss
+				for _, l := range d.DeferredAgainst(seg) {
+					out = append(out, deferredLossOf(l))
+				}
+				return out
+			},
+			c.headroom.Admit, c.headroom.Drawn),
+		Tracker:    tr,
+		Index:      state.Index,
+		Set:        state.Set,
+		Durability: d,
+		Durable:    d,
+		Retirer:    c.retirer,
+		EndDeferral: func(seg core.SegmentID, e reclaim.DeferredLoss) bool {
+			for _, l := range d.DeferredAgainst(seg) {
+				if deferredLossOf(l) == e {
+					return d.EndDeferral(seg, l)
+				}
+			}
+			return false
+		},
+		Account: c.Account,
+		Reserve: reclaim.Reserve{
+			Held:     func() int64 { return c.pool.Counters().RepackReserveBytes },
+			Count:    c.cap.CopyLanded,
+			Transfer: c.cap.CopiesTransfer,
+		},
+		Sealer: reclaim.NewSealer(c.streams, state.Set, c.headroom.Admit, c.headroom.Drawn, c.headroom.Refund),
+	})
 
 	// The open's registration: a core continued from a rebuilt state
 	// registers every record the rebuild found still live on disk through
@@ -774,6 +878,13 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		c.retiring.Start()
 	}
 	c.addStop(c.retirer.Stop)
+	// The repack pass's stop registers right after the retirer's, so reverse
+	// order stops it before the retirer: a pass interrupted between its
+	// units hands the source its in-flight unit is retiring to a retirer
+	// still running, and the stop joins the pass before the executor is
+	// stopped — the durability layer, whose own stop runs first and wakes
+	// every durability waiter, is what frees a pass stuck in a wait.
+	c.addStop(c.repack.Stop)
 	// The probe registers between the retirer's stop and the reclaim
 	// worker's, so reverse order runs it once the reclaim worker has stopped
 	// and before the retirer stops — the window the stop-order test reads
@@ -822,8 +933,63 @@ func (c *Core) Retire(id core.SegmentID, reason segment.Reason) (segment.Retirem
 	return c.retirer.Retire(id, reason)
 }
 
+// Repack runs one repack pass over the core: units of one source segment
+// each, bounded by a budget of copied bytes, aimed at the scope the caller
+// names. A done context is answered before anything changes; a pass the
+// core's close interrupts between its units returns core.ErrClosed having
+// completed the unit in flight. The bytes the pass's copies moved are added
+// to the repacked_bytes counter, and a tracer sees one repack_pass span
+// carrying the pass's segments, bytes and freed figures. It returns freed,
+// the storage the pass's retirements returned through the executor.
+//
+// decision: the span is opened with the pass's own outcome rather than
+// around its work, because a tracer takes its attributes at the span's start
+// and the pass's segment, byte and freed figures exist only at its end — a
+// span opened beforehand could carry the budget alone. Overturned by a
+// tracer whose ending carries its attributes, which would wrap the work
+// instead.
+func (c *Core) Repack(ctx context.Context, budget int64, scope reclaim.Scope) (int64, error) {
+	if c.closed() {
+		return 0, core.ErrClosed
+	}
+	out, err := c.repack.Run(ctx, budget, scope)
+	if out.Bytes > 0 {
+		c.repackedBytes.Add(uint64(out.Bytes))
+	}
+	if c.tracer != nil {
+		_, end := c.tracer(ctx, core.SpanRepackPass,
+			slog.Int("segments", out.Segments),
+			slog.Uint64("bytes", uint64(out.Bytes)),
+			slog.Int64("freed", out.Freed))
+		end(err)
+	}
+	return out.Freed, err
+}
+
+// deferredLossOf maps one registry entry of the durability layer's deferred
+// losses onto the copy's own shape, field by field. The mapping is the
+// pass's whole contract with the registry: the carry builds its record from
+// it, and the deferral-end wiring matches the entry back by it — one entry
+// per dropped piece, so the mapped fields name one entry exactly.
+func deferredLossOf(l durability.Loss) reclaim.DeferredLoss {
+	return reclaim.DeferredLoss{
+		Share:     l.Share,
+		File:      l.File,
+		Extent:    l.Extent,
+		Version:   l.Version,
+		Seq:       l.Seq,
+		Reason:    l.Reason,
+		Offloaded: l.Offloaded,
+		Synced:    l.Synced,
+	}
+}
+
 // Durability returns the durability layer.
 func (c *Core) Durability() *durability.Durability { return c.dur }
+
+// Unread returns the set of records no read returned, which the repack
+// pass's reads mark and the per-segment rows report.
+func (c *Core) Unread() *unread.Set { return c.unread }
 
 // Streams returns the append streams.
 func (c *Core) Streams() *segment.Streams { return c.streams }
@@ -912,8 +1078,13 @@ func (c *Core) Retirer() *segment.Retirer { return c.retirer }
 // retirement already moved, so it is missed by nothing. Overturned by an
 // executor whose hook carries the tag, which would name the one share
 // directly.
+//
+// The copies a pass counted against the segment move to their shares' figures
+// first, in the same step, and before the figures drop by the segment's own
+// bytes: a tally between the two stands above the truth, never below it.
 func (c *Core) retiredSegment(id core.SegmentID) {
 	c.dur.Retired(id)
+	c.cap.CopiesTransfer(id)
 	c.cap.RetiredEverySeeded()
 }
 
@@ -921,6 +1092,17 @@ func (c *Core) retiredSegment(id core.SegmentID) {
 // scan and pass. It has no production caller: a test waits on the worker's
 // own events through it, where the worker's real timer allows no clock.
 func (c *Core) AfterRetirementTick(fn func()) { c.retiring.AfterTick(fn) }
+
+// CopyHeldBytes returns the record bytes of repack copies held out of the
+// shares' tallies, whose sources are not yet retired. It reports the
+// capacity's own copy ledger, the transfer of which the pass's abandon and
+// the retirement hand over.
+//
+// decision: no production caller; a test of the copy ledger's transfer holds
+// the signature up — the capacity sits inside the core, unreachable any other
+// way. Drop the method, or give it a production caller, once the figures are
+// exported through Stats.
+func (c *Core) CopyHeldBytes() int64 { return c.cap.CopyHeldBytes() }
 
 // WaitSpares blocks until the pool has readied every spare the open's own
 // targets name, or reports the pool's word for why it stopped filling. It is

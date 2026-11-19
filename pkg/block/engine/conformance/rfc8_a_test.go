@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"testing"
@@ -807,6 +808,49 @@ func TestRFC8A_CapacityOverwriteServedAfterTheLastStep(t *testing.T) {
 	mustSecond(t, f, fa, 2*mib, mib, 'c')
 }
 
+// A refusal the maintained figures can answer settles without running a
+// repack pass: the share holds nothing but live, synced bytes, so the scope's
+// sync frees nothing and no pass can relieve — the refusal answers no space
+// straight from the figures, without appending one byte or removing one
+// segment on the segmented backing, which is what a pass would do. This is
+// the proof the at-once row's speed bound rests on: no pass, no seal in the
+// caller's goroutine, no cycle.
+func TestRFC8A_CapacityNoSpaceWithoutAPass(t *testing.T) {
+	f := enginetest.New(t)
+	limitedSecond(t, f, 2*mib)
+
+	fa := secondFile(t, f, "a")
+	mustSecond(t, f, fa, 0, mib, 'k')
+
+	// What a repack pass would touch on the segmented backing: the copies it
+	// appends and the retirements it removes. The scope's own sync touches
+	// neither, and the refused write is refused before its appends, so the
+	// refusal's whole relief cannot move these counts without a pass.
+	segCalls := func() (writes, removes int) {
+		for id := 1; id <= 40; id++ {
+			name := fmt.Sprintf("%020d.seg", id)
+			writes += f.Seam.CallsFor("write", name)
+			removes += f.Seam.CallsFor("remove", name)
+		}
+		return writes, removes
+	}
+	beforeW, beforeR := segCalls()
+
+	if err := putSecond(t, f, fa, mib, mib, 'x'); !errors.Is(err, vfserr.ErrNoSpace) {
+		t.Fatalf("a write at the limit with nothing to free: %v, want ErrNoSpace", err)
+	}
+
+	afterW, afterR := segCalls()
+	if afterW != beforeW || afterR != beforeR {
+		t.Errorf("the relief over nothing-to-free appended %d writes and removed %d segments over the segmented backing (before %d and %d), want both unchanged: the figures answer this refusal without a pass",
+			afterW-beforeW, afterR-beforeR, beforeW, beforeR)
+	}
+	got := make([]byte, mib)
+	if _, err := f.E.Read(t.Context(), f.Second.ID, fa, 0, got); err != nil || got[0] != 'k' {
+		t.Errorf("the first write reads back %q, %v, want 'k'", got[:1], err)
+	}
+}
+
 // The same with nothing left to free: no space, and the first write's bytes
 // still read back.
 func TestRFC8A_CapacityNothingLeftToFree(t *testing.T) {
@@ -916,10 +960,25 @@ func TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved(t *testing.T) {
 	f.Clock.Advance(time.Minute)
 	within(t, "the re-append's sync reaching the seam", hold.Reached())
 
-	// the deadline is real time, since the caller's context cannot
-	// end on the test clock; the assertion is that the answer does not wait for it.
+	// The refused write parks the capacity answer behind the share seal's
+	// caller-side fsync waiting on the seam, so it is given its own bounded
+	// deadline: the bounded wait IS the assertion (the harness's allowance,
+	// for a wait no injected clock can advance), failing on its own message
+	// rather than letting a parked write hold the suite until its package
+	// timeout. On the landed design the refusal answers ErrDelay long
+	// before the deadline, inside the tenth of the caller's bound.
 	start := time.Now()
-	err := putSecond(t, f, fa, 2*mib, mib, 'c')
+	parked := make(chan error, 1)
+	go func() { parked <- putSecond(t, f, fa, 2*mib, mib, 'c') }()
+	var err error
+	select {
+	case err = <-parked:
+	case <-time.After(bound / 10):
+		// The held sync must be let go first, or the cleanup joins the
+		// parked write and the suite hangs behind the row again.
+		hold.Release()
+		t.Fatal("the refused write is still parked on the seal's sync: the capacity answer waited on the caller's own fsync")
+	}
 
 	var d *vfserr.Delay
 	if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {

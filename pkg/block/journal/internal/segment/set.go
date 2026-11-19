@@ -105,6 +105,23 @@ type Counters struct {
 	Segments int64
 	// Sealed is the number of sealed segments in the set.
 	Sealed int64
+	// NoAppendOverBytes is the part of NoAppendBytes that is not payload
+	// — the record headers, padding and whole payload-free records those
+	// segments' entries carry, moved by exactly the edges NoAppendBytes
+	// moves at, the charges of ended segments included. The figure the
+	// ended-unreclaimed identity subtracts beside its live half, so the
+	// answer names live payload only, the same basis UnreclaimedBytes rides
+	// and never above it.
+	NoAppendOverBytes int64
+	// NoAppendBytes is the record bytes the segments that take no further
+	// append — the sealed and the ended alike — hold, the total the per-tag
+	// noAppendTag map keeps per share, moved at every edge that map moves
+	// at: raised by a Seal, an End and an adoption of such a segment, joined
+	// by a record completing against an ended one, lowered at every removal.
+	// The recorded charges are the basis; the accounted size never enters,
+	// so the figure rides the same record-byte basis the shares' settled
+	// figures do.
+	NoAppendBytes int64
 	// Spares is the number of spares the ledger holds.
 	// decision: it counts every spare the ledger holds, every class the pool
 	// separates them into, because Check sums every one of them at the cap —
@@ -162,6 +179,20 @@ type Set struct {
 	// or already moved into retired, never both and never neither.
 	retired map[core.ShareTag]int64
 
+	// noAppendTag holds, per share tag, the record bytes its records hold
+	// in the segments that take no further append — the sealed and the
+	// ended alike — moved under mu beside the entries' own per-tag bytes at
+	// each state change, charge and removal.
+	noAppendTag map[core.ShareTag]int64
+
+	// untaken holds the segments whose end event has not been taken by its
+	// consumer yet: the end itself is made synchronously in the step that
+	// ends the segment, while the event hands over on its own goroutine, so
+	// the untaken flag is the reader's proof of the end before the take. It
+	// is cleared by the take and by the segment's own removal, and kept
+	// beside the set's state under mu.
+	untaken map[core.SegmentID]struct{}
+
 	// c holds the counters of Counters above, maintained at each event that
 	// moves one and never rebuilt: every read is one lock and a copy.
 	c Counters
@@ -200,8 +231,11 @@ type Set struct {
 // and only that Set reaches an entry — the capacity lock domain its owner
 // names covers it.
 type entry struct {
-	state   State
-	size    int64
+	state State
+	size  int64
+	// stream is the append stream that took the segment, zero until a stream
+	// names it: a segment an open adopted is not named.
+	stream  uint32
 	claimed bool
 	// full is what the seal named: true only for a segment closed at its cap
 	// by a full seal, never for one the seal named early — whose truncation
@@ -215,6 +249,26 @@ type entry struct {
 	// over is the part of tags that is not payload, per tag; nil until the
 	// first record is accounted.
 	over map[core.ShareTag]int64
+}
+
+// overSum totals a per-tag overhead map. A nil map is the segment that has
+// charged none, summing to zero.
+func overSum(m map[core.ShareTag]int64) int64 {
+	var n int64
+	for _, v := range m {
+		n += v
+	}
+	return n
+}
+
+// tagSum totals a per-tag record-byte map the way overSum does an overhead
+// one. A nil map is the segment that charged none.
+func tagSum(m map[core.ShareTag]int64) int64 {
+	var n int64
+	for _, v := range m {
+		n += v
+	}
+	return n
 }
 
 // absentMessage is the Warn of a retire or recycle that subtracted nothing.
@@ -232,13 +286,15 @@ func NewSet(segCap int64, log *slog.Logger) *Set {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Set{
-		cap:     segCap,
-		log:     log,
-		segs:    make(map[core.SegmentID]*entry),
-		spares:  make(map[core.SegmentID]struct{}),
-		tags:    make(map[core.ShareTag]int64),
-		over:    make(map[core.ShareTag]int64),
-		retired: make(map[core.ShareTag]int64),
+		cap:         segCap,
+		log:         log,
+		segs:        make(map[core.SegmentID]*entry),
+		spares:      make(map[core.SegmentID]struct{}),
+		tags:        make(map[core.ShareTag]int64),
+		over:        make(map[core.ShareTag]int64),
+		retired:     make(map[core.ShareTag]int64),
+		noAppendTag: make(map[core.ShareTag]int64),
+		untaken:     make(map[core.SegmentID]struct{}),
 	}
 }
 
@@ -540,6 +596,18 @@ func (s *Set) AdoptRebuilt(id core.SegmentID, size int64, st State, full bool, t
 	if st == Sealed {
 		s.c.Sealed++
 	}
+	if st != Active {
+		// An adopted segment joins the no-append measures its state names —
+		// a sealed or ended one takes no further append — with the bytes it
+		// arrives accounting for, so its later removal lowers them by what
+		// it entered with. An entry raised here is the same one Seal and End
+		// raise on the running journal.
+		s.c.NoAppendBytes += tagSum(tags)
+		s.c.NoAppendOverBytes += overSum(holds)
+		for tag, n := range tags {
+			s.noAppendTag[tag] += n
+		}
+	}
 	for tag, n := range tags {
 		s.tags[tag] += n
 	}
@@ -547,6 +615,16 @@ func (s *Set) AdoptRebuilt(id core.SegmentID, size int64, st State, full bool, t
 		s.over[tag] += n
 	}
 	return nil
+}
+
+// SetStream records that stream no took segment id, for its row to report. A
+// segment not in the set is left alone.
+func (s *Set) SetStream(id core.SegmentID, no uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.segs[id]; ok {
+		e.stream = no
+	}
 }
 
 // Take carries a spare into the set, as the segment a stream appends to. The
@@ -605,6 +683,11 @@ func (s *Set) Seal(id core.SegmentID, full bool) error {
 	e.state = Sealed
 	e.full = full
 	s.c.Sealed++
+	s.c.NoAppendBytes += tagSum(e.tags)
+	s.c.NoAppendOverBytes += overSum(e.over)
+	for tag, n := range e.tags {
+		s.noAppendTag[tag] += n
+	}
 	s.mu.Unlock()
 	// No lock of the ledger's is held while the observer runs, and the seal
 	// it names is whole: every read answers with state past the change.
@@ -638,7 +721,44 @@ func (s *Set) End(id core.SegmentID) error {
 		return ErrWrongState
 	}
 	e.state = Ended
+	s.c.NoAppendBytes += tagSum(e.tags)
+	s.c.NoAppendOverBytes += overSum(e.over)
+	for tag, n := range e.tags {
+		s.noAppendTag[tag] += n
+	}
 	return nil
+}
+
+// OweEnd records that id, already ended, is owed an end event its consumer
+// has not taken yet: the segment's failure opened a window the consumer —
+// not the end's own maker — is the only word for, so from the moment the end
+// is made a reader that asks about the segment before the take must be
+// answered as though the window were open already. The step that ends the
+// segment and starts its event is the caller; TakeEnd is the take's.
+func (s *Set) OweEnd(id core.SegmentID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.untaken[id] = struct{}{}
+}
+
+// TakeEnd clears the owed end of id: its event reached the consumer, whose
+// own state — the window it made, the failure it recorded — answers from
+// here. One taken is not owed; a second take changes nothing.
+func (s *Set) TakeEnd(id core.SegmentID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.untaken, id)
+}
+
+// EndOwed reports whether id ended and its end event has not been taken yet.
+func (s *Set) EndOwed(id core.SegmentID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, ok := s.untaken[id]
+	return ok
 }
 
 // Shrink lowers the accounted size of a segment of the set that no stream
@@ -766,6 +886,16 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n, overhead int64)
 	e.held += n
 	e.tags[tag] += n
 	s.tags[tag] += n
+	if e.state == Ended {
+		// A record completing against an ended segment joins the measures
+		// its end took; a sealed one is refused above, and an active one
+		// has not entered them yet.
+		s.c.NoAppendBytes += n
+		if overhead > 0 {
+			s.c.NoAppendOverBytes += overhead
+		}
+		s.noAppendTag[tag] += n
+	}
 	if overhead > 0 {
 		e.over[tag] += overhead
 		s.over[tag] += overhead
@@ -811,7 +941,16 @@ type Row struct {
 	ID    core.SegmentID
 	State State
 	Size  int64
-	Tags  map[core.ShareTag]int64
+	// Stream is the append stream that took the segment; zero for one an
+	// open adopted, which no stream has named.
+	//
+	// ponytail: an adopted segment reports stream zero, indistinguishable from
+	// a real stream-0 segment, for the rebuild keeps
+	// no header's stream beside its scan. Upgrade to carrying the scanned
+	// header's stream into the adoption when a reader needs the stream of a
+	// segment that predates this process.
+	Stream uint32
+	Tags   map[core.ShareTag]int64
 }
 
 // Snapshot lists every segment of the set, spares excluded, in ascending id
@@ -824,7 +963,7 @@ func (s *Set) Snapshot() []Row {
 
 	rows := make([]Row, 0, len(s.segs))
 	for id, e := range s.segs {
-		rows = append(rows, Row{ID: id, State: e.state, Size: e.size, Tags: maps.Clone(e.tags)})
+		rows = append(rows, Row{ID: id, State: e.state, Size: e.size, Stream: e.stream, Tags: maps.Clone(e.tags)})
 	}
 	slices.SortFunc(rows, func(a, b Row) int { return cmp.Compare(a.ID, b.ID) })
 	return rows
@@ -1070,8 +1209,20 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 // found the entry in the set.
 func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 	delete(s.segs, id)
+	// The removed segment is owed no end event any more: whatever the take
+	// did, the segment's leaving is the reader's later word.
+	delete(s.untaken, id)
 	if e.state == Sealed {
 		s.c.Sealed--
+	}
+	if e.state != Active {
+		// The segment's leaving takes the no-append measures with it: an
+		// active one never entered them.
+		s.c.NoAppendBytes -= tagSum(e.tags)
+		s.c.NoAppendOverBytes -= overSum(e.over)
+		for tag, n := range e.tags {
+			s.noAppendTag[tag] -= n
+		}
 	}
 	s.c.Segments--
 	s.c.UsedBytes -= e.size
@@ -1093,6 +1244,16 @@ func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 			s.over[tag] = left
 		}
 	}
+}
+
+// NoAppendBytesOf returns the record bytes tag's records hold in the
+// segments that take no further append — the sealed and the ended alike —
+// one map read the set maintains at each state change, charge and removal,
+// allocating nothing.
+func (s *Set) NoAppendBytesOf(tag core.ShareTag) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.noAppendTag[tag]
 }
 
 // Counters returns the ledger's maintained counters. One lock, one struct

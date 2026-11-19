@@ -72,20 +72,6 @@
   category: feature
   reason: 'the removal''s prune at recovery: a release whose last batch committed and whose prune did not is pruned at the restart, and its index entry goes. The open recovers the segments and the row gets past its writes and the restart, but the release reads unfinished after the prune, wanting none, and the released file still holds its keys. The row waits on the start''s retirement pruning the removals the recovery finds done.'
   issue: '#4210'
-- test: TestV20/journal/a_refusal_repack_can_answer_is_a_delay_until_it_frees
-  message: 'the write past the limit answered vfs: retry shortly: capacity before its repack reached the journal'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the journal''s Repack: a write refused at the share''s journal limit while another refusal''s repack runs answers ErrDelay (DelayCapacity), and is served once that repack frees the superseded records. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4206'
-- test: TestV20/journal/a_refusal_nothing_can_free_is_no_space_at_once
-  message: 'a write past the limit with nothing to free: vfs: retry shortly: capacity, want ErrNoSpace'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the journal''s Repack: a write refused at the share''s journal limit with nothing superseded answers ErrNoSpace at once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4206'
 - test: TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag
   message: 'forget the tag: engine: journal: not implemented: vfs: unavailable'
   status: fail
@@ -100,62 +86,51 @@
   category: feature
   reason: 'the journal''s timers on the fixture clock (TestRFC8A_UnsuitableJournalAtStart, Fixture.start in engine/enginetest/fixture.go): a journal refused as unsuitable at start leaves its share unattached and named, and the retried open attaches it once the check clears. Init and Open work and the journal reports its version counter, so the row gets past its first write; it stops at the retry''s timer check (not within 10s) because the real journal''s own timers sit on the fixture clock, so the pending-timer count reads 6, not 1; the unit tests prove the engine side over the fake journal.'
   issue: '#4206'
-- test: TestRFC8A_CapacityScopedRepack
-  message: 'write 3 of b: vfs: retry shortly: capacity'
+- test: TestRFC8A_RetryLaterAtTheShareLimit
+  message: 'the share limit has nothing left to free'
   status: fail
   fix: planned
   category: feature
-  reason: 'the journal''s Repack: the scoped repack of a share at its limit leaves other shares segments alone. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4206'
+  reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two things, filed apart: the engine''s settled answer composing RFC 8 section 10.2''s dirty-bytes disjunct (the live dirty bytes with the store put-healthy that keep retry-later), filed as the entry''s issue; and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker, filed under #4873.'
+  issue: '#4892'
+
+- test: TestRFC8A_Clone
+  message: 'a clone its destination''s journal cannot reserve: engine: the share limit has nothing left to free'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The same settled answer as its retry-later sibling for the destination''s share: the destination''s journal limit refusal reads an ended-unreclaimed figure of zero once the refusal''s two repack passes have cycled the share''s live bytes, and answers no space where the row wants the retry-later that outlives the refusal. The row waits on the same two things the sibling''s entry names, filed apart as its issue and #4873.'
+  issue: '#4892'
+
 - test: TestRFC8A_CapacityRacingRefusals
-  message: 'write 1 of b: vfs: retry shortly: capacity'
+  message: 'the share limit has nothing left to free'
   status: fail
   fix: planned
   category: feature
-  reason: 'the journal''s Repack: two refusals racing for the only unreclaimed segments answer retry-later while the first repack is held. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4206'
-- test: TestRFC8A_CapacityOverwriteServedAfterTheLastStep
-  message: 'write 1 of b: vfs: retry shortly: capacity'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the journal''s Repack: an overwrite left unsynced at the limit is served after the scope sync and the seal. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4206'
+  reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two things, filed apart: the engine''s settled answer composing RFC 8 section 10.2''s dirty-bytes disjunct (the live dirty bytes with the store put-healthy that keep retry-later), filed as the entry''s issue; and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker, filed under #4873.'
+  issue: '#4892'
 - test: TestRFC8A_CapacityNothingLeftToFree
-  message: 'write of 2097152 bytes at 0: vfs: retry shortly: capacity'
+  message: 'the share limit has nothing left to free'
   status: fail
   fix: planned
   category: feature
-  reason: 'the journal''s Repack: a scope with nothing left to free answers no space and the first write reads back. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4206'
-- test: TestRFC8A_CapacityResolvedFailedSegmentCountsAsLeft
-  message: 'write 1 of b: vfs: retry shortly: capacity'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the journal''s Repack: a failed segment with a resolved window counts as left to free. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4206'
-- test: TestRFC8A_CapacityScopeSyncTakesAFailedWindow
-  message: 'write 1 of b: vfs: retry shortly: capacity'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the journal''s Repack: the scope sync takes a failed window and the next Commit fails once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4206'
+  reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two things, filed apart: the engine''s settled answer composing RFC 8 section 10.2''s dirty-bytes disjunct (the live dirty bytes with the store put-healthy that keep retry-later), filed as the entry''s issue; and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker, filed under #4873.'
+  issue: '#4892'
 - test: TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved
-  message: 'write 1 of b: vfs: retry shortly: capacity'
+  message: 'the refused write is still parked on the seal''s sync: the capacity answer waited on the caller''s own fsync'
   status: fail
   fix: planned
   category: feature
-  reason: 'the journal''s Repack: a refusal while a failed window is unresolved answers retry-later at once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4206'
+  reason: 'What the row demonstrates, on its own bounded assertion now: the refusal over an unresolved window parks the refused write on the share seal''s caller-side fsync — the seal runs in the refusal''s own goroutine and syncs the records of the segment it closes, which the row''s held sync stops. What it waits on: the RFC 8 / RFC 28 ruling the PR text carries — whether the seal may place its marker without a caller-side sync, which the named-predecessor recovery refusal over an unsynced marker stands against, or whether the durability layer learns to seal off the caller''s goroutine. Once ruled, the refusal answers ErrDelay under a tenth of the caller''s bound and the entry leaves.'
+  issue: '#4873'
+
 - test: TestRFC8A_CapacityRepackReserveServesAThirdShare
-  message: 'write of 2097152 bytes at 0: vfs: retry shortly: capacity'
+  message: 'the share limit has nothing left to free'
   status: fail
   fix: planned
   category: feature
-  reason: 'the journal''s Repack: repack draws on the reserve, so a third share is served. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4206'
+  reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two things, filed apart: the engine''s settled answer composing RFC 8 section 10.2''s dirty-bytes disjunct (the live dirty bytes with the store put-healthy that keep retry-later), filed as the entry''s issue; and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker, filed under #4873.'
+  issue: '#4892'
 - test: TestV26/journal/a_clone_of_a_lost_run_reads_lost_there
   message: 'the destination over the source''s lost run: <nil>, want ErrLost'
   status: fail
@@ -177,6 +152,13 @@
   category: feature
   reason: 'a committed hole reads zeros and a synced record the journal lost reads Lost after the restart. The row gets past the restart, but the lost extent serves the bytes it held before, superseded ones, and answers no error instead of ErrLost. Cause: after the restart the open cuts the corrupted record, the stream''s last synced record with nothing after it to prove it synced, as an unproven tail, and a loss counts only when a recorded mark proves it; the engine''s journal open passes nil marks (pkg/block/engine/enginewire.go), so no mark proves it. The row waits on the open being handed the recorded marks.'
   issue: '#4711'
+- test: TestRFC8B_SharedJournal
+  message: 'the filling write: engine: the share limit has nothing left to free'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The one journal share at its own limit takes the settled no-space answer where the row wants the refusal-later that never becomes no space while another share is healthy: the share''s bytes, none superseded, sit in a single active segment, so each refusal''s scoped pass seals and recycles that one segment whole and the candidacy the settled answer reads is left with nothing. The share rides the same two things the no-space cluster does, filed apart: the engine''s settled answer composing the dirty-bytes disjunct that keeps retry-later (the entry''s issue), and the seal that owes no caller-side fsync (#4873). At the base line it only passed the interim retry-later of the not-built repack.'
+  issue: '#4892'
 - test: TestRFC8B_JournalFullOnAFullDevice
   message: 'answered vfs: retry shortly: capacity, want the device''s ErrNoSpace'
   status: fail

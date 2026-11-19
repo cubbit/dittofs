@@ -12,7 +12,7 @@ import (
 type ShareStats struct {
 	Limit, UsedBytes, ReservedBytes, HeldBytes, DirtyBytes, UnreclaimedBytes int64
 	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
-	// take no further append; zero, like UnreclaimedBytes, until Repack seals.
+	// take no further append.
 	UnreclaimedEndedBytes int64
 }
 
@@ -37,21 +37,24 @@ type Stats struct {
 	ExtentCount                                               int64
 	DropRanges, Segments, Sealed, Spares                      int
 	UnreclaimedBytes, HeadroomBytes, RepackReserveBytes       int64
-	PinnedSegments, OpenDescriptors, DescriptorLimit          int
-	DamagedSegments                                           int
-	LastSyncError                                             *durability.SyncFailure
-	SyncDuration                                              durability.Histogram
-	RemovalMarkers                                            int
-	VersionLimit                                              core.Version
-	VersionsLeft                                              uint64
-	NextVersion                                               core.Version
-	ExtentLimit                                               int64
-	Counters                                                  Counters
-	Losses                                                    []core.LossEvent
-	LossGeneration                                            uint64
-	TagConflicts                                              []index.Conflict
-	Shares                                                    map[core.ShareTag]ShareStats
-	ReadOnly                                                  core.ReadOnlyState
+	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
+	// take no further append; see the journal package's Stats.
+	UnreclaimedEndedBytes                            int64
+	PinnedSegments, OpenDescriptors, DescriptorLimit int
+	DamagedSegments                                  int
+	LastSyncError                                    *durability.SyncFailure
+	SyncDuration                                     durability.Histogram
+	RemovalMarkers                                   int
+	VersionLimit                                     core.Version
+	VersionsLeft                                     uint64
+	NextVersion                                      core.Version
+	ExtentLimit                                      int64
+	Counters                                         Counters
+	Losses                                           []core.LossEvent
+	LossGeneration                                   uint64
+	TagConflicts                                     []index.Conflict
+	Shares                                           map[core.ShareTag]ShareStats
+	ReadOnly                                         core.ReadOnlyState
 }
 
 // Stats reads the maintained counters. It walks neither the index nor the
@@ -129,6 +132,7 @@ func (c *Core) Stats() Stats {
 	s.Counters = Counters{
 		WrittenBytes: c.WrittenBytes(), FilledBytes: c.FilledBytes(), FillRefused: c.FillRefused(),
 		FreedBytes:         c.retirer.Counters().FreedBytes,
+		RepackedBytes:      c.repackedBytes.Load(),
 		ReservationRefused: c.cap.RefusedCount(),
 		Syncs:              d.Syncs, SyncFailures: d.SyncFailures, SyncReappendedBytes: d.ReappendedBytes,
 		HeadroomDraws:          c.headroom.Draws(),
@@ -154,11 +158,47 @@ func (c *Core) Stats() Stats {
 		}
 	}
 	delete(s.Shares, 0)
+	// The journal-wide half of the unreclaimed bytes of the segments that
+	// take no further append — the sealed ones and the failed ones, a
+	// running repack's selected among them until they are retired — served
+	// from maintained figures, never a walk: the accounted bytes the set
+	// counts per state change, less the record overhead those segments
+	// carry — so the answer names live payload only, the same basis
+	// UnreclaimedBytes rides and never above it — less the live bytes
+	// those segments still back. The live half rides the identity that the shares' held and
+	// retained figures sum every segment's live bytes, so the no-append
+	// side is that sum less the bytes still backed by the segments an
+	// append can reach — one per stream, a fixed count. The live figures
+	// and the per-segment counters they ride move at the same edges the
+	// index publishes, so the pair is off by at most one operation in
+	// flight, the bias the rest of Stats documents; the clamp keeps an
+	// in-flight publishing read from answering below zero.
+	liveAll := int64(0)
+	for _, f := range figs {
+		liveAll += f.Held + f.Retained
+	}
+	for i := range c.streams.Len() {
+		if id, ok := c.streams.Stream(i).OpenSegment(); ok {
+			b := c.index.SegmentBytes(id)
+			liveAll -= b.Held + b.Retained
+		}
+	}
+	s.UnreclaimedEndedBytes = max(0, sc.NoAppendBytes-sc.NoAppendOverBytes-liveAll)
 	for t, ss := range s.Shares {
 		ss.UsedBytes = used[t]
 		ss.HeldBytes, ss.DirtyBytes = figs[t].Held, figs[t].Dirty
 		ss.ReservedBytes = reservedBy[t]
 		ss.UnreclaimedBytes = unreclaimed(used[t], over[t], figs[t])
+		// The share's half is the record bytes its records hold in the
+		// segments no append can reach — the set maintains it beside its
+		// own per-tag bytes at each state change, charge and removal. It
+		// is the candidate measure a share-scoped pass reads: zero iff no
+		// such pass has a segment holding the share's bytes to free, and
+		// never the byte figure itself, which the per-share bookkeeping
+		// below this loop's shapes would need live counters per open
+		// segment per tag. positive answers the retry-later the
+		// journal-wide figure's byte answer stays for.
+		ss.UnreclaimedEndedBytes = c.set.NoAppendBytesOf(t)
 		s.UnreclaimedBytes += ss.UnreclaimedBytes
 		s.Shares[t] = ss
 	}

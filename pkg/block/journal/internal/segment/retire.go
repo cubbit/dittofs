@@ -197,10 +197,14 @@ func NewRetirer(c RetirerConfig) *Retirer {
 // check first, nothing touched before it passes; the ledger's claim, which
 // serialises two retirements of one segment; Close(id), which drains the
 // readers and closes the descriptors before any storage moves; the one
-// filesystem call — the unlink or the rename — then the rest; the ledger's
-// retire or recycle, the freed count, the retired-segment hook with the
-// segment's id, and the directory sync that makes the whole thing durable,
-// which the returned Retirement reports.
+// filesystem call — the unlink or the rename — then the rest. An unlink's
+// directory sync runs next, so the ledger's retire, the freed count and the
+// retired-segment hook with the segment's id land only once the removal is
+// durable — or once its sync has failed for good — and the storage in use
+// falls at the moment the returned Retirement reports, never earlier (RFC 1
+// §7.2). A recycle keeps its own earlier sync, the one before its zeroing,
+// and its freed is the cap the spare pool took, with the footprint
+// unchanged; only a successful unlink lowers the storage in use.
 func (r *Retirer) Retire(id core.SegmentID, reason Reason) (Retirement, error) {
 	// decision: retirement unlinks and recycles nothing while read-only,
 	// because a read-only journal writes nothing it need not. RFC 1 §5.4's
@@ -420,8 +424,37 @@ func (r *Retirer) unlink(id core.SegmentID, st State) (Retirement, error) {
 		}
 	}
 
+	// The unlink's own durability comes before the ledger gives the segment
+	// up: the storage in use and freed_bytes fall at the same moment, when
+	// the removal is durable, never earlier (RFC 1 §7.2) — a Wait held on the
+	// directory sync still sees the old figures.
+	//
+	// decision: a failed directory sync stays failed — the removal it
+	// failed to cover is never reported durable, and no later pass
+	// re-syncs it into a signal — because RFC 1 §5.1 rules that "a sync
+	// that failed MUST NOT satisfy, by a later success, a Sync for
+	// writes made before the failure", and §5.3 reaches a directory sync
+	// that lost a removal the same way: the retry would tell epic 9's
+	// index the removal record is safe where the crash answer says the
+	// file may still sit on disk. No new error is returned either: the
+	// unlink itself succeeded, so a retry would only count a double
+	// retire. The retirement below is completed whatever the sync said —
+	// its ledger retire, its freed count and its hook run the same — so
+	// the removal a failed sync left is the next open's scan's to settle.
+	// Overturned only when the seam's failure model changes to make a
+	// re-synced removal genuinely durable.
+	if err := r.cfg.FS.SyncDir(); err != nil {
+		r.log.Warn("segment: a retirement's directory sync failed; the removal is not durable",
+			"segment", uint64(id), "err", err)
+	} else {
+		ret.Durable = true
+	}
+
 	freed, err := r.cfg.Set.Retire(id)
 	if err != nil {
+		// The unlink — and maybe its sync — are done, while the segment
+		// stays in the set, accounted, for a retry whose unlink finds the
+		// name absent, which a remove that does counts gone.
 		return ret, fmt.Errorf("segment: retiring %d: %w", uint64(id), err)
 	}
 	ret.Freed = freed
@@ -431,41 +464,21 @@ func (r *Retirer) unlink(id core.SegmentID, st State) (Retirement, error) {
 	}
 
 	// The extra names left with the segment, and freed_bytes rises only now,
-	// after the unlink has happened: a Wait on the remove still sees the old
-	// figure.
+	// once the removal is durable or its sync has failed for good: a Wait
+	// held on the directory sync still sees the old figure.
 	r.mu.Lock()
 	delete(r.extra, id)
 	r.freedB += uint64(freed)
 	r.mu.Unlock()
 
-	// The hook runs before the directory sync, holding no executor lock: the
-	// retirement is done — the storage moved and the segment left the set —
-	// whatever the sync does, so a not-durable unlink calls it too.
+	// The hook runs after the ledger gave the segment up, holding no executor
+	// lock: the retirement is done — the storage moved and the segment left
+	// the set — whatever the sync did, so a not-durable unlink calls it too.
 	r.retired(id)
 
-	if err := r.cfg.FS.SyncDir(); err != nil {
-		// The retirement is done; the removal may not be durable. Warn names
-		// it: no signal follows, in this process or a later one.
-		//
-		// decision: a failed directory sync stays failed — the removal it
-		// failed to cover is never reported durable, and no later pass
-		// re-syncs it into a signal — because RFC 1 §5.1 rules that "a sync
-		// that failed MUST NOT satisfy, by a later success, a Sync for
-		// writes made before the failure", and §5.3 reaches a directory sync
-		// that lost a removal the same way: the retry would tell epic 9's
-		// index the removal record is safe where the crash answer says the
-		// file may still sit on disk. No new error is returned either: the
-		// unlink itself succeeded, so a retry would only count a double
-		// retire. Overturned only when the seam's failure model changes to
-		// make a re-synced removal genuinely durable. The next open's scan
-		// settles whatever the failed sync left.
-		r.log.Warn("segment: a retirement's directory sync failed; the removal is not durable",
-			"segment", uint64(id), "err", err)
-		return ret, nil
+	if ret.Durable {
+		r.signal(ret)
 	}
-
-	ret.Durable = true
-	r.signal(ret)
 	return ret, nil
 }
 

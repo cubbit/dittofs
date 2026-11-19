@@ -1943,3 +1943,46 @@ func TestCopyReopenFillBitAndMTime(t *testing.T) {
 		t.Fatalf("the fill's change serves %d bytes, want the source's bytes byte-exact", len(bodyF.Payload))
 	}
 }
+
+// TestCopierPanicLeavesTheAppendDomainLockable copies a source one of whose
+// pieces claims more payload than its record holds — the state a placement
+// torn beside its index write leaves behind — and recovers the panic the
+// stitch then raises, asserting the file's append domain is lockable again:
+// the copy releases the domain on its way out, a panic included, so a failing
+// copy wedges no later holder of the file.
+func TestCopierPanicLeavesTheAppendDomainLockable(t *testing.T) {
+	f := newCopyFixture(t)
+	file := copyFile(7)
+	rec, seq, v := f.plant(t, copyTag, file, make([]byte, copyKib), 0)
+	torn := core.Extent{Off: 2 * copyKib, Len: 2 * copyKib}
+	if _, err := f.ix.WriteRetain(copyTag, file, index.Placed{Extent: torn, Record: rec, Version: v}, seq); err != nil {
+		t.Fatalf("WriteRetain of the torn piece: %v", err)
+	}
+	f.sealSource(t, file)
+	f.waitSpares(t)
+
+	panicked := func() (panicked bool) {
+		defer func() {
+			if recover() != nil {
+				panicked = true
+			}
+		}()
+		_, _ = f.copier().Copy(context.Background(), rec.Segment)
+		return false
+	}()
+	if !panicked {
+		t.Fatalf("Copy over the torn piece %v of file %v raised no panic, want the stitch to read past the record's payload", torn, file)
+	}
+
+	locked := make(chan struct{})
+	go func() {
+		unlock := f.core.Domains().Lock(file)
+		close(locked)
+		unlock()
+	}()
+	select {
+	case <-locked:
+	case <-time.After(copyWait):
+		t.Fatalf("the append domain of file %v stayed locked after the copy's panic, want the copy's release to run on its way out", file)
+	}
+}

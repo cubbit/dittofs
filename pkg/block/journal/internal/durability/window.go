@@ -170,7 +170,12 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	}
 
 	st.mu.Lock()
-	// The event leaves the queue in the step that makes its window.
+	// The event leaves the queue in the step that makes its window, and the
+	// owed end it carried leaves with it: the segment's facts are this
+	// layer's from here.
+	if d.takeEnd != nil {
+		d.takeEnd(ev.Segment)
+	}
 	st.ends = slices.Delete(st.ends, 0, 1)
 	// decision: the window is the entries no sync has covered when the worker
 	// takes the event, and no Synced report for the failed segment is refused
@@ -294,6 +299,14 @@ func (d *Durability) resolve(st *stream, w *window) {
 // no I/O. The streams are read one after another, not as one snapshot; a
 // segment belongs to one stream, so the answer for seg is not torn by it.
 func (d *Durability) WindowOpen(seg core.SegmentID) bool {
+	// An ended segment whose event has not reached a worker yet is answered
+	// by the owed end the segment set carries: the window the end opens is
+	// this layer's to make, but from the end itself until the take a reader
+	// of the segment can see none of it, and the end owes the window
+	// whatever the take's timing.
+	if d.endOwed != nil && d.endOwed(seg) {
+		return true
+	}
 	d.mu.Lock()
 	streams := make([]*stream, 0, len(d.made))
 	for _, st := range d.made {

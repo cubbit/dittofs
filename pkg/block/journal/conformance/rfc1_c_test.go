@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
@@ -1657,5 +1658,75 @@ func TestRFC1C_LossSurvivesRestart(t *testing.T) {
 	// answering for the loss the first instance's record already took.
 	if after := f.J.Stats().Losses; len(after) != 0 {
 		t.Fatalf("a second reopen reported %+v as new; the first open's loss record answers for the piece", after)
+	}
+}
+
+// TestStats_TheEndedFigureSurvivesAReopen pins the no-append measure across
+// an open's adoption of the sealed segments it found on disk — the pin the
+// recovery side of the round asked for: the journal-wide figure reads the
+// same bytes after the reopen (an adopted sealed segment joins the measures
+// its state names), and once a pass retires those segments both the
+// journal-wide and the share's figures return to zero, never below it.
+func TestStats_TheEndedFigureSurvivesAReopen(t *testing.T) {
+	f := journaltest.New(t)
+	h, id := f.Share(0), journaltest.File(0)
+	const size = 64 << 10
+
+	// A write, synced, and a smaller one over its head synced beside it: the
+	// first half of the first record is superseded, so the segment holds
+	// unreclaimed bytes beside the live ones.
+	write(t, h, id, 0, distinct(0, size))
+	syncFiles(t, h, id)
+	write(t, h, id, 0, distinct(1, size>>1))
+	syncFiles(t, h, id)
+	seg := segmentOf(t, f, id, 0)
+	sealNow(t, f, seg)
+
+	before := f.J.Stats()
+	if before.UnreclaimedEndedBytes < size>>1 {
+		t.Fatalf("journal-wide UnreclaimedEndedBytes = %d with the share's superseded bytes sealed beside it, want at least the superseded %d", before.UnreclaimedEndedBytes, size>>1)
+	}
+	if before.UnreclaimedEndedBytes > before.UnreclaimedBytes {
+		t.Fatalf("the ended part %d exceeds the journal-wide whole %d: the part rides the same payload basis as UnreclaimedBytes", before.UnreclaimedEndedBytes, before.UnreclaimedBytes)
+	}
+	if got := before.Shares[journaltest.Tag(0)].UnreclaimedEndedBytes; got <= 0 {
+		t.Fatalf("the share's UnreclaimedEndedBytes = %d, want its records' bytes in the sealed segment: the share's figure is its candidacy over the sealed segment", got)
+	}
+
+	// The reopen rebuilds the segment from its catalog and adopts it sealed:
+	// the figure stands, for nothing the open did names the bytes free.
+	f.Reopen()
+	after := f.J.Stats()
+	if got := after.UnreclaimedEndedBytes; got < size>>1 {
+		t.Fatalf("journal-wide UnreclaimedEndedBytes = %d after the reopen, want the adopted sealed segment's bytes, at least %d", got, size>>1)
+	} else if got > before.UnreclaimedEndedBytes+32*1024 {
+		t.Fatalf("journal-wide UnreclaimedEndedBytes = %d after the reopen, want near the before figure %d", got, before.UnreclaimedEndedBytes)
+	}
+	if got := after.Shares[journaltest.Tag(0)].UnreclaimedEndedBytes; got <= 0 {
+		t.Fatalf("the share's UnreclaimedEndedBytes = %d after the reopen, want the adopted segment's record bytes: an adopted segment joins the share's candidacy", got)
+	}
+	if after.UnreclaimedEndedBytes > after.UnreclaimedBytes {
+		t.Fatalf("the ended part %d exceeds the journal-wide whole %d after the reopen", after.UnreclaimedEndedBytes, after.UnreclaimedBytes)
+	}
+
+	// Once a pass retires the adopted segments both figures return to zero,
+	// never below: a removal of a segment the adoption never raised would
+	// take each measure negative.
+	h = f.Share(0)
+	repackAll(t, f, journal.RepackScope{})
+	var settled journal.Stats
+	deadline := time.Now().Add(backgroundWait)
+	var zeroed bool
+	for time.Now().Before(deadline) {
+		settled = f.J.Stats()
+		if settled.UnreclaimedEndedBytes == 0 && settled.Shares[journaltest.Tag(0)].UnreclaimedEndedBytes == 0 {
+			zeroed = true
+			break
+		}
+		repackAll(t, f, journal.RepackScope{})
+	}
+	if !zeroed {
+		t.Fatalf("after the passes over the adopted segments: journal-wide UnreclaimedEndedBytes = %d, share's = %d, want both zero, never negative",
+			settled.UnreclaimedEndedBytes, settled.Shares[journaltest.Tag(0)].UnreclaimedEndedBytes)
 	}
 }
