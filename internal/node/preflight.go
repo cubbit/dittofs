@@ -143,7 +143,8 @@ func probeStore(storeDir string) (storeState, error) {
 
 // afterDeviceOpen runs after each device's journal opens, in device order;
 // a test replaces it so a row can end its context mid-probe. Production
-// leaves it unset.
+// leaves it unset. It is package-level because Preflight has no instance to
+// hang it on: a row that sets it must not run while another does.
 var afterDeviceOpen func()
 
 // Preflight checks, before anything opens, that the store and the journal
