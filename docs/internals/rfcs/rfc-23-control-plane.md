@@ -989,8 +989,12 @@ them and decides nothing about identity:
   the directory in the write: one that cannot answer refuses the write
   `ErrUnavailable`, one that holds no such entry refuses it naming the name,
   and a name in another realm stores none ([RFC 18 §4.2](rfc-18-identity.md#4.2%20Kerberos%20names), as the RFC 18
-  plan amends it). A file user created without a
-  uid, gid or SID gets one allocated in the create's transaction; an account
+  plan amends it). A name a machine holds moves to a user only for a caller
+  with the installation right, an `admin`; any other caller is refused `409`
+  on `spec.kerberos`. The move marks the machine deleted in the same write and
+  starts its `user.delete`, so that write answers `202` with the operation's
+  `Location` (§4.6) and its audit outcome names the operation. A file user
+  created without a uid, gid or SID gets one allocated in the create's transaction; an account
   created with a role and no spelling at all is API-only and gets none, so it
   signs in over no file protocol ([RFC 18 §8](rfc-18-identity.md#8.%20Management-API%20users));
 - **link** an OpenID Connect subject to a user by writing its `oidc` spelling,
@@ -1042,9 +1046,12 @@ them and decides nothing about identity:
   `operation_running` while a `join-domain` or a `rotate-machine-password`
   runs (§4.6), reading the running operations tracked, so no version a running
   join or rotation did not take becomes current under it. A crash between the
-  two writes leaves an audited version no join uses; it derives no key and the
-  secure channel never signs in with it ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2),
-  as the RFC 18 plan amends it), and the next join or rotation supersedes it. Neither join keeps an
+  two writes, or a refusal of the second, leaves an audited version no join
+  uses; it derives no key and the secure channel never signs in with it ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2),
+  as the RFC 18 plan amends it), and the next join supersedes it. The
+  operation's write is refused `409` `operation_running` unless the version
+  its own hand-over wrote is still the current one, so a join never runs on a
+  password another join's hand-over has replaced. Neither join keeps an
   idempotency record (§4.5), so no digest of its body, credential included, is kept. An online join's administrator credential is never put in the
   operation's record: the route picks the operation's ID and hands the
   credential to identity under it before the write that creates the operation,
@@ -1055,7 +1062,10 @@ them and decides nothing about identity:
   at the domain controller, and starts only once every node reports the
   previous one applied, in
   [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)'s order
-  ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). Leaving the domain has
+  ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). A rotation is refused
+  `409` while a join runs, and while the current version is one handed to an
+  offline join that no join has confirmed, so it never rotates a password no
+  join confirmed. Leaving the domain has
   no action until RFC 18 defines it. `test-directory` checks that every node reaches the
   directory the record names, and reports each node's answer. The join's
   state is the installation record's `Join` ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities), as the RFC 18 plan
@@ -1063,7 +1073,18 @@ them and decides nothing about identity:
   the operations that wrote them; the machine password's version is its
   `Secret`'s. The installation reports `machine_password_rotation_failed`
   from it, and each node reports its secure channel's health as
-  `machine_account_unhealthy` among its conditions (§2.4).
+  `machine_account_unhealthy` among its conditions (§2.4);
+- **the keytab** is a secret of the installation, `identity.keytab`, set by
+  `PUT /api/v1/installation/keytab` and removed by `DELETE` on that path, each
+  taking the installation right, an `admin`'s. A keytab that holds no key, or
+  any key that is not AES, is refused whole before it is sealed
+  ([RFC 18 §3.3](rfc-18-identity.md#3.3%20Kerberos)). So is one holding a key
+  for a name the joined computer account holds, in the realm
+  `identity.directory.realm` records, or in every realm when none is recorded;
+  that check runs again inside the write, so a join between the two is not
+  missed. A `PUT` over a keytab already set is refused `409`: until its
+  rotation operation (§3.3) is built, a keytab is replaced by a `DELETE`, then
+  a `PUT`, and the `DELETE` drops every imported key at once.
 
 [RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)'s figure follows a user's create
 from this API through the principals generation to its next sign-in, beside
@@ -1162,8 +1183,9 @@ for turning NTLM back on is this one, and RFC 18 §3.5 points here:
 - **Turning it on** — a put of on, or the delete of the installation's
   `identity.ntlm` record, which makes the default, on, effective — is refused
   `409` `operation_running` while `Off` is set and `Deleted` is zero, naming
-  the deletion running or the last one failed while its record is kept, and
-  is retried once one has completed. With `Deleted` set, it is accepted
+  the deletion while one runs. After a failed one, with none running, it
+  names no operation, and the failed deletion is found in the operation list.
+  It is retried once one has completed. With `Deleted` set, it is accepted
   however long ago the deletion ended.
 - **Turning it off** starts a deletion unless one runs. A write setting it
   off while it is already off starts one only when `Deleted` is zero and none
@@ -1477,7 +1499,7 @@ type Progress struct {
 - **One per target and kind.** A second request for the same work on the same
   target while one runs is refused `409` `operation_running`, naming it, as
   is a write §4.1 refuses because of an operation of a named kind (`identity.ntlm`
-  turned on before an `identity.nt-hash-delete` has completed since the last turn-off, as `Installation.NTLMOff` records it), except an acknowledgement of unreadable ranges, which joins the running one
+  turned on before an `identity.nt-hash-delete` has completed since the last turn-off, as `Installation.NTLMOff` records it, names the deletion only while one runs), except an acknowledgement of unreadable ranges, which joins the running one
   ([§3.3](#3.3%20Stores%20and%20namespaces)).
 - **Ends.** A finished operation is kept 7 days, then deleted; its audit records
   stay for the audit's own retention (§6).
