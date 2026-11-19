@@ -475,6 +475,9 @@ type SettingsReader interface {
 	// AllSettings lists every scope's settings in key order, resuming after
 	// after; the zero key starts from the first. A row that does not decode
 	// is yielded with an error wrapping ErrBadRow, and the listing goes on.
+	// Resume only after a pair whose error is nil: a bad row's Setting may be
+	// zero. A bad row is not an absent setting, and the caller must not treat
+	// it as one.
 	AllSettings(ctx context.Context, after SettingKey) iter.Seq2[Setting, error]
 }
 

@@ -141,7 +141,9 @@ func TestAllSettingsResumesAfterDeletedKey(t *testing.T) {
 func TestAllSettingsYieldsBadRows(t *testing.T) {
 	s, _, db := faultDiskStore(t)
 	badKey := []byte{keys.KindCFG, byte(entity.ScopeInstallation), 'b', '2'} // no string terminator
+	shortKey := []byte{keys.KindCFG}                                         // sorts before every cursor a zero key could build
 	putRows(t, db, []kv.KeyValue{
+		{Key: shortKey, Value: settingRow("s").Value},
 		settingRow("a"),
 		{Key: settingKey(instScope, "b"), Value: []byte{0xFF}},
 		{Key: badKey, Value: settingRow("b2").Value},
@@ -149,11 +151,11 @@ func TestAllSettingsYieldsBadRows(t *testing.T) {
 	})
 
 	got := allPairs(s, entity.SettingKey{})
-	if len(got) != 4 {
-		t.Fatalf("pairs: got %d %+v, want 4: a, the bad value, the bad key, c", len(got), got)
+	if len(got) != 5 {
+		t.Fatalf("pairs: got %d %+v, want 5: the short key, a, the bad value, the bad key, c", len(got), got)
 	}
 
-	for i, key := range map[int]string{0: "a", 3: "c"} {
+	for i, key := range map[int]string{1: "a", 4: "c"} {
 		p := got[i]
 		if p.err != nil || p.s.Scope != instScope || p.s.Key != key || string(p.s.Value) != key {
 			t.Errorf("pair %d: got %+v, want the valid setting %q and no error", i, p, key)
@@ -166,8 +168,9 @@ func TestAllSettingsYieldsBadRows(t *testing.T) {
 		s     entity.Setting
 		cause error
 	}{
-		{1, "bad value", entity.Setting{Scope: instScope, Key: "b"}, codec.ErrVersion},
-		{2, "bad key", entity.Setting{}, keys.ErrMalformed},
+		{0, "short key", entity.Setting{}, errMalformed},
+		{2, "bad value", entity.Setting{Scope: instScope, Key: "b"}, codec.ErrVersion},
+		{3, "bad key", entity.Setting{}, keys.ErrMalformed},
 	} {
 		p := got[c.i]
 		if !errors.Is(p.err, entity.ErrBadRow) || !errors.Is(p.err, c.cause) {

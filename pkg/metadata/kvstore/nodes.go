@@ -236,7 +236,7 @@ var _ entity.SettingsReader = Nodes{}
 // AllSettings lists every scope's settings in key order, resuming after the
 // setting after names, one read transaction per page, so a write between two
 // pages shows only in a page read after it. The zero key starts from the
-// first: its scope kind is zero, below every scope a setting is stored at.
+// first, with no cursor, so a row whose key does not parse is yielded too.
 //
 // decision: a row that does not decode is yielded with an error wrapping
 // entity.ErrBadRow and the cause, its Setting carrying the scope and key when
@@ -252,7 +252,10 @@ func (n Nodes) AllSettings(
 		err error
 	}
 
-	cursor := settingKey(after.Scope, after.Key)
+	var cursor []byte
+	if after != (entity.SettingKey{}) {
+		cursor = settingKey(after.Scope, after.Key)
+	}
 
 	// load never fails, so pages ends the listing only on a scan error.
 	rows := pages(
