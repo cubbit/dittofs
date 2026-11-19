@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -439,6 +440,100 @@ func TestStartRefusesAnUnreadableDevice(t *testing.T) {
 	}
 	if err := h.Node().Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// foreignJournal creates, over its own temporary directory, a journal of an
+// installation the harness's store does not hold: its installation ID has
+// byte 15 set to 9, which the harness's own installation does not.
+func foreignJournal(t *testing.T) (dir string, id journal.JournalID) {
+	t.Helper()
+	dir = filepath.Join(t.TempDir(), "foreign")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id, err := journal.Init(t.Context(), dir, journal.InstallationID{15: 9},
+		journal.WithClock(sim.NewTestClock(time.Unix(0, 0))), journaltest.SuitableMount())
+	if err != nil {
+		t.Fatalf("init a journal of another installation: %v", err)
+	}
+	return dir, id
+}
+
+// A device whose journal belongs to another installation fails the start at
+// its first step, naming the device, the journal's identity, its installation
+// and the store's.
+func TestStartRefusesAJournalOfAnotherInstallation(t *testing.T) {
+	dir, jid := foreignJournal(t)
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		cfg.Bootstrap.Journals = []bootstrap.Journal{{Path: dir}}
+		return node.New(cfg)
+	}))
+	err := h.Node().Start(t.Context())
+	if err == nil {
+		t.Fatal("Start over a journal of another installation: nil error, want the refusal")
+	}
+	for what, want := range map[string]string{
+		"the start step":           "start step refuse:",
+		"the device's dir":         dir,
+		"the journal's identity":   fmt.Sprintf("%x", jid),
+		"the journal installation": fmt.Sprintf("%x", journal.InstallationID{15: 9}),
+		"the store's installation": fmt.Sprintf("%x", [16]byte{'n', 'o', 'd', 'e', 't', 'e', 's', 't'}),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %s: %q missing from %q", what, want, err.Error())
+		}
+	}
+	if api, _ := h.Node().Addrs(); api != "" {
+		t.Errorf("listeners after the refused Start: API bound at %s, want none opened", api)
+	}
+	if err := h.Node().Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// decision: the refused start's bytes are hashed over every device and the
+// store's parent tree, the live store's own directory left out — as the
+// comment below names — because Badger settles it when Stop closes it no
+// matter what the start did, so its bytes hold no evidence either way. The
+// row therefore proves the refusal changed no device and no store sibling;
+// it does not prove the store's own files were untouched. Upgrade to a
+// committed-keys before/after scan, as the kvstore Init rows do, when this
+// row must prove that too.
+func TestStartRefusalLeavesEverythingByteIdentical(t *testing.T) {
+	foreign, _ := foreignJournal(t)
+	var device string
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		device = cfg.Bootstrap.Journals[0].Path
+		cfg.Bootstrap.Journals = []bootstrap.Journal{{Path: foreign}}
+		return node.New(cfg)
+	}))
+	// The store's own directory is left out of the parent's hash: Badger
+	// settles it when Stop closes it — memtable to SST, LOCK removed — no
+	// matter what the start did, so its bytes hold no evidence either way.
+	// Everything the refusal could create or change is inside the parent's
+	// tree — the harness's device under it among them — except the foreign
+	// journal's own tree, hashed beside it.
+	parent := filepath.Dir(device)
+	store := filepath.Join(parent, "store")
+	tree := func() map[string]string {
+		return map[string]string{
+			parent:  node.HashTree(t, parent, store),
+			foreign: node.HashTree(t, foreign),
+		}
+	}
+	before := tree()
+	err := h.Node().Start(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "start step refuse:") {
+		t.Fatalf("Start over a journal of another installation: got %v, want a start step refuse", err)
+	}
+	if serr := h.Node().Stop(t.Context()); serr != nil {
+		t.Fatalf("Stop after the refused Start: %v", serr)
+	}
+	for root, after := range tree() {
+		if after != before[root] {
+			t.Errorf("tree %s across the refused start: hash %s after %s before, want the refusal to touch nothing", root, after, before[root])
+		}
 	}
 }
 

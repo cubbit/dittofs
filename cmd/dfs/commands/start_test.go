@@ -171,22 +171,26 @@ func installed(t *testing.T, dir string) string {
 	return bootstrapFile{store: store, journal: dev, node: nodeUUID}.write(t, dir)
 }
 
-// Over a directory holding no installation, dfs start exits non-zero naming
-// the step that refused, and creates no store directory.
+// Over a directory holding no installation, dfs start exits non-zero at its
+// start check, naming the missing initialisation, and creates no store
+// directory.
 func TestStartNoInstallation(t *testing.T) {
 	dir := t.TempDir()
 	store := filepath.Join(dir, "store")
 	code, out := runChild(t, bootstrapFile{store: store, journal: filepath.Join(dir, "device"), node: nodeUUID}.write(t, dir))
-	if code == 0 || !strings.Contains(out, "Error: opening the metadata store: metadata.badger.path: ") {
-		t.Fatalf("dfs start over no installation: exit %d, output:\n%s\nwant non-zero naming the metadata store's step", code, out)
+	if code == 0 || !strings.Contains(out, "Error: the start check: the node is not initialised") ||
+		!strings.Contains(out, "dfs init") {
+		t.Fatalf("dfs start over no installation: exit %d, output:\n%s\nwant non-zero naming the start check's not-initialised verdict", code, out)
 	}
 	if _, err := os.Stat(store); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("store directory %s after the refusal: %v, want none created", store, err)
 	}
 }
 
-// Beside v1's controlplane.db, dfs start refuses naming it, and opens no
-// store.
+// Beside v1's controlplane.db, over the store the layout leaves — empty, or
+// holding whatever it left — dfs start refuses naming the database: the
+// config's own checks and the v1 refusal run before the start check, so an
+// operator is never told to run dfs init into a v1 deployment's directory.
 func TestStartRefusesV1Database(t *testing.T) {
 	dir := t.TempDir()
 	store := filepath.Join(dir, "store")
@@ -204,10 +208,14 @@ func TestStartRefusesV1Database(t *testing.T) {
 	if entries, err := os.ReadDir(store); err != nil || len(entries) != 0 {
 		t.Errorf("store directory %s after the refusal: %d entries (%v), want none: nothing opened", store, len(entries), err)
 	}
+	if strings.Contains(out, "dfs init") {
+		t.Errorf("dfs start beside v1's database: the refusal advises running dfs init (%s), which over a v1 deployment's directory is the advice that destroys data", out)
+	}
 }
 
-// Each bootstrap the store's opening refuses fails dfs start in process,
-// naming the step and the key, before anything is opened.
+// The refusals dfs start answers before anything opens, each naming the
+// piece of the configuration it is: the configuration's own checks, then the
+// start check's verdicts over the storage. Nothing is opened by a refusal.
 func TestStartRefusesTheStore(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	for _, tc := range []struct {
@@ -216,17 +224,19 @@ func TestStartRefusesTheStore(t *testing.T) {
 		want string
 	}{
 		{"backend not badger", func(dir string) bootstrapFile {
-			return bootstrapFile{backend: "foundationdb", store: dir, node: nodeUUID}
-		}, `metadata.backend "foundationdb" is not one this build opens`},
-		{"no store path", func(string) bootstrapFile {
-			return bootstrapFile{node: nodeUUID}
+			return bootstrapFile{backend: "foundationdb", store: filepath.Join(dir, "store"),
+				journal: filepath.Join(dir, "device"), node: nodeUUID}
+		}, `metadata.backend "foundationdb" is not one this build opens; it opens badger`},
+		{"no store path", func(dir string) bootstrapFile {
+			return bootstrapFile{journal: filepath.Join(dir, "device"), node: nodeUUID}
 		}, "metadata.badger.path is not set"},
 		{"no node", func(dir string) bootstrapFile {
-			return bootstrapFile{store: dir}
+			return bootstrapFile{store: filepath.Join(dir, "store"), journal: filepath.Join(dir, "device")}
 		}, "node.id is not set"},
 		{"no store directory", func(dir string) bootstrapFile {
-			return bootstrapFile{store: filepath.Join(dir, "missing"), node: nodeUUID}
-		}, "metadata.badger.path: "},
+			return bootstrapFile{store: filepath.Join(dir, "missing"),
+				journal: filepath.Join(dir, "device"), node: nodeUUID}
+		}, "the start check: the node is not initialised"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -234,8 +244,8 @@ func TestStartRefusesTheStore(t *testing.T) {
 			root.SetOut(io.Discard)
 			root.SetArgs([]string{"start", "--config", tc.b(dir).write(t, dir)})
 			err := root.Execute()
-			if want := "opening the metadata store: " + tc.want; err == nil || !strings.HasPrefix(err.Error(), want) {
-				t.Errorf("dfs start: %v, want an error starting %q", err, want)
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+				t.Errorf("dfs start: %v, want an error starting %q", err, tc.want)
 			}
 			if entries, _ := os.ReadDir(dir); len(entries) != 1 {
 				t.Errorf("%s after the refusal holds %d entries, want only the bootstrap: nothing opened", dir, len(entries))
@@ -322,21 +332,23 @@ func TestV1Databases(t *testing.T) {
 	}
 }
 
-// Over an empty store directory, such as a volume mounted late, dfs start
-// refuses naming it and leaves the directory empty: a start creates no
-// store.
+// Over an empty store directory, such as a volume mounted late, with a
+// device that holds no journal either, dfs start answers the start check's
+// not-initialised verdict and leaves the directory empty: a start creates
+// no store.
 func TestStartRefusesAnEmptyStore(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	dir := t.TempDir()
-	store := filepath.Join(t.TempDir(), "store")
+	store := filepath.Join(dir, "store")
 	if err := os.Mkdir(store, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	root := NewRoot()
 	root.SetOut(io.Discard)
-	root.SetArgs([]string{"start", "--config", bootstrapFile{store: store, node: nodeUUID}.write(t, dir)})
+	root.SetArgs([]string{"start", "--config", bootstrapFile{store: store,
+		journal: filepath.Join(dir, "device"), node: nodeUUID}.write(t, dir)})
 	err := root.Execute()
-	if want := "opening the metadata store: metadata.badger.path " + store + " holds no store"; err == nil || !strings.HasPrefix(err.Error(), want) {
+	if want := "the start check: the node is not initialised"; err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("dfs start over an empty store directory: %v, want an error starting %q", err, want)
 	}
 	if entries, err := os.ReadDir(store); err != nil || len(entries) != 0 {

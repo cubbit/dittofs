@@ -17,6 +17,7 @@ var (
 	ErrNotInitialised = errors.New("kvstore: store not initialised")
 	ErrInitialised    = errors.New("kvstore: store already initialised")
 	ErrFormat         = errors.New("kvstore: store format not supported")
+	ErrForeignStore   = errors.New("kvstore: store holds a foreign backend's keys")
 )
 
 // MinFormat and MaxFormat are the store formats this binary reads and
@@ -94,6 +95,24 @@ func Init(ctx context.Context, db kv.KV, install [16]byte) error {
 			return ErrInitialised
 		} else if !errors.Is(err, kv.ErrNotFound) {
 			return err
+		}
+		// decision: Init refuses every key but the clock ceiling a store's
+		// own Open leaves in whatever directory it opened — v1's text keys
+		// and this format's records alike — because Init, the
+		// initialisation step, would otherwise write a new Installation over
+		// storage it can no longer name. A store holding nothing but the
+		// ceiling is one whose records went wholesale, which is what the
+		// initialisation step exists to recover. Overturned when a store
+		// can name its records without opening: a read-only open the backend
+		// tolerates after an unclean close.
+		for k, err := range tx.Scan(nil, nil) {
+			if err != nil {
+				return err
+			}
+			ceil := k.Key
+			if len(ceil) != 1+keys.IDLen+1 || ceil[0] != keys.KindN || ceil[len(ceil)-1] != keys.NClk {
+				return fmt.Errorf("%w: key %q names a record a new installation must not overwrite", ErrForeignStore, k.Key)
+			}
 		}
 		in := entity.Installation{ID: install, Instance: uuid.New()}
 		for _, kvs := range [][2][]byte{

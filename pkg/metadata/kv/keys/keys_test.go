@@ -5,8 +5,13 @@ import (
 	"cmp"
 	"encoding/hex"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"math/rand/v2"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -156,5 +161,53 @@ func TestDescribeNamesEveryCode(t *testing.T) {
 		if _, ok := sSubNames[s]; !ok {
 			t.Errorf("share sub-kind 0x%02x has no name", s)
 		}
+	}
+}
+
+// Every key kind, collected from keys.go's own source so a constant no
+// hand-written list carries cannot stay out, is distinct and below the
+// ASCII range: none can be the lowercase first byte of another backend's
+// text key, which is what the store's foreign-key refusal of v1 stores
+// leans on.
+func TestKinds(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "keys.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[byte]string{}
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range vs.Names {
+				if len(vs.Values) == 0 || !strings.HasPrefix(name.Name, "Kind") {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.INT {
+					t.Fatalf("kind %s: its value is not an integer literal, which the pin needs", name.Name)
+				}
+				v, err := strconv.ParseUint(lit.Value, 0, 16)
+				if err != nil {
+					t.Fatalf("kind %s: %v", name.Name, err)
+				}
+				if v >= 0x61 {
+					t.Errorf("kind %s = 0x%02x is not below 0x61, so it can pass for the lowercase first byte of another backend's text key", name.Name, v)
+				}
+				if other, dup := seen[byte(v)]; dup {
+					t.Errorf("kinds %s and %s share 0x%02x, which a prefix check cannot tell apart", other, name.Name, v)
+				}
+				seen[byte(v)] = name.Name
+			}
+		}
+	}
+	if len(seen) < 10 {
+		t.Fatalf("collected %d kind constants from keys.go: the pin found too little to be the kind list", len(seen))
 	}
 }

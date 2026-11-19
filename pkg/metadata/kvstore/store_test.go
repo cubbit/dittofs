@@ -2,8 +2,9 @@ package kvstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
-	"github.com/google/uuid"
 	"sync"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+	"github.com/google/uuid"
 )
 
 func memKV(t *testing.T) kv.KV {
@@ -125,5 +127,100 @@ func TestOpenRefusesFormat(t *testing.T) {
 func TestFormatGolden(t *testing.T) {
 	if got := encodeFormat(format{Version: 1, Folds: []uint32{1}}); string(got) != "\x01"+"\x00\x00\x00\x00\x00\x00\x00\x01"+"\x01"+"\x00\x00\x00\x01" {
 		t.Errorf("format record %x", got)
+	}
+}
+
+// keysHash hashes every committed record, key and value in key order. The
+// foreign-store refusal is decided inside Init's one transaction, so the
+// committed records before and after are the whole of what could have
+// changed.
+func keysHash(t *testing.T, db *badgerkv.Store) string {
+	t.Helper()
+	h := sha256.New()
+	if err := db.View(context.Background(), func(r kv.Reader) error {
+		for kv, err := range r.Scan(nil, nil) {
+			if err != nil {
+				return err
+			}
+			h.Write(kv.Key)
+			h.Write(kv.Value)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// openStore opens a real Badger store on a fresh directory, whose Open writes
+// the node's clock ceiling and nothing else.
+func openBadger(t *testing.T, dir string) *badgerkv.Store {
+	t.Helper()
+	db, err := badgerkv.Open(badgerkv.Options{Dir: dir, NodeID: [keys.IDLen]byte{0xAB}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return db
+}
+
+// Init over a store holding only the node's clock ceiling — what a fresh
+// Open wrote — initialises it: the ceiling is the one row Init rewrites.
+func TestInitOverOnlyTheCeiling(t *testing.T) {
+	db := openBadger(t, t.TempDir())
+	if err := Init(context.Background(), db, uuid.New()); err != nil {
+		t.Fatalf("Init over a store holding only the clock ceiling: %v, want nil", err)
+	}
+}
+
+// Init over a store whose format record is lost but whose records remain —
+// a share's own File row is enough — refuses, committing nothing: a new
+// Installation would otherwise be written over data it can no longer name.
+func TestInitRefusesAStoreHoldingThisFormatsRecords(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db := openBadger(t, dir)
+	file := append(keys.ID([]byte{keys.KindF}, make([]byte, keys.IDLen)), make([]byte, keys.IDLen)...)
+	if err := db.Update(ctx, func(tx kv.Txn) error {
+		return tx.Set(file, []byte("a record the initialisation step does not own"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := keysHash(t, db)
+	err := Init(ctx, db, uuid.New())
+	if !errors.Is(err, ErrForeignStore) {
+		t.Fatalf("Init over a store holding a File row and no format record: %v, want ErrForeignStore", err)
+	}
+	if after := keysHash(t, db); after != before {
+		t.Errorf("Init refused over a File row committed records after it: hash %s after %s before, want the refusal to commit nothing", after, before)
+	}
+}
+
+// Init over a store holding a v1 Badger key refuses naming it as a foreign
+// store, writing nothing of its own into it.
+func TestInitRefusesAV1Store(t *testing.T) {
+	ctx := context.Background()
+	for _, key := range []string{"f:1", "p:x", "c:y", "lock:z"} {
+		t.Run(key, func(t *testing.T) {
+			dir := t.TempDir()
+			db := openBadger(t, dir)
+			if err := db.Update(ctx, func(tx kv.Txn) error {
+				return tx.Set([]byte(key), []byte("v1 record"))
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before := keysHash(t, db)
+			err := Init(ctx, db, uuid.New())
+			if !errors.Is(err, ErrForeignStore) {
+				t.Fatalf("Init over a store holding the v1 key %q: %v, want ErrForeignStore", key, err)
+			}
+			if after := keysHash(t, db); after != before {
+				t.Errorf("Init refused over %q committed records after it: hash %s after %s before, want the refusal to commit nothing", key, after, before)
+			}
+		})
 	}
 }

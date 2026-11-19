@@ -25,7 +25,7 @@ var configFields = []string{"Bootstrap", "KV", "Clock", "Metrics", "Logger", "Jo
 
 // nodeExports returns the violations of the node's surface in the package
 // whose sources are in dir: an exported package-level declaration other than
-// New, Node and Config; an exported method of Node other than Start and Stop,
+// New, Node, Config and Preflight; an exported method of Node other than Start and Stop,
 // or of another exported type, a method of an unexported type being no part
 // of the surface;
 // a field Node embeds, whose methods it would promote, or exports; a Config
@@ -38,7 +38,7 @@ func nodeExports(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	want := map[string]bool{"New": false, "Node": false, "Config": false, "Node.Start": false, "Node.Stop": false}
+	want := map[string]bool{"New": false, "Node": false, "Config": false, "Preflight": false, "Node.Start": false, "Node.Stop": false}
 	var bad []string
 	note := func(name string) {
 		if _, ok := want[name]; ok {
@@ -134,8 +134,8 @@ func structViolations(s *ast.TypeSpec) []string {
 	return bad
 }
 
-// The node exports New, Node and Config, and Node's Start and Stop, and
-// nothing else; each planted tree, holding one violation, is caught.
+// The node exports New, Node, Config and Preflight, and Node's Start and
+// Stop, and nothing else; each planted tree, holding one violation, is caught.
 func TestNodeExports(t *testing.T) {
 	for _, tc := range []struct {
 		dir  string

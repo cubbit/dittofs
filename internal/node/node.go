@@ -126,6 +126,15 @@ func newNode(cfg Config, in apiInputs) (*Node, error) {
 	if cfg.KV == nil {
 		return nil, errors.New("node: Config.KV is missing")
 	}
+	// decision: a bootstrap that names no journal device is a missing wiring
+	// piece, refused before the store opens — equally over a store that is
+	// not initialised, whose refusal the operator would otherwise read as
+	// the advice to run the init step against a node that has nowhere to
+	// keep journals. Overturned when the node builds over a store that names
+	// its devices, which would make an empty list the store's fact to refuse.
+	if len(cfg.Bootstrap.Journals) == 0 {
+		return nil, errors.Join(fmt.Errorf("node: %w", errNoDevice), cfg.KV.Close())
+	}
 	n, err := build(cfg, in)
 	if err != nil {
 		return nil, errors.Join(err, cfg.KV.Close())

@@ -582,7 +582,10 @@ func (s *Store) cursor(it *fdb.RangeIterator) *cursor {
 
 func (c *cursor) Valid() bool { return c.valid }
 func (c *cursor) Err() error  { return c.err }
-func (c *cursor) Key() []byte { return c.cur.Key[len(c.s.prefix):] }
+func (c *cursor) Key() []byte { return c.strip(c.cur.Key) }
+
+// strip takes the store's prefix off a stored key.
+func (c *cursor) strip(key fdb.Key) []byte { return key[len(c.s.prefix):] }
 
 func (c *cursor) Value() ([]byte, error) {
 	_, v, err := unstamp(c.cur.Value)
@@ -591,15 +594,23 @@ func (c *cursor) Value() ([]byte, error) {
 
 func (c *cursor) Next() {
 	c.valid = false
-	if c.err != nil || !c.it.Advance() {
+	for c.err == nil && c.it.Advance() {
+		kv, err := c.it.Get()
+		if err != nil {
+			c.err = mapErr(err)
+			return
+		}
+		if k := c.strip(kv.Key); bytes.HasPrefix(k, keys.Commit) || bytes.Equal(k, keys.Time) {
+			// The commit marks and the store time's atomic maximum are the
+			// backend's own rows, inside the API's key range stored without
+			// the stamp every value a reader decodes carries: a scan yields
+			// stored values only, so it skips them by their keys — any other
+			// short row is a real one to error on, as reads do.
+			continue
+		}
+		c.cur, c.valid = kv, true
 		return
 	}
-	kv, err := c.it.Get()
-	if err != nil {
-		c.err = mapErr(err)
-		return
-	}
-	c.cur, c.valid = kv, true
 }
 
 // txn is one attempt of an Update.
