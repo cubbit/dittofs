@@ -227,6 +227,30 @@ func TestCodecDialects(t *testing.T) {
 	}
 }
 
+// A NEGOTIATE request's negotiate contexts are on the wire only when its
+// dialects hold 3.1.1: otherwise the eight bytes before its dialects are
+// ClientStartTime, which the server ignores, so a 2.1 client's non-zero one
+// decodes, and a request without 3.1.1 is written with no contexts and those
+// bytes 0 (MS-SMB2 2.2.3).
+func TestCodecClientStartTime(t *testing.T) {
+	b := patched(golden(t, "negotiate-request")[:36], 66, 2, 0)        // two dialects
+	b = patched(b, 92, 0xf2, 0xf5, 0xaa, 0x4a, 0xc4, 0x01, 0xdd, 0x01) // ClientStartTime, a FILETIME
+	b = append(b, units(0x202, 0x210)...)
+	var r NegotiateRequest
+	if n, err := r.DecodeWire(b, 0); err != nil || n != len(b) {
+		t.Fatalf("a 2.1 client's NEGOTIATE: %d of %d bytes read: %v", n, len(b), err)
+	}
+	if want := []uint16{0x202, 0x210}; !reflect.DeepEqual(r.Dialects, want) || r.Contexts != nil {
+		t.Errorf("read dialects %x and contexts %+v, want %x and none", r.Dialects, r.Contexts, want)
+	}
+	r.Contexts = []NegotiateContext{{ContextType: 2, Encryption: EncryptionCapabilities{Ciphers: []uint16{2}}}}
+	want := patched(b, 92, make([]byte, 8)...)
+	var out resources.Buf
+	if err := r.EncodeWire(0, &out); err != nil || !bytes.Equal(out.B, want) {
+		t.Errorf("written\n  %x (%v)\nwant\n  %x", out.B, err, want)
+	}
+}
+
 // A name is UTF-16LE on the wire and WTF-8 in the struct: a surrogate pair is
 // its one code point, and a surrogate that is half of no pair is kept as its
 // three WTF-8 bytes, which utf8.ValidString refuses, so a handler tells it from
@@ -481,7 +505,7 @@ func TestCodecEncodeRefusals(t *testing.T) {
 		{"a union naming one arm while another holds a value", &CreateRequest{Contexts: []CreateContext{{Name: []byte("DH2Q"), Data: []byte{1}}}}},
 		{"contexts past their chain's maximum", &CreateRequest{Contexts: []CreateContext{big, big, big, big, big}}},
 		{"dialects past their maximum", &NegotiateRequest{Dialects: make([]uint16, 65)}},
-		{"negotiate contexts past their maximum", &NegotiateRequest{Contexts: make([]NegotiateContext, 17)}},
+		{"negotiate contexts past their maximum", &NegotiateRequest{Dialects: []uint16{0x311}, Contexts: make([]NegotiateContext, 17)}},
 		{"an offset past its two bytes", &WriteRequest{Data: make([]byte, 1<<16), ChannelInfo: []byte{1}}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

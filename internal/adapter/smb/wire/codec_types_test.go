@@ -67,7 +67,9 @@ type AllocationSize struct {
 	AllocationSize uint64
 }
 
-// NegotiateRequest is MS-SMB2 2.2.3's NEGOTIATE request at 3.1.1.
+// NegotiateRequest is MS-SMB2 2.2.3's NEGOTIATE request, whose negotiate
+// contexts are on the wire when its Dialects hold 3.1.1, the eight bytes
+// before its dialects ClientStartTime, ignored, when they do not.
 type NegotiateRequest struct {
 	_            uint16 `smb2:"size=36"`
 	_            uint16 `smb2:"name=DialectCount"`
@@ -79,7 +81,7 @@ type NegotiateRequest struct {
 	_            uint16             `smb2:"name=NegotiateContextCount"`
 	_            uint16             // Reserved2
 	Dialects     []uint16           `smb2:"count=DialectCount,max=64"`
-	Contexts     []NegotiateContext `smb2:"offset=NegotiateContextOffset,count=NegotiateContextCount,max=16,align=8,chain"`
+	Contexts     []NegotiateContext `smb2:"offset=NegotiateContextOffset,count=NegotiateContextCount,max=16,align=8,chain,if=Dialects:0x311"`
 }
 
 // NegotiateResponse is MS-SMB2 2.2.4's NEGOTIATE response, whose negotiate
