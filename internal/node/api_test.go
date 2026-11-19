@@ -81,11 +81,14 @@ func TestNodeServesTheAPI(t *testing.T) {
 
 	// A poll parks on the node's clock: it does not answer while the clock
 	// stands short of its wait, and answers once the clock passes it.
+	// Neither call keeps its connection: the leak check that ends the test
+	// would otherwise race the transport's goroutines winding down.
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	polled := make(chan error, 1)
 	var poll *http.Response
 	go func() {
 		var err error
-		poll, err = http.Get("http://" + addr + opPath + "?wait=2s")
+		poll, err = c.Get("http://" + addr + opPath + "?wait=2s")
 		polled <- err
 	}()
 	parked := h.Clock().Pending()
@@ -119,7 +122,7 @@ func TestNodeServesTheAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Idempotency-Key", "cancel-1")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.Do(req)
 	if err != nil {
 		t.Fatalf("POST the operation's cancel: %v", err)
 	}
