@@ -2,6 +2,7 @@ package identity
 
 import (
 	"container/heap"
+	"crypto/sha256"
 	"fmt"
 	"sync"
 	"time"
@@ -25,16 +26,15 @@ var (
 	errReplayFull = fmt.Errorf("%w: kerberos: replay cache full", vfserr.ErrUnavailable)
 )
 
-// replayKey names one authenticator (RFC 4120 §3.2.3): its client name and
-// realm, its time and microseconds, and the ticket's service name with ASCII
-// letters folded, since the service name lies outside the encrypted parts and
-// the ring accepts it in any case, so a replay re-spelling it is still the
-// same authenticator.
+// replayKey names one authenticator (RFC 4120 §3.2.3) by what a client
+// cannot change without the session key: the SHA-256 of the AP-REQ's
+// encrypted authenticator, which seals its client, time and microseconds. The
+// ticket's service name stays out, since it travels in cleartext and every
+// SPN of an account holds the same key, so a replay naming another one, or
+// re-spelling it, still decrypts. client is kept for its per-client share.
 type replayKey struct {
-	client  string
-	ctime   int64 // Unix seconds
-	cusec   int
-	service string
+	client string
+	auth   [sha256.Size]byte
 }
 
 type replayEntry struct {
@@ -80,10 +80,8 @@ func newReplayCache(bound, share int) *replayCache {
 func (c *replayCache) insert(t *ticket, now time.Time) error {
 	a := &t.req.Authenticator
 	k := replayKey{
-		client:  a.CName.PrincipalNameString() + "@" + a.CRealm,
-		ctime:   a.CTime.Unix(),
-		cusec:   a.Cusec,
-		service: foldASCII(t.req.Ticket.SName.PrincipalNameString()),
+		client: a.CName.PrincipalNameString() + "@" + a.CRealm,
+		auth:   sha256.Sum256(t.req.EncryptedAuthenticator.Cipher),
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
