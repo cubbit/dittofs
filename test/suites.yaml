@@ -30,7 +30,7 @@ suites:
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
       # going red. None of these tags excludes another.
-      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,journal_model,journal_soak,journal_bench,engine_conformance,engine_soak,engine_bench,adapter_conformance ./...
+      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,journal_plant_truncate,journal_model,journal_soak,journal_bench,engine_conformance,engine_soak,engine_bench,adapter_conformance ./...
       # The adapters run on every platform a node does, and their socket code differs by
       # platform, so they are vetted for Windows and macOS beside the host's own.
       - { sh: 'for os in windows darwin; do GOOS=$os go vet ./pkg/adapter/... ./pkg/resources/... ./internal/adapter/... || exit 1; done' }
@@ -100,13 +100,14 @@ suites:
         cmd:
           - go test -timeout=5m ./pkg/block/journal/internal/index/ ./pkg/block/journal/internal/durability/ ./pkg/block/journal/internal/format/ ./internal/prof/
           - go test -timeout=5m -run=^(TestReadOfALargeRecordAllocatesFlat|TestRFC1D_StatsCostIsFlat)$ ./pkg/block/journal/internal/datapath/
-      # The index built with a bug planted in its split, which the model fuzz and the model's
-      # data-path run must both find. The planted build breaks the package's other tests by
-      # design, so only these tests run.
+      # The index built with a bug planted in its split and the truncate marker with one planted
+      # past its size, which the model fuzz and the model's runs must find. The planted builds
+      # break the packages' other tests by design, so only these tests run.
       journal-plant:
         cmd:
           - go test -tags=journal_plant_split -timeout=2m -run=^TestFuzzFindsPlantedSplit$ ./pkg/block/journal/internal/index/
           - go test -tags=journal_plant_split,journal_conformance -timeout=10m -run=^TestModelDataPathFindsPlantedSupersession$ ./pkg/block/journal/conformance/
+          - go test -tags=journal_plant_truncate,journal_conformance,journal_model -timeout=10m -run=^TestModelManySeedsFindsPlantedTruncate$ ./pkg/block/journal/conformance/
       # The journal's allocation checks, which the race detector makes unmeasurable and the race
       # leg of journal-conformance skips as known: the counted calls of RFC 1 §9.7, running
       # without -race, where allocation counting works, with the flat-Stats check, whose rig
