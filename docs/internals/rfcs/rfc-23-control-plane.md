@@ -1172,16 +1172,22 @@ serves:
 - **Operation IDs** are the path's fixed segments below the prefix, then the
   action, joined by `_`, each `-` made `_`. The action is the `:verb`; else
   `list` or `get` for a `GET`, `create` for a `POST` on a collection, or the
-  method. An ID
-  changes only when its call's method, path or verb does.
+  method. An ID changes only when its call's method, path or verb does.
 - **`x-dittofs-role`** is the least §5.2 role holding the call's right, `none`
   for a public call.
 - **`x-dittofs-starts`** is the operation kind (§4.6) a write starts, answered
   `202` with its `Location`.
 - **`x-dittofs-waits-applied`** marks a write whose answer waits at most one
   second for the answering node to apply it (§2.3).
+- **`x-dittofs-role-by-kind`** marks a call whose right is the one that starts
+  the named operation's kind (§4.6), not `x-dittofs-role`'s.
+- **A request body requires no field and refuses an unknown one** (§4.3): a
+  missing field takes its default, and the call refuses with `400` when it
+  needs one. A `PATCH` body is a merge patch that may set any value to `null`,
+  and request and response bodies are described apart.
 - **Every operation takes a bearer token** (§5.3), but version discovery
-  (§9), which takes none.
+  (§9), which takes none. The health probes (§2.5) are served beside the API
+  and left out of the document.
 
 ### 4.2 Reads and listings
 

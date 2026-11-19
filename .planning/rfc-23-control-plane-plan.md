@@ -600,7 +600,13 @@ them and the route table, never the reverse. The CLI is the only typed client.
 - **The document.** `pkg/node/apiv1/openapi.json`, written by `go run ./cmd/genopenapi`.
 - **Its source.** Each route row's adapter carries its form and its body and answer types, which the
   generator reads.
-- **Its check.** A test fails when the committed file differs from the generated one.
+- **Its rules.** The write rules (whether a write creates, which precondition it needs, when it
+  answers `412`) are each one method on the route row, read by the write adapter and the
+  generator alike, so the document cannot state a rule the server does not apply.
+- **Its checks.** A test fails when the committed file differs from the generated one. Another
+  drives the server and holds each answer to the document: its status, its headers and its body's
+  schema; each documented filter is accepted, and each documented required header, left out,
+  gets `428`.
 - **Prior art (from memory).** Vault's `api` and MinIO's `madmin-go` are hand-written leaf packages.
 - **Applied by** epic 1; the document, epic 4.
 
