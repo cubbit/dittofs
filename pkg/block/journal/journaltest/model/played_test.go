@@ -166,6 +166,14 @@ func (p *played) refuse(id journal.FileID, tag journal.ShareTag) error {
 	return nil
 }
 
+// Forget drops every file of the share's tag, as a journal does.
+func (p *played) Forget(_ context.Context, i int) error {
+	for _, id := range p.j.Forget(tagOf(i)) {
+		delete(p.dropped, id)
+	}
+	return nil
+}
+
 // Repack drops the records of every file that holds nothing.
 func (p *played) Repack(context.Context) error {
 	for id, f := range p.j.files {

@@ -230,6 +230,15 @@ func (x *fixtureTarget) Repack(ctx context.Context) error {
 	return err
 }
 
+// Forget closes share i's handle, forgets its tag and leaves the share
+// detached, so the next Share(i) attaches it again.
+func (x *fixtureTarget) Forget(ctx context.Context, i int) error {
+	if err := x.f.Detach(i); err != nil {
+		return err
+	}
+	return x.f.J.Forget(ctx, Tag(i))
+}
+
 // countSealed records how many sealed segments the journal has now.
 func (x *fixtureTarget) countSealed() {
 	if x.f.J == nil {

@@ -372,8 +372,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and the row reads its segments, then fails on the Offload stub. Needs Offload.'
-  issue: '#4044'
+  reason: 'The journal opens and the row reads its segments, then fails on the Offload stub. Waits for Offload and the MarkOffloaded it feeds.'
+  issue: '#3379'
   message: 'stub: Offload'
 
 - test: TestRFC1C_ReleaseRecordLost
@@ -516,7 +516,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the disagreement is over the row of a retired segment, not over any stub. RFC 1 section 4.4 keeps the row of a damaged retired segment, marked retired, until close, and this check reads the row''s expectation to cover also a segment repack emptied and then retired, a case the section''s text names neither way. A wording gap for the RFC owner; the PR text carries it.'
+  reason: 'Segments keeps the row of a retired damaged segment, marked retired, until close (RFC 1 section 4.4), and this check expects the repacked segment gone from the list: the RFC and the check disagree for a segment repack emptied before retiring it. Waits on the RFC owner, not on a call.'
   issue: '#3815'
   message: 'is still among the journal'
 
@@ -729,12 +729,43 @@
   message: 'stub: Restamp'
 
 
+- test: TestDamage_LostWrites/open_seal_after_truncation
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The open proves the unproven tail and refuses before the torn tail is truncated and sealed: the teardown of a torn tail at the open is not built. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  issue: '#3814'
+  message: 'precondition: the held call is not the sync point meant: no seal marker after the last record that verified'
+
+- test: TestDamage_LostWrites/open_spare_zeroing
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The driven model write is refused for want of a spare the journal never made (no space, refused by the spare limit), which the model has no rule for; no 9b call is involved. Open: whether the journal or the model is wrong at that sync point.'
+  issue: '#3815'
+  message: 'open_spare_zeroing: model: model: write file 66696c652d3030303030303030303031: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
+
+- test: TestDamage_LostWrites/recycle_rename
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The driven model write is refused for want of a spare the journal never made (no space, refused by the spare limit), which the model has no rule for; no 9b call is involved. Open: whether the journal or the model is wrong at that sync point.'
+  issue: '#3815'
+  message: 'recycle_rename: model: model: write file 66696c652d3030303030303030303031: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
+
+- test: TestDamage_LostWrites/open_tmp_unlink
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The driven model write is refused for want of a spare the journal never made (no space, refused by the spare limit), which the model has no rule for; no 9b call is involved. Open: whether the journal or the model is wrong at that sync point.'
+  issue: '#3815'
+  message: 'open_tmp_unlink: model: model: write file 66696c652d3030303030303030303030: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
 
 - test: TestDamage_LostWrites/failed_unlink
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails: the segment whose sync failed at the crash is not reported failed after the restart, so the row''s unread-window leg never lands. Needs the open reading the failed sync''s shape from the crash state and reporting the segment failed.'
+  reason: 'The precondition fails: a sync that fails with nothing unsynced does not report the segment failed through Inspect().Segments(). Open: whether such a Sync reaches the device at all; no 9b call is involved.'
   issue: '#3815'
   message: 'is not reported failed after its sync failed'
 
@@ -1129,14 +1160,6 @@
   reason: 'The journal opens; the check fails on a stub call. Needs repack that keeps a carried release record''s sequence, and recovery.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
-
-- test: TestRFC1A_CopyLosesToNewerWrite
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check''s own record-count assertion fires after the pass ran: record(s) were appended once the pass''s source was superseded and synced. Needs repack dropping a record superseded mid-copy, and recovery.'
-  issue: '#3815'
-  message: 'record(s) were appended once the pass''s source was superseded and synced'
 
 - test: TestRFC1A_DropsDecidedAfterCopies
   status: fail

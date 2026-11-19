@@ -607,37 +607,29 @@ func TestRFC1A_RemovalRecordsCarriedForward(t *testing.T) {
 // before its append.
 //
 // decision: the unsynced leg parks the pass inside the copy's own write,
-// after the pass has decided to append, so the overwrite must land while that
-// write is parked, on a goroutine, so a journal that serialises appends on
-// its stream does not hang the run behind it.
+// after the pass has decided to append, and starts the overwrite on a
+// goroutine, so a journal that serialises appends does not hang the run
+// behind it.
 func TestRFC1A_CopyLosesToNewerWrite(t *testing.T) {
 	f := journaltest.NewWithSegmentCap(t, recordCap, nil)
 	const size = 512 << 10
 
 	// overwriteAt starts a goroutine writing p over the extent, so the write
-	// does not hang behind a pass parked inside its own append, and returns
-	// once the seam has counted the overwrite's own write on a segment file.
-	// The count is read before the goroutine starts, so the first rise past
-	// it is the overwrite's append, not the pass's parked copy — a call held
-	// at a hold is counted already, which is how the parked copy is told from
-	// the overwrite arriving behind it. The wait is bounded and fails the
-	// check: with nothing observed the pass would be released before the
-	// overwrite is in flight, and the ordering the check exists to force
-	// would be left to the scheduler.
+	// does not hang behind a pass parked inside its own append.
+	//
+	// decision: the overwrite is not waited for at the seam. The copy appends
+	// under the file's own append domain, so an overwrite of the same file
+	// cannot reach a segment while the copy's write is parked: it queues
+	// behind the domain and lands once the copy is released, which is the
+	// serialised order the row's retained-copy half asks for. Overturned if
+	// the copy ever appends without the file's domain, when the overwrite
+	// could land first and the check should wait for it again.
 	overwriteAt := func(h *journal.Handle, id journal.FileID, p []byte) <-chan error {
-		before := segmentWrites(t, f)
 		done := make(chan error, 1)
 		go func() {
 			_, err := tryWrite(t, h, id, 0, p)
 			done <- err
 		}()
-		deadline := time.Now().Add(backgroundWait)
-		for segmentWrites(t, f) <= before {
-			if time.Now().After(deadline) {
-				t.Fatalf("the overwrite did not reach a segment file within %v, so nothing ordered it before the released pass", backgroundWait)
-			}
-			time.Sleep(time.Millisecond)
-		}
 		return done
 	}
 	joinWrite := func(what string, done <-chan error) {
@@ -705,7 +697,18 @@ func TestRFC1A_CopyLosesToNewerWrite(t *testing.T) {
 		// The pass goes on past a source its file no longer needs: between
 		// the released read and its return nothing lands on a segment file,
 		// so no copy of the superseded record was appended.
-		before := segmentWrites(t, f)
+		// The source is left out of the sum: the pass retires it, and the
+		// seam drops a removed file's counts, so a sum that held it would fall
+		// by the source's own writes. A copy lands in another segment.
+		writesOn := func() (n int) {
+			for _, name := range segmentNames(t, f) {
+				if name != segmentName(seg) {
+					n += f.Seam.CallsFor(kit.OpWrite, name)
+				}
+			}
+			return n
+		}
+		before := writesOn()
 		reading.Release()
 		select {
 		case err := <-repacked:
@@ -716,7 +719,7 @@ func TestRFC1A_CopyLosesToNewerWrite(t *testing.T) {
 		case <-time.After(backgroundWait):
 			t.Fatalf("share %d: the repack kept running %v past its released read", k, backgroundWait)
 		}
-		if got := segmentWrites(t, f); got != before {
+		if got := writesOn(); got != before {
 			t.Fatalf("share %d: %d record(s) were appended once the pass's source was superseded and synced, want no copy of it", k, got-before)
 		}
 

@@ -294,6 +294,24 @@ func (m *Model) remove(op string, kind recordKind, tag shareTag, id fileID, e ex
 	return nil
 }
 
+// Forget applies a forget of tag that the journal accepted: every file the tag
+// claims is dropped whole, its records and its markers with it, and so is the
+// offer running on it. Nothing is left to settle and Since never reports the
+// drop, so the model keeps nothing of the file; a later call claims it afresh.
+// The forget is durable on return, so a crash after it brings nothing back.
+// It returns the files dropped.
+func (m *Model) Forget(tag shareTag) []fileID {
+	var dropped []fileID
+	for id, f := range m.files {
+		if f.tag == tag {
+			dropped = append(dropped, id)
+			delete(m.files, id)
+			delete(m.offers, id)
+		}
+	}
+	return dropped
+}
+
 // Settle applies the caller's statement that metadata has recorded every
 // removal of file id at or below v: their markers are dropped. Settling is not
 // persisted, so a crash brings the markers back. The journal's Settle returns
