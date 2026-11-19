@@ -1,6 +1,7 @@
 package segment
 
 import (
+	"sync"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -70,4 +71,12 @@ func (p *Pool) KickQueuedForTest() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.kick) > 0
+}
+
+// HoldMuForTest takes the retirer's lock and returns its release, so a test
+// holds a pool wait inside its question to the retirer.
+func (r *Retirer) HoldMuForTest() (release func()) {
+	r.mu.Lock()
+	var once sync.Once
+	return func() { once.Do(r.mu.Unlock) }
 }

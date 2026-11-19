@@ -7,14 +7,16 @@ import (
 
 // fullToHand reports whether a full-size sealed segment is queued for a
 // retirement the worker will run: the retirer is started and the queue holds a
-// segment that recycles (Stop empties the queue, so a stopped retirer holds
-// none). A retirer that is not started counts nothing to hand, because its
+// segment that recycles and is not refused for another path's claim (Stop
+// empties the queue, so a stopped retirer holds none). A retirer that is not started counts nothing to hand, because its
 // queue never drains. It takes r.mu and
-// nothing else, and is called with no lock of the pool held.
+// nothing else, and is called with no lock of the pool held; a caller that
+// reads the answer after leaving the pool's lock tells a stale one by the
+// pool's settle generation, not by the lock.
 func (r *Retirer) fullToHand() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.started && len(r.full) > 0
+	return r.started && len(r.full) > len(r.claimBlocked)
 }
 
 // retiredToHand asks the attached retirer whether a full-size retired segment

@@ -167,17 +167,17 @@ type Pool struct {
 	// out and by Stop. filling says a pass is running or a kick is queued:
 	// true from the moment work is promised — Start's own first pass, the
 	// kick any take or retirement enqueues — until the pass it promised ends
-	// at a settle. recycling counts the recycles in flight the same way:
-	// each is a spare a retirement promised before its rename ran, and a
+	// at a settle. The recycles in flight count the same way, as the sum of
+	// incoming (recyclingLocked): each is a spare a retirement promised
+	// before its rename ran, and a
 	// waiter parks behind one as behind a pass, for a refuse while it runs
 	// would answer no-space for a spare a moment's I/O away. A waiter parks
 	// while filling or a recycle runs, and reads a pool that holds no
 	// promised or running pass however it likes: one short of its targets
 	// then is the pool's own last word, whatever pass last left it there,
 	// and however long ago. Guarded by mu.
-	settled   *sync.Cond
-	filling   bool
-	recycling int
+	settled *sync.Cond
+	filling bool
 	// settles counts the settle events, so a wait that left mu to ask the
 	// retirer can tell a settle landed meanwhile. Guarded by mu.
 	settles uint64
@@ -632,8 +632,8 @@ func (h *Hold) Close() {
 // pool starts, and a recycle syncs its own rename's directory entry, so the
 // spare a recycle lands is durable whatever the pool's own start sync was
 // for — the re-adopted spare's case Adopt stands on. The reservation it
-// takes also holds the pool's waits open for the recycle's steps: see the
-// recycling field.
+// takes also holds the pool's waits open for the recycle's steps: see
+// recyclingLocked.
 //
 // ponytail: a make in flight is invisible to the reservation. refill picks
 // its class, sets the slot aside and runs Make outside the mutex, and over
@@ -665,18 +665,15 @@ func (p *Pool) wantRecycle() (Class, bool) {
 		// reserved slot a held take occupies is a slot the recycle would
 		// double-fill.
 		p.incoming[Headroom]++
-		p.recycling++
 		return Headroom, true
 	case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
 		p.incoming[Reserve]++
-		p.recycling++
 		return Reserve, true
 	case len(p.ready[Content])+p.incoming[Content] < p.contentGoalLocked():
 		// Content counts what holds demand and what a refused Hold asked,
 		// exactly as the refill does: a recycle filling a slot is worth what
 		// a made spare in it is.
 		p.incoming[Content]++
-		p.recycling++
 		return Content, true
 	}
 	return 0, false
@@ -697,7 +694,6 @@ func (p *Pool) wantRecycle() (Class, bool) {
 func (p *Pool) recycled(id core.SegmentID, c Class) {
 	p.mu.Lock()
 	p.incoming[c]--
-	p.recycling--
 	p.ready[c] = append(p.ready[c], id)
 	if c == Content {
 		p.settleDemandLocked()
@@ -713,7 +709,6 @@ func (p *Pool) recycled(id core.SegmentID, c Class) {
 func (p *Pool) recycleFailed(c Class) {
 	p.mu.Lock()
 	p.incoming[c]--
-	p.recycling--
 	p.mu.Unlock()
 
 	p.Kick()
@@ -852,14 +847,19 @@ func (p *Pool) Counters() PoolCounters {
 //
 // decision: a wait parks behind a queued full-sized segment until a settle, a
 // landing or a stop wakes it, however long that retirement takes. A
-// retirement that keeps failing — requeued, or held by a read-only interval —
+// retirement that keeps failing a step, or held by a read-only interval,
 // leaves the wait parked until its context ends or the pool stops, where an
-// idle pool would have answered the refusal at once. The retirer is asked
-// with the pool's lock released, for the retirer's lock is never taken under
-// it, and the settle generation tells the wait whether anything moved while
-// it asked. Withdrawn if a retirement that cannot succeed is ever left
-// queued indefinitely, which would need the retirer to say when it has given
-// up.
+// idle pool would have answered the refusal at once. The repack copier waits
+// here when its reserve roll is refused, and a repack holds claims, so a
+// retirement refused for another path's claim is not counted as handed: the
+// retirer marks it, kicks the pool, and the wait reads the pool again and
+// refuses, rather than park on a holder that may itself be this caller. The
+// retirer is asked with the pool's lock released, for the retirer's lock is
+// never taken under it, and the settle generation tells the wait whether
+// anything moved while it asked. The ceiling is a copy's own context: a
+// repack pass's carries a deadline only where its caller sets one. Withdrawn
+// if a retirement that cannot succeed is ever left queued indefinitely,
+// which would need the retirer to say when it has given up.
 //
 // decision: the wait guarantees one thing only — that every class holds its
 // goal of ready spares, and that the pool is not mid-fill when it says so.
@@ -996,7 +996,7 @@ func (p *Pool) wait(ctx context.Context, short func() bool, missing func() int64
 			close(answered)
 			return nil
 		}
-		if !p.filling && p.recycling == 0 {
+		if !p.filling && p.recyclingLocked() == 0 {
 			// No pass is running and none is queued, and no recycle is
 			// placing a spare. A full-sized segment queued with the retirer
 			// is a recycle still to come, which the pass left to the
@@ -1009,7 +1009,7 @@ func (p *Pool) wait(ctx context.Context, short func() bool, missing func() int64
 				p.mu.Unlock()
 				handed := r.fullToHand()
 				p.mu.Lock()
-				if p.settles != gen || p.filling || p.recycling != 0 || p.stopped {
+				if p.settles != gen || p.filling || p.recyclingLocked() != 0 || p.stopped || ctx.Err() != nil {
 					continue
 				}
 				if handed {
@@ -1039,6 +1039,12 @@ func (p *Pool) wait(ctx context.Context, short func() bool, missing func() int64
 		p.settled.Wait()
 		p.parked--
 	}
+}
+
+// recyclingLocked is the recycles in flight: each holds one incoming slot
+// from wantRecycle until it lands or fails. The caller holds mu.
+func (p *Pool) recyclingLocked() int {
+	return p.incoming[Headroom] + p.incoming[Reserve] + p.incoming[Content]
 }
 
 // readyShortLocked reports whether the pool holds, ready to take, fewer

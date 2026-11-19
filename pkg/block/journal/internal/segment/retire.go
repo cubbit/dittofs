@@ -133,8 +133,15 @@ type Retirer struct {
 	// held and sealed full, with a pool to take the spare. Its length is the
 	// count the pool's refill asks, kept at each enqueue and drop so no
 	// question walks the queue; guarded by mu.
-	full    map[core.SegmentID]struct{}
-	started bool
+	full map[core.SegmentID]struct{}
+	// claimBlocked is the ids of full whose last retirement was refused
+	// because another path holds the segment's claim, a repack's among them:
+	// such a retirement waits for that holder, so a spare wait that parked
+	// behind it would wait on a holder that may itself be waiting on the
+	// spare. A subset of full, cleared when the retirement is tried again or
+	// the id leaves the queue; guarded by mu.
+	claimBlocked map[core.SegmentID]struct{}
+	started      bool
 	// extra holds the names a recycle's failed rename may have put the file
 	// under beside the segment's own, keyed by the segment id: the retry's
 	// unlink removes them together with the segment name.
@@ -168,14 +175,15 @@ func NewRetirer(c RetirerConfig) *Retirer {
 		c.Log = slog.New(slog.DiscardHandler)
 	}
 	r := &Retirer{
-		cfg:        c,
-		log:        c.Log,
-		queued:     make(map[core.SegmentID]struct{}),
-		full:       make(map[core.SegmentID]struct{}),
-		extra:      make(map[core.SegmentID][]string),
-		kick:       make(chan struct{}, 1),
-		done:       make(chan struct{}),
-		retryEvery: time.Second,
+		cfg:          c,
+		log:          c.Log,
+		queued:       make(map[core.SegmentID]struct{}),
+		full:         make(map[core.SegmentID]struct{}),
+		claimBlocked: make(map[core.SegmentID]struct{}),
+		extra:        make(map[core.SegmentID][]string),
+		kick:         make(chan struct{}, 1),
+		done:         make(chan struct{}),
+		retryEvery:   time.Second,
 	}
 	if c.Pool != nil {
 		c.Pool.attachRetirer(r)
@@ -631,6 +639,7 @@ func (r *Retirer) Stop() {
 		// pool that held its refill for it is woken after the unlock.
 		wake = len(r.full) > 0
 		clear(r.full)
+		clear(r.claimBlocked)
 	})
 	if wake && r.cfg.Pool != nil {
 		r.cfg.Pool.Kick()
@@ -712,6 +721,7 @@ func (r *Retirer) pass() {
 	for i, id := range queue {
 		r.mu.Lock()
 		stopped := r.stoppedLocked()
+		delete(r.claimBlocked, id)
 		r.mu.Unlock()
 		if stopped {
 			// The rest of the queue is dropped with the retirer: epic 9
@@ -739,11 +749,29 @@ func (r *Retirer) pass() {
 			// pass, which is the retry.
 			requeued = append(requeued, id)
 			requeuedReasons = append(requeuedReasons, reasons[i])
+			if errors.Is(err, ErrClaimed) {
+				r.markClaimBlocked(id)
+			}
 		}
 	}
 
 	if len(requeued) > 0 {
 		r.requeue(requeued, requeuedReasons)
+	}
+}
+
+// markClaimBlocked records that the queued full-size id's retirement was
+// refused for another path's claim, and kicks the pool so a spare wait
+// parked behind the queue reads it again, without the id counted as handed.
+func (r *Retirer) markClaimBlocked(id core.SegmentID) {
+	r.mu.Lock()
+	_, full := r.full[id]
+	if full {
+		r.claimBlocked[id] = struct{}{}
+	}
+	r.mu.Unlock()
+	if full && r.cfg.Pool != nil {
+		r.cfg.Pool.Kick()
 	}
 }
 
@@ -758,6 +786,7 @@ func (r *Retirer) dropQueued(id core.SegmentID) {
 	delete(r.queued, id)
 	_, wasFull := r.full[id]
 	delete(r.full, id)
+	delete(r.claimBlocked, id)
 	emptied := wasFull && len(r.full) == 0
 	r.mu.Unlock()
 
