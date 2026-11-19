@@ -98,7 +98,7 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 | `engine-bench` | the engine's benchmarks, RFC 8 §15.4's B5, B7 and B9, on a real directory and an on-disk store | manual | any machine, with `DITTOFS_BENCH_DIR` on the device under test |
 | `reconcile-bench` | the reconcile pass at 10⁴ shares, cold and under share churn, against RFC 23 §8's 5 s | manual | any machine, with `DITTOFS_BENCH_DIR` |
 | `version-limit-probe-bench` | the engine's version-limit probe alone | manual | any machine |
-| `adapter-conformance` | the adapters' specifications that wait on a stub, behind their own tag: each fails until its epic fills the stub, a known failure | pr | any machine |
+| `adapter-conformance` | the adapters' conformance specifications, behind their own tag | pr | any machine |
 | `integration` | `-tags=integration` tests against real services | pr | Docker with Postgres and KMIP up; `integration/portmap` needs a Linux host with rpcbind |
 | `operator` | the Kubernetes operator: `make test`, `make lint`, manifests, kustomize | pr | any machine with `make` and `kubectl` |
 | `e2e` | `-tags=e2e` tests through real kernel NFS and SMB mounts, as root | merge | Linux, or dtc |
@@ -475,6 +475,9 @@ of its own with `dt run CELL --ci`. A new suite in the registry reaches CI with 
 - **Always:** Go Checks, Repo Checks, ShellCheck, the secret scan (gitleaks) and CodeQL.
 - **Blocking or not:** `e2e`'s options, `bench-smoke` and `unit/windows` don't block a pull
   request. Everything else does.
+- **On `feat/storage-v2`:** `tests.yml` skips the suites that haven't moved there yet (its `V2`
+  filter): `e2e`, `pjdfstest`, `pynfs`, `wpts`, `smbtorture`, `cthon04`, `nfstest`, `clients`,
+  `fio-verify`, `bench-smoke`, `system`, `unit/windows` and `integration/kerberos`.
 
 **Required to merge** into `develop` or `feat/storage-v2`:
 
@@ -943,17 +946,8 @@ Each of these is a real failure mode:
   misbound rpcbind.
 - **Use IP addresses, not hostnames,** for the mount target and NSM: the two namespaces don't share
   name resolution.
-- **DittoFS must register with the system rpcbind, with UDP on** (below); UDP carries NSM and
+- **DittoFS must register with the system rpcbind, with UDP on**; UDP carries NSM and
   `SM_NOTIFY`.
-
-### Enabling server-side registration
-
-Registration is off by default. The e2e harness turns it on at run time:
-
-```
-PATCH /api/v1/adapters/nfs/settings
-{ "portmapper_register_with_system": true, "udp_enabled": true }
-```
 
 ### What it covers
 

@@ -199,9 +199,9 @@ section and "Writing tests" in [CLAUDE.md](../../CLAUDE.md).
 
 ## Benchmarking
 
-`bench-smoke` runs on pull requests, non-blocking; `fio-verify` and `perf-night` run nightly. The
-others are run by hand: Go's `-bench`, `dfsbench`'s full runs and the `manual` tier's
-`engine-bench`, `reconcile-bench` and `version-limit-probe-bench` (RFC 29 §4.3).
+On storage-v2, `tests.yml` drops `bench-smoke` and `fio-verify`, as it does every suite that
+hasn't moved to storage-v2 yet. Go's `-bench`, `dfsbench`'s full runs and the `manual` tier's
+`engine-bench`, `reconcile-bench` and `version-limit-probe-bench` are run by hand (RFC 29 §4.3).
 [`bench/README.md`](../../bench/README.md) covers how to run `dfsbench` and the components'
 `go test -bench`.
 
