@@ -1075,7 +1075,8 @@ dt known prune SUITE [--ci] [--last N]         remove entries that matched no fa
 dt known import FILE.md KNOWN.yaml             convert a Markdown known-failure list into a known file, once;
    [--where AXIS=V,...]                        --where sets where its entries apply
 dt known baseline SUITE/CELL [RUN]             write a cell's results as its baseline file (smbtorture's)
-dt docs [--check]                              write the documentation's suite tables, or check them; check the RFCs' suites paragraphs
+dt docs [--check]                              write the testing guide's suite table and dt's command reference, or check them;
+                                               check the RFCs' suites paragraphs
 dt completion bash|zsh|fish|powershell         cobra's script for the shell, completing dt's arguments and flag values; bash and zsh are tested
 ```
 

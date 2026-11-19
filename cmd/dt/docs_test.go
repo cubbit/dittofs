@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -45,7 +46,7 @@ func TestDocsRFCs(t *testing.T) {
 		{"**Suites.** `a` and\n`c`, as `g` does.\n", rfcDir + "/rfc-2-x.md:2: `c` is no suite, group or option"},
 		{"**Suites.** `a`.\n\n**Suites.** `b`.\n", rfcDir + "/rfc-2-x.md: 2 paragraphs start **Suites.**"},
 	} {
-		path := docsRepo(t, suitesBegin+"\n"+suitesEnd+"\n")
+		path := docsRepo(t, suitesBegin+"\n"+suitesEnd+"\n"+commandsBegin+"\n"+commandsEnd+"\n")
 		writeFile(t, filepath.Join(rfcDir, "rfc-index.md"), "no paragraph\n")
 		writeFile(t, filepath.Join(rfcDir, "rfc-2-x.md"), c.rfc)
 		for _, args := range [][]string{nil, {"--check"}} {
@@ -77,7 +78,7 @@ func docs(args ...string) (string, error) {
 // to fix it; dt docs writes a row for each suite and option with a known file
 // between the markers only; then the check passes.
 func TestDocs(t *testing.T) {
-	stale := "intro\n" + suitesBegin + "\nold\n" + suitesEnd + "\noutro\n"
+	stale := "intro\n" + suitesBegin + "\nold\n" + suitesEnd + "\noutro\n" + commandsBegin + "\n" + commandsEnd + "\n"
 	path := docsRepo(t, stale)
 
 	out, err := docs("--check")
@@ -101,7 +102,7 @@ func TestDocs(t *testing.T) {
 
 From [` + "`test/suites.yaml`" + `](../../test/suites.yaml): its suites graded against a known file, and their options.
 Each runs in its tier and the wider ones, ` + "`pr` then `merge` then `nightly`; a `manual` one only when asked.\n" + suitesEnd + "\noutro\n"
-	if got, _ := os.ReadFile(path); string(got) != want {
+	if got, _ := os.ReadFile(path); !strings.HasPrefix(string(got), want) {
 		t.Errorf("written doc:\n%s\nwant:\n%s", got, want)
 	}
 
@@ -110,10 +111,47 @@ Each runs in its tier and the wider ones, ` + "`pr` then `merge` then `nightly`;
 	}
 }
 
-// A doc without the begin marker, or without an end marker after it, is an
-// error and is left as it is, so a lost marker can't pass the check.
+// dt docs writes each available command, the nested ones too, with its usage
+// line and flags between the commands markers, --help left out. Once a command takes a flag the reference doesn't list, as
+// a suite's new option gives dt run, the check fails and says how to fix it,
+// until dt docs writes it again.
+func TestDocsCommands(t *testing.T) {
+	path := docsRepo(t, suitesBegin+"\n"+suitesEnd+"\n"+commandsBegin+"\n"+commandsEnd+"\n")
+	if _, err := docs(); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	for _, want := range []string{"(?m)^### `dt run`$", `(?m)^ +--o\[=true\|false\] +run the suite's o option$`, "(?m)^### `dt docs`$", `(?m)^dt docs \[--check\] \[flags\]$`, `(?m)^ +--check\[=true\|false\] +only check`, "(?m)^### `dt known prune`$"} {
+		if !regexp.MustCompile(want).Match(got) {
+			t.Errorf("written reference lacks %s:\n%s", want, got)
+		}
+	}
+	if strings.Contains(string(got), "--help") || strings.Contains(string(got), "### `dt help`") {
+		t.Errorf("written reference lists --help or dt help:\n%s", got)
+	}
+
+	data, _ := os.ReadFile("test/suites.yaml")
+	writeFile(t, "test/suites.yaml", strings.Replace(string(data), `b: { cmd: "true" }`, `b: { cmd: "true", options: { p: { cmd: "true" } } }`, 1))
+	out, err := docs("--check")
+	if status := exitStatus(0); !errors.As(err, &status) || status != 1 || !strings.Contains(out, "the command reference differs from dt's commands; run test/harness/bin/dt docs") {
+		t.Errorf("check after a new option: %v, %q; want exit status 1 and the fix", err, out)
+	}
+	if _, err := docs(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := docs("--check"); err != nil {
+		t.Errorf("check after the write: %v, %q", err, out)
+	}
+}
+
+// A doc without either block's begin marker, or without its end marker after
+// it, is an error and is left as it is, so a lost marker can't pass the check.
 func TestDocsNeedsBothMarkers(t *testing.T) {
-	for _, doc := range []string{"no table\n", suitesEnd + "\n" + suitesBegin + "\nno end after it\n"} {
+	suites := suitesBegin + "\n" + suitesEnd + "\n"
+	for _, doc := range []string{
+		"no table\n", suitesEnd + "\n" + suitesBegin + "\nno end after it\n",
+		suites + "no reference\n", suites + commandsEnd + "\n" + commandsBegin + "\nno end after it\n",
+	} {
 		path := docsRepo(t, doc)
 		if _, err := docs("--check"); err == nil {
 			t.Errorf("%q: the check passed", doc)

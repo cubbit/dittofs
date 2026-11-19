@@ -27,6 +27,7 @@ design and its reasons are in [RFC 29](rfcs/rfc-29-test-harness.md).
 - [Real NFSv3 NLM lock testing (network-namespace isolation)](#real-nfsv3-nlm-lock-testing-network-namespace-isolation)
 - [Crash testing (dm-flakey and cold reads)](#crash-testing-dm-flakey-and-cold-reads)
 - [Manual testing from Windows](#manual-testing-from-windows)
+- [Command reference](#command-reference)
 - [Troubleshooting](#troubleshooting)
 - [Further reading](#further-reading)
 
@@ -1287,6 +1288,330 @@ limitations compared to Linux and macOS NFS clients.
 | NFS-08 | Delete directory | `rmdir Z:\nfsdir` | [ ] Pass / [ ] Fail / [ ] Skip | |
 
 For the end-user guide to connecting a Windows client, see [`../guide/windows.md`](../guide/windows.md).
+
+## Command reference
+
+Every `dt` command with its usage line and flags, which `dt COMMAND --help` also prints. `dt docs`
+writes this section from dt's commands, and `dt docs --check`, in `lint-repo`, fails when it is out
+of date.
+
+<!-- dt-commands:begin -->
+<!-- Generated from dt's commands by test/harness/bin/dt docs. Do not edit by hand. -->
+
+### `dt cleanup`
+
+Stop everything the harness can leave running
+
+```text
+dt cleanup [ARGS]
+```
+
+### `dt completion`
+
+Generate the autocompletion script for the specified shell
+
+```text
+dt completion
+```
+
+### `dt completion bash`
+
+Generate the autocompletion script for bash
+
+```text
+dt completion bash
+```
+
+Flags:
+
+```text
+      --no-descriptions[=true|false]   disable completion descriptions
+```
+
+### `dt completion fish`
+
+Generate the autocompletion script for fish
+
+```text
+dt completion fish [flags]
+```
+
+Flags:
+
+```text
+      --no-descriptions[=true|false]   disable completion descriptions
+```
+
+### `dt completion powershell`
+
+Generate the autocompletion script for powershell
+
+```text
+dt completion powershell [flags]
+```
+
+Flags:
+
+```text
+      --no-descriptions[=true|false]   disable completion descriptions
+```
+
+### `dt completion zsh`
+
+Generate the autocompletion script for zsh
+
+```text
+dt completion zsh [flags]
+```
+
+Flags:
+
+```text
+      --no-descriptions[=true|false]   disable completion descriptions
+```
+
+### `dt docs`
+
+Write the testing guide's suite table from the registry and its command reference from dt's commands, or check them; check the RFCs' suites paragraphs; exit 1 on a difference
+
+```text
+dt docs [--check] [flags]
+```
+
+Flags:
+
+```text
+      --check[=true|false]   only check the suite table, the command reference and the RFCs' suites paragraphs, and exit 1 on a difference
+```
+
+### `dt doctor`
+
+Which needs this machine meets, and how to meet the rest
+
+```text
+dt doctor
+```
+
+### `dt e2e`
+
+dt run e2e
+
+```text
+dt e2e [ARGS...]
+```
+
+### `dt history`
+
+Pass, fail, skip and flaky counts over past runs, with p50 and p90 durations: per suite, per test of SUITE, and each result of TEST
+
+```text
+dt history [SUITE[/TEST]] [flags]
+```
+
+Flags:
+
+```text
+      --branch string     with --ci, the branch whose runs of tests.yml are read (default "develop")
+      --ci[=true|false]   read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
+      --last int          read the last N runs (default 10)
+```
+
+### `dt history diff`
+
+Which cells and tests took longer or shorter between two runs of tests.yml, by workflow run ID, or between the older and the newer half of the last N on --branch, each test's median
+
+```text
+dt history diff [A B] [flags]
+```
+
+Flags:
+
+```text
+      --branch string    without run IDs, the branch whose runs of tests.yml are compared (default "develop")
+      --floor duration   leave out tests whose time changed by less than this (default 100ms)
+      --last int         without run IDs, compare the median of the older half of the last N runs with the newer half's (default 10)
+      --top int          show at most N tests, the ones that took longer first; 0 shows all (default 30)
+```
+
+### `dt hooks`
+
+Run git's hooks through the harness, on this machine or in the dtc container
+
+```text
+dt hooks [ARGS]
+```
+
+### `dt integration`
+
+dt run integration
+
+```text
+dt integration [ARGS...]
+```
+
+### `dt known`
+
+Work on the suites' known files
+
+```text
+dt known
+```
+
+### `dt known baseline`
+
+Write a cell's results, the latest run's by default, as its baseline file (smbtorture's)
+
+```text
+dt known baseline SUITE/CELL [RUN]
+```
+
+### `dt known import`
+
+Convert a Markdown known-failure list into a known file, once
+
+```text
+dt known import FILE.md KNOWN.yaml [flags]
+```
+
+Flags:
+
+```text
+      --where string   AXIS=V,...: where the list's entries apply
+```
+
+### `dt known prune`
+
+Remove the known entries that matched no failing or skipping test in the runs dt history reads
+
+```text
+dt known prune SUITE [flags]
+```
+
+Flags:
+
+```text
+      --branch string     with --ci, the branch whose runs of tests.yml are read (default "develop")
+      --ci[=true|false]   read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
+      --last int          read the last N runs (default 10)
+```
+
+### `dt list`
+
+Suites, options and groups, with their tier, format and needs, and whether they can run here
+
+```text
+dt list [flags]
+```
+
+Flags:
+
+```text
+      --json[=true|false]   print JSON
+      --tier string         only the suites tier T runs
+```
+
+### `dt plan`
+
+The cells a tier runs, each with its place; with --estimate, the tier's runner-minutes from dt history
+
+```text
+dt plan [flags]
+```
+
+Flags:
+
+```text
+      --base string             compare the branch with REF: a docs-only change plans nothing, and suites with paths run only when touched
+      --branch string           with --ci, the branch whose runs of tests.yml are read (default "develop")
+      --ci[=true|false]         read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
+      --estimate[=true|false]   give each cell its p50 over the runs dt history reads, and the tier's runner-minutes, their sum
+      --json[=true|false]       print JSON
+      --last int                read the last N runs (default 10)
+      --shard string            only shard I of N of the cells, as I/N
+      --tier string             the tier to plan: pr, merge, nightly or manual (required)
+```
+
+### `dt report`
+
+Show a run, the latest by default: how each cell went, and its new failures; with --post, post them, and with --commit-status, set its commit's status
+
+```text
+dt report [RUN...] [flags]
+```
+
+Flags:
+
+```text
+      --commit-status string    set the commit status NAME on a run of develop's merge or nightly tier: success, failure or error from its exit status, with its test counts, with the token in GITHUB_TOKEN
+      --failures[=true|false]   only the new failures
+      --format string           text, md or json (default "text")
+      --post strings            post the new failures of a tier run of develop, whose planned cells are CELL,..., to the develop-status issue, and give a test failing 2 runs in a row an issue of its own, with the token in GITHUB_TOKEN; a planned cell with no run didn't run
+      --results string          where the runs are, relative to the checkout's root (default test/harness/results)
+```
+
+### `dt run`
+
+Run suites and write their results and logs; exit 0 when all passed, 1 when one failed, 2 when one didn't run
+
+```text
+dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] | --place P [flags]
+```
+
+Flags:
+
+```text
+      --ad-dc[=true|false]            run the suite's ad-dc option
+      --base string                   compare the branch with REF wherever a command uses {base}, instead of the base dt finds: origin/develop, or in CI the event's
+      --changed[=true|false]          where a suite's packages gives patterns, test only the packages with a change committed since the base: every one without a base, when go.mod, go.sum or go.work changed, or when a changed file is in no package
+      --ci[=true|false]               an unmet need fails the run instead of skipping the cell, and new failures are annotated
+      --cross-protocol[=true|false]   run the suite's cross-protocol option
+      --in string                     where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)
+      --json[=true|false]             print the run's results on stdout as dt report --format json does, once the run ends, and the rest on stderr
+      --kerberos[=true|false]         run the suite's kerberos option
+      --knfsd[=true|false]            run the suite's knfsd option
+      --macos[=true|false]            run the suite's macos option
+      --no-color[=true|false]         don't color the results, as NO_COLOR set does; without either, they're colored on a terminal
+      --nonrace[=true|false]          run the suite's nonrace option
+      --only strings                  run only these suites of the group
+      --packages strings              test only these packages, where a suite's commands take {packages}: they replace the patterns and --changed's selection
+      --parallel int                  run up to N cells at once; cells that conflict, as two on one fixed port, still run one at a time (default 1)
+      --place string                  run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met
+      --portmap[=true|false]          run the suite's portmap option
+      --results string                where results go, relative to the checkout's root (default test/harness/results)
+      --retry int                     run each test that failed new again, up to N times: a pass on a retry is flaky
+      --skip strings                  skip these suites of the group
+      --smb[=true|false]              run the suite's smb option
+      --smb21[=true|false]            run the suite's smb21 option
+      --stress[=true|false]           run the suite's stress option
+      --tier string                   run at tier T, or at a suite's own tier when wider: it sets args, env and select (default "pr")
+      --windows[=true|false]          run the suite's windows option
+```
+
+### `dt services`
+
+Start, stop or show the services the suites use: localstack, postgres, kmip
+
+```text
+dt services [ARGS]
+```
+
+### `dt stack`
+
+Start, stop, show or mount the compose stack: a server with its S3 on Localstack
+
+```text
+dt stack [ARGS]
+```
+
+### `dt unit`
+
+dt run unit
+
+```text
+dt unit [ARGS...]
+```
+
+<!-- dt-commands:end -->
 
 ## Troubleshooting
 
