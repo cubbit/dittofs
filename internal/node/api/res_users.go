@@ -304,6 +304,13 @@ func holds(c auth.Caller, r auth.Right) bool {
 // exactly one @, a user part and a realm, and no space or control
 // character; the realm's ASCII letters upper-cased, as a directory's realm
 // is spelled; the user part kept byte for byte, as identity compares it.
+//
+// decision: the realm is upper-cased because an ad directory's realm is
+// upper case, which its record's validation enforces. An rfc2307 record may
+// name a realm with lower-case letters, and identity matches a name's realm
+// against the directory's case and all, so a name under such a realm is
+// stored in a spelling that never matches it. Overturned by the first
+// rfc2307 deployment that uses Kerberos: keep the realm as given there.
 func krbName(name string) (string, error) {
 	if len(name) > maxDirectoryName {
 		return "", tooLong("spec.kerberos")
