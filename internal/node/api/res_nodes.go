@@ -87,15 +87,12 @@ type connRow struct {
 	key []byte
 }
 
-// connections is the connections open on this node now, read from its
-// adapters, never from the store (RFC 23 §4.2), in key order, resuming
-// after the key after.
-//
-// ponytail: it pages through list, which reads every node's status once a
-// page though no connection uses it, an O(nodes) store read beside a
-// node-local one. Give list a listing that reads no status once that read
-// shows in a page's profile.
+// connections is the connections open on this node now, in key order,
+// resuming after the key after: a local listing, read from the node's
+// adapters and never from the store (RFC 23 §4.2), so a store refusing every
+// call does not refuse it.
 var connections = listing[connRow, apiv1.Connection]{
+	local: true,
 	records: func(_ context.Context, d Deps, after []byte, _ map[string]string) iter.Seq2[connRow, error] {
 		var rows []connRow
 		for _, c := range d.Connections() {

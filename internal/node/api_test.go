@@ -24,6 +24,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // admin authenticates every request as an admin.
@@ -425,5 +426,39 @@ func TestTheConnectionsNeedTheViewRight(t *testing.T) {
 	addr, _ := h.Node().Addrs()
 	if got := get(t, addr, connectionsPath(h.NodeID())); !notFound(got) {
 		t.Errorf("connections for an account with no role: answered %+v, want 404 not_found", got)
+	}
+}
+
+// The connections are read from the node, not from the store (RFC 23 §4.2):
+// with a client connected and every call of the store refused unavailable, a
+// viewer still reads its connection.
+func TestTheConnectionsAreReadWhileTheStoreRefuses(t *testing.T) {
+	var f *kvtest.FaultKV
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		f = kvtest.NewFaultKV(cfg.KV)
+		cfg.KV = f
+		return node.NewAuthenticating(caller(entity.RoleViewer))(cfg)
+	}))
+	smbPort := freePort(t)
+	h.Node().SetSMB(true, smbAt(smbPort))
+	started(t, h)
+	addr, _ := h.Node().Addrs()
+	path := connectionsPath(h.NodeID())
+	want := []string{nameOf("smb", client(t, smbPort))}
+	if got := listedUntil(t, addr, path, func(got []string) bool { return slices.Equal(got, want) }); !slices.Equal(got, want) {
+		t.Fatalf("connections with the store answering: %q, want %q", got, want)
+	}
+
+	unreachable := fmt.Errorf("the store is unreachable: %w", vfserr.ErrUnavailable)
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: "*", Key: "*", Action: sim.FaultAction{Err: unreachable}})
+	if err != nil {
+		t.Fatalf("fault schedule: %v", err)
+	}
+	f.SetFault(sched)
+	got := get(t, addr, path)
+	f.SetFault(nil)
+	var p apiv1.Page[apiv1.Connection]
+	if got.status != http.StatusOK || json.Unmarshal([]byte(got.body), &p) != nil || !slices.Equal(named(p.Items), want) {
+		t.Errorf("connections with every store call refused: answered %+v, want 200 listing %q", got, want)
 	}
 }

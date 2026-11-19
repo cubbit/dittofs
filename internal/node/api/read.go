@@ -52,9 +52,12 @@ const (
 // parameters it filters on, each an indexed field of its records; records,
 // which yields its records in key order, resuming after the key after, with
 // the filters the request named; each record's key; and its item on the
-// wire, from the record and what the page read once for every item.
+// wire, from the record and what the page read once for every item. A local
+// listing's records are this node's own, read from the node and never from
+// the store (RFC 23 §4.2): its page reads nothing from the store.
 type listing[E, T any] struct {
 	lo, hi  []byte
+	local   bool
 	filters []string
 	records func(ctx context.Context, d Deps, after []byte, filter map[string]string) iter.Seq2[E, error]
 	key     func(E) []byte
@@ -106,7 +109,8 @@ func (p perPage) applied(ref entity.ResourceRef, at uint64, through func(entity.
 // filter on is refused, naming it: a filter the store would answer by a scan
 // is not offered. With several at fault, the 400 names the first in name
 // order. Every registered node's status is read once for the page, whatever
-// its size, and handed to each item.
+// its size, and handed to each item, but for a local listing, which reads
+// none and needs no store.
 func list[E, T any](l listing[E, T]) adapter {
 	return func(ctx context.Context, s *Server, r *http.Request, _ *route, _ [16]byte) (answer, error) {
 		limit, after, filter := defaultLimit, []byte(nil), map[string]string{}
@@ -133,13 +137,15 @@ func list[E, T any](l listing[E, T]) adapter {
 				return answer{}, &fieldError{field: k, detail: "not a filter of this listing"}
 			}
 		}
-		if s.d.Store == nil || s.d.Nodes == nil {
-			return answer{}, errNoStore
-		}
 		var pp perPage
-		var err error
-		if pp.statuses, err = s.d.Nodes.RegisteredStatuses(ctx); err != nil {
-			return answer{}, err
+		if !l.local {
+			if s.d.Store == nil || s.d.Nodes == nil {
+				return answer{}, errNoStore
+			}
+			var err error
+			if pp.statuses, err = s.d.Nodes.RegisteredStatuses(ctx); err != nil {
+				return answer{}, err
+			}
 		}
 		page := apiv1.Page[T]{Items: []T{}}
 		var last []byte
