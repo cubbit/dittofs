@@ -229,6 +229,24 @@ func TestGroupMembers(t *testing.T) {
 	if got := s.groupsOf(t, u.ID); len(got) != 0 {
 		t.Errorf("alice's groups after the removal: %v, want none", got)
 	}
+	m := s.machine(t)
+	r = s.do(t, http.MethodPut, "/api/v1/groups/"+g.ID+"/members/"+m.String(), `{"spec":{}}`, "If-None-Match", "*")
+	if r.status != http.StatusBadRequest {
+		t.Errorf("PUT a machine as a member: answered %d %s, want 400", r.status, r.body)
+	}
+	if got := s.groupsOf(t, m.String()); len(got) != 0 {
+		t.Errorf("the machine's groups after its refused add: %v, want none", got)
+	}
+}
+
+// machine writes a machine principal through the store and returns its ID.
+func (s *served) machine(t *testing.T) uuid.UUID {
+	t.Helper()
+	m := entity.Principal{Kind: entity.PrincipalMachine, ID: entity.NewPrincipalID()}
+	if _, err := s.store.PutUser(t.Context(), entity.User{Principal: m, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeKerberos, Value: "host/" + uuid.NewString() + "@EXAMPLE.COM"}}}, 0, entity.Alloc{}); err != nil {
+		t.Fatalf("put the machine: %v", err)
+	}
+	return uuid.UUID(m.ID)
 }
 
 // groupsOf is the groups the user id names is a member of, as the store's
@@ -284,15 +302,12 @@ func TestGrants(t *testing.T) {
 		t.Errorf("staff's grant after alice's DELETE: %v, %v; want read, so alice falls through to it", a, ok)
 	}
 
-	m := entity.Principal{Kind: entity.PrincipalMachine, ID: entity.NewPrincipalID()}
-	if _, err := s.store.PutUser(t.Context(), entity.User{Principal: m, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeKerberos, Value: "host/a@EXAMPLE.COM"}}}, 0, entity.Alloc{}); err != nil {
-		t.Fatalf("put the machine: %v", err)
+	m := s.machine(t)
+	r := s.do(t, http.MethodPut, at(m.String()), `{"spec":{"access":"read"}}`, "If-None-Match", "*")
+	if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "invalid_argument" {
+		t.Errorf("PUT a machine's grant: answered %d %+v, want the store's 400 invalid_argument", r.status, p)
 	}
-	r := s.do(t, http.MethodPut, at(uuid.UUID(m.ID).String()), `{"spec":{"access":"read"}}`, "If-None-Match", "*")
-	if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "invalid" {
-		t.Errorf("PUT a machine's grant: answered %d %+v, want 400 invalid", r.status, p)
-	}
-	if _, ok := s.grantOf(t, share, uuid.UUID(m.ID).String()); ok {
+	if _, ok := s.grantOf(t, share, m.String()); ok {
 		t.Error("the store holds the machine's refused grant")
 	}
 }
@@ -382,8 +397,9 @@ func TestPrincipalWritesWaitForTheNode(t *testing.T) {
 	}
 	u, tag := s.createUser(t, apiv1.UserSpec{Name: "alice"}, "c1")
 	waited("POST /users", true)
-	if r := s.do(t, http.MethodPatch, "/api/v1/users/"+u.ID, `{"spec":{"disabled":true}}`, "If-Match", tag); r.status != http.StatusOK {
-		t.Fatalf("PATCH the user: answered %d %s", r.status, r.body)
+	pr := s.do(t, http.MethodPatch, "/api/v1/users/"+u.ID, `{"spec":{"disabled":true}}`, "If-Match", tag)
+	if pr.status != http.StatusOK {
+		t.Fatalf("PATCH the user: answered %d %s", pr.status, pr.body)
 	}
 	waited("PATCH /users/{id}", true)
 	g := s.createGroup(t, apiv1.GroupSpec{Name: "staff"}, "g1")
@@ -405,4 +421,16 @@ func TestPrincipalWritesWaitForTheNode(t *testing.T) {
 		t.Fatalf("PUT the netgroup: answered %d %s", r.status, r.body)
 	}
 	waited("PUT /netgroups/{sub}", false)
+	if r := s.do(t, http.MethodDelete, "/api/v1/groups/"+g.ID+"/members/"+u.ID, "", "If-Match", `"1"`, "Idempotency-Key", "dm"); r.status != http.StatusOK {
+		t.Fatalf("DELETE the member: answered %d %s", r.status, r.body)
+	}
+	waited("DELETE /groups/{id}/members/{sub}", true)
+	if r := s.do(t, http.MethodDelete, "/api/v1/users/"+u.ID, "", "If-Match", pr.header.Get("ETag"), "Idempotency-Key", "du"); r.status != http.StatusAccepted {
+		t.Fatalf("DELETE the user: answered %d %s", r.status, r.body)
+	}
+	waited("DELETE /users/{id}", true)
+	if r := s.do(t, http.MethodDelete, "/api/v1/groups/"+g.ID, "", "If-Match", `"`+strconv.FormatUint(g.Generation, 10)+`"`, "Idempotency-Key", "dg"); r.status != http.StatusAccepted {
+		t.Fatalf("DELETE the group: answered %d %s", r.status, r.body)
+	}
+	waited("DELETE /groups/{id}", true)
 }

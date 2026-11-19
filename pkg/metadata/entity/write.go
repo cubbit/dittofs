@@ -123,7 +123,8 @@ type ControlPlaneTx interface {
 	Member(m Membership) (bool, error)
 	// Netgroup is the netgroup of name; false when none is stored.
 	Netgroup(name string) (Netgroup, bool, error)
-	// Quota is share's quota on the user or group p; false when it has none.
+	// Quota is share's quota on the user or group p, the zero p naming the
+	// share's own; false when it has none.
 	Quota(share ShareID, p Principal) (Quota, bool, error)
 	Share(id ShareID) (Share, bool, error)
 	// ExportPolicy is the share's export policy; the default one, version
