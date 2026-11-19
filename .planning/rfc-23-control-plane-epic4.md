@@ -10,7 +10,7 @@ on the API's side; [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §6 
 [RFC 23's plan](rfc-23-control-plane-plan.md) D2, D5 and D14, and its amendment A8 to RFC 23 §2.3
 (the writing node's wait).
 **Track:** B.
-**Epic 4 estimate: 12 subtasks, 39 man-days.**
+**Epic 4 estimate: 12 subtasks, 39.5 man-days.**
 **Depends on:** S1 (E1 merged): the shared wire types in `pkg/node/apiv1` and the node's surface. E2:
 `ControlPlane.Write` with `entity.WriteMeta` and `entity.ControlPlaneTx`, `expect` on every write,
 the idempotency, audit and operation records with their errors in `entity`, the operation record's
@@ -877,12 +877,13 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 ### T4.11 The domain's routes and the `identity.ntlm` rule
 
-**Subtask T4.11 estimate: 5 man-days.**
+**Subtask T4.11 estimate: 5.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.9, T4.10; its success paths on the RFC 18 plan's epics 6 and 7
   (identity's calls and `pkg/identity/identitytest`'s in-memory directory and domain controller),
   and the `krb` link's stored SID on its epic 5's T5.8a (`entity.ProtocolID.Linked`)
-  and X1.
+  and X1. Its keytab secret route depends on T4.9's `Sealer` path only, and on nothing in the
+  RFC 18 plan's epic 7, so it lands in its own pull request, §8's PR 6, before the domain's routes.
 - **Covers:** R3, R22, R44, R49, R50, R51, R61, R63, R64.
 - **Deliverables:** the identity-owned keytab secret route, a write of `identity.keytab`'s `Secret`
   authorized as the installation's, its value sealed by the pre-write step through `Deps.Sealer`
@@ -912,7 +913,11 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   - A `krb` link whose directory cannot answer is refused `ErrUnavailable` and writes nothing.
   - An offline join's retry while the first runs writes no version.
   - An online join whose OU or host name is refused writes no operation and holds no credential.
-- **Tests:** with each interface nil, every domain route refused and nothing written (R64, D13);
+- **Tests:** the keytab secret route: a keytab sealed through `Deps.Sealer` and read raw holding no
+  value, refused `503` with nothing written while `Sealer` is nil, refused for a caller without
+  the installation's write right, and, once the RFC 18 plan's epic 5 settles its D3,
+  `CheckKeytab` run before the seal, a keytab it refuses answered `400` with no `Secret` version
+  written (R63, R64); with each interface nil, every domain route refused and nothing written (R64, D13);
   over the in-memory directory and domain controller held to their suites: a `krb` link with the
   directory answering, unreachable, holding no entry, and in another realm; alice's entry cached
   and the directory failing inside its stale grace, the write refused `ErrUnavailable` with nothing
@@ -958,8 +963,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   operation IDs unique and of the documented form; required body fields as the wire writes them; and,
   against the API on `127.0.0.1:0`, the server's answers held to the document: a share's create,
   read, listing, patch, delete and its operation, each answer valid against its schema, every
-  documented listing filter accepted, and every header the server requires documented as required
-  (catches a document that drifts from the server rather than from the table, R70). No test double.
+  documented listing filter accepted, and each documented required header, left out, answered
+  `428` (catches a document that drifts from the server rather than from the table, R70). No test double.
 
 ## 7. Order of work
 
@@ -994,8 +999,9 @@ its commands on the client.
 | 3 | T4.5, T4.6 | 5.5 | PR 1 | reads, operations, nodes and the audit |
 | 4 | T4.7, T4.8 | 7 | PR 2, PR 3 | shares and the client that first drives them |
 | 5 | T4.9, T4.10 | 6.75 | PR 4 | the remaining resources |
-| 6 | T4.11 | 5 | PR 5 | the domain |
-| 7 | T4.12 | 2 | PR 4 | the generated document, once the client's routes are in |
+| 6 | T4.11, its keytab secret route | 0.5 | PR 5 (T4.9) | the route the RFC 18 plan's epic 8's T8.4 needs, with nothing of the RFC 18 plan's epic 7 |
+| 7 | T4.11, the rest | 5 | PR 5, PR 6 | the domain, after the RFC 18 plan's epic 7's T7.5 |
+| 8 | T4.12 | 2 | PR 4 | the generated document, once the client's routes are in |
 
 PR 2 and PR 3 can be open at once. A suggestion only: one pull request per subtask works as well.
 

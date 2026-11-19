@@ -669,7 +669,7 @@ flowchart TD
   T8_2 --> T8_3["T8.3 Applied at once"]
   X3(["E3 T3.6, RFC 23 plan epic 3 T3.5 (D16) and T3.3's follow-up, epic 4 write path"]):::sync --> T8_3
   T8_2 --> T8_4["T8.4 alice's Samba ticket"]
-  X4(["E5 T5.1 and T5.11, E6 T6.1, T6.6 and T6.11"]):::sync --> T8_4
+  X4(["E5 T5.1 and T5.11, E6 T6.1, T6.6 and T6.11, RFC 23 plan epic 4 T4.11 (keytab route)"]):::sync --> T8_4
   X5(["E5 T5.8b, E6 T6.9 and T6.11"]):::sync --> T8_5["T8.5 Kerberos clauses"]
   T8_2 --> T8_6["T8.6 Machine account in the node"]
   X6(["E7 T7.3 to T7.15"]):::sync --> T8_6
@@ -694,7 +694,7 @@ passes through; after T8.11, E9 can start once S3 is reached.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T8.1 | 1.5 | E2's T2.4 and T2.6, RFC 23's plan's epic 3, #4059's epic 5 | identity in the node, which E3's T3.6 and RFC 23's plan's epic 5 wait for |
-| 2 | T8.2, T8.3, T8.4 | 4.75 | PR 1, E3's T3.6, E4, E5 (T5.3's test realm among it), E6, the RFC 13 PR adding the `identity.keytab` row, RFC 23's #4550 (reconcile applies on a failed share pass) | the node delivering every principal, Kerberos and directory change, checked against Samba |
+| 2 | T8.2, T8.3, T8.4 | 4.75 | PR 1, E3's T3.6, E4, E5 (T5.3's test realm among it), E6, the RFC 13 PR adding the `identity.keytab` row, RFC 23's #4550 (reconcile applies on a failed share pass), RFC 23 plan epic 4 T4.11 (keytab route) | the node delivering every principal, Kerberos and directory change, checked against Samba |
 | 3 | T8.5 | 2 | E5's T5.8b, E6's T6.11 | the Kerberos clauses in identity alone; may be open beside PR 2 |
 | 4 | T8.6, T8.7, T8.8 | 4 | PR 2, E7, RFC 23's plan's epic 4's T4.9 and T4.11 | the machine account in the node and what pass-through and the join close |
 | 5 | T8.9, T8.10, T8.11 | 2.5 | PR 4, RFC 23's plan's epics 4 and 5 | the rows through the API, and the capture over everything above |
