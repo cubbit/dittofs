@@ -732,7 +732,7 @@ card. A client asks for the server's addresses
   ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)) only when the last of its
   channels ends (MS-SMB2 3.3.7.1): that session's volatile opens close, and so
   do its durable opens that no grant with handle caching covers, since MS-SMB2
-  3.3.5.9.7 refuses their reconnect; its other durable opens and its
+  3.3.5.9.7 and 3.3.5.9.12 refuse their reconnect; its other durable opens and its
   persistent opens start their timeouts. Losing one channel of a
   multichannel session ends nothing while another channel lives, and one
   user's disconnect on a multi-session host starts no timeout on another
@@ -778,7 +778,7 @@ carries many users' sessions at once.
   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): to a session holding
   one of the lease's opens (MS-SMB2 3.3.4.7); if every one is disconnected and
   none is persistent, nowhere, and those opens close, since a reconnect after
-  an undelivered break is refused (MS-SMB2 3.3.5.9.7); if every one is
+  an undelivered break is refused (MS-SMB2 3.3.5.9.7, 3.3.5.9.12); if every one is
   disconnected and one is persistent, only to a session of that client signed
   in as one of the openers; and if there is none, nowhere, so the break times
   out (§6.3). The service names the
@@ -1188,12 +1188,12 @@ The hold and the re-run are the pipeline mechanism of
   out. A permanent cause is `STATUS_DISK_FULL` at once (§16.5).
 - **A waiting lock has no deadline** (§7): it holds no worker and ends only as
   RFC 14's waiter does.
-- **A break not acknowledged by its deadline downgrades; it does not close.**
+- **A break not acknowledged by its deadline downgrades; it closes only disconnected durable opens that are not persistent.**
   At the deadline the lease or oplock is set to none (MS-SMB2 3.3.6.1,
   3.3.6.5), and the waiting request is re-run. The holder's opens stay open,
   but for its disconnected durable opens that are not persistent, which
   close, as a durable open that is not persistent is kept only under handle
-  caching (MS-SMB2 3.3.5.9.7,
+  caching (MS-SMB2 3.3.5.9.7, 3.3.5.9.12,
   [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)). Those that stay keep their deny modes and locks, and the
   holder's later reads and writes through them are served as ordinary
   I/O on an open that holds no caching. The client — the machine (§4.4) — is
@@ -1217,7 +1217,8 @@ The hold and the re-run are the pipeline mechanism of
 > connection's trees on unmoved shares reconnect too. Revisit with RFC 27's
 > trigger, the Windows-client row of §18.
 
-> decision: a timed-out break downgrades the grant and keeps the opens, as
+> decision: a timed-out break downgrades the grant and keeps the opens, its
+> disconnected durable opens that are not persistent aside, as
 > Windows servers do. Closing the holder's opens would end a stalled virtual
 > machine's profile disk mid-session — the worst outcome for the reference
 > workload — to protect against writes the holder buffered under write
@@ -2988,7 +2989,7 @@ name, a SID, a principal or a client address
 | S9 | Every SMB object the adapter maps names a record another RFC owns; the adapter keeps no durable state but the opaque `Adapter` bytes of those records, reached through the service. |
 | S10 | A write on a persistent open, or on any open on a continuously available share, is stable before it is acknowledged (S22); a durable open is never reconnected after its primary is lost. |
 | S11 | Every session signs or encrypts every request after setup; no share carries its own signing setting. |
-| S12 | A break ends before the request waiting on it: the pending deadline exceeds the break deadline. A timed-out break downgrades the grant and leaves its opens open. |
+| S12 | A break ends before the request waiting on it: the pending deadline exceeds the break deadline. A timed-out break downgrades the grant and leaves its opens open, but for disconnected durable opens that are not persistent, which close. |
 | S13 | A sharing violation against a handle-cached open is decided only after handle caching is broken. |
 | S14 | A durable reconnect is routed by the FileId's persistent half; a previous session held on the node is torn down before the new one completes. |
 | S15 | No SMB field carries a `FileID`; the SACL is read or changed only by an administrator; `ChangeTime` is never suspended. |

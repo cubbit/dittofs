@@ -410,7 +410,7 @@ type Peers interface {
 	ReadAt(ctx context.Context, to NodeID, src OpenRef, off int64, dst []byte) (int, error) // §5.9: a cross-shard copy's source read
 	Sequence(ctx context.Context, to NodeID, o LockOwner, seq uint32) error // §5.11: a sequenced owner's number at its home primary (RFC 14 §2.8)
 	ClientState(ctx context.Context, to NodeID, c ClientID, op Op, args []any) (Reply, error) // the lease owner to each primary holding its client's state, TestState's other refs included (§3.5)
-	Recall(ctx context.Context, to NodeID, s SessionRef, openers []Principal, ev any) (sent bool, err error) // a primary's recall, notify or revoke to the node holding s, the session the service picked (§3.2); zero s and openers given: an SMB break whose opens are all disconnected, which that node passes to its adapter's RecallGrant with the openers, returning the sent it answers; zero s and no openers: to an NFS or NLM client's lease owner, the client named in ev (RFC 14 §4.1)
+	Recall(ctx context.Context, to NodeID, s SessionRef, openers []Principal, ev any) (sent bool, err error) // a primary's recall, notify or revoke to the node holding s, the session the service picked (§3.2); zero s and openers given: an SMB break whose opens are all disconnected and one is persistent, which that node passes to its adapter's RecallGrant with the openers, returning the sent it answers; zero s and no openers: to an NFS or NLM client's lease owner, the client named in ev (RFC 14 §4.1)
 }
 
 // Envelope is RFC 15 §4.3's route envelope; its rules are there.

@@ -314,7 +314,7 @@ durable reconnect re-attaches an open only for its opener's principal
 ([§8.1](#8.1%20SMB%20durable%20and%20persistent%20opens), MS-SMB2 3.3.5.9.12).
 When every open of the grant is disconnected and none is persistent, the break
 is sent nowhere and those opens close, since a reconnect after an undelivered
-break is refused (MS-SMB2 3.3.4.7, 3.3.5.9.7). When every open is disconnected
+break is refused (MS-SMB2 3.3.4.7, 3.3.5.9.7, 3.3.5.9.12). When every open is disconnected
 and one is persistent, the break goes only to a session
 of that client signed in as one of the openers, which the adapter on the node
 holding it picks from its own session table
@@ -1944,7 +1944,7 @@ its kind and by the opens it covers (§2.4). A grant that covers opens — an SM
 lease under its key, an oplock over its open — is cut to none at 35 s, and the
 opens stay, but for its disconnected durable opens that are not persistent,
 which close, a durable open being kept only under handle caching (MS-SMB2
-3.3.5.9.7). A grant that covers no open, an NFS delegation, is revoked at one
+3.3.5.9.7, 3.3.5.9.12). A grant that covers no open, an NFS delegation, is revoked at one
 lease period, and later I/O under it is refused.
 
 **An administrator's revoke follows the same path.** It releases every open,
@@ -2006,7 +2006,8 @@ for it: each still ends within its own deadline when anything conflicts.
 > still offered grants at another. Hold it at the lease owner if fenced clients
 > are seen missing recalls at a second primary within the period.
 
-**A grant that covers opens times out to none; it does not close.** A recall of
+**A grant that covers opens times out to none; it closes only its disconnected
+durable opens that are not persistent.** A recall of
 such a grant not acknowledged by its deadline sets the grant to none and
 proceeds, and a later acknowledgement is `ErrNoRecall` (§2.4); the opens it
 covered stay open, with their locks and deny modes, and
@@ -2393,7 +2394,7 @@ on the opens whose `Session` it is, never on the client record: one machine's
 other sessions keep their opens. Its persistent opens, and its SMB-durable ones
 a grant with handle caching covers, stay, with every lock, deny mode and lease
 they hold, and conflict as before; its other SMB-durable opens close, as its
-volatile ones do (MS-SMB2 3.3.5.9.7 refuses their reconnect); each kept one is
+volatile ones do (MS-SMB2 3.3.5.9.7 and 3.3.5.9.12 refuse their reconnect); each kept one is
 closed when `Timeout` has passed since the disconnect without a reconnect. A
 close by timeout is a close: it releases what the open held and can run a
 pending delete ([§9.4](#9.4%20Delete%20on%20close)). A new primary counts every
