@@ -44,7 +44,6 @@ The Nix flake provides:
 - ACL libraries for POSIX compliance testing
 - pjdfstest for POSIX compliance testing (Linux)
 - pynfs for NFSv4 protocol conformance, as `pynfs-4.0` and `pynfs-4.1`
-- `dfs-postgres-start` / `dfs-postgres-stop` for a PostgreSQL test container
 
 `nix flake check` builds both binaries.
 
