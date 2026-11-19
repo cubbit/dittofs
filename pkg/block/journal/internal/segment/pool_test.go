@@ -2672,15 +2672,26 @@ func TestPoolTakeReserveAboveFailedRenameStrandsNothing(t *testing.T) {
 			if got := p.Counters().RepackReserveBytes; got != 0 {
 				t.Errorf("the pool's ready reserve after the failed %s holds %d bytes, want 0: the spare is out of every ready list", op, got)
 			}
-			var names int
-			for _, id := range []core.SegmentID{3, 11} {
-				if f, err := seam.Open(format.SegmentName(id)); err == nil {
-					names++
-					_ = f.Close()
+			// The spare's file stands under exactly one name, read from the
+			// directory rather than pinned to a drawn id: the pool's own
+			// Start-kicked pass draws from the same id counter the take's
+			// rename renames under, and a draw it wins the race to burns the
+			// id the test has no claim on.
+			stand := make([]string, 0, 1)
+			for _, name := range listNames(t, seam) {
+				if kind, _ := format.ClassifyName(name); kind == format.NameSegment || kind == format.NameSpare {
+					stand = append(stand, name)
 				}
 			}
-			if names != 1 {
-				t.Errorf("the spare's file stands under %d of its two names after the failed %s, want exactly 1", names, op)
+			if len(stand) != 1 {
+				t.Errorf("the spare's file stands under %d names after the failed %s, want exactly 1: %v", len(stand), op, stand)
+			} else if f, err := seam.Open(stand[0]); err != nil {
+				t.Errorf("the spare's file %s does not open after the failed %s: %v", stand[0], op, err)
+			} else {
+				_ = f.Close()
+				if op == kit.OpSyncDir && stand[0] == format.SegmentName(3) {
+					t.Errorf("the spare's file still stands under its old name %s after the failed %s, want the drawn fresh one", stand[0], op)
+				}
 			}
 		})
 	}
