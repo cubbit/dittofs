@@ -114,9 +114,10 @@ func (p *Provider) roleKey(role Role, kind entity.SecretKind) (keyprovider.KeyPr
 }
 
 // openRecord opens one stored version with the caller's role, kind, owner and
-// reference in the additional data, so the open proves the caller's
-// expectation rather than the record's own. A record of another kind or
-// owner is refused before its data key is unwrapped.
+// reference in the additional data, and the record's version and HandedOver,
+// so the open proves the caller's expectation rather than the record's own.
+// A record of another kind or owner is refused before its data key is
+// unwrapped.
 func openRecord(
 	ctx context.Context,
 	key keyprovider.KeyProvider,
