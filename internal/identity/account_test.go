@@ -1,14 +1,23 @@
 package identity_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/prof"
+	pid "github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -87,14 +96,234 @@ func TestAccount(t *testing.T) {
 	}
 }
 
-// A server built without a secret provider refuses every password
+// A server built without a secret provider refuses alice's right password
 // ErrUnavailable, never ErrLogonFailure and never a panic.
 func TestVerifyPasswordWithoutSecrets(t *testing.T) {
 	r := naming(t)
 	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
+	r.withPassword(t, &alice, alicePassword, nil)
 	r.user(t, alice, 0)
-	if err := r.srv.VerifyPassword(context.Background(), alice.Principal, []byte("Password")); !errors.Is(err, vfserr.ErrUnavailable) {
+	if err := r.srv.VerifyPassword(context.Background(), alice.Principal, []byte(alicePassword)); !errors.Is(err, vfserr.ErrUnavailable) {
 		t.Errorf("VerifyPassword with no secret provider = %v, want ErrUnavailable", err)
+	}
+}
+
+const alicePassword = "Password"
+
+// signing is a naming fixture whose server resolves secrets through the real
+// provider, over real key files and the same fault-wrapped store.
+func signing(t *testing.T) (*resolving, *secrets.Provider) {
+	t.Helper()
+	r := naming(t)
+	p, err := secrets.New(r.cp, roleKeys(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.srv, err = identity.New(identity.Deps{Store: r.st, Clock: sim.NewTestClock(time.Unix(0, 0)), Secrets: p}); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.srv.Apply(state(1)); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	return r, p
+}
+
+// roleKeys writes one real key file per role and opens both.
+func roleKeys(t *testing.T) map[secrets.Role]keyprovider.KeyProvider {
+	t.Helper()
+	const passphrase = "sign-in test passphrase"
+	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
+	keys := map[secrets.Role]keyprovider.KeyProvider{}
+	for _, role := range []secrets.Role{secrets.Protocol, secrets.Storage} {
+		b, err := keyprovider.GenerateKeyFile(passphrase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), role.String()+".key")
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		kp, err := keyprovider.NewProvider(context.Background(), keyprovider.Config{Kind: keyprovider.KindLocal, File: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = kp.Close() })
+		keys[role] = kp
+	}
+	return keys
+}
+
+// withPassword derives u's hash with NewHashes, NTLM off, and names it in
+// u.Password; with a provider it also seals and stores it, owned by u's
+// record under "password" as the API stores it.
+func (r *resolving) withPassword(t *testing.T, u *entity.User, password string, p *secrets.Provider) {
+	t.Helper()
+	h, err := pid.NewHashes(*u, []byte(password), pid.NTLMSetting{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Password = entity.SecretRef(uuid.New())
+	if p != nil {
+		r.sealPassword(t, p, *u, h.Password)
+	}
+}
+
+// sealPassword seals hash as u.Password's first version and stores it.
+func (r *resolving) sealPassword(t *testing.T, p *secrets.Provider, u entity.User, hash []byte) {
+	t.Helper()
+	ctx := context.Background()
+	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: "password"}
+	sec, err := p.Seal(ctx, secrets.Storage, entity.SecretPassword, owner, u.Password, hash, secrets.Meta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.cp.PutSecret(ctx, sec, 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Alice signs in with her password only. A wrong password, the zero
+// principal, a disabled user and one with no password are each
+// ErrLogonFailure, as R26 lists them.
+func TestVerifyPassword(t *testing.T) {
+	r, p := signing(t)
+	ctx := context.Background()
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
+	r.withPassword(t, &alice, alicePassword, p)
+	r.user(t, alice, 0)
+	bob := entity.User{Principal: entity.NewUser(), Name: "bob", IDs: fileIDs("1501"), Disabled: true}
+	r.withPassword(t, &bob, "bob's password", p)
+	r.user(t, bob, 0)
+	carol := entity.User{Principal: entity.NewUser(), Name: "carol", IDs: fileIDs("1502")}
+	r.user(t, carol, 0)
+
+	if err := r.srv.VerifyPassword(ctx, alice.Principal, []byte(alicePassword)); err != nil {
+		t.Fatalf("VerifyPassword(alice, her password) = %v, want nil", err)
+	}
+	for _, c := range []struct {
+		name     string
+		p        entity.Principal
+		password string
+	}{
+		{"alice, a wrong password", alice.Principal, "password"},
+		{"the zero principal", entity.Principal{}, alicePassword},
+		{"the zero principal, the dummy hash's password", entity.Principal{}, "dummy"},
+		{"bob, disabled, his password", bob.Principal, "bob's password"},
+		{"carol, no password", carol.Principal, ""},
+	} {
+		if err := r.srv.VerifyPassword(ctx, c.p, []byte(c.password)); !errors.Is(err, vfserr.ErrLogonFailure) {
+			t.Errorf("VerifyPassword(%s) = %v, want ErrLogonFailure", c.name, err)
+		}
+	}
+}
+
+// A stored hash that is not an argon2id PHC string is ErrUnavailable, never
+// a wrong password.
+func TestVerifyPasswordCorruptHash(t *testing.T) {
+	r, p := signing(t)
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500"), Password: entity.SecretRef(uuid.New())}
+	r.sealPassword(t, p, alice, []byte("$argon2id$v=19$m=19456,t=2,p=1$not base64!$"))
+	r.user(t, alice, 0)
+	if err := r.srv.VerifyPassword(context.Background(), alice.Principal, []byte(alicePassword)); !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Errorf("VerifyPassword against a corrupt hash = %v, want ErrUnavailable", err)
+	}
+}
+
+// A store that cannot answer, the user's read or the hash's, is
+// ErrUnavailable, never a wrong password.
+func TestVerifyPasswordStoreOutage(t *testing.T) {
+	for _, c := range []struct {
+		name, op, key string
+	}{
+		{"the user's read", kvtest.OpGet, "U‖*"},
+		{"the hash's read", kvtest.OpBefore, "SEC‖*"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, p := signing(t)
+			alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
+			r.withPassword(t, &alice, alicePassword, p)
+			r.user(t, alice, 0)
+			r.fail(t, c.op, c.key)
+			if err := r.srv.VerifyPassword(context.Background(), alice.Principal, []byte(alicePassword)); !errors.Is(err, vfserr.ErrUnavailable) {
+				t.Errorf("VerifyPassword with %s failing = %v, want ErrUnavailable", c.name, err)
+			}
+		})
+	}
+}
+
+// The zero principal's call, and that of a user with no password, verifies
+// against an argon2id hash with the parameters a stored one has, as a wrong
+// password's does, and never short-cuts.
+func TestVerifyPasswordHashesWithoutAnAccount(t *testing.T) {
+	r, _ := signing(t)
+	carol := entity.User{Principal: entity.NewUser(), Name: "carol", IDs: fileIDs("1502")}
+	r.user(t, carol, 0)
+	for _, c := range []struct {
+		name string
+		p    entity.Principal
+	}{
+		{"the zero principal", entity.Principal{}},
+		{"carol, no password", carol.Principal},
+	} {
+		var got [][]byte
+		r.srv.OnVerify(func(phc []byte) { got = append(got, phc) })
+		if err := r.srv.VerifyPassword(context.Background(), c.p, []byte(alicePassword)); !errors.Is(err, vfserr.ErrLogonFailure) {
+			t.Fatalf("VerifyPassword(%s) = %v, want ErrLogonFailure", c.name, err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("hashes verified for %s = %d, want 1", c.name, len(got))
+		}
+		m, tm, th, _, key, err := identity.ParsePHC(got[0])
+		if err != nil || m != 19456 || tm != 2 || th != 1 || len(key) != 32 {
+			t.Errorf("hash verified for %s = m=%d t=%d p=%d key %d bytes, %v; want m=19456 t=2 p=1, 32 bytes",
+				c.name, m, tm, th, len(key), err)
+		}
+	}
+}
+
+// With every hashing slot held, alice's sign-in waits 5 s on the clock and
+// answers ErrUnavailable, leaving no goroutine behind.
+func TestVerifyPasswordWaitsForASlot(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	ctx := context.Background()
+	st := newStore(t)
+	p, err := secrets.New(st.ControlPlane(), roleKeys(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	s, err := identity.New(identity.Deps{Store: st, Clock: clock, Secrets: p})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	r := &resolving{cp: st.ControlPlane()}
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
+	r.withPassword(t, &alice, alicePassword, p)
+	r.user(t, alice, 0)
+	defer s.HoldHashSlots(0)()
+
+	done := make(chan error, 1)
+	go func() { done <- s.VerifyPassword(ctx, alice.Principal, []byte(alicePassword)) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for clock.Pending() == 0 {
+		select {
+		case err := <-done:
+			t.Fatalf("VerifyPassword with every slot held = %v without waiting on the clock", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the verification never waited on the clock for a slot")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	clock.Advance(hashWait)
+	select {
+	case err := <-done:
+		if !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("VerifyPassword with every slot held = %v, want ErrUnavailable", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("VerifyPassword did not return once the clock passed 5 s")
 	}
 }
 
