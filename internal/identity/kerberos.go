@@ -23,6 +23,11 @@ import (
 // deployment's KDC or domain is shown to need another value.
 const clockSkew = 5 * time.Minute
 
+// retention is how long a derived key outlives its version, before the clock
+// skew: a ticket's longest life, so a ticket issued under the previous key
+// verifies until it expires.
+const retention = 10 * time.Hour
+
 // ticket is what a verified AP-REQ yields: the request with its ticket's
 // encrypted part and its authenticator decrypted, the service key that
 // decrypted the ticket, and the keys the adapter's mechanism needs.
@@ -95,11 +100,18 @@ func verifyAPReq(st *State, b []byte, svc identity.Service, tr identity.Transpor
 	if !aesEtype(tkt.EncPart.EType) {
 		return ticket{}, logonFailure("ticket under encryption type %d", tkt.EncPart.EType)
 	}
-	key, ok := st.keys.key(tkt.SName.PrincipalNameString(), tkt.Realm, uint32(tkt.EncPart.KVNO), tkt.EncPart.EType)
-	if !ok {
-		return ticket{}, logonFailure("no key for %q in %q, kvno %d, etype %d", tkt.SName.PrincipalNameString(), tkt.Realm, tkt.EncPart.KVNO, tkt.EncPart.EType)
+	keys, err := st.serviceKeys(tkt.SName.PrincipalNameString(), tkt.Realm, uint32(tkt.EncPart.KVNO), tkt.EncPart.EType, now)
+	if err != nil {
+		return ticket{}, logonFailure("%v", err)
 	}
-	if err := tkt.Decrypt(key); err != nil {
+	var key types.EncryptionKey
+	for _, k := range keys {
+		if err = tkt.Decrypt(k); err == nil {
+			key = k
+			break
+		}
+	}
+	if err != nil {
 		return ticket{}, logonFailure("ticket does not decrypt: %v", err)
 	}
 	enc := &tkt.DecryptedEncPart

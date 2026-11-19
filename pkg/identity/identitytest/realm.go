@@ -84,13 +84,17 @@ func (r *Realm) Keytab() []byte {
 // TicketOpts is what an AP-REQ carries. Every zero field takes the default
 // its comment names.
 type TicketOpts struct {
-	Client  string    // the ticket's client name, components split on "/"; "alice"
-	Service string    // the ticket's service name, as written
-	KeyOf   string    // the service name whose key encrypts the ticket; Service
-	Etype   int32     // the ticket's encryption type; AES256
-	Now     time.Time // the ticket's authentication time
-	Start   time.Time // the ticket's start time; none, which reads as Now
-	End     time.Time // the ticket's end time; Now plus 10 hours
+	Client  string // the ticket's client name, components split on "/"; "alice"
+	Service string // the ticket's service name, as written
+	KeyOf   string // the service name whose key encrypts the ticket; Service
+	Etype   int32  // the ticket's encryption type; AES256
+	// Key encrypts the ticket instead of the realm's key of KeyOf, so a test
+	// can issue a ticket under a key derived elsewhere; its type is Etype's.
+	Key   []byte
+	KVNO  int       // the ticket's key version number; 1
+	Now   time.Time // the ticket's authentication time
+	Start time.Time // the ticket's start time; none, which reads as Now
+	End   time.Time // the ticket's end time; Now plus 10 hours
 	// Session is the ticket's session key; a fresh AES256 key.
 	Session types.EncryptionKey
 	// Subkey is the authenticator's subkey; none.
@@ -152,7 +156,14 @@ func (r *Realm) Ticket(o TicketOpts) []byte {
 	if err != nil {
 		panic(err)
 	}
-	enc, err := crypto.GetEncryptedData(asn1tools.AddASNAppTag(b, asnAppTag.EncTicketPart), r.Key(o.KeyOf, o.Etype), keyusage.KDC_REP_TICKET, 1)
+	key := types.EncryptionKey{KeyType: o.Etype, KeyValue: o.Key}
+	if o.Key == nil {
+		key = r.Key(o.KeyOf, o.Etype)
+	}
+	if o.KVNO == 0 {
+		o.KVNO = 1
+	}
+	enc, err := crypto.GetEncryptedData(asn1tools.AddASNAppTag(b, asnAppTag.EncTicketPart), key, keyusage.KDC_REP_TICKET, o.KVNO)
 	if err != nil {
 		panic(err)
 	}

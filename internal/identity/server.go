@@ -82,6 +82,16 @@ type State struct {
 	// keys is the ring Apply builds from Keytab; whatever the caller
 	// passes is replaced.
 	keys keyRing
+	// Machine is the machine password's versions in force, opened, current
+	// first. While Join.Joined, Apply derives each one's keys for the names
+	// in Join.Names, but for a version marked HandedOver.
+	Machine []secrets.Version
+	// Join is the machine account's state as of this Apply; zero while the
+	// installation is not joined.
+	Join entity.MachineJoin
+	// machine is the ring Apply derives from Machine and Join; whatever the
+	// caller passes is replaced.
+	machine machineRing
 	// Directory is the identity.directory section as of this Apply; nil
 	// when the installation has no directory.
 	Directory *directory.Record
@@ -210,6 +220,8 @@ func (s *Server) Apply(st State) error {
 		return err
 	}
 	st.keys = buildRing(st.Keytab, s.logger)
+	st.machine = buildMachineRing(&st, s.logger)
+	st.keys.dropMachineNames(&st.machine, s.logger)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur := s.state.Load()
