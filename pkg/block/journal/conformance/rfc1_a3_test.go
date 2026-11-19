@@ -13,9 +13,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
-// Journal-level checks of the failed append's shape: the rows the offloading
-// epic owns carry their offload-driven legs, so this file drives the same
-// rules through the data path alone.
+// Journal-level checks of the failed append's shape: the offload-driven rows
+// of it are driven elsewhere, so this file drives the same rules through the
+// data path alone.
 
 // TestALossRecordCarriedFromItsSegmentJournalLevel is the journal-level row of
 // the registration a corrupt record's loss files: the loss record it appends
@@ -95,7 +95,7 @@ func TestALossRecordCarriedFromItsSegmentJournalLevel(t *testing.T) {
 }
 
 // TestFailedAppendCarriedOnceResolvedJournalLevel is the journal-level form
-// of the recycled segment's failed-append leg (R68): a failed append into
+// of the recycled segment's failed-append leg: a failed append into
 // the stream's active segment, with a synced record beside it and an
 // unsynced one left after it, ends that segment with a window owed; a pass
 // that reaches the segment before the end event is taken declines it, once

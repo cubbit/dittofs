@@ -12,7 +12,7 @@ import (
 )
 
 // Journal-level checks of the repack reserve and of the copy's accounting:
-// the rows the offloading epic owns carry their release legs, so these drive
+// the offload-driven rows carry their release legs elsewhere, so these drive
 // the same rules through overwrites in place, which kill a record exactly as
 // a release would.
 

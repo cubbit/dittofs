@@ -1406,7 +1406,7 @@ func (d *Durability) WaitCopy(at segment.Location) error {
 // resolution has not ended with it, the stream's last recorded failure once
 // it has, and, the day neither names it, the move itself. The caller holds
 // mu. A record moves only out of a failed window — the copy wait reads the
-// move as the failure it is (D8) — so a caller that never sees a failure
+// move as the failure it is — so a caller that never sees a failure
 // here never had a copy to wait for.
 func (st *stream) movedCopyErrorLocked(at, now segment.Location) error {
 	if err, kept := st.failed[at.Segment]; kept {
