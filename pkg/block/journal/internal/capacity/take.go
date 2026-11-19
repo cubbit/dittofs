@@ -855,6 +855,19 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 // on the way in. It is called with mu held and holds it across the set's
 // read by releasing it for that read and retaking it: the set's lock is of
 // this same domain, and no two locks of one domain are held at once.
+//
+// decision: a tag is seeded once per process, from the set's settled bytes
+// less the held repack copies, and nothing clears seeded[tag] afterwards. A
+// record that lands between the set counting it and this read is counted by
+// the seed and again by its own Landed call or copy transfer, so the figure
+// stands high by that record until the journal reopens and reseeds. The
+// overcount is one-time per tag per process and bounded to the records in
+// flight at the seed's read: later records are counted once and refunded once
+// at their retirement, so it does not grow with churn, and it errs high, so it
+// fails closed. Re-seeding while writes are in flight would add a race to the
+// data path to remove that bounded excess. Overturned by a share refusing
+// writes it has room for because of a stood-high figure; the upgrade is a seed
+// that can be redone safely, after a retirement or on an explicit request.
 func (c *Capacity) seedFor(tag core.ShareTag) {
 	if c.seeded[tag] {
 		return
