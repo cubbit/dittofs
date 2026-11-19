@@ -80,8 +80,8 @@ benchmark.
 - RFC 13 §6's port rule on every node an installation write reaches, past this node (D8): the
   plan's deferral ledger row "RFC 13 §6's port rule on every node a write reaches", owner RFC 16
   §3 with RFC 15. The rule's `sidecars.portmap.port` (D8): the row "the port mapper's port in RFC
-  13 §6's port rule at write", owner the cutover with RFC 20's concrete sidecars. Neither row is
-  in the ledger yet: both are added through a pull request against the plan (§9).
+  13 §6's port rule at write", owner the cutover with RFC 20's concrete sidecars. Both rows are
+  added to the plan's ledger in this document's pull request (§9).
 - Pruning the OpenID Connect client secret and reporting its old version revocable: the plan's
   deferral ledger row "the OpenID Connect client secret's prune and revocation report", owner the
   RFC 18 plan's OpenID Connect epic, which that plan has not added yet, added through a pull
@@ -304,8 +304,8 @@ store (E3's T3.1, RFC 23's epic 2).
   `ControlPlaneTx` reads one node's record by its ID (`Node(id)`) and lists none, so the rule reads
   the overrides of the node a node-scope write names, or for an installation write those of the
   node serving the API (`Deps.Node`, the ID `node.New` builds the table with); on one node that is
-  every node the write reaches. Each narrowing has its deferral-ledger row (§1.2), neither in the
-  ledger yet (§9). Prior art: none found.
+  every node the write reaches. Each narrowing has its deferral-ledger row (§1.2), added to the plan in
+  this document's pull request (§9). Prior art: none found.
 - **D9, the prune's audit record is the revocation report.** RFC 13 §7 has "the control plane
   report that the old credential may be revoked at its service" once the old version is deleted.
   The prune commits inside an audited `Write` (E4's T4.5), so its audit record names the reference
@@ -669,14 +669,14 @@ Pending the user's answer, each written in its recommended form above:
 Further points:
 
 - **The table's rows (D2)** depart from the plans' "with the adapters' section": the adapters'
-  rows are RFC 20's T7.6's. Four places still give them to this epic, each corrected by a pull
-  request against its plan: RFC 13's plan's epic 5 text ("the one table, with the adapters'
+  rows are RFC 20's T7.6's. Four places gave them to this epic, each corrected in this document's
+  pull request: RFC 13's plan's epic 5 text ("the one table, with the adapters'
   section") and the last row of its deferral ledger ("the settings table's adapters' section and
   `Check`, wired into reconcile and the settings routes"); RFC 20's plan's epic 7 text ("The one
   settings table, with the adapters' section, and `Check` … are RFC 13's plan's epic 5") and its
   deferral ledger row for the same.
-- **Three deferral-ledger rows this breakdown adds** to RFC 13's plan, through a pull request
-  against it, none in the ledger yet (§1.2 cites them):
+- **Three deferral-ledger rows this breakdown adds** to RFC 13's plan, in this document's pull
+  request (§1.2 cites them):
   - the port mapper's port in RFC 13 §6's port rule at write (D8): owner the cutover, with RFC
     20's concrete sidecars; trigger "the port mapper's section is declared";
   - RFC 13 §6's port rule on every node a write reaches (D8, T5.7): `ControlPlaneTx` reads one
