@@ -1836,3 +1836,71 @@ func TestTake_LandedAfterTheSeedReadItStandsHigh(t *testing.T) {
 		}
 	})
 }
+
+// refusedBeside is refused for a take made while another grant is open: the
+// same check as refused, without its test that nothing is reserved.
+func (r *rig) refusedBeside(t *testing.T, rq Request, want core.Limit) *core.NoSpaceError {
+	t.Helper()
+	g, err := r.c.Take(context.Background(), rq)
+	if err == nil {
+		g.Release()
+		t.Fatalf("Take(%+v) was granted, want a refusal naming %s", rq, want)
+	}
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) || ns.Limit != want {
+		t.Fatalf("Take(%+v) = %v, want a NoSpaceError naming %s", rq, err, want)
+	}
+	return ns
+}
+
+// TestTake_SecondTakeAtTheLastEntryIsRefusedAtAdmission pins that an admitted
+// take holds the one entry the index has left: a second write, whose own
+// pre-check still passes against the unmoved count, is refused naming the
+// index at its take, before any I/O, and counted; releasing the first gives
+// the entry back.
+func TestTake_SecondTakeAtTheLastEntryIsRefusedAtAdmission(t *testing.T) {
+	o := std()
+	o.indexBound = 1
+	r := newRig(t, o)
+	r.seed(t, 0)
+
+	g := r.grant(t, req())
+	before := r.c.RefusedCount()
+	ns := r.refusedBeside(t, req(), core.LimitIndex)
+	if ns.Missing != 1 || ns.Unit != core.UnitEntries {
+		t.Fatalf("the second take's refusal = %d %s, want one entry", ns.Missing, ns.Unit)
+	}
+	if got := r.c.RefusedCount(); got != before+1 {
+		t.Fatalf("RefusedCount went %d -> %d, want +1", before, got)
+	}
+	g.Release()
+	g2 := r.grant(t, req())
+	g2.Release()
+}
+
+// TestTake_SecondTakeAtTheLastVersionIsRefusedAndCounted pins that the check
+// and the draw are one section: with one version left, the first take draws
+// it and the second is refused naming the version limit at its take, counted
+// once, not refused later at a draw.
+func TestTake_SecondTakeAtTheLastVersionIsRefusedAndCounted(t *testing.T) {
+	r := newRig(t, std())
+	r.seed(t, 0)
+	// Leave exactly one version: the counters' limit sits one past the next draw.
+	if err := r.ctr.SetVersionLimit(core.Version{Counter: r.ctr.NextVersion().Counter + 1}); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	if left := r.c.cfg.VersionsLeft(); left != 1 {
+		t.Fatalf("precondition: %d versions left, want 1", left)
+	}
+
+	g := r.grant(t, req())
+	defer g.Release()
+	before := r.c.RefusedCount()
+	ns := r.refusedBeside(t, req(), core.LimitVersion)
+	if ns.Missing != 1 || ns.Unit != core.UnitVersions {
+		t.Fatalf("the second take's refusal = %d %s, want one version", ns.Missing, ns.Unit)
+	}
+	if got := r.c.RefusedCount(); got != before+1 {
+		t.Fatalf("RefusedCount went %d -> %d, want +1", before, got)
+	}
+}
