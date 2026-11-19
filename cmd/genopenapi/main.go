@@ -19,13 +19,18 @@ import (
 func main() {
 	out := flag.String("out", "pkg/node/apiv1/openapi.json", "output file path")
 	flag.Parse()
-	b, err := api.OpenAPI()
-	if err == nil {
-		err = os.WriteFile(*out, b, 0o644)
-	}
-	if err != nil {
+	if err := generate(*out); err != nil {
 		fmt.Fprintf(os.Stderr, "genopenapi: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("wrote %s\n", *out)
+}
+
+// generate writes the API's OpenAPI document to the file out.
+func generate(out string) error {
+	b, err := api.OpenAPI()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(out, b, 0o644)
 }
