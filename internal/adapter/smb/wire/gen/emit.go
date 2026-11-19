@@ -222,6 +222,13 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 			// unknown context too long to keep is ignored, not the request
 			// refused (MS-SMB2 3.3.5.4; RFC 22 section 16). None rather than
 			// all, so a decoded value still encodes within its maxima.
+			//
+			// decision: an unknown value's bytes past the default's max are
+			// dropped, not refused, which fails open: safe only while every
+			// value a handler reads from the default's bytes is listed in
+			// known=, and its name is kept, so a handler can still refuse it by
+			// name. Overturned if a handler acts on a value's bytes without
+			// adding it to known=.
 			def := arms[len(arms)-1]
 			expr, lit := discriminant(disc)
 			fmt.Fprintf(b, "{\nr := %s\nswitch %s {\n", region(def, "len(d.B)"), expr)
