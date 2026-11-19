@@ -1,0 +1,734 @@
+package identity_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/cubbit/dittofs/internal/identity"
+	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/internal/node/step"
+	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/identity/identitytest"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/secrets"
+	"github.com/cubbit/dittofs/pkg/sim"
+)
+
+// switchFaults fails every call of an op while the test has it set: a fault
+// injector for the domain controller's wrapper.
+type switchFaults struct {
+	mu sync.Mutex
+	m  map[string]error
+}
+
+func (f *switchFaults) set(op string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.m[op] = err
+}
+
+func (f *switchFaults) At(op string, _ []byte) (time.Duration, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return 0, 0, f.m[op]
+}
+
+// failingPrune is the real provider with Prune failing as err: a fault
+// injected around it.
+type failingPrune struct {
+	*secrets.Provider
+	err error
+}
+
+func (f failingPrune) Prune(context.Context, entity.SecretKind, entity.SecretOwner, entity.SecretRef) error {
+	return f.err
+}
+
+// rotFixture is a server over the in-memory store and the real secret
+// provider, joined as NAS$ to a domain whose controller dc1 holds pw2 at key
+// version number 1, reached through a fault wrapper, on a clock at mt0.
+type rotFixture struct {
+	clock  *sim.TestClock
+	cp     kvstore.ControlPlane
+	store  *kvstore.Store
+	p      *secrets.Provider
+	d      *identitytest.DomainController
+	faults *switchFaults
+	reg    *metrics.Registry
+	rec    directory.Record
+	in     entity.Installation
+	s      *identity.Server
+	// hold stops the turns delivering the store's State to the server, as a
+	// node lagging behind the store.
+	hold bool
+}
+
+const bindPW = "Svc-Passw0rd"
+
+// rotKeys writes one real key file per role and opens both.
+func rotKeys(t *testing.T) map[secrets.Role]keyprovider.KeyProvider {
+	t.Helper()
+	const passphrase = "rotation test passphrase"
+	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
+	keys := map[secrets.Role]keyprovider.KeyProvider{}
+	for _, role := range []secrets.Role{secrets.Protocol, secrets.Storage} {
+		b, err := keyprovider.GenerateKeyFile(passphrase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), role.String()+".key")
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		kp, err := keyprovider.NewProvider(context.Background(), keyprovider.Config{Kind: keyprovider.KindLocal, File: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = kp.Close() })
+		keys[role] = kp
+	}
+	return keys
+}
+
+func newRotation(t *testing.T) *rotFixture {
+	t.Helper()
+	prof.Watch(t, prof.Options{})
+	ctx := context.Background()
+	clock := sim.NewTestClock(mt0)
+	db, err := badgerkv.Open(badgerkv.Options{Clock: clock.Now, CeilingAhead: 1000 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := kvstore.Init(ctx, db, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	st, err := kvstore.Open(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := secrets.New(st.ControlPlane(), rotKeys(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx := &rotFixture{clock: clock, cp: st.ControlPlane(), store: st, p: p, faults: &switchFaults{m: map[string]error{}}}
+	fx.d = identitytest.NewDomainController("CORP", machineRealm, "DC=corp,DC=example", dc1, dc2)
+	fx.d.StageComputer(t, identitytest.StagedComputer{Name: "NAS", Password: []byte(pw2), EncTypes: 0x18,
+		SPNs: []string{"HOST/NAS", "HOST/nas.corp.example"}})
+	fx.d.AddUser(t, "alice", alicePW)
+	fx.d.AddUser(t, "svc", []byte(bindPW))
+
+	bindRef := entity.SecretRef(uuid.New())
+	bind, err := p.Seal(ctx, secrets.Protocol, entity.SecretDirectoryCredential,
+		entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}, bindRef, []byte(bindPW), secrets.Meta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fx.cp.PutSecret(ctx, bind, 0); err != nil {
+		t.Fatal(err)
+	}
+	fx.rec = directory.Record{Address: "ldaps://dc1.corp.example", Realm: machineRealm, NetBIOSDomain: "CORP",
+		BindName: "CN=svc,CN=Users,DC=corp,DC=example", BindCredential: bindRef, DCAddress: dc1}
+
+	if fx.in, err = st.Installation(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fx.in.MachinePassword = entity.SecretRef(uuid.New())
+	fx.seal(t, pw2, secrets.Meta{KeyVersion: 1}, func(tx entity.ControlPlaneTx) error {
+		j := entity.MachineJoin{Joined: true, Account: "NAS$", Names: []string{"cifs/NAS.corp.example", "host/nas.corp.example"}}
+		j.LastRotation.At, j.LastRotation.Confirmed = tx.Now(), tx.Now()
+		j.LastRotation.Tag, j.LastRotation.Read, j.LastRotation.Version = 1, 1, 1
+		return tx.SetMachineJoin(j)
+	})
+	fx.restart(t, p)
+	return fx
+}
+
+// seal seals password as the machine password's next version with m, in
+// one write with also's.
+func (fx *rotFixture) seal(t *testing.T, password string, m secrets.Meta, also func(entity.ControlPlaneTx) error) {
+	t.Helper()
+	ctx := context.Background()
+	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceInstallation, ID: fx.in.ID[:]}, Key: "machine_password"}
+	sec, err := fx.p.Seal(ctx, secrets.Protocol, entity.SecretMachinePassword, owner, fx.in.MachinePassword, []byte(password), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = fx.cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		if err := tx.PutSecret(sec, sec.Version-1); err != nil {
+			return err
+		}
+		if err := tx.SetMachinePassword(fx.in.MachinePassword); err != nil {
+			return err
+		}
+		if also != nil {
+			return also(tx)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// restart builds a fresh server over the same store and secrets, as a node
+// restarts, and delivers it the store's State. Every test passes the real
+// provider here as a SecretProvider, so a signature drift fails the build.
+func (fx *rotFixture) restart(t *testing.T, secrets identity.SecretProvider) {
+	t.Helper()
+	if fx.s != nil {
+		_ = fx.s.Stop(context.Background())
+	}
+	fx.reg = metrics.New("test", "test")
+	s, err := identity.New(identity.Deps{Store: fx.store, Clock: fx.clock, Secrets: secrets, Metrics: fx.reg,
+		DomainController: identitytest.NewFaultyDomainController(fx.d, fx.faults)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Stop(context.Background()) })
+	fx.s = s
+	fx.reconcile(t)
+}
+
+// versions are the machine password's versions in the store, current first.
+func (fx *rotFixture) versions(t *testing.T) []secrets.Version {
+	t.Helper()
+	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceInstallation, ID: fx.in.ID[:]}, Key: "machine_password"}
+	vs, err := fx.p.Versions(context.Background(), secrets.Protocol, entity.SecretMachinePassword, owner, fx.in.MachinePassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return vs
+}
+
+func (fx *rotFixture) join(t *testing.T) entity.MachineJoin {
+	t.Helper()
+	in, err := fx.store.Installation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return in.Join
+}
+
+// reconcile applies the store's State, as the node's reconcile does.
+func (fx *rotFixture) reconcile(t *testing.T) {
+	t.Helper()
+	st := state(1)
+	rec := fx.rec
+	st.Directory = &rec
+	st.Machine = fx.versions(t)
+	st.Join = fx.join(t)
+	if err := fx.s.Apply(st); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+}
+
+// op is a new rotation of the installation.
+func (fx *rotFixture) op() *entity.Operation {
+	return &entity.Operation{ID: entity.OperationID(uuid.New()), Kind: string(apiv1.OpRotateMachinePassword),
+		Target: entity.ResourceRef{Kind: entity.ResourceInstallation, ID: fx.in.ID[:]}, State: entity.OpRunning}
+}
+
+func (fx *rotFixture) phase(op *entity.Operation) string {
+	return fx.s.RotateProgress(context.Background(), *op).Phase
+}
+
+// turn runs one turn of op as the runner does, the store's State delivered
+// first unless held: a retried error fails the test, a failure ends op and
+// is returned, and a done turn's End is written.
+func (fx *rotFixture) turn(t *testing.T, op *entity.Operation) (done bool, failed error) {
+	t.Helper()
+	if op.State != entity.OpRunning {
+		t.Fatalf("turn of an operation already %v", op.State)
+	}
+	if !fx.hold {
+		fx.reconcile(t)
+	}
+	res, err := step.Run(context.Background(), fx.s.RotateStep, *op)
+	if _, fails := step.Failure(err); fails {
+		op.State = entity.OpFailed
+		fx.reconcile(t)
+		return true, err
+	}
+	if err != nil {
+		t.Fatalf("turn at phase %q: retried error %v", fx.phase(op), err)
+	}
+	op.Step = res.Next
+	if !res.Done {
+		return false, nil
+	}
+	if res.End != nil {
+		if err := fx.cp.Write(context.Background(), entity.WriteMeta{}, res.End); err != nil {
+			t.Fatalf("the rotation's End: %v", err)
+		}
+	}
+	op.State, op.Result = entity.OpSucceeded, res.Result
+	fx.reconcile(t)
+	return true, nil
+}
+
+// runs runs one turn of op and wants op still running.
+func (fx *rotFixture) runs(t *testing.T, op *entity.Operation) {
+	t.Helper()
+	if done, err := fx.turn(t, op); done {
+		t.Fatalf("turn ended the rotation (%v), want it running", err)
+	}
+}
+
+// until runs op's turns until it reaches phase, without moving the clock.
+func (fx *rotFixture) until(t *testing.T, op *entity.Operation, phase string) {
+	t.Helper()
+	for range 20 {
+		if fx.phase(op) == phase {
+			return
+		}
+		if done, err := fx.turn(t, op); done {
+			t.Fatalf("op ended (%v) before phase %q", err, phase)
+		}
+	}
+	t.Fatalf("op never reached phase %q; at %q", phase, fx.phase(op))
+}
+
+// complete runs op's turns to the end, a minute apart, and wants it done.
+func (fx *rotFixture) complete(t *testing.T, op *entity.Operation) {
+	t.Helper()
+	for range 50 {
+		done, err := fx.turn(t, op)
+		if err != nil {
+			t.Fatalf("rotation failed at phase %q: %v", fx.phase(op), err)
+		}
+		if done {
+			return
+		}
+		fx.clock.Advance(time.Minute)
+	}
+	t.Fatalf("rotation not done after 50 turns; at phase %q", fx.phase(op))
+}
+
+// unanswered fails dc1 from op's next turn and runs turns an hour apart until
+// op fails: it wants the failure to name dc1 at the hour, and not before.
+func (fx *rotFixture) unanswered(t *testing.T, op *entity.Operation) {
+	t.Helper()
+	fx.faults.set("dial", errDown)
+	defer fx.faults.set("dial", nil)
+	if done, err := fx.turn(t, op); done {
+		t.Fatalf("first unanswered turn ended the rotation: %v", err)
+	}
+	fx.clock.Advance(59 * time.Minute)
+	if done, err := fx.turn(t, op); done {
+		t.Fatalf("unanswered for 59 minutes: rotation ended (%v), want still running", err)
+	}
+	fx.clock.Advance(time.Minute)
+	fx.wantFailed(t, op, "domain controller "+dc1)
+}
+
+// wantFailed runs a turn of op and wants it to fail as a problem naming what.
+func (fx *rotFixture) wantFailed(t *testing.T, op *entity.Operation, what string) {
+	t.Helper()
+	done, err := fx.turn(t, op)
+	p, ok := errors.AsType[*apiv1.Problem](err)
+	if !done || !ok || !strings.Contains(p.Detail, what) {
+		t.Fatalf("turn: done %v, err %v; want a problem naming %q", done, err, what)
+	}
+}
+
+// kvno is the account's key version number at dc1.
+func (fx *rotFixture) kvno(t *testing.T) uint32 {
+	t.Helper()
+	ctx := context.Background()
+	dc, err := fx.d.Dial(ctx, fx.rec, dc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dc.Close() }()
+	a, err := dc.Account(ctx, fx.d.Admin(), "NAS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a.KeyVersion
+}
+
+// mismatches is identity_machine_key_version_mismatches_total's value.
+func (fx *rotFixture) mismatches(t *testing.T) float64 {
+	t.Helper()
+	mfs, err := fx.reg.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == metrics.Namespace+"_identity_machine_key_version_mismatches_total" {
+			return mf.GetMetric()[0].GetCounter().GetValue()
+		}
+	}
+	return 0
+}
+
+// atStore reports whether the store time got is want's: the store moves its
+// time on by a tick per transaction when the clock has not moved.
+func atStore(got, want time.Time) bool {
+	return !got.Before(want) && got.Sub(want) < time.Second
+}
+
+// cursorVersion is op's recorded cursor's sealed version.
+func cursorVersion(t *testing.T, op *entity.Operation) uint64 {
+	t.Helper()
+	var c struct{ Version uint64 }
+	if err := json.Unmarshal(op.Step, &c); err != nil {
+		t.Fatal(err)
+	}
+	return c.Version
+}
+
+// rotationFailed reports machine_password_rotation_failed on the installation.
+func rotationFailed(s *identity.Server) bool {
+	for _, c := range s.Conditions(nil) {
+		if c.Name == "machine_password_rotation_failed" && c.Subject.Scope == health.ScopeInstallation {
+			return true
+		}
+	}
+	return false
+}
+
+// signsIn wants alice's pass-through answered over the node's channel, set
+// up with version.
+func (fx *rotFixture) signsIn(t *testing.T, version uint64) {
+	t.Helper()
+	cf := &chanFixture{s: fx.s}
+	if err := cf.logon(context.Background(), "alice", alicePW); err != nil {
+		t.Fatalf("alice's logon: %v, want answered", err)
+	}
+	if _, v, ok := fx.s.ChannelAt(); !ok || v != version {
+		t.Errorf("channel set up with version %d (%v), want %d", v, ok, version)
+	}
+}
+
+// wantTicket wants a ticket for cifs/ under kvno and password's key verified.
+func (fx *rotFixture) wantTicket(t *testing.T, kvno int, password string) {
+	t.Helper()
+	now := fx.clock.Now()
+	if err := verify(fx.s, tkt(machineSvc, kvno, machineKey(t, password), now), now); err != nil {
+		t.Errorf("ticket under kvno %d: %v, want accepted", kvno, err)
+	}
+}
+
+// A rotation seals a version tagged with the controller's number plus one,
+// sets it, confirms it and records it; a fresh server over the same store
+// accepts tickets under both numbers and reads the last rotation back.
+func TestRotation(t *testing.T) {
+	fx := newRotation(t)
+	// Past the retention, so the first turn calls the provider's Prune,
+	// which is not built yet and must not fail the rotation.
+	fx.clock.Advance(11 * time.Hour)
+	op := fx.op()
+	fx.complete(t, op)
+	vs := fx.versions(t)
+	if len(vs) != 2 || vs[0].Number != 2 || vs[0].Meta.KeyVersion != 2 {
+		t.Fatalf("versions %v, want 2 tagged 2 over 1", vs)
+	}
+	if got := fx.kvno(t); got != 2 {
+		t.Errorf("account's key version number %d, want 2", got)
+	}
+	confirmed := fx.clock.Now()
+	fx.restart(t, fx.p)
+	lr := fx.s.Applied().Join.LastRotation
+	if lr.Failed || lr.Tag != 2 || lr.Read != 2 || lr.Version != 2 || !atStore(lr.Confirmed, confirmed) || !atStore(lr.At, confirmed) {
+		t.Errorf("last rotation %+v, want completed at %v, tag 2, read 2, version 2", lr, confirmed)
+	}
+	if names := fx.s.Applied().Join.Names; !strings.Contains(strings.Join(names, " "), "cifs/nas.corp.example") {
+		t.Errorf("names %v, want the account's, sPNMappings applied", names)
+	}
+	fx.wantTicket(t, 1, pw2)
+	fx.wantTicket(t, 2, string(vs[0].Value))
+	fx.signsIn(t, 2)
+	if rotationFailed(fx.s) {
+		t.Error("machine_password_rotation_failed raised after a completed rotation")
+	}
+	var res struct {
+		Version uint64
+		Tag     uint32
+	}
+	if err := json.Unmarshal(op.Result, &res); err != nil || res.Version != 2 || res.Tag != 2 {
+		t.Errorf("result %s (%v), want version 2, tag 2", op.Result, err)
+	}
+}
+
+// A crash after the seal commits and before the runner records the turn
+// runs the seal again: it takes the version it sealed, so the password is
+// set once and the number rises by one.
+func TestRotationResumedSeal(t *testing.T) {
+	fx := newRotation(t)
+	op := fx.op()
+	fx.until(t, op, "seal")
+	before := op.Step
+	fx.runs(t, op)
+	op.Step = before // the runner's record of the seal's turn is lost
+	fx.complete(t, op)
+	if vs := fx.versions(t); len(vs) != 2 {
+		t.Errorf("versions %v, want the one sealed over the first", vs)
+	}
+	if got := fx.kvno(t); got != 2 {
+		t.Errorf("account's key version number %d, want 2: set once", got)
+	}
+	fx.signsIn(t, 2)
+}
+
+// A controller unanswered for an hour after the set fails the rotation,
+// naming it; the condition is raised, still raised after a restart, and
+// tickets under both versions verify.
+func TestRotationUnansweredAfterSet(t *testing.T) {
+	fx := newRotation(t)
+	op := fx.op()
+	fx.until(t, op, "confirm")
+	fx.unanswered(t, op)
+	if !rotationFailed(fx.s) {
+		t.Error("machine_password_rotation_failed not raised by the failed rotation")
+	}
+	if j := fx.join(t); !j.LastRotation.Failed || j.LastRotation.Version != 1 || !atStore(j.LastRotation.At, fx.clock.Now()) {
+		t.Errorf("last rotation %+v, want failed now, version still 1", j.LastRotation)
+	}
+	fx.restart(t, fx.p)
+	if !rotationFailed(fx.s) {
+		t.Error("machine_password_rotation_failed cleared by a restart")
+	}
+	vs := fx.versions(t)
+	fx.wantTicket(t, 1, pw2)
+	fx.wantTicket(t, 2, string(vs[0].Value))
+}
+
+// Two rotations failing in a row before their set leave one unconfirmed
+// version: the second takes the first's, and the third sets it.
+func TestRotationFailuresKeepOneVersion(t *testing.T) {
+	fx := newRotation(t)
+	for i := range 2 {
+		op := fx.op()
+		fx.until(t, op, "set")
+		if got := cursorVersion(t, op); got != 2 {
+			t.Fatalf("rotation %d took version %d, want 2", i+1, got)
+		}
+		fx.unanswered(t, op)
+		if vs := fx.versions(t); len(vs) != 2 {
+			t.Fatalf("after failure %d: versions %v, want one unconfirmed over the first", i+1, vs)
+		}
+		fx.signsIn(t, 1)
+	}
+	op := fx.op()
+	fx.complete(t, op)
+	if vs := fx.versions(t); len(vs) != 2 || cursorVersion(t, op) != 2 {
+		t.Errorf("versions %v, completed version %d, want 2 set over 1", vs, cursorVersion(t, op))
+	}
+	if got := fx.kvno(t); got != 2 {
+		t.Errorf("account's key version number %d, want 2", got)
+	}
+}
+
+// A set the controller took, its answer lost, then a controller gone for an
+// hour: the next rotation probes, finds the version accepted and does not
+// set it again.
+func TestRotationSetTakenNotRepeated(t *testing.T) {
+	fx := newRotation(t)
+	op := fx.op()
+	fx.until(t, op, "set")
+	fx.faults.set("setpassword", errDown)
+	fx.runs(t, op)
+	if got := fx.kvno(t); got != 1 || !strings.Contains(string(op.Step), `"attempted":true`) {
+		t.Fatalf("first set turn: number %d, cursor %s; want the attempt recorded and nothing sent", got, op.Step)
+	}
+	fx.runs(t, op) // the set sent and its answer lost
+	fx.faults.set("setpassword", nil)
+	if got := fx.kvno(t); got != 2 {
+		t.Fatalf("account's key version number %d after the lost answer, want 2", got)
+	}
+	fx.unanswered(t, op)
+	fx.restart(t, fx.p)
+	fx.complete(t, fx.op())
+	if got := fx.kvno(t); got != 2 {
+		t.Errorf("account's key version number %d, want 2: the version set once", got)
+	}
+	if !atStore(fx.join(t).LastRotation.Confirmed, fx.clock.Now()) || rotationFailed(fx.s) {
+		t.Errorf("last rotation %+v, want completed now", fx.join(t).LastRotation)
+	}
+}
+
+// A confirm reading a number other than the tag completes the rotation,
+// counts the mismatch once and keeps the tag; a ticket under the number read
+// verifies.
+func TestRotationConfirmMismatch(t *testing.T) {
+	fx := newRotation(t)
+	for range 5 {
+		fx.d.SetComputerPassword(t, "NAS", []byte(pw2)) // the number to 6
+	}
+	op := fx.op()
+	fx.until(t, op, "confirm")
+	vs := fx.versions(t)
+	fx.d.SetComputerPassword(t, "NAS", vs[0].Value) // another set of the same password: 8
+	fx.complete(t, op)
+	lr := fx.join(t).LastRotation
+	if lr.Tag != 7 || lr.Read != 8 || fx.versions(t)[0].Meta.KeyVersion != 7 {
+		t.Errorf("last rotation tag %d read %d, version tagged %d; want tag 7 kept, 8 read", lr.Tag, lr.Read, fx.versions(t)[0].Meta.KeyVersion)
+	}
+	if got := fx.mismatches(t); got != 1 {
+		t.Errorf("mismatches counted %v, want 1", got)
+	}
+	fx.wantTicket(t, 8, string(vs[0].Value))
+}
+
+// A confirm at a controller that no longer accepts the version fails the
+// rotation, naming it.
+func TestRotationConfirmNotAccepted(t *testing.T) {
+	fx := newRotation(t)
+	op := fx.op()
+	fx.until(t, op, "confirm")
+	fx.d.SetComputerPassword(t, "NAS", []byte(pw3))
+	fx.wantFailed(t, op, "domain controller "+dc1+" no longer accepts")
+	if !rotationFailed(fx.s) {
+		t.Error("machine_password_rotation_failed not raised")
+	}
+}
+
+// A node that does not hold the previous version holds the rotation back:
+// nothing is sealed, it still waits at 59 minutes and fails at the hour,
+// raising the condition, which a restart keeps.
+func TestRotationWaitsForPrevious(t *testing.T) {
+	fx := newRotation(t)
+	st := *fx.s.Applied()
+	st.Machine = nil // this node has not applied the store's version
+	if err := fx.s.Apply(st); err != nil {
+		t.Fatal(err)
+	}
+	fx.hold = true
+	op := fx.op()
+	fx.until(t, op, "previous")
+	fx.runs(t, op) // the wait starts
+	fx.clock.Advance(59 * time.Minute)
+	if done, err := fx.turn(t, op); done {
+		t.Fatalf("at 59 minutes: rotation ended (%v), want still waiting", err)
+	}
+	fx.clock.Advance(time.Minute)
+	fx.wantFailed(t, op, "does not hold the machine password's version 1")
+	if vs := fx.versions(t); len(vs) != 1 {
+		t.Errorf("versions %v, want nothing sealed", vs)
+	}
+	if j := fx.join(t); !j.LastRotation.Failed || !atStore(j.LastRotation.At, fx.clock.Now()) {
+		t.Errorf("last rotation %+v, want failed now", j.LastRotation)
+	}
+	fx.hold = false
+	fx.restart(t, fx.p)
+	if !rotationFailed(fx.s) {
+		t.Error("machine_password_rotation_failed not raised after a restart")
+	}
+}
+
+// The set waits until this node holds the sealed version, however long.
+func TestRotationSetWaitsForSealed(t *testing.T) {
+	fx := newRotation(t)
+	op := fx.op()
+	fx.until(t, op, "seal")
+	fx.hold = true
+	fx.runs(t, op)
+	for range 3 {
+		fx.clock.Advance(time.Hour)
+		if done, err := fx.turn(t, op); done {
+			t.Fatalf("rotation ended (%v) while this node lacks the sealed version", err)
+		}
+	}
+	if got := fx.kvno(t); got != 1 || fx.phase(op) != "applied" {
+		t.Fatalf("number %d at phase %q, want 1, waiting at applied", got, fx.phase(op))
+	}
+	fx.hold = false
+	fx.complete(t, op)
+	if got := fx.kvno(t); got != 2 {
+		t.Errorf("account's key version number %d, want 2", got)
+	}
+}
+
+// A version handed over and current, left by a crash, is neither taken nor
+// set: the rotation seals a new one.
+func TestRotationSkipsHandedOver(t *testing.T) {
+	fx := newRotation(t)
+	fx.seal(t, pw3, secrets.Meta{KeyVersion: 2, HandedOver: true}, nil)
+	op := fx.op()
+	fx.complete(t, op)
+	if got := cursorVersion(t, op); got != 3 {
+		t.Errorf("rotation set version %d, want a new 3", got)
+	}
+	if got := fx.kvno(t); got != 2 {
+		t.Errorf("account's key version number %d, want 2: one set", got)
+	}
+	fx.signsIn(t, 3)
+}
+
+// The condition is cleared by a completed rotation, never by a channel set
+// up with the previous version.
+func TestRotationConditionClearedByCompletion(t *testing.T) {
+	fx := newRotation(t)
+	op := fx.op()
+	fx.until(t, op, "confirm")
+	fx.d.SetComputerPassword(t, "NAS", []byte(pw2))
+	fx.wantFailed(t, op, "no longer accepts")
+	fx.signsIn(t, 1)
+	if !rotationFailed(fx.s) {
+		t.Fatal("machine_password_rotation_failed cleared by a channel set up with the previous version")
+	}
+	fx.complete(t, fx.op())
+	if rotationFailed(fx.s) {
+		t.Error("machine_password_rotation_failed still raised after a completed rotation")
+	}
+}
+
+// A prune failing with any error but the unbuilt provider's fails the
+// rotation at its first turn, nothing sealed.
+func TestRotationPruneFailure(t *testing.T) {
+	fx := newRotation(t)
+	fx.restart(t, failingPrune{fx.p, errors.New("prune: store unavailable")})
+	fx.clock.Advance(11 * time.Hour)
+	op := fx.op()
+	done, err := fx.turn(t, op)
+	if _, fails := step.Failure(err); !done || !fails || !strings.Contains(err.Error(), "store unavailable") {
+		t.Fatalf("first turn: done %v, err %v; want the prune's error failing it", done, err)
+	}
+	if vs := fx.versions(t); len(vs) != 1 {
+		t.Errorf("versions %v, want nothing sealed", vs)
+	}
+}
+
+// A rotation started while a join runs on the installation is refused at its
+// first turn, naming the join, with nothing written.
+func TestRotationRefusedDuringJoin(t *testing.T) {
+	fx := newRotation(t)
+	join := entity.Operation{ID: entity.OperationID(uuid.New()), Kind: string(apiv1.OpJoinDomain),
+		Target: entity.ResourceRef{Kind: entity.ResourceInstallation, ID: fx.in.ID[:]}, State: entity.OpRunning}
+	if err := fx.cp.Write(context.Background(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		_, err := tx.PutOperation(join, 0)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := fx.join(t)
+	op := fx.op()
+	done, err := fx.turn(t, op)
+	p, ok := errors.AsType[*apiv1.Problem](err)
+	if !done || !ok || p.Code != apiv1.CodeOperationRunning || !strings.Contains(p.Detail, uuid.UUID(join.ID).String()[:8]) {
+		t.Fatalf("first turn: done %v, err %v; want refused naming the join", done, err)
+	}
+	if vs := fx.versions(t); len(vs) != 1 {
+		t.Errorf("versions %v, want nothing sealed", vs)
+	}
+	if after := fx.join(t); after.LastRotation != before.LastRotation {
+		t.Errorf("last rotation %+v, want unchanged %+v", after.LastRotation, before.LastRotation)
+	}
+}

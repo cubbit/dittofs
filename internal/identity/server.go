@@ -49,20 +49,29 @@ type Deps struct {
 	DomainController netlogon.Dialer
 }
 
-// SecretProvider is the secret provider's one call the server makes.
+// SecretProvider is the secret provider's calls the server makes: Resolve
+// for a bind password, and the machine password's Versions, Seal and Prune
+// for its rotation.
 type SecretProvider interface {
 	Resolve(ctx context.Context, role secrets.Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]byte, error)
+	Versions(ctx context.Context, role secrets.Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]secrets.Version, error)
+	Seal(ctx context.Context, role secrets.Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte, m secrets.Meta) (entity.Secret, error)
+	Prune(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) error
 }
 
 var _ SecretProvider = (*secrets.Provider)(nil)
 
 // Store is the store's calls the server makes: the principals and their
-// records, a group's record, and the one write that mints principals. Declaring it here keeps a
-// change to the store's write calls inside the store.
+// records, a group's record, the one write that mints principals, and the
+// installation record and the control-plane writes the rotation makes.
+// Declaring it here keeps a change to the store's write calls inside the
+// store.
 type Store interface {
 	Principals() kvstore.Principals
 	Records() kvstore.Records
 	Minter() kvstore.Minter
+	Installation(ctx context.Context) (entity.Installation, error)
+	ControlPlane() kvstore.ControlPlane
 }
 
 // Clock is the server's source of time.
@@ -159,13 +168,16 @@ type Server struct {
 	lifeMu    sync.Mutex         // life's and end's
 	life      context.Context    // ended by Stop, ending every call in flight
 	end       context.CancelFunc // ends life
+
+	mismatches *prometheus.CounterVec // the rotation's confirms whose number differs from the tag
 }
 
-// Conditions appends the node's identity conditions: machine_account_unhealthy
-// and directory_unreachable (RFC 18 §9.2). Their subjects name no node: the
-// node's own conditions carry its ID.
+// Conditions appends identity's conditions: the node's
+// machine_account_unhealthy and directory_unreachable, and the installation's
+// machine_password_rotation_failed (RFC 18 §9.2). Their subjects name no
+// node: the node's own conditions carry its ID.
 func (s *Server) Conditions(dst []health.Condition) []health.Condition {
-	return s.directoryConditions(s.machineAccountConditions(dst))
+	return s.rotationConditions(s.directoryConditions(s.machineAccountConditions(dst)))
 }
 
 // refusalsSpec counts the calls resolution refuses, by the reason refused.
@@ -209,6 +221,7 @@ func New(d Deps) (*Server, error) {
 	s.mints = counter(d.Metrics, mintsSpec)
 	s.unnamed = counter(d.Metrics, unnamedSpec)
 	s.unmapped = counter(d.Metrics, unmappedSpec)
+	s.mismatches = counter(d.Metrics, mismatchesSpec)
 	return s, nil
 }
 
@@ -292,12 +305,18 @@ func (s *Server) newDirectoryClient(rec *directory.Record) *dirCache {
 	}
 	ref := rec.BindCredential
 	return newDirCache(directory.NewClient(*rec, s.deps.Directory, func(ctx context.Context) ([]byte, error) {
-		if s.deps.Secrets == nil {
-			return nil, errors.New("no secret provider")
-		}
-		return s.deps.Secrets.Resolve(ctx, secrets.Protocol, entity.SecretDirectoryCredential,
-			entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}, ref)
+		return s.bindPassword(ctx, ref)
 	}, s.deps.Clock, s.logger), s.deps)
+}
+
+// bindPassword resolves the directory record's bind password through
+// Deps.Secrets.
+func (s *Server) bindPassword(ctx context.Context, ref entity.SecretRef) ([]byte, error) {
+	if s.deps.Secrets == nil {
+		return nil, errors.New("no secret provider")
+	}
+	return s.deps.Secrets.Resolve(ctx, secrets.Protocol, entity.SecretDirectoryCredential,
+		entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}, ref)
 }
 
 // validate refuses settings or a directory record that fail their Validate,
