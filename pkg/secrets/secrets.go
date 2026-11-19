@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -15,9 +16,17 @@ import (
 )
 
 // Provider resolves secret references to their values, under the two roles'
-// wrapping keys. It holds nothing until its methods are built, which add the
-// view and the keys New takes.
-type Provider struct{}
+// wrapping keys. It reads through the control-plane view and writes nothing:
+// a sealed version is committed by its caller.
+//
+// ponytail: no reseal pass. A role key rotates by making the next key current
+// and keeping the old one among keyprovider's retired keys, so every sealed
+// version still opens, and an old role key can never leave the bootstrap.
+// Upgrade: RFC 13 §7's reseal pass, when an operator must remove a role key.
+type Provider struct {
+	cp   kvstore.ControlPlane
+	keys map[Role]keyprovider.KeyProvider
+}
 
 // unbuilt is the error of a method whose body is not built yet; the message
 // names the work that fills it.
@@ -30,27 +39,19 @@ func unbuilt(method string) error {
 }
 
 // New builds a provider over the control-plane view and each role's
-// wrapping key.
+// wrapping key. It keeps its own copy of keys, so a caller reusing its map
+// cannot take a role's key away. A role missing from keys is refused when a
+// call needs it, not here.
+//
+// ponytail: one passphrase variable for every key file. keyprovider's local
+// provider reads DITTOFS_ENCRYPTION_PASSPHRASE, so two roles kept in
+// passphrase-protected files share one passphrase. Upgrade: a per-role
+// passphrase variable in the provider's configuration.
 func New(cp kvstore.ControlPlane, keys map[Role]keyprovider.KeyProvider) (*Provider, error) {
-	return nil, unbuilt("New")
-}
-
-// Seal wraps value with role's wrapping key as the next version of ref and
-// returns it unwritten; a new version of an existing ref keeps its kind and
-// owner, and one naming others is refused. The caller commits it with
-// ControlPlaneTx.PutSecret(s, s.Version-1) inside its own Write, beside the
-// record naming ref, so a sealed version commits with its change or not at
-// all.
-func (p *Provider) Seal(
-	ctx context.Context,
-	role Role,
-	kind entity.SecretKind,
-	owner entity.SecretOwner,
-	ref entity.SecretRef,
-	value []byte,
-	m Meta,
-) (entity.Secret, error) {
-	return entity.Secret{}, unbuilt("Seal")
+	return &Provider{
+		cp:   cp,
+		keys: maps.Clone(keys),
+	}, nil
 }
 
 // Resolve returns the current value of ref, unsealed with role's wrapping
