@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -58,31 +59,61 @@ type answer struct {
 // adapter runs a row's handler for a caller that holds the row's right, and
 // returns what to send. No handler is handed the http.ResponseWriter, so none
 // answers before its adapter has the whole answer: a write's is made inside
-// its transaction and sent only once that has committed.
-type adapter func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (answer, error)
+// its transaction and sent only once that has committed. The rest is what
+// the row carries on the wire, which the API's OpenAPI document is built
+// from: its form; the request body's type and the success answer's, nil for
+// none; a listing's filters; the words a watched read's ?wait= takes beside
+// a duration, and the errors its wait refuses with; for a write, whether a
+// POST action changes the spec, whether its answer is recorded under its idempotency
+// key, and whether it waits for the node to apply it; and whether the right
+// the call needs is the one that starts the kind of operation it names.
+type adapter struct {
+	run         func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (answer, error)
+	form        form
+	body, out   reflect.Type
+	filters     []string
+	words       []param
+	refuses     []error
+	changesSpec bool
+	replays     bool
+	raises      bool
+	roleByKind  bool
+}
+
+// form is an adapter's kind of call, which decides the parameters and
+// headers it takes and the answers it gives.
+type form uint8
+
+const (
+	formRead  form = iota // a plain read
+	formWatch             // a read with an ETag and ?wait=
+	formList              // a listing, paged by ?limit= and ?after=
+	formWrite             // a write, its preconditions and Idempotency-Key
+	formCall              // a call that makes its whole answer
+)
 
 // read adapts a read whose answer carries no ETag: its answer is 200 with
 // what h returns from the server's Deps. A record with a tag is read through
 // watch, which takes the record's tag, so none of those answers without its
 // ETag.
 func read[R any](h func(context.Context, Deps, request[none]) (R, error)) adapter {
-	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
+	return adapter{form: formRead, out: reflect.TypeFor[R](), run: func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
 		return jsonOr(h(ctx, s.d, request[none]{ID: id, Sub: r.PathValue("sub"), d: s.d}))
-	}
+	}}
 }
 
 // call adapts a call that is no write of the adapter's: h makes the whole
 // answer. If it writes, it does so through a function of package auth, the
 // one place besides the write adapter that calls the store's Write.
 func call[B any](h func(context.Context, request[B]) (answer, error)) adapter {
-	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
+	return adapter{form: formCall, body: reflect.TypeFor[B](), run: func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
 		rq, err := decodeRequest[B](r, id)
 		if err != nil {
 			return answer{}, err
 		}
 		rq.d = s.d
 		return h(ctx, rq)
-	}
+	}}
 }
 
 // decodeRequest is the request naming id, its body read from r, at most
@@ -233,14 +264,14 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 			// Named as the row's adapter names it, so an applied and a
 			// refused write of one record share a target.
 			sid, perr := entity.ParseShareID(rawID)
-			if hasID := strings.Contains(rt.pattern, "{id}"); (hasID && perr == nil) || (!hasID && rt.target != nil) {
+			if hasID := rt.hasID(); (hasID && perr == nil) || (!hasID && rt.target != nil) {
 				rec.Target.ID = rt.ref(sid, r.PathValue("sub"))
 			}
 			s.refuse(ctx, rec, err)
 		}
 		return answer{}, err
 	}
-	return rt.serve(ctx, s, r, rt, id)
+	return rt.serve.run(ctx, s, r, rt, id)
 }
 
 // admit refuses a row the caller ctx carries may not call, and an ID or a
@@ -262,7 +293,7 @@ func admit(ctx context.Context, rt *route, rawID, sub string) (id [16]byte, err 
 			return id, &refusal{code: apiv1.CodePasswordChangeRequired, detail: "change the account's password first"}
 		}
 	}
-	if strings.Contains(rt.pattern, "{id}") {
+	if rt.hasID() {
 		// Every ID is a UUID in its canonical form, which ParseShareID
 		// parses for any of them.
 		sid, err := entity.ParseShareID(rawID)

@@ -6,6 +6,7 @@ import (
 	"iter"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 
@@ -144,7 +145,7 @@ func (p perPage) applied(ref entity.ResourceRef, at uint64, through func(entity.
 // its size, and handed to each item, but for a local listing, which reads
 // none and needs no store.
 func list[E, T any](l listing[E, T]) adapter {
-	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
+	return adapter{form: formList, out: reflect.TypeFor[apiv1.Page[T]](), filters: l.filters, run: func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
 		limit, after, filter := defaultLimit, []byte(nil), map[string]string{}
 		q := r.URL.Query()
 		for _, k := range slices.Sorted(maps.Keys(q)) {
@@ -199,5 +200,5 @@ func list[E, T any](l listing[E, T]) adapter {
 			last = l.key(e)
 		}
 		return jsonAnswer(http.StatusOK, page)
-	}
+	}}
 }

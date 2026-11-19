@@ -88,6 +88,9 @@ go vet ./...
 # Regenerate docs/guide/cli.md after changing any command/flag
 go run ./cmd/gendocs
 
+# Regenerate pkg/node/apiv1/openapi.json after changing an API route or wire type
+go run ./cmd/genopenapi
+
 # Run server with debug logging
 DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 ```
