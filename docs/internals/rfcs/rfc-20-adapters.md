@@ -508,10 +508,13 @@ flowchart TB
   `node.New` through a protocol and `core` back to the node.
 - **`internal/adapter/`** holds every line of implementation: `core`, each
   protocol, their codecs and stages. Only the two constructors in
-  `pkg/adapter/nfs` and `pkg/adapter/smb` import a protocol's implementation,
-  but for a sidecar that speaks a protocol's encoding, which imports that
+  `pkg/adapter/nfs` and `pkg/adapter/smb` import a protocol's implementation.
+  Beside them, a sidecar that speaks a protocol's encoding imports that
   protocol's `wire` (§3.5), and a test file outside `pkg/` and
-  `internal/adapter/`. No other package under `pkg/`, its test files
+  `internal/adapter/` may import any implementation, until a package of test
+  helpers outside `internal/adapter/` imports one and non-test code imports
+  that package (the import test's `decision:`). No other package under
+  `pkg/`, its test files
   included, imports anything under `internal/adapter/`; the implementation
   imports `pkg/adapter` and `pkg/adapter/settings`, never a constructor
   package.
@@ -564,10 +567,11 @@ internal/sidecar/           the runner the node drives (§3.5); mdns/ wsd/ portm
 and reply structs, tagged for the codec, and its handler, and nothing else;
 nothing in it reads or writes a byte. Its row is one line of its table, its
 error rows are in the one error table, and it has no codec file of its own. A
-non-test file **SHOULD** stay under 500 lines. The import test of §7.1 also
-lists every adapter file over 800 lines, against a checked-in allowlist that
-may only shrink, so the rule does not drift the first week someone is in a
-hurry.
+non-test file **SHOULD** stay under 500 lines. The import test of §7.1 will
+also list every adapter file over 800 lines, against a checked-in allowlist
+that may only shrink, so the rule does not drift the first week someone is in
+a hurry: the plan's deferral ledger holds the check, and its allowlist starts
+with `core`'s `pipeline.go`, `hold.go` and `chain.go`.
 
 **`wire` is pure, in both protocols.** `wire/` holds the shared codec pieces
 and nothing else: record framing, the hand-written header codec, the generated
@@ -580,7 +584,8 @@ a session, a credit window — is in `protocol/`, the protocol's stages.
 The one exception to `wire`'s imports, beside its test files, which read their
 vectors from files, is `<protocol>/wire/gen`, the generator, a main package in
 no adapter's build: it reads its input files and writes its own, so it may
-import `os`, and none of `io/ioutil`, `net`, `syscall` or `plugin`, still from
+import `os`, and none of `io/ioutil`, `net` (but `net/netip`), `syscall` or
+`plugin`, still from
 the standard library alone.
 
 > ponytail: a line count, not a complexity measure. A 500-line file of table
@@ -1381,8 +1386,8 @@ type Settings interface {
 - **Every field names its key** with a `json:"…"` tag, and each field of a
   shape its binding class with a `class:"…"` tag, `restart` on `Port` and
   `live` on the rest, as RFC 13 Appendix B records them, `Addrs`, which no
-  record names, carrying neither; `pkg/settings`' `Of` reads both and refuses
-  a field without its class. Every adapter key is
+  record names, carrying neither; `pkg/settings`' `Of` reads both and panics
+  on a field without its class. Every adapter key is
   `adapters.<protocol>.<field>`: `adapters.smb.idle_timeout`,
   `adapters.nfs.tls.mode`, `adapters.smb.pending_timeout`, and the least
   configuration is `adapters: {nfs: {enabled: true}, smb: {enabled: true}}`.
@@ -4025,7 +4030,8 @@ each buys:
    (§6.3) and replies as each completes. It **MUST NOT** serialise a connection's
    requests beyond one NFSv4.1 slot's sequence and the members of one SMB2
    chain, related or not, each admitted once the reply of the one before it is
-   encoded (§4.7). Order between requests on one file
+   encoded, since §4.7's chain runner takes one member at a time. Order
+   between requests on one file
    is the service's ([RFC 17 §4.8](rfc-17-vfs.md#4.8%20One%20primary%20per%20file)).
 2. **Many connections per client.** Clients open several connections for
    bandwidth — NFS clients with several connections per mount, NFSv4.1 trunking
@@ -4294,16 +4300,17 @@ package and the import, on anything §2.3 forbids: any core package but
 aliases. It is seeded in its own test data with deliberate violations, at
 least one per rule, each of which it must report exactly once, and with
 imports the rules allow, which it must not report, so a check that silently
-matches nothing, or one written too wide, is caught. The same test lists adapter files over 800
-lines and fails on one not in its allowlist (§2.5), fails a `wire` package that
+matches nothing, or one written too wide, is caught. The same test fails a
+`wire` package that
 imports anything but the standard library and `pkg/resources`, or a standard
 package that does file or network I/O (but `os` in `<protocol>/wire/gen`,
 §2.5, and any in a `wire` package's test files, which read their vectors
 from files), a
 generated `codec_gen.go` that imports more than those and its protocol's
-`wire`, and an `ops` file other than `codec_gen.go` that names its protocol's
-`wire.Decoder` or `wire.Encoder` or imports `encoding/binary`, since a command
-file touches no bytes (§5.1; an `ops` package's test files are held by
+`wire`, and an `ops` file other than `codec_gen.go` that calls a function or
+method of its protocol's `wire` that reads or writes bytes (it may name
+`wire`'s types only) or imports `encoding/binary`, since a command file
+touches no bytes (§5.1; an `ops` package's test files are held by
 neither rule), and
 fails a call of an entry method — `Root`, `SecInfo`, `ListShares` — outside
 the entry handlers of §4.10. It also fails, in both directions, a package
@@ -4320,9 +4327,12 @@ the standard library; a non-test
 file outside `adaptertest` that imports `adaptertest` or `testproto`; and any
 package at a path the first adapters used (`pkg/controlplane/runtime/adapters`,
 `internal/adapter/common`, `pool`, `testruntime`, `auth`, `nfs/rpc`,
-`smb/session`, `smb/handlers`). It starts with no
-allowlist: today's adapters are deleted rather than moved, so nothing is
-grandfathered in. The walk reads each package's own imports; its `_test.go`
+`smb/session`, `smb/handlers`). Its import rules start with no allowlist:
+the first adapters were deleted rather than moved, so nothing is
+grandfathered in. It will also list adapter files over 800 lines and fail on
+one not in its allowlist (§2.5), once the plan's ledger row for it lands; that
+allowlist starts with `core`'s `pipeline.go`, `hold.go` and `chain.go`. The
+walk reads each package's own imports; its `_test.go`
 files may also import `pkg/vfs/vfstest` and `adaptertest`, whose in-memory
 service builds the real filesystem, and `internal/prof`, a profiler importing
 only the standard library; `adaptertest`'s own files may import
