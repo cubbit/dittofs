@@ -117,11 +117,11 @@
   reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two rulings the PR text carries: whether a share''s live dirty bytes with the store put-healthy keep the first row''s retry-later answer (RFC 8 section 10.2), and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker.'
   issue: '#4206'
 - test: TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved
-  message: 'write 1 of b: vfs: retry shortly: capacity'
+  message: 'panic: test timed out after 30m0s'
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal''s repack is real, and the row now HANGS the suite: the refusal''s share seal syncs the records of the segment it closes inside the refused write''s own goroutine, and the row holds every sync at the seam, so the write parks on the seal''s fsync for the journal''s life; the stopped fix — sealing without the caller-side sync — is refused by the named-predecessor recovery rule over an unsynced seal marker (RFC 28 section 3.3), a wording gap the PR text carries to the RFC owner. Runs that reach the seam hold answer the row''s delay check only once the design is ruled.'
+  reason: 'The journal''s repack is real, and the row now HANGS the suite: the refusal''s share seal syncs the records of the segment it closes inside the refused write''s own goroutine, and the row holds every sync at the seam, so the write parks on the seal''s fsync for the journal''s life; the stopped fix — sealing without the caller-side sync — is refused by the named-predecessor recovery rule over an unsynced seal marker (RFC 28 section 3.3), a wording gap the PR text carries to the RFC owner. The harness''s own rule keeps a hang a regression no entry excuses, so the engine cell stays red until the design is ruled.'
   issue: '#4206'
 - test: TestRFC8A_CapacityRepackReserveServesAThirdShare
   message: 'the share limit has nothing left to free'
