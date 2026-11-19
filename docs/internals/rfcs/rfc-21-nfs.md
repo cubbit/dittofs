@@ -289,7 +289,7 @@ version.
 
 | Program, version | Served | Notes |
 | --- | --- | --- |
-| NFS v2 | no | `PROG_MISMATCH` naming 3–4 |
+| NFS v2 | no | `PROG_MISMATCH` naming the lowest and highest NFS version the range serves, 3 and 4 by default |
 | NFS v3 (RFC 1813), MOUNT v3, NLM v4, NSM v1 | yes | §6 |
 | NFS v4.0 (RFC 7530) | yes | §4 |
 | NFS v4.1 (RFC 8881) | yes | sessions §3; pNFS (parallel NFS, clients reading data servers directly) only in a cluster, per [RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS): a single node advertises no metadata server and answers every layout operation `NFS4ERR_NOTSUPP` (§3.3) |
@@ -300,11 +300,13 @@ table, all of it by default
 ([RFC 20 §4.8](rfc-20-adapters.md#4.8%20Several%20versions%20of%20one%20protocol)); a range of
 only 4.x serves no MOUNT, NLM or NSM.
 
-- A `COMPOUND` whose minor version is above 2 **MUST** be answered
+- A `COMPOUND` whose minor version is outside the `adapters.nfs.versions`
+  range, any above 2 among them, **MUST** be answered
   `NFS4ERR_MINOR_VERS_MISMATCH` with no operation run: its tag echoed and no
   results (RFC 8881 §16.2.3, §15.1.3.2), written by the header codec, which
   reads the tag and the minor version with the RPC header, so the router
-  refuses it before any member decodes (§11.5).
+  refuses it before any member decodes (§11.5). Under a range with no 4.x,
+  version 4 is not served and a `COMPOUND` is answered `PROG_MISMATCH`.
 - The minor version is the client's choice per `COMPOUND`; the server
   **MUST NOT** remember one per client, so a client that falls back from 4.2
   to 4.1 needs no new client ID.
@@ -320,8 +322,10 @@ only 4.x serves no MOUNT, NLM or NSM.
 - Every NFS program — NFS, MOUNT, NLM, NSM — **MUST** be served over TCP and
   **MUST NOT** be served over UDP, with one exception: NLM and NSM are served
   over UDP too while [RFC 20 §11](rfc-20-adapters.md#11.%20Open%20questions)'s
-  UDP question stands, for parity with today, since some clients send lock
-  requests only over UDP.
+  UDP question stands, for parity with the first adapters, since some clients send lock
+  requests only over UDP. The exception is deferred until `core` has a
+  datagram listener, a row of the RFC 20 plan's deferral ledger; until then no
+  listener reads UDP.
 - The port mapper (the service a client asks which port each program listens
   on), where the server runs one, answers on UDP and TCP, because clients probe
   it there before choosing a transport. It reaches no file.
@@ -365,6 +369,33 @@ A record, its fragments together, is at most the transfer class's capacity, 1
 MiB and 4 KiB, in at most 64 fragments: a record mark that would take it past
 either closes the connection ([RFC 20 §5.2](rfc-20-adapters.md#5.2%20Decoding%20is%20bounded),
 [RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)).
+A reply record is held to the same cap, `Framer.MaxRecord`'s bytes. A single
+operation's reply is bounded by its class. In a `COMPOUND`, each `READ` and
+`READ_PLUS` is clamped by its row's `Bound` hook before it runs, to what is
+left of the cap after the replies before it and the bounds of the operations
+that follow it, and answered as a short read (RFC 8881 §18.22, RFC 7530
+§16.23.5, RFC 7862 §15.10.3). It is never lowered below one byte, since Linux
+turns a short read of no data with `eof` false into `EIO`: a `COMPOUND` that
+would leave one less is refused, as one whose operation after a `READ` has a
+bound near the cap is
+([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
+In an NFSv4.1 session the hook also lowers the room it is handed by what the
+session's `ca_maxresponsesize` falls short of the cap, read from the session
+the compound's own `SEQUENCE` resolved into `Request.State` (§3.1), so the
+reply stays within that budget too.
+
+> decision: a `READDIR`'s `maxcount`, and a `LISTXATTRS`'s `lxa_maxcount`
+> (RFC 8276 §8.4.3), are not clamped to the room, as a `READ`'s count is.
+> Their floor is one entry, not one byte, and an entry's size is not known
+> before the listing is read: a count too small for one is `NFS4ERR_TOOSMALL`
+> (RFC 8881 §18.23.3), which would fail an operation whose own count fits.
+> The ceiling: a `COMPOUND` whose `READDIR` or `LISTXATTRS`, with the
+> operations around it, would pass the cap is refused; Linux's own
+> directory-read compound (`PUTFH`, `READDIR`, after `SEQUENCE` in NFSv4.1)
+> carries no `GETATTR`, so the cap holds its `READDIR` whole. Clamp the count
+> in their `Bound` hooks too, since a client resumes from its cookie, once a
+> client is seen sending one beside an operation whose bound passes the cap's
+> header room.
 
 > ponytail: 64 fragments let a record of the cap arrive in fragments of just
 > over 16 KiB (1028 KiB over 64) and more; common clients send one. Raise it
@@ -581,7 +612,11 @@ the call travels primary → that node → the client's connection.
   as the client not answering, and the recall is revoked at its deadline
   ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
 - The client's back channel is **down** when the node its record names is lost,
-  or that node reports the channel's connection gone. The record carries that
+  or that node reports the channel's connection gone. The service has no call
+  for an adapter to report it, a row of the RFC 20 plan's deferral ledger;
+  until it has one, a single node never marks the channel down, so a dropped
+  back-channel connection leaves delegations offered and each recall runs to
+  its revoke deadline. The record carries that
   state, so whichever node answers the client's next `SEQUENCE` **MUST** set
   `SEQ4_STATUS_CB_PATH_DOWN` in it, and no delegation is offered to the client
   ([RFC 14 §5.4](rfc-14-open-state.md#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays))
@@ -650,7 +685,7 @@ the wire:
     one step ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); for the
     confirming `CREATE_SESSION` the sequence compared is the `Pending`
     proposal's (§3.3);
-  - if `AddSession` answers `ErrRecordChanged`, another node applied a
+  - if `AddSession` answers `ErrState` (`RecordChanged`), another node applied a
     `CREATE_SESSION` first: the adapter drops the session it built, rereads
     the record it was handed, and decides again, so a racing replay is
     answered with the winner's reply;
@@ -875,22 +910,22 @@ creates a new client record (§6.1).
 ### 5.2 Stateids
 
 A **stateid** is the 16-byte token the server returns for each open, lock,
-delegation, layout or copy; the client quotes it on every later read, write,
+delegation or layout; the client quotes it on every later read, write,
 lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
 `seqid`, a counter that moves each time that state changes. The codec is
 `pkg/vfs`'s, shared by every adapter that names one
 ([RFC 17 §3.4](rfc-17-vfs.md#3.4%20IDs%20and%20their%20encodings)), under five rules:
 
 1. **`other` names a record, not a table slot.** It **MUST** be a type tag and
-   the RFC 14 identifier it stands for — open, a lock owner's lock state,
-   delegation, layout or copy — so any gateway node resolves it without a
+   the RFC 14 identifier it stands for (open, a lock owner's lock state,
+   delegation or layout), so any gateway node resolves it without a
    table of its own, and a stateid survives a gateway node loss. Its
    non-random part carries the number of the shard that holds the record, and
    its random bits are unique within that shard, whose primary keeps an index
    from them to the record
    ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)): a stateid is resolved
    by shard, then index, with no file handle. The 12 bytes are laid out as:
-   byte 0 the type tag (open, lock state, delegation, layout, copy) in its low
+   byte 0 the type tag (open, lock state or grant, a delegation's) in its low
    3 bits and the low 5 bits of the shard's grace instance the stateid was
    minted under (§5.4) in its high 5 bits; bytes 1–3 the shard number, big-endian; bytes 4–11 the
    record's 64 random bits. Nothing else fits without giving up random bits.
@@ -938,7 +973,7 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    a random source, so a client that sees its own stateids learns nothing that
    names another's. `other` has the room: RFC 14 names an NFS open by its
    `Token`, which `other` carries, and takes no `OpenID` for it, and gives a
-   lock state, delegation, layout or copy an ID that carries those bits
+   lock state, delegation or layout an ID that carries those bits
    ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)); a counter or a
    timestamp in their place makes every neighbouring stateid reachable by
    arithmetic. The rule binds stateids, which are bearer tokens with room for
@@ -1376,8 +1411,9 @@ client, are RFC 14's.
   would leave a lock granted after its request was cancelled, held by no client
   that knows it.
 - **The grant is resent until the host answers.** `NLMPROC4_GRANTED` (or
-  `NLMPROC4_GRANTED_MSG` and its `NLMPROC4_GRANTED_RES`) is sent, and resent on a 1 s
-  backoff growing to 30 s, until the host acknowledges it, refuses it
+  `NLMPROC4_GRANTED_MSG` and its `NLMPROC4_GRANTED_RES`) is sent, each send
+  bounded by the 35 s callback deadline, and sent again 10 s after each send
+  that ends unanswered, until the host acknowledges it, refuses it
   (`NLM4_DENIED` or another error in the reply), cancels the lock or restarts,
   or the lock is released by an administrator's revoke or by `DropShare`
   ([RFC 14 §2.10](rfc-14-open-state.md#2.10%20Lock%20waiters)). Each send is one
@@ -1579,8 +1615,9 @@ and adds no export of its own:
 - a share's root reports the share's own `fsid`, and `mounted_on_fileid` the
   numeric id of the pseudo directory it sits in, so a client sees a mount
   crossing there;
-- `SECINFO` on a pseudo directory answers every flavour some share admits; on
-  a share's path, the share's `Flavors`.
+- `SECINFO` on a pseudo directory answers every flavour admitted by a share at
+  or below it whose state and client rules admit the caller, whatever its
+  `MinProof` and `MinProtection`; on a share's path, the share's `Flavors`.
 
 `fs_locations` — the attribute telling a client where else a filesystem can be
 reached — is returned only for a drain
@@ -1831,14 +1868,15 @@ metadata (`FILE_SYNC`).
   server may have lost unstable writes, telling the client to resend them — is
   RFC 17's ([RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)), passed
   through.
-- **A loss reaches NFS as the verifier.** When the service reports to a
-  `Commit` that unstable writes of the file were lost (`ErrLost`, reported once
-  per loss), the `COMMIT` reply **MUST** carry the verifier sampled after the
-  loss, which differs from the one those writes were answered with, and
-  succeed: the client then resends every write since its last matching
-  verifier (RFC 1813 §3.3.21, RFC 8881 §18.3.4), which recovers the data, where
-  an error would lose it. A `COMMIT` is never answered with a verifier sampled
-  before a loss it was told of.
+- **A loss reaches NFS as the verifier.** `Commit` answers the verifier
+  sampled once its sync has completed, so a loss of unstable writes before or
+  during that sync makes it differ from the one those writes were answered
+  with ([RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)). The
+  `COMMIT` reply **MUST** carry it and succeed: the client then resends every
+  write since its last matching verifier (RFC 1813 §3.3.21, RFC 8881
+  §18.3.4), which recovers the data, where an error would lose it. `ErrLost`
+  is answered only to a `Commit` through an open, which NFS never makes (SMB's
+  flush does).
 - **A stable write whose sync may have lost it is retried.** A `DATA_SYNC` or
   `FILE_SYNC` `WRITE` whose `Commit` answers a verifier other than its `Write`'s
   is `ErrDelay` (`DelayCommit`, [RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)).
@@ -1919,8 +1957,8 @@ Not served, answered `NFS4ERR_NOTSUPP`: `ALLOCATE`, copy between installations
 `LAYOUTERROR` and `LAYOUTSTATS`, and on a single node every layout operation
 (§3.3).
 
-**`COPY` and `CLONE` are one mechanism, two atomicities.** Both are the
-service's `Copy`, the engine's clone
+**`COPY` and `CLONE` are one mechanism, two atomicities.** `COPY` is the
+service's `Copy` and `CLONE` its `Clone`, both the engine's clone
 ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone),
 [RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
 RFC 7862 requires atomicity of `CLONE` only, and `COPY` reports the bytes it
@@ -2097,8 +2135,9 @@ of its own, and the translations of this chapter read decoded fields, never
 bytes. What the tags must carry beyond fixed fields:
 
 - the bounds: file handles at 64 bytes (NFSv3, RFC 1813) and 128 (NFSv4,
-  RFC 8881), `AUTH_SYS` gids and machine name at §11.1's limits, and every
-  other opaque, string and array at the transfer sizes of §2.3;
+  RFC 8881), and every other opaque, string and array at the transfer sizes
+  of §2.3. The `AUTH_SYS` body has no tags: it is decoded by hand in `wire/`,
+  beside the RPC header, into fixed arrays at §11.1's limits;
 - discriminated unions — every result by its status, `createhow3`,
   `stable_how`, `open_claim4`, `createhow4`, the callback and state-protection
   arms of `EXCHANGE_ID` and `CREATE_SESSION` — and optional data, `post_op_attr`
@@ -2502,7 +2541,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrNotEmpty` | `NFS4ERR_NOTEMPTY` | `NFS3ERR_NOTEMPTY` |
 | `ErrNotDir`, `ErrIsDir` | `NFS4ERR_NOTDIR`, `NFS4ERR_ISDIR` | `NFS3ERR_NOTDIR`, `NFS3ERR_ISDIR` |
 | `ErrAccess`, the read-only marker's refusals included, a delete's `ReadOnly` cause too ([RFC 7 §7.9](rfc-7-namespace-metadata.md#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)) | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
-| `ErrWrongShare` — a handle of another share than the one asked | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
+| a handle of another share than the one asked, [RFC 7 §6.3](rfc-7-namespace-metadata.md#6.3%20Staleness%20is%20reported%2C%20never%20guessed)'s `ErrWrongShare`, which the service returns as `ErrStale` | `NFS4ERR_STALE` | `NFS3ERR_STALE` |
 | `ErrCross` (`CrossShare`) — a `RENAME` or `LINK` between shares | `NFS4ERR_XDEV` | `NFS3ERR_XDEV` |
 | `ErrDelay`: a recall or break in progress, a write held behind a clone past its own deadline or past what its session lets wait (`DelayClone`, §9.3), a share frozen for a move (§7.4), any transient refusal [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes as retry-later, a stability reply waiting on a stalled store (§9.1), a stable write whose sync may have lost it (`DelayCommit`, §9.1), or a store conflict still unresolved at the caller's deadline (`DelayConflict`, [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_DELAY`, for as long as the cause lasts | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrDelay` with `DelayResources` — a node memory pool spent: the share's cap on the request buffers, open state, or a reply reservation's deadline ([RFC 24 §4.2](rfc-24-resources.md#4.2%20Across%20shares%3A%20the%20share%20cap%20at%20admission)) | `NFS4ERR_DELAY`, at once; never held | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD`, which the Linux lock manager waits on and resends, where `NLM4_DENIED_NOLOCKS` reaches the application as `ENOLCK` with no retry |
@@ -2521,7 +2560,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrCross` (`CrossProject`) — a `RENAME` or `LINK` across tree quotas ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_XDEV`; `mv` copies and deletes instead | `NFS3ERR_XDEV` |
 | `ErrState` (`ClientInUse`) | `NFS4ERR_CLID_INUSE` | — |
 | `ErrState` (`RecordChanged`) — another node wrote the client record's adapter bytes first | never sent: the adapter rereads the record and decides again (§3.5); a `CREATE_SESSION` it then finds misordered is its own `NFS4ERR_SEQ_MISORDERED` | — |
-| `ErrLost` on `Commit` — a loss of unstable writes the client was answered for | the `COMMIT` reply, with the new verifier (§9.1) | the same |
+| `ErrLost` on `Commit`, answered only to a `Commit` through an open, which NFS never makes (§9.1) | never met: an NFS `COMMIT` meets a loss as the changed verifier its reply carries (§9.1) | the same |
 | `ErrGrace` | `NFS4ERR_GRACE` | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrState` (`NoReclaim`) — one reclaim refused while its client still owes reclaims: a shard the record does not name for it, or state the shard does not hold (§5.4) | `NFS4ERR_RECLAIM_BAD` | NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrState` (`NoGrace`) — a reclaim from a client with nothing left to reclaim (§5.4); the service, which knows the shard's grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)), answers it as its own kind ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), so no handler splits by grace | `NFS4ERR_NO_GRACE` | NLM: `NLM4_DENIED` |
@@ -2544,6 +2583,11 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrDeletePending` | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrState` (`OldState`) — a stateid seqid older than the state's ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) | `NFS4ERR_OLD_STATEID` | — |
 | `ErrPastEnd` — a `SEEK` from an offset at or past the file's end (RFC 7862 §15.11.3) | `NFS4ERR_NXIO` | — (NFSv3 has no `SEEK`) |
+| `ErrUnknownPrincipal`: a `who`, `owner` or `owner_group` a set names that no principal holds | `NFS4ERR_BADOWNER` (§11.3, [RFC 18 §4.5](rfc-18-identity.md#4.5%20NFSv4%20owner%20strings)); a principal `Spell` cannot spell is never an error, and is shown as §11.3 and RFC 18 §4.5 say | not set yet: RFC 21's plan sets the NFSv3 status of a `sattr3` naming a `uid` or `gid` no principal holds ([RFC 18 §4.3](rfc-18-identity.md#4.3%20uid%20and%20gid) covers only a credential's uid and gids and a principal `Spell` cannot spell, shown as 65534); NLM never names an owner |
+| `ErrLogonFailure` | never met by an operation: only an `RPCSEC_GSS` context's creation signs in (§10, §11.1), and it runs no operation; the fault, `NFS4ERR_SERVERFAULT`, should one arrive | likewise: `NFS3ERR_SERVERFAULT`; NLM: `SYSTEM_ERR` |
+| `ErrState` (`AdapterVersion`) | never met: a node writes only an `Adapter` version every node of the installation reads ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); the fault, as for `ErrLogonFailure` | as `ErrLogonFailure` |
+| `ErrState` (`NoRecall`) | never met: it answers an acknowledgement, with no recall in flight, of a grant that covers opens, a lease or an oplock ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)); a delegation covers none, so an unasked `DELEGRETURN` is a return; the fault, as for `ErrLogonFailure` | as `ErrLogonFailure` |
+| `ErrState` (`CreateInUse`) | never met: it answers an SMB create naming a create ID another open of its client holds ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)), and an NFS open carries none; the fault, as for `ErrLogonFailure` | as `ErrLogonFailure` |
 
 The adapter answers the capacity error the service returns and decides none of
 them. A write refused by the journal's capacity or by the share's journal limit
@@ -2567,13 +2611,15 @@ it meets an XFS project quota. A user or group quota is `DQUOT`, what
 `rquota` reports against.
 
 **`core`'s own refusals** ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
-`Errors()`) map as: `ErrNotSupported` to `NFS4ERR_NOTSUPP` (v4) or
-`PROC_UNAVAIL` (v3) for an operation the minor version defines and the
-adapter does not serve; an operation code the minor version does not define,
+`Errors()`) map as: `ErrNotSupported` to `PROC_UNAVAIL` in every program's
+table, NFSv4's included, for a procedure the table lacks, and to
+`NFS4ERR_NOTSUPP` in the NFSv4 members' table for an operation the minor
+version defines and the adapter does not serve; an operation code the minor version does not define,
 an NFSv4.1 code such as `SEQUENCE` sent under NFSv4.0 included, is routed to
 the `ILLEGAL` row, which answers `NFS4ERR_OP_ILLEGAL`, as develop does; `ErrVersion` to
-`PROG_MISMATCH` for an RPC version, and for an NFSv4 minor version not served
-to `NFS4ERR_MINOR_VERS_MISMATCH`, answered once for the compound before any
+`PROG_MISMATCH` in the stages' table, for a program version the connection
+does not serve, and in NFSv4's table, for a minor version not served, to
+`NFS4ERR_MINOR_VERS_MISMATCH`, answered once for the compound before any
 operation runs, with its tag and no results; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrDecode`, in the row naming no
 operation or version that RFC 20 §4.7's `NewErrorTable` demands of every
 table, to `GARBAGE_ARGS`, the RPC accept state, in every table but the NFSv4
@@ -2584,7 +2630,9 @@ arguments do not is `GARBAGE_ARGS`; `ErrTooLong` to
 `NFS4ERR_TOO_MANY_OPS` in a row naming no version, which RFC 20 §4.7's
 `NewOpTable` demands of a table with a compound row, and to `NFS4ERR_RESOURCE`
 for NFSv4.0, which has no such status, in a row naming it that wins there; `ErrReplyTooBig`, a
-`COMPOUND` whose reply would hold more than a quarter of the reply pool
+`COMPOUND` whose reply would hold more than a quarter of the reply pool, or
+would pass the reply record cap of §2.3, or leave a `READ` or `READ_PLUS` less
+than one byte under it
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)),
 to `NFS4ERR_REP_TOO_BIG` (RFC 8881 §15.1.3.6) in a row naming no version, which
 RFC 20 §4.7's `NewOpTable` demands of a table with a compound row, and to
@@ -2595,6 +2643,13 @@ row of NFSv4's table naming them in `Ops`; NFSv3, MOUNT and NLM each have a
 table of their own, RFC 20 §4.5), §7.4; `ErrDraining`, and `ErrMoved` for any other
 NFSv4 operation and for NFSv3, MOUNT and NLM, which have no move signal, to no
 reply.
+
+**A status names its layer.** Each row's status is one `core.Status` whose two
+high bits name its layer: 0 a program's status, inside an accepted reply whose
+accept state is `SUCCESS`; 1 an RPC accept state; 2 `RPC_MISMATCH`; 3
+`AUTH_ERROR`, with its `auth_stat` in the low bits. No program's status
+(`nfsstat3`, `nfsstat4`, `mountstat3`, NLM's and NSM's) reaches bit 30, and the
+header codec writes the reply each layer takes.
 
 **A reply carrying a status alone** is written whole by the header codec
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
@@ -2608,8 +2663,10 @@ only what its result carries beside the status.
 `opaque<>` (RFC 8881 §3.2, RFC 7530 §2.1), whose definition RFC 8881 §16.2.3
 and RFC 7530 §15.2.4 leave to the implementor, asking only that the reply's tag
 SHOULD be the request's. It is bounded by the
-record alone ([§2.3](#2.3%20Transfer%20sizes)) and echoed whole, in every reply
-the compound gets, a refusal's included. The header codec reads it with the
+record alone ([§2.3](#2.3%20Transfer%20sizes)) and echoed whole in every reply
+that carries the compound's status, a refusal's included; an accept state
+other than success, or a denied reply, carries no tag (RFC 5531 §9). The
+header codec reads it with the
 RPC header, so `HeaderCodec.ReplyLen` counts its bytes in the reply head, and
 the reply's reservation, or a status alone's buffer, is sized with them before
 it is taken: no reservation grows with the tag, and NFS parks nothing.
@@ -2712,14 +2769,18 @@ owner, file or principal label.
 | neutral errors with no row in §11.5; any nonzero is a bug | `adapter_unmapped_errors_total{protocol}` | counter |
 | `Adapter` bytes that failed to decode, by `reason` (`truncated`, `corrupt`, `unknown_version`); any nonzero is an alert | `adapter_record_decode_failures_total{protocol, reason}` | counter |
 | `CREATE_SESSION` replays answered from the client record | `adapter_record_replays_total{protocol="nfs4"}` | counter |
-| reply-cache hits: genuine retransmissions answered from a session's slot | `adapter_replay_hits_total{protocol="nfs4"}` | counter |
+| reply-cache hits: genuine retransmissions answered from a session's slot, counted under the connection's label, `nfs3`, as `core` counts every replay hit ([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)) | `adapter_replay_hits_total{protocol="nfs3"}` | counter |
 
 **The request span.** One per RPC, named `adapter.nfs3.<PROCEDURE>` or
-`adapter.nfs4.COMPOUND`, with one child per operation of a compound
+`adapter.nfs4.COMPOUND`, or `adapter.nfs3`, its connection's label, for one
+refused before `Route` or whose procedure its table lacks, an NFSv4 RPC among
+them ([RFC 20 §10.2](rfc-20-adapters.md#10.2%20Spans)), with one child per operation of a compound
 (`adapter.nfs4.<OP>`) and the service's span below it
 ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)). Its attributes are
-closed sets: protocol, minor version, operation, NFS status, the neutral error
-or result, request and reply bytes, and the stage that refused. Never a path,
+closed sets: protocol, version (a `COMPOUND`'s minor version, 0 for NFSv4's
+other procedures, and the program's version for every other call), operation,
+NFS status, the neutral error or result, request and reply bytes, and the
+stage that refused. Never a path,
 a name, an owner string, a principal or a client address
 ([RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)).
 
@@ -2784,7 +2845,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §3.2 reply cache | pynfs `nfs4.1` session and `SEQUENCE` replay tests; then kill the gateway node with a `REMOVE` in flight and assert the client sees `NFS4ERR_NOENT` on retry and recovers its session with no grace. | a session assumed durable, or a grace started on gateway node loss |
 | §3.3 trunking | `EXCHANGE_ID` on two nodes: same `so_major_id` and scope, different `so_minor_id`; `BIND_CONN_TO_SESSION` across nodes is `NFS4ERR_BADSESSION`. | one scope per node, or a session bound across nodes |
 | §3.4 callback routing | Hold a delegation, kill the client's gateway node, reconnect through another, conflict from a second client. Assert `CB_RECALL` arrives on the new connection. | callbacks registered once at first `Connect` |
-| §3.4 path down | Block the back channel. Assert `SEQ4_STATUS_CB_PATH_DOWN` and no delegation offered. | |
+| §3.4 path down | Once the RFC 20 plan's ledger row for the back channel's down state lands (§3.4): block the back channel; assert `SEQ4_STATUS_CB_PATH_DOWN` and no delegation offered. | |
 | §4.2 v4.0 owners | pynfs `nfs4.0` open-owner and lock replay tests; then move the client to another node mid-sequence and assert the next sequenced `OPEN` is accepted. Kill the client's gateway node with a `CLOSE` in flight whose reply is lost; assert the retransmission through the node that took the address over is answered with the first result, the owner's next `OPEN` accepted, and no `NFS4ERR_BAD_SEQID`. Open with a new owner and, before `OPEN_CONFIRM`, send `READ` and `CLOSE` under it through another node; assert both refused and `OPEN_CONFIRM` then accepted. | seqids or confirmation held in the gateway node |
 | §3.5 confirm | `SETCLIENTID` on P1, `SETCLIENTID_CONFIRM` on P2: assert `NFS4ERR_STALE_CLIENTID`; repeat both on P2 and assert confirmed. `SETCLIENTID` on P1 then the confirm on P1 from another principal: assert `NFS4ERR_CLID_INUSE`, and the confirm from the first principal then accepted. A client holding a lock reboots and sends `EXCHANGE_ID` with a new verifier but no `CREATE_SESSION`: assert its old client ID still holds the lock. `EXCHANGE_ID` for a confirmed owner from another principal: assert `NFS4ERR_CLID_INUSE`. Collect 10^4 confirm verifiers for one client ID and verifier: assert no two equal. | a confirm value derived from the client ID and verifier, or a client ID that acts before it is confirmed |
 | §3.5 `CREATE_SESSION` sequence | Send `CREATE_SESSION`, drop the reply, move the address to P2 and resend it: assert the first reply and one session. Send one with `csa_sequence` two ahead: assert `NFS4ERR_SEQ_MISORDERED`. Restart the node between a `CREATE_SESSION` and its replay; assert the replay answered from the record. | `CREATE_SESSION`'s sequence held in one node's memory |
@@ -2803,6 +2864,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §5.4 single-node restart | On one node: a client mounts, sending `RECLAIM_COMPLETE`, and takes a lock; restart the node. Assert the shard's incarnation rose, the client's reclaim of the lock is granted rather than `NFS4ERR_NO_GRACE`, and a second client's conflicting lock is refused until the reclaim. | an incarnation raised only when a journal begins serving, so the grace instance repeats |
 | §5.4 NFSv4.0 signal | An NFSv4.0 client holds an open in a shard that fails over. Assert its `RENEW` is `NFS4ERR_STALE_CLIENTID`, a `READ` under the open's stateid `NFS4ERR_STALE_STATEID`, and after it repeats `SETCLIENTID` and the confirm, the client ID unchanged and its reclaim granted. A Linux client completes recovery without looping. | `NFS4ERR_STALE_STATEID` with a valid client ID as the only signal |
 | §11.5 full journal | Fill the journal with offload stalled and the remote reachable; assert a write is answered `NFS4ERR_DELAY` (v4) and `NFS3ERR_JUKEBOX` (v3), not `NFS4ERR_NOSPC`, and succeeds on retry once offload resumes. Fill one share's journal limit the same way: assert `NFS4ERR_DELAY` too, and success once offload drains it. Fill the journal with the store unreachable for 2 minutes, past the caller's deadline: assert every retry is `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`, never `NOSPC`, and the writes succeed once the store returns. Make the store deny puts; assert `NFS4ERR_NOSPC` at once. Exceed a user quota; assert `NFS4ERR_DQUOT` at once. Exceed a project quota, then a share-wide one; assert `NFS4ERR_NOSPC` at once for each. | a share's journal limit answered "no space" at once, a transient refusal turned into "no space" at its deadline, or a quota answered "retry" |
+| §2.3 a compound's reply under the record cap | Over NFSv4.0, on a file longer than 2 MiB, send `PUTFH, READ(1 MiB)` followed by `GETATTR`s of fixed-size attributes (`type`, `size`, `change`, `time_modify`), whose bounds those attributes state, enough that they sum past the 4 KiB of header room: assert the `READ` is answered short, with at least one byte and `eof` false, each `GETATTR` answered, and the reply within 1 MiB and 4 KiB. Over NFSv4.2, send `SEQUENCE, PUTFH, READ_PLUS(1 MiB)` and the same `GETATTR`s: assert the `READ_PLUS` is answered short likewise. Send `PUTFH, READ(1 MiB), READ(1 MiB)`: assert the first `READ` is answered short and the second whole. Send `PUTFH` and three `READ(1 MiB)`; `PUTFH, READ(1 MiB), READDIR` with a `maxcount` of 1 MiB followed by those `GETATTR`s, where the `READDIR` leaves the `READ` no byte; and the same without the `READ`: assert `NFS4ERR_RESOURCE` before any operation runs; repeat over NFSv4.1 and assert `NFS4ERR_REP_TOO_BIG`. Over NFSv4.1, on a session whose `ca_maxresponsesize` is 512 KiB, send `SEQUENCE, PUTFH, READ(1 MiB)`: assert the `READ` is answered short within 512 KiB. Assert `adapter_reads_shortened_total` rose by one per short `READ` and `READ_PLUS`. | a compound refused for a reply a short read would fit, a reply past the cap or the session's budget, a `READ` or `READ_PLUS` answered no data with `eof` false, or a `READDIR` clamped rather than refused |
 | §5.3 lock recall | Client A holds a write delegation; client B sends an NLM lock and, separately, an NFSv4 `LOCK` over a range A locked locally. Assert `CB_RECALL` before B's answer and A's lock sent to the server; once the recall ends, B's NFSv4 `LOCK` is `NFS4ERR_DENIED`, a non-blocking NLM lock `NLM4_DENIED`, and a blocking NLM lock stays `NLM4_BLOCKED` behind A's lock and is sent `NLMPROC4_GRANTED` when A unlocks. Repeat with A holding a read delegation and no local lock; assert `CB_RECALL` before B is granted. While A delays its `DELEGRETURN`, assert B's NFSv4 `LOCK` answered `NFS4ERR_DELAY`, a blocking NLM lock `NLM4_BLOCKED` and then `NLMPROC4_GRANTED` once A returns, and a non-blocking one `NLM4_DENIED_GRACE_PERIOD` — never `NFS4ERR_DENIED` or `NLM4_DENIED`. | a lock request that does not recall, recalls write delegations only, or is answered "held" or "blocked" with no waiter while the recall runs |
 | §5.3 handle-cached deny mode | An SMB client opens with deny-write under an RWH lease and closes its handle locally. An NFSv4 client opens for write, and an NFSv3 client writes: assert each `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX` while the break runs, then succeeds. Repeat with the SMB handle still in use: assert `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES` only after the break. | an NFS request refused by a deny mode only a handle cache held |
 | §6 NLM | cthon04 lock tests over NFSv3; an NLM lock against an SMB byte-range lock and an SMB deny mode against `NLMPROC4_SHARE`. Fail a shard over and assert `SM_NOTIFY` reaches the client's statd and it reclaims. | NLM state held in the adapter |
@@ -2919,9 +2981,10 @@ client, owner, file or principal label.
    question 4.
 4. **Session trunking across nodes** (§3.3) would need slots held at a shared
    place; nothing asks for it yet.
-5. **A duplicate-request cache for NFSv3 and NFSv4.0.** The adapter keeps one
-   in memory today, and [RFC 20 §11](rfc-20-adapters.md#11.%20Open%20questions)
-   keeps it for parity (its question 2). The service's dedup covers only a
+5. **A duplicate-request cache for NFSv3 and NFSv4.0.** The adapter keeps none
+   yet (the RFC 20 plan's deferral ledger holds it), and
+   [RFC 20 §11](rfc-20-adapters.md#11.%20Open%20questions) keeps one for
+   parity (its question 2). The service's dedup covers only a
    forwarded call ([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)).
    This RFC decides whether the service's dedup should cover a single node too,
    so a retransmitted `REMOVE` or `CREATE` is answered its first result without
@@ -3038,7 +3101,7 @@ method then calls below is
 | NLM `*_MSG`, `*_RES` | as their synchronous forms | answered on the host's callback service |
 | NSM `SM_NOTIFY` (received) | `HostRestarted` | |
 | NSM `SM_MON`, `SM_UNMON` | none (adapter only) | sent by the server to its own monitor, never received from a peer; a host is registered for restart notification by its first NLM call, which is `Connect` with its `caller_name` as monitor name (§6.2) |
-| rquota `GETQUOTA` | `Quota` | |
+| rquota `GETQUOTA` | none: not served | rquota is not among the programs §2.1 serves, so a call is answered `PROG_UNAVAIL`; serving it is a row of the RFC 20 plan's deferral ledger |
 
 **NFSv4.0, 4.1 and 4.2.** `COMPOUND` runs its operations as sequences of these.
 
