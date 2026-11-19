@@ -1,6 +1,7 @@
 package netlogon
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -33,15 +34,24 @@ var errNoAES = errors.New("netlogon: the domain controller negotiated no AES")
 var errServerCredential = errors.New("netlogon: the domain controller's server credential does not verify")
 
 // errServerChallenge is a NetrServerReqChallenge reply whose server challenge
-// is missing, not 8 bytes, or all zero.
+// is missing, not 8 bytes, or one byte repeated.
 var errServerChallenge = errors.New("netlogon: NetrServerReqChallenge answered no usable server challenge")
 
 // checkServerChallenge refuses a server challenge that is not 8 bytes or is
-// all zero. The session-key negotiation (MS-NRPC §3.1.4.1) computes the
-// session key (§3.1.4.3) and both credentials (§3.1.4.4) from it, so the
-// client refuses an all-zero one before computing any of them.
+// one byte repeated, all zero among them. The session-key negotiation
+// (MS-NRPC §3.1.4.1) computes the session key (§3.1.4.3) and both
+// credentials (§3.1.4.4) from it, so the client refuses one before computing
+// any of them.
+//
+// decision: the server credential is the server challenge under AES-CFB8
+// with a zero IV (§3.1.4.4.1), which encrypts 8 bytes to all zero only when
+// they are 8 copies of the first byte of the session key's encryption of
+// zero, so about 1 repeated-byte challenge in 256 has an all-zero
+// credential, which matches an all-zero reply without the session key.
+// Refusing every repeated-byte challenge leaves no such case; a controller's
+// 8 random bytes are one byte repeated once in 2^56 set-ups.
 func checkServerChallenge(c *logon.Credential) error {
-	if c == nil || len(c.Data) != 8 || allZero(c.Data) {
+	if c == nil || len(c.Data) != 8 || bytes.Count(c.Data, c.Data[:1]) == 8 {
 		return errServerChallenge
 	}
 	return nil
@@ -51,9 +61,8 @@ func checkServerChallenge(c *logon.Credential) error {
 // one the client computed (MS-NRPC §3.1.4.4), and refuses an all-zero one
 // even when want is all zero too.
 func checkServerCredential(want []byte, got *logon.Credential) error {
-	// decision: want is all zero for about 1 server challenge in 256 made of
-	// one repeated byte (AES-CFB8 under a zero IV), so an all-zero credential
-	// can match it without the session key; this refuses that reply.
+	// decision: checkServerChallenge leaves want never all zero, and the
+	// all-zero refusal stays so this check does not rest on that one.
 	if got == nil || allZero(got.Data) || !hmac.Equal(want, got.Data) {
 		return errServerCredential
 	}
@@ -67,6 +76,21 @@ func allZero(b []byte) bool {
 		}
 	}
 	return true
+}
+
+// checkAuthenticated checks a NetrServerAuthenticate3 reply to the client
+// cred is, for serverChallenge: the negotiated AES first, as a controller
+// without it computes no credential the client's AES one matches, then the
+// server credential (MS-NRPC §3.1.4.4).
+func checkAuthenticated(ctx context.Context, cred *nlssp.SecureCredential, serverChallenge []byte, reply *logon.Authenticate3Response) error {
+	if err := checkNegotiated(reply.NegotiateFlags); err != nil {
+		return err
+	}
+	want, err := cred.Encrypt(ctx, serverChallenge)
+	if err != nil {
+		return err
+	}
+	return checkServerCredential(want, reply.ServerCredential)
 }
 
 // checkNegotiated refuses the flags a NetrServerAuthenticate3 reply
@@ -175,14 +199,7 @@ func (d *dc) authenticate(ctx context.Context, name string, machine credential.C
 	if auth3.Return != 0 {
 		return nil, nil, Status(uint32(auth3.Return))
 	}
-	want, err := cred.Encrypt(ctx, cfg.ServerChallenge)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := checkServerCredential(want, auth3.ServerCredential); err != nil {
-		return nil, nil, err
-	}
-	if err := checkNegotiated(auth3.NegotiateFlags); err != nil {
+	if err := checkAuthenticated(ctx, cred, cfg.ServerChallenge, auth3); err != nil {
 		return nil, nil, err
 	}
 	return cfg, cred, nil
