@@ -122,7 +122,7 @@ func TestDecodeWrongTypeInJSONTerms(t *testing.T) {
 
 // sampleKeys are a sample's JSON names at each path holding an object,
 // written out by hand so that FuzzDecode holds decode to them and not to
-// jsonFields, which decode itself uses.
+// wireFields, which decode itself uses.
 var sampleKeys = map[string][]string{
 	"":    {"note", "name", "size", "tags", "sub", "at"},
 	"sub": {"on"},

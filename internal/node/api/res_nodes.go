@@ -74,11 +74,18 @@ func node(ctx context.Context, d Deps, rq request[none]) (apiv1.Node, error) {
 // nodeConnections is GET /nodes/{id}/connections: the connections listing,
 // for this node's ID alone; any other ID is 404 before any adapter is read,
 // as GET /nodes/{id} answers a node that never registered.
-func nodeConnections(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (answer, error) {
-	if entity.NodeID(id) != s.d.Node {
-		return answer{}, errNotFound
+var nodeConnections = onlySelf(list(connections))
+
+// onlySelf is a, answering 404 for any ID but this node's.
+func onlySelf(a adapter) adapter {
+	run := a.run
+	a.run = func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (answer, error) {
+		if entity.NodeID(id) != s.d.Node {
+			return answer{}, errNotFound
+		}
+		return run(ctx, s, r, rt, id)
 	}
-	return list(connections)(ctx, s, r, rt, id)
+	return a
 }
 
 // connRow is a connection with its key.

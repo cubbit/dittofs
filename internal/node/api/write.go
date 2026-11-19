@@ -25,12 +25,17 @@ import (
 // maxKey bounds an Idempotency-Key, in bytes.
 const maxKey = 255
 
+// appliedWait bounds how long a write raising the principals or settings
+// generation waits for the node to apply it.
+const appliedWait = time.Second
+
 // writing is what a write row's adapter knows of the resource it writes:
 // its kind; read, which returns the record id and the path's {sub} name,
 // tracked in the write's transaction, as the body a PUT of it sends, with
 // its tag, ok false when there is none; whether its commit raises the principals or settings
 // generation; whether the row is a POST action that changes the spec, and so
-// carries If-Match as a PUT does; secret, which names the fields of the
+// carries If-Match as a PUT does; whether the record always exists, so a PUT
+// never creates it, which the API's OpenAPI document says; secret, which names the fields of the
 // body whose values its audit record holds only as "set", nil for none; and
 // auditAs, the name its audit record's change gives the body's spec, empty
 // keeping spec, for a record written as part of another resource's.
@@ -44,6 +49,7 @@ type writing[B any] struct {
 	hidden      func(ctx context.Context, tx entity.ControlPlaneTx, id [16]byte) (bool, error)
 	raises      bool
 	changesSpec bool
+	exists      bool
 	secret      func(path string) bool
 	auditAs     string
 }
@@ -83,11 +89,11 @@ type writing[B any] struct {
 // transaction of its own. After a commit that raises the principals or
 // settings generation, the answer waits for the node to apply it.
 func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) (I, error), h func(context.Context, request[B], I, entity.ControlPlaneTx) (R, [16]byte, error)) adapter {
-	return func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (a answer, err error) {
+	return adapter{form: formWrite, body: reflect.TypeFor[B](), out: reflect.TypeFor[R](), changesSpec: w.changesSpec, exists: w.exists, replays: true, raises: w.raises, run: func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (a answer, err error) {
 		if s.d.Store == nil {
 			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
 		}
-		created := r.Method == http.MethodPost && r.PathValue("id") == ""
+		created := rt.creates()
 		sub := r.PathValue("sub")
 		rec := s.auditOf(ctx, r)
 		rec.Target.Kind = w.kind
@@ -144,7 +150,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 				return s.replayed(err)
 			}
 		}
-		cond, err := conditionOf(r, key, w.changesSpec)
+		cond, err := conditionOf(r, key, rt.precondition())
 		if err != nil {
 			return answer{}, err
 		}
@@ -240,7 +246,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			s.awaitApplied(ctx)
 		}
 		return a, nil
-	}
+	}}
 }
 
 // awaitApplied waits for the node to apply what a write raising the
@@ -248,7 +254,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 // API's clock, the wall clock's with none. The second is armed before
 // Applied is called, so a caller that sees Applied reached knows it runs.
 //
-// decision: the answer waits at most 1 s, the bound a reconcile pass is held
+// decision: the answer waits at most appliedWait, one second, the bound a reconcile pass is held
 // to, and the write answers the commit's own result whatever the wait
 // returns: the write is durable, and status.applied says where it is
 // applied. Overturned if a pass on a healthy node regularly outlasts the
@@ -259,9 +265,9 @@ func (s *Server) awaitApplied(ctx context.Context) {
 	}
 	var cancel context.CancelFunc
 	if s.d.Clock == nil {
-		ctx, cancel = context.WithTimeout(ctx, time.Second)
+		ctx, cancel = context.WithTimeout(ctx, appliedWait)
 	} else {
-		bound := s.d.Clock.After(time.Second)
+		bound := s.d.Clock.After(appliedWait)
 		ctx, cancel = context.WithCancel(ctx)
 		go func() {
 			select {
@@ -317,10 +323,10 @@ type condition struct {
 }
 
 // conditionOf is the condition r's headers name, refusing a request lacking
-// a header its method requires, 428: a POST or a DELETE its Idempotency-Key,
-// and a PUT, a PATCH, a DELETE or a POST action that changes the spec its
-// If-Match, which a PUT may replace by If-None-Match: *. A request carrying
-// both, or an If-Match of * or of a list, is refused 400.
+// a header its row's precondition p requires, 428: its Idempotency-Key, and
+// its If-Match, which a PUT that may create its record may replace by
+// If-None-Match: *. A request carrying both, or an If-Match of * or of a
+// list, is refused 400.
 //
 // decision: If-Match is required, not optional. Optional, every script
 // omits it, and a lost update is the default behaviour; the CLI reads before
@@ -330,9 +336,9 @@ type condition struct {
 // would make the write unconditional again, and a list would let a client
 // that has read no single record write over any of several, so both are
 // refused rather than honoured.
-func conditionOf(r *http.Request, key string, changesSpec bool) (condition, error) {
+func conditionOf(r *http.Request, key string, p precondition) (condition, error) {
 	m := r.Method
-	if key == "" && (m == http.MethodPost || m == http.MethodDelete) {
+	if key == "" && p.key {
 		return condition{}, &refusal{code: apiv1.CodePreconditionRequired, detail: "a " + m + " carries an Idempotency-Key"}
 	}
 	// A header sent on several lines is one list, as HTTP joins them.
@@ -343,12 +349,14 @@ func conditionOf(r *http.Request, key string, changesSpec bool) (condition, erro
 		return condition{}, &fieldError{field: "If-Match", detail: "a request carries If-Match or If-None-Match, not both"}
 	case match == "*" || strings.Contains(match, ","):
 		return condition{}, &fieldError{field: "If-Match", detail: "If-Match names exactly one tag, never * or a list"}
-	case m == http.MethodPost && !changesSpec:
+	case !p.compares():
 		return condition{}, nil
-	case m == http.MethodPut && none == "*":
+	case p.create && none == "*":
 		return condition{create: true}, nil
-	case match == "":
+	case match == "" && p.create:
 		return condition{}, &refusal{code: apiv1.CodePreconditionRequired, detail: "a " + m + " carries If-Match, or a PUT creating its record If-None-Match: *"}
+	case match == "":
+		return condition{}, &refusal{code: apiv1.CodePreconditionRequired, detail: "a " + m + " carries If-Match"}
 	}
 	return condition{match: match}, nil
 }

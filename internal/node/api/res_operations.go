@@ -123,6 +123,11 @@ var operation = watching[opRead]{
 // ponytail: a state filter reads the whole running index for each page and
 // sorts it by ID, O(running). Index running operations by state and ID when
 // the running count makes a page's read show in a profile.
+// operationFilters describe GET /operations's filters.
+var operationFilters = []param{
+	{name: "state", enum: []string{"pending", "running", "cancelling"}, desc: "The operations that have not ended in this state, in ID order."},
+}
+
 var operations = listing[opRead, apiv1.Operation]{
 	filters: []string{"state"},
 	records: func(ctx context.Context, d Deps, after []byte, f map[string]string) iter.Seq2[opRead, error] {

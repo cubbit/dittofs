@@ -217,6 +217,15 @@ type shareRow struct {
 // ?namespace= the shares counted in that namespace, in ID order, a share
 // being removed left out as the name order leaves it out; both together, the
 // named share when it is counted in that namespace.
+// shareFilters describe GET /shares's filters.
+var shareFilters = []param{
+	{name: "name", desc: "The share of this name: a list of zero or one."},
+	{name: "namespace", format: "uuid", desc: "The shares counted in this namespace, in ID order."},
+}
+
+// snapshotsParam describes DELETE /shares/{id}'s ?snapshots=.
+var snapshotsParam = param{name: "snapshots", enum: []string{"refuse", "delete", "detach"}, desc: "What the delete does with the share's snapshots; refuse when left out."}
+
 var shares = listing[shareRow, apiv1.Share]{
 	filters: []string{"name", "namespace"},
 	records: func(ctx context.Context, d Deps, after []byte, f map[string]string) iter.Seq2[shareRow, error] {
@@ -321,8 +330,10 @@ func readShare(ctx context.Context, d Deps, rq request[none]) (shareRead, error)
 // again, so the wait is refused 409 stale. Overturned if a client needs to
 // wait through a quiesce for the resume.
 var share = watching[shareRead]{
-	read: readShare,
-	tag:  func(s shareRead) uint64 { return s.Generation },
+	read:    readShare,
+	tag:     func(s shareRead) uint64 { return s.Generation },
+	words:   []param{{name: "serving", desc: "until the share serves on every registered node, or one refuses it, for at most " + maxWait.String() + "; a quiesced share answers at once, and one being removed is refused 409 stale"}},
+	refuses: []error{entity.ErrStale},
 	until: func(w string) (time.Duration, func(first, now shareRead) (bool, error), error) {
 		if w == "serving" {
 			return maxWait, func(_, now shareRead) (bool, error) {

@@ -118,8 +118,8 @@ func policyFrom(share entity.ShareID, spec apiv1.ExportPolicySpec, at string) (e
 // generations, and its change names the policy's fields under
 // export_policy, as the share's create records them. A share with no policy
 // stored has the default one, at version zero, so a PUT naming "0" replaces
-// it.
-var policies = writing[policyDoc]{kind: entity.ResourceShare, auditAs: "export_policy", read: func(tx entity.ControlPlaneTx, id [16]byte, _ string) (policyDoc, uint64, bool, error) {
+// it; a share's policy always exists, so a PUT under If-None-Match: * is 412.
+var policies = writing[policyDoc]{kind: entity.ResourceShare, auditAs: "export_policy", exists: true, read: func(tx entity.ControlPlaneTx, id [16]byte, _ string) (policyDoc, uint64, bool, error) {
 	_, ok, err := tx.Share(entity.ShareID(id))
 	if err != nil || !ok {
 		return policyDoc{}, 0, false, err

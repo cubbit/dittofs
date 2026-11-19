@@ -230,8 +230,8 @@ func settingRoutes() []route {
 			}}
 		path := sc.path + "/{sub}"
 		out = append(out,
-			route{method: http.MethodGet, pattern: path, kind: entity.ResourceSetting, right: auth.View, target: target, serve: watch(settingRead(sc.scope))},
-			route{method: http.MethodPut, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, serve: write(w, nil,
+			route{method: http.MethodGet, pattern: path, kind: entity.ResourceSetting, right: auth.View, target: target, sub: subSetting, serve: watch(settingRead(sc.scope))},
+			route{method: http.MethodPut, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, serve: write(w, nil,
 				func(ctx context.Context, rq request[settingDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Setting, [16]byte, error) {
 					v := rq.Body.Spec.Value
 					if len(v) == 0 || string(v) == "null" {
@@ -240,7 +240,7 @@ func settingRoutes() []route {
 					gen, err := putSetting(ctx, rq.d, tx, entity.Setting{Scope: sc.scope(rq.ID), Key: rq.Sub, Value: v}, rq.Expect)
 					return apiv1.Setting{ID: rq.Sub, Generation: gen, Spec: apiv1.SettingSpec{Value: v}}, rq.ID, err
 				})},
-			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, serve: write(tagsOf(w), nil,
+			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, serve: write(tagsOf(w), nil,
 				func(ctx context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
 					return none{}, rq.ID, deleteSetting(ctx, rq.d, tx, sc.scope(rq.ID), rq.Sub, rq.Expect)
 				})},
