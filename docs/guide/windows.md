@@ -8,7 +8,7 @@ This guide walks through mounting a DittoFS share on a Windows machine over SMB,
 Windows NFS client if needed. It assumes DittoFS is already running on a Linux or macOS host.
 
 For the Windows test VM and the manual checklists contributors use, see
-[`../internals/testing.md`](../internals/testing.md#manual-testing-from-windows).
+[`../internals/testing-windows.md`](../internals/testing-windows.md).
 
 ## Table of Contents
 

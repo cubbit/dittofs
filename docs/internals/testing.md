@@ -25,8 +25,7 @@ design and its reasons are in [RFC 29](rfcs/rfc-29-test-harness.md).
 - [Performance and benchmarks](#performance-and-benchmarks)
 - [Running DittoFS by hand](#running-dittofs-by-hand)
 - [Real NFSv3 NLM lock testing (network-namespace isolation)](#real-nfsv3-nlm-lock-testing-network-namespace-isolation)
-- [Crash testing (dm-flakey and cold reads)](#crash-testing-dm-flakey-and-cold-reads)
-- [Manual testing from Windows](#manual-testing-from-windows)
+- [Command reference](#command-reference)
 - [Troubleshooting](#troubleshooting)
 - [Further reading](#further-reading)
 
@@ -44,7 +43,8 @@ test/harness/bin/dt report               # the last run again, with its new fail
 ```
 
 To complete `dt`'s arguments with TAB, alias it once from the repository root, then load the
-script (zsh; for bash, `dt completion bash`, which needs the bash-completion package):
+script. This is zsh's; bash's is `dt completion bash`, which needs the bash-completion package, and
+cobra also writes one for fish and for powershell:
 
 ```bash
 alias dt="$PWD/test/harness/bin/dt"
@@ -63,7 +63,7 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 ## How the harness is organized
 
 - **Suite:** one entry in `test/suites.yaml`: the command, the format its results come in, its
-  tier, what it needs and the fixture it runs against. There are 19 (table below).
+  tier, what it needs and the fixture it runs against. The table below lists each one.
 - **Option:** a named variant of a suite, such as `unit/nonrace` or `smbtorture/kerberos`. Each
   option is also a flag of `dt run`: `dt run smbtorture --kerberos`.
 - **Matrix:** the axes a suite runs across, such as the storage profile and the NFS version.
@@ -245,22 +245,9 @@ test/harness/bin/dt unit                                       # unit, integrati
 
 ### `dt run` flags
 
-| Flag | Does |
-|---|---|
-| `--in host\|container\|auto` | Where the run happens (next section). Default `auto`, or `host` with `--ci` |
-| `--parallel N` | Runs up to N cells at once, where the suites allow it (below). Default 1 |
-| `--changed` | Tests only the packages with a change committed since the base; for `unit` |
-| `--packages p1,p2` | Tests only these packages; for `unit` (`integration` ignores it) |
-| `--base REF` | The base for `--changed` and the commit checks. Default `origin/develop` |
-| `--tier T` | Runs at tier T, or a suite's own tier when wider |
-| `--only a,b` / `--skip a,b` | Narrows a group |
-| `--retry N` | Runs each new failure again, up to N times; a pass on retry is graded flaky |
-| `--ci` | What CI uses: an unmet need makes the cell not run (exit 2) instead of skipping it, and failures print GitHub annotations |
-| `--results DIR` | Where results go, inside the checkout. Default `test/harness/results` |
-| `--json` | Prints the run on stdout once it ends, as `dt report --format json` does, and everything else on stderr. The exit code is unchanged |
-| `--no-color` | No colors. On a terminal, results are colored by default: passed green, failed red, not run yellow; `NO_COLOR` also turns them off |
-| `--place P` | Runs every cell of the tier that `dt plan` gives place P, as the dedicated host does |
-| `--OPTION` | Runs the suite's option of that name: `--kerberos`, `--nonrace`, `--knfsd`, `--smb21`, `--macos`, `--windows`, `--stress`, `--portmap`, `--ad-dc`, `--cross-protocol`, `--smb` |
+Every flag of `dt run`, each suite's options among them (`dt run smbtorture --kerberos`), is in
+the [command reference](#command-reference), as `dt run --help` prints it. Where a run happens and
+how many cells run at once have their own sections next.
 
 ### Where a run happens: `--in`
 
@@ -278,7 +265,7 @@ host and the cell doesn't run. A fixed port works the same way: `wpts` and `smbt
 445, which is free on a Mac, so `--in auto` keeps them there, where they're skipped. Run those
 with `--in container`.
 
-Here is what that looks like on a Mac (from the [demo](../../test/harness/demo/README.md)):
+Here is what that looks like on a Mac, as dt prints it (checkout path shortened):
 
 ```text
 $ test/harness/bin/dt run pjdfstest/badger-s3/4.1 --in host --ci
@@ -286,13 +273,20 @@ $ test/harness/bin/dt run pjdfstest/badger-s3/4.1 --in host --ci
 ::error title=dt pjdfstest/badger-s3/4.1::not run: dt mounts NFS only on Linux yet
 CELL                     RESULT   TIME  NOTE
 pjdfstest/badger-s3/4.1  not run  0s    dt mounts NFS only on Linux yet
+results: ~/dittofs/test/harness/results/20261119T092223Z-2d7db986
+cells: 1 not run, 1 total in 0s
 (exit 2)
 
 $ test/harness/bin/dt run pjdfstest/badger-s3/4.1 chmod/00.t
 [dt] in dtc: dt run pjdfstest/badger-s3/4.1 chmod/00.t --in=host
-[dt] fixture: blocks in the bucket dittofs-dt at http://127.0.0.1:4566, under dt-374eb7f093efddfc/
+[dt] $ go build -o ~/dittofs/test/harness/results/20261119T092525Z-2d7db986/bin/ ./cmd/dfs ./cmd/dfsctl
+[dt] fixture: blocks in the bucket dittofs-dt at http://127.0.0.1:4566, under dt-1bda5eab77bc3f40/
 ...
-(exit 0, after 17 s)
+CELL                     RESULT  TIME  NOTE
+pjdfstest/badger-s3/4.1  passed  19s
+results: ~/dittofs/test/harness/results/20261119T092525Z-2d7db986
+cells: 1 passed, 1 total in 20s
+(exit 0, after 25 s)
 ```
 
 ### Several cells at once: `--parallel`
@@ -308,8 +302,8 @@ log, fixture, port and mount point.
 test/harness/bin/dt run pjdfstest chmod/00.t --in container --parallel 3   # NFSv3, v4 and v4.1 side by side
 ```
 
-On a Mac each of the three cells takes about 13 s, and all three finish in 17 s, about what one
-takes alone.
+On a Mac each of the three cells takes 13 s, and the run ends with `cells: 3 passed, 3 total in
+16s`, about what one takes alone.
 [`testing-parallel.md`](testing-parallel.md) says when a suite may say `parallel: true` and how to
 check it.
 
@@ -340,8 +334,8 @@ run can exit 0 having skipped most of what you asked for. Read the table it prin
 | `LOCALSTACK_ENDPOINT`, `DITTOFS_TEST_POSTGRES_DSN`, `DITTOFS_TEST_KMIP*` | Use these services instead of the local ones |
 | `GITHUB_TOKEN` | Lets `dt history --ci`, `dt plan --estimate --ci` and `dt known prune --ci` read CI's results |
 | `DITTOFS_REPO` | Points `dtc` and the environment commands at another checkout |
-| `DITTOFS_E2E_*`, `DT_*`, `NO_COLOR` | Passed through into dtc |
-| `NO_COLOR` | Set to anything but empty, turns `dt run`'s colors off, as `--no-color` does |
+| `DITTOFS_E2E_*`, `DT_*` | Passed through into dtc |
+| `NO_COLOR` | Set to anything but empty, turns `dt run`'s colors off, as `--no-color` does; passed through into dtc |
 | `DITTOFS_SKIP_PREPUSH`, `DITTOFS_SKIP_*`, `DITTOFS_PREPUSH_BASE` | Git hook switches (see [Git hooks](#git-hooks)) |
 
 Suites that run as root (e2e, pjdfstest and the other mounting suites) go through `sudo`, which
@@ -362,7 +356,8 @@ Each run writes to `test/harness/results/<UTC time>-<commit>/`:
 | `bin/`, `tools/` | The `dfs` and `dfsctl` built for the run, and the test tools it used |
 
 A run ends with its results directory and a line counting its cells by result, with the run's time:
-`cells: 1 failed, 2 passed, 1 skipped, 4 total in 1m12s`.
+`cells: 1 failed, 2 passed, 1 skipped, 4 total in 1m12s`. On a terminal the results are colored:
+passed green, failed red, not run yellow. `--no-color`, or `NO_COLOR` set, turns that off.
 
 ```bash
 test/harness/bin/dt run SUITE --json > run.json # the run as JSON on stdout, the rest on stderr
@@ -372,6 +367,7 @@ test/harness/bin/dt report RUN_DIR              # another run, such as one downl
 test/harness/bin/dt report --format md|json     # as Markdown or JSON
 test/harness/bin/dt history SUITE[/TEST]        # pass, fail, skip and flaky counts over the last 10 local runs, with p50 and p90 times
 test/harness/bin/dt history --ci SUITE/TEST     # the same over develop's CI runs (needs GITHUB_TOKEN)
+test/harness/bin/dt history diff [A B]          # which cells and tests took longer or shorter between two CI runs; without run IDs, the last 10's halves
 ```
 
 ## Known failures, expected skips and quarantine
@@ -551,8 +547,8 @@ it to that branch.
 
 ## Writing tests
 
-These rules apply to every new or changed test. [RFC 29 §4.11](rfcs/rfc-29-test-harness.md) has
-the full reasoning.
+These rules apply to every new or changed test. They are the ones
+[`CLAUDE.md`](../../CLAUDE.md#writing-tests) gives every contributor, agents included.
 
 **A test must be able to fail.** Break the code it guards in a realistic way that still compiles,
 and watch the test fail on its assertion. A test that has never failed is unverified. Tests that
@@ -564,7 +560,8 @@ fake.
 argument. Put the logic in a function of its inputs and keep I/O in a thin layer at the edge, or
 take the dependency as a small interface and test against a real implementation of it: the memory
 metadata or block store, `t.TempDir()`, a listener on `127.0.0.1:0`, an in-memory SQLite store.
-Three kinds of double are allowed:
+Three kinds of double are allowed ([RFC 29 §4.11](rfcs/rfc-29-test-harness.md#411-test-doubles) has
+the reasoning):
 
 1. An injected clock or seeded random source.
 2. A verified in-memory implementation that lives with the interface's package and passes the same
@@ -976,317 +973,329 @@ The framework is in `test/e2e/framework/netns.go` and the tests in
 `test/e2e/nlm_axis_interop_test.go`. The single-host registration check, which can't take a real
 lock for the reason above, is `TestNLMSystemRpcbindRegistration` in `test/e2e/nlm_locking_test.go`.
 
-## Crash testing (dm-flakey and cold reads)
+## Command reference
 
-Two rigs check that data lost underneath DittoFS comes back as an error, never as plausible zeros.
-Neither is a registered suite. Both need root, Linux, `cifs-utils` and `python3`: a VM, not a
-laptop.
+Every `dt` command with its usage line and flags, from dt's own command definitions. A command
+shown with `[ARGS]` passes its arguments on, and its own `--help` lists them. `dt docs` writes this
+section from dt's commands, and `dt docs --check`, in `lint-repo`, fails when it is out of date.
 
-### Device loss (dm-flakey)
+<!-- dt-commands:begin -->
+<!-- Generated from dt's commands by test/harness/bin/dt docs. Do not edit by hand. -->
 
-`test/crash/device-loss.sh` answers one question: can an acknowledged write come back as the right
-size with zero content? Losing an uncommitted write in a crash is expected; returning
-plausible-looking zeros for it is not, because no reader can tell the difference.
+### `dt cleanup`
 
-**`kill -9` does not test this.** The page cache outlives the process, so the data is still there
-when the server restarts. Only device-level loss exposes the gap between metadata that reached
-stable storage and data that did not.
+Stop everything the harness can leave running
 
-The rig puts the metadata store and the share's journal on an ext4 filesystem over `dm-flakey`,
-writes self-identifying 4096-byte records over SMB (`cache=none`, so the server answers every
-`write()`), then swaps the device table to `drop_writes` with `dmsetup suspend --noflush
---nolockfs`. From that instant only bytes that really reached the device survive. The writer is
-stopped before the swap, so every record in its acknowledgement log was answered while the device
-was healthy, and that log is fsynced to a different disk. After the swap the server is killed, the
-device is restored to what survived, and the file is read back.
-
-```bash
-sudo ./test/crash/device-loss.sh ./dfs ./dfsctl [write-seconds] [commit-every]
+```text
+dt cleanup [ARGS]
 ```
 
-`write-seconds` defaults to 15. `commit-every` is how often the writer calls `fsync`, and the two
-modes test opposite directions:
+### `dt completion`
 
-- **`0`:** nothing is ever committed, so nothing may be published. The file must come back short
-  or empty, never full-size and zeroed.
-- **`64`** (the default): a durable prefix exists. Every fsynced record must read back byte for
-  byte; only records written since the last fsync may be missing.
+Generate the autocompletion script for the specified shell
 
-The verdict fails on any record that reads as zeros or garbage inside the file's own size, and on
-any fsynced record that is missing. The machine needs the `dm-flakey` kernel module.
-
-### Cold-read loss
-
-`test/crash/invalidate-cold-loss.sh` checks the read path once a range lives only in the block
-store. It writes records over SMB, waits until the syncer has mirrored them, reads one back, evicts
-the journal's copy, then restarts a server whose block store is in memory, so the only copy is
-gone. The second read must fail. Zeros, or any other wrong bytes, at full length are the bug; the
-right bytes mean the copy was never the only one, and the run reports INCONCLUSIVE.
-
-```bash
-sudo ./test/crash/invalidate-cold-loss.sh ./dfs ./dfsctl
+```text
+dt completion
 ```
 
-## Manual testing from Windows
+### `dt completion bash`
 
-The suites above cover the protocols. Real Windows applications are still worth a manual pass
-before a release: this section sets up a Windows VM and lists what to try.
+Generate the autocompletion script for bash
 
-### Windows VM setup
-
-**Last validated:** 2026-02-28 (Windows 11 24H2)
-
-#### Option A: UTM (Apple Silicon, recommended)
-
-1. Download and install UTM from [mac.getutm.app](https://mac.getutm.app/).
-2. Download the Windows 11 ARM ISO from [Microsoft UUP dump](https://uupdump.net/) or the
-   official Microsoft site.
-3. Create a new VM:
-   - Click "Create a New Virtual Machine" > "Virtualize".
-   - Select "Windows".
-   - Allocate at least 4 GB RAM and 2 CPU cores.
-   - Allocate 64 GB disk (minimum).
-   - Enable "Install drivers and SPICE tools".
-4. Attach the Windows 11 ARM ISO and boot the VM.
-5. Complete the Windows 11 installation (skip network during OOBE if needed; use a local
-   account).
-
-#### Option B: VirtualBox / Hyper-V (x86)
-
-- **VirtualBox:** download from [virtualbox.org](https://www.virtualbox.org/), create a Windows
-  11 x64 VM with at least 4 GB RAM, enable EFI and TPM 2.0 emulation.
-- **Hyper-V:** available on Windows 10/11 Pro/Enterprise, enable via "Turn Windows features on
-  or off".
-
-#### Network configuration
-
-The Windows VM must reach the DittoFS host on ports **12445** (SMB) and **12049** (NFS).
-
-| Network mode | When to use | Configuration |
-|-------------|-------------|---------------|
-| **Bridged** | VM and host on same LAN | VM gets its own IP from DHCP; use host's LAN IP to connect |
-| **Host-only** | Isolated testing | Configure a host-only network adapter; use host-only gateway IP |
-| **Shared (NAT)** | Default in UTM | Forward ports 12445 (SMB) and 12049 (NFS) from host to guest |
-
-Verify connectivity from the Windows VM:
-
-```powershell
-Test-NetConnection -ComputerName <host-ip> -Port 12445
+```text
+dt completion bash
 ```
 
-#### Required Windows features
+Flags:
 
-**Client for NFS** (for NFS client testing):
-
-1. Open **Settings** > **Apps** > **Optional Features** > **More Windows features**.
-2. Expand **Services for NFS**, check **Client for NFS**, click OK and restart if prompted.
-
-**SMB client:** installed and enabled by default on Windows 11; no additional setup needed.
-
-#### Guest auth GPO configuration
-
-Windows 11 24H2 blocks insecure guest logons by default. For testing DittoFS with guest or
-anonymous sessions:
-
-**Option 1, Group Policy Editor (`gpedit.msc`):**
-
-1. Press `Win+R`, type `gpedit.msc`, press Enter.
-2. Navigate to: **Computer Configuration** > **Administrative Templates** > **Network** >
-   **Lanman Workstation**.
-3. Double-click **"Enable insecure guest logons"**, set to **Enabled**, click OK.
-4. Restart the Lanman Workstation service or reboot.
-
-**Option 2, Registry (Windows 11 Home or scripted):**
-
-```powershell
-# Run as Administrator
-Set-ItemProperty `
-  -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" `
-  -Name "AllowInsecureGuestAuth" -Value 1 -Type DWord
-Restart-Service LanmanWorkstation
+```text
+      --no-descriptions[=true|false]   disable completion descriptions
 ```
 
-Registry path: `HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters\AllowInsecureGuestAuth` = 1 (DWORD)
+### `dt completion fish`
 
-#### DittoFS server setup for testing
+Generate the autocompletion script for fish
 
-On the macOS or Linux host:
-
-```bash
-# 1. Build DittoFS
-go build -o dfs ./cmd/dfs
-go build -o dfsctl ./cmd/dfsctl
-
-# 2. Initialize config (first time only)
-./dfs init
-
-# 3. Start DittoFS; on its first start it prints the admin's initial password
-./dfs start
-
-# 4. Log in
-./dfsctl login --server http://localhost:8080 --username admin
-
-# 5. Create test stores
-./dfsctl store metadata add --name test-meta --in-memory
-./dfsctl store block add --name test-blocks --type memory
-
-# 6. Create a test share
-./dfsctl share create --name /smbbasic --metadata test-meta --block-store test-blocks
-
-# 7. Create a test user
-./dfsctl user create --username testuser    # enter password when prompted
-
-# 8. Grant permissions
-./dfsctl share permission grant /smbbasic --user testuser --level read-write
-
-# 9. Verify the SMB adapter is listening on port 12445
-./dfsctl adapter list
+```text
+dt completion fish [flags]
 ```
 
-Connect from the Windows VM:
+Flags:
 
-```cmd
-rem Mapped drive
-net use Z: \\<host-ip>\smbbasic /user:testuser <password>
-
-rem UNC path
-explorer \\<host-ip>\smbbasic
+```text
+      --no-descriptions[=true|false]   disable completion descriptions
 ```
 
-Optional software useful for testing:
+### `dt completion powershell`
 
-| Software | Purpose |
-|----------|---------|
-| VS Code | Test opening projects from SMB share, file editing, integrated terminal |
-| Microsoft Office | Test Word/Excel save/open cycles with file locking |
-| 7-Zip or WinRAR | Test archive extraction to/from share |
+Generate the autocompletion script for powershell
 
-### SMB manual validation checklist
+```text
+dt completion powershell [flags]
+```
 
-Test both **mapped drives** (e.g., `Z:`) and **UNC paths** (e.g., `\\host\smbbasic`) for each
-category.
+Flags:
 
-#### Connection tests
+```text
+      --no-descriptions[=true|false]   disable completion descriptions
+```
 
-| # | Test | Mapped drive | UNC path | Notes |
-|---|------|:---:|:---:|-------|
-| C-01 | Connect with `net use Z: \\host\smbbasic /user:testuser <pass>` | [ ] Pass / [ ] Fail / [ ] Skip | N/A | |
-| C-02 | Browse via Explorer `\\host\smbbasic` | N/A | [ ] Pass / [ ] Fail / [ ] Skip | |
-| C-03 | Disconnect with `net use Z: /delete` | [ ] Pass / [ ] Fail / [ ] Skip | N/A | |
-| C-04 | Reconnect after disconnect | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
+### `dt completion zsh`
 
-#### Explorer operations
+Generate the autocompletion script for zsh
 
-| # | Test | Mapped drive | UNC path | Notes |
-|---|------|:---:|:---:|-------|
-| E-01 | Create new text file (right-click > New > Text Document) | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-02 | Create new folder | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-03 | Rename file | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-04 | Rename folder | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-05 | Delete file (Delete key or right-click > Delete) | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-06 | Delete folder (empty) | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-07 | Delete folder (non-empty) | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-08 | Copy file (Ctrl+C / Ctrl+V) | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-09 | Move file (Ctrl+X / Ctrl+V) | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-10 | Drag-and-drop file within share | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-11 | Copy file from local disk to share | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-12 | Copy file from share to local disk | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-13 | View file Properties (General tab) | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | |
-| E-14 | View file Properties (Security tab) | [ ] Pass / [ ] Fail / [ ] Skip | [ ] Pass / [ ] Fail / [ ] Skip | Should show Owner + DACL |
+```text
+dt completion zsh [flags]
+```
 
-#### cmd.exe operations
+Flags:
 
-| # | Test | Command | Result | Notes |
-|---|------|---------|:---:|-------|
-| CMD-01 | List directory | `dir Z:\` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| CMD-02 | Display file contents | `type Z:\testfile.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| CMD-03 | Copy file | `copy Z:\file1.txt Z:\file2.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| CMD-04 | Move file | `move Z:\file2.txt Z:\subfolder\` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| CMD-05 | Rename file | `ren Z:\file1.txt newname.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| CMD-06 | Delete file | `del Z:\newname.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| CMD-07 | Create directory | `mkdir Z:\testdir` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| CMD-08 | Remove directory | `rmdir Z:\testdir` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| CMD-09 | View ACLs | `icacls Z:\` | [ ] Pass / [ ] Fail / [ ] Skip | Should show Owner + DACL entries |
-| CMD-10 | View attributes | `attrib Z:\testfile.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| CMD-11 | File system info | `fsutil fsinfo volumeinfo Z:\` | [ ] Pass / [ ] Fail / [ ] Skip | |
+```text
+      --no-descriptions[=true|false]   disable completion descriptions
+```
 
-#### PowerShell operations
+### `dt docs`
 
-| # | Test | Command | Result | Notes |
-|---|------|---------|:---:|-------|
-| PS-01 | Get file info | `Get-Item Z:\testfile.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| PS-02 | List directory | `Get-ChildItem Z:\ -Recurse` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| PS-03 | Create file | `New-Item Z:\pstest.txt -ItemType File -Value "hello"` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| PS-04 | Create directory | `New-Item Z:\psdir -ItemType Directory` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| PS-05 | Remove file | `Remove-Item Z:\pstest.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| PS-06 | Remove directory | `Remove-Item Z:\psdir -Recurse` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| PS-07 | Copy file | `Copy-Item Z:\file1.txt Z:\file_copy.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| PS-08 | Move file | `Move-Item Z:\file_copy.txt Z:\moved.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| PS-09 | Get ACL | `Get-Acl Z:\testfile.txt` | [ ] Pass / [ ] Fail / [ ] Skip | Should show Owner + Access rules |
-| PS-10 | Set ACL | `$acl = Get-Acl Z:\testfile.txt; Set-Acl Z:\testfile.txt $acl` | [ ] Pass / [ ] Fail / [ ] Skip | Round-trip test |
-| PS-11 | Write content | `Set-Content Z:\pstest.txt "new content"` | [ ] Pass / [ ] Fail / [ ] Skip | |
+Write the testing guide's suite table from the registry and its command reference from dt's commands, or check them; check the RFCs' suites paragraphs; exit 1 on a difference
 
-#### Office testing
+```text
+dt docs [--check] [flags]
+```
 
-| # | Test | Steps | Result | Notes |
-|---|------|-------|:---:|-------|
-| OFF-01 | Word: Create new document | Open Word > Save As to `Z:\` as .docx | [ ] Pass / [ ] Fail / [ ] Skip | |
-| OFF-02 | Word: Reopen document | Double-click the .docx on `Z:\` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| OFF-03 | Word: Edit and save | Modify text, Ctrl+S | [ ] Pass / [ ] Fail / [ ] Skip | |
-| OFF-04 | Excel: Create workbook | Open Excel > Add data + formulas > Save As .xlsx to `Z:\` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| OFF-05 | Excel: Reopen workbook | Double-click the .xlsx on `Z:\` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| OFF-06 | Excel: Verify formulas | Check that formulas compute correctly after reopen | [ ] Pass / [ ] Fail / [ ] Skip | |
-| OFF-07 | Large file save (10 MB+) | Create a large document with images, save to `Z:\` | [ ] Pass / [ ] Fail / [ ] Skip | |
+Flags:
 
-#### VS Code testing
+```text
+      --check[=true|false]   only check the suite table, the command reference and the RFCs' suites paragraphs, and exit 1 on a difference
+```
 
-| # | Test | Steps | Result | Notes |
-|---|------|-------|:---:|-------|
-| VS-01 | Open folder from share | File > Open Folder > select `Z:\` or `\\host\smbbasic` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| VS-02 | Create new file | File > New File > save to share | [ ] Pass / [ ] Fail / [ ] Skip | |
-| VS-03 | Edit and save | Modify file content, Ctrl+S | [ ] Pass / [ ] Fail / [ ] Skip | |
-| VS-04 | Search across files | Ctrl+Shift+F, search for a string | [ ] Pass / [ ] Fail / [ ] Skip | |
-| VS-05 | Integrated terminal | Open terminal, run `dir` on share path | [ ] Pass / [ ] Fail / [ ] Skip | |
-| VS-06 | Git operations (if .git exists) | `git status`, `git log` on share | [ ] Pass / [ ] Fail / [ ] Skip | Best-effort |
+### `dt doctor`
 
-#### File size testing
+Which needs this machine meets, and how to meet the rest
 
-| # | Test | Command | Result | Notes |
-|---|------|---------|:---:|-------|
-| FS-01 | 1 MB file | `fsutil file createnew Z:\test_1mb.bin 1048576` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| FS-02 | 10 MB file | `fsutil file createnew Z:\test_10mb.bin 10485760` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| FS-03 | 50 MB file | `fsutil file createnew Z:\test_50mb.bin 52428800` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| FS-04 | 100 MB file | `fsutil file createnew Z:\test_100mb.bin 104857600` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| FS-05 | Read back 1 MB | `copy Z:\test_1mb.bin NUL` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| FS-06 | Read back 10 MB | `copy Z:\test_10mb.bin NUL` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| FS-07 | Read back 50 MB | `copy Z:\test_50mb.bin NUL` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| FS-08 | Read back 100 MB | `copy Z:\test_100mb.bin NUL` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| FS-09 | Verify integrity | Write known content, read back, compare | [ ] Pass / [ ] Fail / [ ] Skip | Use `certutil -hashfile` for SHA256 |
+```text
+dt doctor
+```
 
-### NFS client validation checklist
+### `dt e2e`
 
-Windows NFS client support is best-effort. The Windows Services for NFS client has known
-limitations compared to Linux and macOS NFS clients.
+dt run e2e
 
-#### NFS connection
+```text
+dt e2e [ARGS...]
+```
 
-| # | Test | Command | Result | Notes |
-|---|------|---------|:---:|-------|
-| NFS-01 | Mount NFS share | `mount -o anon \\<host-ip>\export Z:` | [ ] Pass / [ ] Fail / [ ] Skip | Port 12049 |
-| NFS-02 | List share contents | `dir Z:\` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| NFS-03 | Unmount | `umount Z:` | [ ] Pass / [ ] Fail / [ ] Skip | |
+### `dt history`
 
-#### NFS file operations
+Pass, fail, skip and flaky counts over past runs, with p50 and p90 durations: per suite, per test of SUITE, and each result of TEST
 
-| # | Test | Command | Result | Notes |
-|---|------|---------|:---:|-------|
-| NFS-04 | Create file | `echo test > Z:\nfstest.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| NFS-05 | Read file | `type Z:\nfstest.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| NFS-06 | Create directory | `mkdir Z:\nfsdir` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| NFS-07 | Delete file | `del Z:\nfstest.txt` | [ ] Pass / [ ] Fail / [ ] Skip | |
-| NFS-08 | Delete directory | `rmdir Z:\nfsdir` | [ ] Pass / [ ] Fail / [ ] Skip | |
+```text
+dt history [SUITE[/TEST]] [flags]
+```
 
-For the end-user guide to connecting a Windows client, see [`../guide/windows.md`](../guide/windows.md).
+Flags:
+
+```text
+      --branch string     with --ci, the branch whose runs of tests.yml are read (default "develop")
+      --ci[=true|false]   read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
+      --last int          read the last N runs (default 10)
+```
+
+### `dt history diff`
+
+Which cells and tests took longer or shorter between two runs of tests.yml, by workflow run ID, or between the older and the newer half of the last N on --branch, each test's median
+
+```text
+dt history diff [A B] [flags]
+```
+
+Flags:
+
+```text
+      --branch string    without run IDs, the branch whose runs of tests.yml are compared (default "develop")
+      --floor duration   leave out tests whose time changed by less than this (default 100ms)
+      --last int         without run IDs, compare the median of the older half of the last N runs with the newer half's (default 10)
+      --top int          show at most N tests, the ones that took longer first; 0 shows all (default 30)
+```
+
+### `dt hooks`
+
+Run git's hooks through the harness, on this machine or in the dtc container
+
+```text
+dt hooks [ARGS]
+```
+
+### `dt integration`
+
+dt run integration
+
+```text
+dt integration [ARGS...]
+```
+
+### `dt known`
+
+Work on the suites' known files
+
+```text
+dt known
+```
+
+### `dt known baseline`
+
+Write a cell's results, the latest run's by default, as its baseline file (smbtorture's)
+
+```text
+dt known baseline SUITE/CELL [RUN]
+```
+
+### `dt known import`
+
+Convert a Markdown known-failure list into a known file, once
+
+```text
+dt known import FILE.md KNOWN.yaml [flags]
+```
+
+Flags:
+
+```text
+      --where string   AXIS=V,...: where the list's entries apply
+```
+
+### `dt known prune`
+
+Remove the known entries that matched no failing or skipping test in the runs dt history reads
+
+```text
+dt known prune SUITE [flags]
+```
+
+Flags:
+
+```text
+      --branch string     with --ci, the branch whose runs of tests.yml are read (default "develop")
+      --ci[=true|false]   read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
+      --last int          read the last N runs (default 10)
+```
+
+### `dt list`
+
+Suites, options and groups, with their tier, format and needs, and whether they can run here
+
+```text
+dt list [flags]
+```
+
+Flags:
+
+```text
+      --json[=true|false]   print JSON
+      --tier string         only the suites tier T runs
+```
+
+### `dt plan`
+
+The cells a tier runs, each with its place; with --estimate, the tier's runner-minutes from dt history
+
+```text
+dt plan [flags]
+```
+
+Flags:
+
+```text
+      --base string             compare the branch with REF: a docs-only change plans nothing, and suites with paths run only when touched
+      --branch string           with --ci, the branch whose runs of tests.yml are read (default "develop")
+      --ci[=true|false]         read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
+      --estimate[=true|false]   give each cell its p50 over the runs dt history reads, and the tier's runner-minutes, their sum
+      --json[=true|false]       print JSON
+      --last int                read the last N runs (default 10)
+      --shard string            only shard I of N of the cells, as I/N
+      --tier string             the tier to plan: pr, merge, nightly or manual (required)
+```
+
+### `dt report`
+
+Show a run, the latest by default: how each cell went, and its new failures; with --post, post them, and with --commit-status, set its commit's status
+
+```text
+dt report [RUN...] [flags]
+```
+
+Flags:
+
+```text
+      --commit-status string    set the commit status NAME on a run of develop's merge or nightly tier: success, failure or error from its exit status, with its test counts, with the token in GITHUB_TOKEN
+      --failures[=true|false]   only the new failures
+      --format string           text, md or json (default "text")
+      --post strings            post the new failures of a tier run of develop, whose planned cells are CELL,..., to the develop-status issue, and give a test failing 2 runs in a row an issue of its own, with the token in GITHUB_TOKEN; a planned cell with no run didn't run
+      --results string          where the runs are, relative to the checkout's root (default test/harness/results)
+```
+
+### `dt run`
+
+Run suites and write their results and logs; exit 0 when all passed, 1 when one failed, 2 when one didn't run
+
+```text
+dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] | --place P [flags]
+```
+
+Flags:
+
+```text
+      --ad-dc[=true|false]            run the suite's ad-dc option
+      --base string                   compare the branch with REF wherever a command uses {base}, instead of the base dt finds: origin/develop, or in CI the event's
+      --changed[=true|false]          where a suite's packages gives patterns, test only the packages with a change committed since the base: every one without a base, when go.mod, go.sum or go.work changed, or when a changed file is in no package
+      --ci[=true|false]               an unmet need fails the run instead of skipping the cell, and new failures are annotated
+      --cross-protocol[=true|false]   run the suite's cross-protocol option
+      --in string                     where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)
+      --json[=true|false]             print the run's results on stdout as dt report --format json does, once the run ends, and the rest on stderr
+      --kerberos[=true|false]         run the suite's kerberos option
+      --knfsd[=true|false]            run the suite's knfsd option
+      --macos[=true|false]            run the suite's macos option
+      --no-color[=true|false]         don't color the results, as NO_COLOR set does; without either, they're colored on a terminal
+      --nonrace[=true|false]          run the suite's nonrace option
+      --only strings                  run only these suites of the group
+      --packages strings              test only these packages, where a suite's commands take {packages}: they replace the patterns and --changed's selection
+      --parallel int                  run up to N cells at once; cells that conflict, as two on one fixed port, still run one at a time (default 1)
+      --place string                  run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met
+      --portmap[=true|false]          run the suite's portmap option
+      --results string                where results go, relative to the checkout's root (default test/harness/results)
+      --retry int                     run each test that failed new again, up to N times: a pass on a retry is flaky
+      --skip strings                  skip these suites of the group
+      --smb[=true|false]              run the suite's smb option
+      --smb21[=true|false]            run the suite's smb21 option
+      --stress[=true|false]           run the suite's stress option
+      --tier string                   run at tier T, or at a suite's own tier when wider: it sets args, env and select (default "pr")
+      --windows[=true|false]          run the suite's windows option
+```
+
+### `dt services`
+
+Start, stop or show the services the suites use: localstack, postgres, kmip
+
+```text
+dt services [ARGS]
+```
+
+### `dt stack`
+
+Start, stop, show or mount the compose stack: a server with its S3 on Localstack
+
+```text
+dt stack [ARGS]
+```
+
+### `dt unit`
+
+dt run unit
+
+```text
+dt unit [ARGS...]
+```
+
+<!-- dt-commands:end -->
 
 ## Troubleshooting
 
@@ -1304,7 +1313,7 @@ For the end-user guide to connecting a Windows client, see [`../guide/windows.md
 | "passed unexpectedly" | A known failure passes: remove its entry (see [When a test fails](#when-a-test-fails)) |
 | "unexpected skip", exit 2 | A test skipped that the known file doesn't expect: fix the environment, or add an expected skip with its reason |
 | Repo Checks fails on `dt doctor` | A quarantine entry has expired: fix the test, or renew the entry with its issue |
-| Repo Checks fails on `dt docs --check` | The suites table is out of date: run `test/harness/bin/dt docs` and commit |
+| Repo Checks fails on `dt docs --check` | The suite table or the command reference is out of date: run `test/harness/bin/dt docs` and commit |
 | gofmt differences you didn't make | A Go release other than 1.26: set `GOTOOLCHAIN=go1.26.10` |
 | The disk fills up | `test/harness/results/` is never pruned: delete old runs; `dt cleanup --volumes`; `dtc clean` |
 | CI fails in a download, the package mirror, the runner's Docker or its disk | Infrastructure, not your change: re-run the job |
@@ -1313,6 +1322,8 @@ For the end-user guide to connecting a Windows client, see [`../guide/windows.md
 ## Further reading
 
 - [RFC 29: the test harness](rfcs/rfc-29-test-harness.md), the design and its reasons.
+- [`testing-windows.md`](testing-windows.md): the manual checklists for real Windows applications, over SMB and NFS.
+- [`test/crash/`](../../test/crash/README.md): two rigs, run by hand as root on a Linux VM, that check data lost under DittoFS reads back as an error.
 - [`testing-parallel.md`](testing-parallel.md): when a suite may run beside others.
 - [`test/suites.yaml`](../../test/suites.yaml): the registry itself.
 - [`test/harness/demo/`](../../test/harness/demo/README.md): a ten-step terminal demo of `dt`,
