@@ -4,22 +4,25 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
-// A section with no rows yields the defaults: NTLM on, NetBIOSName DITTOFS
-// and uids and gids from 1 000 000 to 1 999 999 999. The defaults are read
+// A section with no rows yields the defaults: NTLM on, NetBIOSName DITTOFS,
+// uids and gids from 1 000 000 to 1 999 999 999 and a directory stale grace
+// of 15 minutes. The defaults are read
 // from the value the section is declared with, since the settings read that
 // applies them to a section with no rows is not built yet.
 func TestDefaultSettings(t *testing.T) {
 	got := identity.DefaultSettings()
 	want := identity.Settings{
-		IDRange:     entity.IDRange{Lo: 1_000_000, Hi: 1_999_999_999},
-		NTLM:        true,
-		NetBIOSName: "DITTOFS",
+		IDRange:             entity.IDRange{Lo: 1_000_000, Hi: 1_999_999_999},
+		NTLM:                true,
+		NetBIOSName:         "DITTOFS",
+		DirectoryStaleGrace: 15 * time.Minute,
 	}
 	if got != want {
 		t.Fatalf("default settings = %+v, want %+v", got, want)
@@ -44,6 +47,8 @@ func TestSettingsValidate(t *testing.T) {
 		{"empty", func(s *identity.Settings) { s.NetBIOSName = "" }, true},
 		{"range of one ID", func(s *identity.Settings) { s.IDRange = entity.IDRange{Lo: 5, Hi: 5} }, false},
 		{"range Lo above Hi", func(s *identity.Settings) { s.IDRange = entity.IDRange{Lo: 6, Hi: 5} }, true},
+		{"no stale grace", func(s *identity.Settings) { s.DirectoryStaleGrace = 0 }, false},
+		{"negative stale grace", func(s *identity.Settings) { s.DirectoryStaleGrace = -time.Second }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := identity.DefaultSettings()

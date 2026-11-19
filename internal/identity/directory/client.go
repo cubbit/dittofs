@@ -30,6 +30,10 @@ type Password func(ctx context.Context) ([]byte, error)
 // queryTimeout bounds each dial, bind and search on the client's clock.
 const queryTimeout = 5 * time.Second
 
+// ErrAmbiguous is a "who holds this" question more than one entry answers;
+// Lookup's error wraps it beside vfserr.ErrUnavailable.
+var ErrAmbiguous = errors.New("identity.directory: more than one entry answers")
+
 // errTimeout is a call the query timeout ended.
 var errTimeout = errors.New("identity.directory: no answer within the query timeout")
 
@@ -142,7 +146,7 @@ func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool
 	}
 	c.log.Warn("identity.directory: a lookup answered by more than one entry, refused",
 		"first", res.Entries[0].DN, "second", res.Entries[1].DN, "entries", len(res.Entries))
-	return Answer{}, false, unavailable("lookup", fmt.Errorf("%d entries answer it", len(res.Entries)))
+	return Answer{}, false, unavailable("lookup", fmt.Errorf("%w: %d of them", ErrAmbiguous, len(res.Entries)))
 }
 
 // DomainSID is the objectSid of the entry the root DSE's defaultNamingContext

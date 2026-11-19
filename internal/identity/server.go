@@ -35,7 +35,7 @@ type Deps struct {
 	Store   Store
 	Clock   Clock
 	Metrics *metrics.Registry // nil: registers nothing
-	Tracer  trace.Tracer      // the identity.resolve span; nil: the no-op tracer
+	Tracer  trace.Tracer      // the identity.resolve and directory query spans; nil: the no-op tracer
 	Logger  *slog.Logger
 	// Secrets resolves the secrets identity holds by reference; New does not
 	// require it.
@@ -102,9 +102,10 @@ type State struct {
 	// Directory is the identity.directory section as of this Apply; nil
 	// when the installation has no directory.
 	Directory *directory.Record
-	// dir is Apply's client of Directory, kept across Applies that leave
-	// Directory unchanged; nil with no record or no Deps.Directory.
-	dir *directory.Client
+	// dir is Apply's client of Directory with its cache, kept across
+	// Applies that leave Directory unchanged; nil with no record or no
+	// Deps.Directory.
+	dir *dirCache
 	// Serial is set by Apply, whatever the caller passes: raised only when
 	// the State differs from the current one. A Caller's Built is the Serial
 	// of the State it was resolved under.
@@ -275,19 +276,20 @@ func (s *Server) Apply(st State) error {
 }
 
 // newDirectoryClient is a client of rec, its bind password resolved through
-// Deps.Secrets at each dial; nil with no record or no Deps.Directory.
-func (s *Server) newDirectoryClient(rec *directory.Record) *directory.Client {
+// Deps.Secrets at each dial, and its empty cache; nil with no record or no
+// Deps.Directory.
+func (s *Server) newDirectoryClient(rec *directory.Record) *dirCache {
 	if rec == nil || s.deps.Directory == nil {
 		return nil
 	}
 	ref := rec.BindCredential
-	return directory.NewClient(*rec, s.deps.Directory, func(ctx context.Context) ([]byte, error) {
+	return newDirCache(directory.NewClient(*rec, s.deps.Directory, func(ctx context.Context) ([]byte, error) {
 		if s.deps.Secrets == nil {
 			return nil, errors.New("no secret provider")
 		}
 		return s.deps.Secrets.Resolve(ctx, secrets.Protocol, entity.SecretDirectoryCredential,
 			entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}, ref)
-	}, s.deps.Clock, s.logger)
+	}, s.deps.Clock, s.logger), s.deps)
 }
 
 // validate refuses settings or a directory record that fail their Validate,
