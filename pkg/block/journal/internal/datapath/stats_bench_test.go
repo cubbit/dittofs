@@ -119,8 +119,8 @@ func TestOldestDirtyMatchesAScan(t *testing.T) {
 				want = &w
 			}
 		}
-		if len(l.keys) != len(l.inHeap) {
-			t.Fatalf("step %d: heap holds %d entries for %d distinct seconds: a second was pushed twice", step, len(l.keys), len(l.inHeap))
+		if bound := 2*len(l.byTime) + 16; len(l.keys) > bound {
+			t.Fatalf("step %d: heap holds %d entries for %d live seconds, want at most %d: compaction did not run", step, len(l.keys), len(l.byTime), bound)
 		}
 		got := l.oldest.Load() ^ oldestBits
 		switch {

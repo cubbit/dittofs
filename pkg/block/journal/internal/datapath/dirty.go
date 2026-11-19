@@ -43,19 +43,20 @@ type dirtyList struct {
 	// keys is a min-heap of the seconds byTime holds, with lazy deletion: a
 	// second is pushed when byTime first holds it and popped from the top
 	// only once byTime no longer does, so the oldest is the top after the
-	// stale ones are discarded. inHeap names the seconds keys holds, so a
-	// second that byTime dropped and holds again while its stale entry is
-	// still in the heap is not pushed twice. The heap is rebuilt from byTime
-	// when stale entries outnumber live ones, which bounds it to a small
-	// multiple of byTime.
+	// stale ones are discarded. The heap is rebuilt from byTime when stale
+	// entries outnumber live ones, which bounds it to a small multiple of
+	// byTime.
 	//
-	// ponytail: the rebuild is O(live seconds) under mu, which every publish
-	// takes, and it runs once per as many drops as there are live seconds, so
-	// it amortises to O(1) per drop; one publish pays the whole pass. Upgrade
-	// to a per-second ordered structure with no rebuild when a backlog of
-	// hundreds of thousands of seconds shows that one slow publish.
-	keys   secHeap
-	inHeap map[int64]struct{}
+	// ponytail: a second that byTime dropped and holds again while its stale
+	// entry is still in the heap is pushed a second time. The duplicates are
+	// harmless to the answer and the compaction bounds them, but each
+	// compaction is O(live seconds) under mu, which every publish takes, run
+	// about once per as many same-second re-counts as there are live seconds,
+	// so it amortises to O(1) per re-count while one publish pays the whole
+	// pass. Upgrade to skipping the push while the second is still in the
+	// heap, which costs a set operation on every count change, when a profile
+	// shows that one slow publish.
+	keys secHeap
 	// oldest is the second of the oldest counted file with its sign bit
 	// flipped, so the zero value of a list reads as noOldest: none counted. It
 	// is replaced under mu whenever the heap's top changes, and read without
@@ -130,11 +131,7 @@ func (l *dirtyList) count(t time.Time, n int) {
 	l.byTime[k] = before + n
 	if l.byTime[k] == 0 {
 		delete(l.byTime, k)
-	} else if _, queued := l.inHeap[k]; !queued {
-		if l.inHeap == nil {
-			l.inHeap = make(map[int64]struct{})
-		}
-		l.inHeap[k] = struct{}{}
+	} else if before == 0 {
 		l.keys.push(k)
 	}
 }
@@ -144,10 +141,8 @@ func (l *dirtyList) count(t time.Time, n int) {
 func (l *dirtyList) settleOldest() {
 	if len(l.keys) > 2*len(l.byTime)+16 {
 		l.keys = l.keys[:0]
-		clear(l.inHeap)
 		for k := range l.byTime {
 			l.keys = append(l.keys, k)
-			l.inHeap[k] = struct{}{}
 		}
 		for i := len(l.keys)/2 - 1; i >= 0; i-- {
 			l.keys.down(i)
@@ -157,7 +152,6 @@ func (l *dirtyList) settleOldest() {
 		if _, live := l.byTime[l.keys[0]]; live {
 			break
 		}
-		delete(l.inHeap, l.keys[0])
 		l.keys.pop()
 	}
 	if len(l.keys) == 0 {
