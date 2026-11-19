@@ -103,6 +103,7 @@ type dirCache struct {
 	flight  singleflight.Group
 	slots   chan struct{} // the queries running, dirInFlight at most
 	waiting atomic.Int32  // the queries waiting for a slot
+	out     outage        // directory_unreachable
 
 	mu      sync.Mutex
 	entries map[dirKey]*list.Element // of *dirEntry
@@ -172,7 +173,8 @@ func (s *Server) directoryLookup(ctx context.Context, by directory.Key, value []
 // waiting for it, leaves the entry as it was and answers from a positive one whose last answer is no older than the
 // TTL plus grace, counted stale, unless fresh is set; any other failure is
 // ErrUnavailable, counted refused, or ambiguous for an answer more than one
-// entry gave. No failure is stored.
+// entry gave. No failure is stored. While directory_unreachable is raised
+// only the probe queries; every other lookup is answered as a failed query is.
 func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, grace time.Duration, fresh bool) (directory.Answer, bool, error) {
 	q := question(by)
 	k := dirKey{by: by, value: string(value)}
@@ -180,21 +182,34 @@ func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, g
 		k.value = entity.FoldPrincipalName(k.value)
 	}
 	e := c.get(k)
-	if e != nil && e.fresh(c.clock.Now()) {
+	now := c.clock.Now()
+	if e != nil && e.fresh(now) {
 		c.lookups.WithLabelValues(q, "fresh").Inc()
 		return e.ans, e.found, nil
 	}
-	// The query runs on the first caller's context without its cancellation,
-	// so a caller that stops waiting leaves it to the others; the client's
-	// query timeout bounds it.
-	ch := c.flight.DoChan(strconv.Itoa(int(by))+":"+k.value, func() (any, error) {
-		return c.query(context.WithoutCancel(ctx), k, q, value)
-	})
 	var r singleflight.Result
-	select {
-	case r = <-ch:
-	case <-ctx.Done():
-		r.Err = fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())
+	// decision: while directory_unreachable is raised, the probe is a
+	// lookup, not a goroutine: the first lookup dirProbeEvery after the last
+	// probe asks the directory and every other is answered from the grace or
+	// refused at once, so an outage costs one query's timeout per 10 seconds
+	// rather than one per expired entry or cold sign-in (RFC 18 §5.3). No
+	// background loop runs, so Stop has nothing to wait for. Overturned if
+	// an outage must clear while no lookup arrives, which a lookup-free node
+	// has no use for.
+	if c.out.skip(now) {
+		r.Err = errDirUnreachable
+	} else {
+		// The query runs on the first caller's context without its
+		// cancellation, so a caller that stops waiting leaves it to the
+		// others; the client's query timeout bounds it.
+		ch := c.flight.DoChan(strconv.Itoa(int(by))+":"+k.value, func() (any, error) {
+			return c.query(context.WithoutCancel(ctx), k, q, value)
+		})
+		select {
+		case r = <-ch:
+		case <-ctx.Done():
+			r.Err = fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())
+		}
 	}
 	if r.Err == nil {
 		n := r.Val.(*dirEntry)
@@ -222,6 +237,7 @@ func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, g
 		return e.ans, true, nil
 	}
 	c.lookups.WithLabelValues(q, "refused").Inc()
+	c.out.refuse()
 	return directory.Answer{}, false, r.Err
 }
 
@@ -253,6 +269,12 @@ func (c *dirCache) query(ctx context.Context, k dirKey, q string, value []byte) 
 	start := c.clock.Now()
 	ans, found, err := c.client.Lookup(ctx, k.by, value)
 	c.seconds.Observe(c.clock.Now().Sub(start).Seconds())
+	// An ambiguous answer is still the directory's answer.
+	if err != nil && !errors.Is(err, directory.ErrAmbiguous) {
+		c.out.raise(c.clock.Now())
+	} else {
+		c.out.clear()
+	}
 	if err != nil {
 		span.SetStatus(codes.Error, "directory unavailable")
 		return nil, err

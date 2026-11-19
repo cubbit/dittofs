@@ -265,7 +265,7 @@ func TestDirectoryCachePerServer(t *testing.T) {
 
 // No error is stored: a failed query leaves the positive entry it followed
 // in place, and a first dial whose handshake fails is dialled again and
-// answers at the next lookup.
+// answers at the next probe.
 func TestDirectoryCacheStoresNoError(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	t.Run("positive entry kept", func(t *testing.T) {
@@ -284,6 +284,7 @@ func TestDirectoryCacheStoresNoError(t *testing.T) {
 		c := e.cache(t)
 		e.fail(t, sim.Rule{Op: "dial", Key: "*", Count: 1, Action: sim.FaultAction{Err: errors.New("injected handshake failure")}})
 		mustRefuse(t, c, "alice", 15*time.Minute)
+		e.clock.Advance(10 * time.Second)
 		mustFind(t, c, "alice")
 		if got := e.f.Dials(); len(got) != 2 {
 			t.Errorf("dials %v, want two", got)
@@ -601,7 +602,9 @@ func TestDirectoryCacheCountsEachResult(t *testing.T) {
 		{func() { mustFind(t, c, "alice") }, "fresh", false},
 		{func() { _, _, _ = lookup(c, "nobody", 0) }, "not_found", true},
 		{func() { e.down(t); e.clock.Advance(6 * time.Minute); mustFind(t, c, "alice") }, "stale", true},
-		{func() { mustRefuse(t, c, "carol", 15*time.Minute) }, "refused", true},
+		// alice's failed query raised directory_unreachable, so carol's
+		// lookup is refused unsent.
+		{func() { mustRefuse(t, c, "carol", 15*time.Minute) }, "refused", false},
 	} {
 		step.do()
 		want[step.result]++

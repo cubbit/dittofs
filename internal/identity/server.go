@@ -22,6 +22,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
+	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -158,6 +159,13 @@ type Server struct {
 	lifeMu    sync.Mutex         // life's and end's
 	life      context.Context    // ended by Stop, ending every call in flight
 	end       context.CancelFunc // ends life
+}
+
+// Conditions appends the node's identity conditions: machine_account_unhealthy
+// and directory_unreachable (RFC 18 §9.2). Their subjects name no node: the
+// node's own conditions carry its ID.
+func (s *Server) Conditions(dst []health.Condition) []health.Condition {
+	return s.directoryConditions(s.machineAccountConditions(dst))
 }
 
 // refusalsSpec counts the calls resolution refuses, by the reason refused.

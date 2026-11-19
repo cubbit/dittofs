@@ -7,6 +7,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
+	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -134,3 +135,9 @@ func (c *dirCache) Lookup(ctx context.Context, by directory.Key, value []byte, g
 
 // Waiting is the number of queries waiting for one of the 64 slots.
 func (c *dirCache) Waiting() int { return int(c.waiting.Load()) }
+
+// Conditions is the cache's directory_unreachable, as Server.Conditions
+// reports it for the applied State's cache.
+func (c *dirCache) Conditions(dst []health.Condition) []health.Condition {
+	return c.out.conditions(dst)
+}
