@@ -31,9 +31,8 @@ const (
 // What the probe of one device's journal directory found: errors that say the
 // journal belongs to an installation, and anything else Open reported.
 type deviceFacts struct {
-	Dir      string
-	OpenErr  error
-	Segments bool
+	Dir     string
+	OpenErr error
 }
 
 // Everything the start's probes gathered about the node's storage, from which
@@ -73,55 +72,42 @@ const manifestName = "MANIFEST"
 
 // probeV1State returns the path of the first pre-journal (v1) local layout
 // under root: a shares/<name> directory holding a populated journal, blobs or
-// logs directory. "" is none. A shares directory that is not there means the
-// root holds no v1 layout; a directory that is there but cannot be listed,
-// this root's or a leaf's, is the caller's own reading error, refused as that
-// and never read as a verdict over what it could not see.
-func probeV1State(root string) (string, error) {
-	list := func(p string) ([]os.DirEntry, error) {
-		entries, err := os.ReadDir(p)
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return entries, err
-	}
-	sharesPath := filepath.Join(root, "shares")
-	shares, err := list(sharesPath)
+// logs directory. "" is none. The probe is a heuristic over directories whose
+// contents the start does not own, so it tolerates what it cannot read — a
+// missing, malformed or unreadable tree reads as no v1 state — while the store
+// and device probes, over directories the start does own, name their reading
+// errors.
+func probeV1State(root string) string {
+	shares, err := os.ReadDir(filepath.Join(root, "shares"))
 	if err != nil {
-		return "", fmt.Errorf("reading %s: %w", sharesPath, err)
+		return ""
 	}
 	for _, share := range shares {
 		for _, leaf := range [...]string{"journal", "blobs", "logs"} {
 			dir := filepath.Join(root, "shares", share.Name(), leaf)
-			entries, err := list(dir)
-			if err != nil {
-				return "", fmt.Errorf("reading %s: %w", dir, err)
-			}
-			if len(entries) > 0 {
-				return dir, nil
+			if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
+				return dir
 			}
 		}
 	}
-	return "", nil
+	return ""
 }
 
 // probeStore stats the store directory: present, absent, unidentifiable.
 // fs.ErrNotExist or an empty directory means absent; a directory holding
 // MANIFEST means present; any other directory or stat error means
-// unidentifiable, returned with the error.
+// unidentifiable, returned with the error that says why.
 //
 // ponytail: a MANIFEST with no format record is left to the store's own
 // Open and Init to refuse. Upgrade to a read-only open, once the backend
 // tolerates one after an unclean close.
 //
-// decision: a directory holding files but no MANIFEST — a freshly
-// formatted ext4 volume's lost+found among them — reads as an
-// unidentifiable store and refuses, never as not-initialised: only a
-// missing or empty directory reads as absent, and a start must not
-// initialise over files it cannot name. The cost is that a first start
-// over such a volume needs the files understood first. Withdraw it by
-// allowing known filesystem artifacts once a first start over a fresh
-// volume must succeed unattended.
+// decision: a directory whose only entry is a volume's own lost+found is the
+// volume's mount point, and the store belongs in a directory on the volume,
+// never at its mount root (RFC 1 §3): the refusal names lost+found and says
+// so, refusing a start that would otherwise read every fresh mount point as
+// a store to initialise. Withdraw the naming once a start can be trusted to
+// initialise over foreign files, which it cannot be asked to today.
 func probeStore(storeDir string) (storeState, error) {
 	fi, err := os.Stat(storeDir)
 	switch {
@@ -141,21 +127,33 @@ func probeStore(storeDir string) (storeState, error) {
 		// yet, the same refusal a missing one takes.
 		return storeAbsent, nil
 	}
+	if len(entries) == 1 && entries[0].Name() == "lost+found" {
+		return storeUnidentifiable, fmt.Errorf(
+			"%s holds only %s, a volume's mount point: point the store at a directory on the volume, not at its mount root",
+			storeDir, entries[0].Name(),
+		)
+	}
 	if _, err := os.Stat(filepath.Join(storeDir, manifestName)); err == nil {
 		return storePresent, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return storeUnidentifiable, err
 	}
-	return storeUnidentifiable, nil
+	return storeUnidentifiable, errors.New("no Badger MANIFEST")
 }
+
+// afterDeviceOpen runs after each device's journal opens, in device order;
+// a test replaces it so a row can end its context mid-probe. Production
+// leaves it unset.
+var afterDeviceOpen func()
 
 // Preflight checks, before anything opens, that the store and the journal
 // devices a start finds are the ones its installation wrote: a pre-journal
-// (v1) local layout is refused naming the path; a present Badger store passes;
-// an absent store with the journals that name an installation is the store
-// lost; nothing else is initialised or identifiable. It creates, changes and
-// removes nothing, and builds no component.
-func Preflight(ctx context.Context, storeDir string, devices []string, clock engine.Clock) error {
+// (v1) local layout, at a device or at the journal root the blockstore's
+// configuration names, is refused naming the path; a present Badger store
+// passes; an absent store with the journals that name an installation is the
+// store lost; nothing else is initialised or identifiable. It creates,
+// changes and removes nothing, and builds no component.
+func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, clock engine.Clock) error {
 	switch {
 	case ctx.Err() != nil:
 		// A canceled context is the caller's answer, never a device verdict:
@@ -180,28 +178,19 @@ func Preflight(ctx context.Context, storeDir string, devices []string, clock eng
 		return errNoDevice
 	}
 	facts := startFacts{StoreDir: storeDir}
-	roots := append(slices.Clone(devices), filepath.Dir(storeDir), filepath.Join(filepath.Dir(storeDir), "blocks"))
-	for _, root := range roots {
-		p, err := probeV1State(root)
-		if err != nil {
-			return err
-		}
-		if p != "" {
+	for _, root := range append(slices.Clone(devices), v1Root) {
+		if p := probeV1State(root); p != "" {
 			facts.V1 = p
 			break
 		}
 	}
 	state, err := probeStore(storeDir)
-	switch state {
-	case storePresent:
-		// A present store already identifies the node's storage: no device
-		// probe runs, so a start over an installed store reads none of its
-		// devices.
-		facts.Store = storePresent
-		return decide(facts)
-	case storeUnidentifiable:
-		// The device probes cannot change this verdict, so they do not run.
-		facts.Store, facts.StoreErr = storeUnidentifiable, err
+	if state != storeAbsent {
+		// The device probes cannot change a present or an unidentifiable
+		// verdict, so they do not run: a present store already identifies the
+		// node's storage, and one that cannot be identified leaves nothing
+		// for the devices to decide.
+		facts.Store, facts.StoreErr = state, err
 		return decide(facts)
 	}
 	for _, dir := range devices {
@@ -209,12 +198,10 @@ func Preflight(ctx context.Context, storeDir string, devices []string, clock eng
 		// A zero expected identity makes Open read and answer the journal's
 		// own format and nothing else: no recovery runs, and no byte is
 		// written.
-		fact := deviceFacts{Dir: dir, OpenErr: err}
-		var id *journal.IdentityError
-		if errors.As(err, &id) {
-			fact.Segments = id.Segments
+		if afterDeviceOpen != nil {
+			afterDeviceOpen()
 		}
-		facts.Devices = append(facts.Devices, fact)
+		facts.Devices = append(facts.Devices, deviceFacts{Dir: dir, OpenErr: err})
 	}
 	// A context that dies mid-probe is the caller's answer, never a device
 	// verdict: decide would read its cancellation as an unidentified device.
@@ -230,7 +217,7 @@ func Preflight(ctx context.Context, storeDir string, devices []string, clock eng
 // checks reorders which advice that operator gets.
 func decide(f startFacts) error {
 	if f.V1 != "" {
-		return fmt.Errorf("%w: a v1 journal lives at %s, from before the current layout", errV1State, f.V1)
+		return fmt.Errorf("%w: v1 state lives at %s, from before the current layout", errV1State, f.V1)
 	}
 	if f.Store == storePresent {
 		// decision: a present store settles the start check on its own and
@@ -242,50 +229,36 @@ func decide(f startFacts) error {
 		return nil
 	}
 	if f.Store == storeUnidentifiable {
-		reason := f.StoreErr
-		if reason == nil {
-			reason = errors.New("no Badger MANIFEST")
-		}
-		return fmt.Errorf("%w: the metadata store in %s cannot be identified: %v", errUnidentifiable, f.StoreDir, reason)
+		return fmt.Errorf("%w: the metadata store in %s cannot be identified: %v", errUnidentifiable, f.StoreDir, f.StoreErr)
 	}
+	var (
+		first    *journal.IdentityError // the first device's journal identity, by device order
+		firstDir string
+		segments bool // any identified device still holds segments
+	)
 	for _, d := range f.Devices {
 		var id *journal.IdentityError
-		if errors.Is(d.OpenErr, journal.ErrNoJournal) || errors.As(d.OpenErr, &id) {
+		if errors.Is(d.OpenErr, journal.ErrNoJournal) {
 			continue
 		}
-		return fmt.Errorf("%w: the journal in %s cannot be identified: %v", errUnidentifiable, d.Dir, d.OpenErr)
-	}
-	seen := make(map[journal.InstallationID]bool)
-	var installs []journal.InstallationID
-	dirs := make(map[journal.InstallationID]string)
-	segments := false
-	firstID, firstDir, firstSeen := journal.JournalID{}, "", false
-	for _, d := range f.Devices {
-		segments = segments || d.Segments
-		var id *journal.IdentityError
 		if !errors.As(d.OpenErr, &id) {
+			return fmt.Errorf("%w: the journal in %s cannot be identified: %v", errUnidentifiable, d.Dir, d.OpenErr)
+		}
+		segments = segments || id.Segments
+		if first == nil {
+			first, firstDir = id, d.Dir
 			continue
 		}
-		if !firstSeen {
-			firstID, firstDir, firstSeen = id.Found, d.Dir, true
+		if id.Installation != first.Installation {
+			return fmt.Errorf("%w: %s names installation %x and %s names installation %x", errDevicesDisagree, firstDir, first.Installation, d.Dir, id.Installation)
 		}
-		if seen[id.Installation] {
-			continue
-		}
-		seen[id.Installation] = true
-		installs = append(installs, id.Installation)
-		dirs[id.Installation] = d.Dir
 	}
-	switch {
-	case len(installs) >= 2:
-		return fmt.Errorf("%w: %s names installation %x and %s names installation %x", errDevicesDisagree, dirs[installs[0]], installs[0], dirs[installs[1]], installs[1])
-	case len(installs) == 1:
-		held := ""
-		if segments {
-			held = ", while its segments still live on the devices"
-		}
-		return fmt.Errorf("%w: the store volume at %s holds none of installation %x the devices name — the journal at %s carries identity %x%s; check the store volume's mount first, then restore it from a backup, which loses every write since that backup", errStoreLost, f.StoreDir, installs[0], firstDir, firstID, held)
-	default:
+	if first == nil {
 		return fmt.Errorf("%w: no device holds a journal and no store holds one; check that each volume is mounted where the configuration's mount paths point, then run dfs init to initialise the node", errNotInitialised)
 	}
+	held := ""
+	if segments {
+		held = ", while its segments still live on the devices"
+	}
+	return fmt.Errorf("%w: the store volume at %s holds none of installation %x the devices name — the journal at %s carries identity %x%s; check the store volume's mount first, then restore it from a backup, which loses every write since that backup", errStoreLost, f.StoreDir, first.Installation, firstDir, first.Found, held)
 }

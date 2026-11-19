@@ -25,3 +25,5 @@ func (n *Node) helper() {}
 type box[T any] struct{}
 
 func (b *box[T]) Open() {}
+
+func Preflight() {}

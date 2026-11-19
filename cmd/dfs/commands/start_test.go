@@ -187,111 +187,69 @@ func TestStartNoInstallation(t *testing.T) {
 	}
 }
 
-// Beside v1's controlplane.db, with a store the start check accepts behind
-// it, dfs start refuses naming the database, and opens no store beyond the
-// one the test planted.
+// Beside v1's controlplane.db, over the store the layout leaves — empty, or
+// holding whatever it left — dfs start refuses naming the database: the
+// config's own checks and the v1 refusal run before the start check, so an
+// operator is never told to run dfs init into a v1 deployment's directory.
 func TestStartRefusesV1Database(t *testing.T) {
 	dir := t.TempDir()
 	store := filepath.Join(dir, "store")
-	db, err := badgerkv.Open(badgerkv.Options{Dir: store, NodeID: testNode})
-	if err != nil {
-		t.Fatalf("open the KV: %v", err)
-	}
-	if err := db.Close(); err != nil {
+	if err := os.Mkdir(store, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	v1 := filepath.Join(dir, "controlplane.db")
 	if err := os.WriteFile(v1, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.ReadDir(store)
-	if err != nil {
-		t.Fatal(err)
-	}
 	code, out := runChild(t, bootstrapFile{store: store, journal: filepath.Join(dir, "device"), node: nodeUUID}.write(t, dir))
 	if code == 0 || !strings.Contains(out, "refusing to start: "+v1+" is v1's control-plane database") {
 		t.Fatalf("dfs start beside %s: exit %d, output:\n%s\nwant non-zero naming it", v1, code, out)
 	}
-	after, err := os.ReadDir(store)
-	if err != nil {
-		t.Fatal(err)
+	if entries, err := os.ReadDir(store); err != nil || len(entries) != 0 {
+		t.Errorf("store directory %s after the refusal: %d entries (%v), want none: nothing opened", store, len(entries), err)
 	}
-	if len(after) != len(before) {
-		t.Errorf("store directory %s after the refusal: %d entries, want the %d the test planted: nothing opened", store, len(after), len(before))
+	if strings.Contains(out, "dfs init") {
+		t.Errorf("dfs start beside v1's database: the refusal advises running dfs init (%s), which over a v1 deployment's directory is the advice that destroys data", out)
 	}
 }
 
-// The refusals dfs start answers in process, each naming its step: the start
-// check answers over what it finds first, and the store's opening answers the
-// rest behind a store it accepts. Nothing is opened by a refusal.
+// The refusals dfs start answers before anything opens, each naming the
+// piece of the configuration it is: the configuration's own checks, then the
+// start check's verdicts over the storage. Nothing is opened by a refusal.
 func TestStartRefusesTheStore(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	// plantedStore leaves a Badger store open at dir/store, whose MANIFEST
-	// the start check reads.
-	plantedStore := func(t *testing.T, dir string) {
-		t.Helper()
-		store := filepath.Join(dir, "store")
-		db, err := badgerkv.Open(badgerkv.Options{Dir: store, NodeID: testNode})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := db.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
 	for _, tc := range []struct {
-		name    string
-		b       func(t *testing.T, dir string) bootstrapFile
-		want    string
-		entries func(t *testing.T, dir string)
+		name string
+		b    func(dir string) bootstrapFile
+		want string
 	}{
-		{"backend not badger", func(t *testing.T, dir string) bootstrapFile {
-			plantedStore(t, dir)
+		{"backend not badger", func(dir string) bootstrapFile {
 			return bootstrapFile{backend: "foundationdb", store: filepath.Join(dir, "store"),
 				journal: filepath.Join(dir, "device"), node: nodeUUID}
-		}, "opening the metadata store: metadata.backend \"foundationdb\" is not one this build opens",
-			func(t *testing.T, dir string) {
-				if entries, _ := os.ReadDir(dir); len(entries) != 2 {
-					t.Errorf("%s after the refusal holds %d entries, want the planted store and the bootstrap: nothing opened", dir, len(entries))
-				}
-			}},
-		{"no store path", func(t *testing.T, dir string) bootstrapFile {
+		}, `metadata.backend "foundationdb" is not one this build opens; it opens badger`},
+		{"no store path", func(dir string) bootstrapFile {
 			return bootstrapFile{journal: filepath.Join(dir, "device"), node: nodeUUID}
-		}, "the start check: the store's directory is not set",
-			func(t *testing.T, dir string) {
-				if entries, _ := os.ReadDir(dir); len(entries) != 1 {
-					t.Errorf("%s after the refusal holds %d entries, want only the bootstrap: nothing opened", dir, len(entries))
-				}
-			}},
-		{"no node", func(t *testing.T, dir string) bootstrapFile {
-			plantedStore(t, dir)
+		}, "metadata.badger.path is not set"},
+		{"no node", func(dir string) bootstrapFile {
 			return bootstrapFile{store: filepath.Join(dir, "store"), journal: filepath.Join(dir, "device")}
-		}, "opening the metadata store: node.id is not set",
-			func(t *testing.T, dir string) {
-				if entries, _ := os.ReadDir(dir); len(entries) != 2 {
-					t.Errorf("%s after the refusal holds %d entries, want the planted store and the bootstrap: nothing opened", dir, len(entries))
-				}
-			}},
-		{"no store directory", func(t *testing.T, dir string) bootstrapFile {
+		}, "node.id is not set"},
+		{"no store directory", func(dir string) bootstrapFile {
 			return bootstrapFile{store: filepath.Join(dir, "missing"),
 				journal: filepath.Join(dir, "device"), node: nodeUUID}
-		}, "the start check: the node is not initialised",
-			func(t *testing.T, dir string) {
-				if entries, _ := os.ReadDir(dir); len(entries) != 1 {
-					t.Errorf("%s after the refusal holds %d entries, want only the bootstrap: nothing opened", dir, len(entries))
-				}
-			}},
+		}, "the start check: the node is not initialised"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			root := NewRoot()
 			root.SetOut(io.Discard)
-			root.SetArgs([]string{"start", "--config", tc.b(t, dir).write(t, dir)})
+			root.SetArgs([]string{"start", "--config", tc.b(dir).write(t, dir)})
 			err := root.Execute()
 			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
 				t.Errorf("dfs start: %v, want an error starting %q", err, tc.want)
 			}
-			tc.entries(t, dir)
+			if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+				t.Errorf("%s after the refusal holds %d entries, want only the bootstrap: nothing opened", dir, len(entries))
+			}
 		})
 	}
 }

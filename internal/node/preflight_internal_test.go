@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -32,8 +31,7 @@ func TestDecide(t *testing.T) {
 	corruptFormat := fmt.Errorf("%w: the format file is damaged", journal.ErrCorrupt)
 	ident := func(inst journal.InstallationID, dir string, segments bool) deviceFacts {
 		return deviceFacts{Dir: dir,
-			OpenErr:  &journal.IdentityError{Found: journal.JournalID{0x11, 0x22}, Installation: inst},
-			Segments: segments}
+			OpenErr: &journal.IdentityError{Found: journal.JournalID{0x11, 0x22}, Installation: inst, Segments: segments}}
 	}
 	noJournal := func(dir string) deviceFacts {
 		return deviceFacts{Dir: dir, OpenErr: journal.ErrNoJournal}
@@ -362,6 +360,10 @@ func TestPreflight(t *testing.T) {
 		noClock bool
 		// cancelCtx hands the check a context its caller already canceled.
 		cancelCtx bool
+		// v1Root names the row's blockstore journal root, the configured
+		// v1 location the check is handed; nil defaults to the row's
+		// <parent>/blocks.
+		v1Root func(parent string) string
 		// want is the verdict, matched by sentinel through errors.Is.
 		want error
 		// neverIs are the verdicts this row must not answer.
@@ -484,22 +486,39 @@ func TestPreflight(t *testing.T) {
 			contains: func(string) []string { return []string{manifestName} },
 		},
 		{
-			name: "installed store, a v1 layout beside it",
+			name: "installed store, a v1 layout under the configured root",
 			setup: func(t *testing.T, parent string) (string, []string) {
 				openStore(t, filepath.Join(parent, "store"))
-				writeFile(t, filepath.Join(parent, "shares", "s1", "blobs", "f1"), "v1 data")
+				writeFile(t, filepath.Join(parent, "mnt-fast", "shares", "s1", "blobs", "f1"), "v1 data")
 				dir := filepath.Join(parent, "device")
 				initJournal(t, dir, instA)
 				return filepath.Join(parent, "store"), []string{dir}
 			},
-			// the v1 probe runs before the store-present verdict, so a v1
-			// layout is refused even beside a store this installation
-			// accepts.
+			// the probe reads the root the configuration names, not the
+			// store's parent: this row's v1 layout is where the bootstrap
+			// points blockstore.journal.path, and the refusal runs before
+			// the store-present verdict.
+			v1Root:  func(parent string) string { return filepath.Join(parent, "mnt-fast") },
 			want:    errV1State,
 			neverIs: []error{errStoreLost},
 			contains: func(parent string) []string {
-				return []string{filepath.Join(parent, "shares", "s1", "blobs")}
+				return []string{filepath.Join(parent, "mnt-fast", "shares", "s1", "blobs")}
 			},
+		},
+		{
+			name: "a v1-shaped tree the configuration does not name is not the start's to read",
+			setup: func(t *testing.T, parent string) (string, []string) {
+				openStore(t, filepath.Join(parent, "store"))
+				writeFile(t, filepath.Join(parent, "shares", "web", "logs", "access.log"), "someone else's data")
+				dir := filepath.Join(parent, "device")
+				initJournal(t, dir, instA)
+				return filepath.Join(parent, "store"), []string{dir}
+			},
+			// only the devices and the configured blockstore root are
+			// probed: an unrelated shares-like tree beside the store does
+			// not refuse a node that is already installed.
+			want:    nil,
+			neverIs: []error{errV1State},
 		},
 		{
 			name: "device is an old v1 root",
@@ -515,13 +534,17 @@ func TestPreflight(t *testing.T) {
 			},
 		},
 		{
-			name: "v1 under the default root",
+			name: "v1 under the blockstore's default root",
 			setup: func(t *testing.T, parent string) (string, []string) {
 				writeFile(t, filepath.Join(parent, "blocks", "shares", "s1", "blobs", "f1"), "v1 data")
 				dir := filepath.Join(parent, "device")
 				initJournal(t, dir, instA)
 				return filepath.Join(parent, "metadata"), []string{dir}
 			},
+			// the row leaves the root at its default, the state directory's
+			// blocks, which the bootstrap resolves when the operator sets
+			// nothing: the device checks alone would answer not-initialised
+			// and v1 data would be left behind with no warning.
 			want: errV1State,
 			contains: func(parent string) []string {
 				return []string{filepath.Join(parent, "blocks", "shares", "s1", "blobs")}
@@ -581,7 +604,7 @@ func TestPreflight(t *testing.T) {
 			},
 		},
 		{
-			name: "a v1 shares directory that cannot be listed",
+			name: "an unreadable v1-shaped tree the configuration does not name reads as none",
 			setup: func(t *testing.T, parent string) (string, []string) {
 				openStore(t, filepath.Join(parent, "store"))
 				makeDir(t, filepath.Join(parent, "shares", "s1", "blobs"))
@@ -589,17 +612,17 @@ func TestPreflight(t *testing.T) {
 				makeDir(t, device)
 				return filepath.Join(parent, "store"), []string{device}
 			},
-			// The shares tree is made unreadable between the hashes: beside a
-			// store the check would accept, a v1 tree it cannot read must
-			// refuse as a reading error of its own — not pass as no v1 layout
-			// and not name a verdict over what it could not see.
+			// The shares tree is made unreadable between the hashes: the
+			// v1 probe tolerates what it cannot read — the store and device
+			// probes name their own errors — so beside a store the check
+			// accepts, an unreadable tree it does not own refuses nothing.
 			postSetup: func(t *testing.T, storeDir string, _ []string) {
 				shares := filepath.Join(filepath.Dir(storeDir), "shares")
 				if err := os.Chmod(shares, 0o000); err != nil {
 					t.Fatal(err)
 				}
 				if entries, err := os.ReadDir(shares); err == nil {
-					t.Skipf("this host reads a 0-mode directory (%d entries), which root does; the refusal below cannot be shown here", len(entries))
+					t.Skipf("this host reads a 0-mode directory (%d entries), which root does; the tolerance below cannot be shown here", len(entries))
 				}
 			},
 			postRun: func(t *testing.T, storeDir string, _ []string) {
@@ -607,10 +630,26 @@ func TestPreflight(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			want:    fs.ErrPermission,
+			want:    nil,
 			neverIs: []error{errV1State, errUnidentifiable, errNoDevice},
+		},
+		{
+			name: "a store directory holding only a volume's lost+found",
+			setup: func(t *testing.T, parent string) (string, []string) {
+				dir := filepath.Join(parent, "store")
+				makeDir(t, filepath.Join(dir, "lost+found"))
+				device := filepath.Join(parent, "device")
+				initJournal(t, device, instA)
+				return dir, []string{device}
+			},
+			// a mount point is not a store location: the refusal names
+			// lost+found and the directory-on-the-volume rule, so the
+			// operator is not told to initialise over the volume's own
+			// directory.
+			want:    errUnidentifiable,
+			neverIs: []error{errNotInitialised},
 			contains: func(parent string) []string {
-				return []string{filepath.Join(parent, "shares")}
+				return []string{filepath.Join(parent, "store"), "lost+found", "mount root"}
 			},
 		},
 		{
@@ -662,13 +701,17 @@ func TestPreflight(t *testing.T) {
 			if r.noClock {
 				clock = nil
 			}
+			v1Root := filepath.Join(parent, "blocks")
+			if r.v1Root != nil {
+				v1Root = r.v1Root(parent)
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			if r.cancelCtx {
 				cancel()
 			} else {
 				defer cancel()
 			}
-			got := Preflight(ctx, storeDir, devices, clock)
+			got := Preflight(ctx, storeDir, v1Root, devices, clock)
 			if r.postRun != nil {
 				r.postRun(t, storeDir, devices)
 			}
@@ -698,5 +741,35 @@ func TestPreflight(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A context that dies mid-probe — this row ends it during the devices'
+// opens — is the caller's answer, never a device verdict: without the guard
+// after the loop, decide would read the cancellation as an unidentified
+// device and misadvise an operator whose process is merely stopping.
+func TestPreflightCancelDuringTheProbes(t *testing.T) {
+	parent := t.TempDir()
+	store := filepath.Join(parent, "store")
+	d1 := filepath.Join(parent, "device-one")
+	d2 := filepath.Join(parent, "device-two")
+	initJournal(t, d1, journal.InstallationID{0xAA, 0x01})
+	makeDir(t, d2)
+	before := map[string]string{parent: hashTree(t, parent)}
+	ctx, cancel := context.WithCancel(context.Background())
+	afterDeviceOpen = cancel
+	t.Cleanup(func() { afterDeviceOpen = nil })
+	err := Preflight(ctx, store, filepath.Join(parent, "blocks"), []string{d1, d2},
+		sim.NewTestClock(time.Unix(0, 0)))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Preflight over a context ended mid-probe: got %v, want the context's own error", err)
+	}
+	for _, never := range []error{errUnidentifiable, errDevicesDisagree, errStoreLost, errNotInitialised, errV1State} {
+		if errors.Is(err, never) {
+			t.Errorf("Preflight over a context ended mid-probe: got %v, which must never wrap %v", err, never)
+		}
+	}
+	if after := hashTree(t, parent); after != before[parent] {
+		t.Errorf("the trees changed across an ended probe: hash %s after %s before, want the check to touch nothing", after, before[parent])
 	}
 }

@@ -23,3 +23,5 @@ func (n *Node) Stop(ctx context.Context) error { return nil }
 func (n *Node) helper() {}
 
 func Extra() {}
+
+func Preflight() {}

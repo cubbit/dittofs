@@ -143,17 +143,15 @@ func TestStartRefusesNoJournalDevice(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store, config := tc.prepare(t)
 			code, out := runChild(t, config)
-			if code == 0 || !strings.Contains(out, "no journal device") {
-				t.Fatalf("dfs start with no journal device (%s): exit %d, output:\n%s\nwant non-zero naming the start check's no-journal-device refusal", tc.name, code, out)
+			// "the start check:" is the prefix only the check the run begins
+			// with adds: node.New's own no-device refusal carries the words
+			// but not the prefix, so this row fails if the call before
+			// openKV ever goes.
+			if code == 0 || !strings.Contains(out, "Error: the start check: no journal device") {
+				t.Fatalf("dfs start with no journal device (%s): exit %d, output:\n%s\nwant non-zero naming the start check's refusal", tc.name, code, out)
 			}
 			if _, err := os.Stat(store); !errors.Is(err, os.ErrNotExist) && tc.name == "without a store directory" {
 				t.Errorf("the store directory %s exists after the refusal (%v), want none: the refusal creates nothing", store, err)
-			} else if err == nil {
-				// Over a planted store: the refusal opened nothing, so the
-				// store still holds exactly the files planted.
-				if entries, err := os.ReadDir(store); err != nil || len(entries) == 0 {
-					t.Errorf("the store directory %s after the refusal: %d entries (%v), want the planted store untouched", store, len(entries), err)
-				}
 			}
 		})
 	}

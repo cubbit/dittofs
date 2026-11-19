@@ -126,6 +126,15 @@ func newNode(cfg Config, in apiInputs) (*Node, error) {
 	if cfg.KV == nil {
 		return nil, errors.New("node: Config.KV is missing")
 	}
+	// decision: a bootstrap that names no journal device is a missing wiring
+	// piece, refused before the store opens — equally over a store that is
+	// not initialised, whose refusal the operator would otherwise read as
+	// the advice to run the init step against a node that has nowhere to
+	// keep journals. Overturned when the node builds over a store that names
+	// its devices, which would make an empty list the store's fact to refuse.
+	if len(cfg.Bootstrap.Journals) == 0 {
+		return nil, errors.Join(fmt.Errorf("node: %w", errNoDevice), cfg.KV.Close())
+	}
 	n, err := build(cfg, in)
 	if err != nil {
 		return nil, errors.Join(err, cfg.KV.Close())
@@ -167,12 +176,6 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 	n := &Node{cfg: cfg, rec: newReconciler(), sweep: newSweeper()}
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		return nil, fmt.Errorf("node: metadata store: %w", err)
-	}
-	// An empty journal list is a missing wiring piece, not an empty store
-	// question: it is refused by name before any component is composed over
-	// zero devices.
-	if len(cfg.Bootstrap.Journals) == 0 {
-		return nil, fmt.Errorf("node: %w", errNoDevice)
 	}
 	open, deps, err := enginewire.Compose(enginewire.Params{
 		Node:    cfg.Bootstrap.Node.ID,

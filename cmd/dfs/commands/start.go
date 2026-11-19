@@ -66,15 +66,21 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		configPath = bootstrap.GetDefaultConfigPath()
 	}
 	clock := newSystemClock()
+	if err := checkKV(cfg); err != nil {
+		return err
+	}
+	v1 := append([]string{filepath.Join(filepath.Dir(configPath), "controlplane.db")}, v1Databases()...)
+	if err := refuseV1(v1...); err != nil {
+		return err
+	}
 	devices := make([]string, 0, len(cfg.Journals))
 	for _, j := range cfg.Journals {
 		devices = append(devices, j.Path)
 	}
-	if err := node.Preflight(ctx, cfg.Metadata.Badger.Path, devices, clock); err != nil {
+	if err := node.Preflight(ctx, cfg.Metadata.Badger.Path, cfg.Blockstore.Journal.Path, devices, clock); err != nil {
 		return fmt.Errorf("the start check: %w", err)
 	}
-	v1 := append([]string{filepath.Join(filepath.Dir(configPath), "controlplane.db")}, v1Databases()...)
-	kv, err := openKV(cfg, clock, v1...)
+	kv, err := openKV(cfg, clock)
 	if err != nil {
 		return fmt.Errorf("opening the metadata store: %w", err)
 	}
