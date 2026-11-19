@@ -263,9 +263,16 @@ func TestStatusWriteHeldPastItsBound(t *testing.T) {
 	setFault(t, f, held, sim.Rule{Op: kvtest.OpSet, Key: statusKey(h), Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
 	defer held.Advance(time.Hour) // a failed test's Stop finds no write held
 
+	// Applied catches up without moving the clock, so no status turn runs
+	// mid-pass, when an adapter already runs the new settings but the
+	// position has not moved, and the held write is the finished pass's.
 	configure(t, h, storeA)
 	first := counters(t, h).Settings
-	caughtUp(t, h)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second) // a backstop: Applied returns on the position moving
+	defer cancel()
+	if err := h.Node().Applied(ctx); err != nil {
+		t.Fatalf("Applied after the settings change: %v", err)
+	}
 	heldUntil(t, h, held, "status write")
 	drain(ch)
 	h.Clock().Advance(20 * time.Second)
