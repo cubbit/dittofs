@@ -141,3 +141,20 @@ func (c *dirCache) Waiting() int { return int(c.waiting.Load()) }
 func (c *dirCache) Conditions(dst []health.Condition) []health.Condition {
 	return c.out.conditions(dst)
 }
+
+// UseDirectoryCache puts c in place of the applied State's directory cache,
+// so a test reaches the directory through a client whose bind password it
+// passes in, where Apply's client resolves it through Deps.Secrets.
+func (s *Server) UseDirectoryCache(c *DirectoryCache) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := *s.state.Load()
+	st.dir = c
+	s.state.Store(&st)
+}
+
+// ByKerberosName maps user@realm through the directory, as a Kerberos
+// sign-in's third step does, minting with mint.
+func (s *Server) ByKerberosName(ctx context.Context, user, realm string, mint bool) (entity.Principal, error) {
+	return s.byKerberosName(ctx, user, realm, mint)
+}

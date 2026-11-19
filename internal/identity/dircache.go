@@ -167,11 +167,16 @@ func question(by directory.Key) string {
 }
 
 // directoryLookup answers "who holds this" through the applied State's
-// directory cache, under its stale grace: ErrUnavailable with no record or no
+// directory cache, as dirLookup does.
+func (s *Server) directoryLookup(ctx context.Context, by directory.Key, value []byte, fresh bool) (directory.Answer, bool, error) {
+	return s.state.Load().dirLookup(ctx, by, value, fresh)
+}
+
+// dirLookup answers "who holds this" through st's directory cache, under its
+// stale grace: ErrUnavailable with no State, no record or no
 // Deps.Directory. fresh asks for a fresh answer only (a query's, or an entry
 // within its TTL), never one served stale.
-func (s *Server) directoryLookup(ctx context.Context, by directory.Key, value []byte, fresh bool) (directory.Answer, bool, error) {
-	st := s.state.Load()
+func (st *State) dirLookup(ctx context.Context, by directory.Key, value []byte, fresh bool) (directory.Answer, bool, error) {
 	if st == nil || st.dir == nil {
 		return directory.Answer{}, false, fmt.Errorf("%w: identity: no directory", vfserr.ErrUnavailable)
 	}
