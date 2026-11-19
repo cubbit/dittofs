@@ -170,3 +170,27 @@ func TestRefused(t *testing.T) {
 		}
 	}
 }
+
+// A 32-bit attribute is read signed or unsigned, and a value neither reading
+// holds is refused rather than wrapped.
+func TestAttrUint32(t *testing.T) {
+	for _, tc := range []struct {
+		v    string
+		want uint32
+		ok   bool
+	}{
+		{"0", 0, true},
+		{"24", 24, true},
+		{"4294967295", 0xffffffff, true},
+		{"-1", 0xffffffff, true},
+		{"-2147483648", 0x80000000, true},
+		{"4294967296", 0, false},
+		{"-2147483649", 0, false},
+		{"x", 0, false},
+	} {
+		got, err := attrUint32(tc.v)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("attrUint32(%q) = %d, %v; want %d, ok %v", tc.v, got, err, tc.want, tc.ok)
+		}
+	}
+}

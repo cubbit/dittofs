@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -114,12 +115,11 @@ func ReadComputer(ctx context.Context, rec Record, bindName string, bindPassword
 	a := ComputerAccount{DN: e.DN, Delegation: e.GetRawAttributeValue(delegationAttr)}
 	for attr, dst := range map[string]*uint32{"msDS-KeyVersionNumber": &a.KeyVersion, "msDS-SupportedEncryptionTypes": &a.EncTypes} {
 		if v := e.GetAttributeValue(attr); v != "" {
-			// msDS-SupportedEncryptionTypes is a signed 32-bit integer.
-			n, err := strconv.ParseInt(v, 10, 64)
+			n, err := attrUint32(v)
 			if err != nil {
 				return ComputerAccount{}, fmt.Errorf("identity.directory: %s$'s %s %q: %w", name, attr, v, err)
 			}
-			*dst = uint32(n)
+			*dst = n
 		}
 	}
 	if a.Owner, err = sdOwner(e.GetRawAttributeValue("nTSecurityDescriptor")); err != nil {
@@ -295,4 +295,18 @@ func unicodePwd(password []byte) string {
 		buf = append(buf, byte(c), byte(c>>8))
 	}
 	return string(buf)
+}
+
+// attrUint32 reads a 32-bit integer attribute as its bits: AD writes
+// msDS-SupportedEncryptionTypes signed and msDS-KeyVersionNumber unsigned, so
+// either reading is taken and anything outside both is refused.
+func attrUint32(v string) (uint32, error) {
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if n < math.MinInt32 || n > math.MaxUint32 {
+		return 0, fmt.Errorf("%d is not a 32-bit integer", n)
+	}
+	return uint32(n), nil
 }
