@@ -274,7 +274,7 @@ func nodeImporters(root string) ([]string, error) {
 // registry, and the node builds every component. start.go is the one file of
 // them that imports the node, so nodeImporters names only it.
 var (
-	startFiles   = []string{"cmd/dfs/commands/clock.go", "cmd/dfs/commands/start.go", "cmd/dfs/commands/store.go"}
+	startFiles   = []string{"cmd/dfs/commands/clock.go", "cmd/dfs/commands/kv.go", "cmd/dfs/commands/preflight.go", "cmd/dfs/commands/start.go"}
 	startAllowed = []string{"internal/node", "pkg/bootstrap", "pkg/metadata/kv/badgerkv", "pkg/metrics"}
 )
 
@@ -419,7 +419,7 @@ func TestImportRules(t *testing.T) {
 				"internal/node/nodetest2/harness.go imports the node",
 			}},
 		{"what dfs start imports", startImports, "start-imports",
-			[]string{"cmd/dfs/commands/store.go imports " + module + "pkg/metadata/kvstore"}},
+			[]string{"cmd/dfs/commands/kv.go imports " + module + "pkg/metadata/kvstore"}},
 		{"who imports enginewire", enginewireImporters, "enginewire-importers",
 			[]string{"pkg/vfs/vfs.go imports enginewire"}},
 		{"the CLI's closure", cliClosure, "cli-closure",
