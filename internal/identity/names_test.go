@@ -144,6 +144,21 @@ func TestQualified(t *testing.T) {
 		}
 	}
 
+	// A user and a group named alike map to the user; an API-only user beside
+	// the group leaves the name to the group.
+	twin := entity.User{Principal: entity.NewUser(), Name: "finance", IDs: fileIDs("1700")}
+	r.user(t, twin, 0)
+	api := entity.User{Principal: entity.NewUser(), Name: "audit", Role: entity.RoleOperator}
+	r.user(t, api, 0)
+	audit := entity.Group{Principal: entity.NewGroup(), Name: "audit", IDs: entity.ProtocolIDs{
+		{Scheme: entity.SchemeGID, Value: "2600"}, sidID("S-1-5-21-9-9-9-2600")}}
+	r.putGroup(t, audit)
+	for text, want := range map[string]entity.Principal{`NAS01\finance`: twin.Principal, `NAS01\audit`: audit.Principal} {
+		if p, err := r.srv.Find(ctx, pid.Spelling{Scheme: pid.SchemeQualified, Text: text}, pid.FindOpts{}); err != nil || p != want {
+			t.Errorf("Find(qualified %q) with a user and a group of that name = %v, %v; want %v", text, p, err, want)
+		}
+	}
+
 	// Only ASCII letters fold: the Kelvin sign U+212A is not k.
 	st = state(3)
 	st.Settings.NetBIOSName = "K-NAS"
@@ -247,6 +262,19 @@ func TestFindUnknown(t *testing.T) {
 		if got := r.counter(t, "identity_unmapped_total", "scheme", scheme); got != want {
 			t.Errorf("identity_unmapped_total{scheme=%q} = %v, want %v", scheme, got, want)
 		}
+	}
+}
+
+// A stored SID row with bytes past the SID is refused as corrupt, not spelled
+// as a SID Find would miss.
+func TestSpellSIDTrailingBytes(t *testing.T) {
+	r := naming(t)
+	id := sidID("S-1-5-21-9-9-9-1500")
+	id.Value += "\x00"
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "1500"}, id}}
+	r.user(t, alice, 0)
+	if sp, err := r.srv.Spell(context.Background(), alice.Principal, pid.SchemeSID); err == nil || errors.Is(err, vfserr.ErrUnknownPrincipal) {
+		t.Errorf("Spell(alice, sid) with a trailing byte = %+v, %v; want a corrupt-row error", sp, err)
 	}
 }
 
