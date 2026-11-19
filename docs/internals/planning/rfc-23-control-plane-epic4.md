@@ -10,7 +10,7 @@ on the API's side; [RFC 13](../rfcs/rfc-13-configuration.md) §6 and §7 as a ca
 [RFC 23's plan](rfc-23-control-plane-plan.md) D2, D5 and D14, and its amendment A8 to RFC 23 §2.3
 (the writing node's wait).
 **Track:** B.
-**Epic 4 estimate: 11 subtasks, 37 man-days.**
+**Epic 4 estimate: 12 subtasks, 39.5 man-days.**
 **Depends on:** S1 (E1 merged): the shared wire types in `pkg/node/apiv1` and the node's surface. E2:
 `ControlPlane.Write` with `entity.WriteMeta` and `entity.ControlPlaneTx`, `expect` on every write,
 the idempotency, audit and operation records with their errors in `entity`, the operation record's
@@ -32,7 +32,7 @@ which wires identity into `Deps` and drives the domain's operation kinds recorde
 
 The management API answers every in-scope resource and action of RFC 23, changes nothing but
 records, commits each change with its audit record in one transaction, and maps every error to a
-status by one table. `pkg/node/apiv1/client` comes back as the one typed client of it.
+status by one table. `pkg/node/apiv1/client` is the one typed client of it.
 
 **At the end of the epic:**
 
@@ -179,6 +179,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | R25 | `GET /operations/{id}` answers from the store on any node; `?wait=` returns when the state or phase changes or after the wait, at most 60 s | MUST | RFC 23 §4.6 | T4.6 |
 | R26 | `POST /operations/{id}:cancel` answers `409` `not_cancellable` for every kind in scope | MUST | RFC 23 §4.6 | T4.6 |
 | R69 | An operation's reads render a zero `Account` as started by the schedule, never as a principal's, so the scheduled rotation is told from one a caller started | MUST | RFC 23 §4.6 | T4.6 |
+| R70 | The API's OpenAPI 3.1 document is generated from the route table and the wire types, never the reverse; the committed document equals the generated one, and the server's answers match what it describes | invariant | RFC 23 §4.1; RFC 23 plan D4 | T4.12 |
 | R27 | A second request for the same work on the same target while one runs is refused `409` `operation_running`, naming it | MUST | RFC 23 §4.6 | T4.4 |
 
 **Errors**
@@ -214,7 +215,7 @@ this epic, numbered so that subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R42 | A user or group is created by `POST` with an idempotency key and edited by `PUT` or `PATCH` with `If-Match`; a protocol spelling is checked unique in its scheme and never defaulted; an account created with a role and no spelling gets none | MUST | RFC 23 §3.5 | T4.10 |
+| R42 | A user or group is created by `POST` with an idempotency key and edited by `PUT` or `PATCH` with `If-Match`; a protocol spelling is checked unique in its scheme and never defaulted; an account created with a role and no spelling gets none | MUST | RFC 23 §3.5 | T4.10; the API-only account's test E5's T5.6 |
 | R43 | `email` is optional, never defaulted, refused with `ErrInvalid` unless a syntactically valid address, stored as given, refused on a directory principal, and offered no filter; who may read it is E5's | MUST | RFC 23 §3.5 | T4.10 |
 | R44 | Writing a user's Kerberos name stores the directory user SID the link is made for, asked of the directory before the transaction and taken from a fresh answer only, never one served stale: one that cannot answer, or serves only a stale answer, refuses it `ErrUnavailable`, one with no such entry refuses it naming the name, and a name in another realm stores none; a machine's spelling moved to a user keeps its stored SID and the directory is not asked | MUST | RFC 23 §3.5, §4.3 (as amended here); RFC 18 §4.2 | T4.11 |
 | R45 | Deleting a user or group is an operation, answered `202` after the mark | MUST | RFC 23 §3.5 | T4.10 |
@@ -382,8 +383,10 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
   checked, writes no audit record, because RFC 23 §6 audits the attempt when it settles, in the
   settle's own `Write`, and an attempt that never settles was never checked, so it is counted and
   not recorded. A `decision:` marker at the count names that rule and its overturn: a count that
-  must be recorded on its own. `pkg/secrets` passes the import allow-list, for `auth` and the API
-  alike: it is the RFC 13 plan's library of sealing and resolving over records, holding no running
+  must be recorded on its own. Of `pkg/secrets`, only the leaf `pkg/secrets/secreterr`, its
+  refusals, passes the import allow-list, for `auth` and the API alike, and an architecture test
+  holds the API's whole import closure off `pkg/metadata/kvstore` and `pkg/keyprovider`; the
+  provider itself is the RFC 13 plan's library of sealing and resolving over records, holding no running
   component, and the key providers it seals under are built and handed in by the node, so
   `pkg/keyprovider`'s implementations stay off the list. The API's `Deps.Sealer` (D13) stays an
   interface so a nil one refuses. No marker beyond the count's.
@@ -426,6 +429,8 @@ internal/node/api/
   res_users.go, res_groups.go, res_grants.go,
   res_netgroups.go, res_quotas.go                 T4.10
   res_domain.go, ntlm.go                          T4.11
+  openapi.go                                      T4.12 the document from the route table
+cmd/genopenapi/main.go                            T4.12 writes pkg/node/apiv1/openapi.json
 internal/node/arch_test.go                        T4.2, T4.4, T4.9, T4.11  E3's two rules extended
 pkg/node/apiv1/
   operation.go (extended), node.go, audit.go,
@@ -436,6 +441,7 @@ pkg/node/apiv1/
   user.go, group.go, grant.go, netgroup.go,
   quota.go                                        T4.10
   installation.go                                 T4.11
+  openapi.json                                    T4.12 generated by cmd/genopenapi
 pkg/node/apiv1/client/
   client.go, problem.go, resource.go, wait.go,
   resources.go                                    T4.8  the core, the generic resource, the accessors
@@ -565,7 +571,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   allow-list of the store methods the API may call, `entity.ControlPlaneTx`'s exempt by name, and,
   with `go/types`, `Write` called only from the write adapter and from functions of
   `internal/node/api/auth`, each passing a `WriteMeta` whose `Audit` is set, but auth's sign-in
-  count, exempt by name (D20); `pkg/secrets` on the import allow-list (D20). Consumed by every
+  count, exempt by name (D20); `pkg/secrets/secreterr` on the import allow-list (D20). Consumed by every
   resource subtask and E5, whose own writes (the sign-in count and settle, sessions, tokens,
   passwords) call `Write` from `auth` with their own `WriteMeta`.
 - **Acceptance criteria:**
@@ -774,13 +780,26 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 - **Deliverables:** `res_stores.go` and `res_namespaces.go` over E2's `NS‖ns‖info` and
   `NSR‖store‖ns`: a namespace written by `PutNamespace` and deleted by `DeleteNamespace`, which
   refuses one a share still names; a store's delete refused while `StoreNamed(store)` reads true in
-  its transaction; their writes through `Check` (D4, D11);
-  `res_secrets.go`, the write-only secret (set, delete) authorized as its owning resource's write,
-  its value sealed by the pre-write step through `Deps.Sealer` (D17), refused `503` while
-  `Sealer` is nil; `res_adapters.go`, `/adapters/{protocol}` with `enabled`, its settings and
-  per-node status; `res_settings.go`, the generic setting resource (RFC 23's plan, D5) at each scope;
-  the wire types, a credential a `SecretRef` (D10); the import rule extended with the settings
-  table's package. Consumed by E6 and E7.
+  its transaction; their writes through `Check` (D4, D11). A remote store has no record of its own:
+  it exists through its `remote.endpoint` setting at its scope, which is its tag, and its
+  credential is the secret reference under `remote.credential`; both are written only through the
+  store and credential routes, and the generic setting route refuses either key, naming the route
+  that writes it. A credential is not accepted on the store's create (§6.1 of RFC 23's plan);
+  `res_secrets.go`, the store's write-only credential (`PUT` and `DELETE
+  /stores/{id}/credential`) authorized as the store's write, its value sealed by the pre-write step
+  through `Deps.Sealer` (D17), refused `503` while `Sealer` is nil, and a set over an existing
+  credential refused `409` until rotation exists as an operation; no other secret route: the
+  identity-owned keytab's is T4.11's; `res_adapters.go`,
+  `/adapters/{protocol}` with `enabled`, its settings and the per-node read of each node's adapter
+  state, from `NodeStatus.Adapters`, which this subtask adds (RFC 20's plan's epic 7, O7; the
+  node-side write is that plan's T7.7); `res_settings.go`, the generic setting resource (RFC 23's
+  plan, D5) at each scope; every settings-backed write refused while the node hands in no settings
+  table; the wire types, a credential a `SecretRef` (D10); the import rule extended with the
+  settings table's package and with `pkg/secrets/secreterr`, a leaf holding the secret provider's
+  refusals, the one part of `pkg/secrets` the API admits. `Deps.Sealer` and `Deps.Settings` are
+  handed in by the node once the RFC 13 plan builds them: the secret provider in its epic 4 (X1),
+  the settings table in its epic 3, wired onto the write path by its epic 5 (X3). Consumed by E6
+  and E7.
 - **Acceptance criteria:**
   - Every settings-backed write is refused `400` naming the key until X3, and commits nothing.
   - A remote store a namespace names is refused deletion by one key read.
@@ -789,8 +808,11 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   R12, D4); a remote store's credential read back as reference and version (R7); a store's delete
   refused while a namespace written by `PutNamespace` names it, `StoreNamed` its one read, and a
   namespace's delete refused while a share names it (R39); a secret set with `Sealer` nil refused `503` and nothing written, and with the RFC 13
-  plan's `pkg/secrets` over a test key provider, read raw holding no value (R64, R63); an adapter's
-  per-node status from two node statuses (R40). The bound, location and node-override success paths
+  plan's `pkg/secrets` over a test key provider, read raw holding no value (R64, R63), which waits
+  on the node handing in both a sealer and a settings table, so until then only the refusals run; a
+  credential set over an existing one refused `409`; `remote.endpoint` and `remote.credential`
+  refused through the generic setting route; an adapter's per-node status from two node statuses
+  (R40). The bound, location and node-override success paths
   are `Check`'s, run in E7.
 
 ### T4.10 Users, groups, grants, netgroups and quotas
@@ -804,45 +826,71 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 - **Deliverables:** `res_users.go` and `res_groups.go` (create passing `entity.Alloc{UID, GID, RID,
   Range}` for each ID the request leaves out, the range read from `identity.id_range` through the
   settings table; edit, `disabled`, `email` parsed with `net/mail`, delete as an operation,
-  memberships), `res_grants.go` (`PUT` and `DELETE` by principal
+  memberships; `?name=` on both listings), `res_grants.go` (`PUT` and `DELETE` by principal
   ID, `none` included, a machine principal refused, the grant and its version for the entity tag
-  read through E2's `ControlPlane.ShareGrant`), `res_netgroups.go` (put and delete whole),
-  `res_quotas.go`; their wire types; each user, group, membership and spelling row marked as
+  read through E2's `ControlPlane.ShareGrant`; the share's grant listing), `res_netgroups.go` (put
+  and delete whole, keyed by name, since a netgroup has no ID), `res_quotas.go` (a quota per user
+  or group, the share's own at `/shares/{id}/quota`, and the share's quota listing; project quotas
+  are §6.1's of RFC 23's plan); their wire types; until E5's per-call account check, a user holding
+  an API role hidden from a caller below `admin`: its read answers `404`, the listing and `?name=`
+  leave it out, and a write naming it answers `404` ahead of its precondition, as one naming no user
+  does, so a `PUT`, `PATCH` or `DELETE` of a missing user is `404`, not `412`, and no `/users`
+  answer tells which IDs are accounts; the hiding covers `/users` only, since grants, memberships
+  and quotas resolve a principal's ID whatever its role, so a grant on an admin's ID succeeds where
+  one on a missing ID is `404`, and those routes do not hide role holders until E5's per-call check; the last enabled admin kept, its disable or delete refused `409`
+  `last_admin`, counted in the write's transaction; a uid or gid of 0 refused, an absent one
+  allocated; a user, group or netgroup name refused when it is invalid UTF-8, holds a control
+  character, begins or ends with white space, or exceeds 255 bytes, a user or group created with
+  no name or edited to none refused, and an `email` over 254 bytes refused; each user, group, membership and spelling row marked as
   raising `PGEN`, so T4.4's adapter waits on `Deps.Applied` after its commit (D22), the first
-  production rows to do so. Consumed by E5 (the role field, `last_admin`, `email`'s
-  visibility) and E6.
+  production rows to do so. Consumed by E5 (the role field, which is its T5.6, `last_admin`,
+  `email`'s visibility, and the guard's replacement) and E6.
 - **Acceptance criteria:**
   - A grant naming a machine principal is refused `ErrInvalid` and writes nothing.
   - An invalid `email`, or one on a directory principal, is refused and writes nothing.
-- **Tests:** create with a key and a spelling another user holds, refused by the store (R42); an
-  API-only account created with no spelling holding none (R42); a user created with no uid getting
+- **Tests:** create with a key and a spelling another user holds, refused by the store (R42); a
+  user created with no uid getting
   one in `identity.id_range`, and a second create a different one (R42); an invalid address and a directory
   principal's address refused (R43); a delete answered `202` after the mark (R45); a `none` grant
   read back apart from no grant, `DELETE` falling through to a group's grant, a machine principal
-  refused (R46); a netgroup replaced whole, a quota set (R47); `disabled` read back (R48). In
+  refused (R46); a netgroup replaced whole, a quota set (R47); `disabled` read back (R48); a
+  user holding a role read, listed and written by an operator, each answered `404` or left out,
+  and a write of a missing user `404`; the last enabled admin's disable and delete refused `409`
+  `last_admin`; a uid and a gid of 0 refused; each name and address refusal; the grant and quota listings and `?name=`
+  read back. The API-only account's test, created with no spelling and holding none (R42), is E5's,
+  with the role field (T5.6). In
   `internal/node`'s `node_test`, over `nodetest` with a real node, `Deps.Applied` E3's and the clock
-  never advanced but where named: a user created through this route (it raises `PGEN`) answers only
+  never advanced but where named: a user's `PATCH` through this route (it raises `PGEN`; a
+  `PATCH` of a user the store holds rather than a create, as the node hands no signing key yet)
+  answers only
   once the node's reconciled-through principals position, read through E3's `export_test.go`
   accessor as soon as the answer arrives, is at least the `PGEN` read back through
   `Nodes.Counters` (catches an answer at commit: with the clock still, no pass runs unless the
   write wakes one, R68; a pass already running is E3's T3.5's case); with reconcile held after its
-  counters read by E3's per-node pause from `export_test.go`, the same create parked until
-  `Pending` on the clock counts its wait, then the clock advanced 1 s: the answer is the create's
-  own `201`, the user read back committed, and the position still below it (catches an unbounded
-  wait, or a committed write answered as refused, R68); a grant written while reconcile is held
-  answered with the clock untouched (catches a wait on a write that raised neither generation,
-  R68). Doubles: the injected clock (kind 1).
+  counters read by E3's per-node pause from `export_test.go`, the same `PATCH` parked until
+  `Pending` on the clock counts its wait, then the clock advanced 1 s: the answer is the `PATCH`'s
+  own `200`, the user read back committed, and the position still below it (catches an unbounded
+  wait, or a committed write answered as refused, R68); with reconcile held, a group's and a
+  membership's write each waiting for the clock's second likewise, and a grant's, a quota's and a
+  netgroup's answered with the clock untouched (catches a wait on a write that raised neither
+  generation, or a `PGEN` row left unmarked, R68). Doubles: the injected clock (kind 1).
 
 ### T4.11 The domain's routes and the `identity.ntlm` rule
 
-**Subtask T4.11 estimate: 5 man-days.**
+**Subtask T4.11 estimate: 5.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.9, T4.10; its success paths on the RFC 18 plan's epics 6 and 7
   (identity's calls and `pkg/identity/identitytest`'s in-memory directory and domain controller),
   and the `krb` link's stored SID on its epic 5's T5.8a (`entity.ProtocolID.Linked`)
-  and X1.
+  and X1. Its keytab secret route depends on T4.9's `Sealer` path only, and on nothing in the
+  RFC 18 plan's epic 7, so it lands in its own pull request, §8's PR 6, before the domain's routes.
 - **Covers:** R3, R22, R44, R49, R50, R51, R61, R63, R64.
-- **Deliverables:** `res_domain.go`: a user's `krb` spelling, the SID asked of `Deps.Directory` before
+- **Deliverables:** the identity-owned keytab secret route, a write of `identity.keytab`'s `Secret`
+  authorized as the installation's, its value sealed by the pre-write step through `Deps.Sealer`
+  (D17) and refused `503` while `Sealer` is nil; until the RFC 18 plan's epic 5 settles its D3 it
+  seals the keytab unchecked, then runs `pkg/identity.CheckKeytab` as its pre-write step before
+  `Seal`; the RFC 18 plan's epic 8's T8.4 needs it, writing `identity.keytab` through the node's
+  API; `res_domain.go`: a user's `krb` spelling, the SID asked of `Deps.Directory` before
   the transaction (D17); `resolve-principal`, `test-directory`, `join-domain` (online and offline,
   no idempotency record) and `rotate-machine-password` as operation kinds; the offline join's version
   sealed before the transaction and written in its own audited write, refused while a join or
@@ -856,7 +904,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   join's secret version; no credential field) and `ResolvePrincipalParams` (a name or a SID), the
   `Operation.Params` these routes write and identity's steps decode (RFC 16's "encoded by that
   kind"), consumed by the RFC 18 plan's epic 7's T7.5 and T7.14; with
-  `Installation.Join.Names`, which E2's T2.4 stores and that epic's D6 fills, T4.9's keytab pre-write step also refusing `400` `ErrInvalid` a key
+  `Installation.Join.Names`, which E2's T2.4 stores and that epic's D6 fills, this subtask's keytab pre-write step also refusing `400` `ErrInvalid` a key
   for a name in it, with no `Secret` version written (RFC 18 §3.3, that epic's R27); each refusing `503` `unavailable` while its
   interface is nil (D13); `ntlm.go`, the rule (D14), called by the settings route; the
   installation's wire type; the import rule extended with `pkg/identity`, for `JoinCredential`. Consumed by
@@ -865,7 +913,11 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   - A `krb` link whose directory cannot answer is refused `ErrUnavailable` and writes nothing.
   - An offline join's retry while the first runs writes no version.
   - An online join whose OU or host name is refused writes no operation and holds no credential.
-- **Tests:** with each interface nil, every domain route refused and nothing written (R64, D13);
+- **Tests:** the keytab secret route: a keytab sealed through `Deps.Sealer` and read raw holding no
+  value, refused `503` with nothing written while `Sealer` is nil, refused for a caller without
+  the installation's write right, and, once the RFC 18 plan's epic 5 settles its D3,
+  `CheckKeytab` run before the seal, a keytab it refuses answered `400` with no `Secret` version
+  written (R63, R64); with each interface nil, every domain route refused and nothing written (R64, D13);
   over the in-memory directory and domain controller held to their suites: a `krb` link with the
   directory answering, unreachable, holding no entry, and in another realm; alice's entry cached
   and the directory failing inside its stale grace, the write refused `ErrUnavailable` with nothing
@@ -888,6 +940,32 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   turn-off changing neither and starting no deletion while one runs; a turn-on refused while a fresh
   deletion runs after an older `Deleted` mark was cleared; and each other case of R51 (R51; its `202` and `409` through the route in E7, once X3 is in).
 
+### T4.12 The OpenAPI document
+
+**Subtask T4.12 estimate: 2 man-days.**
+
+- **Track:** B. **Depends on:** T4.8.
+- **Covers:** R70 (RFC 23's plan's D4).
+- **Deliverables:** `internal/node/api/openapi.go`, `OpenAPI() ([]byte, error)`, building the
+  OpenAPI 3.1 document from the route table, the wire types each row's adapter carries and the
+  problem table: operation IDs (RFC 23 §4.1), `x-dittofs-role`, `x-dittofs-starts` and
+  `x-dittofs-waits-applied`, bearer security on every row but `/api/version`; each route row's
+  adapter carrying its form (read, watch, list, write, call) and its body and answer types, which
+  the generator reads; `route.creates` and `route.precondition`, shared by `write.go` and the
+  generator, so the document's `201`, `If-Match`, `If-None-Match` and `Idempotency-Key` are the
+  write path's own; `cmd/genopenapi`, writing `pkg/node/apiv1/openapi.json`; the committed
+  document. Consumed by E6 and the MCP server (§6.1 of RFC 23's plan).
+- **Acceptance criteria:**
+  - A route row added or changed without `go run ./cmd/genopenapi` fails the build's tests.
+  - Every answer the server gives on the documented calls matches its documented schema.
+- **Tests:** the committed `openapi.json` compared with `OpenAPI()`'s output (catches a row
+  changed without regenerating, R70); every row named once, each schema a defined component;
+  operation IDs unique and of the documented form; required body fields as the wire writes them; and,
+  against the API on `127.0.0.1:0`, the server's answers held to the document: a share's create,
+  read, listing, patch, delete and its operation, each answer valid against its schema, every
+  documented listing filter accepted, and each documented required header, left out, answered
+  `428` (catches a document that drifts from the server rather than from the table, R70). No test double.
+
 ## 7. Order of work
 
 ```mermaid
@@ -904,6 +982,7 @@ flowchart TD
   T4_8 --> T4_9["T4.9 Stores, namespaces, secrets, adapters, settings"]
   T4_8 --> T4_10["T4.10 Principals"]
   T4_9 & T4_10 --> T4_11["T4.11 Domain and NTLM"]
+  T4_8 --> T4_12["T4.12 The OpenAPI document"]
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -919,7 +998,9 @@ its commands on the client.
 | 3 | T4.5, T4.6 | 5.5 | PR 1 | reads, operations, nodes and the audit |
 | 4 | T4.7, T4.8 | 7 | PR 2, PR 3 | shares and the client that first drives them |
 | 5 | T4.9, T4.10 | 6.75 | PR 4 | the remaining resources |
-| 6 | T4.11 | 5 | PR 5 | the domain |
+| 6 | T4.11, its keytab secret route | 0.5 | PR 5 (T4.9) | the route the RFC 18 plan's epic 8's T8.4 needs, with nothing of the RFC 18 plan's epic 7 |
+| 7 | T4.11, the rest | 5 | PR 5, PR 6 | the domain, after the RFC 18 plan's epic 7's T7.5 |
+| 8 | T4.12 | 2 | PR 4 | the generated document, once the client's routes are in |
 
 PR 2 and PR 3 can be open at once. A suggestion only: one pull request per subtask works as well.
 
@@ -940,11 +1021,11 @@ Other open points:
   `node` (a cycle, and outside the export pin); it should read `deps.Settings.Check`, the table the
   node hands in (D4).
 - **The keytab.** RFC 18 §3.3 refuses a keytab holding DES or RC4 keys whole. Once the RFC 18
-  plan's epic 5 settles `pkg/identity.CheckKeytab(b []byte) error` (its D3), T4.9's keytab
+  plan's epic 5 settles `pkg/identity.CheckKeytab(b []byte) error` (its D3), the keytab's
   pre-write step calls it before `Seal`, a failure answered `400` `ErrInvalid`, `pkg/identity`
-  joins D20's import allow-list, and T4.9 tests a keytab with one AES and one RC4 key refused with
-  no `Secret` version written. Until then the secret route seals a keytab unchecked, and RFC 18
-  §3.3's import refusal is held by no test. A keytab version's retention is RFC 23 §3.3's, inside
+  joins D20's import allow-list, and a keytab with one AES and one RC4 key is tested refused with
+  no `Secret` version written. T4.11 builds the route and seals unchecked until then, so RFC 18
+  §3.3's import refusal is held by no test before D3 settles. A keytab version's retention is RFC 23 §3.3's, inside
   the rotation operation, so no ledger row is needed; only if the RFC 18 plan's epic 5's D13 picks
   a `retire-keytab-version` action do its route row and `OpKind` join T4.11, with an RFC 23 §3.3
   amendment.

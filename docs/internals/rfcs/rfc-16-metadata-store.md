@@ -885,6 +885,13 @@ type NodeStatus struct {
 	Secrets        []SecretVersion // each secret reference it resolves, and the version it holds (RFC 13 §7)
 	Conditions     []byte // the node's health conditions (RFC 25)
 }
+
+// AdapterStatus is one of a node's adapters as the node reports it.
+type AdapterStatus struct {
+	Protocol   string
+	State      AdapterState // configured, serving, draining or stopped (RFC 20); the zero value names none
+	Generation uint64       // the settings generation the adapter runs
+}
 ```
 
 Adapter settings and identity-provider configuration follow the same pattern
@@ -1344,6 +1351,8 @@ type TagRecord struct {
 // nothing under any F‖ prefix.
 type ControlPlane interface {
 	Users(ctx context.Context, after string) iter.Seq2[User, error]
+	User(ctx context.Context, p Principal) (User, bool, error)        // a user's or machine's read by ID; false once marked deleted, or for a principal of another kind
+	UserNamed(ctx context.Context, name string) (User, bool, error)   // the users listing's ?name= filter: the name folded as sign-in folds it
 	// Every Put*, Set* and Delete* takes expect, the generation the caller
 	// read (Version, for a grant, an export policy, a netgroup or a quota). It reads the record with
 	// conflict tracking and refuses ErrGenerationMismatch when the stored one
@@ -1364,6 +1373,8 @@ type ControlPlane interface {
 	PutUser(ctx context.Context, u User, expect uint64, a Alloc) error // a applies only to a create (expect zero), as Minter's does; a later put allocates nothing
 	DeleteUser(ctx context.Context, p Principal, expect uint64) error // as DeleteGroup: the first transaction deletes the indexes (NX, PX) and marks the record deleted, bounded batches a restart resumes from that mark drop its grants (through GR), memberships (MR, M) and quota records, and the last transaction deletes the record with every version of the secret it names (SEC‖id‖*, through RFC 13 §7), so no password or NT hash outlives its user; a marked user is admitted nowhere
 	Groups(ctx context.Context, after string) iter.Seq2[Group, error]
+	Group(ctx context.Context, p Principal) (Group, bool, error)      // a group's read by ID; false once marked deleted, or for a principal of another kind
+	GroupNamed(ctx context.Context, name string) (Group, bool, error) // the groups listing's ?name= filter
 	PutGroup(ctx context.Context, g Group, expect uint64, a Alloc) error
 	AddMember(ctx context.Context, m Membership) error
 	RemoveMember(ctx context.Context, m Membership) error
@@ -1374,13 +1385,18 @@ type ControlPlane interface {
 	DeleteShare(ctx context.Context, share ShareID, snapshots SnapshotDisposition, expect uint64) error // §2.3.2
 	SetGrant(ctx context.Context, g ShareGrant, expect uint64) error // Access none stores a grant that refuses the principal, distinct from no grant (RFC 18 §6.4); a grant naming a principal with no file spelling — a machine or an API-only account (RFC 18 §2.4) — is refused; Version, and the share's grant-list version S‖id‖gv written in the same transaction, are the writing commit's, so neither ever repeats a value a cache keyed on
 	DeleteGrant(ctx context.Context, share ShareID, p Principal, expect uint64) error // deletes the grant and its GR key, so the principal falls through to its groups' grants, and sets S‖id‖gv to the writing commit's version, so a cache keyed before the deletion misses
+	ShareGrants(ctx context.Context, share ShareID, after PrincipalID) iter.Seq2[ShareGrant, error] // a share's grant listing, in principal ID order, resuming after the principal after
 	PutExportPolicy(ctx context.Context, p ExportPolicy, expect uint64) error // raises Version, as SetGrant does; ErrInvalid for a MinProtection above None with a MinProof that admits AUTH_SYS (ExportPolicy)
 	Quotas(ctx context.Context, share ShareID) iter.Seq2[Quota, error] // the share's quotas: share-wide, the user and group defaults, per principal and per project
+	Quota(ctx context.Context, share ShareID, p Principal) (Quota, bool, error)              // the quota on a user or group, the zero p naming the share's own; false when none is set
+	PrincipalQuotas(ctx context.Context, share ShareID, after PrincipalID) iter.Seq2[Quota, error] // a share's quota listing on users and groups, in principal ID order, resuming after the principal after
 	SetQuota(ctx context.Context, share ShareID, q Quota, expect uint64) error // a quota that limits nothing deletes it, and a share-wide or project one its qx; a changed soft limit restarts its grace: qx is rewritten at the change's time if usage is above the new soft limit and deleted otherwise, while a change to any other limit leaves a running grace; a principal's grace under a changed default, or one that gains or loses its own quota, restarts at its next check, which finds the soft limit qx recorded no longer in force (RFC 7 §2.8)
 	Netgroups(ctx context.Context, after string) iter.Seq2[Netgroup, error]
+	Netgroup(ctx context.Context, name string) (Netgroup, bool, error) // a netgroup's read: by name, since a netgroup has no ID
 	PutNetgroup(ctx context.Context, n Netgroup, expect uint64) error // sets Version to the writing commit's, as SetGrant does
 	DeleteNetgroup(ctx context.Context, name string, expect uint64) error // rules naming it are not rewritten and fail closed (Netgroup)
 	Namespaces(ctx context.Context, after NamespaceID) iter.Seq2[Namespace, error]
+	Namespace(ctx context.Context, id NamespaceID) (Namespace, bool, error) // one namespace's read by ID
 	PutNamespace(ctx context.Context, n Namespace, expect uint64) (uint64, error) // writes NS‖ns‖info and its NSR‖store‖ns key in one transaction and returns the generation written; a namespace naming no remote store is ErrInvalid; a bound field changed while content exists is refused (RFC 13 §5.1). Known narrowing: the store refuses any change to an existing namespace's store or bound fields, content or not, since nothing in its transaction reads whether content exists; an empty namespace no share names is deleted and created again instead (a decision: marker at the code)
 	DeleteNamespace(ctx context.Context, id NamespaceID, expect uint64) error // refused while a share's Namespaces names it; deletes the record and its NSR key together
 	Snapshots(ctx context.Context, share ShareID) iter.Seq2[Snapshot, error]
@@ -1448,6 +1464,12 @@ type WriteMeta struct {
 type ControlPlaneTx interface {
 	Setting(scope SettingScope, key string) (Setting, bool, error) // tracked read
 	User(p Principal) (User, bool, error)                           // tracked read
+	Group(p Principal) (Group, bool, error)                         // tracked read: false for a group marked deleted, or a principal of another kind
+	Grant(share ShareID, p Principal) (ShareGrant, bool, error)     // tracked read: the stored grant, whose Version a write replacing or deleting it expects
+	Member(m Membership) (bool, error)                              // tracked read: whether the membership is stored; it has no version, so it exists or does not
+	Netgroup(name string) (Netgroup, bool, error)                   // tracked read, by name
+	Quota(share ShareID, p Principal) (Quota, bool, error)          // tracked read: the zero p names the share's own; false when none is set
+	Node(id NodeID) (Node, bool, error)                             // tracked read: a node-scope setting is written only for a registered node
 	Share(id ShareID) (Share, bool, error)                          // tracked read
 	ExportPolicy(share ShareID) (ExportPolicy, error)               // tracked read: the default policy, at version 0, when none is stored
 	IDHighWater() (uid, gid uint32, err error)                      // tracked read: the uid and gid counters' high-water marks, which a settings write of identity.id_range checks a new range against (RFC 18 §2.6)
@@ -1992,7 +2014,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `CL‖clientID`, `CL‖clientID‖sh‖shard` | durable Client record. Its fields are **exactly** these, and the store **MUST** write no other: protocol, name, boot, owner principal (zero when the client names a machine or host, or its principal maps to the anonymous one), whether state protection is on (`Protect`), recovery kind (`Recovery`), the `Adapter` bytes — opaque, at most 4 KiB, version first, never read by the store, written in the transaction of the change they belong to ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) — and (cluster) lease owner node, back-channel node, back-channel-down flag, session holders and the ended mark ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)). `Client.Expires` **MUST NOT** be written: it is volatile, held by the lease owner, so a renewal writes nothing; written, it would make 10⁵ clients cost 10⁵ writes per lease period. A pending confirmation is never written. The record is rewritten only when one of its fields changes. One key per shard the client holds state in (`Client.Shards`), checked on reclaim, whose value is `Done`: the grace instance the client last finished reclaiming in there, or the shard's instance when it joined, so a client owes a reclaim while it is below the shard's `GraceInstance` and a failover writes no client record ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)). An administrator's revoke deletes every such key in its transaction, so a reclaim after a restart finds none ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)). (cluster) An expired record is kept, marked ended, until every shard it names has released the client's state ([RFC 14 §4.3](rfc-14-open-state.md#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)). A client that recovers by notice keeps where its notice goes in its `Adapter` bytes, so these records are the restart-notice monitor list ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)) |
 | | `CLO‖protocol‖name` | client name index: the client's own stable name → `ClientID`, unique, so a client naming itself finds its record after any restart ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
 | | `IDS‖kind` | ID allocator, one per kind (client, open, lock, shard): the next unreserved ID, reserved in ranges by the process that issues them, so an ID is never issued twice and issuing one writes nothing; a range left unused when the process stops is abandoned. A `ClientID` and an `OpenID` are unique across the installation ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); an `OpenID` is issued only to an SMB, durable or clone source open, never to every NFS open, and below 2⁴⁰: `IDS‖open` refuses to issue past it ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)); a `lockID` need only differ from every other lock under its open and offset, which a server-wide counter more than meets. A shard number is read and raised in the transaction that creates the shard, which writes `S‖id‖shs‖shard` and `SH‖shard` — a share's own at the share's creation ([§2.3.1](#2.3.1%20Share%20names%2C%20paths%20and%20state)), a per-child one at its directory's ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)) —, never reserved in ranges and never reused, so a stateid naming a removed shard never resolves against another share's; `IDS‖shard` refuses with `ErrNoSpace` at 2²⁴, the most shards an installation numbers ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)). Three more kinds, uid, gid and RID, are the allocation counters of principals' spellings (RFC 18 §2.3): each only rises, and is read and raised in the transaction that creates the `User` or `Group` it numbers, as `S‖id‖pjn` is, never reserved in ranges; a uid or gid is drawn from `identity.id_range` and one any principal holds is skipped, which its `PX‖` row shows, so no allocated uid, gid or RID is given twice, even after its principal is deleted |
-| | `N‖node‖st` | NodeStatus (§2.3): what the node has applied, refused and holds restart-pending, and its conditions; written only by that node (RFC 23 §2.4) |
+| | `N‖node‖st` | NodeStatus (§2.3): what the node has applied, refused and holds restart-pending, its conditions, and its adapters' states; written only by that node (RFC 23 §2.4) |
 | | `OP‖opID` | Operation (§2.3), deleted 7 days after it ends (RFC 23 §4.6) |
 | | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` the target's resource kind as one byte, then its ID |
 | | `IK‖account‖key` | IdempotencyRecord (§2.3), written in the request's own transaction (RFC 23 §4.5) |

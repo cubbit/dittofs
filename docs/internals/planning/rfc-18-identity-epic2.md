@@ -18,7 +18,7 @@ counters land, T2.2 (`Installation.NTLMOff`, its R54), T2.6 (positions and the `
 D8 and T2.11 (`DeleteUser`'s mark, batches and secret deletion); RFC 23's epic 3 document (pull
 request #4336), D7 and T3.4 (the runner's `StepResult`, `Step` and `Progress`).
 **Track:** C.
-**Epic 2 estimate: 9 subtasks, 14.25 man-days.**
+**Epic 2 estimate: 10 subtasks, 14.75 man-days.**
 **Depends on:** **S1**, epic 1's identity surface frozen. **#4059's S1 and S2**: `pkg/settings`
 and `pkg/secrets` frozen, with `Seal` taking the kind, the owner and `secrets.Meta`, the kvstore
 secrets view (`Secret`, `PutSecret`, `PruneSecret`) on the view and on `ControlPlaneTx`, and
@@ -183,6 +183,7 @@ spells it `merrs.NewInvalidArgumentError`, as RFC 23's plan's epic 2 does (its D
 | --- | --- | --- | --- | --- |
 | R7 | User and group names are compared under simple Unicode case folding and are unique under it within their kind; a user and a group may share a name | MUST | §4.6, §12 item 1; RFC 16 §4.2 `NX‖kind‖name` | T2.1 |
 | R8 | A local user or group name never holds `@` or `\`: a creation or rename naming one is refused `ErrInvalid`; `\` because `qualified` spells a local principal `<NetBIOS name>\<name>` and `Lookup` strips a `DOMAIN\` prefix (D2), so a local `CORP\alice` would be one spelling of two principals | MUST NOT | §4.6 | T2.1 |
+| R37 | A local user or group name is valid UTF-8 of at most 255 bytes, holds no control character, and neither begins nor ends with white space: a creation or rename naming another is refused `ErrInvalid` by the store's name check beside R8's, so every create path, the API, `dfs init`'s admin and `reset-admin`, holds it | MUST | §4.6 | T2.10 |
 | R9 | §10's "name case" row: two users whose names differ only in case, the second refused as a duplicate; a local user named `bob@example.com`, refused | test row | §10 | T2.1 |
 
 **IDs**
@@ -379,6 +380,7 @@ pkg/metadata/entity/
   write.go          T2.9  ControlPlaneTx.IDHighWater, the tracked read identity's CheckTx calls (D1)
 pkg/metadata/kvstore/
   users.go          T2.1  shape checks (D3), the @ rule, cross-kind uniqueness
+                    T2.10 the name's UTF-8, control-character, white-space and length rule (R37)
                     T2.2  the allocation behind Alloc on PutUser and PutGroup, SID immutable
                     T2.8  NTHash among the references DeleteUser's last batch deletes (R34)
   alloc.go          T2.2  IDS‖0x04 uid, IDS‖0x05 gid, IDS‖0x06 RID; the installation's domain SID
@@ -740,12 +742,37 @@ internal/identity/
   check of the uid counter only); a `State` with a range below the marks, applied by `Apply`
   (catches a second check at `Apply`, which would split the two range sources, D1). No test double.
 
+### T2.10 A local name's characters, refused by the store
+
+**Subtask T2.10 estimate: 0.5 man-days.**
+
+- **Track:** C. **Depends on:** T2.1; a follow-up to it, after RFC 23's plan's epic 4's T4.10
+  lands the same refusals in the API's handlers, which this subtask moves into the store.
+- **Covers:** R37.
+- **Deliverables:** one name rule in `entity`, shared by principals and netgroups: invalid UTF-8,
+  a control character, edge white space or more than 255 bytes refused, and for a user or group
+  `@` and `\` too; kvstore's `localName` calling it, beside T2.1's `@` and `\` rule, so a created
+  or renamed user or group name it refuses is refused `ErrInvalid`; the API's check kept for
+  netgroups, whose names the store keeps opaque, and for its field-named answer, the API mapping
+  the store's refusal of a user's or group's name to a `400` naming the field, the store's being
+  the one every create path reaches; identity's mint leaving a directory name the rule refuses
+  unnamed rather than failing the mint.
+- **Acceptance criteria:**
+  - A user created by `dfs init` or `reset-admin` with a name holding a control character is
+    refused `ErrInvalid`, as one created through the API is.
+- **Tests:** in kvstore's conformance suite, on the memory KV and Badger: a user and a group named
+  with invalid UTF-8, with `\x07`, with a leading and with a trailing space, and with 256 bytes,
+  each refused `ErrInvalid` on create and on rename with no `NX` row written, and a name of exactly
+  255 bytes accepted (catches the check left in the API only, which `dfs init` and `reset-admin`
+  skip, R37). No test double.
+
 ## 7. Order of work
 
 ```mermaid
 flowchart TD
   S1(["S1 identity surface frozen"]):::sync --> T2_1["T2.1 Records and names"]
   T2_1 --> T2_2["T2.2 ID counters, Alloc, SID"]
+  T2_1 --> T2_10["T2.10 Name characters in the store"]
   T2_2 --> T2_3["T2.3 Minter.Create"]
   T2_3 --> C1(["after T2.3: the store mints"]):::sync
   X59(["#4059 S1 and S2"]):::sync --> T2_4["T2.4 Settings, State, Secrets"]
@@ -780,6 +807,7 @@ RFC 23's user deletion; after T2.8 RFC 23's plan's epic 5's password writes may 
 | 4 | T2.7 | 2.5 | PR 1 | the NT-hash deletion, once RFC 23's `StepResult` and `SetNTHashDeleted` land; may be open beside PR 2 and PR 3 |
 | 5 | T2.8 | 1 | PR 3 | the NT hash's deletion with its user and the marked-deleted sign-in cases, once RFC 23's plan's epic 2's T2.11 lands, and before RFC 23's plan's epic 5's password write |
 | 6 | T2.9 | 0.5 | PR 2 | the dead-range refusal, once the RFC 13 plan's epic 3 lands its `Check`; nothing waits for it |
+| 7 | T2.10 | 0.5 | PR 1 | the name's character rule moved into the store, after RFC 23's plan's epic 4's T4.10 merges |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -789,15 +817,16 @@ The sources are RFC 18 as #4058 merged it (83232b441), whose text in the section
 the version this document was written against. RFC 18 §8.1 declares `Lookup` and the
 principal-based `VerifyPassword`, which epic 1 freezes.
 
-The plan's figure for this epic is 8 subtasks, 13 man-days; this document's is 9 subtasks,
-14.25 man-days: the mint path goes to E6's T6.2 (below); the allocation behind RFC 23's
+The plan's figure for this epic is 8 subtasks, 13 man-days; this document's is 10 subtasks,
+14.75 man-days: the mint path goes to E6's T6.2 (below); the allocation behind RFC 23's
 `entity.Alloc` on `PutUser` and `PutGroup` comes in (T2.2), which RFC 23's plan's epic 2 refuses
 until it lands (its D2), as does `NTHash` among the secrets `DeleteUser` deletes, which the plan lists
 nowhere (T2.8, R34); `Installation.NTLMOff` is RFC 23's plan's epic 2's (its T2.2, R54); and the
 deletion's step can fail on a record it cannot decode (T2.7, R36); and the settings write refuses
 a range at or below a counter's high-water mark inside its transaction, through identity's
 function handed to the RFC 13 plan's `CheckTx` option, its own subtask so that T2.4's readers do
-not wait for the RFC 13 plan's epic 3 (T2.9, D1).
+not wait for the RFC 13 plan's epic 3 (T2.9, D1); and the name's character rule moves into the
+store's name check, so `dfs init` and `reset-admin` hold it too (T2.10, R37).
 
 **Pending the user's answer** (the recommended option is written in place):
 

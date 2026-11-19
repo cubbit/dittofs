@@ -53,7 +53,7 @@ regenerated reference.
   [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger) (OpenID Connect sign-in).
 - A command importing a keytab as a `Secret` version of `identity.keytab`, and a `user update` flag
   writing a user's Kerberos name: RFC 23 §7 names neither, and the routes they would call are E4's
-  T4.9 keytab step and T4.11 `krb` link, settled with the RFC 18 plan's epic 5; a row of
+  T4.11 keytab secret route and `krb` link, settled with the RFC 18 plan's epic 5; a row of
   [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger) (the keytab import command).
 - The client's transport, its version check, its idempotency key, its retry on `401` and its
   credential calls: E4's client, with the edits §9 lists.
