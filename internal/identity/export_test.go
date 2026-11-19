@@ -211,6 +211,3 @@ func (s *Server) ThrottleFootprint() int {
 // BoundThrottle gives s an empty logon throttle holding at most bound pairs,
 // its evictions counted where they were.
 func (s *Server) BoundThrottle(bound int) { s.throttle = newThrottle(bound, s.throttle.evictions) }
-
-// ThrottleBound is how many pairs the logon throttle holds.
-const ThrottleBound = throttleBound

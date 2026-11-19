@@ -69,7 +69,7 @@ func (s *Server) signIn(ctx context.Context, step identity.SignInStep) (identity
 	// is an outage, so neither counts: an outage never locks a right
 	// password out. Overturned if a refusal is ever found to count a
 	// client's legitimate retries against it.
-	settle, ok := s.throttle.reserve(throttleKeyOf(a.User, step.Client), s.deps.Clock.Now())
+	settle, ok := s.throttle.reserve(a.User, step.Client, s.deps.Clock.Now())
 	if !ok {
 		return identity.SignInResult{}, outcomeThrottled, vfserr.ErrLogonFailure
 	}
