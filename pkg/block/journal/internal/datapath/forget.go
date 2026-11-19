@@ -237,8 +237,8 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 		// told the forget failed owns nothing registered. One channel
 		// stays open: a one-shot sync failure, raising no read-only
 		// fence, lets the window resolution re-append the record durably
-		// behind the error, and it then binds on disk. Withdraw the
-		// exemption once the re-append suppresses a record whose forget
+		// behind the error, and it then binds on disk. Close this
+		// channel once the re-append suppresses a record whose forget
 		// answered an error, or an admission-level undo owns it.
 		c.liveness.Unregister(forgetRec)
 		return err

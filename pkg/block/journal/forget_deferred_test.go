@@ -2,6 +2,7 @@ package journal
 
 import (
 	"context"
+	"errors"
 	"syscall"
 	"testing"
 
@@ -341,8 +342,8 @@ func TestTheProbeOptionCarriesTheBarrierCheck(t *testing.T) {
 	nobarrier := func(string) (storage.Probe, error) {
 		return platformtest.NoBarrierMount(dir), nil
 	}
-	if _, err := Init(t.Context(), dir, deferralInst, WithStorage(seam.FS()), WithMountProbe(nobarrier)); err == nil {
-		t.Fatalf("Init over a mount the barrier rule refuses succeeded, want the refusal the check is consulted for")
+	if _, err := Init(t.Context(), dir, deferralInst, WithStorage(seam.FS()), WithMountProbe(nobarrier)); !errors.Is(err, ErrUnsuitableStorage) {
+		t.Fatalf("Init over a mount the barrier rule refuses = %v, want the refusal the check is consulted for", err)
 	}
 }
 

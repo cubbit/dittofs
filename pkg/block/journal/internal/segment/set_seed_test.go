@@ -126,12 +126,9 @@ func TestForgetTagTakesTheNoAppendMeasures(t *testing.T) {
 	}
 
 	set.ForgetTag(tag)
-	st, full, err := set.ClaimRetirement(id)
-	if err != nil {
+	if _, _, err := set.ClaimRetirement(id); err != nil {
 		t.Fatal(err)
 	}
-	_ = st
-	_ = full
 	if _, err := set.Retire(id); err != nil {
 		t.Fatal(err)
 	}
