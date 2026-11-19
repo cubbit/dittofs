@@ -887,6 +887,9 @@ func (c *Capacity) seedFor(tag core.ShareTag) {
 		return
 	}
 	c.seeding[tag] = true
+	// The copies counted before this read were appended before it, so the
+	// stale figure holds them; one counted during the read may not be in it.
+	held := c.copyHeld[tag]
 	c.mu.Unlock()
 	settled, retired := c.cfg.ShareFigures(tag)
 	c.mu.Lock()
@@ -905,7 +908,7 @@ func (c *Capacity) seedFor(tag core.ShareTag) {
 	}
 	// The copies a pass has landed and not yet handed over are in the set's
 	// settled figure but are not the share's until their source goes.
-	settled -= c.copyHeld[tag]
+	settled -= held
 	// What Landed and CopiesTransfer took while the read ran: the figure read
 	// may predate it, so it is added in, counting a record the read already
 	// held twice, never zero times.
