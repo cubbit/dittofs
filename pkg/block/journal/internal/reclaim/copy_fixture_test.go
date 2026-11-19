@@ -380,6 +380,15 @@ func (f *copyFixture) corrupt(ctx context.Context, bad reclaim.BadSource) (recla
 // a settle racing a pass would.
 func (f *copyFixture) plantRemoval(t *testing.T, tag core.ShareTag, file core.FileID, kind format.Kind, change core.ChangeKind, header, over core.Extent, settle bool) (reclaim.Rec, index.RecordAt, core.Seq, core.Version) {
 	t.Helper()
+	return f.plantRemovalUnderTags(t, tag, tag, file, kind, change, header, over, settle)
+}
+
+// plantRemovalUnderTags is plantRemoval for a record the disk and the tracker
+// name under diskTag while the index applied it under indexTag: a file another
+// share owns, so a later note of the record under its own tag is refused by
+// the index as a rival claim.
+func (f *copyFixture) plantRemovalUnderTags(t *testing.T, diskTag, indexTag core.ShareTag, file core.FileID, kind format.Kind, change core.ChangeKind, header, over core.Extent, settle bool) (reclaim.Rec, index.RecordAt, core.Seq, core.Version) {
+	t.Helper()
 	unlock := f.core.Domains().Lock(file)
 	defer unlock()
 	v, err := f.counters.Draw()
@@ -391,20 +400,20 @@ func (f *copyFixture) plantRemoval(t *testing.T, tag core.ShareTag, file core.Fi
 		t.Fatalf("NextSeq of the %s: %v", kind, err)
 	}
 	pl, err := f.core.Streams().For(file).Append(format.RecordHeader{
-		Kind: kind, File: file, Extent: header, Seq: seq, Version: v, Tag: tag,
+		Kind: kind, File: file, Extent: header, Seq: seq, Version: v, Tag: diskTag,
 	}, format.RecordBody{})
 	if err != nil {
 		t.Fatalf("Append of the %s record: %v", kind, err)
 	}
 	at := index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}
-	hd, _, err := f.ix.ApplyRemoval(tag, file, change, over, v, seq, at, nil)
+	hd, _, err := f.ix.ApplyRemoval(indexTag, file, change, over, v, seq, at, nil)
 	if err != nil {
 		t.Fatalf("ApplyRemoval of the %s: %v", kind, err)
 	}
 	f.core.Account(hd)
 	rec := reclaim.Rec{
 		Kind: kind, File: file, Seg: pl.Loc.Segment, Ext: header,
-		Pair: index.Numbers{Version: v, Seq: seq}, Seq: seq, Tag: tag, Loc: pl.Loc,
+		Pair: index.Numbers{Version: v, Seq: seq}, Seq: seq, Tag: diskTag, Loc: pl.Loc,
 	}
 	f.tracker.Register(rec)
 	if settle {

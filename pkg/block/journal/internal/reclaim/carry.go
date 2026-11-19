@@ -259,6 +259,9 @@ func (c *Copier) carryDeferredLoss(ctx context.Context, seg core.SegmentID, entr
 	if c.drawn != nil {
 		c.drawn(draw)
 	}
+	// The record is on disk from here: it joins the result before the note
+	// that can fail, so the caller counts it either way.
+	out.Deferred = append(out.Deferred, DeferredCopy{Loss: entry, Loc: pl.Loc})
 	if err := c.ix.NotePlaced(entry.Share, entry.File, pl.Loc.Segment, entry.Extent, index.Numbers{Version: entry.Version, Seq: seq}); err != nil {
 		return fmt.Errorf("reclaim: carrying segment %d: noting the deferred loss record of seq %d: %w", seg, entry.Seq, err)
 	}
@@ -280,7 +283,6 @@ func (c *Copier) carryDeferredLoss(ctx context.Context, seg core.SegmentID, entr
 		Superseded: entry.Reason == core.LossSuperseded,
 		Loc:        pl.Loc,
 	})
-	out.Deferred = append(out.Deferred, DeferredCopy{Loss: entry, Loc: pl.Loc})
 	return nil
 }
 
@@ -310,10 +312,13 @@ func (c *Copier) carryFile(ctx context.Context, file core.FileID, recs []Rec, ou
 			continue
 		}
 		cr, err := c.carryRecord(ctx, rec)
+		if cr.Rec.Loc.Len > 0 {
+			// A record that landed is counted even when its note failed.
+			out.Carried = append(out.Carried, cr)
+		}
 		if err != nil {
 			return err
 		}
-		out.Carried = append(out.Carried, cr)
 	}
 	return nil
 }
@@ -336,10 +341,13 @@ func (c *Copier) carryForgetRecs(ctx context.Context, recs []Rec, out *CarryResu
 			continue
 		}
 		cr, err := c.carryRecord(ctx, rec)
+		if cr.Rec.Loc.Len > 0 {
+			// A record that landed is counted even when its note failed.
+			out.Carried = append(out.Carried, cr)
+		}
 		if err != nil {
 			return err
 		}
-		out.Carried = append(out.Carried, cr)
 	}
 	return nil
 }
@@ -417,16 +425,19 @@ func (c *Copier) placeCarried(ctx context.Context, rec Rec, h format.RecordHeade
 	} else {
 		c.tracker.Register(cp)
 	}
-	if rec.File != (core.FileID{}) {
-		if err := c.ix.NotePlaced(rec.Tag, rec.File, pl.Loc.Segment, covered(rec), rec.Pair); err != nil {
-			return CarriedRec{}, fmt.Errorf("reclaim: noting the carried record of seq %d: %w", rec.Seq, err)
-		}
-	}
-	return CarriedRec{
+	// The record is on disk from here, so it answers with its place even when
+	// the note below fails: the caller counts it before it gives the unit up.
+	placed := CarriedRec{
 		Rec:  cp,
 		From: index.RecordAt{Segment: rec.Loc.Segment, Offset: uint32(rec.Loc.Off)},
 		To:   index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
-	}, nil
+	}
+	if rec.File != (core.FileID{}) {
+		if err := c.ix.NotePlaced(rec.Tag, rec.File, pl.Loc.Segment, covered(rec), rec.Pair); err != nil {
+			return placed, fmt.Errorf("reclaim: noting the carried record of seq %d: %w", rec.Seq, err)
+		}
+	}
+	return placed, nil
 }
 
 // relearnReleased re-asks, for the pass about to carry seg, every
