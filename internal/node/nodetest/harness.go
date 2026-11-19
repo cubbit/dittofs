@@ -68,7 +68,8 @@ func WithNew(f func(node.Config) (*node.Node, error)) Option {
 
 // New initialises an installation, the metadata store and one journal under
 // t.TempDir(), records the journal for the node's one device, and builds a
-// node over them. Every KV the harness opens is closed when the test ends.
+// node over them, its API, metrics listener and adapters on loopback. Every
+// KV the harness opens is closed when the test ends.
 func New(t testing.TB, opts ...Option) *Harness {
 	t.Helper()
 	o := options{newNode: node.New}
@@ -97,6 +98,7 @@ func New(t testing.TB, opts ...Option) *Harness {
 	b.Node.ID = nodeID
 	b.API.Listen = []string{"127.0.0.1:0"}
 	b.Metrics.Listen = "127.0.0.1:0"
+	b.Adapters.Listen = []string{"127.0.0.1"}
 	h.cfg = node.Config{
 		Bootstrap: b,
 		Clock:     h.clock,

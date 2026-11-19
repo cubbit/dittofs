@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"reflect"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/sidecar"
@@ -26,15 +28,23 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// drainIdle is how often a call waiting on an adapter's drain reports its
-// loop idle: inside RFC 25 §3.5's 30 s, as an accept loop does.
-const drainIdle = 10 * time.Second
+const (
+	// drainIdle is how often a call waiting on an adapter's drain reports
+	// its loop idle: inside RFC 25 §3.5's 30 s, as an accept loop does.
+	drainIdle = 10 * time.Second
+	// onCloseBound is how long past its drain deadline an adapter's Stop
+	// may wait for its connections' OnClose (RFC 20 §3.4).
+	onCloseBound = 30 * time.Second
+	// stepAdapters names start step 9 and the part stop step 2 stops.
+	stepAdapters = "adapters"
+)
 
 // listenAddrs resolves adapters.listen (RFC 13 Appendix C) into the
 // addresses every adapter binds, given whether a tcp6 socket opens on [::]:0
-// on this host. A literal that does not parse is refused naming the key and
-// its index, never the value, which may come from the environment (RFC 13
-// §6); every such literal is refused together.
+// on this host. A literal that does not parse, and an address that overlaps
+// one listed before it, are refused naming the key and the index, never the
+// value, which may come from the environment (RFC 13 §6); every such entry
+// is refused together.
 //
 // decision: an unset adapters.listen is 0.0.0.0, and :: beside it only where
 // tcp6 opens, for RFC 13 Appendix C's "every interface": an adapter binds ::
@@ -42,6 +52,13 @@ const drainIdle = 10 * time.Second
 // 20 §3.1), so :: on a host with IPv6 off would refuse every adapter. A list
 // that is set is bound as written, :: included. Withdraw it if RFC 13
 // Appendix C's default comes to name its addresses.
+//
+// decision: an address that repeats one listed before it, or sits beside
+// its family's unspecified address, is refused here, as each adapter's
+// Validate would refuse it, so New fails naming the operator's key. Left to
+// Validate, every adapter would be refused at New naming Addrs, and retried
+// on reconcile's backoff for good. Withdraw it if RFC 13 Appendix C comes to
+// say how the bootstrap reads such a list.
 func listenAddrs(listen []string, tcp6 bool) ([]netip.Addr, error) {
 	if len(listen) == 0 {
 		if tcp6 {
@@ -57,6 +74,15 @@ func listenAddrs(listen []string, tcp6 bool) ([]netip.Addr, error) {
 			bad = append(bad, fmt.Errorf("node: adapters.listen[%d]: not an IP address", i))
 			continue
 		}
+		// An IPv4-mapped address is its IPv4 address, and an unspecified
+		// address binds every other address of its family.
+		for j, prev := range addrs[:i] {
+			p, u := prev.Unmap(), a.Unmap()
+			if prev.IsValid() && (p == u || p.Is4() == u.Is4() && (p.IsUnspecified() || u.IsUnspecified())) {
+				bad = append(bad, fmt.Errorf("node: adapters.listen[%d]: overlaps adapters.listen[%d]", i, j))
+				break
+			}
+		}
 		addrs[i] = a
 	}
 	if bad != nil {
@@ -65,11 +91,32 @@ func listenAddrs(listen []string, tcp6 bool) ([]netip.Addr, error) {
 	return addrs, nil
 }
 
+// listenPort is the port addr names, 0 when it names none: the API cannot
+// bind such an address, so Start fails at step 2, before any adapter starts.
+func listenPort(addr string) uint16 {
+	_, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0
+	}
+	port, err := net.LookupPort("tcp", p)
+	if err != nil {
+		return 0
+	}
+	return uint16(port)
+}
+
 // adapterDeps is the one Deps the node hands every adapter it builds (RFC 20
 // §3.4): the filesystem, the node's budgets, registry and logger, and its
 // watchdog, which each accept loop registers with. Every other field is
 // zero: the node is handed no tracer, so SampleRatio samples none (RFC 25
 // §8.1).
+//
+// decision: an accept loop reports idle every 10 s on the runtime's clock,
+// as Deps hands an adapter no clock (RFC 20 §3.4), while the watchdog reads
+// the node's (RFC 25 §3.5). Outside a test both are the runtime's. A test
+// that moves the node's clock past 60 s while an adapter serves finds
+// liveness failed, so the node's tests serve none while they do. Overturned
+// when a test must, and then by a clock in Deps.
 func adapterDeps(fs vfs.Service, b *resources.Budgets, m *metrics.Registry, log *slog.Logger, w *health.Watchdog) adapter.Deps {
 	return adapter.Deps{
 		VFS:     fs,
@@ -94,21 +141,42 @@ type slot[S shape] struct {
 	build  func(adapter.Deps, S) (adapter.Adapter, error) // the protocol's New
 	deps   adapter.Deps
 	runner *sidecar.Runner
-	addrs  []netip.Addr // adapters.listen, resolved: what every adapter binds
-	taken  []uint16     // the API's and the metrics listener's ports
-	clock  engine.Clock // what a drain's idle reports wait on
+	addrs  []netip.Addr    // adapters.listen, resolved: what every adapter binds
+	taken  []uint16        // the API's and the metrics listener's ports
+	clock  engine.Clock    // what a drain's idle reports wait on
+	drains context.Context // what a drain runs under: the node's, which stop step 2 ends
 
-	running adapter.Adapter // nil while nothing serves
+	// want is what apply hands the slot, nil while nothing sets it: the
+	// adapter disabled.
+	want atomic.Pointer[desired[S]]
+
+	running adapter.Adapter // nil while nothing serves; still the draining one when reconcile stopped waiting on it
 	runs    S               // what running serves with: the last settings that served
 	refused S               // what refusal refused
 	refusal *refusal        // the last call's, nil once a call applied
 }
 
+// desired is what a slot is to run: whether its adapter is enabled, and its
+// protocol's settings.
+type desired[S shape] struct {
+	enabled  bool
+	settings S
+}
+
+// applyWanted is apply with what the slot is to run.
+func (s *slot[S]) applyWanted(ctx context.Context, loop *health.Loop) *refusal {
+	var w desired[S]
+	if p := s.want.Load(); p != nil {
+		w = *p
+	}
+	return s.apply(ctx, loop, w.enabled, w.settings)
+}
+
 // newSlots builds the node's slot for each protocol, nfs and smb, over one
-// Deps and one runner (RFC 20 §3.4, §3.5).
-func newSlots(d adapter.Deps, r *sidecar.Runner, addrs []netip.Addr, taken []uint16, clock engine.Clock) (*slot[settings.NFS], *slot[settings.SMB]) {
-	return &slot[settings.NFS]{name: "nfs", build: nfs.New, deps: d, runner: r, addrs: addrs, taken: taken, clock: clock},
-		&slot[settings.SMB]{name: "smb", build: smb.New, deps: d, runner: r, addrs: addrs, taken: taken, clock: clock}
+// Deps and one runner (RFC 20 §3.4, §3.5), each drain under drains.
+func newSlots(d adapter.Deps, r *sidecar.Runner, addrs []netip.Addr, taken []uint16, clock engine.Clock, drains context.Context) (*slot[settings.NFS], *slot[settings.SMB]) {
+	return &slot[settings.NFS]{name: "nfs", build: nfs.New, deps: d, runner: r, addrs: addrs, taken: taken, clock: clock, drains: drains},
+		&slot[settings.SMB]{name: "smb", build: smb.New, deps: d, runner: r, addrs: addrs, taken: taken, clock: clock, drains: drains}
 }
 
 // apply moves the adapter to what enabled and next say, next's Addrs the
@@ -193,8 +261,10 @@ func (s *slot[S]) start(ctx context.Context, next S) error {
 	return nil
 }
 
-// stop drains and stops the running adapter through the runner, reporting
-// loop idle every drainIdle on the node's clock until its Stop returns.
+// stop drains and stops the running adapter through the runner, its
+// sidecar syncs included, under the slot's drains, reporting loop idle
+// every drainIdle on the node's clock until its Stop returns, or until ctx
+// ends: the drain then goes on, its adapter still the slot's.
 //
 // decision: the call waits on the drain itself, up to drain_timeout plus
 // 30 s, reporting its loop idle meanwhile, since RFC 25 §3.5 counts a
@@ -202,14 +272,26 @@ func (s *slot[S]) start(ctx context.Context, next S) error {
 // liveness after 60 s without one; other changes wait for the call, one
 // adapter at a time (RFC 23 §3.4). Overturned if a drain must not hold back
 // other records.
+//
+// decision: the drain runs under the node's drains, not ctx, and the call
+// stops waiting on it once ctx ends, as reconcile's stop ends it: waiting on
+// would hold reconcile's stop past its bound, and ending the drain with ctx
+// would cut it short. Stop step 2 ends the drains at its drain deadline, so
+// this drain and a sidecar Sync it holds end by then, never sooner, and
+// cannot hold step 2 past its bound. The adapter stays the slot's, so step 2
+// stops it with the others, and its Stop, called again, returns once the
+// first has stopped it (RFC 20 §3.4, RFC 23 §2.2). Overturned if a drain
+// must end with the change that started it.
 func (s *slot[S]) stop(ctx context.Context, loop *health.Loop) error {
 	done := make(chan error, 1)
-	go func(a adapter.Adapter) { done <- s.runner.Stop(ctx, s.name, a) }(s.running)
-	s.running = nil
+	go func(a adapter.Adapter) { done <- s.runner.Stop(s.drains, s.name, a) }(s.running)
 	for {
 		select {
 		case err := <-done:
+			s.running = nil
 			return err
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-s.clock.After(drainIdle):
 			loop.Idle()
 		}
@@ -239,4 +321,32 @@ func withAddrs[S shape](s S, addrs []netip.Addr) S {
 		p.Addrs = addrs
 	}
 	return s
+}
+
+// applyAdapters calls each slot with what it is to run, and returns their
+// refusals, each at settings generation gen, which the caller read.
+func (n *Node) applyAdapters(ctx context.Context, loop *health.Loop, gen uint64) []refusal {
+	var refusals []refusal
+	for _, r := range []*refusal{n.nfs.applyWanted(ctx, loop), n.smb.applyWanted(ctx, loop)} {
+		if r != nil {
+			f := *r
+			f.rec.Generation = gen
+			refusals = append(refusals, f)
+		}
+	}
+	return refusals
+}
+
+// adaptersHeld is every adapter the slots hold, serving or still draining,
+// by protocol, and the longest drain_timeout they run.
+func (n *Node) adaptersHeld() (map[string]adapter.Adapter, time.Duration) {
+	held := map[string]adapter.Adapter{}
+	var longest time.Duration
+	if a := n.nfs.running; a != nil {
+		held[n.nfs.name], longest = a, max(longest, n.nfs.runs.DrainTimeout)
+	}
+	if a := n.smb.running; a != nil {
+		held[n.smb.name], longest = a, max(longest, n.smb.runs.DrainTimeout)
+	}
+	return held, longest
 }
