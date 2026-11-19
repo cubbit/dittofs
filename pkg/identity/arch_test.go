@@ -15,10 +15,11 @@ import (
 
 const module = "github.com/cubbit/dittofs/"
 
-// leaf is what pkg/identity imports of the module: the store's value types,
-// the SID codec and the filesystem's error values. Anything else outside the
-// standard library is refused.
-var leaf = []string{module + "pkg/metadata/entity", module + "pkg/auth/sid", module + "pkg/vfs/vfserr"}
+// leaf is what pkg/identity imports outside the standard library: the
+// store's value types, the SID codec, the filesystem's error values, and the
+// argon2 and MD4 that NewHashes derives with. Anything else is refused.
+var leaf = []string{module + "pkg/metadata/entity", module + "pkg/auth/sid", module + "pkg/vfs/vfserr",
+	"golang.org/x/crypto/argon2", "golang.org/x/crypto/md4"}
 
 const (
 	server = "internal/identity"
@@ -40,7 +41,7 @@ func standard(imp string) bool {
 func forbidden(dir, imp string) string {
 	switch {
 	case dir == "pkg/identity" && !standard(imp) && !slices.Contains(leaf, imp):
-		return "pkg/identity is a leaf: it imports only the standard library, entity, pkg/auth/sid and vfserr"
+		return "pkg/identity is a leaf: it imports only the standard library, entity, pkg/auth/sid, vfserr, argon2 and md4"
 	case dir == "pkg/vfs/vfstest/memory" && imp == module+server+"/identitymem":
 		return ""
 	// identitytest hands tests identity's directory and NETLOGON clients, so
@@ -130,9 +131,9 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/node/nodetest/nodetest.go: imports " + module + "internal/identity/directory: only internal/node and identity's own packages import the identity server",
 		"internal/vfs/server.go: imports " + module + "internal/identity: only internal/node and identity's own packages import the identity server",
 		"pkg/identity/identitytest/srv.go: imports " + module + "internal/identity: only internal/node and identity's own packages import the identity server",
-		"pkg/identity/store.go: imports " + module + "pkg/metadata/kvstore: pkg/identity is a leaf: it imports only the standard library, entity, pkg/auth/sid and vfserr",
-		"pkg/identity/uuid.go: imports github.com/google/uuid: pkg/identity is a leaf: it imports only the standard library, entity, pkg/auth/sid and vfserr",
-		"pkg/identity/vfs.go: imports " + module + "pkg/vfs: pkg/identity is a leaf: it imports only the standard library, entity, pkg/auth/sid and vfserr",
+		"pkg/identity/store.go: imports " + module + "pkg/metadata/kvstore: pkg/identity is a leaf: it imports only the standard library, entity, pkg/auth/sid, vfserr, argon2 and md4",
+		"pkg/identity/uuid.go: imports github.com/google/uuid: pkg/identity is a leaf: it imports only the standard library, entity, pkg/auth/sid, vfserr, argon2 and md4",
+		"pkg/identity/vfs.go: imports " + module + "pkg/vfs: pkg/identity is a leaf: it imports only the standard library, entity, pkg/auth/sid, vfserr, argon2 and md4",
 		"pkg/vfs/vfstest/memory/memory.go: imports " + module + "internal/identity: only internal/node and identity's own packages import the identity server",
 	}
 	if !slices.Equal(got, want) {

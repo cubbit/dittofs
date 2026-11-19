@@ -2,7 +2,8 @@
 // an adapter's proof becomes, the interfaces the identity server implements
 // and the filesystem and management API call, and the errors they answer. It
 // is a leaf: it imports only the standard library, the metadata store's value
-// types, the SID codec and the filesystem's error values. pkg/vfs aliases the
+// types, the SID codec, the filesystem's error values, and x/crypto's argon2
+// and md4, which NewHashes derives with. pkg/vfs aliases the
 // value types an adapter needs, so an adapter imports pkg/vfs alone.
 package identity
 

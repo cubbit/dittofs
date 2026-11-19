@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // APISignIn is the management API's account check. The API calls identity
@@ -42,19 +41,4 @@ type PasswordHashes struct{ Password, NTHash []byte }
 type NTLMSetting struct {
 	On         bool
 	Generation uint64
-}
-
-// NewHashes derives what a new password is stored as: the password hash and,
-// only while ntlm is on and u holds file spellings and is not a directory
-// principal, the NT hash. It is pure: it reads and writes nothing. The API
-// writes the result with the record, conditional on ntlm.Generation still being
-// current; for a directory principal it fails vfserr.ErrInvalid.
-//
-// ponytail: it answers vfserr.ErrUnavailable, deriving nothing, so a caller
-// wired to it before the hashing exists sets no password. Replace the body with
-// the argon2id and NT hash derivation, which the principals' password checks
-// are the first to need; x/crypto's argon2 and md4 then join the leaf list in
-// arch_test.go, being libraries outside the module that import none of it.
-func NewHashes(u entity.User, password []byte, ntlm NTLMSetting) (PasswordHashes, error) {
-	return PasswordHashes{}, vfserr.ErrUnavailable
 }
