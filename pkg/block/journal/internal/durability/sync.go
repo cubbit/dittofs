@@ -35,8 +35,8 @@ type Config struct {
 	Resolved func(stream uint32, seg core.SegmentID)
 	// Landed, when set, is told of every record this layer appends under a
 	// share's tag outside a write — a re-append, of a forget record as of any
-	// other, and a loss record — with the record's placed length, so the share's figure takes its bytes. Nil
-	// means none.
+	// other, and a loss record — with the record's placed length, so the
+	// share's figure takes its bytes. Nil means none.
 	Landed func(tag core.ShareTag, n int64)
 
 	// Index is the placement index the layer lifts retained content out of
