@@ -215,9 +215,11 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 `, f.offset, f.count, f.max, least(g.byName[f.typ]), f.name, f.typ, f.count, f.name, f.name)
 		default: // a union's arms, at its first
 			// A union's bytes are bounded by the bytes holding them alone, not
-			// by its default's max: an arm reads its own struct from them, and
-			// the default keeps them within its max and past it keeps none, so
-			// an unknown context too long to keep is ignored, not the request
+			// by its default's max: an arm reads its own struct from them; a
+			// known value with no arm keeps them within the default's max and
+			// past it refuses the request, as the server acts on it; and any
+			// other value's are kept within that max and past it none, so an
+			// unknown context too long to keep is ignored, not the request
 			// refused (MS-SMB2 3.3.5.4; RFC 22 section 16). None rather than
 			// all, so a decoded value still encodes within its maxima.
 			def := arms[len(arms)-1]
@@ -229,6 +231,13 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 					take = "Exact"
 				}
 				fmt.Fprintf(b, "case %s:\nsub := d.Sub(r)\nx.%s.decodeSMB2(&sub, v)\nd.%s(&sub)\n", lit(a.cas), a.name, take)
+			}
+			if len(def.known) > 0 {
+				lits := make([]string, len(def.known))
+				for i, k := range def.known {
+					lits[i] = lit(k)
+				}
+				fmt.Fprintf(b, "case %s:\nsub := d.Sub(r)\nx.%s = sub.Next(len(r), %d)\nd.Join(&sub)\n", strings.Join(lits, ", "), def.name, def.max)
 			}
 			fmt.Fprintf(b, "default:\nif len(r) <= %d {\nx.%s = r\n}\n}\n}\n", def.max, def.name)
 		}

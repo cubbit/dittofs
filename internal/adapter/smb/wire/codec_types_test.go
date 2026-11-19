@@ -38,7 +38,9 @@ type CreateRequest struct {
 }
 
 // CreateContext is MS-SMB2 2.2.13.2's SMB2_CREATE_CONTEXT, its data decoded
-// by its name.
+// by its name. The names RFC 22 Appendix D has the server act on and no arm
+// reads are known, kept as bytes and never dropped, AppInstanceId's and
+// AppInstanceVersion's being their GUIDs.
 type CreateContext struct {
 	_              uint32                 `smb2:"name=Next"`
 	_              uint16                 `smb2:"name=NameOffset"`
@@ -49,7 +51,7 @@ type CreateContext struct {
 	Name           []byte                 `smb2:"offset=NameOffset,len=NameLength,max=16,union"`
 	DurableV2      DurableHandleRequestV2 `smb2:"offset=DataOffset,len=DataLength,align=8,case=DH2Q,exact"`
 	AllocationSize AllocationSize         `smb2:"offset=DataOffset,len=DataLength,align=8,case=AlSi,exact"`
-	Data           []byte                 `smb2:"offset=DataOffset,len=DataLength,align=8,max=1024,default"`
+	Data           []byte                 `smb2:"offset=DataOffset,len=DataLength,align=8,max=1024,default,known=DHnQ|DHnC|DH2C|RqLs|QFid|SecD|ExtA|TWrp|MxAc|\x45\xbc\xa6\x6a\xef\xa7\xf7\x4a\x90\x08\xfa\x46\x2e\x14\x4d\x74|\xb9\x82\xd0\xb7\x3b\x56\x07\x4f\xa0\x7b\x52\x4a\x81\x16\xa0\x10"`
 }
 
 // DurableHandleRequestV2 is MS-SMB2 2.2.13.2.11's
@@ -107,14 +109,16 @@ type NegotiateResponse struct {
 }
 
 // NegotiateContext is MS-SMB2 2.2.3.1's SMB2 NEGOTIATE_CONTEXT, its data
-// decoded by its type.
+// decoded by its type. The netname and signing contexts, which RFC 22
+// section 3.2 has the server read, are known, kept as bytes and never
+// dropped.
 type NegotiateContext struct {
 	ContextType uint16 `smb2:"union"`
 	_           uint16 `smb2:"name=DataLength"`
 	_           uint32
 	Preauth     PreauthIntegrityCapabilities `smb2:"len=DataLength,case=1"`
 	Encryption  EncryptionCapabilities       `smb2:"len=DataLength,case=2"`
-	Data        []byte                       `smb2:"len=DataLength,max=1024,default"`
+	Data        []byte                       `smb2:"len=DataLength,max=1024,default,known=5|8"`
 }
 
 // PreauthIntegrityCapabilities is MS-SMB2 2.2.3.1.1's
