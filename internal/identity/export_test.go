@@ -31,3 +31,10 @@ func (s *Server) KeyOf(name, realm string, kvno uint32, etype int32) ([]byte, bo
 	k, ok := s.state.Load().keys.key(name, realm, kvno, etype)
 	return k.KeyValue, ok
 }
+
+// Len is the number of entries the replay cache holds.
+func (c *replayCache) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
