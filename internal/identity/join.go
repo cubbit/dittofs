@@ -37,11 +37,17 @@ func (s *Server) HoldJoinCredential(id entity.OperationID, cred identity.JoinCre
 	return func() {
 		once.Do(func() {
 			s.holds.mu.Lock()
-			if s.holds.m[id] == c {
+			cur := s.holds.m[id]
+			if cur == c {
 				delete(s.holds.m, id)
 			}
+			// A live hold over the same buffer keeps it: zeroing it here
+			// would clear the password that hold still answers.
+			shared := cur != nil && cur != c && samePassword(cur.Password, c.Password)
 			s.holds.mu.Unlock()
-			clear(c.Password)
+			if !shared {
+				clear(c.Password)
+			}
 		})
 	}
 }

@@ -66,7 +66,13 @@ func TestHoldJoinCredentialReplacedSameSlice(t *testing.T) {
 		t.Errorf("HeldCredential after a hold over the same slice = %q, %v; want %q", got.Password, ok, "one")
 	}
 	first()
+	if got, ok := s.HeldCredential(id); !ok || string(got.Password) != "one" {
+		t.Errorf("HeldCredential after the replaced hold's release = %q, %v; want %q, the live hold's buffer kept", got.Password, ok, "one")
+	}
 	second()
+	if !bytes.Equal(pw, make([]byte, len(pw))) {
+		t.Errorf("password after the live hold's release = %q; want every byte zero", pw)
+	}
 }
 
 // Stop drops every hold and zeroes its password, so none outlives the server.
