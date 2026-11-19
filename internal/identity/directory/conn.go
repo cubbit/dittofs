@@ -163,9 +163,13 @@ func (c *ldapConn) Bind(ctx context.Context, name string, password []byte) error
 	// name with an empty password is an unauthenticated bind (RFC 4513
 	// §5.1.2), which a permissive server answers with success, so a credential
 	// that resolved to an empty secret would look bound while holding only
-	// anonymous access. The error is go-ldap's own class for this refusal. Drop
-	// the check only if identity ever needs an anonymous bind, and then send
-	// it as one, never as a named bind with no password.
+	// anonymous access. go-ldap refuses it too: v3.4.15's SimpleBind returns
+	// ErrorEmptyPassword before sending when AllowEmptyPassword is false, as
+	// the request below spells out. This check makes the rule ours, so it
+	// holds across a library upgrade that changes that default or that check,
+	// and it answers with go-ldap's own error class for the refusal. Drop it
+	// only if identity ever needs an anonymous bind, and then send it as one,
+	// never as a named bind with no password.
 	if len(password) == 0 {
 		return ldap.NewError(ldap.ErrorEmptyPassword,
 			errors.New("identity.directory: a bind with an empty password is refused"))

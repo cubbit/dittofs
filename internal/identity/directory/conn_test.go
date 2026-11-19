@@ -126,9 +126,12 @@ func TestDialTLSVerifiesTheServer(t *testing.T) {
 	}
 }
 
-// Bind with an empty password, nil or zero-length, is refused by the
-// connection itself, before a byte of it reaches the directory: a name with
-// no password is an unauthenticated bind, which a permissive server accepts.
+// Bind with an empty password, nil or zero-length, is refused before a byte
+// of it reaches the directory: a name with no password is an unauthenticated
+// bind, which a permissive server accepts. The test pins that rule, whichever
+// layer refuses: Bind's own check and go-ldap's, which the request's spelled-out
+// AllowEmptyPassword: false keeps on, each refuse with the same error class, so
+// it fails only when both go.
 func TestBindRefusesAnEmptyPassword(t *testing.T) {
 	ca := newCert(t, nil)
 	addr, handshake, read := serve(t, newCert(t, ca, "localhost"))
