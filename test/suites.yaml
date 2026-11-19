@@ -178,6 +178,16 @@ suites:
     cmd:
       - { sh: 'go test -count=10 -run ^$ -bench ^BenchmarkVersionLimitProbe$ ./pkg/block/engine > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
+  # The commit rate of eight concurrent Seal and PutSecret writers with the settings generation's
+  # raise and without it, to read RFC 13's plan §4.3 trigger (the raise under half the baseline's
+  # rate). Compare with benchstat -col /mode on bench.txt. No -race and the default -benchtime, as a
+  # rate needs a timed run of many commits. Badger lives under t.TempDir(), so TMPDIR is pointed at
+  # DITTOFS_BENCH_DIR, a directory on the device under test: on tmpfs the fsync a commit waits on
+  # vanishes and the rates are not comparable.
+  settings-gen-bench:
+    cmd:
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -run ^$ -bench ^BenchmarkSettingsGenerationCost$ ./pkg/secrets/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
   # epic that fills its stub, and each failure is a known one.
   adapter-conformance:

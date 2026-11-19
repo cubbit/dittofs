@@ -98,6 +98,7 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 | `engine-bench` | the engine's benchmarks, RFC 8 §15.4's B5, B7 and B9, on a real directory and an on-disk store | manual | any machine, with `DITTOFS_BENCH_DIR` on the device under test |
 | `reconcile-bench` | the reconcile pass at 10⁴ shares, cold and under share churn, against RFC 23 §8's 5 s | manual | any machine, with `DITTOFS_BENCH_DIR` |
 | `version-limit-probe-bench` | the engine's version-limit probe alone | manual | any machine |
+| `settings-gen-bench` | the commit rate of eight concurrent secret writers with the settings generation's raise and without it, RFC 13 plan §4.3's trigger | manual | any machine, with `DITTOFS_BENCH_DIR` |
 | `adapter-conformance` | the adapters' conformance specifications, behind their own tag | pr | any machine |
 | `integration` | `-tags=integration` tests against real services | pr | Docker with Postgres and KMIP up; `integration/portmap` needs a Linux host with rpcbind |
 | `operator` | the Kubernetes operator: `make test`, `make lint`, manifests, kustomize | pr | any machine with `make` and `kubectl` |
