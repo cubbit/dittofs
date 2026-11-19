@@ -18,6 +18,8 @@ E2's T2.8 (#4518, merged), the binary's registered ranges in `pkg/settings/versi
 itself is `pkg/bootstrap`'s), the settings schema among the `Format` values E2's D6 declares
 there, which T3.1's newer-schema refusal and T3.6's format gate read; the plan's edge and blockers
 row for that dependency came in #4662. S2, a `Secret` sealed by E4, for T3.7 only.
+E2's T2.1, the shared strict size and duration parser of RFC 13 Appendix B's grammar, for
+T3.3's decode, which imports its file and record modes and its duration grammar.
 **Blocks:** E5, which builds the node's table from `Of`, reconciles through `Read` and `Diff`, and
 calls `Check` from the API's settings routes, which wait on T3.7's secret gates (PR 4); the RFC 18
 plan's epic 6, partly, whose NetBIOS cross-check is a tracked read through `Check`.
@@ -48,11 +50,12 @@ by the component's own rules before it commits, and classifies each change for r
 
 ### 1.1 In scope
 
-The kvstore settings view's delete and schema refusal; `Of`, `Table` and their
-options; the strict decode, the size grammar and the duration codec of E1's D10; `Read`, `Get`,
-`Diff` and `Keep`; `Check` and every gate RFC 13's plan gives it; the two settings series; the
-reconcile benchmark, `Read` and `Diff`; the `decision:` and `ponytail:` markers RFC 13's plan places
-in this epic.
+The kvstore settings view's delete and schema refusal; `Of`, `Table` and their options; the strict
+decode, the size grammar of RFC 13 Appendix B decoded through the shared strict parser epic 2's T2.1
+creates, and the duration codec of E1's D10 through the same parser; `Read`, `Get`, `Diff` and
+`Keep`; `Check` and every gate RFC 13's plan gives it; the two settings series; the reconcile
+benchmark, `Read` and `Diff`; the `decision:` and `ponytail:` markers RFC 13's plan places in this
+epic.
 
 ### 1.2 Out of scope
 
@@ -120,10 +123,10 @@ title and not copied.
 | rule 6, known failures shrink | none | no suite of this epic has a `known.yaml` |
 | rule 7, v2 ignores v1 | T3.1 | the view's existing `Settings` and `PutSetting` are kept; nothing reads v1's GORM settings store |
 | rule 8, real dependencies for properties of those dependencies | T3.1, T3.4, T3.9 | the generation raise, the scan through `Nodes` and the conflict of a tracked read on Badger under `t.TempDir()` |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T3.1, T3.3, T3.4, T3.5, T3.6 | D9's and D11's `decision:` notes at `Check`, the repair delete's at `lookup`, the skipped row's at `Read` and the size's truncation at the decode; the `ponytail:` markers of the one-scan reconcile, the one `CFGGEN` key and the rule across components |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T3.1, T3.4, T3.5, T3.6 | D9's and D11's `decision:` notes at `Check`, the repair delete's at `lookup` and the skipped row's at `Read`; the `ponytail:` markers of the one-scan reconcile, the one `CFGGEN` key and the rule across components |
 | rule 10, a test must be able to fail | all | each gate has a test feeding the refused write and one feeding the write that passes beside it |
 | rule 11, a symbol is exported only if RFC 13's interfaces use it | all | nothing beyond E1's frozen surface is exported but `Of`'s `FormatVersion` option (D6), added to E1's export pin as it lands; `entity.ErrBadRow` (D2) is outside E1's three packages |
-| rule 12, each subtask creates only what it declares | all | the size grammar lands with the decode, the series with T3.9, the gates each with its subtask |
+| rule 12, each subtask creates only what it declares | all | the record's sizes land with the decode through the shared parser epic 2's T2.1 creates, the series with T3.9, the gates each with its subtask |
 
 ## 3. Requirements and invariants
 
@@ -155,8 +158,8 @@ Every obligation RFC 13, RFC 16 and RFC 23 place on this epic, and those RFC 13'
 | --- | --- | --- | --- | --- |
 | R11 | A field the section does not know is refused | MUST | RFC 13 §6 ("Unknown fields are refused") | T3.3 |
 | R12 | Keys match exactly as declared; `adapters.smb.Port` is refused | invariant | RFC 13's plan, epic 3; RFC 13 Appendix B's conventions (#4486) | T3.3 |
-| R13 | A duration is a string (`"30s"`), a bare number refused; a size is a string or an integer of bytes; `null` into a non-pointer field, a duplicate key and invalid UTF-8 are refused | invariant | RFC 13's plan, epic 3; RFC 13 Appendix B's conventions (#4486) | T3.3 |
-| R14 | A size keeps `internal/bytesize`'s grammar, and a product past `uint64` is refused on both of its paths | invariant | RFC 13's plan, epic 3 | T3.3 |
+| R13 | A duration is a string (`"30s"`), a bare number refused; a size is a string or an integer of bytes written as a JSON number (the string `"512"` refused); `null` into a non-pointer field, a duplicate key and invalid UTF-8 are refused | invariant | RFC 13's plan, epic 3; RFC 13 Appendix B's conventions (#4486) | T3.3 |
+| R14 | A size follows RFC 13 Appendix B's grammar: a whole number and a unit written as listed, and in a record an exact integer of bytes; a value past `uint64` is refused, decoded through the shared strict parser of the `internal/` package epic 2's T2.1 creates (`internal/<pkg>`, its name a placeholder here) | invariant | RFC 13 Appendix B; RFC 13's plan, epic 3 | T3.3 |
 
 **Validation**
 
@@ -331,7 +334,7 @@ pkg/settings/section.go                 T3.2  Of, its options, the class tags, t
 pkg/settings/table.go                   T3.2  Table, lookup on a dot boundary
 pkg/settings/decode.go                  T3.3  the strict decode, durations, sizes
 pkg/settings/decode_fuzz_test.go        T3.3  FuzzDecode
-internal/bytesize/bytesize.go           T3.3  the product past uint64 refused
+internal/<pkg>/<pkg>.go                 T2.1  the shared strict parser, its name a placeholder, which T3.3 imports for sizes
 pkg/settings/read.go                    T3.4  Snapshot, Read, Get
 pkg/settings/check.go                   T3.5  Check, the effective value after a write
 pkg/settings/gates.go                   T3.6  bound, store location, format version
@@ -403,7 +406,7 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
 
 **Subtask T3.3 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** T3.2.
+- **Track:** B. **Depends on:** T3.2 and epic 2's T2.1 (the shared strict parser).
 - **Covers:** R11, R12, R13, R14, R15, R31.
 - **Deliverables:** a section's value decoded over its defaults, refusing an unknown field, its
   refusal naming the closest declared one in #4486's shape, a key in another case than declared
@@ -415,35 +418,36 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   holding what the operator wrote, so `pkg/adapter/settings`' structs keep their fields and D1's
   version never rises for it (E1's D10 drops its `Schema` raise, since #4773); the duration grammar
   is RFC 13 Appendix B's, `ms`, `s`, `m` or `h` in lower case, never negative, a whole number, `0s`
-  zero and a bare number refused, checked before `time.ParseDuration`, which accepts `-5s`, `1.5s`
-  and `µs`; sizes through `internal/bytesize`, its unit matched as ASCII (`(?i)` folds the Kelvin
-  sign U+212A to `k`, so `1K` is accepted today as one kilobyte), its product past `uint64`
-  refused on the integer path, which wraps today, and on the fraction path, whose float conversion
-  is undefined past it; `FuzzDecode`; a `decision:` note at the size decode: a fraction of a byte
-  truncates toward zero as `internal/bytesize` does today (R14 keeps its grammar), the one place a
-  value is rounded against R16, since no unit below a byte exists to express it; withdraw it if a
-  refused fraction is wanted, which changes what today's files accept.
+  zero and a bare number refused, checked by the shared parser before `time.ParseDuration`, which
+  accepts `-5s`, `1.5s` and `µs`; sizes decoded through the shared strict parser of RFC 13
+  Appendix B's grammar, the `internal/` package epic 2's T2.1 creates and names (`internal/<pkg>`,
+  a placeholder until it does): a JSON string goes to its file mode, a whole number and a unit
+  written as listed with no space between them, `B`, decimal `KB` to `TB` or binary `KiB` to
+  `TiB`, a bare integer refused;
+  a JSON number goes to its record mode, an integer of bytes, exact; a product past `uint64`
+  refused; each refusal names its cause (not a number, no unit, unknown unit, fraction,
+  overflow) and carries only the cause, never the input; `FuzzDecode`.
 - **Acceptance criteria:** each refusal names the field and the rule, never the decoder's own
   text, which quotes its input (D4).
-- **Tests:** a table over `internal/bytesize`'s grammar, one row per form: decimal `K`/`KB` to
-  `T`/`TB`, binary `Ki`/`KiB` to `Ti`/`TiB`, a bare `B` or no unit, units without case, `1.5GiB`,
-  `1.5` as 1 and `0.1KiB` as 102, whitespace around and inside; `16EiB` and `18446744073709551616`
-  refused by the grammar alone, an unknown unit and a number `ParseUint` cannot hold, neither
-  reaching the multiplication; `18446744073709551615T` and `18446744073709551.615Ti` refused,
-  their product past `uint64` on the integer and the fraction path (catches the wrap, which passes
-  on today's code); `30` for a duration refused and `"250ms"`, `"30s"`, `"5m"`, `"1h"`, `"1h30m"`
-  and `"0s"` accepted, and `"-5s"`, `"0"`, `"1.5s"`, `"30S"`, `"5µs"` and `"5μs"` (U+00B5 and
-  U+03BC) refused (RFC 13 Appendix B); a Kelvin-sign unit (`1` then U+212A) refused; the integer
-  sizes `9007199254740993` (2⁵³+1) accepted exactly, never through a float, and `1e3` and `-1`
-  refused; `{"port":1,"port":2}` refused and a field name with a line break refused with the break
-  escaped by `%q`; `adapters.smb.Port` refused; `FuzzDecode` seeded with
+- **Tests:** a table over RFC 13 Appendix B's size grammar through the shared parser (a JSON
+  string in its file mode, a JSON number in its record mode), one row per form: `512MiB`, `1B`, `1KB`, `1MB`, `1GB`, `1TB`, `1KiB`, `1MiB`, `1GiB` and
+  `1TiB` accepted exact; refused: `1.5GiB`, `4.1GB`, `0.1KiB`, `1Gi`, `1Mi`, `10m`, `1g`,
+  `100mib`, `1kb`, `1kib`, `16EiB` (a unit outside the grammar), an integer of bytes past `uint64`
+  (`18446744073709551616`, and in file mode `18446744073709551616B`), a product past `uint64`
+  (`17179869184GiB`), a unit with no number
+  (`MiB`), whitespace inside (`1 MiB`), a Kelvin sign (U+212A) in place of `K` in `KiB` and the
+  string `"512"` (an integer of bytes as a string), with `"512B"` accepted; the JSON numbers
+  `9007199254740993` (2⁵³+1) and `18446744073709551615` accepted exactly, never through a float,
+  and `1e3` and `-1` refused;
+  `30` for a duration refused and `"250ms"`, `"30s"`, `"5m"`, `"1h"`, `"1h30m"` and `"0s"`
+  accepted, and `"-5s"`, `"0"`, `"1.5s"`, `"30S"`, `"5µs"` and `"5μs"` (U+00B5 and U+03BC)
+  refused (RFC 13 Appendix B); `{"port":1,"port":2}` refused and a field name with a line break
+  refused with the break escaped by `%q`; `adapters.smb.Port` refused; `FuzzDecode` seeded with
   every row, `1500ms` and `90s` among them; a marker value put through a size row and through an
-  unknown field never appearing in
-  the refusal's error; an independent oracle for sizes: a test computes each row's product, and
-  each fuzzed integer-path input's, with `math/big` and fails on a decode that accepts a product
-  past `uint64` or refuses one inside it (on the fraction path the oracle holds away from the
-  `uint64` edge, where the float conversion's own rounding begins, and the table's rows pin the
-  edge itself), so a decode and a re-encode sharing one bug cannot pass.
+  unknown field never appearing in the refusal's error; an independent oracle for sizes: a test
+  computes each row's product, and each fuzzed integer input's, with `math/big` and fails on a
+  decode that accepts a product past `uint64` or refuses one inside it, so a decode and a
+  re-encode sharing one bug cannot pass.
 
 ### T3.4 The snapshot, `Read` and `Get`
 
@@ -723,6 +727,7 @@ flowchart TD
   T2_8(["E2's T2.8, the binary's registered ranges"]):::sync --> T3_1
   T2_8 --> T3_6
   N2_8(["RFC 23's T2.8, Nodes.AllSettings"]):::sync --> T3_4
+  T2_1(["E2's T2.1, the shared strict parser"]):::sync --> T3_3
   T3_2 --> T3_3["T3.3 Strict decode"]
   T3_1 & T3_3 --> T3_4["T3.4 Snapshot, Read, Get"]
   T3_1 & T3_2 & T3_3 --> T3_5["T3.5 Check"]
@@ -736,14 +741,14 @@ flowchart TD
 ```
 
 T3.1 and T3.2 start at once. Checkpoint after T3.4: a section reads end to end, enough for E5 to
-build the node's table. Four subtasks wait outside the epic: T3.1 and T3.6 on E2's T2.8, T3.4 on
-RFC 23's T2.8 and T3.7 on E4's S2.
+build the node's table. Five subtasks wait outside the epic: T3.1 and T3.6 on E2's T2.8, T3.3 on
+E2's T2.1, T3.4 on RFC 23's T2.8 and T3.7 on E4's S2.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T3.1, T3.2, T3.3 | 6.5 | S1, T3.1 behind E2's T2.8 | the view, the declarations and the decode, each reviewable alone |
+| 1 | T3.1, T3.2, T3.3 | 6.5 | S1, T3.1 behind E2's T2.8, T3.3 behind E2's T2.1 | the view, the declarations and the decode, each reviewable alone |
 | 2 | T3.4, T3.8 | 3.5 | PR 1, RFC 23's T2.8 | the read side, what reconcile calls |
 | 3 | T3.5, T3.6, T3.9 | 7.5 | PR 2 | the write check, its gates and the series and benchmark over the finished code |
 | 4 | T3.7 | 1.5 | PR 3, S2 | the secret references once E4 seals |

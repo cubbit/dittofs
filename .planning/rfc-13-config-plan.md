@@ -322,7 +322,7 @@ flowchart TD
     E4["E4 Secrets"]
   end
   S1 --> E2 & E3 & E4
-  E2 -. "the binary's registered ranges" .-> E3
+  E2 -. "the binary's registered ranges and the shared strict parser" .-> E3
   R2(["RFC 23 epic 2's Node and NodeStatus records"]):::sync
   R2 -. "Node record, for its ranges" .-> E2
   R2 -. "versions nodes hold" .-> E4
@@ -380,7 +380,7 @@ flowchart TD
 | E4 | RFC 18's plan's epic 2 (S2) | Identity seals and resolves its secrets here. |
 | E3 | RFC 18's plan's epic 6, partly | The NetBIOS cross-check is a tracked read through `Check`; the rest does not wait. Turning `identity.ntlm` back on is refused by #4050's settings route, not by a validator (RFC 18 plan's A13). |
 | E4 | E3, partly | Two of `Check`'s tests, D9's credential reference repointed at a freshly sealed `remote credential` and D10's reference to a secret of another kind or owner, need sealed secrets; the rest of E3 does not wait. |
-| E2 | E3, partly | The newer-schema refusal and the block format gate read the binary's registered ranges in `pkg/settings/versions.go`, which epic 2's version gate subtask adds; the rest of E3 does not wait. |
+| E2 | E3, partly | The newer-schema refusal and the block format gate read the binary's registered ranges in `pkg/settings/versions.go`, which epic 2's version gate subtask adds; E3's T3.3 imports the shared strict parser epic 2's T2.1 creates; the rest of E3 does not wait. |
 | E5 | E6 | E2E green runs the wired server. |
 | RFC 23's epic 2 (outside) | E2 and E4, partly | The version gate adds a node's ranges to RFC 23's `Node` record, `WriteMissingNodeIDs` reads RFC 16's `JournalID`, and `Prune` reads the versions a node holds from its `NodeStatus`. Everything else in both epics starts at S1. |
 | RFC 23's epics 2, 3 and 4 (outside, S3) | E5, partly | Integration wires this library into RFC 23's reconcile and write path, in the slots those epics leave; the table and D3's check start before (§3.4). |
@@ -414,6 +414,8 @@ pkg/metadata/entity/        + Secret; Installation's active versions; ranges on 
 pkg/metadata/kvstore/       settings: delete, newer schema refused;                         E3, E4
                             secrets (SEC)
 internal/node/settings.go   the one settings table, naming every declared section           E5
+internal/<pkg>/             the shared strict size and duration parser, its name a          E2 (T2.1), E3
+                            placeholder until T2.1 names it
 ```
 
 ### 4.2 Decisions
@@ -1128,6 +1130,9 @@ value; D7's drift test passes.
 **Expected content:**
 - `Load` on the renamed loader: the default path, `--config` and `DITTOFS_CONFIG`, unknown keys
   refused from `Metadata.Unused` once the v1 keys among them are named (D7); the file's fuzz target.
+- The shared strict size and duration parser of RFC 13 Appendix B's grammar, in an `internal/`
+  package T2.1 creates and names, with its own table test and fuzz target, which epic 3's decode
+  imports.
 - The refused v1 keys, through `checkRenamedKeys` and its table (§1.1's list), and the scan of the
   environment that refuses their `DITTOFS_*` forms and any other non-bootstrap name but D7's
   allowed ones, with a test that each allowed name and prefix passes and a v1 name refuses, naming
@@ -1216,15 +1221,17 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   `Validate`, and returns the sections it could not decode as refused, so one bad row stops only
   its section; `Get` is a lookup of a value `Read` decoded, with no decode; the value's fuzz
   target. A
-  duration is a string (`"30s"`) and a size a string or an integer of bytes; a bare integer for a
-  duration is refused, since strict JSON reads `30` as 30 ns. The decode also refuses `null` into a
-  non-pointer field, a duplicate key and invalid UTF-8. A size keeps `internal/bytesize`'s grammar,
-  pinned by a table test: decimal `K`/`KB` to `T`/`TB`, binary `Ki`/`KiB` to `Ti`/`TiB`, a bare
-  `B` or no unit, units matched without case, a fraction (`1.5GiB`), a fraction of a byte truncating toward zero as today (`1.5` is 1,
-  `0.1KiB` is 102), whitespace around the number
-  and between it and its unit, and a product past `uint64` refused on both of `ParseByteSize`'s
-  paths, the integer one, which wraps today, and the fraction one, whose float conversion is
-  undefined past it.
+  duration is a string (`"30s"`) and a size a string or an integer of bytes as a JSON number; a bare
+  integer for a duration is refused, since strict JSON reads `30` as 30 ns. The decode also refuses
+  `null` into a non-pointer field, a duplicate key and invalid UTF-8. A size follows RFC 13 Appendix
+  B's grammar, decoded through the shared strict parser of the `internal/` package epic 2's T2.1
+  creates and names (`internal/<pkg>`, a placeholder until it does): a string is a whole number and
+  a unit written as listed, with no space between them, decimal `KB` to `TB`, binary `KiB` to
+  `TiB` or `B` (`512MiB`), and a
+  JSON number an integer of bytes, exact; the string `"512"`, a fraction (`1.5GiB`, `0.1KiB`), a
+  unit written another way (`1Gi`, `10m`, `1g`, `1kb`, `100mib`), a product past `uint64`
+  (`17179869184GiB`) and an integer past `uint64` (`18446744073709551616`) are refused, pinned by a
+  table test.
   The fuzz target seeds each case.
 - `Of` requiring a class on every field, panicking on one left unclassified, so a forgotten restart
   or bound field never runs live; `Table` panicking on two sections whose prefixes overlap
