@@ -1,9 +1,12 @@
 package identity_test
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -274,5 +277,56 @@ func TestMachineKeysRetention(t *testing.T) {
 	}
 	if err := verify(fresh, tkt(machineSvc, 7, machineKey(t, "pw7"), now), now); err != nil {
 		t.Errorf("number 7 at 10h05m01s: verify = %v, want accepted", err)
+	}
+	if err := s.Apply(joinedState(2, ver(3, 8, "pw8", false), ver(2, 7, "pw7", false))); err != nil {
+		t.Fatal(err)
+	}
+	if err := verify(s, tkt(machineSvc, 8, machineKey(t, "pw8"), now), now); err != nil {
+		t.Errorf("a sealed version above the confirmed one at 10h05m01s: verify = %v, want accepted", err)
+	}
+}
+
+// Of the versions below the confirmed one, only the newest derives a key, so a
+// version two rotations back is refused while the one just below is accepted.
+func TestMachineKeysRetentionOneBelow(t *testing.T) {
+	s := newServer(t)
+	if err := s.Apply(joinedState(3, ver(3, 9, "pw9", false), ver(2, 8, "pw8", false), ver(1, 7, "pw7", false))); err != nil {
+		t.Fatal(err)
+	}
+	now := mt0.Add(10 * time.Hour)
+	if err := verify(s, tkt(machineSvc, 7, machineKey(t, "pw7"), now), now); !errors.Is(err, vfserr.ErrLogonFailure) {
+		t.Errorf("number 7, two versions below the confirmed one, at 10h: verify = %v, want ErrLogonFailure", err)
+	}
+	if err := verify(s, tkt(machineSvc, 8, machineKey(t, "pw8"), now), now); err != nil {
+		t.Errorf("number 8, just below the confirmed one, at 10h: verify = %v, want accepted", err)
+	}
+}
+
+// An imported key for one of the account's names is logged at the Apply that
+// drops it, not again at an equal Apply.
+func TestMachineKeysImportedDropLoggedOnce(t *testing.T) {
+	kt := keytab.New()
+	if err := kt.AddEntry(machineSvc, machineRealm, "imported", time.Unix(1, 0), 7, etypeID.AES256_CTS_HMAC_SHA1_96); err != nil {
+		t.Fatal(err)
+	}
+	b, err := kt.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := joinedState(1, ver(1, 7, "pw7", false))
+	st.Keytab = []secrets.Version{{Number: 1, Value: b}}
+	logs := &bytes.Buffer{}
+	prof.Watch(t, prof.Options{})
+	s, err := identity.New(identity.Deps{Store: newStore(t), Clock: sim.NewTestClock(time.Unix(0, 0)), Logger: slog.New(slog.NewJSONHandler(logs, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := s.Apply(st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := strings.Count(logs.String(), "imported key for a computer account's name skipped"); n != 1 {
+		t.Errorf("drop log lines after two equal Applies = %d, want 1: %s", n, logs)
 	}
 }

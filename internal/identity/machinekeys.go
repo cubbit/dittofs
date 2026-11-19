@@ -58,9 +58,10 @@ func stringToKey(etype int32, password []byte, salt string, iterations uint32) (
 
 // buildMachineRing derives the machine password's keys from st: none while
 // the installation is not joined or has no directory, whose realm the keys
-// are in; none from a version marked HandedOver; and a version below the one
-// the last join or rotation confirmed expires the retention plus the clock
-// skew after that confirm.
+// are in; none from a version marked HandedOver; none from a version below
+// the newest one under the one the last join or rotation confirmed; and that
+// newest one below expires the retention plus the clock skew after that
+// confirm.
 //
 // decision: the computer account's names are derived rather than imported,
 // because their key and the machine password are one key; rotating them apart
@@ -84,12 +85,27 @@ func buildMachineRing(st *State, log *slog.Logger) machineRing {
 		m.names[foldASCII(n)] = true
 	}
 	salt := machineSalt(m.realm, j.Account)
+	var prev uint64 // the newest version below the confirmed one
+	for _, v := range st.Machine {
+		if v.Number < j.LastRotation.Version && v.Number > prev {
+			prev = v.Number
+		}
+	}
 	for _, v := range st.Machine {
 		if v.Meta.HandedOver {
 			continue
 		}
 		var notAfter time.Time
+		// decision: during the retention only the version just below the
+		// confirmed one stays usable, and older ones derive no key, so a run
+		// of rotations within the retention never keeps an older password
+		// usable past the one rotation the retention covers. Overturned by a
+		// deployment whose controllers lag more than one rotation behind
+		// within the retention.
 		if v.Number < j.LastRotation.Version {
+			if v.Number != prev {
+				continue
+			}
 			notAfter = j.LastRotation.Confirmed.Add(retention + clockSkew)
 		}
 		for _, et := range machineEtypes {
@@ -133,7 +149,8 @@ func (m *machineRing) candidates(kvno uint32, etype int32, now time.Time) []type
 }
 
 // dropMachineNames removes from r every key for a name the computer account
-// holds.
+// holds and returns what it removed, nil when nothing; Apply logs each one
+// the State it replaces did not already drop.
 //
 // decision: an imported key for a name the computer account holds contributes
 // nothing to the ring and is logged, while Apply still succeeds: refusing the
@@ -141,13 +158,18 @@ func (m *machineRing) candidates(kvno uint32, etype int32, now time.Time) []type
 // refuses such an import itself once the account's names are stored.
 // Overturned if an imported key can no longer reach the store for one of
 // those names.
-func (r keyRing) dropMachineNames(m *machineRing, log *slog.Logger) {
+func (r keyRing) dropMachineNames(m *machineRing) map[ringKey]bool {
+	var dropped map[ringKey]bool
 	for k := range r {
 		if m.holds(k.name, k.realm) {
-			log.Error("identity: imported key for a computer account's name skipped", "name", k.name, "realm", k.realm, "kvno", k.kvno)
+			if dropped == nil {
+				dropped = map[ringKey]bool{}
+			}
+			dropped[k] = true
 			delete(r, k)
 		}
 	}
+	return dropped
 }
 
 // serviceKeys are the keys to try, in order, for a ticket for name in realm

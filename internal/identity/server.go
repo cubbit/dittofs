@@ -92,6 +92,9 @@ type State struct {
 	// machine is the ring Apply derives from Machine and Join; whatever the
 	// caller passes is replaced.
 	machine machineRing
+	// dropped is the imported keys Apply removed for the computer account's
+	// names; whatever the caller passes is replaced.
+	dropped map[ringKey]bool
 	// Directory is the identity.directory section as of this Apply; nil
 	// when the installation has no directory.
 	Directory *directory.Record
@@ -221,10 +224,15 @@ func (s *Server) Apply(st State) error {
 	}
 	st.keys = buildRing(st.Keytab, s.logger)
 	st.machine = buildMachineRing(&st, s.logger)
-	st.keys.dropMachineNames(&st.machine, s.logger)
+	st.dropped = st.keys.dropMachineNames(&st.machine)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur := s.state.Load()
+	for k := range st.dropped {
+		if cur == nil || !cur.dropped[k] {
+			s.logger.Error("identity: imported key for a computer account's name skipped", "name", k.name, "realm", k.realm, "kvno", k.kvno)
+		}
+	}
 	if cur != nil {
 		st.Serial = cur.Serial
 		st.dir = cur.dir
