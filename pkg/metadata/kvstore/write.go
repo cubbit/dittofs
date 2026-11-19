@@ -200,16 +200,7 @@ func (c controlTx) Netgroup(name string) (entity.Netgroup, bool, error) {
 }
 
 func (c controlTx) Quota(share entity.ShareID, p entity.Principal) (entity.Quota, bool, error) {
-	suffix, err := quotaSuffix(QuotaTarget{Principal: p})
-	if err != nil {
-		return entity.Quota{}, false, err
-	}
-	b, ok, err := get(c.tx, quotaKey(share, keys.SQt, suffix))
-	if err != nil || !ok {
-		return entity.Quota{}, false, err
-	}
-	q, err := decodeQuota(share, suffix, b)
-	return q, err == nil, err
+	return quotaIn(c.tx, share, QuotaTarget{Principal: p})
 }
 
 func (c controlTx) Share(id entity.ShareID) (entity.Share, bool, error) {

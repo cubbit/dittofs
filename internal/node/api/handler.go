@@ -222,13 +222,16 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 		}
 		ctx = auth.With(ctx, c)
 	}
-	id, err := admit(ctx, rt, rawID)
+	id, err := admit(ctx, rt, rawID, r.PathValue("sub"))
 	if err != nil {
 		if _, authed := auth.CallerFrom(ctx); authed && rt != nil {
 			rec := s.auditOf(ctx, r)
 			rec.Target.Kind = rt.kind
-			if sid, perr := entity.ParseShareID(rawID); perr == nil && strings.Contains(rt.pattern, "{id}") {
-				rec.Target.ID = sid[:]
+			// Named as the row's adapter names it, so an applied and a
+			// refused write of one record share a target.
+			sid, perr := entity.ParseShareID(rawID)
+			if hasID := strings.Contains(rt.pattern, "{id}"); hasID && perr == nil || !hasID && rt.target != nil {
+				rec.Target.ID = rt.ref(sid, r.PathValue("sub"))
 			}
 			s.refuse(ctx, rec, err)
 		}
@@ -237,11 +240,11 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 	return rt.serve(ctx, s, r, rt, id)
 }
 
-// admit refuses a row the caller ctx carries may not call and an ID that
-// does not parse, and returns the ID the path names. A caller's rights are
-// checked before whether it must change its password, so that refusal
-// reveals no row the caller may not read.
-func admit(ctx context.Context, rt *route, rawID string) (id [16]byte, err error) {
+// admit refuses a row the caller ctx carries may not call, and an ID or a
+// {sub} that does not parse, and returns the ID the path names. A caller's
+// rights are checked before whether it must change its password, so that
+// refusal reveals no row the caller may not read.
+func admit(ctx context.Context, rt *route, rawID, sub string) (id [16]byte, err error) {
 	if rt == nil {
 		return id, errNotFound
 	}
@@ -265,6 +268,11 @@ func admit(ctx context.Context, rt *route, rawID string) (id [16]byte, err error
 		}
 		id = sid
 		trace.SpanFromContext(ctx).SetAttributes(attribute.String("api.id", sid.String()))
+	}
+	if rt.target != nil {
+		if _, err := rt.target(id, sub); err != nil {
+			return id, err
+		}
 	}
 	return id, nil
 }

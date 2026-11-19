@@ -68,10 +68,7 @@ var shareSpecs = writing[shareDoc]{kind: entity.ResourceShare, read: func(tx ent
 
 // shareTags is shareSpecs for a call that carries no body: quiesce, resume
 // and delete.
-var shareTags = writing[none]{kind: entity.ResourceShare, read: func(tx entity.ControlPlaneTx, id [16]byte, _ string) (none, uint64, bool, error) {
-	sh, ok, err := tx.Share(entity.ShareID(id))
-	return none{}, sh.Generation, ok, err
-}}
+var shareTags = tagsOf(shareSpecs)
 
 // newShares is what the write adapter knows of a share it creates: the
 // spec and the export policy the create wrote, which its audit record holds.

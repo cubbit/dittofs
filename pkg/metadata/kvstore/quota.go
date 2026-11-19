@@ -1,6 +1,7 @@
 package kvstore
 
 import (
+	"bytes"
 	"context"
 	"iter"
 	"time"
@@ -198,27 +199,62 @@ func (c ControlPlane) Quotas(ctx context.Context, share entity.ShareID) iter.Seq
 // since, when usage first went above its soft limit, zero when it isn't
 // above it.
 func (c Capacity) Quota(ctx context.Context, share entity.ShareID, t QuotaTarget) (q entity.Quota, since time.Time, err error) {
-	suffix, err := quotaSuffix(t)
-	if err != nil {
-		return q, since, err
-	}
-	q = entity.Quota{Share: share, Principal: t.Principal, Project: t.Project}
 	err = c.s.kv.View(ctx, func(r kv.Reader) error {
-		b, ok, err := get(r, quotaKey(share, keys.SQt, suffix))
-		if err != nil || !ok {
+		var ok bool
+		if q, ok, err = quotaIn(r, share, t); err != nil || !ok {
 			return err
 		}
-		if q, err = decodeQuota(share, suffix, b); err != nil {
-			return err
-		}
-		b, ok, err = get(r, quotaKey(share, keys.SQx, suffix))
+		suffix, _ := quotaSuffix(t) // quotaIn parsed it
+		b, ok, err := get(r, quotaKey(share, keys.SQx, suffix))
 		if err != nil || !ok {
 			return err
 		}
 		since, err = decodeSince(b)
 		return err
 	})
+	if err == nil && q.Version == 0 {
+		q = entity.Quota{Share: share, Principal: t.Principal, Project: t.Project}
+	}
 	return q, since, err
+}
+
+// Quota is a share's quota on the user or group p, the zero p naming the
+// share's own, and false when there is none.
+func (c ControlPlane) Quota(ctx context.Context, share entity.ShareID, p entity.Principal) (q entity.Quota, found bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		q, found, err = quotaIn(r, share, QuotaTarget{Principal: p})
+		return err
+	})
+	return q, found, err
+}
+
+// PrincipalQuotas lists a share's quotas on users and groups, in principal
+// ID order, resuming after the principal after; the zero ID starts at the
+// first.
+func (c ControlPlane) PrincipalQuotas(ctx context.Context, share entity.ShareID, after entity.PrincipalID) iter.Seq2[entity.Quota, error] {
+	pre := append(shareKey(share, keys.SQt), quotaPrincipal)
+	var cursor []byte
+	if after != (entity.PrincipalID{}) {
+		cursor = keys.ID(bytes.Clone(pre), after[:])
+	}
+	return pages(ctx, c.s.kv, pre, cursor, func(_ kv.Reader, row kv.KeyValue) (entity.Quota, error) {
+		return decodeQuota(share, row.Key[len(pre)-1:], row.Value)
+	})
+}
+
+// quotaIn reads the quota on t in a share, tracked in a transaction; false
+// when there is none.
+func quotaIn(r kv.Reader, share entity.ShareID, t QuotaTarget) (entity.Quota, bool, error) {
+	suffix, err := quotaSuffix(t)
+	if err != nil {
+		return entity.Quota{}, false, err
+	}
+	b, ok, err := get(r, quotaKey(share, keys.SQt, suffix))
+	if err != nil || !ok {
+		return entity.Quota{}, false, err
+	}
+	q, err := decodeQuota(share, suffix, b)
+	return q, err == nil, err
 }
 
 // SoftExceeded records whether usage of t is above its soft limit, as the

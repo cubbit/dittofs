@@ -32,7 +32,7 @@ const maxNetBIOSName = 15
 // defaultSettings is the section's value where no row sets a key.
 func defaultSettings() Settings {
 	return Settings{
-		IDRange: entity.IDRange{Lo: 1_000_000, Hi: 1_999_999_999},
+		IDRange: entity.DefaultIDRange,
 		// decision: NTLM is on by default. Workgroup deployments with local users
 		// have no KDC, and SMB clients outside a domain fall back to NTLM. A
 		// deployment with Kerberos everywhere turns it off. Revisit the default

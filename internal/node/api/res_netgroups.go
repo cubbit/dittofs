@@ -3,6 +3,10 @@ package api
 import (
 	"context"
 	"iter"
+	"net/netip"
+	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -21,27 +25,60 @@ func netgroupOf(g entity.Netgroup) apiv1.Netgroup {
 	return apiv1.Netgroup{ID: g.Name, Generation: g.Version, Spec: apiv1.NetgroupSpec{Members: members}}
 }
 
+// maxNetgroupName bounds a netgroup's name, in bytes, so its key and its
+// audit records' target stay small.
+const maxNetgroupName = 255
+
+// netgroupRef is the target of a netgroup's row: its name, which must be
+// valid UTF-8 of 1 to maxNetgroupName bytes.
+func netgroupRef(_ [16]byte, name string) ([]byte, error) {
+	if name == "" || len(name) > maxNetgroupName || !utf8.ValidString(name) {
+		return nil, &fieldError{field: "name", detail: "a netgroup's name is valid UTF-8 of 1 to " + strconv.Itoa(maxNetgroupName) + " bytes"}
+	}
+	return []byte(name), nil
+}
+
+// hostName reports whether s is a DNS host name: dot-separated labels of
+// 1 to 63 letters, digits and hyphens, no label starting or ending with a
+// hyphen, 253 bytes at most.
+func hostName(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	for _, l := range strings.Split(s, ".") {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		if strings.Trim(l, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // netgroups is what the write adapter knows of a netgroup: the path's {sub}
-// is its name, which its audit records name it by, and its tag is its
-// version.
+// is its name, and its tag is its version.
 var netgroups = writing[netgroupDoc]{kind: entity.ResourceNetgroup,
-	ref: func(_ [16]byte, name string) []byte { return []byte(name) },
 	read: func(tx entity.ControlPlaneTx, _ [16]byte, name string) (netgroupDoc, uint64, bool, error) {
 		g, ok, err := tx.Netgroup(name)
 		return netgroupDoc{netgroupOf(g).Spec}, g.Version, ok, err
 	}}
 
-// netgroupTags is netgroups for a delete, which carries no body.
-var netgroupTags = writing[none]{kind: entity.ResourceNetgroup, ref: netgroups.ref,
-	read: func(tx entity.ControlPlaneTx, id [16]byte, name string) (none, uint64, bool, error) {
-		_, tag, ok, err := netgroups.read(tx, id, name)
-		return none{}, tag, ok, err
-	}}
-
 // putNetgroup is PUT /netgroups/{sub}: the netgroup sub names, created
 // under If-None-Match: * or replaced whole under the version If-Match
-// names.
+// names. Each member is an address, a CIDR or a host name.
 func putNetgroup(_ context.Context, rq request[netgroupDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Netgroup, [16]byte, error) {
+	for i, m := range rq.Body.Spec.Members {
+		if _, err := netip.ParseAddr(m); err == nil {
+			continue
+		}
+		if _, err := netip.ParsePrefix(m); err == nil {
+			continue
+		}
+		if !hostName(m) {
+			return apiv1.Netgroup{}, rq.ID, &fieldError{field: "spec.members[" + strconv.Itoa(i) + "]", detail: "not an address, a CIDR or a host name: " + m}
+		}
+	}
 	g := entity.Netgroup{Name: rq.Sub, Members: rq.Body.Spec.Members}
 	var err error
 	if g.Version, err = tx.PutNetgroup(g, rq.Expect); err != nil {

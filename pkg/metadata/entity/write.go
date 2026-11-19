@@ -41,6 +41,13 @@ type IDRange struct {
 	Hi uint32 `json:"hi"`
 }
 
+// IDRangeSetting is the installation setting holding the IDRange a missing
+// uid or gid is allocated from, and DefaultIDRange its value where no
+// setting row sets it.
+const IDRangeSetting = "identity.id_range"
+
+var DefaultIDRange = IDRange{Lo: 1_000_000, Hi: 1_999_999_999}
+
 // Alloc names the IDs a user or group create draws from the store's uid, gid
 // and RID counters in its own transaction. An ID it does not name is written
 // as the record holds it. Range is the span a named uid or gid is drawn from,

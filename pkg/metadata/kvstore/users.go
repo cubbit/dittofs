@@ -71,6 +71,44 @@ func (c ControlPlane) Group(ctx context.Context, p entity.Principal) (g entity.G
 	return g, found, err
 }
 
+// UserNamed is the user the name names, its case folded as sign-in folds
+// it; false when none holds it.
+func (c ControlPlane) UserNamed(ctx context.Context, name string) (u entity.User, found bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		b, ok, err := get(r, nameKey(keys.NXUser, name))
+		if err != nil || !ok {
+			return err
+		}
+		id, err := decodeNameRow(b)
+		if err != nil {
+			return err
+		}
+		if u, found, err = userIn(r, entity.Principal{Kind: entity.PrincipalUser, ID: id}); err != nil || !found {
+			return err
+		}
+		u.Primary, err = primaryIn(r, u)
+		return err
+	})
+	return u, found, err
+}
+
+// GroupNamed is the group the name names; false when none holds it.
+func (c ControlPlane) GroupNamed(ctx context.Context, name string) (g entity.Group, found bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		b, ok, err := get(r, nameKey(keys.NXGroup, name))
+		if err != nil || !ok {
+			return err
+		}
+		id, err := decodeNameRow(b)
+		if err != nil {
+			return err
+		}
+		g, found, err = groupIn(r, entity.Principal{Kind: entity.PrincipalGroup, ID: id})
+		return err
+	})
+	return g, found, err
+}
+
 // groupIn reads p's group record, tracked in a transaction. A record marked
 // deleted, or a principal of another kind, reads as absent.
 func groupIn(r kv.Reader, p entity.Principal) (entity.Group, bool, error) {

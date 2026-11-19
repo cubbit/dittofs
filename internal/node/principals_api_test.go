@@ -113,13 +113,14 @@ func TestUserWriteWaitsASecondThenAnswersItsCommit(t *testing.T) {
 		}
 		<-release
 	})
+	awaited := make(chan struct{}, 4)
+	h.Node().OnAwaited(func() { awaited <- struct{}{} })
 	sh := addShare(t, h)
 	started(t, h)
 	// Registered after started's, so it runs first: Stop finds no pass held.
 	t.Cleanup(func() { holding.Store(false); close(release) })
 	addr, _ := h.Node().Addrs()
 	p, tag := putUser(t, h, "alice")
-	base := h.Clock().Pending()
 	holding.Store(true)
 	ch := send(t.Context(), addr, http.MethodPatch, "/api/v1/users/"+uuid.UUID(p.ID).String(), `{"spec":{"disabled":true}}`, "If-Match", tag)
 	select {
@@ -127,11 +128,18 @@ func TestUserWriteWaitsASecondThenAnswersItsCommit(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("no reconcile pass read the counters within 10 s of the write")
 	}
-	wait(t, "the writer's wait on the node's clock", func() bool { return h.Clock().Pending() > base })
+	select {
+	case <-awaited: // the writer's second is armed on the node's clock
+	case <-time.After(10 * time.Second):
+		t.Fatal("the write's wait for the node never started within 10 s")
+	}
+	// No event marks an answer that is never sent, so a bounded wait is the
+	// assertion here. It outlasts a wall-clock second, so a wait timed on
+	// the wall clock rather than the node's answers inside it.
 	select {
 	case r := <-ch:
 		t.Fatalf("PATCH the user answered %d %s with the node's clock short of the writer's second", r.status, r.body)
-	default:
+	case <-time.After(1500 * time.Millisecond):
 	}
 	h.Clock().Advance(time.Second)
 	r := answeredIn(t, "PATCH the user once a second passed", ch)

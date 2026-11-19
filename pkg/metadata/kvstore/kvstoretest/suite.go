@@ -81,6 +81,7 @@ func Run(t *testing.T, open Opener) {
 		{"ExpectRace", testExpectRace},
 		{"RecreatedPrincipalRefusesOldGeneration", testRecreatedPrincipalRefusesOldGeneration},
 		{"WritesToRemovedShare", testWritesToRemovedShare},
+		{"ControlPlaneReads", testControlPlaneReads},
 		{"Quotas", testQuotas},
 		{"QuotaSoftChange", testQuotaSoftChange},
 		{"Projects", testProjects},

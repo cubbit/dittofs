@@ -27,8 +27,7 @@ const maxKey = 255
 // writing is what a write row's adapter knows of the resource it writes:
 // its kind; read, which returns the record id and the path's {sub} name,
 // tracked in the write's transaction, as the body a PUT of it sends, with
-// its tag, ok false when there is none; ref, the ID its audit record names
-// it by, nil naming it by id; whether its commit raises the principals or settings
+// its tag, ok false when there is none; whether its commit raises the principals or settings
 // generation; whether the row is a POST action that changes the spec, and so
 // carries If-Match as a PUT does; secret, which names the fields of the
 // body whose values its audit record holds only as "set", nil for none; and
@@ -38,7 +37,6 @@ const maxKey = 255
 type writing[B any] struct {
 	kind        entity.ResourceKind
 	read        func(tx entity.ControlPlaneTx, id [16]byte, sub string) (doc B, tag uint64, ok bool, err error)
-	ref         func(id [16]byte, sub string) []byte
 	raises      bool
 	changesSpec bool
 	secret      func(path string) bool
@@ -89,7 +87,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		rec := s.auditOf(ctx, r)
 		rec.Target.Kind = w.kind
 		if !created {
-			rec.Target.ID = w.refOf(id, sub)
+			rec.Target.ID = rt.ref(id, sub)
 		}
 		refused := rec // as the request arrived, holding nothing a failed attempt set
 		defer func() {
@@ -192,7 +190,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			if rec.Change, err = change(present(doc, ok), present(after, exists), w.auditAs, w.secret); err != nil {
 				return err
 			}
-			rec.Target.ID = w.refOf(wrote, sub)
+			rec.Target.ID = rt.ref(wrote, sub)
 			rec.Before, rec.After, rec.Outcome = tag, afterTag, []byte("applied")
 			status, body, location := http.StatusOK, any(resp), ""
 			if created {
@@ -227,43 +225,45 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		if idem != nil {
 			s.idempotencyWritten.Inc()
 		}
-		if w.raises && s.d.Applied != nil {
-			// decision: the answer waits at most 1 s for the node to
-			// apply a write raising the principals or settings
-			// generation, the bound a reconcile pass is held to, and
-			// answers the commit's own result whatever the wait
-			// returns: the write is durable, and status.applied says
-			// where it is applied. Overturned if a pass on a healthy
-			// node regularly outlasts the second. The second is on the
-			// API's clock, and on the wall clock's with none.
-			wctx, cancel := context.WithTimeout(ctx, time.Second)
-			if s.d.Clock != nil {
-				cancel()
-				wctx, cancel = context.WithCancel(ctx)
-				go func() {
-					select {
-					case <-s.d.Clock.After(time.Second):
-						cancel()
-					case <-wctx.Done():
-					}
-				}()
-			}
-			if werr := s.d.Applied(wctx); werr != nil {
-				s.d.Logger.Debug("node api: a committed write is not yet applied on this node", "request_id", requestID(ctx), "err", werr)
-			}
-			cancel()
+		if w.raises {
+			s.awaitApplied(ctx)
 		}
 		return a, nil
 	}
 }
 
-// refOf is the ID the audit record of a write of the record id and sub
-// name names it by.
-func (w writing[B]) refOf(id [16]byte, sub string) []byte {
-	if w.ref != nil {
-		return w.ref(id, sub)
+// awaitApplied waits for the node to apply what a write raising the
+// principals or settings generation committed, for at most a second on the
+// API's clock, the wall clock's with none. The second is armed before
+// Applied is called, so a caller that sees Applied reached knows it runs.
+//
+// decision: the answer waits at most 1 s, the bound a reconcile pass is held
+// to, and the write answers the commit's own result whatever the wait
+// returns: the write is durable, and status.applied says where it is
+// applied. Overturned if a pass on a healthy node regularly outlasts the
+// second.
+func (s *Server) awaitApplied(ctx context.Context) {
+	if s.d.Applied == nil {
+		return
 	}
-	return id[:]
+	var cancel context.CancelFunc
+	if s.d.Clock == nil {
+		ctx, cancel = context.WithTimeout(ctx, time.Second)
+	} else {
+		bound := s.d.Clock.After(time.Second)
+		ctx, cancel = context.WithCancel(ctx)
+		go func() {
+			select {
+			case <-bound:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+	defer cancel()
+	if err := s.d.Applied(ctx); err != nil {
+		s.d.Logger.Debug("node api: a committed write is not yet applied on this node", "request_id", requestID(ctx), "err", err)
+	}
 }
 
 // start writes, in tx, an operation of kind on target, started by the

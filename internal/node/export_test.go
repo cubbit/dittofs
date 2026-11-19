@@ -72,7 +72,7 @@ func NewPausing(paused func(read kvstore.Counters)) func(Config) (*Node, error) 
 	return func(cfg Config) (*Node, error) {
 		n, err := New(cfg)
 		if err == nil {
-			n.rec.paused = paused
+			n.OnReconcileRead(paused)
 		}
 		return n, err
 	}
@@ -82,6 +82,12 @@ func NewPausing(paused func(read kvstore.Counters)) func(Config) (*Node, error) 
 // read, before it acts on them, as NewPausing does; the pass waits for it.
 // Call it before Start.
 func (n *Node) OnReconcileRead(paused func(read kvstore.Counters)) { n.rec.paused = paused }
+
+// OnAwaited has each write's wait for the node to apply it call awaited as
+// it starts. The API arms its bound on the clock before it calls the wait,
+// so a test that sees awaited called may advance the clock past the bound.
+// Call it before Start.
+func (n *Node) OnAwaited(awaited func()) { n.rec.awaited = awaited }
 
 // OnBind has reconcile call binding with each share before it binds it. Call
 // it before Start.
