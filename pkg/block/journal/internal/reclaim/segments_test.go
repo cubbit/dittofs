@@ -156,6 +156,10 @@ func TestSegmentRows_SplitWriteRepacks(t *testing.T) {
 	const want = 17 * 4096
 	var planted []core.SegmentID
 	for i := range 17 {
+		// The pool is waited before each plant, the way the writer's path
+		// waits its rolls out: a plant that rolled and found no spare fails
+		// by the spare limit, and the pool refills off the path.
+		f.waitSpares(t)
 		v, err := f.counters.Draw()
 		if err != nil {
 			t.Fatalf("Draw: %v", err)
