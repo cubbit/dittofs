@@ -224,6 +224,27 @@ func TestDeadlineSpentOrCancelledShowsAtOnce(t *testing.T) {
 	}
 }
 
+// bubbleGoroutines counts the goroutines of the caller's synctest bubble,
+// read from their tracebacks' headers: runtime.NumGoroutine counts the
+// whole process's, which a goroutine of another test moves when it starts
+// or ends.
+func bubbleGoroutines() int {
+	buf := make([]byte, 1<<16)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	// The caller's traceback comes first, its header ending
+	// "[running, synctest bubble N]:".
+	self, _, _ := bytes.Cut(buf, []byte("\n"))
+	_, bubble, _ := bytes.Cut(self, []byte(", synctest bubble "))
+	return bytes.Count(buf, append([]byte(", synctest bubble "), bubble...))
+}
+
 // A context derived from the call's starts no goroutine to watch it, and
 // ends when the clock reaches the call's deadline.
 func TestDeadlineContextStartsNoGoroutine(t *testing.T) {
@@ -233,11 +254,11 @@ func TestDeadlineContextStartsNoGoroutine(t *testing.T) {
 		core.SetClock(sh, clk)
 		_ = sh.Deadline(func(ctx context.Context, _ *core.Request) error {
 			synctest.Wait()
-			before := runtime.NumGoroutine()
+			before := bubbleGoroutines()
 			child, cancel := context.WithCancel(ctx)
 			defer cancel()
 			synctest.Wait()
-			if after := runtime.NumGoroutine(); after != before {
+			if after := bubbleGoroutines(); after != before {
 				t.Errorf("deriving a context started %d goroutines, want none", after-before)
 			}
 			clk.Advance(30 * time.Second)
