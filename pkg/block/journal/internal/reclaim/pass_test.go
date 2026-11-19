@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
@@ -581,7 +583,7 @@ func passHeldEntries(t *testing.T, f *copyFixture, file core.FileID) []index.Ent
 // held at the seam and checks the index while it is: no held entry of the
 // file names a copy — every one still names the planted source record — and
 // the source is neither retired nor freed. Nothing is published before its
-// copy is durable (R36); once the sync completes the pass repoints the file
+// copy is durable; once the sync completes the pass repoints the file
 // in one index step and retires the source.
 func TestPassAHeldCopySyncPublishesNothing(t *testing.T) {
 	p := newPassFixture(t)
@@ -641,9 +643,9 @@ func TestPassAHeldCopySyncPublishesNothing(t *testing.T) {
 // extents while a pass copies it: every read returns the written bytes with
 // nothing missing — the old or the new location, never neither — and the two
 // goroutines run under the race detector, so an unindexed window between the
-// copy's append and the repoint shows as a missed read (R37, R40). The
+// copy's append and the repoint shows as a missed read. The
 // reader stops once the pass has answered, and a pass that never reclaims
-// under a continuous reader runs out of that answer's bounded wait (R48).
+// under a continuous reader runs out of that answer's bounded wait.
 func TestPassAReaderNeverMissesARepointedExtent(t *testing.T) {
 	p := newPassFixture(t)
 	file := copyFile(14)
@@ -717,7 +719,7 @@ func TestPassAReaderNeverMissesARepointedExtent(t *testing.T) {
 		t.Fatalf("Repack under the looping reader: %v", r.err)
 	}
 	if r.freed <= 0 {
-		t.Fatalf("Repack under the looping reader freed %d, want the unit to complete within the reader's run (R48)", r.freed)
+		t.Fatalf("Repack under the looping reader freed %d, want the unit to complete within the reader's run", r.freed)
 	}
 	if !p.setGone(src) {
 		t.Fatal("the source is still in the set, want it retired under the reader")
@@ -731,7 +733,7 @@ func TestPassAReaderNeverMissesARepointedExtent(t *testing.T) {
 // fails at the seam: the unit is abandoned whole — nothing repointed, the
 // source not retired, freed nothing, the error returned — and the file still
 // reads whole from its original record, so a later pass finds the extents
-// where the abandoned one left them (D8, Review Focus 1).
+// where the abandoned one left them.
 func TestPassAbandonsItsUnitOnAFailedCopyWindow(t *testing.T) {
 	p := newPassFixture(t)
 	file := copyFile(13)
@@ -774,6 +776,12 @@ func TestPassAbandonsItsUnitOnAFailedCopyWindow(t *testing.T) {
 	if got := p.readAll(t, file, 0, int64(len(payload))); !bytes.Equal(got, payload) {
 		t.Fatal("the file does not read back whole after the abandoned window")
 	}
+	// The abandoned unit handed its copies to their shares' tallies on its
+	// way out, so nothing stays held out of them for a source that stays:
+	// the copies are the shares' records now, kept out of no limit.
+	if held := p.f.core.CopyHeldBytes(); held != 0 {
+		t.Fatalf("CopyHeldBytes after the abandoned window = %d, want 0: the abandon hands the copies it counted over", held)
+	}
 	// A later pass still finds the extents: the abandon cost its copies
 	// alone, so the source answers a selection again, its pieces whole where
 	// the index holds them. The run that retires it cannot ride this
@@ -789,13 +797,78 @@ func TestPassAbandonsItsUnitOnAFailedCopyWindow(t *testing.T) {
 	sel.Done(cands[0].ID)
 }
 
+// TestPassACarryFailureHandsOverAndLeavesNothingHeldOut drives the other
+// error path that releases a source with its copies on disk: a removal whose
+// bytes the carry reads back rotted fails the unit after Copy landed its
+// content, and the unit's way out is the abandon's — the tallies hand the
+// copies over, so nothing stays held out, and the source stands for a later
+// pass to reach with its records still named where the index holds them.
+// The RepointFile error shares this way out by construction; its refusal has
+// no real shape in the in-memory index, which only errors on its callers'
+// own bugs, so the carry's failure carries the pairing.
+func TestPassACarryFailureHandsOverAndLeavesNothingHeldOut(t *testing.T) {
+	p := newPassFixture(t)
+	file := copyFile(14)
+	payload := bytes.Repeat([]byte("a copy beside a rotted removal!"), 4)
+	// A live removal beside the content, registered live so the carry must
+	// reach it — its bytes then rotted on disk past its checksum.
+	// The removal's marker is left unsettled, so the record stays live for
+	// the carry to reach: a settled one that outranks nothing would drop at
+	// the unit's re-test and never be read.
+	rem, _, _, _ := p.f.plantRemoval(t, copyTag, file, format.KindDelete, core.ChangeDelete,
+		core.Extent{}, core.Extent{Len: math.MaxInt64}, false)
+	rec, _, _ := p.f.plant(t, copyTag, file, payload, 0)
+	src := rec.Segment
+	if rem.Seg != src {
+		t.Fatalf("the removal landed in segment %d, want the content's %d", rem.Seg, src)
+	}
+	// The fixtures register into their own tracker, but this test drives the
+	// core's own pass: the removal joins the liveness registry the pass
+	// walks.
+	p.f.core.Liveness().Register(rem)
+	// Rotted on disk past any decode: the removal's own bytes carry the
+	// header the carry must fail to read back.
+	f, ferr := p.f.seam.Open(format.SegmentName(src))
+	if ferr != nil {
+		t.Fatalf("opening segment %d: %v", src, ferr)
+	}
+	one := make([]byte, 1)
+	if _, err := f.ReadAt(one, rem.Loc.Off); err != nil {
+		t.Fatalf("reading the removal's first byte: %v", err)
+	}
+	one[0] ^= 0xff
+	if _, err := f.WriteAt(one, rem.Loc.Off); err != nil {
+		t.Fatalf("rotting the removal's first byte: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("closing segment %d: %v", src, err)
+	}
+	p.f.sealSource(t, file)
+	p.retainActivity(t, p.f.core.Streams().IndexFor(file), file)
+	r := awaitRepack(t, p.goRepack(context.Background(), copySegCap*8, src))
+	if r.err == nil || !strings.Contains(r.err.Error(), "does not decode or verify") {
+		t.Fatalf("Repack over a rotten removal = %v, want the carry's verify failure", r.err)
+	}
+	if p.setGone(src) {
+		t.Fatal("the carry-failed source left the set, want its claim released with the unit abandoned")
+	}
+	if held := p.f.core.CopyHeldBytes(); held != 0 {
+		t.Fatalf("CopyHeldBytes after the carry's failure = %d, want 0: the copies Copy landed before the failure are the share's records, held out of no tally", held)
+	}
+	// The content the copies serve is still the index's: the rotten removal
+	// published nothing, so the file reads whole from its original record.
+	if got := p.readAll(t, file, 0, int64(len(payload))); !bytes.Equal(got, payload) {
+		t.Fatal("the file does not read back whole after the carry's failure")
+	}
+}
+
 // TestPassFreedWaitsForTheRetiresDirSync holds the retire's directory sync
 // at the seam while its unit reclaims a source: the pass has not returned,
 // the storage in use has not moved and nothing is freed until that sync
 // completes — then freed equals the storage the retirer returned and the
-// storage in use falls by it, never before (R38). A read of another file
+// storage in use falls by it, never before it frees. A read of another file
 // completes while the directory sync is held, for reclamation holds nothing
-// a reader of another segment waits on (R49).
+// a reader of another segment waits on.
 func TestPassFreedWaitsForTheRetiresDirSync(t *testing.T) {
 	p := newPassFixture(t)
 	fa, _ := passFilesOnDistinctStreams(p.f)

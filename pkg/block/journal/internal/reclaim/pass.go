@@ -18,7 +18,7 @@ import (
 // a copy instead: a failed window re-appends a content record to a place
 // the pass cannot name, for its move names the copy's own place, or fails
 // its re-read and drops it, and either way the copy the pass holds is dead,
-// so the wait answers the failure the window settled with (D8) rather than
+// so the wait answers the failure the window settled with rather than
 // publish the copy at a place a failed window abandoned.
 type Durable interface {
 	WaitDurable(at segment.Location) error
@@ -255,8 +255,11 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 	}
 	carry, err := p.cop.Carry(ctx, seg, res)
 	if err != nil {
-		p.sel.Done(seg)
-		return 0, 0, false, fmt.Errorf("reclaim: the unit over segment %d: %w", seg, err)
+		// The copies Copy landed stay on disk as their shares' records, so
+		// they are handed over as the abandon comment promises: this unit
+		// releases its claim and the source stays, and whatever the source's
+		// later retirement would hand over is no less owed now.
+		return 0, 0, false, p.abandon(seg, err)
 	}
 	// The copies are held out of their shares' tallies until the source goes: held here,
 	// handed to their shares when it is retired.
@@ -333,8 +336,11 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 			p.acct(hd)
 		}
 		if rerr != nil {
-			p.sel.Done(seg)
-			return 0, 0, false, fmt.Errorf("reclaim: the unit over segment %d: repointing the copies of file %v: %w", seg, file, rerr)
+			// An unpublished move strands the copies the unit counted against
+			// the source beside the ones it repointed whole: both are the
+			// shares' records now, for the source stays with its claim
+			// released, so the abandon hands its tallies over with the rest.
+			return 0, 0, false, p.abandon(seg, fmt.Errorf("repointing the copies of file %v: %w", file, rerr))
 		}
 	}
 
