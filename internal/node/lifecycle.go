@@ -34,10 +34,12 @@ const (
 	stepRunner     = "runner"
 )
 
-// stopBound is how long Stop waits for one part to stop, on the node's clock.
+// stopBound is how long Stop waits for one part to stop, on the node's clock,
+// for every part but the adapters', which RFC 23 §2.2 bounds by its drain
+// deadline plus 30 s.
 //
-// ponytail: one fixed bound for every part, as RFC 23 sets the drain deadline
-// but no per-step figure. Make it a setting once an operator needs another.
+// ponytail: one fixed bound for every other part, as RFC 23 sets no other
+// per-step figure. Make it a setting once an operator needs another.
 const stopBound = 30 * time.Second
 
 // engineDefaults are the engine's settings until the settings records carry
@@ -68,6 +70,9 @@ type part struct {
 	// misses its bound or fails, they are left open under it.
 	uses []string
 	stop func(ctx context.Context) error
+	// bound is how long Stop waits for its stop, read as the wait starts;
+	// nil is stopBound.
+	bound func() time.Duration
 
 	running chan struct{} // closed once the stop in flight ends; nil when none is
 	err     error         // the ended stop's answer, written before running closes
@@ -148,6 +153,8 @@ func (n *Node) Start(ctx context.Context) error {
 		// node never ready since it started (Served), with no retry. Make the calls'
 		// acceptance a part started here, apart from the health listener,
 		// once a call reaches a part the stop closes first.
+		{stepFirstReconcile, n.firstReconcile},
+		{stepAdapters, n.startAdapters},
 		{stepReconcile, n.startReconcile},
 	} {
 		if err := s.run(ctx); err != nil {
@@ -166,13 +173,14 @@ func (n *Node) Start(ctx context.Context) error {
 }
 
 // Stop turns readiness to draining, then stops what Start started in
-// reverse, each part bounded by stopBound on the node's clock, and closes the
-// metadata store's KV last. A part that misses its bound or whose stop fails
-// leaves open every part it uses, and the store, and the error names it; the
-// parts that do not depend on it still stop. A later Stop waits again for a
-// stop still running, and runs a failed one again. With no Start, Stop closes
-// only the KV. A Stop during a Start waits for it: ending Start's context ends
-// a Start that waits. Ending Stop's own context stops nothing sooner.
+// reverse, each part bounded on the node's clock by its own bound, stopBound
+// for all but the adapters', and closes the metadata store's KV last. A part
+// that misses its bound or whose stop fails leaves open every part it uses,
+// and the store, and the error names it; the parts that do not depend on it
+// still stop. A later Stop waits again for a stop still running, and runs a
+// failed one again. With no Start, Stop closes only the KV. A Stop during a
+// Start waits for it: ending Start's context ends a Start that waits. Ending
+// Stop's own context stops nothing sooner.
 func (n *Node) Stop(ctx context.Context) error {
 	l := &n.life
 	l.mu.Lock()
@@ -203,14 +211,18 @@ func (n *Node) halt(ctx context.Context, keep int) error {
 		if held[p.name] {
 			err = fmt.Errorf("node: stop %s: left open, as a part using it did not stop", p.name)
 		} else {
-			bound := n.cfg.Clock.After(stopBound)
+			d := stopBound
+			if p.bound != nil {
+				d = p.bound()
+			}
+			bound := n.cfg.Clock.After(d)
 			if l.stepped != nil {
 				l.stepped("wait " + p.name)
 			}
 			done, stopErr := p.stopped(ctx, bound)
 			switch {
 			case !done:
-				err = fmt.Errorf("node: stop %s: not stopped within %v", p.name, stopBound)
+				err = fmt.Errorf("node: stop %s: not stopped within %v", p.name, d)
 			case stopErr != nil:
 				err = fmt.Errorf("node: stop %s: %w", p.name, stopErr)
 			}
@@ -310,7 +322,7 @@ func (n *Node) readRecords(ctx context.Context) error {
 	if n.life.removing, err = n.readRemoving(ctx); err != nil {
 		return err
 	}
-	if _, err := n.apply(ctx, c); err != nil {
+	if _, err := n.apply(ctx, c, nil); err != nil {
 		return err
 	}
 	n.rec.seen = c
@@ -383,6 +395,64 @@ func (n *Node) startRunner(context.Context) error {
 		return nil
 	})
 	return nil
+}
+
+// startAdapters is start step 9 (RFC 23 §2.2): each slot is called with
+// what it is to run, at the settings generation the first full reconcile
+// read, and from here apply calls the slots. A refusal does not fail the
+// start: it joins the refusals that pass recorded, so the next pass reads
+// its retry flag and retries it on reconcile's backoff as its own (RFC 20
+// §3.7, RFC 23 §2.3). The adapters' part uses the filesystem and the zero
+// check, so a drain past its bound leaves both open.
+//
+// decision: apply calls the slots only once this step has run. It runs
+// twice before, at step 4 and in the first full reconcile, and an adapter
+// started there would listen before the engine and the filesystem serve,
+// or before the node has reconciled, answering its clients retry-later (RFC
+// 23 §2.2, §12's "§2.2 order"). Overturned if RFC 23 §2.2 moves the
+// adapters' start.
+func (n *Node) startAdapters(ctx context.Context) error {
+	n.adapting = true
+	// Nothing runs yet, so no call drains, and none is handed a loop.
+	refusals := n.applyAdapters(ctx, nil, n.rec.seen.Settings)
+	n.rec.mu.Lock()
+	n.rec.applied = append(n.rec.applied, refusals...)
+	n.rec.mu.Unlock()
+	n.life.parts = append(n.life.parts, &part{name: stepAdapters, stop: n.stopAdapters,
+		uses: []string{stepFilesystem, partBudgets}, bound: func() time.Duration {
+			_, longest := n.adaptersHeld()
+			return longest + onCloseBound
+		}})
+	return nil
+}
+
+// stopAdapters is stop step 2 (RFC 23 §2.2): every sidecar is synced with
+// the empty set, then every adapter the slots hold is stopped at once,
+// under one context that ends at the drain deadline, and then the runner
+// closes. An adapter a rebuild or a disable was still draining when
+// reconcile stopped is among them, so its drain is joined.
+//
+// decision: the drain deadline is the step's start plus the longest
+// drain_timeout of the adapters it stops, so no adapter's drain is cut
+// shorter than its own; RFC 23 §2.2 bounds the step by the deadline plus
+// 30 s but sets no deadline. The context ends at it on the node's clock, as
+// a share removal's step 3 ends its own, and carries no Deadline, which an
+// adapter would read on the runtime's clock. Overturned if RFC 23 §2.2
+// comes to set the deadline.
+func (n *Node) stopAdapters(ctx context.Context) error {
+	held, longest := n.adaptersHeld()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func(deadline <-chan struct{}) {
+		select {
+		case <-deadline:
+			cancel()
+		case <-ctx.Done():
+		}
+	}(n.cfg.Clock.After(longest))
+	err := n.sidecars.StopAll(ctx, held)
+	n.sidecars.Close()
+	return err
 }
 
 // startFailed is the node's start_failed condition after a Start that

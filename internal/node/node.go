@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 
 	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
+	"github.com/cubbit/dittofs/internal/sidecar"
 	"github.com/cubbit/dittofs/internal/vfs"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -64,19 +67,30 @@ type Node struct {
 	life     lifecycle
 	budgets  *resources.Budgets
 	pools    []pool // budgets' pools, for their series and the zero check
+	// The adapters: one slot per protocol over the one runner that drives
+	// the sidecars around them.
+	nfs      *slot[settings.NFS]
+	smb      *slot[settings.SMB]
+	sidecars *sidecar.Runner
+	// adapting is set by start step 9: from then on apply calls the slots.
+	// Written before reconcile's loop starts, and read by apply alone.
+	adapting bool
 	// ending, when set, is called by step 3 of each share removal once its
 	// bound is set on the clock, before it waits on anything.
 	ending func(entity.ShareID)
 }
 
-// New opens the metadata store over cfg.KV, refusing a KV that holds no
-// installation or one this binary does not read, then builds open state,
-// the engine and the filesystem, each empty from its own Deps, the budgets
-// and their series, the operation runner with the steps of the kinds this
-// node drives, the watchdog, and the API over the store's control plane and node view, the
-// runner's progress, the health evaluator and the writer's wait. It starts
-// nothing: no journal, goroutine
-// or listener exists until Start.
+// New resolves the adapters' addresses, refusing an adapters.listen it
+// cannot bind, opens the metadata store over cfg.KV, refusing a KV that
+// holds no installation or one this binary does not read, then builds open
+// state, the engine and the filesystem, each empty from its own Deps, the
+// budgets and their series, the operation runner with the steps of the
+// kinds this node drives, the watchdog, the adapters' one Deps, the sidecar
+// runner and a slot per protocol, and the API over the store's control
+// plane and node view, the runner's progress, the health evaluator and the
+// writer's wait. It starts nothing: no journal, goroutine or listener exists
+// until Start, but for the socket an unset adapters.listen opens and closes
+// at once to learn whether tcp6 does.
 //
 // ponytail: the node both builds and drives its components. Split the
 // builder out when it gains dependencies a multi-node test cannot replace
@@ -128,8 +142,18 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 			n,
 		)
 	}
+	tcp6 := false
+	if len(cfg.Bootstrap.Adapters.Listen) == 0 {
+		if l, err := net.Listen("tcp6", "[::]:0"); err == nil {
+			tcp6 = true
+			_ = l.Close()
+		}
+	}
+	addrs, err := listenAddrs(cfg.Bootstrap.Adapters.Listen, tcp6)
+	if err != nil {
+		return nil, err
+	}
 	n := &Node{cfg: cfg, rec: newReconciler(), sweep: newSweeper()}
-	var err error
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		return nil, fmt.Errorf("node: metadata store: %w", err)
 	}
@@ -172,6 +196,9 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 	steps[string(apiv1.OpShareDelete)] = stepRow{n.shareDeletion, n.removalProgress}
 	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node.ID, cfg.Logger, steps)
 	n.watchdog = health.NewWatchdog(cfg.Clock)
+	n.sidecars = sidecar.New()
+	n.nfs, n.smb = newSlots(adapterDeps(n.fs, n.budgets, cfg.Metrics, cfg.Logger, n.watchdog), n.sidecars, addrs,
+		[]uint16{listenPort(cfg.Bootstrap.API.Listen[0]), listenPort(cfg.Bootstrap.Metrics.Listen)}, cfg.Clock)
 	n.life.ready.Store(readyStarting)
 	// decision: the API gets no TLS, local socket, signing key or tracer,
 	// and in production no Authenticate, because nothing the node is handed

@@ -169,16 +169,18 @@ func TestStartAndStopInOrder(t *testing.T) {
 	// The shard's incarnation is raised once by the engine's start and
 	// once by the filesystem's serve.
 	want := map[string]snapshot{
-		"refuse":     {ready: closed, metrics: closed, incarnation: before},
-		"listeners":  {ready: starting, metrics: scraped, incarnation: before},
-		"register":   {ready: starting, metrics: scraped, registered: true, address: api, incarnation: before},
-		"apply":      {ready: starting, metrics: scraped, registered: true, address: api, incarnation: before},
-		"engine":     {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 1},
-		"filesystem": {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
-		"runner":     {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
-		"reconcile":  {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
+		"refuse":          {ready: closed, metrics: closed, incarnation: before},
+		"listeners":       {ready: starting, metrics: scraped, incarnation: before},
+		"register":        {ready: starting, metrics: scraped, registered: true, address: api, incarnation: before},
+		"apply":           {ready: starting, metrics: scraped, registered: true, address: api, incarnation: before},
+		"engine":          {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 1},
+		"filesystem":      {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
+		"runner":          {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
+		"first reconcile": {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
+		"adapters":        {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
+		"reconcile":       {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 	}
-	steps := []string{"refuse", "listeners", "register", "apply", "engine", "filesystem", "runner", "reconcile"}
+	steps := []string{"refuse", "listeners", "register", "apply", "engine", "filesystem", "runner", "first reconcile", "adapters", "reconcile"}
 	if got := s.reported(); !slices.Equal(got, steps) {
 		t.Fatalf("start steps: got %v, want %v", got, steps)
 	}
@@ -197,11 +199,11 @@ func TestStartAndStopInOrder(t *testing.T) {
 	if err := h.Node().Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	stops := []string{"stop reconcile", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners", "stop store"}
+	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners", "stop store"}
 	if got := s.reported()[len(steps):]; !slices.Equal(got, stops) {
 		t.Fatalf("stop steps: got %v, want %v", got, stops)
 	}
-	for _, step := range stops[:3] {
+	for _, step := range stops[:4] {
 		if got := s.seen[step]; got.ready != draining || !got.registered {
 			t.Errorf("after %s: readiness %+v, record read %v; want draining, and the store open", step, got.ready, got.registered)
 		}
@@ -289,7 +291,7 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 		{step: "apply", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 1) }, registered: true},
 		{step: "engine", fault: func(k string) sim.Rule { return failOn(kvtest.OpSet, k, 2) }, registered: true},
 		{step: "filesystem", fault: func(string) sim.Rule { return failOn(kvtest.OpSet, "SH‖*", 2) }, registered: true, epoch: 1, undone: []string{"stop engine"}},
-		{step: "reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 2) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop budgets", "stop engine"}},
+		{step: "first reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 2) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop budgets", "stop engine"}},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			var h *nodetest.Harness
@@ -408,7 +410,7 @@ func TestStopWithAnEndedContext(t *testing.T) {
 	if err := h.Node().Stop(ctx); err != nil {
 		t.Errorf("Stop with an ended context: got %v, want nil", err)
 	}
-	stops := []string{"stop reconcile", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners", "stop store"}
+	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners", "stop store"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with an ended context: got %v, want %v", got, stops)
 	}
@@ -670,7 +672,7 @@ func TestStopStepPastItsBound(t *testing.T) {
 	if stopErr == nil || !strings.Contains(stopErr.Error(), "stop runner: not stopped within") || !strings.Contains(stopErr.Error(), "stop store: left open") {
 		t.Errorf("Stop with the runner held: got %v, want the runner named past its bound and the store left open", stopErr)
 	}
-	stops := []string{"stop reconcile", "stop filesystem", "stop budgets", "stop engine", "stop listeners"}
+	stops := []string{"stop reconcile", "stop adapters", "stop filesystem", "stop budgets", "stop engine", "stop listeners"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with the runner held: got %v, want %v", got, stops)
 	}
@@ -731,7 +733,7 @@ func TestStopLeavesTheEngineUnderAHeldFilesystem(t *testing.T) {
 			t.Errorf("Stop with the filesystem's call held: got %v, want it to say %q", stopErr, want)
 		}
 	}
-	stops := []string{"stop reconcile", "stop runner", "stop listeners"}
+	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop listeners"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with the filesystem held: got %v, want %v", got, stops)
 	}

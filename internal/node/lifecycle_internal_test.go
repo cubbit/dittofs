@@ -126,3 +126,39 @@ func TestStopRetriesAPartWhoseStopFailed(t *testing.T) {
 		t.Error("the KV after the second Stop: a View succeeded, want it closed")
 	}
 }
+
+// A part carrying its own bound is waited on for that bound, not stopBound:
+// one of 120 s whose stop holds is still waited on past 30 s, and is named
+// not stopped within its 120 s once the clock has moved that far.
+func TestHaltWaitsAPartForItsOwnBound(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	n := &Node{cfg: Config{Clock: clock}}
+	waits := make(chan string, 1)
+	n.life.stepped = func(step string) {
+		if part, ok := strings.CutPrefix(step, "wait "); ok {
+			waits <- part
+		}
+	}
+	release := make(chan struct{})
+	n.life.parts = []*part{{name: "drain", bound: func() time.Duration { return 120 * time.Second },
+		stop: func(context.Context) error { <-release; return nil }}}
+	defer close(release)
+
+	halted := make(chan error, 1)
+	go func() { halted <- n.halt(t.Context(), 0) }()
+	select {
+	case <-waits:
+	case <-time.After(10 * time.Second):
+		t.Fatal("halt never waited on the part")
+	}
+	clock.Advance(120 * time.Second)
+	select {
+	case err := <-halted:
+		if err == nil || !strings.Contains(err.Error(), "stop drain: not stopped within 2m0s") {
+			t.Errorf("halt past the part's own bound: got %v, want it named not stopped within 2m0s", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("halt still running 10 s after the part's bound")
+	}
+}

@@ -7,7 +7,10 @@ import (
 	"net/netip"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
+	"github.com/cubbit/dittofs/internal/sidecar"
 	"github.com/cubbit/dittofs/internal/vfs"
+	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -151,6 +154,43 @@ func (n *Node) OnSweep(turned func([]kvstore.Swept)) { n.sweep.turned = turned }
 // which New leaves unset.
 func NewAuthenticating(authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
 	return func(cfg Config) (*Node, error) { return newNode(cfg, authenticate) }
+}
+
+// SetNFS has apply hand the NFS slot enabled and s, as the adapter's
+// settings section will. Safe while the node runs: a pass reads it once a
+// counter moves or a retry is due.
+func (n *Node) SetNFS(enabled bool, s settings.NFS) {
+	n.nfs.want.Store(&desired[settings.NFS]{enabled, s})
+}
+
+// SetSMB has apply hand the SMB slot enabled and s, as SetNFS does NFS's.
+func (n *Node) SetSMB(enabled bool, s settings.SMB) {
+	n.smb.want.Store(&desired[settings.SMB]{enabled, s})
+}
+
+// SetSidecar has the node's runner drive sc, and no other sidecar. Call it
+// before Start.
+func (n *Node) SetSidecar(sc adapter.Sidecar) {
+	n.sidecars = sidecar.New(sc)
+	n.nfs.runner, n.smb.runner = n.sidecars, n.sidecars
+}
+
+// OnAdapter has each adapter the slots build handed to wrap with its
+// protocol, and the slots run what wrap returns. Call it before Start.
+func (n *Node) OnAdapter(wrap func(protocol string, a adapter.Adapter) adapter.Adapter) {
+	wrapBuild(n.nfs, wrap)
+	wrapBuild(n.smb, wrap)
+}
+
+func wrapBuild[S shape](s *slot[S], wrap func(string, adapter.Adapter) adapter.Adapter) {
+	build := s.build
+	s.build = func(d adapter.Deps, set S) (adapter.Adapter, error) {
+		a, err := build(d, set)
+		if err != nil {
+			return nil, err
+		}
+		return wrap(s.name, a), nil
+	}
 }
 
 // Reserve reserves bytes from the node's budget pool names, receive, reply,

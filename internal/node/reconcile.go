@@ -27,7 +27,9 @@ const (
 	// storeBound is how long reconcile waits on one store call, on the
 	// node's clock.
 	storeBound = 20 * time.Second
-	// stepReconcile names the first full reconcile and the loop after it.
+	// stepFirstReconcile names the first full reconcile, start step 8.
+	stepFirstReconcile = "first reconcile"
+	// stepReconcile names reconcile's loop, start step 10, and its part.
 	stepReconcile = "reconcile"
 )
 
@@ -173,17 +175,30 @@ func refused(s entity.Share, retry bool, err error) refusal {
 }
 
 // apply hands each component the settings it reads, at counters c, and
-// returns the records it refused.
+// returns the records it refused. Once start step 9 has run it calls each
+// adapter's slot too, handing it loop to report idle on while it waits on a
+// drain, and returns the slots' refusals.
 //
 // ponytail: apply hands the engine RFC 13 Appendix B's defaults whatever c
 // says, as no settings record carries the engine's values yet, and refuses
 // nothing. Read the settings and principals generations' records here once
 // those carry what a component reads.
-func (n *Node) apply(_ context.Context, c kvstore.Counters) ([]refusal, error) {
+//
+// ponytail: each slot is handed what the node's tests set, and nothing else
+// enables an adapter, as no settings record carries an adapter's section
+// yet. Read each adapter's section with the settings snapshot's Get once it
+// has a body.
+func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop) ([]refusal, error) {
 	if n.rec.applying != nil {
 		n.rec.applying(c)
 	}
-	return nil, n.engine.Apply(engineDefaults)
+	if err := n.engine.Apply(engineDefaults); err != nil {
+		return nil, err
+	}
+	if !n.adapting {
+		return nil, nil
+	}
+	return n.applyAdapters(ctx, loop, c.Settings), nil
 }
 
 // backoff is the wait before the next pass on the backoff, given its last
@@ -352,7 +367,7 @@ func (n *Node) counters(ctx context.Context) (kvstore.Counters, error) {
 // for after a failed read, even when only one share changed. List the shares
 // whose position is above the last one acted on, once a share index by
 // position exists and a profile shows the listing.
-func (n *Node) pass(ctx context.Context) error {
+func (n *Node) pass(ctx context.Context, loop *health.Loop) error {
 	r := &n.rec
 	c, err := n.counters(ctx)
 	if err != nil {
@@ -372,7 +387,7 @@ func (n *Node) pass(ctx context.Context) error {
 		}
 	}
 	if apply {
-		refusals, err := n.apply(ctx, c)
+		refusals, err := n.apply(ctx, c, loop)
 		if err != nil {
 			r.errors[kindSettings].Add(1)
 			r.again = true
@@ -471,7 +486,7 @@ func (n *Node) reconcileLoop(ctx context.Context, loop *health.Loop) {
 		case <-r.wake:
 		}
 		loop.Idle()
-		fault.observed(ctx, n, stepReconcile, n.pass(ctx), slog.Attr{})
+		fault.observed(ctx, n, stepReconcile, n.pass(ctx, loop), slog.Attr{})
 		loop.Turn()
 	}
 }
@@ -506,13 +521,18 @@ func (n *Node) applied(ctx context.Context) error {
 	}
 }
 
-// startReconcile runs the first full reconcile, then the loop, the status
-// writer and the expiry sweep, each watched by the watchdog, until Stop.
-func (n *Node) startReconcile(ctx context.Context) error {
+// firstReconcile runs the first full reconcile, start step 8. Apply calls no
+// slot yet, so the pass is handed no loop.
+func (n *Node) firstReconcile(ctx context.Context) error {
 	n.rec.again = true
-	if err := n.pass(ctx); err != nil {
-		return err
-	}
+	return n.pass(ctx, nil)
+}
+
+// startReconcile runs reconcile's loop, the status writer and the expiry
+// sweep, each watched by the watchdog, until Stop. Its part uses the
+// adapters' slots, which a pass calls, so a pass held past its bound leaves
+// the adapters open rather than stopped under it.
+func (n *Node) startReconcile(context.Context) error {
 	loopCtx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	for name, run := range map[string]func(context.Context, *health.Loop){stepReconcile: n.reconcileLoop, stepStatus: n.statusLoop, stepSweep: n.sweepLoop} {
@@ -526,6 +546,6 @@ func (n *Node) startReconcile(ctx context.Context) error {
 		cancel()
 		wg.Wait()
 		return nil
-	})
+	}, stepAdapters)
 	return nil
 }
