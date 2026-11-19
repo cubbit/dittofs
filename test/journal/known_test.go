@@ -53,9 +53,10 @@ var classOwner = map[string]string{
 var stubClass = regexp.MustCompile(`^stub: ([A-Za-z_.]+)`)
 
 // testOwner maps each test whose message names no call to the owner its
-// reason names: the recovery rows of the epic that owes them, the rows whose
-// failed call the offload epics owe, and the rows on code that has landed,
-// whose defect the burn-down owns.
+// reason names: the recovery rows of the epic that owes them, and the rows on
+// code that has landed, whose defect the burn-down owns. A row that stopped at
+// a stub runs further when the call lands and fails on its own assertion, so
+// the tables, never its issue, carry it across: retagging is by message.
 //
 // decision: one message can span owners, so the message cannot route these
 // rows. The ceiling is that a new row has no entry until someone adds it, and
@@ -63,11 +64,11 @@ var stubClass = regexp.MustCompile(`^stub: ([A-Za-z_.]+)`)
 var testOwner = map[string]string{
 	"TestRFC1A_SinceYieldsOver":                               "#3395",
 	"TestRFC1A_SyncedLossMasksSuperseded":                     "#3395",
-	"TestRFC1B_HeadroomIsAllocated":                           "#3379",
+	"TestRFC1B_HeadroomIsAllocated":                           "#3395",
 	"TestRFC1B_ReadOnlyProbe":                                 "#3395",
 	"TestRFC1B_ReadOnlyStopsTheDrain":                         "#3395",
-	"TestRFC1B_RecordsWithoutBytesAtTheLimit":                 "#3379",
-	"TestRFC1C_IncrementalReport":                             "#3379",
+	"TestRFC1B_RecordsWithoutBytesAtTheLimit":                 "#3395",
+	"TestRFC1C_IncrementalReport":                             "#3395",
 	"TestRFC1C_LossSurvivesRestart":                           "#3395",
 	"TestRFC1D_MetricsAreReachable":                           "#3395",
 	"TestRFC28A_AZeroSlotIsNotTheEnd":                         "#3596",
@@ -76,9 +77,9 @@ var testOwner = map[string]string{
 	"TestRFC28C_BadCopyDoesNotMaskAGoodOne":                   "#3395",
 	"TestRFC28C_SyncedDamageIsNotATornTail":                   "#3395",
 	"TestRFC28C_SparesAreReAdopted":                           "#3395",
-	"TestRFC28C_SpareIsWholeOrAbsent/durable_temporary_entry": "#3379",
-	"TestRFC28C_RetiredSegmentsAreRecycled":                   "#3379",
-	"TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead":        "#3379",
+	"TestRFC28C_SpareIsWholeOrAbsent/durable_temporary_entry": "#3395",
+	"TestRFC28C_RetiredSegmentsAreRecycled":                   "#3395",
+	"TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead":        "#3395",
 	"TestRFC28C_JournalGone":                                  "#3395",
 	"TestRFC28C_InterruptedInit":                              "#3395",
 	"TestDamage_LostWrites/failed_unlink":                     "#3395",
@@ -148,7 +149,7 @@ func TestFixState(t *testing.T) {
 // Every row of every known file the registry lists names its failure, since a
 // bare `stub:` matches any stub failure and the registry grades by Contains.
 // Each planned row of the journal's own file names the open epic that owns
-// its failure, and no row of trace.yaml is owned by an epic that has landed.
+// its failure, and no row of trace.yaml is owned by a superseded epic.
 func TestKnownFilesClassified(t *testing.T) {
 	reg, err := registry.Load(suitesRoot)
 	if err != nil {
@@ -186,8 +187,17 @@ func TestKnownFilesClassified(t *testing.T) {
 
 	// decision: the journal's file alone is classified. The engine's is
 	// another plan's to re-point, overturned if it is still red once its
-	// issues close, and then it joins by name.
+	// issues close, and then it joins by name. Every row of it names its
+	// failure — here, not in the bare check above, because an entry that
+	// stands for any output of the test it names is the other files' norm.
+	rows := map[string][]known.Entry{}
 	for _, e := range reg.Known[journalKnown] {
+		rows[e.Test] = append(rows[e.Test], e)
+		if strings.TrimSpace(e.Message) == "" {
+			t.Errorf("%s: %s has no message, so it stands for any output of the test; want one that names its failure",
+				journalKnown, e.Test)
+			continue
+		}
 		exempt, unknown := fixState(e.Fix)
 		if unknown {
 			t.Errorf("%s: %s carries fix: %q, which is neither planned nor wontfix, so it can neither own its failure nor be exempt from owning one",
@@ -219,11 +229,34 @@ func TestKnownFilesClassified(t *testing.T) {
 		}
 	}
 
-	// trace.yaml's owner field is free text, so a landed epic is rejected by
-	// name.
+	// The test-name table is routing machinery, so an entry that no row would
+	// ever reach fails loudly: a row whose row left the file in the change
+	// that turned it green, or one whose message is routed by its class
+	// alone.
+	for _, name := range slices.Sorted(maps.Keys(testOwner)) {
+		rs := rows[name]
+		if len(rs) == 0 {
+			t.Errorf("%s: %s has no row, but the test-name table still routes it; remove the entry with the row",
+				journalKnown, name)
+			continue
+		}
+		consulted := false
+		for _, e := range rs {
+			if stubClass.FindStringSubmatch(e.Message) == nil {
+				consulted = true
+			}
+		}
+		if !consulted {
+			t.Errorf("%s: %s is routed by its message's class alone, so the test-name table's entry for it is never consulted",
+				journalKnown, name)
+		}
+	}
+
+	// trace.yaml's owner field is free text, so a superseded epic is rejected
+	// by name.
 	//
-	// decision: only a landed epic this re-point removes is refused. The
-	// ledger's other owners map whole RFC rows, not known failures, and
+	// decision: only the superseded epic this re-point removes is refused.
+	// The ledger's other owners map whole RFC rows, not known failures, and
 	// trace_test.go holds each to a reason.
 	var trace map[string]traceEntry
 	f, err := os.Open("trace.yaml")
@@ -238,7 +271,7 @@ func TestKnownFilesClassified(t *testing.T) {
 	}
 	for _, row := range slices.Sorted(maps.Keys(trace)) {
 		if strings.Contains(trace[row].Owner, "epic 11") {
-			t.Errorf("trace.yaml: %s names the owner %q, an epic that has landed", row, trace[row].Owner)
+			t.Errorf("trace.yaml: %s names the owner %q, a superseded epic, want the work that owns it now", row, trace[row].Owner)
 		}
 	}
 }
