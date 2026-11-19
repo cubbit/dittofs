@@ -916,10 +916,25 @@ func TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved(t *testing.T) {
 	f.Clock.Advance(time.Minute)
 	within(t, "the re-append's sync reaching the seam", hold.Reached())
 
-	// the deadline is real time, since the caller's context cannot
-	// end on the test clock; the assertion is that the answer does not wait for it.
+	// The refused write parks the capacity answer behind the share seal's
+	// caller-side fsync waiting on the seam, so it is given its own bounded
+	// deadline: the bounded wait IS the assertion (the harness's allowance,
+	// for a wait no injected clock can advance), failing on its own message
+	// rather than letting a parked write hold the suite until its package
+	// timeout. On the landed design the refusal answers ErrDelay long
+	// before the deadline, inside the tenth of the caller's bound.
 	start := time.Now()
-	err := putSecond(t, f, fa, 2*mib, mib, 'c')
+	parked := make(chan error, 1)
+	go func() { parked <- putSecond(t, f, fa, 2*mib, mib, 'c') }()
+	var err error
+	select {
+	case err = <-parked:
+	case <-time.After(bound / 10):
+		// The held sync must be let go first, or the cleanup joins the
+		// parked write and the suite hangs behind the row again.
+		hold.Release()
+		t.Fatal("the refused write is still parked on the seal's sync: the capacity answer waited on the caller's own fsync")
+	}
 
 	var d *vfserr.Delay
 	if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
