@@ -63,7 +63,10 @@ func (d *dialer) Lookup(ctx context.Context, realm, dnsServer string) ([]string,
 	}
 	addrs := make([]string, 0, len(srvs))
 	for _, s := range srvs {
-		addrs = append(addrs, strings.TrimSuffix(s.Target, "."))
+		// A target of "." says the service is not available there (RFC 2782).
+		if t := strings.TrimSuffix(s.Target, "."); t != "" {
+			addrs = append(addrs, t)
+		}
 	}
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("netlogon: _ldap._tcp.dc._msdcs.%s names no controller", realm)
@@ -100,14 +103,18 @@ func ldapRecord(rec directory.Record, addr string) directory.Record {
 	if err != nil {
 		return rec // Validate refuses it at the first account call
 	}
-	host := addr
-	if strings.Contains(addr, ":") {
-		host = "[" + addr + "]"
+	port := u.Port()
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		addr = h // a port on addr is NETLOGON's, not LDAP's
 	}
-	if port := u.Port(); port != "" {
-		host = net.JoinHostPort(addr, port)
+	switch {
+	case port != "":
+		u.Host = net.JoinHostPort(addr, port)
+	case strings.Contains(addr, ":"): // with no port left, an IPv6 address
+		u.Host = "[" + addr + "]"
+	default:
+		u.Host = addr
 	}
-	u.Host = host
 	rec.Address = u.String()
 	return rec
 }
@@ -229,11 +236,8 @@ func (d *dc) Account(ctx context.Context, bind identity.JoinCredential, name str
 		return Account{}, errClosed
 	}
 	a, err := directory.ReadComputer(ctx, d.ldap, bind.User, bind.Password, name)
-	if errors.Is(err, fs.ErrNotExist) {
-		return Account{}, fmt.Errorf("%w: %w", ErrNoAccount, err)
-	}
 	if err != nil {
-		return Account{}, err
+		return Account{}, accountErr(err)
 	}
 	return Account(a), nil
 }
@@ -243,7 +247,7 @@ func (d *dc) Create(ctx context.Context, admin identity.JoinCredential, c Comput
 	if d.isClosed() {
 		return errClosed
 	}
-	return directory.CreateComputer(ctx, d.ldap, admin.User, admin.Password, directory.NewComputer(c), password)
+	return accountErr(directory.CreateComputer(ctx, d.ldap, admin.User, admin.Password, directory.NewComputer(c), password))
 }
 
 // Reset sets the computer account's password over LDAP as admin.
@@ -251,9 +255,18 @@ func (d *dc) Reset(ctx context.Context, admin identity.JoinCredential, name stri
 	if d.isClosed() {
 		return errClosed
 	}
-	err := directory.ResetComputer(ctx, d.ldap, admin.User, admin.Password, name, password)
-	if errors.Is(err, fs.ErrNotExist) {
+	return accountErr(directory.ResetComputer(ctx, d.ldap, admin.User, admin.Password, name, password))
+}
+
+// accountErr is an account call's directory error as the DC contract
+// answers it: an absent account is ErrNoAccount, and a refused bind or
+// missing right ErrRejected.
+func accountErr(err error) error {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
 		return fmt.Errorf("%w: %w", ErrNoAccount, err)
+	case errors.Is(err, directory.ErrRefused):
+		return fmt.Errorf("%w: %w", ErrRejected, err)
 	}
 	return err
 }

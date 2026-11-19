@@ -13,6 +13,7 @@ import (
 	"net"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,6 +147,39 @@ func TestLookupAsksTheDNSServerForTheLocatorRecord(t *testing.T) {
 	}
 	if name := <-asked; name != "_ldap._tcp.dc._msdcs.corp.example." {
 		t.Errorf("the DNS server was asked %q, want _ldap._tcp.dc._msdcs.corp.example.", name)
+	}
+}
+
+// A locator record whose only target is "." names no controller (RFC 2782's
+// "service not available"), so Lookup answers an error, not an empty address.
+func TestLookupSkipsAnUnavailableTarget(t *testing.T) {
+	srv, _ := serveSRV(t, dnsmessage.SRVResource{Priority: 0, Weight: 0, Port: 0, Target: dnsmessage.MustNewName(".")})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	got, err := NewDialer((&net.Dialer{}).DialContext).Lookup(ctx, "corp.example", srv)
+	if err == nil || !strings.Contains(err.Error(), "names no controller") {
+		t.Errorf("Lookup of a record targeting . = %q, %v, want the names-no-controller error", got, err)
+	}
+}
+
+// ldapRecord puts the pinned controller in the record's address under the
+// record's scheme and port, dropping a port addr carries and bracketing an
+// IPv6 address.
+func TestLDAPRecord(t *testing.T) {
+	for _, tc := range []struct{ address, addr, want string }{
+		{"ldaps://dc.corp.example:636", "10.0.0.1", "ldaps://10.0.0.1:636"},
+		{"ldaps://dc.corp.example:636", "dc1.corp.example", "ldaps://dc1.corp.example:636"},
+		{"ldaps://dc.corp.example:636", "dc1.corp.example:135", "ldaps://dc1.corp.example:636"},
+		{"ldaps://dc.corp.example:636", "fd00::1", "ldaps://[fd00::1]:636"},
+		{"ldaps://dc.corp.example:636", "[fd00::1]:135", "ldaps://[fd00::1]:636"},
+		{"ldap://dc.corp.example", "10.0.0.1", "ldap://10.0.0.1"},
+		{"ldap://dc.corp.example", "dc1.corp.example:135", "ldap://dc1.corp.example"},
+		{"ldap://dc.corp.example", "fd00::1", "ldap://[fd00::1]"},
+		{"ldap://dc.corp.example", "[fd00::1]:135", "ldap://[fd00::1]"},
+	} {
+		if got := ldapRecord(directory.Record{Address: tc.address}, tc.addr).Address; got != tc.want {
+			t.Errorf("ldapRecord(%s, %s) = %s, want %s", tc.address, tc.addr, got, tc.want)
+		}
 	}
 }
 

@@ -37,7 +37,9 @@ type DC interface {
 	// never a rejection.
 	Channel(ctx context.Context, account string, password []byte) (Channel, error)
 	// Account reads the computer account bound as bind, its names with the
-	// domain's sPNMappings applied: ErrNoAccount when absent.
+	// domain's sPNMappings applied: ErrNoAccount when absent. Account, Create
+	// and Reset answer ErrRejected when the controller refuses the bind's
+	// credentials or the rights the call needs.
 	Account(ctx context.Context, bind identity.JoinCredential, name string) (Account, error)
 	// Create creates the computer account c as admin with password in the
 	// creation itself, its host/ and cifs/ names for the short and the DNS

@@ -3,6 +3,7 @@ package directory
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io/fs"
 	"strconv"
@@ -45,6 +46,19 @@ const delegationAttr = "msDS-AllowedToActOnBehalfOfOtherIdentity"
 // SACL.
 var sdOwnerOnly = ldap.NewControlString("1.2.840.113556.1.4.801", true, "\x30\x03\x02\x01\x01")
 
+// ErrRefused is the directory's refusal of a bind's credentials, or of the
+// rights the bound account holds.
+var ErrRefused = errors.New("identity.directory: refused by the directory")
+
+// refused is err, matching ErrRefused too when the directory refused the
+// credentials or the rights.
+func refused(err error) error {
+	if ldap.IsErrorAnyOf(err, ldap.LDAPResultInvalidCredentials, ldap.LDAPResultInsufficientAccessRights, ldap.ErrorEmptyPassword) {
+		return fmt.Errorf("%w: %w", err, ErrRefused)
+	}
+	return err
+}
+
 // dialBound dials rec over DialTLS and binds as name with password.
 func dialBound(ctx context.Context, rec Record, name string, password []byte) (*ldapConn, error) {
 	c, err := DialTLS(ctx, rec)
@@ -54,7 +68,7 @@ func dialBound(ctx context.Context, rec Record, name string, password []byte) (*
 	lc := c.(*ldapConn)
 	if err := lc.Bind(ctx, name, password); err != nil {
 		_ = lc.Close()
-		return nil, fmt.Errorf("identity.directory: bind as %s: %w", name, err)
+		return nil, fmt.Errorf("identity.directory: bind as %s: %w", name, refused(err))
 	}
 	return lc, nil
 }
@@ -147,22 +161,38 @@ func sdOwner(sd []byte) (sid.SID, error) {
 func (c *ldapConn) hostMappings(ctx context.Context) ([]string, error) {
 	root, err := c.search(ctx, ldap.NewSearchRequest("", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false,
 		"(objectClass=*)", []string{"configurationNamingContext"}, nil))
-	if err != nil || len(root.Entries) != 1 {
-		return nil, fmt.Errorf("identity.directory: read the root DSE's configurationNamingContext: %v", err)
+	if err != nil {
+		return nil, fmt.Errorf("identity.directory: read the root DSE's configurationNamingContext: %w", err)
+	}
+	if len(root.Entries) != 1 {
+		return nil, fmt.Errorf("identity.directory: the root DSE search answered %d entries, want 1", len(root.Entries))
 	}
 	config := root.Entries[0].GetAttributeValue("configurationNamingContext")
 	res, err := c.search(ctx, ldap.NewSearchRequest("CN=Directory Service,CN=Windows NT,CN=Services,"+config,
 		ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"sPNMappings"}, nil))
-	if err != nil || len(res.Entries) != 1 {
-		return nil, fmt.Errorf("identity.directory: read sPNMappings under %s: %v", config, err)
+	if err != nil {
+		return nil, fmt.Errorf("identity.directory: read sPNMappings under %s: %w", config, err)
 	}
+	if len(res.Entries) != 1 {
+		return nil, fmt.Errorf("identity.directory: the sPNMappings search under %s answered %d entries, want 1", config, len(res.Entries))
+	}
+	return hostAliases(res.Entries[0].GetAttributeValues("sPNMappings")), nil
+}
+
+// hostAliases is the services the sPNMappings values map to host: each value
+// is alias,alias,...=service.
+func hostAliases(mappings []string) []string {
 	var hostTo []string
-	for _, m := range res.Entries[0].GetAttributeValues("sPNMappings") {
-		if k, v, ok := strings.Cut(m, "="); ok && strings.EqualFold(k, "host") {
-			hostTo = append(hostTo, strings.Split(v, ",")...)
+	for _, m := range mappings {
+		if k, v, ok := strings.Cut(m, "="); ok && strings.EqualFold(strings.TrimSpace(k), "host") {
+			for _, a := range strings.Split(v, ",") {
+				if a = strings.TrimSpace(a); a != "" {
+					hostTo = append(hostTo, a)
+				}
+			}
 		}
 	}
-	return hostTo, nil
+	return hostTo
 }
 
 // computersContainer is the DN of the Computers container the domain at base
@@ -170,16 +200,27 @@ func (c *ldapConn) hostMappings(ctx context.Context) ([]string, error) {
 func (c *ldapConn) computersContainer(ctx context.Context, base string) (string, error) {
 	res, err := c.search(ctx, ldap.NewSearchRequest(base, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false,
 		"(objectClass=*)", []string{"wellKnownObjects"}, nil))
-	if err != nil || len(res.Entries) != 1 {
-		return "", fmt.Errorf("identity.directory: read %s's wellKnownObjects: %v", base, err)
+	if err != nil {
+		return "", fmt.Errorf("identity.directory: read %s's wellKnownObjects: %w", base, err)
 	}
-	// Each value is B:32:<GUID>:<DN>.
-	for _, v := range res.Entries[0].GetAttributeValues("wellKnownObjects") {
-		if parts := strings.SplitN(v, ":", 4); len(parts) == 4 && strings.EqualFold(parts[2], computersGUID) {
-			return parts[3], nil
-		}
+	if len(res.Entries) != 1 {
+		return "", fmt.Errorf("identity.directory: the wellKnownObjects search at %s answered %d entries, want 1", base, len(res.Entries))
+	}
+	if dn, ok := wellKnownDN(res.Entries[0].GetAttributeValues("wellKnownObjects"), computersGUID); ok {
+		return dn, nil
 	}
 	return "", fmt.Errorf("identity.directory: %s's wellKnownObjects names no Computers container", base)
+}
+
+// wellKnownDN is the DN the wellKnownObjects values, each B:32:<GUID>:<DN>,
+// name for guid, and whether one does.
+func wellKnownDN(values []string, guid string) (string, bool) {
+	for _, v := range values {
+		if parts := strings.SplitN(v, ":", 4); len(parts) == 4 && strings.EqualFold(parts[2], guid) && parts[3] != "" {
+			return parts[3], true
+		}
+	}
+	return "", false
 }
 
 // CreateComputer creates the computer account c as adminName: its host/ and
@@ -189,9 +230,9 @@ func (c *ldapConn) computersContainer(ctx context.Context, base string) (string,
 //
 // decision: the password goes in the add itself, so Active Directory numbers
 // the account's first key version 1; an add without a password and a set
-// after it, as adcli and v1 did, numbers it 2. Whoever seals the version reads
-// the number back with ReadComputer rather than assuming either, so this line
-// alone changes if the add-then-set order is chosen.
+// after it, as adcli does, numbers it 2. The join seals key version 1, which
+// holds only while this add carries the password, and its confirm reports a
+// mismatch.
 func CreateComputer(ctx context.Context, rec Record, adminName string, adminPassword []byte, c NewComputer, password []byte) error {
 	conn, err := dialBound(ctx, rec, adminName, adminPassword)
 	if err != nil {
@@ -218,7 +259,7 @@ func CreateComputer(ctx context.Context, rec Record, adminName string, adminPass
 		return fmt.Errorf("identity.directory: computer account %s$: %w: %w", c.Name, err, fs.ErrExist)
 	}
 	if err != nil {
-		return fmt.Errorf("identity.directory: create computer account %s$ in %s: %w", c.Name, ou, err)
+		return fmt.Errorf("identity.directory: create computer account %s$ in %s: %w", c.Name, ou, refused(err))
 	}
 	return nil
 }
@@ -238,7 +279,7 @@ func ResetComputer(ctx context.Context, rec Record, adminName string, adminPassw
 	mod := ldap.NewModifyRequest(e.DN, nil)
 	mod.Replace("unicodePwd", []string{unicodePwd(password)})
 	if err := conn.during(ctx, func() error { return conn.l.Modify(mod) }); err != nil {
-		return fmt.Errorf("identity.directory: reset %s$'s password: %w", name, err)
+		return fmt.Errorf("identity.directory: reset %s$'s password: %w", name, refused(err))
 	}
 	return nil
 }
