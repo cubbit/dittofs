@@ -1487,8 +1487,9 @@ and RFC 21 carries it on the wire.
   `<NetBIOS name>\<name>` spelling below, whose domain `APISignIn.Lookup` strips
   (§8.1): a local `CORP\alice` would be one string naming two principals.
 - A local user or group name **MUST** be valid UTF-8 of at most 255 bytes,
-  hold no control character, and neither begin nor end with white space; a
-  creation or rename naming another is refused `ErrInvalid`.
+  hold no control character, and neither begin nor end with white space; the
+  store refuses a creation or rename naming another `ErrInvalid`, so every path
+  that creates a principal holds it.
 - A user and a group may share a name
   ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)); a
   name lookup always says which kind it wants.
