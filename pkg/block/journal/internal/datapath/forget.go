@@ -72,6 +72,18 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 	// everything it needs from the bare one. Overturned by a caller that must
 	// know which handle blocks, which an ErrHandleOpen carrying the handle
 	// would answer.
+	//
+	// decision: a second Forget of the tag while the first runs is refused
+	// with the wrapped ErrHandleOpen, the same answer Share reads. The mark
+	// is a set entry the first call clears on its return, so without this
+	// gate a second Forget's drop runs under a mark the first already
+	// lifted, cutting the writes of a handle a caller attached in the gap —
+	// and the engine's calls are serialised per share, not per journal, so
+	// nothing but the gate holds the two apart. The refusal is honest to
+	// retry: it ends with the first call's return, the engine's start
+	// retrying whatever time the forget took. Overturned by the forgetting
+	// mark counting calls instead of naming tags, which would let a second
+	// wait behind the first rather than answer at once.
 	c.registryMu.Lock()
 	if p := c.registry.Load(); p != nil {
 		for _, s := range *p {
@@ -80,6 +92,10 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 				return core.ErrHandleOpen
 			}
 		}
+	}
+	if c.isForgetting(tag) {
+		c.registryMu.Unlock()
+		return fmt.Errorf("datapath: a forget of tag %d is in progress: %w", tag, core.ErrHandleOpen)
 	}
 	c.markForgetting(tag)
 	c.registryMu.Unlock()
@@ -169,6 +185,26 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 	}
 	c.headroom.Drawn(draw)
 
+	// The forget record's liveness, registered the moment its bytes landed:
+	// the registration's own contract counts the record before its segment
+	// can seal — the removals register right beside their drawn append — and
+	// a record appended but unregistered leaves a window its segment may
+	// seal, retire as not-held and take with it, a crash handing the
+	// tracker back a durable forget nothing answered for while a below
+	// segment still stands with the tag's records for a rebuild to apply.
+	// The snapshot was taken at the barrier: the record is live while any
+	// segment that held the tag's records below it remains, so no retirement
+	// frees the record's own segment early, and every later error path — a
+	// refused drop, a marks refusal — still finds the record registered.
+	c.liveness.RegisterForget(reclaim.Rec{
+		Kind: format.KindForget,
+		Seg:  pl.Loc.Segment,
+		Pair: index.Numbers{Seq: seq},
+		Seq:  seq,
+		Tag:  tag,
+		Loc:  pl.Loc,
+	}, below)
+
 	// decision: nothing is dropped before the record is durable, so a
 	// failed window — the record unsynced, its segment ended — answers the
 	// error with the tag whole: the in-memory index needs no undo for a
@@ -240,20 +276,6 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 			c.retiring.Emptied(seg, pl.Loc)
 		}
 	}
-
-	// The forget record's liveness: registered against the snapshot taken at
-	// the barrier, it is live while any segment that held the tag's records
-	// below it remains, so no retirement frees the record's own segment
-	// early and a reopen with records of the tag still on disk finds the
-	// record that ends them.
-	c.liveness.RegisterForget(reclaim.Rec{
-		Kind: format.KindForget,
-		Seg:  pl.Loc.Segment,
-		Pair: index.Numbers{Seq: seq},
-		Seq:  seq,
-		Tag:  tag,
-		Loc:  pl.Loc,
-	}, below)
 
 	// The tag's accounting goes with its extents: the set's per-segment
 	// record-byte figures leave — Stats stops listing the tag while its

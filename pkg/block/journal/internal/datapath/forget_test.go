@@ -3,6 +3,7 @@ package datapath
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -565,5 +566,41 @@ func TestForgetConnectionDropsOnceNoneRemains(t *testing.T) {
 	}
 	if _, err := c.set.State(zero); err == nil {
 		t.Fatalf("the forget record's segment stayed in the set after the pass that dropped it")
+	}
+}
+
+// A second Forget of a tag whose first is still running is refused with the
+// same wrapped ErrHandleOpen a Share reads, so the second cannot clear the
+// first's mark mid-drop and cut a handle the caller attached in the gap.
+func TestForgetRefusesASecondForgetWhileOneRuns(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, forgetTag)
+	f := testFile(1)
+	publishUnder(t, c, forgetTag, f, 0, []byte("one"))
+	awaitSpares(t, c, 0)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	hold := seam.Hold(t, kit.OpWrite, "*.seg")
+	done := make(chan error, 1)
+	go func() { done <- c.Forget(context.Background(), forgetTag) }()
+	holdOrForgot(t, hold.Reached(), done)
+
+	err := c.Forget(context.Background(), forgetTag)
+	if !errors.Is(err, core.ErrHandleOpen) {
+		t.Fatalf("the second Forget while the first runs = %v, want the wrapped ErrHandleOpen", err)
+	}
+	if !strings.Contains(err.Error(), "in progress") {
+		t.Fatalf("the refusal %q does not say a forget is in progress", err)
+	}
+
+	hold.Release()
+	if err := <-done; err != nil {
+		t.Fatalf("the first Forget the choreography ran: %v", err)
+	}
+	// The mark went with the first call: the tag's own later forget runs.
+	if err := c.Forget(context.Background(), forgetTag); err != nil {
+		t.Fatalf("the forget after the first returned: %v", err)
 	}
 }
