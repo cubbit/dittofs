@@ -3,6 +3,7 @@
 package conformance
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -43,11 +44,22 @@ type driven struct {
 // registered on.
 func newDriven(tb testing.TB, t *testing.T, label string, watch bool) *driven {
 	tb.Helper()
+	return newDrivenSpares(tb, t, label, watch, 0)
+}
+
+// newDrivenSpares is newDriven on a journal whose pool keeps spares spares
+// ready, or the fixture's one per stream when spares is 0, for a sync point
+// that parks spare-making and then takes more spares than that.
+func newDrivenSpares(tb testing.TB, t *testing.T, label string, watch bool, spares int) *driven {
+	tb.Helper()
 
 	var f *journaltest.Fixture
-	if watch {
+	switch {
+	case watch && spares > 0:
+		f = journaltest.NewWith(tb, func(s *journal.Settings) { s.SpareTarget = spares })
+	case watch:
 		f = journaltest.New(tb)
-	} else {
+	default:
 		f = journaltest.NewUnwatched(tb)
 	}
 
@@ -759,11 +771,23 @@ func takeParked(t *testing.T, d *driven, zero *kit.Hold, name string) parked {
 // the crash takes it. The trailer sweep of the torn writes needs a segment
 // sealed full, whose trailer is the file's last bytes, so it alone rolls a
 // write and tells the model of it.
+//
+// decision: the open's sync of its loss records, before the retirements,
+// has no point here. A lost write leaves a torn or absent tail, which the
+// open cuts or re-appends and never records as a loss: a loss record is
+// appended only for a record the device corrupted or dropped after it was
+// synced, damage the reference model cannot excuse, so no crash of this
+// matrix puts an open into the loss pass. The order is held by
+// TestRetiringHoldsUntilTheOpenLossRecordLands and, over the emptying's own
+// seam points, by recovery.TestCrashAtEveryEmptyingStep, whose fixture
+// plants the deferred loss the copy owes. Withdraw this when the model
+// excuses a synced record the device lost.
 var syncPoints = []struct {
-	name string
-	run  func(t *testing.T, d *driven) parked
+	name   string
+	spares int // the spares the pool keeps ready, or the fixture's own when 0
+	run    func(t *testing.T, d *driven) parked
 }{
-	{"write_at", func(t *testing.T, d *driven) parked {
+	{"write_at", 0, func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
 		d.writeSynced(0, 0, 0, 64<<10)
 		w := d.write(0, 0, 64<<10, pattern("w", 64<<10))
@@ -776,7 +800,7 @@ var syncPoints = []struct {
 		}()
 		return parked{held: held, done: done}
 	}},
-	{"seal", func(t *testing.T, d *driven) parked {
+	{"seal", 0, func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
 		p, seg := idleSealParked(t, d)
 		name := segmentName(seg)
@@ -794,7 +818,7 @@ var syncPoints = []struct {
 		}
 		return p
 	}},
-	{"footer", func(t *testing.T, d *driven) parked {
+	{"footer", 0, func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
 		p, seg := idleSealParked(t, d)
 		name := segmentName(seg)
@@ -808,7 +832,7 @@ var syncPoints = []struct {
 		}
 		return p
 	}},
-	{"repack_copy", func(t *testing.T, d *driven) parked {
+	{"repack_copy", 0, func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
 		recs, _, seg := d.fill(0, 0, 64<<10)
 		d.sync(0, recs[0].id)
@@ -827,7 +851,7 @@ var syncPoints = []struct {
 			return ""
 		}}
 	}},
-	{"repack_unlink", func(t *testing.T, d *driven) parked {
+	{"repack_unlink", 0, func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
 		var recs []rec
 		var seg journal.SegmentID
@@ -863,13 +887,14 @@ var syncPoints = []struct {
 		}
 		return p
 	}},
-	{"spare_entry", func(t *testing.T, d *driven) parked {
+	{"spare_entry", 0, func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
 		// A take's refill is awaited and the journal reopened, so the pool is
 		// at its target as the open counts it and no spare-making of the
 		// open's own is in flight: the next directory sync is a refill's.
 		awaitSettledSpare(t, d.f, func() { d.writeSynced(0, 2, 0, journaltest.FixtureSegmentCap) })
 		d.f.Reopen()
+		d.f.WaitSpares()
 		before := len(segmentFiles(t, d.f))
 		held := d.f.Seam.Hold(d.tb, kit.OpSyncDir, "*")
 		recs, _, _ := d.fill(0, 0, 64<<10)
@@ -884,7 +909,7 @@ var syncPoints = []struct {
 			return ""
 		}}
 	}},
-	{"open_unproven_tail", func(t *testing.T, d *driven) parked {
+	{"open_unproven_tail", 0, func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
 		a := d.write(0, 0, 0, pattern("a", 64<<10))
 		d.write(0, 0, 64<<10, pattern("b", 64<<10))
@@ -894,7 +919,7 @@ var syncPoints = []struct {
 		go func() { done <- d.f.TryKill() }()
 		return parked{held: held, done: done}
 	}},
-	{"open_torn_tail_truncation", func(t *testing.T, d *driven) parked {
+	{"open_torn_tail_truncation", 0, func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
 		a := d.writeSynced(0, 0, 0, 64<<10)
 		d.write(0, 0, 64<<10, pattern("b", 64<<10))
@@ -903,14 +928,26 @@ var syncPoints = []struct {
 		held := d.f.Seam.Hold(d.tb, kit.OpSync, name)
 		done := make(chan error, 1)
 		go func() { done <- d.f.TryCrash(kit.TornIn(name, 32<<10)) }()
-		return parked{held: held, done: done, check: func() string {
+		p := parked{held: held, done: done, check: func() string {
 			if d.f.Seam.CallsFor(kit.OpTruncate, name) != truncates+1 {
 				return "the held sync does not follow the truncation of the torn tail"
 			}
 			return ""
 		}}
+		// The open syncs the segment to prove its unproven tail before it
+		// cuts the torn one, so the syncs ahead of the cut pass.
+		waitAtHold(t, p, "the open after a torn crash")
+		for n := 0; d.f.Seam.CallsFor(kit.OpTruncate, name) == truncates; n++ {
+			if n == maxOpenSyncs {
+				t.Fatalf("precondition: the open did not truncate %s within %d syncs of it", name, n)
+			}
+
+			p.held = holdNext(d.tb, d.f, kit.OpSync, name, p.held)
+			waitAtHold(t, p, "the open after a torn crash")
+		}
+		return p
 	}},
-	{"open_seal_after_truncation", func(t *testing.T, d *driven) parked {
+	{"open_seal_after_truncation", 0, func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
 		a := d.writeSynced(0, 0, 0, 64<<10)
 		d.write(0, 0, 64<<10, pattern("b", 64<<10))
@@ -922,11 +959,16 @@ var syncPoints = []struct {
 		go func() { done <- d.f.TryCrash(kit.TornIn(name, 32<<10)) }()
 		p := parked{held: held, done: done}
 		waitAtHold(t, p, "the open after a torn crash")
-		// A journal that syncs the truncation and the seal together is at the
-		// seal's sync already; one that syncs them apart is at the
-		// truncation's, and the next sync of the segment is the seal's.
-		if !magicAt(t, d.f, name, end, "DJS1") {
+		// The syncs of the proof of the tail and of the truncation come
+		// before the seal's; a journal that syncs the truncation and the
+		// seal together is at the seal's sync already.
+		for n := 0; !magicAt(t, d.f, name, end, "DJS1"); n++ {
+			if n == maxOpenSyncs {
+				t.Fatalf("precondition: no seal marker after the last record that verified within %d syncs of the open", n)
+			}
+
 			p.held = holdNext(d.tb, d.f, kit.OpSync, name, p.held)
+			waitAtHold(t, p, "the open after a torn crash")
 		}
 
 		p.check = func() string {
@@ -937,7 +979,7 @@ var syncPoints = []struct {
 		}
 		return p
 	}},
-	{"open_reappend", func(t *testing.T, d *driven) parked {
+	{"open_reappend", 0, func(t *testing.T, d *driven) parked {
 		other := d.writeSynced(1, 1, 0, 64<<10)
 		otherName := segmentName(entryAt(t, d.f, other.id, 0).Location.Segment)
 		a := d.write(0, 0, 0, pattern("a", 64<<10))
@@ -980,7 +1022,70 @@ var syncPoints = []struct {
 		}
 		return p
 	}},
-	{"open_spare_zeroing", func(t *testing.T, d *driven) parked {
+	{"open_unnamed_marker", 0, func(t *testing.T, d *driven) parked {
+		// The open seals the unnamed segment its tail proof cut: the marker
+		// is written, and the sync that follows is parked with the marker
+		// not yet durable.
+		p, _ := openEnding(t, d, func(s endingOpen) bool { return s.held == s.other && markerPending(t, d.f, s.other) })
+		return p
+	}},
+	{"open_emptying_copy", 0, func(t *testing.T, d *driven) parked {
+		// The emptying copies the ended segment's record into a spare; the
+		// sync that follows parks with the copy written and not durable.
+		p, _ := openEnding(t, d, func(s endingOpen) bool { return slices.Contains(copyNames(t, d.f, s, false), s.held) })
+		return p
+	}},
+	{"open_emptying_copy_seal", 0, func(t *testing.T, d *driven) parked {
+		// The copy's seal: its marker, footer and trailer written, the
+		// sync that makes them durable parked, the record already durable.
+		p, _ := openEnding(t, d, func(s endingOpen) bool { return copySealPending(t, d.f, s) })
+		return p
+	}},
+	{"open_emptying_unlink", 0, func(t *testing.T, d *driven) parked {
+		p, s := openEnding(t, d, func(s endingOpen) bool { return copySealPending(t, d.f, s) })
+		// The copy's seal passes: the next change to the directory is the
+		// unlink of the ended segment, parked before it applies.
+		removes := d.f.Seam.CallsFor(kit.OpRemove, s.u)
+		unlink := d.f.Seam.Hold(d.tb, kit.OpRemove, s.u)
+		p.held.Release()
+		p.held = unlink
+		waitAtHold(t, p, "the open after a kill")
+		p.check = func() string {
+			if len(copyNames(t, d.f, s, true)) == 0 {
+				return "no segment other than the ended one holds its record durably, so the unlink is not behind the copy"
+			}
+
+			if d.f.Seam.CallsFor(kit.OpRemove, s.u) != removes+1 {
+				return "the held call is not the unlink of the ended segment"
+			}
+			return ""
+		}
+		return p
+	}},
+	{"open_emptying_unlink_dirsync", 0, func(t *testing.T, d *driven) parked {
+		p, s := openEnding(t, d, func(s endingOpen) bool { return copySealPending(t, d.f, s) })
+		removes := d.f.Seam.CallsFor(kit.OpRemove, s.u)
+		held := d.f.Seam.Hold(d.tb, kit.OpSyncDir, "*")
+		p.held.Release()
+		p.held = held
+		p.check = func() string {
+			if d.f.Seam.CallsFor(kit.OpRemove, s.u) != removes+1 {
+				return "the held directory sync does not follow the unlink of the ended segment"
+			}
+			return ""
+		}
+		waitAtHold(t, p, "the open after a kill")
+		for n := 0; d.f.Seam.CallsFor(kit.OpRemove, s.u) == removes; n++ {
+			if n == maxRefillSyncs {
+				t.Fatalf("precondition: the open did not unlink %s within %d directory syncs", s.u, n)
+			}
+
+			p.held = holdNext(d.tb, d.f, kit.OpSyncDir, "*", p.held)
+			waitAtHold(t, p, "the open after a kill")
+		}
+		return p
+	}},
+	{"open_spare_zeroing", parkedSpares, func(t *testing.T, d *driven) parked {
 		name := recycleCrashed(t, d)
 
 		// The open after the crash re-adopts the segment and zeroes both its
@@ -1002,7 +1107,7 @@ var syncPoints = []struct {
 		wantOnlySpare(t, d.f, name)
 		return takeParked(t, d, zero, name)
 	}},
-	{"recycle_rename", func(t *testing.T, d *driven) parked {
+	{"recycle_rename", parkedSpares, func(t *testing.T, d *driven) parked {
 		// A recycle renames the retired segment and syncs the directory
 		// before it zeroes the slots; the sync is the point, held once the
 		// rename is parked, so no earlier directory sync is taken for it.
@@ -1024,7 +1129,7 @@ var syncPoints = []struct {
 		}
 		return p
 	}},
-	{"open_tmp_unlink", func(t *testing.T, d *driven) parked {
+	{"open_tmp_unlink", parkedSpares, func(t *testing.T, d *driven) parked {
 		const size = 64 << 10
 		// A spare's refill parked at its rename, its temporary entry made
 		// durable by the directory sync of a retirement, then a crash: the
@@ -1081,7 +1186,7 @@ var syncPoints = []struct {
 		}
 		return p
 	}},
-	{"failed_unlink", func(t *testing.T, d *driven) parked {
+	{"failed_unlink", 0, func(t *testing.T, d *driven) parked {
 		d.writeSynced(1, 1, 0, 64<<10)
 		a := d.writeSynced(0, 0, 0, 64<<10)
 		seg := entryAt(t, d.f, a.id, 0).Location.Segment
@@ -1127,6 +1232,118 @@ var syncPoints = []struct {
 	}},
 }
 
+// maxEndingSyncs bounds the segment syncs an open that ends a segment is
+// given before the one a sync point names: the proof of every tail, the
+// re-append's, the unnamed segment's truncation and marker, then the
+// emptying's.
+const maxEndingSyncs = 16
+
+// endingOpen names what an open over an ended segment works on: the ended
+// segment u, whose tail the device never held, the segment of file 1, which
+// the open seals unnamed, and the bytes of the record the emptying moves.
+type endingOpen struct {
+	u, other string
+	a        []byte
+	// held is the segment whose sync the open is parked at: the one whose
+	// count of syncs rose since the previous stop.
+	held string
+}
+
+// openEnding writes a synced record on file 1, a record of file 0 whose tail
+// the device never held, and kills the process with the segment's own sync
+// dropped, so the open after it ends the segment and empties it. The open is
+// parked at each sync of a segment in turn until at holds, and returned
+// parked at that sync, its check being at.
+func openEnding(t *testing.T, d *driven, at func(endingOpen) bool) (parked, endingOpen) {
+	t.Helper()
+
+	other := d.writeSynced(1, 1, 0, 64<<10)
+	a := d.write(0, 0, 0, pattern("a", 64<<10))
+	// The record is acknowledged, so the model holds it and a copy leg whose
+	// emptying retires the segment before the copy is durable sees it lost.
+	d.sync(0, a.id)
+	s := endingOpen{u: segmentName(entryAt(t, d.f, a.id, 0).Location.Segment), other: segmentName(entryAt(t, d.f, other.id, 0).Location.Segment), a: a.p}
+	deviceSync(t, d.f, s.u)
+	d.write(0, 0, 64<<10, pattern("b", 64<<10))
+	d.f.Drop(kit.OpSync, s.u)
+	held := d.f.Seam.Hold(d.tb, kit.OpSync, "*.seg")
+	done := make(chan error, 1)
+	go func() { done <- d.f.TryKill() }()
+	p := parked{held: held, done: done}
+	counts := map[string]int{}
+	stop := func() {
+		waitAtHold(t, p, "the open after a kill")
+		s.held = ""
+		for _, n := range segmentFiles(t, d.f) {
+			c := d.f.Seam.CallsFor(kit.OpSync, n)
+			if c > counts[n] {
+				s.held = n
+			}
+			counts[n] = c
+		}
+	}
+	stop()
+	for n := 0; !at(s); n++ {
+		if n == maxEndingSyncs {
+			t.Fatalf("precondition: the sync point was not reached within %d syncs of the open", n)
+		}
+
+		p.held = holdNext(d.tb, d.f, kit.OpSync, "*.seg", p.held)
+		stop()
+	}
+
+	p.check = func() string {
+		if !at(s) {
+			return "the held sync is not the one meant"
+		}
+		return ""
+	}
+	return p, s
+}
+
+// markerPending reports whether the segment file name carries a seal marker
+// that is written and not durable.
+func markerPending(t *testing.T, f *journaltest.Fixture, name string) bool {
+	t.Helper()
+	return bytes.Contains(liveBytes(t, f, name), []byte("DJS1")) && !bytes.Contains(durable(t, f, name), []byte("DJS1"))
+}
+
+// copySealPending reports whether a durable copy of the ended segment's
+// record has its seal written and not durable.
+func copySealPending(t *testing.T, f *journaltest.Fixture, s endingOpen) bool {
+	t.Helper()
+
+	for _, n := range copyNames(t, f, s, true) {
+		if n == s.held && markerPending(t, f, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// copyNames returns the segments other than the ended one that hold its
+// record, durably or, when sound is false, written and not yet durable.
+func copyNames(t *testing.T, f *journaltest.Fixture, s endingOpen, sound bool) []string {
+	t.Helper()
+
+	var names []string
+	for _, n := range segmentFiles(t, f) {
+		if n == s.u || n == s.other {
+			continue
+		}
+
+		if bytes.Contains(durable(t, f, n), s.a) == sound && (sound || bytes.Contains(liveBytes(t, f, n), s.a)) {
+			names = append(names, n)
+		}
+	}
+	return names
+}
+
+// parkedSpares is the spares the pool keeps ready for a sync point that parks
+// spare-making and then fills both streams' segments: each stream takes a
+// spare for its first segment and one to roll onto.
+const parkedSpares = 6
+
 // maxRefillSyncs bounds the directory syncs a repack is given before the
 // unlink's: one per spare its copies take.
 const maxRefillSyncs = 4
@@ -1146,11 +1363,17 @@ func TestDamage_LostWrites(t *testing.T) {
 	killed := map[string]bool{
 		"open_unproven_tail": true,
 		"open_reappend":      true,
+
+		"open_unnamed_marker":          true,
+		"open_emptying_copy":           true,
+		"open_emptying_copy_seal":      true,
+		"open_emptying_unlink":         true,
+		"open_emptying_unlink_dirsync": true,
 	}
 
 	for _, sp := range syncPoints {
 		t.Run(sp.name, func(t *testing.T) {
-			d := newDriven(t, t, sp.name, !killed[sp.name])
+			d := newDrivenSpares(t, t, sp.name, !killed[sp.name], sp.spares)
 			p := sp.run(t, d)
 			if p.check == nil {
 				p.check = func() string { return "" }
@@ -1301,6 +1524,7 @@ func reorderScript(t *testing.T, tb testing.TB, d *driven) (*kit.Hold, []pieced)
 		t.Fatalf("%s: reopen: %v", d.label, err)
 	}
 
+	d.f.WaitSpares()
 	spares := d.f.Seam.Hold(tb, kit.OpCreate, "*.spare.tmp")
 
 	d.writeSynced(0, 0, 0, size)
@@ -1342,7 +1566,7 @@ func TestDamage_ReorderedWrites(t *testing.T) {
 	var k int
 	for mask := uint64(0); ; mask++ {
 		iterate(t, func(tb testing.TB) {
-			d := newDriven(tb, t, fmt.Sprintf("the crash keeping the unsynced writes %#b", mask), true)
+			d := newDrivenSpares(tb, t, fmt.Sprintf("the crash keeping the unsynced writes %#b", mask), true, parkedSpares)
 			spares, writes := reorderScript(t, tb, d)
 
 			n := d.f.Seam.Unsynced()
@@ -1715,6 +1939,9 @@ func flipStructure(t *testing.T, s *flipSite, name string, base int64, fd field,
 
 	start := base + int64(fd.off)
 	orig := slices.Clone(durable(t, s.f, name)[start : start+int64(fd.size)])
+	if fd.size == 0 {
+		t.Fatalf("precondition: the %s of %s has no bytes, so a sweep of it flips nothing", fd.name, name)
+	}
 	for i := range fd.size {
 		for b := range uint(8) {
 			off := start + int64(i)

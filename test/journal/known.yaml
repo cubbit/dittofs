@@ -68,8 +68,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and Since yields Over; the check then reopens a journal that has run, which cannot be done until recovery lands. Needs recovery of removal markers.'
-  issue: '#3814'
+  reason: 'The journal opens and Since yields Over before the crash; the reopen after a crash before any Settle yields nothing where the removal''s marker is wanted, so the open does not recover the removal markers (RFC 1 9.4 ''removals survive''). The reopen half (R72) is owed by #4863.'
+  issue: '#4863'
   message: 'after a crash before any Settle: Since(F, 0) = map[]'
 
 - test: TestRFC1A_NoZeroFill
@@ -380,8 +380,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and reads the loss record back from disk, but an in-process reopen places it into no ring: the piece it names was taken by the running journal that appended the record, and the registry answers it named. Needs the ruling on RFC 1 3.8: whether the found-at-open ring serves an in-process reopen, or only a restart, which wipes the registry.'
-  issue: '#3814'
+  reason: 'The journal opens and reads the loss record back from disk, but an in-process reopen places it into no ring: the piece it names was taken by the running journal that appended the record, and the registry answers it named. Needs the ruling on RFC 1 3.8: whether the found-at-open ring serves an in-process reopen, or only a restart, which wipes the registry. The ruling and the reopen half (R72) are owed by #4862.'
+  issue: '#4862'
   message: '0 loss events after the reopen, want the one found at open'
 
 - test: TestRFC1C_Monotonicity
@@ -556,32 +556,32 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs failed sync windows, the re-append, recovery and the loss ring.'
-  issue: '#3814'
+  reason: 'The journal opens and the check reaches the segment it reads; it fails where Inspect().Segments() does not list that segment (ownedSegment), because the per-segment accounting that lists a journal''s segments is not built. Waits only on that accounting.'
+  issue: '#4044'
   message: 'segment 3 is not among the journal'
 
 - test: TestRFC28C_NeighboursSurvive
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and the corrupt read drops the record and reports it; the check fails where Inspect does not list the damaged segment. The segment id is an allocation the machine hands the row, so the entry matches the words the failure shares, not the id.'
-  issue: '#3814'
+  reason: 'The journal opens and the check reaches the segment it reads; it fails where Inspect().Segments() does not list that segment (ownedSegment), because the per-segment accounting that lists a journal''s segments is not built. Waits only on that accounting. The segment id is an allocation the machine hands the row, so the entry matches the words the failure shares, not the id.'
+  issue: '#4044'
   message: 'is not among the journal'
 
 - test: TestRFC28C_SyncedDamageIsNotATornTail
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery by scan with the synced-through rule, and corrupt reads.'
-  issue: '#3814'
+  reason: 'The journal opens over a segment holding synced damage and drops the record, but publishes no loss event for it: the check reads 0 loss events where it wants 1. The open''s loss records for synced damage (R71) are owed by #4859.'
+  issue: '#4859'
   message: '0 loss events, want 1'
 
 - test: TestRFC28C_Rebuild
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path and recovery that cuts and seals a torn tail. The segment the stub names is an allocation the machine hands the row: the open-grading machines answer 3 or 4 with the same failure, so the entry matches the words the failure shares, not the id.'
-  issue: '#3814'
+  reason: 'The journal opens and the check reaches the segment it reads; it fails where Inspect().Segments() does not list that segment (ownedSegment), because the per-segment accounting that lists a journal''s segments is not built. Waits only on that accounting. The segment id is an allocation the machine hands the row: the open-grading machines answer 3 or 4 with the same failure, so the entry matches the words the failure shares, not the id.'
+  issue: '#4044'
   message: 'is not among the journal'
 
 - test: TestRFC28A_AZeroSlotIsNotTheEnd
@@ -644,16 +644,16 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs catalogs, recovery by scan, and reads that check the record header against the catalog entry.'
-  issue: '#3814'
+  reason: 'The journal opens and the check reaches the segment it reads; it fails where Inspect().Segments() does not list that segment (ownedSegment), because the per-segment accounting that lists a journal''s segments is not built. Waits only on that accounting.'
+  issue: '#4044'
   message: 'segment 3 is not among the journal'
 
 - test: TestRFC28C_UnknownVersion
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
-  issue: '#3814'
+  reason: 'The journal opens and the check reaches the segment it reads; it fails where Inspect().Segments() does not list that segment (ownedSegment), because the per-segment accounting that lists a journal''s segments is not built. Waits only on that accounting.'
+  issue: '#4044'
   message: 'segment 3 is not among the journal'
 
 - test: TestRFC28C_ScanResynchronises
@@ -676,8 +676,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and its re-adopted spares reach the pool, so the half where every spare must be on disk passes. The other half fails: a segment a stream took and never synced does not come back as a spare after the crash. Needs recovery that gives a taken record-less segment back to the pool.'
-  issue: '#3814'
+  reason: 'The journal opens and its re-adopted spares reach the pool, so the half where every spare must be on disk passes. The other half fails: a segment a stream took and never synced does not come back as a spare after the crash. The record-less take''s return to the pool (R74) is owed by #4860.'
+  issue: '#4860'
   message: 'taken and never synced, is not a spare again after the crash'
 
 - test: TestRFC28C_SpareIsWholeOrAbsent/create
@@ -764,16 +764,16 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; an open with no recorded identity names the spares an earlier open left behind. Needs Open refusing a missing, emptied or replaced journal, and the identity error.'
-  issue: '#3814'
+  reason: 'The journal opens; an open with no recorded identity over a directory an earlier open ran in answers segments true where the check wants false: the spares the earlier open left behind still count. Refusing a missing, emptied or replaced journal and the identity error (R69) are owed by #4861.'
+  issue: '#4861'
   message: 'segments true, want '
 
 - test: TestRFC28C_InterruptedInit
   status: fail
   fix: planned
   category: feature
-  reason: 'The check has two legs and two needs. Its first leg, an open with no recorded identity over a directory holding only the format file that Init wrote, needs an Init-only fixture to run it — this check opens its journal first, and the open leaves finished spares behind, so the leg sees a directory that has run; that is a test change this subtask does not make. Its second leg, the reopen with the identity recorded once the journal has served, waits on recovery. The current failure is the first leg naming the spares an open leaves.'
-  issue: '#3814'
+  reason: 'The check has two legs. Its first leg, an open with no recorded identity over a directory holding only the format file that Init wrote, needs an Init-only fixture: this check opens its journal first, and the open leaves finished spares behind, so the leg sees a directory that has run and answers segments true where false is wanted; that is the failure today. Its second leg, the reopen with the identity recorded once the journal has served, is not reached. The unidentified-directory half (R69) is owed by #4861.'
+  issue: '#4861'
   message: 'segments true, want '
 
 - test: TestRFC28C_FormatFile
@@ -788,7 +788,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens and the leg reaches its sync point; it fails on the stub of Repack, which the point drives. Needs Repack.'
   issue: '#3815'
   message: 'stub: repack_copy'
 
@@ -796,65 +796,41 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens and the leg reaches its sync point; it fails on the stub of Repack, which the point drives. Needs Repack.'
   issue: '#3815'
   message: 'stub: the repack'
-
-- test: TestDamage_LostWrites/open_torn_tail_truncation
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The open proves the unproven tail; no truncation of the torn tail follows, for the teardown of a torn tail at the open is not built. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
-  issue: '#3814'
-  message: 'precondition: the held call is not the sync point meant: the held sync does not follow the truncation of the torn tail'
-
-- test: TestDamage_LostWrites/open_seal_after_truncation
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The open proves the unproven tail and refuses before the torn tail is truncated and sealed: the teardown of a torn tail at the open is not built. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
-  issue: '#3814'
-  message: 'precondition: the held call is not the sync point meant: no seal marker after the last record that verified'
 
 - test: TestDamage_LostWrites/open_spare_zeroing
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens and the leg reaches its sync point; it fails on the stub of Repack, which the point drives. Needs Repack.'
   issue: '#3815'
-  message: 'open_spare_zeroing: model: model: write file 66696c652d3030303030303030303031: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
+  message: 'stub: the repack'
 
 - test: TestDamage_LostWrites/recycle_rename
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens and the leg reaches its sync point; it fails on the stub of Repack, which the point drives. Needs Repack.'
   issue: '#3815'
-  message: 'recycle_rename: model: model: write file 66696c652d3030303030303030303031: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
+  message: 'stub: the repack'
 
 - test: TestDamage_LostWrites/open_tmp_unlink
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens and the leg reaches its sync point; it fails on the stub of Repack, which the point drives. Needs Repack.'
   issue: '#3815'
-  message: 'open_tmp_unlink: model: model: write file 66696c652d3030303030303030303030: returned journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing, which the model has no rule for: the journal did what the RFC does not allow'
+  message: 'stub: Repack'
 
 - test: TestDamage_LostWrites/failed_unlink
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the leg fails at its precondition, where the inspector does not list the failed segment it reads. Needs the inspector listing a failed segment, and Repack.'
   issue: '#3815'
   message: 'segment 4 is not among the journal''s'
-
-- test: TestDamage_ReorderedWrites
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the data path, writes split at the cap, recovery and the reference model agreeing after each subset.'
-  issue: '#3814'
-  message: 'the crash keeping the unsynced writes'
 
 - test: TestDamage_BitFlip/record_header/magic
   status: fail
