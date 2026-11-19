@@ -250,9 +250,11 @@ func TestDecide(t *testing.T) {
 }
 
 // hashTree hashes root's whole tree — relative paths, sizes, then contents,
-// in sorted order, skipping nothing — so any file created, changed, removed
-// or renamed under root changes it.
-func hashTree(t *testing.T, root string) string {
+// in sorted order — so any file created, changed, removed or renamed under
+// root changes it. A path named in skip, and everything under it, is left out:
+// for a subtree a collaborator of the code under test rewrites on its own
+// close, whose bytes say nothing about what the code did.
+func hashTree(t *testing.T, root string, skip ...string) string {
 	t.Helper()
 	h := sha256.New()
 	var walk func(dir, rel string)
@@ -267,6 +269,9 @@ func hashTree(t *testing.T, root string) string {
 				name = rel + "/" + e.Name()
 			}
 			p := filepath.Join(dir, e.Name())
+			if slices.Contains(skip, p) {
+				continue
+			}
 			if e.IsDir() {
 				h.Write([]byte(name + "/"))
 				walk(p, name)

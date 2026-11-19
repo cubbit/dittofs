@@ -288,7 +288,7 @@ func (n *Node) refuse(ctx context.Context) error {
 		switch {
 		case errors.As(err, &id):
 			if id.Installation != journal.InstallationID(in.ID) {
-				return fmt.Errorf("the journal in %s belongs to installation %x, and the metadata store to installation %x", dir, id.Installation, in.ID)
+				return fmt.Errorf("the journal %x in %s belongs to installation %x, and the metadata store to installation %x", id.Found, dir, id.Installation, in.ID)
 			}
 		case errors.Is(err, journal.ErrNoJournal):
 		default:

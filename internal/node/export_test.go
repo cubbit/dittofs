@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"testing"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/sidecar"
@@ -19,6 +20,12 @@ import (
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
+
+// HashTree hashes root's whole tree — relative paths, sizes, then contents —
+// so the node's outside tests can compare a directory byte for byte across a
+// start that must touch nothing. The paths named in skip are left out, with
+// everything under them.
+func HashTree(t *testing.T, root string, skip ...string) string { return hashTree(t, root, skip...) }
 
 // LiveStateBound is how long step 3 of a share's removal waits.
 const LiveStateBound = liveStateBound
