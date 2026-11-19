@@ -326,6 +326,7 @@ func TestNetlogonWire(t *testing.T) {
 	waitForMachinePassword(t, dcIP, "dittofs", machineAccountPass)
 	rec, ca := dcRecord(t)
 	seed := &sambaDCSeeder{conn: adminLDAP(t, dcIP, ca)}
+	pwd := func() []byte { return []byte("Dc1!" + randomHex() + randomHex()) }
 
 	// start stages a computer account and a user, and opens the controller
 	// through a wire with rules.
@@ -333,9 +334,9 @@ func TestNetlogonWire(t *testing.T) {
 		t.Helper()
 		seed.Reset(t)
 		t.Cleanup(func() { seed.Reset(t) })
-		name, pw := "DCT"+randomHex(), []byte("Dc1!"+randomHex()+randomHex())
+		name, pw := "DCT"+randomHex(), pwd()
 		seed.StageComputer(t, identitytest.StagedComputer{Name: name, Password: pw, EncTypes: 0x18})
-		user, upw := "dcu"+randomHex(), []byte("Dc1!"+randomHex()+randomHex())
+		user, upw := "dcu"+randomHex(), pwd()
 		seed.AddUser(t, user, upw)
 		w := newWire(t, name, pw, rules...)
 		dc, err := netlogon.NewDialer(w.DialContext).Dial(context.Background(), rec, dcIP)
@@ -407,11 +408,12 @@ func TestNetlogonWire(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		flip flip
+		want string
 	}{
 		// NetrServerAuthenticate3's reply: ServerCredential at 0, then
 		// NegotiateFlags at 8, little-endian, AES_SHA2 being 0x01000000.
-		{"a server credential that does not verify", flip{off: 0, mask: 0x01}},
-		{"a reply negotiating no AES", flip{off: 8 + 3, mask: 0x01}},
+		{"a server credential that does not verify", flip{off: 0, mask: 0x01}, "server credential does not verify"},
+		{"a reply negotiating no AES", flip{off: 8 + 3, mask: 0x01}, "negotiated no AES"},
 	} {
 		t.Run(tc.name+" refuses the channel", func(t *testing.T) {
 			dc, w, name, pw, user, upw := start(t, sim.Rule{Op: "reply", Key: "Authenticate3", Count: 1,
@@ -421,6 +423,8 @@ func TestNetlogonWire(t *testing.T) {
 				_ = logonAs(ch, name, user, upw)
 				_ = ch.Close()
 				t.Errorf("secure channel after %s: set up, want refused", tc.name)
+			} else if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("secure channel after %s: err %v, want %q", tc.name, err, tc.want)
 			}
 			if got := w.sealed(); len(got) != 0 {
 				t.Errorf("after %s the client sent %d PDUs under the Netlogon authentication, want none", tc.name, len(got))
@@ -474,8 +478,8 @@ func TestNetlogonWire(t *testing.T) {
 		dc, w, name, pw, _, _ := start(t, sim.Rule{Op: "reply", Key: "PasswordSet2", Count: 1,
 			Action: sim.FaultAction{Err: flip{off: 0, mask: 0x01}}})
 		ch := channel(t, dc, name, pw)
-		if err := ch.SetPassword(ctx, []byte("Dc1!"+randomHex()+randomHex())); err == nil {
-			t.Error("SetPassword with a return authenticator altered under the seal: accepted, want an error")
+		if err := ch.SetPassword(ctx, pwd()); err == nil || !strings.Contains(err.Error(), "return authenticator") {
+			t.Errorf("SetPassword with a return authenticator altered under the seal: err %v, want the return authenticator refused", err)
 		}
 		if n := len(w.requests(opPasswordSet2)); n != 1 {
 			t.Errorf("%d NetrServerPasswordSet2 requests, want 1", n)
