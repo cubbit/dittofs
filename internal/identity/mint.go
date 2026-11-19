@@ -20,10 +20,10 @@ var mintsSpec = metrics.Spec{
 }
 
 // unnamedSpec counts the records minted without their name because another
-// principal of their kind held it.
+// principal of their kind held it or the name rule refuses it.
 var unnamedSpec = metrics.Spec{
 	Name:   "identity_mints_unnamed_total",
-	Help:   "Principal records minted without their name, which another principal held, by kind.",
+	Help:   "Principal records minted without their name, which another principal held or the name rule refuses, by kind.",
 	Labels: []string{"kind"},
 }
 
@@ -200,7 +200,8 @@ func (s *Server) held(ctx context.Context, kind entity.PrincipalKind, p entity.P
 }
 
 // countMints counts each record of a committed batch by its kind, and logs
-// each record this call unnamed, naming the principal holding its name.
+// each record this call unnamed, naming the principal holding its name, or,
+// with no holder, as one whose name the name rule refuses.
 func (s *Server) countMints(ctx context.Context, b entity.MintBatch, marked map[string]entity.Principal) {
 	count := func(p entity.Principal, ids entity.ProtocolIDs, name string, unnamed bool) {
 		kind := p.Kind.String()
@@ -212,6 +213,9 @@ func (s *Server) countMints(ctx context.Context, b entity.MintBatch, marked map[
 		if holder, ok := marked[markKey(p.Kind, ids, name)]; ok {
 			s.logger.WarnContext(ctx, "identity: principal minted without its name, which another holds",
 				"kind", kind, "principal", p.ID.String(), "holder", holder.ID.String())
+		} else {
+			s.logger.WarnContext(ctx, "identity: principal minted without its name, which the name rule refuses",
+				"kind", kind, "principal", p.ID.String())
 		}
 	}
 	for _, r := range b.Users {
