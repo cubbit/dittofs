@@ -1,12 +1,18 @@
 package commands
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/spf13/cobra"
 )
 
@@ -16,8 +22,9 @@ func newStartCmd() *cobra.Command {
 		Short: "Start the DittoFS server",
 		Long: `Start the DittoFS server in the foreground with the specified configuration.
 
-The server runs until it is stopped. Run it under a process supervisor
-(systemd, Docker) to keep it in the background.
+The server runs until it receives SIGINT or SIGTERM, then stops and exits
+zero once every part stopped. Run it under a process supervisor (systemd,
+Docker) to keep it in the background.
 
 Examples:
   # Start with the default configuration
@@ -33,30 +40,82 @@ Examples:
 	}
 }
 
+// runStart reads the bootstrap, refuses v1's control-plane database, opens
+// the metadata store's KV, builds and starts the node, and stops it on
+// SIGINT or SIGTERM. Each error names the step that failed.
 func runStart(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
+	// The handler is installed first, so a signal while the store opens or
+	// the node is built stops the start rather than killing the process;
+	// Start then returns at once and the node is stopped.
+	base := cmd.Context()
+	ctx, unnotify := signal.NotifyContext(base, syscall.SIGINT, syscall.SIGTERM)
+	defer unnotify()
+	// Once a signal arrived, a second one ends the process at once.
+	context.AfterFunc(ctx, unnotify)
 
 	cfg, err := bootstrap.MustLoad(configPath, os.Environ())
 	if err != nil {
 		return err
 	}
-
 	if err := bootstrap.InitLogger(cfg); err != nil {
 		return err
 	}
-	// The KV, the clock and the metrics registry join the node's
-	// configuration once the start command opens the host's store; until
-	// then New refuses.
-	n, err := node.New(node.Config{Bootstrap: *cfg, Logger: slog.Default()})
+	if configPath == "" {
+		configPath = bootstrap.GetDefaultConfigPath()
+	}
+	clock := newSystemClock()
+	v1 := append([]string{filepath.Join(filepath.Dir(configPath), "controlplane.db")}, v1Databases()...)
+	kv, err := openKV(cfg, clock, v1...)
+	if err != nil {
+		return fmt.Errorf("opening the metadata store: %w", err)
+	}
+	n, err := node.New(node.Config{
+		Bootstrap: *cfg,
+		KV:        kv,
+		Clock:     clock,
+		Metrics:   metrics.New(Version, Commit),
+		Logger:    slog.Default(),
+	})
 	if err != nil {
 		return fmt.Errorf("building the node: %w", err)
 	}
-	ctx := cmd.Context()
-	if err := n.Start(ctx); err != nil {
-		return fmt.Errorf("starting the node: %w", err)
+
+	startErr := n.Start(ctx)
+	if startErr == nil {
+		<-ctx.Done()
 	}
-	// ponytail: Stop runs at once, because New refuses until this command
-	// opens the host's KV and metrics registry, so no node gets here yet.
-	// Wait for a termination signal before Stop once this command does.
-	return n.Stop(ctx)
+	signalled := ctx.Err() != nil && base.Err() == nil
+	if signalled {
+		if startErr != nil {
+			slog.Info("dfs: the start ended on a termination signal", "err", startErr)
+		}
+		slog.Info("dfs: stopping on a termination signal")
+	}
+	stopErr := n.Stop(base)
+	if stopErr == nil {
+		slog.Info("dfs: stopped")
+	}
+	return answer(startErr, signalled, stopErr)
+}
+
+// answer is the command's error once the node stopped: a Start that failed
+// for any reason but a termination signal, naming its step, joined with
+// Stop's; otherwise Stop's alone, so a signal exits zero once every part
+// stopped.
+func answer(startErr error, signalled bool, stopErr error) error {
+	if startErr != nil && !signalled {
+		return errors.Join(fmt.Errorf("starting the node: %w", startErr), stopped(stopErr))
+	}
+	return stopped(stopErr)
+}
+
+// stopped is the command's answer to Stop's error: nil when every part
+// stopped, else the error naming the stop step that failed or missed its
+// bound, which exits non-zero.
+func stopped(err error) error {
+	if err != nil {
+		return fmt.Errorf("stopping the node: %w", err)
+	}
+	return nil
 }

@@ -268,6 +268,42 @@ func nodeImporters(root string) ([]string, error) {
 	return bad, err
 }
 
+// startFiles are the files of dfs start's run, and startAllowed what of this
+// module they may import: the node, the bootstrap, Badger and the metrics
+// registry. The command reads the bootstrap and opens the KV and the
+// registry, and the node builds every component. start.go is the one file of
+// them that imports the node, so nodeImporters names only it.
+var (
+	startFiles   = []string{"cmd/dfs/commands/clock.go", "cmd/dfs/commands/kv.go", "cmd/dfs/commands/preflight.go", "cmd/dfs/commands/start.go"}
+	startAllowed = []string{"internal/node", "pkg/bootstrap", "pkg/metadata/kv/badgerkv", "pkg/metrics"}
+)
+
+// startImports returns each import of this module by one of startFiles
+// outside startAllowed, and each of startFiles missing under root, so that a
+// file renamed away cannot leave the rule passing over nothing.
+func startImports(root string) ([]string, error) {
+	var bad []string
+	seen := map[string]bool{}
+	err := walkImports(root, false, func(file string, imports []string) {
+		if !slices.Contains(startFiles, file) {
+			return
+		}
+		seen[file] = true
+		for _, imp := range imports {
+			if rel, ok := strings.CutPrefix(imp, module); ok && !slices.Contains(startAllowed, rel) {
+				bad = append(bad, file+" imports "+imp)
+			}
+		}
+	})
+	for _, f := range startFiles {
+		if !seen[f] {
+			bad = append(bad, f+" is missing")
+		}
+	}
+	slices.Sort(bad)
+	return bad, err
+}
+
 // enginewireImporters returns each non-test file under root that imports
 // enginewire outside the two packages its package doc names: the node and
 // enginetest.
@@ -382,6 +418,10 @@ func TestImportRules(t *testing.T) {
 				"internal/cli/cli_test.go imports the node",
 				"internal/node/nodetest2/harness.go imports the node",
 			}},
+		{"what dfs start imports", startImports, "start-imports",
+			[]string{"cmd/dfs/commands/kv.go imports " + module + "pkg/metadata/kvstore"}},
+		{"a file of dfs start renamed away", startImports, "start-imports-missing",
+			[]string{"cmd/dfs/commands/preflight.go is missing"}},
 		{"who imports enginewire", enginewireImporters, "enginewire-importers",
 			[]string{"pkg/vfs/vfs.go imports enginewire"}},
 		{"the CLI's closure", cliClosure, "cli-closure",
