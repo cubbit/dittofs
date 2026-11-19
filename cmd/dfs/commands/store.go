@@ -11,8 +11,8 @@ import (
 )
 
 // v1Databases are where v1 kept its control-plane database by default: the
-// Kubernetes operator's path and the Docker image's state volume. A start
-// refuses one at either, wherever its bootstrap file is.
+// Kubernetes operator's path and the Docker image's state volume. refuseV1
+// looks for a file at each, wherever the bootstrap file is.
 func v1Databases() []string {
 	return []string{"/data/controlplane/controlplane.db", "/data/state/controlplane.db"}
 }
@@ -20,7 +20,8 @@ func v1Databases() []string {
 // openKV opens the metadata store's KV the bootstrap names, after refusing a
 // backend this build does not open, a store directory that is not set or
 // does not exist, so that a typo creates no empty store, a bootstrap naming
-// no node, and v1's control-plane database at any of v1. It opens nothing
+// no node, and, as refuseV1's preflight check, a v1 deployment's database at
+// any of v1. It opens nothing
 // before every refusal has passed.
 func openKV(cfg *bootstrap.Bootstrap, clock systemClock, v1 ...string) (*badgerkv.Store, error) {
 	if b := cfg.Metadata.Backend; b != "" && b != "badger" {
@@ -47,8 +48,12 @@ func openKV(cfg *bootstrap.Bootstrap, clock systemClock, v1 ...string) (*badgerk
 	return badgerkv.Open(badgerkv.Options{Dir: dir, NodeID: cfg.Node.ID, Clock: clock.Now})
 }
 
-// refuseV1 refuses a start when v1's control-plane database is at any of
-// paths, naming it, and when one of paths cannot be checked.
+// refuseV1 is a preflight check only: it keeps this version from starting
+// over a v1 deployment's data directory, where it would open a new, empty
+// metadata store beside v1's configuration and serve none of it. It reads,
+// opens and migrates nothing: this version never reads v1's database, and a
+// file at one of paths only stops the start, naming it, as does a path it
+// cannot check.
 func refuseV1(paths ...string) error {
 	for _, p := range paths {
 		_, err := os.Stat(p)
