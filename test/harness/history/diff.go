@@ -24,8 +24,9 @@ func (c Change) Delta() time.Duration { return c.B - c.A }
 // they took in B, the largest increase first.
 type Delta struct{ Cells, Tests []Change }
 
-// Diff compares what a and b ran. A test is the one of its cell with its
-// title, and several results of it in one cell add up. Tests holds those
+// Diff compares what a and b ran, each the jobs of one or several workflow
+// runs, of which a cell's or test's median is taken. A test is the one of its
+// cell with its title, and several results of it in one cell add up. Tests holds those
 // that took at least floor longer or shorter, and those in one side only that
 // took at least floor there, at most top of them, the largest increase first;
 // top <= 0 keeps them all. Cells holds every cell either side ran, which one
@@ -50,21 +51,53 @@ func Diff(a, b []report.Run, floor time.Duration, top int) Delta {
 
 type key struct{ cell, test string }
 
-// times are the time of each cell and of each test of each cell in runs.
+// times are the time of each cell and of each test of each cell in runs: in
+// each workflow run (the runs of one name, its jobs) they add up, and across
+// workflow runs the median is taken, of those that ran it, so one run made
+// slow by its runner does not move the result.
 func times(runs []report.Run) (cells, tests map[key]time.Duration) {
-	cells, tests = map[key]time.Duration{}, map[key]time.Duration{}
+	perRun := map[string]map[key]time.Duration{} // by workflow run, then key; cells have no test
 	for _, r := range runs {
+		m := perRun[r.Name]
+		if m == nil {
+			m = map[key]time.Duration{}
+			perRun[r.Name] = m
+		}
 		for _, c := range r.Cells {
 			if c.Result == report.Skipped {
 				continue
 			}
-			cells[key{cell: c.Name}] += c.Took
+			m[key{cell: c.Name}] += c.Took
 			for _, t := range c.Tests {
-				tests[key{c.Name, t.Title()}] += t.Duration
+				m[key{c.Name, t.Title()}] += t.Duration
 			}
 		}
 	}
+	all := map[key][]time.Duration{}
+	for _, m := range perRun {
+		for k, d := range m {
+			all[k] = append(all[k], d)
+		}
+	}
+	cells, tests = map[key]time.Duration{}, map[key]time.Duration{}
+	for k, ds := range all {
+		if k.test == "" {
+			cells[k] = median(ds)
+		} else {
+			tests[k] = median(ds)
+		}
+	}
 	return cells, tests
+}
+
+// median is the middle of ds, or the mean of the two middle ones.
+func median(ds []time.Duration) time.Duration {
+	slices.Sort(ds)
+	n := len(ds)
+	if n%2 == 1 {
+		return ds[n/2]
+	}
+	return (ds[n/2-1] + ds[n/2]) / 2
 }
 
 // changes are the keys of a and b that moved by at least floor, sorted by Delta, largest first.
