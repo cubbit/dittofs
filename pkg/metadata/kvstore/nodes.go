@@ -3,6 +3,7 @@ package kvstore
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"iter"
 	"maps"
 	"slices"
@@ -228,6 +229,73 @@ func (n Nodes) NodeRecords(ctx context.Context, after entity.NodeID) iter.Seq2[e
 			}
 		}
 	}
+}
+
+var _ entity.SettingsReader = Nodes{}
+
+// AllSettings lists every scope's settings in key order, resuming after the
+// setting after names, one read transaction per page, so a write between two
+// pages shows only in a page read after it. The zero key starts from the
+// first, with no cursor, so a row whose key does not parse is yielded too.
+//
+// decision: a row that does not decode is yielded with an error wrapping
+// entity.ErrBadRow and the cause, its Setting carrying the scope and key when
+// the row's key parses, and the listing goes on, because a record that does
+// not validate stops only what it configures (RFC 13 §6). Any other error is
+// the scan failing: it is yielded as it is and ends the listing.
+func (n Nodes) AllSettings(
+	ctx context.Context,
+	after entity.SettingKey,
+) iter.Seq2[entity.Setting, error] {
+	type row struct {
+		s   entity.Setting
+		err error
+	}
+
+	var cursor []byte
+	if after != (entity.SettingKey{}) {
+		cursor = settingKey(after.Scope, after.Key)
+	}
+
+	// load never fails, so pages ends the listing only on a scan error.
+	rows := pages(
+		ctx,
+		n.s.kv,
+		[]byte{keys.KindCFG},
+		cursor,
+		func(_ kv.Reader, kvp kv.KeyValue) (row, error) {
+			scope, key, err := settingAt(kvp.Key)
+			if err != nil {
+				return row{err: badRow(err)}, nil
+			}
+
+			s, err := decodeSetting(scope, key, kvp.Value)
+			if err != nil {
+				return row{s: entity.Setting{Scope: scope, Key: key}, err: badRow(err)}, nil
+			}
+
+			return row{s: s}, nil
+		},
+	)
+
+	return func(yield func(entity.Setting, error) bool) {
+		for r, err := range rows {
+			if err != nil {
+				yield(entity.Setting{}, err)
+
+				return
+			}
+
+			if !yield(r.s, r.err) {
+				return
+			}
+		}
+	}
+}
+
+// badRow wraps err, why a setting row does not decode, in entity.ErrBadRow.
+func badRow(err error) error {
+	return fmt.Errorf("%w: %w", entity.ErrBadRow, err)
 }
 
 // Record is one record List yields: its Setting or its Share, as the kind

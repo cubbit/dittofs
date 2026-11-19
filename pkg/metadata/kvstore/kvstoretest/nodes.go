@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 const bothRoles = entity.NodeRoleProtocol | entity.NodeRoleStorage
@@ -281,5 +282,130 @@ func testListSharesAcrossRename(t *testing.T, kvo Opener) {
 	}
 	if len(seen) != n {
 		t.Errorf("shares listed: got %d, want %d", len(seen), n)
+	}
+}
+
+// seedSettings writes n settings at installation scope and n at a node's
+// scope, keys k000 upwards, and returns the node's scope and every key in
+// the order a listing of every scope yields them.
+func seedSettings(
+	t *testing.T,
+	cp kvstore.ControlPlane,
+	n int,
+) (entity.SettingScope, []entity.SettingKey) {
+	t.Helper()
+
+	nodeScope := entity.SettingScope{Kind: entity.ScopeNode, ID: uuid.New()}
+
+	var want []entity.SettingKey
+
+	for _, scope := range []entity.SettingScope{instScope, nodeScope} {
+		for i := range n {
+			k := entity.SettingKey{Scope: scope, Key: fmt.Sprintf("k%03d", i)}
+			putSetting(t, cp, k)
+			want = append(want, k)
+		}
+	}
+
+	return nodeScope, want
+}
+
+// putSetting writes a new setting under k, its value settingValue's.
+func putSetting(t *testing.T, cp kvstore.ControlPlane, k entity.SettingKey) {
+	t.Helper()
+
+	s := entity.Setting{Scope: k.Scope, Key: k.Key, Value: settingValue(k)}
+	must(t, errOf(cp.PutSetting(ctx, s, 0)))
+}
+
+// sameKeys fails the test, naming what, unless got and want hold the same
+// keys in the same order.
+func sameKeys(t *testing.T, what string, got, want []entity.SettingKey) {
+	t.Helper()
+
+	if slices.Equal(got, want) {
+		return
+	}
+
+	i := 0
+	for i < min(len(got), len(want)) && got[i] == want[i] {
+		i++
+	}
+
+	t.Errorf("%s: got %d keys, want %d, first difference at %d: got %v, want %v",
+		what, len(got), len(want), i, got[i:min(i+1, len(got))], want[i:min(i+1, len(want))])
+}
+
+// settingValue is the value seedSettings writes under k.
+func settingValue(k entity.SettingKey) []byte {
+	return fmt.Appendf(nil, "%v/%s", k.Scope.Kind, k.Key)
+}
+
+// settingKeys lists every scope's settings after after, failing on any
+// error or on a value other than the one seedSettings writes, and returns
+// their keys.
+func settingKeys(t *testing.T, nodes kvstore.Nodes, after entity.SettingKey) []entity.SettingKey {
+	t.Helper()
+
+	var got []entity.SettingKey
+
+	for s, err := range nodes.AllSettings(ctx, after) {
+		must(t, err)
+
+		k := entity.SettingKey{Scope: s.Scope, Key: s.Key}
+		if !bytes.Equal(s.Value, settingValue(k)) {
+			t.Errorf("setting %v: value %q, want %q", k, s.Value, settingValue(k))
+		}
+
+		got = append(got, k)
+	}
+
+	return got
+}
+
+// Every scope's settings are listed once, in key order, over more than one
+// page, the zero key starting from the first.
+func testAllSettingsPages(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	_, want := seedSettings(t, s.ControlPlane(), 150)
+
+	got := settingKeys(t, s.Nodes(), entity.SettingKey{})
+	sameKeys(t, "every setting from the zero key", got, want)
+}
+
+// Each page is its own read: a write landing in a page already read is not
+// listed, and one landing in a later page is.
+func testAllSettingsWriteBetweenPages(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	nodeScope, want := seedSettings(t, cp, 150)
+	early := entity.SettingKey{Scope: instScope, Key: "k000a"} // in the first page
+	late := entity.SettingKey{Scope: nodeScope, Key: "k200"}   // past the first page
+
+	var got []entity.SettingKey
+
+	for st, err := range s.Nodes().AllSettings(ctx, entity.SettingKey{}) {
+		must(t, err)
+
+		if len(got) == 0 {
+			putSetting(t, cp, early)
+			putSetting(t, cp, late)
+		}
+
+		got = append(got, entity.SettingKey{Scope: st.Scope, Key: st.Key})
+	}
+
+	sameKeys(t, "settings with a write between pages", got, append(want, late))
+}
+
+// A listing resumed after any key it yielded, a page's last among them,
+// yields exactly the keys after it.
+func testAllSettingsResumes(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	_, keys := seedSettings(t, s.ControlPlane(), 150)
+
+	for _, i := range []int{0, 255, 299} {
+		what := fmt.Sprintf("settings after key %d", i)
+		sameKeys(t, what, settingKeys(t, s.Nodes(), keys[i]), keys[i+1:])
 	}
 }
