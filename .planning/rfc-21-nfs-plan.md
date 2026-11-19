@@ -73,8 +73,8 @@ then): A1, RFC 20's compound runner asking a `READ`'s hook again before it runs 
 RFC 17 call marking a back channel down (#5090 1.5); A3, RFC 17's admission skipping the minimums
 for NLM, `MNT` and `EXPORT` (#5090 2.3); A4, RFC 17's listing carrying the share's cookie verifier.
 **Pending Marco:** who records RFC 21 §14's six `nfs_*` series (§6.1, point 5; #5090 (a)).
-**Pending the user's answer:** D10, D11 and D12 (§4.2, §6.1). **Decision needed on the layout**
-(§4.1), which RFC 20 §2.5 does not fully place (§6.2, point 9).
+**Settled with the user:** D10, D11 and D12 (§4.2), and the layout (§4.1), which RFC 20 §2.5 does
+not fully place (§6.2, point 9).
 
 ## 1. Introduction
 
@@ -449,8 +449,7 @@ Figures are man-days from S2.
   against knfsd alone, its DittoFS side waits for S5, and if S5 is late the track fills with E16's
   in-process rows as their epics allow. 76 man-days.
 - **Track B: E4, E7, E11, E13, and E2's service halves as soon as S2b holds.** NFSv3 and MOUNT, then
-  identity's NFS side, then NLM and NSM, then RPCSEC_GSS. E4 comes first so S3 holds at 23 (D12,
-  pending); E7 follows, ending at 38, before track C reaches E6 at 47; E13 starts at 59 and needs
+  identity's NFS side, then NLM and NSM, then RPCSEC_GSS. E4 comes first so S3 holds at 23 (D12); E7 follows, ending at 38, before track C reaches E6 at 47; E13 starts at 59 and needs
   S6c, RFC 22's plan's `gss`, and S6b for its signed-in rows, which, if late, leave E13's table
   and refusals done and its sign-in rows waiting. 75 man-days.
 - **Track C: E5, E9, E6, E12.** The NFSv4 namespace and data path, then opens, stateids and locks on
@@ -491,7 +490,7 @@ internal/adapter/
     protocol/                 RFC 20's E6: Router, Tables, stages; E1: State; E10: the Router's demux of replies on a back channel
       auth.go                 E3: credentials to Identity, the AUTH_SYS and AUTH_NONE Security stage
       tls.go                  E3: the AUTH_TLS probe and StartTLS
-      drc.go                  E3: the NFSv3 and NFSv4.0 duplicate-request cache (D10, pending)
+      drc.go                  E3: the NFSv3 and NFSv4.0 duplicate-request cache (D10)
       sessions.go             E8: the session registry, Pending proposals (D7)
       slots.go                E8: the Replay stage: SEQUENCE's slot read before dispatch, slot tables, reply caches
       owners.go               E9: NFSv4.0 owners' last replies (D8)
@@ -560,20 +559,19 @@ them.
 - **D9. `CB_NOTIFY_LOCK` is not sent.** RFC 21 §5.5 makes it optional and the poll decides; a client
   that asked for it polls anyway. Prior art: knfsd sends it, Linux clients poll regardless (from
   memory). Applied in E10; its row is in §6.6.
-- **D10. An NFSv3 and NFSv4.0 duplicate-request cache, pending the user's answer.** RFC 21 §15
-  question 5 and RFC 20 §11 question 2 leave it open, and RFC 20's plan's ledger gives it here. As
-  written: a bounded per-node cache in NFS's `Replay` stage (`core`'s `ReplayCache`), keyed by RFC 21
+- **D10. An NFSv3 and NFSv4.0 duplicate-request cache.** RFC 21 §15
+  question 5 and RFC 20 §11 question 2 leave it open, and RFC 20's plan's ledger gives it here. The
+  choice: a bounded per-node cache in NFS's `Replay` stage (`core`'s `ReplayCache`), keyed by RFC 21
   §11.2's NFSv3 and NFSv4.0 retry identity, answering a retransmission its first reply. Prior art:
-  knfsd's DRC and Ganesha's DRC, both per node in memory (from memory). Applied in E3, once
-  answered; an RFC 21 §15 amendment records it (§6.1, point 7).
-- **D11. The v1 NFS settings RFC 13 does not carry are dropped, pending the user's answer.**
+  knfsd's DRC and Ganesha's DRC, both per node in memory (from memory). Applied in E3; an RFC 21 §15 amendment records it (§6.1, point 7).
+- **D11. The v1 NFS settings RFC 13 does not carry are dropped.**
   `DelegationRecallTimeout`, `CallbackTimeout`, `MaxDelegations`, `DirDelegBatchWindowMs`,
   `MaxClients`, the read and write sizes, the NFSv4.1 slot limits and the lock grace setting (RFC 20's
   plan's ledger): RFC 21 fixes each (§2.3 the sizes, §3.1 the slots, §5.3 the recall deadline and no
   directory delegations, RFC 14 §5.5 the grant budget, RFC 14 §4.2 the grace), and RFC 20 §3.6's
   `connection_limit` is the connection cap. Prior art: knfsd exposes most of these as module
   parameters (from memory). Applied as a recorded decision closing those ledger rows (§6.4).
-- **D12. NFSv3 first on track B, pending the user's answer.** E4 before E7 makes S3, an NFSv3 mount
+- **D12. NFSv3 first on track B.** E4 before E7 makes S3, an NFSv3 mount
   over loopback, the plan's first mount, at S2 + 23. Applied in §3.4.
 - **D13. The callbacks value reaches `ops/` through a `Handlers` field.** `nfs.go` imports every
   `ops/` package, so a handler calling `Connect` cannot import the root package's type; `New` sets a
@@ -1071,7 +1069,7 @@ follows the RFC as written.
    plan merges and then D4's answer, and after the byte-0 list a sentence says a layout, which RFC 14
    §2.6 reserves, takes a tag when it is built (§6.6's layout row).
 7. **A duplicate-request cache for NFSv3 and NFSv4.0** (RFC 21 §15 question 5; RFC 20 §11 question
-   2). D10, pending the user's answer: an RFC 21 §15 pull request records the answer, and §15's
+   2). D10 settles it as a per-node cache in NFS's `Replay` stage: an RFC 21 §15 pull request records the answer, and §15's
    question leaves.
 8. **The wire tests' suite** (RFC 21 §13's suites paragraph). No suite runs them yet, and this plan
    registers none: until the paragraph names one, E14's runs are by hand and fail no pull request.
@@ -1130,7 +1128,7 @@ Each row is one of [RFC 20's plan](rfc-20-adapters-plan.md)'s deferral ledger (i
 | `core`'s datagram listener and the UDP listener of RFC 20 §4.8's example | E11 |
 | RPCSEC_GSS context table and window | E13 |
 | NFSv4.1 slots and reply cache, the session's reply budget, the bound by a quarter of the slots under `vfs.WithHold` | E8; the budget's `READ` hook by A1 (§6.1); the hold in E12 |
-| the NFSv3 and NFSv4.0 duplicate-request cache (RFC 20 §11 q2) | E3, pending D10 (§6.1, point 7) |
+| the NFSv3 and NFSv4.0 duplicate-request cache (RFC 20 §11 q2) | E3, D10 (§6.1, point 7) |
 | NFS over TLS: `Conn.StartTLS`, `tlsconfig` reload, the modes, certificate loading | E3 |
 | NFS callbacks: `CB_RECALL`, `CB_NOTIFY`, `CB_RECALL_ANY`, NLM `GRANTED` through `Deps.DialClient` | E10; NLM in E11; `CB_NOTIFY` never sent (RFC 21 §5.3) |
 | `ConnInfo.Session` | E8 |
@@ -1154,7 +1152,7 @@ Each row is one of [RFC 20's plan](rfc-20-adapters-plan.md)'s deferral ledger (i
 | `Deps.Retry`: RFC 21's `DESTROY_SESSION` the NFS half | E8 |
 | `adapter_translation_refused_total`, `adapter_record_decode_failures_total`, `adapter_record_replays_total` | produced by E3, E5, E6, E9 (translation) and E8 (record) |
 | `grace` and `nfs_clients` API endpoints | not here: §6.6, unowned (RFC 23 defines no endpoint) |
-| `DelegationRecallTimeout`, `CallbackTimeout`, `MaxDelegations`, `DirDelegBatchWindowMs`, `MaxClients`, the read and write sizes and slot limits, the lock grace setting | D11, pending: dropped as RFC 21 and RFC 14 fix each |
+| `DelegationRecallTimeout`, `CallbackTimeout`, `MaxDelegations`, `DirDelegBatchWindowMs`, `MaxClients`, the read and write sizes and slot limits, the lock grace setting | D11: dropped as RFC 21 and RFC 14 fix each |
 | the share-policy gates (D23): the flavour and Kerberos-level policy and the netgroup allowlist | built on `feat/storage-v2` in `internal/vfs/admission.go`; E3, E4, E9 and E13's rows drive it; the row leaves on this plan's merge |
 | the `require_kerberos` boot refusal (D25) | E13 |
 | uid and gid mapping (identity-mapping config) | E7 |
