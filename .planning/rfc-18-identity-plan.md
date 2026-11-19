@@ -836,14 +836,15 @@ operations.
 - **Applied by** epic 7.
 
 **D6. LDAP is v1's provider, lifted into `internal/identity/directory`,** the only package importing
-`go-ldap`. It keeps v1's filter escaping, `LDAP_MATCHING_RULE_IN_CHAIN`, and LDAPS and StartTLS, and
+`go-ldap`. It keeps v1's filter escaping, and LDAPS and StartTLS, and
 drops v1's `InsecureSkipVerify` and `AllowPlaintext`, so both are verified, the online join's LDAP
 connection to its pinned controller included, where v1's join kept an opt-in `InsecureSkipVerify`
 too (RFC 18 §3.5); adds RFC 2696 paging, `tokenGroups` for a user's closure (which includes the primary group
 `memberOf` omits), range retrieval for large `member` values, `objectGUID` as the entry ID, a
 disabled account read from `userAccountControl` or `accountExpires`, and `mail` into `User.Email`
 (RFC 18 §5.1); and refuses an ambiguous answer
-where v1 took the first. It keeps v1's simple bind, a distinguished name and the bind credential,
+where v1 took the first. It drops v1's `LDAP_MATCHING_RULE_IN_CHAIN`: a closure `tokenGroups` cannot
+answer is walked level by level through security groups (epic 6's D10). It keeps v1's simple bind, a distinguished name and the bind credential,
 over the verified TLS; SASL is not used, since a GSSAPI bind over TLS needs a channel-binding token
 `go-ldap` does not send, and a domain controller enforcing LDAP signing and channel binding still
 accepts a simple bind over TLS. The cache's single flight is `x/sync/singleflight`, as v1's.
