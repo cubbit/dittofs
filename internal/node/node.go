@@ -207,17 +207,18 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 		[]uint16{listenPort(cfg.Bootstrap.API.Listen[0]), listenPort(cfg.Bootstrap.Metrics.Listen)}, cfg.Clock, n.drains)
 	n.health.Add(&adapterConditions{n})
 	n.life.ready.Store(readyStarting)
-	// decision: the API gets no TLS, local socket, signing key or tracer,
-	// and in production no Authenticate, because nothing the node is handed
-	// holds them yet: the bootstrap carries no certificate, key or socket
-	// path, the installation's signing key is a secret no secret store
-	// reads, and Config names no tracer. So a start on an address but
-	// loopback is refused for want of a certificate, no local socket is
-	// served, every call but a public row's answers 401, every POST and
-	// DELETE, which must carry an Idempotency-Key, answers 503 or 428, and
-	// spans go to the no-op tracer. Fill
-	// each from the bootstrap, the secret store, sign-in and the host's
-	// tracer as they land.
+	// decision: the API is handed neither the bootstrap's api.tls
+	// certificate and key nor its api.socket path, though the bootstrap
+	// names them and the API serves TLS on every address but loopback; nor
+	// a signing key or tracer, and in production no Authenticate, as the
+	// installation's signing key is a secret no secret store reads and
+	// Config names no tracer. So a start on an address but loopback is
+	// refused for want of a certificate even when api.tls names one, no
+	// local socket is served, every call but a public row's answers 401,
+	// every POST and DELETE, which must carry an Idempotency-Key, answers
+	// 503 or 428, and spans go to the no-op tracer. Fill each from the
+	// bootstrap, the secret store, sign-in and the host's tracer as they
+	// land.
 	n.api = api.New(api.Deps{
 		Ready:        n.readiness,
 		Served:       n.life.served.Load,

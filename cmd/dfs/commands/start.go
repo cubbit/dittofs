@@ -1,9 +1,9 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -12,14 +12,9 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
-	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/spf13/cobra"
 )
-
-// v1Database is where the Kubernetes operator kept v1's control-plane
-// database, which a start refuses wherever its bootstrap file is.
-const v1Database = "/data/controlplane/controlplane.db"
 
 func newStartCmd() *cobra.Command {
 	return &cobra.Command{
@@ -61,18 +56,9 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	if configPath == "" {
 		configPath = bootstrap.GetDefaultConfigPath()
 	}
-	if err := refuseV1(filepath.Join(filepath.Dir(configPath), "controlplane.db"), v1Database); err != nil {
-		return err
-	}
-
-	if b := cfg.Metadata.Backend; b != "" && b != "badger" {
-		return fmt.Errorf("opening the metadata store: metadata.backend %q is not one this build opens; it opens badger", b)
-	}
-	if cfg.Metadata.Badger.Path == "" {
-		return errors.New("opening the metadata store: metadata.badger.path is not set")
-	}
 	clock := newSystemClock()
-	kv, err := badgerkv.Open(badgerkv.Options{Dir: cfg.Metadata.Badger.Path, NodeID: cfg.Node.ID, Clock: clock.Now})
+	v1 := append([]string{filepath.Join(filepath.Dir(configPath), "controlplane.db")}, v1Databases()...)
+	kv, err := openKV(cfg, clock, v1...)
 	if err != nil {
 		return fmt.Errorf("opening the metadata store: %w", err)
 	}
@@ -90,28 +76,31 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	base := cmd.Context()
 	ctx, unnotify := signal.NotifyContext(base, syscall.SIGINT, syscall.SIGTERM)
 	defer unnotify()
-	if err := n.Start(ctx); err != nil {
-		return errors.Join(fmt.Errorf("starting the node: %w", err), stopped(n.Stop(base)))
+	// Once a signal arrived, a second one ends the process at once.
+	context.AfterFunc(ctx, unnotify)
+	startErr := n.Start(ctx)
+	if startErr == nil {
+		<-ctx.Done()
 	}
-	<-ctx.Done()
-	unnotify() // a second signal ends the process at once
-	slog.Info("dfs: stopping on a termination signal")
-	return stopped(n.Stop(base))
+	signalled := ctx.Err() != nil && base.Err() == nil
+	if signalled {
+		if startErr != nil {
+			slog.Info("dfs: the start ended on a termination signal", "err", startErr)
+		}
+		slog.Info("dfs: stopping on a termination signal")
+	}
+	return answer(startErr, signalled, n.Stop(base))
 }
 
-// refuseV1 refuses a start when v1's control-plane database is at any of
-// paths, naming it, before anything is opened.
-func refuseV1(paths ...string) error {
-	for _, p := range paths {
-		_, err := os.Stat(p)
-		switch {
-		case err == nil:
-			return fmt.Errorf("refusing to start: %s is v1's control-plane database, which this version does not read; move it away to start", p)
-		case !errors.Is(err, fs.ErrNotExist):
-			return fmt.Errorf("refusing to start: checking for v1's control-plane database at %s: %w", p, err)
-		}
+// answer is the command's error once the node stopped: a Start that failed
+// for any reason but a termination signal, naming its step, joined with
+// Stop's; otherwise Stop's alone, so a signal exits zero once every part
+// stopped.
+func answer(startErr error, signalled bool, stopErr error) error {
+	if startErr != nil && !signalled {
+		return errors.Join(fmt.Errorf("starting the node: %w", startErr), stopped(stopErr))
 	}
-	return nil
+	return stopped(stopErr)
 }
 
 // stopped is the command's answer to Stop's error: nil when every part

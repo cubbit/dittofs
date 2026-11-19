@@ -12,6 +12,9 @@ func (systemClock) Now() time.Time { return time.Now() }
 
 func (c systemClock) Elapsed() time.Duration { return time.Since(c.origin) }
 
+// ponytail: the timer After starts cannot be cancelled, so it lives to its
+// deadline even when its caller stopped waiting. Add a stoppable After to the
+// clock interface if loop re-arms show in a heap profile.
 func (systemClock) After(d time.Duration) <-chan struct{} {
 	ch := make(chan struct{})
 	time.AfterFunc(d, func() { close(ch) })
