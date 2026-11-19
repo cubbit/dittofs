@@ -531,6 +531,8 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 	SetNTHashDeleted(op OperationID) error // sets NTLMOff.Deleted, by identity.nt-hash-delete's StepResult.End alone
 	SetMachineJoin(j MachineJoin) error // Join, by the RFC 18 plan's epic 7's join-domain and rotate-machine-password steps alone, in their Writes and StepResult.End
 	SetMachinePassword(ref SecretRef) error // MachinePassword, by the same steps, in the Write that seals the version
+	SetSigningKey(ref SecretRef) error // SigningKey, by epic 5's initialisation step, in the Write that seals its first version
+	Holder(id ProtocolID) (User, bool, error) // tracked: the user or machine holding a spelling, for epic 4's krb link (R44)
 	Now() time.Time // kv.Txn's Now: on feat/storage-v2 taken when the transaction starts, fixed for its life; a retry gets a new one
   	DeleteUser(p Principal, expect uint64) error // the mark
   	DeleteGroup(p Principal, expect uint64) error

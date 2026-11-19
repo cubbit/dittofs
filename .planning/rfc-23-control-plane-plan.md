@@ -591,8 +591,9 @@ epic 1 deletes with the rest of v1's e2e tests; their cells are already off (D9)
 - **Prior art (from memory).** The Go 1.22 mux patterns; Kubernetes uses go-restful.
 - **Applied by** epic 4.
 
-**D3. Access tokens are HS256 JWTs signed with `golang-jwt/jwt`**, already a dependency, with a
-`kid` header naming the signing key's version so RFC 23 §5.3's rotation verifies old tokens.
+**D3. Access tokens are HS256 JWTs signed with `golang-jwt/jwt`**, a new direct dependency
+(`v5`), with a `kid` header naming the signing key's version so RFC 23 §5.3's rotation verifies
+old tokens.
 - **Prior art (from memory).** Vault uses opaque tokens; Kubernetes' service-account tokens are JWTs
   with a `kid`.
 - **Applied by** epic 5.
