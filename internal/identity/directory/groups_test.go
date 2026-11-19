@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -190,6 +192,47 @@ func TestGroupsMorePagesThanTheBound(t *testing.T) {
 	if n := len(f.Dials()); n != dials+1 {
 		t.Errorf("%d dials after the next lookup, want %d: the connection left mid-search closed", n, dials+1)
 	}
+}
+
+// A caller whose context ends while a later page is out gets an error, and
+// the connection the paged search was left open on is closed: the next
+// question dials again.
+func TestGroupsCallerGoneMidPages(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t)
+		user := e.d.AddUser(t, "alice", nil)
+		for i := range 2 {
+			e.d.AddGroup(t, fmt.Sprintf("g%d", i), map[string][][]byte{"member": {[]byte(user)}})
+		}
+		e.d.HideTokenGroups()
+		e.d.SetMaxPageSize(1)
+		a, _, err := e.client(e.d.Dial).Lookup(context.Background(), directory.ByUserName, []byte("alice"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		filter := walkFilter(t, e, a)
+
+		// The walk's second page is answered, then held a second.
+		f := e.faulty(t, sim.Rule{Op: "search", Key: filter, From: 2, Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+		c := e.client(f.Dial)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { _, err := c.Groups(ctx, a); done <- err }()
+		synctest.Wait()
+		cancel()
+		if err := <-done; !errors.Is(err, vfserr.ErrUnavailable) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("Groups(alice), its context ended on the second page = %v; want ErrUnavailable for the canceled context", err)
+		}
+		e.clock.Advance(time.Second)
+		synctest.Wait()
+		dials := len(f.Dials())
+		if _, _, err := c.Lookup(context.Background(), directory.ByUserName, []byte("alice")); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(f.Dials()); n != dials+1 {
+			t.Errorf("%d dials after the next lookup, want %d: the connection left mid-search closed", n, dials+1)
+		}
+	})
 }
 
 // A tokenGroups SID the lookup finds no entry for, as when the bind may not

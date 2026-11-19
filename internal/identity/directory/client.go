@@ -458,6 +458,12 @@ func (c *Client) pages(ctx context.Context, req Request) (out []Entry, later boo
 		}
 		req.Cookie = res.Cookie
 		if res, err = c.search(ctx, conn, req); err != nil {
+			// A page that failed on an open connection, as when the caller
+			// stopped waiting, leaves the search open on it; closing the
+			// connection ends it, as at the cap.
+			if !errors.Is(err, ErrClosed) {
+				c.drop(conn)
+			}
 			return nil, true, err
 		}
 		out = append(out, res.Entries...)
