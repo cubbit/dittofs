@@ -1013,15 +1013,16 @@ directory's domain as a computer account. Joining is an operation
 seals a new password as a `Secret` first, as a rotation does, then creates the
 computer object with that password, its service names and its
 `msDS-SupportedEncryptionTypes` (§3.3). It takes two optional parameters: the
-organisational unit to create the object in, a distinguished name under the
-directory record's base, by default the domain's `Computers` container, which
-the domain names and which is not checked against the base; and
-the object's DNS host name, by default the account's name in lower case, `.`
+organisational unit to create the object in, a distinguished name strictly
+under the directory record's base, never the base itself, by default the
+domain's `Computers` container, which the domain names and which is not
+checked against the base; and the object's DNS host name, by default the account's name in lower case, `.`
 and the realm in lower case, which it writes as `dNSHostName` and from which
-the fully qualified service names are made. An organisational unit outside the
-base, or a host name that is not a DNS name, is refused before the join's first
-step. A join of either kind is refused while the directory record's schema is
-`rfc2307`, which has no domain controller (§5.1). The join's first step records the one
+the fully qualified service names are made. An organisational unit not
+strictly under the base, one given while the record names no base, or a host
+name that is not a DNS name of two labels or more, is refused before the
+join's first step. A join of either kind is refused while the directory
+record's schema is `rfc2307`, which has no domain controller (§5.1). The join's first step records the one
 domain controller it uses, and every later step and a resumed join use that one,
 so a controller that has not replicated the account never reads as "no such
 account". A resumed join creates nothing if that controller already accepts the
@@ -1359,6 +1360,23 @@ keeps its SID. So the link follows the directory account, not its name: the
 account deleted and its name given to another, the new holder's PAC carries
 another SID and is refused, never bound to the linked user; linking the new
 account is a new write.
+
+A machine's name is moved to a user only by a caller with the installation
+right, an `admin`; any other is refused `409` on the name. The move marks the machine deleted in the same write and starts its user deletion,
+so that write answers `202` with the operation's `Location` and its audit
+outcome names the operation
+([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)). A
+write restating the name a user already holds keeps its link and asks the
+directory nothing; linking the name to another directory account takes
+removing it, then writing it again.
+
+A written name has one `@`, a non-empty user part and realm, and no
+whitespace or control character. Its realm is stored with its ASCII letters
+upper-cased, and its user part as given, matched byte for byte. The
+upper-casing assumes an Active Directory realm, which is always upper case. A
+directory of the `rfc2307` schema may name a realm with lower-case letters,
+and realms are compared case and all, so a name in such a realm does not
+match its directory's realm.
 
 ### 4.3 uid and gid
 
