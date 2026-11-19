@@ -382,7 +382,27 @@ func (e *Engine) relieved(
 		return e.answeredAs(b, err, r, settled(r, e.left(b, r), others)), false
 	}
 
-	if serr := e.relieve(ctx, b, r, at); serr != nil {
+	// The share's own limit reads the figures between the last step's sync
+	// and its repack: the step's sync runs first — the figures it leaves
+	// empty name nothing a repack could relieve, so the step answers no
+	// space at once and the repack never runs — and its verdict carries the
+	// sync's outcome to the repack's own guard below, keeping the
+	// no-repack-after-a-dead-sync rule.
+	synced, s0 := false, error(nil)
+	if r.limit == journal.LimitShare && *at == stepRepack {
+		answer, done, serr0 := e.settledFromFigures(ctx, b, r, err)
+		if done {
+			return answer, false
+		}
+		// The gate ran the step's own sync whatever the figures said, and
+		// its outcome — a refusal or the sync's own error — feeds the
+		// repack's guard, which keeps its two rules: no repack after a
+		// dead sync, and a repack still tried after a live one that
+		// failed.
+		synced, s0 = true, serr0
+	}
+
+	if serr := e.relieve(ctx, b, r, at, synced, s0); serr != nil {
 		if errors.Is(serr, journal.ErrClosed) {
 			return e.journalErr(serr), false
 		}
