@@ -13,6 +13,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/pkg/auth/sid"
+	pkgidentity "github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
@@ -382,6 +383,33 @@ func TestWithKerberosRefusesAStaleMachineLink(t *testing.T) {
 		}
 		if _, ok, err := cp.User(t.Context(), m); err != nil || ok != (tc.holder != nil) {
 			t.Errorf("%s: the machine found %v (%v), want %v", tc.name, ok, err, tc.holder != nil)
+		}
+	}
+}
+
+// accountHolds refuses a key for a name the joined account holds in the
+// recorded realm only, and in every realm when no realm is recorded; it
+// refuses nothing while not joined.
+func TestAccountHolds(t *testing.T) {
+	j := entity.MachineJoin{Joined: true, Account: "DFS$", Names: []string{"HOST/dfs.ad.example"}}
+	realm := entity.Setting{Value: []byte(`"AD.EXAMPLE"`)}
+	in := func(name, r string) []pkgidentity.KeytabName { return []pkgidentity.KeytabName{{Name: name, Realm: r}} }
+	for _, tc := range []struct {
+		name    string
+		join    entity.MachineJoin
+		ok      bool
+		names   []pkgidentity.KeytabName
+		refused bool
+	}{
+		{"a held name in the recorded realm", j, true, in("host/dfs.ad.example", "ad.example"), true},
+		{"a held name in another realm", j, true, in("host/dfs.ad.example", "OTHER.EXAMPLE"), false},
+		{"the account's name with no realm recorded", j, false, in("dfs$", "OTHER.EXAMPLE"), true},
+		{"another name with no realm recorded", j, false, in("cifs/nas.ad.example", "AD.EXAMPLE"), false},
+		{"a held name while not joined", entity.MachineJoin{Account: "DFS$"}, false, in("dfs$", "AD.EXAMPLE"), false},
+	} {
+		err := accountHolds(tc.join, realm, tc.ok, tc.names)
+		if (err != nil) != tc.refused {
+			t.Errorf("%s: accountHolds = %v, want refused %v", tc.name, err, tc.refused)
 		}
 	}
 }
