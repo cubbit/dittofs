@@ -105,6 +105,14 @@ type Counters struct {
 	Segments int64
 	// Sealed is the number of sealed segments in the set.
 	Sealed int64
+	// NoAppendBytes is the accounted bytes of the segments that take no
+	// further append — the sealed and the ended alike — moved at the same
+	// steps the set's own states are: raised at a Seal and an End by the
+	// segment's then-accounted size, lowered at every removal by the same,
+	// and lowered by whatever a Shrink cut from one. It names no active
+	// segment's bytes, so the Stats identity that reads it subtracts the
+	// active side from the shares' live figures beside it.
+	NoAppendBytes int64
 	// Spares is the number of spares the ledger holds.
 	// decision: it counts every spare the ledger holds, every class the pool
 	// separates them into, because Check sums every one of them at the cap —
@@ -161,6 +169,12 @@ type Set struct {
 	// the pair sees each retirement exactly once: either still in tags,
 	// or already moved into retired, never both and never neither.
 	retired map[core.ShareTag]int64
+
+	// noAppendTag holds, per share tag, the record bytes its records hold
+	// in the segments that take no further append — the sealed and the
+	// ended alike — moved under mu beside the entries' own per-tag bytes at
+	// each state change, charge and removal.
+	noAppendTag map[core.ShareTag]int64
 
 	// untaken holds the segments whose end event has not been taken by its
 	// consumer yet: the end itself is made synchronously in the step that
@@ -243,14 +257,15 @@ func NewSet(segCap int64, log *slog.Logger) *Set {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Set{
-		cap:     segCap,
-		log:     log,
-		segs:    make(map[core.SegmentID]*entry),
-		spares:  make(map[core.SegmentID]struct{}),
-		tags:    make(map[core.ShareTag]int64),
-		over:    make(map[core.ShareTag]int64),
-		retired: make(map[core.ShareTag]int64),
-		untaken: make(map[core.SegmentID]struct{}),
+		cap:         segCap,
+		log:         log,
+		segs:        make(map[core.SegmentID]*entry),
+		spares:      make(map[core.SegmentID]struct{}),
+		tags:        make(map[core.ShareTag]int64),
+		over:        make(map[core.ShareTag]int64),
+		retired:     make(map[core.ShareTag]int64),
+		noAppendTag: make(map[core.ShareTag]int64),
+		untaken:     make(map[core.SegmentID]struct{}),
 	}
 }
 
@@ -627,6 +642,10 @@ func (s *Set) Seal(id core.SegmentID, full bool) error {
 	e.state = Sealed
 	e.full = full
 	s.c.Sealed++
+	s.c.NoAppendBytes += e.size
+	for tag, n := range e.tags {
+		s.noAppendTag[tag] += n
+	}
 	s.mu.Unlock()
 	// No lock of the ledger's is held while the observer runs, and the seal
 	// it names is whole: every read answers with state past the change.
@@ -660,6 +679,10 @@ func (s *Set) End(id core.SegmentID) error {
 		return ErrWrongState
 	}
 	e.state = Ended
+	s.c.NoAppendBytes += e.size
+	for tag, n := range e.tags {
+		s.noAppendTag[tag] += n
+	}
 	return nil
 }
 
@@ -761,6 +784,9 @@ func (s *Set) Shrink(id core.SegmentID, size int64) error {
 		return ErrBadSize
 	}
 	s.c.UsedBytes -= e.size - size
+	// A cut of a segment that takes no further append lowers the no-append
+	// measure by the same cut; an active one never entered it.
+	s.c.NoAppendBytes -= e.size - size
 	e.size = size
 	return nil
 }
@@ -820,6 +846,12 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n, overhead int64)
 	e.held += n
 	e.tags[tag] += n
 	s.tags[tag] += n
+	if e.state == Ended {
+		// A record completing against an ended segment joins the measures
+		// its end took; a sealed one is refused above, and an active one
+		// has not entered them yet.
+		s.noAppendTag[tag] += n
+	}
 	if overhead > 0 {
 		e.over[tag] += overhead
 		s.over[tag] += overhead
@@ -1139,6 +1171,14 @@ func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 	if e.state == Sealed {
 		s.c.Sealed--
 	}
+	if e.state != Active {
+		// The segment's leaving takes the no-append measures with it: an
+		// active one never entered them.
+		s.c.NoAppendBytes -= e.size
+		for tag, n := range e.tags {
+			s.noAppendTag[tag] -= n
+		}
+	}
 	s.c.Segments--
 	s.c.UsedBytes -= e.size
 	for tag, n := range e.tags {
@@ -1159,6 +1199,16 @@ func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 			s.over[tag] = left
 		}
 	}
+}
+
+// NoAppendBytesOf returns the record bytes tag's records hold in the
+// segments that take no further append — the sealed and the ended alike —
+// one map read the set maintains at each state change, charge and removal,
+// allocating nothing.
+func (s *Set) NoAppendBytesOf(tag core.ShareTag) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.noAppendTag[tag]
 }
 
 // Counters returns the ledger's maintained counters. One lock, one struct
