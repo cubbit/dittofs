@@ -56,7 +56,13 @@ type failingPrune struct {
 	err error
 }
 
-func (f failingPrune) Prune(context.Context, entity.SecretKind, entity.SecretOwner, entity.SecretRef) error {
+func (f failingPrune) Prune(
+	context.Context,
+	entity.ControlPlaneTx,
+	entity.SecretKind,
+	entity.SecretOwner,
+	entity.SecretRef,
+) error {
 	return f.err
 }
 
@@ -447,8 +453,7 @@ func (fx *rotFixture) wantTicket(t *testing.T, kvno int, password string) {
 // accepts tickets under both numbers and reads the last rotation back.
 func TestRotation(t *testing.T) {
 	fx := newRotation(t)
-	// Past the retention, so the first turn calls the provider's Prune,
-	// which is not built yet and must not fail the rotation.
+	// Past the retention, so the first turn calls the provider's Prune.
 	fx.clock.Advance(11 * time.Hour)
 	op := fx.op()
 	fx.complete(t, op)
