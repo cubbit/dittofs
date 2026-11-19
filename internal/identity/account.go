@@ -71,6 +71,15 @@ func (s *Server) VerifyPassword(ctx context.Context, p entity.Principal, passwor
 
 // storedHash is p's password hash and true; the dummy hash and false for an
 // account that cannot sign in or has no password.
+//
+// decision: the dummy hash equalises the hashing, not the store reads before
+// it. An unknown name reads nothing, a disabled user or one with no password
+// reads its record, and a wrong password reads its record and its sealed hash,
+// so the paths differ by up to two store reads; RFC 18 §8.1's "same work" is
+// held for the hashing, which is the bulk of it. Equalising the reads too
+// would mean reading a dummy record and secret on every miss. Overturned if a
+// backend whose reads are round trips shows the difference in a sign-in's
+// latency next to the hashing's.
 func (s *Server) storedHash(ctx context.Context, p entity.Principal) ([]byte, bool, error) {
 	u, err := s.Account(ctx, p)
 	switch {
