@@ -130,7 +130,7 @@ Every obligation RFC 13, RFC 16 and RFC 23 place on this epic, and those RFC 13'
 | --- | --- | --- | --- | --- |
 | R1 | A setting is a `Setting` record in the metadata store; a component gets its value from `Read` and `Get`, never from a file or a source of its own | invariant | RFC 13 §2.1 | T3.4 |
 | R2 | A setting has exactly one scope, in one of three forms: one value across the scope, one per thing inside it, or a wider default a narrower record may replace | MUST | RFC 13 §3 | T3.2 |
-| R3 | The effective value is the narrower override if one exists, else the wider value, else the default, per thing where the form is per thing | invariant | RFC 13 §3 | T3.4 |
+| R3 | The effective value is the narrower override if one exists, else the wider value, else the default, per thing where the form is per thing; under an `Override` scope declared with `OverrideOnly`, only the fields it names take the narrower value | invariant | RFC 13 §3; E1's D9 | T3.2, T3.4 |
 | R4 | A record with a schema version the reader does not know is refused whole, never read for the fields it recognises | MUST | RFC 13 §2.3; RFC 16 §2.3 (`Setting.Schema`) | T3.1, T3.4, T3.5 |
 | R5 | A delete removes one row, so the wider value is effective, and raises the settings generation in its transaction as a put does | MUST | RFC 16 §3 (`DeleteSetting`) | T3.1 |
 | R6 | Reconcile reads every scope's rows in one prefix scan | invariant | RFC 13's plan, §4.3; pending #4473 | T3.1 |
@@ -142,7 +142,7 @@ Every obligation RFC 13, RFC 16 and RFC 23 place on this epic, and those RFC 13'
 | R7 | A setting has a default or is required; a snapshot or a write that leaves a required key unset is refused | MUST | RFC 13 §4.2 | T3.2, T3.4, T3.5 |
 | R8 | Every field of a section declares its class: live, restart, next write or bound; one left unclassified panics at `Of` | MUST | RFC 13 §5 | T3.2 |
 | R9 | The sections Appendix B gives to `admin` alone (`identity.oidc`, `api.oidc_role_map`, `api.password_sign_in`, `identity.directory`, `audit.retention`, `api.session_lifetime`, `api.token_max_lifetime`) are written by `admin` only, first value included; roles compare by an explicit rank, an empty or unknown one ranking lowest | MUST | RFC 13 Appendix B; RFC 23 §5.2; RFC 13's plan, A1 | T3.2, T3.5 |
-| R10 | `Of` panics on a field without a class tag, on a class that is not one of the four (`class:"restar"`), on a field with no explicit `json` name, on two fields that share a name after flattening, and on a `Required`, `SecretRef` or `FormatVersion` name that is no field (E1's D9; the plan's `Of` sketch), and on an unknown write role; `Table` panics on two sections declaring the same prefix and on a section whose prefix consumes a field key another section generates, as an `identity` section's field `oidc` beside an `identity.oidc` section, which the longest-prefix match would make unreachable; a key belongs to the longest section prefix on a dot boundary | invariant | RFC 13's plan, epic 3; E1's D9 for the class tag and the field names | T3.2 |
+| R10 | `Of` panics on a field without a class tag, on a class that is not one of the four (`class:"restar"`), on a field with no explicit `json` name, on two fields that share a name after flattening, and on a `Required`, `SecretRef`, `OverrideOnly` or `FormatVersion` name that is no field and on `OverrideOnly` outside an `Override` scope (E1's D9; the plan's `Of` sketch), and on an unknown write role; `Table` panics on two sections declaring the same prefix and on a section whose prefix consumes a field key another section generates, as an `identity` section's field `oidc` beside an `identity.oidc` section, which the longest-prefix match would make unreachable; a key belongs to the longest section prefix on a dot boundary | invariant | RFC 13's plan, epic 3; E1's D9 for the class tag and the field names | T3.2, T3.6 (`FormatVersion`) |
 
 **Decoding a value**
 
@@ -167,7 +167,7 @@ Every obligation RFC 13, RFC 16 and RFC 23 place on this epic, and those RFC 13'
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R20 | `Check` refuses an unknown key, a wrong scope, a newer schema and a caller below the section's write role | MUST | RFC 13 §2.3, §3, §6; RFC 23 §5.2 | T3.5 |
+| R20 | `Check` refuses an unknown key, a wrong scope (a narrower record of a field `OverrideOnly` does not name among them), a newer schema and a caller below the section's write role | MUST | RFC 13 §2.3, §3, §6; RFC 23 §5.2 | T3.5 |
 | R21 | A delete is checked as the change it is: against the effective value it leaves; a delete that leaves the same effective value, as a node override does when the installation's row holds that value, is no change | invariant | RFC 13's plan, D9 | T3.5, T3.6 |
 | R22 | A change to a bound setting is refused while its scope holds content, by a put or a delete; a put of the same value, or a delete that leaves the same effective value, is no change | MUST | RFC 13 §5.1 | T3.6 |
 | R23 | A change to a remote store's endpoint, bucket, prefix or credential reference is refused until it can be proven, naming RFC 13 §5.2; its first value passes | MUST | RFC 13 §5.2; RFC 13's plan, D9 | T3.6 |
@@ -364,14 +364,18 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
 **Subtask T3.2 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** S1.
-- **Covers:** R2, R7, R8, R9, R10, R19, R31, R33.
+- **Covers:** R2, R3, R7, R8, R9, R10, R19, R31, R33.
 - **Deliverables:** `Of`'s body: the section from `T`'s fields and their `class` tags (E1's D9),
   its scope in E1's D9's constructors (`At`, `PerThing`, `Override`), `WriteRole`, whose default
   is `operator` as the plan's `Of` sketch says, `Required`, `CheckTx` as E1 froze it
-  (`func(entity.ControlPlaneTx, Write, T) error`, kept on the section for `Check`, R33) and
-  `SecretRef(field, kind)`; panics on an unclassified field, a class outside the four, a field
+  (`func(entity.ControlPlaneTx, Write, T) error`, kept on the section for `Check`, R33),
+  `SecretRef(field, kind)` and `OverrideOnly(fields ...string)` (E1's D9), kept on the section for
+  `Read` (T3.4) and `Check` (T3.5); panics on an unclassified field, a class outside the four,
+  a field
   with no explicit `json` name, two fields sharing a name after flattening (E1's D9, the plan's
-  `Of` sketch), an option naming no field and an unknown write role; the explicit role rank;
+  `Of` sketch), an option naming no field, `OverrideOnly` outside an `Override` scope and an
+  unknown write
+  role; the explicit role rank;
   `Table`'s body, panicking on two sections declaring the same prefix and on a section whose
   prefix consumes a field key another section generates, as an `identity` section with a field
   `oidc` beside an `identity.oidc` section, which the longest-prefix match would make unreachable,
@@ -385,8 +389,10 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
 - **Tests:** one row per panic, among them a field with no `class` tag, `class:"restar"`, a field
   with no `json` name, two fields sharing a name after flattening, a section declared twice (the
   panic naming both sections), a
-  parent field consumed by a child section's prefix, a `FormatVersion`, `Required` or `SecretRef`
-  name that is no field and an unknown write role; a section declared with `CheckTx` keeps it,
+  parent field consumed by a child section's prefix, a `Required`, `SecretRef` or `OverrideOnly`
+  name that is no field (`OverrideOnly("port")`, the json key), `OverrideOnly` under `At` and
+  under `PerThing`, and an unknown write role; `OverrideOnly("Port")` kept under `Override`; a
+  section declared with `CheckTx` keeps it,
   and one declared without has none (T3.5 runs it); the rank compares `viewer` below `operator`
   below `admin`, and an empty role below `viewer` (catches a comparison by name); `identity.oidcx`
   does not resolve to `identity.oidc` (catches a prefix match off a dot boundary).
@@ -444,7 +450,11 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
 - **Track:** B. **Depends on:** T3.1, T3.3.
 - **Covers:** R1, R3, R4, R7, R16, R18, R31.
 - **Deliverables:** `Read(ctx, cp, table, node)`: one `AllSettings` scan, each section decoded on
-  its own from its installation value, then the narrower override, per thing where the form is per
+  its own from its installation value, then the narrower override, only for the fields
+  `OverrideOnly` names when the section declares it, a narrower row of another field skipped,
+  neither refused nor counted, under the same `decision:` note as a row no section claims, since
+  `Check` refuses that row's delete too (R20) and a refusal could not be repaired, as when a newer
+  binary's `OverrideOnly` names more fields; per thing where the form is per
   thing, then its required keys, then `Validate`; a newer-schema row refusing its section; the
   sections it could not decode returned as refused, a per-thing section refused for that thing
   alone, with D4's errors, among them the section a row
@@ -466,7 +476,9 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   - `Get` on a refused section returns its error, never the default.
   - A row no section claims changes no snapshot value and no refusal.
 - **Tests:** a node override wins over the installation's value, and a delete of the override
-  brings it back; a per-journal value read for two journals; a required key unset refuses the
+  brings it back; on a section declared with `OverrideOnly("Port")`, a node row of the port wins
+  and a node row of another field changes no value and refuses nothing (R3); a per-journal value
+  read for two journals; a required key unset refuses the
   section (RFC 13 §9's "§6 refused" at the library's layer); an invalid value refuses and no
   default is returned for it; a
   newer-schema row refuses its section (RFC 13 §9's "§2.3 schema"); a row written at an older
@@ -494,7 +506,9 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
 - **Covers:** R4, R7, R9, R15, R16, R17, R19, R20, R21, R25, R31, R32, R33.
 - **Deliverables:** `Check(tx, caller, w, holds)`'s first gates, its `tx` the `ControlPlaneTx` S1
   freezes, built on `feat/storage-v2` by #4494 (RFC 23's T2.4, #4362), in RFC 13's plan's order:
-  `lookup` for the unknown key and the wrong scope, the newer schema, the write role, then the
+  `lookup` for the unknown key and the wrong scope, a narrower record of a field `OverrideOnly`
+  does not name among them (any adapter field but the port), the newer schema, the
+  write role, then the
   effective value after the write, a put's row or what a delete leaves, decoded, then validated
   through the section's own `Validate`; every related row read through `tx`, so it is tracked, and
   only by point reads, one per declared field of the section at each scope of the key's chain,
@@ -535,7 +549,9 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   binary's refused with `ErrNewerSchema` and one at the current schema passing beside it, and a
   put to a section whose stored sibling row carries the newer schema refused the same; a put of
   `api.password_sign_in` at node scope refused with `ErrWrongScope` and at the installation scope
-  passing for an `admin`; a row of a key the section does not declare, stored under a declared
+  passing for an `admin`; on a section declared with `OverrideOnly("Port")`, a node put of the
+  port passing and a node put of another field refused with `ErrWrongScope`; a row of a key the
+  section does not declare, stored under a declared
   prefix, makes `Read` refuse the section, and an `operator`'s delete of that key passes
   `Check` and the next `Read` reads the section, while a `viewer`'s is refused; an
   `operator`'s write to
@@ -566,7 +582,7 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
 **Subtask T3.6 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** T3.5; E2's T2.8 (the block format's registered range).
-- **Covers:** R21, R22, R23, R24, R26.
+- **Covers:** R10 (`FormatVersion`), R21, R22, R23, R24, R26.
 - **Deliverables:** the bound refusal on `holds`, for a put and for a delete, a put of the same
   value and a delete that leaves the same effective value passing, values compared decoded and
   not by bytes, since a row keeps what the operator wrote (R21, R22); D9's refusal of a
@@ -594,7 +610,8 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   deleted, changing what the effective value leaves, refused as its put is (D9's delete path),
   while a delete that leaves the same bucket passes; a block format version one past the range
   refused and the newest one accepted, on a section the test declares with `Of`'s `FormatVersion`
-  option (D6), written through `Check`.
+  option (D6), written through `Check`; `Of` with a `FormatVersion` name that is no field
+  panics, naming it (R10).
 
 ### T3.7 Secret references
 
