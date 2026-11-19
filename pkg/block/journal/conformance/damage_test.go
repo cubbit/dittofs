@@ -1936,7 +1936,9 @@ func flipStructure(t *testing.T, s *flipSite, name string, base int64, fd field,
 
 	start := base + int64(fd.off)
 	orig := slices.Clone(durable(t, s.f, name)[start : start+int64(fd.size)])
-	flips := 0
+	if fd.size == 0 {
+		t.Fatalf("precondition: the %s of %s has no bytes, so a sweep of it flips nothing", fd.name, name)
+	}
 	for i := range fd.size {
 		for b := range uint(8) {
 			off := start + int64(i)
@@ -1944,12 +1946,7 @@ func flipStructure(t *testing.T, s *flipSite, name string, base int64, fd field,
 			flipBit(t, s.f, name, off, b)
 			check(where)
 			overwrite(t, s.f, name, start, orig)
-			flips++
 		}
-	}
-
-	if want := 8 * fd.size; flips != want {
-		t.Fatalf("%s: %d bits of the %s flipped, want %d: a sweep that flipped fewer injected less than it claims", name, flips, fd.name, want)
 	}
 }
 

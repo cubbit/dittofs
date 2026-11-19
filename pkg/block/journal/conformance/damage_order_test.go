@@ -35,6 +35,10 @@ import (
 func TestDamage_SuccessorTakenAfterSealSync(t *testing.T) {
 	d := newDriven(t, t, "the roll", true)
 	d.writeSynced(1, 1, 0, 64<<10)
+	// The spares are settled first: a successor the pool makes after the
+	// snapshot would be missing from it, and the check below would never look
+	// at that segment.
+	d.f.WaitSpares()
 	// The counts are taken before the roll starts: a successor written between
 	// its take and the seal's first sync is as early as one written at the
 	// last.
