@@ -18,8 +18,9 @@ import (
 // apiAddr matches the record naming the API's bound address.
 var apiAddr = regexp.MustCompile(`node: listening api=(\S+)`)
 
-// stopping is the record dfs start logs once a termination signal arrived.
-const stopping = "dfs: stopping on a termination signal"
+// stopping is the record dfs start logs once Stop returned with every part
+// stopped.
+const stopping = "dfs: stopped"
 
 // listening starts dfs start over an installation under t.TempDir() and
 // returns it with the API address its log names, the log so far, and the

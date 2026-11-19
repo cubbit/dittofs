@@ -321,3 +321,25 @@ func TestV1Databases(t *testing.T) {
 		t.Errorf("v1Databases() = %q, want %q", got, want)
 	}
 }
+
+// Over an empty store directory, such as a volume mounted late, dfs start
+// refuses naming it and leaves the directory empty: a start creates no
+// store.
+func TestStartRefusesAnEmptyStore(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := t.TempDir()
+	store := filepath.Join(t.TempDir(), "store")
+	if err := os.Mkdir(store, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := NewRoot()
+	root.SetOut(io.Discard)
+	root.SetArgs([]string{"start", "--config", bootstrapFile{store: store, node: nodeUUID}.write(t, dir)})
+	err := root.Execute()
+	if want := "opening the metadata store: metadata.badger.path " + store + " holds no store"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("dfs start over an empty store directory: %v, want an error starting %q", err, want)
+	}
+	if entries, err := os.ReadDir(store); err != nil || len(entries) != 0 {
+		t.Errorf("store directory %s after the refusal: %d entries (%v), want none: no store created", store, len(entries), err)
+	}
+}

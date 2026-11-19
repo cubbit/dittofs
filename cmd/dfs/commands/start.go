@@ -92,7 +92,11 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		}
 		slog.Info("dfs: stopping on a termination signal")
 	}
-	return answer(startErr, signalled, n.Stop(base))
+	stopErr := n.Stop(base)
+	if stopErr == nil {
+		slog.Info("dfs: stopped")
+	}
+	return answer(startErr, signalled, stopErr)
 }
 
 // answer is the command's error once the node stopped: a Start that failed

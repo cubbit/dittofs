@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+
+	"github.com/dgraph-io/badger/v4"
 
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
@@ -20,6 +23,9 @@ func openKV(cfg *bootstrap.Bootstrap, clock systemClock, v1 ...string) (*badgerk
 		return nil, fmt.Errorf("metadata.backend %q is not one this build opens; it opens badger", b)
 	}
 	dir := cfg.Metadata.Badger.Path
+	// ponytail: RFC 13 Appendix C defaults metadata.badger.path to the state
+	// directory's metadata, which the bootstrap loader does not fill yet, so
+	// an unset path is refused until it does.
 	if dir == "" {
 		return nil, errors.New("metadata.badger.path is not set")
 	}
@@ -36,6 +42,12 @@ func openKV(cfg *bootstrap.Bootstrap, clock systemClock, v1 ...string) (*badgerk
 	}
 	if err := refuseV1(v1...); err != nil {
 		return nil, err
+	}
+	// Badger creates a store in a directory that holds none, and a start
+	// creates no store: an empty directory, such as a volume mounted late,
+	// is refused rather than initialised.
+	if _, err := os.Stat(filepath.Join(dir, badger.ManifestFilename)); err != nil {
+		return nil, fmt.Errorf("metadata.badger.path %s holds no store: %w", dir, err)
 	}
 	return badgerkv.Open(badgerkv.Options{Dir: dir, NodeID: cfg.Node.ID, Clock: clock.Now})
 }
