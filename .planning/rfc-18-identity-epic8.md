@@ -446,7 +446,7 @@ test/integration/ad-dc/
 **Subtask T8.4 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T8.2. E5's T5.1 and T5.11; E6's T6.1, T6.6 and T6.11; RFC
-  23's plan's epic 4's settings and secret routes.
+  23's plan's epic 4's settings route (T4.9) and keytab secret route (T4.11).
 - **Covers:** R30.
 - **Deliverables:** `test/integration/ad-dc/node_signin_test.go` (tag `ad_dc`): the fixture's DC
   started by `setupADDC` on its own Docker network; a node built by `nodetest`; the keytab

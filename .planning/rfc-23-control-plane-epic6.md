@@ -7,7 +7,7 @@ the part a unit test can check.
 **Track:** A.
 **Epic 6 estimate: 6 subtasks, 11.5 man-days.**
 **Depends on:** E1, whose `dfsctl` tree refuses every v1 command until this epic; E3's harness
-`internal/node/nodetest`; E4's client (`pkg/apiclient`) and routes, `GET /api/v1/health` among them;
+`internal/node/nodetest`; E4's client (`pkg/node/apiv1/client`) and routes, `GET /api/v1/health` among them;
 E5's sign-in, refresh, sign-out, password change, API tokens and signing-key rotation. The grant by
 directory name and the domain commands need no directory here: `nodetest` reaches none (its seam is
 `internal/node`'s `export_test.go`), so this epic tests their arguments and refusal, and E7's T7.6
@@ -20,7 +20,7 @@ process; E8, whose e2e setup drives the rebuilt CLI.
 ## 1. Goal
 
 `dfsctl` becomes a client of the management API and of nothing else: every command is one or more
-calls through `pkg/apiclient`, the commands no API serves are gone, and the reference is generated
+calls through `pkg/node/apiv1/client`, the commands no API serves are gone, and the reference is generated
 from the tree.
 
 **At the end of the epic:**
@@ -53,7 +53,7 @@ regenerated reference.
   [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger) (OpenID Connect sign-in).
 - A command importing a keytab as a `Secret` version of `identity.keytab`, and a `user update` flag
   writing a user's Kerberos name: RFC 23 §7 names neither, and the routes they would call are E4's
-  T4.9 keytab step and T4.11 `krb` link, settled with the RFC 18 plan's epic 5; a row of
+  T4.11 keytab secret route and `krb` link, settled with the RFC 18 plan's epic 5; a row of
   [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger) (the keytab import command).
 - The client's transport, its version check, its idempotency key, its retry on `401` and its
   credential calls: E4's client, with the edits §9 lists.
@@ -72,7 +72,7 @@ regenerated reference.
   CLI-closure rule and the reference test.
 - **E3**, epic 3, the node: the harness `internal/node/nodetest`, a node over Badger with the API
   on `127.0.0.1:0` and an injected clock.
-- **E4**, epic 4, the management API: the routes and `pkg/apiclient`.
+- **E4**, epic 4, the management API: the routes and `pkg/node/apiv1/client`.
 - **E5**, epic 5, accounts and sign-in.
 - **E6**, this epic.
 - **E7**, epic 7, **the integration epic**: RFC 23 §12's single-node rows, "§7 CLI" among them.

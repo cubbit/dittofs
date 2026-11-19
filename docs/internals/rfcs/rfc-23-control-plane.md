@@ -711,8 +711,9 @@ when a value changed:
 - the records whose restart-class field has changed since it started — its
   restart-pending set;
 - its health conditions, as [RFC 25](rfc-25-observability.md) derives them;
-- each adapter's state and the settings generation it runs, so §3.4's status
-  shows it per node;
+- each adapter, by protocol: its state (configured, serving, draining or
+  stopped) and the settings generation it runs, so §3.4's status shows it per
+  node;
 - the version of each secret it holds, so that an old version is deleted only
   once every node that resolves the secret holds the new one
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)).
@@ -1163,6 +1164,32 @@ for turning NTLM back on is this one, and RFC 18 §3.5 points here:
 Since `OpKind` is closed, `api_operations{kind}` is a closed set
 ([RFC 25 §2.4](rfc-25-observability.md#2.4%20Labels)), and `operation_running`
 keys on the same value.
+
+**The API publishes an OpenAPI 3.1 document**, generated from its route table
+and its wire types, never the reverse, so it cannot drift from what the API
+serves:
+
+- **Operation IDs** are the path's fixed segments below the prefix, then the
+  action, joined by `_`, each `-` made `_`. The action is the `:verb`; else
+  `list` for a `GET` that serves a listing and `get` for any other `GET`, so a
+  share's quota is `shares_quota_get` and its grants `shares_grants_list`;
+  `create` for a `POST` on a collection; or the method. Version discovery is
+  `version_get`. An ID changes only when its call's method, path or verb does.
+- **`x-dittofs-role`** is the least §5.2 role holding the call's right, `none`
+  for a public call.
+- **`x-dittofs-starts`** is the operation kind (§4.6) a write starts, answered
+  `202` with its `Location`.
+- **`x-dittofs-waits-applied`** marks a write whose answer waits at most one
+  second for the answering node to apply it (§2.3).
+- **`x-dittofs-role-by-kind`** marks a call whose right is the one that starts
+  the named operation's kind (§4.6), not `x-dittofs-role`'s.
+- **A request body requires no field and refuses an unknown one** (§4.3): a
+  missing field takes its default, and the call refuses with `400` when it
+  needs one. A `PATCH` body is a merge patch that may set any value to `null`,
+  and request and response bodies are described apart.
+- **Every operation takes a bearer token** (§5.3), but version discovery
+  (§9), which takes none. The health probes (§2.5) are served beside the API
+  and left out of the document.
 
 ### 4.2 Reads and listings
 

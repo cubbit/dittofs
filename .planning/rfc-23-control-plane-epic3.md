@@ -133,8 +133,8 @@ that subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | The start command reads the host's bootstrap, builds the `Config` from it, calls `New`, then `Start`; an error from either is printed naming the step that failed and exits non-zero; on a termination signal it calls `Stop` and exits zero when every stop step completed, non-zero naming the step that missed its bound | MUST | RFC 23 §2 | T3.9 |
-| R2 | The start command reads no record and builds no component | invariant | RFC 23 §2 | T3.9 |
-| R3 | A start that finds v1's control-plane database, `controlplane.db`, refuses before the store opens and names it | MUST | RFC 23 plan §1.1, §1.4; RFC 23 §2.2 (step 1) | T3.9 |
+| R2 | The start command reads no record and builds no component; `internal/node`'s import rules hold it over start's files (`start.go`, `kv.go`, `preflight.go`, `clock.go`) | invariant | RFC 23 §2 | T3.9 |
+| R3 | A start that finds v1's control-plane database, `controlplane.db`, beside the bootstrap, at the operator's `/data/controlplane/controlplane.db` or at v1's Docker volume `/data/state/controlplane.db`, refuses before the store opens and names it; a preflight check only, reading and migrating nothing | MUST | RFC 23 plan §1.1, §1.4; RFC 23 §2.2 (step 1) | T3.9 |
 
 **Composition**
 
@@ -338,7 +338,9 @@ that subtasks and tests can cite them.
   marker.
 - **D14, stop bounds are fixed and on the node's clock.** Each stop step waits at most 30 s on
   `cfg.Clock.After`; RFC 23 sets the drain deadline but no per-step figure. Tests advance the
-  injected clock. A `ponytail:` at the bound names a setting as its upgrade, once an operator needs
+  injected clock. The store's close, `Stop`'s last step, has no bound yet, so a store that can no
+  longer be written holds `Stop` past every bound and the process exits only on a second signal
+  (#4981). A `ponytail:` at the bound names a setting as its upgrade, once an operator needs
   one.
 - **D15, the filesystem's own removal join goes with its owner.** `internal/vfs`'s `removeShare`
   and its `Start` drop carry a `ponytail:` naming the node's removal driver as their replacement.
@@ -410,10 +412,11 @@ pkg/health/
 internal/vfs/
   admission.go, filesystem.go              T3.6  the filesystem's own removal join deleted (D15)
 cmd/dfs/commands/
-  clock.go, start.go                       T3.9  systemClock, RFC 23 §2's run, the v1 refusal
+  clock.go, start.go                       T3.9  systemClock, RFC 23 §2's run, the signal handler first
+  kv.go, preflight.go                      T3.9  the store's refusals and open; the v1 refusal (R3)
 pkg/block/journal/internal/format/
   names.go                                 T3.10 node-id and node-id.tmp known
-Dockerfile                                 T3.9  HEALTHCHECK on http://localhost:8080/health/live
+Dockerfile                                 T3.9  HEALTHCHECK on https://localhost:8080/health/live
 ```
 
 ## 6. Subtasks
@@ -722,21 +725,29 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 
 - **Track:** A. **Depends on:** T3.3, and on the RFC 13 plan's epic 1 (`pkg/bootstrap`).
 - **Covers:** R1, R2, R3, R23.
-- **Deliverables:** `runStart`: the bootstrap loaded; one `os.Stat` for `controlplane.db` in the
-  bootstrap file's directory and at the operator's default `/data/controlplane/controlplane.db`,
-  refusing naming the path, before the store opens (R3); `badgerkv.Open` at the bootstrap's store
-  with the node's ID, read from the bootstrap's `node.id`, which this subtask's tests set, until T3.10 reads it through X1's `NodeID`; `node.New` with `systemClock` (D2); `Start`; a wait for `SIGINT` or
-  `SIGTERM`; `Stop`; each error printed naming its step, exit codes as R1 says; E1's `ponytail:`
-  at the immediate `Stop` deleted; the bound addresses logged; an architecture rule that
-  `cmd/dfs/commands/start.go` imports, of this module, only `internal/node`, `pkg/bootstrap`,
-  `badgerkv` and `pkg/metrics` (R2); the `Dockerfile`'s `HEALTHCHECK` on
-  `http://localhost:8080/health/live`, and `docker-compose.yml`'s on
-  `http://localhost:8080/health/ready`; E4's T4.3 moves both to `https`. Consumed by E5's `dfs init` beside it
-  and E7's server fixture.
+- **Deliverables:** `runStart`: a `SIGINT` and `SIGTERM` handler installed first, so a signal while
+  the store opens or the node is built stops the start, and a second one ends the process; the
+  bootstrap loaded; refusals before anything opens, each naming what it refused: a
+  `metadata.backend` other than badger, an unset or missing `metadata.badger.path`, a path that is
+  no directory, a directory holding no store (a start creates none), and an unset `node.id`; the
+  v1 refusal (R3), a preflight check only, one `os.Stat` for `controlplane.db` beside the bootstrap
+  file, at the operator's default `/data/controlplane/controlplane.db` and at v1's Docker volume
+  `/data/state/controlplane.db`, reading and migrating nothing; `badgerkv.Open` at the bootstrap's
+  store with the node's ID, read from the bootstrap's `node.id`, which this subtask's tests set,
+  until T3.10 reads it through X1's `NodeID`; `node.New` with `systemClock` (D2); `Start`; a wait
+  for the signal; `Stop`; `dfs: stopped` logged once `Stop` returned nil; each error printed
+  naming its step, exit codes as R1 says; E1's `ponytail:` at the immediate `Stop` deleted; the
+  bound addresses logged; `internal/node`'s import rules over start's files (`start.go`, `kv.go`,
+  `preflight.go`, `clock.go`): of this module only `internal/node`, `pkg/bootstrap`, `badgerkv`
+  and `pkg/metrics`, and `start.go` the one that imports the node (R2); the `Dockerfile`'s
+  `HEALTHCHECK` on `https://localhost:8080/health/live`, and `docker-compose.yml`'s on
+  `https://localhost:8080/health/ready`, since the API serves TLS on every address but loopback
+  (E4's T4.3, done). Consumed by E5's `dfs init` beside it and E7's server fixture.
 - **Acceptance criteria:**
   - Over an initialised installation, `dfs start` answers `ready` and exits zero on `SIGTERM`.
-  - Over a directory with no installation, or beside a `controlplane.db`, it exits non-zero naming
-    the step or the path.
+  - Over a directory with no installation, an unset or missing `metadata.badger.path`, an unset
+    `node.id`, or beside a `controlplane.db`, it exits non-zero naming the step or the path, and
+    opens nothing.
 - **Tests:** the command run as a child process over an installation the test initialises under
   `t.TempDir()`, its bootstrap naming `127.0.0.1:0`, the bound address read from the child's log:
   ready, then `SIGTERM`, exit 0 (R1); no installation, exit non-zero and the step in its output
@@ -827,9 +838,10 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- The container's probe is `/health/live` and docker-compose's `/health/ready` (T3.9, E4's T4.3).
-  RFC 23's plan's D13 and the RFC 13 plan's epic 6 name `/health/ready` for the image's
-  `HEALTHCHECK`; both should be brought in line through a pull request against each plan.
+- The container's probe is `https://…/health/live` and docker-compose's `https://…/health/ready`
+  (T3.9, E4's T4.3).
+  RFC 23's plan's D13 now says so; the RFC 13 plan's epic 6 still names `/health/ready` for the
+  image's `HEALTHCHECK`, and should be brought in line through a pull request against that plan.
 
 - What E3 reads from E2 is named by E2's final document (#4326): `Nodes.Counters`,
   `RegisterNode` and `PutNodeStatus`, `Operations`, `Sweep` with `More`, and the continuations
