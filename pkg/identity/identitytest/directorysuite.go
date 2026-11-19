@@ -103,6 +103,24 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		}
 	})
 
+	// A name with an empty password is an unauthenticated bind, which a
+	// permissive directory answers with success; it is refused, and the
+	// connection is left unbound.
+	t.Run("a bind with an empty password is refused", func(t *testing.T) {
+		c, s := open(t)
+		defer func() { _ = c.Close() }()
+		name, _ := s.Account()
+		for _, pw := range [][]byte{nil, {}} {
+			if err := c.Bind(ctx, name, pw); err == nil {
+				t.Errorf("bind as %q with password %#v: accepted, want refused", name, pw)
+			}
+		}
+		res, err := c.Search(ctx, directory.Request{Base: naming(t, c), Scope: directory.ScopeSubtree, Filter: "(objectClass=user)"})
+		if err == nil && len(res.Entries) > 0 {
+			t.Errorf("a subtree search after binds with an empty password returned %d entries, want it refused", len(res.Entries))
+		}
+	})
+
 	t.Run("root DSE names the naming context and its domain SID", func(t *testing.T) {
 		c, s := open(t)
 		defer func() { _ = c.Close() }()
