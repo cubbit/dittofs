@@ -20,9 +20,10 @@ func valid() settings.NFS {
 }
 
 // deps is the Deps New requires, VFS and Budgets, and nothing else. VFS is the
-// filesystem over memory.
+// filesystem over memory; Budgets holds only the connection count core
+// requires.
 func deps(t *testing.T) adapter.Deps {
-	return adapter.Deps{VFS: memory.New(t), Budgets: &resources.Budgets{}}
+	return adapter.Deps{VFS: memory.New(t), Budgets: &resources.Budgets{Conns: resources.NewConnLimit(1024)}}
 }
 
 // New refuses Deps missing VFS or Budgets with a nil adapter, naming every

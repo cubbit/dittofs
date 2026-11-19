@@ -156,6 +156,7 @@ func leakChecked(t *testing.T) adapter.Deps {
 		Reply:      resources.NewWaitBudget("reply", 8<<20),
 		Connection: resources.NewBudget("connection", 1<<20),
 		Hold:       resources.NewBudget("hold", 1<<20),
+		Conns:      resources.NewConnLimit(1024),
 	}
 	adaptertest.CheckLeaks(t, b)
 	return adapter.Deps{VFS: memory.New(t), Budgets: b, Metrics: metrics.New("test", "test")}
