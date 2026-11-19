@@ -89,10 +89,22 @@ func (s *snapshot) get() (engine.Stats, bool) {
 		go s.watch(f)
 	}
 	s.mu.Unlock()
+	// done is served first, at both checks: a fetch ending exactly at the
+	// deadline is a served snapshot, never a counted omission.
+	select {
+	case <-f.done:
+		return f.st, true
+	default:
+	}
 	select {
 	case <-f.done:
 		return f.st, true
 	case <-f.expired:
+		select {
+		case <-f.done:
+			return f.st, true
+		default:
+		}
 		return engine.Stats{}, false
 	}
 }
@@ -101,7 +113,10 @@ func (s *snapshot) get() (engine.Stats, bool) {
 func (s *snapshot) now() time.Time { return s.clock.Now() }
 
 // run fetches the Stats and ends the flight, wedged or not: a later get
-// then starts a fresh one, with a fresh deadline.
+// then starts a fresh one, with a fresh deadline. Single flight joins only
+// callers concurrent with a fetch, so two collectors whose Collect runs at
+// different times — never in one scrape's parallel gather, always across
+// two scrapes — read two different snapshots.
 func (s *snapshot) run(f *fetch) {
 	var st engine.Stats
 	if fn := s.stats.Load(); fn != nil {
@@ -120,9 +135,20 @@ func (s *snapshot) run(f *fetch) {
 func (s *snapshot) watch(f *fetch) {
 	select {
 	case <-f.done:
+		return
+	default:
+	}
+	select {
+	case <-f.done:
 	case <-f.after:
-		s.partial.WithLabelValues("engine").Inc()
-		close(f.expired)
+		// A second look at done keeps a fetch that landed while the fired
+		// timer woke this watcher from counting as an omission.
+		select {
+		case <-f.done:
+		default:
+			s.partial.WithLabelValues("engine").Inc()
+			close(f.expired)
+		}
 	}
 }
 
@@ -296,6 +322,7 @@ var journalGauges = []gaugeSpec{
 		return now.Sub(s.OldestDirty).Seconds()
 	}},
 	{"Files", "files", "Files with at least one held extent.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Files) }},
+
 	{"ExtentCount", "extent_count", "Placement index entries: held extents, retained extents and removal markers.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.ExtentCount) }},
 	{"DropRanges", "drop_ranges", "Ranges the removal-drop test keeps per file and segment.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.DropRanges) }},
 	{"Segments", "segments", "Segments in total.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Segments) }},
@@ -556,22 +583,37 @@ func (c *journalSeries) shareGauges(ch chan<- prometheus.Metric, js engine.Journ
 		}
 		// decision: the unlabelled sum rides the same series name with an
 		// empty share value, because the client library refuses one name
-		// under two label dimensions — a sum without the share label beside
-		// the labelled rows is what the name cannot carry. PromQL's
-		// share="" row is the sum; split the name or drop the label when
-		// the library ever allows the two shapes.
+		// under two label dimensions — a sum without the share label
+		// beside the labelled rows is what the name cannot carry. The RFC
+		// itself makes the shape deliberate: it asks for the same gauge
+		// "without a share label, as the sum over every share". The
+		// double-count hazard this shape carries is real, so a PromQL total
+		// must read the labelled rows alone — sum(...) share!="" — and
+		// never every row of the name, which counts each share's bytes
+		// once as labelled and once inside the sum. Split the name only if
+		// the RFC's wording or the library ever allows the two shapes.
 		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, sum, id, "")
 	}
 }
 
 // syncHistogram emits the journal's sync duration distribution, buckets and
-// all, read from the snapshot's bounds and counts.
+// all, read from the snapshot's bounds and counts. The journal keeps one
+// count per interval — at or below each bound and above the bound before it
+// — while the exposition serves every `le` bucket cumulatively, so the
+// running total is what a bucket names: Counts[i] accrued over
+// Counts[:i+1], the last count left as the overflow.
 func (c *journalSeries) syncHistogram(ch chan<- prometheus.Metric, s *journal.Stats, id string) {
 	h := s.SyncDuration
+	if len(h.Counts) < len(h.Bounds) {
+		// A histogram too short to fill its bounds serves nothing: naming a
+		// bucket it cannot count would under-report every count after it.
+		return
+	}
 	buckets := make(map[float64]uint64, len(h.Bounds))
-	var count uint64
+	var past, count uint64
 	for i, b := range h.Bounds {
-		buckets[b.Seconds()] = h.Counts[i]
+		past += h.Counts[i]
+		buckets[b.Seconds()] = past
 	}
 	for _, n := range h.Counts {
 		count += n

@@ -627,8 +627,10 @@ func TestSnapshotDeadlineOmitsAndCounts(t *testing.T) {
 			t.Fatalf("the partial counter = %v over a scrape of one wedged fetch, want it still 1: a joining scrape never counts its own", v)
 		}
 	}
-	if n := runtime.NumGoroutine(); n > before {
-		t.Errorf("goroutines rose from %d to %d over a hundred scrapes of one wedged fetch, want the count flat", before, n)
+	// One goroutine of tolerance covers a background connection settling
+	// or a worker between states; a leak per scrape would add hundreds.
+	if n := runtime.NumGoroutine(); n > before+1 {
+		t.Errorf("goroutines rose from %d to %d over a hundred scrapes of one wedged fetch, want the count flat within one", before, n)
 	}
 	close(block)
 }

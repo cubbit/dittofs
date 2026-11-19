@@ -20,6 +20,32 @@ const journalHex = "0a0b0c0d0e0f0102030405060708090a"
 
 var startish = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 
+// histogramOf reads the one sample of series name's histogram family into
+// its cumulative buckets, keyed by upper bound, and its count.
+func histogramOf(t *testing.T, c prometheus.Collector, name string) (map[float64]uint64, uint64) {
+	t.Helper()
+	r := prometheus.NewRegistry()
+	if err := r.Register(c); err != nil {
+		t.Fatalf("register the collector for %s: %v", name, err)
+	}
+	fams, err := r.Gather()
+	if err != nil {
+		t.Fatalf("gather %s: %v", name, err)
+	}
+	for _, f := range fams {
+		if f.GetName() == name && len(f.GetMetric()) == 1 {
+			h := f.GetMetric()[0].GetHistogram()
+			out := map[float64]uint64{}
+			for _, b := range h.GetBucket() {
+				out[b.GetUpperBound()] = b.GetCumulativeCount()
+			}
+			return out, h.GetSampleCount()
+		}
+	}
+	t.Fatalf("no one-sample histogram family %s in the scrape", name)
+	return nil, 0
+}
+
 // scrapeOf gathers every metric c emits into: the series names, and per
 // series the sample values keyed by the sample's labels as k=v pairs.
 func scrapeOf(t *testing.T, c prometheus.Collector) map[string]map[string]float64 {
@@ -60,28 +86,40 @@ func scrapeOf(t *testing.T, c prometheus.Collector) map[string]map[string]float6
 // field of journal.Stats and its nested shapes that a series answers, keyed
 // "<Field>", "Counters.<Field>", "ShareStats.<Field>", "EngineShares.<Field>",
 // "SyncMark.<Field>", "Recovery.<Field>".
-func answeredBy() map[string]string {
+// answeredBy builds the field-to-series table the collector declares, and
+// fails t on any duplicate: two entries under one key would serve whichever
+// the map kept, masking a figure with two sources.
+func answeredBy(t *testing.T) map[string]string {
+	t.Helper()
 	out := map[string]string{}
-	for _, c := range journalCounters {
-		out["Counters."+c.field] = "dittofs_journal_" + c.name
+	add := func(key, series string) {
+		if _, dup := out[key]; dup && key != "Counters.CorruptExtentsDataLoss" && key != "Counters.CorruptExtentsRepairable" {
+			t.Errorf("the table answers journal.Stats %s twice: a figure with two sources serves whichever map wins", key)
+		}
+		out[key] = series
 	}
-	out["Counters.CorruptExtentsDataLoss"] = corruptExtentsSeries
-	out["Counters.CorruptExtentsRepairable"] = corruptExtentsSeries
+	for _, c := range journalCounters {
+		add("Counters."+c.field, "dittofs_journal_"+c.name)
+	}
+	// The corrupt pair is the one deliberate sharing: two fields, one
+	// series, split by the outcome label.
+	add("Counters.CorruptExtentsDataLoss", corruptExtentsSeries)
+	add("Counters.CorruptExtentsRepairable", corruptExtentsSeries)
 	for _, g := range journalGauges {
-		out[g.field] = "dittofs_journal_" + g.name
+		add(g.field, "dittofs_journal_"+g.name)
 	}
 	// The containers themselves are answered by the series their nested
 	// shapes each cover, which the walk reads field by field; the histogram
 	// is one series of its own.
-	out["SyncDuration"] = "dittofs_journal_sync_seconds"
+	add("SyncDuration", "dittofs_journal_sync_seconds")
 	for _, g := range journalShareGauges {
-		out["ShareStats."+g.field] = "dittofs_journal_" + g.name
+		add("ShareStats."+g.field, "dittofs_journal_"+g.name)
 		if g.getEngine != nil {
-			out["EngineShares."+g.field] = "dittofs_journal_" + g.name
+			add("EngineShares."+g.field, "dittofs_journal_"+g.name)
 		}
 	}
 	for _, m := range journalSyncMarks {
-		out["SyncMark."+m.field] = "dittofs_journal_" + m.name
+		add("SyncMark."+m.field, "dittofs_journal_"+m.name)
 	}
 	return out
 }
@@ -115,7 +153,7 @@ func absentField(key string) bool {
 // carries a written reason. The day a field is added with no series, or a
 // reason is held for a field that has landed, this fails on its assertion.
 func TestJournalStatsEveryFieldHasASeries(t *testing.T) {
-	answered := answeredBy()
+	answered := answeredBy(t)
 	shapes := []struct {
 		ty     reflect.Type
 		prefix string
@@ -137,14 +175,17 @@ func TestJournalStatsEveryFieldHasASeries(t *testing.T) {
 			if shape.prefix == "" && walkedSeparately[key] {
 				continue
 			}
+			reason, excluded := journalExcluded[key]
 			if series, ok := answered[key]; ok {
 				if series == "" {
 					t.Errorf("journal.Stats %s is answered by an empty series name", key)
 				}
+				if excluded {
+					t.Errorf("journal.Stats %s is answered by %s and excluded for %q: a figure with two entries serves whichever the reader finds first", key, series, reason.reason)
+				}
 				continue
 			}
-			reason, ok := journalExcluded[key]
-			if !ok {
+			if !excluded {
 				t.Errorf("journal.Stats %s has neither a series nor a written reason in the table", key)
 				continue
 			}
@@ -262,8 +303,9 @@ func oneJournal(s *journal.Stats) engine.Stats {
 // error and read-only figures carry stays out of the labels.
 func TestJournalSeriesReadTheirFields(t *testing.T) {
 	s := statsSnapshot()
-	scr := scrapeOf(t, collectorFor(oneJournal(s), journalHex))
-	answered := answeredBy()
+	c := collectorFor(oneJournal(s), journalHex)
+	scr := scrapeOf(t, c)
+	answered := answeredBy(t)
 
 	for key, series := range answered {
 		if key == "Counters.CorruptExtentsDataLoss" || key == "Counters.CorruptExtentsRepairable" {
@@ -329,13 +371,18 @@ func TestJournalSeriesReadTheirFields(t *testing.T) {
 		}
 	}
 
-	// The sync histogram reads the journal's bounds, counts and sum.
-	vals, ok := scr["dittofs_journal_sync_seconds"]
-	if !ok {
-		t.Fatal("the scrape has no series dittofs_journal_sync_seconds")
+	// The sync histogram reads the journal's bounds, counts and sum. The
+	// journal keeps one count per interval — at or below its bound and
+	// above the bound before it — while the exposition's each `le` bucket
+	// is cumulative: 1 below 1 s, 3 at or below 2 s, and 6 samples in all.
+	buckets, count := histogramOf(t, c, "dittofs_journal_sync_seconds")
+	for le, want := range map[float64]uint64{1: 1, 2: 3} {
+		if got := buckets[le]; got != want {
+			t.Errorf("sync_seconds_bucket{le=%v} = %d, want the cumulative %d", le, got, want)
+		}
 	}
-	if got := vals["journal="+journalHex+","]; got != 6 {
-		t.Errorf("sync_seconds_count = %v, want the counts' sum 6", got)
+	if count != 6 {
+		t.Errorf("sync_seconds_count = %d, want the counts' sum 6", count)
 	}
 
 	// The sync marks, per stream.
