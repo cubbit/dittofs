@@ -168,11 +168,11 @@ func TestEngineConditionsDeadlinedRaisesUnavailability(t *testing.T) {
 }
 
 // A wedged fetch is one flight: however many callers call get() while it
-// runs, each joins the same in-flight fetch — the wedged call is entered
-// once — and one advance of the injected clock past the deadline answers
-// them all, every one with false and its component of the partial counter
-// raised exactly once for the flight's watchers. The callers' own scrapes
-// would each count on top; this test measures the flight alone.
+// runs, each joins the same in-flight fetch, and one advance of the
+// injected clock past the deadline answers them all, every one with false.
+// The entered count of the wedged seam is asserted once before the advance
+// and once after the answers — the after is the deterministic half, since
+// every caller has then answered through the one flight.
 func TestSnapshotOneWedgedFlightAnswersAllCallers(t *testing.T) {
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
@@ -189,23 +189,26 @@ func TestSnapshotOneWedgedFlightAnswersAllCallers(t *testing.T) {
 	clock := sim.NewTestClock(startish)
 	snap := newSnapshot(fetches, clock, newPartialCounter())
 
+	// The started gate releases once every caller has entered get(), so
+	// the answers below are the concurrent joining the single flight
+	// describes, not eight spreads of a sequential launch — and what the
+	// gate waits on is the entering of get(), never its answer.
+	var started sync.WaitGroup
 	const callers = 8
+	started.Add(callers)
 	answers := make(chan bool, callers)
 	for range callers {
 		go func() {
+			started.Done()
 			_, ok := snap.get()
 			answers <- ok
 		}()
 	}
+	started.Wait()
 	select {
 	case <-enteredOnce: // the one flight is led, its watcher armed
 	case <-time.After(10 * time.Second):
 		t.Fatal("no caller ever reached the snapshot")
-	}
-	// No entered-second: the wedged fetch is the only one in flight. The
-	// remaining callers park on its expiry, no second fetch spawned.
-	if n := entered.Load(); n != 1 {
-		t.Fatalf("the wedged fetch was entered %d times before the deadline, want 1: concurrent callers spawned their own fetches", n)
 	}
 	clock.Advance(statsDeadline + time.Second)
 	for range callers {
@@ -217,5 +220,11 @@ func TestSnapshotOneWedgedFlightAnswersAllCallers(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("a caller of a wedged flight never answered past the deadline")
 		}
+	}
+	// Only after every caller answered is the seam's entry count
+	// deterministic: none can have led a second fetch, for every one already
+	// joined the wedged flight's expiry.
+	if n := entered.Load(); n != 1 {
+		t.Fatalf("the wedged fetch was entered %d times over %d callers, want 1: the single flight served them all", n, callers)
 	}
 }

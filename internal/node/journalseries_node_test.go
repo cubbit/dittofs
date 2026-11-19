@@ -688,8 +688,6 @@ func TestSnapshotDeadlineOmitsAndCounts(t *testing.T) {
 
 }
 
-// pattern returns
-
 // pattern returns n distinct bytes: i modulo 251, offset by seed's hash, so
 // no two seeds' patterns share a run.
 func pattern(seed string, n int) []byte {

@@ -702,9 +702,23 @@ func limitedSecond(t *testing.T, f *enginetest.Fixture, limit int64) {
 	}
 }
 
-// unreclaimed is the journal's figures for share id: its unreclaimed bytes.
+// unreclaimed is the journal's figures for share id: its unreclaimed bytes,
+// read through the carried snapshot, whose Shares map the entry's TagShares
+// keys by the share's tag.
 func unreclaimed(f *enginetest.Fixture, id entity.ShareID) int64 {
-	return f.E.Stats().Journals[f.Dir].Shares[id].UnreclaimedBytes
+	js := f.E.Stats().Journals[f.Dir]
+	return js.Stats.Shares[attachedTag(js, id)].UnreclaimedBytes
+}
+
+// attachedTag is the tag the entry names for attached share id; it panics
+// when the entry names none, since every caller hands a share Stats serves.
+func attachedTag(js engine.JournalStats, id entity.ShareID) journal.ShareTag {
+	for tag, sid := range js.TagShares {
+		if sid == id {
+			return tag
+		}
+	}
+	panic("no attached share holds the id in TagShares")
 }
 
 // overwriteTwice writes mebibytes of 'a' then of 'b' over the same range of
