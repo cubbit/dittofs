@@ -202,6 +202,12 @@ create_group_if_absent devs
 # the "no LDAP group-walk needed" property AD-1 demonstrates.
 samba-tool group addmembers engineering devs >/dev/null 2>&1 || true
 
+# --- Lockout ---------------------------------------------------------------
+# Samba counts badPwdCount only under a lockout threshold, which a provisioned
+# domain leaves at 0. 100 counts every wrong password and locks no test out,
+# including one that sends more than ten.
+samba-tool domain passwordsettings set --account-lockout-threshold=100 >/dev/null
+
 # --- Users ----------------------------------------------------------------
 # alice: RFC2307 attrs set (idmap_ad path), member of devs (=> nested in engineering).
 create_user_if_absent "$USER_ALICE" \

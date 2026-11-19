@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"time"
-	"unicode/utf16"
 
 	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
 	nlssp "github.com/oiweiwei/go-msrpc/ssp/netlogon"
 )
+
+// errSpent answers a SetPassword on a channel an earlier SetPassword failed on.
+var errSpent = errors.New("netlogon: SetPassword on a channel a failed SetPassword spent; settle it on a new Channel")
 
 // trustPasswordRunes is NL_TRUST_PASSWORD's buffer in UTF-16 code units.
 const trustPasswordRunes = 256
@@ -20,10 +22,16 @@ const trustPasswordRunes = 256
 // the sealed association, the request authenticator the channel's next and
 // the reply's return authenticator verified. It is never sent twice: a call
 // that fails, its password set or not, is answered as an error the caller
-// settles by asking whether the controller accepts the password.
-func (c *channel) SetPassword(ctx context.Context, password []byte) error {
+// settles by asking whether the controller accepts the password. A failed
+// call spends the channel, whose chain may then be ahead of the controller's:
+// a later SetPassword answers errSpent without touching the wire.
+func (c *channel) SetPassword(ctx context.Context, password []byte) (err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.spent {
+		return errSpent
+	}
+	defer func() { c.spent = err != nil }()
 	as, err := c.association(ctx)
 	if err != nil {
 		return err
@@ -66,21 +74,18 @@ func (c *channel) SetPassword(ctx context.Context, password []byte) error {
 // password's UTF-16LE at the buffer's end, and its length in bytes after it,
 // all 516 bytes encrypted together.
 func trustPassword(ctx context.Context, cred *nlssp.SecureCredential, password []byte) (*logon.TrustPassword, error) {
-	codes := utf16.Encode([]rune(string(password)))
-	if len(codes) > trustPasswordRunes {
-		return nil, fmt.Errorf("netlogon: a machine password of %d UTF-16 code units, more than %d", len(codes), trustPasswordRunes)
+	b := utf16le(password)
+	defer clear(b)
+	if len(b) > 2*trustPasswordRunes {
+		return nil, fmt.Errorf("netlogon: a machine password of %d UTF-16 code units, more than %d", len(b)/2, trustPasswordRunes)
 	}
 	plain := make([]byte, 2*trustPasswordRunes+4)
 	defer clear(plain)
 	if _, err := rand.Read(plain[:2*trustPasswordRunes]); err != nil {
 		return nil, err
 	}
-	off := 2 * (trustPasswordRunes - len(codes))
-	for i, c := range codes {
-		binary.LittleEndian.PutUint16(plain[off+2*i:], c)
-	}
-	clear(codes)
-	binary.LittleEndian.PutUint32(plain[2*trustPasswordRunes:], uint32(2*len(codes)))
+	copy(plain[2*trustPasswordRunes-len(b):], b)
+	binary.LittleEndian.PutUint32(plain[2*trustPasswordRunes:], uint32(len(b)))
 	cipher, err := cred.Encrypt(ctx, plain)
 	if err != nil {
 		return nil, err

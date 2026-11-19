@@ -300,6 +300,24 @@ func DomainControllerConformance(t *testing.T, open func(t *testing.T) (netlogon
 		}
 	})
 
+	t.Run("a wrong admin password is ErrRejected", func(t *testing.T) {
+		dc, s := start(t)
+		name, _ := joined(t, s)
+		bad := s.Admin()
+		bad.Password = password()
+		if _, err := dc.Account(ctx, bad, name); !errors.Is(err, netlogon.ErrRejected) {
+			t.Errorf("Account with a wrong admin password: err %v, want ErrRejected", err)
+		}
+		other := randomName("DCT")
+		c := netlogon.Computer{Name: other, DNSHostName: strings.ToLower(other + "." + s.Domain().Realm)}
+		if err := dc.Create(ctx, bad, c, password()); !errors.Is(err, netlogon.ErrRejected) {
+			t.Errorf("Create with a wrong admin password: err %v, want ErrRejected", err)
+		}
+		if err := dc.Reset(ctx, bad, name, password()); !errors.Is(err, netlogon.ErrRejected) {
+			t.Errorf("Reset with a wrong admin password: err %v, want ErrRejected", err)
+		}
+	})
+
 	t.Run("an absent account is ErrNoAccount", func(t *testing.T) {
 		dc, s := start(t)
 		if _, err := dc.Account(ctx, s.Admin(), randomName("DCT")); !errors.Is(err, netlogon.ErrNoAccount) {

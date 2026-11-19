@@ -37,7 +37,9 @@ type DC interface {
 	// never a rejection.
 	Channel(ctx context.Context, account string, password []byte) (Channel, error)
 	// Account reads the computer account bound as bind, its names with the
-	// domain's sPNMappings applied: ErrNoAccount when absent.
+	// domain's sPNMappings applied: ErrNoAccount when absent. Account, Create
+	// and Reset answer ErrRejected when the controller refuses the bind's
+	// credentials or the rights the call needs.
 	Account(ctx context.Context, bind identity.JoinCredential, name string) (Account, error)
 	// Create creates the computer account c as admin with password in the
 	// creation itself, its host/ and cifs/ names for the short and the DNS
@@ -66,23 +68,10 @@ type Channel interface {
 }
 
 // Computer is a computer account to create.
-type Computer struct {
-	Name        string // without the $
-	OU          string // the container's DN; empty for the domain's Computers container
-	DNSHostName string // written as dNSHostName and in the fully qualified names
-}
+type Computer = directory.NewComputer
 
 // Account is what a controller holds of a computer account.
-type Account struct {
-	DN         string
-	KeyVersion uint32 // msDS-KeyVersionNumber
-	EncTypes   uint32 // msDS-SupportedEncryptionTypes; 0 when absent
-	// Names is servicePrincipalName, each host/ name standing also for every
-	// service sPNMappings maps to host, on that host name.
-	Names      []string
-	Owner      sid.SID // the security descriptor's owner
-	Delegation []byte  // msDS-AllowedToActOnBehalfOfOtherIdentity, as stored
-}
+type Account = directory.ComputerAccount
 
 // LogonRequest is one NTLM network logon passed through.
 type LogonRequest struct {

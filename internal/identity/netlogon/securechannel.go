@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/oiweiwei/go-msrpc/dcerpc"
 	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
@@ -91,30 +93,30 @@ func (d *dc) Channel(ctx context.Context, account string, password []byte) (Chan
 	if d.closed {
 		return nil, errClosed
 	}
+	binding, err := d.netlogonBinding(ctx)
+	if err != nil {
+		return nil, err
+	}
 	name := strings.ToUpper(account)
 	machine, err := machineCredential(name, d.realm, password)
 	if err != nil {
 		return nil, err
 	}
-	cfg, cred, err := d.authenticate(ctx, name, machine)
+	cfg, cred, err := d.authenticate(ctx, binding, name, machine)
 	if err != nil {
 		return nil, err
 	}
-	as, err := d.seal(ctx, cfg, machine)
+	as, err := d.seal(ctx, binding, cfg, machine)
 	if err != nil {
 		return nil, err
 	}
-	return &channel{dc: d, name: name, cfg: cfg, machine: machine, cred: cred, as: as}, nil
+	return &channel{dc: d, binding: binding, name: name, cfg: cfg, machine: machine, cred: cred, as: as}, nil
 }
 
 // machineCredential is the computer account name$ keyed by its NT hash, so no
 // string holds the password.
 func machineCredential(name, realm string, password []byte) (credential.Credential, error) {
-	codes := utf16.Encode([]rune(string(password)))
-	b := make([]byte, 0, 2*len(codes))
-	for _, c := range codes {
-		b = append(b, byte(c), byte(c>>8))
-	}
+	b := utf16le(password)
 	hash, err := crypto.MD4(b)
 	clear(b)
 	if err != nil {
@@ -124,10 +126,29 @@ func machineCredential(name, realm string, password []byte) (credential.Credenti
 	return credential.NewFromNTHashBytes(name+"$", hash, credential.Workstation(name), credential.Domain(realm)), nil
 }
 
+// utf16le is password, UTF-8, encoded UTF-16LE with no rune slice or string
+// in between, so clearing the result and the caller's slice leaves no copy.
+// An invalid byte encodes as U+FFFD, as []rune(string(password)) has it. No
+// UTF-8 sequence takes more than twice its length in UTF-16LE, so the buffer
+// is never grown and leaves no unzeroed copy behind.
+func utf16le(password []byte) []byte {
+	b := make([]byte, 0, 2*len(password))
+	for i := 0; i < len(password); {
+		r, n := utf8.DecodeRune(password[i:])
+		i += n
+		if hi, lo := utf16.EncodeRune(r); hi != utf8.RuneError {
+			b = binary.LittleEndian.AppendUint16(b, uint16(hi))
+			r = lo
+		}
+		b = binary.LittleEndian.AppendUint16(b, uint16(r))
+	}
+	return b
+}
+
 // authenticate runs the challenge and NetrServerAuthenticate3 as name on an
 // association of its own, closed before it returns.
-func (d *dc) authenticate(ctx context.Context, name string, machine credential.Credential) (*nlssp.Config, *nlssp.SecureCredential, error) {
-	cc, err := dcerpc.Dial(ctx, d.binding, dcerpc.WithDialer(d.dial))
+func (d *dc) authenticate(ctx context.Context, binding, name string, machine credential.Credential) (*nlssp.Config, *nlssp.SecureCredential, error) {
+	cc, err := dcerpc.Dial(ctx, binding, dcerpc.WithDialer(d.dial))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -250,12 +271,12 @@ func (a *assoc) close() {
 // go-msrpc ties an association's lifetime to the context it was bound under,
 // so it is bound under one ctx's cancellation does not reach, and ctx bounds
 // the bind by closing the connection.
-func (d *dc) seal(ctx context.Context, cfg *nlssp.Config, machine credential.Credential) (*assoc, error) {
+func (d *dc) seal(ctx context.Context, binding string, cfg *nlssp.Config, machine credential.Credential) (*assoc, error) {
 	a := &assoc{}
 	stop := context.AfterFunc(ctx, a.abort)
 	defer stop()
 	life := context.WithoutCancel(ctx)
-	cc, err := dcerpc.Dial(life, d.binding, dcerpc.WithDialer(a.dialer(d.dial)))
+	cc, err := dcerpc.Dial(life, binding, dcerpc.WithDialer(a.dialer(d.dial)))
 	if err != nil {
 		a.abort()
 		return nil, err
@@ -284,6 +305,7 @@ func (d *dc) seal(ctx context.Context, cfg *nlssp.Config, machine credential.Cre
 // other in a profile.
 type channel struct {
 	dc      *dc
+	binding string
 	name    string
 	cfg     *nlssp.Config
 	machine credential.Credential
@@ -292,6 +314,7 @@ type channel struct {
 	cred   *nlssp.SecureCredential // the authenticator chain NetrServerPasswordSet2 advances
 	as     *assoc                  // nil once torn, until the next call binds another
 	closed bool                    // set by Close: no association is bound again
+	spent  bool                    // a SetPassword failed: the chain may be ahead of the controller's
 }
 
 // errChannelClosed is a call on a closed channel.
@@ -305,7 +328,7 @@ func (c *channel) association(ctx context.Context) (*assoc, error) {
 		return nil, errChannelClosed
 	}
 	if c.as == nil {
-		as, err := c.dc.seal(ctx, c.cfg, c.machine)
+		as, err := c.dc.seal(ctx, c.binding, c.cfg, c.machine)
 		if err != nil {
 			return nil, err
 		}
