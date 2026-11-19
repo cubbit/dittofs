@@ -157,6 +157,55 @@ func TestRFC1D_UpdateOrderKeepsDirtyUnderHeld(t *testing.T) {
 	}
 }
 
+// TestRFC1D_ShareUpdateOrderKeepsDirtyUnderHeld applies share-level deltas, one
+// writer, and reads Stats between each pair of the share ledger's updates:
+// every share's dirty bytes stay at most its held bytes, and so do the core's.
+// With one writer the pair stays out of order for all of shareFigures'
+// re-reads, so a wrong update order shows here and nowhere a concurrent
+// sampler could resolve it.
+func TestRFC1D_ShareUpdateOrderKeepsDirtyUnderHeld(t *testing.T) {
+	var c *Core
+	var applied int
+	check := func(what string) {
+		st := c.Stats()
+		applied++
+		if st.DirtyBytes > st.HeldBytes {
+			t.Errorf("%s, step sample %d: core DirtyBytes %d > HeldBytes %d", what, applied, st.DirtyBytes, st.HeldBytes)
+		}
+		if _, ok := st.Shares[7]; !ok {
+			t.Fatalf("%s, step sample %d: Stats lists no share 7, so no share figure was checked", what, applied)
+		}
+		for tag, ss := range st.Shares {
+			if ss.DirtyBytes > ss.HeldBytes {
+				t.Errorf("%s, step sample %d: share %d DirtyBytes %d > HeldBytes %d", what, applied, tag, ss.DirtyBytes, ss.HeldBytes)
+			}
+		}
+	}
+	var what string
+	c, _ = newTestCore(t, func(o *coreOptions) {
+		o.shareStepSpy = func(int) { check(what) }
+	})
+	// Stats lists a share that has a handle, so one is attached for the tag.
+	mustShare(t, c, 7)
+	f := testFile(9)
+	for _, step := range []struct {
+		what string
+		d    index.HeldDelta
+	}{
+		{"a write", index.HeldDelta{Tag: 7, File: f, HeldBytes: 100, DirtyBytes: 100, Dirty: index.BecameDirty}},
+		{"a retained delta", index.HeldDelta{Tag: 7, File: f, RetainedBytes: 50}},
+		{"a clean-to-dirty transition", index.HeldDelta{Tag: 7, File: testFile(10), HeldBytes: 30, DirtyBytes: 30, Dirty: index.BecameDirty}},
+		{"a removal", index.HeldDelta{Tag: 7, File: f, HeldBytes: -100, DirtyBytes: -100, Dirty: index.BecameClean}},
+	} {
+		what = step.what
+		before := applied
+		c.Account(step.d)
+		if applied-before != 2 {
+			t.Fatalf("%s: the share step spy ran %d times, want 2", step.what, applied-before)
+		}
+	}
+}
+
 // TestRFC1D_StatsTakeNoWriteLock holds a file's append domain and a write
 // inside its append, and checks Stats still answers. It proves only that the
 // file append domain is not taken: another lock a write holds would not show.

@@ -95,6 +95,11 @@ type Stats struct {
 // dead removal records reads near zero while wholly reclaimable. Upgrade to a
 // per-record backed-bytes count once repack picks segments by this figure or
 // that error shows in a capacity decision.
+//
+// The components this function reads are the input of the lock test
+// (statsLocks in stats_locks_test.go), which holds every mutex they own while
+// calling it. A component Stats starts reading must be added there as a root,
+// or a lock it takes is not found; the test cannot discover one on its own.
 func (c *Core) Stats() Stats {
 	var s Stats
 	s.MaxBytes = c.maxBytes

@@ -30,6 +30,14 @@ type shareCells struct{ held, dirty, retained atomic.Int64 }
 type shareLedger struct {
 	mu sync.Mutex
 	m  atomic.Pointer[map[core.ShareTag]*shareCells]
+
+	// stepSpy is a test seam that stands between apply's updates of one
+	// share's figures, told how many have been applied, so a test can read
+	// the figures with one applied and the next not.
+	//
+	// decision: it is nil outside tests, for the same reason the core's
+	// stepSpy is: one nil comparison per step on the publish path.
+	stepSpy func(step int)
 }
 
 func (l *shareLedger) cells(tag core.ShareTag, create bool) *shareCells {
@@ -67,7 +75,13 @@ func (l *shareLedger) apply(d index.HeldDelta) {
 	}
 	f := l.cells(d.Tag, true)
 	f.held.Add(max(d.HeldBytes, 0))
+	if l.stepSpy != nil {
+		l.stepSpy(1)
+	}
 	f.dirty.Add(d.DirtyBytes)
+	if l.stepSpy != nil {
+		l.stepSpy(2)
+	}
 	f.held.Add(min(d.HeldBytes, 0))
 	f.retained.Add(d.RetainedBytes)
 }
