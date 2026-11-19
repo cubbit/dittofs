@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
 )
@@ -36,7 +37,10 @@ var _ Seeder = (*Directory)(nil)
 // controller in integration tests, so the in-memory one stands in only where
 // both answer alike.
 func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn, Seeder)) {
-	ctx := context.Background()
+	// A directory that stops answering fails the suite at a minute; a domain
+	// controller passes it in under a second.
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
 
 	// bound opens a connection and binds it as the seeder's account.
 	bound := func(t *testing.T) (directory.Conn, Seeder) {
