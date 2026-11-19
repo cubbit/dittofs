@@ -198,7 +198,9 @@ const maxSettingKey = 255
 // A put states the value; a delete removes the record, so the wider
 // scope's value or the default is effective. Every write is judged by the
 // settings table, and refused 404 for a record of a scope that does not
-// exist, and 400 for a key only a resource's own route writes. A
+// exist, and 400 for a key only a resource's own route writes. A write of
+// the installation's identity.ntlm also runs the rule for turning NTLM back
+// on, and answers 202 with the NT-hash deletion it starts. A
 // share-scoped setting of a share being removed is refused stale by the
 // store.
 func settingRoutes() []route {
@@ -237,12 +239,20 @@ func settingRoutes() []route {
 					if len(v) == 0 || string(v) == "null" {
 						return apiv1.Setting{}, rq.ID, &fieldError{field: "spec.value", detail: "a put states the value; a DELETE resets the setting to its default"}
 					}
-					gen, err := putSetting(ctx, rq.d, tx, entity.Setting{Scope: sc.scope(rq.ID), Key: rq.Sub, Value: v}, rq.Expect)
+					var gen uint64
+					st := entity.Setting{Scope: sc.scope(rq.ID), Key: rq.Sub, Value: v}
+					err := ntlmWrite(tx, rq.start, st.Scope, st.Key, func() (on bool, err error) {
+						gen, err = putSetting(ctx, rq.d, tx, st, rq.Expect)
+						return ntlmOn(st, true), err
+					})
 					return apiv1.Setting{ID: rq.Sub, Generation: gen, Spec: apiv1.SettingSpec{Value: v}}, rq.ID, err
 				})},
 			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, serve: write(tagsOf(w), nil,
 				func(ctx context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
-					return none{}, rq.ID, deleteSetting(ctx, rq.d, tx, sc.scope(rq.ID), rq.Sub, rq.Expect)
+					scope := sc.scope(rq.ID)
+					return none{}, rq.ID, ntlmWrite(tx, rq.start, scope, rq.Sub, func() (bool, error) {
+						return true, deleteSetting(ctx, rq.d, tx, scope, rq.Sub, rq.Expect)
+					})
 				})},
 		)
 	}

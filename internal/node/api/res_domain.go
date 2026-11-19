@@ -54,7 +54,7 @@ const maxDirectoryName = 1024
 
 var (
 	errNoDirectory = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no directory to ask"}
-	errNoIdentity  = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no identity service to hand the join to"}
+	errNoIdentity  = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no identity service to drive the operation"}
 	errNoSealer    = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no secret provider to seal the value with"}
 )
 
@@ -102,7 +102,7 @@ func installationRead(ctx context.Context, d Deps, _ request[none]) (apiv1.Insta
 
 // prepareResolve is resolve-principal's pre-write step: a name or a SID,
 // exactly one, recorded as the operation's params, refused 503 while the
-// node holds no directory to resolve it in.
+// node holds no identity service to drive it.
 func prepareResolve(_ context.Context, rq request[apiv1.ResolvePrincipalParams]) (opStart, error) {
 	p := rq.Body
 	switch {
@@ -115,30 +115,24 @@ func prepareResolve(_ context.Context, rq request[apiv1.ResolvePrincipalParams])
 			return opStart{}, &fieldError{field: "sid", detail: "not a SID in its string form"}
 		}
 	}
-	if rq.d.Directory == nil {
-		return opStart{}, errNoDirectory
+	if rq.d.Joins == nil {
+		return opStart{}, errNoIdentity
 	}
 	b, err := json.Marshal(p)
 	return opStart{params: b}, err
 }
 
-// prepareTestDirectory is test-directory's pre-write step, refused 503 while
-// the node holds no directory to test.
-func prepareTestDirectory(_ context.Context, rq request[none]) (opStart, error) {
-	if rq.d.Directory == nil {
-		return opStart{}, errNoDirectory
-	}
-	return opStart{}, nil
-}
-
-// prepareRotate is rotate-machine-password's pre-write step, refused 503
-// while the node holds no identity service to drive it.
+// identityDrives is the pre-write step of test-directory and
+// rotate-machine-password, which hand identity nothing: refused 503 while
+// the node holds no identity service to drive the operation.
 //
-// decision: the rotation is gated on Joins, identity's join hold, since it
-// is the one call the API makes of the service that drives the domain's
-// operations; the rotation itself hands identity nothing. Overturned when
-// the API is handed identity whole, and gates on that.
-func prepareRotate(_ context.Context, rq request[none]) (opStart, error) {
+// decision: resolve-principal, test-directory and rotate-machine-password
+// are gated on Joins, identity's join hold, since it is the one interface
+// the API holds of the service whose runner steps drive them; none of them
+// hands identity anything before its write. A node handing in Joins without
+// identity's steps would start operations nobody drives. Overturned when the
+// API is handed identity whole, and gates on that.
+func identityDrives(_ context.Context, rq request[none]) (opStart, error) {
 	if rq.d.Joins == nil {
 		return opStart{}, errNoIdentity
 	}

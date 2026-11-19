@@ -222,9 +222,9 @@ var baseRoutes = []route{
 	{method: http.MethodPut, pattern: "/api/v1/adapters/{sub}", kind: entity.ResourceAdapter, right: auth.Stores, target: adapterRef, sub: subProtocol, serve: write(adapters, adapterFieldsStep, putAdapter)},
 	{method: http.MethodGet, pattern: "/api/v1/installation", kind: entity.ResourceInstallation, right: auth.View, serve: read(installationRead)},
 	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "resolve-principal", kind: entity.ResourceInstallation, right: auth.Principals, starts: apiv1.OpResolvePrincipal, serve: write(onInstallation[apiv1.ResolvePrincipalParams](), prepareResolve, startOn)},
-	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "test-directory", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpTestDirectory, serve: write(onInstallation[none](), prepareTestDirectory, startOn)},
+	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "test-directory", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpTestDirectory, serve: write(onInstallation[none](), identityDrives, startOn)},
 	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "join-domain", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpJoinDomain, keyless: true, serve: write(onInstallation[apiv1.JoinDomain](), prepareJoin, startOn)},
-	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "rotate-machine-password", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpRotateMachinePassword, serve: write(onInstallation[none](), prepareRotate, startOn)},
+	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "rotate-machine-password", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpRotateMachinePassword, serve: write(onInstallation[none](), identityDrives, startOn)},
 }
 
 // routes is the whole table: the rows above, and the generic setting

@@ -114,12 +114,13 @@ type Deps struct {
 	// would be called.
 	Sealer sealer
 	// Directory is identity's directory, asked the user SID a Kerberos name
-	// links for before the write that stores it; nil, a write of a user's
-	// Kerberos name, resolve-principal and test-directory answer 503.
+	// links for before the write that stores it; nil, a write giving a user
+	// a new Kerberos name answers 503.
 	Directory directory
 	// Joins is identity's hold of an online join's administrator credential,
 	// in memory under the operation it is handed to; nil, an online
-	// join-domain and rotate-machine-password answer 503.
+	// join-domain, resolve-principal, test-directory and
+	// rotate-machine-password answer 503.
 	Joins joins
 }
 

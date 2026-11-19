@@ -462,14 +462,17 @@ func TestImportRules(t *testing.T) {
 // certificate with, the settings table's package, which imports only the
 // entity package and whose table the node hands in, and the secret
 // provider's refusals, apart from the provider, which the node hands in
-// behind an interface the API declares; nodetest, which imports Badger, is not allowed. Everything
+// behind an interface the API declares, and identity's value types and the
+// SID's encoding, which the domain's routes hand identity and store, apart
+// from identity's server, also handed in behind interfaces the API declares;
+// nodetest, which imports Badger, is not allowed. Everything
 // else it reaches through an interface it declares or a value the node hands
 // it.
 func componentAllowed(rel string) bool {
 	switch rel {
 	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1",
 		"pkg/metadata/errors", "pkg/metadata/kv", "pkg/vfs/vfserr", "internal/tlsconfig",
-		"pkg/settings", "pkg/secrets/secreterr":
+		"pkg/settings", "pkg/secrets/secreterr", "pkg/identity", "pkg/auth/sid":
 		return true
 	}
 	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
@@ -567,6 +570,7 @@ func TestNoComponentImports(t *testing.T) {
 	}{
 		{".", nil},
 		{"testdata/arch/component-import", []string{
+			"api/allowed.go imports github.com/cubbit/dittofs/internal/identity",
 			"api/allowed.go imports github.com/dgraph-io/badger/v4",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.KV",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.Counting",

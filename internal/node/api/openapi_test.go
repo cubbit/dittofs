@@ -138,7 +138,10 @@ func TestOpenAPINamesEveryRow(t *testing.T) {
 			want = append(want, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound)
 		}
 		if rt.serve.form == formWrite {
-			want = append(want, http.StatusConflict, http.StatusPreconditionRequired)
+			want = append(want, http.StatusConflict)
+			if p := rt.precondition(); p.key || p.compares() {
+				want = append(want, http.StatusPreconditionRequired)
+			}
 			if rt.method != http.MethodPost || rt.serve.changesSpec {
 				want = append(want, http.StatusPreconditionFailed)
 			}

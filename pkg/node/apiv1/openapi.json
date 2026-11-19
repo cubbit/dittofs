@@ -636,6 +636,94 @@
         ],
         "type": "object"
       },
+      "InstallationStatus": {
+        "properties": {
+          "join": {
+            "$ref": "#/components/schemas/Join"
+          },
+          "ntlm_off": {
+            "$ref": "#/components/schemas/NTLMOff"
+          }
+        },
+        "required": [
+          "join",
+          "ntlm_off"
+        ],
+        "type": "object"
+      },
+      "Join": {
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "joined": {
+            "type": "boolean"
+          },
+          "last_rotation": {
+            "$ref": "#/components/schemas/Rotation"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "joined"
+        ],
+        "type": "object"
+      },
+      "JoinCredentialRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "password": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "JoinDomainParamsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "dns_host_name": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "ou": {
+            "type": "string"
+          },
+          "takeover": {
+            "type": "boolean"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "JoinDomainRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "credential": {
+            "$ref": "#/components/schemas/JoinCredentialRequest"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/JoinDomainParamsRequest"
+          }
+        },
+        "type": "object"
+      },
       "Limit": {
         "properties": {
           "bytes": {
@@ -661,6 +749,21 @@
             "type": "integer"
           }
         },
+        "type": "object"
+      },
+      "NTLMOff": {
+        "properties": {
+          "deleted": {
+            "type": "string"
+          },
+          "off": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "off"
+        ],
         "type": "object"
       },
       "NamespaceSpec": {
@@ -960,6 +1063,44 @@
         ],
         "type": "object"
       },
+      "ResolvePrincipalParamsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sid": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Rotation": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "confirmed": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "failed": {
+            "type": "boolean"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at",
+          "failed",
+          "version",
+          "confirmed"
+        ],
+        "type": "object"
+      },
       "SMBShare": {
         "properties": {
           "continuously_available": {
@@ -1223,6 +1364,9 @@
           "email": {
             "type": "string"
           },
+          "kerberos": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -1247,6 +1391,12 @@
             ]
           },
           "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kerberos": {
             "type": [
               "string",
               "null"
@@ -1278,6 +1428,9 @@
             "type": "boolean"
           },
           "email": {
+            "type": "string"
+          },
+          "kerberos": {
             "type": "string"
           },
           "name": {
@@ -2521,6 +2674,350 @@
           }
         },
         "x-dittofs-role": "viewer"
+      }
+    },
+    "/api/v1/installation": {
+      "get": {
+        "operationId": "installation_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "generation": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "spec": {
+                      "type": "object"
+                    },
+                    "status": {
+                      "$ref": "#/components/schemas/InstallationStatus"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "generation",
+                    "spec",
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem404"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem503"
+          }
+        },
+        "x-dittofs-role": "viewer"
+      }
+    },
+    "/api/v1/installation:join-domain": {
+      "post": {
+        "operationId": "installation_join_domain",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JoinDomainRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Accepted",
+            "headers": {
+              "ETag": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem409"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem503"
+          }
+        },
+        "x-dittofs-role": "admin",
+        "x-dittofs-starts": "installation.join-domain"
+      }
+    },
+    "/api/v1/installation:resolve-principal": {
+      "post": {
+        "operationId": "installation_resolve_principal",
+        "parameters": [
+          {
+            "description": "At most 255 bytes; a retry with the same key and request answers what the first answered.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolvePrincipalParamsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Accepted",
+            "headers": {
+              "ETag": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Problem422"
+          },
+          "428": {
+            "$ref": "#/components/responses/Problem428"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem503"
+          }
+        },
+        "x-dittofs-role": "operator",
+        "x-dittofs-starts": "installation.resolve-principal"
+      }
+    },
+    "/api/v1/installation:rotate-machine-password": {
+      "post": {
+        "operationId": "installation_rotate_machine_password",
+        "parameters": [
+          {
+            "description": "At most 255 bytes; a retry with the same key and request answers what the first answered.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Accepted",
+            "headers": {
+              "ETag": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Problem422"
+          },
+          "428": {
+            "$ref": "#/components/responses/Problem428"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem503"
+          }
+        },
+        "x-dittofs-role": "admin",
+        "x-dittofs-starts": "installation.rotate-machine-password"
+      }
+    },
+    "/api/v1/installation:test-directory": {
+      "post": {
+        "operationId": "installation_test_directory",
+        "parameters": [
+          {
+            "description": "At most 255 bytes; a retry with the same key and request answers what the first answered.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Accepted",
+            "headers": {
+              "ETag": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Problem422"
+          },
+          "428": {
+            "$ref": "#/components/responses/Problem428"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem503"
+          }
+        },
+        "x-dittofs-role": "admin",
+        "x-dittofs-starts": "installation.test-directory"
       }
     },
     "/api/v1/namespaces": {
