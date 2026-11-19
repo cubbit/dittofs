@@ -22,7 +22,9 @@ import (
 // decision: a registered node that reports nothing of ref holds nothing back,
 // since it resolves the current version when it next resolves ref. Withdraw
 // it if a node can keep a version below the current one without reporting
-// it.
+// it. Until a node's reconcile writes NodeStatus.Secrets no node reports
+// anything, so the floor is always the current version and only the caller's
+// own retention gate protects an old version.
 //
 // decision: the statuses are read outside tx, untracked, so a report that
 // commits after this read does not rerun the Write. It widens only the gap
