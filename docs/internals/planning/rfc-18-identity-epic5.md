@@ -275,10 +275,11 @@ record are E6's and E8's to drive, on the rule this epic builds.
   ticket presented over NFS is refused. A `decision:` marker at the check. Prior art (from
   memory): MIT's `krb5_rd_req` with a server principal set refuses another name.
 - **D5, the replay cache is a map with an expiry heap, bounded at 1 048 576 entries.** The key
-  is the authenticator's client name and realm, its time and microseconds, and the ticket's
-  service name with ASCII letters folded (RFC 4120 §3.2.3): the name sits outside the encrypted
-  parts and R5 accepts it in any case, so an unfolded key would let a replay respell it past the
-  cache; an entry lives until the authenticator's time plus 5 minutes;
+  is the authenticator's client name and realm and a SHA-256 of the authenticator's ciphertext,
+  as MIT keys its replay cache: the ticket's service name sits outside the encrypted parts, and an
+  AD keytab holds every SPN of the computer account under one AES key, so a key on the service
+  name, folded or not, would let a replay re-addressed to another SPN past the cache, while the
+  ciphertext cannot change without the session key; an entry lives until the authenticator's time plus 5 minutes;
   an insert first drops expired entries from the heap's head, and a full cache refuses
   `ErrUnavailable`. One mutex, no goroutine. The order is: the authenticator decrypts, D9's
   throttle admits the (name, address) pair, then the insert; so a pair flooding failures takes at
@@ -556,7 +557,7 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
 - **Track:** B. **Depends on:** T5.3.
 - **Covers:** R9, R10, R11.
 - **Deliverables:** `develop`'s `replay.go` lifted and rewritten as D5's cache: keyed on the
-  authenticator's client, time and microseconds and the ticket's service name, folded (D5), each
+  authenticator's client and a SHA-256 of its ciphertext (D5), each
   entry kept
   until the authenticator's time plus 5 minutes on the injected clock, bounded at 1 048 576, a
   full cache answering `ErrUnavailable`; a count per ticket client capping each at 16 384, a
@@ -585,7 +586,8 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   time plus the skew, her next is accepted (catches a cache with no per-client cap, and a share
   never released, R11); the same AP-REQ again with its ticket's service name re-spelled
   `CIFS/NAS.TEST`, which the ring accepts: refused with outcome `replay` (catches a key on the
-  unfolded name, R9, D5). The flood through `SignIn` is T5.5's test, where the order lives (R11).
+  unfolded name, R9, D5); the same AP-REQ re-addressed to `cifs/nas`, which the ring holds under
+  `cifs/nas.test`'s key: refused with outcome `replay` (catches a key on the service name, R9, D5). The flood through `SignIn` is T5.5's test, where the order lives (R11).
 
 ### T5.5 Kerberos sign-in without a PAC
 

@@ -939,6 +939,12 @@ the domain controller's server credential (MS-NRPC 3.1.4.1); one that fails
 refuses the channel, so no NTLM response reaches a peer that does not hold the
 machine password.
 
+The CHALLENGE's `MsvAvNbComputerName` **MUST** be `identity.netbios_name`, the
+joined account's NetBIOS name, which identity hands the adapter's `gss`: a
+domain controller may refuse a pass-through whose NTLMv2 response names a
+computer other than the secure channel's account, and Samba does. The adapter
+builds the CHALLENGE and its other AV pairs ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
+
 A local user or group name never holds `@` or `\` (§4.6), so a name with
 either is never local. `identity.netbios_name` **MUST NOT** equal the directory record's NetBIOS
 domain, or a domain would route to both sources: a settings change naming the
@@ -1069,9 +1075,12 @@ Active Directory Users and Computers has none, and reports which service names t
 names still need an imported key (§3.3), before the secure channel signs in
 with the password; it then rotates the password twice
 (below), because whoever created the account knows it and could derive the
-computer account's service key and forge a PAC with it, and a domain
-controller accepts the previous password as well as the current one, so after
-one rotation the creator could still set up a secure channel as the account.
+computer account's service key and forge a PAC with it, and after one
+rotation the creator could still set up a secure channel as the account: a
+Windows domain controller accepts the previous password at
+`NetrServerAuthenticate3` as well as the current one, Samba does not, and
+either way a controller the first set has not reached still holds the
+handed-over password.
 **The second rotation's confirm proves no third set.** The join reads the
 account's key version number from its pinned controller when it verifies the
 handed-over password, and records it with that step. The second rotation's

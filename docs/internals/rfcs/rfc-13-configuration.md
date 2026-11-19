@@ -831,10 +831,12 @@ type SecretProvider interface {
 	Versions(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef) ([]Version, error)
 	// Prune drops the versions below the lowest one any node reports holding
 	// (§8), never the current one; the rotation's owner calls it once its
-	// retention ends. Prune and Delete check the caller's kind and owner as
-	// Resolve does, so a wrong reference neither destroys another holder's
-	// secret nor cuts its retention short.
-	Prune(ctx context.Context, kind SecretKind, owner SecretOwner, ref SecretRef) error
+	// retention ends. It commits through tx, inside the caller's own Write
+	// beside the audit record naming the versions dropped (RFC 23 §6), so a
+	// prune commits with its audit or not at all. Prune and Delete check the
+	// caller's kind and owner as Resolve does, so a wrong reference neither
+	// destroys another holder's secret nor cuts its retention short.
+	Prune(ctx context.Context, tx ControlPlaneTx, kind SecretKind, owner SecretOwner, ref SecretRef) error
 	// Delete destroys every version of the secret; a later Resolve of ref
 	// fails.
 	Delete(ctx context.Context, kind SecretKind, owner SecretOwner, ref SecretRef) error

@@ -570,7 +570,11 @@ pkg/settings/
     resolved through `Deps.Secrets` at the dial, an empty one refused before the dial, so no
     unauthenticated bind is sent (RFC 4513 §5.1.2); the domain SID read from the root DSE's
     `defaultNamingContext` entry before the first answer, `ErrUnavailable` while an `ad` client
-    cannot read it; a referral in any result refused `ErrUnavailable`, never dialled;
+    cannot read it; a continuation reference (`SearchResultReference`, `Result.Referrals`) handed
+    back and ignored, never followed or refused, and a referral (an `LDAPResult` with code 10)
+    refused `ErrUnavailable`, never dialled, the two being different LDAP messages; every search
+    sent with the domain-scope control (1.2.840.113556.1.4.1339), so a directory that honours it
+    sends no references and one that ignores it is served by the rule before;
   - the questions "who holds this name, SID or entry ID" and "what is this group's SID and gid",
     each one query under a 5-second timeout, values escaped as RFC 4515 requires (`go-ldap`'s
     `EscapeFilter` for text, `\xx` for a SID or GUID); two entries answering refused
@@ -591,11 +595,13 @@ pkg/settings/
   `*`, `(`, `)` and `\` beside the entries they would match unescaped, each resolving to its own
   entry only, and two entries answering one name `ErrUnavailable`, nothing bound (catches an
   unescaped value or the first of two taken, R18, R19, R20); a question based outside the
-  directory's naming context, answered by a referral: `ErrUnavailable`, never "no such entry"
-  (catches a referral read as an empty answer, R10, R14), pending #4734 (§9), since T6.4's in-memory
-  directory answers such a search noSuchObject, as Samba does, and never a referral, so the row's
-  referral comes from the fault wrapper rewriting a real answer once #4734 settles what counts as
-  one; a disabled bit, a past `accountExpires` and a `mail` read back (R21);
+  directory's naming context, which the in-memory directory answers noSuchObject, as Samba does:
+  `ErrUnavailable`, never "no such entry" (catches a refusal read as an empty answer, R14); the
+  same question's answer turned by the fault wrapper into an `LDAPResult` with code 10 naming
+  another host: `ErrUnavailable`, nothing dialled (catches a referral read as an empty answer or
+  followed, R10, R14); a name's question over the naming context, which the in-memory directory
+  answers with the entry and the partitions' continuation references: the entry answered (catches
+  a continuation reference refused, which would refuse every subtree lookup, R10); a disabled bit, a past `accountExpires` and a `mail` read back (R21);
   `Start` then `Stop` with the fault wrapper holding every dial until its context ends, under the
   leak check: `Start` returns at once (catches an eager dial, which would hang, R12); an `ad` directory without a readable domain object:
   every question `ErrUnavailable`, and an `rfc2307` one without it answering (R13); `Apply` of a
@@ -1008,13 +1014,17 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
 
 **Other:**
 
-- **T6.5's referral rule is open.** T6.4 found that Samba, like Active Directory, returns
-  continuation references to the configuration and DNS partitions on every subtree search of the
-  naming context, and answers a search outside it with noSuchObject rather than a referral, so
-  T6.5's "a referral in any result refused `ErrUnavailable`" would refuse every subtree lookup, and
-  its referral test row cannot be built over the in-memory directory, which never answers one. How
-  T6.5 tells a continuation reference from a referral is asked on #4734; T6.5's rule and test row
-  stand until that is answered.
+- **T6.5's referral rule, decided on #4734.** T6.4 found that Samba, like Active Directory,
+  returns continuation references to the configuration and DNS partitions on every subtree search
+  of the naming context, and answers a search outside it with noSuchObject rather than a referral,
+  so "a referral in any result refused" would have refused every subtree lookup. Decided: a
+  continuation reference (`SearchResultReference`) is handed back and ignored, a referral (an
+  `LDAPResult` with code 10) is refused `ErrUnavailable`, never dialled, and every search sends the
+  domain-scope control (1.2.840.113556.1.4.1339) to cut the references where the server honours
+  it; a narrower base is not needed. R10 is unchanged. T6.5's referral row comes from the fault
+  wrapper turning a real answer into a code-10 result, and T6.4's suite keeps its two rows from the
+  same finding: a base outside the naming context refused, never answered empty, and substrings
+  matched on values without a NUL.
 - `identitytest` imports `internal/identity/directory` for `Conn`, `Request` and `Entry`. E1's
   import rule forbids importing `internal/identity` outside `internal/node` and its own packages;
   it names the server's package, not the directory's, so the rule needs no change, but T6.4

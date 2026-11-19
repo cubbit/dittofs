@@ -1631,8 +1631,9 @@ This epic waits for an SMB adapter serving through the node (S3).
   - `Keys` stays RFC 18 §3.1's, whose comment now states `Keys.Session`'s chain (A12), as SMB's
     `FullSessionKey` takes it (MS-SMB2 3.3.5.5.3);
   - two gaps that need an RFC 22 amendment there: the CHALLENGE's AV pairs (§4.1), `MsvAvTimestamp`
-    among them and `MsvAvNbComputerName` equal to `identity.netbios_name` (A2), and the seam that
-    hands `gss` those names, since `vfs.Principals` and `config.SMB` carry none; and `lsarpc`'s
+    among them and `MsvAvNbComputerName` equal to `identity.netbios_name` (A2), that name and the
+    seam that hands `gss` it built by E7's T7.11 since #4625, as `vfs.Principals` and `config.SMB`
+    carry none; and `lsarpc`'s
     `OpenPolicy`, `LookupSids` and `OpenPolicy3` (opnums 6, 15, 130, §5.2), which `develop` serves
     for `smbcacls` and Windows 11.
 
@@ -1737,7 +1738,7 @@ What the plan knowingly does not build. Each row cites the section that defers i
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
-| The CHALLENGE's AV pairs, `MsvAvNbComputerName` from `identity.netbios_name`, and the seam that hands `gss` those names | O3: an RFC 22 amendment | RFC 22 plan (#3911) | its session epic |
+| The CHALLENGE's AV pairs, `MsvAvNbComputerName` among them put in through the seam E7's T7.11 builds | O3: an RFC 22 amendment. `MsvAvNbComputerName`'s value, `identity.netbios_name`, and the seam that hands `gss` it moved to E7's T7.11 on #4625, since Samba refuses a pass-through whose response names another computer | RFC 22 plan (#3911) | its session epic |
 | `lsarpc`'s `OpenPolicy`, `LookupSids` and `OpenPolicy3` (opnums 6, 15, 130) | O3: RFC 22 §5.2 | RFC 22 plan (#3911) | its IPC$ epic |
 | Dropping a tree kept across a guest or anonymous re-authentication, whose new opens on a share with `MinProof` `None` and guest access off are decided for `Anonymous` | O3: an RFC 22 change, RFC 22 §4.1's decision keeps the trees | RFC 22 plan (#3911) | its session epic |
 | RFC 20 §4.5's adapter rows for `ErrLogonFailure` and `ErrUnknownPrincipal`, which `Spell` and `Find` also return | O3, E1: SMB's in RFC 22's table, NFS's in RFC 21's | RFC 22 plan (#3911); RFC 21 plan | each plan's error-mapping epic |
