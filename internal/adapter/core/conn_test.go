@@ -2046,7 +2046,7 @@ func TestTheDrainDeadlineAbandonedRequestCountsUnderDrain(t *testing.T) {
 	waitsFor(t, "the Echo to wait for its reply room", func() bool { return pipelineRuns(conn) == 1 })
 	stopped := make(chan error, 1)
 	go func() { stopped <- srv.Stop(context.Background()) }()
-	waitsFor(t, "the server to drain", func() bool { return srv.Health().State == adapter.StateDraining })
+	deadlineArmed(t, clk)
 	clk.Advance(251 * time.Millisecond)
 	select {
 	case err := <-stopped:
