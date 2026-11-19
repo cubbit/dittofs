@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -35,9 +36,15 @@ func idRange(tx entity.ControlPlaneTx) (entity.IDRange, error) {
 func nameField(field string, err error) error {
 	var se *merrs.StoreError
 	if errors.As(err, &se) && errors.Is(se.Cause, entity.ErrLocalName) {
-		return &fieldError{field: field, detail: se.Cause.Error()}
+		return &fieldError{field: field, detail: nameDetail(se.Cause)}
 	}
 	return err
+}
+
+// nameDetail is what the name rule's refusal err says is wrong with the
+// name, without the sentinel's own text.
+func nameDetail(err error) string {
+	return strings.TrimPrefix(err.Error(), entity.ErrLocalName.Error()+": ")
 }
 
 // spelling is the value of ids' spelling in scheme, and false when it has
