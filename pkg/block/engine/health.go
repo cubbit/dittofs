@@ -133,6 +133,10 @@ func (s Stats) clone() Stats {
 		// cloning it would hand out a zero journal a healthy one reads as.
 		if j.Stats != nil {
 			st := *j.Stats
+			if st.LastSyncError != nil {
+				e := *st.LastSyncError
+				st.LastSyncError = &e
+			}
 			st.SyncMarks = maps.Clone(st.SyncMarks)
 			st.Shares = maps.Clone(st.Shares)
 			st.Losses = slices.Clone(st.Losses)

@@ -202,8 +202,9 @@ func TestStatsCarriesTheJournalsSnapshot(t *testing.T) {
 	if _, _, err := u.e.Commit(t.Context(), u.share.ID, f, 0, 4); err != nil {
 		t.Fatal(err)
 	}
-	// A refused reservation: a write past the share's journal limit is
-	// refused at capacity, one figure the snapshot must still carry whole.
+	// A refused reservation: the small share's own journal limit, two bytes,
+	// refuses this write — the journal-wide capacity and its reservation
+	// counters are the journal conformance suite's, over the real journal.
 	small := enginetest.AddShare(t, u.fs.Store, "small", 2)
 	if err := u.e.Bind(t.Context(), small); err != nil {
 		t.Fatal(err)
