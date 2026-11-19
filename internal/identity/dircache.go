@@ -23,11 +23,12 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// ponytail: the TTLs and the query timeout are constants. Make them settings
+// ponytail: the TTLs and the slot wait are constants. Make them settings
 // when an operator shows a directory that needs others.
 const (
 	dirFound    = 5 * time.Minute  // how long a positive answer is fresh
 	dirNotFound = 30 * time.Second // how long a "no such entry" answer is fresh
+	dirSlotWait = 5 * time.Second  // how long a query waits for a slot, the client's query timeout
 )
 
 // ponytail: the cache holds 65 536 entries and lets 64 queries run at once,
@@ -167,8 +168,8 @@ func (s *Server) directoryLookup(ctx context.Context, by directory.Key, value []
 }
 
 // lookup answers from a fresh entry, else from one query, shared by every
-// concurrent lookup of the key. A query that fails leaves the entry as it
-// was and answers from a positive one whose last answer is no older than the
+// concurrent lookup of the key. A query that fails, or a caller that stops
+// waiting for it, leaves the entry as it was and answers from a positive one whose last answer is no older than the
 // TTL plus grace, counted stale, unless fresh is set; any other failure is
 // ErrUnavailable, counted refused, or ambiguous for an answer more than one
 // entry gave. No failure is stored.
@@ -193,8 +194,7 @@ func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, g
 	select {
 	case r = <-ch:
 	case <-ctx.Done():
-		c.lookups.WithLabelValues(q, "refused").Inc()
-		return directory.Answer{}, false, fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())
+		r.Err = fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())
 	}
 	if r.Err == nil {
 		n := r.Val.(*dirEntry)
@@ -226,14 +226,25 @@ func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, g
 }
 
 // query asks the directory k once, in a slot of its own, under a span of the
-// context that opened it, and stores the answer.
+// context that opened it, and stores the answer. A query that waits
+// dirSlotWait for a slot fails ErrUnavailable unsent, so an outage of many
+// distinct names neither parks a goroutine each without bound nor sends their
+// queries after every caller has left.
 func (c *dirCache) query(ctx context.Context, k dirKey, q string, value []byte) (*dirEntry, error) {
 	select {
 	case c.slots <- struct{}{}:
 	default:
 		c.waiting.Add(1)
-		c.slots <- struct{}{}
+		got := false
+		select {
+		case c.slots <- struct{}{}:
+			got = true
+		case <-c.clock.After(dirSlotWait):
+		}
 		c.waiting.Add(-1)
+		if !got {
+			return nil, fmt.Errorf("%w: identity: no directory query slot within %v", vfserr.ErrUnavailable, dirSlotWait)
+		}
 	}
 	defer func() { <-c.slots }()
 

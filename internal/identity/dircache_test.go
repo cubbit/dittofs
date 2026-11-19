@@ -459,6 +459,126 @@ func TestDirectoryCacheBoundsQueriesInFlight(t *testing.T) {
 	})
 }
 
+// A query that waits 5 seconds for a slot is not sent: its lookup answers
+// from the stale grace, and carol's, with no entry, is refused.
+func TestDirectoryCacheBoundsTheSlotWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newDirEnv(t)
+		e.d.AddUser(t, "alice", nil)
+		e.d.AddUser(t, "carol", nil)
+		c := e.cache(t)
+		mustFind(t, c, "alice")
+		e.clock.Advance(6 * time.Minute)
+		// The burst holds every slot for 10 seconds, past the slot wait.
+		e.fail(t, sim.Rule{Op: "search", Key: userSearches, Count: 64, Action: sim.FaultAction{Delay: 10 * time.Second}})
+		var wg sync.WaitGroup
+		for i := range 64 {
+			wg.Go(func() { _, _, _ = lookup(c, fmt.Sprintf("u%d", i), 0) })
+		}
+		synctest.Wait()
+		sent := len(e.f.Queries())
+		type answer struct {
+			found bool
+			err   error
+		}
+		done := make(chan answer, 2)
+		for _, n := range []string{"alice", "carol"} {
+			go func() {
+				_, found, err := lookup(c, n, 15*time.Minute)
+				done <- answer{found, err}
+			}()
+		}
+		synctest.Wait()
+		if got := c.Waiting(); got != 2 {
+			t.Fatalf("queries waiting for a slot %d, want 2", got)
+		}
+		e.clock.Advance(5 * time.Second)
+		synctest.Wait()
+		if got := c.Waiting(); got != 0 {
+			t.Errorf("queries waiting for a slot at 5 seconds %d, want 0", got)
+		}
+		for range 2 {
+			select {
+			case a := <-done:
+				if !a.found && !errors.Is(a.err, vfserr.ErrUnavailable) {
+					t.Errorf("lookup = found %v, %v; want alice found and carol ErrUnavailable", a.found, a.err)
+				}
+			default:
+				t.Fatal("a lookup still waiting at 5 seconds, want it answered at the slot wait")
+			}
+		}
+		got := e.results(t)
+		if got["stale"] != 1 || got["refused"] != 1 {
+			t.Errorf("lookups counted stale %v, refused %v; want 1 and 1", got["stale"], got["refused"])
+		}
+		e.clock.Advance(5 * time.Second)
+		wg.Wait()
+		if got := len(e.f.Queries()); got != sent {
+			t.Errorf("searches sent %d once the slots freed, want %d: none for the lookups that left", got, sent)
+		}
+	})
+}
+
+// A caller that stops waiting is served a positive entry within the grace,
+// as a failed query is.
+func TestDirectoryCacheLeavingCallerServedStale(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newDirEnv(t)
+		e.d.AddUser(t, "alice", nil)
+		c := e.cache(t)
+		mustFind(t, c, "alice")
+		e.clock.Advance(6 * time.Minute)
+		e.fail(t, sim.Rule{Op: "search", Key: userSearches, Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, found, err := c.Lookup(ctx, directory.ByUserName, []byte("alice"), 15*time.Minute, false); err != nil || !found {
+			t.Errorf("lookup alice by a caller that left = found %v, %v; want found stale", found, err)
+		}
+		if got := e.results(t)["stale"]; got != 1 {
+			t.Errorf("lookups counted stale %v, want 1", got)
+		}
+		e.clock.Advance(time.Second)
+		synctest.Wait()
+	})
+}
+
+// The query runs without the first caller's cancellation: A opens it and
+// leaves, and B, who joined it, is answered when it completes.
+func TestDirectoryCacheQueryOutlivesFirstCaller(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newDirEnv(t)
+		e.d.AddUser(t, "alice", nil)
+		c := e.cache(t)
+		e.fail(t, sim.Rule{Op: "search", Key: userSearches, Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+		ctx, cancel := context.WithCancel(context.Background())
+		a := make(chan error, 1)
+		go func() {
+			_, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice"), 0, false)
+			a <- err
+		}()
+		synctest.Wait()
+		type answer struct {
+			found bool
+			err   error
+		}
+		b := make(chan answer, 1)
+		go func() {
+			_, found, err := lookup(c, "alice", 0)
+			b <- answer{found, err}
+		}()
+		synctest.Wait()
+		cancel()
+		if err := <-a; !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("lookup by A, who left = %v, want ErrUnavailable", err)
+		}
+		e.clock.Advance(time.Second)
+		if got := <-b; got.err != nil || !got.found {
+			t.Errorf("lookup by B, after A left = found %v, %v; want found", got.found, got.err)
+		}
+		e.wantQueries(t, 1, "A and B's shared query")
+	})
+}
+
 // Each lookup is counted once under its result, and each query sent adds
 // one sample to identity_directory_seconds.
 func TestDirectoryCacheCountsEachResult(t *testing.T) {
