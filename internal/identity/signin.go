@@ -40,7 +40,9 @@ func (s *Server) SignIn(ctx context.Context, step identity.SignInStep) (identity
 // a guest or anonymous one. RFC 18 §3.6 has no "map to guest": a wrong
 // password answered with a guest session turns every typo into a session
 // the client did not ask for, and a store outage into access. Null and guest
-// sessions are set up by the adapter's mechanism without SignIn.
+// sessions are set up by the adapter's mechanism without SignIn. Every path
+// below answers a zero result with its error already; the check after
+// signInNTLM is the one place that holds the rule for any path added later.
 func (s *Server) signIn(ctx context.Context, step identity.SignInStep) (identity.SignInResult, outcome, error) {
 	a := step.NTLM
 	// decision: a step carrying neither or both of an AP-REQ and an
@@ -93,20 +95,19 @@ func (s *Server) signInNTLM(ctx context.Context, st *State, step identity.SignIn
 	return s.signInLocal(ctx, step, proof, blob, avFlags)
 }
 
-// localDomain is the domain table's local row (RFC 18 §3.5): an empty domain
-// with a user name holding neither '@' nor '\', or the installation's NetBIOS
-// name, ASCII letters folded only, so the Kelvin sign never matches a K.
-// Every other domain is unknown until pass-through adds its row.
+// localDomain is the domain table's local row (RFC 18 §3.5): a user name
+// holding neither '@' nor '\', since a local name never holds either, sent
+// with an empty domain or the installation's NetBIOS name, ASCII letters
+// folded only, so the Kelvin sign never matches a K. Every other domain is
+// unknown until pass-through adds its row.
 //
 // decision: a UPN under one of the forest's alternate suffixes, or a domain
 // written with a trailing dot, is unknown_domain: nothing reads the forest's
 // suffixes (RFC 18 §3.5). Overturned when a deployment's users sign in with
 // an alternate suffix.
 func localDomain(st *State, user, domain string) bool {
-	if domain == "" {
-		return !strings.ContainsAny(user, `@\`)
-	}
-	return equalFoldASCII(domain, st.Settings.NetBIOSName)
+	return !strings.ContainsAny(user, `@\`) &&
+		(domain == "" || equalFoldASCII(domain, st.Settings.NetBIOSName))
 }
 
 // signInLocal finds the user the message names and verifies the response
@@ -114,13 +115,17 @@ func localDomain(st *State, user, domain string) bool {
 // and no other domain (MS-NLMP 3.3.2), then derives the exported session key
 // and checks the MIC (MS-NLMP 3.1.5.1.2, 3.2.5.1.2).
 //
-// decision: an unknown name, a disabled, deleted or directory principal and
-// a user with no NT hash each compute the proof against a dummy NT hash drawn
-// at New, so the NTLMv2 work is a wrong password's (RFC 18 §3.5's equal
-// work). The store reads and the secret's unwrap are not equalised: a miss
-// skips the unwrap, a round trip under a remote key provider. Overturned if
-// §3.5's "the same work" is read to include the unwrap; then a miss unwraps
-// a dummy secret too.
+// decision: every refusal does a wrong password's work (RFC 18 §3.5's
+// "the same work"): it reads a user record, the dummy principal's for a name
+// no user holds, resolves a secret reference, the dummy reference for a user
+// with nothing to resolve, and computes the proof against the dummy NT hash.
+// So a store round trip does not tell a name that exists from one that does
+// not, and an outage answers both ErrUnavailable. What still differs is in
+// memory: a dummy reference finds no record, so its data key is not unwrapped
+// and its value not opened, two AES-GCM opens, since every key provider holds
+// its keys in memory once started. Overturned if a key provider unwraps with
+// a round trip; a miss then needs a sealed dummy record to resolve, which
+// pkg/secrets' frozen surface (RFC 13 §7) has no call for.
 //
 // decision: a disabled user's outcome is disabled whatever the password, its
 // proof computed against the dummy hash as a miss's is; the answer is
@@ -136,16 +141,20 @@ func (s *Server) signInLocal(ctx context.Context, step identity.SignInStep, proo
 		return identity.SignInResult{}, outcomeUnavailable, err
 	}
 	ntHash := s.dummyNT
-	if oc == outcomeOK {
-		// The NT hash is owned by the user's record under "nt_hash" (RFC 16 §2.3).
-		owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: u.Principal.ID[:]}, Key: "nt_hash"}
-		b, err := s.deps.Secrets.Resolve(ctx, secrets.Protocol, entity.SecretNTHash, owner, u.NTHash)
-		switch {
-		case err != nil:
-			return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: NT hash: %w", vfserr.ErrUnavailable, err)
-		case len(b) != len(ntHash):
-			return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: stored NT hash of %d bytes", vfserr.ErrUnavailable, len(b))
-		}
+	// The NT hash is owned by the user's record under "nt_hash" (RFC 16 §2.3).
+	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: u.Principal.ID[:]}, Key: "nt_hash"}
+	ref := u.NTHash
+	if oc != outcomeOK {
+		ref = s.dummyRef
+	}
+	b, err := s.deps.Secrets.Resolve(ctx, secrets.Protocol, entity.SecretNTHash, owner, ref)
+	switch {
+	case oc != outcomeOK && merrs.IsNotFoundError(err):
+	case err != nil:
+		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: NT hash: %w", vfserr.ErrUnavailable, err)
+	case len(b) != len(ntHash):
+		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: stored NT hash of %d bytes", vfserr.ErrUnavailable, len(b))
+	default:
 		ntHash = [16]byte(b)
 	}
 	if s.ntHashed != nil {
@@ -176,25 +185,29 @@ func (s *Server) signInLocal(ctx context.Context, step identity.SignInStep, proo
 	}, outcomeOK, nil
 }
 
-// ntlmUser is the record name finds and outcomeOK when it can sign in over
+// ntlmUser is the user name finds and outcomeOK when it can sign in over
 // NTLM; otherwise the outcome its refusal is recorded with: disabled, or
-// logon_failure for a miss (a deleted user, which no name finds, among
-// them), a directory principal and a user with no NT hash. An error is the
-// store's, ErrUnavailable.
+// logon_failure for a name no user holds, a user Account refuses, a
+// directory principal and a user with no NT hash. A name no user holds reads
+// the dummy principal's record, as a name that exists reads its own. An
+// error is the store's, ErrUnavailable.
 func (s *Server) ntlmUser(ctx context.Context, name string) (entity.User, outcome, error) {
 	p, err := s.Lookup(ctx, name)
-	if err != nil || p == (entity.Principal{}) {
-		return entity.User{}, outcomeLogonFailure, err
+	if err != nil {
+		return entity.User{}, outcomeUnavailable, err
 	}
-	u, err := s.deps.Store.Principals().User(ctx, p)
+	if p == (entity.Principal{}) {
+		p = s.dummyUser
+	}
+	u, err := s.Account(ctx, p)
 	switch {
-	case merrs.IsNotFoundError(err):
+	case errors.Is(err, errDisabled):
+		return entity.User{}, outcomeDisabled, nil
+	case errors.Is(err, vfserr.ErrLogonFailure):
 		return entity.User{}, outcomeLogonFailure, nil
 	case err != nil:
-		return entity.User{}, outcomeUnavailable, fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
-	case u.Disabled:
-		return u, outcomeDisabled, nil
-	case u.Deleted, u.NTHash == entity.SecretRef{}, has(u.IDs, entity.SchemeDir):
+		return entity.User{}, outcomeUnavailable, err
+	case u.NTHash == entity.SecretRef{}, has(u.IDs, entity.SchemeDir):
 		return u, outcomeLogonFailure, nil
 	}
 	return u, outcomeOK, nil

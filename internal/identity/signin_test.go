@@ -184,7 +184,8 @@ func TestSignInPublishedExample(t *testing.T) {
 
 // The domain table, local and refusal rows (RFC 18 §3.5, §10 "NTLM domain"):
 // the NetBIOS name in another case and an empty domain are local; any other
-// domain, a qualified user name with an empty domain, the Kelvin sign for K,
+// domain, a qualified user name with an empty domain or the NetBIOS name,
+// the Kelvin sign for K,
 // a trailing dot and an alternate UPN suffix are unknown_domain; a response
 // computed for an empty domain but sent naming the NetBIOS name is refused,
 // so no domain but the one the message names is tried.
@@ -204,6 +205,9 @@ func TestSignInDomains(t *testing.T) {
 		{"a UPN, empty domain", "alice@corp.example.com", "", "", vfserr.ErrLogonFailure, "unknown_domain"},
 		{"an alternate UPN suffix", "alice@alt.example", "", "", vfserr.ErrLogonFailure, "unknown_domain"},
 		{`CORP\bob, empty domain`, `CORP\bob`, "", "", vfserr.ErrLogonFailure, "unknown_domain"},
+		{"a UPN, sent as KIOSK", "alice@corp.example.com", "KIOSK", "KIOSK", vfserr.ErrLogonFailure, "unknown_domain"},
+		{`CORP\bob, sent as KIOSK`, `CORP\bob`, "KIOSK", "KIOSK", vfserr.ErrLogonFailure, "unknown_domain"},
+		{`KIOSK\alice, sent as KIOSK`, `KIOSK\alice`, "KIOSK", "KIOSK", vfserr.ErrLogonFailure, "unknown_domain"},
 		{"the Kelvin sign for K", "alice", "KIOSK", "KIOSK", vfserr.ErrLogonFailure, "unknown_domain"},
 		{"a trailing dot", "alice", "KIOSK.", "KIOSK.", vfserr.ErrLogonFailure, "unknown_domain"},
 		{"computed for no domain, sent as KIOSK", "alice", "", "KIOSK", vfserr.ErrLogonFailure, "logon_failure"},
@@ -349,9 +353,14 @@ func TestSignInRefusesAccounts(t *testing.T) {
 	}
 }
 
-// A store that cannot answer, the user's read or the NT hash's, and a server
-// with no secret provider, are ErrUnavailable with the zero result, never a
-// wrong password or a session.
+// A store that cannot answer, the name's read, the user's or the NT hash's,
+// is ErrUnavailable with the zero result, never a wrong password or a
+// session, and so it is for every account a wrong password is refused for:
+// an unknown name reads a user record and resolves a secret reference as a
+// wrong password does (RFC 18 §3.5's "the same work"), so neither the reads
+// nor an outage's answer tell a name that exists. A stored NT hash of 15
+// bytes, an NT hash reference with no record and a server with no secret
+// provider are ErrUnavailable too.
 func TestSignInOutage(t *testing.T) {
 	for _, c := range []struct {
 		name, op, key string
@@ -363,11 +372,38 @@ func TestSignInOutage(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			r, p := ntlmServer(t, "NAS01")
 			r.ntlmUser(t, p, "alice", "1500", alicePassword)
+			r.user(t, entity.User{Principal: entity.NewUser(), Name: "nohash", IDs: fileIDs("1501")}, 0)
+			disabled := entity.User{Principal: entity.NewUser(), Name: "carol", IDs: fileIDs("1502"), Disabled: true}
+			r.withNTHash(t, p, &disabled, alicePassword)
+			r.user(t, disabled, 0)
 			r.fail(t, c.op, c.key)
-			res, oc, err := r.srv.SignInOutcome(context.Background(), ntlmStep(alicePassword, "alice", "", false))
-			refused(t, c.name+" failing", res, oc, err, vfserr.ErrUnavailable, "unavailable")
+			for _, a := range []struct{ what, user, password string }{
+				{"the right password", "alice", alicePassword},
+				{"a wrong password", "alice", "wrong"},
+				{"an unknown name", "nobody", alicePassword},
+				{"a user with no NT hash", "nohash", alicePassword},
+				{"a disabled user", "carol", alicePassword},
+			} {
+				res, oc, err := r.srv.SignInOutcome(context.Background(), ntlmStep(a.password, a.user, "", false))
+				refused(t, a.what+", "+c.name+" failing", res, oc, err, vfserr.ErrUnavailable, "unavailable")
+			}
 		})
 	}
+	t.Run("a stored NT hash of 15 bytes", func(t *testing.T) {
+		r, p := ntlmServer(t, "NAS01")
+		u := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
+		r.sealNTHash(t, p, &u, make([]byte, 15))
+		r.user(t, u, 0)
+		res, oc, err := r.srv.SignInOutcome(context.Background(), ntlmStep(alicePassword, "alice", "", false))
+		refused(t, "a stored NT hash of 15 bytes", res, oc, err, vfserr.ErrUnavailable, "unavailable")
+	})
+	t.Run("an NT hash reference with no record", func(t *testing.T) {
+		r, _ := ntlmServer(t, "NAS01")
+		u := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500"), NTHash: entity.SecretRef(uuid.New())}
+		r.user(t, u, 0)
+		res, oc, err := r.srv.SignInOutcome(context.Background(), ntlmStep(alicePassword, "alice", "", false))
+		refused(t, "an NT hash reference with no record", res, oc, err, vfserr.ErrUnavailable, "unavailable")
+	})
 	t.Run("no secret provider", func(t *testing.T) {
 		r, p := ntlmServer(t, "NAS01")
 		r.ntlmUser(t, p, "alice", "1500", alicePassword)
