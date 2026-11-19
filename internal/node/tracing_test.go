@@ -129,11 +129,11 @@ func fillUntilRefused(t *testing.T, h *nodetest.Harness, shID entity.ShareID, fi
 // write is made again on that answer, until the pool has made one; any other
 // outcome is the write's own. The bound is a real-time backstop, never the
 // assertion.
-func writeSpared(t *testing.T, h *nodetest.Harness, s entity.ShareID, f entity.FileID, p []byte) error {
+func writeSpared(t *testing.T, h *nodetest.Harness, s entity.ShareID, f entity.FileID, off int64, p []byte) error {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		err := jwrite(t, h, s, f, 0, p)
+		err := jwrite(t, h, s, f, off, p)
 		var delay *vfserr.Delay
 		if !errors.As(err, &delay) || delay.Cause != vfserr.DelayCapacity {
 			return err
@@ -158,7 +158,7 @@ func TestTheJournalTracesItsOperations(t *testing.T) {
 	file := createFiles(t, h, sh, 1)[0]
 	caughtUp(t, h)
 
-	if err := writeSpared(t, h, sh.ID, file.ID, pattern("trace", 4096)); err != nil {
+	if err := writeSpared(t, h, sh.ID, file.ID, 0, pattern("trace", 4096)); err != nil {
 		t.Fatal(err)
 	}
 	if err := jcommit(t, h, sh.ID, file.ID); err != nil {
@@ -245,7 +245,7 @@ func TestTheJournalRunsUntracedWithoutATracer(t *testing.T) {
 	sh := addShare(t, h)
 	file := createFiles(t, h, sh, 1)[0]
 	caughtUp(t, h)
-	if err := writeSpared(t, h, sh.ID, file.ID, pattern("untraced", 4096)); err != nil {
+	if err := writeSpared(t, h, sh.ID, file.ID, 0, pattern("untraced", 4096)); err != nil {
 		t.Fatal(err)
 	}
 	if err := jcommit(t, h, sh.ID, file.ID); err != nil {
@@ -272,7 +272,7 @@ func TestTheJournalLoggerNamesTheJournal(t *testing.T) {
 	sh := addShare(t, h)
 	file := createFiles(t, h, sh, 1)[0]
 	caughtUp(t, h)
-	if err := writeSpared(t, h, sh.ID, file.ID, pattern("logged", 4096)); err != nil {
+	if err := writeSpared(t, h, sh.ID, file.ID, 0, pattern("logged", 4096)); err != nil {
 		t.Fatal(err)
 	}
 	if err := jcommit(t, h, sh.ID, file.ID); err != nil {
