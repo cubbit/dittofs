@@ -289,11 +289,11 @@ cluster is several over one replicated store.
    from the host's file or environment.
 2. It calls `node.Preflight` (§2.1), the start check, before anything opens:
    over the store directory and journal devices the bootstrap names (**(cluster)**: a
-   cluster node's store has no directory), it refuses naming what it found, and
+   cluster node's store has no directory), it refuses, naming the reason, and
    nothing was opened.
-3. It builds the `Config` (§2.1) from it: the bootstrap, the key-value store the
-   metadata store opens on, the transport (none on one node), the clock, the
-   fault seam, the metrics registry and the logger.
+3. It builds the `Config` (§2.1) from the bootstrap: the bootstrap, the key-value
+   store the metadata store opens on, the transport (none on one node), the
+   clock, the fault seam, the metrics registry and the logger.
 4. It calls `node.New(cfg)`, then `Start`. An error from either is printed,
    naming the step that failed, and the process exits non-zero.
 5. On a termination signal it calls `Stop` and exits: zero when every stop step

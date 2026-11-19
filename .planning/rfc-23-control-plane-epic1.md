@@ -179,11 +179,12 @@ that subtasks and tests can cite them.
   Prior art: the strangler pattern's last step, deleting the old path once nothing calls it (from
   memory).
 - **D2, the node's surface is what RFC 23 §2.1 declares, less what has no consumer.** `New`,
-  `Node`, `Config`, `Preflight` and `Start`/`Stop`. `Preflight` is the start check: it has to run
-  before the host opens the KV store, because `Config.KV` arrives already open and Badger's own
-  open writes the `MANIFEST` the check reads, so `New` and `Start` are both too late to tell an
-  absent store from a present one. A package of its own for one function would add a boundary
-  and gain nothing, since the probes read the storage the node's own configuration names. `Config.Clock` is `engine.Clock` (`Now`, `Elapsed`,
+  `Node`, `Config`, `Preflight` and `Start`/`Stop`. `Preflight` is the start check: it has to
+  run before the host opens the KV store, because `Config.KV` arrives already open and
+  Badger's own open writes the `MANIFEST` the check reads, so `New` and `Start` are both too
+  late to tell an absent store from a present one. A package of its own for one function would
+  add a boundary and gain nothing, since the probes read the storage the node's own
+  configuration names. `Config.Clock` is `engine.Clock` (`Now`, `Elapsed`,
   `After`), which `sim.TestClock` already implements and the journal's and open state's clocks are
   subsets of, so the node declares no clock type of its own and exports exactly rule 11's list.
   `Config` leaves out `Transport` (cluster only) and `Fault` (no component's `Deps` takes a fault
@@ -408,8 +409,9 @@ internal/node/
   flag (R5, R7); and `internal/node/arch_test.go`'s export pin (R9, D10): `internal/node`'s exported
   package-level declarations are exactly `New`, `Node`, `Config` and `Preflight` and `*Node`'s
   exported methods exactly `Start` and `Stop`, run over the package and over the planted
-  trees under `testdata/arch/`, each holding one violation. It lands here because `internal/node` is new in this subtask and
-  `lint-repo`'s `test/new-package-tests.sh` refuses a new package with no `_test.go`.
+  trees under `testdata/arch/`, each holding one violation. It lands here because
+  `internal/node` is new in this subtask and `lint-repo`'s `test/new-package-tests.sh` refuses
+  a new package with no `_test.go`.
 
 ### T1.4 The daemon flags' other callers, and the reference test
 
