@@ -17,7 +17,9 @@ Writing rules for review comments and replies:
 
 <!-- One to three sentences: what changes in behavior, and why. Link the issue / RFC
 instead of re-explaining it. For each subtask this PR finishes, one line closing its
-issue: Closes #<subtask issue>. That line credits the PR on the burn-up. -->
+issue: Closes #<subtask issue>. For subtasks with no issue, one line naming them by RFC
+and id: Closes: RFC 8 T3.4, T3.5, RFC 9 T5.6 (Part of: for one finished only in part).
+These lines credit the PR on the burn-up; without them it has no estimate. -->
 
 ## Decision needed
 
