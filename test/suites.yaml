@@ -136,7 +136,8 @@ suites:
   # them see is nightly, not per-change, with DITTOFS_MODEL_SEEDS holding the count. No
   # -race: the seeds multiply the run's cost, and journal-conformance already races a change.
   # decision: no known: file — the model red on one seed is a divergence to fix, and an
-  # entry would mute every later seed's telling of it.
+  # entry would mute every later seed's telling of it. A flake goes to quarantine, with
+  # an issue and an expiry date, never to a known list.
   journal-model:
     format: go-json
     cmd: go test -tags=journal_conformance,journal_model -run ^TestModelManySeeds$ -timeout=110m -artifacts -outputdir={out} ./pkg/block/journal/conformance/
@@ -150,7 +151,8 @@ suites:
   # DITTOFS_SOAK_DURATION, a stability no short checked run can show. No -race, as for the
   # model: the detector changes the timing a soak explores.
   # decision: no known: file — drift in a counter the soak checks is a leak to fix, not a
-  # figure to list.
+  # figure to list. A flake goes to quarantine, with an issue and an expiry date, never
+  # to a known list.
   journal-soak:
     format: go-json
     cmd: go test -tags=journal_conformance,journal_soak -run ^TestJournalSoak -timeout=150m -artifacts -outputdir={out} ./pkg/block/journal/conformance/
@@ -172,7 +174,8 @@ suites:
   # decision: manual until a reference runner exists, the ledger row the journal plan
   # carries — a nightly figure compares only against the same host's, and no host is one yet.
   # decision: no known: file — a benchmark that refuses to run is a finding to fix; its
-  # b.Fatalf line is in bench.txt.
+  # b.Fatalf line is in bench.txt. A flake goes to quarantine, with an issue and an
+  # expiry date, never to a known list.
   journal-bench:
     cmd:
       # The bench pattern's quotes rule out the flow style shellcheck's and engine-bench's
