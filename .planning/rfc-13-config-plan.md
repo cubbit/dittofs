@@ -679,10 +679,11 @@ Each carries a `ponytail:` marker at the code site:
     the switch (RFC 23 §5.3);
   - NT hashes, with no retention; a keytab and the machine password, after RFC 18 §3.3's retention:
     the RFC 18 plan (#4058), which rotates them;
-  - an identity provider's bind credential and the OpenID Connect client secret, which an `admin`
-    rotates through the API's secret-write route, with no retention: epic 5's reconcile, which
-    calls `Prune` on each such reference once it has written the version it now holds to
-    `NodeStatus.Secrets`, so on one node the old version goes at the next reconcile.
+  - an identity provider's bind credential, which an `admin` rotates through the API's
+    secret-write route, with no retention: epic 5's reconcile, which calls `Prune` on it once
+    it has written the version it now holds to `NodeStatus.Secrets`, so on one node the old
+    version goes at the next reconcile; the OpenID Connect client secret's: §6.1's row "the
+    OpenID Connect client secret's prune and revocation report".
 
   A node reports in `NodeStatus.Secrets` only the references it keeps resolved: the role keys'
   users, a keytab, the machine password, a bind credential, the OpenID Connect client secret, the
@@ -697,8 +698,7 @@ Each carries a `ponytail:` marker at the code site:
   The owner also makes RFC 13 §7's report that the old credential may be revoked at its service,
   once its prune has dropped that version, as `Versions` no longer lists it, not at the call, for
   each kind that has one: epic 5's reconcile for a bind credential, revoked at
-  the directory; §6.1's row "the OpenID Connect client secret's prune and revocation report" for
-  the OpenID Connect client secret, revoked at the identity provider; the RFC 18
+  the directory; for the OpenID Connect client secret, revoked at the identity provider; the RFC 18
   plan for a keytab and the machine password, at the domain. A password hash, an NT hash and the
   signing key have no such service.
   - *Ceiling:* a second node: a node that is down keeps its last report, and holds the prune back.

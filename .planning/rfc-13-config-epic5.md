@@ -13,7 +13,7 @@ for a store's and a namespace's delete under `Check`, and for RFC 13 §6's port 
 [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §2.3 (`Namespace.Bound`, "encoded by RFC
 13's settings schema").
 **Track:** the team.
-**Epic 5 estimate: 9 subtasks, 17.5 man-days.**
+**Epic 5 estimate: 9 subtasks, 18 man-days.**
 **Depends on:** E2, E3 and E4, whose bodies it wires: E3's `Of` and `Table` (T3.2), `Read` and `Get`
 (T3.4), `Check` and its gates (T3.5, T3.6, T3.7), `Diff` and `Keep` (T3.8), its series and reconcile
 benchmark (T3.9); E4's `Seal` (T4.3), `Versions` (T4.4) and `Prune` (T4.5); E2's loaded bootstrap,
@@ -66,7 +66,7 @@ its owner writes it.
 The node's table and RFC 23's sections in it; `apply` filled on `Read`, `Diff`, `Keep` and `Get`;
 the restart-pending set and the secret versions in `NodeStatus`; the table handed to the API's
 `Check`, its content read and the two RFC 23 ledger rows on stores and namespaces; a namespace's
-`Bound` written at its create; the write of a
+`Bound` written at its create through `pkg/settings`' codec; the write of a
 setting's secret; RFC 13 §6's port rule at write, on this node; the secrets pass in reconcile, its
 prune and revocation report; `config_secrets_behind`; Appendix B's check; the full reconcile
 benchmark.
@@ -104,7 +104,8 @@ benchmark.
   `config_generation_behind` condition (RFC 23's epic 3): built by their owners; T5.9 checks only
   that each reaches the node's registry.
 - Comparing a namespace's `Bound` with its configuration at every open, and refusing the open on
-  a difference (RFC 13 §5.3): the engine's, RFC 8 §2.4. T5.4 writes what that comparison reads.
+  a difference (RFC 13 §5.3): the engine's, RFC 8 §2.4. T5.4 writes what that comparison reads,
+  and exports from `pkg/settings` the decode it reads through (D12).
 - Reconcile reading only the records above its position: the plan's ledger row "Reconcile reading
   only records above its position", unowned.
 
@@ -127,7 +128,7 @@ benchmark.
   snapshot; **the RFC 18 plan's T8.1**, identity in the node and its sections in the table.
 - **D2**, **D3**, **D9**, **D10** and **D11** with RFC 13's plan named are its decisions (the table,
   Appendix B's check, a store location's change, a reference's kind and owner, the one schema);
-  **D1** to **D11** without a plan named are this epic's own (§4). **O1** and **O4** are the plan's
+  **D1** to **D10** and **D12** without a plan named are this epic's own (§4). **O1** and **O4** are the plan's
   open points on its deferred scope and on the components' sections.
 
 ## 2. How the general rules apply
@@ -139,16 +140,16 @@ title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | on `internal/node/nodetest`'s harness over Badger under `t.TempDir()`, `keyprovider`'s local provider over two key files, the API handler with the caller fixed through `api.New`, and `kvtest`'s fault wrapper (kind 3) to pause or fail a read on cue. A section the test needs and the table lacks is declared by the test and handed to the node as an input through `export_test.go`, never a double of `pkg/settings` |
-| rule 2, fuzz every decoder of untrusted bytes | none | no decoder here: a setting's value is E3's `FuzzDecode`, the `Secret` codec and envelope E4's. The Appendix B parser reads a file of the repository, not untrusted bytes |
+| rule 2, fuzz every decoder of untrusted bytes | T5.4 | one decoder here, `Bound`'s, a new on-disk format the engine's open reads: `FuzzBound` beside it in `pkg/settings` (D12). A setting's value is E3's `FuzzDecode`, the `Secret` codec and envelope E4's. The Appendix B parser reads a file of the repository, not untrusted bytes |
 | rule 3, observability follows RFC 25 | T5.8, T5.9 | `config_secrets_behind` recorded by the secrets pass, unlabelled; T5.9 checks every RFC 13 §8 series on the node's registry and that none carries a record or secret label |
 | rule 4, profiling | all | every test under the leak check; T5.9's benchmark reports allocations |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T5.2, T5.3, T5.4, T5.6, T5.8 | a live change is proven by the component running the new value (a sign-in's session lifetime, the sweep's retention), a refusal by the API's answer and the store's raw keys, a rotation by `NodeStatus` and the store's versions, never by the snapshot holding a value |
 | rule 6, known failures shrink | none | no suite this epic touches keeps a `known.yaml` |
 | rule 7, v2 ignores v1 | none | nothing reads v1's settings tables or its watcher; RFC 20's plan replaced the watcher with this reconcile |
 | rule 8, real dependencies for properties of those dependencies | T5.2, T5.4, T5.6, T5.8, T5.9 | the paged walk, the tracked reads' conflicts, a seal's commit and a prune's commit on Badger under `t.TempDir()`; sealing on two real key files |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T5.3, T5.4, T5.5, T5.7, T5.8 | `decision:` markers at the version reported for a secret (D3), at the content read, which fails closed for a namespace and for a scope with no content rule (D6), at the scope removal (D7), at the port rule's key set and its one node (D8), at the Appendix B file the check reads (D10) and at `Bound`'s encoding (D11). T5.4 withdraws five markers in `internal/node/api`: `checkSetting`'s nil-table `decision:` and `holdsContent`'s `decision:` in `res_settings.go`, the two "no store or namespace can be deleted" `ponytail:` markers in `res_stores.go` and `res_namespaces.go`, and `createNamespace`'s `ponytail:` on the record's empty `Bound` in `res_namespaces.go`. `status.go`'s `ponytail:` on the empty restart-pending set, secret versions and claim generation is narrowed, not withdrawn: T5.3 drops the restart-pending set from it, T5.8 the secret versions, and the claim generation stays |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T5.3, T5.4, T5.5, T5.7, T5.8 | `decision:` markers at the version reported for a secret (D3), at the content read, which fails closed for a namespace and for a scope with no content rule (D6), at the scope removal (D7), at the port rule's key set and its one node (D8), at the Appendix B file the check reads (D10) and at `Bound`'s encoding (D12). T5.4 withdraws five markers in `internal/node/api`: `checkSetting`'s nil-table `decision:` and `holdsContent`'s `decision:` in `res_settings.go`, the two "no store or namespace can be deleted" `ponytail:` markers in `res_stores.go` and `res_namespaces.go`, and `createNamespace`'s `ponytail:` on the record's empty `Bound` in `res_namespaces.go`. `status.go`'s `ponytail:` on the empty restart-pending set, secret versions and claim generation is narrowed, not withdrawn: T5.3 drops the restart-pending set from it, T5.8 the secret versions, and the claim generation stays |
 | rule 10, a test must be able to fail | all | each test names the bug it catches in §6 |
-| rule 11, a symbol is exported only if RFC 13's interfaces use it | T5.6, T5.8 | `pkg/settings` gains two exports, `(*Snapshot).Secrets` and `(Table).SecretKind`, the node's and the API's first callers (D4, pending the user's answer), added to E1's export pin with them; `internal/node` exports nothing new |
+| rule 11, a symbol is exported only if RFC 13's interfaces use it | T5.4, T5.6, T5.8 | `pkg/settings` gains four exports, each added to E1's export pin with its first caller: `(Table).Bound` and `(Table).DecodeBound`, the API's create and RFC 8 §2.4's open, which reads `Bound` and cannot import `internal/node/api` (D12); `(*Snapshot).Secrets` and `(Table).SecretKind`, the node's and the API's (D4); all four pending the user's answer. `internal/node` exports nothing new |
 | rule 12, each subtask creates only what it declares | all | the table lands with RFC 23's sections, its first rows; the provider is built in `node.New` with its first caller, T5.6's seal; each other section's row lands with its own plan (D2) |
 
 ## 3. Requirements and invariants
@@ -190,7 +191,7 @@ deferral ledger set for it.
 | R32 | The content read fails closed: a namespace answers that it holds content while its blocks may still be draining, and a scope kind with no content rule is refused as a store error, never read as empty | invariant | D6; RFC 13 §5.1 | T5.4 |
 | R18 | A remote store's credential, set when the store has none yet, is its first value and passes; a store can be created and given its credential | MUST | RFC 13's plan, D9; RFC 23's plan, §6.1 (a remote store's credential on its create) | T5.4 |
 | R19 | A remote store's or a namespace's delete, once nothing names it, removes its scope's settings as the scope's removal, never refused as a change of a bound or location key | invariant | RFC 23's plan, §6.1 (a store's and a namespace's delete) | T5.4 |
-| R34 | A namespace's bound settings are recorded once, with the namespace, when it is created: its record's `Bound` holds, encoded by the settings schema, every namespace-scope key the create writes that the table classes bound, with the value its setting row holds, and no other key | invariant | RFC 13 §5.3; RFC 16 §2.3; D11 | T5.4 |
+| R34 | A namespace's bound settings are recorded once, with the namespace, when it is created: its record's `Bound` holds, encoded by the settings schema, every namespace-scope key the table classes bound, with the value the create gives it, else its default, and no other key; a namespace section that declares no bound key records an empty set, never an absent `Bound` | invariant | RFC 13 §5.3; RFC 16 §2.3; D12 | T5.4 |
 | R20 | The effective `adapters.nfs.port` and `adapters.smb.port`, a node's override else the installation's value, differ unless 0; a write of either at either scope is checked against the other on the node a node-scope write names, or on this node (`Deps.Node`) for an installation write, reading both tracked in the write's transaction. `sidecars.portmap.port` and every other node an installation write reaches are D8's deferrals | MUST | RFC 13 §6 ("A rule across settings"), Appendix B's port rows; D8 | T5.7 |
 
 **Secrets**
@@ -328,22 +329,42 @@ store (E3's T3.1, RFC 23's epic 2).
   `tracing.*`'s class) touch no declared section, so they are reported, not failed (R3). A
   `decision:` marker at the file path says so, withdrawn if the RFCs ever live in one copy. Prior
   art: none found.
-- **D11, a namespace's `Bound` is a JSON object of its bound settings, pending the user's answer.**
-  RFC 16 §2.3 has `Namespace.Bound` "encoded by RFC 13's settings schema", and RFC 13 §5.3 has a
-  bound setting "recorded once, with the namespace, when it is created", but neither states the
-  encoding, and `createNamespace` writes the bound fields as setting rows and leaves `Bound` empty
-  (its `ponytail:`). T5.4 writes `Bound` in the create's transaction as
-  `{"schema": <n>, "settings": {"<key>": <value>, …}}`: `schema` the settings format's schema
-  version its rows carry (RFC 13 §2.3, RFC 13's plan's D11), so a reader that does not know it
-  refuses the record as it refuses a row; `settings` every namespace-scope key of the create that
-  the table classes bound, each value the JSON its setting row holds, keys sorted as
-  `encoding/json` sorts a map's, so one set of values has one encoding. The rows stay: they are the
-  effective value `Check` and reconcile read, and `Bound` is the record RFC 13 §5.3's open compares
-  with them. Which keys are bound comes from a third export of `pkg/settings`,
-  `(Table).Class(key string) (Class, bool)`, added to E1's export pin with its first caller, as D4's
-  two are. Decoding is `encoding/json` and E3's value decode, so no new decoder of stored bytes
-  (rule 2). A `decision:` marker at the encoder names the encoding as this epic's, withdrawn when
-  RFC 13 states one (§9). Prior art: Kubernetes records an object's immutable fields in the object
+- **D12, a namespace's `Bound` is a JSON object of every bound setting's effective value,
+  encoded and decoded by `pkg/settings`, pending the user's answer.** RFC 16 §2.3 has
+  `Namespace.Bound` "encoded by RFC 13's settings schema", and RFC 13 §5.3 has a bound setting
+  "recorded once, with the namespace, when it is created", but neither states the encoding, and
+  `createNamespace` writes the bound fields as setting rows and leaves `Bound` empty (its
+  `ponytail:`).
+  - *The form.* `{"schema": <n>, "settings": {"<key>": <value>, …}}`: `schema` the settings
+    format's schema version its rows carry (RFC 13 §2.3, RFC 13's plan's D11, the one schema), so a
+    reader that does not know it refuses the record as it refuses a row; `settings` every
+    namespace-scope key the table classes bound, the value the create gives it, else its default
+    (a key the create leaves out would otherwise be absent, and a later release that changes the
+    default would open the namespace at the new value, the case RFC 13 §5.3 refuses), and
+    `{}` for a namespace section that declares no bound key. Each value is the field E3's value
+    decode gives, encoded again, never the bytes the row holds: `262144`, `2.62144e5` and
+    `"256KiB"` are one value and encode once. Keys sort as `encoding/json` sorts a map's. So one
+    set of values has one encoding, whatever order or spelling the request used.
+  - *Where it lives.* The writer is the API's `createNamespace` and the reader RFC 8 §2.4's open,
+    in the engine, which cannot import `internal/node/api`, so the codec is `pkg/settings`':
+    `(Table).Bound(rows []entity.Setting) ([]byte, error)`, the namespace section decoded over
+    its defaults with the create's rows and its bound fields encoded, and
+    `(Table).DecodeBound(b []byte) (map[string]json.RawMessage, error)`, which refuses a schema
+    version the table does not know, a key the table does not class bound at namespace scope and
+    a value E3's decode refuses, and returns each value re-encoded as `Bound` writes it. The pair
+    reads the class itself, so no `(Table).Class` is exported. Both join D4's two exports in E1's
+    export pin, with their first callers.
+  - *The comparison.* The open compares decoded values, key by key, never the record's bytes: it
+    decodes the record's `Bound` and compares each key with the same key of `(Table).Bound` over
+    the namespace's rows now, so it can name the key that differs. Since both sides are encoded
+    from decoded values, a byte comparison would agree, and `Bound` stays a record a later schema
+    can widen.
+  - *The rows stay*: they are the effective value `Check` and reconcile read, and `Bound` is the
+    record RFC 13 §5.3's open compares with them.
+
+  `Bound` is a new on-disk format, so `FuzzBound` runs `DecodeBound` beside it (rule 2). A
+  `decision:` marker at the encoder states the encoding, and that RFC 13 states none, withdrawn
+  when it does (§9). Prior art: Kubernetes records an object's immutable fields in the object
   and refuses their update (from memory).
 
 ## 5. Target tree
@@ -356,10 +377,12 @@ internal/node/reconcile.go                  T5.2  apply on Read, Keep and the CF
 internal/node/status.go                     T5.3  RestartPending; T5.8 Secrets; its ponytail narrowed to the claim generation
 internal/node/api/res_settings.go           T5.4  nil table refused 503, the content read per scope replacing holdsContent (D6); T5.6 a setting's secret
 internal/node/api/res_stores.go             T5.4  credential on create (R18), scope removal (D7)
-internal/node/api/res_namespaces.go         T5.4  scope removal (D7), the record's Bound written at create (D11)
+internal/node/api/res_namespaces.go         T5.4  scope removal (D7), the record's Bound written at create (D12)
 internal/node/appendixb_test.go             T5.5  Appendix B's check on the checkout's RFC copy (D10), "§3 scope forms"
+pkg/settings/bound.go                       T5.4  (Table).Bound and (Table).DecodeBound, Bound's codec (D12)
+pkg/settings/bound_fuzz_test.go             T5.4  FuzzBound (D12)
 pkg/settings/snapshot.go                    T5.8  (*Snapshot).Secrets (D4)
-pkg/settings/table.go                       T5.4  (Table).Class (D11); T5.6 (Table).SecretKind (D4)
+pkg/settings/table.go                       T5.6  (Table).SecretKind (D4)
 internal/node/sealer.go                     T5.6  providerSealer wired, its var _ line gone
 internal/node/ports.go                      T5.7  the port rule, a CheckTx on the adapters' rows, on one node (D8)
 internal/node/secrets.go                    T5.8  the secrets pass, the prune, config_secrets_behind
@@ -452,7 +475,7 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 
 ### T5.4 The write path on `Check`
 
-**Subtask T5.4 estimate: 2.25 man-days.**
+**Subtask T5.4 estimate: 2.75 man-days.**
 
 - **Track:** the team. **Depends on:** T5.3; E3's T3.5, T3.6 and T3.7; RFC 23's T4.9.
 - **Covers:** R15, R16, R17, R18, R19, R32, R34.
@@ -471,9 +494,12 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
   - a store's create taking its credential, sealed by the pre-write step through `Deps.Sealer`, the
     endpoint, the credential reference and the `Secret` committed in one `Write` (R18, pending the
     user's answer, §9), in place of `createStore`'s refusal of `spec.credential`;
-  - a namespace's `Bound` (D11): `createNamespace` encodes the bound keys of its settings, chosen
-    through `(Table).Class` with its export pin, into the record it puts, beside the rows, which
-    withdraws its `ponytail:` on the empty `Bound` with D11's `decision:` at the encoder.
+  - `Bound`'s codec in `pkg/settings` (D12): `(Table).Bound(rows []entity.Setting) ([]byte,
+    error)` and `(Table).DecodeBound(b []byte) (map[string]json.RawMessage, error)`, with
+    `FuzzBound` and their export pin, D12's `decision:` at the encoder; consumed by the create
+    below and by RFC 8 §2.4's open;
+  - a namespace's `Bound`: `createNamespace` puts `(Table).Bound` over its settings into the record,
+    beside the rows, which withdraws its `ponytail:` on the empty `Bound`.
 
   Consumed by T5.6, T5.7 and RFC 23's integration epic.
 - **Acceptance criteria:**
@@ -483,8 +509,10 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
     passes. A namespace's bound key is refused whether or not a share names it.
   - A store created with its credential reads back as one endpoint row, one reference and one
     `Secret` version; a store and a namespace each delete once nothing names them.
-  - A namespace created with bound and next-write settings holds in its record's `Bound` the
-    bound ones only, each with its row's value.
+  - A namespace created with bound and next-write settings holds in its record's `Bound` every
+    bound key of its section, the ones it sent with the value sent and the others at their
+    default, and no next-write key; two creates sending the same bound values in another key
+    order or spelling hold byte-equal `Bound`.
 - **Tests:** through the API handler on `nodetest`, sections the test declares for a remote store
   and a namespace (none is declared by its plan yet): an `operator` writing `audit.retention`
   refused and nothing committed, an `admin` passing (catches the node's table never handed in,
@@ -497,12 +525,21 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
   version read back (catches the create's credential refused as a location change, R18), and a
   second credential set over it refused, as RFC 13's plan's D9 refuses it; a store and a namespace
   deleted with bound and location keys set, both accepted and their rows gone (catches a scope's
-  removal judged key by key, R19); a namespace created through the API with two bound keys and one
-  next-write key of a test-declared namespace section, its record read through `tx.Namespace` and
-  `Bound` decoded with `encoding/json` in the test, independent of the encoder: the schema version
-  the rows carry and exactly the two bound keys, each equal to its row's value (catches `Bound`
-  left empty, as today, a next-write key recorded as bound, or a value recorded other than the
-  row's, R34); RFC 13's plan's §1.4 scenario: a `audit.retention` `PUT`
+  removal judged key by key, R19); a namespace created through the API with two of a
+  test-declared namespace section's three bound keys and one next-write key, its record read
+  through `tx.Namespace` and `Bound` decoded with `encoding/json` in the test, independent of the
+  codec: the schema version the rows carry and exactly the three bound keys, the two sent each
+  equal to the value the request sent and to its row's value, the third equal to its declared
+  default (catches `Bound` left empty, as today, a next-write key recorded as bound, a key left
+  at its default not recorded, or a value decoded wrongly into both the row and `Bound`, R34);
+  two creates sending the same bound values in a different key order, and one sending a size as
+  `262144` and the other as `"256KiB"`, their `Bound` byte-equal (catches the row's bytes or the
+  request's order written in place of the decoded value, D12); a create on a namespace section
+  that declares no bound key, its `Bound` `{"schema": <n>, "settings": {}}` (catches an absent or
+  `null` set, R34); in `pkg/settings`, `DecodeBound` refusing an unknown schema version, a key not
+  classed bound and a value E3's decode refuses, and returning what `Bound` encoded; `FuzzBound`
+  asserting no panic and, for a decode that succeeds, that encoding its result and decoding again
+  gives the same map; RFC 13's plan's §1.4 scenario: a `audit.retention` `PUT`
   through the API reaching the sweep, and a test-declared restart-class key landing in the
   status's restart-pending set (R15).
 - **Rules:** rule 12: the table reaches the API here, with the scope removal that keeps a delete
@@ -670,7 +707,7 @@ plans add their rows. T5.7 waits on RFC 20's T7.6, which waits on T5.3.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T5.1, T5.2, T5.3 | 5.75 | E3's PR 2 | the node reads, holds and applies its settings through the table |
-| 2 | T5.4, T5.5 | 4.25 | PR 1, E3's PR 4 | the API checks every write through the table, and the table is checked against the RFC |
+| 2 | T5.4, T5.5 | 4.75 | PR 1, E3's PR 4 | the API checks every write through the table, and the table is checked against the RFC |
 | 3 | T5.6, T5.7 | 3.25 | PR 2, E4's PR 1; T5.7 after RFC 20's T7.6 | the write side's last two rules: a setting's secret and the port rule |
 | 4 | T5.8, T5.9 | 4.25 | PR 3, E4's PR 2 | secrets end to end and the full figure |
 
@@ -696,9 +733,10 @@ Pending the user's answer, each written in its recommended form above:
   so a store is never created without the credential RFC 13 §4.2 requires. Both change RFC 23 §4's
   route text and RFC 23's T4.9: proposed as an RFC 23 amendment in this document's pull request
   once agreed.
-- **`Bound`'s encoding (D11).** RFC 13 states none, and RFC 8 §2.4's open reads what T5.4
-  writes. Recommended: D11's JSON object, proposed as RFC 13 §5.3 text in an RFC amendment once
-  agreed, which withdraws D11's `decision:` marker.
+- **`Bound`'s encoding and codec (D12).** RFC 13 states none, and RFC 8 §2.4's open reads what
+  T5.4 writes. Recommended: D12's JSON object of every bound key's effective value, through
+  `pkg/settings`' `(Table).Bound` and `(Table).DecodeBound`, compared by decoded value, proposed as
+  RFC 13 §5.3 text in an RFC amendment once agreed, which withdraws D12's `decision:` marker.
 - **RFC 23's sections (D1).** Two sections, `api` and `audit`, or one prefix-less section, which
   `Of` refuses today (#4844 asks for prefix-less keys).
 
@@ -718,8 +756,8 @@ Further points:
   - RFC 13 §6's port rule on every node a write reaches (D8, T5.7): `ControlPlaneTx` reads one
     node's record by ID and lists none, and a node registered concurrently must conflict with the
     check; owner RFC 16 §3, with RFC 15; trigger "a second node registers";
-  - the OpenID Connect client secret's prune and revocation report, which RFC 13's plan's epic 5
-    gave this epic beside the bind credential's, both places now pointing at this row: `entity.SecretKind` does not declare the client
+  - the OpenID Connect client secret's prune and revocation report, which RFC 13's plan's §4.3
+    and epic 5 point at this row: `entity.SecretKind` does not declare the client
     secret ("wait for theirs" in `pkg/metadata/entity/secret.go`, behind RFC 13 §7, which already
     seals OpenID Connect client secrets under the `storage` key) and no section names it; owner
     the RFC 18 plan's OpenID Connect epic, which that plan has not added yet (the RFC 18 and RFC
@@ -729,9 +767,12 @@ Further points:
 - **The node's prune as a writer.** The prune's `Write` is the first audited write `internal/node`
   makes outside its API package; T5.8 states the audit record's actor as the node, as RFC 23 §6
   names one for a node-run step, and checks it against the architecture tests' write rules.
-- **The estimate.** 17.5 man-days in 9 subtasks, against the plan's 12.5 in 4. The plan's figure had
+- **The estimate.** 18 man-days in 9 subtasks, against the plan's 12.5 in 4. The plan's figure had
   the port rule ride on the write path and the secret writes on the routes RFC 23 builds; this
   document sizes them, Appendix B's parse (rows that name several keys or none), the two RFC 23
   ledger rows, and a secrets pass that must re-apply a section on a moved version. T5.4 sizes only
-  what RFC 23's T4.9 left, and grew by 0.5 man-days for the namespace's `Bound` (D11, R34). Least certain: T5.8, whose size depends on how identity's directory
+  what RFC 23's T4.9 left, and the namespace's `Bound` with its codec in `pkg/settings` (D12, R34),
+  1 man-day of its 2.75: the codec lands in T5.4, not a subtask of its own, because its first
+  caller is T5.4's create, and an export lands with its first caller (rule 12). Least certain:
+  T5.8, whose size depends on how identity's directory
   client takes a moved credential.
