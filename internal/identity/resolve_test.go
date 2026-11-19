@@ -43,7 +43,8 @@ type resolving struct {
 	reg   *metrics.Registry
 	spans *tracetest.SpanRecorder
 	tp    *sdktrace.TracerProvider
-	logs  *bytes.Buffer // what the server logged, one JSON record a line
+	logs  *bytes.Buffer  // what the server logged, one JSON record a line
+	clock *sim.TestClock // the server's, where the fixture keeps it
 }
 
 func newResolving(t *testing.T) *resolving {

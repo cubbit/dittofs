@@ -119,7 +119,8 @@ func signing(t *testing.T) (*resolving, *secrets.Provider) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.srv, err = identity.New(identity.Deps{Store: r.st, Clock: sim.NewTestClock(time.Unix(0, 0)), Secrets: p}); err != nil {
+	r.clock = sim.NewTestClock(time.Unix(0, 0))
+	if r.srv, err = identity.New(identity.Deps{Store: r.st, Clock: r.clock, Secrets: p}); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if err := r.srv.Apply(state(1)); err != nil {

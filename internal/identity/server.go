@@ -180,6 +180,7 @@ type Server struct {
 	ntHashed  func(nt [16]byte)      // a test's view of each NT hash a sign-in computed its proof with; nil in production
 	verified  func(phc []byte)       // a test's view of each hash VerifyPassword verified against; nil in production
 	holds     holds                  // the joins' administrator credentials
+	throttle  *throttle              // the logon failures per name and client address
 
 	slots     chan struct{}      // the pass-through's, channelSlots of them
 	chMu      sync.Mutex         // held across the channel's set-up
@@ -255,6 +256,7 @@ func New(d Deps) (*Server, error) {
 	s.skipped = counter(d.Metrics, skippedSpec)
 	s.unmapped = counter(d.Metrics, unmappedSpec)
 	s.mismatches = counter(d.Metrics, mismatchesSpec)
+	s.throttle = newThrottle(counter(d.Metrics, evictionsSpec).WithLabelValues())
 	return s, nil
 }
 
@@ -414,12 +416,12 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop drops every in-memory table, the applied State and the held join
-// credentials among them, so a restart needs an Apply before its Start, ends
-// every call to a domain controller in flight, stops the rotation's
-// schedule, closes the node's secure channel, and closes its directory
-// client once the questions running on it return. It closes nothing it was
-// handed.
+// Stop drops every in-memory table, the applied State, the held join
+// credentials and the logon throttle among them, so a restart needs an Apply
+// before its Start, ends every call to a domain controller in flight, stops
+// the rotation's schedule, closes the node's secure channel, and closes its
+// directory client once the questions running on it return. It closes nothing
+// it was handed.
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -430,6 +432,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		old.dir.Close()
 	}
 	s.dropHolds()
+	s.throttle.drop()
 	s.closeChannel()
 	return nil
 }

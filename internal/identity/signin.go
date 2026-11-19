@@ -24,11 +24,13 @@ const (
 	outcomeInvalid       outcome = "invalid"
 	outcomeUnavailable   outcome = "unavailable"
 	outcomeUnknownDomain outcome = "unknown_domain"
+	outcomeThrottled     outcome = "throttled"
 )
 
 // SignIn verifies one handshake round under one State: a local user's
-// NTLMv2 response (RFC 18 §3.5). It reads the store and the secret provider
-// only, and writes nothing.
+// NTLMv2 response (RFC 18 §3.5), refused before its credential is read once
+// its name and client address are past the logon throttle's limit (§3.1). It
+// reads the store and the secret provider only, and writes nothing.
 func (s *Server) SignIn(ctx context.Context, step identity.SignInStep) (identity.SignInResult, error) {
 	res, _, err := s.signIn(ctx, step)
 	return res, err
@@ -59,12 +61,27 @@ func (s *Server) signIn(ctx context.Context, step identity.SignInStep) (identity
 	case a.User == "":
 		return identity.SignInResult{}, "", fmt.Errorf("%w: an AUTHENTICATE with no user name", vfserr.ErrInvalid)
 	}
+	// decision: the throttle is asked before every refusal of the message,
+	// NTLM off, NTLMv1 or LM and a malformed response, and every
+	// ErrLogonFailure but a throttled one counts, those refusals included,
+	// so no mechanism the installation refuses lets a client try names
+	// uncounted. ErrInvalid tells nothing of the password and ErrUnavailable
+	// is an outage, so neither counts: an outage never locks a right
+	// password out. Overturned if a refusal is ever found to count a
+	// client's legitimate retries against it.
+	k, now := throttleKeyOf(a.User, step.Client), s.deps.Clock.Now()
+	if s.throttle.throttled(k, now) {
+		return identity.SignInResult{}, outcomeThrottled, vfserr.ErrLogonFailure
+	}
 	st := s.state.Load()
 	if st == nil {
 		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: no State applied", vfserr.ErrUnavailable)
 	}
 	res, oc, err := s.signInNTLM(ctx, st, step)
 	if err != nil {
+		if errors.Is(err, vfserr.ErrLogonFailure) {
+			s.throttle.fail(k, now)
+		}
 		return identity.SignInResult{}, oc, err
 	}
 	return res, oc, nil
