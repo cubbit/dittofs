@@ -209,7 +209,7 @@ can cite them. Sources are RFC 18 unless named.
 | R21 | On a joined installation, keys for exactly the service names the computer account holds are derived from the machine password: AES128 and AES256 under the salt of the realm in upper case, `host`, the account's name without its `$` in lower case, `.` and the realm in lower case | MUST | §3.3 | T7.9, T7.16 |
 | R22 | Each derived key is tagged with the account's key version number, 32 bits, never truncated to a keytab file's 8 bits | invariant | §3.3 | T7.9 |
 | R23 | The account's names are read at each join and rotation from its `servicePrincipalName`, each `host/` name standing also for every service `sPNMappings` maps to `host`, on that host name; a ticket's service name is compared with them with ASCII letters folded | MUST | §3.3 | T7.3, T7.7, T7.9, T7.12, T7.14 |
-| R24 | A derived key follows its password's version: applied with it, kept after it stops being current for 10 hours plus the clock skew, a restart included, then removed | MUST | §3.3; §2.6's table | T7.9, T7.10 (the fallback's end) |
+| R24 | A derived key follows its password's version: applied with it, kept after it stops being current for 10 hours plus the clock skew, a restart included, then removed; only the version just below the current one is kept so, and an older one is removed at once, so a ticket under it is refused inside its 10 hours and a run of rotations never keeps an older password usable past one retention | MUST | §3.3; §2.6's table | T7.9, T7.10 (the fallback's end) |
 | R25 | A version marked `HandedOver` derives no key, on any node and after any restart | MUST NOT | §3.3; §2.6's table; RFC 16 §2.3 | T7.9 |
 | R26 | A ticket for one of these names whose key version number no held key carries is tried against each held derived key of its encryption type, the current one first | MUST | §3.3 | T7.9 |
 | R27 | An imported key for a name the computer account holds is refused, so no name has two keys | MUST NOT | §3.3; §10 "derived keytab" | T7.9 for the ring; the import's refusal at the secret route is RFC 23's plan's epic 4's T4.11 (#4408) |
@@ -253,7 +253,7 @@ can cite them. Sources are RFC 18 unless named.
 | R54 | A resumed seal step that finds the current version already tagged, unconfirmed, with the number it would write takes that version; a `HandedOver` version is never taken | MUST | §3.5 | T7.12 |
 | R55 | A confirm first asks whether the controller accepts the sealed version, and fails the rotation naming it if not; an accepted one completes the rotation whether the number read matches the tag or not, a mismatch reported and counted in `identity_machine_key_version_mismatches_total` with the tag unchanged | MUST | §3.5; §9.2 | T7.12 |
 | R56 | At a rotation's completion the `Installation` record's last rotation is written and `machine_password_rotation_failed` clears; it is raised while the last rotation is recorded failed, and cleared only by a rotation completed, never by a channel set up with the previous password or by a restart | invariant | §3.5; §9.2; RFC 25 §3.9 | T7.12 |
-| R57 | Once the retention passes, the previous version is pruned, which changes none of the above, and the old password is reported revocable at the domain | MUST | §3.5; §3.3; RFC 13 §7 | T7.12 |
+| R57 | Once the retention passes, the previous version is pruned, which changes none of the above, and the old password is reported revocable at the domain | MUST | §3.5; §3.3; RFC 13 §7 | T7.12; its rows wait on the RFC 13 plan's T4.5 (D14) |
 | R63 | A rotation that finds a `join-domain` running on this installation fails as a `*apiv1.Problem` at its first turn, writing nothing, and a join's first turn refuses while a rotation runs, both through a tracked read of the running index (`ControlPlaneTx.RunningOperation`, owed by RFC 23's plan's epic 2, §9), so no two passwords are sealed from one number plus one | MUST NOT | §3.5 (R43, R49, R53); RFC 23 §4.6 refuses only a second request of one kind | T7.12, T7.14, T7.15 |
 
 **Operations, the in-memory domain controller, guides**
@@ -393,9 +393,13 @@ epic's test holds it.
 - **D14, the keys expire at the retention; the secret is pruned at the next rotation's first
   turn.** Waiting out 10 hours plus the skew inside the rotation would keep it running, refusing an
   offline join's write and the schedule for that time (RFC 23 §3.5). So the retention needs no
-  running operation: a version below the one `Join.LastRotation.Version` names stops deriving keys
+  running operation: the version just below the one `Join.LastRotation.Version` names stops deriving keys
   (T7.9) and backing the channel's fallback (T7.10) once the clock passes
-  `LastRotation.Confirmed` plus 10 hours plus the skew, from `State` alone, a restart included. The
+  `LastRotation.Confirmed` plus 10 hours plus the skew, from `State` alone, a restart included. An
+  older version does neither even inside the retention: a ticket under it is refused early, inside
+  its 10 hours, the rare ticket two rotations old, and in exchange a run of rotations never extends
+  an older password's life by another 10 hours each. The `decision:` at `machineVersions` records
+  it. The
   secret itself is pruned by a rotation's first turn, before it pins, through `SecretProvider`'s
   `Prune` inside that turn's control-plane `Write`, with an audit record naming the versions it
   drops, as RFC 23 §3.3's credential-rotation bullet deletes the old version "when it passes" and §6
@@ -412,6 +416,9 @@ epic's test holds it.
   every version below the current one, and it never runs while the current version is
   unconfirmed. A `ponytail:` marker names the ceiling: a previous version's sealed value stays in
   the store, used by no key and no channel, until the next rotation, at most the schedule's 7 days.
+  The provider's `Prune` is RFC 13's plan's epic 4's T4.5 (#4652), and a stub until it lands: T7.12
+  makes the call and tolerates only the stub's error, so the old versions stay held until then, and
+  the prune's rows wait in the RFC 18 plan's deferral ledger.
   Prior art: Samba keeps the previous machine password until the next change (from memory).
 
 ## 5. Target tree
@@ -737,9 +744,10 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   the first code that reads them; `Apply`, while `Join.Joined`, deriving for each version
   in `State.Machine` not marked `HandedOver` AES128 and AES256 keys under R21's salt for each name
   in `Join.Names`, tagged with the version's `KeyVersion`, into E5's ring beside the imported keys,
-  and deriving nothing while not joined; a version below the one `Join.LastRotation.Version` names
+  and deriving nothing while not joined; the version just below the one `Join.LastRotation.Version` names
   carrying a not-after of `LastRotation.Confirmed` plus 10 hours plus the skew, past which key
-  selection skips it, read from `State` and the injected clock with no new `State` (D14); E5's key
+  selection skips it, read from `State` and the injected clock with no new `State`, and an older
+  one deriving nothing (D14); E5's key
   selection, for one of those names whose number no held key carries, trying each held derived key
   of the ticket's type, current first; an imported key for one of those names skipped and logged
   (D8); RFC 18 §3.3's decision at the derivation and D8's marker. Consumed by T7.10 to T7.16 and
@@ -761,7 +769,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   removal); with no second rotation, the clock advanced to 10 hours 4 minutes after
   `LastRotation.Confirmed`: the previous number's ticket accepted, and to 10 hours 5 minutes and a
   second: refused, and still refused by a fresh server over the same store (catches a key kept until
-  the next rotation's prune, R24, at the consumer). Doubles: E5's test realm (real tickets), the
+  the next rotation's prune, R24, at the consumer); versions 9, 8 and 7 held, 9 confirmed, at 10
+  hours: a ticket under 7 refused and one under 8 accepted (catches every version below the current
+  one kept, R24). Doubles: E5's test realm (real tickets), the
   clock (kind 1).
 - **Rules:** rule 11 (the two fields), rule 12.
 
@@ -860,20 +870,25 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 
 **Subtask T7.12 estimate: 4.5 man-days.**
 
-- **Track:** A. **Depends on:** T7.10. E2's T2.4 (`SecretProvider`); #4059's provider's `Prune` and
-  `Versions`; RFC 23's plan's epic 2's T2.4 (`SetMachineJoin`, which writes `Join`, and `Write` with
+- **Track:** A. **Depends on:** T7.10. E2's T2.4 (`SecretProvider`); #4059's provider's `Prune`'s
+  signature and `Versions`; the RFC 13 plan's epic 4's T4.5 (#4652), the provider's `Prune`, for the
+  prune's rows only; RFC 23's plan's epic 2's T2.4 (`SetMachineJoin`, which writes `Join`, and `Write` with
   its audit record); #4552's `SetMachinePassword`; RFC 23's plan's epic 2's D4 (`tx.PutSecret` and
   `tx.PruneSecret`, by whichever of its T2.4 and the RFC 13 plan's epic 1 lands second); its T2.7's
   tracked `ControlPlaneTx.RunningOperation` (R63, §9).
 - **Covers:** R23, R46, R47, R48, R49, R50, R51, R52, R53, R54, R55, R56, R57, R59, R63.
 - **Deliverables:** `Prune` and `Versions` added to `SecretProvider` (RFC 18 §2.6, declared by E2's
-  T2.4), which `*secrets.Provider` implements, `Prune` taking the caller's `ControlPlaneTx` so D14's
-  prune commits inside an audited `Write`; `RotateStep`, a `step.Step`, and `RotateProgress`, a
+  T2.4), which `*secrets.Provider` implements, `Prune` with the provider's signature, called inside
+  the first turn's `Write`; T4.5 gives it the caller's `ControlPlaneTx` and updates the call site;
+  `RotateStep`, a `step.Step`, and `RotateProgress`, a
   `step.Progress` (D4), the cursor `Next`
   recording the pinned controller, the tag, the sealed version, whether a set was attempted, the first unanswered
   time, and when the wait for the previous version started; in RFC 18 §3.5's order: at the first turn, a `join-domain` running on the installation,
   read tracked from the running index, failing the rotation as a problem naming it before anything
-  is written, `LastRotation` and the condition untouched (R63), then the prune of D14; pin a
+  is written, `LastRotation` and the condition untouched (R63), then the prune of D14, tolerating
+  only the stub's error (`errors.Is(err, errors.ErrUnsupported)`, what `unbuilt` wraps), any other
+  prune error failing the call, with a `ponytail:` at the call saying the prune is a no-op until
+  the provider fills it, so old versions stay held, and that the tolerance goes when T4.5 lands; pin a
   controller; wait until
   this node's `State.Machine` holds the previous version (D9), failing as a problem once one hour
   has passed since the wait started, with `LastRotation.Failed` and `LastRotation.At` written first (R48, R56); seal through
@@ -908,7 +923,11 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   same store (R51, R48, R56); this node holding the sealed version only after the
   clock passes the wait: the set waits for it (R49); a `HandedOver` version current from R47's
   crash: the rotation seals a new version and never takes or sets it (R47, R54); the condition
-  cleared at the completion and not by a channel set up with the previous version (R56); the next
+  cleared at the completion and not by a channel set up with the previous version (R56); the
+  provider's stub `Prune`: the rotation completes; the fault wrapper failing `Prune` with another
+  error: the rotation fails at its first turn, nothing sealed (catches a tolerance wider than the
+  stub's error). Deferred to T4.5 (the RFC 18 plan's deferral ledger), since a stub prunes nothing,
+  these prune rows: the next
   rotation at 10 hours 4 minutes after a confirm prunes nothing, at 10 hours 5 minutes and a second
   prunes the previous version, no longer listed by `Versions`, the revocation in `result`,
   `LastRotation` byte-equal before and after (R57; the keys' expiry is T7.9's); after a failed
@@ -916,14 +935,15 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   the prune's turn: one `Write` dropping the previous version and holding an audit record that names
   the reference and the versions dropped, and with `kvtest`'s wrapper failing that `Write`'s commit,
   `Versions` still listing both versions and no audit record stored (catches a prune committed
-  outside the audited `Write`, RFC 23 §6); `*secrets.Provider` assigned to a `SecretProvider` in the test,
+  outside the audited `Write`, RFC 23 §6). The rest run now: `*secrets.Provider` assigned to a `SecretProvider` in the test,
   so a signature drift fails the build;
   a rotation started during an offline join's closing rotations: refused at its first turn naming
   the join, nothing sealed, and the join's second confirm still reading the recorded number plus
   two, joined (catches two passwords sealed from one number, R63, R43).
   Doubles: the in-memory controller (kind 2), its fault wrapper (kind 3), `kvtest`'s wrapper for the
-  crash between seal and record (kind 3), the clock (kind 1).
-- **Rules:** rule 9 (D5's `decision:`, D9's and D14's `ponytail:`), rule 3 (the counter, the
+  crash between seal and record (kind 3), a fault wrapper around the provider's `Prune` (kind 3),
+  the clock (kind 1).
+- **Rules:** rule 9 (D5's `decision:`, D9's and D14's `ponytail:`, the prune call's `ponytail:`), rule 3 (the counter, the
   condition).
 
 ### T7.13 The rotation's schedule
@@ -1028,7 +1048,7 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   not signed in to with the handed-over one (R19), and the handed-over password setting up no
   channel at the controller; the second closing rotation failed after its set: not joined after a
   fresh server, both versions kept, and an offline join after a reset completes, after which the
-  first rotation's prune drops them (R36); a creator's set between the rotations, before the second
+  first rotation's prune drops them (R36; this half waits with T7.12's prune rows); a creator's set between the rotations, before the second
   reads its tag and after: failed naming the number, not joined (R43); an offline join started
   while a rotation runs: refused at its first turn naming it, nothing sealed, `Join.Joined` false
   (catches the offline branch skipping R63's check). Doubles: the in-memory

@@ -819,7 +819,10 @@ that holds the `host/` name; an offline join reports which names it serves
 through them, and a ticket's service name is compared with them
 with ASCII letters folded (§4.6), as Active Directory compares them case-insensitively. A derived key follows its password's version: it is
 applied with it, and kept after it stops being current for the retention
-above. The one exception is a version marked `HandedOver` (RFC 16 §2.3), an
+above. Only the version just below the current one is kept so: an older one is
+removed at once, so a ticket under it is refused inside its 10 hours, the rare
+ticket two rotations old, and a run of rotations never keeps an older password
+usable past one retention. The one exception is a version marked `HandedOver` (RFC 16 §2.3), an
 offline join's (§3.5): no key is derived from it, whichever node applies it and
 after any restart, since the mark is stored with the version. A ticket for one of these names whose key version number no held key
 carries is tried against each held derived key of its encryption type, the
