@@ -319,11 +319,10 @@ func (s *Server) closeChannel() {
 	s.unhealthy.Store(false)
 }
 
-// Conditions appends machine_account_unhealthy while the last set-up of the
-// secure channel failed at every domain controller. Stop, and an Apply that
-// leaves the domain or drops its record, clear it. The condition's subject
-// names no node: the node's own conditions carry its ID.
-func (s *Server) Conditions(dst []health.Condition) []health.Condition {
+// machineAccountConditions appends machine_account_unhealthy while the last
+// set-up of the secure channel failed at every domain controller. Stop, and
+// an Apply that leaves the domain or drops its record, clear it.
+func (s *Server) machineAccountConditions(dst []health.Condition) []health.Condition {
 	if !s.unhealthy.Load() {
 		return dst
 	}
