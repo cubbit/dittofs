@@ -13,6 +13,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -388,5 +389,39 @@ func TestDialTLSEndsAsStartTLSCompletes(t *testing.T) {
 		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("round %d: DialTLS cancelled as StartTLS completes: err %v, want a connection or %v", round, err, context.Canceled)
 		}
+	}
+}
+
+// A request asking for domain scope carries the domain-scope control, not
+// critical, so a directory that does not know it still answers; one that
+// does not ask carries none.
+func TestSearchRequestDomainScope(t *testing.T) {
+	sr := directory.SearchRequest(directory.Request{Base: "DC=x", Filter: "(cn=a)", DomainScope: true})
+	found := false
+	for _, c := range sr.Controls {
+		if c.GetControlType() == "1.2.840.113556.1.4.1339" {
+			found = true
+			if cs, ok := c.(*ldap.ControlString); !ok || cs.Criticality || cs.ControlValue != "" {
+				t.Errorf("domain-scope control %v, want it not critical and with no value", c)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("controls %v, want the domain-scope control", sr.Controls)
+	}
+	if sr := directory.SearchRequest(directory.Request{Base: "DC=x", Filter: "(cn=a)"}); len(sr.Controls) != 0 {
+		t.Errorf("controls %v without DomainScope, want none", sr.Controls)
+	}
+}
+
+// A search answered by a referral, an LDAPResult of code 10, fails with
+// ErrReferral; another refusal does not.
+func TestSearchErrorReferral(t *testing.T) {
+	ref := ldap.NewError(ldap.LDAPResultReferral, errors.New("ldap://elsewhere.example/DC=x"))
+	if err := directory.SearchError(ref); !errors.Is(err, directory.ErrReferral) || !strings.Contains(err.Error(), "elsewhere.example") {
+		t.Errorf("a code-10 result = %v, want ErrReferral naming the host", err)
+	}
+	if err := directory.SearchError(ldap.NewError(ldap.LDAPResultNoSuchObject, errors.New("no such object"))); errors.Is(err, directory.ErrReferral) {
+		t.Errorf("a code-32 result = %v, want it not ErrReferral", err)
 	}
 }

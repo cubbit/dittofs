@@ -26,6 +26,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/secrets"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // Deps is what the server is built over. The node starts and stops each of
@@ -39,6 +40,9 @@ type Deps struct {
 	// Secrets resolves the secrets identity holds by reference; New does not
 	// require it.
 	Secrets SecretProvider
+	// Directory dials the directory State.Directory names; nil, as with no
+	// record, answers every directory question ErrUnavailable.
+	Directory directory.Dialer
 }
 
 // SecretProvider is the secret provider's one call the server makes.
@@ -82,6 +86,9 @@ type State struct {
 	// Directory is the identity.directory section as of this Apply; nil
 	// when the installation has no directory.
 	Directory *directory.Record
+	// dir is Apply's client of Directory, kept across Applies that leave
+	// Directory unchanged; nil with no record or no Deps.Directory.
+	dir *directory.Client
 	// Serial is set by Apply, whatever the caller passes: raised only when
 	// the State differs from the current one. A Caller's Built is the Serial
 	// of the State it was resolved under.
@@ -182,6 +189,10 @@ func counter(reg *metrics.Registry, spec metrics.Spec) *prometheus.CounterVec {
 // A State whose Settings or Directory fail Validate, or whose NetBIOSName is
 // the directory's NetBIOS domain, is refused and the current one kept.
 //
+// A State whose Directory differs from the current one's gets a new
+// directory client, which dials nothing until its first question; the old
+// one is closed once the questions running on it return.
+//
 // decision: the serial is raised per differing State, not per Apply, so a
 // once-a-second reconcile that changed nothing empties no cache, and under
 // one lock across the load, the compare, the serial and the store, so two
@@ -205,16 +216,48 @@ func (s *Server) Apply(st State) error {
 	cur := s.state.Load()
 	if cur != nil {
 		st.Serial = cur.Serial
+		st.dir = cur.dir
 		// DeepEqual, since a State's keytab versions and Directory are
 		// compared by value.
 		if reflect.DeepEqual(st, *cur) {
 			return nil
 		}
 	}
+	if cur == nil || !reflect.DeepEqual(st.Directory, cur.Directory) {
+		st.dir = s.newDirectoryClient(st.Directory)
+	}
 	s.serial++
 	st.Serial = s.serial
 	s.state.Store(&st)
+	if cur != nil && cur.dir != st.dir && cur.dir != nil {
+		cur.dir.Close()
+	}
 	return nil
+}
+
+// newDirectoryClient is a client of rec, its bind password resolved through
+// Deps.Secrets at each dial; nil with no record or no Deps.Directory.
+func (s *Server) newDirectoryClient(rec *directory.Record) *directory.Client {
+	if rec == nil || s.deps.Directory == nil {
+		return nil
+	}
+	ref := rec.BindCredential
+	return directory.NewClient(*rec, s.deps.Directory, func(ctx context.Context) ([]byte, error) {
+		if s.deps.Secrets == nil {
+			return nil, errors.New("no secret provider")
+		}
+		return s.deps.Secrets.Resolve(ctx, secrets.Protocol, entity.SecretDirectoryCredential,
+			entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}, ref)
+	}, s.deps.Clock, s.logger)
+}
+
+// dirClient is st's directory client: ErrUnavailable with no record or no
+// Deps.Directory.
+func (st *State) dirClient() (*directory.Client, error) {
+	if st == nil || st.dir == nil {
+		return nil, fmt.Errorf("%w: identity: no directory", vfserr.ErrUnavailable)
+	}
+	return st.dir, nil
 }
 
 // validate refuses settings or a directory record that fail their Validate,
@@ -273,10 +316,15 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 // Stop drops every in-memory table, the applied State and the held join
-// credentials among them, so a restart needs an Apply before its Start. It
+// credentials among them, so a restart needs an Apply before its Start, and
+// closes its directory client once the questions running on it return. It
 // closes nothing it was handed.
 func (s *Server) Stop(ctx context.Context) error {
-	s.state.Store(nil)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if old := s.state.Swap(nil); old != nil && old.dir != nil {
+		old.dir.Close()
+	}
 	s.dropHolds()
 	return nil
 }

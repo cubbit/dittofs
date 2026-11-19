@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -67,4 +68,14 @@ func (s *Server) HashSlot(ctx context.Context) error {
 // HeldCredential is the join credential held under id.
 func (s *Server) HeldCredential(id entity.OperationID) (identity.JoinCredential, bool) {
 	return s.heldCredential(id)
+}
+
+// DirectoryLookup asks the applied State's directory client a "who holds
+// this" question.
+func (s *Server) DirectoryLookup(ctx context.Context, by directory.Key, value []byte) (directory.Answer, bool, error) {
+	c, err := s.state.Load().dirClient()
+	if err != nil {
+		return directory.Answer{}, false, err
+	}
+	return c.Lookup(ctx, by, value)
 }
