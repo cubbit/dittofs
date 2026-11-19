@@ -36,17 +36,36 @@ func TestHoldJoinCredentialRelease(t *testing.T) {
 	release() // a second call is harmless
 }
 
-// A second hold under the same ID replaces the first, and the first's release
-// leaves the second in place.
+// A second hold under the same ID replaces the first and zeroes its password,
+// and the first's release leaves the second in place.
 func TestHoldJoinCredentialReplaced(t *testing.T) {
 	s := newServer(t)
 	id := entity.OperationID{1}
-	first := s.HoldJoinCredential(id, pid.JoinCredential{User: "a", Password: []byte("one")})
+	pw := []byte("one")
+	first := s.HoldJoinCredential(id, pid.JoinCredential{User: "a", Password: pw})
 	second := s.HoldJoinCredential(id, pid.JoinCredential{User: "b", Password: []byte("two")})
+	if !bytes.Equal(pw, make([]byte, len(pw))) {
+		t.Errorf("replaced hold's password after the second hold = %q; want every byte zero", pw)
+	}
 	first()
 	if got, ok := s.HeldCredential(id); !ok || got.User != "b" || string(got.Password) != "two" {
 		t.Errorf("HeldCredential after the first release = %q, %q, %v; want the second hold", got.User, got.Password, ok)
 	}
+	second()
+}
+
+// A second hold over the caller's same password slice keeps the password: the
+// replacement zeroes only a buffer the new hold does not hold.
+func TestHoldJoinCredentialReplacedSameSlice(t *testing.T) {
+	s := newServer(t)
+	id := entity.OperationID{1}
+	pw := []byte("one")
+	first := s.HoldJoinCredential(id, pid.JoinCredential{User: "a", Password: pw})
+	second := s.HoldJoinCredential(id, pid.JoinCredential{User: "a", Password: pw})
+	if got, ok := s.HeldCredential(id); !ok || string(got.Password) != "one" {
+		t.Errorf("HeldCredential after a hold over the same slice = %q, %v; want %q", got.Password, ok, "one")
+	}
+	first()
 	second()
 }
 
