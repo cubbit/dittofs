@@ -87,9 +87,9 @@ type Seam struct {
 	// heap slack, since every retired-and-remade segment is a name the
 	// journal retires and another one it mints. The cap evicts a name no
 	// call touched in the oldest callsForCap names, so a count an existing
-	// check asserts is lost only past ten-thousand names churned between
-	// the counting and the reading.
-	callsForOrder []([2]string)
+	// check asserts is lost only past the cap itself — 16,384 names churned
+	// between the counting and the reading.
+	callsForOrder [][2]string
 	stashed       int
 	holds         []*Hold
 	crashes       uint64 // Crash and Abandon calls so far; a call that waited across one fails

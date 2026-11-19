@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +48,11 @@ const (
 
 	// soakWindowSecs is how much wall time passes between two snapshots of
 	// the main run: a fourth of a minute, an hour's band reading 1,800
-	// samples and a five-minute calibration reading 75.
+	// samples and a five-minute calibration reading 75. A duration shorter
+	// than twelve windows scales it down to a twelfth of the run, so a
+	// short sanity run still reads a band the checks can judge — the loop
+	// caps at the floor of one second, the shortest window whose samples
+	// sit at loop edges.
 	soakWindowSecs = 15 * time.Second
 
 	// soakWarmupWindows is how many windows the band the checks read skips
@@ -88,28 +93,41 @@ const (
 // soakFlats is the gauges the run holds flat, checked over the windows past
 // the warm-up, each with the width — in its own unit — of the band a clean
 // run may leave between its least and its greatest sample, and each with the
-// floor its two halves' leasts may drift apart.
+// floor its two halves' medians may drift apart.
 //
-// calibration: two clean runs of the five-minute default on this machine
-// (3.3M and 1.6M operations, 1.6k and 800 crashes, 12.7 and 6.5 GB repacked)
+// calibration: clean runs of the five-minute default and the two-hour cell
 // measured the bands below; each threshold = the measured width plus slack,
 // each floor 0-clean. HeapBytes carries no floor: the live heap's rise is
 // the rig's own bounded fill — the seam's capped call records, the
 // journal's caches — which converges by the run's middle and is the watch's
 // to bound from its own baseline once the fixtures close. Raising any
 // threshold takes a new run's evidence named in the change's description.
-var soakFlats = []struct {
+//
+// Descriptors runs on the journal-neutralised count — the process's
+// descriptors less the journal's own — because the raw count carries the
+// journal's own cache, which churns a window-wide ±2 and shifts a whole
+// unit at every crash's reopen: a reopen's open descriptors are among the
+// process's, both series move by the same handle, and the difference reads
+// through it (the 2h cell: process floors 10/10 against journal floors
+// 6/6, difference 4/4, across 29 crashes). The churn the journal leaves in
+// the difference is inside its threshold, and a permanent leak — a
+// descriptor the process holds that the journal does not — is one the
+// median criterion catches whatever the crash count, which is why the
+// floor stays 0 with no scaling for the reopen's shift.
+type soakFlat struct {
 	name      string
 	get       func(*soakSample) int64
 	threshold int64
 	floor     int64
-}{
-	{"ExtentCount", func(s *soakSample) int64 { return s.ExtentCount }, 32, 8},                // band 68..89, floors 68/68
-	{"Segments", func(s *soakSample) int64 { return int64(s.Segments) }, 8, 2},                // band 6..10, floors 6/6
-	{"Spares", func(s *soakSample) int64 { return int64(s.Spares) }, 6, 1},                    // band 0..3, floors 0/0
-	{"OpenDescriptors", func(s *soakSample) int64 { return int64(s.OpenDescriptors) }, 10, 2}, // band 6..10, floors 6/6
-	{"Descriptors", func(s *soakSample) int64 { return int64(s.ProcessFds) }, 8, 0},           // band 10..14, floors 10/10
-	{"HeapBytes", func(s *soakSample) int64 { return int64(s.Heap) }, 24 << 20, -1},           // band 0.4..21 MB, converging
+}
+
+var soakFlats = []soakFlat{
+	{"ExtentCount", func(s *soakSample) int64 { return s.ExtentCount }, 32, 8},                          // band 68..93, halves 68/68
+	{"Segments", func(s *soakSample) int64 { return int64(s.Segments) }, 8, 2},                          // band 6..10, halves 6/6
+	{"Spares", func(s *soakSample) int64 { return int64(s.Spares) }, 6, 1},                              // band 0..3, halves 0/0
+	{"OpenDescriptors", func(s *soakSample) int64 { return int64(s.OpenDescriptors) }, 10, 2},           // band 6..10, halves 6/6
+	{"Descriptors", func(s *soakSample) int64 { return int64(s.ProcessFds - s.OpenDescriptors) }, 8, 0}, // neutralised: band 3..8, halves 4/4
+	{"HeapBytes", func(s *soakSample) int64 { return int64(s.Heap) }, 24 << 20, -1},                     // band 3.3..9.2 MB across the cells, converging
 }
 
 // soakSample is one window's counters, taken at a loop edge with every
@@ -154,9 +172,11 @@ type soakCfg struct {
 }
 
 // soakDuration returns how long the soak runs: DITTOFS_SOAK_DURATION, parsed
-// as a duration, set by the nightly suite's cell to the hours it wants;
-// unset or zero means the 5-minute calibration default, so the test also
-// runs by hand at a size its evidence can be read from.
+// as a duration, set by the nightly suite's cell to the hours it wants.
+// Unset, or anything that parses to zero or below — "0" and "0s" alike —
+// means the 5-minute calibration default, so the test also runs by hand
+// at a size its evidence can be read from. A text that parses as no
+// duration is the knob misused, and fails the run.
 func soakDuration(t *testing.T) time.Duration {
 	t.Helper()
 
@@ -167,9 +187,6 @@ func soakDuration(t *testing.T) time.Duration {
 	d, err := time.ParseDuration(s)
 	if err != nil {
 		t.Fatalf("DITTOFS_SOAK_DURATION=%q: %v", s, err)
-	}
-	if d <= 0 && s != "0" {
-		t.Fatalf("DITTOFS_SOAK_DURATION=%q: %d is no duration to run for", s, d)
 	}
 	if d <= 0 {
 		return 5 * time.Minute
@@ -185,6 +202,11 @@ func soakDuration(t *testing.T) time.Duration {
 //
 // The suite this test runs in has no known failures and no retries: a red
 // here is a leak to fix.
+//
+// The main run is driven by wall-clock deadlines: DITTOFS_SOAK_DURATION
+// names its stop, its windows scale with it, and the loop ends at the
+// operation that finds the deadline past - never at a timer, a sleep or a
+// fixed operation count, which the planted leg alone takes.
 func TestJournalSoak(t *testing.T) {
 	log := soakRun(t, soakCfg{duration: soakDuration(t)})
 
@@ -201,21 +223,9 @@ func TestJournalSoak(t *testing.T) {
 		for i := range log.samples {
 			vals[i] = flat.get(&log.samples[i])
 		}
-		floor := flat.floor
-		if flat.name == "Descriptors" {
-			// calibration: each crash's reopen settles the journal's open
-			// descriptors at most one higher than before it (floors 6/7
-			// across the one crash of a 5-minute run), a reopen's own
-			// footprint rather than a leak, so the process's fd floor
-			// tolerates what the run's crashes may shift. The width and the
-			// end drift bounds stay tight over the whole run, and the
-			// planted leg runs crash-free, so its floor keeps the zero a
-			// single descriptor must trip.
-			floor += int64(log.crashes)
-		}
-		t.Logf("soak: %s samples: first=%v last=%v, band=%v..%v, halves' floors=%v/%v",
-			flat.name, vals[0], vals[len(vals)-1], soakLeast(vals), soakMost(vals), soakLeast(vals[:len(vals)/2]), soakLeast(vals[len(vals)/2:]))
-		if err := soakWantFlat(flat.name, vals, flat.threshold, floor); err != nil {
+		t.Logf("soak: %s samples: first=%v last=%v, band=%v..%v, halves' medians=%v/%v",
+			flat.name, vals[0], vals[len(vals)-1], soakLeast(vals), soakMost(vals), soakMedian(vals[:len(vals)/2]), soakMedian(vals[len(vals)/2:]))
+		if err := soakWantFlat(flat.name, vals, flat.threshold, flat.floor); err != nil {
 			t.Errorf("soak: %v", err)
 		}
 	}
@@ -245,21 +255,25 @@ func soakMost(vals []int64) int64 {
 // one handle nobody closes, the journal underneath untouched — not a stub
 // standing in for it.
 //
-// The check the leg faces runs on the journal-neutralised count — the
-// process's descriptors less the journal's own, each sample's difference —
-// because the journal's own cache of open descriptors churns a window-wide
-// ±2 while the plant is worth exactly 1: on the raw count a real plant
-// hides behind the journal's own transient, a masking this leg measured
-// and a leak under it would live with too, which is why the main soak's
-// strict bound on a leak left behind is the watch's own baseline check
-// once the journal closes. What stays here is the point the leg exists
-// for: the band's checks, on a sample series whose only never-returns rise
-// is the plant, honours it — the same soakWantFlat the main soak runs, at
-// the same zero slack.
+// The check it faces is the production one, unchanged: the Descriptors
+// gauge the main soak runs — the journal-neutralised count, whose crash
+// shifts cancel (see the gauge table) — read through soakGaugeOf, which
+// hands the leg the gauge's own series, threshold and floor rather than
+// any it might spell itself, so a leak this leg plants is, by
+// construction, one the main soak's own check would catch. The plant lands
+// before the run's crash window, so the series it fails the check on
+// carries a crash and a reopen inside its band too: the reopen shifts the
+// journal's own descriptors and the process's by the same handle, and the
+// difference reads through it. What proves the claim is the halves' median
+// criterion alone — a permanent +1 in the process series lifts the second
+// half's middle above the first's, where the sampling skew that moves a
+// single window cannot — so the leg pins that criterion in its failure
+// and its log.
 func TestJournalSoakFindsPlantedDescriptor(t *testing.T) {
 	// Enough windows that the plant, placed after the warm-up so the band
 	// reads the clean floor first, is a rise the end of the run still
-	// carries whole halves around.
+	// carries whole halves around — and one crash window past it, whose
+	// reopen the neutralised series must read through.
 	plant := soakCfg{maxOps: soakWindowOps * 24, plantOp: soakWindowOps * 13}
 	log := soakRun(t, plant)
 	if log.planted == nil {
@@ -270,46 +284,64 @@ func TestJournalSoakFindsPlantedDescriptor(t *testing.T) {
 	// test leaks of itself, and this leg leaves nothing.
 	defer log.planted.Close()
 
+	descriptors := soakGaugeOf("Descriptors")
 	past := make([]int64, len(log.samples))
 	for i := range log.samples {
-		past[i] = int64(log.samples[i].ProcessFds - log.samples[i].OpenDescriptors)
+		past[i] = descriptors.get(&log.samples[i])
 	}
-	err := soakWantFlat("Descriptors", past, 0, 0)
+	err := soakWantFlat("Descriptors", past, descriptors.threshold, descriptors.floor)
 	if err == nil {
 		t.Fatalf("the descriptor check passed with one descriptor planted at op %d and never closed: descriptors past the journal's own over the windows %v, want the check to fail on the plant", plant.plantOp, past)
 	}
-	want := fmt.Sprintf("Descriptors got %d..%d", past[soakWarmupWindows], past[len(past)-1])
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("the descriptor check failed with:\n%v\nwant it to fail on the descriptor exactly, naming the counter and the band's first and last samples: %q", err, want)
+	t.Logf("the planted descriptor was caught by the production gauge's check:\n%v", err)
+	if !strings.Contains(err.Error(), "the second half's median") {
+		t.Fatalf("the descriptor check failed with:\n%v\nwant it to fail on the median criterion exactly, the one criterion a never-returns rise trips", err)
 	}
-	// The plant is the whole rise: the journal-neutralised count's band
-	// rises across the run by the one planted descriptor and nothing else,
-	// so the failure the check reports is the plant's own arithmetic.
-	if rise := past[len(past)-1] - past[soakWarmupWindows]; rise != 1 {
-		t.Fatalf("the descriptors past the journal's own rose by %d across the band, want exactly the one planted descriptor: %v", rise, past)
+	// The plant is the whole rise: the journal-neutralised count's median
+	// moves across the band by the one planted descriptor and nothing else —
+	// single windows can skew a unit on the sampling order, so the leg
+	// asserts the move on the same medians the check reads.
+	med := len(past) / 2
+	if rise := soakMedian(past[med:]) - soakMedian(past[soakWarmupWindows:med]); rise != 1 {
+		t.Fatalf("the descriptors past the journal's own moved by %d between the halves' medians, want exactly the one planted descriptor: %v", rise, past)
 	}
 }
 
-// soakFlatOf returns the flat entry the named gauge runs with, for a leg that
-// reads the same checks the main soak runs.
-func soakFlatOf(name string) (threshold, floor int64) {
+// soakGaugeOf returns the flat entry the named gauge runs with, so a leg
+// reads the same gauge, thresholds and floors the main soak runs rather
+// than spelling its own; its name comes from the gauge table.
+func soakGaugeOf(name string) soakFlat {
 	for _, flat := range soakFlats {
 		if flat.name == name {
-			return flat.threshold, flat.floor
+			return flat
 		}
 	}
 	panic("soak: no flat gauge named " + name)
 }
 
+// soakMedian returns the median of vals — the middle of its sorted order,
+// the upper middle of an even count. The floor criterion reads medians, not
+// leasts, because a sample of a gauge whose two sources are read one after
+// the other — the journal's own descriptor count and the process's — can
+// skew a unit off for the moment its second source has moved and its first
+// has not; the least of a half answers such a dip, and a permanent rise of
+// one would hide behind it, where the median does not.
+func soakMedian(vals []int64) int64 {
+	s := append([]int64(nil), vals...)
+	slices.Sort(s)
+	return s[len(s)/2]
+}
+
 // soakWantFlat checks that vals, one sample per window, are flat: the end
 // within threshold of the band the samples past the warm-up span, the band
 // no wider than that, and — where floor is not negative — the band's second
-// half never resting above the first by more than it. The floor criterion
-// is what a permanent rise fails: a leak lifts every window after it, so
-// the least of the second half stays above the least of the first, while a
-// transient opens and closes and puts the count right back; the width and
-// the drift alone cannot see one descriptor stay, in a band the journal's
-// own churn oscillates wider than it.
+// half resting no more than floor above its first by the two halves'
+// medians. That median criterion is what a permanent rise fails: a leak
+// lifts every window after it, so the second half's middle sits a whole
+// unit above the first's, while a transient opens and closes and puts the
+// count right back; the width and the drift alone cannot see one
+// descriptor stay, in a band the journal's own churn oscillates wider than
+// it, and the leasts would hand the leaks to the sampling skew above.
 func soakWantFlat(name string, vals []int64, threshold, floor int64) error {
 	if len(vals) <= soakWarmupWindows+1 {
 		return fmt.Errorf("%s: %d windows, want more than the %d warm-up ones to read a band from", name, len(vals), soakWarmupWindows)
@@ -329,8 +361,8 @@ func soakWantFlat(name string, vals []int64, threshold, floor int64) error {
 	}
 	if floor >= 0 {
 		half := len(band) / 2
-		if rise := soakLeast(band[half:]) - soakLeast(band[:half]); rise > floor {
-			return fmt.Errorf("%s got %v..%v, want flat within %d: the second half's floor %v sits %v above the first half's %v, over the calibrated floor", name, first, last, threshold, soakLeast(band[half:]), rise, soakLeast(band[:half]))
+		if rise := soakMedian(band[half:]) - soakMedian(band[:half]); rise > floor {
+			return fmt.Errorf("%s got %v..%v, want flat within %d: the second half's median %v sits %v above the first half's %v, over the calibrated floor", name, first, last, threshold, soakMedian(band[half:]), rise, soakMedian(band[:half]))
 		}
 	}
 	return nil
@@ -354,7 +386,18 @@ func soakRun(t *testing.T, cfg soakCfg) *soakLog {
 	rng := rand.New(rand.NewPCG(0x734f614b, 0x6c617661))
 	maxV := f.Floor()
 	deadline := time.Now().Add(cfg.duration)
-	windowEnd := time.Now().Add(soakWindowSecs)
+	// A duration run's windows and its stop both ride the wall clock, and
+	// a short duration needs its windows short too: the flat checks read a
+	// band of at least a dozen windows whatever the run's length, so a
+	// two-minute sanity run and even a half-minute one work, at a window of
+	// a twelfth of the duration rather than the fifteen-second default the
+	// hours-long cells keep. The fixed-size legs keep their op-count
+	// cadence: they name no duration and no window.
+	window := soakWindowSecs
+	if cfg.duration > 0 && cfg.duration < 12*window {
+		window = max(cfg.duration/12, time.Second)
+	}
+	windowEnd := time.Now().Add(window)
 
 	// soakOp runs one mixed operation, its kind drawn from the table below.
 	//
@@ -447,7 +490,7 @@ func soakRun(t *testing.T, cfg soakCfg) *soakLog {
 		if !edge {
 			continue
 		}
-		windowEnd = time.Now().Add(soakWindowSecs)
+		windowEnd = time.Now().Add(window)
 
 		// The window's edge: snapshot first, then the slow-period events.
 		// Samples sit at loop edges with every operation of the window
