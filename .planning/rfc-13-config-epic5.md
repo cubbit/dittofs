@@ -11,15 +11,16 @@ sets, the secret versions held) and §5.2 ("A secret is written as its owner is"
 settings); RFC 23's plan's deferral ledger, its rows for a remote store's credential on its create,
 for a store's and a namespace's delete under `Check`, and for RFC 13 §6's port rule.
 **Track:** the team.
-**Epic 5 estimate: 9 subtasks, 18 man-days.**
+**Epic 5 estimate: 9 subtasks, 17 man-days.**
 **Depends on:** E2, E3 and E4, whose bodies it wires: E3's `Of` and `Table` (T3.2), `Read` and `Get`
 (T3.4), `Check` and its gates (T3.5, T3.6, T3.7), `Diff` and `Keep` (T3.8), its series and reconcile
 benchmark (T3.9); E4's `Seal` (T4.3), `Versions` (T4.4) and `Prune` (T4.5); E2's loaded bootstrap,
 whose two wrapping keys build the provider. S3, outside RFC 13's plan: RFC 23's reconcile with its
 `apply` slot (`internal/node/reconcile.go`, on `feat/storage-v2`), its epic 2's `Nodes.AllSettings`
-(T2.8, #4812, open) and `NodeStatus` record (#4527, landed), and its epic 4's settings, store and
-secret routes with their `Check` slot and `Deps.Sealer` (its T4.9). RFC 20's plan's T7.6, the
-adapters' section types, for T5.7 only.
+(T2.8, landed) and `NodeStatus` record (#4527, landed), and its epic 4's settings, store, namespace,
+adapter and secret routes, which already call `Check` through `checkSetting` with the caller's role,
+and `Deps.Sealer` (its T4.9, #4994, landed). RFC 20's plan's T7.6, the adapters' section types, for
+T5.7 only.
 **Blocks:** E6, which runs RFC 13 §9's single-node rows on the wired server; RFC 23's integration
 epic (its epic 7, through X3), whose rows that write a setting wait for `Check` on the routes; RFC
 20's plan's T7.6, which reads each adapter's section from the snapshot this epic's reconcile
@@ -45,12 +46,14 @@ its owner writes it.
   read through (T5.2);
 - a live change runs within 5 s, a restart-class one lands in the restart-pending set, and a
   next-write one is read by the next write (T5.3);
-- the API's settings, store and namespace writes run `Check` in the write's transaction, with the
-  caller's role and a tracked content read (T5.4);
+- the API's `Check`, already called by every settings-backed route, judges through the node's
+  table with a tracked content read that fails closed, and a store's or a namespace's delete
+  removes its scope (T5.4);
 - a key the table declares that Appendix B lacks, or holds otherwise, fails a test (T5.5);
 - a setting's secret is sealed before its `Write` and committed beside the row that names it
   (T5.6);
-- two of a node's three effective ports cannot be made equal by any write (T5.7);
+- the adapters' two effective ports cannot be made equal on this node by any write; the port
+  mapper's joins the rule when its section is declared (D8) (T5.7);
 - a rotated bind credential is resolved again, reported, pruned and reported revocable, RFC 13
   §9's "§7 rotation" on one node (T5.8);
 - every RFC 13 §8 series is on the node's registry with closed labels, and the full reconcile is
@@ -59,10 +62,11 @@ its owner writes it.
 ### 1.1 In scope
 
 The node's table and RFC 23's sections in it; `apply` filled on `Read`, `Diff`, `Keep` and `Get`;
-the restart-pending set and the secret versions in `NodeStatus`; the API's `Check` slot filled, its
-content read and the two RFC 23 ledger rows on stores and namespaces; the write of a setting's
-secret; RFC 13 §6's port rule at write; the secrets pass in reconcile, its prune and revocation
-report; `config_secrets_behind`; Appendix B's check; the full reconcile benchmark.
+the restart-pending set and the secret versions in `NodeStatus`; the table handed to the API's
+`Check`, its content read and the two RFC 23 ledger rows on stores and namespaces; the write of a
+setting's secret; RFC 13 §6's port rule at write, on this node; the secrets pass in reconcile, its
+prune and revocation report; `config_secrets_behind`; Appendix B's check; the full reconcile
+benchmark.
 
 ### 1.2 Out of scope
 
@@ -73,6 +77,15 @@ report; `config_secrets_behind`; Appendix B's check; the full reconcile benchmar
   and RFC 13 §9's "§5 adapter port": RFC 20's plan's T7.6.
 - RFC 13 §6's port rule at start, a port equal to the API's or the metrics listener's: the plan's
   deferral ledger row "RFC 13 §6's port rule at start", owner RFC 20's plan's epic 7.
+- RFC 13 §6's port rule on every node an installation write reaches, past this node (D8): the
+  plan's deferral ledger row "RFC 13 §6's port rule on every node a write reaches", owner RFC 16
+  §3 with RFC 15. The rule's `sidecars.portmap.port` (D8): the row "the port mapper's port in RFC
+  13 §6's port rule at write", owner the cutover with RFC 20's concrete sidecars. Neither row is
+  in the ledger yet: both are added through a pull request against the plan (§9).
+- Pruning the OpenID Connect client secret and reporting its old version revocable: the plan's
+  deferral ledger row "the OpenID Connect client secret's prune and revocation report", owner the
+  RFC 18 plan's OpenID Connect epic, which that plan has not added yet, added through a pull
+  request against the plan (§9).
 - A store credential's rotation and a store location's proof: RFC 13's plan's D9 refuses both
   (E3's T3.6, E4's T4.3); the plan's ledger row for a remote store's endpoint, bucket, prefix or
   credential change.
@@ -109,7 +122,7 @@ report; `config_secrets_behind`; Appendix B's check; the full reconcile benchmar
   snapshot; **the RFC 18 plan's T8.1**, identity in the node and its sections in the table.
 - **D2**, **D3**, **D9**, **D10** and **D11** with RFC 13's plan named are its decisions (the table,
   Appendix B's check, a store location's change, a reference's kind and owner, the one schema);
-  **D1** to **D9** without a plan named are this epic's own (§4). **O1** and **O4** are the plan's
+  **D1** to **D10** without a plan named are this epic's own (§4). **O1** and **O4** are the plan's
   open points on its deferred scope and on the components' sections.
 
 ## 2. How the general rules apply
@@ -128,7 +141,7 @@ title and not copied.
 | rule 6, known failures shrink | none | no suite this epic touches keeps a `known.yaml` |
 | rule 7, v2 ignores v1 | none | nothing reads v1's settings tables or its watcher; RFC 20's plan replaced the watcher with this reconcile |
 | rule 8, real dependencies for properties of those dependencies | T5.2, T5.4, T5.6, T5.8, T5.9 | the paged walk, the tracked reads' conflicts, a seal's commit and a prune's commit on Badger under `t.TempDir()`; sealing on two real key files |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T5.2, T5.4, T5.7, T5.8 | `decision:` markers at the version reported for a secret (D3), at the content read's refusal of a scope with no content rule (D6), at the scope removal (D7) and at the port rule's key set (D8); `status.go`'s `ponytail:` on the empty restart-pending set and secret versions withdrawn with the code that fills them |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T5.3, T5.4, T5.5, T5.7, T5.8 | `decision:` markers at the version reported for a secret (D3), at the content read, which fails closed for a namespace and for a scope with no content rule (D6), at the scope removal (D7), at the port rule's key set and its one node (D8) and at the Appendix B file the check reads (D10). T5.4 withdraws four markers in `internal/node/api`: `checkSetting`'s nil-table `decision:` and `holdsContent`'s `decision:` in `res_settings.go`, and the two "no store or namespace can be deleted" `ponytail:` markers in `res_stores.go` and `res_namespaces.go`. `status.go`'s `ponytail:` on the empty restart-pending set, secret versions and claim generation is narrowed, not withdrawn: T5.3 drops the restart-pending set from it, T5.8 the secret versions, and the claim generation stays |
 | rule 10, a test must be able to fail | all | each test names the bug it catches in §6 |
 | rule 11, a symbol is exported only if RFC 13's interfaces use it | T5.6, T5.8 | `pkg/settings` gains two exports, `(*Snapshot).Secrets` and `(Table).SecretKind`, the node's and the API's first callers (D4, pending the user's answer), added to E1's export pin with them; `internal/node` exports nothing new |
 | rule 12, each subtask creates only what it declares | all | the table lands with RFC 23's sections, its first rows; the provider is built in `node.New` with its first caller, T5.6's seal; each other section's row lands with its own plan (D2) |
@@ -144,7 +157,7 @@ deferral ledger set for it.
 | --- | --- | --- | --- | --- |
 | R1 | The node holds one `settings.Table` naming each declared section with its scope, its override and a class per key, and the API's write check and reconcile both read that one table | invariant | RFC 13's plan, D2 | T5.1, T5.2, T5.4 |
 | R2 | RFC 23's own settings, `api.session_lifetime`, `api.token_max_lifetime` and `audit.retention`, are declared in the table at installation scope, live, written by `admin` only; an `audit.retention` under 90 days is refused | MUST | RFC 13 Appendix B; RFC 23 §5.2 | T5.1 |
-| R3 | A key the table declares that Appendix B lacks, or holds with another scope, class or write role, fails a test; an Appendix B section no component declares is reported, not failed | invariant | RFC 13's plan, D3 and O4 | T5.5 |
+| R3 | A key the table declares that Appendix B lacks, or holds with another scope, class or write role, fails a test; an Appendix B section no component declares, and an Appendix B key under a declared section's prefix that the section lacks, are reported, not failed | invariant | RFC 13's plan, D3 and O4 | T5.5 |
 | R4 | Every entry of Appendix B's scope column is one of the five scopes in one of §3's three forms, a shard override counting as a refinement of share, or "—" with a class of fixed, derived or bootstrap | test row | RFC 13 §9 ("§3 scope forms"), §3 | T5.5 |
 | R5 | No section's `Validate` prints the value of a field declared as a reference, since a refusal never prints a credential's value | MUST NOT | RFC 13 §6 (a refusal "MUST NOT print the value … of a key that holds a credential"), §7 | T5.5 |
 
@@ -168,10 +181,11 @@ deferral ledger set for it.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R16 | Every settings-backed write of the API, a put and a delete, is checked by `Check` with the caller's role inside the write's transaction before its row is written, so a refused write commits nothing and its refusal names the key | MUST | RFC 13 §6 ("Checked twice"); RFC 23 §5.2; RFC 13's plan, §4.4 (`Check` on the settings route) | T5.4 |
-| R17 | Whether a scope holds content is read through the write's transaction, tracked, so a content write conflicts with a bound change; a scope with no content rule is refused, never read as empty | MUST | RFC 13 §5.1; RFC 13's plan, §4.4 | T5.4 |
+| R17 | Whether a scope holds content is read through the write's transaction, tracked, so a content write conflicts with a bound change | MUST | RFC 13 §5.1; RFC 13's plan, §4.4 | T5.4 |
+| R32 | The content read fails closed: a namespace answers that it holds content while its blocks may still be draining, and a scope kind with no content rule is refused as a store error, never read as empty | invariant | D6; RFC 13 §5.1 | T5.4 |
 | R18 | A remote store's credential, set when the store has none yet, is its first value and passes; a store can be created and given its credential | MUST | RFC 13's plan, D9; RFC 23's plan, §6.1 (a remote store's credential on its create) | T5.4 |
 | R19 | A remote store's or a namespace's delete, once nothing names it, removes its scope's settings as the scope's removal, never refused as a change of a bound or location key | invariant | RFC 23's plan, §6.1 (a store's and a namespace's delete) | T5.4 |
-| R20 | On each node the effective `adapters.nfs.port`, `adapters.smb.port` and `sidecars.portmap.port`, the node's override else the installation's value, differ unless 0; a write of any of them at either scope is checked against the others on every node it reaches, reading them tracked in the write's transaction | MUST | RFC 13 §6 ("A rule across settings"), Appendix B's port rows | T5.7 |
+| R20 | The effective `adapters.nfs.port` and `adapters.smb.port`, a node's override else the installation's value, differ unless 0; a write of either at either scope is checked against the other on the node a node-scope write names, or on this node (`Deps.Node`) for an installation write, reading both tracked in the write's transaction. `sidecars.portmap.port` and every other node an installation write reaches are D8's deferrals | MUST | RFC 13 §6 ("A rule across settings"), Appendix B's port rows; D8 | T5.7 |
 
 **Secrets**
 
@@ -182,7 +196,8 @@ deferral ledger set for it.
 | R23 | No secret value appears in an API answer, an audit record, a log line or a metric | MUST NOT | RFC 13 §7 ("Read never returns a secret"); RFC 23 §10, CP11 | T5.6, T5.8 |
 | R24 | A `Secret`'s new version is resolved again by the component holding the reference within the live bound | MUST | RFC 13 §7 ("A secret changes without a record change, in two phases"); RFC 23 §2.3 | T5.8 |
 | R25 | A reference that fails to resolve, of another kind or owner, failing to unwrap, or under a retired key that is gone, holds or keeps its section and is reported refused, as an undecodable row is | invariant | RFC 13 §6; RFC 13's plan, epic 5 | T5.8 |
-| R26 | The node writes to its status the version of each secret it keeps resolved, never a version above the one its holder resolves | MUST | RFC 23 §2.4; RFC 13 §7 ("Only once every such node reports the new version does the provider delete the old one") | T5.8 |
+| R26 | The node writes to its status the version of each secret it keeps resolved | MUST | RFC 23 §2.4; RFC 13 §7 ("Only once every such node reports the new version does the provider delete the old one") | T5.8 |
+| R33 | The version reported for a secret is never above the one its holder resolves | invariant | D3 | T5.8 |
 | R27 | For a directory's bind credential, once the node reports the new version, `Prune` drops the old one inside an audited `Write`, and only then is the old credential reported revocable at its service | MUST | RFC 13 §7 (`Prune`; "the control plane report that the old credential may be revoked at its service"); RFC 13's plan, §4.3 | T5.8 |
 | R28 | Rotating a credential the node uses: it reports the new version within 5 s, the old version stays resolvable until it does, and only then is the old one deleted | test row | RFC 13 §9 ("§7 rotation", its credential half, on one node) | T5.8 |
 
@@ -232,7 +247,7 @@ store (E3's T3.1, RFC 23's epic 2).
   section, whose apply runs again when a reference's version moved, and the component resolves its
   value through its own `pkg/secrets` at that apply (the RFC 18 plan's directory client resolves at
   its dial, so a moved version must make it dial again). A concurrent seal can only raise what the
-  component then reads, so the reported version is never above the one held (R26), and a prune
+  component then reads, so the reported version is never above the one held (R33), and a prune
   never drops a held version. A `decision:` marker at the report says so, withdrawn if a holder
   ever resolves before the node reads. `Versions` opens every held version, at most a few per
   reference, so no `ponytail:`. Prior art: Vault's KV v2 returns a secret's version with its data
@@ -253,48 +268,77 @@ store (E3's T3.1, RFC 23's epic 2).
   sees it changed (R14). RFC 23's epic 3's 90-day constant in the sweep goes. No marker. Prior art:
   Kubernetes' kubelet hands its config to components by the pointer each reads at use (from
   memory).
-- **D6, whether a scope holds content is answered per scope kind, failing closed.** A remote store
-  holds content while a namespace names it (`ControlPlaneTx.StoreNamed`), a namespace while a share
-  names it (`NamespaceNamed`), both tracked. No `ControlPlaneTx` read says whether a share holds
-  content, and no share-scope bound setting is declared yet (case sensitivity and the entry-digest
-  key are fixed at the share's creation), so a share scope and every other kind answer an error
-  naming the scope, which `Check` returns as a store error, never as "no content". A `decision:`
-  marker at the closure says a namespace's drain (RFC 9 §7.6) is not read, so a namespace whose
-  last share was removed reads as empty while GC drains it; withdrawn when that drain is readable
+- **D6, whether a scope holds content is answered per scope kind, failing closed.** It replaces
+  `holdsContent` in `internal/node/api/res_settings.go`, which answers "holds content" for every
+  scope, and its `decision:`. A remote store holds content while a namespace names it
+  (`ControlPlaneTx.StoreNamed`, tracked). A namespace keeps answering that it holds content,
+  whether or not a share names it: once its last share is removed, `NamespaceNamed` reads false,
+  but RFC 9 §7.6 keeps its blocks, keys and claim until GC drains it, and a `Target` or chunking
+  key changed then makes that content unreachable, which RFC 13 §5.1 refuses. No `ControlPlaneTx`
+  read says whether a share holds content, and no share-scope bound setting is declared yet (case
+  sensitivity and the entry-digest key are fixed at the share's creation), so a share scope and
+  every other kind answer an error naming the scope, which `Check` returns as a store error, never
+  as "no content". The `decision:` marker at the closure names two windows. A namespace's bound
+  settings stay refused for its whole life; once the drain is readable in the transaction, a
+  namespace holds content while a share names it or its drain is unfinished. A store reads empty
+  once its last namespace's record is deleted, while GC still drains that namespace's blocks in
+  it, because `deleteNamespace` drops the record at once (its `ponytail:`); this exposes only a
+  store's bound keys other than its location, since RFC 13's plan's D9 refuses a location change
+  with or without content, and it closes with the same change, the record kept under its drain
+  mark so that `StoreNamed` reads true until the drain ends. Withdrawn when the drain is readable
   in the transaction or a share-scope bound setting is declared. Prior art: none found.
-- **D7, a store's or a namespace's delete is its scope's removal, not a change.** Once
-  `StoreNamed` or `NamespaceNamed` reads false in the delete's transaction, the route deletes every
-  setting row at that scope with `DeleteSetting`, without `Check`: a removed scope has no effective
-  value left to change, and the route's own role check is the write's authorization. A `decision:`
-  marker at the route names the rule and its overturn: a store or namespace setting whose removal
-  needs a check of its own. Prior art: Kubernetes deletes a namespace's objects with the namespace,
-  not object by object under their own admission (from memory).
-- **D8, the port rule covers the ports the table declares.** The port mapper's section is not
-  declared (RFC 20's plan defers the concrete sidecars), so `sidecars.portmap.port` has no value to
-  compare: the rule compares the adapters' ports, and the port mapper's joins it when its section
-  is declared. A `decision:` marker at the rule says so. The plan's deferral ledger has no row for
-  this narrowing (§9). Prior art: none found.
+- **D7, a store's or a namespace's delete is its scope's removal, not a change.** Once the delete's
+  transaction finds the scope deletable, `StoreNamed` reading false for a store and
+  `NamespaceNamed` for a namespace, the route deletes every setting row it listed at that scope with
+  `DeleteSetting`, without `Check`: a removed scope has no effective value left to change, and the
+  route's own role check is the write's authorization. A namespace's settings go with its record,
+  as `deleteNamespace` does today, so they share the window its `ponytail:` names: when GC's drain
+  lands and the record stays under its drain mark, the settings stay with it and go at the drain's
+  end. A `decision:` marker at the route names the rule and its overturn: a store or namespace
+  setting whose removal needs a check of its own. Prior art: Kubernetes deletes a namespace's
+  objects with the namespace, not object by object under their own admission (from memory).
+- **D8, the port rule covers the adapters' ports on one node.** Two narrowings, one `decision:`
+  marker at the rule naming both. The port mapper's section is not declared (RFC 20's plan defers
+  the concrete sidecars), so `sidecars.portmap.port` has no value to compare: the rule compares the
+  adapters' ports, and the port mapper's joins it when its section is declared. And
+  `ControlPlaneTx` reads one node's record by its ID (`Node(id)`) and lists none, so the rule reads
+  the overrides of the node a node-scope write names, or for an installation write those of the
+  node serving the API (`Deps.Node`, the ID `node.New` builds the table with); on one node that is
+  every node the write reaches. Each narrowing has its deferral-ledger row (§1.2), neither in the
+  ledger yet (§9). Prior art: none found.
 - **D9, the prune's audit record is the revocation report.** RFC 13 §7 has "the control plane
   report that the old credential may be revoked at its service" once the old version is deleted.
   The prune commits inside an audited `Write` (E4's T4.5), so its audit record names the reference
   and the versions dropped, and a log line at `Info` names the reference, never a value. No second
   channel. No marker. Prior art: Vault audits a lease's revocation (from memory).
+- **D10, Appendix B's check reads the RFC copy in its own checkout.** The test runs on
+  `feat/storage-v2`, whose `docs/internals/rfcs/` lags develop and takes RFC text only through the
+  batched `-x` cherry-pick of develop's RFC pull requests. The test parses
+  `docs/internals/rfcs/rfc-13-configuration.md` as the branch it runs on holds it, so an Appendix B
+  change reaches the check through that cherry-pick, and nothing reads develop at test time. A
+  plan adding rows to the table (RFC 20's T7.6, the RFC 18 plan's T8.1) whose Appendix B text
+  changed on develop lands that cherry-pick before or with its rows; the check failing on the
+  stale copy is the signal. Today's drifts (the `remote.*` key names, `adapters.<protocol>.enabled`,
+  `tracing.*`'s class) touch no declared section, so they are reported, not failed (R3). A
+  `decision:` marker at the file path says so, withdrawn if the RFCs ever live in one copy. Prior
+  art: none found.
 
 ## 5. Target tree
 
 ```text
 internal/node/api/apisettings/settings.go   T5.1  Settings (api) and Audit (audit), tagged (D1)
 internal/node/settings.go                   T5.1  the one table; T5.3 the section-to-apply map (D5)
-internal/node/node.go                       T5.1  the table handed to api.Deps.Settings; T5.6 the provider built in New
+internal/node/node.go                       T5.1  the table kept for reconcile; T5.4 handed to api.Deps.Settings; T5.6 the provider built in New
 internal/node/reconcile.go                  T5.2  apply on Read, Keep and the CFGGEN check; T5.3 Diff's class paths
-internal/node/status.go                     T5.3  RestartPending; T5.8 Secrets, ponytail withdrawn
-internal/node/api/res_settings.go           T5.4  Check on put and delete, the content read per scope (D6); T5.6 a setting's secret
+internal/node/status.go                     T5.3  RestartPending; T5.8 Secrets; its ponytail narrowed to the claim generation
+internal/node/api/res_settings.go           T5.4  nil table refused 503, the content read per scope replacing holdsContent (D6); T5.6 a setting's secret
 internal/node/api/res_stores.go             T5.4  credential on create (R18), scope removal (D7)
 internal/node/api/res_namespaces.go         T5.4  scope removal (D7)
-internal/node/appendixb_test.go             T5.5  Appendix B's check, "§3 scope forms"
+internal/node/appendixb_test.go             T5.5  Appendix B's check on the checkout's RFC copy (D10), "§3 scope forms"
 pkg/settings/snapshot.go                    T5.8  (*Snapshot).Secrets (D4)
 pkg/settings/table.go                       T5.6  (Table).SecretKind (D4)
-internal/node/ports.go                      T5.7  the port rule, a CheckTx on the adapters' rows
+internal/node/sealer.go                     T5.6  providerSealer wired, its var _ line gone
+internal/node/ports.go                      T5.7  the port rule, a CheckTx on the adapters' rows, on one node (D8)
 internal/node/secrets.go                    T5.8  the secrets pass, the prune, config_secrets_behind
 internal/node/reconcile_bench_test.go       T5.9  BenchmarkReconcile grown with settings and secrets
 internal/node/series_test.go                T5.9  RFC 13 §8's series on the registry
@@ -310,8 +354,10 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 - **Covers:** R1, R2.
 - **Deliverables:** `apisettings` split into `Settings` and `Audit` with `json` and `class` tags
   (D1); `internal/node/settings.go`, the one `settings.Table` with the `api` and `audit` sections,
-  both `admin`-only; the table handed to `api.Deps.Settings` in `node.New` and kept for reconcile.
-  Consumed by T5.2 and T5.4; RFC 20's T7.6 and the RFC 18 plan's T8.1 add their rows to it.
+  both `admin`-only; the table built in `node.New` and kept for reconcile. Consumed by T5.2 and
+  T5.4, which hands it to the API; RFC 20's T7.6 and the RFC 18 plan's T8.1 add their rows to it.
+  It is not handed to `api.Deps.Settings` here: under `holdsContent`'s answer, a handed-in table
+  refuses every store and namespace delete until T5.4's scope removal lands.
 - **Acceptance criteria:**
   - The table builds its index with no panic, so no two sections share a prefix or a key.
   - An `audit.retention` of 89 days fails `Audit.Validate`, naming the key.
@@ -326,7 +372,7 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 **Subtask T5.2 estimate: 3 man-days.**
 
 - **Track:** the team. **Depends on:** T5.1; E3's T3.4 and T3.8; RFC 23's T2.8 (`Nodes.AllSettings`,
-  #4812).
+  landed: one read transaction per page).
 - **Covers:** R6, R7, R8, R9, R10, R11.
 - **Deliverables:** `apply`'s settings half in `reconcile.go`: `CFGGEN` read, `settings.Read` over
   the node view's `AllSettings`, `CFGGEN` read again and the walk discarded when it moved; each
@@ -365,8 +411,8 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
   refusing that section only; a restart-class one into `NodeStatus.RestartPending` (an adapter's
   port is RFC 20's T7.6's rebuild); a next-write one with nothing to apply; the section-to-apply map
   in `settings.go`, RFC 23's sections "read at use" by `auth` and the sweep, whose 90-day constant
-  goes; `status.go`'s restart-pending `ponytail:` withdrawn. Consumed by T5.4's scenario, T5.8 and
-  RFC 20's T7.6.
+  goes; `status.go`'s `ponytail:` narrowed, the restart-pending set dropped from it. Consumed by
+  T5.4's scenario, T5.8 and RFC 20's T7.6.
 - **Acceptance criteria:**
   - A live change is run by its component on the first pass after its commit.
   - A section with a changed live key and no entry in the map is refused and never reported
@@ -383,37 +429,51 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 
 ### T5.4 The write path on `Check`
 
-**Subtask T5.4 estimate: 2.5 man-days.**
+**Subtask T5.4 estimate: 1.75 man-days.**
 
 - **Track:** the team. **Depends on:** T5.3; E3's T3.5, T3.6 and T3.7; RFC 23's T4.9.
-- **Covers:** R15, R16, R17, R18, R19.
-- **Deliverables:** RFC 23's settings, store and namespace routes calling `Check` in their slot,
-  with the caller's role, for a put and a delete; the content read, a closure over the write's `tx`
-  (D6), with its `decision:` marker; a store's create taking its credential, sealed by the pre-write
-  step through `Deps.Sealer`, the endpoint, the credential reference and the `Secret` committed in
-  one `Write` (R18, pending the user's answer, §9); a store's and a namespace's delete removing its
-  scope's rows after `StoreNamed` or `NamespaceNamed` reads false (D7), with its `decision:`
-  marker. Consumed by T5.6, T5.7 and RFC 23's integration epic.
+- **Covers:** R15, R16, R17, R18, R19, R32.
+- **Deliverables:** RFC 23's T4.9 (#4994) already calls `Check` from `checkSetting`
+  (`internal/node/api/res_settings.go`) with the caller's role, for a put and a delete, on the
+  settings, store, namespace and adapter routes; what is left:
+  - the node's table handed to `api.Deps.Settings` in `node.New`, and a nil table refused `503`,
+    which withdraws `checkSetting`'s nil-table `decision:`; `sealer.go`'s `var _` line loses its
+    `Settings` half;
+  - the content read, a closure over the write's `tx` (D6), replacing `holdsContent` and its
+    `decision:` with D6's;
+  - the scope removal (D7): `deleteStore` and `deleteNamespace` delete their listed rows without
+    `Check`, which withdraws the two "no store or namespace can be deleted" `ponytail:` markers in
+    `res_stores.go` and `res_namespaces.go`, with D7's `decision:`; their listing `ponytail:`
+    markers and `deleteNamespace`'s drain `ponytail:` stay;
+  - a store's create taking its credential, sealed by the pre-write step through `Deps.Sealer`, the
+    endpoint, the credential reference and the `Secret` committed in one `Write` (R18, pending the
+    user's answer, §9), in place of `createStore`'s refusal of `spec.credential`.
+
+  Consumed by T5.6, T5.7 and RFC 23's integration epic.
 - **Acceptance criteria:**
   - An `operator`'s write of an `admin`-only key, and a write of an unknown key, are refused,
     naming the key, and the store's raw keys hold no new row.
   - A bound key changed while a namespace names its store is refused; the same write with none
-    passes.
+    passes. A namespace's bound key is refused whether or not a share names it.
   - A store created with its credential reads back as one endpoint row, one reference and one
     `Secret` version; a store and a namespace each delete once nothing names them.
 - **Tests:** through the API handler on `nodetest`, sections the test declares for a remote store
   and a namespace (none is declared by its plan yet): an `operator` writing `audit.retention`
-  refused and nothing committed, an `admin` passing (catches the slot left open, R16); a bound
-  store key changed with a namespace written through `PutNamespace`, refused `409`, and a
-  concurrent namespace write making the change retry (catches an untracked content read, R17); a
-  share-scope bound key the test declares refused as a store error, not accepted (catches "no
-  content" assumed, D6); a store created with its credential accepted, its reference and one
-  `Secret` version read back (catches the create's credential refused as a location change, R18),
-  and a second credential set over it refused, as RFC 13's plan's D9 refuses it; a store and a
-  namespace deleted with bound and location keys set, both accepted and their rows gone (catches a
-  scope's removal judged key by key, R19); RFC 13's plan's §1.4 scenario: a `audit.retention`
-  `PUT` through the API reaching the sweep, and a test-declared restart-class key landing in the
+  refused and nothing committed, an `admin` passing (catches the node's table never handed in,
+  every key refused unknown, R16); a bound store key changed with a namespace written through
+  `PutNamespace`, refused `409`, and a concurrent namespace write making the change retry (catches
+  an untracked content read, R17); a namespace's bound key changed after its last share is
+  removed, refused (catches a namespace read as empty while GC drains it, R32); a share-scope
+  bound key the test declares refused as a store error, not accepted (catches "no content"
+  assumed, R32); a store created with its credential accepted, its reference and one `Secret`
+  version read back (catches the create's credential refused as a location change, R18), and a
+  second credential set over it refused, as RFC 13's plan's D9 refuses it; a store and a namespace
+  deleted with bound and location keys set, both accepted and their rows gone (catches a scope's
+  removal judged key by key, R19); RFC 13's plan's §1.4 scenario: a `audit.retention` `PUT`
+  through the API reaching the sweep, and a test-declared restart-class key landing in the
   status's restart-pending set (R15).
+- **Rules:** rule 12: the table reaches the API here, with the scope removal that keeps a delete
+  possible under it, not in T5.1.
 
 ### T5.5 Appendix B's check
 
@@ -422,19 +482,25 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 - **Track:** the team. **Depends on:** T5.1.
 - **Covers:** R3, R4, R5.
 - **Deliverables:** `appendixb_test.go`, parsing RFC 13 Appendix B from
-  `docs/internals/rfcs/rfc-13-configuration.md`: each row's backticked keys, its scope cell, the
-  class's first word and "written by `admin` only"; compared with the node's table by key, scope,
-  class and write role; an Appendix B row no section declares reported with `t.Log`, never failed
-  (RFC 13's plan, O4); RFC 13 §9's "§3 scope forms"; each section's `Validate` driven with a marker
+  `docs/internals/rfcs/rfc-13-configuration.md` as the branch the test runs on holds it, with D10's
+  `decision:` marker at the path: each row's backticked keys, its scope cell, the class's first
+  word and "written by `admin` only"; compared with the node's table by key, scope, class and write
+  role; an Appendix B row no section declares, and an Appendix B key under a declared section's
+  prefix that the section lacks, each reported with `t.Log`, never failed (RFC 13's plan, O4); RFC
+  13 §9's "§3 scope forms"; each section's `Validate` driven with a marker
   in every reference field and its refusal searched for it. Consumed by RFC 20's T7.6 and the RFC
   18 plan's T8.1, whose rows run under it.
 - **Acceptance criteria:**
   - The table's keys all match their rows; the parse finds the RFC 23 rows by key.
+  - `api.oidc_role_map` and `api.password_sign_in`, Appendix B keys under the declared `api`
+    prefix that T5.1's section lacks (D1), are reported in the test's log and do not fail it.
   - Every scope cell parses as one of §3's forms or "—".
 - **Tests:** the check over the real appendix and the node's table, and the same comparison
   table-driven over three edited inputs held in the test, each required to fail: a key of the table
   renamed, an `audit` section declared at the default role, and a scope cell edited to "cluster"
-  (each catching a drift between the table and the RFC, R3, R4); a test section whose `Validate`
+  (each catching a drift between the table and the RFC, R3, R4); the comparison run over the
+  real appendix with the `api` section's two later keys returned among its reported keys, required
+  to list both and pass (catches a missing key failed, or dropped silently, R3); a test section whose `Validate`
   formats its reference field, required to fail the marker search (catches a refusal printing a
   credential, R5).
 
@@ -444,8 +510,9 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 
 - **Track:** the team. **Depends on:** T5.4; E4's T4.3.
 - **Covers:** R21, R22, R23.
-- **Deliverables:** the provider built in `node.New` from the bootstrap's two wrapping keys and
-  handed to `api.Deps.Sealer`; `(Table).SecretKind` (D4), with its export pin; the settings route's
+- **Deliverables:** the provider built in `node.New` from the bootstrap's two wrapping keys,
+  wrapped in the existing `providerSealer` (`internal/node/sealer.go`) and handed to
+  `api.Deps.Sealer`, `sealer.go`'s `var _` line removed; `(Table).SecretKind` (D4), with its export pin; the settings route's
   secret write (§9's route question, pending the user's answer): for a key the table declares a
   reference, the value sealed by the pre-write step under the declared kind's role, its owner the
   setting's scope and key, then in one audited `Write` `Check` on the reference row and
@@ -458,7 +525,9 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
     the store.
 - **Tests:** on `nodetest`, through the API with a test-declared `admin`-only section holding a
   `directory credential` reference: the store's raw keys, the answer, the audit record and the
-  captured log holding no byte of a canary value (catches a value leaking, R23); the `Write`'s
+  captured log holding no byte of a canary value (catches a value leaking, R23); the same canary
+  search after each refused write carrying it: by an `operator` caller, under an unknown key, and
+  with a value the section's `Validate` refuses (catches a refusal printing the value, R23); the `Write`'s
   audit set failed by `kvtest`'s fault wrapper, then `Secret(ref, 0)` reading not found (catches a
   seal committed without its row, R22); an idempotent retry of the call sealing no extra version
   (catches a seal inside the write's function); an `operator` caller refused and no `SEC` key
@@ -466,19 +535,21 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 
 ### T5.7 The port rule
 
-**Subtask T5.7 estimate: 1.5 man-days.**
+**Subtask T5.7 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T5.4; RFC 20's T7.6 (the adapters' rows).
 - **Covers:** R20.
-- **Deliverables:** `ports.go`: a `CheckTx` attached to the adapters' rows that reads, tracked, the
-  installation value and each registered node's override of every declared port (D8) and refuses a
-  write leaving two equal and non-zero on any node, naming both keys and the node; its `decision:`
-  marker on the port mapper. Consumed by RFC 23's integration epic.
+- **Deliverables:** `ports.go`: a `CheckTx` attached to the adapters' rows, a closure over the ID
+  `node.New` builds the table with, the one `Deps.Node` holds, that reads, tracked, the
+  installation value of each adapter's port and the overrides of one node, the one a node-scope
+  write names or else this node, and refuses a write leaving the two equal and non-zero, naming
+  both keys and the node; D8's `decision:` marker naming both narrowings, the port mapper and the
+  one node. Consumed by RFC 23's integration epic.
 - **Acceptance criteria:**
-  - Installation `adapters.smb.port` set to a node's override of `adapters.nfs.port` is refused,
-    naming the node; two ports set to 0 pass.
+  - Installation `adapters.smb.port` set to this node's override of `adapters.nfs.port` is
+    refused, naming the node; two ports set to 0 pass.
 - **Tests:** on `nodetest`, through `Check`: a node-scope write equal to the other port's
-  installation value refused, and an installation write equal to a node's override refused
+  installation value refused, and an installation write equal to this node's override refused
   (catches the rule checked at the written scope only, R20); both at 0 accepted (catches 0 treated
   as a port); a concurrent write of the other port's override making the write retry (catches an
   untracked read).
@@ -488,12 +559,12 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 **Subtask T5.8 estimate: 3 man-days.**
 
 - **Track:** the team. **Depends on:** T5.3, T5.6; E4's T4.4 and T4.5.
-- **Covers:** R23, R24, R25, R26, R27, R28, R29.
+- **Covers:** R23, R24, R25, R26, R27, R28, R29, R33.
 - **Deliverables:** `secrets.go`: after each walk and before any section applies, `Versions` for
   every reference `(*Snapshot).Secrets` lists (D3, D4), a moved version marking its section
   changed so its apply runs again, a failure holding or keeping the section and reporting it
-  refused; `NodeStatus.Secrets` from those versions, with D3's `decision:` marker and `status.go`'s
-  `ponytail:` withdrawn; `config_secrets_behind`; for a `directory credential`, once the status
+  refused; `NodeStatus.Secrets` from those versions, with D3's `decision:` marker, `status.go`'s
+  `ponytail:` narrowed to the claim generation, the secret versions dropped from it; `config_secrets_behind`; for a `directory credential`, once the status
   holding the new version is written, `Prune` inside a `Write` audited as D9 says.
   `(*Snapshot).Secrets` with its export pin. Consumed by E6 and T5.9.
 - **Acceptance criteria:**
@@ -504,11 +575,11 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
     snapshot.
 - **Tests:** on `nodetest` over Badger with two real key files: the rotation row, the clock moved
   per reconcile interval, reading the status and `Versions` at each step (catches an old version
-  pruned before it is reported, or never, R27, R28); the test section's apply resolving its reference and keeping the
+  pruned before it is reported, or never, or a status that never reports the new version, R26, R27, R28); the test section's apply resolving its reference and keeping the
   value it resolved at each apply, the new value after the rotation (catches a moved version that
   reaches no component, R24); a seal committed while the pass runs, paused on cue,
   and the reported version never above the one the component then reads (catches a version
-  reported above the held one, R26); the stored secret rewritten under another kind through
+  reported above the held one, R33); the stored secret rewritten under another kind through
   kvstore, the section refused and still running its last value (R25); `config_secrets_behind`
   read from the registry at 1 between the seal and the next pass and 0 after (R29); the prune's
   audit record and the log holding the reference and no value (R23).
@@ -565,9 +636,9 @@ plans add their rows. T5.7 waits on RFC 20's T7.6, which waits on T5.3.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.1, T5.2, T5.3 | 5.75 | E3's PR 2, RFC 23's T2.8 | the node reads, holds and applies its settings through the table |
-| 2 | T5.4, T5.5 | 4.5 | PR 1, E3's PR 4, RFC 23's T4.9 | the API checks every write through the table, and the table is checked against the RFC |
-| 3 | T5.6, T5.7 | 3.5 | PR 2, E4's PR 1; T5.7 after RFC 20's T7.6 | the write side's last two rules: a setting's secret and the port rule |
+| 1 | T5.1, T5.2, T5.3 | 5.75 | E3's PR 2 | the node reads, holds and applies its settings through the table |
+| 2 | T5.4, T5.5 | 3.75 | PR 1, E3's PR 4 | the API checks every write through the table, and the table is checked against the RFC |
+| 3 | T5.6, T5.7 | 3.25 | PR 2, E4's PR 1; T5.7 after RFC 20's T7.6 | the write side's last two rules: a setting's secret and the port rule |
 | 4 | T5.8, T5.9 | 4.25 | PR 3, E4's PR 2 | secrets end to end and the full figure |
 
 A suggestion only: one pull request per subtask works as well. PR 3's two subtasks share no code
@@ -597,26 +668,34 @@ Pending the user's answer, each written in its recommended form above:
 
 Further points:
 
-- **The table's rows (D2)** depart from the plan's "with the adapters' section": the adapters' rows
-  are RFC 20's T7.6's. The plan's epic 5 text is the one to correct, through a pull request against
-  it.
-- **The port mapper (D8)** has no row in the plan's deferral ledger: its narrowing needs one, owner
-  RFC 20's plan (the concrete sidecars), trigger "the port mapper's section is declared", added by
-  a pull request against the plan.
-- **The registered nodes in a transaction (T5.7).** `ControlPlaneTx` has no tracked read of the
-  registered nodes, which the rule needs to find every node an installation write reaches, and a
-  node registered concurrently must conflict with it. On one node the rule reads this node's
-  overrides; a cluster needs the read added to RFC 16 §3, with RFC 15.
-- **The OpenID Connect client secret.** `entity.SecretKind` does not declare it yet ("wait for
-  theirs" in `pkg/metadata/entity/secret.go`), and no section names it. T5.8 prunes the directory's
-  bind credential only; the client secret joins the same path when its kind and `identity.oidc`'s
-  section are declared.
+- **The table's rows (D2)** depart from the plans' "with the adapters' section": the adapters'
+  rows are RFC 20's T7.6's. Four places still give them to this epic, each corrected by a pull
+  request against its plan: RFC 13's plan's epic 5 text ("the one table, with the adapters'
+  section") and the last row of its deferral ledger ("the settings table's adapters' section and
+  `Check`, wired into reconcile and the settings routes"); RFC 20's plan's epic 7 text ("The one
+  settings table, with the adapters' section, and `Check` … are RFC 13's plan's epic 5") and its
+  deferral ledger row for the same.
+- **Three deferral-ledger rows this breakdown adds** to RFC 13's plan, through a pull request
+  against it, none in the ledger yet (§1.2 cites them):
+  - the port mapper's port in RFC 13 §6's port rule at write (D8): owner the cutover, with RFC
+    20's concrete sidecars; trigger "the port mapper's section is declared";
+  - RFC 13 §6's port rule on every node a write reaches (D8, T5.7): `ControlPlaneTx` reads one
+    node's record by ID and lists none, and a node registered concurrently must conflict with the
+    check; owner RFC 16 §3, with RFC 15; trigger "a second node registers";
+  - the OpenID Connect client secret's prune and revocation report, which RFC 13's plan's epic 5
+    gives this epic beside the bind credential's: `entity.SecretKind` does not declare the client
+    secret ("wait for theirs" in `pkg/metadata/entity/secret.go`, behind RFC 13 §7, which already
+    seals OpenID Connect client secrets under the `storage` key) and no section names it; owner
+    the RFC 18 plan's OpenID Connect epic, which that plan has not added yet (the RFC 18 and RFC
+    23 plans' ledgers hold OpenID Connect sign-in unowned); trigger "`entity.SecretKind` declares
+    the client secret". T5.8 prunes the directory's bind credential only; the client secret joins
+    the same path then.
 - **The node's prune as a writer.** The prune's `Write` is the first audited write `internal/node`
   makes outside its API package; T5.8 states the audit record's actor as the node, as RFC 23 §6
   names one for a node-run step, and checks it against the architecture tests' write rules.
-- **The estimate.** 18 man-days in 9 subtasks, against the plan's 12.5 in 4. The plan's figure had
+- **The estimate.** 17 man-days in 9 subtasks, against the plan's 12.5 in 4. The plan's figure had
   the port rule ride on the write path and the secret writes on the routes RFC 23 builds; this
   document sizes them, Appendix B's parse (rows that name several keys or none), the two RFC 23
-  ledger rows, and a secrets pass that must re-apply a section on a moved version. Least certain:
-  T5.2, whose page-boundary test depends on #4812's paging, and T5.8, whose size depends on how
-  identity's directory client takes a moved credential.
+  ledger rows, and a secrets pass that must re-apply a section on a moved version. T5.4 sizes only
+  what RFC 23's T4.9 left. Least certain: T5.8, whose size depends on how identity's directory
+  client takes a moved credential.
