@@ -25,15 +25,12 @@ func (c *channel) Logon(ctx context.Context, r LogonRequest) (Reply, error) {
 			return Reply{}, err
 		}
 		before := as.written.Load()
-		var out *logon.SAMLogonExResponse
-		err = decoded(func() (err error) {
-			out, err = as.cli.SAMLogonEx(ctx, req)
-			return err
-		})
-		if out != nil && out.Return != 0 {
-			return Reply{}, Status(uint32(out.Return))
-		}
+		out := &logon.SAMLogonExResponse{}
+		err = invoke(ctx, as.cli.Conn(), req, out)
 		if err == nil {
+			if out.Return != 0 {
+				return Reply{}, Status(uint32(out.Return))
+			}
 			v, ok := out.ValidationInformation.GetValue().(*logon.ValidationSAMInfo4)
 			if !ok || v == nil {
 				return Reply{}, fmt.Errorf("netlogon: NetrLogonSamLogonEx answered %T, want SamInfo4", out.ValidationInformation.GetValue())

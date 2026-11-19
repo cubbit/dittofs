@@ -1,10 +1,14 @@
 package netlogon
 
 import (
+	"context"
+	"errors"
 	"fmt"
 
+	"github.com/oiweiwei/go-msrpc/dcerpc"
 	"github.com/oiweiwei/go-msrpc/msrpc/dtyp"
 	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
+	"github.com/oiweiwei/go-msrpc/ndr"
 
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 )
@@ -16,11 +20,15 @@ const maxSubAuthorities = 15
 // under LogonDomainID, then each extra SID, the user session key's blocks in
 // order. It checks nothing a sign-in decides on: a missing LogonDomainID
 // leaves the user and the domain groups the zero SID, and a missing or short
-// session key is kept as it came. A SID longer than MS-DTYP allows is refused.
+// session key is kept as it came. A SID longer than MS-DTYP allows is
+// refused, and so is a LogonDomainID with no room left for a RID.
 func replyFrom(v *logon.ValidationSAMInfo4) (Reply, error) {
 	domain, err := toSID(v.LogonDomainID)
 	if err != nil {
 		return Reply{}, fmt.Errorf("netlogon: LogonDomainId: %w", err)
+	}
+	if domain.SubAuthorityCount >= maxSubAuthorities {
+		return Reply{}, fmt.Errorf("netlogon: a LogonDomainId of %d sub-authorities leaves no room for a RID", domain.SubAuthorityCount)
 	}
 	rep := Reply{UserFlags: v.UserFlags, LogonDomain: domain, User: withRID(domain, v.UserID)}
 	for _, g := range v.GroupIDs {
@@ -48,10 +56,9 @@ func replyFrom(v *logon.ValidationSAMInfo4) (Reply, error) {
 	return rep, nil
 }
 
-// decoded runs f, which decodes a controller's reply with go-msrpc, and
-// answers a panic in it as an error: go-msrpc's NDR decoder panics on a reply
-// whose pointers alias values of different types, which a controller sends
-// only in error but no node should crash on.
+// decoded runs f and answers a panic in it as an error: go-msrpc's NDR
+// decoder panics on a reply whose pointers alias values of different types,
+// which a controller sends only in error but no node should crash on.
 func decoded(f func() error) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -59,6 +66,66 @@ func decoded(f func() error) (err error) {
 		}
 	}()
 	return f()
+}
+
+// request and response are a go-msrpc call's request and response types.
+type request interface {
+	OpNum() int
+	OpName() string
+	MarshalNDR(context.Context, ndr.Writer) error
+}
+
+type response interface {
+	UnmarshalNDR(context.Context, ndr.Reader) error
+}
+
+// invoke sends req on cc and decodes the reply into resp, every call this
+// package makes going through it in place of go-msrpc's generated client
+// method. go-msrpc decodes a reply on a goroutine of its own (dcerpc.NewBody),
+// where no recover of the caller's reaches, so the decode runs under decoded
+// inside the operation that goroutine calls. A refused call is not an error
+// here: it is resp's Return, which the caller reads.
+func invoke(ctx context.Context, cc dcerpc.Conn, req request, resp response) error {
+	op := &guardedOp{req: req, resp: resp, done: make(chan struct{})}
+	if err := cc.Invoke(ctx, op); err != nil {
+		return err
+	}
+	// Invoke returned nil, so it started the decode and closed its input on
+	// return: the decode ends, and resp is ours once it has.
+	<-op.done
+	return op.err
+}
+
+// guardedOp is the go-msrpc operation invoke sends: req's request out, and
+// the reply decoded into resp under decoded, its outcome in err once done is
+// closed.
+type guardedOp struct {
+	req  request
+	resp response
+	done chan struct{}
+	err  error
+}
+
+func (o *guardedOp) OpNum() int     { return o.req.OpNum() }
+func (o *guardedOp) OpName() string { return o.req.OpName() }
+
+func (o *guardedOp) MarshalNDRRequest(ctx context.Context, w ndr.Writer) error {
+	return o.req.MarshalNDR(ctx, w)
+}
+
+func (o *guardedOp) UnmarshalNDRResponse(ctx context.Context, r ndr.Reader) error {
+	defer close(o.done)
+	o.err = decoded(func() error { return o.resp.UnmarshalNDR(ctx, r) })
+	return o.err
+}
+
+// The server's halves are never called on a client's operation.
+func (o *guardedOp) UnmarshalNDRRequest(context.Context, ndr.Reader) error {
+	return errors.ErrUnsupported
+}
+
+func (o *guardedOp) MarshalNDRResponse(context.Context, ndr.Writer) error {
+	return errors.ErrUnsupported
 }
 
 // toSID is s as a sid.SID; nil is the zero SID.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -74,24 +75,50 @@ func netlogonPort(ctx context.Context, dial dialFunc, addr string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	resp, err := cli.Lookup(ctx, &epm.LookupRequest{
+	resp := &epm.LookupResponse{}
+	if err := invoke(ctx, cli.Conn(), &epm.LookupRequest{
 		InquiryType: 1, // RPC_C_EP_MATCH_BY_IF
 		InterfaceID: &dcetypes.InterfaceID{UUID: dtyp.GUIDFromUUID(logon.LogonSyntaxUUID), VersMajor: 1},
 		MaxEntries:  500,
-	})
-	if err != nil {
+	}, resp); err != nil {
 		return "", err
 	}
 	// Samba answers every endpoint it holds, so NETLOGON's is picked out by
 	// the interface its tower names.
 	for _, e := range resp.Entries {
-		b := e.Tower.Binding()
-		if b.SyntaxID.IfUUID.String() == logon.LogonSyntaxUUID.String() &&
-			b.StringBinding.ProtocolSequence == dcerpc.ProtocolSequenceIPTCP {
-			return b.StringBinding.Endpoint, nil
+		if e == nil {
+			continue
+		}
+		if port, ok := netlogonEndpoint(e.Tower); ok {
+			return port, nil
 		}
 	}
 	return "", errors.New("no ncacn_ip_tcp endpoint for NETLOGON")
+}
+
+// netlogonEndpoint is the ncacn_ip_tcp port tower names for NETLOGON, and
+// whether it names one: a TCP port number, or none. go-msrpc's tower parsing panics on a floor shorter
+// than its protocol's data, and a nil tower is a nil dereference; the
+// unauthenticated endpoint mapper's reply can carry either, so such a tower
+// names none.
+func netlogonEndpoint(tower *dcetypes.Tower) (port string, ok bool) {
+	err := decoded(func() error {
+		b := tower.Binding()
+		ok = b.SyntaxID.IfUUID.String() == logon.LogonSyntaxUUID.String() &&
+			b.StringBinding.ProtocolSequence == dcerpc.ProtocolSequenceIPTCP
+		port = b.StringBinding.Endpoint
+		return nil
+	})
+	if err != nil || !ok {
+		return "", false
+	}
+	// A later floor of another protocol overwrites the TCP floor's endpoint
+	// with its own string, which is no port.
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return "", false
+	}
+	return strconv.FormatUint(n, 10), true
 }
 
 // logonServer is the controller's name as NETLOGON's calls carry it: the

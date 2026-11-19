@@ -1,13 +1,18 @@
 package netlogon
 
 import (
+	"context"
+	"encoding/hex"
+	"errors"
 	"reflect"
 	"runtime"
 	"testing"
 
+	"github.com/oiweiwei/go-msrpc/dcerpc"
 	"github.com/oiweiwei/go-msrpc/msrpc/dtyp"
 	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
 	"github.com/oiweiwei/go-msrpc/ndr"
+	"github.com/oiweiwei/go-msrpc/ssp/credential"
 	nlssp "github.com/oiweiwei/go-msrpc/ssp/netlogon"
 
 	"github.com/cubbit/dittofs/pkg/auth/sid"
@@ -84,12 +89,39 @@ func TestReplyFrom(t *testing.T) {
 	}
 }
 
-// A SID longer than MS-DTYP allows is refused, not truncated.
+// A SID longer than MS-DTYP allows is refused, not truncated, and so is a
+// LogonDomainID whose user or group SID would be.
 func TestReplyFromRefusesLongSID(t *testing.T) {
-	v := samInfo4()
-	v.ExtraSIDs[0].SID = dsid(make([]uint32, 16)...)
-	if _, err := replyFrom(v); err == nil {
-		t.Errorf("replyFrom with a 16-sub-authority extra SID = nil error, want it refused")
+	for _, tc := range []struct {
+		name string
+		edit func(v *logon.ValidationSAMInfo4)
+		ok   bool
+	}{
+		{"16-sub-authority extra SID", func(v *logon.ValidationSAMInfo4) { v.ExtraSIDs[0].SID = dsid(make([]uint32, 16)...) }, false},
+		{"15-sub-authority LogonDomainID", func(v *logon.ValidationSAMInfo4) { v.LogonDomainID = dsid(make([]uint32, 15)...) }, false},
+		{"14-sub-authority LogonDomainID", func(v *logon.ValidationSAMInfo4) { v.LogonDomainID = dsid(make([]uint32, 14)...) }, true},
+	} {
+		v := samInfo4()
+		tc.edit(v)
+		if _, err := replyFrom(v); (err == nil) != tc.ok {
+			t.Errorf("%s: replyFrom error = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+	}
+}
+
+// The machine credential is keyed by the password's NT hash, MS-NLMP
+// 4.2.2.1.2's for "Password".
+func TestMachineCredentialNTHash(t *testing.T) {
+	c, err := machineCredential("NODE", "EXAMPLE.COM", []byte("Password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, ok := c.(credential.NTHash)
+	if !ok {
+		t.Fatalf("machineCredential = %T, want an NT hash credential", c)
+	}
+	if got, want := hex.EncodeToString(h.NTHash()), "a4f49c406510bdcab6824ee7c30fd852"; got != want {
+		t.Errorf("NT hash of \"Password\" = %s, want %s", got, want)
 	}
 }
 
@@ -113,9 +145,69 @@ func TestNegotiateFlags(t *testing.T) {
 	}
 }
 
-// FuzzSamInfo4 decodes a SamInfo4 off the wire as NetrLogonSamLogonEx's reply
-// carries it, under the guard Logon decodes under, and maps it to a Reply. It
-// never panics, allocates at most a
+// samLogonExStub is NetrLogonSamLogonEx's reply stub carrying info, a
+// SamInfo4 as ndr.Marshal encodes it: the union's switch and the pointer to
+// it, info, then Authoritative, ExtraFlags and a zero Return.
+func samLogonExStub(info []byte) []byte {
+	stub := append([]byte{6, 0, 0, 0, 5, 0, 0, 0}, info...)
+	return append(stub, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+}
+
+// decodeReply decodes stub into resp as invoke's operation does under
+// go-msrpc: dcerpc.NewBody starts the decode on a goroutine of its own, the
+// stub is handed to it as one fragment, and the body is closed as
+// Invoke closes it on return.
+func decodeReply(stub []byte, resp response) error {
+	op := &guardedOp{req: &logon.SAMLogonExRequest{}, resp: resp, done: make(chan struct{})}
+	body := dcerpc.NewBody(context.Background(), op, &dcerpc.Presentation{TransferSyntax: dcerpc.TransferNDRSyntaxV2_0}, false)
+	_, _ = body.DecodeFrom(stub, ndr.DefaultDataRepresentation, len(stub))
+	body.Close()
+	<-op.done
+	return op.err
+}
+
+// A reply decodes on go-msrpc's goroutine into what the controller sent, and
+// one go-msrpc's decoder panics on, or one cut short, is an error rather
+// than the end of the process.
+func TestInvokeDecode(t *testing.T) {
+	good, err := ndr.Marshal(samInfo4())
+	if err != nil {
+		t.Fatal(err)
+	}
+	crasher := []byte("00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\x00\x00\x00\x010000000000000000\x00\x00\x00\x01")
+	for _, tc := range []struct {
+		name string
+		stub []byte
+		ok   bool
+	}{
+		{"SamInfo4", samLogonExStub(good), true},
+		{"aliased pointers", samLogonExStub(crasher), false},
+		{"cut short", samLogonExStub(good)[:100], false},
+	} {
+		out := &logon.SAMLogonExResponse{}
+		err := decodeReply(tc.stub, out)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: decode error = %v, want ok=%v", tc.name, err, tc.ok)
+			continue
+		}
+		if !tc.ok {
+			continue
+		}
+		v, _ := out.ValidationInformation.GetValue().(*logon.ValidationSAMInfo4)
+		if v == nil {
+			t.Fatalf("%s: decoded %T, want SamInfo4", tc.name, out.ValidationInformation.GetValue())
+		}
+		got, err := replyFrom(v)
+		want, _ := replyFrom(samInfo4())
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: Reply = %+v, %v; want %+v", tc.name, got, err, want)
+		}
+	}
+}
+
+// FuzzSamInfo4 decodes a SamInfo4 off the wire inside NetrLogonSamLogonEx's
+// reply, through the path Logon decodes it on: go-msrpc's decoding goroutine,
+// under the operation invoke sends. It never panics, allocates at most a
 // constant times the input's length, and a decoded value re-encoded by
 // go-msrpc's NDR encoder decodes to the same Reply.
 func FuzzSamInfo4(f *testing.F) {
@@ -133,11 +225,11 @@ func FuzzSamInfo4(f *testing.F) {
 		var ms runtime.MemStats
 		runtime.ReadMemStats(&ms)
 		start := ms.TotalAlloc
-		var v logon.ValidationSAMInfo4
-		if err := decoded(func() error { return ndr.Unmarshal(b, &v) }); err != nil {
+		v, err := decodeSamInfo4(b)
+		if err != nil {
 			return
 		}
-		rep, err := replyFrom(&v)
+		rep, err := replyFrom(v)
 		runtime.ReadMemStats(&ms)
 		if used, limit := ms.TotalAlloc-start, 64*uint64(len(b))+64<<10; used > limit {
 			t.Fatalf("decoding %d bytes allocated %d, want at most %d", len(b), used, limit)
@@ -151,15 +243,15 @@ func FuzzSamInfo4(f *testing.F) {
 				fixCount(x.SID)
 			}
 		}
-		again, err2 := ndr.Marshal(&v)
+		again, err2 := ndr.Marshal(v)
 		if err2 != nil {
 			return // a value go-msrpc cannot encode back, such as a count its array disagrees with
 		}
-		var w logon.ValidationSAMInfo4
-		if err := decoded(func() error { return ndr.Unmarshal(again, &w) }); err != nil {
+		w, err := decodeSamInfo4(again)
+		if err != nil {
 			t.Fatalf("re-encoded %x does not decode: %v", again, err)
 		}
-		rep2, err3 := replyFrom(&w)
+		rep2, err3 := replyFrom(w)
 		if (err == nil) != (err3 == nil) {
 			t.Fatalf("replyFrom = %v, re-encoded %v; want both nil or both errors", err, err3)
 		}
@@ -167,6 +259,20 @@ func FuzzSamInfo4(f *testing.F) {
 			t.Fatalf("Reply %+v, re-encoded %+v", rep, rep2)
 		}
 	})
+}
+
+// decodeSamInfo4 is the SamInfo4 b encodes, decoded inside a
+// NetrLogonSamLogonEx reply by decodeReply.
+func decodeSamInfo4(b []byte) (*logon.ValidationSAMInfo4, error) {
+	out := &logon.SAMLogonExResponse{}
+	if err := decodeReply(samLogonExStub(b), out); err != nil {
+		return nil, err
+	}
+	v, _ := out.ValidationInformation.GetValue().(*logon.ValidationSAMInfo4)
+	if v == nil {
+		return nil, errors.New("no SamInfo4")
+	}
+	return v, nil
 }
 
 // fixCount sets s's count to its array's length, as the encoder needs.

@@ -37,19 +37,20 @@ func (c *channel) SetPassword(ctx context.Context, password []byte) error {
 	if err != nil {
 		return err
 	}
-	out, err := as.cli.PasswordSet2(ctx, &logon.PasswordSet2Request{
+	out := &logon.PasswordSet2Response{}
+	err = invoke(ctx, as.cli.Conn(), &logon.PasswordSet2Request{
 		PrimaryName: c.dc.server, AccountName: c.name + "$",
 		SecureChannelType: logon.SecureChannelTypeWorkstationSecureChannel,
 		ComputerName:      c.name,
 		Authenticator:     &logon.Authenticator{Credential: &logon.Credential{Data: auth}, Timestamp: ts},
 		ClearNewPassword:  tp,
-	})
-	if out != nil && out.Return != 0 {
-		return Status(uint32(out.Return))
-	}
+	}, out)
 	if err != nil {
 		c.drop()
 		return fmt.Errorf("netlogon: NetrServerPasswordSet2: %w", err)
+	}
+	if out.Return != 0 {
+		return Status(uint32(out.Return))
 	}
 	if out.ReturnAuthenticator == nil || out.ReturnAuthenticator.Credential == nil {
 		return errors.New("netlogon: NetrServerPasswordSet2 answered no return authenticator")

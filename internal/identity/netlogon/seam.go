@@ -56,7 +56,11 @@ type Channel interface {
 	// Logon sends one NTLM response to the controller: an error matching
 	// ErrRejected, a Status, when the controller refuses it.
 	Logon(ctx context.Context, r LogonRequest) (Reply, error)
-	// SetPassword sets the channel's account's password to password.
+	// SetPassword sets the channel's account's password to password. It
+	// advances the channel's authenticator chain before it sends, so after
+	// an error the chain may be ahead of the controller's and the channel
+	// takes no further SetPassword: the caller settles the failure on a new
+	// Channel. Logon carries no authenticator and is unaffected.
 	SetPassword(ctx context.Context, password []byte) error
 	Close() error
 }

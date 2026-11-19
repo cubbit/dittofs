@@ -103,17 +103,15 @@ func (d *dc) authenticate(ctx context.Context, name string, machine credential.C
 	if _, err := rand.Read(cfg.ClientChallenge); err != nil {
 		return nil, nil, err
 	}
-	// go-msrpc answers a refused call both as an error and in Return, so
-	// Return is read first.
-	chal, err := plain.RequestChallenge(ctx, &logon.RequestChallengeRequest{
+	chal := &logon.RequestChallengeResponse{}
+	if err := invoke(ctx, plain.Conn(), &logon.RequestChallengeRequest{
 		PrimaryName: d.server, ComputerName: name,
 		ClientChallenge: &logon.Credential{Data: cfg.ClientChallenge},
-	})
-	if chal != nil && chal.Return != 0 {
-		return nil, nil, Status(uint32(chal.Return))
-	}
-	if err != nil {
+	}, chal); err != nil {
 		return nil, nil, err
+	}
+	if chal.Return != 0 {
+		return nil, nil, Status(uint32(chal.Return))
 	}
 	if chal.ServerChallenge == nil || len(chal.ServerChallenge.Data) != 8 {
 		return nil, nil, errors.New("netlogon: NetrServerReqChallenge answered no server challenge")
@@ -127,18 +125,18 @@ func (d *dc) authenticate(ctx context.Context, name string, machine credential.C
 	if err != nil {
 		return nil, nil, err
 	}
-	auth3, err := plain.Authenticate3(ctx, &logon.Authenticate3Request{
+	auth3 := &logon.Authenticate3Response{}
+	if err := invoke(ctx, plain.Conn(), &logon.Authenticate3Request{
 		PrimaryName: d.server, AccountName: name + "$",
 		SecureChannelType: logon.SecureChannelTypeWorkstationSecureChannel,
 		ComputerName:      name,
 		ClientCredential:  &logon.Credential{Data: clientCred},
 		NegotiateFlags:    uint32(offered),
-	})
-	if auth3 != nil && auth3.Return != 0 {
-		return nil, nil, Status(uint32(auth3.Return))
-	}
-	if err != nil {
+	}, auth3); err != nil {
 		return nil, nil, err
+	}
+	if auth3.Return != 0 {
+		return nil, nil, Status(uint32(auth3.Return))
 	}
 	want, err := cred.Encrypt(ctx, cfg.ServerChallenge)
 	if err != nil {
