@@ -602,9 +602,10 @@ before `vfs.Serve` stops (step 4), while other nodes can still reach it:
    ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)), and reconcile stops.
 2. The sidecars are synced with the empty set, so nothing is advertised that is
    about to stop; then every adapter is `Stop`ped, which drains it
-   ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)), all of them concurrently, under one drain deadline.
-   The step's bound is that deadline plus 30 s, the longest a `Stop` waits for
-   its connections' `OnClose`. Then the retrier the adapters hand a failing
+   ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)), all of them concurrently, under one context, its
+   deadline the step's start plus the longest `drain_timeout` of the adapters
+   stopped. The step's bound is that deadline plus 30 s, the longest a `Stop`
+   waits for its connections' `OnClose`. Then the retrier the adapters hand a failing
    `Disconnect` to, `Deps.Retry`, stops, dropping what it still holds
    ([RFC 20 §3.2](rfc-20-adapters.md#3.2%20A%20connection%27s%20lifecycle)).
 3. The management API stops accepting calls, and calls in flight run to their
@@ -710,6 +711,8 @@ when a value changed:
 - the records whose restart-class field has changed since it started — its
   restart-pending set;
 - its health conditions, as [RFC 25](rfc-25-observability.md) derives them;
+- each adapter's state and the settings generation it runs, so §3.4's status
+  shows it per node;
 - the version of each secret it holds, so that an old version is deleted only
   once every node that resolves the secret holds the new one
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)).
@@ -1184,7 +1187,8 @@ keys on the same value.
   lists now — protocol, remote address, session, since
   ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) — from that node, not
   from the store, for `viewer`. It is read-only and writes no client or
-  principal record.
+  principal record. An `{id}` other than the answering node's answers
+  `404 not_found`, before any adapter is read.
 
 ### 4.3 Writes
 

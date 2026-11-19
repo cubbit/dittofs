@@ -632,6 +632,7 @@ listener clients are sent to is down.
 | metadata store lost: no share served until a recovery import | yes | no | unhealthy, `metadata_store_lost` |
 | a listener lost (`adapter_listener_lost`) | yes | no — clients sent to it cannot connect | unhealthy |
 | an adapter refused at configured (`adapter_refused`) | yes | yes — every node refuses the same setting, and the API that fixes it must stay reachable | unhealthy |
+| an adapter rebuilt for a restart-class change, or one enabled after start | yes | yes: the node keeps serving through the rebuild, its readiness ending only if the rebuilt adapter's listener is lost | from its conditions |
 | a start step failed | yes | no | unhealthy, `start_failed` |
 | draining: stop requested | yes | no | draining |
 | watchdog stalled | no | no | — |
