@@ -190,6 +190,10 @@ type Server struct {
 	end       context.CancelFunc // ends life
 
 	mismatches *prometheus.CounterVec // the rotation's confirms whose number differs from the tag
+
+	schedMu   sync.Mutex // schedStop's
+	schedStop func()     // ends the rotation's schedule and waits for it; nil while it does not run
+	scheduled func()     // a test's view of each schedule check, its next tick armed; nil in production
 }
 
 // Conditions appends identity's conditions: the node's
@@ -395,21 +399,25 @@ func equalFoldASCII(a, b string) bool {
 // the first Apply and after Stop.
 func (s *Server) Current() uint64 { return s.state.Load().serial() }
 
-// Start starts the server under the State last applied, and refuses
-// errNotApplied when none has been.
+// Start starts the server under the State last applied, and the machine
+// password rotation's schedule when Deps.ControlPlane is set, and refuses
+// errNotApplied when no State has been applied.
 func (s *Server) Start(ctx context.Context) error {
 	if s.state.Load() == nil {
 		return errNotApplied
 	}
+	s.startSchedule()
 	return nil
 }
 
 // Stop drops every in-memory table, the applied State and the held join
 // credentials among them, so a restart needs an Apply before its Start, ends
-// every call to a domain controller in flight, closes the node's secure
-// channel, and closes its directory client once the questions running on it
-// return. It closes nothing it was handed.
+// every call to a domain controller in flight, stops the rotation's
+// schedule, closes the node's secure channel, and closes its directory
+// client once the questions running on it return. It closes nothing it was
+// handed.
 func (s *Server) Stop(ctx context.Context) error {
+	s.stopSchedule()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old := s.state.Swap(nil); old != nil && old.dir != nil {

@@ -185,3 +185,7 @@ var (
 	NLMPRandomKey       = nlmpRandomKey
 	NLMPEncryptedSKey   = nlmpEncryptedSKey
 )
+
+// OnScheduled has the rotation's schedule call f after each check, once its
+// next tick is armed.
+func (s *Server) OnScheduled(f func()) { s.scheduled = f }
