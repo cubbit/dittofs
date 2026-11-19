@@ -49,6 +49,8 @@
 
 ### Task 2: #3951 — the share tally's refund budget
 
+> **Superseded while executing — see "Outcome" at the end.** The refund-bucket design below is a no-op: every raiser of `shareTally` raises the bucket by the same amount, so it always equals the tally and the clamp changes nothing. What was built is `Capacity.Landed`, fed by every tagged landing outside `Grant.Wrote`.
+
 **Files:**
 - Modify: `pkg/block/journal/internal/capacity/take.go` — `Retired` (~:918), `seedFor` (~:854), `Grant.Wrote` (~:983), and every other raiser of `c.shareTally` in the file (enumerate with `rg 'shareTally\['`); the `Capacity` struct's counters block.
 - Test: `pkg/block/journal/internal/capacity/take_test.go` (the #3992 rig of real collaborators).
@@ -96,3 +98,24 @@
 - [ ] **Step 2: Verify #3953 item by item.** Entry reservation (`index/bound.go` `writeAdds`/`checkWrite`), version-race counting (`heldVersions`, `reservation_refused` on `LimitVersion`), MaxInt64 overflow-safe sums (take.go:743, 1331), `checkWrite` duplication gone. Name the covering test or commit for each item, verifiable from the issue's four bullets.
 - [ ] **Step 3: Draft the closing comments** (posted only after merge): #3990 cites PR #3992 commit `a32d5c147` with the surviving-assertions evidence; #3953 cites per-item evidence (commits `0fcf352d8`/`563f7f0ea`/`33cc23cf0` and successors); #3950/#3951/#3952 close by hand on the merged PR with one line each.
 - [ ] **Step 4: PR and land.** Push the branch, `gh pr create` per `pr-opening` (base `feat/storage-v2`, the title in Global Constraints, assignee `didimelli`, stacked on nothing); the PR body lists each issue, the red/green evidence per test, and the design departure note from Task 2. Then the standard pipeline: reviews requested, replies then re-request, squash-merge, then hand-close all five issues with `state_reason: completed` and their drafted comments.
+
+---
+
+## Outcome
+
+What was built, against the plan above. Each row is one commit on the branch.
+
+| Task | Result |
+|---|---|
+| 1 — #3952 | Built as planned: the seal-without-roll retire test with a bounded-wait assertion, revert-proved against the seal's own release, and the two stale comments corrected. |
+| 2 — #3951 | **Redesigned.** The refund bucket is a no-op (see the note under Task 2). Built instead: `Capacity.Landed(tag, n)`, which raises the tally without refusing, fed by durability's re-append and loss record through a `durability.Config.Landed` hook and called directly by the removal appender; the forget record needs no call because `Forget` settles the whole tag to zero. A datapath test with a row per writer asserts the share figure equals the set's settled bytes minus the held repack copies, while the segment stands and after it retires. The invariant: the tally equals the set's per-tag settled bytes minus the held copies, apart from a lag that only overcounts. |
+| 2b — #5100 (added) | Review of Task 2 found a fifth writer: a repack pass that fails after appending copies discarded them uncounted. The pass now counts a failed unit's partial copies before it abandons them. Tests cover the Carry-error and Copy-error branches, each asserting after the abandoned copies retire. |
+| 3 — #3950 | **Not built; the audit said no.** RFC 1 does not forbid a version on a refused write, but the only consumer (`pkg/block/engine/write.go`) discards it and records nothing, and recording a partial write needs the published extent surfaced through `Handle.WriteAt` and `Reservation.WriteAt`, the engine interface, the model and the fakes: wider than one write path. The `decision:` marker in `datapath/write.go` now says so. #3950 stays open as the tracker. |
+| 4 — #3953, #3990 | Both verified against the code. #3990 had landed whole in an earlier change. #3953 items 1 to 3 had landed but the exact scenarios had no test, so two were added; item 4 (duplicated entry prediction and refusal construction) is now one helper each in the index bound. |
+| 5 — #5101 (added) | A flake the unit runs surfaced, fixed at the root: a test that cancelled a run on a fixed 300 ms timer. The other flake they surfaced, #5078 (a test that never closed its journals before its temp directory was removed), was fixed here too, then left out: the pool change in its own open pull request holds the same fix to that test, and carrying it twice would conflict. |
+
+### Deferred
+
+| Deferred | Why | Owner | Trigger |
+|---|---|---|---|
+| A refused unreserved write returns its drawn version and published extent (#3950) | Needs `WriteAt` to report the extent through `Handle` and `Reservation`, an engine way to record a partial write, and a model rule for a refused write that publishes pieces; wider than this change | unowned | An engine consumer that can record a partially published write |
