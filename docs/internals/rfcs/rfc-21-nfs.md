@@ -322,7 +322,7 @@ only 4.x serves no MOUNT, NLM or NSM.
 - Every NFS program — NFS, MOUNT, NLM, NSM — **MUST** be served over TCP and
   **MUST NOT** be served over UDP, with one exception: NLM and NSM are served
   over UDP too while [RFC 20 §11](rfc-20-adapters.md#11.%20Open%20questions)'s
-  UDP question stands, for parity with today, since some clients send lock
+  UDP question stands, for parity with the first adapters, since some clients send lock
   requests only over UDP. The exception is deferred until `core` has a
   datagram listener, a row of the RFC 20 plan's deferral ledger; until then no
   listener reads UDP.
@@ -612,9 +612,11 @@ the call travels primary → that node → the client's connection.
   as the client not answering, and the recall is revoked at its deadline
   ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
 - The client's back channel is **down** when the node its record names is lost,
-  or that node reports the channel's connection gone; on one node nothing
-  reports it yet, since the service has no call for an adapter to report it.
-  The record carries that
+  or that node reports the channel's connection gone. The service has no call
+  for an adapter to report it, a row of the RFC 20 plan's deferral ledger;
+  until it has one, a single node never marks the channel down, so a dropped
+  back-channel connection leaves delegations offered and each recall runs to
+  its revoke deadline. The record carries that
   state, so whichever node answers the client's next `SEQUENCE` **MUST** set
   `SEQ4_STATUS_CB_PATH_DOWN` in it, and no delegation is offered to the client
   ([RFC 14 §5.4](rfc-14-open-state.md#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays))
@@ -923,7 +925,8 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    from them to the record
    ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)): a stateid is resolved
    by shard, then index, with no file handle. The 12 bytes are laid out as:
-   byte 0 the type tag (open, lock state, delegation, layout) in its low
+   byte 0 the type tag (open, lock state or grant, the one tag a delegation
+   and a layout share) in its low
    3 bits and the low 5 bits of the shard's grace instance the stateid was
    minted under (§5.4) in its high 5 bits; bytes 1–3 the shard number, big-endian; bytes 4–11 the
    record's 64 random bits. Nothing else fits without giving up random bits.
@@ -1873,7 +1876,8 @@ metadata (`FILE_SYNC`).
   `COMMIT` reply **MUST** carry it and succeed: the client then resends every
   write since its last matching verifier (RFC 1813 §3.3.21, RFC 8881
   §18.3.4), which recovers the data, where an error would lose it. `ErrLost`
-  is answered only to an SMB flush.
+  is answered only to a `Commit` through an open, which NFS never makes (SMB's
+  flush does).
 - **A stable write whose sync may have lost it is retried.** A `DATA_SYNC` or
   `FILE_SYNC` `WRITE` whose `Commit` answers a verifier other than its `Write`'s
   is `ErrDelay` (`DelayCommit`, [RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)).
@@ -2557,7 +2561,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrCross` (`CrossProject`) — a `RENAME` or `LINK` across tree quotas ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_XDEV`; `mv` copies and deletes instead | `NFS3ERR_XDEV` |
 | `ErrState` (`ClientInUse`) | `NFS4ERR_CLID_INUSE` | — |
 | `ErrState` (`RecordChanged`) — another node wrote the client record's adapter bytes first | never sent: the adapter rereads the record and decides again (§3.5); a `CREATE_SESSION` it then finds misordered is its own `NFS4ERR_SEQ_MISORDERED` | — |
-| `ErrLost` on `Commit`, answered only to an SMB flush (§9.1) | never met: an NFS `COMMIT` meets a loss as the changed verifier its reply carries (§9.1) | the same |
+| `ErrLost` on `Commit`, answered only to a `Commit` through an open, which NFS never makes (§9.1) | never met: an NFS `COMMIT` meets a loss as the changed verifier its reply carries (§9.1) | the same |
 | `ErrGrace` | `NFS4ERR_GRACE` | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrState` (`NoReclaim`) — one reclaim refused while its client still owes reclaims: a shard the record does not name for it, or state the shard does not hold (§5.4) | `NFS4ERR_RECLAIM_BAD` | NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrState` (`NoGrace`) — a reclaim from a client with nothing left to reclaim (§5.4); the service, which knows the shard's grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)), answers it as its own kind ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), so no handler splits by grace | `NFS4ERR_NO_GRACE` | NLM: `NLM4_DENIED` |
@@ -2580,11 +2584,11 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrDeletePending` | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrState` (`OldState`) — a stateid seqid older than the state's ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) | `NFS4ERR_OLD_STATEID` | — |
 | `ErrPastEnd` — a `SEEK` from an offset at or past the file's end (RFC 7862 §15.11.3) | `NFS4ERR_NXIO` | — (NFSv3 has no `SEEK`) |
-| `ErrLogonFailure` | none: no NFSv4 table has a row for it, so it is answered the fault, `NFS4ERR_SERVERFAULT`, and logged at error ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)) | likewise: `NFS3ERR_SERVERFAULT`; NLM: `SYSTEM_ERR` |
-| `ErrUnknownPrincipal` | as `ErrLogonFailure` | as `ErrLogonFailure` |
-| `ErrState` (`AdapterVersion`) | as `ErrLogonFailure` | as `ErrLogonFailure` |
-| `ErrState` (`NoRecall`) | as `ErrLogonFailure` | as `ErrLogonFailure` |
-| `ErrState` (`CreateInUse`) | as `ErrLogonFailure` | as `ErrLogonFailure` |
+| `ErrUnknownPrincipal`: a `who`, `owner` or `owner_group` a set names that no principal holds | `NFS4ERR_BADOWNER` ([RFC 18 §4.5](rfc-18-identity.md#4.5%20NFSv4%20owner%20strings), §11.3); a principal `Spell` cannot spell is never an error, and is shown as RFC 18 §4.5 and §11.3 say | not set yet: the NFS plan sets the NFSv3 status of a `SETATTR` naming a `uid` or `gid` no principal holds ([RFC 18 §4.3](rfc-18-identity.md#4.3%20uid%20and%20gid) covers only a credential's uid and a principal `Spell` cannot spell, shown as 65534); NLM never names an owner |
+| `ErrLogonFailure` | never met by an operation: only an `RPCSEC_GSS` context's creation signs in (§10, §11.1), and it runs no operation; the fault, `NFS4ERR_SERVERFAULT`, should one arrive | likewise: `NFS3ERR_SERVERFAULT`; NLM: `SYSTEM_ERR` |
+| `ErrState` (`AdapterVersion`) | never met: a node writes only an `Adapter` version every node of the installation reads ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); the fault, as for `ErrLogonFailure` | as `ErrLogonFailure` |
+| `ErrState` (`NoRecall`) | never met: it answers an acknowledgement, with no recall in flight, of a grant that covers opens, a lease or an oplock ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)); a delegation covers none, so an unasked `DELEGRETURN` is a return; the fault, as for `ErrLogonFailure` | as `ErrLogonFailure` |
+| `ErrState` (`CreateInUse`) | never met: it answers an SMB create naming a create ID another open of its client holds ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)), and an NFS open carries none; the fault, as for `ErrLogonFailure` | as `ErrLogonFailure` |
 
 The adapter answers the capacity error the service returns and decides none of
 them. A write refused by the journal's capacity or by the share's journal limit
@@ -3098,7 +3102,7 @@ method then calls below is
 | NLM `*_MSG`, `*_RES` | as their synchronous forms | answered on the host's callback service |
 | NSM `SM_NOTIFY` (received) | `HostRestarted` | |
 | NSM `SM_MON`, `SM_UNMON` | none (adapter only) | sent by the server to its own monitor, never received from a peer; a host is registered for restart notification by its first NLM call, which is `Connect` with its `caller_name` as monitor name (§6.2) |
-| rquota `GETQUOTA` | none: not served | rquota is not among the programs §2.1 serves, so a call is answered `PROG_UNAVAIL` |
+| rquota `GETQUOTA` | none: not served | rquota is not among the programs §2.1 serves, so a call is answered `PROG_UNAVAIL`; serving it is a row of the RFC 20 plan's deferral ledger |
 
 **NFSv4.0, 4.1 and 4.2.** `COMPOUND` runs its operations as sequences of these.
 
