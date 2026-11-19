@@ -93,16 +93,26 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 	// file claimed as a reopen would.
 	//
 	// decision: a tag nothing holds anywhere — no record byte in any
-	// segment, no file it claims — is answered nil with no record
-	// appended, because a forget record of a tag that holds nothing can
-	// change nothing recovery would serve, and a start that names every
-	// forgotten tag again would make one record per tag of no effect. Its
-	// ceiling: an unlisted stranding the call still leaves — the answer
-	// takes the tag out of the stranded set, which needs no record, since
-	// the set is memory the caller's next start re-makes. Overturned by a
-	// caller the journal owes a durable receipt of the forget to.
+	// segment, no file it claims, and no deferred loss the registry owes
+	// for it — is answered nil with no record appended, because a forget
+	// record of a tag that holds nothing can change nothing recovery would
+	// serve, and a start that names every forgotten tag again would make one
+	// record per tag of no effect. The registry ask is part of the census
+	// because a deferred loss is something the journal holds for the tag
+	// whatever the set and the index answer: its record is owed to whatever
+	// copy retires its segment, an unsynced record's bytes never entered the
+	// set's counters, and the answer nil would leave the tag's latch — and
+	// the record a later pass writes under it — standing behind a caller
+	// told the tag holds nothing. The ask is taken once here and the sweep
+	// below spends it: the registry gains entries only on the open's own
+	// loss pass, never beside a running core, so the one census serves both.
+	// The ceiling stays: an unlisted stranding the call still leaves — the
+	// answer takes the tag out of the stranded set, which needs no record,
+	// since the set is memory the caller's next start re-makes. Overturned
+	// by a caller the journal owes a durable receipt of the forget to.
 	files := c.index.FilesClaimedBy(tag)
-	if len(files) == 0 && c.set.ShareBytes(tag) == 0 {
+	deferred := c.dur.DeferredOfTag(tag)
+	if len(files) == 0 && c.set.ShareBytes(tag) == 0 && len(deferred) == 0 {
 		c.unstrand(tag)
 		return nil
 	}
@@ -185,26 +195,27 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 			unlock()
 			return fmt.Errorf("datapath: forgetting file %v: %w", f, derr)
 		}
+		c.Account(hd)
 		if terr := c.index.ForgetTagMarks(f, tag); terr != nil {
 			unlock()
 			return fmt.Errorf("datapath: forgetting the marks of file %v: %w", f, terr)
 		}
-		c.Account(hd)
 		named = append(named, nm...)
 		unlock()
 	}
 
-	// The tag's deferred losses end here: a loss whose record the copy of
-	// one of its segments owed would be written by a later pass, at a
-	// sequence number above the forget record, claimed for the tag again —
-	// and a reopen would withold nothing of it. The forget discards the
-	// content the loss was owed for, so the registry entry goes without its
-	// record, and the pass over the tag's segments finds nothing to write.
-	for _, seg := range below {
-		for _, l := range c.dur.DeferredAgainst(seg) {
-			if l.Share != tag {
-				continue
-			}
+	// The tag's deferred losses end here, by the registry's own tag census
+	// — not the set's figures, which cannot guide this sweep: a deferral
+	// can sit against a segment whose per-tag bytes read zero, the crash
+	// shape where the dropped record's bytes never entered the counters,
+	// and the census took it at the predicate above. A pass would
+	// otherwise write the loss record above the forget's, under a tag the
+	// caller was told was gone; the forget discards the content the loss
+	// was owed for, so the registry entry goes without its record, its
+	// latch on the segment with it. Entries a concurrent pass already
+	// carried answer false and change nothing.
+	for seg, ls := range deferred {
+		for _, l := range ls {
 			if c.dur.EndDeferral(seg, l) {
 				c.liveness.SetDeferred(seg, false)
 			}

@@ -265,6 +265,29 @@ func (s *dirState) deferAgainst(seg core.SegmentID, l Loss) {
 	s.deferred[seg] = append(s.deferred[seg], l)
 }
 
+// deferredOfTag answers the losses stored against any segment whose dropped
+// content belonged to share tag, each with the segment it is deferred
+// against: the one census a whole-tag forget needs, over a registry the set's
+// own per-tag figures cannot stand in for — an unsynced record whose bytes
+// never entered the set's counters carries no figure there, while the
+// registry keeps the loss owed to whatever copy retires its segment. The
+// answer is a copy; the sweep that ends a deferral reads it once and hands
+// each entry back by its segment.
+func (s *dirState) deferredOfTag(tag core.ShareTag) map[core.SegmentID][]Loss {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[core.SegmentID][]Loss)
+	for seg, es := range s.deferred {
+		for _, l := range es {
+			if l.Share != tag {
+				continue
+			}
+			out[seg] = append(out[seg], l)
+		}
+	}
+	return out
+}
+
 // deferredAgainst returns a copy of the losses stored against seg, in the
 // order they deferred.
 func (s *dirState) deferredAgainst(seg core.SegmentID) []Loss {
