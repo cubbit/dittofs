@@ -22,10 +22,10 @@ const statsBackstop = 5 * time.Second
 // holding it cannot stall a write. A lock on Stats' path that is on neither
 // this list nor removed from the path fails the test below by name.
 var statsAllowed = map[string]string{
-	"dur.lmu": "held by a loss for its raise, counters and ring publish as one section, and by " +
+	"dur.lmu": "deviates from RFC 1 section 3.7's MUST NOT block a write (a loss-path write can wait on it while Stats copies the ring); held by a loss for its raise, counters and ring publish as one section, and by " +
 		"Stats for the ring copy and the generation read; no I/O under it, and the one lock " +
 		"taken inside it is dur.dir.mu",
-	"dur.dir.mu": "a leaf taken inside dur.lmu that guards the directory's generation and failed " +
+	"dur.dir.mu": "part of the same deviation from RFC 1 section 3.7, a leaf taken inside dur.lmu that guards the directory's generation and failed " +
 		"list, never held across I/O",
 }
 

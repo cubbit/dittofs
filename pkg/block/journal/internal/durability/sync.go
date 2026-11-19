@@ -1015,7 +1015,9 @@ func (d *Durability) Stats() Part {
 		p.LastSyncError = &sf
 	}
 
-	// decision: Stats still takes lmu, and through the directory's generation
+	// decision: this deviates from RFC 1 section 3.7's MUST NOT block a write:
+	// a loss-path write can wait on lmu while Stats copies the ring. Stats
+	// still takes lmu, and through the directory's generation
 	// read the directory state's mutex (dirState.mu), the two locks left on
 	// its path. The ring and the generation must be read as one step, so a
 	// snapshot never holds a raise without its event, and the loss path keeps
@@ -1457,10 +1459,11 @@ func (st *stream) movedCopyErrorLocked(at, now segment.Location) error {
 
 // snapshot returns the streams made so far, in no order, from the list Sink
 // publishes with each new stream. It takes no lock, so the stats read of it
-// never waits on d.mu.
+// never waits on d.mu. The slice is shared and read-only: Sink replaces it
+// whole and no caller changes it.
 func (d *Durability) snapshot() []*stream {
 	if v := d.madeView.Load(); v != nil {
-		return slices.Clone(*v)
+		return *v
 	}
 	return nil
 }

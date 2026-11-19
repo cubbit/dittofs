@@ -34,7 +34,10 @@ func checkNamed(t *testing.T, when string, s Stats) {
 
 // TestRFC1D_NamedInequalitiesHold samples Stats in a tight loop while writers,
 // truncates and removals run, between Account's counter updates and between a
-// record's append and its publish, and every sample keeps the inequalities.
+// record's append and its publish, and every sample keeps the inequalities. It
+// checks the bound under load: the order of the share ledger's own updates is
+// pinned by TestRFC1D_ShareUpdateOrderKeepsDirtyUnderHeld, which a concurrent
+// sampler cannot, because Stats' bounded re-read resolves that transient.
 func TestRFC1D_NamedInequalitiesHold(t *testing.T) {
 	var c *Core
 	c, _ = newTestCore(t, func(o *coreOptions) {
@@ -99,6 +102,15 @@ func TestRFC1D_NamedInequalitiesHold(t *testing.T) {
 	// a retire can lower used in between.
 	if st := c.Stats(); st.HeldBytes > st.UsedBytes {
 		t.Errorf("quiescent: HeldBytes %d > UsedBytes %d: held bytes live in allocated segments", st.HeldBytes, st.UsedBytes)
+	}
+	// The maintained figures Stats serves, against a full walk of what they
+	// count: the set's counters and per-tag tallies against its segments, and
+	// the pool's ready counts against its lists.
+	if err := c.set.Check(); err != nil {
+		t.Errorf("quiescent: the set's maintained figures disagree with a walk: %v", err)
+	}
+	if err := c.pool.Check(); err != nil {
+		t.Errorf("quiescent: the pool's maintained figures disagree with a walk: %v", err)
 	}
 }
 

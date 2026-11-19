@@ -2603,6 +2603,37 @@ func TestPoolWaitReserveSpareAnswersTheReserveAlone(t *testing.T) {
 	}
 }
 
+// TestPoolCheckMatchesTheListsAfterEveryTake: the ready counts Counters serves
+// are stored beside each change of a ready list, and Check walks the lists
+// against them. Every way a class loses a spare is driven here, the floored
+// reserve take that removes from the middle of its list included, so a path
+// that changes a list and forgets its count fails Check naming the class.
+func TestPoolCheckMatchesTheListsAfterEveryTake(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, _, _, p := poolOf(t, segment.Targets{Content: 2, Headroom: 2, Reserve: 3}, noMax, 0, nil)
+	p.Start()
+	defer p.Stop()
+	awaitCounters(t, "targets {2,2,3} filled", p, func(c segment.PoolCounters) bool {
+		return c.Spares == 2 && c.HeadroomBytes == 2*segCap && c.RepackReserveBytes == 3*segCap
+	})
+	check := func(when string) {
+		t.Helper()
+		if err := p.Check(); err != nil {
+			t.Fatalf("%s: %v", when, err)
+		}
+	}
+	check("after the fill")
+	takeClass(t, p, segment.Content)
+	check("after a content take")
+	takeClass(t, p, segment.Headroom)
+	check("after a headroom take")
+	if _, err := p.TakeReserveAbove(0); err != nil {
+		t.Fatalf("TakeReserveAbove(0): %v", err)
+	}
+	check("after a floored reserve take")
+}
+
 // TestPoolTakeReserveAboveRenamesALowSpare: at a maximum of one cap, a
 // reserve whose one ready spare is an adopted id below the floor answers the
 // take with that spare under a fresh id above the seed — its file renamed,

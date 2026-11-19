@@ -47,9 +47,11 @@ type dirtyList struct {
 	// entries outnumber live ones, which bounds it to a small multiple of
 	// byTime.
 	//
-	// ponytail: a second that byTime dropped and holds again while its stale
-	// entry is still in the heap is pushed a second time. The duplicates are
-	// harmless to the answer and the compaction bounds them, but each
+	// ponytail: a stale entry stays in the heap until it reaches the top: any
+	// second that leaves byTime below the top does, and a second that byTime
+	// dropped and holds again while its stale entry is still in the heap is
+	// pushed a second time. The stale and duplicate entries are harmless to
+	// the answer and the compaction bounds them, but each
 	// compaction is O(live seconds) under mu, which every publish takes, run
 	// about once per as many same-second re-counts as there are live seconds,
 	// so it amortises to O(1) per re-count while one publish pays the whole
@@ -71,10 +73,10 @@ type dirtyList struct {
 
 // noOldest is the oldest value of a list that counts no file with a known
 // time. No Unix second a clock reads equals it.
+//
+// It is also the mask oldest stores a second under, its sign bit flipped, so
+// the zero value of a list reads as "none counted": a stored 0 is noOldest.
 const noOldest = math.MinInt64
-
-// oldestBits flips the sign bit between a second and the form oldest stores.
-const oldestBits = math.MinInt64
 
 // secHeap is a min-heap of Unix seconds.
 type secHeap []int64
@@ -155,10 +157,10 @@ func (l *dirtyList) settleOldest() {
 		l.keys.pop()
 	}
 	if len(l.keys) == 0 {
-		l.oldest.Store(noOldest ^ oldestBits)
+		l.oldest.Store(0)
 		return
 	}
-	l.oldest.Store(l.keys[0] ^ oldestBits)
+	l.oldest.Store(l.keys[0] ^ noOldest)
 }
 
 // oldestDirty returns the start of the second of the oldest dirty write of any
@@ -166,7 +168,7 @@ func (l *dirtyList) settleOldest() {
 // understates it, or the zero time when no listed file has a known one. It is
 // one atomic load of the value apply maintains.
 func (c *Core) oldestDirty() time.Time {
-	if k := c.dirtyFiles.oldest.Load() ^ oldestBits; k != noOldest {
+	if k := c.dirtyFiles.oldest.Load() ^ noOldest; k != noOldest {
 		return time.Unix(k, 0)
 	}
 	return time.Time{}
