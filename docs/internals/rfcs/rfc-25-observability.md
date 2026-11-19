@@ -639,7 +639,10 @@ listener clients are sent to is down.
 
 Every node runs both roles, so readiness has one rule: a node is ready once each
 enabled adapter accepts clients or was refused at configured, the share list is loaded and, **(cluster)**, it has
-joined the store. A shard it holds and cannot serve does not make it unready,
+joined the store. Once that start is passed, the adapters end readiness only
+through a lost listener: an adapter rebuilt for a restart-class change, or one
+enabled after start, keeps the node ready, its readiness ending only if the
+rebuilt adapter's listener is lost. A shard it holds and cannot serve does not make it unready,
 since sending clients elsewhere would not serve that shard either; it is the
 shard's own condition, `shard_relinquished` or `replication_under_floor`
 (§3.9). A rolling upgrade
@@ -1186,7 +1189,7 @@ steps are [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)'s.
 | watchdog | `pkg/health` | the root | clock | `Watchdog *health.Watchdog`; each watched loop takes its own `*health.Loop` from `Watchdog.Loop(name)` and closes it when the loop ends — a listener on unbind, since [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)'s reconfiguration adds and removes listeners at run time; an adapter, which may not import `pkg/health`, gets the same three calls as `Deps.Watch` ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)), which the node adapts to a `Loop` | starts before start step 2, stops after stop step 9; the liveness answer reads it (§3.5) |
 | health evaluator | `pkg/health` | the root; the node reads its `Snapshot` and writes node status (§3.8) | clock, logger, registry, watchdog, §3.9's table as Go, the `Source`s | injected into nothing: each component is a `Source`, added with `Add` and removed with `Remove` by the node, which owns the set of running components ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)) | `Start` before start step 2 takes `Watchdog.Loop("health")` and turns it after each evaluation, every second; `Close` after stop step 9 closes it |
 | event sink | `pkg/events` | the root | clock, logger, registry, `events.path` | `Events *events.Sink`, to the filesystem service and the authenticator only | `New` opens nothing; `Start` after start step 2 and before step 6 opens the spool, writes the `restart` gap record (§4.4) and starts the writers; `Close(ctx)` after stop step 6 drains the rings until `ctx` ends, drops and counts the rest, and syncs the spool |
-| tracer | none: the tracing API | the root builds the provider when `tracing.endpoint` is set (§6.3), a no-op provider otherwise | settings | `Tracer`, the tracing API's tracer type, in the `Deps` of every component that opens spans (§6.1): the adapters, the service, the metadata store, the engine and each background pass | the provider shuts down after stop step 6, flushing within the drain deadline; spans it cannot flush are counted (§10) |
+| tracer | none: the tracing API | the root builds the provider when `tracing.endpoint` is set (§6.3), a no-op provider otherwise | settings | `Tracer`, the tracing API's tracer type, in the `Deps` of every component that opens spans (§6.1): the adapters, the service, the metadata store, the engine and each background pass | the provider shuts down after stop step 6, flushing within step 2's deadline; spans it cannot flush are counted (§10) |
 
 ### 8.2 The packages
 

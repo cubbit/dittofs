@@ -609,7 +609,7 @@ before `vfs.Serve` stops (step 4), while other nodes can still reach it:
    `Disconnect` to, `Deps.Retry`, stops, dropping what it still holds
    ([RFC 20 §3.2](rfc-20-adapters.md#3.2%20A%20connection%27s%20lifecycle)).
 3. The management API stops accepting calls, and calls in flight run to their
-   answer within the drain deadline; then the operation runner stops, leaving
+   answer within step 2's deadline; then the operation runner stops, leaving
    each operation it drives at its last durable step and releasing its claim
    (§4.6).
 4. **(cluster)** The shards this node is primary of are handed over
@@ -1187,8 +1187,8 @@ keys on the same value.
   lists now — protocol, remote address, session, since
   ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) — from that node, not
   from the store, for `viewer`. It is read-only and writes no client or
-  principal record. An `{id}` other than the answering node's answers
-  `404 not_found`, before any adapter is read.
+  principal record. **(single node)** An `{id}` other than the answering node's
+  answers `404 not_found`, before any adapter is read.
 
 ### 4.3 Writes
 
