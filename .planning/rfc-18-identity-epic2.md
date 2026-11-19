@@ -752,10 +752,14 @@ internal/identity/
 - **Track:** C. **Depends on:** T2.1; a follow-up to it, after RFC 23's plan's epic 4's T4.10
   lands the same refusals in the API's handlers, which this subtask moves into the store.
 - **Covers:** R37.
-- **Deliverables:** kvstore's `localName`, beside T2.1's `@` and `\` rule, refusing `ErrInvalid` a
-  created or renamed user or group name that is invalid UTF-8, holds a control character, begins
-  or ends with white space, or exceeds 255 bytes; the API's copy of the check removed, so the
-  store's is the one every create path reaches.
+- **Deliverables:** one name rule in `entity`, shared by principals and netgroups: invalid UTF-8,
+  a control character, edge white space or more than 255 bytes refused, and for a user or group
+  `@` and `\` too; kvstore's `localName` calling it, beside T2.1's `@` and `\` rule, so a created
+  or renamed user or group name it refuses is refused `ErrInvalid`; the API's check kept for
+  netgroups, whose names the store keeps opaque, and for its field-named answer, the API mapping
+  the store's refusal of a user's or group's name to a `400` naming the field, the store's being
+  the one every create path reaches; identity's mint leaving a directory name the rule refuses
+  unnamed rather than failing the mint.
 - **Acceptance criteria:**
   - A user created by `dfs init` or `reset-admin` with a name holding a control character is
     refused `ErrInvalid`, as one created through the API is.
