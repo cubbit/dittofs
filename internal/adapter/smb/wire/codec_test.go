@@ -459,6 +459,57 @@ func TestCodecContextDataLength(t *testing.T) {
 	}
 }
 
+// An unknown context's data is kept up to its maximum and past it ignored,
+// kept as no bytes, and the context after it still decodes, a negotiate
+// context's and a create context's alike: MS-SMB2 3.3.5.4 has a server
+// ignore a negotiate context it does not know, and RFC 22 section 16 any
+// unknown context, so its length refuses the request no more than its type
+// does.
+func TestCodecUnknownContextPastItsMaximum(t *testing.T) {
+	netname := NegotiateContext{ContextType: 5, Data: units('1', '2', '7', '.', '0', '.', '0', '.', '1')}
+	alsi := CreateContext{Name: []byte("AlSi"), AllocationSize: AllocationSize{AllocationSize: 1 << 20}}
+	// context is a create context named name holding data, padded to the next
+	// one's 8-byte alignment, its Next 0.
+	context := func(name string, data []byte) []byte {
+		b := append(le32(0), 16, 0, 4, 0, 0, 0, 24, 0) // NameOffset 16, NameLength 4, Reserved, DataOffset 24
+		b = append(append(b, le32(uint32(len(data)))...), name+"\x00\x00\x00\x00"...)
+		return append(append(b, data...), make([]byte, (8-len(data)%8)%8)...)
+	}
+	for _, n := range []int{1024, 1025} {
+		data := bytes.Repeat([]byte{0xab}, n)
+		var kept []byte
+		if n <= 1024 {
+			kept = data
+		}
+
+		// The third negotiate context, made unknown, with n bytes of data.
+		neg := spliced(golden(t, "negotiate-request"), 192, 200, append(data, make([]byte, (8-n%8)%8)...)...)
+		neg = patched(neg, 184, append(le16(0x99), le16(uint16(n))...)...)
+		var r NegotiateRequest
+		if got, err := r.DecodeWire(neg, 0x311); err != nil || got != len(neg) || len(r.Contexts) != 4 {
+			t.Fatalf("an unknown negotiate context of %d bytes: %d of %d bytes read into %d contexts: %v", n, got, len(neg), len(r.Contexts), err)
+		}
+		if want := []NegotiateContext{{ContextType: 0x99, Data: kept}, netname}; !reflect.DeepEqual(r.Contexts[2:], want) {
+			t.Errorf("an unknown negotiate context of %d bytes: read\n  %+v\nwant\n  %+v", n, r.Contexts[2:], want)
+		}
+
+		// A CREATE of no name whose contexts, at 120, are an unknown one with
+		// n bytes of data and an AlSi.
+		unknown, last := context("ZZZZ", data), context("AlSi", binary.LittleEndian.AppendUint64(nil, 1<<20))
+		copy(unknown, le32(uint32(len(unknown))))
+		create := patched(golden(t, "create-request")[:56], 110, 0, 0)
+		create = patched(create, 112, append(le32(120), le32(uint32(len(unknown)+len(last)))...)...)
+		create = append(append(create, unknown...), last...)
+		var c CreateRequest
+		if got, err := c.DecodeWire(create, 0x311); err != nil || got != len(create) {
+			t.Fatalf("an unknown create context of %d bytes: %d of %d bytes read: %v", n, got, len(create), err)
+		}
+		if want := []CreateContext{{Name: []byte("ZZZZ"), Data: kept}, alsi}; !reflect.DeepEqual(c.Contexts, want) {
+			t.Errorf("an unknown create context of %d bytes: read\n  %+v\nwant\n  %+v", n, c.Contexts, want)
+		}
+	}
+}
+
 // A refusal of a claimed length or count costs less than 1 KiB, within RFC 20
 // section 5.2's 4 KiB: it is checked against the bytes left before anything
 // is made, where 16 negotiate contexts made first would take 1.7 KB.
@@ -487,11 +538,11 @@ func TestCodecClaimedLengths(t *testing.T) {
 	}
 }
 
-// A value the peer's decoder would refuse is refused on encode, and its output
-// is left as it was: a name, a count or a context past its maximum, contexts
-// past the bytes their chain may take, a name that is not WTF-8, an offset
-// its two bytes cannot hold, and a context naming one arm while another
-// holds a value.
+// A value past its tags' maxima, or one the peer's decoder would refuse, is
+// refused on encode, and its output is left as it was: a name, a count or a
+// context past its maximum, contexts past the bytes their chain may take, a
+// name that is not WTF-8, an offset its two bytes cannot hold, and a context
+// naming one arm while another holds a value.
 func TestCodecEncodeRefusals(t *testing.T) {
 	big := CreateContext{Name: []byte("MxAc"), Data: make([]byte, 1000)}
 	for _, c := range []struct {

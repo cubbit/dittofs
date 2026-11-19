@@ -188,7 +188,7 @@ func readCreate(r *sr, _ uint32) CreateRequest {
 // readCreateContext reads 2.2.13.2: its offsets count from its own first
 // byte, its data 8-byte aligned and read by its name, DH2Q's (2.2.13.2.11)
 // and AlSi's (2.2.13.2.6) into their structs, each exactly its structure's
-// size (3.3.5.9), any other's kept as bytes.
+// size (3.3.5.9), any other's kept as bytes up to 1024 and ignored past them.
 func readCreateContext(r *sr) CreateContext {
 	var c CreateContext
 	r.u32() // Next, which the chain reads
@@ -196,7 +196,7 @@ func readCreateContext(r *sr) CreateContext {
 	r.next(2)
 	dataOff, dataLen := int(r.u16()), int(r.u32())
 	c.Name = r.located(nameOff, nameLen, 16, 1)
-	data := r.located(dataOff, dataLen, 1024, 8)
+	data := r.located(dataOff, dataLen, len(r.b), 8)
 	switch string(c.Name) {
 	case "DH2Q":
 		r.bad = r.bad || len(data) != 32
@@ -210,7 +210,9 @@ func readCreateContext(r *sr) CreateContext {
 		r.bad = r.bad || len(data) != 8
 		c.AllocationSize = inner(r, data, func(d *sr) AllocationSize { return AllocationSize{AllocationSize: d.u64()} })
 	default:
-		c.Data = data
+		if len(data) <= 1024 {
+			c.Data = data
+		}
 	}
 	return c
 }
@@ -250,15 +252,11 @@ func negotiateContexts(r *sr, offset, count int) []NegotiateContext {
 
 // readNegotiateContext reads 2.2.3.1: its data, DataLength bytes, read by its
 // type, 1's (2.2.3.1.1) and 2's (2.2.3.1.2) into their structs, any other's
-// kept as bytes.
+// kept as bytes up to 1024 and ignored past them (3.3.5.4).
 func readNegotiateContext(r *sr) NegotiateContext {
 	c := NegotiateContext{ContextType: r.u16()}
 	n := int(r.u16())
 	r.next(4)
-	if n > 1024 {
-		r.bad = true
-		return c
-	}
 	data := r.next(n)
 	switch c.ContextType {
 	case 1:
@@ -277,7 +275,9 @@ func readNegotiateContext(r *sr) NegotiateContext {
 			return EncryptionCapabilities{Ciphers: u16s(d, int(d.u16()), 8)}
 		})
 	default:
-		c.Data = data
+		if n <= 1024 {
+			c.Data = data
+		}
 	}
 	return c
 }
