@@ -154,20 +154,25 @@ type slot[S shape] struct {
 	runs    S               // what running serves with: the last settings that served
 	refused S               // what refusal refused
 	refusal *refusal        // the last call's, nil once a call applied
+	gen     uint64          // the settings generation of the last call that applied: the one the slot runs
 
-	// last is what the last call left, which the node's health and its
-	// connection listing read from other goroutines; nil before the first
-	// call. A call in flight leaves it as the call before left it, so a
-	// rebuild waiting on a drain reads as the adapter it replaces.
+	// last is what the last call left, which the node's health, its
+	// connection listing and its status read from other goroutines; nil
+	// before the first call. A call in flight leaves it as the call before
+	// left it, but for a drain, which marks it draining: a rebuild waiting on
+	// a drain reads as the adapter it replaces, draining.
 	last atomic.Pointer[outcome]
 }
 
-// outcome is what a slot's call left: the adapter running, nil when none,
-// and, while the adapter is enabled and nothing serves it, the error that
-// refused it.
+// outcome is what a slot's call left: the adapter running, nil when none;
+// while the adapter is enabled and nothing serves it, the error that refused
+// it; whether a drain of running is under way; and the settings generation
+// the slot runs.
 type outcome struct {
-	running adapter.Adapter
-	refused error
+	running    adapter.Adapter
+	refused    error
+	draining   bool
+	generation uint64
 }
 
 // desired is what a slot is to run: whether its adapter is enabled, and its
@@ -177,13 +182,14 @@ type desired[S shape] struct {
 	settings S
 }
 
-// applyWanted is apply with what the slot is to run.
-func (s *slot[S]) applyWanted(ctx context.Context, loop *health.Loop) *refusal {
+// applyWanted is apply with what the slot is to run, read at settings
+// generation gen.
+func (s *slot[S]) applyWanted(ctx context.Context, loop *health.Loop, gen uint64) *refusal {
 	var w desired[S]
 	if p := s.want.Load(); p != nil {
 		w = *p
 	}
-	return s.apply(ctx, loop, w.enabled, w.settings)
+	return s.apply(ctx, loop, gen, w.enabled, w.settings)
 }
 
 // newSlots builds the node's slot for each protocol, nfs and smb, over one
@@ -193,19 +199,23 @@ func newSlots(d adapter.Deps, r *sidecar.Runner, addrs []netip.Addr, taken []uin
 		&slot[settings.SMB]{name: "smb", build: smb.New, deps: d, runner: r, addrs: addrs, taken: taken, clock: clock, drains: drains}
 }
 
-// apply moves the adapter to what enabled and next say, next's Addrs the
-// slot's own (RFC 20 §3.6), and returns its refusal, nil when it applied
-// (RFC 23 §2.3). Settings it refused while an adapter served on are refused
-// again, untouched, so a call repeated on the same records does nothing; with
-// nothing serving, a repeated call tries again. Every other call leaves its
-// outcome in last.
-func (s *slot[S]) apply(ctx context.Context, loop *health.Loop, enabled bool, next S) *refusal {
+// apply moves the adapter to what enabled and next say, read at settings
+// generation gen, next's Addrs the slot's own (RFC 20 §3.6), and returns its
+// refusal, nil when it applied (RFC 23 §2.3). Once it applied, the slot runs
+// gen; a refused call leaves the generation it ran. Settings it refused while
+// an adapter served on are refused again, untouched, so a call repeated on
+// the same records does nothing; with nothing serving, a repeated call tries
+// again. Every other call leaves its outcome in last.
+func (s *slot[S]) apply(ctx context.Context, loop *health.Loop, gen uint64, enabled bool, next S) *refusal {
 	next = withAddrs(next, s.addrs)
 	if enabled && s.running != nil && s.refusal != nil && reflect.DeepEqual(next, s.refused) {
 		return s.refusal
 	}
 	err := s.move(ctx, loop, enabled, next)
-	o := outcome{running: s.running}
+	if err == nil {
+		s.gen = gen
+	}
+	o := outcome{running: s.running, generation: s.gen}
 	if enabled && s.running == nil {
 		o.refused = err
 	}
@@ -304,6 +314,7 @@ func (s *slot[S]) start(ctx context.Context, next S) error {
 // first has stopped it (RFC 20 §3.4, RFC 23 §2.2). Overturned if a drain
 // must end with the change that started it.
 func (s *slot[S]) stop(ctx context.Context, loop *health.Loop) error {
+	s.last.Store(&outcome{running: s.running, draining: true, generation: s.gen})
 	done := make(chan error, 1)
 	go func(a adapter.Adapter) { done <- s.runner.Stop(s.drains, s.name, a) }(s.running)
 	for {
@@ -348,7 +359,7 @@ func withAddrs[S shape](s S, addrs []netip.Addr) S {
 // refusals, each at settings generation gen, which the caller read.
 func (n *Node) applyAdapters(ctx context.Context, loop *health.Loop, gen uint64) []refusal {
 	var refusals []refusal
-	for _, r := range []*refusal{n.nfs.applyWanted(ctx, loop), n.smb.applyWanted(ctx, loop)} {
+	for _, r := range []*refusal{n.nfs.applyWanted(ctx, loop, gen), n.smb.applyWanted(ctx, loop, gen)} {
 		if r != nil {
 			f := *r
 			f.rec.Generation = gen
@@ -370,6 +381,29 @@ func (n *Node) adaptersHeld() (map[string]adapter.Adapter, time.Duration) {
 		held[n.smb.name], longest = a, max(longest, n.smb.runs.DrainTimeout)
 	}
 	return held, longest
+}
+
+// status is the slot's adapter as the node's status reports it (RFC 23
+// §3.4): its state, in RFC 20 §3.1's terms, and the settings generation it
+// runs. An adapter enabled but refused, nothing serving it, stays configured
+// (RFC 23 §3.4). Start step 9 calls every slot before the status writer's
+// first turn, so a call has always left last.
+//
+// decision: a drain under way reports draining, the old adapter's, as RFC 20
+// §3.1 names that state, for a disable's drain and a rebuild's alike, so the
+// status says why an adapter still holds connections it no longer accepts.
+func (s *slot[S]) status() entity.AdapterStatus {
+	o := s.last.Load()
+	state := entity.AdapterStopped
+	switch {
+	case o.draining:
+		state = entity.AdapterDraining
+	case o.running != nil:
+		state = entity.AdapterServing
+	case o.refused != nil:
+		state = entity.AdapterConfigured
+	}
+	return entity.AdapterStatus{Protocol: s.name, State: state, Generation: o.generation}
 }
 
 // conditionListenerLost is the condition an adapter's Health names for a

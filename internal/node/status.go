@@ -118,7 +118,8 @@ func (n *Node) statusTurn(ctx context.Context) {
 
 // nodeStatus is what the node reports: the positions it has reconciled
 // through, the records it refused, the operation kinds its runner has no
-// step for, and its health conditions.
+// step for, its health conditions, and each adapter's state and the settings
+// generation it runs (RFC 23 §3.4).
 //
 // ponytail: the node reports three high-water positions and the exceptions,
 // not one generation per record, so the status stays one small record
@@ -143,6 +144,7 @@ func (n *Node) nodeStatus() entity.NodeStatus {
 		Principals: pos.Principals,
 		Refused:    refused,
 		Conditions: encodeConditions(n.health.Conditions(nil)),
+		Adapters:   []entity.AdapterStatus{n.nfs.status(), n.smb.status()},
 	}
 }
 
