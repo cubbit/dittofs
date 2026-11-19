@@ -85,15 +85,14 @@ func scrapeOf(t *testing.T, c prometheus.Collector) map[string]map[string]float6
 // answeredBy builds the field-to-series table the collector declares: every
 // field of journal.Stats and its nested shapes that a series answers, keyed
 // "<Field>", "Counters.<Field>", "ShareStats.<Field>", "EngineShares.<Field>",
-// "SyncMark.<Field>", "Recovery.<Field>".
-// answeredBy builds the field-to-series table the collector declares, and
-// fails t on any duplicate: two entries under one key would serve whichever
-// the map kept, masking a figure with two sources.
+// "SyncMark.<Field>", "Recovery.<Field>" — and fails t on any duplicate:
+// two entries under one key would serve whichever the map kept, masking a
+// figure with two sources.
 func answeredBy(t *testing.T) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	add := func(key, series string) {
-		if _, dup := out[key]; dup && key != "Counters.CorruptExtentsDataLoss" && key != "Counters.CorruptExtentsRepairable" {
+		if _, dup := out[key]; dup {
 			t.Errorf("the table answers journal.Stats %s twice: a figure with two sources serves whichever map wins", key)
 		}
 		out[key] = series
@@ -101,8 +100,9 @@ func answeredBy(t *testing.T) map[string]string {
 	for _, c := range journalCounters {
 		add("Counters."+c.field, "dittofs_journal_"+c.name)
 	}
-	// The corrupt pair is the one deliberate sharing: two fields, one
-	// series, split by the outcome label.
+	// The corrupt pair is two fields under one series, split by the
+	// outcome label: distinct keys, so the duplicate check holds for them
+	// as for any other figure.
 	add("Counters.CorruptExtentsDataLoss", corruptExtentsSeries)
 	add("Counters.CorruptExtentsRepairable", corruptExtentsSeries)
 	for _, g := range journalGauges {

@@ -114,9 +114,10 @@ func (s *snapshot) now() time.Time { return s.clock.Now() }
 
 // run fetches the Stats and ends the flight, wedged or not: a later get
 // then starts a fresh one, with a fresh deadline. Single flight joins only
-// callers concurrent with a fetch, so two collectors whose Collect runs at
-// different times — never in one scrape's parallel gather, always across
-// two scrapes — read two different snapshots.
+// callers concurrent with a fetch, and no longer: a collector whose Collect
+// begins once the current fetch has ended leads a fresh fetch of its own, so
+// two collectors of one scrape — gathered in parallel — can read two
+// different snapshots when their starts straddle a fetch's end.
 func (s *snapshot) run(f *fetch) {
 	var st engine.Stats
 	if fn := s.stats.Load(); fn != nil {
@@ -322,7 +323,6 @@ var journalGauges = []gaugeSpec{
 		return now.Sub(s.OldestDirty).Seconds()
 	}},
 	{"Files", "files", "Files with at least one held extent.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Files) }},
-
 	{"ExtentCount", "extent_count", "Placement index entries: held extents, retained extents and removal markers.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.ExtentCount) }},
 	{"DropRanges", "drop_ranges", "Ranges the removal-drop test keeps per file and segment.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.DropRanges) }},
 	{"Segments", "segments", "Segments in total.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Segments) }},
