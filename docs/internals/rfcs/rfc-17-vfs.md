@@ -410,7 +410,7 @@ type Peers interface {
 	ReadAt(ctx context.Context, to NodeID, src OpenRef, off int64, dst []byte) (int, error) // §5.9: a cross-shard copy's source read
 	Sequence(ctx context.Context, to NodeID, o LockOwner, seq uint32) error // §5.11: a sequenced owner's number at its home primary (RFC 14 §2.8)
 	ClientState(ctx context.Context, to NodeID, c ClientID, op Op, args []any) (Reply, error) // the lease owner to each primary holding its client's state, TestState's other refs included (§3.5)
-	Recall(ctx context.Context, to NodeID, s SessionRef, openers []Principal, ev any) (sent bool, err error) // a primary's recall, notify or revoke to the node holding s, the session the service picked (§3.2); zero s and openers given: an SMB break whose opens are all disconnected, which that node passes to its adapter's RecallGrant with the openers, returning the sent it answers; zero s and no openers: to an NFS or NLM client's lease owner, the client named in ev (RFC 14 §4.1)
+	Recall(ctx context.Context, to NodeID, s SessionRef, openers []Principal, ev any) (sent bool, err error) // a primary's recall, notify or revoke to the node holding s, the session the service picked (§3.2); zero s and openers given: an SMB break whose opens are all disconnected and one is persistent, which that node passes to its adapter's RecallGrant with the openers, returning the sent it answers; zero s and no openers: to an NFS or NLM client's lease owner, the client named in ev (RFC 14 §4.1)
 }
 
 // Envelope is RFC 15 §4.3's route envelope; its rules are there.
@@ -1027,9 +1027,10 @@ that answers it other than as granted calls `CancelLock` first.
 primary **MUST** stop offering that client grants for one lease period; the
 others it holds end by their own deadlines when something conflicts
 ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
-An SMB break that times out is forced — the lease downgraded to none — and the
+An SMB break that times out is forced, the lease downgraded to none, and the
 request held behind it proceeds; the break keeps the opens it covered, with
-their locks and deny modes, so the holder may keep writing through them; a
+their locks and deny modes, so the holder may keep writing through them, and
+closes its disconnected durable opens that are not persistent; a
 revoked NFS delegation's later writes are refused (the same section).
 
 **A share removed or moved.** `DropShare` ends every open, lock, waiting lock,
@@ -1075,8 +1076,10 @@ from the grant's opens, each with its session and opener, as RFC 14's
 one holding one of the grant's opens, each signed in as its opener. It passes
 that session to `RecallGrant`, through `Peers.Recall` to the node the
 `SessionRef` names when it is another, and the adapter delivers there and
-nowhere else. When every open of a grant is disconnected, the service asks
-every node in `Reach.Sessions` in parallel, each bounded by the break's
+nowhere else. When every open of a grant is disconnected and none is
+persistent, the break is sent nowhere and those opens close
+([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); when one is persistent, the
+service asks every node in `Reach.Sessions` in parallel, each bounded by the break's
 deadline: it calls `RecallGrant` with a zero session and the openers'
 principals, through `Peers.Recall` on another node. The adapter there picks one
 of its own sessions of the client signed in now as one of the openers, from the
@@ -1356,7 +1359,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrNotFound`, `ErrExist`, `ErrNotEmpty`, `ErrNotDir`, `ErrIsDir` | the name or entry is not as the call needs | — |
 | `ErrAccess` | the share grant, its client rules, or the file's mode or ACL refuse the caller; or the read-only marker refuses a write or a delete ([RFC 7 §7.9](rfc-7-namespace-metadata.md#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)) | `*AccessError{Cause}`: `ReadOnly` when the read-only marker refused a delete; absent otherwise |
 | `ErrPerm` | refused whatever the caller's access: an immutable or append-only file ([RFC 7 §7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint)), or a change of owner, group or flags only a privileged caller or the owner may make ([RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)) | — |
-| `ErrStale` | a handle to nothing, or to a share being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) | — |
+| `ErrStale` | a handle to nothing, or of another share than the one asked ([RFC 7 §11.3](rfc-7-namespace-metadata.md#11.3%20Neutral%20errors)'s `ErrWrongShare`), or to a share being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) | none |
 | `ErrReadOnly` | a mutation where only reading is admitted: a share or a client rule narrowed to read-only ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)), a snapshot ([RFC 12](rfc-12-snapshots.md)), the pseudo-filesystem, a journal whose filesystem turned read-only ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)) | — |
 | `ErrNameTooLong` | a name past the share's length limit ([RFC 7 §3.2](rfc-7-namespace-metadata.md#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)); any other name the store refuses is `ErrInvalid` | — |
 | `ErrInvalid` | the arguments cannot be honoured as given: a name the store refuses, an overlapping copy or clone within one file, a clone longer than `clone_max_len`, a deny entry naming a well-known principal [RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)'s table lacks | — |
