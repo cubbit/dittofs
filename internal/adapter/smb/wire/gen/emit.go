@@ -101,12 +101,11 @@ func width(s *strct, l string) int {
 // dialect it is on the wire from, and, where a value x is at hand, the value
 // its if= list must hold. MaxWire has no value: it counts such a field.
 //
-// decision: a request's own list gates its field, not the dialect v, since a
-// NEGOTIATE request is read before any dialect is chosen: its negotiate
-// contexts are on the wire when its Dialects hold 0x0311, and the same eight
-// bytes are otherwise ClientStartTime, which the server ignores (MS-SMB2
-// 2.2.3). Overturned when RFC 20 section 5.1 names another way for a
-// request's own field to place another on the wire.
+// A request's own list gates its field, not the dialect v, since a NEGOTIATE
+// request is read before any dialect is chosen: its negotiate contexts are on
+// the wire when its Dialects hold 0x0311, and the same eight bytes are
+// otherwise ClientStartTime, which the server ignores (MS-SMB2 2.2.3; RFC 20
+// section 5.1, the dialects a NEGOTIATE request offers).
 func gate(b *bytes.Buffer, f *field, x bool) string {
 	var conds []string
 	if f.since != "" {

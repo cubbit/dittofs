@@ -3480,7 +3480,7 @@ enforces as it parses (§5.2), and nothing else:
 | padding | XDR's 4-byte padding; SMB2's 8-byte alignment between chained structures |
 | a choice of arms | an XDR discriminated union; XDR optional data (`*T`) |
 | a chain | SMB2 create contexts and negotiate contexts, each found from the one before it: `smb2:"chain"` |
-| the versions a field is on the wire in | an NFSv4 minor version, an SMB2 dialect |
+| the versions a field is on the wire in | an NFSv4 minor version, an SMB2 dialect, or the dialects a NEGOTIATE request offers |
 
 A protocol rule — one that relates two fields or gives a value its meaning —
 is the handler's, checked before its service call (§4.3), never the decoder's:
