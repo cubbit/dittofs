@@ -42,10 +42,14 @@ var _ Seeder = (*Directory)(nil)
 // controller in integration tests, so the in-memory one stands in only where
 // both answer alike.
 func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn, Seeder)) {
-	// A directory that stops answering fails the suite at a minute; a domain
-	// controller passes it in under a second.
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
+	// call bounds one call to the directory: a directory that stops answering
+	// fails it at a minute, and the seeding before it, however long, takes
+	// none of that minute.
+	call := func(t *testing.T) context.Context {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		t.Cleanup(cancel)
+		return ctx
+	}
 
 	// bound opens a connection and binds it as the seeder's account.
 	bound := func(t *testing.T) (directory.Conn, Seeder) {
@@ -53,14 +57,14 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		c, s := open(t)
 		t.Cleanup(func() { _ = c.Close() })
 		name, pw := s.Account()
-		if err := c.Bind(ctx, name, pw); err != nil {
+		if err := c.Bind(call(t), name, pw); err != nil {
 			t.Fatalf("bind as the seeder's account %q: %v", name, err)
 		}
 		return c, s
 	}
 	search := func(t *testing.T, c directory.Conn, req directory.Request) directory.Result {
 		t.Helper()
-		res, err := c.Search(ctx, req)
+		res, err := c.Search(call(t), req)
 		if err != nil {
 			t.Fatalf("search %+v: %v", req, err)
 		}
@@ -104,10 +108,10 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		c, s := open(t)
 		defer func() { _ = c.Close() }()
 		name, pw := s.Account()
-		if err := c.Bind(ctx, name, append(slices.Clone(pw), 'x')); err == nil {
+		if err := c.Bind(call(t), name, append(slices.Clone(pw), 'x')); err == nil {
 			t.Errorf("bind as %q with a wrong password: accepted, want refused", name)
 		}
-		if err := c.Bind(ctx, name, pw); err != nil {
+		if err := c.Bind(call(t), name, pw); err != nil {
 			t.Errorf("bind as %q with its password: %v", name, err)
 		}
 	})
@@ -120,11 +124,11 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		defer func() { _ = c.Close() }()
 		name, _ := s.Account()
 		for _, pw := range [][]byte{nil, {}} {
-			if err := c.Bind(ctx, name, pw); err == nil {
+			if err := c.Bind(call(t), name, pw); err == nil {
 				t.Errorf("bind as %q with password %#v: accepted, want refused", name, pw)
 			}
 		}
-		res, err := c.Search(ctx, directory.Request{Base: naming(t, c), Scope: directory.ScopeSubtree, Filter: "(objectClass=user)"})
+		res, err := c.Search(call(t), directory.Request{Base: naming(t, c), Scope: directory.ScopeSubtree, Filter: "(objectClass=user)"})
 		if err == nil && len(res.Entries) > 0 {
 			t.Errorf("a subtree search after binds with an empty password returned %d entries, want it refused", len(res.Entries))
 		}
@@ -135,7 +139,7 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		defer func() { _ = c.Close() }()
 		nc := naming(t, c) // read before any bind, as a client finds the directory
 		name, pw := s.Account()
-		if err := c.Bind(ctx, name, pw); err != nil {
+		if err := c.Bind(call(t), name, pw); err != nil {
 			t.Fatal(err)
 		}
 		res := search(t, c, directory.Request{Base: nc, Scope: directory.ScopeBase, Filter: "(objectClass=*)",
@@ -153,7 +157,7 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 	t.Run("a search on a closed connection fails ErrClosed", func(t *testing.T) {
 		c, _ := bound(t)
 		_ = c.Close()
-		if _, err := c.Search(ctx, directory.Request{Scope: directory.ScopeBase, Filter: "(objectClass=*)"}); !errors.Is(err, directory.ErrClosed) {
+		if _, err := c.Search(call(t), directory.Request{Scope: directory.ScopeBase, Filter: "(objectClass=*)"}); !errors.Is(err, directory.ErrClosed) {
 			t.Errorf("a search on a closed connection = %v, want ErrClosed", err)
 		}
 	})
@@ -162,7 +166,7 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		c, _ := open(t)
 		defer func() { _ = c.Close() }()
 		nc := naming(t, c)
-		res, err := c.Search(ctx, directory.Request{Base: nc, Scope: directory.ScopeSubtree, Filter: "(objectClass=user)"})
+		res, err := c.Search(call(t), directory.Request{Base: nc, Scope: directory.ScopeSubtree, Filter: "(objectClass=user)"})
 		if err == nil && len(res.Entries) > 0 {
 			t.Errorf("an unbound subtree search returned %d entries, want it refused", len(res.Entries))
 		}
@@ -183,7 +187,7 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		if got := dns(t, c, "(description="+escape([]byte(upper))+")"); !slices.Equal(got, lower(want)) {
 			t.Errorf("escaped %q, the value's case changed, matched %v, want only %s", upper, got, want)
 		}
-		if _, err := c.Search(ctx, directory.Request{Base: naming(t, c), Scope: directory.ScopeSubtree,
+		if _, err := c.Search(call(t), directory.Request{Base: naming(t, c), Scope: directory.ScopeSubtree,
 			Filter: `(description=\zz)`}); err == nil {
 			t.Error(`a filter holding the escape \zz was answered, want it refused`)
 		}
@@ -226,7 +230,7 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 	t.Run("a search based outside the naming context is refused", func(t *testing.T) {
 		c, _ := bound(t)
 		const base = "DC=elsewhere,DC=example"
-		res, err := c.Search(ctx, directory.Request{Base: base, Scope: directory.ScopeSubtree, Filter: "(objectClass=*)"})
+		res, err := c.Search(call(t), directory.Request{Base: base, Scope: directory.ScopeSubtree, Filter: "(objectClass=*)"})
 		if err == nil {
 			t.Errorf("search based at %s: answered %d entries and referrals %q, want it refused", base, len(res.Entries), res.Referrals)
 		}
