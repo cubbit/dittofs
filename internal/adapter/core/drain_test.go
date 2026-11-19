@@ -42,6 +42,20 @@ func drainSnap(addrs ...string) testproto.Settings {
 	return s
 }
 
+// deadlineArmed waits until the drain has armed its deadline on clk: the
+// nearest timer, at drain_timeout's 200 ms, since every other timer these
+// tests arm is seconds away. The drain reads now and then arms a timer for
+// what is left of the deadline, which the clock counts from its now at the
+// arm, so a move of the clock between the read and the arm lands the timer
+// that much past the deadline and Stop never returns. A test moves the clock
+// to the deadline only once the timer is armed.
+func deadlineArmed(t *testing.T, clk *manualClock) {
+	t.Helper()
+	waitsFor(t, "the drain to arm its deadline", func() bool {
+		return clk.nextIn() == 200*time.Millisecond
+	})
+}
+
 // capturing is a protocol that keeps every connection it is handed, so a
 // loopback test reaches the connections whose pipelines the drain counts.
 type capturing struct {
@@ -273,9 +287,7 @@ func TestTheDrainDeadlineAbandonsAnEchoStillWaiting(t *testing.T) {
 	})
 	stopped := make(chan error, 1)
 	go func() { stopped <- srv.Stop(context.Background()) }()
-	waitsFor(t, "the server to drain", func() bool {
-		return srv.Health().State == adapter.StateDraining
-	})
+	deadlineArmed(t, clk)
 	clk.Advance(201 * time.Millisecond)
 	select {
 	case err := <-stopped:
