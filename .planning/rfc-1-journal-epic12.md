@@ -3,68 +3,47 @@
 **Sources:** [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §9.1, §9.3, §9.4, §9.6 and §9.7;
 [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.7.
 **Track:** the team.
-**Epic 12 estimate: 8 subtasks, 25 man-days.**
+**Epic 12 estimate: 8 subtasks, 29 man-days.**
 
 Epic 12 takes the journal's suite from listed to passing, for RFC 1 without 7b and 9b.
 
-State of the known-failure files on `feat/storage-v2`.
+State of the known-failure files on `feat/storage-v2` at `9efa0702f`, after 7a's T7.12.
 
-`test/journal/known.yaml`: 261 entries.
+`test/journal/known.yaml`: 185 entries, by the message each fails on (the counts add to 185: 109 + 5 + 8 + 2 + 4 + 4 + 53):
 
-By the issue each names:
-
-- 119 name 9b (#3379).
-- 65 name 7a (#3814).
-- 37 name epic 8 (#3378), which has landed.
-- 25 name 9a (#3815).
-- 7 name 7b (#3596).
-- 8 name other issues:
-  - #4032 and #4033, open 7a subtasks (one each).
-  - #3748, closed T6.6 (three: read-only and `Release` rows).
-  - #3764 and #3395, the three race-detector skips (kept, see T12.3).
-
-By the message each fails on, which is what decides the owner (the counts add to 261: 105 + 105 + 5 + 3 + 5 + 3 + 4 + 31):
-
-- 105 fail on `holds segments; recovering them is not built`: the reopen 7a builds.
-- 105 fail on a 9b call: `stub: MarkOffloaded` (84), `Offload` (15), `Release` (2), `Stamp` (2), `Hold` (2).
+- 109 fail on a 9b call: `stub: MarkOffloaded` (87), `Offload` (16), `Release` (2), `Stamp` (2), `Hold` (2).
 - 5 fail on a 7b call: `stub: Restamp` (2), `Inspect.Verify` (1), and a recovery message ending `names no record` (2).
-  - With the 9b rows these are the 110 that stay listed, each with a recorded decision.
-- 3 fail on a 9a call: `stub: Forget`, `Repack`, `repack_copy`.
-- 5 fail on a 7a call: `stub: Open` (2), `open_seal_after_truncation`, and `segments true, want ` (2, the Open refusals).
-- 3 are the race-detector skips, kept.
+  - With the 9b rows these are the 114 that stay listed, each with a recorded decision.
+- 8 fail on a 9a call: `stub: Forget` (2), `Repack` (2), `repack_copy` (1), and `stub: the repack` (3).
+  - The three read as the call `the` under the pattern below, so T12.1 tightens them to `stub: Repack`.
+- 2 are 7a's Open refusals, `segments true, want `: a generic got/want fragment, which T12.1 tightens to the full text.
+- 4 are the race-detector skips, kept.
 - 4 are bare: `stub:` (3) and `stub: ` with a trailing space (1).
-- 31 are other: seal, idle-seal, corrupt-counter, model and figure rows.
+- 53 are other: seal, idle-seal, corrupt-counter, model and figure rows.
+  - The reopen no longer masks them: 7a's reopen landed, and no row fails on `holds segments` any more.
 
-`test/engine/known.yaml`: 45 entries (#4206 for 44, #4611 for 1).
+`test/engine/known.yaml`: 26 entries. `test/engine/soak-known.yaml`: 0.
 
-Their messages are the engine's own, so the owner is read from each entry's `reason`:
-
-- 27 wait on "the journal's Open recovering segments", which is 7a's:
-  - 24 fail on the reopen message;
-  - `TestRFC8A_IncarnationAtStart` fails on the bare `journal: not implemented`, which matches the reopen error under `Contains`;
-  - two `fixture: start: engine: engine: start: open the journal` rows.
-- 11 wait on "the journal's Repack" or "Forget", which is 9a's.
-- 7 are RFC 8's own (a version block the conformance package cannot set, a timer, `Journal.Draw` called as a method value, and similar).
-- RFC 8's T10.3 re-points the entries that name a closed issue. Its first change waits for nothing, so T12.1 lands after it.
-
-`test/engine/soak-known.yaml` (suite `engine-soak`, tier `pr`): 2 entries on the reopen message (#4206).
+- 11 wait on the journal's `Repack` or `Forget` (9a).
+- The rest are RFC 8's own.
+- Their messages are the engine's, and a `reason` is free text that drifts when it is reworded.
+- decision: T12.1 does not classify this file. RFC 8's T10.3 owns re-pointing it. The ceiling: a row that waits on a journal call is then tagged by its engine owner. Overturned if RFC 8's T10.3 does not land, and then T12.1 adds the file by test name.
 
 What that means:
 
-- When 7a lands, every reopen row, in all three files, either passes (failing the run) or comes back graded new.
-- Retagging is by message, never by issue, and it is redone when 7a and 9a land.
-  - A row that stopped at the reopen runs further and fails on the next message.
-  - Those PRs re-run the classification until T12.1's test exists, and use it after.
-- What T12.2 may inherit, by message: the 31 other rows and the 4 bare rows once tightened, so 35.
-  - 7a and 9a clear some of them in their own PRs (seal, idle seal and spare rows).
-  - 35 rows at 0.3 md is about 10.5 md; the placeholder is 10 md.
-- That figure is a placeholder until 7a lands: rows the reopen unmasks cannot be measured yet.
+- Retagging is by message, never by issue, and it is redone when 9a lands.
+  - A row that stopped at a stub runs further and fails on the next message.
+  - T12.1 starts from the files as 7a left them. 7a's and 9a's remaining PRs re-run the classification by hand until T12.1's test exists, and use it after.
+- What T12.2 may inherit, by message: the 53 other rows and the 4 bare rows once tightened, so 57.
+  - 7a's open subtasks (#4044: 6 rows) and 9a clear some of them in their own PRs.
+  - About 45 rows at 0.3 md is 13.5 md; the placeholder is 14 md.
+- The system rows that need `vfs.New` and the offload engine are RFC 8's second part.
 
 ## Requirements
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | Every conformance check passes on a real filesystem on every supported platform, except the rows 7b and 9b own and the three race-detector skips | MUST | RFC 1 §9.1, §9.3, §9.4 | T12.2 |
+| R1 | Every conformance check passes on a real filesystem on every supported platform, except the rows 7b and 9b own and the four race-detector skips | MUST | RFC 1 §9.1, §9.3, §9.4 | T12.2 |
 | R2 | A known failure names an open owner: the epic whose missing call it fails on, or epic 12 (T12.2) for a defect in code that has landed; none names an epic that has landed | MUST | RFC 29 §4.7 | T12.1 |
 | R3 | The model-based test compares a reference model after every step of random sequences; a failing sequence is shrunk and kept as a regression case | MUST | RFC 1 §9.1 | T12.5 |
 | R4 | The soak runs for hours against a capacity smaller than the data written, and the counters, open descriptors and footprint stay flat | MUST | RFC 1 §9.1 | T12.6 |
@@ -88,48 +67,46 @@ Out of scope until 9b (the plan's epic 9 owns them, run once it lands):
 
 **Subtask T12.1 estimate: 2.5 man-days.**
 
-- **Depends on:** none. It lands after RFC 8's T10.3 first change (above), and before 7a's T7.12, which uses its test.
+- **Depends on:** none. It starts from the files as 7a left them.
 - **Covers requirements:** R2.
 - **Deliverables:**
   - Every entry of `test/journal/known.yaml` retagged to the owner of its message.
-    - `holds segments; recovering them is not built`: 7a.
     - `stub: MarkOffloaded`, `stub: Offload`, `stub: Release`, `stub: Hold`, `stub: Stamp`: 9b.
     - `stub: Restamp`, `stub: Inspect.Verify`, and a message ending `names no record`: 7b.
     - `stub: Forget`, `stub: Repack`, `stub: repack_copy`: 9a.
-    - `stub: Open`, `stub: open_seal_after_truncation`, and `segments true, want `: 7a.
+    - `stub: Open`, `stub: open_seal_after_truncation`: 7a.
     - Seal, corrupt-counter and figure rows: epic 12 (T12.2), because epic 8, which built the code, has landed.
   - A `stub:` class is an anchored prefix, `stub: <Call>`: the identifier after `stub: ` matches `[A-Za-z_.]+` and equals the call.
     - So `a Release on a read-only journal returned …` is not a 9b row.
-  - Each bare message, in every `known:` file, tightened to the specific call.
-    - Bare: a message that trims to `stub:`, or is `journal: not implemented`.
+    - `stub: the repack` (three rows) is tightened to `stub: Repack`, and `segments true, want ` (two rows) to the full got/want text.
+  - A bare message, in every `known:` file, is rejected.
+    - Bare: a message that equals `stub:` after trimming, or equals `journal: not implemented`.
+    - Equality, not `Contains`: `…journal: not implemented: vfs: unavailable` is a specific row.
     - The harness matches a message with `strings.Contains`, so a bare one matches any stub failure.
-  - The other `known:` files: entries are classified by message class, or by `reason` for the engine's.
-    - The test reads every `known:` file `test/suites.yaml` lists, so the next one is not missed.
-    - `test/engine/known.yaml`: 27 rows are 7a's and 11 are 9a's (above); the other 7 are RFC 8's and are left.
-    - `test/engine/soak-known.yaml`: the 2 reopen rows are 7a's.
+    - Each bare row on `feat/storage-v2` is tightened to its call.
+  - The test reads every `known:` file `test/suites.yaml` lists, so the next one is not missed.
+    - It classifies `test/journal/known.yaml` only. `test/engine/known.yaml` is RFC 8's (decision above).
   - `test/journal/trace.yaml`: the three `owner: epic 11` rows are re-pointed to their owners.
-  - #4032 and #4033 stay 7a's: they are open subtasks, not stale.
   - A test beside `trace_test.go`: message class to owning epic issue.
-  - A sentence in 7a's and 9a's known-failures rule: a row that now fails further is retagged in the same change.
+  - A sentence in 9a's known-failures rule: a row that now fails further is retagged in the same change.
 - **Acceptance criteria:**
   - No entry names a landed epic or a closed subtask.
   - In `test/journal/known.yaml`, every message matches exactly one class, or the test fails.
   - The test fails on a bare message in any `known:` file.
-  - In every other file, an entry matching a journal class must name its owner.
-  - The test is green on day one, over the engine's 7 RFC 8 rows.
+  - The test is green on the files as they stand after T12.1's retag.
 - **Tests:**
-  - The new test, shown to fail five ways:
+  - The new test, shown to fail six ways:
     - retag one entry;
     - add a journal entry with an unknown message;
     - leave a bare `stub:` entry;
-    - leave one of the engine or soak reopen rows tagged to nobody;
+    - leave a bare `journal: not implemented` entry in the engine file;
     - leave a `names no record` row tagged to 7a;
     - give `a Release on a read-only journal …` to 9b.
   - `dt`'s grading over every edited list.
 
 ### T12.2 Burn down what 7a and 9a leave
 
-**Subtask T12.2 estimate: 10 man-days.**
+**Subtask T12.2 estimate: 14 man-days.**
 
 - **Depends on:** T12.1, and 7a and 9a landed.
 - **Covers requirements:** R1.
@@ -137,10 +114,10 @@ Out of scope until 9b (the plan's epic 9 owns them, run once it lands):
   - Every entry still red against 7a or 9a is fixed or recorded as a decision.
   - This includes the rows 7a's reopen unmasks, once classified again.
   - Each entry is removed in the change that turns it green.
-  - A placeholder: about 35 rows at 0.3 md, less what 7a and 9a clear in their own PRs.
+  - A placeholder: about 45 rows at 0.3 md, less what 7a and 9a clear in their own PRs.
 - **Acceptance criteria:**
   - The lists hold only entries owned by 7b or 9b, each with a recorded decision.
-  - The three race-detector skips stay.
+  - The four race-detector skips stay.
 - **Tests:**
   - The suite itself, under `-race`, on every platform the matrix lists.
   - `dt` fails when a listed test passes.
@@ -153,10 +130,10 @@ Out of scope until 9b (the plan's epic 9 owns them, run once it lands):
 - **Covers requirements:** R7.
 - **Deliverables:**
   - Confirm `unit.options.journal-conformance-norace` (tier `pr`) runs both allocation tests.
-  - Keep the three race-detector entries: they are deliberate skips for the `-race` leg.
+  - Keep the four race-detector entries: they are deliberate skips for the `-race` leg.
   - Name the job as R7's enforcer in the entries' `reason`.
 - **Acceptance criteria:**
-  - The `-race` leg stays green with the three skips.
+  - The `-race` leg stays green with the four skips.
   - The non-race job runs both allocation tests green.
 - **Tests:**
   - Adding an allocation to a hot path fails the non-race job (existing).
@@ -266,10 +243,10 @@ Out of scope until 9b (the plan's epic 9 owns them, run once it lands):
   - T12.5 to T12.7 after T12.4.
   - T12.2 after 7a and 9a land.
 - Suggested PR 1: T12.1 and T12.3 (3 md).
-- Suggested PR 2: T12.4 and T12.8 (3 md).
+- Suggested PR 2: T12.4 and T12.8 (3.5 md).
 - Suggested PR 3: T12.5 and T12.6 (5 md).
 - Suggested PR 4: T12.7 (3.5 md).
-- Suggested PR 5: T12.2 (10 md).
+- Suggested PR 5: T12.2 (14 md).
 
 ## Open points
 

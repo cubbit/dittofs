@@ -35,7 +35,7 @@ What it does not own:
 | R8 | A node with no journal device is refused before anything opens | MUST | RFC 0 §1.4 | T10.3 |
 | R9 | A device whose `format` cannot be read or does not verify is refused naming the error, never read as a journal that is absent | MUST NOT | RFC 28 §3.4; RFC 8 §2.5 | T10.1, T10.2 |
 | R10 | A start that finds a pre-journal (v1) local layout under a configured device, beside the store directory or under v1's default root refuses before anything opens, naming the path | MUST | RFC 23 plan §1.4; journal plan, "No upgrade from v1" | T10.1, T10.2 |
-| R11 | `kvstore.Init` never writes v2 keys into a key-value store that holds keys but no format record (a v1 Badger store): it refuses and changes nothing | MUST NOT | RFC 16 §3.2; journal plan, "No upgrade from v1" | T10.2 |
+| R11 | `kvstore.Init` never writes v2 keys into a key-value store that holds a key outside v2's key kinds and no format record (a v1 Badger store): it refuses, and its transaction writes nothing. The clock ceiling `badgerkv.Open` writes is v2's own key | MUST NOT | RFC 16 §3.2; journal plan, "No upgrade from v1" | T10.2 |
 
 Not this epic's: a store with no journal, and a journal not recorded for this device (the engine's step 1).
 
@@ -106,9 +106,11 @@ Not this epic's: a store with no journal, and a journal not recorded for this de
     - Any other directory without a `MANIFEST` (tables, `*.vlog` or `KEYREGISTRY` left by a partial restore) is an unidentifiable store: refuse naming it.
     - Any other stat error refuses, naming the path and the error.
   - Absent: read each device through `journal.Open` with a zero identity, which opens nothing, then apply `decide`.
-  - `kvstore.Init` refuses a key-value store that holds keys but no format record (R11).
+  - `kvstore.Init` refuses a key-value store that holds a key outside v2's key kinds and no format record (R11).
     - The `MANIFEST` probe cannot tell a v1 Badger store from a v2 one: v1's guides put it at `/var/lib/dittofs/metadata`.
-    - Without this, `badgerkv.Open` writes a clock ceiling into it and `Init` commits v2 keys beside v1's.
+    - Without this, `Init` commits v2 keys beside v1's.
+    - `badgerkv.Open` writes the node's clock ceiling before it returns, so a fresh store is never empty: that key is exempt.
+    - v1's keys are ASCII prefixes (`f:`, `p:`, `c:`, `lock:`), none starting with a v2 key kind.
     - The refusal is its own error, and `Init`'s transaction writes nothing.
   - A `ponytail:` at the probe:
     - A `MANIFEST` with no format record is left to `kvstore.Open` and `Init` (R11).
@@ -128,7 +130,9 @@ Not this epic's: a store with no journal, and a journal not recorded for this de
   - An installed store returns nil.
   - A store directory that cannot be read (permissions) refuses naming the error.
   - A nil clock refuses as a wiring error, never as unidentifiable devices.
-  - At `kvstore.Init`: a store holding a non-v2 key and no format record refuses and is unchanged; an empty one initialises.
+  - At `kvstore.Init`, over `badgerkv.Open` on a fresh `t.TempDir()`:
+    - a store holding only the clock ceiling initialises;
+    - the same with a v1-style key present refuses, and only the ceiling changed.
   - v1 rows:
     - a device that is an old v1 root (`shares/<n>/journal/x.seg`);
     - a store directory's parent holding `shares/<n>/blobs/x`;
@@ -181,7 +185,7 @@ Not this epic's: a store with no journal, and a journal not recorded for this de
 ## Order and pull requests
 
 - Order: T10.1, then T10.2, then T10.3 and T10.4.
-- Suggested PR 1: T10.1 to T10.3 (5.5 md).
+- Suggested PR 1: T10.1 to T10.3 (6 md).
 - Suggested PR 2: T10.4 (1.5 md).
 - One PR per subtask works too.
 
