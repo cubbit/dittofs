@@ -793,7 +793,12 @@ The lower half of the drawing above:
    node's sessions' opens as disconnected from its node lease's lapse
    ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)),
    and its entry, listed under an older node epoch than its next start's, counts
-   as absent (RFC 14 §2.1).
+   as absent (RFC 14 §2.1). **(single node)** the restart releases them the
+   same way: a process that restarted acquires a new node epoch
+   (RFC 11 §3.1), and an entry listed under the older one counts as absent
+   (RFC 14 §2.1). The retrier holds one such `Disconnect` per client record
+   per adapter; a newer one for the same client record and adapter replaces
+   the one it holds.
 
 The service learns of a client at the protocol's own moment
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations) `Connect`) — not at accept, since
@@ -994,6 +999,7 @@ const (
 type Health struct {
 	State      State
 	Conditions []string // §3.7's conditions this adapter raises now, by name: adapter_listener_lost
+	Lost       []netip.AddrPort // the lost listeners' addresses, once adapter_listener_lost is raised (§3.7); empty otherwise
 }
 
 // Ready is serving with no condition raised.
@@ -1215,6 +1221,10 @@ gives back, so the limit and an address's quarter of it span NFS and SMB
 enabled flag is not an adapter setting either: the node applies it by `Sync`,
 with the serving adapters or with none (§3.5,
 [RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)).
+An adapter's `enabled` is not a shape field either: the node's section for
+the protocol carries it beside the shape, `adapters.<protocol>.enabled`
+([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)),
+and the shapes stay the protocols' own.
 
 > decision: a share's encryption requirement is read at tree connect and held
 > for the tree's life. Unwrap enforces it per tree (§5.5); reading the share
@@ -1410,7 +1420,7 @@ An adapter contributes three things, all from `core`, none from protocol code:
 | Answer | What the adapter supplies |
 | --- | --- |
 | **liveness** ([RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)) | each accept loop reports a turn through `Deps.Watch`, or reports idle; a loop that does neither for 60 s fails liveness. A connection's reader legitimately blocks on its socket and is not watched. Nothing else the adapter does can fail it |
-| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node is ready for clients when every enabled adapter is serving or was refused at configured. A refused adapter has no `Health`: the node raises `adapter_refused` from the error `New` or `Start` returned, and the others keep serving |
+| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node is ready for clients when every enabled adapter is serving or was refused at configured. A refused adapter has no `Health`: the node raises `adapter_refused` from the error `New` or `Start` returned, and the others keep serving. Once the node has been ready, a lost listener is the only adapter condition that makes it not ready again: an adapter rebuilt for a `port` change, or one enabled later, leaves it ready |
 | **conditions** ([RFC 25 §3.1](rfc-25-observability.md#3.1%20Conditions)) | `adapter_listener_lost`, a listener whose `Accept` has kept failing for 60 s while serving (§6.4), `unhealthy`; `adapter_refused`, raised by the node for an adapter whose `New` or `Start` failed, `unhealthy` with the error; `sidecar_failed` (§3.5), `degraded`; `adapter_record_unreadable`, naming the protocol, `degraded` while `Adapter` bytes fail to decode (the usual cause a rolling upgrade across record versions), raising a ticket at once. Each derived from current evidence and cleared when it no longer holds |
 
 A refused setting is not readiness either: it is refused on every node that reads it, so steering clients elsewhere helps none of them, and an unready node would take the management API that can fix the setting out of service with it. A sidecar's failure and a single client's trouble are not readiness: a node
@@ -2446,11 +2456,12 @@ type ErrorRow struct {
 	Ops      []uint32 // nil: every operation
 	Versions *Range   // nil: every version
 	NoReply  bool     // no final reply (ErrDraining, and ErrMoved where no move signal fits, §3.1); a table that Holds sends an interim granting the request's credits; Status unused
-	// Hold, only in a table that Holds (NewOpTable refuses it elsewhere): a
-	// request whose latest attempt maps here is held and re-driven until the
-	// deadline Hold returns, counted from the hold's start, and is then
-	// answered Status. A deadline at or before the attempt's time answers
-	// Status now, with no further attempt. nil: answered Status at once.
+	// Hold, only in a table that Holds and never beside NoReply (NewOpTable
+	// refuses it elsewhere): a request whose latest attempt maps here is held
+	// and re-driven until the deadline Hold returns, counted from the hold's
+	// start, and is then answered Status. A deadline at or before the
+	// attempt's time answers Status now, with no further attempt. nil:
+	// answered Status at once.
 	Hold     func(err error, start time.Time) time.Time
 	Status   Status
 }
@@ -2537,9 +2548,10 @@ writes the compound's `Invocation.EncodeHead` first, then each member's result a
 `Members.EncodeResult` followed by that member's `Encode`, and last writes the
 head again over its own bytes with the compound's status and the count of
 results, so no result is copied. A chain encodes each member's reply, joins them with
-`HeaderCodec.Chain`, and calls `Wrap` once on the joined record: SMB's `Wrap`
-signs each member over its own bytes, `NextCommand` and padding included, and
-encrypts the record once. The joined record is one buffer, RFC 24 §2.5's
+`HeaderCodec.Chain`, which `core` calls between members only, and calls `Wrap`
+once on the joined record: SMB's `Wrap` pads the chain's last reply to 8
+(MS-SMB2 3.3.4.1.3, a SHOULD), signs each member over its own bytes,
+`NextCommand` and padding included, and encrypts the record once. The joined record is one buffer, RFC 24 §2.5's
 `Join` of the members' reply buffers, which takes over their reservations: the
 runner appends each reply to it, `Chain` pointing the one before at it, and the
 members' bounds summed hold it, since `ReplyLen` counts `Chain`'s padding. A
@@ -2593,10 +2605,10 @@ header fails `Decode` splits the chain the same way, but its refusal's record
 is not passed to `Wrap` (§5.5), so no `Wrap` of a joined record reaches it.
 The chain runs on past a refused member only when that header's `Next` is a
 valid step, forward and inside the record; a bad step ends the chain: nothing
-past it is read, and once the records before it are sent the connection closes
-(`Conn.Close`), since the members past it can be neither read nor answered and
-their message IDs and credits would wait out the client's timeout. With a nil header from
-`Decode` or `Unwrap` the
+past it is read, and once the records before it are sent, within the close's
+grace, the connection closes (`Conn.Close`), since the members past it can be
+neither read nor answered and their message IDs and credits would wait out the
+client's timeout. With a nil header from `Decode` or `Unwrap` the
 connection closes and nothing more is sent. Each such split is counted in
 `adapter_chain_splits_total` (§10.1).
 
@@ -4245,7 +4257,12 @@ a healthy node; any increase is a bug, and alerts as one.
 
 **How they are recorded.** The reader and writer count connections and bytes;
 the pipeline counts refusals by stage and replay hits; the metrics middleware
-(§4.7) times the stages around the call. Every series a request can touch is
+(§4.7) times the stages around the call. A compound the drain refuses whole
+is counted under `decode_args`; it is judged once its reply is reserved
+(§3.1), so `decode_args` and `reply_wait` are observed first and the
+judgment's time falls into `map_error`; a member the drain refuses with a
+reply is timed under `resolve_ids`, the stage that refused it. Every series a
+request can touch is
 resolved once per server: a table's per-protocol, per-operation and per-error
 series at the first `Route` that returns it, under its `OpTable.Protocol`, and
 what a request records before `Route` (its admission, its replay check, and a
