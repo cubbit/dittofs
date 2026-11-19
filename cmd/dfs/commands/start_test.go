@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -309,5 +310,14 @@ func TestAnswer(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%s: answer = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// dfs start looks for v1's database at the Kubernetes operator's default and
+// at the Docker image's state volume, wherever its bootstrap file is.
+func TestV1Databases(t *testing.T) {
+	want := []string{"/data/controlplane/controlplane.db", "/data/state/controlplane.db"}
+	if got := v1Databases(); !slices.Equal(got, want) {
+		t.Errorf("v1Databases() = %q, want %q", got, want)
 	}
 }

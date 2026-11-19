@@ -420,6 +420,8 @@ func TestImportRules(t *testing.T) {
 			}},
 		{"what dfs start imports", startImports, "start-imports",
 			[]string{"cmd/dfs/commands/kv.go imports " + module + "pkg/metadata/kvstore"}},
+		{"a file of dfs start renamed away", startImports, "start-imports-missing",
+			[]string{"cmd/dfs/commands/preflight.go is missing"}},
 		{"who imports enginewire", enginewireImporters, "enginewire-importers",
 			[]string{"pkg/vfs/vfs.go imports enginewire"}},
 		{"the CLI's closure", cliClosure, "cli-closure",

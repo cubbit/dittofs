@@ -13,8 +13,8 @@ import (
 // backend this build does not open, a store directory that is not set or
 // does not exist, so that a typo creates no empty store, a bootstrap naming
 // no node, and, as refuseV1's preflight check, a v1 deployment's database at
-// any of v1. It opens nothing
-// before every refusal has passed.
+// any of v1's paths: the two v1Databases and the one beside the bootstrap.
+// Nothing is opened before every refusal has passed.
 func openKV(cfg *bootstrap.Bootstrap, clock systemClock, v1 ...string) (*badgerkv.Store, error) {
 	if b := cfg.Metadata.Backend; b != "" && b != "badger" {
 		return nil, fmt.Errorf("metadata.backend %q is not one this build opens; it opens badger", b)

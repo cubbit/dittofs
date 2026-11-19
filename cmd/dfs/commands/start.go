@@ -45,6 +45,14 @@ Examples:
 // SIGINT or SIGTERM. Each error names the step that failed.
 func runStart(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
+	// The handler is installed first, so a signal while the store opens or
+	// the node is built stops the start rather than killing the process;
+	// Start then returns at once and the node is stopped.
+	base := cmd.Context()
+	ctx, unnotify := signal.NotifyContext(base, syscall.SIGINT, syscall.SIGTERM)
+	defer unnotify()
+	// Once a signal arrived, a second one ends the process at once.
+	context.AfterFunc(ctx, unnotify)
 
 	cfg, err := bootstrap.MustLoad(configPath, os.Environ())
 	if err != nil {
@@ -73,11 +81,6 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("building the node: %w", err)
 	}
 
-	base := cmd.Context()
-	ctx, unnotify := signal.NotifyContext(base, syscall.SIGINT, syscall.SIGTERM)
-	defer unnotify()
-	// Once a signal arrived, a second one ends the process at once.
-	context.AfterFunc(ctx, unnotify)
 	startErr := n.Start(ctx)
 	if startErr == nil {
 		<-ctx.Done()
