@@ -46,26 +46,27 @@ type SecretOwner struct {
 // SecretKind is what a secret holds. Its value is stored, so a new kind is
 // appended and none is renumbered; the zero kind names none. A kind is
 // declared only once RFC 13 §7 gives it a wrapping-key role, so the node
-// credential, the directory's bind credential and the OpenID Connect client
-// secret wait for theirs.
+// credential and the OpenID Connect client secret wait for theirs.
 type SecretKind uint8
 
 const (
-	SecretPassword         SecretKind = iota + 1 // a slow password hash
-	SecretNTHash                                 // only with NTLM enabled
-	SecretKeytab                                 // a Kerberos keytab
-	SecretMachinePassword                        // the computer account's password
-	SecretRemoteCredential                       // a remote store's credential
-	SecretKey                                    // a master-key reference or the API signing key
+	SecretPassword            SecretKind = iota + 1 // a slow password hash
+	SecretNTHash                                    // only with NTLM enabled
+	SecretKeytab                                    // a Kerberos keytab
+	SecretMachinePassword                           // the computer account's password
+	SecretRemoteCredential                          // a remote store's credential
+	SecretKey                                       // a master-key reference or the API signing key
+	SecretDirectoryCredential                       // the directory's bind password
 )
 
 var secretKinds = []string{
-	SecretPassword:         "password",
-	SecretNTHash:           "nt-hash",
-	SecretKeytab:           "keytab",
-	SecretMachinePassword:  "machine password",
-	SecretRemoteCredential: "remote credential",
-	SecretKey:              "key",
+	SecretPassword:            "password",
+	SecretNTHash:              "nt-hash",
+	SecretKeytab:              "keytab",
+	SecretMachinePassword:     "machine password",
+	SecretRemoteCredential:    "remote credential",
+	SecretKey:                 "key",
+	SecretDirectoryCredential: "directory credential",
 }
 
 func (k SecretKind) String() string {

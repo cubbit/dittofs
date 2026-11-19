@@ -8,6 +8,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -74,6 +76,9 @@ type State struct {
 	// keys is the ring Apply builds from Keytab; whatever the caller
 	// passes is replaced.
 	keys keyRing
+	// Directory is the identity.directory section as of this Apply; nil
+	// when the installation has no directory.
+	Directory *directory.Record
 	// Serial is set by Apply, whatever the caller passes: raised only when
 	// the State differs from the current one. A Caller's Built is the Serial
 	// of the State it was resolved under.
@@ -164,7 +169,8 @@ func counter(reg *metrics.Registry, spec metrics.Spec) *prometheus.CounterVec {
 // equal to the current one but for its Serial is not swapped in, so the
 // serial stays; any other gets a serial greater than every one before it.
 //
-// A State whose Settings fail Validate is refused and the current one kept.
+// A State whose Settings or Directory fail Validate, or whose NetBIOSName is
+// the directory's NetBIOS domain, is refused and the current one kept.
 //
 // decision: the serial is raised per differing State, not per Apply, so a
 // once-a-second reconcile that changed nothing empties no cache, and under
@@ -173,7 +179,14 @@ func counter(reg *metrics.Registry, spec metrics.Spec) *prometheus.CounterVec {
 // serial survives Stop, so a restarted server never repeats one a cache may
 // still hold. Overturned if Apply ever needs to run without that lock.
 func (s *Server) Apply(st State) error {
-	if err := st.Settings.Validate(); err != nil {
+	// The State keeps its own copy of the record, so the caller editing its
+	// record later changes nothing applied. A Record holds only values, no
+	// slice or map, so one level copies it whole.
+	if st.Directory != nil {
+		d := *st.Directory
+		st.Directory = &d
+	}
+	if err := st.validate(); err != nil {
 		return err
 	}
 	st.keys = buildRing(st.Keytab, s.logger)
@@ -182,7 +195,8 @@ func (s *Server) Apply(st State) error {
 	cur := s.state.Load()
 	if cur != nil {
 		st.Serial = cur.Serial
-		// DeepEqual, since a State's keytab versions are compared by value.
+		// DeepEqual, since a State's keytab versions and Directory are
+		// compared by value.
 		if reflect.DeepEqual(st, *cur) {
 			return nil
 		}
@@ -191,6 +205,48 @@ func (s *Server) Apply(st State) error {
 	st.Serial = s.serial
 	s.state.Store(&st)
 	return nil
+}
+
+// validate refuses settings or a directory record that fail their Validate,
+// and an installation NetBIOS name that is the directory's NetBIOS domain,
+// which would make a local NTLMv2 sign-in's domain name both.
+func (st *State) validate() error {
+	if err := st.Settings.Validate(); err != nil {
+		return err
+	}
+	d := st.Directory
+	if d == nil {
+		return nil
+	}
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	if equalFoldASCII(st.Settings.NetBIOSName, d.NetBIOSDomain) {
+		return fmt.Errorf("identity: netbios_name %q is identity.directory's netbios_domain %q", st.Settings.NetBIOSName, d.NetBIOSDomain)
+	}
+	return nil
+}
+
+// equalFoldASCII compares a and b with ASCII letters folded and every other
+// byte as itself, so a Unicode letter that folds to an ASCII one, the Kelvin
+// sign to k among them, never matches.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range len(a) {
+		x, y := a[i], b[i]
+		if 'a' <= x && x <= 'z' {
+			x -= 'a' - 'A'
+		}
+		if 'a' <= y && y <= 'z' {
+			y -= 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
 }
 
 // Current is the serial of the State a Resolve starting now reads; 0 before
