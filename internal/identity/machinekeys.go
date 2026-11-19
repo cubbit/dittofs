@@ -37,11 +37,14 @@ type machineRing struct {
 	keys  map[int32][]machineKey // by encryption type, current first
 }
 
+// accountName is the computer account's name without its trailing $.
+func accountName(account string) string { return strings.TrimSuffix(account, "$") }
+
 // machineSalt is the computer account's salt: the realm in upper case, "host",
 // the account's name without its $ in lower case, "." and the realm in lower
 // case.
 func machineSalt(realm, account string) string {
-	return strings.ToUpper(realm) + "host" + strings.ToLower(strings.TrimSuffix(account, "$")) + "." + strings.ToLower(realm)
+	return strings.ToUpper(realm) + "host" + strings.ToLower(accountName(account)) + "." + strings.ToLower(realm)
 }
 
 // stringToKey is RFC 3962's string-to-key of password under salt with
