@@ -58,11 +58,10 @@ var reservedIDs = map[uint32]entity.Principal{0: entity.RootPrincipal, 65534: en
 // of which exists yet, and "no one holds it" would be read by a client as
 // data. Withdraw each when its setting or rows land.
 func deferred(scheme identity.Scheme) error {
-	switch scheme {
-	case identity.SchemeOwner, identity.SchemeOIDC:
+	switch {
+	case scheme == identity.SchemeOwner, scheme == identity.SchemeOIDC:
 		return fmt.Errorf("%w: the %d scheme is not served yet", vfserr.ErrInvalid, scheme)
-	case identity.SchemeUID, identity.SchemeGID, identity.SchemeSID, identity.SchemeKrb, identity.SchemeDir,
-		identity.SchemeUserName, identity.SchemeGroupName, identity.SchemeQualified:
+	case scheme.Stored(), scheme == identity.SchemeQualified:
 		return nil
 	}
 	return fmt.Errorf("%w: unknown scheme %d", vfserr.ErrInvalid, scheme)
@@ -136,9 +135,13 @@ func (s *Server) Spell(ctx context.Context, p entity.Principal, scheme identity.
 		}
 		sp.Num = uint32(n)
 	case identity.SchemeSID:
-		d, _, err := sid.DecodeSID([]byte(v))
+		d, n, err := sid.DecodeSID([]byte(v))
 		if err != nil {
 			return identity.Spelling{}, fmt.Errorf("identity: %v holds an undecodable SID: %w", p, err)
+		}
+		// Find re-encodes the SID without the trailing bytes and would miss the row.
+		if n != len(v) {
+			return identity.Spelling{}, fmt.Errorf("identity: %v holds a SID with %d trailing bytes", p, len(v)-n)
 		}
 		sp.SID = *d
 	default:
