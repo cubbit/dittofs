@@ -975,9 +975,9 @@ lock for the reason above, is `TestNLMSystemRpcbindRegistration` in `test/e2e/nl
 
 ## Command reference
 
-Every `dt` command with its usage line and flags, which `dt COMMAND --help` also prints. `dt docs`
-writes this section from dt's commands, and `dt docs --check`, in `lint-repo`, fails when it is out
-of date.
+Every `dt` command with its usage line and flags, from dt's own command definitions. A command
+shown with `[ARGS]` passes its arguments on, and its own `--help` lists them. `dt docs` writes this
+section from dt's commands, and `dt docs --check`, in `lint-repo`, fails when it is out of date.
 
 <!-- dt-commands:begin -->
 <!-- Generated from dt's commands by test/harness/bin/dt docs. Do not edit by hand. -->
