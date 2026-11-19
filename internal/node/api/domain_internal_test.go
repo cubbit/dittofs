@@ -111,6 +111,12 @@ func TestKeytabNamesCheckedInTheWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		_, err := tx.PutSetting(entity.Setting{Scope: installation, Key: directoryRealm, Value: []byte(`"AD.EXAMPLE"`)}, 0)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	inTx, err := keytabs.check(t.Context(), Deps{Store: cp}, b)
 	if err != nil {
 		t.Fatalf("the check before any join: %v, want admitted", err)

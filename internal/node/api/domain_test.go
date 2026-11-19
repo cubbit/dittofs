@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,15 +14,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/cubbit/dittofs/internal/identity"
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/internal/node/api"
+	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	pid "github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
@@ -30,6 +35,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // heldJoins passes each hold through to identity's join hold and records
@@ -112,27 +118,88 @@ func provider(t *testing.T, cp kvstore.ControlPlane) sealing {
 }
 
 // domain is the API as an admin over Badger on disk, identity's join hold
-// behind a recorder and, when it seals, the secret provider.
+// behind a recorder, identity itself as the directory a Kerberos name's link
+// is asked of, over an in-memory directory of realm AD.EXAMPLE behind a
+// fault wrapper on an injected clock, and, when it seals, the secret
+// provider.
 type domain struct {
 	*served
 	disk  *onDisk
 	joins *heldJoins
+	ids   *identity.Server
+	dir   *identitytest.Directory
+	fault *switched
+	clock *sim.TestClock
+}
+
+// switched is the directory's fault, the schedule last stored, none letting
+// every call through.
+type switched struct{ cur atomic.Pointer[sim.Schedule] }
+
+func (s *switched) At(op string, key []byte) (time.Duration, int, error) {
+	if f := s.cur.Load(); f != nil {
+		return f.At(op, key)
+	}
+	return 0, 0, nil
+}
+
+// fail sets the rules every later dial, bind and search of the directory
+// runs under; none lets every call through.
+func (d *domain) fail(t *testing.T, rules ...sim.Rule) {
+	t.Helper()
+	if len(rules) == 0 {
+		d.fault.cur.Store(nil)
+		return
+	}
+	s, err := sim.NewSchedule(1, d.clock, rules...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.fault.cur.Store(s)
 }
 
 func serveDomain(t *testing.T, seal bool) *domain {
 	t.Helper()
+	return serveDomainAs(t, seal, as(entity.RoleAdmin, false))
+}
+
+// serveDomainAs is serveDomain for the caller authenticate answers.
+func serveDomainAs(t *testing.T, seal bool, authenticate func(*http.Request) (auth.Caller, error)) *domain {
+	t.Helper()
 	disk := newOnDisk(t)
-	ids, err := identity.New(identity.Deps{Store: disk.st, Clock: sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))})
+	p := provider(t, disk.cp)
+	d := &domain{disk: disk, dir: identitytest.NewDirectory("DC=ad,DC=example"), fault: &switched{},
+		clock: sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))}
+	f := identitytest.NewFaultyDirectory(d.dir.Dial, d.fault)
+	var err error
+	if d.ids, err = identity.New(identity.Deps{Store: disk.st, Clock: d.clock, Secrets: p.p, Directory: f.Dial}); err != nil {
+		t.Fatal(err)
+	}
+	name, pw := d.dir.Account()
+	ref := entity.SecretRef(uuid.New())
+	owner := entity.SecretOwner{Scope: installation, Key: "identity.directory"}
+	bind, err := p.p.Seal(t.Context(), secrets.Protocol, entity.SecretDirectoryCredential, owner, ref, pw, secrets.Meta{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	j := &heldJoins{next: ids}
-	edits := []func(*api.Deps){disk.use, func(d *api.Deps) { d.Joins = j }}
-	if seal {
-		p := provider(t, disk.cp)
-		edits = append(edits, func(d *api.Deps) { d.Sealer = p })
+	if err := disk.cp.PutSecret(t.Context(), bind, 0); err != nil {
+		t.Fatal(err)
 	}
-	return &domain{serve(t, as(entity.RoleAdmin, false), edits...), disk, j}
+	rec := directory.Record{Schema: directory.SchemaAD, Address: "ldaps://dc.ad.example", Base: "DC=ad,DC=example",
+		BindName: name, BindCredential: ref, Realm: "AD.EXAMPLE", NetBIOSDomain: "AD"}
+	settings := identity.Settings{IDRange: entity.DefaultIDRange, NTLM: true, NetBIOSName: "DITTOFS", DirectoryStaleGrace: 15 * time.Minute}
+	if err := d.ids.Apply(identity.State{Settings: settings, Directory: &rec}); err != nil {
+		t.Fatal(err)
+	}
+	d.joins = &heldJoins{next: d.ids}
+	edits := []func(*api.Deps){disk.use, func(deps *api.Deps) { deps.Joins, deps.Directory = d.joins, d.ids }}
+	if seal {
+		edits = append(edits, func(deps *api.Deps) { deps.Sealer = p })
+	}
+	d.served = serve(t, authenticate, edits...)
+	// Registered after serve's, so identity stops before its leak check.
+	t.Cleanup(func() { _ = d.ids.Stop(context.Background()) })
+	return d
 }
 
 // operations is every operation the store holds.
@@ -522,6 +589,141 @@ func TestKerberosNameKeptWithoutTheDirectory(t *testing.T) {
 	}
 	if got, ok := krbOf(); ok {
 		t.Errorf("Kerberos name after its removal: %+v, want none", got)
+	}
+}
+
+// krbLinked is the krb spelling the user id holds, false for none.
+func (s *served) krbLinked(t *testing.T, id string) (entity.ProtocolID, bool) {
+	t.Helper()
+	u, _ := s.userRecord(t, id)
+	i := slices.IndexFunc(u.IDs, func(id entity.ProtocolID) bool { return id.Scheme == entity.SchemeKerberos })
+	if i < 0 {
+		return entity.ProtocolID{}, false
+	}
+	return u.IDs[i], true
+}
+
+// postKerberos is POST /users of a user name holding the Kerberos name krb.
+func (s *served) postKerberos(t *testing.T, name, krb string) reply {
+	t.Helper()
+	return s.do(t, http.MethodPost, "/api/v1/users", `{"spec":{"name":"`+name+`","kerberos":"`+krb+`"}}`, "Idempotency-Key", name)
+}
+
+// A new Kerberos name is linked as identity's directory answers it, asked
+// before the write: a name in the directory's realm for the SID of the user
+// it holds under the user part, a name in another realm for none; a name it
+// holds no entry for is refused 400 naming spec.kerberos, and one it cannot
+// answer for, unreachable or able to serve only a cached answer past its
+// TTL, is refused 503 unavailable, each writing no user.
+func TestKerberosLinkAsksTheDirectory(t *testing.T) {
+	d := serveDomain(t, false)
+	for _, n := range []string{"alice", "dave", "erin"} {
+		d.dir.AddUser(t, n, nil)
+	}
+	r := d.postKerberos(t, "alice", "alice@AD.EXAMPLE")
+	if r.status != http.StatusCreated {
+		t.Fatalf("a name the directory holds: answered %d %s, want 201", r.status, r.body)
+	}
+	var alice apiv1.User
+	if err := json.Unmarshal(r.body, &alice); err != nil {
+		t.Fatal(err)
+	}
+	want, err := d.ids.KerberosLinkSID(t.Context(), "alice@AD.EXAMPLE")
+	if err != nil || want.Revision == 0 {
+		t.Fatalf("identity's link SID for alice: %v, %v; want a SID", sid.FormatSID(&want), err)
+	}
+	var wantLinked bytes.Buffer
+	sid.EncodeSID(&wantLinked, &want)
+	if got, ok := d.krbLinked(t, alice.ID); !ok || got.Value != "alice@AD.EXAMPLE" || got.Linked != wantLinked.String() {
+		t.Errorf("alice's krb spelling %+v, want alice@AD.EXAMPLE linked for %s", got, sid.FormatSID(&want))
+	}
+
+	r = d.postKerberos(t, "carol", "carol@OTHER.EXAMPLE")
+	if r.status != http.StatusCreated {
+		t.Fatalf("a name in another realm: answered %d %s, want 201", r.status, r.body)
+	}
+	var carol apiv1.User
+	if err := json.Unmarshal(r.body, &carol); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := d.krbLinked(t, carol.ID); !ok || got.Linked != "" {
+		t.Errorf("carol's krb spelling %+v, want carol@OTHER.EXAMPLE linked for none", got)
+	}
+
+	noUser := func(name string) {
+		t.Helper()
+		if _, ok, err := d.store.UserNamed(t.Context(), name); err != nil || ok {
+			t.Errorf("user %s: found %v (%v), want none written", name, ok, err)
+		}
+	}
+	r = d.postKerberos(t, "nobody", "nobody@AD.EXAMPLE")
+	if r.status != http.StatusBadRequest || r.problem(t).Field != "spec.kerberos" {
+		t.Errorf("a name the directory holds no entry for: answered %d %s, want 400 naming spec.kerberos", r.status, r.body)
+	}
+	noUser("nobody")
+
+	// erin's entry is cached, then the directory fails past its TTL, within
+	// the grace a lookup could still be served from.
+	if _, err := d.ids.Find(t.Context(), pid.Spelling{Scheme: pid.SchemeQualified, Text: `AD\erin`}, pid.FindOpts{}); errors.Is(err, vfserr.ErrUnavailable) {
+		t.Fatalf("erin's lookup: %v, want answered", err)
+	}
+	d.clock.Advance(5*time.Minute + time.Second)
+	d.fail(t, sim.Rule{Op: "*", Key: "*", Action: sim.FaultAction{Err: errors.New("injected directory fault")}})
+	if _, err := d.ids.Find(t.Context(), pid.Spelling{Scheme: pid.SchemeQualified, Text: `AD\erin`}, pid.FindOpts{}); errors.Is(err, vfserr.ErrUnavailable) {
+		t.Fatalf("erin's lookup within the grace: %v, want the stale answer: the test's premise", err)
+	}
+	for _, name := range []string{"dave", "erin"} {
+		r = d.postKerberos(t, name, name+"@AD.EXAMPLE")
+		if r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
+			t.Errorf("%s with the directory failing: answered %d %s, want 503 unavailable", name, r.status, r.body)
+		}
+		noUser(name)
+	}
+}
+
+// A Kerberos name is checked and stored as identity finds it: one @, a
+// user part and a realm, no space or control character, or 400 naming
+// spec.kerberos; the realm's letters upper-cased, so a name differing from a
+// held one only in its realm's case is refused 409; the user part kept byte
+// for byte, as identity's Find compares it, so one differing only in its
+// case is another name.
+func TestKerberosNameShape(t *testing.T) {
+	d := serveDomain(t, false)
+	for _, bad := range []string{"alice", "alice@", "@AD.EXAMPLE", "a@b@AD.EXAMPLE", "al ice@AD.EXAMPLE", "alice@AD.EXAMPLE\\u0001", "alice@AD .EXAMPLE"} {
+		r := d.postKerberos(t, "bad", bad)
+		if r.status != http.StatusBadRequest || r.problem(t).Field != "spec.kerberos" {
+			t.Errorf("Kerberos name %q: answered %d %s, want 400 naming spec.kerberos", bad, r.status, r.body)
+		}
+	}
+	alice, _ := d.createUser(t, apiv1.UserSpec{Name: "alice", Kerberos: "alice@other.example"}, "alice")
+	if got, _ := d.krbLinked(t, alice.ID); got.Value != "alice@OTHER.EXAMPLE" {
+		t.Errorf("alice's krb spelling %q, want its realm upper-cased, alice@OTHER.EXAMPLE", got.Value)
+	}
+	if alice.Spec.Kerberos != "alice@OTHER.EXAMPLE" {
+		t.Errorf("answer's Kerberos name %q, want alice@OTHER.EXAMPLE", alice.Spec.Kerberos)
+	}
+	r := d.postKerberos(t, "alice2", "alice@Other.Example")
+	if r.status != http.StatusConflict || r.problem(t).Field != "spec.kerberos" {
+		t.Errorf("alice's name with its realm in another case: answered %d %s, want 409 naming spec.kerberos", r.status, r.body)
+	}
+	if r := d.postKerberos(t, "alice3", "Alice@OTHER.EXAMPLE"); r.status != http.StatusCreated {
+		t.Errorf("alice's name with its user part in another case: answered %d %s, want 201, another name", r.status, r.body)
+	}
+}
+
+// A Kerberos name held by a user hidden from the caller is not confirmed as
+// another user's: the store refuses its write as it refuses any held
+// spelling.
+func TestKerberosNameOfAHiddenUser(t *testing.T) {
+	op := serveDomainAs(t, false, as(entity.RoleOperator, false))
+	adm := entity.User{Principal: entity.NewUser(), Name: "root2", Role: entity.RoleAdmin,
+		IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "5002"}, {Scheme: entity.SchemeKerberos, Value: "adm@OTHER.EXAMPLE"}}}
+	if _, err := op.store.PutUser(t.Context(), adm, 0, entity.Alloc{RID: true}); err != nil {
+		t.Fatal(err)
+	}
+	r := op.postKerberos(t, "eve", "adm@OTHER.EXAMPLE")
+	if r.status != http.StatusConflict || strings.Contains(r.problem(t).Detail, "user") {
+		t.Errorf("an admin's name, as an operator: answered %d %s, want 409 naming no user", r.status, r.body)
 	}
 }
 

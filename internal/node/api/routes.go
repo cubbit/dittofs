@@ -191,10 +191,10 @@ var baseRoutes = []route{
 	{method: http.MethodGet, pattern: "/api/v1/shares/{id}/quotas/{sub}", kind: entity.ResourceQuota, right: auth.View, target: pairRef, sub: subPrincipal, serve: watch(quota)},
 	{method: http.MethodPut, pattern: "/api/v1/shares/{id}/quotas/{sub}", kind: entity.ResourceQuota, right: auth.Shares, target: pairRef, sub: subPrincipal, serve: write(quotas, nil, putQuota)},
 	{method: http.MethodGet, pattern: "/api/v1/users", kind: entity.ResourceUser, right: auth.View, serve: list(usersList), params: []param{{name: "name", desc: "The user of this name: a list of zero or one."}}},
-	{method: http.MethodPost, pattern: "/api/v1/users", kind: entity.ResourceUser, right: auth.Principals, serve: write(users, kerberosLink, createUser)},
+	{method: http.MethodPost, pattern: "/api/v1/users", kind: entity.ResourceUser, right: auth.Principals, mayStart: apiv1.OpUserDelete, serve: write(users, kerberosLink, createUser)},
 	{method: http.MethodGet, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.View, serve: watch(user)},
-	{method: http.MethodPut, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, serve: write(users, kerberosLink, putUser)},
-	{method: http.MethodPatch, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, serve: write(users, kerberosLink, putUser)},
+	{method: http.MethodPut, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, mayStart: apiv1.OpUserDelete, serve: write(users, kerberosLink, putUser)},
+	{method: http.MethodPatch, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, mayStart: apiv1.OpUserDelete, serve: write(users, kerberosLink, putUser)},
 	{method: http.MethodDelete, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, starts: apiv1.OpUserDelete, serve: write(tagsOf(users), nil, deleteUser)},
 	{method: http.MethodGet, pattern: "/api/v1/groups", kind: entity.ResourceGroup, right: auth.View, serve: list(groupsList), params: []param{{name: "name", desc: "The group of this name: a list of zero or one."}}},
 	{method: http.MethodPost, pattern: "/api/v1/groups", kind: entity.ResourceGroup, right: auth.Principals, serve: write(groups, nil, createGroup)},
@@ -216,6 +216,11 @@ var baseRoutes = []route{
 	{method: http.MethodDelete, pattern: "/api/v1/stores/{id}", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(tagsOf(stores), settingKeys(storeScope), deleteStore)},
 	{method: http.MethodPut, pattern: "/api/v1/stores/{id}/credential", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(credentials, storeCredentials.seal, storeCredentials.put)},
 	{method: http.MethodDelete, pattern: "/api/v1/stores/{id}/credential", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(tagsOf(credentials), nil, storeCredentials.remove)},
+	// decision: the keytab's writes take the installation right, an admin's,
+	// as join-domain and rotate-machine-password do, rather than the
+	// operator's right over settings and the secrets they name: the keytab
+	// holds the keys Kerberos sign-in to every share is verified with.
+	// Overturned if the role table gives identity.keytab to an operator.
 	{method: http.MethodPut, pattern: "/api/v1/installation/keytab", kind: entity.ResourceInstallation, right: auth.Installation, serve: write(keytabWrites, keytabs.seal, keytabs.put)},
 	{method: http.MethodDelete, pattern: "/api/v1/installation/keytab", kind: entity.ResourceInstallation, right: auth.Installation, serve: write(tagsOf(keytabWrites), nil, keytabs.remove)},
 	{method: http.MethodGet, pattern: "/api/v1/namespaces", kind: entity.ResourceNamespace, right: auth.View, serve: list(namespaceList)},

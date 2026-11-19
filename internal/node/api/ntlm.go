@@ -1,7 +1,7 @@
 package api
 
 import (
-	"bytes"
+	"encoding/json"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -11,9 +11,12 @@ import (
 const ntlmKey = "identity.ntlm"
 
 // ntlmOn reports whether the installation's identity.ntlm record s, ok
-// false for none, leaves NTLM on: none leaves the default, on.
+// false for none, leaves NTLM on, its value decoded as identity decodes it,
+// a JSON bool: none, and a value that is no bool, which the settings table
+// refuses, leave the default, on.
 func ntlmOn(s entity.Setting, ok bool) bool {
-	return !ok || string(bytes.TrimSpace(s.Value)) != "false"
+	var on bool
+	return !ok || json.Unmarshal(s.Value, &on) != nil || on
 }
 
 // ntlmWrite runs write, a write of key at scope inside tx, and, for the

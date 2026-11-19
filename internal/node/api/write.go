@@ -55,9 +55,6 @@ type writing[B any] struct {
 	// reaches, such as the installation's, which its audit records and its
 	// handler's request name.
 	self func(context.Context, Deps) ([16]byte, error)
-	// starting is set by action alone, whose pre-write step's result is the
-	// opStart naming the operation the row starts.
-	starting bool
 }
 
 // write adapts a write. Its checks run in this order: a query parameter its
@@ -110,22 +107,23 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		}
 		created := rt.creates()
 		sub := r.PathValue("sub")
-		if w.self != nil {
-			if id, err = w.self(ctx, s.d); err != nil {
-				return answer{}, err
-			}
-		}
 		rec := s.auditOf(ctx, r)
 		rec.Target.Kind = w.kind
-		if !created {
-			rec.Target.ID = rt.ref(id, sub)
-		}
 		refused := rec // as the request arrived, holding nothing a failed attempt set
 		defer func() {
 			if err != nil {
 				s.refuse(ctx, refused, err)
 			}
 		}()
+		if w.self != nil {
+			if id, err = w.self(ctx, s.d); err != nil {
+				return answer{}, err
+			}
+		}
+		if !created {
+			rec.Target.ID = rt.ref(id, sub)
+		}
+		refused = rec
 		for k := range r.URL.Query() {
 			if !slices.Contains(rt.query, k) {
 				return answer{}, &fieldError{field: k, detail: "not a parameter of this write"}
@@ -143,6 +141,19 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			return answer{}, &fieldError{field: "Idempotency-Key", detail: "this call carries a credential, so it keeps no idempotency record and takes no key"}
 		}
 		rq := request[B]{ID: id, Sub: sub, Query: r.URL.Query()}
+		prepared := false
+		if rt.keyless {
+			// The credential the body decodes is prepare's from the call on,
+			// which clears it; a refusal before it clears it here.
+			defer func() {
+				if !prepared {
+					wipe(reflect.ValueOf(&rq.Body).Elem())
+				}
+			}()
+		}
+		if w.secret != nil {
+			defer clear(body) // it holds the secret's value, encoded
+		}
 		rq.d = s.d
 		rq.own = func(ctx context.Context, target entity.ResourceRef, change []byte, fn func(entity.ControlPlaneTx) error) error {
 			a := refused
@@ -199,15 +210,13 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		// depended on. Overturned if a step's answer must be fresher than
 		// one request.
 		var in I
+		prepared = true
 		if prepare != nil {
 			if in, err = prepare(ctx, rq); err != nil {
 				return answer{}, err
 			}
 		}
-		var st opStart
-		if w.starting {
-			st = any(in).(opStart) // set only by action, whose step returns an opStart
-		}
+		st, _ := any(in).(opStart) // an action's step names the operation its row starts
 		committed := false
 		defer func() {
 			if !committed && st.release != nil {
@@ -565,6 +574,24 @@ func diff(path string, o, n any, secret func(string) bool, out map[string]any) {
 	for k, v := range nm {
 		if _, ok := om[k]; !ok {
 			diff(at(k), nil, v, secret, out)
+		}
+	}
+}
+
+// wipe zeroes every byte slice v holds, through its structs and pointers.
+func wipe(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.Slice:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			clear(v.Bytes())
+		}
+	case reflect.Struct:
+		for i := range v.NumField() {
+			wipe(v.Field(i))
+		}
+	case reflect.Pointer:
+		if !v.IsNil() {
+			wipe(v.Elem())
 		}
 	}
 }

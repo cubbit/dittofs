@@ -144,23 +144,36 @@ func TestDomainAuditsNameTheInstallation(t *testing.T) {
 	}
 }
 
-// A machine's Kerberos name moved to a user keeps the machine's linked SID
-// with no directory to ask: the user holds the name linked as the machine
-// held it, the machine is found no more, and its deletion runs.
+// A machine's Kerberos name moved to a user by an admin keeps the machine's
+// linked SID with no directory to ask: the write answers 202 with the
+// machine's user deletion and a Location naming it, its audit record's
+// outcome is that operation's ID, the user holds the name linked as the
+// machine held it, and the machine is found no more. A second user then
+// naming the name is refused 409, as another user holds it.
 func TestMachineSpellingMovedToAUser(t *testing.T) {
 	s := serve(t, as(entity.RoleAdmin, false))
-	var linked bytes.Buffer
-	sid.EncodeSID(&linked, sid.ParseSIDMust("S-1-5-21-1-2-3-1199"))
-	krb := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "host/build01@AD.EXAMPLE", Linked: linked.String()}
-	m := entity.Principal{Kind: entity.PrincipalMachine, ID: entity.NewPrincipalID()}
-	if _, err := s.store.PutUser(t.Context(), entity.User{Principal: m, IDs: entity.ProtocolIDs{krb}}, 0, entity.Alloc{}); err != nil {
-		t.Fatal(err)
-	}
+	krb, m := putMachine(t, s, "host/build01@AD.EXAMPLE")
 	alice, _ := s.createUser(t, apiv1.UserSpec{Name: "alice"}, "alice")
 	r := s.do(t, http.MethodPut, "/api/v1/users/"+alice.ID, `{"spec":{"name":"alice","uid":`+strconv.FormatUint(uint64(*alice.Spec.UID), 10)+`,"kerberos":"host/build01@AD.EXAMPLE"}}`,
 		"If-Match", strconv.Quote(strconv.FormatUint(alice.Generation, 10)))
-	if r.status != http.StatusOK {
-		t.Fatalf("PUT moving the machine's name: answered %d %s, want 200", r.status, r.body)
+	if r.status != http.StatusAccepted {
+		t.Fatalf("PUT moving the machine's name: answered %d %s, want 202", r.status, r.body)
+	}
+	del := s.opNamed(t, apiv1.OpUserDelete)
+	if del.Target.Kind != entity.ResourceUser || !bytes.Equal(del.Target.ID, m.ID[:]) {
+		t.Errorf("deletion %+v, want a user deletion of the machine %v", del.Target, m.ID)
+	}
+	id := uuid.UUID(del.ID).String()
+	var op apiv1.Operation
+	if err := json.Unmarshal(r.body, &op); err != nil || op.ID != id {
+		t.Errorf("answer %s: want the deletion %s", r.body, id)
+	}
+	if loc := r.header.Get("Location"); loc != "/api/v1/operations/"+id {
+		t.Errorf("Location %q, want the deletion %s", loc, id)
+	}
+	audits := s.audits(t)
+	if last := audits[len(audits)-1]; string(last.Outcome) != id || last.Target.Kind != entity.ResourceUser {
+		t.Errorf("the write's audit: outcome %q on %v, want the deletion's ID %s on the user", last.Outcome, last.Target.Kind, id)
 	}
 	u, _ := s.userRecord(t, alice.ID)
 	if i := slices.IndexFunc(u.IDs, func(id entity.ProtocolID) bool { return id.Scheme == entity.SchemeKerberos }); i < 0 || u.IDs[i] != krb {
@@ -169,9 +182,41 @@ func TestMachineSpellingMovedToAUser(t *testing.T) {
 	if _, ok, err := s.store.User(t.Context(), m); err != nil || ok {
 		t.Errorf("the machine after the move: found %v (%v), want gone", ok, err)
 	}
-	del := s.opNamed(t, apiv1.OpUserDelete)
-	if del.Target.Kind != entity.ResourceUser || !bytes.Equal(del.Target.ID, m.ID[:]) {
-		t.Errorf("deletion %+v, want a user deletion of the machine %v", del.Target, m.ID)
+	r = s.do(t, http.MethodPost, "/api/v1/users", `{"spec":{"name":"bob","kerberos":"host/build01@AD.EXAMPLE"}}`, "Idempotency-Key", "bob")
+	if r.status != http.StatusConflict || r.problem(t).Field != "spec.kerberos" {
+		t.Errorf("a second user naming the moved name: answered %d %s, want 409 naming spec.kerberos", r.status, r.body)
+	}
+}
+
+// putMachine writes a machine holding the krb spelling name, linked, and
+// returns the spelling and the machine.
+func putMachine(t *testing.T, s *served, name string) (entity.ProtocolID, entity.Principal) {
+	t.Helper()
+	var linked bytes.Buffer
+	sid.EncodeSID(&linked, sid.ParseSIDMust("S-1-5-21-1-2-3-1199"))
+	krb := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: name, Linked: linked.String()}
+	m := entity.Principal{Kind: entity.PrincipalMachine, ID: entity.NewPrincipalID()}
+	if _, err := s.store.PutUser(t.Context(), entity.User{Principal: m, IDs: entity.ProtocolIDs{krb}}, 0, entity.Alloc{}); err != nil {
+		t.Fatal(err)
+	}
+	return krb, m
+}
+
+// An operator may not move a machine's Kerberos name to a user: the write is
+// refused 409 naming spec.kerberos, the machine kept and no deletion
+// started.
+func TestMachineSpellingMoveRefusedToAnOperator(t *testing.T) {
+	s := serve(t, as(entity.RoleOperator, false))
+	_, m := putMachine(t, s, "host/build01@AD.EXAMPLE")
+	r := s.do(t, http.MethodPost, "/api/v1/users", `{"spec":{"name":"alice","kerberos":"host/build01@AD.EXAMPLE"}}`, "Idempotency-Key", "alice")
+	if r.status != http.StatusConflict || r.problem(t).Field != "spec.kerberos" {
+		t.Errorf("an operator moving a machine's name: answered %d %s, want 409 naming spec.kerberos", r.status, r.body)
+	}
+	if _, ok, err := s.store.User(t.Context(), m); err != nil || !ok {
+		t.Errorf("the machine after the refusal: found %v (%v), want kept", ok, err)
+	}
+	if ops := s.operations(t); len(ops) != 0 {
+		t.Errorf("operations: %+v, want none", ops)
 	}
 }
 
@@ -193,12 +238,13 @@ func (d *domain) secretRows(t *testing.T) int {
 	return n
 }
 
-// keytabOf is a keytab of one AES256 key for name, its etype relabelled
-// when etype is another.
+// keytabOf is a keytab of one AES256 key for name in AD.EXAMPLE, its etype
+// relabelled when etype is another.
 func keytabOf(t *testing.T, name string, etype int32) []byte {
 	t.Helper()
+	b := keytabIn(t, name, "AD.EXAMPLE")
 	kt := keytab.New()
-	if err := kt.AddEntry(name, "AD.EXAMPLE", "pw", time.Unix(1, 0), 1, etypeID.AES256_CTS_HMAC_SHA1_96); err != nil {
+	if err := kt.Unmarshal(b); err != nil {
 		t.Fatal(err)
 	}
 	kt.Entries[0].Key.KeyType = etype
@@ -209,13 +255,20 @@ func keytabOf(t *testing.T, name string, etype int32) []byte {
 	return b
 }
 
-// A keytab identity's check refuses, and one holding a key for a name the
-// computer account holds, are each refused before anything is written; with a sealer, the empty settings table refuses the
-// setting naming it, so no version is written either. The keytab's bytes are
-// found nowhere.
-//
-// ponytail: no test reads a sealed keytab back raw, since the settings table
-// the setting's write needs is not handed in yet; test it once it is.
+// keytabIn is a keytab of one AES256 key for name in realm.
+func keytabIn(t *testing.T, name, realm string) []byte {
+	t.Helper()
+	kt := keytab.New()
+	if err := kt.AddEntry(name, realm, "pw", time.Unix(1, 0), 1, etypeID.AES256_CTS_HMAC_SHA1_96); err != nil {
+		t.Fatal(err)
+	}
+	b, err := kt.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 const keytabPath = "/api/v1/installation/keytab"
 
 func putKeytab(b []byte) string { return `{"spec":{"value":"` + b64(string(b)) + `"}}` }
@@ -242,9 +295,19 @@ func TestKeytabRouteRefusals(t *testing.T) {
 	}
 }
 
+// A keytab identity's check refuses, and one holding a key for a name the
+// computer account holds in the directory's realm, compared with ASCII
+// letters folded, are each refused before anything is written; with a
+// sealer, the empty settings table refuses the setting naming any other,
+// one for the account's name in another realm among them, so no version is
+// written either. The keytab's bytes are found nowhere.
+//
+// ponytail: no test reads a sealed keytab back raw, since the settings table
+// the setting's write needs is not handed in yet; test it once it is.
 func TestKeytabRoute(t *testing.T) {
 	good := keytabOf(t, "cifs/nas.ad.example", etypeID.AES256_CTS_HMAC_SHA1_96)
 	d := serveDomain(t, true)
+	d.putSetting(t, installation, "identity.directory.realm", `"ad.example"`)
 	j := entity.MachineJoin{Joined: true, Account: "DFS$", Names: []string{"HOST/dfs.ad.example"}}
 	if err := d.store.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetMachineJoin(j) }); err != nil {
 		t.Fatal(err)
@@ -252,6 +315,8 @@ func TestKeytabRoute(t *testing.T) {
 	rc4 := keytabOf(t, "cifs/nas.ad.example", etypeID.RC4_HMAC)
 	held := keytabOf(t, "host/dfs.ad.example", etypeID.AES256_CTS_HMAC_SHA1_96)
 	account := keytabOf(t, "dfs$", etypeID.AES256_CTS_HMAC_SHA1_96)
+	elsewhere := keytabIn(t, "host/dfs.ad.example", "OTHER.EXAMPLE")
+	before := d.secretRows(t)
 	var replies []reply
 	for _, tc := range []struct {
 		name   string
@@ -263,6 +328,7 @@ func TestKeytabRoute(t *testing.T) {
 		{"a keytab for a name the join holds", held, http.StatusBadRequest, "invalid"},
 		{"a keytab for the computer account's own name", account, http.StatusBadRequest, "invalid"},
 		{"a good keytab, refused by the empty table", good, http.StatusBadRequest, "unknown_key"},
+		{"the account's name in another realm, refused by the empty table", elsewhere, http.StatusBadRequest, "unknown_key"},
 	} {
 		r := d.do(t, http.MethodPut, keytabPath, putKeytab(tc.b), "If-None-Match", "*")
 		replies = append(replies, r)
@@ -271,14 +337,14 @@ func TestKeytabRoute(t *testing.T) {
 		}
 	}
 	var secrets []string
-	for _, b := range [][]byte{good, rc4, held, account} {
+	for _, b := range [][]byte{good, rc4, held, account, elsewhere} {
 		secrets = append(secrets, string(b[len(b)-32:])) // each keytab's key
 	}
 	if l := d.leaks(t, replies, secrets...); len(l) != 0 {
 		t.Errorf("found %q, want no keytab key anywhere and no idempotency record", l)
 	}
-	if n := d.secretRows(t); n != 0 {
-		t.Errorf("secret versions written: %d, want none", n)
+	if n := d.secretRows(t); n != before {
+		t.Errorf("secret versions: %d, want %d, none written", n, before)
 	}
 	for s, err := range d.store.Settings(t.Context(), installation) {
 		if err != nil {
@@ -337,17 +403,23 @@ func TestJoinModeIsAnEnum(t *testing.T) {
 	}
 }
 
-// The keytab's DELETE is the installation's write, refused to an operator
-// (above); for an admin, 412 while no keytab is named, as no record holds the tag, and, with one named, judged by
-// the settings table, whose empty table refuses it, the refusal audited
-// against the installation's ID.
+// The keytab's DELETE is the installation's write, refused 403 to an
+// operator, the refusal audited against the installation's ID.
 func TestKeytabDeleteRefusedToAnOperator(t *testing.T) {
 	op := serve(t, as(entity.RoleOperator, false))
 	if r := op.do(t, http.MethodDelete, keytabPath, "", "If-Match", `"1"`, "Idempotency-Key", "del"); r.status != http.StatusForbidden {
 		t.Errorf("an operator's DELETE: answered %d %s, want 403", r.status, r.body)
 	}
+	in := op.installationRecord(t)
+	if a := op.audits(t); len(a) != 1 || a[0].Target.Kind != entity.ResourceInstallation || !bytes.Equal(a[0].Target.ID, in.ID[:]) {
+		t.Errorf("the refusal's audit %+v, want one naming the installation %x", a, in.ID)
+	}
 }
 
+// The keytab's DELETE, for an admin: 412 while no keytab is named, as no
+// record holds the tag, and, with one named, judged by the settings table,
+// whose empty table refuses it, the refusal audited against the
+// installation's ID.
 func TestKeytabDelete(t *testing.T) {
 	s := serve(t, as(entity.RoleAdmin, false))
 	if r := s.do(t, http.MethodDelete, keytabPath, "", "If-Match", `"1"`, "Idempotency-Key", "del-none"); r.status != http.StatusPreconditionFailed {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"strings"
 
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -118,6 +117,11 @@ func (ss secretSetting) writing(kind entity.ResourceKind) writing[apiv1.Credenti
 // of a new reference, under its kind's role, then cleared. A record that
 // holds the secret is refused 409 first, then a value check refuses, then,
 // with no sealer, the set is refused 503, each before anything is written.
+//
+// ponytail: the node hands in no sealer and no settings table yet, so
+// neither a store's credential nor the keytab is sealed or written through
+// these routes, and no test reads a sealed version back raw. Test the set
+// end to end once the node hands in both.
 func (ss secretSetting) seal(ctx context.Context, rq request[apiv1.Credential]) (sealedSecret, error) {
 	v := rq.Body.Spec.Value
 	defer clear(v)
@@ -215,10 +219,11 @@ const keytabKey = "identity.keytab"
 // keytabs is the installation's keytab, identity's, sealed under the
 // protocol role, refused when identity's check refuses it or it holds a key
 // for a name the computer account holds, which the join derives and no
-// keytab may replace: refused before the seal on the installation read then,
-// and again in the write's transaction on the installation read tracked
-// there, so a join that names the account in between is not missed.
-var keytabs = secretSetting{scope: func([16]byte) entity.SettingScope { return entity.SettingScope{Kind: entity.ScopeInstallation} }, key: keytabKey, kind: entity.SecretKeytab, auditAs: "keytab",
+// keytab may replace: refused before the seal on the installation and the
+// directory's realm read then, and again in the write's transaction on both
+// read tracked there, so a join that names the account in between is not
+// missed. The keytab's bytes are cleared once its names are read.
+var keytabs = secretSetting{scope: func([16]byte) entity.SettingScope { return installation }, key: keytabKey, kind: entity.SecretKeytab, auditAs: "keytab",
 	check: func(ctx context.Context, d Deps, v []byte) (func(entity.ControlPlaneTx) error, error) {
 		names, err := identity.KeytabNames(v)
 		if err != nil {
@@ -228,7 +233,12 @@ var keytabs = secretSetting{scope: func([16]byte) entity.SettingScope { return e
 		if err != nil {
 			return nil, err
 		}
-		if err := accountHolds(in.Join, names); err != nil {
+		all, err := scopeSettings(ctx, d.Store, installation)
+		if err != nil {
+			return nil, err
+		}
+		s, ok := all[directoryRealm]
+		if err := accountHolds(in.Join, s, ok, names); err != nil {
 			return nil, err
 		}
 		return func(tx entity.ControlPlaneTx) error {
@@ -236,23 +246,58 @@ var keytabs = secretSetting{scope: func([16]byte) entity.SettingScope { return e
 			if err != nil {
 				return err
 			}
-			return accountHolds(in.Join, names)
+			s, ok, err := tx.Setting(installation, directoryRealm)
+			if err != nil {
+				return err
+			}
+			return accountHolds(in.Join, s, ok, names)
 		}, nil
 	}}
 
 // accountHolds refuses a keytab holding a key for a name the computer
-// account holds while joined: its own name or one of its service names,
-// compared ignoring case.
-func accountHolds(j entity.MachineJoin, names []string) error {
-	if !j.Joined {
+// account holds while joined, its own name or one of its service names, in
+// the realm of the directory record's realm setting realm, ok false for
+// none, which holds no name. Names are compared with ASCII letters folded,
+// realms ignoring the case of ASCII letters, as identity matches a ticket
+// to the account's names.
+func accountHolds(j entity.MachineJoin, realm entity.Setting, ok bool, names []identity.KeytabName) error {
+	if !j.Joined || !ok {
 		return nil
 	}
+	var r string
+	if err := json.Unmarshal(realm.Value, &r); err != nil {
+		return err
+	}
 	for _, n := range names {
-		if strings.EqualFold(n, j.Account) || slices.ContainsFunc(j.Names, func(m string) bool { return strings.EqualFold(n, m) }) {
-			return &fieldError{field: "spec.value", detail: "holds a key for " + n + ", a name of the computer account the domain join derives keys for"}
+		if !equalFoldASCII(n.Realm, r) {
+			continue
+		}
+		if equalFoldASCII(n.Name, j.Account) || slices.ContainsFunc(j.Names, func(m string) bool { return equalFoldASCII(n.Name, m) }) {
+			return &fieldError{field: "spec.value", detail: "holds a key for " + n.Name + "@" + n.Realm + ", a name of the computer account the domain join derives keys for"}
 		}
 	}
 	return nil
+}
+
+// equalFoldASCII reports whether a and b are equal with ASCII letters
+// folded, every other byte compared as is.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range len(a) {
+		if lowerASCII(a[i]) != lowerASCII(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func lowerASCII(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+	return c
 }
 
 // keytabWrites is what the write adapter knows of the keytab: a secret of

@@ -5094,30 +5094,6 @@
               }
             }
           },
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Operation"
-                }
-              }
-            },
-            "description": "Accepted",
-            "headers": {
-              "ETag": {
-                "required": false,
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Location": {
-                "required": true,
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
           "400": {
             "$ref": "#/components/responses/Problem400"
           },
@@ -5149,7 +5125,6 @@
             "$ref": "#/components/responses/Problem503"
           }
         },
-        "x-dittofs-may-start": "identity.nt-hash-delete",
         "x-dittofs-role": "operator",
         "x-dittofs-waits-applied": true
       },
@@ -8665,6 +8640,30 @@
               }
             }
           },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Accepted",
+            "headers": {
+              "ETag": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "400": {
             "$ref": "#/components/responses/Problem400"
           },
@@ -8693,6 +8692,7 @@
             "$ref": "#/components/responses/Problem503"
           }
         },
+        "x-dittofs-may-start": "user.delete",
         "x-dittofs-role": "operator",
         "x-dittofs-waits-applied": true
       }
@@ -8954,6 +8954,30 @@
               }
             }
           },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Accepted",
+            "headers": {
+              "ETag": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "400": {
             "$ref": "#/components/responses/Problem400"
           },
@@ -8985,6 +9009,7 @@
             "$ref": "#/components/responses/Problem503"
           }
         },
+        "x-dittofs-may-start": "user.delete",
         "x-dittofs-role": "operator",
         "x-dittofs-waits-applied": true
       },
@@ -9074,6 +9099,30 @@
               }
             }
           },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Accepted",
+            "headers": {
+              "ETag": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "400": {
             "$ref": "#/components/responses/Problem400"
           },
@@ -9105,6 +9154,7 @@
             "$ref": "#/components/responses/Problem503"
           }
         },
+        "x-dittofs-may-start": "user.delete",
         "x-dittofs-role": "operator",
         "x-dittofs-waits-applied": true
       }

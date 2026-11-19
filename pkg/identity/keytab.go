@@ -26,22 +26,22 @@ const (
 // host-byte-order format no current tool writes, is refused. Overturned if
 // RFC 18 §3.3 ever admits an encryption type beside AES.
 func CheckKeytab(b []byte) error {
-	_, err := keytabEntries(b)
+	_, err := KeytabNames(b)
 	return err
 }
 
-// KeytabNames is the service name of each key b holds, its principal's
-// components joined by "/" without the realm, as a computer account's names
-// are spelled, once per key; it refuses what CheckKeytab refuses.
-func KeytabNames(b []byte) ([]string, error) { return keytabEntries(b) }
+// KeytabName is the principal a keytab's key is for: its service name, the
+// components joined by "/", as a computer account's names are spelled, and
+// its realm.
+type KeytabName struct{ Name, Realm string }
 
-// keytabEntries checks b as CheckKeytab says and returns each key's service
-// name.
-func keytabEntries(b []byte) ([]string, error) {
+// KeytabNames is the principal of each key b holds, once per key; it refuses
+// what CheckKeytab refuses.
+func KeytabNames(b []byte) ([]KeytabName, error) {
 	if len(b) < 2 || b[0] != 5 || b[1] != 2 {
 		return nil, fmt.Errorf("%w: not a version 2 keytab", vfserr.ErrInvalid)
 	}
-	var names []string
+	var names []KeytabName
 	for n := 2; n < len(b); {
 		if len(b)-n < 4 {
 			return nil, fmt.Errorf("%w: keytab ends inside a record length", vfserr.ErrInvalid)
@@ -79,10 +79,9 @@ func keytabEntries(b []byte) ([]string, error) {
 var errShort = errors.New("entry ends early")
 
 // entry reads one entry, its principal, timestamp, key version number and
-// key, and returns its service name, the principal's components joined by
-// "/", and the key's encryption type. Every length is a signed 16-bit field
+// key, and returns its principal and the key's encryption type. Every length is a signed 16-bit field
 // and a negative one is refused.
-func entry(e []byte) (string, uint16, error) {
+func entry(e []byte) (KeytabName, uint16, error) {
 	p := 0
 	u16 := func() (int, error) {
 		if len(e)-p < 2 {
@@ -104,38 +103,41 @@ func entry(e []byte) (string, uint16, error) {
 	}
 	comps, err := u16()
 	if err != nil {
-		return "", 0, err
+		return KeytabName{}, 0, err
 	}
+	var realm string
 	var parts []string
 	for i := range comps + 1 { // the realm, then each component
 		l, err := u16()
 		if err != nil {
-			return "", 0, err
+			return KeytabName{}, 0, err
 		}
 		at := p
 		if err := skip(l); err != nil {
-			return "", 0, err
+			return KeytabName{}, 0, err
 		}
-		if i > 0 {
+		if i == 0 {
+			realm = string(e[at:p])
+		} else {
 			parts = append(parts, string(e[at:p]))
 		}
 	}
 	if err := skip(4 + 4 + 1); err != nil { // name type, timestamp, key version number
-		return "", 0, err
+		return KeytabName{}, 0, err
 	}
 	etype, err := u16()
 	if err != nil {
-		return "", 0, err
+		return KeytabName{}, 0, err
 	}
 	l, err := u16()
 	if err != nil {
-		return "", 0, err
+		return KeytabName{}, 0, err
 	}
 	if l == 0 {
-		return "", 0, errors.New("empty key")
+		return KeytabName{}, 0, errors.New("empty key")
 	}
 	if err := skip(l); err != nil {
-		return "", 0, err
+		return KeytabName{}, 0, err
 	}
-	return strings.Join(parts, "/"), uint16(etype), nil
+	return KeytabName{strings.Join(parts, "/"), realm}, uint16(etype), nil
 }

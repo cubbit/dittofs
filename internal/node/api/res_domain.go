@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -10,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // directory is identity's directory as the API asks it before a write. A
@@ -46,6 +50,7 @@ type opStart struct {
 // The settings and secret owner the domain's routes read and write.
 const (
 	directoryBase   = "identity.directory.base"
+	directoryRealm  = "identity.directory.realm"
 	machinePassword = "machine_password"
 )
 
@@ -83,7 +88,7 @@ func installationID(ctx context.Context, d Deps) ([16]byte, error) {
 // check; the write starts it, on the installation, once check admits it in
 // the same transaction. Its audit records name the installation by its ID.
 func action[B any](prep func(context.Context, request[B]) (opStart, error)) adapter {
-	w := writing[B]{kind: entity.ResourceInstallation, self: installationID, starting: true,
+	w := writing[B]{kind: entity.ResourceInstallation, self: installationID,
 		read: func(entity.ControlPlaneTx, [16]byte, string) (B, uint64, bool, error) {
 			var b B
 			return b, 0, false, nil
@@ -173,13 +178,35 @@ func identityDrives(_ context.Context, rq request[none]) (opStart, error) {
 
 // prepareRotate is rotate-machine-password's pre-write step: refused 503
 // while the node holds no identity service, and, at its start, 409 while a
-// join runs, so a join and a rotation never run at once.
+// join runs, so a join and a rotation never run at once, and 409 while the
+// machine password's current version is one handed to an offline join that
+// no join has confirmed (notHandedOver).
 func prepareRotate(ctx context.Context, rq request[none]) (opStart, error) {
 	st, err := identityDrives(ctx, rq)
 	st.check = func(tx entity.ControlPlaneTx, in entity.Installation) error {
-		return noneRunning(tx, in, apiv1.OpJoinDomain)
+		if err := noneRunning(tx, in, apiv1.OpJoinDomain); err != nil {
+			return err
+		}
+		return notHandedOver(tx, in)
 	}
 	return st, err
+}
+
+// notHandedOver refuses, 409 naming the machine password, while its current
+// version, read tracked in tx, is one an offline join was handed and the
+// last join or rotation has not confirmed: a hand-over whose operation's
+// write was refused, or a join that failed, leaves such a version current,
+// and a rotation would run on a password no join confirmed. Another offline
+// join supersedes it.
+func notHandedOver(tx entity.ControlPlaneTx, in entity.Installation) error {
+	if in.MachinePassword == (entity.SecretRef{}) {
+		return nil
+	}
+	cur, ok, err := tx.Secret(in.MachinePassword, 0)
+	if err != nil || !ok || !cur.HandedOver || cur.Version == in.Join.LastRotation.Version {
+		return err
+	}
+	return &componentError{field: machinePassword, detail: "the current version was handed to an offline join no join has confirmed; join again before rotating", err: vfserr.ErrExist}
 }
 
 // prepareJoin is join-domain's pre-write step. Either mode is refused 503
@@ -217,10 +244,11 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 			return opStart{}, &fieldError{field: "credential.user", detail: "an online join takes the administrator's name"}
 		case len(p.OU) > maxDirectoryName:
 			return opStart{}, tooLong("spec.ou")
-		case p.DNSHostName != "" && !hostName(p.DNSHostName):
-			return opStart{}, &fieldError{field: "spec.dns_host_name", detail: "not a DNS host name"}
+		case p.DNSHostName != "" && (!hostName(p.DNSHostName) || !strings.Contains(p.DNSHostName, ".")):
+			return opStart{}, &fieldError{field: "spec.dns_host_name", detail: "not a DNS host name of two labels or more"}
 		}
-		if err := underBase(ctx, rq.d, p.OU); err != nil {
+		base, err := underBase(ctx, rq.d, p.OU)
+		if err != nil {
 			return opStart{}, err
 		}
 		if rq.d.Joins == nil {
@@ -232,7 +260,17 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 		}
 		id := entity.OperationID(entity.NewShareID())
 		owned = true
-		return opStart{id: id, params: b, check: notRotating,
+		check := func(tx entity.ControlPlaneTx, in entity.Installation) error {
+			if err := notRotating(tx, in); err != nil || p.OU == "" {
+				return err
+			}
+			s, ok, err := tx.Setting(installation, directoryBase)
+			if err == nil && (!ok || !bytes.Equal(s.Value, base)) {
+				err = &refusal{code: apiv1.CodeUnavailable, detail: "the directory's base changed while the join was checked; retry"}
+			}
+			return err
+		}
+		return opStart{id: id, params: b, check: check,
 			release: rq.d.Joins.HoldJoinCredential(id, identity.JoinCredential{User: cred.User, Password: cred.Password})}, nil
 	case apiv1.JoinOffline:
 		switch {
@@ -262,6 +300,13 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 			if err != nil {
 				return err
 			}
+			// decision: a version superseded since its hand-over is refused
+			// 409 operation_running naming no operation: another join's
+			// hand-over superseded it, and that join may not have started
+			// yet, so there is no operation to name; the refusal keeps
+			// this join off a password no longer current. Overturned if
+			// the refusal must name the superseding join, which needs its
+			// operation's ID recorded with the version.
 			if !ok || in.MachinePassword != ref.ID || cur.Version != p.Version {
 				return &refusal{code: apiv1.CodeOperationRunning, detail: "another join wrote the machine password since this one did"}
 			}
@@ -284,6 +329,7 @@ func notRotating(tx entity.ControlPlaneTx, in entity.Installation) error {
 // no version a running one did not take becomes current under it. It
 // returns the version written, unsealed fields only.
 func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte) (entity.Secret, error) {
+	defer clear(password)
 	in, err := rq.d.Store.Installation(ctx)
 	if err != nil {
 		return entity.Secret{}, err
@@ -294,7 +340,6 @@ func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte
 	}
 	owner := entity.SecretOwner{Record: installationRef(in), Key: machinePassword}
 	sealed, err := rq.d.Sealer.Seal(ctx, entity.SecretMachinePassword, owner, ref, password, true)
-	clear(password)
 	if err != nil {
 		return entity.Secret{}, err
 	}
@@ -321,75 +366,92 @@ func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte
 }
 
 // underBase refuses an organisational unit that is not a distinguished name
-// at or under the directory record's base, compared RDN by RDN, ignoring case
-// and the spaces around each; an empty one is identity's default and passes.
-func underBase(ctx context.Context, d Deps, ou string) error {
+// strictly under the directory record's base, compared RDN by RDN (rdns),
+// and one given while the record names no base; an empty one is identity's
+// default and passes. It returns the base setting's value as read, nil for
+// an empty unit, which the join's start reads again.
+func underBase(ctx context.Context, d Deps, ou string) ([]byte, error) {
 	if ou == "" {
-		return nil
+		return nil, nil
 	}
 	refuse := func(detail string) error { return &fieldError{field: "spec.ou", detail: detail} }
 	o, ok := rdns(ou)
 	if !ok {
-		return refuse("not a distinguished name")
+		return nil, refuse("not a distinguished name")
 	}
-	all, err := scopeSettings(ctx, d.Store, entity.SettingScope{Kind: entity.ScopeInstallation})
+	all, err := scopeSettings(ctx, d.Store, installation)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var base string
-	if s, ok := all[directoryBase]; ok {
+	s, ok := all[directoryBase]
+	if ok {
 		if err := json.Unmarshal(s.Value, &base); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	b, ok := rdns(base)
 	if !ok {
-		return refuse("the installation's directory record names no base to place it under")
+		return nil, refuse("the installation's directory record names no base to place it under")
 	}
-	if len(o) < len(b) {
-		return refuse("not under the directory's base " + base)
+	if len(o) <= len(b) || !slices.EqualFunc(o[len(o)-len(b):], b, slices.Equal) {
+		return nil, refuse("not under the directory's base " + base)
 	}
-	for i, r := range b {
-		if !strings.EqualFold(o[len(o)-len(b)+i], r) {
-			return refuse("not under the directory's base " + base)
-		}
-	}
-	return nil
+	return s.Value, nil
 }
 
-// rdns splits a distinguished name into its RDNs, each type=value with the
-// spaces around its parts removed; false for a name with no RDN, an RDN
-// lacking its type or value, or a trailing escape.
-func rdns(dn string) ([]string, bool) {
-	var out []string
+// rdns splits a distinguished name into its RDNs, each the sorted list of
+// its attribute type=value pairs, lower-cased, with an escape decoded (a
+// backslash before two hex digits naming a byte, or before any other
+// character standing for it) and the spaces around the type and the value
+// removed, so two spellings of one name compare equal; false for a name with
+// no RDN, a pair lacking its type, its = or its value, or a trailing escape.
+func rdns(dn string) ([][]string, bool) {
+	var out [][]string
+	var rdn []string
 	var cur strings.Builder
-	esc := false
-	flush := func() bool {
-		t, v, ok := strings.Cut(cur.String(), "=")
-		t, v = strings.TrimSpace(t), strings.TrimSpace(v)
-		if !ok || t == "" || v == "" {
+	typ, inValue := "", false
+	pair := func() bool {
+		v := strings.TrimSpace(cur.String())
+		cur.Reset()
+		if !inValue || typ == "" || v == "" {
 			return false
 		}
-		out = append(out, t+"="+v)
-		cur.Reset()
+		rdn = append(rdn, strings.ToLower(typ+"="+v))
+		typ, inValue = "", false
 		return true
 	}
-	for _, c := range dn {
-		switch {
-		case esc:
-			esc = false
+	for i := 0; i < len(dn); i++ {
+		switch c := dn[i]; {
 		case c == '\\':
-			esc = true
-		case c == ',':
-			if !flush() {
+			if i+1 == len(dn) {
 				return nil, false
 			}
-			continue
+			if b, err := hex.DecodeString(dn[i+1 : min(i+3, len(dn))]); err == nil && len(b) == 1 {
+				cur.WriteByte(b[0])
+				i += 2
+			} else {
+				cur.WriteByte(dn[i+1])
+				i++
+			}
+		case c == '=' && !inValue:
+			typ, inValue = strings.TrimSpace(cur.String()), true
+			cur.Reset()
+		case c == '+' || c == ',':
+			if !pair() {
+				return nil, false
+			}
+			if c == ',' {
+				slices.Sort(rdn)
+				out, rdn = append(out, rdn), nil
+			}
+		default:
+			cur.WriteByte(c)
 		}
-		cur.WriteRune(c)
 	}
-	if esc || !flush() {
+	if !pair() {
 		return nil, false
 	}
-	return out, true
+	slices.Sort(rdn)
+	return append(out, rdn), true
 }

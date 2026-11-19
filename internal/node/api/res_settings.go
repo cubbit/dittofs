@@ -183,11 +183,13 @@ func scopeOf(k entity.ScopeKind) func([16]byte) entity.SettingScope {
 }
 
 // ownKeys are the keys only a resource's own route writes, each with the
-// route that does: a store is created with its endpoint, and its
-// credential's reference is written with the secret it names.
+// route that does: a store is created with its endpoint, and a store's
+// credential's and the keytab's references are each written with the secret
+// they name, after their route's checks.
 var ownKeys = map[string]string{
 	storeEndpoint:   "POST /api/v1/stores",
 	storeCredential: "PUT /api/v1/stores/{id}/credential",
+	keytabKey:       "PUT /api/v1/installation/keytab",
 }
 
 // maxSettingKey is the longest setting key a route takes.
@@ -206,8 +208,9 @@ const maxSettingKey = 255
 func settingRoutes() []route {
 	var out []route
 	for _, sc := range settingScopes {
-		// An installation setting's write may start the NT-hash deletion,
-		// which identity.ntlm's rule starts.
+		// An installation setting's put may start the NT-hash deletion,
+		// which identity.ntlm's rule starts; a delete turns NTLM on, which
+		// starts none.
 		var may apiv1.OpKind
 		if sc.path == "/api/v1/settings" {
 			may = apiv1.OpNTHashDelete
@@ -253,7 +256,7 @@ func settingRoutes() []route {
 					})
 					return apiv1.Setting{ID: rq.Sub, Generation: gen, Spec: apiv1.SettingSpec{Value: v}}, rq.ID, err
 				})},
-			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, mayStart: may, target: target, sub: subSetting, serve: write(tagsOf(w), nil,
+			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, serve: write(tagsOf(w), nil,
 				func(ctx context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
 					scope := sc.scope(rq.ID)
 					return none{}, rq.ID, ntlmWrite(tx, rq.start, scope, rq.Sub, func() error {

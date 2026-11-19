@@ -248,7 +248,8 @@ func pick(rows []route, r *http.Request) (*route, string) {
 // does not admit, parses the path's ID and runs the row's adapter. With no
 // Authenticate, every caller is refused 401. A refusal of an authenticated
 // caller here, before the adapter, is audited against the row's kind and
-// the path's ID when it parses; the write adapter audits its own.
+// the path's ID when it parses, or, on an installation row, whose path
+// names none, the installation's ID; the write adapter audits its own.
 //
 // decision: a path no row names is refused unaudited. It names no resource,
 // and the store refuses an audit record whose target has no kind, so its
@@ -272,10 +273,16 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 			rec := s.auditOf(ctx, r)
 			rec.Target.Kind = rt.kind
 			// Named as the row's adapter names it, so an applied and a
-			// refused write of one record share a target.
+			// refused write of one record share a target: an installation
+			// row's path names no ID, so the installation's is read.
 			sid, perr := entity.ParseShareID(rawID)
-			if hasID := rt.hasID(); (hasID && perr == nil) || (!hasID && rt.target != nil) {
+			switch hasID := rt.hasID(); {
+			case (hasID && perr == nil) || (!hasID && rt.target != nil):
 				rec.Target.ID = rt.ref(sid, r.PathValue("sub"))
+			case !hasID && rt.kind == entity.ResourceInstallation && s.d.Store != nil:
+				if in, err := s.d.Store.Installation(ctx); err == nil {
+					rec.Target.ID = in.ID[:]
+				}
 			}
 			s.refuse(ctx, rec, err)
 		}

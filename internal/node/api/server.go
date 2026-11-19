@@ -118,8 +118,8 @@ type Deps struct {
 	// a new Kerberos name answers 503.
 	Directory directory
 	// Joins is identity's hold of an online join's administrator credential,
-	// in memory under the operation it is handed to; nil, an online
-	// join-domain, resolve-principal, test-directory and
+	// in memory under the operation it is handed to; nil, join-domain,
+	// online or offline, resolve-principal, test-directory and
 	// rotate-machine-password answer 503.
 	Joins joins
 }

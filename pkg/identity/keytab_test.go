@@ -74,12 +74,13 @@ func TestCheckKeytab(t *testing.T) {
 	}
 }
 
-// KeytabNames names each key's service, its realm left out, and refuses
-// what CheckKeytab refuses.
+// KeytabNames names each key's service and realm, and refuses what
+// CheckKeytab refuses.
 func TestKeytabNames(t *testing.T) {
 	names, err := identity.KeytabNames(keytabOf(t, etypeID.AES128_CTS_HMAC_SHA1_96, etypeID.AES256_CTS_HMAC_SHA1_96))
-	if err != nil || len(names) != 2 || names[0] != "cifs/nas.corp.example" || names[1] != names[0] {
-		t.Errorf("KeytabNames = %q, %v; want cifs/nas.corp.example twice", names, err)
+	want := identity.KeytabName{Name: "cifs/nas.corp.example", Realm: "CORP.EXAMPLE"}
+	if err != nil || len(names) != 2 || names[0] != want || names[1] != want {
+		t.Errorf("KeytabNames = %q, %v; want %v twice", names, err, want)
 	}
 	if _, err := identity.KeytabNames(keytabOf(t, etypeID.RC4_HMAC)); !errors.Is(err, vfserr.ErrInvalid) {
 		t.Errorf("KeytabNames of an RC4 keytab = %v, want vfserr.ErrInvalid", err)
@@ -110,7 +111,7 @@ func FuzzCheckKeytab(f *testing.F) {
 			t.Fatalf("KeytabNames(%x) = %q, %v; gokrb5 decodes %d entries", b, names, err, len(kt.Entries))
 		}
 		for i, e := range kt.Entries {
-			if want := strings.Join(e.Principal.Components, "/"); names[i] != want {
+			if want := (identity.KeytabName{Name: strings.Join(e.Principal.Components, "/"), Realm: e.Principal.Realm}); names[i] != want {
 				t.Fatalf("KeytabNames(%x)[%d] = %q, gokrb5 decodes %q", b, i, names[i], want)
 			}
 		}

@@ -94,8 +94,11 @@ type JoinDomainParams struct {
 
 // ResolvePrincipalParams is the body of POST
 // /installation:resolve-principal, and its operation's parameters: a
-// directory principal by name, or by SID in its string form, exactly one of
-// them.
+// directory principal by name or by SID in its string form, exactly one of
+// them. The name is its qualified spelling, DOMAIN\name with DOMAIN the
+// directory's NetBIOS domain, as identity's Find takes it in the qualified
+// scheme, its domain compared ignoring the case of ASCII letters; neither a
+// UPN nor a Kerberos name is taken.
 type ResolvePrincipalParams struct {
 	Name string `json:"name,omitempty"`
 	SID  string `json:"sid,omitempty"`
