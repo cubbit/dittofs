@@ -100,7 +100,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs offload, release, sealing with catalogs and recovery by catalog and by scan.'
+  reason: 'The journal opens; the check fails on the Offload stub, which its release legs reach. Needs offload, release, sealing with catalogs and recovery by catalog and by scan.'
   issue: '#3379'
   message: 'stub: Offload'
 
@@ -228,7 +228,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs idle sealing and offload pins bounded across running offers.'
+  reason: 'The journal opens; the check fails on the Offload stub, which its offload pins need. Needs idle sealing and offload, with pins bounded across running offers.'
   issue: '#3379'
   message: 'stub: Offload'
 
@@ -476,7 +476,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release and repack.'
+  reason: 'The journal opens; the check fails on the MarkOffloaded stub, which its release legs reach. Needs MarkOffloaded, release and repack.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
@@ -540,7 +540,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs failed sync windows, the re-append, recovery and the loss ring.'
+  reason: 'The journal opens; the check''s own assertion fails where it expects damage reported: the segment holds a copy that does not verify and is not reported damaged. Needs the damaged report for a record whose re-read fails where the catalog can name it.'
   issue: '#3814'
   message: 'holds a copy that does not verify and is not reported damaged'
 
@@ -612,7 +612,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs catalogs, recovery by scan, and reads that check the record header against the catalog entry.'
+  reason: 'The journal opens; the check fails at the open itself: the recovery read no segments by catalog, wanting the one whose footer should have named it. Needs the catalog rebuild reading the footer''s entries and reads that check the record header against them.'
   issue: '#3814'
   message: 'recovery read 0 segments by catalog, want 1'
 
@@ -620,7 +620,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery by scan that resynchronises past a bad record, corrupt reads and the loss ring.'
+  reason: 'The journal opens; the open refuses over the bad record the scan should have stepped past: a refused range that names no record. Needs recovery by scan that resynchronises past a bad record instead of refusing the open over what the catalog cannot name.'
   issue: '#3596'
   message: 'that names no record'
 
@@ -790,7 +790,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the leg fails at its precondition, where the inspector does not list the failed segment it reads. Needs the inspector listing a failed segment, and Repack.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails: the segment whose sync failed at the crash is not reported failed after the restart, so the row''s unread-window leg never lands. Needs the open reading the failed sync''s shape from the crash state and reporting the segment failed.'
   issue: '#3815'
   message: 'is not reported failed after its sync failed'
 
@@ -1102,7 +1102,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped header byte reports no damaged segment. The header''s magic, format version and identity fields name nothing a reader validates relative to the catalog, so the row waits on recovery reporting and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its header changed'
 
@@ -1110,7 +1110,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped header byte reports no damaged segment. The header''s magic, format version and identity fields name nothing a reader validates relative to the catalog, so the row waits on recovery reporting and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its header changed'
 
@@ -1118,7 +1118,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped header byte reports no damaged segment. Needs recovery reporting a damaged header and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its header changed'
 
@@ -1126,7 +1126,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped header byte reports no damaged segment. The header''s magic, format version and identity fields name nothing a reader validates relative to the catalog, so the row waits on recovery reporting and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its header changed'
 
@@ -1134,7 +1134,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped header byte reports no damaged segment. Needs recovery reporting a damaged header and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its header changed'
 
@@ -1142,7 +1142,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped header byte reports no damaged segment. Needs recovery reporting a damaged header and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its header changed'
 
@@ -1150,7 +1150,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped header byte reports no damaged segment. Needs recovery reporting a damaged header and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its header changed'
 
@@ -1158,7 +1158,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped header byte reports no damaged segment. Needs recovery reporting a damaged header and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its header changed'
 
@@ -1166,7 +1166,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped seal-marker byte reports no damaged segment. Needs recovery reporting a bad seal marker as damage and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its seal marker changed'
 
@@ -1174,7 +1174,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped seal-marker byte reports no damaged segment. Needs recovery reporting a bad seal marker as damage and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its seal marker changed'
 
@@ -1182,7 +1182,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped seal-marker byte reports no damaged segment. Needs recovery reporting a bad seal marker as damage and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its seal marker changed'
 
@@ -1190,7 +1190,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped seal-marker byte reports no damaged segment. Needs recovery reporting a bad seal marker as damage and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its seal marker changed'
 
@@ -1198,7 +1198,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped seal-marker byte reports no damaged segment. Needs recovery reporting a bad seal marker as damage and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its seal marker changed'
 
@@ -1206,7 +1206,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens and replays the row''s crash; the check''s own assertion fails where it expects damage reported: the flipped seal-marker byte reports no damaged segment. Needs recovery reporting a bad seal marker as damage and attaching the segment.'
   issue: '#3815'
   message: 'is not reported damaged with its seal marker changed'
 
@@ -1302,7 +1302,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs repack that drops a record superseded mid-copy, and recovery.'
+  reason: 'The journal opens; the check''s own record-count assertion fires after the pass ran: record(s) were appended once the pass''s source was superseded and synced. Needs repack dropping a record superseded mid-copy, and recovery.'
   issue: '#3815'
   message: 'record(s) were appended once the pass''s source was superseded and synced'
 
@@ -1326,7 +1326,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recycled segments serving only new records, a failed append retiring one, and recovery.'
+  reason: 'The journal opens; the check fails on the MarkOffloaded stub, which its released-content leg reaches. Needs recycled segments serving only new records, a failed append retiring one, and recovery.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
