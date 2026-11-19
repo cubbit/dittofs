@@ -290,13 +290,13 @@ Out of scope, each named in O1:
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 7 | 8.75 | team | every epic |
 | E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 9 | 18.5 | A | E5; partly E3; RFC 23's epics 3, 4 and 5 (its X1) |
-| E3 | Settings | a delete, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19.5 | B | E5; partly RFC 18's plan's epic 6 |
+| E3 | Settings | a delete, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19 | B | E5; partly RFC 18's plan's epic 6 |
 | E4 | Secrets | `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epics 4 and 5 (its X1) |
 | E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty, off by default; the launchers on `dfs init` and the images' `init` as an explicit step, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
-| | **Total** | | **42** | **81.25** | | |
+| | **Total** | | **42** | **80.75** | | |
 
-**Plan estimate: 42 subtasks, 81.25 man-days.**
+**Plan estimate: 42 subtasks, 80.75 man-days.**
 
 The skill's estimate for RFC 13's 1,221 lines is 3 middle epics (`round(1221 / 400)`), and this plan
 has 3.
@@ -868,6 +868,12 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, h
 	if err != nil {
 		return err
 	}
+	if w.deletes() && !sec.declares(key) { // decision: the repair delete, admin-only (epic 3's D1, T3.5)
+		if rank(caller) < rank(entity.RoleAdmin) {
+			return ErrForbidden // whatever sec.writeRole: an operator could otherwise delete a newer binary's admin-only key
+		}
+		// no class for an undeclared key, so the class and bound gates below never run on it
+	}
 	if rank(caller) < rank(sec.writeRole) { // an explicit rank, never the names; an empty or unknown role ranks lowest, and Of panics on an unknown WriteRole
 		return ErrForbidden // admin-only sections, identity.directory among them, its first value included (RFC 13 Appendix B, A1)
 	}
@@ -1166,7 +1172,7 @@ value; D7's drift test passes.
 
 ### Epic 3 — Settings
 
-**Epic 3 estimate: 9 subtasks, 19.5 man-days.**
+**Epic 3 estimate: 9 subtasks, 19 man-days.**
 
 Settings are rows at their scope. A component's effective value is read through one call. A write is
 checked by the component's own rules, and a change is classified for reconcile.
@@ -1491,7 +1497,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | A remote store's endpoint, bucket, prefix or credential change, refused, the bucket and prefix even with no content, past RFC 13 §5.1's "no content, accepted"; "§5.2 same content" (D9, O1, §1.4) | needs the capability check (RFC 4 §4.11) and the claim (RFC 27 §2.1) | RFC 4 and RFC 27; RFC 23 plan (#4050) for its credential rotation and proven endpoint | both pieces built |
 | "§2.2 explicit initialisation"'s clause recording a new identity by a recovery import (O1, §1.4) | needs RFC 26's recovery import | RFC 26 plan | RFC 26's plan builds the import |
 | The call that raises an active version, `raise-format` (RFC 13 §5.5), and with it D11's write of the settings format's newer schema version (header, §4.3's `ponytail:`, D11, O1) | each format has one version | unowned | a format gains a second version |
-| Refusing a write that sets a field a newer binary added, while it is newer than the active version (D11's caveat; epic 3's D1, T3.4 and T3.6) | the raise call only raises the version, it does not refuse this write | unowned | a release adds a field to a section |
+| Refusing a write that sets a field a newer binary added, while it is newer than the active version (D11's caveat; epic 3's D1, T3.4, T3.5 and T3.6) | the raise call only raises the version, it does not refuse this write | unowned | a release adds a field to a section |
 | "§7 rotation"'s wrapping-key half and its reseal pass (§4.3's `ponytail:`, O1, §1.4) | a retired role key keeps every secret open | unowned | an operator must remove a role key, or a role key is compromised |
 | The namespace key table; "§5.1 encryption bound", "§7 namespace keys", "§7 chunk-ID key", "§7 key table" (header, O1, §1.4) | RFC 13 §7's material bullets are RFC 5's | RFC 5 plan | RFC 5's plan |
 | "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys |
