@@ -116,21 +116,7 @@ func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool
 	}
 	c.begin()
 	defer c.end()
-	req := Request{Base: c.rec.Base, Scope: ScopeSubtree, Filter: filter, Attrs: c.rec.attrs()}
-	conn, fresh, err := c.connect(ctx)
-	if err != nil {
-		return Answer{}, false, err
-	}
-	res, err := c.search(ctx, conn, req)
-	// A held connection the directory closed while idle fails the first
-	// question on it, so that one is asked again, once, on a new one; a
-	// fresh connection's failure is the directory's answer, not retried.
-	if err != nil && !fresh && errors.Is(err, ErrClosed) {
-		if conn, _, err = c.connect(ctx); err != nil {
-			return Answer{}, false, err
-		}
-		res, err = c.search(ctx, conn, req)
-	}
+	res, err := c.do(ctx, Request{Base: c.rec.Base, Scope: ScopeSubtree, Filter: filter, Attrs: c.rec.attrs()})
 	if err != nil {
 		return Answer{}, false, err
 	}

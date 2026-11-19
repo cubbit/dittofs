@@ -5,12 +5,15 @@
 package identitytest
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -26,20 +29,31 @@ import (
 // case-insensitively and objectSid and objectGUID byte for byte, no such
 // object for a search based outside its naming context, and continuation
 // references to the configuration and DNS partitions for a subtree search of
-// the naming context itself.
+// the naming context itself. It pages a search as RFC 2696 says, matches
+// LDAP_MATCHING_RULE_IN_CHAIN, constructs tokenGroups on a base-scope read,
+// and hands back a range of a multi-valued attribute asked for as
+// attr;range=<lo>-<hi|*>, at most MaxValRange values of it.
 //
-// It reads no paging, no extensible match, none of the constructed
+// It reads no other extensible match, none of the other constructed
 // tokenGroups attributes and none of the selectors *, + and 1.1: a request
-// asking for one is refused, where a domain controller would answer it.
+// asking for one is refused, where a domain controller would answer it. An
+// attribute asked for without a range is answered whole, as Samba answers
+// it, where Active Directory would hand back its first range.
 type Directory struct {
 	base      string // the naming context
 	domainSID []byte // the naming context's objectSid
 
-	mu        sync.Mutex
-	entries   map[string]*entry // by DN, lower-cased
-	passwords map[string][]byte // by DN, lower-cased
-	nextRID   uint32
+	mu          sync.Mutex
+	entries     map[string]*entry // by DN, lower-cased
+	passwords   map[string][]byte // by DN, lower-cased
+	nextRID     uint32
+	maxValRange int  // the most values of one range
+	noTokens    bool // tokenGroups answered empty
 }
+
+// domainUsersRID is the RID of Domain Users, every user's primary group
+// unless its primaryGroupID names another.
+const domainUsersRID = 513
 
 // entry is one entry. Its attributes are keyed by the name they were stored
 // under and looked up case-insensitively.
@@ -81,6 +95,8 @@ func NewDirectory(base string) *Directory {
 		entries:   map[string]*entry{},
 		passwords: map[string][]byte{},
 		nextRID:   1100,
+		// Active Directory's default MaxValRange.
+		maxValRange: 1500,
 	}
 	d.put("", map[string][][]byte{
 		"objectClass":          {[]byte("top")},
@@ -95,6 +111,7 @@ func NewDirectory(base string) *Directory {
 		"objectClass": {[]byte("top"), []byte("container")},
 		"cn":          {[]byte("Users")},
 	})
+	d.add("Domain Users", []string{"top", "group"}, domainUsersRID, nil)
 	admin := d.AddUser(nil, "Administrator", nil)
 	d.passwords[strings.ToLower(admin)] = []byte(adminPassword)
 	return d
@@ -105,25 +122,72 @@ func (d *Directory) put(dn string, attrs map[string][][]byte) {
 }
 
 // AddUser adds a user named name under the Users container, its
-// sAMAccountName and cn name, with an objectSid of the domain's and a random
-// objectGUID, then attrs over those, and returns its DN.
+// sAMAccountName and cn name, with an objectSid of the domain's, a random
+// objectGUID and Domain Users its primaryGroupID, then attrs over those, and
+// returns its DN.
 func (d *Directory) AddUser(_ testing.TB, name string, attrs map[string][][]byte) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	pg := map[string][][]byte{"primaryGroupID": {[]byte(strconv.Itoa(domainUsersRID))}}
+	maps.Copy(pg, attrs)
+	return d.add(name, []string{"top", "person", "organizationalPerson", "user"}, d.rid(), pg)
+}
 
-	sid := append(slices.Clone(d.domainSID), 0, 0, 0, 0)
-	sid[1]++
-	binary.LittleEndian.PutUint32(sid[24:], d.nextRID)
+// AddGroup adds a group named name under the Users container, its
+// sAMAccountName and cn name, with an objectSid of the domain's and a random
+// objectGUID, then attrs over those, member among them, and returns its DN.
+func (d *Directory) AddGroup(_ testing.TB, name string, attrs map[string][][]byte) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.add(name, []string{"top", "group"}, d.rid(), attrs)
+}
+
+// SetMaxValRange sets the most values one range of an attribute holds, 1 500
+// unless set, as Active Directory's MaxValRange.
+func (d *Directory) SetMaxValRange(n int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.maxValRange = n
+}
+
+// HideTokenGroups answers tokenGroups empty from then on, as Active
+// Directory answers a bind that may not read it.
+func (d *Directory) HideTokenGroups() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.noTokens = true
+}
+
+// rid hands out the next RID; d.mu is held.
+func (d *Directory) rid() uint32 {
 	d.nextRID++
+	return d.nextRID - 1
+}
+
+// sid is the domain's SID with rid appended.
+func (d *Directory) sid(rid uint32) []byte {
+	sid := binary.LittleEndian.AppendUint32(slices.Clone(d.domainSID), rid)
+	sid[1]++
+	return sid
+}
+
+// add puts an entry named name under the Users container, of classes, with
+// rid's SID and a random objectGUID, then attrs over those, and returns its
+// DN; d.mu is held, or d is not yet shared.
+func (d *Directory) add(name string, classes []string, rid uint32, attrs map[string][][]byte) string {
 	guid := make([]byte, 16)
 	_, _ = rand.Read(guid)
+	var oc [][]byte
+	for _, c := range classes {
+		oc = append(oc, []byte(c))
+	}
 
 	dn := "CN=" + name + ",CN=Users," + d.base
 	all := map[string][][]byte{
-		"objectClass":    {[]byte("top"), []byte("person"), []byte("organizationalPerson"), []byte("user")},
+		"objectClass":    oc,
 		"cn":             {[]byte(name)},
 		"sAMAccountName": {[]byte(name)},
-		"objectSid":      {sid},
+		"objectSid":      {d.sid(rid)},
 		"objectGUID":     {guid},
 	}
 	for k, v := range attrs {
@@ -155,9 +219,10 @@ func (d *Directory) Dial(ctx context.Context, _ directory.Record) (directory.Con
 var _ directory.Dialer = (*Directory)(nil).Dial
 
 // unread are the attribute names a domain controller answers and the
-// in-memory directory cannot: the constructed token groups, which it does not
-// compute, and the selectors, which selected would read as names no entry has.
-var unread = []string{"tokenGroups", "tokenGroupsGlobalAndUniversal", "tokenGroupsNoGCAcceptable", "*", "+", "1.1"}
+// in-memory directory cannot: the constructed token groups but tokenGroups,
+// which it does not compute, and the selectors, which selected would read as
+// names no entry has.
+var unread = []string{"tokenGroupsGlobalAndUniversal", "tokenGroupsNoGCAcceptable", "*", "+", "1.1"}
 
 // errClosed is a call on a closed connection, as a real one fails it.
 var errClosed = fmt.Errorf("%w: identitytest", directory.ErrClosed)
@@ -192,10 +257,10 @@ func (c *memConn) Search(ctx context.Context, req directory.Request) (directory.
 	if err := c.check(ctx); err != nil {
 		return directory.Result{}, err
 	}
-	if req.PageSize > 0 || req.Cookie != nil {
-		return directory.Result{}, errors.New("identitytest: the in-memory directory reads no paged search")
-	}
 	for _, a := range req.Attrs {
+		if strings.EqualFold(a, "tokenGroups") && req.Scope != directory.ScopeBase {
+			return directory.Result{}, errors.New("identitytest: tokenGroups is read with base scope only")
+		}
 		if slices.ContainsFunc(unread, func(u string) bool { return strings.EqualFold(u, a) }) {
 			return directory.Result{}, fmt.Errorf("identitytest: the in-memory directory reads no attribute %q", a)
 		}
@@ -226,8 +291,12 @@ func (c *memConn) Search(ctx context.Context, req directory.Request) (directory.
 	}
 	var res directory.Result
 	for _, e := range d.entries {
-		if inScope(e.dn, req.Base, req.Scope) && f.match(e) {
-			res.Entries = append(res.Entries, e.selected(req.Attrs))
+		if inScope(e.dn, req.Base, req.Scope) && f.match(e, d) {
+			out, err := d.selected(e, req.Attrs)
+			if err != nil {
+				return directory.Result{}, err
+			}
+			res.Entries = append(res.Entries, out)
 		}
 	}
 	if req.Scope == directory.ScopeSubtree && strings.EqualFold(req.Base, d.base) {
@@ -237,6 +306,34 @@ func (c *memConn) Search(ctx context.Context, req directory.Request) (directory.
 		}
 	}
 	slices.SortFunc(res.Entries, func(a, b directory.Entry) int { return strings.Compare(a.DN, b.DN) })
+	if req.PageSize > 0 {
+		return page(res, req)
+	}
+	return res, nil
+}
+
+// page is the page of res req asks for. The cookie is the offset of the
+// page's first entry in the whole answer, which is sorted by DN.
+//
+// ponytail: the cookie holds no state, so an entry added or removed between
+// two pages shifts the rest by one, where a domain controller pages a
+// snapshot. Keep a per-connection snapshot when a test pages a directory it
+// changes.
+func page(res directory.Result, req directory.Request) (directory.Result, error) {
+	off := 0
+	if req.Cookie != nil {
+		n, err := strconv.Atoi(string(req.Cookie))
+		if err != nil || n <= 0 || n > len(res.Entries) {
+			return directory.Result{}, fmt.Errorf("identitytest: a paged search's cookie %q is not one it handed out", req.Cookie)
+		}
+		off = n
+	}
+	all := res.Entries
+	end := min(off+req.PageSize, len(all))
+	res.Entries, res.Cookie = all[off:end], nil
+	if end < len(all) {
+		res.Cookie = []byte(strconv.Itoa(end))
+	}
 	return res, nil
 }
 
@@ -260,19 +357,94 @@ func (c *memConn) check(ctx context.Context) error {
 }
 
 // selected copies the entry with the attributes attrs names, or all of them
-// when it names none.
-func (e *entry) selected(attrs []string) directory.Entry {
+// when it names none: a stored one whole, one asked as attr;range=<lo>-<hi|*>
+// as that range, and tokenGroups constructed; d.mu is held.
+func (d *Directory) selected(e *entry, attrs []string) (directory.Entry, error) {
 	out := directory.Entry{DN: e.dn, Attrs: map[string][][]byte{}}
 	for k, vs := range e.attrs {
 		if len(attrs) == 0 || slices.ContainsFunc(attrs, func(a string) bool { return strings.EqualFold(a, k) }) {
-			cp := make([][]byte, len(vs))
-			for i, v := range vs {
-				cp[i] = slices.Clone(v)
-			}
-			out.Attrs[k] = cp
+			out.Attrs[k] = clone(vs)
 		}
 	}
-	return out
+	for _, a := range attrs {
+		if strings.EqualFold(a, "tokenGroups") {
+			if sids := d.tokenGroups(e); len(sids) > 0 {
+				out.Attrs[a] = sids
+			}
+			continue
+		}
+		if !strings.Contains(strings.ToLower(a), ";range=") {
+			continue
+		}
+		r, ok := directory.ParseRange(a)
+		if !ok {
+			return directory.Entry{}, fmt.Errorf("identitytest: the range %q does not parse", a)
+		}
+		vs := e.get(r.Attr)
+		if r.Lo >= len(vs) {
+			continue
+		}
+		last := r.Lo + d.maxValRange - 1
+		if r.Hi >= 0 {
+			last = min(last, r.Hi)
+		}
+		got := directory.Range{Attr: r.Attr, Lo: r.Lo, Hi: last}
+		if last >= len(vs)-1 {
+			got.Hi, last = -1, len(vs)-1
+		}
+		out.Attrs[got.String()] = clone(vs[r.Lo : last+1])
+	}
+	return out, nil
+}
+
+func clone(vs [][]byte) [][]byte {
+	cp := make([][]byte, len(vs))
+	for i, v := range vs {
+		cp[i] = slices.Clone(v)
+	}
+	return cp
+}
+
+// tokenGroups is the SIDs of every group e belongs to, through member links
+// or its primaryGroupID, directly or through other groups, each once; none
+// once HideTokenGroups was called; d.mu is held.
+func (d *Directory) tokenGroups(e *entry) [][]byte {
+	if d.noTokens {
+		return nil
+	}
+	var start []*entry
+	if v := e.get("primaryGroupID"); len(v) == 1 {
+		if rid, err := strconv.ParseUint(string(v[0]), 10, 32); err == nil {
+			sid := d.sid(uint32(rid))
+			for _, g := range d.entries {
+				if slices.ContainsFunc(g.get("objectSid"), func(s []byte) bool { return bytes.Equal(s, sid) }) {
+					start = append(start, g)
+				}
+			}
+		}
+	}
+	seen := map[*entry]bool{}
+	var sids [][]byte
+	var visit func(m *entry)
+	visit = func(m *entry) {
+		if seen[m] {
+			return
+		}
+		seen[m] = true
+		if m != e {
+			sids = append(sids, clone(m.get("objectSid"))...)
+		}
+		for _, g := range d.entries {
+			if slices.ContainsFunc(g.get("member"), func(v []byte) bool { return strings.EqualFold(string(v), m.dn) }) {
+				visit(g)
+			}
+		}
+	}
+	visit(e)
+	for _, g := range start {
+		visit(g)
+	}
+	return sids
 }
 
 // under reports whether dn is base or below it.

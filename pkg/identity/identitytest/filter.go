@@ -9,17 +9,19 @@ import (
 
 // filter is a parsed RFC 4515 search filter.
 type filter struct {
-	op    byte     // '&', '|', '!', '=' (equality), '*' (presence) or 's' (substrings)
+	op    byte     // '&', '|', '!', '=' (equality), '*' (presence), 's' (substrings) or 'c' (in chain)
 	subs  []filter // the operands of '&', '|' and '!'
 	attr  string
-	value []byte   // equality's value
+	value []byte   // equality's value, or the DN in chain's
 	parts [][]byte // substrings' pieces: initial, any..., final; an empty first or last is absent
 }
 
 // parseFilter parses s, which must be one whole filter. It reads equality,
 // presence, substrings, and, or and not, with \xx escapes, and refuses
-// anything else, approximate, ordering and extensible matches among it, as an
-// error rather than an answer the in-memory directory cannot give.
+// LDAP_MATCHING_RULE_IN_CHAIN's extensible match, attr:1.2.840.113556.1.4.1941:=dn,
+// and refuses anything else, approximate, ordering and other extensible
+// matches among it, as an error rather than an answer the in-memory directory
+// cannot give.
 func parseFilter(s string) (filter, error) {
 	f, rest, err := parseOne(s)
 	if err != nil {
@@ -84,6 +86,13 @@ func parseItem(s string) (filter, error) {
 		return filter{}, fmt.Errorf("item %q has no attribute and =", s)
 	}
 	attr, raw := s[:eq], s[eq+1:]
+	if a, ok := strings.CutSuffix(attr, ":"+inChain+":"); ok && a != "" && !strings.ContainsAny(a, "~<>:(\\*") {
+		v, err := unescape(raw)
+		if err != nil {
+			return filter{}, fmt.Errorf("item %q: %w", s, err)
+		}
+		return filter{op: 'c', attr: a, value: v}, nil
+	}
 	if strings.ContainsAny(attr, "~<>:(\\*") || strings.TrimSpace(attr) != attr {
 		return filter{}, fmt.Errorf("item %q: approximate, ordering and extensible matches, and attribute %q, are not read", s, attr)
 	}
@@ -153,27 +162,32 @@ func hexDigit(c byte) (byte, bool) {
 	return 0, false
 }
 
-// match reports whether e satisfies f.
-func (f filter) match(e *entry) bool {
+// inChain is LDAP_MATCHING_RULE_IN_CHAIN.
+const inChain = "1.2.840.113556.1.4.1941"
+
+// match reports whether e, an entry of d, satisfies f; d.mu is held.
+func (f filter) match(e *entry, d *Directory) bool {
 	switch f.op {
 	case '&':
 		for _, s := range f.subs {
-			if !s.match(e) {
+			if !s.match(e, d) {
 				return false
 			}
 		}
 		return true
 	case '|':
 		for _, s := range f.subs {
-			if s.match(e) {
+			if s.match(e, d) {
 				return true
 			}
 		}
 		return false
 	case '!':
-		return !f.subs[0].match(e)
+		return !f.subs[0].match(e, d)
 	case '*':
 		return len(e.get(f.attr)) > 0
+	case 'c':
+		return chained(e, f.attr, string(f.value), d, map[*entry]bool{})
 	}
 	fold := !binaryAttr(f.attr)
 	for _, v := range e.get(f.attr) {
@@ -220,4 +234,22 @@ func substrings(v []byte, parts [][]byte, fold bool) bool {
 		v = v[i+len(p):]
 	}
 	return bytes.HasSuffix(v, last)
+}
+
+// chained reports whether dn is among e's values of attr, or among those of
+// an entry they name, at any depth, each entry visited once; d.mu is held.
+func chained(e *entry, attr, dn string, d *Directory, seen map[*entry]bool) bool {
+	if seen[e] {
+		return false
+	}
+	seen[e] = true
+	for _, v := range e.get(attr) {
+		if strings.EqualFold(string(v), dn) {
+			return true
+		}
+		if next, ok := d.entries[strings.ToLower(string(v))]; ok && chained(next, attr, dn, d, seen) {
+			return true
+		}
+	}
+	return false
 }
