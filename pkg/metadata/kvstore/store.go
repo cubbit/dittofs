@@ -17,6 +17,7 @@ var (
 	ErrNotInitialised = errors.New("kvstore: store not initialised")
 	ErrInitialised    = errors.New("kvstore: store already initialised")
 	ErrFormat         = errors.New("kvstore: store format not supported")
+	ErrForeignStore   = errors.New("kvstore: store holds a foreign backend's keys")
 )
 
 // MinFormat and MaxFormat are the store formats this binary reads and
@@ -94,6 +95,23 @@ func Init(ctx context.Context, db kv.KV, install [16]byte) error {
 			return ErrInitialised
 		} else if !errors.Is(err, kv.ErrNotFound) {
 			return err
+		}
+		// decision: Init accepts a store holding only the clock ceiling, so a v1
+		// store that Open has already written the ceiling into is still refused,
+		// because it holds v1 keys. The ceiling: a store holding no key at all
+		// would pass; it holds none only when empty. Overturned if v1 can leave
+		// an empty store that matters.
+		for k, err := range tx.Scan(nil, nil) {
+			if err != nil {
+				return err
+			}
+			kind := byte(0xFF)
+			if len(k.Key) > 0 {
+				kind = k.Key[0]
+			}
+			if !slices.Contains(keys.Kinds, kind) {
+				return fmt.Errorf("%w: key %q, kind 0x%02x, is not one this format writes", ErrForeignStore, k.Key, kind)
+			}
 		}
 		in := entity.Installation{ID: install, Instance: uuid.New()}
 		for _, kvs := range [][2][]byte{

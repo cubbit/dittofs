@@ -158,3 +158,36 @@ func TestDescribeNamesEveryCode(t *testing.T) {
 		}
 	}
 }
+
+// Kinds holds every key kind, exactly once, and every kind is below the ASCII
+// range, so none of them can pass for the leading byte of another backend's
+// text key: the store's foreign-key check reads Kinds as the complete set of
+// this format's kinds, so a kind left out of it would refuse a store of its
+// own, and a kind that doubles as v1's ASCII would let a v1 store through.
+func TestKinds(t *testing.T) {
+	want := []byte{KindStore, KindF, KindS, KindC, KindCR, KindB, KindBR, KindBD, KindBC, KindI, KindNS,
+		KindU, KindG, KindM, KindMR, KindGR, KindNX, KindNP, KindNG, KindSL, KindIN, KindNSM, KindPX,
+		KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP, KindIDS,
+		KindPGEN, KindOP, KindOPR, KindIK, KindXP, KindAU, KindAUX, KindJD, KindUA, KindNSR,
+		KindSS, KindSSH, KindAT, KindATH, KindATA, KindSF, KindSSA}
+	if !slices.Equal(Kinds, want) {
+		t.Errorf("Kinds = % x, want % x: every kind exactly once, in the constant declaration order", Kinds, want)
+	}
+	for _, sub := range []struct {
+		name     string
+		check    func(k byte) bool
+		violated string
+	}{
+		{"every kind below 0x61, the ASCII range", func(k byte) bool { return k >= 0x61 },
+			"kind 0x%02x is not below 0x61, so it can pass for the leading byte of another backend's text key"},
+		{"no v1 key prefix among the kinds", func(k byte) bool {
+			return k == 'f' || k == 'p' || k == 'c' || k == 'l'
+		}, "kind %q is a v1 key's prefix, so a v1 store would read as this format's own"},
+	} {
+		for _, k := range Kinds {
+			if violated := sub.check(k); violated {
+				t.Errorf(sub.violated, k)
+			}
+		}
+	}
+}

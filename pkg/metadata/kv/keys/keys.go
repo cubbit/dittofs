@@ -75,6 +75,19 @@ const (
 	KindSSA    byte = 0x4C // per-account session index: SSA‖principal‖session, empty
 )
 
+// Kinds is every key kind, in the constants' declaration order, by which a
+// store tells its own keys from a foreign backend's: every kind is below the
+// ASCII range, so no key's leading byte of this format can pass for a text
+// key's first character. A new kind constant joins it with the format change
+// that mints it.
+var Kinds = []byte{
+	KindStore, KindF, KindS, KindC, KindCR, KindB, KindBR, KindBD, KindBC, KindI, KindNS,
+	KindU, KindG, KindM, KindMR, KindGR, KindNX, KindNP, KindNG, KindSL, KindIN, KindNSM, KindPX,
+	KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP, KindIDS,
+	KindPGEN, KindOP, KindOPR, KindIK, KindXP, KindAU, KindAUX, KindJD, KindUA, KindNSR,
+	KindSS, KindSSH, KindAT, KindATH, KindATA, KindSF, KindSSA,
+}
+
 // Sub-kinds under F‖id. The File itself has none.
 const (
 	FAcl byte = 0x01
