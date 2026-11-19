@@ -537,6 +537,9 @@ func TestDirectoryCacheLeavingCallerServedStale(t *testing.T) {
 		if got := e.results(t)["stale"]; got != 1 {
 			t.Errorf("lookups counted stale %v, want 1", got)
 		}
+		// The detached query is still on its way to the delayed search: let
+		// it arm its timers before the clock passes them.
+		synctest.Wait()
 		e.clock.Advance(time.Second)
 		synctest.Wait()
 	})
