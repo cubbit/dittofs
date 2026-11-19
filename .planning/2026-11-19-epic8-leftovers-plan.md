@@ -1,10 +1,10 @@
-# Journal v2, epic-8 leftovers: one PR for #3950 #3951 #3952 (+ verify-and-close #3953 #3990)
+# Journal v2, epic-8 leftovers: one PR for #3951 #3952 (#3950 audited, not built; verify-and-close #3953 #3990)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close every open issue of epic 8 ([#3378](https://github.com/cubbit/dittofs/issues/3378)) with one PR on `feat/storage-v2`: one still-live bug (#3951), one deliberate-ceiling turn-on (#3950), one regression test for a bug #4214 already fixed (#3952), and evidence-based closure of two issues whose work already landed but never closed (#3953, #3990).
+**Goal:** Close the open issues of epic 8 ([#3378](https://github.com/cubbit/dittofs/issues/3378)) with one PR on `feat/storage-v2`: one still-live bug (#3951, the share tally undercounting records that land outside a grant), one regression test for a bug #4214 already fixed (#3952), the audit of the deliberate-ceiling turn-on (#3950), which found it wider than one write path and left it open, and evidence-based closure of two issues whose work already landed but never closed (#3953, #3990).
 
-**Architecture:** No structural change. The share tally gains a per-tag refund budget inside `Capacity` so a retirement can never refund bytes the admission never counted (#3951). `Core.WriteAt` returns the version it already drew when an unreserved roll meets the pool's refusal (#3950), overturning the recorded upgrade in its `decision:` marker. A datapath regression test proves a stream-sealed-but-unrolled segment retires (#3952). Everything rides the existing rigs: the capacity rig on real collaborators (PR #3992) and the datapath core fixture.
+**Architecture:** No structural change. The share tally gains `Capacity.Landed`, which every tagged writer outside `Grant.Wrote` calls so a retirement refunds only bytes the tally holds: durability's re-appends and loss records through a `durability.Config.Landed` hook, the removal and forget records directly, a repack pass's copies through the copy ledger and its carried records through the pass's count. A tag mid-seed takes such bytes into a pending figure the seed adds in, so the figure only ever errs high. #3950 was audited and not built (see Task 3). A datapath regression test proves a stream-sealed-but-unrolled segment retires (#3952). Everything rides the existing rigs: the capacity rig on real collaborators (PR #3992) and the datapath core fixture.
 
 **Tech Stack:** Go, the journal v2 packages under `pkg/block/journal/`, the `dt` harness (`test/harness/bin/dt`), Grafana-style `decision:` markers.
 
@@ -18,7 +18,7 @@
 - One commit per issue in the PR; `test():`/`fix():` prefixes; no AI attribution anywhere.
 - Toolchain: `GOTOOLCHAIN=go1.26.10` for local lint and commit hooks; run pinned `golangci-lint` per the CI definition, not the local default; pre-push hook on this branch skips storage-v2 (`DITTOFS_SKIP_PREPUSH=1` if it fires).
 - Suites as CI runs them: `test/harness/bin/dt run unit` (do not hand-run two suites at once).
-- PR: base `feat/storage-v2`, title `fix(journal): the epic-8 leftovers — the tally's refund budget, the refused write's version, the sealed retire [#3950 #3951 #3952 #3990 #3953]`, `--assignee didimelli`. `Closes #N` never fires on storage-v2: every issue closes by hand after merge.
+- PR: base `feat/storage-v2`, title as opened (the plan's first title named the refund budget and the refused write's version, which were not built), `--assignee didimelli`. `Closes #N` never fires on storage-v2: every issue closes by hand after merge.
 - Worktree `.worktrees/epic8-leftovers`, branch `fix/journal-epic8-leftovers` off an updated `origin/feat/storage-v2`.
 
 ## Review Focus
@@ -72,6 +72,8 @@
 
 ### Task 3: #3950 — a refused unreserved write returns the version it drew
 
+> **Superseded while executing — see "Outcome" at the end.** The audit in Step 1 found the contract wider than one write path, so nothing below Step 1 was built. The only consumer of `Handle.WriteAt`'s version discards it and records nothing; recording a partial write needs the published extent surfaced through `Handle.WriteAt`, `Reservation.WriteAt`, the engine interface, the model and the fakes. #3950 stays open as the tracker, and the `decision:` marker in `datapath/write.go` says why.
+
 **Files:**
 - Read first (audit): `pkg/block/journal/internal/datapath/write.go:66-235` (the refusal return and its `decision:` marker), `pkg/block/journal/handle.go:210` (`Handle.WriteAt`), its engine-side caller, and RFC 1 §6 from `origin/develop`.
 - Modify: `pkg/block/journal/internal/datapath/write.go` (the error return(s) after the version was drawn); the `decision:` marker's overturn clause.
@@ -109,6 +111,7 @@ What was built, against the plan above. Each row is one commit on the branch.
 |---|---|
 | 1 — #3952 | Built as planned: the seal-without-roll retire test with a bounded-wait assertion, revert-proved against the seal's own release, and the two stale comments corrected. |
 | 2 — #3951 | **Redesigned.** The refund bucket is a no-op (see the note under Task 2). Built instead: `Capacity.Landed(tag, n)`, which raises the tally without refusing, fed by durability's re-append and loss record through a `durability.Config.Landed` hook and called directly by the removal appender; the forget record is counted by a direct call like the removal record, and `Forget`'s settle of the whole tag to zero stays correct because it retires the record with the rest. A datapath test with a row per writer asserts the share figure equals the set's settled bytes minus the held repack copies, while the segment stands and after it retires. The invariant: the tally equals the set's per-tag settled bytes minus the held copies, apart from a lag that only overcounts. |
+| 2a — #3951 review (added) | Review found two more undercounts, both fixed: a `Landed` or copy transfer running while the tag's seed reads the set was lost (the seed now marks the tag as seeding and adds what such calls took, never counting a record zero times), and a carried or deferred-loss record whose index note failed after it landed was missing from the pass's count. |
 | 2b — #5100 (added) | Review of Task 2 found a fifth writer: a repack pass that fails after appending copies discarded them uncounted. The pass now counts a failed unit's partial copies before it abandons them. Tests cover the Carry-error and Copy-error branches, each asserting after the abandoned copies retire. |
 | 3 — #3950 | **Not built; the audit said no.** RFC 1 does not forbid a version on a refused write, but the only consumer (`pkg/block/engine/write.go`) discards it and records nothing, and recording a partial write needs the published extent surfaced through `Handle.WriteAt` and `Reservation.WriteAt`, the engine interface, the model and the fakes: wider than one write path. The `decision:` marker in `datapath/write.go` now says so. #3950 stays open as the tracker. |
 | 4 — #3953, #3990 | Both verified against the code. #3990 had landed whole in an earlier change. #3953 items 1 to 3 had landed but the exact scenarios had no test, so two were added; item 4 (duplicated entry prediction and refusal construction) is now one helper each in the index bound. |

@@ -12,13 +12,10 @@ import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 // ponytail: the count is made once per unit, after its Copy and Carry calls
 // return, over the copies and records already appended, including a failed
 // unit's partial output, which is handed over at once. It is not made at
-// each append, so a tag seeded while the unit appends reads the copies in its
-// settled figure and counts them again when they transfer: the tally stands
-// high by that unit's copy bytes until the journal reopens and reseeds, for
-// nothing clears a tag's seed in-process; bounded to the copies in flight at
-// the tag's one seed, failing closed.
-// Upgrade to counting at the append when a share's first write racing a pass
-// over its records shows in the field.
+// each append, so a tag seeded while the unit appends can count the copies
+// twice, failing closed; see seedFor for the bound. Upgrade to counting at
+// the append when a share's first write racing a pass over its records shows
+// in the field.
 func (c *Capacity) CopyLanded(src core.SegmentID, tag core.ShareTag, n int64) {
 	if n <= 0 {
 		return

@@ -867,22 +867,21 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 //
 // decision: a tag is seeded once per process, from the set's settled bytes
 // less the held repack copies, and nothing clears seeded[tag] afterwards. A
-// record that lands between the set counting it and this read is counted by
-// the seed and again by its own Landed call or copy transfer, so the figure
-// stands high by that record until the journal reopens and reseeds. A record
-// whose Landed or copy transfer runs between the read and the store is added
-// to the stored figure from seedPending, for the read may predate it: counted
-// twice when the read held it, never zero times. Concurrent seeds of one tag
-// share seeding and seedPending; only the one that stores clears them, and
-// the others return at the seeded check, so a byte is pending for exactly the
-// seed that stores. The
-// overcount is one-time per tag per process and bounded to the records in
-// flight at the seed's read: later records are counted once and refunded once
-// at their retirement, so it does not grow with churn, and it errs high, so it
-// fails closed. Re-seeding while writes are in flight would add a race to the
-// data path to remove that bounded excess. Overturned by a share refusing
-// writes it has room for because of a stood-high figure; the upgrade is a seed
-// that can be redone safely, after a retirement or on an explicit request.
+// record the set counted before the read is in the seed; if its own Landed
+// call or copy transfer runs after the seed stored, it is counted again, and
+// if it runs between the read and the store it is added from seedPending,
+// counted twice when the read held it and once when it did not, never zero
+// times. Concurrent seeds of one tag share seeding and
+// seedPending, only the one that stores clears them, and the others return at
+// the seeded check, so a pending byte is added once. Landed, CopiesTransfer
+// and Retired point here for this argument. The overcount is one-time per tag
+// per process and bounded to the records in flight at the seed's read: later
+// records are counted once and refunded once at their retirement, so it does
+// not grow with churn, and it errs high, so it fails closed. Re-seeding while
+// writes are in flight would add a race to the data path to remove that
+// bounded excess. Overturned by a share refusing writes it has room for
+// because of a stood-high figure; the upgrade is a seed that can be redone
+// safely, after a retirement or on an explicit request.
 func (c *Capacity) seedFor(tag core.ShareTag) {
 	if c.seeded[tag] {
 		return
@@ -944,17 +943,11 @@ func (c *Capacity) seedFor(tag core.ShareTag) {
 // directions: a call whose decrement the baseline already saw computes a
 // delta of zero, and the seed seeds against a figure already free of the
 // retirement, so the only error the tally can still carry is an overcount
-// of a record the seed already read: one counted in the settled figure
-// whose grant has not handed its bytes over yet, a record Landed reports
-// after the seed read it, or a copy a pass counts and transfers after it.
-// None of these is transient: the tally stands high by n until the journal
-// reopens and reseeds, for the retirement subtracts the record once and
-// nothing clears a tag's seed in-process. The excess is bounded to the
-// records in flight at the tag's one seed and fails closed, never admitting
-// a byte past a limit. Overturned by a reporting layer that names retired
-// bytes non-monotonically, whose arithmetic this baseline could then roll
-// back, or by a seed that can be redone while the journal runs, which would
-// heal the excess.
+// of a record the seed already read, which fails closed and stays until the
+// journal reopens; seedFor holds the whole argument. Overturned by a reporting
+// layer that names retired bytes non-monotonically, whose arithmetic this
+// baseline could then roll back, or by a seed that can be redone while the
+// journal runs, which would heal the excess.
 func (c *Capacity) Retired(tag core.ShareTag) {
 	_, retired := c.cfg.ShareFigures(tag)
 	c.mu.Lock()
@@ -1075,7 +1068,7 @@ func (g *Grant) Wrote(n int64) {
 // is safe because a re-append is a second copy of a record the tally already
 // holds until its source retires, so the tally overcounts by at most the
 // copies in flight, and a loss, removal or forget record is a few bytes: the
-// share's limit stands higher by those bytes and refuses later admissions
+// share's figure stands higher by those bytes and refuses later admissions
 // until retirements refund them, failing closed. The tally counts the records
 // the headroom accounts for as well, since their bytes sit in the set under
 // the share's tag and refund when their segment retires. Overturned by an
