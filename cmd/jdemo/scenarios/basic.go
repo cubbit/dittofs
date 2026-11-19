@@ -235,7 +235,7 @@ func basicBeats() []jdemo.Beat {
 		},
 		{
 			Title:   "verify",
-			Caption: "the index checked against the segments, the report rather than the repair; it lands with the same subtask as the per-segment accounting",
+			Caption: "the index checked against the segments, the report rather than the repair; the journal's own answer names what this build still owes",
 			Run: func(d *jdemo.Demo) {
 				rep, err := d.J.Inspect().Verify(context.Background())
 				d.Codef("    rep, err := j.Inspect().Verify(ctx)")

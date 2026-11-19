@@ -4,9 +4,9 @@ One binary, one journal, one story at a time:
 
 ```sh
 go run ./cmd/jdemo                            # a fresh journal under $TMPDIR, the basic story
-go run ./cmd/jdemo --story crash             # the durability story: retention, the mark, the restart refused
+go run ./cmd/jdemo --story crash             # the durability story: retention, the mark, a real restart
 go run ./cmd/jdemo --story limits            # the space story: the share budget, the reserve-first escape
-go run ./cmd/jdemo --dir talk-journal        # name the directory (a used one opens or says why it cannot)
+go run ./cmd/jdemo --dir talk-journal        # name the directory (a used one is recovered on open)
 ```
 
 ## Driving
@@ -53,10 +53,11 @@ go run ./cmd/jdemo --dir talk-journal        # name the directory (a used one op
 
 ## The other stories
 
-- **crash** (6 beats) — durability's half: a write with its sync mark, an
+- **crash** (7 beats) — durability's half: a write with its sync mark, an
   overwrite whose retained range the index look shows, a truncate durable
-  on return, the Since feed a recovery replays, and the closed journal's
-  own refusal to be reopened by a pass that has not landed.
+  on return, the Since feed a recovery replays, and a real restart: the
+  journal closes, `Open` rebuilds the index from the segments and the
+  marks, and the bytes read back.
 - **limits** (7 beats) — space's half: a 2 GiB world and a 512 MiB share
   budget, a reservation taken before the burst, a filler that walks 40 MB
   writes until the share's own refusal, the reserved write served through
@@ -67,13 +68,9 @@ go run ./cmd/jdemo --dir talk-journal        # name the directory (a used one op
 The offload family, holds/stamps, `repack` and `Inspect().Verify`
 answer the journal's own `journal: not implemented` verbatim, and the
 story walks on — the tool never claims a layer beneath the built ones.
-`(i)` shows the story file's real index rows (the read-out landed with
-recovery's assembly); `(s)` answers empty with its one-line note, and a
-used `--dir` still refuses to reopen — the recovery pass that reopens a
-served journal is its own later subtask, the assembly only rebuilds what
-an open holds. Rebase this branch onto fresh `feat/storage-v2` as those
-subtasks land and the same story fills in — epic 9a's T9.9 the segment
-accounting, the offload flow, and the recovery pass the reopen.
+`(i)` and `(s)` show the journal's real index and segment rows, and a used
+`--dir` is recovered on open. Rebase this branch onto fresh
+`feat/storage-v2` as the rest lands and the same story fills in.
 
 ## Numbers worth narrating
 

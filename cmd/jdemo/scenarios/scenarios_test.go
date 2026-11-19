@@ -17,8 +17,8 @@ func TestStoryShapes(t *testing.T) {
 		title string // a beat title unique to the story
 	}{
 		{"basic", 13, "make it durable"},
-		{"crash", 7, "close — and the restart that cannot happen yet"}, // online + attach borrowed + 5 own
-		{"limits", 8, "fill the budget — until the share says no"},     // online borrowed + 7 declared
+		{"crash", 7, "close, then restart — recovery rebuilds it"}, // online + attach borrowed + 5 own
+		{"limits", 8, "fill the budget — until the share says no"}, // online borrowed + 7 declared
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
