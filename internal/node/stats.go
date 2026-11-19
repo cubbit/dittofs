@@ -12,7 +12,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/health"
-	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -89,13 +88,6 @@ func (s *snapshot) get() (engine.Stats, bool) {
 		go s.watch(f)
 	}
 	s.mu.Unlock()
-	// done is served first, at both checks: a fetch ending exactly at the
-	// deadline is a served snapshot, never a counted omission.
-	select {
-	case <-f.done:
-		return f.st, true
-	default:
-	}
 	select {
 	case <-f.done:
 		return f.st, true
@@ -119,10 +111,7 @@ func (s *snapshot) now() time.Time { return s.clock.Now() }
 // two collectors of one scrape — gathered in parallel — can read two
 // different snapshots when their starts straddle a fetch's end.
 func (s *snapshot) run(f *fetch) {
-	var st engine.Stats
-	if fn := s.stats.Load(); fn != nil {
-		st = (*fn)()
-	}
+	st := (*s.stats.Load())()
 	f.st = st
 	s.mu.Lock()
 	s.current = nil
@@ -134,11 +123,6 @@ func (s *snapshot) run(f *fetch) {
 // with none and counts the omission; it leaves when the flight ends in
 // time, so a fetched snapshot raises nothing.
 func (s *snapshot) watch(f *fetch) {
-	select {
-	case <-f.done:
-		return
-	default:
-	}
 	select {
 	case <-f.done:
 	case <-f.after:
@@ -243,12 +227,12 @@ var errStatsUnavailable = errors.New("the engine's stats did not answer within 5
 
 // engineConditions is the engine's conditions as the health evaluator reads
 // them: its node's, each journal's and each share's, from the same deadlined
-// snapshot as the series. node is this node's identity, the subject the one
-// condition a deadlined fetch raises carries, keyed as every other
+// snapshot as the series. subject is the node as conditions name it, the
+// one the condition a deadlined fetch raises carries, keyed as every other
 // node-scope condition's is.
 type engineConditions struct {
-	snap *snapshot
-	node entity.NodeID
+	snap    *snapshot
+	subject health.Subject
 }
 
 func (e *engineConditions) Conditions(dst []health.Condition) []health.Condition {
@@ -266,7 +250,7 @@ func (e *engineConditions) Conditions(dst []health.Condition) []health.Condition
 		// for a stats deadline, which this then defers to.
 		dst = append(dst, health.Condition{
 			Name:    "engine_stats_unavailable",
-			Subject: health.Subject{Scope: health.ScopeNode, ID: hex.EncodeToString(e.node[:])},
+			Subject: e.subject,
 			Cause:   errStatsUnavailable,
 			Detail:  "the engine's statistics did not answer within their deadline; the export omits its series and this condition names the omission",
 		})
@@ -396,14 +380,12 @@ var journalGauges = []gaugeSpec{
 // map feeds every figure for a share no engine copy holds.
 type shareGaugeSpec struct {
 	field, name, help string
-	// getEngine reads the engine's own copy of the figure; nil when the
-	// journal's map is the figure's only source.
-	getEngine  func(s engine.JournalShareStats) float64
-	getJournal func(s journal.ShareStats) float64
+	get               func(s journal.ShareStats) float64
 }
 
-// journalShareGauges is every figure a share is measured by, each tie-named
-// for its source.
+// journalShareGauges is every figure a share is measured by, each read from
+// the carried snapshot's Shares map — the one source, the tag the entry's
+// TagShares names turning a tag into a share.
 var journalShareGauges = []shareGaugeSpec{
 	// decision: share_limit is ranked largest-first as though it were a
 	// backlog and summed as though it were additive, because the worst-n
@@ -411,13 +393,13 @@ var journalShareGauges = []shareGaugeSpec{
 	// and the sum of limits answers nothing an operator asks. The labelled
 	// rows are the useful half. Revisit if a dashboard ever needs a total
 	// limit, which would want its own name and kind.
-	{"Limit", "share_limit", "The share's local journal limit.", func(s engine.JournalShareStats) float64 { return float64(s.Limit) }, func(s journal.ShareStats) float64 { return float64(s.Limit) }},
-	{"UsedBytes", "share_used_bytes", "Record bytes of the share's records still on disk.", func(s engine.JournalShareStats) float64 { return float64(s.UsedBytes) }, func(s journal.ShareStats) float64 { return float64(s.UsedBytes) }},
-	{"HeldBytes", "share_held_bytes", "The share's held extent bytes.", func(s engine.JournalShareStats) float64 { return float64(s.HeldBytes) }, func(s journal.ShareStats) float64 { return float64(s.HeldBytes) }},
-	{"UnreclaimedBytes", "share_unreclaimed_bytes", "The unreclaimed storage counted to the share.", func(s engine.JournalShareStats) float64 { return float64(s.UnreclaimedBytes) }, func(s journal.ShareStats) float64 { return float64(s.UnreclaimedBytes) }},
-	{"ReservedBytes", "share_reserved_bytes", "The share's record bytes reserved by in-flight writes, not yet written.", nil, func(s journal.ShareStats) float64 { return float64(s.ReservedBytes) }},
-	{"DirtyBytes", "share_dirty_bytes", "The share's held bytes whose offloaded bit is unset.", nil, func(s journal.ShareStats) float64 { return float64(s.DirtyBytes) }},
-	{"UnreclaimedEndedBytes", "share_unreclaimed_ended_bytes", "The share's unreclaimed bytes in segments that take no further append.", nil, func(s journal.ShareStats) float64 { return float64(s.UnreclaimedEndedBytes) }},
+	{"Limit", "share_limit", "The share's local journal limit.", func(s journal.ShareStats) float64 { return float64(s.Limit) }},
+	{"UsedBytes", "share_used_bytes", "Record bytes of the share's records still on disk.", func(s journal.ShareStats) float64 { return float64(s.UsedBytes) }},
+	{"HeldBytes", "share_held_bytes", "The share's held extent bytes.", func(s journal.ShareStats) float64 { return float64(s.HeldBytes) }},
+	{"UnreclaimedBytes", "share_unreclaimed_bytes", "The unreclaimed storage counted to the share.", func(s journal.ShareStats) float64 { return float64(s.UnreclaimedBytes) }},
+	{"ReservedBytes", "share_reserved_bytes", "The share's record bytes reserved by in-flight writes, not yet written.", func(s journal.ShareStats) float64 { return float64(s.ReservedBytes) }},
+	{"DirtyBytes", "share_dirty_bytes", "The share's held bytes whose offloaded bit is unset.", func(s journal.ShareStats) float64 { return float64(s.DirtyBytes) }},
+	{"UnreclaimedEndedBytes", "share_unreclaimed_ended_bytes", "The share's unreclaimed bytes in segments that take no further append.", func(s journal.ShareStats) float64 { return float64(s.UnreclaimedEndedBytes) }},
 }
 
 // markSpec is one figure of a stream's sync mark, under a stream label.
@@ -444,8 +426,9 @@ type exclusion struct {
 }
 
 // journalExcluded is every field the tables above do not answer, with its
-// written reason (RFC 25 §2.8 keeps a series scarce only by design, R2
-// requires the reason). The reflection test walks it against journal.Stats.
+// written reason, which RFC 1 §3.9's export contract demands of every field
+// it does not name a series for. The reflection test walks it against
+// journal.Stats.
 var journalExcluded = map[string]exclusion{
 	// decision: SuspectSegments is carried but never set — nothing
 	// maintains a source for it — and a zero would claim nothing is
@@ -492,9 +475,9 @@ var journalExcluded = map[string]exclusion{
 	"SyncFailure.At":  {reason: "when the sync failed is the tracer's and alerting window's; the flag carries whether one failed"},
 
 	// decision: every per-event and per-file field below needs the file
-	// label, which R8 forbids an export to carry; the bounded list these
-	// fields belong to is served per event to the tracer, and the counts
-	// (tag_conflicts, loss_generation) are the exported figures.
+	// label, which RFC 25 §2.8 forbids an export to carry; the bounded list
+	// these fields belong to is served per event to the tracer, and the
+	// counts (tag_conflicts, loss_generation) are the exported figures.
 	"TagConflict.File":    {reason: "a file label is forbidden in an export; tag_conflicts counts the conflicts"},
 	"TagConflict.Tags":    {reason: "the two tags are journal-internal identities; tag_conflicts carries the count alone"},
 	"LossEvent.SeqNum":    {reason: "the event's sequence number needs the event's file label, which the export forbids"},
@@ -578,8 +561,11 @@ func (c *journalSeries) Collect(ch chan<- prometheus.Metric) {
 	if !ok {
 		// decision: a fetch past its deadline omits every journal series:
 		// the snapshot that would fill them never came, and their zeros
-		// would read an empty, healthy journal. The engine's own series
-		// omit with them.
+		// would read an empty, healthy journal. The omission counts under
+		// the journal's own component of the partial counter — one per
+		// omitting scrape, as the engine's collector counts its own — so
+		// the per-component rate stays honest under a lasting wedge.
+		c.snap.partial.WithLabelValues("journal").Inc()
 		return
 	}
 	now := c.snap.now()
@@ -602,6 +588,13 @@ func (c *journalSeries) Collect(ch chan<- prometheus.Metric) {
 			// carries no snapshot anyway.
 			continue
 		}
+		// decision: the journal label carries the journal's internal
+		// identity, though RFC 25 §2.4 asks an entity label take the
+		// object's name, because no name exists to carry: a journal owns
+		// only its identity, its device path may not be exported, and the
+		// identity is the key RFC 25 §3.9's conditions already subject an
+		// operator's alert to. Yields when the journal ever gains a name a
+		// caller can read.
 		for _, spec := range journalCounters {
 			ch <- prometheus.MustNewConstMetric(journalDescs["dittofs_journal_"+spec.name], prometheus.CounterValue, spec.get(s.Counters), id)
 		}
@@ -625,26 +618,17 @@ func (c *journalSeries) Collect(ch chan<- prometheus.Metric) {
 // occupancy figure — recomputed at every export, and beside them the sum
 // over every share.
 func (c *journalSeries) shareGauges(ch chan<- prometheus.Metric, js engine.JournalStats, s *journal.Stats, id string) {
-	// A share's tag, once: TagShares names every attached share's tag.
-	byTag := make(map[journal.ShareTag]entity.ShareID, len(js.TagShares))
-	for tag, sid := range js.TagShares {
-		byTag[tag] = sid
-	}
 	for _, spec := range journalShareGauges {
 		desc := journalDescs["dittofs_journal_"+spec.name]
 		var sum float64
 		var rows []shareRow
 		for tag, ss := range s.Shares {
-			// One source per figure: an attached share's engine copy for
-			// the four the engine carries, the journal's map otherwise —
-			// and, for a tag no attached share holds, the map alone.
-			sid, attached := byTag[tag]
-			value := spec.getJournal(ss)
-			if attached && spec.getEngine != nil {
-				value = spec.getEngine(js.Shares[sid])
-			}
+			value := spec.get(ss)
 			sum += value
-			if attached {
+			// A share's tag, once: TagShares names every attached share's
+			// tag, and a tag it omits belongs to no attached share, so it
+			// holds a labelled row nowhere and rides the sum alone.
+			if sid, attached := js.TagShares[tag]; attached {
 				rows = append(rows, shareRow{share: sid.String(), value: value})
 			}
 		}
@@ -660,18 +644,19 @@ func (c *journalSeries) shareGauges(ch chan<- prometheus.Metric, js engine.Journ
 		for _, row := range rows {
 			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, row.value, id, row.share)
 		}
-		// decision: the unlabelled row with share="" is the total over every
-		// share — the RFC asks for the same gauge "without a share label, as
-		// the sum over every share", and the client library refuses one
-		// name under two label dimensions, so this row rides the name with
-		// an empty share value. Read a total here, directly; the labelled
-		// rows beside it are only the current worst topShares, for ranking
-		// and inspecting individual shares — at more shares than that they
-		// are a truncated view, and an unattached tag holds no labelled row
-		// at all, so summing over share!="" undercounts. Never sum every row
-		// of the name either: the total is its own row, and each labelled row
-		// is already inside it. Split the name only if the RFC's wording or
-		// the library ever allows the two shapes.
+		// decision: the row with share="" is the unlabelled total over every
+		// share that RFC 25 §2.5 asks for — Prometheus drops a label with an
+		// empty value on ingest, so share="" is the same gauge without the
+		// share label, no second name needed. Read a total here, directly;
+		// the labelled rows beside it carry the internal share ID —
+		// RFC 25 §2.4 asks an entity label take the object's name, but no
+		// name exists to carry: the engine's share bindings hold none —
+		// and are only the current worst topShares, for ranking and
+		// inspecting individual shares. At more shares than that they are a
+		// truncated view, and an unattached tag holds no labelled row at
+		// all, so summing over share!="" undercounts. Never sum every row of
+		// the name: the total is its own row, and each labelled row is
+		// already inside it.
 		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, sum, id, "")
 	}
 }

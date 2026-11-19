@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -88,20 +87,11 @@ type JournalStats struct {
 	// Start or after Close — so no zero snapshot can read as healthy.
 	Stats *journal.Stats
 	// TagShares names the tag of every share attached to this journal, and
-	// no other: only the engine knows which share holds a tag.
-	TagShares map[journal.ShareTag]entity.ShareID
-	// Shares is, for each share bound to the journal, the journal's figures
-	// for the share's tag.
-	Shares     map[entity.ShareID]JournalShareStats
+	// no other: only the engine knows which share holds a tag, and the
+	// snapshot's Shares map, read through this map, is the one source of
+	// every per-share figure.
+	TagShares  map[journal.ShareTag]entity.ShareID
 	Conditions []Condition
-}
-
-// JournalShareStats is the journal's figures for one share's tag.
-type JournalShareStats struct {
-	Limit            int64
-	UsedBytes        int64
-	HeldBytes        int64
-	UnreclaimedBytes int64
 }
 
 // NodeStats is this node, as Stats reports it.
@@ -126,30 +116,15 @@ func newStats() Stats {
 }
 
 // clone is a copy of s that shares no map or slice with it, so a caller
-// keeps what Stats returns.
+// keeps what Stats returns. Only recover's refusal shape writes a
+// JournalStats into health — a snapshot of nil, a nil TagShares — so the
+// journals carry nothing to clone here: Stats fills a fresh entry from the
+// live values it reads, wholesale, after this copy.
 func (s Stats) clone() Stats {
 	out := newStats()
 
 	for dev, j := range s.Journals {
 		j.Conditions = slices.Clone(j.Conditions)
-		j.Shares = maps.Clone(j.Shares)
-		j.TagShares = maps.Clone(j.TagShares)
-		// A nil snapshot stays nil: it is the refusal and close shape, and
-		// cloning it would hand out a zero journal a healthy one reads as.
-		if j.Stats != nil {
-			st := *j.Stats
-			if st.LastSyncError != nil {
-				e := *st.LastSyncError
-				st.LastSyncError = &e
-			}
-			st.SyncMarks = maps.Clone(st.SyncMarks)
-			st.Shares = maps.Clone(st.Shares)
-			st.Losses = slices.Clone(st.Losses)
-			st.TagConflicts = slices.Clone(st.TagConflicts)
-			st.SyncDuration.Bounds = slices.Clone(st.SyncDuration.Bounds)
-			st.SyncDuration.Counts = slices.Clone(st.SyncDuration.Counts)
-			j.Stats = &st
-		}
 		out.Journals[dev] = j
 	}
 

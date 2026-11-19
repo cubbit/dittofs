@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,15 +129,14 @@ func TestEngineConditionsDeadlinedRaisesUnavailability(t *testing.T) {
 	entered := make(chan struct{})
 	var once sync.Once
 	clock := sim.NewTestClock(startish)
+	t.Cleanup(func() { close(block) }) // the wedged fetch answers whenever the test ends, success or not
 	snap := newSnapshot(func() engine.Stats {
 		once.Do(func() { close(entered) })
 		<-block
 		return engine.Stats{}
 	}, clock, newPartialCounter())
-	// The node identity is the engine's shape — its first bytes in hex,
-	// zero-padded to the whole ID, as every node-scope subject names it.
 	const node = "6e6f6465000000000000000000000000"
-	e := &engineConditions{snap: snap, node: entity.NodeID{'n', 'o', 'd', 'e'}}
+	e := &engineConditions{snap: snap, subject: health.Subject{Scope: health.ScopeNode, ID: node}}
 
 	got := make(chan []health.Condition, 1)
 	go func() { got <- e.Conditions(nil) }()
@@ -165,5 +165,57 @@ func TestEngineConditionsDeadlinedRaisesUnavailability(t *testing.T) {
 	if conds[0] != want {
 		t.Errorf("a deadlined fetch raised %+v, want %+v", conds[0], want)
 	}
-	close(block)
+}
+
+// A wedged fetch is one flight: however many callers call get() while it
+// runs, each joins the same in-flight fetch — the wedged call is entered
+// once — and one advance of the injected clock past the deadline answers
+// them all, every one with false and its component of the partial counter
+// raised exactly once for the flight's watchers. The callers' own scrapes
+// would each count on top; this test measures the flight alone.
+func TestSnapshotOneWedgedFlightAnswersAllCallers(t *testing.T) {
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	var entered atomic.Int32
+	enteredOnce := make(chan struct{})
+	var once sync.Once
+	fetches := func() engine.Stats {
+		if entered.Add(1) == 1 {
+			once.Do(func() { close(enteredOnce) })
+		}
+		<-block
+		return engine.Stats{}
+	}
+	clock := sim.NewTestClock(startish)
+	snap := newSnapshot(fetches, clock, newPartialCounter())
+
+	const callers = 8
+	answers := make(chan bool, callers)
+	for range callers {
+		go func() {
+			_, ok := snap.get()
+			answers <- ok
+		}()
+	}
+	select {
+	case <-enteredOnce: // the one flight is led, its watcher armed
+	case <-time.After(10 * time.Second):
+		t.Fatal("no caller ever reached the snapshot")
+	}
+	// No entered-second: the wedged fetch is the only one in flight. The
+	// remaining callers park on its expiry, no second fetch spawned.
+	if n := entered.Load(); n != 1 {
+		t.Fatalf("the wedged fetch was entered %d times before the deadline, want 1: concurrent callers spawned their own fetches", n)
+	}
+	clock.Advance(statsDeadline + time.Second)
+	for range callers {
+		select {
+		case ok := <-answers:
+			if ok {
+				t.Error("a caller of a flight past its deadline answered served, want every one omitted")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a caller of a wedged flight never answered past the deadline")
+		}
+	}
 }

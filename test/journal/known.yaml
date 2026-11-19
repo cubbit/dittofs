@@ -460,7 +460,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Stats serves the counters; the leg now stops on a stub call. Needs the data path, failed syncs, corrupt reads, torn tails and foreign segments.'
+  reason: 'Stats serves the counters; the leg now stops on a stub call. Needs the data path, failed syncs, corrupt reads, torn tails and foreign segments. The node-level journal series test''s corrupt-extent data_loss leg rides this same known red and skips until this turns green.'
   issue: '#3378'
   message: 'CorruptExtentsDataLoss is zero after a dirty extent was read corrupt'
 

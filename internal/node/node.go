@@ -209,7 +209,7 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 		return nil, fmt.Errorf("node: sweep series: %w", err)
 	}
 	n.health = &health.Evaluator{}
-	n.health.Add(&engineConditions{snap: snap, node: cfg.Bootstrap.Node.ID})
+	n.health.Add(&engineConditions{snap: snap, subject: n.subject()})
 	n.health.Add(&nodeConditions{n})
 	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)

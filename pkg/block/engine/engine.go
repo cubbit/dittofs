@@ -371,24 +371,22 @@ func (e *Engine) Stats() Stats {
 
 	for _, j := range js { // Start serves one device: journals[0] is Devices[0]'s
 		dir := e.d.Devices[0]
-		st := j.j.Stats()
 		js := s.Journals[dir]
 		js.ID = id
-		js.Stats = &st
+		// The snapshot a close leaves out stays nil (JournalStats.Stats's
+		// own doc): a closed journal answers its zero Stats, and no caller
+		// may read that as an open, empty journal exporting zeros.
+		var st journal.Stats
+		if !e.closed.Load() {
+			st = j.j.Stats()
+			js.Stats = &st
+		}
 		js.TagShares = map[journal.ShareTag]entity.ShareID{}
-		js.Shares = map[entity.ShareID]JournalShareStats{}
 		for sid, b := range table {
 			if b.removed || b.j != j.j {
 				continue
 			}
 			js.TagShares[b.share.Tag] = sid
-			ts := st.Shares[b.share.Tag]
-			js.Shares[sid] = JournalShareStats{
-				Limit:            ts.Limit,
-				UsedBytes:        ts.UsedBytes,
-				HeldBytes:        ts.HeldBytes,
-				UnreclaimedBytes: ts.UnreclaimedBytes,
-			}
 		}
 		if c, ok := readOnlyCondition(st.ReadOnly, dir, id); ok {
 			js.Conditions = append(js.Conditions, c)

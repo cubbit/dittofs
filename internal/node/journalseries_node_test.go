@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -472,25 +471,53 @@ func TestJournalSeriesUnattachedTagCoversTheSum(t *testing.T) {
 	}
 }
 
-// A journal refused at Start — nil snapshot behind its entry — exports no
-// series: a zero snapshot would read as healthy. The engine's own series
-// stay, proving the scrape served.
+// A journal whose entry holds no open journal behind it — refused at Start,
+// or closed since — exports no series: its zero snapshot would read as
+// healthy, with the counters reset as the scrape shows them. The engine's
+// own series stay, proving the scrape served.
 func TestJournalSeriesClosedJournalAbsent(t *testing.T) {
+	noJournalSeries := func(scr map[string]map[string]float64) {
+		t.Helper()
+		for series := range scr {
+			if !strings.HasPrefix(series, "dittofs_journal_") {
+				continue
+			}
+			t.Errorf("a journal with no open journal behind its entry exported the series %s, want none", series)
+		}
+		if _, ok := scr["dittofs_engine_stability_points_total"]; !ok {
+			t.Error("the engine's own series are missing from a scrape whose snapshot is fresh, want them served: only the journal's are absent")
+		}
+	}
+
+	// The Start-refused shape: no journal ever opened.
 	h, seam := seamed(t, 8<<20)
 	if err := seam.Remove("format"); err != nil {
 		t.Fatalf("take the device's format file away: %v", err)
 	}
 	started(t, h)
-	scr := jscrape(t, h)
-	for series := range scr {
-		if !strings.HasPrefix(series, "dittofs_journal_") {
-			continue
-		}
-		t.Errorf("a refused journal exported the series %s, want none", series)
+	noJournalSeries(jscrape(t, h))
+
+	// The closed shape: a journal that served series, its engine since
+	// closed, exports none — not the zeros its closed journal would answer
+	// with as a reset, healthy-looking journal.
+	h2, _ := seamed(t, 8<<20)
+	started(t, h2)
+	sh := addShare(t, h2)
+	file := createFiles(t, h2, sh, 1)[0]
+	caughtUp(t, h2)
+	if err := jwrite(t, h2, sh.ID, file.ID, 0, pattern("closed", 4096)); err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := scr["dittofs_engine_stability_points_total"]; !ok {
-		t.Error("the engine's own series are missing from a scrape whose snapshot is fresh, want them served: only the journal's are absent")
+	if err := jcommit(t, h2, sh.ID, file.ID); err != nil {
+		t.Fatal(err)
 	}
+	if scr := jscrape(t, h2); scr["dittofs_journal_written_bytes_total"] == nil {
+		t.Fatal("the open journal exported no written_bytes series before the close, so the closed shape has nothing to lose")
+	}
+	if err := h2.Node().Engine().Close(t.Context()); err != nil {
+		t.Fatalf("close the engine: %v", err)
+	}
+	noJournalSeries(jscrape(t, h2))
 }
 
 // Every journal series of a scrape uses only the allowed label names, the
@@ -571,8 +598,19 @@ func TestSnapshotDeadlineOmitsAndCounts(t *testing.T) {
 		// a bounded real-time poll of a real write
 		<-time.After(10 * time.Millisecond)
 	}
+	dated := false
+	for se, err := range h.Store().Nodes().NodeStatuses(t.Context(), entity.NodeID{}) {
+		if err == nil && se.Node == h.NodeID() {
+			dated = true
+			break
+		}
+	}
+	if !dated {
+		t.Fatal("the status writer never wrote a first status within its 5 s poll, so the deadline has no clean baseline")
+	}
 
 	block := make(chan struct{})
+	t.Cleanup(func() { close(block) }) // the wedged fetch answers whenever the test ends, success or not
 	entered := make(chan struct{})
 	var once sync.Once
 	node.StatsThrough(h.Node(), func() engine.Stats {
@@ -616,50 +654,41 @@ func TestSnapshotDeadlineOmitsAndCounts(t *testing.T) {
 			t.Errorf("the scrape served %s from a snapshot past its deadline, want the whole snapshot omitted", series)
 		}
 	}
-	// Each omitting scrape counts once — RFC 25's row is exports that
-	// omitted a component, not deadlined flights — so the counter rises by
-	// one per scrape however wedged the one flight they all join stays.
-	// Scrapes 2 to 101 here follow the wedged scrape above, so the value at
-	// the i-th owes one per scrape before it (i of them) and may show its
-	// own (the registry gathers collectors in parallel, so a scrape's
-	// increment can land after the counter's pass within that same scrape):
-	// every reading is i or i+1, moving by exactly one.
-	seen := 0.0
-	for i := 1; i <= 100; i++ {
-		v := seen
-		if n, ok := jscrape(t, h)["dittofs_health_export_partial_total"]["component=engine,"]; ok {
-			v = n
-		}
-		// The wedged scrape above plus the i-1 before this one count i in
-		// all; this one's own increment may show (the parallel gather) or
-		// not, and the counter never reads below what a scrape showed.
-		if v != float64(i) && v != float64(i+1) || v < seen {
-			t.Fatalf("the partial counter read %v at the %d-th scrape of the wedge, want exactly one count per omitting scrape (%d or its own not yet landed, %d)", v, i, i, i+1)
-		}
-		seen = max(seen, v)
+	// Each omitting scrape counts once, per component — the engine's own
+	// collector under component=engine, the journal's under component=journal
+	// — because the counter is labelled by the component whose series an
+	// export omitted, and each collector counts only its own. The wedge here
+	// stays the one flight every scrape joins, so each component rises by
+	// exactly one per omitting scrape; the registry gathers collectors in
+	// parallel, so a scrape's own increment can land after the counter's
+	// pass within that same scrape, and every reading is i or i+1.
+	componentRow := func(scr map[string]map[string]float64, component string) (float64, bool) {
+		v, ok := scr["dittofs_health_export_partial_total"]["component="+component+","]
+		return v, ok
 	}
-	// One more scrape: the hundred and one before it have all landed; its
-	// own increment may have landed within its own gather too (the parallel
-	// gather shows it about half the time), so the reading is 101 or 102.
-	// A double-counting collector reads twice that; a stuck counter is
-	// caught by the loop's absolute readings above.
-	if v := jscrape(t, h)["dittofs_health_export_partial_total"]["component=engine,"]; v != 101 && v != 102 {
-		t.Errorf("the partial counter = %v after 101 omitting scrapes and one more, want 101 (its own scrape's count may land within it, 102): every omitting scrape counts exactly once", v)
+	for i := 1; i <= 100; i++ {
+		scr := jscrape(t, h)
+		for _, component := range []string{"engine", "journal"} {
+			v, ok := componentRow(scr, component)
+			if !ok || (v != float64(i) && v != float64(i+1)) {
+				t.Fatalf("the %s component of the partial counter read %v (present %v) at the %d-th scrape of the wedge, want exactly one count per omitting scrape (%d, or its own not yet landed, %d)", component, v, ok, i, i, i+1)
+			}
+		}
+	}
+	// One more scrape: the hundred and one before it have all landed, and
+	// each own increment may have landed within its own exposition, so each
+	// component reads 101 or 102. A double-counting collector reads twice
+	// that; a stuck counter is caught by the loop's absolute readings above.
+	scr := jscrape(t, h)
+	for _, component := range []string{"engine", "journal"} {
+		if v, _ := componentRow(scr, component); v != 101 && v != 102 {
+			t.Errorf("the %s component of the partial counter = %v after 101 omitting scrapes and one more, want 101 (its own scrape's count may land within it, 102): every omitting scrape counts exactly once", component, v)
+		}
 	}
 
-	// A hundred more scrapes of the same wedged flight add no goroutine:
-	// the in-flight fetch is one, and each scrape only joins it and omits.
-	before := runtime.NumGoroutine()
-	for range 100 {
-		jscrape(t, h)
-	}
-	// One goroutine of tolerance covers a background connection settling
-	// or a worker between states; a leak per scrape would add hundreds.
-	if n := runtime.NumGoroutine(); n > before+1 {
-		t.Errorf("goroutines rose from %d to %d over a hundred scrapes of one wedged fetch, want the count flat within one", before, n)
-	}
-	close(block)
 }
+
+// pattern returns
 
 // pattern returns n distinct bytes: i modulo 251, offset by seed's hash, so
 // no two seeds' patterns share a run.

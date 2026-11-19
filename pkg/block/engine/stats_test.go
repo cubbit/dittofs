@@ -269,10 +269,22 @@ func TestStatsReportsEachSharesFiguresFromItsTag(t *testing.T) {
 	if js.Stats.UsedBytes != want.UsedBytes || js.Stats.UsedBytes != 13 {
 		t.Errorf("the journal's UsedBytes %d in the carried snapshot, want the journal's %d", js.Stats.UsedBytes, want.UsedBytes)
 	}
-	if got := js.Shares[u.share.ID].UsedBytes; got != 10 {
+	// The per-share figures read through the carried snapshot's own map,
+	// each share's tag named by the entry's TagShares.
+	tags := map[entity.ShareID]journal.ShareTag{}
+	for tag, sid := range js.TagShares {
+		tags[sid] = tag
+	}
+	if _, named := tags[u.share.ID]; !named {
+		t.Fatal("share one is not in TagShares")
+	}
+	if _, named := tags[two]; !named {
+		t.Fatal("share two is not in TagShares")
+	}
+	if got := js.Stats.Shares[tags[u.share.ID]].UsedBytes; got != 10 {
 		t.Errorf("share one's UsedBytes %d, want its tag's 10", got)
 	}
-	if got := js.Shares[two].UsedBytes; got != 3 {
+	if got := js.Stats.Shares[tags[two]].UsedBytes; got != 3 {
 		t.Errorf("share two's UsedBytes %d, want its tag's 3", got)
 	}
 	if js.Stats.NextVersion != want.NextVersion || js.Stats.VersionLimit != want.VersionLimit {
@@ -332,7 +344,8 @@ func TestStatsBesideWrites(t *testing.T) {
 	eventually(t, "every write committed", func() bool { return u.e.FileEntries() == 0 })
 	close(stop)
 	wg.Wait()
-	if got := u.e.Stats().Journals["unit"].Shares[u.share.ID].UsedBytes; got != 100 {
+	js := u.e.Stats().Journals["unit"]
+	if got := js.Stats.Shares[u.share.Tag].UsedBytes; got != 100 {
 		t.Errorf("the share's UsedBytes %d, want the 100 bytes written", got)
 	}
 }

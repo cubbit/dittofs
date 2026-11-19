@@ -114,9 +114,6 @@ func answeredBy(t *testing.T) map[string]string {
 	add("SyncDuration", "dittofs_journal_sync_duration_seconds")
 	for _, g := range journalShareGauges {
 		add("ShareStats."+g.field, "dittofs_journal_"+g.name)
-		if g.getEngine != nil {
-			add("EngineShares."+g.field, "dittofs_journal_"+g.name)
-		}
 	}
 	for _, m := range journalSyncMarks {
 		add("SyncMark."+m.field, "dittofs_journal_"+m.name)
@@ -137,7 +134,6 @@ func absentField(key string) bool {
 		{reflect.TypeFor[journal.ShareStats](), "ShareStats."},
 		{reflect.TypeFor[journal.SyncMark](), "SyncMark."},
 		{reflect.TypeFor[journal.RecoveryStats](), "Recovery."},
-		{reflect.TypeFor[engine.JournalShareStats](), "EngineShares."},
 		{reflect.TypeFor[journal.ReadOnlyState](), "ReadOnlyState."},
 		{reflect.TypeFor[journal.SyncFailure](), "SyncFailure."},
 		{reflect.TypeFor[journal.TagConflict](), "TagConflict."},
@@ -168,7 +164,6 @@ func TestJournalStatsEveryFieldHasASeries(t *testing.T) {
 		{reflect.TypeFor[journal.ShareStats](), "ShareStats."},
 		{reflect.TypeFor[journal.SyncMark](), "SyncMark."},
 		{reflect.TypeFor[journal.RecoveryStats](), "Recovery."},
-		{reflect.TypeFor[engine.JournalShareStats](), "EngineShares."},
 		{reflect.TypeFor[journal.ReadOnlyState](), "ReadOnlyState."},
 		{reflect.TypeFor[journal.SyncFailure](), "SyncFailure."},
 		{reflect.TypeFor[journal.TagConflict](), "TagConflict."},
@@ -212,30 +207,20 @@ func TestJournalStatsEveryFieldHasASeries(t *testing.T) {
 		}
 	}
 
-	// The four per-share figures the engine carries its own copy of read
-	// from that copy alone, and every other share figure from the journal's
-	// Shares map: a figure with two sources serves whichever wins, silently.
-	engineFields := map[string]bool{}
+	// Every per-share figure of ShareStats has a series, exactly once: the
+	// carried snapshot's Shares map is the one source, so a second source
+	// for any figure is both impossible by construction and caught by the
+	// duplicate check in answeredBy above.
 	journalFields := map[string]bool{}
 	for _, g := range journalShareGauges {
-		if g.getEngine != nil {
-			engineFields["EngineShares."+g.field] = true
-		}
 		journalFields["ShareStats."+g.field] = true
-	}
-	wantEngine := map[string]bool{}
-	for _, f := range reflect.VisibleFields(reflect.TypeFor[engine.JournalShareStats]()) {
-		wantEngine["EngineShares."+f.Name] = true
-	}
-	if !reflect.DeepEqual(engineFields, wantEngine) {
-		t.Errorf("the share figures read from the engine's own copy are %v, want exactly every field engine.JournalShareStats carries: %v", engineFields, wantEngine)
 	}
 	wantJournal := map[string]bool{}
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[journal.ShareStats]()) {
 		wantJournal["ShareStats."+f.Name] = true
 	}
 	if !reflect.DeepEqual(journalFields, wantJournal) {
-		t.Errorf("the share figures read from the journal's Shares map are %v, want exactly every ShareStats field: %v", journalFields, wantJournal)
+		t.Errorf("the share series are %v, want exactly every ShareStats field: %v", journalFields, wantJournal)
 	}
 }
 
@@ -300,11 +285,10 @@ func collectorFor(st engine.Stats) *journalSeries {
 var journalID = [16]byte{0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa}
 
 // oneJournal wraps the journal snapshot of one attached share in an engine
-// Stats, the engine's own share figures deliberately unlike the journal's,
-// so a figure read from the wrong copy fails below.
+// Stats: the snapshot's own Shares map is the per-share figures' one source,
+// and TagShares names the share that holds its tag.
 func oneJournal(s *journal.Stats) engine.Stats {
 	js := engine.JournalStats{ID: journalID, Stats: s, TagShares: map[journal.ShareTag]entity.ShareID{1: shareIDs[0]}}
-	js.Shares = map[entity.ShareID]engine.JournalShareStats{shareIDs[0]: {Limit: 301, UsedBytes: 302, HeldBytes: 303, UnreclaimedBytes: 304}}
 	return engine.Stats{Journals: map[string]engine.JournalStats{"/dev/test": js}}
 }
 
@@ -495,22 +479,18 @@ func cutLabels(labels, n string) (string, bool) {
 func TestJournalSeriesSharesWorstNAndSum(t *testing.T) {
 	s := statsSnapshot()
 	js := engine.JournalStats{ID: journalID, Stats: s}
-	// Attached shares numbered with the index, each holding i+1 dirty KiB;
-	// the journal's used-figures deliberately unlike the engine's own copies.
+	// Attached shares numbered with the index, each holding i+1 dirty KiB
+	// and i+1 used KiB, every figure written once, in the snapshot's map.
 	var dirtySum, usedSum float64
 	js.TagShares = map[journal.ShareTag]entity.ShareID{}
-	js.Shares = map[entity.ShareID]engine.JournalShareStats{}
 	for i := range 25 {
 		tag := journal.ShareTag(i + 1)
 		s.Shares[tag] = journal.ShareStats{
-			UsedBytes:  90000 + int64(i), // a decoy: must never appear
+			UsedBytes:  int64(i+1) << 10,
 			DirtyBytes: int64(i+1) << 10, UnreclaimedBytes: 500, ReservedBytes: 50,
 			Limit: 1, HeldBytes: 1, UnreclaimedEndedBytes: 1,
 		}
 		js.TagShares[tag] = shareIDs[i]
-		js.Shares[shareIDs[i]] = engine.JournalShareStats{
-			UsedBytes: int64(i+1) << 10, Limit: 9, HeldBytes: 9, UnreclaimedBytes: 9,
-		}
 		dirtySum += float64(int64(i+1) << 10)
 		usedSum += float64(int64(i+1) << 10)
 	}
@@ -556,19 +536,12 @@ func TestJournalSeriesSharesWorstNAndSum(t *testing.T) {
 		t.Errorf("dirty_bytes sum row %v is not strictly greater than the labelled rows' sum %v: the total covers the shares the worst-n cut and the unattached tag", sum, labeled)
 	}
 
-	// Used bytes, read from the engine's own copy: the labelled rows show the
-	// engine's figures, not the journal's 90000-decoys.
+	// Used bytes, the same single source: the sum covers every attached
+	// share's and the unattached tag's, and the labelled rows are the worst
+	// twenty of the same map.
 	used := shareRows(t, scr, "dittofs_journal_share_used_bytes")
 	if sum, ok := splitSum(used); !ok || sum != usedSum+777 {
-		t.Errorf("used_bytes sum row = %v (present %v), want %v: the engine's figures over the attached and the unattached tag's 777", sum, ok, usedSum+777)
-	}
-	for _, row := range used {
-		if row.share == "" {
-			continue
-		}
-		if row.value >= 90000 {
-			t.Errorf("used_bytes row share=%s = %v, an engine-copied figure reading the journal's map instead", row.share, row.value)
-		}
+		t.Errorf("used_bytes sum row = %v (present %v), want %v: every attached share's and the unattached tag's 777", sum, ok, usedSum+777)
 	}
 
 	// A change of worst between two scrapes is followed: share 0 becomes the
