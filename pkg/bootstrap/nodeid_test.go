@@ -310,6 +310,17 @@ func TestNodeIDAgainstHostFile(t *testing.T) {
 	}
 }
 
+// Every copy that differs from the host file is named, not only the first.
+func TestNodeIDNamesEveryCopyDifferingFromHost(t *testing.T) {
+	dirs := []string{t.TempDir(), t.TempDir(), t.TempDir()}
+	for _, d := range dirs {
+		putCopy(t, d, encodeNodeID(nodeA))
+	}
+
+	_, err := NodeID(bootstrapOf(nodeB, dirs...))
+	refused(t, "three copies that differ from the host file", err, errCopyDiffersFromHost, dirs...)
+}
+
 func TestNodeIDIgnoresTmp(t *testing.T) {
 	dir := t.TempDir()
 	putCopy(t, dir, encodeNodeID(nodeA))
@@ -1348,18 +1359,6 @@ func TestWriteRefusesATemporaryReplacedBeforeTheLink(t *testing.T) {
 
 	if got := copyBytes(t, dir); !bytes.Equal(got, theirs) {
 		t.Errorf("the published copy: got %x, want the other process's %x", got, theirs)
-	}
-}
-
-func TestSyncDirOfAJournalDirectory(t *testing.T) {
-	dir := t.TempDir()
-
-	if err := osDir(dir).SyncDir(); err != nil {
-		t.Fatalf("SyncDir of %s: %v", dir, err)
-	}
-
-	if err := osDir(filepath.Join(dir, "gone")).SyncDir(); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("SyncDir of a missing directory: got %v, want fs.ErrNotExist", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -145,15 +146,22 @@ func TestReadFormatAnswersACancelledContext(t *testing.T) {
 }
 
 func TestSystemClock(t *testing.T) {
-	c := systemClock{origin: time.Now()}
+	synctest.Test(t, func(t *testing.T) {
+		c := systemClock{origin: time.Now()}
 
-	<-c.After(0)
+		if got := c.Now(); !got.Equal(time.Now()) {
+			t.Errorf("Now: got %v, want %v", got, time.Now())
+		}
 
-	if d := c.Elapsed(); d < 0 {
-		t.Errorf("Elapsed: got %v, want at least 0", d)
-	}
+		start := time.Now()
+		<-c.After(time.Second)
 
-	if c.Now().IsZero() {
-		t.Error("Now: got the zero time")
-	}
+		if got := time.Since(start); got != time.Second {
+			t.Errorf("After(1s) closed after %v, want 1s", got)
+		}
+
+		if got := c.Elapsed(); got != time.Second {
+			t.Errorf("Elapsed: got %v, want 1s", got)
+		}
+	})
 }

@@ -23,6 +23,9 @@ import (
 // The read goes through the retry bound every read at open gets, timed by the
 // system clock: it is one bounded read, and no journal runs on that clock.
 func ReadFormat(ctx context.Context, dir string) (JournalID, InstallationID, error) {
+	// decision: platform.CheckDir is not applied. It guards writes and is the
+	// open's to make, and this read writes nothing. Withdraw it if a caller ever
+	// takes this read as proof the directory can be written.
 	cfg, err := resolveConfig(dir, nil)
 	if err != nil {
 		return JournalID{}, InstallationID{}, err
@@ -97,6 +100,9 @@ func (c systemClock) Elapsed() time.Duration {
 	return time.Since(c.origin)
 }
 
+// ponytail: the timer After starts cannot be cancelled, so it lives to its
+// deadline even when its caller stopped waiting. Add a stoppable After to the
+// clock interface if loop re-arms show in a heap profile.
 func (systemClock) After(d time.Duration) <-chan struct{} {
 	done := make(chan struct{})
 

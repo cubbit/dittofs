@@ -8,7 +8,7 @@ import (
 )
 
 // Sync makes the entries of the directory dir durable the way the
-// journal's own directory sync does on Windows: the directory is opened with
+// journal's own directory sync does: the directory is opened with
 // backup semantics, without which a directory does not open, and write
 // access, which FlushFileBuffers needs, sharing every access so no other open
 // of the directory is refused, and flushed.

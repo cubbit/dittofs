@@ -1098,7 +1098,7 @@ value; D7's drift test passes.
   at start and refuses on what the row names, a copy differing from the host file's key among them,
   and ignores a leftover `node-id.tmp`; it only reads and compares, before the store is open.
   `WriteMissingNodeIDs`, which RFC 23's plan's start step 1 calls once the store is open, writes a
-  missing copy, logged, through `InitNodeID`'s temporary file, sync and rename, only into a
+  missing copy, logged, through `InitNodeID`'s temporary file, sync and link, only into a
   directory whose `format` names the journal RFC 16's `JournalID` records for this node and device;
   a directory whose journal is not recorded gets its copy only from `dfs init` or a recovery import.
   Its tests are the node-identity clauses of RFC 13 §9's "§2.2 explicit initialisation": two copies

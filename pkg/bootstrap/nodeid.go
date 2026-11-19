@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/bootstrap/internal/dirsync"
@@ -49,9 +50,10 @@ var (
 // identity if it names one. Before the store opens; it writes nothing.
 func NodeID(b *Bootstrap) (entity.NodeID, error) {
 	var (
-		id   entity.NodeID
-		from string
-		read []string
+		id     entity.NodeID
+		from   string
+		read   []string
+		differ []string
 	)
 
 	for _, j := range b.Journals {
@@ -71,13 +73,19 @@ func NodeID(b *Bootstrap) (entity.NodeID, error) {
 		}
 
 		if b.Node.ID != (entity.NodeID{}) && got != b.Node.ID {
-			return entity.NodeID{}, fmt.Errorf("%w: %s", errCopyDiffersFromHost, j.Path)
+			differ = append(differ, j.Path)
 		}
 
 		id, from = got, j.Path
 	}
 
 	switch {
+	case len(differ) > 0:
+		return entity.NodeID{}, fmt.Errorf(
+			"%w: %s",
+			errCopyDiffersFromHost,
+			strings.Join(differ, ", "),
+		)
 	case from != "":
 		return id, nil
 	case b.Node.ID != (entity.NodeID{}):
@@ -140,23 +148,6 @@ func initNodeID(
 	id, err := adoptNodeID(ctx, b, installation, dir)
 	if err != nil {
 		return entity.NodeID{}, err
-	}
-
-	got, ok, err := readCopy(dir)
-	if err != nil {
-		return entity.NodeID{}, err
-	}
-
-	if ok {
-		if got != id {
-			return entity.NodeID{}, fmt.Errorf(
-				"%w: %s holds another identity",
-				errCopiesDiffer,
-				dir,
-			)
-		}
-
-		return id, nil
 	}
 
 	if _, err := writeCopy(d, dir, id); err != nil {
@@ -364,7 +355,7 @@ func parseNodeID(b []byte) (entity.NodeID, error) {
 // one byte past the layout is read, so a longer file is seen as too long
 // without being read whole.
 func readCopy(dir string) (entity.NodeID, bool, error) {
-	f, err := os.Open(filepath.Join(dir, nodeIDName))
+	f, err := os.OpenFile(filepath.Join(dir, nodeIDName), os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return entity.NodeID{}, false, nil
 	}
@@ -377,6 +368,22 @@ func readCopy(dir string) (entity.NodeID, bool, error) {
 	defer func() {
 		_ = f.Close()
 	}()
+
+	// Opened without blocking, a FIFO or a device would answer here instead
+	// of hanging the open until a writer comes.
+	info, err := f.Stat()
+	if err != nil {
+		return entity.NodeID{}, false, fmt.Errorf("%w: %s: %w", errCopyUnreadable, dir, err)
+	}
+
+	if !info.Mode().IsRegular() {
+		return entity.NodeID{}, false, fmt.Errorf(
+			"%w: %s: %s is not a regular file",
+			errCopyUnreadable,
+			dir,
+			nodeIDName,
+		)
+	}
 
 	buf := make([]byte, nodeIDSize+1)
 
@@ -477,7 +484,16 @@ func writeCopy(d copyDir, dir string, id entity.NodeID) (bool, error) {
 		return false, err
 	}
 
-	if !ok || got != id {
+	if !ok {
+		return false, fmt.Errorf(
+			"%w: %s: no readable %s after the link",
+			errCopyUnreadable,
+			dir,
+			nodeIDName,
+		)
+	}
+
+	if got != id {
 		return false, fmt.Errorf("%w: %s holds another identity", errCopiesDiffer, dir)
 	}
 
