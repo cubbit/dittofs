@@ -101,9 +101,11 @@ type dirCache struct {
 	evicted prometheus.Counter
 
 	flight  singleflight.Group
-	slots   chan struct{} // the queries running, dirInFlight at most
-	waiting atomic.Int32  // the queries waiting for a slot
-	out     outage        // directory_unreachable
+	slots   chan struct{}   // the queries running, dirInFlight at most
+	waiting atomic.Int32    // the queries waiting for a slot
+	out     outage          // directory_unreachable
+	life    context.Context // the probe loop's, ended by Close
+	end     context.CancelFunc
 
 	mu      sync.Mutex
 	entries map[dirKey]*list.Element // of *dirEntry
@@ -117,7 +119,10 @@ func newDirCache(c *directory.Client, d Deps) *dirCache {
 	if tracer == nil {
 		tracer = noop.NewTracerProvider().Tracer("")
 	}
+	life, end := context.WithCancel(context.Background())
 	return &dirCache{
+		life:    life,
+		end:     end,
 		client:  c,
 		clock:   d.Clock,
 		tracer:  tracer,
@@ -138,8 +143,13 @@ func histogram(reg *metrics.Registry, spec metrics.Spec) *prometheus.HistogramVe
 	return prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: spec.Name, Help: spec.Help}, spec.Labels)
 }
 
-// Close closes the client once the lookups running on it return.
-func (c *dirCache) Close() { c.client.Close() }
+// Close ends the probe loop and waits for it, then closes the client once
+// the lookups running on it return.
+func (c *dirCache) Close() {
+	c.end()
+	c.out.close()
+	c.client.Close()
+}
 
 // question is by's question label.
 func question(by directory.Key) string {
@@ -176,6 +186,12 @@ func (s *Server) directoryLookup(ctx context.Context, by directory.Key, value []
 // entry gave. No failure is stored. While directory_unreachable is raised
 // only the probe queries; every other lookup is answered as a failed query is.
 func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, grace time.Duration, fresh bool) (directory.Answer, bool, error) {
+	// The client answers an empty value without the directory, since LDAP
+	// holds none, so it is answered here, before the outage is consulted: it
+	// is no probe and neither raises nor clears directory_unreachable.
+	if len(value) == 0 {
+		return directory.Answer{}, false, nil
+	}
 	q := question(by)
 	k := dirKey{by: by, value: string(value)}
 	if by == directory.ByUserName || by == directory.ByGroupName {
@@ -192,10 +208,14 @@ func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, g
 	// lookup, not a goroutine: the first lookup dirProbeEvery after the last
 	// probe asks the directory and every other is answered from the grace or
 	// refused at once, so an outage costs one query's timeout per 10 seconds
-	// rather than one per expired entry or cold sign-in (RFC 18 §5.3). No
-	// background loop runs, so Stop has nothing to wait for. Overturned if
-	// an outage must clear while no lookup arrives, which a lookup-free node
-	// has no use for.
+	// rather than one per expired entry or cold sign-in (RFC 18 §5.3). A
+	// node no lookup probes on is probed by the cache's own loop instead,
+	// dirQuietProbe after the last probe, twice the lookups' interval so it
+	// sends only the probes no lookup sent, and the condition, which RFC 25
+	// derives and never latches, clears once the directory is back with no
+	// sign-in to notice it. Close ends the loop and waits for it. Overturned
+	// if a quiet node's 20 seconds to clear ever delays a recovery an
+	// operator watches for.
 	if c.out.skip(now) {
 		r.Err = errDirUnreachable
 	} else {
@@ -269,19 +289,48 @@ func (c *dirCache) query(ctx context.Context, k dirKey, q string, value []byte) 
 	start := c.clock.Now()
 	ans, found, err := c.client.Lookup(ctx, k.by, value)
 	c.seconds.Observe(c.clock.Now().Sub(start).Seconds())
-	// An ambiguous answer is still the directory's answer.
-	if err != nil && !errors.Is(err, directory.ErrAmbiguous) {
-		c.out.raise(c.clock.Now())
-	} else {
-		c.out.clear()
-	}
 	if err != nil {
 		span.SetStatus(codes.Error, "directory unavailable")
+		if !errors.Is(err, directory.ErrAmbiguous) {
+			if c.out.raise(start, err) {
+				go c.probe(k, q)
+			}
+			return nil, err
+		}
+	}
+	// An answer, ambiguous or not, is the directory's.
+	c.out.clear(c.clock.Now())
+	if err != nil {
 		return nil, err
 	}
 	e := &dirEntry{key: k, ans: ans, found: found, at: c.clock.Now()}
 	c.put(e)
 	return e, nil
+}
+
+// probe is the probe loop raise started: while the outage is raised it asks
+// the directory k, the question whose failure raised it, whenever no probe
+// was sent for dirQuietProbe, and it ends when the outage clears or Close
+// ends it. It asks k's own copy of the value, a name folded, which the
+// caller's buffer is not.
+func (c *dirCache) probe(k dirKey, q string) {
+	defer c.out.loops.Done()
+	for {
+		wait, ok := c.out.quietWait(c.clock.Now())
+		if !ok {
+			return
+		}
+		if wait > 0 {
+			select {
+			case <-c.clock.After(wait):
+			case <-c.life.Done():
+				return
+			}
+		}
+		if c.out.quiet(c.clock.Now()) {
+			_, _ = c.query(c.life, k, q, []byte(k.value))
+		}
+	}
 }
 
 // get is k's entry, marked most recently used; nil when none is held.

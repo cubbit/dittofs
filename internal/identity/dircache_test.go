@@ -72,8 +72,9 @@ func (e *dirEnv) cache(t *testing.T) *identity.DirectoryCache {
 	name, pw := e.d.Account()
 	rec := directory.Record{Address: "ldaps://dc.corp.example", Base: "DC=corp,DC=example", BindName: name, Realm: "CORP.EXAMPLE"}
 	c := directory.NewClient(rec, e.f.Dial, func(context.Context) ([]byte, error) { return pw, nil }, e.clock, nil)
-	t.Cleanup(c.Close)
-	return identity.NewDirectoryCache(c, identity.Deps{Clock: e.clock, Metrics: e.reg, Tracer: e.tp.Tracer("test")})
+	dc := identity.NewDirectoryCache(c, identity.Deps{Clock: e.clock, Metrics: e.reg, Tracer: e.tp.Tracer("test")})
+	t.Cleanup(dc.Close)
+	return dc
 }
 
 // fail sets the rules every later dial, bind and search runs under; none

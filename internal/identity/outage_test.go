@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -142,6 +143,10 @@ func TestDirectoryOutageConditionAndRecovery(t *testing.T) {
 	e.clock.Advance(6 * time.Minute)
 	mustFind(t, c, "alice")
 	wantCondition(t, c, "degraded", "alice served stale")
+	// The detail names the failure, which the sentinel cause does not.
+	if cs := c.Conditions(nil); !strings.Contains(cs[0].Detail, "injected directory fault") {
+		t.Fatalf("detail %q, want it to name the query's failure", cs[0].Detail)
+	}
 	mustRefuse(t, c, "carol", 15*time.Minute)
 	wantCondition(t, c, "unhealthy", "carol refused")
 	mustFind(t, c, "bob")
@@ -208,4 +213,104 @@ func TestServerConditionsReportsBoth(t *testing.T) {
 	if len(got) != 2 {
 		t.Errorf("conditions %v, want exactly machine_account_unhealthy and directory_unreachable", got)
 	}
+	// A changed record's new client starts with no outage.
+	st.Directory.Address = "ldaps://dc2.corp.example"
+	if err := s.Apply(st); err != nil {
+		t.Fatalf("Apply with a changed directory: %v", err)
+	}
+	for _, c := range s.Conditions(nil) {
+		if c.Name == "directory_unreachable" {
+			t.Errorf("directory_unreachable %v after the record changed, want the new client to start without it", c)
+		}
+	}
+}
+
+// A lookup of an empty value is answered without the directory, so while the
+// outage is raised and a probe is due it sends nothing and leaves the
+// condition as it was.
+func TestDirectoryOutageEmptyValueIsNoProbe(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	e := newDirEnv(t)
+	e.d.AddUser(t, "alice", nil)
+	c := e.cache(t)
+	mustFind(t, c, "alice")
+	e.down(t)
+	e.clock.Advance(6 * time.Minute)
+	mustFind(t, c, "alice") // its failed query raises the outage
+	e.clock.Advance(11 * time.Second)
+	sent := e.queries(t)
+	if _, found, err := c.Lookup(context.Background(), directory.ByUserName, nil, 15*time.Minute, false); err != nil || found {
+		t.Fatalf("lookup of an empty name = found %v, %v; want not found", found, err)
+	}
+	e.wantQueries(t, sent, "an empty name with the probe due")
+	wantCondition(t, c, "degraded", "after an empty name")
+}
+
+// A query sent before the directory's last answer that fails after it raises
+// nothing: carol's search is sent with bob's, alice's failure raises the
+// outage, bob's answer clears it, and carol's failure, two seconds later,
+// leaves it clear.
+func TestDirectoryOutageEarlierFailureRaisesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newDirEnv(t)
+		for _, n := range []string{"alice", "bob", "carol"} {
+			e.d.AddUser(t, n, nil)
+		}
+		c := e.cache(t)
+		e.fail(t,
+			sim.Rule{Op: "search", Key: "*carol*", Action: sim.FaultAction{Delay: 4 * time.Second, Err: errors.New("injected late failure")}},
+			sim.Rule{Op: "search", Key: "*bob*", Action: sim.FaultAction{Delay: 2 * time.Second}},
+			sim.Rule{Op: "search", Key: "*alice*", Action: sim.FaultAction{Err: errors.New("injected directory fault")}})
+		carol, bob := make(chan error, 1), make(chan error, 1)
+		go func() {
+			_, _, err := lookup(c, "carol", 15*time.Minute)
+			carol <- err
+		}()
+		go func() {
+			_, found, err := lookup(c, "bob", 15*time.Minute)
+			if err == nil && !found {
+				err = errors.New("not found")
+			}
+			bob <- err
+		}()
+		synctest.Wait()
+		mustRefuse(t, c, "alice", 15*time.Minute)
+		wantCondition(t, c, "unhealthy", "alice refused")
+		e.clock.Advance(2 * time.Second)
+		if err := <-bob; err != nil {
+			t.Fatalf("lookup bob = %v, want found", err)
+		}
+		wantCondition(t, c, "", "bob answered")
+		e.clock.Advance(2 * time.Second)
+		if err := <-carol; !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Fatalf("lookup carol = %v, want ErrUnavailable", err)
+		}
+		wantCondition(t, c, "", "carol's query, sent before bob's answer, failed after it")
+	})
+}
+
+// With the outage raised and no lookup arriving, the cache's own loop probes
+// the directory dirQuietProbe after the last probe, and the condition clears
+// once the directory is back.
+func TestDirectoryOutageQuietNodeClears(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newDirEnv(t)
+		e.d.AddUser(t, "alice", nil)
+		c := e.cache(t)
+		mustFind(t, c, "alice")
+		e.down(t)
+		e.clock.Advance(6 * time.Minute)
+		mustFind(t, c, "alice") // its failed query raises the outage
+		synctest.Wait()
+		sent := e.queries(t)
+		e.fail(t)
+		e.clock.Advance(19 * time.Second)
+		synctest.Wait()
+		wantCondition(t, c, "degraded", "19 seconds after the last probe")
+		e.wantQueries(t, sent, "before the quiet probe is due")
+		e.clock.Advance(time.Second)
+		synctest.Wait()
+		e.wantQueries(t, sent+1, "the quiet probe")
+		wantCondition(t, c, "", "after the quiet probe answered")
+	})
 }
