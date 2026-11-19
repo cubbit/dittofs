@@ -2435,8 +2435,9 @@ never written, and a new primary starts both counts at zero.
 **An app instance replaces its predecessor.** A create carrying an app instance
 ID (`Durable.Instance`) that an open of the same file already holds closes that
 open first, releasing its locks, deny mode and lease, and then proceeds —
-unless both carry a version and the new one is not higher, when the create is
-refused `ErrInstanceVersion`, which `errors.Is` `ErrShareViolation`. The
+unless that open carries a version and the create's is not higher, a create
+carrying none included, when the create is refused `ErrInstanceVersion`,
+which `errors.Is` `ErrShareViolation`. The
 matching open is closed only if it belongs to another client and
 the caller's maximal access to the file includes read; otherwise the create
 proceeds as if no instance matched and meets the existing open's deny mode like
