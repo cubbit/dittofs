@@ -4,9 +4,11 @@
 package nodetest
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,7 +100,7 @@ func New(t testing.TB, opts ...Option) *Harness {
 	h.cfg = node.Config{
 		Bootstrap: b,
 		Clock:     h.clock,
-		Logger:    slog.New(slog.NewTextHandler(t.Output(), nil)),
+		Logger:    slog.New(failOnBudget{slog.NewTextHandler(t.Output(), nil), t}),
 		Journal:   []journal.Option{journaltest.SuitableMount()},
 	}
 	h.openKV(t)
@@ -180,4 +182,28 @@ func (h *Harness) build(t testing.TB) {
 		t.Fatalf("nodetest: build the node: %v", err)
 	}
 	h.node = n
+}
+
+// budgetNotZero is the record a node logs at its stop for each budget not at
+// zero (RFC 24 §2.7).
+const budgetNotZero = "node: budget not at zero after the adapters and the filesystem stopped"
+
+// failOnBudget hands every record on, and fails t on a budget not at zero.
+// The node logs that record on the logger it is handed, never on one derived
+// with With, so only Handle is wrapped.
+type failOnBudget struct {
+	slog.Handler
+	t testing.TB
+}
+
+func (h failOnBudget) Handle(ctx context.Context, r slog.Record) error {
+	if r.Message == budgetNotZero {
+		var attrs []string
+		r.Attrs(func(a slog.Attr) bool {
+			attrs = append(attrs, a.String())
+			return true
+		})
+		h.t.Errorf("nodetest: %s: %s", r.Message, strings.Join(attrs, " "))
+	}
+	return h.Handler.Handle(ctx, r)
 }

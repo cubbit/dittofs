@@ -352,15 +352,17 @@ func (n *Node) startEngine(ctx context.Context) error {
 }
 
 // startFilesystem starts the filesystem, which serves every share's shard,
-// then runs step 3 of every share removal a crash interrupted, before any
-// call is admitted.
+// recording the zero check's part before the filesystem's, so Stop runs the
+// check once the filesystem has stopped; then it runs step 3 of every share
+// removal a crash interrupted, before any call is admitted.
 func (n *Node) startFilesystem(ctx context.Context) error {
 	if err := n.fs.Start(ctx); err != nil {
 		return err
 	}
+	n.started(partBudgets, n.checkBudgets)
 	n.started(stepFilesystem, func(ctx context.Context) error {
 		return errors.Join(n.fs.Drain(ctx), n.fs.Stop())
-	}, stepEngine)
+	}, stepEngine, partBudgets)
 	return n.joinRemovals(ctx)
 }
 

@@ -2,7 +2,9 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/netip"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/vfs"
@@ -12,10 +14,14 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/resources"
 )
 
 // LiveStateBound is how long step 3 of a share's removal waits.
 const LiveStateBound = liveStateBound
+
+// BudgetNotZero is the zero check's record.
+const BudgetNotZero = budgetNotZero
 
 // NewStepping is New with stepped called after each start step completes,
 // named as Start's error names it; before each part's stop is waited on,
@@ -145,4 +151,20 @@ func (n *Node) OnSweep(turned func([]kvstore.Swept)) { n.sweep.turned = turned }
 // which New leaves unset.
 func NewAuthenticating(authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
 	return func(cfg Config) (*Node, error) { return newNode(cfg, authenticate) }
+}
+
+// Reserve reserves bytes from the node's budget pool names, receive, reply,
+// connection or hold, as an adapter would.
+func (n *Node) Reserve(ctx context.Context, pool string, bytes int64) (resources.Reservation, error) {
+	switch pool {
+	case "receive":
+		return n.budgets.Receive.Reserve(ctx, netip.Addr{}, bytes)
+	case "reply":
+		return n.budgets.Reply.Reserve(ctx, netip.Addr{}, bytes)
+	case "connection":
+		return n.budgets.Connection.Reserve(bytes)
+	case "hold":
+		return n.budgets.Hold.Reserve(bytes)
+	}
+	return resources.Reservation{}, fmt.Errorf("node: no budget %q", pool)
 }

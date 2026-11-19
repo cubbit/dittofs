@@ -8,7 +8,9 @@
 // Close.
 //
 // ponytail: RFC 24's Detect, Split, ShareCap, Reclaim and §4.1's turns are
-// absent; each lands with its first caller.
+// absent. ShareCap, Reclaim and the turns each land with their first caller;
+// Detect and SplitFor replace the fixed figures the node builds its budgets
+// at.
 package resources
 
 import (

@@ -24,6 +24,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/resources"
 )
 
 // Config is what the host supplies and the node cannot build itself.
@@ -61,6 +62,8 @@ type Node struct {
 	watchdog *health.Watchdog
 	api      *api.Server
 	life     lifecycle
+	budgets  *resources.Budgets
+	pools    []pool // budgets' pools, for their series and the zero check
 	// ending, when set, is called by step 3 of each share removal once its
 	// bound is set on the clock, before it waits on anything.
 	ending func(entity.ShareID)
@@ -68,9 +71,9 @@ type Node struct {
 
 // New opens the metadata store over cfg.KV, refusing a KV that holds no
 // installation or one this binary does not read, then builds open state,
-// the engine and the filesystem, each empty from its own Deps, the
-// operation runner with the steps of the kinds this node drives, the
-// watchdog, and the API over the store's control plane and node view, the
+// the engine and the filesystem, each empty from its own Deps, the budgets
+// and their series, the operation runner with the steps of the kinds this
+// node drives, the watchdog, and the API over the store's control plane and node view, the
 // runner's progress, the health evaluator and the writer's wait. It starts
 // nothing: no journal, goroutine
 // or listener exists until Start.
@@ -148,6 +151,10 @@ func build(cfg Config, authenticate func(*http.Request) (auth.Caller, error)) (*
 	reg := cfg.Metrics.Registry()
 	if err := reg.Register(engineSeries{n.engine.Stats}); err != nil {
 		return nil, fmt.Errorf("node: engine series: %w", err)
+	}
+	n.budgets, n.pools = newBudgets()
+	if err := reg.Register(budgetSeries(n.pools)); err != nil {
+		return nil, fmt.Errorf("node: budget series: %w", err)
 	}
 	if err := reg.Register(nodeSeries{n}); err != nil {
 		return nil, fmt.Errorf("node: node series: %w", err)
