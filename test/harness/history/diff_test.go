@@ -17,6 +17,11 @@ func cell(name string, took time.Duration, tests ...report.Test) report.Cell {
 
 func run(cells ...report.Cell) []report.Run { return []report.Run{{Cells: cells}} }
 
+// named is one workflow run, as the jobs of it that ran cells.
+func named(name string, cells ...report.Cell) report.Run {
+	return report.Run{Name: name, Cells: cells}
+}
+
 func TestDiff(t *testing.T) {
 	const floor = 100 * time.Millisecond
 	s := time.Second
@@ -84,6 +89,33 @@ func TestDiff(t *testing.T) {
 			name: "tests of a cell in one side only are left to its cell row",
 			a:    run(cell("old", 0, tst("T", 9*s))),
 			b:    run(cell("new", 0, tst("T", 9*s))),
+		},
+		{
+			// A side of several workflow runs is each test's median of them, so one
+			// slow run, which runner noise makes, does not move it.
+			name: "median of several runs",
+			a: []report.Run{
+				named("r1", cell("unit", 0, tst("TestX", 1*s))),
+				named("r2", cell("unit", 0, tst("TestX", 5*s))),
+				named("r3", cell("unit", 0, tst("TestX", 9*s))),
+			},
+			b: []report.Run{
+				named("r4", cell("unit", 0, tst("TestX", 3*s))),
+				named("r5", cell("unit", 0, tst("TestX", 7*s))),
+				named("r6", cell("unit", 0, tst("TestX", 30*s))),
+			},
+			want: []Change{{Cell: "unit", Test: "TestX", A: 5 * s, B: 7 * s, InA: true, InB: true}},
+		},
+		{
+			// A test a run lacks, because it didn't run it, is not a 0 in the median.
+			name: "median over the runs that ran it",
+			a: []report.Run{
+				named("r1", cell("unit", 0, tst("TestX", 4*s))),
+				named("r2", cell("unit", 0)),
+				named("r3", cell("unit", 0, tst("TestX", 6*s))),
+			},
+			b:    run(cell("unit", 0, tst("TestX", 9*s))),
+			want: []Change{{Cell: "unit", Test: "TestX", A: 5 * s, B: 9 * s, InA: true, InB: true}},
 		},
 		{
 			name: "same run twice",
