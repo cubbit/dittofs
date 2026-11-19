@@ -9,8 +9,10 @@ import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 // that limit. This is a deferral ledger for the share tally alone; the repack
 // reserve's bound is the pool's ready spares and does not read it.
 //
-// ponytail: the count is made when the unit's copies have all landed, not at
-// each append, so a tag seeded in that window reads the copies in its settled
+// ponytail: the count is made once per unit, after the unit's append loop
+// ends, over the copies that landed even when the unit failed partway, whose
+// copies are then handed over at once. It is not made at each append, so a
+// tag seeded in the loop's window reads the copies in its settled
 // figure and counts them again when they transfer: the tally stands high by
 // that unit's copy bytes, failing closed, until the tally is next reseeded.
 // Upgrade to counting at the append when a share's first write racing a pass

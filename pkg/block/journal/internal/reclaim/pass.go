@@ -270,30 +270,25 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64, stayed bool, err error) {
 	res, err := p.cop.Copy(ctx, seg)
 	if err != nil {
-		p.sel.Done(seg)
-		return 0, 0, false, fmt.Errorf("reclaim: the unit over segment %d: %w", seg, err)
+		// A copy that failed midway leaves the copies it already appended
+		// in the set under their shares' tags, so they are counted and
+		// handed over like any abandoned unit's.
+		p.count(seg, res, CarryResult{})
+		return 0, 0, false, p.abandon(seg, err)
 	}
 	carry, err := p.cop.Carry(ctx, seg, res)
 	if err != nil {
-		// The copies Copy landed stay on disk as their shares' records, so
-		// they are handed over as the abandon comment promises: this unit
-		// releases its claim and the source stays, and whatever the source's
-		// later retirement would hand over is no less owed now.
+		// The copies Copy landed and the records Carry placed before it
+		// failed stay on disk as their shares' records, so they are
+		// counted and handed over as the abandon comment promises: this
+		// unit releases its claim and the source stays, and whatever the
+		// source's later retirement would hand over is no less owed now.
+		p.count(seg, res, carry)
 		return 0, 0, false, p.abandon(seg, err)
 	}
 	// The copies are held out of their shares' tallies until the source goes: held here,
 	// handed to their shares when it is retired.
-	if p.res.Count != nil {
-		for _, cp := range res.Copies {
-			p.res.Count(seg, cp.Tag, cp.Loc.Len)
-		}
-		for _, cr := range carry.Carried {
-			p.res.Count(seg, cr.Rec.Tag, cr.Rec.Loc.Len)
-		}
-		for _, dc := range carry.Deferred {
-			p.res.Count(seg, dc.Loss.Share, dc.Loc.Len)
-		}
-	}
+	p.count(seg, res, carry)
 	// Durability before any publish: every place this unit wrote — its
 	// copies, its carried records and the deferred loss records its carry
 	// appended — is waited for before one index entry moves.
@@ -444,6 +439,23 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 		return bytes, 0, false, nil
 	}
 	return bytes, ret.Freed, false, nil
+}
+
+// count holds the bytes of every copy, carried record and deferred loss
+// record the unit appended out of its shares' tallies against seg.
+func (p *Pass) count(seg core.SegmentID, res Result, carry CarryResult) {
+	if p.res.Count == nil {
+		return
+	}
+	for _, cp := range res.Copies {
+		p.res.Count(seg, cp.Tag, cp.Loc.Len)
+	}
+	for _, cr := range carry.Carried {
+		p.res.Count(seg, cr.Rec.Tag, cr.Rec.Loc.Len)
+	}
+	for _, dc := range carry.Deferred {
+		p.res.Count(seg, dc.Loss.Share, dc.Loc.Len)
+	}
 }
 
 // abandon ends a unit whose copy, carried record or deferred loss record

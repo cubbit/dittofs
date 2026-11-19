@@ -20,6 +20,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
@@ -797,6 +798,51 @@ func TestPassAbandonsItsUnitOnAFailedCopyWindow(t *testing.T) {
 	sel.Done(cands[0].ID)
 }
 
+// shareGap is the set's settled bytes for the fixture's tag, less the repack
+// copies held out, less the share's figure: zero when the figure is the set's
+// own, and constant across a pass that counts what it lands. The fixture's
+// planted records bypass the tally, so the gap a test starts with is the
+// planted bytes and what must hold is that it never moves.
+func shareGap(p *passFixture) int64 {
+	c := p.f.core
+	return c.Set().ShareBytes(copyTag) - c.CopyHeldBytes() - c.ShareFigure(copyTag)
+}
+
+func (p *passFixture) requireGap(t *testing.T, when string, want int64) {
+	t.Helper()
+	if got := shareGap(p); got != want {
+		t.Fatalf("%s: set less share figure = %d, want %d: the figure missed or over-took bytes landed outside a write", when, got, want)
+	}
+}
+
+// retireCopies retires the segment a failed unit's copies landed in — any
+// segment of the tag but src — through the executor the core wires, so the
+// set's retired figure rises and the core's hook lowers the share figure.
+func (p *passFixture) retireCopies(t *testing.T, file core.FileID, src core.SegmentID) {
+	t.Helper()
+	var seg core.SegmentID
+	for _, row := range p.f.core.Set().Snapshot() {
+		if row.ID != src && row.Tags[copyTag] > 0 {
+			seg = row.ID
+		}
+	}
+	// A segment a failed append ended retires under its own reason; a
+	// sealed one, once the seal below has run, under the other.
+	reason := segment.NotHeld
+	if st, err := p.f.core.Set().State(seg); err == nil && st == segment.Ended {
+		reason = segment.ReasonEnded
+	}
+	if seg == 0 {
+		t.Fatal("no segment but the source holds bytes of the tag, want the abandoned copies' segment")
+	}
+	if _, err := p.f.core.Streams().For(file).Seal(true); err != nil && !errors.Is(err, segment.ErrSegmentEnded) {
+		t.Logf("Seal: %v", err)
+	}
+	if _, err := p.f.core.Retirer().Retire(seg, reason); err != nil {
+		t.Fatalf("Retire(%d): %v", seg, err)
+	}
+}
+
 // TestPassACarryFailureHandsOverAndLeavesNothingHeldOut drives the other
 // error path that releases a source with its copies on disk: a removal whose
 // bytes the carry reads back rotted fails the unit after Copy landed its
@@ -810,6 +856,11 @@ func TestPassACarryFailureHandsOverAndLeavesNothingHeldOut(t *testing.T) {
 	p := newPassFixture(t)
 	file := copyFile(14)
 	payload := bytes.Repeat([]byte("a copy beside a rotted removal!"), 4)
+	// A write through the core seeds the tag's share figure, so the copies
+	// the failed unit lands are measured against a tally that takes them.
+	if _, err := p.f.core.WriteAt(t.Context(), p.theShare(t), copyFile(15), 0, make([]byte, 4<<10), 1); err != nil {
+		t.Fatalf("the seeding write: %v", err)
+	}
 	// A live removal beside the content, registered live so the carry must
 	// reach it — its bytes then rotted on disk past its checksum.
 	// The removal's marker is left unsettled, so the record stays live for
@@ -845,6 +896,7 @@ func TestPassACarryFailureHandsOverAndLeavesNothingHeldOut(t *testing.T) {
 	}
 	p.f.sealSource(t, file)
 	p.retainActivity(t, p.f.core.Streams().IndexFor(file), file)
+	gap, setBefore := shareGap(p), p.f.core.Set().ShareBytes(copyTag)
 	r := awaitRepack(t, p.goRepack(context.Background(), copySegCap*8, src))
 	if r.err == nil || !strings.Contains(r.err.Error(), "does not decode or verify") {
 		t.Fatalf("Repack over a rotten removal = %v, want the carry's verify failure", r.err)
@@ -855,11 +907,64 @@ func TestPassACarryFailureHandsOverAndLeavesNothingHeldOut(t *testing.T) {
 	if held := p.f.core.CopyHeldBytes(); held != 0 {
 		t.Fatalf("CopyHeldBytes after the carry's failure = %d, want 0: the copies Copy landed before the failure are the share's records, held out of no tally", held)
 	}
+	// The copies stand in the set under the share's tag and no source will
+	// retire to hand them over, so the share's figure takes them: it keeps
+	// the gap it had to the set's settled bytes, or the abandoned copies'
+	// later retirement lowers the figure by bytes it never held.
+	if landed := p.f.core.Set().ShareBytes(copyTag) - setBefore; landed <= 0 {
+		t.Fatalf("the failed unit landed %d bytes under the tag, want its copies in the set", landed)
+	}
+	p.requireGap(t, "with the abandoned copies standing", gap)
+	p.retireCopies(t, file, src)
+	p.requireGap(t, "after the abandoned copies retired", gap)
 	// The content the copies serve is still the index's: the rotten removal
 	// published nothing, so the file reads whole from its original record.
 	if got := p.readAll(t, file, 0, int64(len(payload))); !bytes.Equal(got, payload) {
 		t.Fatal("the file does not read back whole after the carry's failure")
 	}
+}
+
+// TestPassACopyFailureCountsTheCopiesItLanded fails Copy itself after its
+// first copy landed: a later write of the unit's appends is refused at the seam.
+// The copies already in the set are the share's records with no source to
+// retire for them, so the share figure holds them, standing and after their
+// segment retires.
+func TestPassACopyFailureCountsTheCopiesItLanded(t *testing.T) {
+	p := newPassFixture(t)
+	first := copyFile(16)
+	second := passFileOnStream(p.f, p.f.core.Streams().IndexFor(first), first)
+	payload := bytes.Repeat([]byte("a copy then a refused append!"), 4)
+	if _, err := p.f.core.WriteAt(t.Context(), p.theShare(t), copyFile(18), 0, make([]byte, 4<<10), 1); err != nil {
+		t.Fatalf("the seeding write: %v", err)
+	}
+	p.f.waitSpares(t)
+	rec, _, _ := p.f.plant(t, copyTag, first, payload, 0)
+	p.f.plant(t, copyTag, second, payload, 0)
+	src := rec.Segment
+	p.f.sealSource(t, first)
+	p.retainActivity(t, p.f.core.Streams().IndexFor(first), first)
+	boom := errors.New("the second copy's append is refused")
+	if err := p.f.seam.Schedule(kit.FailingFrom(kit.OpWrite, "*.seg", 2, 1, boom)); err != nil {
+		t.Fatalf("scheduling the failing write: %v", err)
+	}
+	gap, setBefore := shareGap(p), p.f.core.Set().ShareBytes(copyTag)
+	r := awaitRepack(t, p.goRepack(context.Background(), copySegCap*8, src))
+	if r.err == nil || !strings.Contains(r.err.Error(), boom.Error()) {
+		t.Fatalf("Repack over a refused append = %v, want the append's own error", r.err)
+	}
+	if p.setGone(src) {
+		t.Fatal("the failed unit's source left the set, want its claim released and the source standing")
+	}
+	if landed := p.f.core.Set().ShareBytes(copyTag) - setBefore; landed <= 0 {
+		t.Fatalf("Copy landed %d bytes under the tag before it failed, want the first file's copies in the set", landed)
+	}
+	if held := p.f.core.CopyHeldBytes(); held != 0 {
+		t.Fatalf("CopyHeldBytes after the failed Copy = %d, want 0", held)
+	}
+	p.requireGap(t, "with the copies of the failed Copy standing", gap)
+	_ = p.f.seam.Schedule()
+	p.retireCopies(t, first, src)
+	p.requireGap(t, "after the copies of the failed Copy retired", gap)
 }
 
 // TestPassFreedWaitsForTheRetiresDirSync holds the retire's directory sync
