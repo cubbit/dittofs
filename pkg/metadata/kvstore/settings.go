@@ -159,19 +159,60 @@ func (c controlTx) PutSetting(s entity.Setting, expect uint64) (uint64, error) {
 }
 
 // DeleteSetting removes the setting at scope whose generation expect names,
-// so the wider scope's value is effective, raising the settings generation as
-// a put does.
+// so the wider scope's value is effective, raising the settings generation
+// as a put does. A key or scope a put refuses is refused the same. A
+// share's setting is refused while the share is being removed, and once it
+// is gone, as its put is. Deleting one that is not
+// there, expect zero, changes nothing: an absent row has no tag, so any
+// other expect names a tag that is not there, and no write moved for any
+// node to re-read.
 func (c ControlPlane) DeleteSetting(
 	ctx context.Context,
 	scope entity.SettingScope,
 	key string,
 	expect uint64,
 ) error {
-	return unbuilt("DeleteSetting", 3)
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error {
+		return tx.DeleteSetting(scope, key, expect)
+	})
 }
 
 func (c controlTx) DeleteSetting(scope entity.SettingScope, key string, expect uint64) error {
-	return unbuilt("DeleteSetting", 3)
+	if scope.Kind.String() == "" || (scope.Kind == entity.ScopeInstallation) != (scope.ID == [16]byte{}) || key == "" {
+		return merrs.NewInvalidArgumentError("a setting needs a key and a scope, with an ID below installation scope")
+	}
+
+	if scope.Kind == entity.ScopeShare {
+		if err := liveShare(c.tx, entity.ShareID(scope.ID)); err != nil {
+			return err
+		}
+	}
+
+	k := settingKey(scope, key)
+
+	b, ok, err := get(c.tx, k)
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		return expected(0, expect)
+	}
+
+	old, err := decodeSetting(scope, key, b)
+	if err != nil {
+		return err
+	}
+
+	if err := expected(old.Generation, expect); err != nil {
+		return err
+	}
+
+	if _, err := raiseCfgGen(c.tx); err != nil {
+		return err
+	}
+
+	return c.tx.Delete(k)
 }
 
 // unbuilt is the error of a method whose body is not built yet; the message
