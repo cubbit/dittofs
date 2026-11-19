@@ -162,3 +162,26 @@ func (s *Server) DirectoryWaiting() int { return s.state.Load().dir.Waiting() }
 func (s *Server) ByKerberosName(ctx context.Context, user, realm string, mint bool) (entity.Principal, error) {
 	return s.byKerberosName(ctx, user, realm, mint)
 }
+
+// OnNTHash has every NTLM sign-in deliver f the NT hash it computed its
+// proof with.
+func (s *Server) OnNTHash(f func(nt [16]byte)) { s.ntHashed = f }
+
+// DummyNTHash is the NT hash a sign-in computes its proof with for a user
+// that cannot sign in.
+func (s *Server) DummyNTHash() [16]byte { return s.dummyNT }
+
+// SignInOutcome signs in as SignIn does and names the attempt's outcome.
+func (s *Server) SignInOutcome(ctx context.Context, step identity.SignInStep) (identity.SignInResult, string, error) {
+	res, oc, err := s.signIn(ctx, step)
+	return res, string(oc), err
+}
+
+// The published NTLMv2 example of MS-NLMP §4.2.4.
+var (
+	NLMPResponse        = nlmpResponse
+	NLMPServerChallenge = nlmpServerChallenge
+	NLMPFlags           = nlmpFlags
+	NLMPRandomKey       = nlmpRandomKey
+	NLMPEncryptedSKey   = nlmpEncryptedSKey
+)

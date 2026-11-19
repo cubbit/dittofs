@@ -7,12 +7,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// ponytail: SignIn answers ErrUnavailable, one of the errors it may answer
-// and never "unknown principal" or a session, so a consumer wired to the
-// server before its body exists fails closed. Replace it with NTLMv2,
-// Kerberos and the domain's secure channel.
-
-// SignIn verifies one handshake round.
-func (s *Server) SignIn(ctx context.Context, step identity.SignInStep) (identity.SignInResult, error) {
-	return identity.SignInResult{}, vfserr.ErrUnavailable
+// ponytail: a Kerberos sign-in step answers ErrUnavailable, one of the errors
+// SignIn may answer and never a session, so a client offering a ticket fails
+// closed. Replace it with the AP-REQ's verification and the PAC (RFC 18 §3.4).
+func (s *Server) signInKerberos(context.Context, identity.SignInStep) (identity.SignInResult, outcome, error) {
+	return identity.SignInResult{}, outcomeUnavailable, vfserr.ErrUnavailable
 }
