@@ -55,6 +55,26 @@ func (f *file) writeAdds(e core.Extent, retain bool) int64 {
 	return n
 }
 
+// predictWrite is the number of entries a write, or a writeRetain when retain,
+// of e on id would add: one for a file with no entry and a write of bytes, none
+// for a zero-length one, otherwise writeAdds under the file's read lock.
+func (fs *files) predictWrite(id core.FileID, e core.Extent, retain bool) int64 {
+	n := int64(1)
+	if e.Len <= 0 {
+		n = 0
+	}
+	fs.view(id, func(f *file) { n = f.writeAdds(e, retain) })
+	return n
+}
+
+// refuseEntries counts one refusal and returns the NoSpaceError naming the
+// index for want entries asked at count c against limit; a want below one
+// names a single entry short.
+func (fs *files) refuseEntries(c, want, limit int64) *core.NoSpaceError {
+	fs.refusals.Add(1)
+	return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(want, 1) - limit, Unit: core.UnitEntries}
+}
+
 // checkWrite predicts a write's admission without reserving: it returns the
 // entries the write would add and, when the bound would refuse it, the same
 // refusal the admission itself would return — a NoSpaceError naming the index,
@@ -71,17 +91,10 @@ func (f *file) writeAdds(e core.Extent, retain bool) int64 {
 // between an admission's reserve and its commit; the admission applies the
 // delta the content truly made, so the count never drifts.
 func (fs *files) checkWrite(id core.FileID, e core.Extent, retain bool) (int64, error) {
-	// A file with no entry holds nothing: a write of bytes adds one entry
-	// and a zero-length one none.
-	n := int64(1)
-	if e.Len <= 0 {
-		n = 0
-	}
-	fs.view(id, func(f *file) { n = f.writeAdds(e, retain) })
+	n := fs.predictWrite(id, e, retain)
 	c, limit := fs.count.Load(), fs.limit.Load()
 	if c+max(n, 0) > limit {
-		fs.refusals.Add(1)
-		return n, &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(n, 1) - limit, Unit: core.UnitEntries}
+		return n, fs.refuseEntries(c, n, limit)
 	}
 	return n, nil
 }
@@ -126,14 +139,7 @@ func (f *file) splits(e core.Extent) bool {
 // report can split in. Revisit if the count is seen
 // above the bound by more than a handful of entries.
 func (fs *files) admitWrite(id core.FileID, e core.Extent, retain bool) (int64, error) {
-	// A file with no entry holds nothing: a write of bytes adds one entry
-	// and a zero-length one none.
-	n := int64(1)
-	if e.Len <= 0 {
-		n = 0
-	}
-	fs.view(id, func(f *file) { n = f.writeAdds(e, retain) })
-	return fs.reserve(max(n, 0))
+	return fs.reserve(max(fs.predictWrite(id, e, retain), 0))
 }
 
 // admitFill reserves the entries a fill of p on id would add, and reports them
@@ -207,8 +213,7 @@ func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) (int64, erro
 	}
 	c, limit := ix.fs.count.Load(), ix.fs.limit.Load()
 	if c+max(n, 0) > limit {
-		ix.fs.refusals.Add(1)
-		return n, &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(n, 1) - limit, Unit: core.UnitEntries}
+		return n, ix.fs.refuseEntries(c, n, limit)
 	}
 	return n, nil
 }
@@ -231,8 +236,7 @@ func (fs *files) reserve(want int64) (int64, error) {
 		c := fs.count.Load()
 		limit := fs.limit.Load()
 		if c+want > limit {
-			fs.refusals.Add(1)
-			return 0, &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(want, 1) - limit, Unit: core.UnitEntries}
+			return 0, fs.refuseEntries(c, want, limit)
 		}
 		if fs.count.CompareAndSwap(c, c+want) {
 			return want, nil
