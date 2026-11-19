@@ -70,9 +70,10 @@ type Store struct {
 //
 // decision: Open writes the ceiling into whatever store it opens, so a
 // start over a v1 store — which the start check passes on its MANIFEST —
-// carries this one v2 key once Open returns, before the store's own Init
-// refuses the v1 keys. The ceiling write is accepted by the journal plan's
-// v1-store refusal: it marks no v2 record the v1 store lacks anyway.
+// carries this one v2 key once Open returns. The write is kept because no
+// served path reads it: a start never runs the initialisation step's Init,
+// and kvstore.Open answers ErrNotInitialised over the v1 keys, so it is
+// Init — run only by dfs init — that refuses the store, ceiling included.
 // Withdraw it by reading the store's keys without opening it, once the
 // backend tolerates a read-only open after an unclean close.
 func Open(opts Options) (*Store, error) {

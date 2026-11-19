@@ -315,6 +315,12 @@ blockstore:
 Env-var mapping follows the dot-path convention:
 `DITTOFS_BLOCKSTORE_JOURNAL_PATH`.
 
+Point this root — and `metadata.badger.path`, and every `journals` device — at a
+**directory on the volume, never the volume's mount point**: a mount point holds
+its filesystem's own files (`lost+found` on a fresh ext4 volume among them), and
+a store directory holding anything but a store **refuses the start** rather than
+initialise over files the node does not own.
+
 A config file still carrying the old `blockstore.local.*` keys is **refused at
 startup**, naming both spellings — see [Upgrading](#upgrading-from-the-localremote-block-store-split).
 The former journal tuning keys (`chunk_size`, `chunk_max`, `dirty_expire`,
