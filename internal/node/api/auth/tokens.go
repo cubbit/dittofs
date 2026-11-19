@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -21,9 +22,8 @@ const accessLife = 15 * time.Minute
 // signingKeyLen is the signing key's length: HS256's block-sized key.
 const signingKeyLen = 32
 
-// refreshEvery is the least time between two reloads of the key's versions
-// that an unknown kid triggers, so a stream of forged kids reads the store
-// at most once a second.
+// refreshEvery is the least time between two reads of the key's versions,
+// so a stream of forged kids reads the store at most once a second.
 const refreshEvery = time.Second
 
 // errToken refuses an access token: malformed, signed with another key or
@@ -54,101 +54,140 @@ func SealSigningKey(ctx context.Context, s sealer, installation [16]byte, ref en
 	return s.Seal(ctx, entity.SecretKey, signingKeyOwner(installation), ref, key)
 }
 
-// Key is one opened version of the signing key.
-type Key struct {
+// keyVersion is one opened version of the signing key. Its value is the raw
+// HMAC key, so every printing path shows the version alone.
+type keyVersion struct {
 	Version uint64
 	Value   []byte
 }
 
+// String prints the version, never the value.
+func (k keyVersion) String() string { return fmt.Sprintf("{version:%d}", k.Version) }
+
+// Format prints String for every verb, %#v included, so no fmt verb reaches
+// the value.
+func (k keyVersion) Format(f fmt.State, _ rune) { _, _ = fmt.Fprint(f, k.String()) }
+
+// LogValue hands slog the version alone.
+func (k keyVersion) LogValue() slog.Value { return slog.Uint64Value(k.Version) }
+
 // keyVersions opens every version of ref still held, current first, checked
 // against kind and owner.
 type keyVersions interface {
-	Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]Key, error)
+	Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]keyVersion, error)
 }
 
-// Tokens issues and verifies access tokens: HS256 JWTs whose kid names the
+// tokens issues and verifies access tokens: HS256 JWTs whose kid names the
 // signing key's version, so a token signed before a rotation verifies while
 // its version is held.
 //
-// ponytail: the opened versions are kept in memory, reloaded when the
-// rotation step calls refresh and on an unknown kid at most once a second,
-// so a rotation switched on another node is seen here up to a second late,
-// and a version pruned there verifies here until a reload. Upgrade: reload
-// on the node's settings generation, which every secret write raises.
-type Tokens struct {
+// ponytail: the opened versions are kept in memory and re-read at most once
+// a second, on the first issue or verify after the last attempt is a second
+// old, and at once when the rotation step calls refresh. So a node that did
+// not run a rotation signs with the old version, and verifies a version
+// pruned elsewhere, for up to a second, and each node reads the key once a
+// second while tokens are in use. Upgrade: re-read on the node's settings
+// generation, which every secret write raises.
+type tokens struct {
 	keys  keyVersions
 	owner entity.SecretOwner
 	ref   entity.SecretRef
 	clk   clock
 
 	mu     sync.Mutex
-	held   []Key // current first
-	loaded time.Time
+	held   []keyVersion // current first
+	tried  time.Time    // the last read's start, failed or not
+	failed error        // the last read's error while nothing is held
 }
 
-// NewTokens returns the tokens of the signing key ref, owned by
+// newTokens returns the tokens of the signing key ref, owned by
 // installation's signing_key, opened through keys. Nothing is read until
 // the first issue or verify.
-func NewTokens(keys keyVersions, installation [16]byte, ref entity.SecretRef, clk clock) *Tokens {
-	return &Tokens{keys: keys, owner: signingKeyOwner(installation), ref: ref, clk: clk}
+func newTokens(keys keyVersions, installation [16]byte, ref entity.SecretRef, clk clock) *tokens {
+	return &tokens{keys: keys, owner: signingKeyOwner(installation), ref: ref, clk: clk}
 }
 
-// refresh reloads every held version of the signing key.
-func (t *Tokens) refresh(ctx context.Context) error {
+// String prints the key's reference and held versions, never a value.
+func (t *tokens) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	vs := make([]uint64, len(t.held))
+	for i, k := range t.held {
+		vs[i] = k.Version
+	}
+	return fmt.Sprintf("{ref:%x versions:%v}", t.ref, vs)
+}
+
+// Format prints String for every verb, so no fmt verb reaches a value.
+func (t *tokens) Format(f fmt.State, _ rune) { _, _ = fmt.Fprint(f, t.String()) }
+
+// LogValue hands slog String.
+func (t *tokens) LogValue() slog.Value { return slog.StringValue(t.String()) }
+
+// refresh re-reads every held version of the signing key at once.
+func (t *tokens) refresh(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.reload(ctx)
 }
 
-// reload reads the versions; t.mu is held.
-func (t *Tokens) reload(ctx context.Context) error {
+// reload reads the versions, recording the attempt before the read so a
+// failing store is read at most once a second too; t.mu is held.
+func (t *tokens) reload(ctx context.Context) error {
+	t.tried = t.clk.Now()
 	ks, err := t.keys.Versions(ctx, entity.SecretKey, t.owner, t.ref)
+	if err == nil && len(ks) == 0 {
+		// decision: unreachable through the real provider, whose Versions
+		// returns the current version or an error; kept so held[0] cannot
+		// panic.
+		err = errors.New("the signing key holds no version")
+	}
 	if err != nil {
-		return fmt.Errorf("auth: open the signing key: %w", err)
+		t.failed = fmt.Errorf("auth: open the signing key: %w", err)
+		return t.failed
 	}
-	if len(ks) == 0 {
-		return errors.New("auth: the signing key holds no version")
-	}
-	t.held, t.loaded = ks, t.clk.Now()
+	t.held, t.failed = ks, nil
 	return nil
 }
 
-// current is the version that signs now, loaded on first use.
-func (t *Tokens) current(ctx context.Context) (Key, error) {
+// fresh re-reads the versions when the last attempt is a second old or
+// more, and returns a read's error, the last one's while nothing is held;
+// t.mu is held.
+func (t *tokens) fresh(ctx context.Context) error {
+	if t.clk.Now().Sub(t.tried) >= refreshEvery {
+		if err := t.reload(ctx); err != nil {
+			return err
+		}
+	}
+	if t.held == nil {
+		return t.failed
+	}
+	return nil
+}
+
+// current is the version that signs now.
+func (t *tokens) current(ctx context.Context) (keyVersion, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.held == nil {
-		if err := t.reload(ctx); err != nil {
-			return Key{}, err
-		}
+	if err := t.fresh(ctx); err != nil {
+		return keyVersion{}, err
 	}
 	return t.held[0], nil
 }
 
-// byVersion is the held version v, reloaded once when it is not held and
-// the last load is a second old or more.
-func (t *Tokens) byVersion(ctx context.Context, v uint64) (Key, bool, error) {
+// byVersion is the held version v, and false when it is not held.
+func (t *tokens) byVersion(ctx context.Context, v uint64) (keyVersion, bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	find := func() (Key, bool) {
-		for _, k := range t.held {
-			if k.Version == v {
-				return k, true
-			}
+	if err := t.fresh(ctx); err != nil {
+		return keyVersion{}, false, err
+	}
+	for _, k := range t.held {
+		if k.Version == v {
+			return k, true, nil
 		}
-		return Key{}, false
 	}
-	if k, ok := find(); ok {
-		return k, true, nil
-	}
-	if t.held != nil && t.clk.Now().Sub(t.loaded) < refreshEvery {
-		return Key{}, false, nil
-	}
-	if err := t.reload(ctx); err != nil {
-		return Key{}, false, err
-	}
-	k, ok := find()
-	return k, ok, nil
+	return keyVersion{}, false, nil
 }
 
 // accessClaims are an access token's claims: exactly sub, sid, iat and exp,
@@ -167,12 +206,11 @@ type claims struct {
 
 // issue signs an access token for principal's session, issued at iat in
 // whole seconds and expiring accessLife later, with the current version.
-func (t *Tokens) issue(ctx context.Context, principal entity.Principal, session [16]byte, iat time.Time) (string, error) {
+func (t *tokens) issue(ctx context.Context, principal entity.Principal, session [16]byte, iat time.Time) (string, error) {
 	k, err := t.current(ctx)
 	if err != nil {
 		return "", err
 	}
-	iat = iat.Truncate(time.Second)
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims{
 		Session: hex.EncodeToString(session[:]),
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -193,7 +231,7 @@ func (t *Tokens) issue(ctx context.Context, principal entity.Principal, session 
 // was issued at runs up to the store's ceiling ahead of a node's clock, and
 // a token issued at it would be refused on a node behind. Its expiry bounds
 // it. Withdraw if issue times move to the node's clock.
-func (t *Tokens) verify(ctx context.Context, raw string) (claims, error) {
+func (t *tokens) verify(ctx context.Context, raw string) (claims, error) {
 	var readErr error
 	var c accessClaims
 	_, err := jwt.ParseWithClaims(raw, &c, func(tok *jwt.Token) (any, error) {

@@ -1,11 +1,14 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -35,11 +38,11 @@ func (p provider) Seal(ctx context.Context, kind entity.SecretKind, owner entity
 	return p.p.Seal(ctx, secrets.Storage, kind, owner, ref, value, secrets.Meta{})
 }
 
-func (p provider) Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]Key, error) {
+func (p provider) Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]keyVersion, error) {
 	vs, err := p.p.Versions(ctx, secrets.Storage, kind, owner, ref)
-	ks := make([]Key, len(vs))
+	ks := make([]keyVersion, len(vs))
 	for i, v := range vs {
-		ks[i] = Key{Version: v.Number, Value: v.Value}
+		ks[i] = keyVersion{Version: v.Number, Value: v.Value}
 	}
 	return ks, err
 }
@@ -126,7 +129,9 @@ func (f *keyFix) seal() {
 	}
 }
 
-// prune deletes version v of the signing key from the KV, as a prune does.
+// prune deletes version v of the signing key from the KV, as a prune does;
+// PruneSecret is not built, so the test deletes the key itself, through the
+// store's own key layout.
 func (f *keyFix) prune(v uint64) {
 	f.t.Helper()
 	err := f.db.Update(f.t.Context(), func(tx kv.Txn) error {
@@ -137,9 +142,9 @@ func (f *keyFix) prune(v uint64) {
 	}
 }
 
-func (f *keyFix) tokens() *Tokens { return NewTokens(f.prov, f.inst, f.ref, f.clk) }
+func (f *keyFix) tokens() *tokens { return newTokens(f.prov, f.inst, f.ref, f.clk) }
 
-func (f *keyFix) issue(tk *Tokens) string {
+func (f *keyFix) issue(tk *tokens) string {
 	f.t.Helper()
 	raw, err := tk.issue(f.t.Context(), f.alice, f.sess, f.clk.Now())
 	if err != nil {
@@ -217,11 +222,16 @@ func TestTokenRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claims := accessClaims{Session: hex.EncodeToString(f.sess[:]), RegisteredClaims: jwt.RegisteredClaims{
+	good := accessClaims{Session: hex.EncodeToString(f.sess[:]), RegisteredClaims: jwt.RegisteredClaims{
 		Subject: f.alice.String(), IssuedAt: jwt.NewNumericDate(t0), ExpiresAt: jwt.NewNumericDate(t0.Add(accessLife)),
 	}}
-	sign := func(m jwt.SigningMethod, kid any, k any) string {
-		tok := jwt.NewWithClaims(m, claims)
+	with := func(change func(*accessClaims)) accessClaims {
+		c := good
+		change(&c)
+		return c
+	}
+	signClaims := func(c accessClaims, m jwt.SigningMethod, kid any, k any) string {
+		tok := jwt.NewWithClaims(m, c)
 		if kid != nil {
 			tok.Header["kid"] = kid
 		}
@@ -231,6 +241,10 @@ func TestTokenRefusals(t *testing.T) {
 		}
 		return raw
 	}
+	sign := func(m jwt.SigningMethod, kid any, k any) string { return signClaims(good, m, kid, k) }
+	// under is the claims c signed as an access token is, with the right key
+	// and kid.
+	under := func(c accessClaims) string { return signClaims(c, jwt.SigningMethodHS256, "1", key.Value) }
 	// The same claims, signed as an access token is, verify, so each
 	// refusal below is its header's or signature's.
 	if _, err := tk.verify(t.Context(), sign(jwt.SigningMethodHS256, "1", key.Value)); err != nil {
@@ -243,6 +257,11 @@ func TestTokenRefusals(t *testing.T) {
 		"no kid":      sign(jwt.SigningMethodHS256, nil, key.Value),
 		"numeric kid": sign(jwt.SigningMethodHS256, 1, key.Value),
 		"other key":   sign(jwt.SigningMethodHS256, "1", []byte("another key of thirty-two bytes!")),
+		"no exp":      under(with(func(c *accessClaims) { c.ExpiresAt = nil })),
+		"sub nobody":  under(with(func(c *accessClaims) { c.Subject = "nobody" })),
+		"8-byte sid":  under(with(func(c *accessClaims) { c.Session = hex.EncodeToString(f.sess[:8]) })),
+		"non-hex sid": under(with(func(c *accessClaims) { c.Session = strings.Repeat("zz", 16) })),
+		"no iat":      under(with(func(c *accessClaims) { c.IssuedAt = nil })),
 	} {
 		if _, err := tk.verify(t.Context(), raw); !errors.Is(err, errToken) {
 			t.Errorf("%s: verify got %v, want errToken", name, err)
@@ -332,5 +351,119 @@ func TestSigningKeySecret(t *testing.T) {
 	other.Key = "machine_password"
 	if _, err := f.prov.p.Resolve(ctx, secrets.Storage, entity.SecretKey, other, f.ref); !errors.Is(err, secrets.ErrWrongKind) {
 		t.Errorf("resolve as another owner: %v, want ErrWrongKind", err)
+	}
+}
+
+// failing is the real versions source, failing every read with err while it
+// is set.
+type failing struct {
+	keyVersions
+	err error
+}
+
+func (f *failing) Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]keyVersion, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.keyVersions.Versions(ctx, kind, owner, ref)
+}
+
+// A store that cannot be read is returned as itself, never as a refused
+// token, and a failed read waits a second before the next, as a good one
+// does, while nothing is held and once something is.
+func TestTokenReadFailure(t *testing.T) {
+	f := newKeyFix(t)
+	raw := f.issue(f.tokens())
+	boom := errors.New("store unavailable")
+	src := &failing{keyVersions: f.prov, err: boom}
+	tk := newTokens(src, f.inst, f.ref, f.clk)
+
+	if _, err := tk.verify(t.Context(), raw); !errors.Is(err, boom) || errors.Is(err, errToken) {
+		t.Errorf("verify over a failing store: %v, want the store's error and not errToken", err)
+	}
+	src.err = nil
+	if _, err := tk.verify(t.Context(), raw); !errors.Is(err, boom) {
+		t.Errorf("verify within a second of the failed read: %v, want the same error with no new read", err)
+	}
+	if _, err := tk.issue(t.Context(), f.alice, f.sess, f.clk.Now()); !errors.Is(err, boom) {
+		t.Errorf("issue within a second of the failed read: %v, want the same error with no new read", err)
+	}
+	f.clk.Advance(refreshEvery)
+	if _, err := tk.verify(t.Context(), raw); err != nil {
+		t.Errorf("verify a second after the failed read: %v, want it to read and verify", err)
+	}
+
+	// Held, a failed read is the call's error, and the next within a
+	// second answers from what is held.
+	f.clk.Advance(refreshEvery)
+	src.err = boom
+	if _, err := tk.verify(t.Context(), raw); !errors.Is(err, boom) || errors.Is(err, errToken) {
+		t.Errorf("verify over a failing store with a version held: %v, want the store's error and not errToken", err)
+	}
+	if _, err := tk.verify(t.Context(), raw); err != nil {
+		t.Errorf("verify within a second of a failed read with a version held: %v, want the held version to verify", err)
+	}
+}
+
+// A node that did not run the rotation signs with the new version and
+// refuses a token of the pruned one once a second has passed since its last
+// read.
+func TestTokenStaleNodeCatchesUp(t *testing.T) {
+	f := newKeyFix(t)
+	b := f.tokens()
+	v1, err := b.current(t.Context()) // b loads version 1
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.seal()
+	a := f.tokens()
+	if err := a.refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	f.clk.Advance(accessLife)
+	f.prune(1)
+
+	if kid := segment(t, f.issue(b), 0)["kid"]; kid != "2" {
+		t.Errorf("kid of b's next token: got %v, want 2", kid)
+	}
+	// A version 1 token current at the clock, so only its kid refuses it.
+	now := f.clk.Now()
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims{Session: hex.EncodeToString(f.sess[:]),
+		RegisteredClaims: jwt.RegisteredClaims{Subject: f.alice.String(), IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(accessLife))}})
+	tok.Header["kid"] = "1"
+	raw, err := tok.SignedString(v1.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.verify(t.Context(), raw); !errors.Is(err, errToken) || !strings.Contains(err.Error(), "version 1 of the signing key is not held") {
+		t.Errorf("b verifying a version 1 token after the prune: %v, want errToken, version 1 not held", err)
+	}
+}
+
+// No fmt verb or slog prints a byte of the signing key, held in a key
+// version or in tokens.
+func TestSigningKeyNotPrinted(t *testing.T) {
+	f := newKeyFix(t)
+	tk := f.tokens()
+	k, err := tk.current(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logged bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&logged, nil))
+	log.Info("key", "k", k, "tokens", tk)
+	log.Info("key", slog.Any("k", k), slog.Any("tokens", tk))
+	out := []string{logged.String()}
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%x", "%q"} {
+		out = append(out, fmt.Sprintf(verb, k), fmt.Sprintf(verb, tk), fmt.Sprintf(verb, []keyVersion{k}), fmt.Sprintf(verb, struct{ T *tokens }{tk}))
+	}
+	for _, o := range out {
+		for _, enc := range []string{string(k.Value), hex.EncodeToString(k.Value), base64.StdEncoding.EncodeToString(k.Value),
+			strings.Trim(fmt.Sprintf("%d", k.Value), "[]")} {
+			if strings.Contains(o, enc) {
+				t.Errorf("printed %q holds the key", o)
+			}
+		}
 	}
 }
