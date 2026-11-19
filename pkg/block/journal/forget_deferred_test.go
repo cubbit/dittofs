@@ -2,9 +2,8 @@ package journal
 
 import (
 	"context"
-	"errors"
+	"syscall"
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
@@ -12,7 +11,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
-	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // deferralSettings are the small-segment settings the deferral legs run
@@ -67,10 +65,10 @@ func deferralOpts(t *testing.T, seam *kit.Seam, dir string, clock core.Clock) []
 // later open of the same directory — a crash and reopen included — takes
 // the same options, so the reopen sees the same segmentation the writes set
 // up.
-func openDeferralJournal(t *testing.T) (*Journal, *kit.Seam, string, JournalID, *sim.TestClock) {
+func openDeferralJournal(t *testing.T) (*Journal, *kit.Seam, string, JournalID, kit.DrivenClock) {
 	t.Helper()
 	dir := t.TempDir()
-	clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	clock := kit.DrivenClock(kit.NewStopwatchClock())
 	seam, err := kit.NewSeam(dir)
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
@@ -124,25 +122,6 @@ func deferralWrite(t *testing.T, h *Handle, id FileID, off int64, n int, step by
 	if _, err := h.Sync(t.Context(), id); err != nil {
 		t.Fatalf("the sync after the write: %v", err)
 	}
-}
-
-// sealedSegOf answers the lowest sealed segment whose entries hold tag's
-// records, or the error that none stands — the try shape the clock-driven
-// rows poll. It never fails the test itself.
-func sealedSegOf(j *Journal, tag ShareTag) (SegmentID, error) {
-	var best SegmentID
-	found := false
-	for _, row := range j.core.Set().Snapshot() {
-		if row.State != segment.Active && row.Tags[tag] > 0 {
-			if !found || row.ID < best {
-				best, found = row.ID, true
-			}
-		}
-	}
-	if !found {
-		return 0, errors.New("no sealed segment of the tag stands")
-	}
-	return best, nil
 }
 
 // sealedSegmentOf answers the lowest sealed segment whose entries hold tag's
@@ -364,5 +343,93 @@ func TestTheProbeOptionCarriesTheBarrierCheck(t *testing.T) {
 	}
 	if _, err := Init(t.Context(), dir, deferralInst, WithStorage(seam.FS()), WithMountProbe(nobarrier)); err == nil {
 		t.Fatalf("Init over a mount the barrier rule refuses succeeded, want the refusal the check is consulted for")
+	}
+}
+
+// TestAFailedForgetsRecordLeavesNothingRegistered pins the two halves of a
+// failed forget's aftermath the register-at-the-draw ordering owes: while the
+// record's bytes land, its home segment is tracker-held — the registration
+// answerable before the call can fail — and once the wait fails the caller
+// answers, that registration is taken back, or the Ended home stays held
+// for the journal's whole life: no pass can run beside the read-only fence the
+// failure raised (the probe never lifts it in-process), so a leaked live
+// count never resolves. The unbind is the two-line counterpart of the
+// registration: the same record the call drew, Unregistered on the failure.
+func TestAFailedForgetsRecordLeavesNothingRegistered(t *testing.T) {
+	const piece = 600 << 10
+	pattern := func(seed byte) []byte {
+		p := make([]byte, piece)
+		for i := range p {
+			p[i] = seed + byte(i%251)
+		}
+		return p
+	}
+	const tt = ShareTag(3)
+	// The content lands on the stream the zero file's records do NOT use:
+	// the record's own home must carry nothing but the forget record, so
+	// the leak the leg pins is its registration and nothing else's bytes.
+	// The id's tail byte was chosen against the streams' file hash — the
+	// zero file's records and this file's ride different streams of the
+	// two — and the leg answers at once if a hash change ever co-houses
+	// them, its fatality naming the co-housing rather than a wrong leak.
+	tfile := NewFileID([16]byte{'f', 'o', 'r', 'g', 'e', 't', '-', 'r', 'e', 'c', 0x7f})
+
+	j, seam, _, _, _ := openDeferralJournal(t)
+	th, err := j.Share(tt, 0, Version{})
+	if err != nil {
+		t.Fatalf("attach the forgotten tag: %v", err)
+	}
+	if _, err := th.WriteAt(t.Context(), tfile, 0, pattern('t'), 0); err != nil {
+		t.Fatalf("the forgotten tag's content: %v", err)
+	}
+	if _, err := th.Sync(t.Context(), tfile); err != nil {
+		t.Fatalf("its sync: %v", err)
+	}
+	if err := th.Close(); err != nil {
+		t.Fatalf("close the tag's handle: %v", err)
+	}
+
+	// The record's sync parked, then failed EROFS: the record is appended
+	// with the journal writable and its wait fails, the failure the journal
+	// answers the caller with.
+	hold := seam.Hold(t, kit.OpSync, "*.seg")
+	forgot := make(chan error, 1)
+	go func() { forgot <- j.Forget(t.Context(), tt) }()
+	<-hold.Reached()
+	// The ordering pin, asserted while the record's bytes have landed and
+	// the call still runs: its home segment is tracker-held BEFORE anything
+	// else the forget does — the registration the moment the draw spent.
+	home, ok := j.core.Streams().For(core.FileID{}).OpenSegment()
+	if !ok {
+		t.Fatalf("the zero file's stream holds no open segment for the forget record's home")
+	}
+	if !j.core.Liveness().Held(home) {
+		t.Fatalf("the forget record's home segment is not held while its record has landed: the register-at-the-draw ordering is gone")
+	}
+	if b := j.core.Index().SegmentBytes(core.SegmentID(home)); b.Held != 0 || b.Retained != 0 {
+		t.Fatalf("the record's home segment carries %+v of held content beside the record: the content file's stream collides with the zero file's, and the leak the leg pins cannot be read", b)
+	}
+	eio := kit.Failing(kit.OpSync, "*", 0, syscall.EROFS)
+	if err := seam.Schedule(eio, kit.Failing(kit.OpSyncDir, "*", 0, syscall.EROFS),
+		kit.Failing(kit.OpRead, "*", 0, syscall.EROFS), kit.Failing(kit.OpReadDirect, "*", 0, syscall.EROFS)); err != nil {
+		t.Fatalf("arm the EROFS on the parked record's sync: %v", err)
+	}
+	hold.Release()
+	// The failed wait's answer: the refusal, whatever its wrapping, and the
+	// home segment the failure ended.
+	if err := <-forgot; err == nil {
+		t.Fatalf("the Forget whose record's sync turned EROFS returned nil, want the failure its window settled with")
+	}
+	if st, serr := j.core.Set().State(home); serr != nil || st != segment.Ended {
+		state, _ := j.core.Set().State(home)
+		t.Fatalf("the record's home segment is %d (%v), want it ended by the failed sync", state, serr)
+	}
+	// The leak pin: a home segment the failed call's record still counts
+	// live can never leave the tracker — the read-only fence stops every
+	// pass for the journal's life — so the refusal's contract, the tag left
+	// whole, includes its tracker whole: nothing of the failed call stays
+	// registered behind it.
+	if j.core.Liveness().Held(home) {
+		t.Fatalf("the failed forget left its record registered: the Ended home segment is still tracker-held after the refusal answered")
 	}
 }
