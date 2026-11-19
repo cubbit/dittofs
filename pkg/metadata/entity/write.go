@@ -41,6 +41,13 @@ type IDRange struct {
 	Hi uint32 `json:"hi"`
 }
 
+// IDRangeSetting is the installation setting holding the IDRange a missing
+// uid or gid is allocated from, and DefaultIDRange its value where no
+// setting row sets it.
+const IDRangeSetting = "identity.id_range"
+
+var DefaultIDRange = IDRange{Lo: 1_000_000, Hi: 1_999_999_999}
+
 // Alloc names the IDs a user or group create draws from the store's uid, gid
 // and RID counters in its own transaction. An ID it does not name is written
 // as the record holds it. Range is the span a named uid or gid is drawn from,
@@ -107,7 +114,18 @@ type WriteMeta struct {
 // write's function runs again.
 type ControlPlaneTx interface {
 	Setting(scope SettingScope, key string) (Setting, bool, error)
-	User(p Principal) (User, bool, error) // false for a user or machine marked deleted, or a record of another kind than p's
+	User(p Principal) (User, bool, error)   // false for a user or machine marked deleted, or a record of another kind than p's
+	Group(p Principal) (Group, bool, error) // false for a group marked deleted, or a principal of another kind
+	// Grant is the stored grant naming p's ID on share, its version the
+	// expect of a write replacing or deleting it; false when none does.
+	Grant(share ShareID, p Principal) (ShareGrant, bool, error)
+	// Member reports whether the membership is stored.
+	Member(m Membership) (bool, error)
+	// Netgroup is the netgroup of name; false when none is stored.
+	Netgroup(name string) (Netgroup, bool, error)
+	// Quota is share's quota on the user or group p, the zero p naming the
+	// share's own; false when it has none.
+	Quota(share ShareID, p Principal) (Quota, bool, error)
 	Share(id ShareID) (Share, bool, error)
 	// ExportPolicy is the share's export policy; the default one, version
 	// zero, when none is stored.

@@ -28,6 +28,20 @@ type route struct {
 	// query is the query parameters a write row takes; a write naming any
 	// other is refused. A read row's adapter checks its own.
 	query []string
+	// target parses the path's {sub} below the {id} it names, refusing one
+	// that names nothing, and returns the ID the row's audit records name
+	// its record by; nil, the path has no {sub} and the ID is {id}'s.
+	target func(id [16]byte, sub string) ([]byte, error)
+}
+
+// ref is the ID the audit records of the row's record id and sub name it
+// by, nil when sub does not parse.
+func (rt *route) ref(id [16]byte, sub string) []byte {
+	if rt.target == nil {
+		return id[:]
+	}
+	b, _ := rt.target(id, sub)
+	return b
 }
 
 // op names the row in its metrics and its span: its method and pattern, and
@@ -70,6 +84,36 @@ var routes = []route{
 	{method: http.MethodGet, pattern: "/api/v1/shares/{id}/export-policy", kind: entity.ResourceShare, right: auth.View, serve: watch(exportPolicy)},
 	{method: http.MethodPut, pattern: "/api/v1/shares/{id}/export-policy", kind: entity.ResourceShare, right: auth.Shares, serve: write(policies, nil, putPolicy)},
 	{method: http.MethodPatch, pattern: "/api/v1/shares/{id}/export-policy", kind: entity.ResourceShare, right: auth.Shares, serve: write(policies, nil, putPolicy)},
+	{method: http.MethodGet, pattern: "/api/v1/shares/{id}/grants", kind: entity.ResourceGrant, right: auth.View, serve: list(grantsList)},
+	{method: http.MethodGet, pattern: "/api/v1/shares/{id}/grants/{sub}", kind: entity.ResourceGrant, right: auth.View, target: pairRef, serve: watch(grant)},
+	{method: http.MethodPut, pattern: "/api/v1/shares/{id}/grants/{sub}", kind: entity.ResourceGrant, right: auth.Shares, target: pairRef, serve: write(grants, nil, putGrant)},
+	{method: http.MethodDelete, pattern: "/api/v1/shares/{id}/grants/{sub}", kind: entity.ResourceGrant, right: auth.Shares, target: pairRef, serve: write(tagsOf(grants), nil, deleteGrant)},
+	{method: http.MethodGet, pattern: "/api/v1/shares/{id}/quota", kind: entity.ResourceQuota, right: auth.View, serve: watch(quota)},
+	{method: http.MethodPut, pattern: "/api/v1/shares/{id}/quota", kind: entity.ResourceQuota, right: auth.Shares, serve: write(quotas, nil, putQuota)},
+	{method: http.MethodGet, pattern: "/api/v1/shares/{id}/quotas", kind: entity.ResourceQuota, right: auth.View, serve: list(quotasList)},
+	{method: http.MethodGet, pattern: "/api/v1/shares/{id}/quotas/{sub}", kind: entity.ResourceQuota, right: auth.View, target: pairRef, serve: watch(quota)},
+	{method: http.MethodPut, pattern: "/api/v1/shares/{id}/quotas/{sub}", kind: entity.ResourceQuota, right: auth.Shares, target: pairRef, serve: write(quotas, nil, putQuota)},
+	{method: http.MethodGet, pattern: "/api/v1/users", kind: entity.ResourceUser, right: auth.View, serve: list(usersList)},
+	{method: http.MethodPost, pattern: "/api/v1/users", kind: entity.ResourceUser, right: auth.Principals, serve: write(users, nil, createUser)},
+	{method: http.MethodGet, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.View, serve: watch(user)},
+	{method: http.MethodPut, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, serve: write(users, nil, putUser)},
+	{method: http.MethodPatch, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, serve: write(users, nil, putUser)},
+	{method: http.MethodDelete, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, starts: apiv1.OpUserDelete, serve: write(tagsOf(users), nil, deleteUser)},
+	{method: http.MethodGet, pattern: "/api/v1/groups", kind: entity.ResourceGroup, right: auth.View, serve: list(groupsList)},
+	{method: http.MethodPost, pattern: "/api/v1/groups", kind: entity.ResourceGroup, right: auth.Principals, serve: write(groups, nil, createGroup)},
+	{method: http.MethodGet, pattern: "/api/v1/groups/{id}", kind: entity.ResourceGroup, right: auth.View, serve: watch(group)},
+	{method: http.MethodPut, pattern: "/api/v1/groups/{id}", kind: entity.ResourceGroup, right: auth.Principals, serve: write(groups, nil, putGroup)},
+	{method: http.MethodPatch, pattern: "/api/v1/groups/{id}", kind: entity.ResourceGroup, right: auth.Principals, serve: write(groups, nil, putGroup)},
+	{method: http.MethodDelete, pattern: "/api/v1/groups/{id}", kind: entity.ResourceGroup, right: auth.Principals, starts: apiv1.OpGroupDelete, serve: write(tagsOf(groups), nil, deleteGroup)},
+	{method: http.MethodPut, pattern: "/api/v1/groups/{id}/members/{sub}", kind: entity.ResourceMembership, right: auth.Principals, target: pairRef, serve: write(memberships, nil, addMember)},
+	{method: http.MethodDelete, pattern: "/api/v1/groups/{id}/members/{sub}", kind: entity.ResourceMembership, right: auth.Principals, target: pairRef, serve: write(tagsOf(memberships), nil, removeMember)},
+	// decision: a netgroup's path names it by name, the one exception to
+	// paths taking IDs: a netgroup has no ID, the store keys it by name and
+	// a client rule names it by name. Overturned once a netgroup has an ID.
+	{method: http.MethodGet, pattern: "/api/v1/netgroups", kind: entity.ResourceNetgroup, right: auth.View, serve: list(netgroupsList)},
+	{method: http.MethodGet, pattern: "/api/v1/netgroups/{sub}", kind: entity.ResourceNetgroup, right: auth.View, target: netgroupRef, serve: watch(netgroup)},
+	{method: http.MethodPut, pattern: "/api/v1/netgroups/{sub}", kind: entity.ResourceNetgroup, right: auth.Stores, target: netgroupRef, serve: write(netgroups, nil, putNetgroup)},
+	{method: http.MethodDelete, pattern: "/api/v1/netgroups/{sub}", kind: entity.ResourceNetgroup, right: auth.Stores, target: netgroupRef, serve: write(tagsOf(netgroups), nil, deleteNetgroup)},
 }
 
 // version answers the API's major versions and nothing else.

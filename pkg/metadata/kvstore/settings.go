@@ -28,6 +28,15 @@ func (c ControlPlane) Netgroups(ctx context.Context, after string) iter.Seq2[ent
 	})
 }
 
+// Netgroup is the netgroup of name; false when none is stored.
+func (c ControlPlane) Netgroup(ctx context.Context, name string) (g entity.Netgroup, found bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		g, err = netgroupIn(r, name)
+		return err
+	})
+	return g, err == nil && g.Version != 0, err
+}
+
 // PutNetgroup creates a netgroup, expect zero, or replaces the one whose
 // version expect names, raising its version.
 func (c ControlPlane) PutNetgroup(ctx context.Context, g entity.Netgroup, expect uint64) (uint64, error) {

@@ -48,6 +48,84 @@ func (c ControlPlane) Groups(ctx context.Context, after string) iter.Seq2[entity
 		})
 }
 
+// User is the user or machine record of p, as a write's transaction reads
+// it; false for one marked deleted, or of another kind than p's.
+func (c ControlPlane) User(ctx context.Context, p entity.Principal) (u entity.User, found bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		if u, found, err = userIn(r, p); err != nil || !found {
+			return err
+		}
+		u.Primary, err = primaryIn(r, u)
+		return err
+	})
+	return u, found, err
+}
+
+// Group is the group record of p; false for one marked deleted, or a
+// principal of another kind.
+func (c ControlPlane) Group(ctx context.Context, p entity.Principal) (g entity.Group, found bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		g, found, err = groupIn(r, p)
+		return err
+	})
+	return g, found, err
+}
+
+// UserNamed is the user the name names, its case folded as sign-in folds
+// it; false when none holds it.
+func (c ControlPlane) UserNamed(ctx context.Context, name string) (u entity.User, found bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		b, ok, err := get(r, nameKey(keys.NXUser, name))
+		if err != nil || !ok {
+			return err
+		}
+		id, err := decodeNameRow(b)
+		if err != nil {
+			return err
+		}
+		if u, found, err = userIn(r, entity.Principal{Kind: entity.PrincipalUser, ID: id}); err != nil || !found {
+			return err
+		}
+		u.Primary, err = primaryIn(r, u)
+		return err
+	})
+	return u, found, err
+}
+
+// GroupNamed is the group the name names; false when none holds it.
+func (c ControlPlane) GroupNamed(ctx context.Context, name string) (g entity.Group, found bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		b, ok, err := get(r, nameKey(keys.NXGroup, name))
+		if err != nil || !ok {
+			return err
+		}
+		id, err := decodeNameRow(b)
+		if err != nil {
+			return err
+		}
+		g, found, err = groupIn(r, entity.Principal{Kind: entity.PrincipalGroup, ID: id})
+		return err
+	})
+	return g, found, err
+}
+
+// groupIn reads p's group record, tracked in a transaction. A record marked
+// deleted, or a principal of another kind, reads as absent.
+func groupIn(r kv.Reader, p entity.Principal) (entity.Group, bool, error) {
+	if p.Kind != entity.PrincipalGroup {
+		return entity.Group{}, false, nil
+	}
+	b, ok, err := get(r, groupKey(p.ID))
+	if err != nil || !ok {
+		return entity.Group{}, false, err
+	}
+	g, err := decodeGroup(p.ID, b)
+	if err != nil || g.Deleted {
+		return entity.Group{}, false, err
+	}
+	return g, true, nil
+}
+
 func nameCursor(kind byte, after string) []byte {
 	if after == "" {
 		return nil

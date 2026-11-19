@@ -27,12 +27,14 @@ const maxBody = 1 << 20
 // the caller may not know exists.
 var errNotFound = fmt.Errorf("api: no such resource: %w", vfserr.ErrNotFound)
 
-// request is a handler's decoded request: the ID its path names, its body,
+// request is a handler's decoded request: the ID its path names, the
+// segment its {sub} names below it, empty for none, its body,
 // decoded strictly, and, for a write, the tag its record must have, which the
 // handler passes to the store's write as its expect: the one If-Match names,
 // or zero under If-None-Match: *.
 type request[B any] struct {
 	ID     [16]byte
+	Sub    string
 	Body   B
 	Expect uint64
 	Query  url.Values // a write's query, holding only parameters its row takes
@@ -63,8 +65,8 @@ type adapter func(ctx context.Context, s *Server, r *http.Request, rt *route, id
 // watch, which takes the record's tag, so none of those answers without its
 // ETag.
 func read[R any](h func(context.Context, Deps, request[none]) (R, error)) adapter {
-	return func(ctx context.Context, s *Server, _ *http.Request, _ *route, id [16]byte) (answer, error) {
-		return jsonOr(h(ctx, s.d, request[none]{ID: id}))
+	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
+		return jsonOr(h(ctx, s.d, request[none]{ID: id, Sub: r.PathValue("sub")}))
 	}
 }
 
@@ -220,13 +222,16 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 		}
 		ctx = auth.With(ctx, c)
 	}
-	id, err := admit(ctx, rt, rawID)
+	id, err := admit(ctx, rt, rawID, r.PathValue("sub"))
 	if err != nil {
 		if _, authed := auth.CallerFrom(ctx); authed && rt != nil {
 			rec := s.auditOf(ctx, r)
 			rec.Target.Kind = rt.kind
-			if sid, perr := entity.ParseShareID(rawID); perr == nil && strings.Contains(rt.pattern, "{id}") {
-				rec.Target.ID = sid[:]
+			// Named as the row's adapter names it, so an applied and a
+			// refused write of one record share a target.
+			sid, perr := entity.ParseShareID(rawID)
+			if hasID := strings.Contains(rt.pattern, "{id}"); (hasID && perr == nil) || (!hasID && rt.target != nil) {
+				rec.Target.ID = rt.ref(sid, r.PathValue("sub"))
 			}
 			s.refuse(ctx, rec, err)
 		}
@@ -235,11 +240,11 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 	return rt.serve(ctx, s, r, rt, id)
 }
 
-// admit refuses a row the caller ctx carries may not call and an ID that
-// does not parse, and returns the ID the path names. A caller's rights are
-// checked before whether it must change its password, so that refusal
-// reveals no row the caller may not read.
-func admit(ctx context.Context, rt *route, rawID string) (id [16]byte, err error) {
+// admit refuses a row the caller ctx carries may not call, and an ID or a
+// {sub} that does not parse, and returns the ID the path names. A caller's
+// rights are checked before whether it must change its password, so that
+// refusal reveals no row the caller may not read.
+func admit(ctx context.Context, rt *route, rawID, sub string) (id [16]byte, err error) {
 	if rt == nil {
 		return id, errNotFound
 	}
@@ -263,6 +268,11 @@ func admit(ctx context.Context, rt *route, rawID string) (id [16]byte, err error
 		}
 		id = sid
 		trace.SpanFromContext(ctx).SetAttributes(attribute.String("api.id", sid.String()))
+	}
+	if rt.target != nil {
+		if _, err := rt.target(id, sub); err != nil {
+			return id, err
+		}
 	}
 	return id, nil
 }

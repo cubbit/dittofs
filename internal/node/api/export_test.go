@@ -85,7 +85,7 @@ var testRows = []route{
 		return knob{}, rq.ID, err
 	})},
 	{method: http.MethodPost, pattern: "/api/v1/knobs/{id}", verb: "turn", kind: entity.ResourceSetting, right: auth.Stores, serve: write(turns, nil, func(ctx context.Context, rq request[knob], _ struct{}, tx entity.ControlPlaneTx) (knob, [16]byte, error) {
-		k, _, _, err := knobs.read(tx, rq.ID)
+		k, _, _, err := knobs.read(tx, rq.ID, "")
 		if err != nil {
 			return knob{}, rq.ID, err
 		}
@@ -155,7 +155,7 @@ func nodeScope(id [16]byte) entity.SettingScope {
 	return entity.SettingScope{Kind: entity.ScopeNode, ID: id}
 }
 
-var knobs = writing[knob]{kind: entity.ResourceSetting, raises: true, read: func(tx entity.ControlPlaneTx, id [16]byte) (knob, uint64, bool, error) {
+var knobs = writing[knob]{kind: entity.ResourceSetting, raises: true, read: func(tx entity.ControlPlaneTx, id [16]byte, _ string) (knob, uint64, bool, error) {
 	s, ok, err := tx.Setting(nodeScope(id), "knob")
 	if err != nil || !ok || len(s.Value) == 0 {
 		return knob{}, 0, false, err
@@ -195,7 +195,7 @@ type vaultSpec struct {
 // Unreachable is the password whose sealing fails ErrUnavailable.
 const Unreachable = "unreachable"
 
-var vaults = writing[vault]{kind: entity.ResourceSecret, secret: func(p string) bool { return p == "spec.password" }, read: func(tx entity.ControlPlaneTx, id [16]byte) (vault, uint64, bool, error) {
+var vaults = writing[vault]{kind: entity.ResourceSecret, secret: func(p string) bool { return p == "spec.password" }, read: func(tx entity.ControlPlaneTx, id [16]byte, _ string) (vault, uint64, bool, error) {
 	s, ok, err := tx.Setting(nodeScope(id), "vault")
 	if err != nil || !ok {
 		return vault{}, 0, false, err

@@ -43,7 +43,9 @@ type reconciler struct {
 	// the pass acts on them; binding, when set, with each share before
 	// reconcile binds it, and bound once the engine bound it; applying, when
 	// set, with the counters each apply acts on; waiting, when set, once each
-	// wait of the loop is set on the node's clock.
+	// wait of the loop is set on the node's clock; awaited, when set, as each
+	// write's wait for the node to apply it starts.
+	awaited  func()
 	paused   func(kvstore.Counters)
 	binding  func(entity.Share)
 	bound    func(entity.Share)
@@ -504,6 +506,9 @@ func (n *Node) reconcileLoop(ctx context.Context, loop *health.Loop) {
 // ctx ends.
 func (n *Node) applied(ctx context.Context) error {
 	r := &n.rec
+	if r.awaited != nil {
+		r.awaited()
+	}
 	c, err := n.meta.Nodes().Counters(ctx)
 	if err != nil {
 		return err

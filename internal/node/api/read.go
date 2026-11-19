@@ -18,6 +18,27 @@ import (
 // back on every node.
 type reads interface {
 	Netgroups(ctx context.Context, after string) iter.Seq2[entity.Netgroup, error]
+	Netgroup(ctx context.Context, name string) (entity.Netgroup, bool, error)
+	// Users and Groups list the named users and groups in name order,
+	// after the name after; User and Group read one, false for one marked
+	// deleted.
+	Users(ctx context.Context, after string) iter.Seq2[entity.User, error]
+	User(ctx context.Context, p entity.Principal) (entity.User, bool, error)
+	Groups(ctx context.Context, after string) iter.Seq2[entity.Group, error]
+	Group(ctx context.Context, p entity.Principal) (entity.Group, bool, error)
+	// ShareGrant is the grant naming p's ID on a share; Quotas lists a
+	// share's quotas.
+	ShareGrant(ctx context.Context, share entity.ShareID, p entity.Principal) (entity.ShareGrant, bool, error)
+	Quotas(ctx context.Context, share entity.ShareID) iter.Seq2[entity.Quota, error]
+	// UserNamed and GroupNamed read the one a name names; ShareGrants and
+	// PrincipalQuotas list a share's grants and its quotas on users and
+	// groups in principal ID order, after the ID after; Quota is a share's
+	// quota on p, the zero p naming the share's own.
+	UserNamed(ctx context.Context, name string) (entity.User, bool, error)
+	GroupNamed(ctx context.Context, name string) (entity.Group, bool, error)
+	ShareGrants(ctx context.Context, share entity.ShareID, after entity.PrincipalID) iter.Seq2[entity.ShareGrant, error]
+	PrincipalQuotas(ctx context.Context, share entity.ShareID, after entity.PrincipalID) iter.Seq2[entity.Quota, error]
+	Quota(ctx context.Context, share entity.ShareID, p entity.Principal) (entity.Quota, bool, error)
 	Settings(ctx context.Context, scope entity.SettingScope) iter.Seq2[entity.Setting, error]
 	// Share is one share with its state and its export policy, a share
 	// with none stored having the default one; a share never created, or
@@ -62,6 +83,10 @@ type listing[E, T any] struct {
 	records func(ctx context.Context, d Deps, after []byte, filter map[string]string) iter.Seq2[E, error]
 	key     func(E) []byte
 	item    func(E, perPage) T
+	// under, when set in place of records, yields the records of a listing
+	// nested under the resource its path's {id} names, the share a grant
+	// is on among them.
+	under func(ctx context.Context, d Deps, id [16]byte, after []byte, filter map[string]string) iter.Seq2[E, error]
 }
 
 // nodeReads is the store's reads of the nodes: every registered node's
@@ -112,7 +137,7 @@ func (p perPage) applied(ref entity.ResourceRef, at uint64, through func(entity.
 // its size, and handed to each item, but for a local listing, which reads
 // none and needs no store.
 func list[E, T any](l listing[E, T]) adapter {
-	return func(ctx context.Context, s *Server, r *http.Request, _ *route, _ [16]byte) (answer, error) {
+	return func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
 		limit, after, filter := defaultLimit, []byte(nil), map[string]string{}
 		q := r.URL.Query()
 		for _, k := range slices.Sorted(maps.Keys(q)) {
@@ -149,7 +174,13 @@ func list[E, T any](l listing[E, T]) adapter {
 		}
 		page := apiv1.Page[T]{Items: []T{}}
 		var last []byte
-		for e, err := range l.records(ctx, s.d, after, filter) {
+		records := l.records
+		if l.under != nil {
+			records = func(ctx context.Context, d Deps, after []byte, f map[string]string) iter.Seq2[E, error] {
+				return l.under(ctx, d, id, after, f)
+			}
+		}
+		for e, err := range records(ctx, s.d, after, filter) {
 			if err != nil {
 				return answer{}, err
 			}

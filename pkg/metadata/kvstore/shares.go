@@ -560,6 +560,23 @@ func (c ControlPlane) ShareGrant(ctx context.Context, share entity.ShareID, p en
 	return g, found, err
 }
 
+// ShareGrants lists the grants stored on a share, in principal ID order,
+// resuming after the principal after; the zero ID starts at the first.
+func (c ControlPlane) ShareGrants(ctx context.Context, share entity.ShareID, after entity.PrincipalID) iter.Seq2[entity.ShareGrant, error] {
+	pre := shareKey(share, keys.SG)
+	var cursor []byte
+	if after != (entity.PrincipalID{}) {
+		cursor = grantKey(share, after)
+	}
+	return pages(ctx, c.s.kv, pre, cursor, func(_ kv.Reader, row kv.KeyValue) (entity.ShareGrant, error) {
+		p, _, err := keys.ReadID(row.Key[len(pre):], keys.IDLen)
+		if err != nil {
+			return entity.ShareGrant{}, err
+		}
+		return decodeGrant(share, entity.PrincipalID(p), row.Value)
+	})
+}
+
 // ExportPolicy reads a share's export policy; a share without one has
 // defaultPolicy's.
 func (c ControlPlane) ExportPolicy(ctx context.Context, share entity.ShareID) (entity.ExportPolicy, error) {

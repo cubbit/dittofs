@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/hkdf"
 	"crypto/hmac"
@@ -25,9 +26,9 @@ import (
 const maxKey = 255
 
 // writing is what a write row's adapter knows of the resource it writes:
-// its kind; read, which returns the record id names, tracked in the write's
-// transaction, as the body a PUT of it sends, with its tag, ok false when
-// there is none; whether its commit raises the principals or settings
+// its kind; read, which returns the record id and the path's {sub} name,
+// tracked in the write's transaction, as the body a PUT of it sends, with
+// its tag, ok false when there is none; whether its commit raises the principals or settings
 // generation; whether the row is a POST action that changes the spec, and so
 // carries If-Match as a PUT does; secret, which names the fields of the
 // body whose values its audit record holds only as "set", nil for none; and
@@ -35,8 +36,12 @@ const maxKey = 255
 // keeping spec, for a record written as part of another resource's.
 // The operation a write starts, if any, is its row's.
 type writing[B any] struct {
-	kind        entity.ResourceKind
-	read        func(tx entity.ControlPlaneTx, id [16]byte) (doc B, tag uint64, ok bool, err error)
+	kind entity.ResourceKind
+	read func(tx entity.ControlPlaneTx, id [16]byte, sub string) (doc B, tag uint64, ok bool, err error)
+	// hidden, when set, reports a record the caller ctx carries may not
+	// know of, read tracked in tx: a write naming it is answered 404, ahead
+	// of its precondition, as one naming no record would be.
+	hidden      func(ctx context.Context, tx entity.ControlPlaneTx, id [16]byte) (bool, error)
 	raises      bool
 	changesSpec bool
 	secret      func(path string) bool
@@ -82,11 +87,12 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		if s.d.Store == nil {
 			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
 		}
-		created := r.PathValue("id") == ""
+		created := r.Method == http.MethodPost && r.PathValue("id") == ""
+		sub := r.PathValue("sub")
 		rec := s.auditOf(ctx, r)
 		rec.Target.Kind = w.kind
 		if !created {
-			rec.Target.ID = id[:]
+			rec.Target.ID = rt.ref(id, sub)
 		}
 		refused := rec // as the request arrived, holding nothing a failed attempt set
 		defer func() {
@@ -107,7 +113,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		if len(key) > maxKey {
 			return answer{}, &fieldError{field: "Idempotency-Key", detail: "longer than " + strconv.Itoa(maxKey) + " bytes"}
 		}
-		rq := request[B]{ID: id, Query: r.URL.Query()}
+		rq := request[B]{ID: id, Sub: sub, Query: r.URL.Query()}
 		if err := decode(bytes.NewReader(body), &rq.Body); err != nil {
 			return answer{}, err
 		}
@@ -157,7 +163,12 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		}
 		err = s.d.Store.Write(ctx, entity.WriteMeta{Audit: &rec, Idempotency: idem}, func(tx entity.ControlPlaneTx) error {
 			rq := rq
-			doc, tag, ok, err := w.read(tx, id)
+			if w.hidden != nil && !created {
+				if hide, err := w.hidden(ctx, tx, id); err != nil || hide {
+					return cmp.Or(err, errNotFound)
+				}
+			}
+			doc, tag, ok, err := w.read(tx, id, sub)
 			if err != nil {
 				return err
 			}
@@ -182,14 +193,14 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			if err != nil {
 				return err
 			}
-			after, afterTag, exists, err := w.read(tx, wrote)
+			after, afterTag, exists, err := w.read(tx, wrote, sub)
 			if err != nil {
 				return err
 			}
 			if rec.Change, err = change(present(doc, ok), present(after, exists), w.auditAs, w.secret); err != nil {
 				return err
 			}
-			rec.Target.ID = wrote[:]
+			rec.Target.ID = rt.ref(wrote, sub)
 			rec.Before, rec.After, rec.Outcome = tag, afterTag, []byte("applied")
 			status, body, location := http.StatusOK, any(resp), ""
 			if created {
@@ -224,33 +235,44 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		if idem != nil {
 			s.idempotencyWritten.Inc()
 		}
-		if w.raises && s.d.Applied != nil {
-			// decision: the answer waits at most 1 s for the node to
-			// apply a write raising the principals or settings
-			// generation, the bound a reconcile pass is held to, and
-			// answers the commit's own result whatever the wait
-			// returns: the write is durable, and status.applied says
-			// where it is applied. Overturned if a pass on a healthy
-			// node regularly outlasts the second. The second is on the
-			// API's clock, and on the wall clock's with none.
-			wctx, cancel := context.WithTimeout(ctx, time.Second)
-			if s.d.Clock != nil {
-				cancel()
-				wctx, cancel = context.WithCancel(ctx)
-				go func() {
-					select {
-					case <-s.d.Clock.After(time.Second):
-						cancel()
-					case <-wctx.Done():
-					}
-				}()
-			}
-			if werr := s.d.Applied(wctx); werr != nil {
-				s.d.Logger.Debug("node api: a committed write is not yet applied on this node", "request_id", requestID(ctx), "err", werr)
-			}
-			cancel()
+		if w.raises {
+			s.awaitApplied(ctx)
 		}
 		return a, nil
+	}
+}
+
+// awaitApplied waits for the node to apply what a write raising the
+// principals or settings generation committed, for at most a second on the
+// API's clock, the wall clock's with none. The second is armed before
+// Applied is called, so a caller that sees Applied reached knows it runs.
+//
+// decision: the answer waits at most 1 s, the bound a reconcile pass is held
+// to, and the write answers the commit's own result whatever the wait
+// returns: the write is durable, and status.applied says where it is
+// applied. Overturned if a pass on a healthy node regularly outlasts the
+// second.
+func (s *Server) awaitApplied(ctx context.Context) {
+	if s.d.Applied == nil {
+		return
+	}
+	var cancel context.CancelFunc
+	if s.d.Clock == nil {
+		ctx, cancel = context.WithTimeout(ctx, time.Second)
+	} else {
+		bound := s.d.Clock.After(time.Second)
+		ctx, cancel = context.WithCancel(ctx)
+		go func() {
+			select {
+			case <-bound:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+	defer cancel()
+	if err := s.d.Applied(ctx); err != nil {
+		s.d.Logger.Debug("node api: a committed write is not yet applied on this node", "request_id", requestID(ctx), "err", err)
 	}
 }
 
