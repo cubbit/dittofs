@@ -419,7 +419,7 @@ it durable with the first records after it. It **MUST** identify:
 | 8 | 16 | journal identity |
 | 24 | 8 | segment id, the one in its name; ids start at 1 and ascend across all streams in the order segments are created |
 | 32 | 8 | predecessor's segment id, or 0 for none |
-| 40 | 4 | number of the append stream that opened it, which reporting and the stream's sync mark use ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)'s `SyncMark.Stream`): the predecessor, not this number, links a stream's segments |
+| 40 | 4 | number of the append stream that opened it, which reporting and the stream's sync mark use ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)'s `SyncMark.Stream`): the predecessor, not this number, links a stream's segments. A segment the open writes to hold copies of several streams' records ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) carries `0xFFFFFFFF`, "no stream", and a reader that attributes a segment to a stream skips it. A copy written before this value was defined carries 0 and is read as stream 0's segment |
 | 44 | 4 | CRC32C over bytes `[0, 44)`, **not seeded** |
 
 The header checksum is deliberately not seeded with the journal identity: a
@@ -1146,7 +1146,7 @@ skips a record whose copy with the same sequence number already verifies, payloa
 included, in a segment whose header verifies, that recovery does not end and whose sync
 has not failed in this open, this step's own new segments included. It then unlinks the
 ended segment and syncs the directory. Where a copy with equal numbers verifies both in an ended segment and in a segment the skip rule above accepts,
-recovery uses the latter's, so that segment stays held and is not retired before the emptying. A crash part way
+recovery uses the latter's. That copy is not repointed to where it sits: the rebuild serves the greatest placement among the copies it keeps and verifies no payload, so a verifying copy below a rotten one would be served rotten again at the next open. Recovery instead carries the record into a segment whose id is above every copy it replaces, and a verifying copy left below it is retired as unheld by the next open, so no segment is held for the record. A crash part way
 leaves copies that the next open skips or, if it ends their segment, copies again, so no record is ever held twice.
 
 > decision: a segment recovery ends is emptied whole at open, not left for repack
@@ -1368,7 +1368,7 @@ write per retired segment, when a lost directory entry is seen in the field.
 
 The open sets each stream's entry in `Stats.SyncMarks` to what it recovered:
 `Through` and `Offset` the end of the stream's last verifying record, a re-append
-included, and `Sequence` that record's number. The group commit records every
+included, and `Sequence` that record's number. A copy segment names no stream ([§2.2](#2.2%20Segments)), so the open credits the records it copied to the stream of the segment they came from, and reads no copy as a stream's own segment: a stream's entry never moves back for having been copied. The group commit records every
 stream's entry as it is ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)), so its first commit after the open writes the
 recovered mark of a stream not synced since, lower where the device lost a tail
 ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), and an idle stream does not report the same loss at every open. A stream
