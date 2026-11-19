@@ -183,6 +183,35 @@ func (c controlTx) User(p entity.Principal) (entity.User, bool, error) {
 	return u, err == nil, err
 }
 
+func (c controlTx) Group(p entity.Principal) (entity.Group, bool, error) { return groupIn(c.tx, p) }
+
+func (c controlTx) Grant(share entity.ShareID, p entity.Principal) (entity.ShareGrant, bool, error) {
+	return grantIn(c.tx, share, p.ID)
+}
+
+func (c controlTx) Member(m entity.Membership) (bool, error) {
+	_, ok, err := get(c.tx, memberKey(m.Group.ID, m.Member.ID))
+	return ok, err
+}
+
+func (c controlTx) Netgroup(name string) (entity.Netgroup, bool, error) {
+	g, err := netgroupIn(c.tx, name)
+	return g, err == nil && g.Version != 0, err
+}
+
+func (c controlTx) Quota(share entity.ShareID, p entity.Principal) (entity.Quota, bool, error) {
+	suffix, err := quotaSuffix(QuotaTarget{Principal: p})
+	if err != nil {
+		return entity.Quota{}, false, err
+	}
+	b, ok, err := get(c.tx, quotaKey(share, keys.SQt, suffix))
+	if err != nil || !ok {
+		return entity.Quota{}, false, err
+	}
+	q, err := decodeQuota(share, suffix, b)
+	return q, err == nil, err
+}
+
 func (c controlTx) Share(id entity.ShareID) (entity.Share, bool, error) {
 	s, err := shareIn(c.tx, id)
 	if errors.Is(err, kv.ErrNotFound) {
