@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -100,8 +101,12 @@ type Copier struct {
 	deferred func(core.SegmentID) []DeferredLoss
 	admit    func(capacity.RecordClass) (capacity.Draw, error)
 	drawn    func(capacity.Draw)
-	clock    core.Clock
-	log      *slog.Logger
+	// waitSpare waits the pool's settle for a reserve spare the roll wants,
+	// the refill's event the one wait; nil keeps a refused roll the error it
+	// was — the shape the tests that drive the copier alone take.
+	waitSpare func(context.Context) error
+	clock     core.Clock
+	log       *slog.Logger
 }
 
 // NewCopier builds the pass over one journal's pieces. dom is the append
@@ -132,8 +137,8 @@ type Copier struct {
 // consulted once per deferred loss under the class the repack reserve
 // serves — and drawn pairs each admitted draw with the record that
 // appended.
-func NewCopier(ix *index.Index, c *index.Counters, st *segment.Streams, un *unread.Set, tr *Tracker, dom Domains, forgetting func(core.ShareTag) bool, corrupt Corrupter, clk core.Clock, log *slog.Logger, deferred func(core.SegmentID) []DeferredLoss, admit func(capacity.RecordClass) (capacity.Draw, error), drawn func(capacity.Draw)) *Copier {
-	return &Copier{ix: ix, counters: c, streams: st, un: un, tracker: tr, dom: dom, forgetting: forgetting, corrupt: corrupt, deferred: deferred, admit: admit, drawn: drawn, clock: clk, log: log}
+func NewCopier(ix *index.Index, c *index.Counters, st *segment.Streams, un *unread.Set, tr *Tracker, dom Domains, forgetting func(core.ShareTag) bool, corrupt Corrupter, clk core.Clock, log *slog.Logger, deferred func(core.SegmentID) []DeferredLoss, admit func(capacity.RecordClass) (capacity.Draw, error), drawn func(capacity.Draw), waitSpare func(context.Context) error) *Copier {
+	return &Copier{ix: ix, counters: c, streams: st, un: un, tracker: tr, dom: dom, forgetting: forgetting, corrupt: corrupt, deferred: deferred, admit: admit, drawn: drawn, waitSpare: waitSpare, clock: clk, log: log}
 }
 
 // Copy copies the live content of seg, whose claim the caller holds. The
@@ -478,7 +483,20 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 			// reserve has already been drawn against. Overturned when a
 			// caller reaches the copier outside the pass, which is the day
 			// the admission moves in here.
+			//
+			// A roll refused for want of a reserve spare is the pool's
+			// refill racing the unit — the admission drew a unit the
+			// ready spare has gone into, and the next one is landing — so
+			// the roll waits the pool's own settle once and tries again
+			// before erroring: the wait parks on the refill's event, not on
+			// a timer, and a refusal standing after it is a real exhaust the
+			// caller is told about. Overturned by the pool's refill losing
+			// its event, when the wait must go.
 			pl, err := c.streams.For(file).AppendRoll(h, body, segment.Roll{Repack: true})
+			if err != nil && c.waitSpare != nil && ctx.Err() == nil &&
+				errors.Is(err, core.ErrNoSpace) && c.waitSpare(ctx) == nil {
+				pl, err = c.streams.For(file).AppendRoll(h, body, segment.Roll{Repack: true})
+			}
 			if err != nil {
 				return err
 			}

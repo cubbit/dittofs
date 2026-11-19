@@ -269,14 +269,14 @@ func (f *copyFixture) selector() *reclaim.Selector {
 // wirings the fixture's plants likewise, nil outside a test that defers
 // something.
 func (f *copyFixture) copier() *reclaim.Copier {
-	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, f.core.Domains(), f.forgetting, f.corrupt, f.clock, slog.New(slog.DiscardHandler), f.deferred, f.admit, f.drawn)
+	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, f.core.Domains(), f.forgetting, f.corrupt, f.clock, slog.New(slog.DiscardHandler), f.deferred, f.admit, f.drawn, nil)
 }
 
 // copierOver wires the pass over the fixture's core behind dom, the append
 // domain table the copier takes instead of the core's own: a recording
 // wrapper around the real one, or the plain table.
 func (f *copyFixture) copierOver(dom reclaim.Domains) *reclaim.Copier {
-	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, dom, f.forgetting, f.corrupt, f.clock, slog.New(slog.DiscardHandler), f.deferred, f.admit, f.drawn)
+	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, dom, f.forgetting, f.corrupt, f.clock, slog.New(slog.DiscardHandler), f.deferred, f.admit, f.drawn, nil)
 }
 
 // share returns the fixture core's handle of tag, closed when the test ends.

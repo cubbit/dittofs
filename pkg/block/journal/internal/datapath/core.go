@@ -792,7 +792,12 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 				}
 				return out
 			},
-			c.headroom.Admit, c.headroom.Drawn),
+			c.headroom.Admit, c.headroom.Drawn,
+			// A copy's roll refused for want of a reserve spare waits the
+			// pool's own settle once — the refill racing the unit — before
+			// the refusal is the caller's: the model's repack-and-forget
+			// mix drew the flake this closes.
+			c.pool.WaitReserveSpare),
 		Tracker:    tr,
 		Index:      state.Index,
 		Set:        state.Set,

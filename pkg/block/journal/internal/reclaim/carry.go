@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -246,6 +247,12 @@ func (c *Copier) carryDeferredLoss(ctx context.Context, seg core.SegmentID, entr
 	// segment's cap of repack reserve. Upgrade to sizing the reserve at
 	// 11/10 of a cap when a deferred loss is seen in the field.
 	pl, err := c.streams.For(entry.File).AppendRoll(h, body, segment.Roll{Repack: true})
+	// The same refill race the copy's roll meets: one wait on the pool's
+	// settle before the refusal is the unit's.
+	if err != nil && c.waitSpare != nil && ctx.Err() == nil &&
+		errors.Is(err, core.ErrNoSpace) && c.waitSpare(ctx) == nil {
+		pl, err = c.streams.For(entry.File).AppendRoll(h, body, segment.Roll{Repack: true})
+	}
 	if err != nil {
 		return fmt.Errorf("reclaim: carrying segment %d: placing the deferred loss record of seq %d: %w", seg, entry.Seq, err)
 	}
@@ -360,7 +367,7 @@ func (c *Copier) carryRecord(ctx context.Context, rec Rec) (CarriedRec, error) {
 		var body format.RecordBody
 		body, derr = format.VerifyRecordBody(b[format.RecordHeaderSize:], identity, h)
 		if derr == nil {
-			return c.placeCarried(rec, h, body)
+			return c.placeCarried(ctx, rec, h, body)
 		}
 	}
 	// decision: a header-only record that does not decode or verify never
@@ -380,7 +387,7 @@ func (c *Copier) carryRecord(ctx context.Context, rec Rec) (CarriedRec, error) {
 // copy owns its own — and the copy's own segment is noted through the
 // index over the extent the record covers. A forget record names no file,
 // so there is no index entry to note: its placement is the tracker's alone.
-func (c *Copier) placeCarried(rec Rec, h format.RecordHeader, body format.RecordBody) (CarriedRec, error) {
+func (c *Copier) placeCarried(ctx context.Context, rec Rec, h format.RecordHeader, body format.RecordBody) (CarriedRec, error) {
 	// The same header as the source's, kind, file, extent, sequence number,
 	// version and tag unchanged; the stream fills the segment, the offset
 	// and the synced-through of the place it lands.
@@ -393,6 +400,12 @@ func (c *Copier) placeCarried(rec Rec, h format.RecordHeader, body format.Record
 		Tag:     h.Tag,
 	}
 	pl, err := c.streams.For(rec.File).AppendRoll(nh, body, segment.Roll{Repack: true})
+	// The same wait-retry the copy's roll takes: the pool's refill racing
+	// the unit's next roll, parked on the settle once.
+	if err != nil && c.waitSpare != nil && ctx.Err() == nil &&
+		errors.Is(err, core.ErrNoSpace) && c.waitSpare(ctx) == nil {
+		pl, err = c.streams.For(rec.File).AppendRoll(nh, body, segment.Roll{Repack: true})
+	}
 	if err != nil {
 		return CarriedRec{}, fmt.Errorf("reclaim: placing the carried record of seq %d: %w", rec.Seq, err)
 	}
