@@ -68,7 +68,7 @@ type Pass struct {
 	// copy to it while its source remains.
 	res Reserve
 	// seal closes a share's active segments before a share-scoped pass
-	// selects; nil seals nothing. Set before the first Run.
+	// selects; nil seals nothing. Set once at the construction.
 	seal *Sealer
 
 	// decision: mu is a leaf. It guards the stop flag and the run count's
@@ -81,26 +81,46 @@ type Pass struct {
 	wg      sync.WaitGroup
 }
 
-// NewPass builds the pass over the pieces its caller owns: the selector claims
-// the candidates the units run over, the copier copies and carries under the
-// same tracker the retirement worker serves, dur is the durability service the
-// ended segments re-read, wait the durability waiter the copies publish
-// through, ret the retirements' executor, end the deferral-end wiring and acct
-// the held-delta consumer, res the repack reserve's bound and accounting. dur,
-// end and acct may be nil — a pass over a journal
+// PassConfig carries every piece a Pass is built over, so the constructor
+// takes one argument whatever the wiring grows: the selector claims the
+// candidates the units run over, the copier copies and carries under the same
+// tracker the retirement worker serves, Durability is the service the ended
+// segments re-read, Durable the waiter the copies publish through, Retirer
+// the retirements' executor, EndDeferral the deferral-end wiring and Account
+// the held-delta consumer, Reserve the repack reserve's bound and accounting,
+// and Sealer the sealer a share-scoped run closes the share's active segments
+// with. Durability, EndDeferral and Account may be nil — a pass over a journal
 // that carries no deferral needs none of them, and the tests that drive the
-// pieces alone pass nil. The rest are a caller bug and panic here.
-func NewPass(sel *Selector, cop *Copier, tr *Tracker, ix *index.Index, set *segment.Set, dur Durability, wait Durable, ret Retirer, end func(core.SegmentID, DeferredLoss) bool, acct func(index.HeldDelta), res Reserve) *Pass {
-	if sel == nil || cop == nil || tr == nil || ix == nil || set == nil || wait == nil || ret == nil {
-		panic("reclaim: NewPass needs its selector, copier, tracker, index, segment set, durability waiter and retirer")
-	}
-	return &Pass{sel: sel, cop: cop, tr: tr, ix: ix, set: set, dur: dur, wait: wait, ret: ret, end: end, acct: acct, res: res}
+// pieces alone pass nil — and so may Sealer, which leaves every scope sealing
+// nothing. The rest are a caller bug and panic in the constructor.
+//
+// decision: the sealer is a field of the one construction rather than a second
+// call the caller must order — the sealer depends on nothing the pass holds,
+// so the old "before the pass is shared" rule guarded a race that could not
+// arise unless a caller raced its own construction. Overturned by a sealer
+// that ever needs a piece the config does not already carry.
+type PassConfig struct {
+	Selector    *Selector
+	Copier      *Copier
+	Tracker     *Tracker
+	Index       *index.Index
+	Set         *segment.Set
+	Durability  Durability
+	Durable     Durable
+	Retirer     Retirer
+	EndDeferral func(core.SegmentID, DeferredLoss) bool
+	Account     func(index.HeldDelta)
+	Reserve     Reserve
+	Sealer      *Sealer
 }
 
-// SetSealer gives the pass the sealer a share-scoped run closes the share's
-// active segments with. It runs before the pass is shared, and a nil sealer
-// leaves every scope sealing nothing.
-func (p *Pass) SetSealer(s *Sealer) { p.seal = s }
+// NewPass builds the pass over cfg.
+func NewPass(cfg PassConfig) *Pass {
+	if cfg.Selector == nil || cfg.Copier == nil || cfg.Tracker == nil || cfg.Index == nil || cfg.Set == nil || cfg.Durable == nil || cfg.Retirer == nil {
+		panic("reclaim: NewPass needs its selector, copier, tracker, index, segment set, durability waiter and retirer")
+	}
+	return &Pass{sel: cfg.Selector, cop: cfg.Copier, tr: cfg.Tracker, ix: cfg.Index, set: cfg.Set, dur: cfg.Durability, wait: cfg.Durable, ret: cfg.Retirer, end: cfg.EndDeferral, acct: cfg.Account, res: cfg.Reserve, seal: cfg.Sealer}
+}
 
 // Stop interrupts every running pass between its units and joins it. What the
 // in-flight unit does depends on where it stands: a segment it is already

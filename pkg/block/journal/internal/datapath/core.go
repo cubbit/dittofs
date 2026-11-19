@@ -762,9 +762,9 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	pun := unread.New(deps.Clock)
 	c.unread = pun
 	pins := reclaim.NewPins()
-	c.repack = reclaim.NewPass(
-		reclaim.NewSelector(state.Set, state.Index, pun, d, pins),
-		reclaim.NewCopier(state.Index, state.Counters, c.streams, pun, tr, c.domains, c.isForgetting,
+	c.repack = reclaim.NewPass(reclaim.PassConfig{
+		Selector: reclaim.NewSelector(state.Set, state.Index, pun, d, pins),
+		Copier: reclaim.NewCopier(state.Index, state.Counters, c.streams, pun, tr, c.domains, c.isForgetting,
 			func(ctx context.Context, bad reclaim.BadSource) (reclaim.CorruptOutcome, error) {
 				out, err := d.Corrupt(ctx, durability.Corruption{
 					Share: bad.Tag, File: bad.File, Record: bad.Record,
@@ -790,8 +790,13 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 				return out
 			},
 			c.headroom.Admit, c.headroom.Drawn),
-		tr, state.Index, state.Set, d, d, c.retirer,
-		func(seg core.SegmentID, e reclaim.DeferredLoss) bool {
+		Tracker:    tr,
+		Index:      state.Index,
+		Set:        state.Set,
+		Durability: d,
+		Durable:    d,
+		Retirer:    c.retirer,
+		EndDeferral: func(seg core.SegmentID, e reclaim.DeferredLoss) bool {
 			for _, l := range d.DeferredAgainst(seg) {
 				if deferredLossOf(l) == e {
 					return d.EndDeferral(seg, l)
@@ -799,14 +804,14 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 			}
 			return false
 		},
-		c.Account,
-		reclaim.Reserve{
+		Account: c.Account,
+		Reserve: reclaim.Reserve{
 			Held:     func() int64 { return c.pool.Counters().RepackReserveBytes },
 			Count:    c.cap.CopyLanded,
 			Transfer: c.cap.CopiesTransfer,
-		})
-
-	c.repack.SetSealer(reclaim.NewSealer(c.streams, state.Set, c.headroom.Admit, c.headroom.Drawn, c.headroom.Refund))
+		},
+		Sealer: reclaim.NewSealer(c.streams, state.Set, c.headroom.Admit, c.headroom.Drawn, c.headroom.Refund),
+	})
 
 	// The open's registration: a core continued from a rebuilt state
 	// registers every record the rebuild found still live on disk through
