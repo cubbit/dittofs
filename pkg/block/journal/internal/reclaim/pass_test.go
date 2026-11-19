@@ -989,3 +989,38 @@ func TestPassFreedOmitsANonDurableRetirement(t *testing.T) {
 		t.Fatalf("segment %d is still in the set, want its retirement done under the failed sync", src)
 	}
 }
+
+// TestPassDeclinesAnOwedEndUntilItsTake runs the pass over a segment whose end
+// someone recorded but whose end event its consumer has not taken: the
+// selection and the pass's ended re-read both answer the segment window-open,
+// so it is declined at once — the fast assertion of the gate, bounded by the
+// claim the selector holds to answer rather than a wait inside the pass.
+func TestPassDeclinesAnOwedEndUntilItsTake(t *testing.T) {
+	p := newPassFixture(t)
+	fa, _ := passFilesOnDistinctStreams(p.f)
+	payload := bytes.Repeat([]byte("an ended segment oweing its take"), 8)
+	src := p.plantSealed(t, fa, payload)
+	// The owed end, as a failed write or sync would record it, without its
+	// notifier's wait: the take the fixture's worker would run is never
+	// armed here, so the flag stands until the takedown below.
+	p.f.set.OweEnd(src)
+
+	freed, err := p.repack(context.Background(), copySegCap*8, src)
+	if err != nil {
+		t.Fatalf("Repack over the owed end: %v; want the decline answered without an error", err)
+	}
+	if freed != 0 {
+		t.Fatalf("Repack over the owed end freed %d, want 0: the unit never ran", freed)
+	}
+	if p.setGone(src) {
+		t.Fatal("the segment left the set over its owed end, want the pass to decline it at the window the flag answers")
+	}
+	// The take clears the owed end and the very next pass reclaims the
+	// segment: the decline never outlives the take.
+	p.f.set.TakeEnd(src)
+	if freed, err := p.repack(context.Background(), copySegCap*8, src); err != nil {
+		t.Fatalf("Repack over the taken end: %v", err)
+	} else if freed == 0 || !p.setGone(src) {
+		t.Fatalf("Repack over the taken end freed %d with the segment left in the set=%v, want the unit to retire it", freed, !p.setGone(src))
+	}
+}
