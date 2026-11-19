@@ -219,7 +219,7 @@ func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint
 	if g.Principal.Kind != entity.PrincipalGroup || fixedID(g.Principal.ID) {
 		return 0, merrs.NewInvalidArgumentError("a group needs a minted group principal")
 	}
-	if err := validIDs(g.IDs, entity.SchemeGID, entity.SchemeSID); err != nil {
+	if err := validIDs(g.IDs, entity.SchemeGID, entity.SchemeSID, entity.SchemeDir); err != nil {
 		return 0, err
 	}
 	key := groupKey(g.Principal.ID)
@@ -276,7 +276,7 @@ func userShape(u entity.User) error {
 	}
 	switch u.Principal.Kind {
 	case entity.PrincipalUser:
-		return validIDs(u.IDs, entity.SchemeUID, entity.SchemeSID, entity.SchemeKerberos)
+		return validIDs(u.IDs, entity.SchemeUID, entity.SchemeSID, entity.SchemeKerberos, entity.SchemeDir)
 	case entity.PrincipalMachine:
 		if u.Name != "" || len(u.IDs) != 1 || !u.Primary.IsZero() || u.Password != (entity.SecretRef{}) || u.NTHash != (entity.SecretRef{}) || u.Role != entity.RoleNone {
 			return merrs.NewInvalidArgumentError("a machine holds its Kerberos name only: no name, file spelling, primary group, credential or API role")

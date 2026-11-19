@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -110,16 +111,22 @@ func (s *Server) Spell(ctx context.Context, p entity.Principal, scheme identity.
 		sp.Text = name
 		return sp, nil
 	case identity.SchemeQualified:
-		// A directory principal is spelled under the directory's domain,
-		// which the directory names; none is configured yet.
-		if name == "" || has(ids, entity.SchemeDir) {
+		if name == "" {
 			return identity.Spelling{}, vfserr.ErrUnknownPrincipal
 		}
 		st := s.state.Load()
 		if st == nil {
 			return identity.Spelling{}, fmt.Errorf("%w: no State applied", vfserr.ErrUnavailable)
 		}
-		sp.Text = st.Settings.NetBIOSName + `\` + name
+		domain := st.Settings.NetBIOSName
+		if has(ids, entity.SchemeDir) {
+			// A directory principal is spelled under the directory's domain.
+			if st.Directory == nil {
+				return identity.Spelling{}, vfserr.ErrUnknownPrincipal
+			}
+			domain = st.Directory.NetBIOSDomain
+		}
+		sp.Text = domain + `\` + name
 		return sp, nil
 	}
 	i := slices.IndexFunc(ids, func(id entity.ProtocolID) bool { return id.Scheme == stored(scheme) })
@@ -171,18 +178,21 @@ func spellWellKnown(p entity.Principal, scheme identity.Scheme) (identity.Spelli
 }
 
 // Find returns the principal holding sp, or ErrUnknownPrincipal: through the
-// index rows for a stored scheme, by name for qualified. It never returns an
-// API-only account, and counts a uid, gid or SID no principal holds. o.Mint
-// is the directory's, and no directory is configured yet.
+// index rows for a stored scheme, by name for qualified. A SID of the
+// directory's domain no principal holds is asked of the directory, and its
+// holder minted, only with o.Mint; a qualified name of the directory's domain
+// is asked of the directory, and its holder minted with o.Mint. It never
+// returns an API-only account, and counts a uid, gid or SID no principal
+// holds.
 func (s *Server) Find(ctx context.Context, sp identity.Spelling, o identity.FindOpts) (entity.Principal, error) {
-	p, err := s.find(ctx, sp)
+	p, err := s.find(ctx, sp, o)
 	if label, ok := unmappedLabel[sp.Scheme]; ok && errors.Is(err, vfserr.ErrUnknownPrincipal) {
 		s.unmapped.WithLabelValues(label).Inc()
 	}
 	return p, err
 }
 
-func (s *Server) find(ctx context.Context, sp identity.Spelling) (entity.Principal, error) {
+func (s *Server) find(ctx context.Context, sp identity.Spelling, o identity.FindOpts) (entity.Principal, error) {
 	if err := deferred(sp.Scheme); err != nil {
 		return entity.Principal{}, err
 	}
@@ -201,7 +211,11 @@ func (s *Server) find(ctx context.Context, sp identity.Spelling) (entity.Princip
 		}
 		var b bytes.Buffer
 		sid.EncodeSID(&b, &sp.SID)
-		return found(pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: entity.SchemeSID, Value: b.String()}))
+		p, err := found(pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: entity.SchemeSID, Value: b.String()}))
+		if errors.Is(err, vfserr.ErrUnknownPrincipal) {
+			return s.findDirectorySID(ctx, s.state.Load(), b.Bytes(), o.Mint)
+		}
+		return p, err
 	case identity.SchemeGroupName:
 		return found(pr.ByName(ctx, entity.PrincipalGroup, sp.Text))
 	case identity.SchemeUserName:
@@ -211,18 +225,18 @@ func (s *Server) find(ctx context.Context, sp identity.Spelling) (entity.Princip
 		p, err := found(pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: stored(sp.Scheme), Value: sp.Text}))
 		return s.fileUser(ctx, p, err)
 	}
-	return s.findQualified(ctx, sp.Text)
+	return s.findQualified(ctx, sp.Text, o.Mint)
 }
 
 // findQualified maps DOMAIN\name by name when DOMAIN is the installation's
-// NetBIOS name, ASCII letters folded. Another domain is the directory's, and
-// none is configured yet.
+// NetBIOS name, and through the directory, minting with mint, when it is the
+// directory's NetBIOS domain, each compared with ASCII letters folded.
 //
 // decision: a name a user and a group share maps to the user, as a POSIX
 // user's private group shares its name; the group is still found by SID and
 // by its group name. Overturned if lsarpc must tell the two apart by
 // qualified name alone.
-func (s *Server) findQualified(ctx context.Context, text string) (entity.Principal, error) {
+func (s *Server) findQualified(ctx context.Context, text string, mint bool) (entity.Principal, error) {
 	domain, name, ok := strings.Cut(text, `\`)
 	if !ok || domain == "" || name == "" {
 		return entity.Principal{}, fmt.Errorf("%w: a qualified name is DOMAIN\\name", vfserr.ErrInvalid)
@@ -232,7 +246,10 @@ func (s *Server) findQualified(ctx context.Context, text string) (entity.Princip
 		return entity.Principal{}, fmt.Errorf("%w: no State applied", vfserr.ErrUnavailable)
 	}
 	if !asciiEqualFold(domain, st.Settings.NetBIOSName) {
-		return entity.Principal{}, vfserr.ErrUnknownPrincipal
+		if st.Directory == nil || !asciiEqualFold(domain, st.Directory.NetBIOSDomain) {
+			return entity.Principal{}, vfserr.ErrUnknownPrincipal
+		}
+		return s.findDirectoryName(ctx, st, name, mint, directory.ByUserName, directory.ByGroupName)
 	}
 	pr := s.deps.Store.Principals()
 	p, err := found(pr.ByName(ctx, entity.PrincipalUser, name))

@@ -70,6 +70,7 @@ func Run(t *testing.T, open Opener) {
 		{"MintRaisesPrincipalsOnce", testMintRaisesPrincipalsOnce},
 		{"MintUnnamed", testMintUnnamed},
 		{"MintShapes", testMintShapes},
+		{"MintDirSpelling", testMintDirSpelling},
 		{"MintNoAPIRole", testMintNoAPIRole},
 		{"DeleteRemovesMembershipsAndGrants", testDeleteRemovesMembershipsAndGrants},
 		{"MarkedPrincipalReads", testMarkedPrincipalReads},

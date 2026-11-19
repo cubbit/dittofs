@@ -81,7 +81,7 @@ func (s *Server) HeldCredential(id entity.OperationID) (identity.JoinCredential,
 // DirectoryLookup asks the applied State's directory cache a "who holds
 // this" question: ErrUnavailable with no record or no Deps.Directory.
 func (s *Server) DirectoryLookup(ctx context.Context, by directory.Key, value []byte) (directory.Answer, bool, error) {
-	return s.directoryLookup(ctx, by, value, false)
+	return s.state.Load().dirLookup(ctx, by, value, false)
 }
 
 // VerifyAPReq verifies an AP-REQ under the applied State at now.
@@ -140,4 +140,14 @@ func (c *dirCache) Waiting() int { return int(c.waiting.Load()) }
 // reports it for the applied State's cache.
 func (c *dirCache) Conditions(dst []health.Condition) []health.Condition {
 	return c.out.conditions(dst)
+}
+
+// DirectoryWaiting is the number of queries waiting for one of the applied
+// State's directory cache's 64 slots.
+func (s *Server) DirectoryWaiting() int { return s.state.Load().dir.Waiting() }
+
+// ByKerberosName maps user@realm through the directory, as a Kerberos
+// sign-in's third step does, minting with mint.
+func (s *Server) ByKerberosName(ctx context.Context, user, realm string, mint bool) (entity.Principal, error) {
+	return s.byKerberosName(ctx, user, realm, mint)
 }

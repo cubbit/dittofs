@@ -148,6 +148,8 @@ type Server struct {
 	refusals  *prometheus.CounterVec // by reason
 	mints     *prometheus.CounterVec // by kind
 	unnamed   *prometheus.CounterVec // by kind
+	remapped  *prometheus.CounterVec // by kind
+	skipped   *prometheus.CounterVec // by reason
 	unmapped  *prometheus.CounterVec // by scheme
 	hashing   chan struct{}          // the password verifications' slots, GOMAXPROCS of them
 	holds     holds                  // the joins' administrator credentials
@@ -208,6 +210,8 @@ func New(d Deps) (*Server, error) {
 	s.refusals = counter(d.Metrics, refusalsSpec)
 	s.mints = counter(d.Metrics, mintsSpec)
 	s.unnamed = counter(d.Metrics, unnamedSpec)
+	s.remapped = counter(d.Metrics, remappedSpec)
+	s.skipped = counter(d.Metrics, skippedSpec)
 	s.unmapped = counter(d.Metrics, unmappedSpec)
 	return s, nil
 }

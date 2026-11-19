@@ -222,6 +222,23 @@ func testMintUnnamed(t *testing.T, kvo Opener) {
 	}
 }
 
+// A user and a group minted with a directory entry's ID are found by it.
+func testMintDirSpelling(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	u, g := mintUser("alice"), mintGroup("finance")
+	udir, gdir := entity.ProtocolID{Scheme: entity.SchemeDir, Value: "entry-alice"}, entity.ProtocolID{Scheme: entity.SchemeDir, Value: "entry-finance"}
+	u.User.IDs = entity.ProtocolIDs{udir}
+	g.Group.IDs = entity.ProtocolIDs{gdir}
+	if err := s.Minter().Create(ctx, entity.MintBatch{Users: []entity.MintUser{u}, Groups: []entity.MintGroup{g}}); err != nil {
+		t.Fatalf("minting a user and a group with dir spellings: %v", err)
+	}
+	for id, want := range map[entity.ProtocolID]entity.Principal{udir: u.User.Principal, gdir: g.Group.Principal} {
+		if got, err := s.Principals().ByProtocolID(ctx, id); err != nil || got != want {
+			t.Errorf("ByProtocolID(%s) = %v, %v; want %v", id.Value, got, err, want)
+		}
+	}
+}
+
 // A batch is held to the checks every write is: uid 0, a machine with a
 // name and a well-known principal are each refused, and a uid 0 the record
 // holds with no Alloc.UID is refused rather than allocated.
