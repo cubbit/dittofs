@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/md4" //nolint:staticcheck // SA1019: NTLM's NT hash is MD4 by definition
@@ -30,6 +31,11 @@ import (
 // It is the price of NTLM sign-in; turning NTLM off deletes every NT hash and
 // derives no new one.
 func NewHashes(u entity.User, password []byte, ntlm NTLMSetting) (PasswordHashes, error) {
+	// The NT hash reads the password as UTF-16 and argon2id as bytes, so a
+	// password that is not UTF-8 would be two different passwords.
+	if !utf8.Valid(password) {
+		return PasswordHashes{}, fmt.Errorf("%w: a password is UTF-8 text", vfserr.ErrInvalid)
+	}
 	if holds(u, entity.SchemeDir) {
 		return PasswordHashes{}, fmt.Errorf("%w: a directory principal has no local password", vfserr.ErrInvalid)
 	}

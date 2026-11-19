@@ -43,8 +43,16 @@ func (s *Server) VerifyPassword(ctx context.Context, p entity.Principal, passwor
 
 // Account returns p's current record, read from the store on every call;
 // ErrLogonFailure if it is disabled, deleted or marked deleted, or is no
-// user's.
+// user's, a machine's included.
+//
+// decision: API users and file principals are one User record kept apart by
+// rule: a role is never read by resolution, and an account with no file
+// spelling cannot sign in over a file protocol. Overturned if an API account
+// is needed that is not a User record.
 func (s *Server) Account(ctx context.Context, p entity.Principal) (entity.User, error) {
+	if p.Kind != entity.PrincipalUser {
+		return entity.User{}, vfserr.ErrLogonFailure
+	}
 	u, err := s.deps.Store.Principals().User(ctx, p)
 	switch {
 	case merrs.IsNotFoundError(err):

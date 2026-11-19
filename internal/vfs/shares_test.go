@@ -572,7 +572,7 @@ func (n *findOpts) Find(ctx context.Context, sp identity.Spelling, o identity.Fi
 // directory mint only for a call proved by a secret or a ticket.
 func TestSpellAndFindPassThroughToNames(t *testing.T) {
 	store := kvstoretest.NewFS(t, memKV)
-	srv, err := identitysrv.New(identitysrv.Deps{Store: store.Store})
+	srv, err := identitysrv.New(identitysrv.Deps{Store: store.Store, Clock: sim.NewTestClock(time.Unix(0, 0))})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -149,6 +149,9 @@ func New(d Deps) (*Server, error) {
 	if v := reflect.ValueOf(d.Store); v.Kind() == reflect.Pointer && v.IsNil() {
 		return nil, errors.New("identity: Deps.Store is a nil pointer")
 	}
+	if d.Clock == nil {
+		return nil, errors.New("identity: Deps.Clock is nil")
+	}
 	s := &Server{deps: d, tracer: d.Tracer, logger: d.Logger, hashing: make(chan struct{}, runtime.GOMAXPROCS(0))}
 	if s.logger == nil {
 		s.logger = slog.New(slog.DiscardHandler)

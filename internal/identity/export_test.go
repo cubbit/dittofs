@@ -39,14 +39,15 @@ func (c *replayCache) Len() int {
 	return len(c.entries)
 }
 
-// HoldHashSlots takes every password verification's slot and returns their
-// release.
-func (s *Server) HoldHashSlots() (release func()) {
-	for range cap(s.hashing) {
+// HoldHashSlots takes every password verification's slot but free of them,
+// and returns their release.
+func (s *Server) HoldHashSlots(free int) (release func()) {
+	n := cap(s.hashing) - free
+	for range n {
 		s.hashing <- struct{}{}
 	}
 	return func() {
-		for range cap(s.hashing) {
+		for range n {
 			<-s.hashing
 		}
 	}

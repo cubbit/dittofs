@@ -50,19 +50,22 @@ func TestNewHashes(t *testing.T) {
 
 	for _, c := range []struct {
 		name   string
+		pw     string
 		u      entity.User
 		ntlm   identity.NTLMSetting
 		ntHash []byte
 		err    error
 	}{
-		{"NTLM on, file user", file, on, published, nil},
-		{"NTLM off, file user", file, off, nil, nil},
-		{"NTLM on, API-only account", apiOnly, on, nil, nil},
-		{"NTLM on, directory principal", directory, on, nil, vfserr.ErrInvalid},
-		{"NTLM off, directory principal", directory, off, nil, vfserr.ErrInvalid},
+		{"NTLM on, file user", "Password", file, on, published, nil},
+		{"NTLM off, file user", "Password", file, off, nil, nil},
+		{"NTLM on, API-only account", "Password", apiOnly, on, nil, nil},
+		{"NTLM on, directory principal", "Password", directory, on, nil, vfserr.ErrInvalid},
+		{"NTLM off, directory principal", "Password", directory, off, nil, vfserr.ErrInvalid},
+		// Read as UTF-16 it would be U+FFFD U+FFFD, the NT hash of other passwords too.
+		{"NTLM on, not UTF-8", "\xff\xff", file, on, nil, vfserr.ErrInvalid},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			h, err := identity.NewHashes(c.u, []byte("Password"), c.ntlm)
+			h, err := identity.NewHashes(c.u, []byte(c.pw), c.ntlm)
 			if !errors.Is(err, c.err) {
 				t.Fatalf("NewHashes error = %v, want %v", err, c.err)
 			}
