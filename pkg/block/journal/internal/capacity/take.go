@@ -171,7 +171,9 @@ type Capacity struct {
 
 	// decision: mu is the capacity domain, rank capacity in the lock order —
 	// the one domain held while no other lock of it exists — and it guards
-	// every field below.
+	// every field below. The one lock taken inside it is the leaf mutex of
+	// reservedTagged when a tag first appears (see core.TagTally), which holds
+	// no I/O and takes nothing.
 	mu lockorder.Mutex
 
 	// reserved is the record bytes open grants hold and their records have
@@ -1332,7 +1334,7 @@ func (c *Capacity) PendingEntries() int64 {
 }
 
 // ReservedByTag returns a copy of what open reservations hold per share tag,
-// taken under the capacity's lock — no walk.
+// read from atomics without the capacity's lock — no walk.
 func (c *Capacity) ReservedByTag() map[core.ShareTag]int64 {
 	return c.reservedTagged.Snapshot()
 }

@@ -119,12 +119,15 @@ func TestOldestDirtyMatchesAScan(t *testing.T) {
 				want = &w
 			}
 		}
-		got := l.oldest.Load()
+		if len(l.keys) != len(l.inHeap) {
+			t.Fatalf("step %d: heap holds %d entries for %d distinct seconds: a second was pushed twice", step, len(l.keys), len(l.inHeap))
+		}
+		got := l.oldest.Load() ^ oldestBits
 		switch {
-		case want == nil && got != nil:
-			t.Fatalf("step %d: oldest = %d, want none", step, *got)
-		case want != nil && (got == nil || *got != want.Unix()):
-			t.Fatalf("step %d: oldest = %v, want %d", step, got, want.Unix())
+		case want == nil && got != noOldest:
+			t.Fatalf("step %d: oldest = %d, want none", step, got)
+		case want != nil && got != want.Unix():
+			t.Fatalf("step %d: oldest = %d, want %d", step, got, want.Unix())
 		}
 	}
 }

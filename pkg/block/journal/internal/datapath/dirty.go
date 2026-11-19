@@ -1,6 +1,7 @@
 package datapath
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,18 +43,37 @@ type dirtyList struct {
 	// keys is a min-heap of the seconds byTime holds, with lazy deletion: a
 	// second is pushed when byTime first holds it and popped from the top
 	// only once byTime no longer does, so the oldest is the top after the
-	// stale ones are discarded. It is rebuilt from byTime when stale entries
-	// outnumber live ones, which bounds it to a small multiple of byTime.
-	keys secHeap
-	// oldest is the second of the oldest counted file, nil when none is. It is
-	// replaced under mu whenever the heap's top changes, and read without it.
+	// stale ones are discarded. inHeap names the seconds keys holds, so a
+	// second that byTime dropped and holds again while its stale entry is
+	// still in the heap is not pushed twice. The heap is rebuilt from byTime
+	// when stale entries outnumber live ones, which bounds it to a small
+	// multiple of byTime.
+	//
+	// ponytail: the rebuild is O(live seconds) under mu, which every publish
+	// takes, and it runs once per as many drops as there are live seconds, so
+	// it amortises to O(1) per drop; one publish pays the whole pass. Upgrade
+	// to a per-second ordered structure with no rebuild when a backlog of
+	// hundreds of thousands of seconds shows that one slow publish.
+	keys   secHeap
+	inHeap map[int64]struct{}
+	// oldest is the second of the oldest counted file with its sign bit
+	// flipped, so the zero value of a list reads as noOldest: none counted. It
+	// is replaced under mu whenever the heap's top changes, and read without
+	// it.
 	//
 	// ponytail: the value keeps the whole-second resolution byTime has, so it
 	// can overstate the oldest write's age by under a second and never
 	// understates it. Upgrade to the exact time when a consumer needs
 	// sub-second age, which byTime would then have to key by nanosecond.
-	oldest atomic.Pointer[int64]
+	oldest atomic.Int64
 }
+
+// noOldest is the oldest value of a list that counts no file with a known
+// time. No Unix second a clock reads equals it.
+const noOldest = math.MinInt64
+
+// oldestBits flips the sign bit between a second and the form oldest stores.
+const oldestBits = math.MinInt64
 
 // secHeap is a min-heap of Unix seconds.
 type secHeap []int64
@@ -71,26 +91,31 @@ func (h *secHeap) push(k int64) {
 	}
 }
 
-func (h *secHeap) pop() {
-	s := *h
-	n := len(s) - 1
-	s[0] = s[n]
-	*h = s[:n]
-	s = *h
-	for i := 0; ; {
+// down sifts the entry at i toward the leaves.
+func (h secHeap) down(i int) {
+	n := len(h)
+	for {
 		l, r, m := 2*i+1, 2*i+2, i
-		if l < n && s[l] < s[m] {
+		if l < n && h[l] < h[m] {
 			m = l
 		}
-		if r < n && s[r] < s[m] {
+		if r < n && h[r] < h[m] {
 			m = r
 		}
 		if m == i {
 			return
 		}
-		s[i], s[m] = s[m], s[i]
+		h[i], h[m] = h[m], h[i]
 		i = m
 	}
+}
+
+func (h *secHeap) pop() {
+	s := *h
+	n := len(s) - 1
+	s[0] = s[n]
+	*h = s[:n]
+	h.down(0)
 }
 
 func (l *dirtyList) count(t time.Time, n int) {
@@ -103,39 +128,43 @@ func (l *dirtyList) count(t time.Time, n int) {
 	k := t.Unix()
 	before := l.byTime[k]
 	l.byTime[k] = before + n
-	switch {
-	case before == 0 && n > 0:
-		l.keys.push(k)
-	case l.byTime[k] == 0:
+	if l.byTime[k] == 0 {
 		delete(l.byTime, k)
+	} else if _, queued := l.inHeap[k]; !queued {
+		if l.inHeap == nil {
+			l.inHeap = make(map[int64]struct{})
+		}
+		l.inHeap[k] = struct{}{}
+		l.keys.push(k)
 	}
 }
 
-// settleOldest discards the heap's stale tops, compacts the heap when stale
+// settleOldest discards the heap's stale tops, rebuilds the heap when stale
 // entries dominate, and publishes the oldest second. The caller holds mu.
 func (l *dirtyList) settleOldest() {
 	if len(l.keys) > 2*len(l.byTime)+16 {
 		l.keys = l.keys[:0]
+		clear(l.inHeap)
 		for k := range l.byTime {
-			l.keys.push(k)
+			l.keys = append(l.keys, k)
+			l.inHeap[k] = struct{}{}
+		}
+		for i := len(l.keys)/2 - 1; i >= 0; i-- {
+			l.keys.down(i)
 		}
 	}
 	for len(l.keys) > 0 {
 		if _, live := l.byTime[l.keys[0]]; live {
 			break
 		}
+		delete(l.inHeap, l.keys[0])
 		l.keys.pop()
 	}
-	cur := l.oldest.Load()
-	switch {
-	case len(l.keys) == 0:
-		if cur != nil {
-			l.oldest.Store(nil)
-		}
-	case cur == nil || *cur != l.keys[0]:
-		k := l.keys[0]
-		l.oldest.Store(&k)
+	if len(l.keys) == 0 {
+		l.oldest.Store(noOldest ^ oldestBits)
+		return
 	}
+	l.oldest.Store(l.keys[0] ^ oldestBits)
 }
 
 // oldestDirty returns the start of the second of the oldest dirty write of any
@@ -143,8 +172,8 @@ func (l *dirtyList) settleOldest() {
 // understates it, or the zero time when no listed file has a known one. It is
 // one atomic load of the value apply maintains.
 func (c *Core) oldestDirty() time.Time {
-	if k := c.dirtyFiles.oldest.Load(); k != nil {
-		return time.Unix(*k, 0)
+	if k := c.dirtyFiles.oldest.Load() ^ oldestBits; k != noOldest {
+		return time.Unix(k, 0)
 	}
 	return time.Time{}
 }

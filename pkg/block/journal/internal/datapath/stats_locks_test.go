@@ -22,7 +22,15 @@ const statsBackstop = 5 * time.Second
 var statsAllowed = map[string]string{
 	"dur.lmu": "a leaf: it holds a loss's raise, counters and ring publish as one section, " +
 		"never across an append, a sync or a marker write",
+	"dur.dir.mu": "a leaf under dur.lmu that guards the directory's generation and failed list, " +
+		"never held across I/O",
 }
+
+// minStatsLocks is the count of mutexes the components Stats reads own. It is
+// a floor, not a target: the twelve locks Stats once took are all present, and
+// the test fails if the walk below finds fewer, which would mean it stopped
+// reaching a component. More is fine.
+const minStatsLocks = 12
 
 var mutexTypes = map[reflect.Type]bool{
 	reflect.TypeFor[sync.Mutex]():        true,
@@ -50,19 +58,25 @@ func field(t *testing.T, v reflect.Value, name string) reflect.Value {
 	return f.Addr()
 }
 
-// locksOf returns a locker for every mutex field of the struct v points at,
-// named root.field. It reads the mutexes through their address, so a lock
-// added to the struct later is found without a line here.
+// locksOf returns a locker for every mutex of the struct v points at, named
+// root.field, including mutexes nested in struct-valued fields (named
+// root.field.sub). It reads the mutexes through their address, so a lock added
+// to the struct later is found without a line here. Pointer fields are not
+// followed; statsLocks names the pointers worth following as roots.
 func locksOf(root string, v reflect.Value) []namedLock {
 	var out []namedLock
 	st := v.Elem()
 	for i := range st.NumField() {
 		ft := st.Type().Field(i)
-		if !mutexTypes[ft.Type] {
-			continue
+		name := root + "." + ft.Name
+		f := st.Field(i)
+		switch {
+		case mutexTypes[ft.Type]:
+			p := reflect.NewAt(ft.Type, unsafe.Pointer(f.UnsafeAddr()))
+			out = append(out, namedLock{name, p.Interface().(sync.Locker)})
+		case ft.Type.Kind() == reflect.Struct:
+			out = append(out, locksOf(name, reflect.NewAt(ft.Type, unsafe.Pointer(f.UnsafeAddr())))...)
 		}
-		p := reflect.NewAt(ft.Type, unsafe.Pointer(st.Field(i).UnsafeAddr()))
-		out = append(out, namedLock{root + "." + ft.Name, p.Interface().(sync.Locker)})
 	}
 	return out
 }
@@ -85,6 +99,7 @@ func statsLocks(t *testing.T, c *Core) []namedLock {
 		"counters": field(t, cv, "counters"),
 		"stream0":  reflect.ValueOf(c.streams.Stream(0)),
 	}
+	roots["dur.dir"] = field(t, roots["dur"], "dir")
 	roots["budget"] = field(t, roots["cache"], "budget")
 	ix := field(t, cv, "index")
 	roots["index"] = ix
@@ -110,8 +125,8 @@ func TestStatsReturnsWhileAnyLockIsHeld(t *testing.T) {
 	syncFiles(t, c, testFile(1))
 
 	locks := statsLocks(t, c)
-	if len(locks) < 12 {
-		t.Fatalf("found %d mutexes on Stats' components, want at least the twelve it once took", len(locks))
+	if len(locks) < minStatsLocks {
+		t.Fatalf("found %d mutexes on Stats' components, want at least %d", len(locks), minStatsLocks)
 	}
 	for _, nl := range locks {
 		t.Run(nl.name, func(t *testing.T) {

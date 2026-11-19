@@ -1010,16 +1010,18 @@ func (d *Durability) Stats() Part {
 		p.LastSyncError = &sf
 	}
 
-	// decision: Stats still takes lmu, the one lock left on its path. The ring
-	// and the generation must be read as one step, so a snapshot never holds a
-	// raise without its event, and the loss path keeps them together under
-	// lmu. The hold cannot stall a write: lmu is a leaf, held by a Lose only
-	// for the raise, the counters and the ring push, and never across an
-	// append, a sync or a marker write, so a Stats waiting on it waits on
-	// memory work alone and a write never waits on Stats, which holds lmu
-	// only to copy the ring. Overturned if a section is ever added under lmu
-	// that does I/O or takes another lock, which a published copy of the ring
-	// would then replace.
+	// decision: Stats still takes lmu, and through the directory's generation
+	// read the directory state's mutex (dirState.mu), the two locks left on
+	// its path. The ring and the generation must be read as one step, so a
+	// snapshot never holds a raise without its event, and the loss path keeps
+	// them together under lmu. A write path that loses a record can wait on
+	// lmu while Stats copies the ring (up to LossRingSize events) and reads
+	// the generation. The wait is bounded and in memory: it sits only on the
+	// loss path, no I/O happens under lmu, and the one lock taken inside it,
+	// dirState.mu, is a leaf that guards maps and a counter and is never held
+	// across I/O. Overturned if a section under lmu ever does I/O or takes a
+	// lock a writer can hold across a blocking call, which a published copy
+	// of the ring and the generation would then replace.
 	d.lmu.Lock()
 	// This instance's ring and the directory's generation are read in one
 	// section, and lmu holds the raise and the publish of a Lose together,
