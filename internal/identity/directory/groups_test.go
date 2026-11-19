@@ -35,7 +35,8 @@ func lowered(dns ...string) []string {
 // An ad user's closure is every level of its nesting, its primary group and
 // that group's own groups, through tokenGroups; and the same through the
 // chain rule and primaryGroupID for a bind that cannot read tokenGroups,
-// which member alone would answer without the primary group.
+// which member alone would answer without the primary group. A distribution
+// group the user is in is in neither, as a security token holds none.
 func TestGroupsAD(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
@@ -46,6 +47,7 @@ func TestGroupsAD(t *testing.T) {
 	du := "CN=Domain Users,CN=Users," + base
 	pgParent := e.d.AddGroup(t, "staff", map[string][][]byte{"member": {[]byte(du)}})
 	e.d.AddGroup(t, "other", nil)
+	e.d.AddGroup(t, "list", map[string][][]byte{"member": {[]byte(user)}, "groupType": {[]byte("2")}})
 	want := lowered(g1, g2, g3, du, pgParent)
 
 	for _, hidden := range []bool{false, true} {
@@ -62,7 +64,7 @@ func TestGroupsAD(t *testing.T) {
 		if err != nil || !slices.Equal(dnsOf(got), want) {
 			t.Errorf("Groups(alice), tokenGroups hidden %v = %v, %v; want %v", hidden, dnsOf(got), err, want)
 		}
-		chained := slices.ContainsFunc(f.Queries(), func(q directory.Request) bool { return strings.Contains(q.Filter, "1.2.840.113556.1.4.1941") })
+		chained := slices.ContainsFunc(f.Queries(), func(q directory.Request) bool { return strings.Contains(q.Filter, directory.InChain) })
 		if chained != hidden {
 			t.Errorf("tokenGroups hidden %v: the chain rule asked %v, want %v", hidden, chained, hidden)
 		}
@@ -84,7 +86,7 @@ func TestGroupsFailedPageFailsWhole(t *testing.T) {
 		e.d.AddGroup(t, fmt.Sprintf("g%04d", i), map[string][][]byte{"member": {[]byte(user)}})
 	}
 	e.d.HideTokenGroups()
-	chain := func(r directory.Request) bool { return strings.Contains(r.Filter, "1.2.840.113556.1.4.1941") }
+	chain := func(r directory.Request) bool { return strings.Contains(r.Filter, directory.InChain) }
 
 	f := e.faulty(t)
 	c := e.client(f.Dial)
@@ -111,6 +113,127 @@ func TestGroupsFailedPageFailsWhole(t *testing.T) {
 	}
 	if n := len(slices.DeleteFunc(f.Queries(), func(r directory.Request) bool { return !chain(r) })); n != 2 {
 		t.Errorf("%d chain-rule pages asked, want the first and the failed second", n)
+	}
+}
+
+// chainFilter is the chain rule's filter of a Groups(user) that asks it,
+// read from a run on a fault wrapper with no faults.
+func chainFilter(t *testing.T, e *env, user directory.Answer) string {
+	t.Helper()
+	f := e.faulty(t)
+	if _, err := e.client(f.Dial).Groups(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range f.Queries() {
+		if strings.Contains(q.Filter, directory.InChain) {
+			return q.Filter
+		}
+	}
+	t.Fatal("Groups asked no chain-rule query")
+	return ""
+}
+
+// A paged search's later pages go on the connection that answered its first,
+// as a directory refuses a cookie on another; one that finds that connection
+// closed restarts the search, once, from its first page on a new one.
+func TestGroupsPagesStayOnOneConnection(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	user := e.d.AddUser(t, "alice", nil)
+	for i := range 1500 {
+		e.d.AddGroup(t, fmt.Sprintf("g%04d", i), map[string][][]byte{"member": {[]byte(user)}})
+	}
+	e.d.HideTokenGroups()
+	a, _, err := e.client(e.d.Dial).Lookup(ctx, directory.ByUserName, []byte("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := chainFilter(t, e, a)
+
+	closed := fmt.Errorf("%w: closed under the search", directory.ErrClosed)
+	f := e.faulty(t, sim.Rule{Op: "search", Key: filter, From: 2, Count: 1, Action: sim.FaultAction{Err: closed}})
+	got, err := e.client(f.Dial).Groups(ctx, a)
+	if err != nil || len(got) != 1501 {
+		t.Fatalf("Groups(alice) with its second page's connection closed = %d groups, %v; want its 1 500 and Domain Users", len(got), err)
+	}
+	if n := len(f.Dials()); n != 2 {
+		t.Errorf("%d dials, want 2: the first and the restart's, none for a lone second page", n)
+	}
+	if n := len(slices.DeleteFunc(f.Queries(), func(r directory.Request) bool { return r.Filter != filter })); n != 4 {
+		t.Errorf("%d chain-rule pages asked, want 4: two, the second closed, then two again", n)
+	}
+}
+
+// A paged search of more than 64 pages fails, and the connection it was left
+// open on is closed: the next question dials again.
+func TestGroupsMorePagesThanTheBound(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	user := e.d.AddUser(t, "alice", nil)
+	for i := range 65 {
+		e.d.AddGroup(t, fmt.Sprintf("g%02d", i), map[string][][]byte{"member": {[]byte(user)}})
+	}
+	e.d.HideTokenGroups()
+	e.d.SetMaxPageSize(1)
+	f := e.faulty(t)
+	c := e.client(f.Dial)
+	a, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Groups(ctx, a)
+	if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+		t.Fatalf("Groups(alice) in 65 groups, a page each = %d groups, %v; want none, ErrUnavailable", len(got), err)
+	}
+	if n := len(slices.DeleteFunc(f.Queries(), func(r directory.Request) bool { return !strings.Contains(r.Filter, directory.InChain) })); n != 64 {
+		t.Errorf("%d chain-rule pages asked, want 64", n)
+	}
+	dials := len(f.Dials())
+	if _, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice")); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.Dials()); n != dials+1 {
+		t.Errorf("%d dials after the next lookup, want %d: the connection left mid-search closed", n, dials+1)
+	}
+}
+
+// A tokenGroups SID the lookup finds no entry for, as when the bind may not
+// read the group, is kept in the closure by its SID alone.
+func TestGroupsKeepsASIDWithNoEntry(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	user := e.d.AddUser(t, "alice", nil)
+	e.d.AddGroup(t, "g1", map[string][][]byte{"member": {[]byte(user)}})
+	c0 := e.client(e.d.Dial)
+	var want []string
+	for _, name := range []string{"g1", "Domain Users"} {
+		g, ok, err := c0.Lookup(ctx, directory.ByGroupName, []byte(name))
+		if err != nil || !ok {
+			t.Fatalf("Lookup(%s) = %v, %v", name, ok, err)
+		}
+		want = append(want, string(g.SID))
+	}
+	slices.Sort(want)
+	a, _, err := c0.Lookup(ctx, directory.ByUserName, []byte("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The SID lookup's first entry comes back without its objectSid.
+	f := e.faulty(t, sim.Rule{Op: "search", Key: "(|(objectSid=*", Action: sim.FaultAction{TearAfter: 1}})
+	f.TearAttr("objectSid", "objectSidUnread")
+	got, err := e.client(f.Dial).Groups(ctx, a)
+	var sids []string
+	bare := 0
+	for _, g := range got {
+		sids = append(sids, string(g.SID))
+		if g.DN == "" {
+			bare++
+		}
+	}
+	slices.Sort(sids)
+	if err != nil || !slices.Equal(sids, want) || bare != 1 {
+		t.Errorf("Groups(alice), one group's entry unread = SIDs %x (%d by SID alone), %v; want %x, one by SID alone", sids, bare, err, want)
 	}
 }
 
@@ -145,6 +268,52 @@ func TestGroupsRFC2307(t *testing.T) {
 	}
 }
 
+// An rfc2307 closure deeper than 64 levels, or of more than 1 024 groups,
+// fails after a bounded number of queries.
+func TestGroupsRFC2307Bounds(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		groups  int
+		nested  bool
+		queries int
+	}{
+		{"70 levels deep", 70, true, 64},
+		{"in 1 025 groups", 1025, false, 2}, // one level, two pages
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			e := newEnv(t)
+			e.rec.Schema = directory.SchemaRFC2307
+			e.d.AddUser(t, "bob", map[string][][]byte{
+				"objectClass": {[]byte("top"), []byte("posixAccount")}, "uid": {[]byte("bob")}})
+			prev := ""
+			for i := range tc.groups {
+				attrs := map[string][][]byte{"objectClass": {[]byte("top"), []byte("posixGroup")}}
+				if tc.nested && prev != "" {
+					attrs["member"] = [][]byte{[]byte(prev)}
+				} else {
+					attrs["memberUid"] = [][]byte{[]byte("bob")}
+				}
+				prev = e.d.AddGroup(t, fmt.Sprintf("p%04d", i), attrs)
+			}
+			f := e.faulty(t)
+			c := e.client(f.Dial)
+			a, ok, err := c.Lookup(ctx, directory.ByUserName, []byte("bob"))
+			if err != nil || !ok {
+				t.Fatalf("Lookup(bob) = %v, %v", ok, err)
+			}
+			got, err := c.Groups(ctx, a)
+			if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+				t.Errorf("Groups(bob) %s = %d groups, %v; want none, ErrUnavailable", tc.name, len(got), err)
+			}
+			walk := func(r directory.Request) bool { return !strings.Contains(r.Filter, "(objectClass=posixGroup)") }
+			if n := len(slices.DeleteFunc(f.Queries(), walk)); n != tc.queries {
+				t.Errorf("Groups(bob) %s asked %d queries, want %d", tc.name, n, tc.queries)
+			}
+		})
+	}
+}
+
 // bigGroup adds a group of n members to e's directory.
 func bigGroup(t *testing.T, e *env, n int) (string, []string) {
 	var members []string
@@ -162,7 +331,7 @@ func TestMembersInRanges(t *testing.T) {
 	e := newEnv(t)
 	dn, members := bigGroup(t, e, 3000)
 	f := e.faulty(t)
-	got, err := e.client(f.Dial).Members(context.Background(), dn)
+	got, err := directory.Members(context.Background(), e.client(f.Dial), dn)
 	if err != nil || !slices.Equal(got, members) {
 		t.Errorf("Members(big) = %d values, %v; want its 3 000 in order", len(got), err)
 	}
@@ -191,13 +360,14 @@ func TestMembersHostileRange(t *testing.T) {
 		{2, "member;range=1500-*", "member;range=1500-1600"},
 		{2, "member;range=1500-*", "member;range=x-*"},
 		{1, "member;range=0-1499", "member;range=0-x"},
+		{2, "member;range=1500-*", "member"},
 	} {
 		t.Run(tc.into, func(t *testing.T) {
 			e := newEnv(t)
 			dn, _ := bigGroup(t, e, 3000)
 			f := e.faulty(t, sim.Rule{Op: "search", Key: "(objectClass=group)", From: tc.from, Count: 1, Action: sim.FaultAction{TearAfter: 1}})
 			f.TearAttr(tc.torn, tc.into)
-			got, err := e.client(f.Dial).Members(context.Background(), dn)
+			got, err := directory.Members(context.Background(), e.client(f.Dial), dn)
 			if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
 				t.Errorf("Members(big) with range %d torn to %s = %d values, %v; want none, ErrUnavailable", tc.from, tc.into, len(got), err)
 			}
@@ -206,6 +376,22 @@ func TestMembersHostileRange(t *testing.T) {
 			}
 		})
 	}
+
+	// Ranges of one value each: a group of 100 members takes more parts than
+	// the bound, and the read stops at it.
+	t.Run("more than 64 parts", func(t *testing.T) {
+		e := newEnv(t)
+		dn, _ := bigGroup(t, e, 100)
+		e.d.SetMaxValRange(1)
+		f := e.faulty(t)
+		got, err := directory.Members(context.Background(), e.client(f.Dial), dn)
+		if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+			t.Errorf("Members(big) in ranges of 1 = %d values, %v; want none, ErrUnavailable", len(got), err)
+		}
+		if n := len(memberQueries(f.Queries())); n != 64 {
+			t.Errorf("%d range queries, want 64", n)
+		}
+	})
 }
 
 // SIDs are looked up at most 64 to a query, each found once; a SID two

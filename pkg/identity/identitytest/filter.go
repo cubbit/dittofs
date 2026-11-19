@@ -4,24 +4,28 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+
+	"github.com/cubbit/dittofs/internal/identity/directory"
 )
 
 // filter is a parsed RFC 4515 search filter.
 type filter struct {
-	op    byte     // '&', '|', '!', '=' (equality), '*' (presence), 's' (substrings) or 'c' (in chain)
+	op    byte     // '&', '|', '!', '=' (equality), '*' (presence), 's' (substrings), 'c' (in chain) or 'b' (bit and)
 	subs  []filter // the operands of '&', '|' and '!'
 	attr  string
 	value []byte   // equality's value, or the DN in chain's
 	parts [][]byte // substrings' pieces: initial, any..., final; an empty first or last is absent
+	mask  uint64   // the bits bit and's integer must hold
 }
 
 // parseFilter parses s, which must be one whole filter. It reads equality,
-// presence, substrings, and, or and not, with \xx escapes, and refuses
-// LDAP_MATCHING_RULE_IN_CHAIN's extensible match, attr:1.2.840.113556.1.4.1941:=dn,
-// and refuses anything else, approximate, ordering and other extensible
-// matches among it, as an error rather than an answer the in-memory directory
-// cannot give.
+// presence, substrings, and, or and not, with \xx escapes, and the
+// extensible matches LDAP_MATCHING_RULE_IN_CHAIN, attr:<directory.InChain>:=dn,
+// and LDAP_MATCHING_RULE_BIT_AND, attr:<directory.BitAnd>:=n; it refuses
+// anything else, approximate, ordering and other extensible matches among
+// it, as an error rather than an answer the in-memory directory cannot give.
 func parseFilter(s string) (filter, error) {
 	f, rest, err := parseOne(s)
 	if err != nil {
@@ -86,12 +90,19 @@ func parseItem(s string) (filter, error) {
 		return filter{}, fmt.Errorf("item %q has no attribute and =", s)
 	}
 	attr, raw := s[:eq], s[eq+1:]
-	if a, ok := strings.CutSuffix(attr, ":"+inChain+":"); ok && a != "" && !strings.ContainsAny(a, "~<>:(\\*") {
+	if a, ok := strings.CutSuffix(attr, ":"+directory.InChain+":"); ok && a != "" && !strings.ContainsAny(a, "~<>:(\\*") {
 		v, err := unescape(raw)
 		if err != nil {
 			return filter{}, fmt.Errorf("item %q: %w", s, err)
 		}
 		return filter{op: 'c', attr: a, value: v}, nil
+	}
+	if a, ok := strings.CutSuffix(attr, ":"+directory.BitAnd+":"); ok && a != "" && !strings.ContainsAny(a, "~<>:(\\*") {
+		n, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return filter{}, fmt.Errorf("item %q: a bit mask that is not a decimal number: %w", s, err)
+		}
+		return filter{op: 'b', attr: a, mask: n}, nil
 	}
 	if strings.ContainsAny(attr, "~<>:(\\*") || strings.TrimSpace(attr) != attr {
 		return filter{}, fmt.Errorf("item %q: approximate, ordering and extensible matches, and attribute %q, are not read", s, attr)
@@ -162,9 +173,6 @@ func hexDigit(c byte) (byte, bool) {
 	return 0, false
 }
 
-// inChain is LDAP_MATCHING_RULE_IN_CHAIN.
-const inChain = "1.2.840.113556.1.4.1941"
-
 // match reports whether e, an entry of d, satisfies f; d.mu is held.
 func (f filter) match(e *entry, d *Directory) bool {
 	switch f.op {
@@ -188,6 +196,15 @@ func (f filter) match(e *entry, d *Directory) bool {
 		return len(e.get(f.attr)) > 0
 	case 'c':
 		return chained(e, f.attr, string(f.value), d, map[*entry]bool{})
+	case 'b':
+		for _, v := range e.get(f.attr) {
+			// An integer attribute is signed, as groupType is; its bits
+			// are its two's complement.
+			if n, err := strconv.ParseInt(string(v), 10, 64); err == nil && uint64(n)&f.mask == f.mask {
+				return true
+			}
+		}
+		return false
 	}
 	fold := !binaryAttr(f.attr)
 	for _, v := range e.get(f.attr) {

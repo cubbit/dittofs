@@ -29,10 +29,12 @@ import (
 // case-insensitively and objectSid and objectGUID byte for byte, no such
 // object for a search based outside its naming context, and continuation
 // references to the configuration and DNS partitions for a subtree search of
-// the naming context itself. It pages a search as RFC 2696 says, matches
-// LDAP_MATCHING_RULE_IN_CHAIN, constructs tokenGroups on a base-scope read,
-// and hands back a range of a multi-valued attribute asked for as
-// attr;range=<lo>-<hi|*>, at most MaxValRange values of it.
+// the naming context itself. It pages a search as RFC 2696 says, refusing a
+// cookie on a connection other than the one that handed it out, matches
+// LDAP_MATCHING_RULE_IN_CHAIN and LDAP_MATCHING_RULE_BIT_AND, constructs
+// tokenGroups, of security groups only, on a base-scope read, and hands back
+// a range of a multi-valued attribute asked for as attr;range=<lo>-<hi|*>,
+// at most MaxValRange values of it.
 //
 // It reads no other extensible match, none of the other constructed
 // tokenGroups attributes and none of the selectors *, + and 1.1: a request
@@ -48,12 +50,17 @@ type Directory struct {
 	passwords   map[string][]byte // by DN, lower-cased
 	nextRID     uint32
 	maxValRange int  // the most values of one range
+	maxPageSize int  // the most entries of one page
 	noTokens    bool // tokenGroups answered empty
 }
 
 // domainUsersRID is the RID of Domain Users, every user's primary group
 // unless its primaryGroupID names another.
 const domainUsersRID = 513
+
+// globalSecurity is the groupType of a global security group (MS-ADTS
+// 2.2.12), as a signed integer: the security bit and the global scope.
+const globalSecurity = "-2147483646"
 
 // entry is one entry. Its attributes are keyed by the name they were stored
 // under and looked up case-insensitively.
@@ -95,8 +102,9 @@ func NewDirectory(base string) *Directory {
 		entries:   map[string]*entry{},
 		passwords: map[string][]byte{},
 		nextRID:   1100,
-		// Active Directory's default MaxValRange.
+		// Active Directory's default MaxValRange and MaxPageSize.
 		maxValRange: 1500,
+		maxPageSize: 1000,
 	}
 	d.put("", map[string][][]byte{
 		"objectClass":          {[]byte("top")},
@@ -111,7 +119,7 @@ func NewDirectory(base string) *Directory {
 		"objectClass": {[]byte("top"), []byte("container")},
 		"cn":          {[]byte("Users")},
 	})
-	d.add("Domain Users", []string{"top", "group"}, domainUsersRID, nil)
+	d.add("Domain Users", []string{"top", "group"}, domainUsersRID, map[string][][]byte{"groupType": {[]byte(globalSecurity)}})
 	admin := d.AddUser(nil, "Administrator", nil)
 	d.passwords[strings.ToLower(admin)] = []byte(adminPassword)
 	return d
@@ -134,12 +142,15 @@ func (d *Directory) AddUser(_ testing.TB, name string, attrs map[string][][]byte
 }
 
 // AddGroup adds a group named name under the Users container, its
-// sAMAccountName and cn name, with an objectSid of the domain's and a random
-// objectGUID, then attrs over those, member among them, and returns its DN.
+// sAMAccountName and cn name, with an objectSid of the domain's, a random
+// objectGUID and the groupType of a global security group, then attrs over
+// those, member among them, and returns its DN.
 func (d *Directory) AddGroup(_ testing.TB, name string, attrs map[string][][]byte) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.add(name, []string{"top", "group"}, d.rid(), attrs)
+	gt := map[string][][]byte{"groupType": {[]byte(globalSecurity)}}
+	maps.Copy(gt, attrs)
+	return d.add(name, []string{"top", "group"}, d.rid(), gt)
 }
 
 // SetMaxValRange sets the most values one range of an attribute holds, 1 500
@@ -148,6 +159,15 @@ func (d *Directory) SetMaxValRange(n int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.maxValRange = n
+}
+
+// SetMaxPageSize sets the most entries one page of a paged search holds,
+// whatever page size the search asks for, 1 000 unless set, as Active
+// Directory's MaxPageSize.
+func (d *Directory) SetMaxPageSize(n int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.maxPageSize = n
 }
 
 // HideTokenGroups answers tokenGroups empty from then on, as Active
@@ -165,11 +185,7 @@ func (d *Directory) rid() uint32 {
 }
 
 // sid is the domain's SID with rid appended.
-func (d *Directory) sid(rid uint32) []byte {
-	sid := binary.LittleEndian.AppendUint32(slices.Clone(d.domainSID), rid)
-	sid[1]++
-	return sid
-}
+func (d *Directory) sid(rid uint32) []byte { return directory.WithRID(d.domainSID, rid) }
 
 // add puts an entry named name under the Users container, of classes, with
 // rid's SID and a random objectGUID, then attrs over those, and returns its
@@ -231,9 +247,10 @@ var errClosed = fmt.Errorf("%w: identitytest", directory.ErrClosed)
 type memConn struct {
 	d *Directory
 
-	mu     sync.Mutex
-	bound  bool
-	closed bool
+	mu      sync.Mutex
+	bound   bool
+	closed  bool
+	cookies map[string]bool // the paged searches' cookies this connection handed out
 }
 
 func (c *memConn) Bind(ctx context.Context, name string, password []byte) error {
@@ -271,7 +288,13 @@ func (c *memConn) Search(ctx context.Context, req directory.Request) (directory.
 	}
 	c.mu.Lock()
 	bound := c.bound
+	// A directory holds a paged search's state per connection, so a cookie
+	// another connection handed out names nothing here.
+	known := req.Cookie == nil || c.cookies[string(req.Cookie)]
 	c.mu.Unlock()
+	if req.PageSize > 0 && !known {
+		return directory.Result{}, fmt.Errorf("identitytest: a paged search's cookie %q this connection did not hand out", req.Cookie)
+	}
 
 	d := c.d
 	if req.Base == "" && req.Scope == directory.ScopeBase {
@@ -306,20 +329,30 @@ func (c *memConn) Search(ctx context.Context, req directory.Request) (directory.
 		}
 	}
 	slices.SortFunc(res.Entries, func(a, b directory.Entry) int { return strings.Compare(a.DN, b.DN) })
-	if req.PageSize > 0 {
-		return page(res, req)
+	if req.PageSize == 0 {
+		return res, nil
 	}
-	return res, nil
+	res, err = page(res, req, d.maxPageSize)
+	if err == nil && res.Cookie != nil {
+		c.mu.Lock()
+		if c.cookies == nil {
+			c.cookies = map[string]bool{}
+		}
+		c.cookies[string(res.Cookie)] = true
+		c.mu.Unlock()
+	}
+	return res, err
 }
 
-// page is the page of res req asks for. The cookie is the offset of the
-// page's first entry in the whole answer, which is sorted by DN.
+// page is the page of res req asks for, of at most most entries. The cookie
+// is the offset of the page's first entry in the whole answer, which is
+// sorted by DN.
 //
 // ponytail: the cookie holds no state, so an entry added or removed between
 // two pages shifts the rest by one, where a domain controller pages a
 // snapshot. Keep a per-connection snapshot when a test pages a directory it
 // changes.
-func page(res directory.Result, req directory.Request) (directory.Result, error) {
+func page(res directory.Result, req directory.Request, most int) (directory.Result, error) {
 	off := 0
 	if req.Cookie != nil {
 		n, err := strconv.Atoi(string(req.Cookie))
@@ -329,7 +362,7 @@ func page(res directory.Result, req directory.Request) (directory.Result, error)
 		off = n
 	}
 	all := res.Entries
-	end := min(off+req.PageSize, len(all))
+	end := min(off+min(req.PageSize, most), len(all))
 	res.Entries, res.Cookie = all[off:end], nil
 	if end < len(all) {
 		res.Cookie = []byte(strconv.Itoa(end))
@@ -405,9 +438,11 @@ func clone(vs [][]byte) [][]byte {
 	return cp
 }
 
-// tokenGroups is the SIDs of every group e belongs to, through member links
-// or its primaryGroupID, directly or through other groups, each once; none
-// once HideTokenGroups was called; d.mu is held.
+// tokenGroups is the SIDs of every security group e belongs to, through
+// member links or its primaryGroupID, directly or through other security
+// groups, each once; none once HideTokenGroups was called; d.mu is held. A
+// distribution group is neither held nor followed, as a security token
+// holds no distribution group.
 func (d *Directory) tokenGroups(e *entry) [][]byte {
 	if d.noTokens {
 		return nil
@@ -427,7 +462,7 @@ func (d *Directory) tokenGroups(e *entry) [][]byte {
 	var sids [][]byte
 	var visit func(m *entry)
 	visit = func(m *entry) {
-		if seen[m] {
+		if seen[m] || m != e && !security(m) {
 			return
 		}
 		seen[m] = true
@@ -445,6 +480,16 @@ func (d *Directory) tokenGroups(e *entry) [][]byte {
 		visit(g)
 	}
 	return sids
+}
+
+// security reports whether e's groupType holds the security bit.
+func security(e *entry) bool {
+	v := e.get("groupType")
+	if len(v) != 1 {
+		return false
+	}
+	n, err := strconv.ParseInt(string(v[0]), 10, 64)
+	return err == nil && n&0x80000000 != 0
 }
 
 // under reports whether dn is base or below it.

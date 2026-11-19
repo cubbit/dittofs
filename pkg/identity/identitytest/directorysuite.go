@@ -27,7 +27,8 @@ type Seeder interface {
 	AddUser(t testing.TB, name string, attrs map[string][][]byte) string
 	// AddGroup adds a global security group named name, at most 20
 	// characters of letters and digits, its account name and cn, with attrs
-	// set on it, member among them, and returns its DN.
+	// set on it, member among them, and returns its DN; a groupType in attrs
+	// makes it another kind of group.
 	AddGroup(t testing.TB, name string, attrs map[string][][]byte) string
 	// Account is a name and password the directory accepts in a simple bind,
 	// whose bind may read every entry AddUser adds.
@@ -352,11 +353,9 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		return user, g, decoy
 	}
 
-	// tokenGroups is read with base scope; it holds the primary group, which
-	// member never names, as well as every level.
-	t.Run("tokenGroups holds every level of nesting and the primary group", func(t *testing.T) {
-		c, s := bound(t)
-		user, g, decoy := nested(t, s)
+	// tokenGroupsOf reads the user's tokenGroups.
+	tokenGroupsOf := func(t *testing.T, c directory.Conn, user string) []string {
+		t.Helper()
 		res := search(t, c, directory.Request{Base: user, Scope: directory.ScopeBase, Filter: "(objectClass=*)",
 			Attrs: []string{"tokenGroups"}})
 		if len(res.Entries) != 1 {
@@ -370,6 +369,15 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 				}
 			}
 		}
+		return got
+	}
+
+	// tokenGroups is read with base scope; it holds the primary group, which
+	// member never names, as well as every level.
+	t.Run("tokenGroups holds every level of nesting and the primary group", func(t *testing.T) {
+		c, s := bound(t)
+		user, g, decoy := nested(t, s)
+		got := tokenGroupsOf(t, c, user)
 		domain := sidOf(t, c, naming(t, c))
 		primary := append(slices.Clone(domain), 0x01, 0x02, 0, 0) // RID 513, Domain Users
 		primary[1]++
@@ -389,9 +397,42 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 	t.Run("the chain rule answers every level of nesting", func(t *testing.T) {
 		c, s := bound(t)
 		user, g, _ := nested(t, s)
-		got := dns(t, c, "(&(objectClass=group)(member:1.2.840.113556.1.4.1941:="+escape([]byte(user))+"))")
+		got := dns(t, c, "(&(objectClass=group)(member:"+directory.InChain+":="+escape([]byte(user))+"))")
 		if want := lower(g[0], g[1], g[2]); !slices.Equal(got, want) {
 			t.Errorf("groups %s is in by the chain rule: %v, want %v", user, got, want)
+		}
+	})
+
+	// A distribution group (groupType 2, global, no security bit) is one the
+	// chain rule matches and a security token never holds: tokenGroups
+	// leaves it out, and so does the chain rule asked for groupType's
+	// security bit. A security group the user reaches only through it is
+	// left out of tokenGroups too, where the chain rule, which follows
+	// member whatever the group, still answers it.
+	t.Run("a distribution group is in neither tokenGroups nor the security bit's chain", func(t *testing.T) {
+		c, s := bound(t)
+		tok := token()
+		user := s.AddUser(t, "du"+tok, nil)
+		sec := s.AddGroup(t, "dsec"+tok, map[string][][]byte{"member": {[]byte(user)}})
+		dist := s.AddGroup(t, "ddist"+tok, map[string][][]byte{"member": {[]byte(user)}, "groupType": {[]byte("2")}})
+		up := s.AddGroup(t, "dup"+tok, map[string][][]byte{"member": {[]byte(dist)}})
+		in := "(member:" + directory.InChain + ":=" + escape([]byte(user)) + ")"
+		if got, want := dns(t, c, "(&(objectClass=group)"+in+")"), lower(sec, dist, up); !slices.Equal(got, want) {
+			t.Errorf("groups %s is in by the chain rule: %v, want %v", user, got, want)
+		}
+		bit := "(groupType:" + directory.BitAnd + ":=2147483648)"
+		if got, want := dns(t, c, "(&(objectClass=group)"+bit+in+")"), lower(sec, up); !slices.Equal(got, want) {
+			t.Errorf("security groups %s is in by the chain rule: %v, want %v", user, got, want)
+		}
+		got := tokenGroupsOf(t, c, user)
+		if want := sidOf(t, c, sec); !slices.Contains(got, string(want)) {
+			t.Errorf("%s: tokenGroups %x lacks its security group, %x", user, got, want)
+		}
+		if d := sidOf(t, c, dist); slices.Contains(got, string(d)) {
+			t.Errorf("%s: tokenGroups holds %x, its distribution group", user, d)
+		}
+		if u := sidOf(t, c, up); slices.Contains(got, string(u)) {
+			t.Errorf("%s: tokenGroups holds %x, a group reached only through its distribution group", user, u)
 		}
 	})
 
@@ -442,6 +483,21 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 			if want := lower(slices.Clone(paged)...); !slices.Equal(got, want) || pages < 3 {
 				t.Errorf("paged search: %d entries in %d pages, want each of the %d once in at least 3 pages",
 					len(got), pages, len(want))
+			}
+		})
+
+		// A directory holds a paged search's state per connection.
+		t.Run("a paged search's cookie is refused on another connection", func(t *testing.T) {
+			req := directory.Request{Base: nc, Scope: directory.ScopeSubtree, Filter: "(description=" + tok + "page)",
+				Attrs: []string{"cn"}, PageSize: 1000}
+			res := search(t, c, req)
+			if len(res.Cookie) == 0 {
+				t.Fatal("the first page of 2 500 entries handed out no cookie")
+			}
+			other, _ := bound(t)
+			req.Cookie = res.Cookie
+			if res, err := other.Search(call(t), req); err == nil {
+				t.Errorf("the second page asked on another connection answered %d entries, want it refused", len(res.Entries))
 			}
 		})
 

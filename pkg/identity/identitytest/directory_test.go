@@ -15,10 +15,12 @@ import (
 
 const base = "DC=corp,DC=example"
 
-// The in-memory directory answers as the suite holds a real one to.
+// The in-memory directory answers as the suite holds a real one to. Every
+// connection is to one directory, as every connection to a domain controller
+// is.
 func TestDirectoryConformance(t *testing.T) {
+	d := identitytest.NewDirectory(base)
 	identitytest.DirectoryConformance(t, func(t *testing.T) (directory.Conn, identitytest.Seeder) {
-		d := identitytest.NewDirectory(base)
 		c, err := d.Dial(context.Background(), directory.Record{})
 		if err != nil {
 			t.Fatal(err)

@@ -116,7 +116,7 @@ func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool
 	}
 	c.begin()
 	defer c.end()
-	res, err := c.do(ctx, Request{Base: c.rec.Base, Scope: ScopeSubtree, Filter: filter, Attrs: c.rec.attrs()})
+	_, res, err := c.do(ctx, Request{Base: c.rec.Base, Scope: ScopeSubtree, Filter: filter, Attrs: c.rec.attrs()})
 	if err != nil {
 		return Answer{}, false, err
 	}
@@ -376,15 +376,81 @@ func (c *Client) searchOn(ctx context.Context, conn Conn, req Request) (Result, 
 	defer cancel()
 	res, err := conn.Search(sctx, req)
 	if err != nil {
-		c.mu.Lock()
-		if c.conn == conn {
-			c.conn = nil
-		}
-		c.mu.Unlock()
-		_ = conn.Close()
+		c.drop(conn)
 		return Result{}, unavailable("search", timedOut(sctx, err))
 	}
 	return res, nil
+}
+
+// drop closes conn, so the next question dials again.
+func (c *Client) drop(conn Conn) {
+	c.mu.Lock()
+	if c.conn == conn {
+		c.conn = nil
+	}
+	c.mu.Unlock()
+	_ = conn.Close()
+}
+
+// do sends req on the client's connection, opening it when there is none,
+// and returns the connection that answered. A held connection the directory
+// closed while idle fails the first query on it, so that one is sent again,
+// once, on a new one; a fresh connection's failure is the directory's
+// answer, not retried.
+func (c *Client) do(ctx context.Context, req Request) (Conn, Result, error) {
+	conn, fresh, err := c.connect(ctx)
+	if err != nil {
+		return nil, Result{}, err
+	}
+	res, err := c.search(ctx, conn, req)
+	if err != nil && !fresh && errors.Is(err, ErrClosed) {
+		if conn, _, err = c.connect(ctx); err != nil {
+			return nil, Result{}, err
+		}
+		res, err = c.search(ctx, conn, req)
+	}
+	return conn, res, err
+}
+
+// all sends req as an RFC 2696 paged search and follows its pages to the
+// end; a page that fails, or more than maxPages, fails the whole search. A
+// later page that finds its connection closed, by the directory or by
+// another question's failed call, restarts the search once from its first
+// page on a new connection.
+func (c *Client) all(ctx context.Context, req Request) ([]Entry, error) {
+	req.PageSize = pageSize
+	out, later, err := c.pages(ctx, req)
+	if later && errors.Is(err, ErrClosed) {
+		out, _, err = c.pages(ctx, req)
+	}
+	return out, err
+}
+
+// pages is one run of all: the first page through do, every later one on the
+// connection that answered it, since a directory holds a paged search's
+// cookie per connection and refuses it on another. later reports that a
+// later page failed.
+func (c *Client) pages(ctx context.Context, req Request) (out []Entry, later bool, err error) {
+	conn, res, err := c.do(ctx, req)
+	if err != nil {
+		return nil, false, err
+	}
+	out = res.Entries
+	for n := 1; len(res.Cookie) > 0; n++ {
+		if n == maxPages {
+			// The search is left open on the directory, which counts it
+			// against the connection's open result sets; closing the
+			// connection ends it.
+			c.drop(conn)
+			return nil, false, unavailable("paged search", fmt.Errorf("more than %d pages", maxPages))
+		}
+		req.Cookie = res.Cookie
+		if res, err = c.search(ctx, conn, req); err != nil {
+			return nil, true, err
+		}
+		out = append(out, res.Entries...)
+	}
+	return out, false, nil
 }
 
 // answer reads an entry into an Answer.
