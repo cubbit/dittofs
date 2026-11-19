@@ -38,7 +38,7 @@ suites:
     parallel: true
     tier: pr
     cmd:
-      - test/harness/bin/dt docs --check       # the documentation's suite tables match the registry
+      - test/harness/bin/dt docs --check       # the guide's suite table and command reference match the registry and dt
       - test/harness/bin/dt doctor             # fails on an expired quarantine entry, here alone
       - test/common/known-failures_test.sh
       - test/nfs-mount/nfstest/parse-results_test.sh   # the grader the knfsd baseline keeps

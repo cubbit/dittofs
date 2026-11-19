@@ -27,8 +27,10 @@ test/harness/demo/dt-demo.sh cleanup    # reset, then remove the worktree
 
 `setup` adds a detached worktree at `DEMO_REF` (default `f02e02620`, the commit the recordings
 were made at) beside this checkout, named `dittofs-demo-dt`; `DEMO_WT` moves it. Every command
-runs there, and every edit a step makes is reverted when the demo exits. `setup --quick` skips the
-warm-up runs. Nothing leaves the machine: no push, no posting, no ssh.
+runs there, and every edit a step makes is reverted when the demo exits. `setup` marks the
+worktree, and every command but `help` and `replay` refuses a `DEMO_WT` without the mark, as a
+worktree from an older setup is: remove that one with `git worktree remove`, then run `setup`.
+`setup --quick` skips the warm-up runs. Nothing leaves the machine: no push, no posting, no ssh.
 
 Between steps:
 

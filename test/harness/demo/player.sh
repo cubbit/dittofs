@@ -86,7 +86,8 @@ typeit() {
 wait_enter() { [ "$MODE" = record ] && { echo; return; }; local k; IFS= read -rs k <&3; echo; }
 
 # run_limited SECONDS CMD...: runs CMD in a process group of its own and, after SECONDS, stops the
-# whole group (TERM, then KILL 3 s later), so no child outlives the limit; it then exits 142.
+# whole group (TERM, then KILL 40 s later: on TERM a cell's fixture may take 25 s to unmount, then
+# 10 s to stop dfs), so no child outlives the limit; it then exits 142.
 # Ctrl-C stops the group too, then the player.
 run_limited() {
   perl -e '
@@ -95,7 +96,7 @@ run_limited() {
     defined $pid or die "fork: $!\n";
     if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
     my ($late, $int) = (0, 0);
-    $SIG{ALRM} = sub { kill($late++ ? "KILL" : "TERM", -$pid); alarm 3 };
+    $SIG{ALRM} = sub { kill($late++ ? "KILL" : "TERM", -$pid); alarm 40 };
     $SIG{INT} = sub { $int = 1; kill "TERM", -$pid };
     $SIG{TERM} = sub { kill "TERM", -$pid };
     alarm $t;

@@ -188,7 +188,11 @@ demo_reset() { # [quiet]
   [ -d "$DEMO_WT" ] || return 0
   (cd "$DEMO_WT" && git checkout -q -- test/clients/files.sh test/suites.yaml 2>/dev/null; rm -f test/clients/known-demo.yaml)
   local m
-  for m in $(mount | awk '$3 ~ /^\/(private\/)?tmp\/dt[0-9]+$/ {print $3}'); do umount "$m" 2>/dev/null; done
+  # Only the mounts this worktree's runs made, as their logs name them: a dt run from another
+  # checkout mounts under /tmp/dtNNN too.
+  for m in $(grep -rhoE 'mounted at /(private/)?tmp/dt[0-9]+' "$DEMO_WT/test/harness/results" 2>/dev/null | awk '{print $3}' | sort -u); do
+    umount "$m" 2>/dev/null
+  done
   pkill -f "$DEMO_WT/test/harness/results/.*/bin/dfs" 2>/dev/null
   # A step 8 run cut short can leave its dtc container: only this worktree's, found by its mount.
   local c
@@ -224,7 +228,8 @@ demo_setup() { # [--quick]
     [ -z "$(git -C "$DEMO_WT" status --short)" ] && ok "worktree clean" || { bad "worktree has changes: $(git -C "$DEMO_WT" status --short | head -3)"; exit 1; }
   else
     git -C "$REPO" cat-file -e "$REF^{commit}" 2>/dev/null || git -C "$REPO" fetch -q origin "$REF" || { bad "no commit $REF"; exit 1; }
-    git -C "$REPO" worktree add -q --detach "$DEMO_WT" "$REF" && ok "worktree added" || exit 1
+    git -C "$REPO" worktree add -q --detach "$DEMO_WT" "$REF" || exit 1
+    touch "$(git -C "$DEMO_WT" rev-parse --absolute-git-dir)/dt-demo" && ok "worktree added" || exit 1
   fi
   local at want
   at=$(git -C "$DEMO_WT" rev-parse HEAD) want=$(git -C "$REPO" rev-parse "$REF^{commit}")
@@ -254,8 +259,8 @@ demo_setup() { # [--quick]
   strong "ready. Next: $(demo_name) (DEMO_HINTS=1 shows each step's 'look for' first)"
 }
 
-# The steps commit, reset and check out files in DEMO_WT, so the demo runs only in a detached linked
-# worktree, as setup makes, never in a checkout that may hold work.
+# The steps commit, reset and check out files in DEMO_WT, so the demo runs only in the detached
+# linked worktree setup made, which it marks, never in a checkout that may hold work.
 case "${1:-}" in
   help | -h | --help | replay) ;;
   *)
@@ -263,6 +268,10 @@ case "${1:-}" in
       dirs=$(git -C "$DEMO_WT" rev-parse --path-format=absolute --git-dir --git-common-dir 2>/dev/null | sort -u | wc -l)
       if [ "$dirs" -ne 2 ] || git -C "$DEMO_WT" symbolic-ref -q HEAD >/dev/null; then
         bad "DEMO_WT=$DEMO_WT is not a detached worktree of its own, and the demo resets it: refusing"
+        exit 1
+      fi
+      if [ ! -f "$(git -C "$DEMO_WT" rev-parse --absolute-git-dir)/dt-demo" ]; then
+        bad "DEMO_WT=$DEMO_WT has no mark from $(demo_name) setup, and the demo resets it: refusing (an older setup's worktree: git worktree remove it, then setup)"
         exit 1
       fi
     fi
