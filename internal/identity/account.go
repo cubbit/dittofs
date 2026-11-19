@@ -99,9 +99,14 @@ func (s *Server) storedHash(ctx context.Context, p entity.Principal) ([]byte, bo
 	return phc, true, nil
 }
 
+// errDisabled is Account's refusal of a disabled account: ErrLogonFailure,
+// told apart only so a sign-in can record its outcome as disabled (RFC 18
+// §3.7).
+var errDisabled = fmt.Errorf("%w: account disabled", vfserr.ErrLogonFailure)
+
 // Account returns p's current record, read from the store on every call;
-// ErrLogonFailure if it is disabled, deleted or marked deleted, or is no
-// user's, a machine's included.
+// ErrLogonFailure if it is deleted or marked deleted, or is no user's, a
+// machine's included, and errDisabled, which wraps it, if it is disabled.
 //
 // decision: API users and file principals are one User record kept apart by
 // rule: a role is never read by resolution, and an account with no file
@@ -117,8 +122,10 @@ func (s *Server) Account(ctx context.Context, p entity.Principal) (entity.User, 
 		return entity.User{}, vfserr.ErrLogonFailure
 	case err != nil:
 		return entity.User{}, fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
-	case u.Disabled || u.Deleted:
+	case u.Deleted:
 		return entity.User{}, vfserr.ErrLogonFailure
+	case u.Disabled:
+		return entity.User{}, errDisabled
 	}
 	return u, nil
 }

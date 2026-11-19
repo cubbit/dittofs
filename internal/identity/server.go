@@ -7,6 +7,7 @@ package identity
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -173,6 +174,10 @@ type Server struct {
 	unmapped  *prometheus.CounterVec // by scheme
 	hashing   chan struct{}          // the password verifications' slots, GOMAXPROCS of them
 	dummy     []byte                 // the hash a password is verified against for an account that cannot sign in
+	dummyNT   [16]byte               // the NT hash an NTLMv2 response is verified against for a user that cannot sign in
+	dummyUser entity.Principal       // the user principal, held by no record, a sign-in reads for a name no user holds
+	dummyRef  entity.SecretRef       // the reference, held by no record, a sign-in resolves for a user with no NT hash to resolve
+	ntHashed  func(nt [16]byte)      // a test's view of each NT hash a sign-in computed its proof with; nil in production
 	verified  func(phc []byte)       // a test's view of each hash VerifyPassword verified against; nil in production
 	holds     holds                  // the joins' administrator credentials
 
@@ -230,6 +235,9 @@ func New(d Deps) (*Server, error) {
 		return nil, fmt.Errorf("identity: dummy password hash: %w", err)
 	}
 	s.dummy = h.Password
+	_, _ = rand.Read(s.dummyNT[:]) // crypto/rand.Read never fails
+	_, _ = rand.Read(s.dummyRef[:])
+	s.dummyUser = entity.NewUser()
 	s.life, s.end = context.WithCancel(context.Background())
 	if s.logger == nil {
 		s.logger = slog.New(slog.DiscardHandler)
