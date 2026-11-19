@@ -150,7 +150,7 @@ func TestRecordsLandedOutsideAWriteReachTheShareFigure(t *testing.T) {
 			// The segment holding the record retires through the hook the
 			// core's own executor runs.
 			if _, err := c.Streams().For(f).Seal(true); err != nil && !errors.Is(err, segment.ErrSegmentEnded) {
-				t.Logf("Seal: %v", err)
+				t.Fatalf("Seal: %v", err)
 			}
 			re := segment.NewRetirer(segment.RetirerConfig{
 				Set: c.set, Cache: c.cache,

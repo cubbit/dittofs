@@ -490,12 +490,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// cache — the index, the counters, the domains and Account are all of
 	// the core's own — so nothing downstream constrains this order.
 	d, err := durability.New(durability.Config{
-		// Read at call time: the capacity is built after this layer.
-		Landed: func(tag core.ShareTag, n int64) {
-			if c.cap != nil {
-				c.cap.Landed(tag, n)
-			}
-		},
+		Landed:   func(tag core.ShareTag, n int64) { c.cap.Landed(tag, n) }, // c.cap is set before d.Start
 		Clock:    deps.Clock,
 		Domains:  domains,
 		Tracer:   deps.Tracer,
