@@ -1300,8 +1300,10 @@ principal of its kind holds under §4.6's comparison — a local group `finance`
 beside the directory's `Finance`, or two directory groups the directory tells
 apart but the simple fold does not — is minted without a name: the batch
 writes no name-index row for it, so it is found by its SID and entry ID, never
-by name, and the mint is counted (§9.2) and logged naming both. A later answer
-names it once the name is free, as §5.1's rename does. So one clash of names
+by name, and the mint is counted (§9.2) and logged naming both. A directory
+name §4.6 refuses is left off the same way, counted and logged naming the
+principal. A later answer names it once the name is free, as §5.1's rename
+does. So one clash of names
 locks no group's members out. Until then it has no name spelling: the
 `qualified` scheme and `lsarpc` answer its SID as unmapped, an NFSv4 owner
 string is its decimal uid or gid whatever the proof (§4.5), and its SID
@@ -1537,8 +1539,9 @@ one that cannot be finished fails whole (§2.5).
   each when it changed. A record whose entry no longer answers its name gives
   the name up at once: when the new name is free the record takes it, and
   otherwise the record is left without a name, found by its SID and entry ID,
-  counted and logged, as a mint is (§4.1). When a directory principal holds the
-  new name, the directory is asked about that holder's entry, and only a
+  counted and logged, as a mint is (§4.1). A new name §4.6 refuses is left off
+  the same way, counted and logged naming the principal. When a directory
+  principal holds the new name, the directory is asked about that holder's entry, and only a
   definite answer that it no longer answers that name — a fresh answer naming
   it otherwise, or "no such entry" — makes the holder give the name up first,
   the rename then following; so two entries that swapped names (alice and bob)
@@ -2352,7 +2355,7 @@ alice's still signs in as alice.
 | Sign-ins by mechanism and outcome | `identity_authentications_total{protocol, mechanism, outcome}`: `mechanism` = `kerberos`, `ntlm`; `outcome` = `ok`, `logon_failure`, `disabled`, `invalid`, `unavailable`, `throttled`, `replay`, `unknown_domain`, `no_pac` | counter |
 | Sign-in latency | `identity_authentication_seconds{mechanism}` | histogram (`request`) |
 | Records identity minted | `identity_mints_total{kind}`: `machine`, `user`, `group` | counter |
-| Mints whose name another principal held (§4.1) | `identity_mints_unnamed_total{kind}`: `user`, `group` | counter |
+| Mints whose name another principal held or §4.6 refuses (§4.1) | `identity_mints_unnamed_total{kind}`: `user`, `group` | counter |
 | Directory mints whose `uidNumber` or `gidNumber` was 0 or 65534 and got an allocated ID (§2.3) | `identity_mints_remapped_total{kind}`: `user`, `group` | counter |
 | Directory principals left without a name by a rename (§5.1) | `identity_renames_unnamed_total{kind}`: `user`, `group` | counter |
 | Rotation confirms whose key version number differs from the tag (§3.5) | `identity_machine_key_version_mismatches_total` | counter |

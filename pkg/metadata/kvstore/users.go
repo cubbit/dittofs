@@ -6,7 +6,6 @@ import (
 	"iter"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
@@ -180,6 +179,9 @@ func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64
 			return 0, notFound(nil, u.Principal)
 		}
 	}
+	if err := localName(u.Name, existed, old.Name); err != nil {
+		return 0, err
+	}
 	if err := expected(old.Generation, expect); err != nil {
 		return 0, err
 	}
@@ -190,9 +192,6 @@ func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64
 		return 0, err
 	}
 	if err := keepSID(old.IDs, u.IDs); err != nil {
-		return 0, err
-	}
-	if err := localName(u.Name, existed, old.Name); err != nil {
 		return 0, err
 	}
 	if err := reindex(c.tx, u.Principal, existed, old.Name, u.Name, old.IDs, u.IDs); err != nil {
@@ -236,6 +235,9 @@ func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint
 			return 0, notFound(nil, g.Principal)
 		}
 	}
+	if err := localName(g.Name, existed, old.Name); err != nil {
+		return 0, err
+	}
 	if err := expected(old.Generation, expect); err != nil {
 		return 0, err
 	}
@@ -246,9 +248,6 @@ func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint
 		return 0, err
 	}
 	if err := keepSID(old.IDs, g.IDs); err != nil {
-		return 0, err
-	}
-	if err := localName(g.Name, existed, old.Name); err != nil {
 		return 0, err
 	}
 	if err := reindex(c.tx, g.Principal, existed, old.Name, g.Name, old.IDs, g.IDs); err != nil {
@@ -286,12 +285,17 @@ func userShape(u entity.User) error {
 	return merrs.NewInvalidArgumentError("a user record is a user or a machine")
 }
 
-// localName refuses a created or renamed user or group name holding @ or \,
-// so a sign-in name with @ always names a directory principal, and a
-// DOMAIN\name spelling, whose prefix a lookup strips, names one principal.
+// localName refuses, as an invalid argument wrapping entity.ErrLocalName, a
+// created or renamed user or group name entity.CheckPrincipalName refuses.
+// Every write of a name, the API's, a mint's and the server's own, reaches
+// it here. A stored name is kept as it is, so a record written before the
+// rule stays writable on its other fields.
 func localName(name string, existed bool, oldName string) error {
-	if (!existed || name != oldName) && strings.ContainsAny(name, `@\`) {
-		return merrs.NewInvalidArgumentError("a local name never holds @ or \\: " + name)
+	if existed && name == oldName {
+		return nil
+	}
+	if err := entity.CheckPrincipalName(name); err != nil {
+		return &merrs.StoreError{Code: merrs.ErrInvalidArgument, Message: err.Error() + ": " + strconv.Quote(name), Cause: err}
 	}
 	return nil
 }

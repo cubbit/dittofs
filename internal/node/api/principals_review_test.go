@@ -252,18 +252,22 @@ func TestUnnamedUserEdit(t *testing.T) {
 func TestNetgroupValidation(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	long := strings.Repeat("a", 70_000)
-	for _, tc := range []struct{ what, path, body string }{
-		{"a name that is not UTF-8", "/api/v1/netgroups/%FF", `{"spec":{"members":[]}}`},
-		{"a 70k name", "/api/v1/netgroups/" + long, `{"spec":{"members":[]}}`},
-		{"a name holding a newline", "/api/v1/netgroups/a%0Ab", `{"spec":{"members":[]}}`},
-		{"a name with a leading space", "/api/v1/netgroups/%20lab", `{"spec":{"members":[]}}`},
-		{"a member that is no host", "/api/v1/netgroups/labs", `{"spec":{"members":["10.0.0.1","bad host!"]}}`},
-		{"a mistyped address", "/api/v1/netgroups/labs", `{"spec":{"members":["1.2.3.999"]}}`},
-		{"a label starting with a hyphen", "/api/v1/netgroups/labs", `{"spec":{"members":["-lab"]}}`},
-	} {
+	cases := []struct{ what, path, body, detail string }{
+		{"a name that is not UTF-8", "/api/v1/netgroups/%FF", `{"spec":{"members":[]}}`, "not valid UTF-8"},
+		{"a name of 256 bytes", "/api/v1/netgroups/" + strings.Repeat("a", 256), `{"spec":{"members":[]}}`, "longer than 255 bytes"},
+		{"a 70k name", "/api/v1/netgroups/" + long, `{"spec":{"members":[]}}`, "longer than 255 bytes"},
+		{"a name holding a newline", "/api/v1/netgroups/a%0Ab", `{"spec":{"members":[]}}`, "holds a control character"},
+		{"a name with a leading space", "/api/v1/netgroups/%20lab", `{"spec":{"members":[]}}`, "starts or ends with white space"},
+		{"a member that is no host", "/api/v1/netgroups/labs", `{"spec":{"members":["10.0.0.1","bad host!"]}}`, ""},
+		{"a mistyped address", "/api/v1/netgroups/labs", `{"spec":{"members":["1.2.3.999"]}}`, ""},
+		{"a label starting with a hyphen", "/api/v1/netgroups/labs", `{"spec":{"members":["-lab"]}}`, ""},
+	}
+	for _, tc := range cases {
 		r := s.do(t, http.MethodPut, tc.path, tc.body, "If-None-Match", "*")
 		if r.status != http.StatusBadRequest {
 			t.Errorf("PUT %s: answered %d %.200s, want 400", tc.what, r.status, r.body)
+		} else if p := r.problem(t); tc.detail != "" && (p.Field != "name" || p.Detail != tc.detail) {
+			t.Errorf("PUT %s: refused naming field %q, detail %q; want name, %q", tc.what, p.Field, p.Detail, tc.detail)
 		}
 	}
 	for g, err := range s.store.Netgroups(t.Context(), "") {
@@ -275,8 +279,8 @@ func TestNetgroupValidation(t *testing.T) {
 			refused++
 		}
 	}
-	if refused != 7 {
-		t.Errorf("netgroup refusals audited: %d, want 7", refused)
+	if refused != len(cases) {
+		t.Errorf("netgroup refusals audited: %d, want %d", refused, len(cases))
 	}
 	ok := s.do(t, http.MethodPut, "/api/v1/netgroups/labs", `{"spec":{"members":["10.0.0.1","10.0.0.0/8","build-1.example.com"]}}`, "If-None-Match", "*")
 	if ok.status != http.StatusOK {
@@ -424,7 +428,16 @@ func TestNameAndEmailBounds(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	u, tag := s.createUser(t, apiv1.UserSpec{Name: "alice"}, "c1")
 	g := s.createGroup(t, apiv1.GroupSpec{Name: "staff"}, "g1")
-	for _, name := range []string{"nul\x00z", "x\ny", " ", " lead", "trail\t", strings.Repeat("a", 256), strings.Repeat("a", 5000)} {
+	for name, detail := range map[string]string{
+		"nul\x00z":                "holds a control character",
+		"x\ny":                    "holds a control character",
+		" ":                       "starts or ends with white space",
+		" lead":                   "starts or ends with white space",
+		"trail\t":                 "holds a control character",
+		strings.Repeat("a", 256):  "longer than 255 bytes",
+		strings.Repeat("a", 5000): "longer than 255 bytes",
+		"bob@corp":                `holds @ or \`,
+	} {
 		body := jsonOf(t, map[string]any{"spec": map[string]any{"name": name}})
 		for _, tc := range []struct{ method, path string }{
 			{http.MethodPost, "/api/v1/users"},
@@ -437,8 +450,8 @@ func TestNameAndEmailBounds(t *testing.T) {
 				tag = etagOf(g.Generation)
 			}
 			r := s.do(t, tc.method, tc.path, body, "Idempotency-Key", "k-"+tc.method+tc.path+strconv.Itoa(len(name))+name[:1], "If-Match", tag)
-			if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "spec.name" {
-				t.Errorf("%s %s named %.20q: answered %d %+v, want 400 naming spec.name", tc.method, tc.path, name, r.status, p)
+			if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "spec.name" || p.Detail != detail {
+				t.Errorf("%s %s named %.20q: answered %d %+v, want 400 naming spec.name, detail %q", tc.method, tc.path, name, r.status, p, detail)
 			}
 		}
 	}

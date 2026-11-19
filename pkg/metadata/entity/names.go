@@ -3,7 +3,10 @@ package entity
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -12,7 +15,49 @@ var (
 	ErrInvalidName = errors.New("entity: invalid name")
 	// ErrNameTooLong is a name longer than the share allows.
 	ErrNameTooLong = errors.New("entity: name too long")
+	// ErrLocalName is a local name CheckLocalName or CheckPrincipalName
+	// refuses.
+	ErrLocalName = errors.New("entity: not a name every protocol carries")
 )
+
+// MaxLocalName bounds a local user's, group's or netgroup's name, in bytes.
+const MaxLocalName = 255
+
+// CheckLocalName is the bound principals and netgroups share, wrapping
+// ErrLocalName: valid UTF-8, no control character, NUL among them, no white
+// space leading or trailing, at most MaxLocalName bytes. An empty name
+// passes: whether one is needed is the caller's rule.
+func CheckLocalName(name string) error {
+	var detail string
+	switch {
+	case len(name) > MaxLocalName:
+		detail = "longer than " + strconv.Itoa(MaxLocalName) + " bytes"
+	case !utf8.ValidString(name):
+		detail = "not valid UTF-8"
+	case strings.ContainsFunc(name, unicode.IsControl):
+		detail = "holds a control character"
+	case strings.TrimFunc(name, unicode.IsSpace) != name:
+		detail = "starts or ends with white space"
+	default:
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrLocalName, detail)
+}
+
+// CheckPrincipalName refuses, wrapping ErrLocalName, a local user's or
+// group's name that CheckLocalName refuses, since such names reach NFSv4
+// owner strings and NTLM sign-in names, or that holds @ or \: a sign-in name
+// with @ always names a directory principal, and a DOMAIN\name spelling,
+// whose prefix a lookup strips, names one principal.
+func CheckPrincipalName(name string) error {
+	if err := CheckLocalName(name); err != nil {
+		return err
+	}
+	if strings.ContainsAny(name, `@\`) {
+		return fmt.Errorf("%w: holds @ or \\", ErrLocalName)
+	}
+	return nil
+}
 
 // NameRule decides which names a share accepts, for every protocol.
 type NameRule uint8

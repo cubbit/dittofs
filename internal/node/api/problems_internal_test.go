@@ -43,6 +43,7 @@ var covered = []struct{ dir, alias, prefix string }{
 var answeredAs = map[string]string{
 	"vfserr.ErrLogonFailure": "unauthenticated",
 	"settings.ErrBound":      "bound_setting",
+	"entity.ErrLocalName":    "invalid",
 }
 
 // Every error and code the covered packages declare, read from their source,

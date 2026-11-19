@@ -401,6 +401,58 @@ func TestMintUnnamesAClashInsideOneBatch(t *testing.T) {
 	}
 }
 
+// A record whose name the store refuses is minted without it, so the name
+// never fails the batch or the sign-ins of the others in it. Left to the
+// store, the refusal would fail the whole batch ErrInvalid.
+func TestMintUnnamesANameTheStoreRefuses(t *testing.T) {
+	r := newResolving(t)
+	ctx := context.Background()
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("4201")}
+	bad := []entity.Group{dirGroup("grp ", "4202"), dirGroup(strings.Repeat("g", 256), "4203"), dirGroup("grp@corp", "4204")}
+	bob := entity.User{Principal: entity.NewUser(), Name: "bob\x07", IDs: fileIDs("4205")}
+	b := entity.MintBatch{Users: []entity.MintUser{{User: alice}, {User: bob}}}
+	for _, g := range bad {
+		b.Groups = append(b.Groups, entity.MintGroup{Group: g})
+	}
+	var runs atomic.Int32
+	if err := r.srv.Mint(ctx, fixed(&runs, b)); err != nil {
+		t.Fatalf("mint: got %v, want nil", err)
+	}
+	if got, err := r.st.Principals().ByName(ctx, entity.PrincipalUser, "alice"); err != nil || got != alice.Principal {
+		t.Errorf("ByName alice: got %v, %v, want %v", got, err, alice.Principal)
+	}
+	if stored, ok, err := r.cp.User(ctx, bob.Principal); err != nil || !ok || stored.Name != "" {
+		t.Errorf("user %q stored as %+v, %v, %v; want it unnamed", bob.Name, stored, ok, err)
+	}
+	for _, g := range bad {
+		if got := r.holder(t, g.IDs[1]); got != g.Principal {
+			t.Errorf("group %.20q's SID: held by %v, want %v", g.Name, got, g.Principal)
+		}
+		stored, ok, err := r.cp.Group(ctx, g.Principal)
+		if err != nil || !ok || stored.Name != "" {
+			t.Errorf("group %.20q stored as %+v, %v, %v; want it unnamed", g.Name, stored, ok, err)
+		}
+	}
+}
+
+// A record minted without a name the name rule refuses is counted unnamed
+// and logged naming the principal, though no principal holds its name.
+func TestMintLogsANameTheRuleRefuses(t *testing.T) {
+	r := newResolving(t)
+	g := dirGroup("grp ", "4206")
+	var runs atomic.Int32
+	if err := r.srv.Mint(context.Background(), fixed(&runs, entity.MintBatch{Groups: []entity.MintGroup{{Group: g}}})); err != nil {
+		t.Fatalf("mint: got %v, want nil", err)
+	}
+	if got := r.counter(t, "identity_mints_unnamed_total", "kind", "group"); got != 1 {
+		t.Errorf("identity_mints_unnamed_total{kind=group}: got %v, want 1", got)
+	}
+	want := `"msg":"identity: principal minted without its name, which the name rule refuses","kind":"group","principal":"` + g.Principal.ID.String() + `"`
+	if !strings.Contains(r.logs.String(), want) {
+		t.Errorf("log after minting %q: got %s, want a record holding %s", g.Name, r.logs, want)
+	}
+}
+
 // Every record a committed batch mints is counted by its kind.
 func TestMintCountsEachRecordByKind(t *testing.T) {
 	r := newResolving(t)

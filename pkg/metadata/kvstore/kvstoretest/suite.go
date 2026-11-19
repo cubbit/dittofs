@@ -55,6 +55,7 @@ func Run(t *testing.T, open Opener) {
 		{"UserCredentialRefs", testUserCredentialRefs},
 		{"SpellingUniqueAcrossKinds", testSpellingUniqueAcrossKinds},
 		{"PrincipalNameCase", testPrincipalNameCase},
+		{"PrincipalNameChars", testPrincipalNameChars},
 		{"AllocNeverRepeats", testAllocNeverRepeats},
 		{"AllocSkipsHeldIDs", testAllocSkipsHeldIDs},
 		{"AllocPastHeldBlock", testAllocPastHeldBlock},

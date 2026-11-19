@@ -24,14 +24,14 @@ func netgroupOf(g entity.Netgroup) apiv1.Netgroup {
 	return apiv1.Netgroup{ID: g.Name, Generation: g.Version, Spec: apiv1.NetgroupSpec{Members: members}}
 }
 
-// netgroupRef is the target of a netgroup's row: its name, which must be
-// one validName admits, and not empty.
+// netgroupRef is the target of a netgroup's row: its name, not empty and
+// one entity.CheckLocalName admits.
 func netgroupRef(_ [16]byte, name string) ([]byte, error) {
 	if name == "" {
 		return nil, &fieldError{field: "name", detail: "a netgroup has a name"}
 	}
-	if err := validName("name", name); err != nil {
-		return nil, err
+	if err := entity.CheckLocalName(name); err != nil {
+		return nil, &fieldError{field: "name", detail: nameDetail(err)}
 	}
 	return []byte(name), nil
 }
@@ -65,7 +65,9 @@ var netgroups = writing[netgroupDoc]{kind: entity.ResourceNetgroup,
 
 // putNetgroup is PUT /netgroups/{sub}: the netgroup sub names, created
 // under If-None-Match: * or replaced whole under the version If-Match
-// names. Each member is an address, a CIDR or a host name.
+// names. Its name is one netgroupRef admitted, checked there since the store
+// keeps a netgroup's name opaque. Each member is an address, a CIDR or a host
+// name.
 func putNetgroup(_ context.Context, rq request[netgroupDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Netgroup, [16]byte, error) {
 	for i, m := range rq.Body.Spec.Members {
 		if _, err := netip.ParseAddr(m); err == nil {
