@@ -77,8 +77,8 @@ other pull requests.
 
 ### 1.2 Out of scope
 
-- The settings table, the adapters' section in it, `Check` on the write path, and reconcile's
-  loop over `settings.Diff`: the RFC 13 plan's epic 5 (X3). This epic writes what that loop calls
+- The settings table, `Check` on the write path, and reconcile's
+  loop over `settings.Diff`: the RFC 13 plan's epic 5 (X3); the adapters' rows in the table are T7.6's. This epic writes what that loop calls
   for an adapter's section, and the control plane's call of `Validate` is that section's.
 - The adapter routes, `/api/v1/adapters/{protocol}`, and `dfsctl adapter`: RFC 23's plan's epics
   4 and 6. An adapter's per-node state and generation in its status (RFC 23 §3.4): §9, O7.
@@ -122,7 +122,7 @@ other pull requests.
 - **E7**, this epic. **E8**, epic 8, end-to-end green.
 - **S4**, `internal/node` exists: RFC 23's plan's S2.
 - **X3**, the RFC 13 plan's epic 5, as RFC 23's plan names it: `apply` on `settings.Diff` and
-  `Get`, the write path on `Check`, the one settings table with the adapters' section.
+  `Get`, the write path on `Check`, the one settings table (its adapters' rows are T7.6's).
 - **The slot**: what the node holds for one protocol: its running adapter, the settings it runs,
   the last settings that served, and its last refusal.
 - **A row**: one of RFC 23 §2.3's adapter rows (enabled, disabled, live, restart-class), as the

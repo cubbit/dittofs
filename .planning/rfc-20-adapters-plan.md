@@ -857,8 +857,9 @@ plan (#4050) leaves these to this epic (its D12, its O7's rebuild of an adapter 
 setting change among them). The epic's breakdown,
 [`rfc-20-adapters-epic7.md`](rfc-20-adapters-epic7.md), is the source for its seven subtasks.
 The adapters' settings are split three ways. The field `settings.Adapter.Port` is epic 2's (#4000,
-D20). The one settings table, with the adapters' section, and `Check`, wired into the node's
-reconcile and into the settings routes, are RFC 13's plan's epic 5 (#4059). This epic writes
+D20). The one settings table, and `Check`, wired into the node's
+reconcile and into the settings routes, are RFC 13's plan's epic 5 (#4059); the adapters' rows in
+that table are this epic's T7.6. This epic writes
 what reconcile calls for an adapter: `Reconfigure`, or `New`, then the old one's stop and the
 new one's start. An adapter refused with nothing serving, a port held for a moment at boot,
 is retried on its own backoff in reconcile, 1 s doubling to 30 s, until it serves; one that serves
@@ -974,7 +975,7 @@ decision to drop it (its issue closed as not planned).
 | the alert rules for `adapter_unmapped_errors_total` and `adapter_handler_panics_total` (RFC 20 §10.1, RFC 25 §7; epic 7's §9, O5) | the repository holds no alert-rule home | the RFC 25 plan | an alert-rule home exists |
 | `Deps.Retry` and the node's retrier: the field, the failing `Disconnect` it holds, and its stop after the adapters (RFC 20 §3.2, §3.4; RFC 23 §2.2's stop step 2; epic 7's §9, O6) | no caller: only a session registry hands it a `Disconnect` | the RFC 22 plan, with the first session registry that calls it (its T5.2 and T5.4; RFC 21's `DESTROY_SESSION` the NFS half) | on top of epic 7's T7.3, once the pending-`Disconnect` bound is settled (the open point on #4533: RFC 24 §5.1's row, one pending `Disconnect` per client record per adapter) |
 | `adapter_listener_lost`'s address, which RFC 25 §3.9 names beside the adapter and `Health`'s names-only conditions do not carry (RFC 20 §3.4; its amendment giving `Health` a `Lost []netip.AddrPort` is the RFC's, no owner yet; epic 7's §9, O8) | the conflict between RFC 25 §3.9 and RFC 20 §3.4 settles by an RFC pull request | `unowned` | RFC 15's floating addresses |
-| the settings table's adapters' section and `Check`, wired into reconcile and the settings routes | need `internal/node` and `pkg/settings` | RFC 13's plan (#4059), epic 5 | that epic |
+| `Check` wired into reconcile and the settings routes, the one settings table | need `internal/node` and `pkg/settings` | RFC 13's plan (#4059), epic 5 | that epic |
 | concrete sidecars: mDNS, WS-Discovery (`pkg/discovery`), the port mapper, rpcbind registration, with their enabled settings and `Runner.SetEnabled`'s caller, and the port mapper's half of RFC 13 §6's port rule at start | need serving protocols | cutover | stage 7 |
 | `/api/v1/adapters`, `dfsctl adapter` and the settings watcher (deleted in T1.2) | built on the Runtime | RFC 23's plan (#4050): the adapter and settings routes in its epic 4, the `adapter` and `setting` commands in its epic 6; the watcher becomes reconcile on `settings.Diff`, RFC 13's plan's epic 5 (#4059) | those epics |
 | the persisted `NFSAdapterSettings` and `SMBAdapterSettings` rows and the share adapter config (D4 of `rfc-20-adapters-epic1.md`), never mapped onto `pkg/adapter/settings` | RFC 23's plan has no migration tool and refuses a v1 database at start (#4050, its transition policy and epic 3) | unowned: dropped with v1's database by #4050's fresh-installs-only policy | none; a fresh install writes v2's settings records |

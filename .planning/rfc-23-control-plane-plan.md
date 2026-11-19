@@ -684,8 +684,8 @@ its epic 7, planned after this plan's S2, the work of putting adapters into the 
 
 `settings.Adapter`'s `Port`, and the rename of `pkg/adapter/config` to `pkg/adapter/settings`,
 landed with RFC 20's epic 2 in #4000 (its D20), on `feat/storage-v2`. A settings generation reaches
-these rows only once X3 has wired `Diff` and `Get` into `apply`. The adapters' section in the one settings table, and that table's `Check` wired into reconcile and the routes, are the RFC 13
-plan's epic 5 (#4059).
+these rows only once X3 has wired `Diff` and `Get` into `apply`. The one settings table and its `Check` wired into reconcile and the routes are the RFC 13
+plan's epic 5 (#4059); the adapters' rows in it are RFC 20's plan's T7.6.
 
 This plan's node leaves that slot to it: reconcile calls the adapter rows that epic 7 writes. This
 plan also takes over the rows of RFC 20's plan's deferral ledger that name RFC 23:

@@ -1309,8 +1309,8 @@ taking that adapter or the port mapper out, needs a serving adapter, and is defe
 adapter port" (§6.1).
 
 **Expected content:**
-- `internal/node/settings.go`, the one table, with the adapters' section and every other section
-  declared by then (the `identity.*` section is RFC 18's plan's).
+- `internal/node/settings.go`, the one table, with RFC 23's sections (the adapters' rows and
+  `connection_limit`'s are RFC 20's plan's T7.6, the `identity.*` section is RFC 18's plan's).
 - RFC 23's reconcile on `settings.Diff` and `Get` (RFC 23 §2.3), in the `apply` slot RFC 23's
   plan's epic 3 leaves (its X3): a section that `Read` could not decode, or whose apply fails, stops
   only itself, keeps the snapshot
@@ -1511,11 +1511,14 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | Appendix B sections no component has declared (D3, O4) | each section is its component's plan's | each component's plan | that plan declares the section |
 | "§5 adapter port" (O1, §1.4) | needs a serving adapter and its rebuild | RFC 20 plan, epic 7 | RFC 20's epic 7 lands |
 | RFC 13 §6's port rule at start: a port equal to the API's or metrics port taking that adapter or the port mapper out (epic 5, O1) | needs a serving adapter | RFC 20 plan, epic 7 | RFC 20's epic 7 lands |
+| RFC 13 §6's port rule on every node a write reaches: an installation write of an adapter's port checked against every registered node's override, a node registered concurrently conflicting with the check (epic 5, its D8 and T5.7) | `ControlPlaneTx` reads one node's record by its ID (`Node(id)`) and lists none, so epic 5 checks the node a node-scope write names, or the node serving the API | RFC 16 §3, with RFC 15 | a second node registers |
+| the port mapper's port in RFC 13 §6's port rule at write: `sidecars.portmap.port` compared with the adapters' ports (epic 5, its D8) | the port mapper's section is not declared: RFC 20's plan defers the concrete sidecars | cutover, with RFC 20's concrete sidecars | the port mapper's section is declared |
+| the OpenID Connect client secret's prune and revocation report, beside the bind credential's (epic 5, its §9) | `entity.SecretKind` does not declare the client secret and no section names it | the RFC 18 plan's OpenID Connect epic, which it has not yet added: its ledger and RFC 23's hold OpenID Connect sign-in unowned | `entity.SecretKind` declares the client secret |
 | `Delete`'s body: RFC 16 §3's whole-secret delete, asked for on `ControlPlaneTx` only, run inside the caller's audited `Write` with D9's tracked read that no store record names the credential, and its kind and owner check, `Delete` then taking the caller's `ControlPlaneTx` in place of RFC 13 §7's frozen signature (epic 4, D9) | RFC 16 §3, as #4050 amends it, carries `Secret`, `PutSecret` and `PruneSecret` only; no caller deletes a secret but a user's, which kvstore's `DeleteUser` deletes itself | RFC 16 | a caller must delete a secret other than a user's, such as a remote store's or a directory's removal |
 | `DITTOFS_ENCRYPTION_PASSPHRASE` in the process environment, readable in `/proc/<pid>/environ`, and no check of the bootstrap's and key files' mode or owner (§4.3's `ponytail:`) | `keyprovider`'s local provider reads it today; neither is new here | unowned | a deployment needs the passphrase out of the environment, or a key file is found readable by another user |
 | The image's `HEALTHCHECK` on its first start after `init`, in a `dt` suite (epic 6's **Done when:**), on unverified `https`: the image's `/health/live`, `docker-compose.yml`'s `/health/ready` | no suite builds the image | unowned | a suite builds the image |
 | The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate checks the active versions only and gains the namespace comparison when the key exists, and epic 3's unit test declares one of its own until then | RFC 4 | a plan of RFC 4 declares the key |
-| the settings table's adapters' section and `Check`, wired into reconcile and the settings routes, which RFC 20's plan's deferral ledger gives this plan | needs `internal/node` and `pkg/settings` | this plan, epic 5 | that epic |
+| the settings table's adapters' rows, which RFC 20's plan's deferral ledger gave this plan | the adapters' section type is RFC 20's T7.6's | RFC 20 plan, its T7.6 | that subtask |
 
 ## 7. RFC coverage
 
