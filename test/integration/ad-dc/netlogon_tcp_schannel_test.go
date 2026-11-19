@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -46,9 +47,6 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// v1's channel registers go-msrpc's mechanisms process-wide, once, and
-	// registering one twice panics; letting it run first also waits for the
-	// account to take its password.
 	waitForMachinePassword(t, dcIP, "dittofs", machineAccountPass)
 
 	port := netlogonTCPPort(ctx, t, dcIP)
@@ -87,6 +85,13 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 	// for RC4 among its capabilities, which D1 takes out, so the channel below
 	// is built from ssp/netlogon's parts.
 	t.Run("one association upgraded by alter context", func(t *testing.T) {
+		// The helper finds its mechanisms in go-msrpc's process-wide store,
+		// which panics on a second registration; nothing else registers them.
+		registerMechanisms.Do(func() {
+			gssapi.AddMechanism(ssp.SPNEGO)
+			gssapi.AddMechanism(ssp.NTLM)
+			gssapi.AddMechanism(ssp.Netlogon)
+		})
 		gctx := gssapi.NewSecurityContext(ctx)
 		cc, err := dcerpc.Dial(gctx, binding, dcerpc.WithCredentials(machine))
 		if err != nil {
@@ -327,6 +332,8 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 		}
 	})
 }
+
+var registerMechanisms sync.Once
 
 // netlogonTCPPort asks the endpoint mapper on port 135 for NETLOGON's
 // ncacn_ip_tcp port.

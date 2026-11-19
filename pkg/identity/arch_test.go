@@ -26,6 +26,12 @@ const (
 	ldap   = "github.com/go-ldap/ldap/v3"
 )
 
+// kerberos reports whether imp is a Kerberos library: gokrb5, its fork, or
+// go-msrpc's Kerberos mechanism.
+func kerberos(imp string) bool {
+	return strings.Contains(imp, "/gokrb5") || under(imp, "github.com/oiweiwei/go-msrpc/ssp/krb5")
+}
+
 // under reports whether p is root or a package below it.
 func under(p, root string) bool { return p == root || strings.HasPrefix(p, root+"/") }
 
@@ -51,13 +57,12 @@ func forbidden(dir, imp string) string {
 		return ""
 	case under(imp, module+server) && dir != "internal/node" && !under(dir, server):
 		return "only internal/node and identity's own packages import the identity server"
-	// decision: the online domain join in internal/auth/netlogon still speaks
-	// LDAP itself; it is exempt until the package moves under
-	// internal/identity, where its LDAP calls go through the directory client,
-	// and the exemption goes with the move. It names one package, so no new
-	// importer hides behind it.
-	case under(imp, ldap) && dir != server+"/directory" && dir != "internal/auth/netlogon":
-		return "only internal/identity/directory and internal/auth/netlogon import LDAP"
+	case under(imp, ldap) && dir != server+"/directory":
+		return "only internal/identity/directory imports LDAP"
+	// The secure channel runs over NETLOGON's own credential, never a
+	// Kerberos session.
+	case dir == server+"/netlogon" && kerberos(imp):
+		return "internal/identity/netlogon imports no Kerberos library"
 	}
 	return ""
 }
@@ -115,7 +120,8 @@ func violations(t *testing.T, root string) []string {
 }
 
 // pkg/identity is a leaf, only the node and identity's own packages import
-// the server, and only the directory client imports LDAP.
+// the server, only the directory client imports LDAP, and the secure channel
+// imports no Kerberos library.
 func TestImports(t *testing.T) {
 	for _, v := range violations(t, filepath.Join("..", "..")) {
 		t.Error(v)
@@ -127,7 +133,8 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 	got := violations(t, filepath.Join("testdata", "arch"))
 	want := []string{
 		"internal/adapter/smb/directory.go: imports " + module + "internal/identity/directory: only internal/node and identity's own packages import the identity server",
-		"internal/adapter/smb/ldap.go: imports " + ldap + ": only internal/identity/directory and internal/auth/netlogon import LDAP",
+		"internal/adapter/smb/ldap.go: imports " + ldap + ": only internal/identity/directory imports LDAP",
+		"internal/identity/netlogon/krb5.go: imports github.com/jcmturner/gokrb5/v8/client: internal/identity/netlogon imports no Kerberos library",
 		"internal/node/nodetest/nodetest.go: imports " + module + "internal/identity/directory: only internal/node and identity's own packages import the identity server",
 		"internal/vfs/server.go: imports " + module + "internal/identity: only internal/node and identity's own packages import the identity server",
 		"pkg/identity/identitytest/srv.go: imports " + module + "internal/identity: only internal/node and identity's own packages import the identity server",
