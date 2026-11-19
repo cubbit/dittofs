@@ -191,9 +191,8 @@ type Server struct {
 
 	mismatches *prometheus.CounterVec // the rotation's confirms whose number differs from the tag
 
-	schedMu   sync.Mutex // schedStop's
-	schedStop func()     // ends the rotation's schedule and waits for it; nil while it does not run
-	scheduled func()     // a test's view of each schedule check, its next tick armed; nil in production
+	schedStop func() // ends the rotation's schedule and waits for it, under mu; nil while it does not run
+	scheduled func() // a test's view of each schedule check, its next tick armed; nil in production
 }
 
 // Conditions appends identity's conditions: the node's
@@ -403,6 +402,11 @@ func (s *Server) Current() uint64 { return s.state.Load().serial() }
 // password rotation's schedule when Deps.ControlPlane is set, and refuses
 // errNotApplied when no State has been applied.
 func (s *Server) Start(ctx context.Context) error {
+	// Under mu, with Stop's clearing of the State and stopping of the
+	// schedule, so a Stop either ends the schedule this Start started or
+	// leaves no State for it to start on.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.state.Load() == nil {
 		return errNotApplied
 	}
@@ -417,9 +421,11 @@ func (s *Server) Start(ctx context.Context) error {
 // client once the questions running on it return. It closes nothing it was
 // handed.
 func (s *Server) Stop(ctx context.Context) error {
-	s.stopSchedule()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The schedule's loop never takes mu, so waiting for it here cannot
+	// deadlock.
+	s.stopSchedule()
 	if old := s.state.Swap(nil); old != nil && old.dir != nil {
 		old.dir.Close()
 	}

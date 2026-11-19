@@ -36,10 +36,8 @@ const scheduleTick = time.Minute
 var errNotDue = errors.New("identity: no rotation is due")
 
 // startSchedule starts the rotation's schedule unless it runs or the server
-// has no control plane to write to.
+// has no control plane to write to. The caller holds s.mu.
 func (s *Server) startSchedule() {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
 	if s.schedStop != nil || s.deps.ControlPlane == nil {
 		return
 	}
@@ -50,9 +48,8 @@ func (s *Server) startSchedule() {
 }
 
 // stopSchedule stops the rotation's schedule and waits for its loop to end.
+// The caller holds s.mu.
 func (s *Server) stopSchedule() {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
 	if s.schedStop != nil {
 		s.schedStop()
 		s.schedStop = nil
@@ -85,12 +82,17 @@ func (s *Server) schedule(ctx context.Context, done chan struct{}) {
 // not fail, it was confirmed rotationPeriod ago. The operation and its audit
 // record are one write, and a check that finds none due writes nothing.
 //
-// decision: the period reads Confirmed, never At, which a failure moves, so
-// failures in a row cannot push the rotation past the domain's maximum
-// machine-password age; a failure is retried an hour after its At, which is
-// in the store, so a restart within the hour still waits it out. Overturned
-// if a failure that the hourly retry cannot clear is shown to need a longer
-// back-off.
+// decision: a failed rotation is retried an hour after its At rather than a
+// period after its Confirmed, so failures in a row cannot push the rotation
+// past the domain's maximum machine-password age; At is in the store, so a
+// restart within the hour still waits it out. Overturned if a failure that
+// the hourly retry cannot clear is shown to need a longer back-off.
+//
+// decision: the period reads Confirmed, but no state the store reaches today
+// tells it apart from At: a confirm sets both to its time, and only a
+// failure moves At alone, setting Failed. So no test can catch the period
+// read from At. A writer that moves At without setting Failed is what makes
+// the choice matter, and it brings the test that tells the two apart.
 func (s *Server) scheduleRotation(ctx context.Context) error {
 	op := entity.Operation{ID: entity.OperationID(uuid.New()), Kind: string(apiv1.OpRotateMachinePassword), State: entity.OpPending}
 	// The zero Actor, ActorName and Credential name the schedule.
@@ -105,6 +107,15 @@ func (s *Server) scheduleRotation(ctx context.Context) error {
 		}
 		lr := in.Join.LastRotation
 		due := lr.Confirmed.Add(rotationPeriod)
+		// decision: only a rotation's failure path writes Failed, so a
+		// rotation that ends another way (a store error out of its step,
+		// the runner giving up on it, a cancel from the API) leaves Failed
+		// false and Confirmed as old as it was, and the next tick starts
+		// another, once a minute with no back-off. The store has no tracked
+		// read of the last ended operation of a kind to back off from, so
+		// the operation runner's failure path must write Failed and At for
+		// every rotation it ends. Holds while no runner drives a rotation;
+		// overturned when one does without that write.
 		if lr.Failed {
 			due = lr.At.Add(rotationRetry)
 		}
