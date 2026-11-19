@@ -1848,6 +1848,43 @@ func TestTake_LandedAfterTheSeedReadItStandsHigh(t *testing.T) {
 	}
 }
 
+// TestTake_LandedInsideTheSeedReadIsCounted pins the seed's read window: a
+// record the set counts after the seed's read but whose Landed runs before the
+// seed stores its figure is in neither the stale figure nor a seeded tally, so
+// the seed has to take it in as a pending figure. Without that the tally never
+// holds it and its segment's retirement drives the figure below the set's.
+func TestTake_LandedInsideTheSeedReadIsCounted(t *testing.T) {
+	r := newRig(t, std())
+	r.seed(t, landedAsk) // a 1000-byte record
+	r.seal(t)
+	var p segment.Placed
+	read := r.c.cfg.ShareFigures
+	r.c.cfg.ShareFigures = func(tag core.ShareTag) (settled, retired int64) {
+		// Read first, then land the record and report it: the stale figure
+		// the seed receives does not hold a record its Landed has counted.
+		settled, retired = read(tag)
+		p = r.append(t, segment.Roll{}, tag1, 404)
+		r.c.Landed(tag1, p.Loc.Len)
+		return settled, retired
+	}
+	r.seedTally(t)
+	r.c.cfg.ShareFigures = read
+	rec := p.Loc.Len
+
+	// The tally holds the seed and the record: an ask of 1000 fits 2000+rec.
+	if missing, ok := r.admitsAt(t, 1999+rec); ok || missing != 1 {
+		t.Fatalf("with the record standing, a take one below the fit: admitted=%v missing=%d, want refused missing 1 (the tally undercounts by the record)", ok, missing)
+	}
+
+	// Its segment retires and Retired takes the record back: the tally is the seed.
+	r.seal(t)
+	r.retire(t, p.Loc.Segment)
+	r.c.Retired(tag1)
+	if missing, ok := r.admitsAt(t, 1999); ok || missing != 1 {
+		t.Fatalf("after the retirement, a take at limit 1999: admitted=%v missing=%d, want refused missing 1 (the tally fell below the set's figure)", ok, missing)
+	}
+}
+
 // refusedBeside is refused for a take made while another grant is open: the
 // same check as refused, without its test that nothing is reserved.
 func (r *rig) refusedBeside(t *testing.T, rq Request, want core.Limit) *core.NoSpaceError {

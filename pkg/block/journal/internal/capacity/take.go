@@ -193,6 +193,13 @@ type Capacity struct {
 	// section and never inside it.
 	seeded map[core.ShareTag]bool
 
+	// seeding names the tags whose seed is between its set read and its
+	// store, and seedPending is what Landed and CopiesTransfer took for
+	// such a tag meanwhile: the seed adds it to the figure it stores, for
+	// the stale figure it read may not hold those bytes.
+	seeding     map[core.ShareTag]bool
+	seedPending map[core.ShareTag]int64
+
 	// retiredSeen is the tag's cumulative retired record bytes that the
 	// tally's arithmetic has already taken into account — the figure of a
 	// Retired call or the seed's own pair read, whichever names more — so
@@ -294,6 +301,8 @@ func New(cfg Config) *Capacity {
 		reservedTagged: make(map[core.ShareTag]int64),
 		shareTally:     make(map[core.ShareTag]int64),
 		seeded:         make(map[core.ShareTag]bool),
+		seeding:        make(map[core.ShareTag]bool),
+		seedPending:    make(map[core.ShareTag]int64),
 		retiredSeen:    make(map[core.ShareTag]int64),
 		grantedRoom:    make(map[int]int64),
 	}
@@ -860,7 +869,13 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 // less the held repack copies, and nothing clears seeded[tag] afterwards. A
 // record that lands between the set counting it and this read is counted by
 // the seed and again by its own Landed call or copy transfer, so the figure
-// stands high by that record until the journal reopens and reseeds. The
+// stands high by that record until the journal reopens and reseeds. A record
+// whose Landed or copy transfer runs between the read and the store is added
+// to the stored figure from seedPending, for the read may predate it: counted
+// twice when the read held it, never zero times. Concurrent seeds of one tag
+// share seeding and seedPending; only the one that stores clears them, and
+// the others return at the seeded check, so a byte is pending for exactly the
+// seed that stores. The
 // overcount is one-time per tag per process and bounded to the records in
 // flight at the seed's read: later records are counted once and refunded once
 // at their retirement, so it does not grow with churn, and it errs high, so it
@@ -872,6 +887,7 @@ func (c *Capacity) seedFor(tag core.ShareTag) {
 	if c.seeded[tag] {
 		return
 	}
+	c.seeding[tag] = true
 	c.mu.Unlock()
 	settled, retired := c.cfg.ShareFigures(tag)
 	c.mu.Lock()
@@ -891,6 +907,12 @@ func (c *Capacity) seedFor(tag core.ShareTag) {
 	// The copies a pass has landed and not yet handed over are in the set's
 	// settled figure but are not the share's until their source goes.
 	settled -= c.copyHeld[tag]
+	// What Landed and CopiesTransfer took while the read ran: the figure read
+	// may predate it, so it is added in, counting a record the read already
+	// held twice, never zero times.
+	settled += c.seedPending[tag]
+	delete(c.seeding, tag)
+	delete(c.seedPending, tag)
 	c.shareTally[tag] = settled
 	if c.retiredSeen[tag] < retired {
 		c.retiredSeen[tag] = retired
@@ -1040,13 +1062,12 @@ func (g *Grant) Wrote(n int64) {
 // them whole; unlike a grant it asks nothing first: no admission, no
 // refusal, no reservation, for such a record must always land.
 //
-// A tag whose figure is not seeded takes nothing: its seed reads the set's
-// settled figure, which already holds the record. A tag seeded between the
-// record's count in the set and this call has the record in its seed and
-// takes it again here, so the tally stands high by n until the journal
-// reopens and reseeds, for the retirement subtracts the record once and
-// nothing clears a tag's seed in-process. The excess is bounded to the
-// records in flight at the tag's one seed and fails closed.
+// A tag whose figure is not seeded and whose seed has not begun takes
+// nothing: its seed reads the set's settled figure, which already holds the
+// record. A tag whose seed is between its set read and its store takes the
+// bytes into a pending figure the seed adds in, for that read may predate the
+// record; a tag already seeded takes them whole. Either can count a record
+// twice, never zero times; see seedFor.
 //
 // decision: durability's re-appends and loss records, and the removal
 // and forget records, bypass the admission because they must always land, but
@@ -1066,6 +1087,8 @@ func (c *Capacity) Landed(tag core.ShareTag, n int64) {
 	c.mu.Lock()
 	if c.seeded[tag] {
 		c.shareTally[tag] += n
+	} else if c.seeding[tag] {
+		c.seedPending[tag] += n
 	}
 	c.mu.Unlock()
 }

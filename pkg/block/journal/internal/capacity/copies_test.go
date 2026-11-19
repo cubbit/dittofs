@@ -56,3 +56,32 @@ func TestCopies_TransferKeepsTheShareFigureWhole(t *testing.T) {
 		t.Fatalf("a 1100-byte ask beside the copies' 600 against a limit of %d = %v, want the share's refusal", limit, err)
 	}
 }
+
+// TestCopies_TransferInsideTheSeedReadIsCounted counts a copy and hands it over
+// inside the window of its tag's seed read, after the read, so the stale
+// figure the seed receives does not hold it and the seeded tally must take the
+// transferred bytes in as pending. Without that the source's retirement lowers
+// a tally that never held the copy.
+func TestCopies_TransferInsideTheSeedReadIsCounted(t *testing.T) {
+	r := newRig(t, std())
+	src := r.seed(t, landedAsk) // a 1000-byte record
+	r.seal(t)
+	var rec int64
+	read := r.c.cfg.ShareFigures
+	r.c.cfg.ShareFigures = func(tag core.ShareTag) (settled, retired int64) {
+		settled, retired = read(tag)
+		rec = r.append(t, segment.Roll{}, tag1, 404).Loc.Len
+		r.c.CopyLanded(src, tag1, rec)
+		r.c.CopiesTransfer(src)
+		return settled, retired
+	}
+	r.seedTally(t)
+	r.c.cfg.ShareFigures = read
+
+	r.retire(t, src)
+	r.c.Retired(tag1)
+	// The tally is the copy alone: an ask of 1000 fits rec+1000.
+	if missing, ok := r.admitsAt(t, rec+999); ok || missing != 1 {
+		t.Fatalf("after the source retired, a take at limit %d: admitted=%v missing=%d, want refused missing 1 (the tally lost the copy)", rec+999, ok, missing)
+	}
+}

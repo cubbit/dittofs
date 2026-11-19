@@ -42,15 +42,19 @@ func (c *Capacity) CopyLanded(src core.SegmentID, tag core.ShareTag, n int64) {
 // the share's tally takes the bytes, for the source's own retirement lowers it
 // by the source's bytes by the same step and the share holds the copies in
 // their place. It runs before that lowering, so the tally only ever stands
-// above the truth, never below it. A tag whose figure is not seeded takes
-// nothing: its seed reads the set's settled figure, which already holds the
-// copies. Safe to call for a segment nothing was counted against.
+// above the truth, never below it. A tag whose figure is not seeded and
+// whose seed has not begun takes nothing: its seed reads the set's settled
+// figure, which already holds the copies. A tag mid-seed takes them into the
+// pending figure the seed adds in, which can count them twice, never zero
+// times; see seedFor. Safe to call for a segment nothing was counted against.
 func (c *Capacity) CopiesTransfer(src core.SegmentID) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for tag, n := range c.copies[src] {
 		if c.seeded[tag] {
 			c.shareTally[tag] += n
+		} else if c.seeding[tag] {
+			c.seedPending[tag] += n
 		}
 		c.copyHeld[tag] -= n
 		if c.copyHeld[tag] <= 0 {
