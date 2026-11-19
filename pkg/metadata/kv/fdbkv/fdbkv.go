@@ -591,15 +591,22 @@ func (c *cursor) Value() ([]byte, error) {
 
 func (c *cursor) Next() {
 	c.valid = false
-	if c.err != nil || !c.it.Advance() {
+	for c.err == nil && c.it.Advance() {
+		kv, err := c.it.Get()
+		if err != nil {
+			c.err = mapErr(err)
+			return
+		}
+		if len(kv.Value) < stampSize {
+			// A commit mark holds no bytes and the store time's atomic
+			// maximum eight, all inside the API's key range but unstamped,
+			// which no reader of stored values can decode: a scan skips
+			// them, yielding values only.
+			continue
+		}
+		c.cur, c.valid = kv, true
 		return
 	}
-	kv, err := c.it.Get()
-	if err != nil {
-		c.err = mapErr(err)
-		return
-	}
-	c.cur, c.valid = kv, true
 }
 
 // txn is one attempt of an Update.
