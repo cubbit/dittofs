@@ -291,8 +291,8 @@ sudo umount /mnt/test
 ## Benchmarking
 
 `bench-smoke` runs on pull requests, non-blocking; every other benchmark suite is in the
-`manual` tier of `test/suites.yaml` (RFC 29 §4.3). [`docs/BENCHMARKS.md`](../BENCHMARKS.md) covers
-how to run them (`dfsbench`, `go test -bench`), the reports and the local perf gates.
+`manual` tier of `test/suites.yaml` (RFC 29 §4.3). [`bench/README.md`](../../bench/README.md)
+covers how to run them: `dfsbench` and the components' `go test -bench`.
 
 To compare a change, run the same benchmark with `-count=10` before and after it on one machine
 and compare the two with `benchstat`; never against a number from another host. Call

@@ -215,8 +215,7 @@ primary store:
 
 ## Measured throughput
 
-File-create + 4 KiB write, 8 threads, NFSv3, badger + S3 block store (median ops/s;
-full method and competitor comparison in [BENCHMARKS.md](../BENCHMARKS.md)). The
+File-create + 4 KiB write, 8 threads, NFSv3, badger + S3 block store (median ops/s). The
 numbers were measured under the old enum; the setting each row selects is spelled
 in the two-axis vocabulary:
 
@@ -240,6 +239,5 @@ lands, `relaxed_metadata_commit` relaxes metadata only.
 
 ## See also
 
-- [BENCHMARKS.md](../BENCHMARKS.md) — per-tier throughput and competitor matrix
 - [Configuration](configuration.md) — full block-store and journal config reference
 - [Choosing stores](choosing-stores.md) — block-store trade-offs
