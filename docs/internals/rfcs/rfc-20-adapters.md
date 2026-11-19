@@ -3485,11 +3485,11 @@ adapter each entry point is one handler and one call:
 operation, and the entry methods — `Root`, `SecInfo`, `ListShares` — are called
 from those files and nowhere else in an adapter. So "what runs when a client mounts" is one search for the method,
 which lands on one handler, whose one call leads into the service's filesystem ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)),
-where resolution, admission and the pseudo-filesystem are. The import test
-(§7.1) keeps it so: it lists every call of an entry method from adapter code
-and fails on one outside the files above, so a second path to a share — how
-admission came to be written four times (Appendix B) — cannot reappear
-unnoticed.
+where resolution, admission and the pseudo-filesystem are. Once the plan's
+ledger row for it lands, the import test (§7.1) will keep it so: it will list
+every call of an entry method from adapter code and fail on one outside the
+files above, so a second path to a share (how admission came to be written
+four times, Appendix B) cannot reappear unnoticed.
 
 What follows from the service owning it:
 
@@ -4310,11 +4310,11 @@ generated `codec_gen.go` that imports more than those and its protocol's
 `wire`, and an `ops` file other than `codec_gen.go` that names its protocol's
 `wire.Decoder` or `wire.Encoder` or imports `encoding/binary`, since a command
 file touches no bytes (§5.1; an `ops` package's test files are held by
-neither rule). It will also fail an `ops` file that calls any other function
-or method of its protocol's `wire` that reads or writes bytes (it may name
-`wire`'s types only), once the plan's ledger row for it lands. It
-fails a call of an entry method — `Root`, `SecInfo`, `ListShares` — outside
-the entry handlers of §4.10. It also fails, in both directions, a package
+neither rule). Once the plan's ledger rows for them land, it will also fail
+an `ops` file that calls any other function or method of its protocol's
+`wire` that reads or writes bytes (it may name `wire`'s other types only),
+and a call of an entry method (`Root`, `SecInfo`, `ListShares`) outside the
+entry handlers of §4.10. It also fails, in both directions, a package
 under `pkg/` other than the two constructors `pkg/adapter/nfs` and
 `pkg/adapter/smb` that imports anything under `internal/adapter/`, and an
 implementation package that imports a constructor. Beside these, it fails a
