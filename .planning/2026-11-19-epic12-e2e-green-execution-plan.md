@@ -120,7 +120,10 @@ disagreement is raised to the user, not silently resolved.
 - Create: `test/journal/known_test.go` (no build tag; runs in `lint-repo` via `go test ./test/journal/`)
 - Modify: `test/journal/known.yaml` (every row re-owned; four bare messages tightened)
 - Modify: `test/journal/trace.yaml` (three `owner: epic 11` rows)
-- Modify: `pkg/block/journal/conformance/damage_test.go` (only if `waitAtHold(t, p, "the repack")` still exists — rename the label to `Repack`)
+- Modify: `pkg/block/journal/conformance/damage_test.go` (only if `waitAtHold(t, p, "the repack")` still
+  exists — rename the label to `Repack`. As built: the label existed and was renamed; the three
+  `stub: the repack` rows 9a's last PRs had already removed no longer existed at this base, so no
+  row was tightened against it)
 
 **Interfaces:**
 - Consumes: the `known:` files list parsed from `test/suites.yaml` (parse it with `dt`'s own
@@ -144,7 +147,8 @@ disagreement is raised to the user, not silently resolved.
        match `[A-Za-z_.]+` and the class equals the call before any other character. So
        `a Release on a read-only journal returned …` is *not* a class, and `stub: the repack` is a
        class named `the` (which no owner table holds, so it fails — the fix is the label rename in
-       `damage_test.go` and the tightened row). Map classes to owners:
+       `damage_test.go`; as built, no `the` row existed at this base, the rename landed anyway, and
+       a future failure there yields the class `Repack`). Map classes to owners:
        `MarkOffloaded|Offload|Release|Hold|Stamp` → 9b (`#3379`);
        `Restamp|Inspect.Verify` → 7b (`#3596`), plus one suffix rule: a message ending
        `names no record` → 7b (`#3596`);
@@ -158,9 +162,11 @@ disagreement is raised to the user, not silently resolved.
        `segment 3 is not among the journal`), a table in the test maps the test name to its owner.
        The owner is the one the row's `reason` names per the epic's counts: 9b rows → `#3379`,
        7b rows → `#3596`, everything else on landed code (epic 8's `#3378` rows, the closed
-       T6.6 `#3748` rows, the tightened bare rows) → `#3395`. decision: one message spans owners,
-       so the message cannot route them; the table's ceiling is that a new row has no entry until
-       someone adds it, and the test fails on it.
+       T6.6 `#3748` rows) → `#3395`. The tightened bare rows do not join this table: their tightened
+       messages are stub classes in their own right (three 9b — `MarkOffloaded` twice, `Offload` —
+       and two of the four also move from `#3378` to `#3379`), so the class rule routes them.
+       decision: one message spans owners, so the message cannot route them; the table's ceiling
+       is that a new row has no entry until someone adds it, and the test fails on it.
      - **Open-owner set** — every `fix: planned` row's `issue` must be one of
        `{"#3596": "epic 7b", "#3379": "epic 9b", "#3395": "epic 12 (T12.2)"}`. No row names a
        landed epic or a closed subtask (today that kills, alongside the 9a/7a tags, the four
@@ -184,9 +190,13 @@ disagreement is raised to the user, not silently resolved.
 
 - [ ] **Step 3: retag `known.yaml` green.** Every row re-owned per the tables; the four bare rows
   (`stub:`, `stub: ` with trailing space, and the `journal: not implemented` one if present)
-  tightened to their real messages by re-running the failing tests and copying the actual output;
-  `segments true, want ` rows tightened to the full got/want text; the `the repack` label renamed
-  in `damage_test.go` and its three rows tightened to `stub: Repack`; the four race skips
+  tightened to their real messages by re-running the failing tests and copying the actual output,
+  then classified by their strengthened messages (by message class, mostly 9b — not `#3395`, which
+  no bare row turned out to hit);
+  `segments true, want ` rows tightened to the full got/want text (down to the per-run identity
+  hash, which is random per journal); the `the repack` label renamed
+  in `damage_test.go` (as built, its three rows no longer existed at this base, so nothing was
+  tightened against it); the four race skips
   re-issued (Task 2 Step 1 covers the reason edit, do them together).
 
 - [ ] **Step 4: grade the retag the way CI will.**
@@ -203,6 +213,8 @@ disagreement is raised to the user, not silently resolved.
 **Files:**
 - Modify: `test/journal/known.yaml` (the four race-detector skip rows' `reason`)
 - Modify: `test/suites.yaml` — only if a check finds a gap (see Step 1); otherwise no diff.
+- Modify: `.github/workflows/tests.yml` — only if the norace job step there no longer matches the
+  option that enforces R7 (PR1's `ci:` commit added the step; check it, do not assume it).
 
 **Interfaces:**
 - Consumes: `unit.options.journal-conformance-norace` (tier `pr`): today
@@ -272,7 +284,20 @@ execution plan is a new file). Then: whole-PR review round → `/llm-council` �
   benchmarks `manual` until a reference runner exists). decision: no `known:` files on the three
   new suites — a red model seed, soak drift or a benchmark that refuses to run is a finding to
   fix, not a list to grow.
-- [ ] **Step 3: verify registration.** `test/harness/bin/dt run journal-model` and
+- [ ] **Step 3: reach CI.** A cell `dt plan` lists runs nowhere until CI picks it up, and a cell
+  reaches CI only through a `job:` field of its own or the jq `select` in `tests.yml`'s
+  "Plan the cells" step — the whitelist `journal-conformance` itself is named in, cell by cell.
+  The `journal-conformance-norace` option fell through exactly this trap: `dt plan` listed it,
+  no CI job ran it, and PR1's `ci:` commit bolted it on as a job step. So the change that
+  registers the suites also names `journal-model` and `journal-soak` (tier `nightly`) in that jq
+  `select` or gives each a `job:` — never leaving a listed suite that no CI job runs; `journal-bench`
+  stays `manual` and needs no CI entry, since no dispatch or tier names it.
+  Verify the mechanism the way `journal-conformance` reaches CI: run `dt list` and
+  `dt plan --json` (the cells exist), then grep `tests.yml` for each new suite's name or its
+  `job:` (the jq whitelist that runs it) — `dt docs --check` will not notice a suite CI never
+  runs.
+
+- [ ] **Step 4: verify registration.** `test/harness/bin/dt run journal-model` and
   `dt run journal-soak` list and (with the tests not yet written) pass green on zero matches —
   confirm grade behaviour is "no tests matched" and not a grading exit; regenerate
   `docs/internals/testing.md` via `dt docs` and pass `dt docs --check` in `lint-repo`;
@@ -280,10 +305,10 @@ execution plan is a new file). Then: whole-PR review round → `/llm-council` �
   Also verify the deferral-ledger row for the daily benchmark run is already in the base's
   `.planning/rfc-1-journal-plan.md` §6 (it ships with PR #4762; if that PR is still unmerged on
   your branch base, note it in the PR description and add nothing).
-- [ ] **Step 4: duration baseline** — `dt history`'s per-suite duration is read **after PR5**
+- [ ] **Step 5: duration baseline** — `dt history`'s per-suite duration is read **after PR5**
   (the epic gates it on the 10⁶-extent checks passing); leave a TODO line in the PR description,
   not in code.
-- [ ] **Step 5: commit** — `test(harness): journal model, soak and bench suites at nightly/nightly/manual`.
+- [ ] **Step 6: commit** — `test(harness): journal model, soak and bench suites at nightly/nightly/manual`.
 
 ### Task 4 (T12.8): profiling baselines
 
