@@ -19,7 +19,7 @@ writes, `resolve-principal`, `test-directory`) and §4.6 (operations);
 `identity.netbios_name`; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §3.9's two condition rows; MS-NRPC
 2.2.1.4.11, 3.1.4.1 and 3.4.5.2.6, and MS-APDS 3.1.5.2.1.
 **Track:** A.
-**Epic 7 estimate: 17 subtasks, 36.75 man-days.**
+**Epic 7 estimate: 17 subtasks, 37.25 man-days.**
 **Depends on:** **S1**, E1's surface frozen: `SignIn`, `Deps`, `State`, `Apply`, `*Server`.
 **RFC 23's plan's epic 1** (#4334) and **its epic 6's T6.1** (#4529, merged): `cmd/dfs`'s `netlogon`
 commands deleted by epic 1 and `cmd/dfsctl`'s by T6.1, so T7.6 can move the package. **E2**: T2.4's
@@ -191,6 +191,8 @@ can cite them. Sources are RFC 18 unless named.
 | R15 | Pass-through is refused until the installation is joined, an offline join's once its second rotation is confirmed | MUST | §3.5 | T7.11, T7.15 |
 | R16 | At most 10 pass-throughs run at once per node; a call waits at most 5 s for a slot and then answers `ErrUnavailable`, and the call itself is bounded at 5 s, both inside §5.1's 20 seconds | bound | RFC 18 plan D5; §5.1 | T7.3, T7.10, T7.11; the 20 seconds whole is E8's T8.7 |
 
+| R64 | The CHALLENGE's `MsvAvNbComputerName` is `identity.netbios_name`, the joined account's NetBIOS name, handed to `gss` through identity, since a controller may refuse a pass-through whose NTLMv2 response names another computer than the channel's account | MUST | §3.5 | T7.11 |
+
 **The secure channel and the domain controllers**
 
 | # | Requirement | Kind | Source | Subtasks |
@@ -338,12 +340,13 @@ epic's test holds it.
   `Join entity.MachineJoin`, filled by E8 from the same read as `Machine`. A zero `State.Join` is
   "not joined", which is the right answer while the field is unset. Written in place in T7.9,
   T7.12, T7.14 and T7.15.
-- **D7, the online join's tag, pending the user's answer (§9).** A created account has no key
+- **D7, the online join's tag, decided on #4625 as (a).** A created account has no key
   version number before its creation, and a tag is never changed (R50). T7.1 found Samba numbers an
   account added with `unicodePwd` in the add itself 1, and one added without a password, as v1's
-  join does, 1 at the add and 2 at the first password set. Recommended: the join writes the password
-  in the add, over LDAPS (T7.7's `computer.go`), and the created account's version is sealed with
-  `KeyVersion` 1; the alternative keeps v1's add-then-set and seals under 2. Its confirm reports and
+  join does, 1 at the add and 2 at the first password set. The join writes the password in the
+  add, over LDAPS (T7.7's `computer.go`), and the created account's version is sealed with
+  `KeyVersion` 1: it is what the code does, Samba pins 1, and the account never exists without a
+  password. v1's add-then-set, sealed under 2, is not taken. Its confirm reports and
   counts a mismatch as a rotation's does; a takeover's is the pinned controller's number plus one.
   Tickets under another number verify through the fallback (R26). The join writes `LastRotation` at
   its confirm, so the schedule has a start. A `decision:` marker at the seal. Prior art: none found.
@@ -402,7 +405,11 @@ epic's test holds it.
   that confirm completed, and the old
   version is reported revocable then; a joined installation's first rotation prunes what a failed
   join kept.
-  `Prune` drops every version below the current one, so it never runs while the current version is
+  `Prune` has RFC 13 §7's one shape for every holder: it commits through the caller's
+  `ControlPlaneTx` inside its audited `Write`, and keeps the floor, dropping only below the lowest
+  version any node holds and never the current one. For the machine password the floor is the
+  current version once the retention has passed, since every node then holds it, so the prune drops
+  every version below the current one, and it never runs while the current version is
   unconfirmed. A `ponytail:` marker names the ceiling: a previous version's sealed value stays in
   the store, used by no key and no channel, until the next rotation, at most the schedule's 7 days.
   Prior art: Samba keeps the previous machine password until the next change (from memory).
@@ -552,7 +559,8 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
     T8.6 and RFC 23's plan's epic 4's T4.11 tests;
   - `identitytest.DomainController` (kind 2): one domain of several controllers, which `Lookup`
     answers in the order it was built with, its `Computers` container settable to another OU as
-    `redircmp` sets it, accounts with their current and previous passwords,
+    `redircmp` sets it, accounts with their current and previous passwords, the previous one
+    refused at `Channel` as Samba refuses it, with a `decision:` at `memDC.Channel` (§9),
     names, owner and delegation value, `badPwdCount` per user, `msDS-KeyVersionNumber` 1 for an
     account created with its password and raised by one per set, `sPNMappings` applied to the names
     it answers, NTLMv2 verified by a verifier of its own written from MS-NLMP 3.3.2 (it imports
@@ -567,8 +575,8 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
     over the in-memory controller, and in `integration/ad-dc` over a `netlogon.DC` the test builds
     from the spike's NETLOGON calls and LDAP, with a seeder adding entries over LDAP as the
     domain administrator, until T7.7's production `DC` replaces it on the same suite. Samba counts
-    `badPwdCount` only under a lockout threshold, which the fixture's domain leaves at 0, so that
-    run sets one, 100, through `samba-tool` before the suite (§9).
+    `badPwdCount` only under a lockout threshold, which the fixture's domain leaves at 0 until T7.7
+    sets one, so that run sets one, 100, through `samba-tool` before the suite.
 - **Acceptance criteria:**
   - `identitytest` imports `internal/identity/netlogon` and never `internal/identity`.
 - **Tests:** the suite's rows over the in-memory controller: a pass-through of the right password
@@ -581,8 +589,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   account accepted by `Channel` with the new password; a set raising the number by one; encryption
   types read as written and 0 when unset; a `host/` name answered with the `cifs/` name
   `sPNMappings` maps to it (R23); the probe's three answers (each row failing on the in-memory one
-  when its rule is removed, R60, R34). An unreplicated controller answering the old number and
-  accepting the previous password, the in-memory one's alone. No double but the ones delivered here.
+  when its rule is removed, R60, R34); a previous password refused at `Channel` after a `Reset` and
+  after a set, as Samba refuses it. An unreplicated controller answering the old number and
+  accepting the password it still holds as current, the in-memory one's alone. No double but the ones delivered here.
 - **Rules:** rule 1 (kind 2 held by its suite), rule 8 (the same suite runs against Samba in T7.7).
 
 ### T7.4 `HoldJoinCredential`
@@ -681,7 +690,10 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   through the DNS server it is given, when set; `NewDialer`'s `DC` answering `Account`, `Create`
   and `Reset` through these, replacing T7.6's `errors.ErrUnsupported` and the test-built `DC` of
   T7.3's Samba run; `DCSeeder` over LDAP as T7.3 builds it, its `MoveComputersContainer`
-  rewriting the domain object's `wellKnownObjects` `Computers` entry as `redircmp` does, and `Reset` putting it back. Consumed by E8's T8.6 (the production dialer) and T7.16.
+  rewriting the domain object's `wellKnownObjects` `Computers` entry as `redircmp` does, and `Reset` putting it back; T7.2's
+  `entrypoint.sh` setting the domain's account-lockout threshold above 10, so Samba counts
+  `badPwdCount` and R12's "throttled at 10, the count 10" rows hold without locking the account
+  out, and T7.3's run no longer setting its own. Consumed by E8's T8.6 (the production dialer) and T7.16.
 - **Acceptance criteria:**
   - `pkg/identity/arch_test.go` passes with the `internal/auth/netlogon` exemption gone (E1's R6),
     and no `errors.ErrUnsupported` is left in `dc.go`.
@@ -791,11 +803,11 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 
 ### T7.11 Pass-through sign-in
 
-**Subtask T7.11 estimate: 2.5 man-days.**
+**Subtask T7.11 estimate: 3 man-days.**
 
-- **Track:** A. **Depends on:** T7.10. E3's T3.1; E4's T4.1, T4.2, T4.4 and T4.5; E5's T5.7; E6's
-  T6.5 and T6.9.
-- **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R12, R14, R15, R16.
+- **Track:** A. **Depends on:** T7.10; T7.7 for its Samba rows. E3's T3.1; E4's T4.1, T4.2, T4.4
+  and T4.5; E5's T5.7; E6's T6.5 and T6.9.
+- **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R12, R14, R15, R16, R64.
 - **Deliverables:** the pass-through row of E4's domain table: the record's NetBIOS domain or realm,
   or an empty domain with `user@realm`, compared with ASCII letters folded, when the record's schema
   is `ad` and `State.Join.Joined`; RFC 18 §3.5's alternate-suffix `decision:` at the row; the call
@@ -805,8 +817,13 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   reply's key; the SIDs through E5's filter and counter; the user SID through `Find` with
   `FindOpts.Mint`, a disabled or marked principal `ErrLogonFailure`, never minted anew; the
   controller's refusal `ErrLogonFailure`, a failure to ask it `ErrUnavailable`; the evidence at
-  `ProofSecret` bound to the principal, with `Keys.Session` the exported key. Consumed by E8's T8.6,
-  T8.7 and T8.11 and T7.16.
+  `ProofSecret` bound to the principal, with `Keys.Session` the exported key; the rule that the
+  CHALLENGE's `MsvAvNbComputerName` is `identity.netbios_name`, the joined account's NetBIOS name
+  (R64), and the seam that hands `gss` that name, a read-only answer from the `State` in force on
+  the interface `gss` already reaches identity through (RFC 22's plan's gap 15 proposes
+  `vfs.Principals`); RFC 22's plan keeps building the CHALLENGE and its other AV pairs, and puts
+  this name in through the seam when its session epic lands. Consumed by E8's T8.6,
+  T8.7 and T8.11, T7.16 and RFC 22's plan's T4.2.
 - **Acceptance criteria:**
   - Every failure path binds no principal and returns no key.
 - **Tests:** at `SignIn`, over the memory KV store, the in-memory directory and controller, E4's
@@ -823,7 +840,14 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   (R3); alice's record disabled in the store: refused with outcome `disabled`; alice marked deleted:
   refused and no principal minted for her SID (R14); `Join.Joined` false: `unknown_domain` and
   nothing sent (R15); ten sign-ins held by the fault wrapper's hold as in T7.10, an eleventh started
-  at 1 s: `ErrUnavailable` at 6 s on the clock, nothing sent for it (R16, at the consumer). Doubles:
+  at 1 s: `ErrUnavailable` at 6 s on the clock, nothing sent for it (R16, at the consumer); the
+  seam answering `identity.netbios_name` from the `State` in force, a new one after `Apply` (R64).
+  In `integration/ad-dc`, over the `DITTOFS$` channel: alice's NTLMv2 response, its blob's
+  `MsvAvNbComputerName` the name the seam answers, passed through and her SID answered, so
+  pass-through holds end to end before RFC 22's session epic (R64, R2); the same response over a
+  channel set up as another computer account (`DCT…$`): `ErrLogonFailure`, `badPwdCount` unchanged
+  (pins Samba's refusal of a response naming a computer other than the channel's account, R64).
+  Doubles:
   the in-memory directory and controller (kind 2), the fault wrapper (kind 3), the clock (kind 1);
   E4's recording sink, a sink of outputs.
 - **Rules:** rule 9 (RFC 18 §3.5's decision and `ponytail:`).
@@ -1069,6 +1093,7 @@ flowchart TD
   X3(["E2 T2.4, E5 T5.2 and T5.3, #4059 secrets.Version"]):::sync --> T7_9
   T7_9 --> T7_10["T7.10 Node's channel"]
   T7_10 --> T7_11["T7.11 Pass-through"]
+  T7_7 -. Samba rows .-> T7_11
   X4(["E3 T3.1, E4 T4.1, T4.2, T4.4, T4.5, E5 T5.7, E6 T6.5, T6.9"]):::sync --> T7_11
   T7_10 --> T7_12["T7.12 Rotation and prune"]
   X5(["#4059 provider Prune and Versions"]):::sync --> T7_12
@@ -1099,7 +1124,7 @@ both joins run and E8's T8.6 can start.
 | 1 | T7.1, T7.2 | 1.75 | #4422 | the spike, open on `feat/storage-v2` as #4759, and the fixture, on `test/ad-dc-join-v2` |
 | 2 | T7.3, T7.4, T7.5 | 5 | S1, E6's T6.4, T6.5 and T6.9, the kinds' parameter types | the seam and the calls other epics wait for; may be open beside PR 1 |
 | 3 | T7.6, T7.7, T7.8 | 6.75 | PR 1, PR 2, #4334, #4529 | the client moved, hardened and held to Samba |
-| 4 | T7.9, T7.10, T7.11 | 8 | PR 2; RFC 23's plan's epic 2's T2.4; E2's T2.4, E3's T3.1, E4, E5's T5.2, T5.3 and T5.7, E6's T6.5 and T6.9 | derived keys and pass-through; may be open beside PR 3 |
+| 4 | T7.9, T7.10, T7.11 | 8.5 | PR 2; RFC 23's plan's epic 2's T2.4; E2's T2.4, E3's T3.1, E4, E5's T5.2, T5.3 and T5.7, E6's T6.5 and T6.9 | derived keys and pass-through; may be open beside PR 3, its Samba rows merged after it |
 | 5 | T7.12, T7.13 | 5.5 | PR 4, #4059's `Prune` and `Versions`, RFC 23's plan's epic 2's T2.4 and T2.7 | the rotation, its prune and its schedule |
 | 6 | T7.14, T7.15 | 6 | PR 5, E6's T6.3 | both joins |
 | 7 | T7.16, T7.17 | 3.75 | PR 3, PR 6, E5's T5.11 | the joins against Samba and the guides |
@@ -1123,30 +1148,37 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
 `LastRotation.Confirmed`, and identity's own loop starts the scheduled rotation, with the zero
 `Account` and an audit record naming the schedule.
 
-**Pending the user's answer:**
+**Decided on #4625 and in review:**
 
-- **The online join's tag (D7), for Marco to decide.** T7.1 found `msDS-KeyVersionNumber` 1 only
-  when the online join writes the password in the add; v1's add-then-set gives 1 at the add and 2
-  at the first password set. Options: (a) the password in the add, over LDAPS, keeping D7's 1;
-  (b) v1's add-then-set, the first version sealed under 2. Recommended: (a), which T7.7's
-  `computer.go` and T7.3's in-memory controller already assume. Written in place in D7, T7.7 and
-  T7.14.
-- **§3.5's previous password and the lockout threshold, for Marco on #4625.** T7.3 found that Samba
-  refuses a workstation's previous password at `NetrServerAuthenticate3`, after an administrator's
-  reset and after a set over the channel alike, and its in-memory controller follows Samba with a
-  `decision:` at `Channel`; and that Samba counts `badPwdCount` only under a lockout threshold,
-  which the fixture's domain leaves unset. T7.3's own run setting 100 through `samba-tool` is
-  settled; what is open is the fixture's threshold, which #4625 proposes T7.2's `entrypoint.sh` set
-  above 10, so R12's "throttled at 10" rows hold without locking the account out, folded in with
-  T7.7 unless Marco wants it sooner. Open; nothing in §3.5's reasoning, D7 or D14 changes
-  here until it is answered. `Prune`'s shape stays open as the gap below states.
+- **The online join's tag (D7): (a).** T7.1 found `msDS-KeyVersionNumber` 1 only when the online
+  join writes the password in the add; v1's add-then-set gives 1 at the add and 2 at the first
+  password set. The password goes in the add, over LDAPS, and the key version is 1. Written in
+  place in D7, T7.7 and T7.14.
+- **§3.5's previous password and the lockout threshold.** T7.3 found that Samba refuses a
+  workstation's previous password at `NetrServerAuthenticate3`, after an administrator's reset and
+  after a set over the channel alike. The two rotations stay, and RFC 18 §3.5's reason no longer
+  depends on the previous password being accepted: Windows accepts it, Samba does not, and either
+  way a controller the first set has not reached still holds the handed-over password. The
+  in-memory controller follows Samba, with a `decision:` at `memDC.Channel` (T7.3). Samba counts
+  `badPwdCount` only under a lockout threshold, which the fixture's domain leaves unset; T7.7 sets
+  one above 10 in T7.2's `entrypoint.sh`.
+- **`MsvAvNbComputerName`.** T7.7 found that Samba refuses a pass-through whose NTLMv2 response
+  names another computer than the secure channel's account: the same response passed over the
+  `DITTOFS$` channel and failed `STATUS_LOGON_FAILURE` over a `DCT…$` one, `badPwdCount` not
+  raised. RFC 18 takes the rule that the name is `identity.netbios_name` and the seam that hands
+  `gss` it, both in T7.11 (R64); RFC 22's plan keeps the CHALLENGE and its other AV pairs. The RFC
+  18 plan's deferral ledger row is split to match.
+- **`Prune`'s shape.** One shape for every holder: it commits inside the caller's audited `Write`
+  through `ControlPlaneTx`, as D14 needs for RFC 23 §6, and keeps RFC 13 §7's floor. For the
+  machine password the two rules agree once the retention has passed, since every node then holds
+  the current version. RFC 13 §7's `Prune` gains the transaction (D14).
 
 **What T7.1 found** (#4759, run against the fixture's Samba 4.17 with `go-msrpc` v1.6.4):
 
 - The transport is `ncacn_ip_tcp` with schannel (D1); the named-pipe fallback is dropped, and with
   it the 2 man-days of contingency it would have added to T7.6. Its ports changed nothing in T7.17.
 - D7's "1 at the first password set" is wrong for an account added without a password: Samba gives
-  1 at the add and 2 at the first set, and 1 for an account added with its password. D7 is pending
+  1 at the add and 2 at the first set, and 1 for an account added with its password. D7 is decided
   above.
 - Samba issues `cifs/<host>` even for an account with no `servicePrincipalName`, matching the host
   label to the `sAMAccountName`, so whether `host/` alone suffices is untested here. T7.2 registers
@@ -1154,7 +1186,7 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
 
 **Where the RFC 18 plan and this document differ:**
 
-- The figure here is 36.75 man-days over 17 subtasks, against the RFC 18 plan's 32 over 13. It holds
+- The figure here is 37.25 man-days over 17 subtasks, against the RFC 18 plan's 32 over 13. It holds
   work the RFC 18 plan's list does not name: the rotation's schedule (T7.13, 0.75),
   `HoldJoinCredential` (T7.4, 0.5), the online join and a rotation against Samba (in T7.16,
   0.5), the keys' and the fallback's expiry at the retention (in T7.9 and T7.10, 0.5), the call
@@ -1164,8 +1196,9 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
   `go-msrpc` already has, plus review's additions: the domain's `Computers` container read (in
   T7.3, 0.25), a rotation and a join refusing each other (in T7.12, 0.25), `Prune` and `Versions`
   on `SecretProvider`, which E5 no longer adds (in T7.12, 0.25), the schedule's audit record (in
-  T7.13, 0.25) and the salt checked against Samba with a chosen host name (in T7.16,
-  0.25). T7.6 and T7.7 are the least certain. The named-pipe fallback's 2 man-days, never in the
+  T7.13, 0.25), the salt checked against Samba with a chosen host name (in T7.16,
+  0.25), and the CHALLENGE's computer name and its seam, moved from RFC 22's plan on #4625 (in
+  T7.11, 0.5). T7.6 and T7.7 are the least certain. The named-pipe fallback's 2 man-days, never in the
   figure, are dropped: T7.1 found the transport holds (D1).
 - The RFC 18 plan has D5's spike run "before the epic is broken down". It ran after, as T7.1
   (#4759), and its answers are in D1, D7 and below; T7.6 and T7.17 keep the transport's figures.
@@ -1204,9 +1237,9 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
   skips the key (D8).
 - The RFC 13 plan's `Prune` commits `PruneSecret` on its own, outside any `Write`, while RFC 23
   §3.3's credential-rotation bullet deletes a rotated credential's old version when the retention
-  passes and §6 audits every action in the transaction that applies it. T7.12's
-  `SecretProvider.Prune` takes the caller's `ControlPlaneTx` (D14); #4059's provider needs that
-  form, and RFC 13 §7 should say a prune commits in the caller's audited `Write`.
+  passes and §6 audits every action in the transaction that applies it. RFC 13 §7's `Prune` now
+  takes the caller's `ControlPlaneTx`, as T7.12's does (D14); the RFC 13 plan's §4.3 sketch and
+  #4059's provider still need that form.
 - RFC 13 §7's `Prune` drops every version below the lowest held and never the current one, while RFC
   18 §3.5 has a failed join prune "the rest it sealed", the newest version whenever it sealed one it
   never sent, and a later join prune "once it is joined". T7.14 keeps every version it attempted to

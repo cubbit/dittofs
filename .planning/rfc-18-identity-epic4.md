@@ -70,11 +70,10 @@ the local check against a sealed NT hash; the NTLM-off refusal at sign-in; the t
 - Kerberos's branch of `SignIn`, outcomes `replay` and `no_pac`, and a ticket's `Expires`: E5.
   Until E5, a Kerberos step keeps epic 1's `ErrUnavailable` stub.
 - NEGOTIATE and CHALLENGE, parsing the AUTHENTICATE, SPNEGO and the `mechListMIC`: RFC 20 §4.4's
-  `gss`, built by RFC 22's plan. The CHALLENGE's AV pairs, `MsvAvNbComputerName` from
-  `identity.netbios_name` among them, and so "NTLM domain"'s first clause, the CHALLENGE
-  advertising the installation's name: the RFC 18 plan's deferral ledger row "The CHALLENGE's
-  AV pairs, `MsvAvNbComputerName` from `identity.netbios_name`, and the seam that hands `gss`
-  those names".
+  `gss`, built by RFC 22's plan. The CHALLENGE's AV pairs, and so "NTLM domain"'s first clause,
+  the CHALLENGE advertising the installation's name: the RFC 18 plan's deferral ledger row "The
+  CHALLENGE's AV pairs"; `MsvAvNbComputerName`'s value, `identity.netbios_name`, and the seam that
+  hands `gss` it: E7's T7.11.
 - RFC 18 §3.6's first rule, null and guest sessions set up as anonymous with no key, and §3.8's
   re-authentication as null or guest keeping the first keys: `gss` and RFC 22's session code set
   them up without `SignIn` (RFC 20 §4.4; RFC 22's plan's S4), so nothing here can break them.
