@@ -2,7 +2,6 @@ package identity
 
 import (
 	"context"
-	"fmt"
 	"net/netip"
 	"time"
 
@@ -10,7 +9,6 @@ import (
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // Applied is the State calls now read; nil before the first Apply and after
@@ -79,14 +77,10 @@ func (s *Server) HeldCredential(id entity.OperationID) (identity.JoinCredential,
 	return s.heldCredential(id)
 }
 
-// DirectoryLookup asks the applied State's directory client a "who holds
+// DirectoryLookup asks the applied State's directory cache a "who holds
 // this" question: ErrUnavailable with no record or no Deps.Directory.
 func (s *Server) DirectoryLookup(ctx context.Context, by directory.Key, value []byte) (directory.Answer, bool, error) {
-	st := s.state.Load()
-	if st == nil || st.dir == nil {
-		return directory.Answer{}, false, fmt.Errorf("%w: identity: no directory", vfserr.ErrUnavailable)
-	}
-	return st.dir.Lookup(ctx, by, value)
+	return s.directoryLookup(ctx, by, value, false)
 }
 
 // VerifyAPReq verifies an AP-REQ under the applied State at now.
@@ -125,3 +119,18 @@ func (s *Server) PassThroughs() int { return len(s.slots) }
 
 // ChannelAttempt is how long a set-up waits on each controller but the last.
 const ChannelAttempt = channelAttempt
+
+// DirectoryCache is the server's cache of a directory client's answers.
+type DirectoryCache = dirCache
+
+// NewDirectoryCache is a cache of c's answers observed through d's clock,
+// registry and tracer, as Apply builds one with each client.
+func NewDirectoryCache(c *directory.Client, d Deps) *DirectoryCache { return newDirCache(c, d) }
+
+// Lookup asks the cache, under grace; fresh asks for a fresh answer only.
+func (c *dirCache) Lookup(ctx context.Context, by directory.Key, value []byte, grace time.Duration, fresh bool) (directory.Answer, bool, error) {
+	return c.lookup(ctx, by, value, grace, fresh)
+}
+
+// Waiting is the number of queries waiting for one of the 64 slots.
+func (c *dirCache) Waiting() int { return int(c.waiting.Load()) }

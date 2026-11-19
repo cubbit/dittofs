@@ -3,6 +3,7 @@ package identity
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -23,6 +24,9 @@ type Settings struct {
 	// Keytab names the keytab, a Secret of kind keytab, never the keytab
 	// itself. Its versions reach the server as State.Keytab.
 	Keytab entity.SecretRef `json:"keytab" class:"live"`
+	// DirectoryStaleGrace is how long past its 5-minute TTL a directory
+	// answer may be served while the directory fails; 0 serves none.
+	DirectoryStaleGrace time.Duration `json:"directory_stale_grace" class:"live"`
 }
 
 // maxNetBIOSName is a NetBIOS name's length in bytes; the sixteenth byte of
@@ -37,8 +41,9 @@ func defaultSettings() Settings {
 		// have no KDC, and SMB clients outside a domain fall back to NTLM. A
 		// deployment with Kerberos everywhere turns it off. Revisit the default
 		// once local users are shown to be rare (RFC 18 section 3.5).
-		NTLM:        true,
-		NetBIOSName: "DITTOFS",
+		NTLM:                true,
+		NetBIOSName:         "DITTOFS",
+		DirectoryStaleGrace: 15 * time.Minute,
 	}
 }
 
@@ -65,12 +70,15 @@ func DirectorySection() settings.Section {
 		settings.SecretRef("BindCredential", entity.SecretDirectoryCredential))
 }
 
-// Validate refuses a range whose low end is above its high end, and a NetBIOS
-// name that is empty, longer than 15 bytes or holds a byte outside
-// [A-Z0-9-].
+// Validate refuses a range whose low end is above its high end, a negative
+// stale grace, and a NetBIOS name that is empty, longer than 15 bytes or
+// holds a byte outside [A-Z0-9-].
 func (s Settings) Validate() error {
 	if s.IDRange.Lo > s.IDRange.Hi {
 		return fmt.Errorf("identity: id_range low end %d above high end %d", s.IDRange.Lo, s.IDRange.Hi)
+	}
+	if s.DirectoryStaleGrace < 0 {
+		return fmt.Errorf("identity: directory_stale_grace %v is negative", s.DirectoryStaleGrace)
 	}
 	if s.NetBIOSName == "" {
 		return errors.New("identity: netbios_name is empty")
