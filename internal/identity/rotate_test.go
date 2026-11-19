@@ -90,6 +90,8 @@ type rotFixture struct {
 	// hold stops the turns delivering the store's State to the server, as a
 	// node lagging behind the store.
 	hold bool
+	// checked receives the end of each of the rotation schedule's checks.
+	checked chan struct{}
 }
 
 const bindPW = "Svc-Passw0rd"
