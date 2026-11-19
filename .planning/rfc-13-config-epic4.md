@@ -346,9 +346,11 @@ S2 is reached here.
 - **Covers:** R2, R6, R16, R20, R21, R22, R23.
 - **Deliverables:** `PruneSecret`'s body on the view and on `ControlPlaneTx`, deleting every
   version below `below`, never the current one, raising no `CFGGEN`, with D5's `decision:` note;
-  `ControlPlane.NodeStatuses` (D4); `Prune`'s body: the current version's kind and owner checked as
-  `Resolve` does, the floor read as the lowest version any node's `NodeStatus.Secrets` reports for
-  the reference, capped at the current version, then `PruneSecret` below it. A `ponytail:` marker
+  `ControlPlane.NodeStatuses` (D4); `Prune`'s body, taking the caller's `ControlPlaneTx` as RFC 13
+  §7 gives it, so the prune commits inside the caller's audited `Write`: the current version's kind
+  and owner checked as `Resolve` does, the floor read as the lowest version any node's
+  `NodeStatus.Secrets` reports for the reference, capped at the current version, then
+  `tx.PruneSecret` below it; E1's `Prune` signature gains the `tx` here. A `ponytail:` marker
   at the floor: one node's report counts, and a node that is down holds the prune back (RFC 13's
   plan, §4.3).
 - **Acceptance criteria:**
@@ -366,7 +368,8 @@ S2 is reached here.
   current one); a pruned version read back as `ErrNotFound`, and `CFGGEN` unchanged by the prune
   (catches a prune that raises the generation);
   `Prune` with another owner refused, every version still there (catches a wrong reference cutting
-  another holder's retention).
+  another holder's retention); `Prune` inside a `Write` whose commit `kvtest`'s wrapper fails, every
+  version still there (catches a prune committed outside the caller's `Write`).
 
 ### T4.6 A user's secrets go with the user
 
