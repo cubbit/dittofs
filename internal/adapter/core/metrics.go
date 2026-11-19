@@ -274,10 +274,10 @@ type tableSeries struct {
 	member                                bool            // the table is a compound row's Members
 	chains                                map[uint32]Call // by operation code
 	heldRequests, heldBytes, holdRefusals adder
-	shortened                             adder                   // a compound's members whose bound their room lowered
-	panics                                map[uint32]adder        // by operation code
-	panicLines                            map[uint32]*lineLimiter // by operation code
-	names                                 map[uint32]string       // the request span's name, by operation code
+	shortened                             adder                  // a compound's members whose bound their room lowered
+	panics                                map[uint32]adder       // by operation code
+	panicLines                            map[uint32]*frameLines // by operation code
+	names                                 map[uint32]string      // the request span's name, by operation code
 }
 
 func (s *protocolSeries) answered()                         { s.inFlight.Add(-1) }
@@ -460,7 +460,7 @@ func (sh *shared) newTable(p string, t *OpTable, member bool) *tableSeries {
 		holdRefusals:   sh.fam[vHoldRefusals](p),
 		shortened:      sh.fam[vShortReads](p),
 		panics:         make(map[uint32]adder, len(t.Ops)),
-		panicLines:     make(map[uint32]*lineLimiter, len(t.Ops)),
+		panicLines:     make(map[uint32]*frameLines, len(t.Ops)),
 		names:          make(map[uint32]string, len(t.Ops)),
 	}
 	for code, op := range t.Ops {

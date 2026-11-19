@@ -474,7 +474,7 @@ func (p *pipeline) redrive(pd *pending) {
 		pd.r.invoke = pd.inv.Call
 		pd.reply = reply
 		err = pd.ts.chains[pd.op.Code](ctx, pd.r)
-		tr.mark = pd.r.callEnd
+		p.called(tr, pd.r)
 	}
 	if span != nil {
 		span.End()

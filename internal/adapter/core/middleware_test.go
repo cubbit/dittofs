@@ -3,6 +3,7 @@ package core_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -354,29 +355,11 @@ func TestAPanicLineIsWrittenOnceAMinutePerOperation(t *testing.T) {
 			t.Fatalf("a panic is answered %v, want ErrPanicked", err)
 		}
 	}
-	type line struct {
-		Msg, Op    string
-		Suppressed int64
-	}
-	lines := func() []line {
-		t.Helper()
-		var ls []line
-		for _, s := range strings.Split(strings.TrimSpace(tr.logged.String()), "\n") {
-			var l line
-			if err := json.Unmarshal([]byte(s), &l); err != nil {
-				t.Fatalf("logged %q: %v", s, err)
-			}
-			ls = append(ls, l)
-		}
-		tr.logged.Reset()
-		return ls
-	}
 	counted := func() float64 {
 		t.Helper()
 		got, _ := scrape(t, tr.m)
 		return got["adapter_handler_panics_total{op="+strings.ToLower(tr.topEcho.Name)+",protocol="+testproto.Name+"}"]
 	}
-	const msg = "handler panicked"
 	echo := tr.topEcho.Name
 
 	panics(tr.top, tr.topEcho)
@@ -385,7 +368,7 @@ func TestAPanicLineIsWrittenOnceAMinutePerOperation(t *testing.T) {
 	panics(v2s, v2Echo)
 	panics(v2s, other)
 	panics(alts, alt.Ops[testproto.OpEcho])
-	if got, want := lines(), []line{{msg, echo, 0}, {msg, other.Name, 0}, {msg, echo, 0}}; !slices.Equal(got, want) {
+	if got, want := tr.panicLines(t), []panicLine{{echo, 0}, {other.Name, 0}, {echo, 0}}; !slices.Equal(got, want) {
 		t.Errorf("three %s panics, one %s and one %s under another protocol within the minute wrote %+v, want %+v", echo, other.Name, echo, got, want)
 	}
 	if n := counted(); n != 3 {
@@ -394,7 +377,7 @@ func TestAPanicLineIsWrittenOnceAMinutePerOperation(t *testing.T) {
 
 	tr.clk.Advance(time.Second)
 	panics(tr.top, tr.topEcho)
-	if got, want := lines(), []line{{msg, echo, 2}}; !slices.Equal(got, want) {
+	if got, want := tr.panicLines(t), []panicLine{{echo, 2}}; !slices.Equal(got, want) {
 		t.Errorf("a %s panic a minute after its line wrote %+v, want %+v", echo, got, want)
 	}
 	if n := counted(); n != 4 {
@@ -405,9 +388,129 @@ func TestAPanicLineIsWrittenOnceAMinutePerOperation(t *testing.T) {
 	panics(tr.members, tr.mEcho)
 	tr.clk.Advance(30 * time.Second)
 	panics(tr.top, tr.topEcho)
-	if got, want := lines(), []line{{msg, echo, 1}}; !slices.Equal(got, want) {
+	if got, want := tr.panicLines(t), []panicLine{{echo, 1}}; !slices.Equal(got, want) {
 		t.Errorf("the next minute's %s line wrote %+v, want %+v, the one since the last line", echo, got, want)
 	}
+}
+
+// A panic's line is written at most once a minute per frame that panicked,
+// within its operation: a panic at another frame within the minute
+// writes its own line, a third at either frame writes none, and each frame's
+// first line a minute on carries the count suppressed at that frame alone
+// (RFC 20 §4.2). The two frames are two lines of one function, raising the
+// panic by a call to panic; by a nil dereference, which the runtime raises
+// from frames of its own below the handler's; or by a short buffer's read,
+// which the standard library raises from one frame of its own for both, so
+// one FSCTL's panic must not hide another's there either.
+func TestAPanicLineIsWrittenOnceAMinutePerFrame(t *testing.T) {
+	var nowhere *struct{ err error }
+	short := []byte{0} // a uint32's read from it panics inside encoding/binary
+	for _, c := range []struct {
+		name  string
+		raise func(place int) error // panics at line 0 or 1 of it
+	}{
+		{"a call to panic", func(place int) error {
+			if place == 0 {
+				panic("here")
+			}
+			panic("there")
+		}},
+		{"a nil dereference", func(place int) error {
+			if place == 0 {
+				return nowhere.err
+			}
+			return nowhere.err
+		}},
+		{"a short buffer's read in the standard library", func(place int) error {
+			if place == 0 {
+				binary.LittleEndian.Uint32(short)
+			}
+			binary.LittleEndian.Uint32(short)
+			return nil
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tr := newTraced(t, false)
+			panics := func(places ...int) {
+				t.Helper()
+				for _, place := range places {
+					r := request(func(context.Context, *core.Request) error { return c.raise(place) })
+					if err := tr.top.Chain(tr.topEcho)(context.Background(), r); !errors.Is(err, core.ErrPanicked) {
+						t.Fatalf("a panic is answered %v, want ErrPanicked", err)
+					}
+				}
+			}
+			echo := tr.topEcho.Name
+
+			panics(0, 1)
+			if got, want := tr.panicLines(t), []panicLine{{echo, 0}, {echo, 0}}; !slices.Equal(got, want) {
+				t.Errorf("panics at two frames wrote %+v, want %+v, a line each", got, want)
+			}
+			panics(0, 1, 1)
+			if got := tr.panicLines(t); len(got) != 0 {
+				t.Errorf("a panic more at either frame within the minute wrote %+v, want none", got)
+			}
+			tr.clk.Advance(time.Minute)
+			panics(1, 0)
+			if got, want := tr.panicLines(t), []panicLine{{echo, 2}, {echo, 1}}; !slices.Equal(got, want) {
+				t.Errorf("a minute on, the two frames wrote %+v, want %+v, each its own count", got, want)
+			}
+		})
+	}
+}
+
+// A panic whose line is held back allocates as much from a handler 200
+// frames deep as from one at depth one: the frame that panicked is read
+// within a bound, and the stack is captured only for a line that is written
+// (RFC 20 §4.2).
+func TestAHeldBackPanicLineAllocatesAlikeAtAnyDepth(t *testing.T) {
+	if prof.RaceEnabled {
+		t.Skip("the race detector changes allocation counts")
+	}
+	tr := newTraced(t, false)
+	call := tr.top.Chain(tr.topEcho)
+	allocs := map[int]float64{}
+	for _, depth := range []int{1, 200} {
+		r := request(func(context.Context, *core.Request) error { return panicBelow(depth) })
+		allocs[depth] = testing.AllocsPerRun(100, func() { _ = call(context.Background(), r) })
+	}
+	if allocs[200] != allocs[1] {
+		t.Errorf("a held-back panic allocates %v times from 200 frames deep, %v from depth one; want the same", allocs[200], allocs[1])
+	}
+}
+
+// panicBelow panics depth frames below its caller, always at one place.
+func panicBelow(depth int) error {
+	if depth > 1 {
+		return panicBelow(depth - 1)
+	}
+	panic("boom")
+}
+
+// panicLine is an error line a panic wrote: its operation and the count
+// suppressed since its last.
+type panicLine struct {
+	Op         string
+	Suppressed int64
+}
+
+// panicLines is the lines tr logged since it was last read, each a panic's
+// error line.
+func (tr traced) panicLines(t *testing.T) []panicLine {
+	t.Helper()
+	var ls []panicLine
+	for s := range strings.Lines(tr.logged.String()) {
+		var l struct {
+			Msg, Op    string
+			Suppressed int64
+		}
+		if err := json.Unmarshal([]byte(s), &l); err != nil || l.Msg != "handler panicked" {
+			t.Fatalf("logged %q (%v), want a panic's line", s, err)
+		}
+		ls = append(ls, panicLine{l.Op, l.Suppressed})
+	}
+	tr.logged.Reset()
+	return ls
 }
 
 var errHandler = errors.New("the handler's own error")
@@ -444,11 +547,9 @@ func newTraced(t *testing.T, tracing bool) traced {
 	return tr
 }
 
-// request is a request routed at version 1 whose resolve_ids began 2 ms
-// before t0, its handler h.
+// request is a request routed at version 1, its handler h.
 func request(h core.Call) *core.Request {
 	r := &core.Request{Version: 1}
-	core.SetResolveStart(r, t0.Add(-2*time.Millisecond))
 	core.SetInvoke(r, h)
 	return r
 }
@@ -568,8 +669,8 @@ func TestChainUnsampledAllocatesNothingMore(t *testing.T) {
 // the handler's context is the deadline's own, done at 30 s on the clock
 // while the span is still open; the panic, which recovery turns into
 // ErrPanicked outermost, reaches the span first, which ends with the fault
-// recorded, and the metrics hinge marked the member's call's start at entry
-// and marks the call's end on the way out.
+// recorded, and the metrics hinge marked the call's start at entry and marks
+// its end on the way out.
 func TestChainOrder(t *testing.T) {
 	tr := newTraced(t, true)
 	reqCtx, _ := tr.tracer.Start(context.Background(), "request")
@@ -601,18 +702,33 @@ func TestChainOrder(t *testing.T) {
 	}
 }
 
-// The metrics hinge runs before the deadline (§4.7), so resolve_ids ends as
-// the chain reaches the hinge: on a clock that moves 1 ms each time it is
-// read, it is the request's own 2 ms, with none of the deadline's reads.
+// The metrics hinge runs before the deadline (§4.7) and only marks
+// (§10.1): on a clock that moves 1 ms each time it is read, a call outside a
+// compound is marked started at t0, the chain's first read, before the
+// deadline's, and ended once the call has moved the clock on, and the chain
+// observes no stage, resolve_ids among them, which the pipeline observes.
 func TestChainOrderHingeBeforeDeadline(t *testing.T) {
 	tr := newTraced(t, false)
 	tr.clk.step = time.Millisecond
-	if err := tr.top.Chain(tr.topEcho)(context.Background(), request(func(context.Context, *core.Request) error { return nil })); err != nil {
+	r := request(func(context.Context, *core.Request) error {
+		tr.clk.Advance(time.Second)
+		return nil
+	})
+	if err := tr.top.Chain(tr.topEcho)(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
+	if got := core.CallStart(r); !got.Equal(t0) {
+		t.Errorf("the call's start is marked at %v, want %v, the chain's first clock read, before the deadline's", got, t0)
+	}
+	if got := core.CallEnd(r); got.Before(t0.Add(time.Second)) {
+		t.Errorf("the call's end is marked at %v, want once the call moved the clock to %v", got, t0.Add(time.Second))
+	}
 	got, _ := scrape(t, tr.m)
-	if sum := got["adapter_wire_seconds_sum{protocol="+testproto.Name+",stage=resolve_ids}"]; sum != 0.002 {
-		t.Errorf("resolve_ids sums %v s, want the request's 0.002: the deadline's clock reads are counted in it", sum)
+	counts, _ := wireSeconds(got)
+	for st, n := range counts {
+		if n != 0 {
+			t.Errorf("the chain observed %s %v times, want none: the pipeline observes every stage", st, n)
+		}
 	}
 }
 

@@ -179,13 +179,12 @@ func WithHoldDeadline(ctx context.Context, t time.Time) context.Context {
 // Chain is op's chain, built with the series of its table.
 func (t *tableSeries) Chain(op *Op) Call { return t.chains[op.Code] }
 
-// SetInvoke and SetResolveStart keep with r what the pipeline keeps there
-// before the chain; CallStart and CallEnd are the call's start and end the
-// chain marked.
-func SetInvoke(r *Request, call Call)          { r.invoke = call }
-func SetResolveStart(r *Request, at time.Time) { r.resolveStart = at }
-func CallStart(r *Request) time.Time           { return r.callStart }
-func CallEnd(r *Request) time.Time             { return r.callEnd }
+// SetInvoke keeps with r the handler the pipeline gives it before the
+// chain; CallStart and CallEnd are the call's start and end the chain
+// marked.
+func SetInvoke(r *Request, call Call) { r.invoke = call }
+func CallStart(r *Request) time.Time  { return r.callStart }
+func CallEnd(r *Request) time.Time    { return r.callEnd }
 
 // OnTheDeadline reports whether ctx is the deadline's own context, as the
 // handler's is when the deadline is the chain's innermost middleware.
