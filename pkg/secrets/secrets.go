@@ -5,13 +5,9 @@
 package secrets
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"maps"
 
 	"github.com/cubbit/dittofs/pkg/keyprovider"
-	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
@@ -28,16 +24,6 @@ type Provider struct {
 	keys map[Role]keyprovider.KeyProvider
 }
 
-// unbuilt is the error of a method whose body is not built yet; the message
-// names the work that fills it.
-func unbuilt(method string) error {
-	return fmt.Errorf(
-		"secrets: %s is filled by configuration epic 4: %w",
-		method,
-		errors.ErrUnsupported,
-	)
-}
-
 // New builds a provider over the control-plane view and each role's
 // wrapping key. It keeps its own copy of keys, so a caller reusing its map
 // cannot take a role's key away. A role missing from keys is refused when a
@@ -52,15 +38,4 @@ func New(cp kvstore.ControlPlane, keys map[Role]keyprovider.KeyProvider) (*Provi
 		cp:   cp,
 		keys: maps.Clone(keys),
 	}, nil
-}
-
-// Prune drops the versions below the lowest one any node reports holding,
-// never the current one, after checking the caller's kind and owner.
-func (p *Provider) Prune(
-	ctx context.Context,
-	kind entity.SecretKind,
-	owner entity.SecretOwner,
-	ref entity.SecretRef,
-) error {
-	return unbuilt("Prune")
 }

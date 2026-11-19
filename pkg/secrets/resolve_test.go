@@ -614,8 +614,8 @@ func TestVersionsCurrentFirst(t *testing.T) {
 		t.Errorf("three versions: %#v, %v; want %#v", got, err, want)
 	}
 
-	// A prune removes the lowest versions; PruneSecret is not built, so the
-	// test deletes the key itself.
+	// A prune removes the lowest versions, so the first missing one ends
+	// those still held; the test deletes the key itself.
 	rawUpdate(t, f.db, func(tx kv.Txn) error {
 		return tx.Delete(secretKVKey(ref, 1))
 	})
