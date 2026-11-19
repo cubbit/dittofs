@@ -1354,6 +1354,7 @@ type ControlPlane interface {
 	Users(ctx context.Context, after string) iter.Seq2[User, error]
 	User(ctx context.Context, p Principal) (User, bool, error)        // a user's or machine's read by ID; false once marked deleted, or for a principal of another kind
 	UserNamed(ctx context.Context, name string) (User, bool, error)   // the users listing's ?name= filter: the name folded as sign-in folds it
+	Holder(ctx context.Context, id ProtocolID) (User, bool, error)    // the user or machine holding the spelling id; false when none does or a group does
 	// Every Put*, Set* and Delete* takes expect, the generation the caller
 	// read (Version, for a grant, an export policy, a netgroup or a quota). It reads the record with
 	// conflict tracking and refuses ErrGenerationMismatch when the stored one
@@ -1465,6 +1466,7 @@ type WriteMeta struct {
 type ControlPlaneTx interface {
 	Setting(scope SettingScope, key string) (Setting, bool, error) // tracked read
 	User(p Principal) (User, bool, error)                           // tracked read
+	Holder(id ProtocolID) (User, bool, error)                       // tracked read, over the spelling's row and the record: the user or machine holding id
 	Group(p Principal) (Group, bool, error)                         // tracked read: false for a group marked deleted, or a principal of another kind
 	Grant(share ShareID, p Principal) (ShareGrant, bool, error)     // tracked read: the stored grant, whose Version a write replacing or deleting it expects
 	Member(m Membership) (bool, error)                              // tracked read: whether the membership is stored; it has no version, so it exists or does not
@@ -1500,6 +1502,7 @@ type ControlPlaneTx interface {
 	PutOperation(op Operation, expect uint64) error
 	PutSignInFailures(key SignInKey, f SignInFailures) error // its count's row, and its XP row where the count expires
 	SetMachinePassword(ref SecretRef) error                  // Installation.MachinePassword (§2.3), in the Write that seals its version
+	SetSigningKey(ref SecretRef) error                       // Installation.SigningKey (§2.3), in the Write that seals its first version
 	// and the view's other writes, the same way
 }
 ```
