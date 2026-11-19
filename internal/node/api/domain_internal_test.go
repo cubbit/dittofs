@@ -302,6 +302,52 @@ func TestKeytabNamesCheckedInTheWrite(t *testing.T) {
 	}
 }
 
+// A realm setting changed after the keytab's pre-write check passed is
+// caught by its put, which reads the realm again tracked in the write's
+// transaction: a key the check admitted under another realm is refused
+// once the realm names the account's.
+func TestKeytabRealmCheckedInTheWrite(t *testing.T) {
+	cp := ntlmStore(t)
+	kt := keytab.New()
+	if err := kt.AddEntry("host/dfs.ad.example", "AD.EXAMPLE", "pw", time.Unix(1, 0), 1, etypeID.AES256_CTS_HMAC_SHA1_96); err != nil {
+		t.Fatal(err)
+	}
+	b, err := kt.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	putRealm := func(v string) {
+		t.Helper()
+		if err := cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+			old, _, err := tx.Setting(installation, directoryRealm)
+			if err != nil {
+				return err
+			}
+			_, err = tx.PutSetting(entity.Setting{Scope: installation, Key: directoryRealm, Value: []byte(v)}, old.Generation)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	putRealm(`"OTHER.EXAMPLE"`)
+	j := entity.MachineJoin{Joined: true, Account: "DFS$", Names: []string{"host/dfs.ad.example"}}
+	if err := cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetMachineJoin(j) }); err != nil {
+		t.Fatal(err)
+	}
+	inTx, err := keytabs.check(t.Context(), Deps{Store: cp}, b)
+	if err != nil {
+		t.Fatalf("the check, the key in another realm than the account's: %v, want admitted", err)
+	}
+	putRealm(`"AD.EXAMPLE"`)
+	err = cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		_, _, err := keytabs.put(t.Context(), request[apiv1.Credential]{d: Deps{Store: cp}}, sealedSecret{inTx: inTx}, tx)
+		return err
+	})
+	if p, _ := problemOf(err); p.Status != 400 || p.Field != "spec.value" {
+		t.Errorf("the keytab's put, the realm since naming the key's: %v, want 400 naming spec.value", err)
+	}
+}
+
 // Every refusal of a join before its hold or its seal clears the password
 // the request carried.
 func TestJoinRefusalClearsThePassword(t *testing.T) {
