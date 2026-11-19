@@ -146,7 +146,7 @@ func TestDomainAuditsNameTheInstallation(t *testing.T) {
 
 // A machine's Kerberos name moved to a user keeps the machine's linked SID
 // with no directory to ask: the user holds the name linked as the machine
-// held it, and the machine is found no more.
+// held it, the machine is found no more, and its deletion runs.
 func TestMachineSpellingMovedToAUser(t *testing.T) {
 	s := serve(t, as(entity.RoleAdmin, false))
 	var linked bytes.Buffer
@@ -168,6 +168,10 @@ func TestMachineSpellingMovedToAUser(t *testing.T) {
 	}
 	if _, ok, err := s.store.User(t.Context(), m); err != nil || ok {
 		t.Errorf("the machine after the move: found %v (%v), want gone", ok, err)
+	}
+	del := s.opNamed(t, apiv1.OpUserDelete)
+	if del.Target.Kind != entity.ResourceUser || !bytes.Equal(del.Target.ID, m.ID[:]) {
+		t.Errorf("deletion %+v, want a user deletion of the machine %v", del.Target, m.ID)
 	}
 }
 

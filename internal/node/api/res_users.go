@@ -95,13 +95,13 @@ var users = writing[userDoc]{kind: entity.ResourceUser, raises: true, read: func
 // and its SID allocated, in the create's transaction. A name or uid another
 // principal holds is refused by the store, and a uid of 0 here. Its
 // Kerberos name is stored linked as the pre-write step asked the directory.
-func createUser(_ context.Context, rq request[userDoc], link entity.ProtocolID, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
+func createUser(ctx context.Context, rq request[userDoc], link entity.ProtocolID, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
 	sp := rq.Body.Spec
 	ids, err := withNumber(nil, entity.SchemeUID, sp.UID, "spec.uid")
 	if err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
-	if ids, err = withKerberos(tx, ids, sp.Kerberos, link); err != nil {
+	if ids, err = withKerberos(ctx, tx, ids, sp.Kerberos, link); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
 	u := entity.User{Principal: entity.NewUser(), Name: sp.Name, Email: sp.Email, Disabled: sp.Disabled, IDs: ids}
@@ -132,7 +132,7 @@ func createUser(_ context.Context, rq request[userDoc], link entity.ProtocolID, 
 // before its precondition: a user is created only by POST. Disabling the
 // last enabled admin is refused. A Kerberos name it keeps keeps its link; a
 // new one is stored linked as the pre-write step asked the directory.
-func putUser(_ context.Context, rq request[userDoc], link entity.ProtocolID, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
+func putUser(ctx context.Context, rq request[userDoc], link entity.ProtocolID, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
 	sp := rq.Body.Spec
 	u, _, err := tx.User(userAt(rq.ID))
 	if err != nil {
@@ -148,7 +148,7 @@ func putUser(_ context.Context, rq request[userDoc], link entity.ProtocolID, tx 
 	if u.IDs, err = withNumber(u.IDs, entity.SchemeUID, sp.UID, "spec.uid"); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
-	if u.IDs, err = withKerberos(tx, u.IDs, sp.Kerberos, link); err != nil {
+	if u.IDs, err = withKerberos(ctx, tx, u.IDs, sp.Kerberos, link); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
 	u.Name, u.Email, u.Disabled = sp.Name, sp.Email, sp.Disabled
@@ -282,17 +282,13 @@ func krbOf(ids entity.ProtocolIDs) (entity.ProtocolID, bool) {
 // otherwise link, which the pre-write step took for that name. A name a
 // machine holds, read tracked in tx, is taken from it with the machine's
 // link: the machine is marked deleted in tx, which frees the name for the
-// user's put after it. A link taken for another name than the spec's, or
-// from a machine whose spelling has changed since, is refused 503, as a
-// directory that could not answer is.
-//
-// decision: moving the name marks the machine deleted, since a machine holds
-// its one Kerberos spelling and nothing else, which the store keeps it to,
-// so a machine without it is no principal. Its marked record is left as a
-// deletion's first transaction leaves one, and no operation drops it, since
-// no runner step continues a machine's deletion. Start one once a step
-// does, or once a machine can hold anything a deletion must drop.
-func withKerberos(tx entity.ControlPlaneTx, ids entity.ProtocolIDs, name string, link entity.ProtocolID) (entity.ProtocolIDs, error) {
+// user's put after it, and a user deletion is started on the machine's ID,
+// which drops the rest of its record as any marked user's or machine's is.
+// The operation is started directly, so the user's write still answers as a
+// write of the user. A link taken for another name than the spec's, or from
+// a machine whose spelling has changed since, is refused 503, as a directory
+// that could not answer is.
+func withKerberos(ctx context.Context, tx entity.ControlPlaneTx, ids entity.ProtocolIDs, name string, link entity.ProtocolID) (entity.ProtocolIDs, error) {
 	old, held := krbOf(ids)
 	out := make(entity.ProtocolIDs, 0, len(ids)+1)
 	for _, id := range ids {
@@ -318,6 +314,9 @@ func withKerberos(tx entity.ControlPlaneTx, ids entity.ProtocolIDs, name string,
 			return nil, stale
 		}
 		if err := tx.DeleteUser(h.Principal, h.Generation); err != nil {
+			return nil, err
+		}
+		if _, err := start(ctx, tx, apiv1.OpUserDelete, entity.ResourceRef{Kind: entity.ResourceUser, ID: h.Principal.ID[:]}, opStart{}); err != nil {
 			return nil, err
 		}
 	}
