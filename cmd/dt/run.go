@@ -31,6 +31,7 @@ func newRun() *cobra.Command {
 	var only, skip []string
 	var ci, changed bool
 	var retry, parallel int
+	var packages []string
 	options := map[string]bool{}
 	cmd := &cobra.Command{
 		Use:   "run SUITE|GROUP[/CELL] [--OPTION] [TEST...] | --place P",
@@ -92,7 +93,7 @@ func newRun() *cobra.Command {
 				}
 				return dtc(cmd, root, again(cmd, args))
 			}
-			return runCells(cmd, root, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry, Place: place, Parallel: parallel, Base: base, Changed: changed})
+			return runCells(cmd, root, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry, Place: place, Parallel: parallel, Base: base, Changed: changed, Packages: packages})
 		},
 	}
 	cmd.Flags().StringVar(&tier, "tier", "pr", "run at tier T, or at a suite's own tier when wider: it sets args, env and select")
@@ -105,6 +106,7 @@ func newRun() *cobra.Command {
 	cmd.Flags().StringVar(&place, "place", "", "run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met")
 	cmd.Flags().StringVar(&base, "base", "", "compare the branch with REF wherever a command uses {base}, instead of the base dt finds: origin/develop, or in CI the event's")
 	cmd.Flags().BoolVar(&changed, "changed", false, "where a suite's packages gives patterns, test only the packages with a change committed since the base: every one without a base, when go.mod, go.sum or go.work changed, or when a changed file is in no package")
+	cmd.Flags().StringSliceVar(&packages, "packages", nil, "test only these packages, where a suite's commands take {packages}: they replace the patterns and --changed's selection")
 	cmd.Flags().StringVar(&in, "in", "", "where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)")
 	// Each suite's options are flags: dt run smbtorture --kerberos.
 	if _, r, err := load(); err == nil {
