@@ -34,9 +34,10 @@ func TestConformance(t *testing.T) {
 
 // A scan yields stored values only: the backend's own unstamped rows — the
 // commit mark a committing Update writes at zero bytes, and the store time's
-// eight-byte atomic maximum a transaction that asks Now raises — are skipped,
-// so no scan whose range covers them errors on a row no API read can decode.
-func TestScanSkipsTheBackendsWithRows(t *testing.T) {
+// eight-byte atomic maximum a transaction that asks Now raises — are
+// skipped by their keys, so no scan whose range covers them errors on a
+// row no API read can decode, while any other short row still does.
+func TestScanSkipsTheBackendsOwnRows(t *testing.T) {
 	s := fdbkvtest.Open(t, fdbkv.Options{})
 	api := []byte{0x01, 'k'} // an API key: its kind byte is one the store writes
 	if err := s.Update(context.Background(), func(tx kv.Txn) error {

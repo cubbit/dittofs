@@ -68,7 +68,7 @@ jobs:
         run: >
           DITTOFS_FDB_CLUSTER_FILE="$HOME/.cache/dittofs-fdb/data/fdb.cluster"
           go test -race -count=1 -timeout=20m
-          -run '^(TestConformance|TestNowAcrossNodes|TestUnknownCommitOutcomeNotReapplied|TestSweepClearsOnlyOldMarks|TestOpenIsolatesAndClears|TestStoreConformanceFDB|TestStoreConformanceFDBFrozenClock|FuzzNamespaceFDB|TestScanSkipsTheBackendsWithRows)$'
+          -run '^(TestConformance|TestNowAcrossNodes|TestUnknownCommitOutcomeNotReapplied|TestSweepClearsOnlyOldMarks|TestOpenIsolatesAndClears|TestStoreConformanceFDB|TestStoreConformanceFDBFrozenClock|FuzzNamespaceFDB|TestScanSkipsTheBackendsOwnRows)$'
           ./pkg/metadata/kv/fdbkv/... ./pkg/metadata/kvstore/
 
       # Only a push run saves: a pull request run reads its base branch's
