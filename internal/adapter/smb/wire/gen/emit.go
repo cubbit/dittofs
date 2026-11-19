@@ -214,15 +214,12 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 }
 `, f.offset, f.count, f.max, least(g.byName[f.typ]), f.name, f.typ, f.count, f.name, f.name)
 		default: // a union's arms, at its first
-			// decision: a union's bytes are bounded by the bytes holding them
-			// alone, not by its default's max: an arm reads its own struct
-			// from them, and the default keeps them within its max and past it
-			// keeps none, so an unknown context too long to keep is ignored,
-			// not the request refused, as MS-SMB2 3.3.5.4 has a negotiate
-			// context the server does not know ignored and RFC 22 section 16
-			// any unknown context. None rather than all, so a decoded value
-			// still encodes within its maxima. Overturned when RFC 22 section
-			// 16 bounds an unknown context's bytes, or keeps them, otherwise.
+			// A union's bytes are bounded by the bytes holding them alone, not
+			// by its default's max: an arm reads its own struct from them, and
+			// the default keeps them within its max and past it keeps none, so
+			// an unknown context too long to keep is ignored, not the request
+			// refused (MS-SMB2 3.3.5.4; RFC 22 section 16). None rather than
+			// all, so a decoded value still encodes within its maxima.
 			def := arms[len(arms)-1]
 			expr, lit := discriminant(disc)
 			fmt.Fprintf(b, "{\nr := %s\nswitch %s {\n", region(def, "len(d.B)"), expr)

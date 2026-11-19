@@ -2291,7 +2291,9 @@ What the tags must carry beyond fixed fields:
   `NEGOTIATE`, each found from the one before by `Next`, each context's body
   decoded by its name or type into its own struct (`DHnQ`, `DH2Q`, `DH2C`,
   `RqLs`, `AppInstanceId`, Appendix D; the preauthentication, encryption and
-  signing contexts of §3.2), an unknown one kept as bytes and ignored;
+  signing contexts of §3.2), an unknown one kept as bytes and ignored, and
+  one past its bytes' maximum ignored and kept as no bytes, never the
+  request refused (MS-SMB2 3.3.5.4's "ignore");
 - `IOCTL`'s input and output buffers, the input decoded by the control code
   into that code's request struct (§10, Appendix F), the output bounded by
   `MaxOutputResponse`;
