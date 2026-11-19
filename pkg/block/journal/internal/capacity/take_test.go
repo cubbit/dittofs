@@ -1816,25 +1816,36 @@ func TestTake_LandedEntersTheTallyAndRetiredRefundsIt(t *testing.T) {
 // TestTake_LandedAfterTheSeedReadItStandsHigh pins the seed window: a record
 // whose Landed arrives after the seed already read it in the set's settled
 // figure is counted twice, the tally standing high by exactly the record,
-// which fails closed. (A Landed before the seed adds nothing observable, for
-// the seed replaces the figure.)
+// which the record's retirement does not lower: it fails closed until the
+// journal reopens and reseeds. (A Landed before the seed adds nothing
+// observable, for the seed replaces the figure.)
 func TestTake_LandedAfterTheSeedReadItStandsHigh(t *testing.T) {
-	t.Run("landed after the seed read it", func(t *testing.T) {
-		r := newRig(t, std())
-		r.seed(t, landedAsk)
-		r.seal(t)
-		p := r.append(t, segment.Roll{}, tag1, 404)
-		r.seedTally(t) // the seed's settled figure already holds the record
-		rec := p.Loc.Len
-		r.c.Landed(tag1, rec)
-		// Standing high by the record: 1000+2*rec; an ask of 1000 fits 2000+2*rec.
-		if missing, ok := r.admitsAt(t, 1999+2*rec); ok || missing != 1 {
-			t.Fatalf("a take one below the doubled fit: admitted=%v missing=%d, want refused missing 1 (the lag overcounts by the record)", ok, missing)
-		}
-		if _, ok := r.admitsAt(t, 2000+2*rec); !ok {
-			t.Fatal("a take at the doubled fit was refused, want admitted")
-		}
-	})
+	r := newRig(t, std())
+	r.seed(t, landedAsk)
+	r.seal(t)
+	p := r.append(t, segment.Roll{}, tag1, 404)
+	r.seedTally(t) // the seed's settled figure already holds the record
+	rec := p.Loc.Len
+	r.c.Landed(tag1, rec)
+	// Standing high by the record: 1000+2*rec; an ask of 1000 fits 2000+2*rec.
+	if missing, ok := r.admitsAt(t, 1999+2*rec); ok || missing != 1 {
+		t.Fatalf("a take one below the doubled fit: admitted=%v missing=%d, want refused missing 1 (the lag overcounts by the record)", ok, missing)
+	}
+	if _, ok := r.admitsAt(t, 2000+2*rec); !ok {
+		t.Fatal("a take at the doubled fit was refused, want admitted")
+	}
+
+	// The retirement subtracts the record once: the tally stays high by it,
+	// for nothing clears a tag's seed in-process.
+	r.seal(t)
+	r.retire(t, p.Loc.Segment)
+	r.c.Retired(tag1)
+	if missing, ok := r.admitsAt(t, 1999+rec); ok || missing != 1 {
+		t.Fatalf("after the retirement, a take at limit %d: admitted=%v missing=%d, want refused missing 1 (the tally stays high by the record)", 1999+rec, ok, missing)
+	}
+	if _, ok := r.admitsAt(t, 2000+rec); !ok {
+		t.Fatalf("after the retirement, a take at limit %d was refused, want admitted", 2000+rec)
+	}
 }
 
 // refusedBeside is refused for a take made while another grant is open: the

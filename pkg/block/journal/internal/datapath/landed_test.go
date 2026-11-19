@@ -73,6 +73,36 @@ func TestRecordsLandedOutsideAWriteReachTheShareFigure(t *testing.T) {
 			}
 			return seg, segment.NotHeld
 		}},
+		{"forget", tag, func(t *testing.T, c *Core, seam *kit.Seam, s *Share, f core.FileID) (core.SegmentID, segment.Reason) {
+			syncFiles(t, c, f) // the window below holds the forget record alone
+			if err := s.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			// The forget record's sync fails and so does every segment write
+			// from the fourth on, so the window cannot re-append it and the
+			// forget answers the failure with the record still in the set
+			// under the tag. The fourth is the first write past the forget's
+			// own append (an earlier one fails the append itself, a later one
+			// leaves the forget succeeding); the row's own assertion fails if
+			// the count drifts, because the record is then not in the set.
+			if err := seam.Schedule(
+				kit.Failing(kit.OpSync, "*.seg", 1, boom),
+				kit.FailingFrom(kit.OpWrite, "*.seg", 4, 0, boom),
+			); err != nil {
+				t.Fatalf("the seam refused the faults: %v", err)
+			}
+			err := c.Forget(context.Background(), tag)
+			if err == nil {
+				t.Fatal("Forget = nil over a failing sync, want the failure")
+			}
+			if serr := seam.Schedule(); serr != nil {
+				t.Fatalf("the seam refused to clear its rules: %v", serr)
+			}
+			// No retirement follows: the failed journal is read-only and its
+			// retirer does not serve the ended segment, so the standing
+			// figures are what this row checks.
+			return 0, 0
+		}},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -91,6 +121,9 @@ func TestRecordsLandedOutsideAWriteReachTheShareFigure(t *testing.T) {
 
 			seg, reason := row.do(t, c, seam, s, f)
 			shareFigureIsTheSets(t, c, "with the record's segment standing", row.tag)
+			if seg == 0 {
+				return
+			}
 
 			// The segment holding the record retires through the hook the
 			// core's own executor runs.

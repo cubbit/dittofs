@@ -34,8 +34,8 @@ type Config struct {
 	// worker with no lock held, so it must not wait on a Sync.
 	Resolved func(stream uint32, seg core.SegmentID)
 	// Landed, when set, is told of every record this layer appends under a
-	// share's tag outside a write — a re-append and a loss record — with the
-	// record's placed length, so the share's figure takes its bytes. Nil
+	// share's tag outside a write — a re-append, of a forget record as of any
+	// other, and a loss record — with the record's placed length, so the share's figure takes its bytes. Nil
 	// means none.
 	Landed func(tag core.ShareTag, n int64)
 

@@ -1015,7 +1015,7 @@ func (g *Grant) Wrote(n int64) {
 
 // Landed takes into the share's figure n record bytes of a record that
 // landed under tag outside any grant: a re-append of a failed window's record,
-// a loss record, a removal record. The set counts such a record in
+// a loss record, a removal or forget record. The set counts such a record in
 // the tag's bytes the moment it lands and, when its segment retires, in the
 // tag's retired figure, which Retired subtracts from the tally, so the tally
 // has to hold the bytes for that subtraction to be exact. Like Wrote it takes
@@ -1030,11 +1030,11 @@ func (g *Grant) Wrote(n int64) {
 // hand-over, failing closed.
 //
 // decision: durability's re-appends and loss records, and the removal
-// records, bypass the admission because they must always land, but
+// and forget records, bypass the admission because they must always land, but
 // their bytes are the share's, so they enter the tally without a check. That
 // is safe because a re-append is a second copy of a record the tally already
 // holds until its source retires, so the tally overcounts by at most the
-// copies in flight, and a loss or removal record is a few bytes: the
+// copies in flight, and a loss, removal or forget record is a few bytes: the
 // share's limit stands higher by those bytes and refuses later admissions
 // until retirements refund them, failing closed. The tally counts the records
 // the headroom accounts for as well, since their bytes sit in the set under
