@@ -42,9 +42,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # userland the repo's scripts assume (GNU, bash 5, perl and prove for pjdfstest)
         bash coreutils util-linux procps psmisc lsof iproute2 iptables netcat-openbsd \
         socat curl ca-certificates openssl netbase kmod acl attr perl git \
-        jq xmlstarlet gettext-base shellcheck fio \
-        # gawk becomes /usr/bin/awk: bookworm's mawk 1.3.4-20200120 has no regex
-        # intervals, so the pynfs grader's /^\*{50}$/ never matches
+        jq shellcheck fio \
+        # gawk becomes /usr/bin/awk, for regex intervals: bookworm's mawk
+        # 1.3.4-20200120 has none
         gawk \
         # pynfs (Python 3.11 still ships xdrlib)
         python3 python3-ply python3-setuptools \
