@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
@@ -256,9 +258,12 @@ func TestDecide(t *testing.T) {
 
 // hashTree hashes root's whole tree — relative paths, sizes, then contents,
 // in sorted order — so any file created, changed, removed or renamed under
-// root changes it. A path named in skip, and everything under it, is left out:
-// for a subtree a collaborator of the code under test rewrites on its own
-// close, whose bytes say nothing about what the code did.
+// root changes it. A symlink is hashed as the link it is — its name and the
+// path it names, never followed — so a tree a start refuses to read on an
+// unstat-able path still hashes before and after. A path named in skip, and
+// everything under it, is left out: for a subtree a collaborator of the code
+// under test rewrites on its own close, whose bytes say nothing about what
+// the code did.
 func hashTree(t *testing.T, root string, skip ...string) string {
 	t.Helper()
 	h := sha256.New()
@@ -275,6 +280,14 @@ func hashTree(t *testing.T, root string, skip ...string) string {
 			}
 			p := filepath.Join(dir, e.Name())
 			if slices.Contains(skip, p) {
+				continue
+			}
+			if e.Type()&fs.ModeSymlink != 0 {
+				target, err := os.Readlink(p)
+				if err != nil {
+					t.Fatalf("hash the link %s: %v", p, err)
+				}
+				_, _ = fmt.Fprintf(h, "%s:%d:link:%s", name, len(target), target)
 				continue
 			}
 			if e.IsDir() {
@@ -311,11 +324,13 @@ func writeFile(t *testing.T, p, content string) {
 	}
 }
 
-// initJournal creates a real journal for install in dir.
+// initJournal creates a real journal for install in dir, over a mount the
+// journal's platform check accepts: the row's host may hold the test's
+// temporary directory where the check is the strictest.
 func initJournal(t *testing.T, dir string, install journal.InstallationID) {
 	t.Helper()
 	makeDir(t, dir)
-	if _, err := journal.Init(context.Background(), dir, install); err != nil {
+	if _, err := journal.Init(context.Background(), dir, install, journaltest.SuitableMount()); err != nil {
 		t.Fatalf("journal init on %s: %v", dir, err)
 	}
 }
@@ -653,6 +668,42 @@ func TestPreflight(t *testing.T) {
 			},
 		},
 		{
+			name: "a store path that cannot be stat'ed",
+			setup: func(t *testing.T, parent string) (string, []string) {
+				dir := filepath.Join(parent, "store")
+				// A symlink to itself: stat answers ELOOP on every host, so
+				// the probe's stat fails without the test needing a mode
+				// this host's user could read around.
+				if err := os.Symlink(dir, dir); err != nil {
+					t.Fatal(err)
+				}
+				device := filepath.Join(parent, "device")
+				initJournal(t, device, instA)
+				return dir, []string{device}
+			},
+			// a path the probe cannot stat is unidentifiable, never absent
+			// with the not-initialised advice to run dfs init over what
+			// cannot even be read.
+			want:    errUnidentifiable,
+			neverIs: []error{errNotInitialised, errStoreLost},
+			contains: func(parent string) []string {
+				return []string{filepath.Join(parent, "store")}
+			},
+		},
+		{
+			name: "a v1 layout's logs leaf under a device",
+			setup: func(t *testing.T, parent string) (string, []string) {
+				dir := filepath.Join(parent, "device")
+				writeFile(t, filepath.Join(dir, "shares", "s1", "logs", "l1"), "v1")
+				return filepath.Join(parent, "store"), []string{dir}
+			},
+			want:    errV1State,
+			neverIs: []error{errNotInitialised},
+			contains: func(parent string) []string {
+				return []string{filepath.Join(parent, "device", "shares", "s1", "logs")}
+			},
+		},
+		{
 			name: "unreadable store directory",
 			setup: func(t *testing.T, parent string) (string, []string) {
 				dir := filepath.Join(parent, "store")
@@ -711,7 +762,7 @@ func TestPreflight(t *testing.T) {
 			} else {
 				defer cancel()
 			}
-			got := Preflight(ctx, storeDir, v1Root, devices, clock)
+			got := Preflight(ctx, storeDir, v1Root, devices, clock, journaltest.SuitableMount())
 			if r.postRun != nil {
 				r.postRun(t, storeDir, devices)
 			}
@@ -760,7 +811,7 @@ func TestPreflightCancelDuringTheProbes(t *testing.T) {
 	afterDeviceOpen = cancel
 	t.Cleanup(func() { afterDeviceOpen = nil })
 	err := Preflight(ctx, store, filepath.Join(parent, "blocks"), []string{d1, d2},
-		sim.NewTestClock(time.Unix(0, 0)))
+		sim.NewTestClock(time.Unix(0, 0)), journaltest.SuitableMount())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Preflight over a context ended mid-probe: got %v, want the context's own error", err)
 	}

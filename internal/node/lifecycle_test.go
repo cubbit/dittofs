@@ -511,14 +511,14 @@ func TestStartRefusalLeavesEverythingByteIdentical(t *testing.T) {
 	// The store's own directory is left out of the parent's hash: Badger
 	// settles it when Stop closes it — memtable to SST, LOCK removed — no
 	// matter what the start did, so its bytes hold no evidence either way.
-	// Everything the refusal could create or change — every device, and any
-	// sibling of the store — is still hashed.
+	// Everything the refusal could create or change is inside the parent's
+	// tree — the harness's device under it among them — except the foreign
+	// journal's own tree, hashed beside it.
 	parent := filepath.Dir(device)
 	store := filepath.Join(parent, "store")
 	tree := func() map[string]string {
 		return map[string]string{
 			parent:  node.HashTree(t, parent, store),
-			device:  node.HashTree(t, device),
 			foreign: node.HashTree(t, foreign),
 		}
 	}

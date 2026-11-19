@@ -152,8 +152,11 @@ var afterDeviceOpen func()
 // configuration names, is refused naming the path; a present Badger store
 // passes; an absent store with the journals that name an installation is the
 // store lost; nothing else is initialised or identifiable. It creates,
-// changes and removes nothing, and builds no component.
-func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, clock engine.Clock) error {
+// changes and removes nothing, and builds no component. opts reach each
+// device's journal open — a test hands the platform check a mount it knows
+// suits the host, exactly as the node's own journal options channel does —
+// and a start hands none: the real platform check stands.
+func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, clock engine.Clock, opts ...journal.Option) error {
 	switch {
 	case ctx.Err() != nil:
 		// A canceled context is the caller's answer, never a device verdict:
@@ -193,8 +196,9 @@ func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, c
 		facts.Store, facts.StoreErr = state, err
 		return decide(facts)
 	}
+	open := append([]journal.Option{journal.WithClock(clock)}, opts...)
 	for _, dir := range devices {
-		_, err := journal.Open(ctx, dir, journal.Version{}, journal.JournalID{}, nil, journal.WithClock(clock))
+		_, err := journal.Open(ctx, dir, journal.Version{}, journal.JournalID{}, nil, open...)
 		// A zero expected identity makes Open read and answer the journal's
 		// own format and nothing else: no recovery runs, and no byte is
 		// written.
