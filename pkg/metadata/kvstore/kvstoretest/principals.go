@@ -3,6 +3,7 @@ package kvstoretest
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -308,6 +309,69 @@ func testPrincipalNameCase(t *testing.T, kvo Opener) {
 	must(t, errOf(cp.PutUser(ctx, user("finance"), 0, entity.Alloc{})))
 	if _, err := cp.PutGroup(ctx, group("finance"), 0, entity.Alloc{}); err != nil {
 		t.Errorf("group finance beside user finance: %v", err)
+	}
+}
+
+// A user's or group's name no protocol carries is refused invalid argument
+// on create, on rename and on a mint, and nothing is written: the rule is
+// the store's, so every path writing a name holds it. A name of exactly 255
+// bytes is accepted.
+func testPrincipalNameChars(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp, p := s.ControlPlane(), s.Principals()
+	alice, staff := user("alice"), group("staff")
+	ugen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
+	must(t, err)
+	ggen, err := cp.PutGroup(ctx, staff, 0, entity.Alloc{})
+	must(t, err)
+	bad := map[string]string{
+		"invalid UTF-8": "bad\xffname",
+		"NUL":           "nul\x00z",
+		"BEL":           "bell\x07",
+		"newline":       "x\ny",
+		"leading space": " lead",
+		"trailing tab":  "trail\t",
+		"256 bytes":     strings.Repeat("a", 256),
+	}
+	refused := func(what, name string, err error) {
+		t.Helper()
+		if !isCode(err, merrs.ErrInvalidArgument) || !errors.Is(err, entity.ErrLocalName) {
+			t.Errorf("%s named %s: %v, want invalid argument wrapping ErrLocalName", what, name, err)
+		}
+	}
+	for why, name := range bad {
+		_, err := cp.PutUser(ctx, user(name), 0, entity.Alloc{})
+		refused("creating a user", why, err)
+		_, err = cp.PutGroup(ctx, group(name), 0, entity.Alloc{})
+		refused("creating a group", why, err)
+		ru, rg := alice, staff
+		ru.Name, rg.Name = name, name
+		_, err = cp.PutUser(ctx, ru, ugen, entity.Alloc{})
+		refused("renaming a user", why, err)
+		_, err = cp.PutGroup(ctx, rg, ggen, entity.Alloc{})
+		refused("renaming a group", why, err)
+		err = s.Minter().Create(ctx, entity.MintBatch{Users: []entity.MintUser{{User: user(name)}}})
+		refused("minting a user", why, err)
+		err = s.Minter().Create(ctx, entity.MintBatch{Groups: []entity.MintGroup{{Group: group(name)}}})
+		refused("minting a group", why, err)
+		for _, kind := range []entity.PrincipalKind{entity.PrincipalUser, entity.PrincipalGroup} {
+			if got, err := p.ByName(ctx, kind, name); !merrs.IsNotFoundError(err) {
+				t.Errorf("ByName(%s, %s) after the refusals = %v, %v; want not found", kind, why, got, err)
+			}
+		}
+	}
+	if users := all(t, cp.Users(ctx, "")); len(users) != 1 || users[0].Name != "alice" || users[0].Generation != ugen {
+		t.Errorf("users after the refusals: %+v, want alice alone, unchanged", users)
+	}
+	if groups := all(t, cp.Groups(ctx, "")); len(groups) != 1 || groups[0].Name != "staff" || groups[0].Generation != ggen {
+		t.Errorf("groups after the refusals: %+v, want staff alone, unchanged", groups)
+	}
+	long := strings.Repeat("a", entity.MaxLocalName)
+	if _, err := cp.PutUser(ctx, user(long), 0, entity.Alloc{}); err != nil {
+		t.Errorf("creating a user named %d bytes: %v, want accepted", len(long), err)
+	}
+	if _, err := cp.PutGroup(ctx, group(long), 0, entity.Alloc{}); err != nil {
+		t.Errorf("creating a group named %d bytes: %v, want accepted", len(long), err)
 	}
 }
 

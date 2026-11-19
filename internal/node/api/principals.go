@@ -3,14 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strconv"
-	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
@@ -29,25 +28,16 @@ func idRange(tx entity.ControlPlaneTx) (entity.IDRange, error) {
 	return r, json.Unmarshal(s.Value, &r)
 }
 
-// maxName bounds a user's, group's or netgroup's name, in bytes.
-const maxName = 255
-
-// validName refuses, naming field, a name a protocol cannot carry as given:
-// not valid UTF-8, holding a control character, NUL among them, with white
-// space leading or trailing, or longer than maxName bytes. Names reach NFSv4
-// owner strings and NTLM sign-in names. An empty name is the caller's rule.
-func validName(field, name string) error {
-	switch {
-	case len(name) > maxName:
-		return &fieldError{field: field, detail: "longer than " + strconv.Itoa(maxName) + " bytes"}
-	case !utf8.ValidString(name):
-		return &fieldError{field: field, detail: "not valid UTF-8"}
-	case strings.ContainsFunc(name, unicode.IsControl):
-		return &fieldError{field: field, detail: "holds a control character"}
-	case strings.TrimFunc(name, unicode.IsSpace) != name:
-		return &fieldError{field: field, detail: "starts or ends with white space"}
+// nameField is err with the store's refusal of a user's or group's name
+// answered as a *fieldError naming spec.name, since the store's own refusal
+// names no field. The store holds the name rule, so every path that writes
+// a name, not the API's alone, is refused it.
+func nameField(err error) error {
+	var se *merrs.StoreError
+	if errors.As(err, &se) && errors.Is(se.Cause, entity.ErrLocalName) {
+		return &fieldError{field: "spec.name", detail: se.Cause.Error()}
 	}
-	return nil
+	return err
 }
 
 // spelling is the value of ids' spelling in scheme, and false when it has

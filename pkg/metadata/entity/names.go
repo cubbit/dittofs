@@ -3,7 +3,10 @@ package entity
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -12,7 +15,35 @@ var (
 	ErrInvalidName = errors.New("entity: invalid name")
 	// ErrNameTooLong is a name longer than the share allows.
 	ErrNameTooLong = errors.New("entity: name too long")
+	// ErrLocalName is a local user's, group's or netgroup's name that
+	// CheckLocalName, or the store's rule for a principal's name, refuses.
+	ErrLocalName = errors.New("not a name every protocol carries")
 )
+
+// MaxLocalName bounds a local user's, group's or netgroup's name, in bytes.
+const MaxLocalName = 255
+
+// CheckLocalName refuses, wrapping ErrLocalName, a local name a protocol
+// cannot carry as given: not valid UTF-8, holding a control character, NUL
+// among them, with white space leading or trailing, or longer than
+// MaxLocalName bytes. Such names reach NFSv4 owner strings and NTLM sign-in
+// names. An empty name passes: whether one is needed is the caller's rule.
+func CheckLocalName(name string) error {
+	var detail string
+	switch {
+	case len(name) > MaxLocalName:
+		detail = "longer than " + strconv.Itoa(MaxLocalName) + " bytes"
+	case !utf8.ValidString(name):
+		detail = "not valid UTF-8"
+	case strings.ContainsFunc(name, unicode.IsControl):
+		detail = "holds a control character"
+	case strings.TrimFunc(name, unicode.IsSpace) != name:
+		detail = "starts or ends with white space"
+	default:
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrLocalName, detail)
+}
 
 // NameRule decides which names a share accepts, for every protocol.
 type NameRule uint8

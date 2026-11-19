@@ -3,6 +3,7 @@ package kvstore
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"iter"
 	"slices"
 	"strconv"
@@ -286,12 +287,22 @@ func userShape(u entity.User) error {
 	return merrs.NewInvalidArgumentError("a user record is a user or a machine")
 }
 
-// localName refuses a created or renamed user or group name holding @ or \,
-// so a sign-in name with @ always names a directory principal, and a
-// DOMAIN\name spelling, whose prefix a lookup strips, names one principal.
+// localName refuses, as an invalid argument wrapping entity.ErrLocalName, a
+// created or renamed user or group name that entity.CheckLocalName refuses
+// or that holds @ or \, so a sign-in name with @ always names a directory
+// principal, and a DOMAIN\name spelling, whose prefix a lookup strips, names
+// one principal. Every write of a name, the API's, a mint's and the server's
+// own, reaches it here. A stored name is kept as it is.
 func localName(name string, existed bool, oldName string) error {
-	if (!existed || name != oldName) && strings.ContainsAny(name, `@\`) {
-		return merrs.NewInvalidArgumentError("a local name never holds @ or \\: " + name)
+	if existed && name == oldName {
+		return nil
+	}
+	err := entity.CheckLocalName(name)
+	if err == nil && strings.ContainsAny(name, `@\`) {
+		err = fmt.Errorf("%w: holds @ or \\", entity.ErrLocalName)
+	}
+	if err != nil {
+		return &merrs.StoreError{Code: merrs.ErrInvalidArgument, Message: err.Error() + ": " + strconv.Quote(name), Cause: err}
 	}
 	return nil
 }

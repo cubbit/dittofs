@@ -60,6 +60,7 @@ var components = []struct {
 	{entity.ErrIdempotencyMismatch, answerOf{http.StatusUnprocessableEntity, "idempotency_mismatch", false}},
 	{entity.ErrOperationRunning, answerOf{http.StatusConflict, apiv1.CodeOperationRunning, true}},
 	{entity.ErrInvalidName, answerOf{http.StatusBadRequest, "invalid_name", false}},
+	{entity.ErrLocalName, answerOf{http.StatusBadRequest, "local_name", false}},
 	{entity.ErrNameTooLong, answerOf{http.StatusBadRequest, "name_too_long", false}},
 	{entity.ErrSyntax, answerOf{http.StatusBadRequest, "syntax", false}},
 	{entity.ErrInvalidFile, answerOf{http.StatusBadRequest, "invalid_file", false}},

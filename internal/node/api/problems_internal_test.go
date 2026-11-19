@@ -200,7 +200,7 @@ func TestProblemStatuses(t *testing.T) {
 // running operation, a delay or a conflicting transaction.
 func TestProblemAnswers(t *testing.T) {
 	want := map[answerOf][]apiv1.Code{
-		{status: 400}: {"invalid", "invalid_name", "name_too_long", "syntax", "invalid_file", "wrong_share", "not_dir", "is_dir",
+		{status: 400}: {"invalid", "invalid_name", "local_name", "name_too_long", "syntax", "invalid_file", "wrong_share", "not_dir", "is_dir",
 			"past_end", "is_directory", "not_directory", "invalid_argument", "not_supported", "invalid_handle", "cross_share", "too_large",
 			"unknown_principal", "unknown_key", "wrong_scope", "required", "secret_ref"},
 		{status: 401}: {"unauthenticated"},

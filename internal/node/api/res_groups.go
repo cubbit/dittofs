@@ -49,7 +49,7 @@ func createGroup(_ context.Context, rq request[groupDoc], _ struct{}, tx entity.
 		}
 	}
 	if _, err := tx.PutGroup(g, 0, a); err != nil {
-		return apiv1.Group{}, g.Principal.ID, err
+		return apiv1.Group{}, g.Principal.ID, nameField(err)
 	}
 	g, _, err = tx.Group(g.Principal)
 	return groupOf(g), g.Principal.ID, err
@@ -74,7 +74,7 @@ func putGroup(_ context.Context, rq request[groupDoc], _ struct{}, tx entity.Con
 	}
 	g.Name = rq.Body.Spec.Name
 	if g.Generation, err = tx.PutGroup(g, rq.Expect, entity.Alloc{}); err != nil {
-		return apiv1.Group{}, rq.ID, err
+		return apiv1.Group{}, rq.ID, nameField(err)
 	}
 	return groupOf(g), rq.ID, nil
 }

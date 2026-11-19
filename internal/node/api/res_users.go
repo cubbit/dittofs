@@ -40,26 +40,23 @@ func emailFor(u entity.User, email string) error {
 	return nil
 }
 
-// named refuses a name an edit may not give: none in place of one, since
-// the API's principals are found by name, and a new one validName refuses.
-// A principal minted with no name keeps none, and a stored name is kept as
-// it is.
+// named refuses an edit giving no name in place of one, since the API's
+// principals are found by name. A principal minted with no name keeps none;
+// a new name is the store's to refuse (nameField).
 func named(old, name string) error {
-	switch {
-	case name == "" && old != "":
+	if name == "" && old != "" {
 		return &fieldError{field: "spec.name", detail: "a user or group keeps its name"}
-	case name != old:
-		return validName("spec.name", name)
 	}
 	return nil
 }
 
-// newName refuses a create naming no one, or a name validName refuses.
+// newName refuses a create naming no one; the name itself is the store's
+// to refuse (nameField).
 func newName(name string) error {
 	if name == "" {
 		return &fieldError{field: "spec.name", detail: "a user or group is created with a name"}
 	}
-	return validName("spec.name", name)
+	return nil
 }
 
 // maxEmail bounds an address, in bytes, as SMTP's path limit does.
@@ -113,7 +110,7 @@ func createUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.Co
 		}
 	}
 	if _, err := tx.PutUser(u, 0, a); err != nil {
-		return apiv1.User{}, u.Principal.ID, err
+		return apiv1.User{}, u.Principal.ID, nameField(err)
 	}
 	u, _, err = tx.User(u.Principal)
 	return userOf(u), u.Principal.ID, err
@@ -144,7 +141,7 @@ func putUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.Contr
 	}
 	u.Name, u.Email, u.Disabled = sp.Name, sp.Email, sp.Disabled
 	if u.Generation, err = tx.PutUser(u, rq.Expect, entity.Alloc{}); err != nil {
-		return apiv1.User{}, rq.ID, err
+		return apiv1.User{}, rq.ID, nameField(err)
 	}
 	return userOf(u), rq.ID, lastAdmin(tx, was)
 }

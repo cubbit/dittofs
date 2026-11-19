@@ -25,13 +25,14 @@ func netgroupOf(g entity.Netgroup) apiv1.Netgroup {
 }
 
 // netgroupRef is the target of a netgroup's row: its name, which must be
-// one validName admits, and not empty.
+// one entity.CheckLocalName admits, and not empty. A netgroup is no
+// principal, so the store holds no name rule for it and the check is here.
 func netgroupRef(_ [16]byte, name string) ([]byte, error) {
 	if name == "" {
 		return nil, &fieldError{field: "name", detail: "a netgroup has a name"}
 	}
-	if err := validName("name", name); err != nil {
-		return nil, err
+	if err := entity.CheckLocalName(name); err != nil {
+		return nil, &fieldError{field: "name", detail: err.Error()}
 	}
 	return []byte(name), nil
 }
