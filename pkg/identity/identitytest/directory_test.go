@@ -41,7 +41,7 @@ func TestDirectoryRefusesWhatItCannotRead(t *testing.T) {
 	}
 	for _, filter := range []string{
 		"(cn~=x)", "(uidNumber>=1)", "(uidNumber<=1)",
-		"(member:1.2.840.113556.1.4.1803:=2)", "(member:dn:=CN=x)", "(:1.2.840.113556.1.4.1941:=CN=x)",
+		"(member:1.2.840.113556.1.4.1803:=2)", "(member:dn:=CN=x)", "(member:1.2.840.113556.1.4.1941:=CN=x)",
 		"(cn=x", "cn=x", "(cn=a**b)", "(cn=x)(cn=y)", `(cn=\4)`,
 	} {
 		if _, err := c.Search(ctx, directory.Request{Base: base, Scope: directory.ScopeSubtree, Filter: filter}); err == nil {

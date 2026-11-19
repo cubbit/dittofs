@@ -12,11 +12,6 @@ import (
 	"github.com/go-ldap/ldap/v3"
 )
 
-// InChain is LDAP_MATCHING_RULE_IN_CHAIN, Active Directory's transitive
-// match: (member:<InChain>:=<dn>) holds for every group dn is a member of,
-// directly or through other groups.
-const InChain = "1.2.840.113556.1.4.1941"
-
 // BitAnd is LDAP_MATCHING_RULE_BIT_AND: (attr:<BitAnd>:=<n>) holds for an
 // entry whose integer attr has every bit of n set.
 const BitAnd = "1.2.840.113556.1.4.803"
@@ -43,7 +38,8 @@ const pageSize = 1000
 // group of 10^5 members fails; an OR filter carries at most 64 terms, the
 // SIDs of one lookup or the groups of one rfc2307 level, so a PAC of 1 024
 // SIDs costs 16 queries; an rfc2307 walk goes at most 64 levels deep and
-// gathers at most 1 024 groups, RFC 18's cap on a principal's groups. Each
+// gathers at most 1 024 groups, RFC 18's cap on a principal's groups, as
+// tokenGroups may hold at most 1 024 SIDs before any is looked up. Each
 // query is under the 5-second timeout; the question as a whole is bounded
 // only by the caller's context, which carries RFC 18's 20 seconds (§5.1).
 // Size the OR filter from a measured filter cost, and the page from the
@@ -63,10 +59,15 @@ const (
 func (c *Client) LookupSIDs(ctx context.Context, sids [][]byte) ([]Answer, error) {
 	c.begin()
 	defer c.end()
-	return c.lookupSIDs(ctx, sids)
+	base, _, err := c.domain(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.lookupSIDs(ctx, base, sids)
 }
 
-func (c *Client) lookupSIDs(ctx context.Context, sids [][]byte) ([]Answer, error) {
+// lookupSIDs is LookupSIDs under base.
+func (c *Client) lookupSIDs(ctx context.Context, base string, sids [][]byte) ([]Answer, error) {
 	var uniq [][]byte
 	asked := map[string]bool{}
 	for _, s := range sids {
@@ -83,7 +84,7 @@ func (c *Client) lookupSIDs(ctx context.Context, sids [][]byte) ([]Answer, error
 			f.WriteString("(objectSid=" + escapeBinary(s) + ")")
 		}
 		f.WriteString(")")
-		_, res, err := c.do(ctx, Request{Base: c.rec.Base, Scope: ScopeSubtree, Filter: f.String(), Attrs: c.rec.attrs()})
+		_, res, err := c.do(ctx, Request{Base: base, Scope: ScopeSubtree, Filter: f.String(), Attrs: c.rec.attrs()})
 		if err != nil {
 			return nil, err
 		}
@@ -110,22 +111,31 @@ func (c *Client) lookupSIDs(ctx context.Context, sids [][]byte) ([]Answer, error
 // Lookup answered: every group it belongs to, directly or through others,
 // its primary group and that group's own groups included. The closure is
 // returned whole or not at all: a query, a page or a range that fails fails
-// it ErrUnavailable.
+// it ErrUnavailable, and so does one of more than 1 024 groups.
 //
 // An ad user's closure is one read of its constructed tokenGroups, its SIDs
-// then looked up in batches; a group SID no entry holds is answered by its
-// SID alone, so the closure keeps it. A bind that may not read tokenGroups
-// gets it empty, and the closure is then asked by LDAP_MATCHING_RULE_IN_CHAIN
-// from the user and from the primary group primaryGroupID names, since
-// member omits a user's primary group, security groups only, as tokenGroups
-// holds. An rfc2307 user's closure is walked level by level: the groups
-// naming it in memberUid or member, then the groups naming those in member,
-// each group visited once.
+// then looked up in batches under the naming context, as tokenGroups covers
+// the whole domain whatever the record's base; a group SID no entry holds is
+// answered by its SID alone, so the closure keeps it. A bind that may not
+// read tokenGroups gets it empty, and the closure is then walked level by
+// level from the user and from the primary group primaryGroupID names, since
+// member omits a user's primary group, following security groups only: the
+// groups tokenGroups would answer (RFC 18 §2.5). An rfc2307 user's closure
+// is walked level by level too: the groups naming it in memberUid or member,
+// then the groups naming those in member.
 func (c *Client) Groups(ctx context.Context, user Answer) ([]Answer, error) {
 	c.begin()
 	defer c.end()
 	if !c.rec.IsAD() {
-		return c.walk(ctx, user)
+		conds := []string{"(member=" + ldap.EscapeFilter(user.DN) + ")"}
+		if user.Name != "" {
+			conds = append(conds, "(memberUid="+ldap.EscapeFilter(user.Name)+")")
+		}
+		return c.walk(ctx, c.rec.Base, "(objectClass=posixGroup)", nil, conds)
+	}
+	nc, domainSID, err := c.domain(ctx)
+	if err != nil {
+		return nil, err
 	}
 	_, res, err := c.do(ctx, Request{Base: user.DN, Scope: ScopeBase, Filter: "(objectClass=user)",
 		Attrs: []string{"tokenGroups", "primaryGroupID"}})
@@ -136,7 +146,10 @@ func (c *Client) Groups(ctx context.Context, user Answer) ([]Answer, error) {
 		return nil, unavailable("groups", fmt.Errorf("the user %q answered %d entries", user.DN, len(res.Entries)))
 	}
 	if sids := values(res.Entries[0], "tokenGroups"); len(sids) > 0 {
-		out, err := c.lookupSIDs(ctx, sids)
+		if len(sids) > maxGroups {
+			return nil, unavailable("groups", fmt.Errorf("tokenGroups holds %d SIDs, more than %d", len(sids), maxGroups))
+		}
+		out, err := c.lookupSIDs(ctx, nc, sids)
 		if err != nil {
 			return nil, err
 		}
@@ -152,79 +165,49 @@ func (c *Client) Groups(ctx context.Context, user Answer) ([]Answer, error) {
 		}
 		return out, nil
 	}
-	return c.chain(ctx, user.DN, first(res.Entries[0], "primaryGroupID"))
-}
-
-// chain is an ad user's closure by LDAP_MATCHING_RULE_IN_CHAIN, from the
-// user and from its primary group, primaryGroup its RID as text.
-func (c *Client) chain(ctx context.Context, dn string, primaryGroup []byte) ([]Answer, error) {
-	from := "(member:" + InChain + ":=" + ldap.EscapeFilter(dn) + ")"
-	var out []Answer
-	if primaryGroup != nil {
-		rid, err := strconv.ParseUint(string(primaryGroup), 10, 32)
-		if err != nil {
-			return nil, unavailable("groups", fmt.Errorf("primaryGroupID %q: %w", primaryGroup, err))
-		}
-		c.mu.Lock()
-		sid := slices.Clone(c.sid)
-		c.mu.Unlock()
-		if len(sid) < 8 {
-			return nil, unavailable("groups", errors.New("no domain SID to name the primary group by"))
-		}
-		pg, err := c.lookupSIDs(ctx, [][]byte{WithRID(sid, uint32(rid))})
-		if err != nil {
-			return nil, err
-		}
-		if len(pg) != 1 {
-			return nil, unavailable("groups", fmt.Errorf("no entry holds the primary group's SID, RID %d", rid))
-		}
-		out = append(out, pg[0])
-		from = "(|" + from + "(member:" + InChain + ":=" + ldap.EscapeFilter(pg[0].DN) + "))"
+	// An ad user always holds primaryGroupID, so a read without it is a bind
+	// that may not see it, and a closure without the primary group is short.
+	primaryGroup := first(res.Entries[0], "primaryGroupID")
+	if primaryGroup == nil {
+		return nil, unavailable("groups", errors.New("no primaryGroupID read"))
 	}
-	// decision: the security bit leaves distribution groups out, as a token
-	// does, but the chain rule still follows member through one, so a
-	// security group reached only through a distribution group is in this
-	// closure and not in tokenGroups'. Matching that takes a level-by-level
-	// walk over security groups; do it if a directory's bind account cannot
-	// read tokenGroups and holds such a nesting.
-	entries, err := c.all(ctx, Request{Base: c.rec.Base, Scope: ScopeSubtree,
-		Filter: "(&(objectClass=group)" + securityGroup + from + ")", Attrs: c.rec.attrs()})
+	rid, err := strconv.ParseUint(string(primaryGroup), 10, 32)
+	if err != nil {
+		return nil, unavailable("groups", fmt.Errorf("primaryGroupID %q: %w", primaryGroup, err))
+	}
+	if len(domainSID) < 8 {
+		return nil, unavailable("groups", errors.New("no domain SID to name the primary group by"))
+	}
+	pg, err := c.lookupSIDs(ctx, nc, [][]byte{WithRID(domainSID, uint32(rid))})
 	if err != nil {
 		return nil, err
 	}
-	// The entries of one search have distinct DNs, so only the primary group
-	// can repeat.
-	seen := map[string]bool{}
-	if len(out) > 0 {
-		seen[strings.ToLower(out[0].DN)] = true
+	if len(pg) != 1 {
+		return nil, unavailable("groups", fmt.Errorf("no entry holds the primary group's SID, RID %d", rid))
 	}
-	for _, e := range entries {
-		if !seen[strings.ToLower(e.DN)] {
-			out = append(out, c.answer(e))
-		}
-	}
-	return out, nil
+	return c.walk(ctx, nc, "(objectClass=group)"+securityGroup, pg,
+		[]string{"(member=" + ldap.EscapeFilter(user.DN) + ")", "(member=" + ldap.EscapeFilter(pg[0].DN) + ")"})
 }
 
-// walk is an rfc2307 user's closure, level by level: each level one paged
-// search per orTerms groups of the level before. A closure deeper than
-// maxLevels or wider than maxGroups fails ErrUnavailable, so a hostile or
-// runaway nesting costs a bounded number of queries.
-func (c *Client) walk(ctx context.Context, user Answer) ([]Answer, error) {
-	conds := []string{"(member=" + ldap.EscapeFilter(user.DN) + ")"}
-	if user.Name != "" {
-		conds = append(conds, "(memberUid="+ldap.EscapeFilter(user.Name)+")")
-	}
+// walk is a closure level by level, under base: the groups of class that
+// one of conds matches, then those naming them in member, each level one
+// paged search per orTerms groups of the level before, each group visited
+// once; out holds the groups already found. A closure deeper than maxLevels
+// or wider than maxGroups fails ErrUnavailable, so a hostile or runaway
+// nesting costs a bounded number of queries.
+func (c *Client) walk(ctx context.Context, base, class string, out []Answer, conds []string) ([]Answer, error) {
 	seen := map[string]bool{}
-	var out []Answer
+	for _, a := range out {
+		seen[strings.ToLower(a.DN)] = true
+	}
 	for level := 0; len(conds) > 0; level++ {
 		if level == maxLevels {
 			return nil, unavailable("groups", fmt.Errorf("nested more than %d levels deep", maxLevels))
 		}
 		var next []string
 		for batch := range slices.Chunk(conds, orTerms) {
-			entries, err := c.all(ctx, Request{Base: c.rec.Base, Scope: ScopeSubtree,
-				Filter: "(&(objectClass=posixGroup)(|" + strings.Join(batch, "") + "))", Attrs: c.rec.attrs()})
+			entries, err := c.all(ctx, Request{Base: base, Scope: ScopeSubtree,
+				Filter: "(&" + class + "(|" + strings.Join(batch, "") + "))", Attrs: c.rec.attrs()})
 			if err != nil {
 				return nil, err
 			}
@@ -253,8 +236,7 @@ func (c *Client) walk(ctx context.Context, user Answer) ([]Answer, error) {
 //
 // decision: unexported, and reached only from tests, because none of RFC
 // 18's directory questions asks a group's members: a closure is read through
-// tokenGroups, the chain rule or the rfc2307 walk, none of which reads
-// member. It is the client's range retrieval, held to Samba beside paging;
+// tokenGroups or a level-by-level walk, neither of which reads member. It is the client's range retrieval, held to Samba beside paging;
 // export it with the first caller that lists a group's members.
 func (c *Client) members(ctx context.Context, dn string) ([]string, error) {
 	c.begin()

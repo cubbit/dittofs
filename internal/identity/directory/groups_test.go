@@ -32,22 +32,27 @@ func lowered(dns ...string) []string {
 	return out
 }
 
+// walked reports whether q is a level of the walk over security groups.
+func walked(q directory.Request) bool { return strings.Contains(q.Filter, directory.BitAnd) }
+
 // An ad user's closure is every level of its nesting, its primary group and
-// that group's own groups, through tokenGroups; and the same through the
-// chain rule and primaryGroupID for a bind that cannot read tokenGroups,
-// which member alone would answer without the primary group. A distribution
-// group the user is in is in neither, as a security token holds none.
+// that group's own groups, a cycle visited once, through tokenGroups; and the
+// same through a level-by-level walk from the user and primaryGroupID for a
+// bind that cannot read tokenGroups, which member alone would answer without
+// the primary group. A distribution group the user is in is in neither, nor
+// is a security group reached only through it, as tokenGroups holds neither.
 func TestGroupsAD(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	user := e.d.AddUser(t, "alice", nil)
-	g1 := e.d.AddGroup(t, "g1", map[string][][]byte{"member": {[]byte(user)}})
+	g1 := e.d.AddGroup(t, "g1", map[string][][]byte{"member": {[]byte("CN=g3,CN=Users," + base), []byte(user)}}) // g3 in g1: a cycle
 	g2 := e.d.AddGroup(t, "g2", map[string][][]byte{"member": {[]byte(g1)}})
 	g3 := e.d.AddGroup(t, "g3", map[string][][]byte{"member": {[]byte(g2)}})
 	du := "CN=Domain Users,CN=Users," + base
 	pgParent := e.d.AddGroup(t, "staff", map[string][][]byte{"member": {[]byte(du)}})
 	e.d.AddGroup(t, "other", nil)
-	e.d.AddGroup(t, "list", map[string][][]byte{"member": {[]byte(user)}, "groupType": {[]byte("2")}})
+	list := e.d.AddGroup(t, "list", map[string][][]byte{"member": {[]byte(user)}, "groupType": {[]byte("2")}})
+	e.d.AddGroup(t, "overlist", map[string][][]byte{"member": {[]byte(list)}})
 	want := lowered(g1, g2, g3, du, pgParent)
 
 	for _, hidden := range []bool{false, true} {
@@ -64,9 +69,8 @@ func TestGroupsAD(t *testing.T) {
 		if err != nil || !slices.Equal(dnsOf(got), want) {
 			t.Errorf("Groups(alice), tokenGroups hidden %v = %v, %v; want %v", hidden, dnsOf(got), err, want)
 		}
-		chained := slices.ContainsFunc(f.Queries(), func(q directory.Request) bool { return strings.Contains(q.Filter, directory.InChain) })
-		if chained != hidden {
-			t.Errorf("tokenGroups hidden %v: the chain rule asked %v, want %v", hidden, chained, hidden)
+		if w := slices.ContainsFunc(f.Queries(), walked); w != hidden {
+			t.Errorf("tokenGroups hidden %v: the walk asked %v, want %v", hidden, w, hidden)
 		}
 		for _, g := range got {
 			if !g.Group || len(g.SID) == 0 {
@@ -82,54 +86,44 @@ func TestGroupsFailedPageFailsWhole(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	user := e.d.AddUser(t, "alice", nil)
-	for i := range 1500 {
+	for i := range 1000 {
 		e.d.AddGroup(t, fmt.Sprintf("g%04d", i), map[string][][]byte{"member": {[]byte(user)}})
 	}
 	e.d.HideTokenGroups()
-	chain := func(r directory.Request) bool { return strings.Contains(r.Filter, directory.InChain) }
+	e.d.SetMaxPageSize(600)
 
-	f := e.faulty(t)
-	c := e.client(f.Dial)
+	c := e.client(e.d.Dial)
 	a, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := c.Groups(ctx, a)
-	if err != nil || len(got) != 1501 {
-		t.Fatalf("Groups(alice) = %d groups, %v; want its 1 500 and Domain Users", len(got), err)
-	}
-	var filter string
-	for _, q := range f.Queries() {
-		if chain(q) {
-			filter = q.Filter
-		}
-	}
+	filter := walkFilter(t, e, a)
 
-	f = e.faulty(t, sim.Rule{Op: "search", Key: filter, From: 2, Count: 1, Action: sim.FaultAction{Err: errors.New("page lost")}})
+	f := e.faulty(t, sim.Rule{Op: "search", Key: filter, From: 2, Count: 1, Action: sim.FaultAction{Err: errors.New("page lost")}})
 	c = e.client(f.Dial)
-	got, err = c.Groups(ctx, a)
+	got, err := c.Groups(ctx, a)
 	if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
 		t.Errorf("Groups(alice) with its second page failed = %d groups, %v; want none, ErrUnavailable", len(got), err)
 	}
-	if n := len(slices.DeleteFunc(f.Queries(), func(r directory.Request) bool { return !chain(r) })); n != 2 {
-		t.Errorf("%d chain-rule pages asked, want the first and the failed second", n)
+	if n := len(slices.DeleteFunc(f.Queries(), func(r directory.Request) bool { return r.Filter != filter })); n != 2 {
+		t.Errorf("%d pages of the walk's first level asked, want the first and the failed second", n)
 	}
 }
 
-// chainFilter is the chain rule's filter of a Groups(user) that asks it,
-// read from a run on a fault wrapper with no faults.
-func chainFilter(t *testing.T, e *env, user directory.Answer) string {
+// walkFilter is the filter of the first level of the walk of a Groups(user)
+// that walks, read from a run on a fault wrapper with no faults.
+func walkFilter(t *testing.T, e *env, user directory.Answer) string {
 	t.Helper()
 	f := e.faulty(t)
 	if _, err := e.client(f.Dial).Groups(context.Background(), user); err != nil {
 		t.Fatal(err)
 	}
 	for _, q := range f.Queries() {
-		if strings.Contains(q.Filter, directory.InChain) {
+		if walked(q) {
 			return q.Filter
 		}
 	}
-	t.Fatal("Groups asked no chain-rule query")
+	t.Fatal("Groups asked no level of the walk")
 	return ""
 }
 
@@ -140,27 +134,28 @@ func TestGroupsPagesStayOnOneConnection(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	user := e.d.AddUser(t, "alice", nil)
-	for i := range 1500 {
+	for i := range 1000 {
 		e.d.AddGroup(t, fmt.Sprintf("g%04d", i), map[string][][]byte{"member": {[]byte(user)}})
 	}
 	e.d.HideTokenGroups()
+	e.d.SetMaxPageSize(600)
 	a, _, err := e.client(e.d.Dial).Lookup(ctx, directory.ByUserName, []byte("alice"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	filter := chainFilter(t, e, a)
+	filter := walkFilter(t, e, a)
 
 	closed := fmt.Errorf("%w: closed under the search", directory.ErrClosed)
 	f := e.faulty(t, sim.Rule{Op: "search", Key: filter, From: 2, Count: 1, Action: sim.FaultAction{Err: closed}})
 	got, err := e.client(f.Dial).Groups(ctx, a)
-	if err != nil || len(got) != 1501 {
-		t.Fatalf("Groups(alice) with its second page's connection closed = %d groups, %v; want its 1 500 and Domain Users", len(got), err)
+	if err != nil || len(got) != 1001 {
+		t.Fatalf("Groups(alice) with its second page's connection closed = %d groups, %v; want its 1 000 and Domain Users", len(got), err)
 	}
 	if n := len(f.Dials()); n != 2 {
 		t.Errorf("%d dials, want 2: the first and the restart's, none for a lone second page", n)
 	}
 	if n := len(slices.DeleteFunc(f.Queries(), func(r directory.Request) bool { return r.Filter != filter })); n != 4 {
-		t.Errorf("%d chain-rule pages asked, want 4: two, the second closed, then two again", n)
+		t.Errorf("%d pages of the walk's first level asked, want 4: two, the second closed, then two again", n)
 	}
 }
 
@@ -185,8 +180,8 @@ func TestGroupsMorePagesThanTheBound(t *testing.T) {
 	if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
 		t.Fatalf("Groups(alice) in 65 groups, a page each = %d groups, %v; want none, ErrUnavailable", len(got), err)
 	}
-	if n := len(slices.DeleteFunc(f.Queries(), func(r directory.Request) bool { return !strings.Contains(r.Filter, directory.InChain) })); n != 64 {
-		t.Errorf("%d chain-rule pages asked, want 64", n)
+	if n := len(slices.DeleteFunc(f.Queries(), func(r directory.Request) bool { return !walked(r) })); n != 64 {
+		t.Errorf("%d pages of the walk asked, want 64", n)
 	}
 	dials := len(f.Dials())
 	if _, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice")); err != nil {
@@ -234,6 +229,85 @@ func TestGroupsKeepsASIDWithNoEntry(t *testing.T) {
 	slices.Sort(sids)
 	if err != nil || !slices.Equal(sids, want) || bare != 1 {
 		t.Errorf("Groups(alice), one group's entry unread = SIDs %x (%d by SID alone), %v; want %x, one by SID alone", sids, bare, err, want)
+	}
+}
+
+// A bind that reads neither tokenGroups nor the user's primaryGroupID, which
+// every ad user holds, fails the closure rather than answer it without the
+// primary group.
+func TestGroupsADUnreadPrimaryGroupIsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	user := e.d.AddUser(t, "alice", nil)
+	e.d.AddGroup(t, "g1", map[string][][]byte{"member": {[]byte(user)}})
+	e.d.HideTokenGroups()
+	f := e.faulty(t, sim.Rule{Op: "search", Key: "(objectClass=user)", Action: sim.FaultAction{TearAfter: 1}})
+	f.TearAttr("primaryGroupID", "primaryGroupIDUnread")
+	got, err := e.client(f.Dial).Groups(ctx, directory.Answer{DN: user})
+	if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+		t.Errorf("Groups(alice), primaryGroupID unread = %v, %v; want none, ErrUnavailable", dnsOf(got), err)
+	}
+}
+
+// A record whose base holds none of the user's groups still answers the
+// whole closure: tokenGroups covers the domain, so its SIDs, the primary
+// group and the walk are looked up under the naming context.
+func TestGroupsADUnderTheNamingContext(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.rec.Base = "OU=People," + base
+	user := e.d.AddUser(t, "alice", nil)
+	g1 := e.d.AddGroup(t, "g1", map[string][][]byte{"member": {[]byte(user)}})
+	g2 := e.d.AddGroup(t, "g2", map[string][][]byte{"member": {[]byte(g1)}})
+	du := "CN=Domain Users,CN=Users," + base
+	staff := e.d.AddGroup(t, "staff", map[string][][]byte{"member": {[]byte(du)}})
+	want := lowered(g1, g2, du, staff)
+	for _, hidden := range []bool{false, true} {
+		if hidden {
+			e.d.HideTokenGroups()
+		}
+		got, err := e.client(e.d.Dial).Groups(ctx, directory.Answer{DN: user})
+		if err != nil || !slices.Equal(dnsOf(got), want) {
+			t.Errorf("Groups(alice) under base %s, tokenGroups hidden %v = %v, %v; want %v", e.rec.Base, hidden, dnsOf(got), err, want)
+		}
+	}
+}
+
+// A closure of more than 1 024 groups fails: from tokenGroups before any of
+// its SIDs is looked up, and from the walk at the level that passes the cap.
+func TestGroupsADBound(t *testing.T) {
+	for _, hidden := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tokenGroups hidden %v", hidden), func(t *testing.T) {
+			ctx := context.Background()
+			e := newEnv(t)
+			user := e.d.AddUser(t, "alice", nil)
+			for i := range 1024 { // and Domain Users: 1 025
+				e.d.AddGroup(t, fmt.Sprintf("g%04d", i), map[string][][]byte{"member": {[]byte(user)}})
+			}
+			if hidden {
+				e.d.HideTokenGroups()
+			}
+			f := e.faulty(t)
+			got, err := e.client(f.Dial).Groups(ctx, directory.Answer{DN: user})
+			if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+				t.Errorf("Groups(alice) in 1 025 groups = %d groups, %v; want none, ErrUnavailable", len(got), err)
+			}
+			lookups, levels := 0, 0
+			for _, q := range f.Queries() {
+				if strings.HasPrefix(q.Filter, "(|(objectSid=") {
+					lookups++
+				}
+				if walked(q) {
+					levels++
+				}
+			}
+			// Hidden, the one lookup is the primary group's, and the walk's
+			// first level is two pages of 1 000.
+			want := map[bool][2]int{false: {0, 0}, true: {1, 2}}[hidden]
+			if lookups != want[0] || levels != want[1] {
+				t.Errorf("Groups(alice) in 1 025 groups asked %d SID lookups and %d walk queries, want %d and %d", lookups, levels, want[0], want[1])
+			}
+		})
 	}
 }
 

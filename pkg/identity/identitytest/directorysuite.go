@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // Seeder puts the entries a row of DirectoryConformance needs into the
@@ -394,45 +395,60 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		}
 	})
 
-	t.Run("the chain rule answers every level of nesting", func(t *testing.T) {
-		c, s := bound(t)
-		user, g, _ := nested(t, s)
-		got := dns(t, c, "(&(objectClass=group)(member:"+directory.InChain+":="+escape([]byte(user))+"))")
-		if want := lower(g[0], g[1], g[2]); !slices.Equal(got, want) {
-			t.Errorf("groups %s is in by the chain rule: %v, want %v", user, got, want)
-		}
-	})
-
-	// A distribution group (groupType 2, global, no security bit) is one the
-	// chain rule matches and a security token never holds: tokenGroups
-	// leaves it out, and so does the chain rule asked for groupType's
-	// security bit. A security group the user reaches only through it is
-	// left out of tokenGroups too, where the chain rule, which follows
-	// member whatever the group, still answers it.
-	t.Run("a distribution group is in neither tokenGroups nor the security bit's chain", func(t *testing.T) {
+	// A distribution group (groupType 2, global, no security bit) is never
+	// in a security token, nor is a security group reached only through one:
+	// pu is in pdirect and in the distribution group pdg, pdg is in psg, and
+	// tokenGroups holds pdirect but neither pdg nor psg. The client's closure
+	// holds tokenGroups' SIDs both when it reads tokenGroups and, with
+	// tokenGroups unread, when it walks security groups level by level from
+	// the user and its primary group (RFC 18 §2.5).
+	t.Run("the closure is tokenGroups', read or walked through security groups", func(t *testing.T) {
 		c, s := bound(t)
 		tok := token()
-		user := s.AddUser(t, "du"+tok, nil)
-		sec := s.AddGroup(t, "dsec"+tok, map[string][][]byte{"member": {[]byte(user)}})
-		dist := s.AddGroup(t, "ddist"+tok, map[string][][]byte{"member": {[]byte(user)}, "groupType": {[]byte("2")}})
-		up := s.AddGroup(t, "dup"+tok, map[string][][]byte{"member": {[]byte(dist)}})
-		in := "(member:" + directory.InChain + ":=" + escape([]byte(user)) + ")"
-		if got, want := dns(t, c, "(&(objectClass=group)"+in+")"), lower(sec, dist, up); !slices.Equal(got, want) {
-			t.Errorf("groups %s is in by the chain rule: %v, want %v", user, got, want)
+		user := s.AddUser(t, "pu"+tok, nil)
+		direct := s.AddGroup(t, "pdirect"+tok, map[string][][]byte{"member": {[]byte(user)}})
+		dist := s.AddGroup(t, "pdg"+tok, map[string][][]byte{"member": {[]byte(user)}, "groupType": {[]byte("2")}})
+		sec := s.AddGroup(t, "psg"+tok, map[string][][]byte{"member": {[]byte(dist)}})
+		want := tokenGroupsOf(t, c, user)
+		slices.Sort(want)
+		if d := sidOf(t, c, direct); !slices.Contains(want, string(d)) {
+			t.Errorf("%s: tokenGroups %x lacks its security group pdirect, %x", user, want, d)
 		}
-		bit := "(groupType:" + directory.BitAnd + ":=2147483648)"
-		if got, want := dns(t, c, "(&(objectClass=group)"+bit+in+")"), lower(sec, up); !slices.Equal(got, want) {
-			t.Errorf("security groups %s is in by the chain rule: %v, want %v", user, got, want)
+		for _, g := range []struct{ what, dn string }{{"its distribution group pdg", dist}, {"psg, reached only through pdg", sec}} {
+			if sid := sidOf(t, c, g.dn); slices.Contains(want, string(sid)) {
+				t.Errorf("%s: tokenGroups holds %s, %x", user, g.what, sid)
+			}
 		}
-		got := tokenGroupsOf(t, c, user)
-		if want := sidOf(t, c, sec); !slices.Contains(got, string(want)) {
-			t.Errorf("%s: tokenGroups %x lacks its security group, %x", user, got, want)
-		}
-		if d := sidOf(t, c, dist); slices.Contains(got, string(d)) {
-			t.Errorf("%s: tokenGroups holds %x, its distribution group", user, d)
-		}
-		if u := sidOf(t, c, up); slices.Contains(got, string(u)) {
-			t.Errorf("%s: tokenGroups holds %x, a group reached only through its distribution group", user, u)
+
+		name, pw := s.Account()
+		nc := naming(t, c)
+		clock := sim.NewTestClock(time.Unix(0, 0))
+		for _, unread := range []bool{false, true} {
+			var rules []sim.Rule
+			if unread {
+				rules = append(rules, sim.Rule{Op: "search", Key: "(objectClass=user)", Action: sim.FaultAction{TearAfter: 1}})
+			}
+			sched, err := sim.NewSchedule(1, clock, rules...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := NewFaultyDirectory(func(context.Context, directory.Record) (directory.Conn, error) {
+				conn, _ := open(t)
+				return conn, nil
+			}, sched)
+			f.TearAttr("tokenGroups", "tokenGroupsUnread")
+			cl := directory.NewClient(directory.Record{Address: "ldap://suite", Base: nc, BindName: name}, f.Dial,
+				func(context.Context) ([]byte, error) { return pw, nil }, clock, nil)
+			got, err := cl.Groups(call(t), directory.Answer{DN: user})
+			cl.Close()
+			var sids []string
+			for _, g := range got {
+				sids = append(sids, string(g.SID))
+			}
+			slices.Sort(sids)
+			if err != nil || !slices.Equal(sids, want) {
+				t.Errorf("Groups(%s), tokenGroups unread %v = SIDs %x, %v; want tokenGroups' %x", user, unread, sids, err, want)
+			}
 		}
 	})
 

@@ -82,6 +82,7 @@ type Client struct {
 	mu       sync.Mutex
 	conn     Conn   // nil until the first question, and after a failed call
 	sid      []byte // the domain SID, once read; never read for an rfc2307 record
+	nc       string // the naming context the domain SID was read from
 	inflight int    // questions running
 	closed   bool
 }
@@ -137,12 +138,23 @@ func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool
 func (c *Client) DomainSID(ctx context.Context) ([]byte, error) {
 	c.begin()
 	defer c.end()
+	_, sid, err := c.domain(ctx)
+	return sid, err
+}
+
+// domain is the base a question about the whole domain searches, and the
+// domain SID: an ad record's naming context, which may hold more than its
+// base, and an rfc2307 record's base, with no SID.
+func (c *Client) domain(ctx context.Context) (string, []byte, error) {
 	if _, _, err := c.connect(ctx); err != nil {
-		return nil, err
+		return "", nil, err
+	}
+	if !c.rec.IsAD() {
+		return c.rec.Base, nil, nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return slices.Clone(c.sid), nil
+	return c.nc, slices.Clone(c.sid), nil
 }
 
 // Test is test-directory's call: on a connection of its own, closed after,
@@ -318,43 +330,43 @@ func (c *Client) establish(ctx context.Context) (Conn, bool, error) {
 		c.mu.Unlock()
 	}
 	if sid == nil && c.rec.IsAD() {
-		sid, err := c.readDomainSID(ctx, conn)
+		nc, sid, err := c.readDomainSID(ctx, conn)
 		if err != nil {
 			return nil, false, err
 		}
 		c.mu.Lock()
-		c.sid = sid
+		c.nc, c.sid = nc, sid
 		c.mu.Unlock()
 	}
 	return conn, fresh, nil
 }
 
-// readDomainSID reads the objectSid of the entry the root DSE's
-// defaultNamingContext names.
-func (c *Client) readDomainSID(ctx context.Context, conn Conn) ([]byte, error) {
+// readDomainSID reads the root DSE's defaultNamingContext and the objectSid
+// of the entry it names.
+func (c *Client) readDomainSID(ctx context.Context, conn Conn) (string, []byte, error) {
 	res, err := c.search(ctx, conn, Request{Scope: ScopeBase, Filter: "(objectClass=*)", Attrs: []string{"defaultNamingContext"}})
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	var nc []byte
 	if len(res.Entries) == 1 {
 		nc = first(res.Entries[0], "defaultNamingContext")
 	}
 	if len(nc) == 0 {
-		return nil, unavailable("domain SID", errors.New("the root DSE names no defaultNamingContext"))
+		return "", nil, unavailable("domain SID", errors.New("the root DSE names no defaultNamingContext"))
 	}
 	res, err = c.search(ctx, conn, Request{Base: string(nc), Scope: ScopeBase, Filter: "(objectSid=*)", Attrs: []string{"objectSid"}})
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	var sid []byte
 	if len(res.Entries) == 1 {
 		sid = first(res.Entries[0], "objectSid")
 	}
 	if len(sid) == 0 {
-		return nil, unavailable("domain SID", fmt.Errorf("the domain object %q holds no objectSid", nc))
+		return "", nil, unavailable("domain SID", fmt.Errorf("the domain object %q holds no objectSid", nc))
 	}
-	return sid, nil
+	return string(nc), sid, nil
 }
 
 // search sends req on conn with the domain-scope control, under the query

@@ -31,7 +31,7 @@ import (
 // references to the configuration and DNS partitions for a subtree search of
 // the naming context itself. It pages a search as RFC 2696 says, refusing a
 // cookie on a connection other than the one that handed it out, matches
-// LDAP_MATCHING_RULE_IN_CHAIN and LDAP_MATCHING_RULE_BIT_AND, constructs
+// LDAP_MATCHING_RULE_BIT_AND, constructs
 // tokenGroups, of security groups only, on a base-scope read, and hands back
 // a range of a multi-valued attribute asked for as attr;range=<lo>-<hi|*>,
 // at most MaxValRange values of it.
