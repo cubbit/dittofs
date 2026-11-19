@@ -26,3 +26,9 @@ var SearchError = searchError
 
 // ErrReferral is a search the directory answered with a referral.
 var ErrReferral = errReferral
+
+// Members is the client's range retrieval of the member values of the group
+// at dn.
+func Members(ctx context.Context, c *Client, dn string) ([]string, error) {
+	return c.members(ctx, dn)
+}

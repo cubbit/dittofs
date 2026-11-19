@@ -42,6 +42,13 @@ TLS_DIR=/var/lib/samba/private/tls
 # only; the tests pass it from fixture_test.go's adRPCPortLow/adRPCPortHigh.
 RPC_PORT_RANGE="${RPC_PORT_RANGE:-50000-50019}"
 
+# Whether the domain database skips fsync on each commit, read at provision
+# only. Each LDAP add or delete is its own transaction, so with fsync a test
+# seeding thousands of entries spends minutes in it. The Go tests set it, as
+# their container is thrown away with the test; the k8s fixture keeps a
+# volume and leaves it off.
+LDB_NOSYNC="${LDB_NOSYNC:-false}"
+
 # Service principals the DittoFS server presents to clients, and the account
 # that holds them.
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-dittofs-svc}"
@@ -91,7 +98,8 @@ if [ ! -f /var/lib/samba/.provisioned ]; then
         --option="rpc server dynamic port range = $RPC_PORT_RANGE" \
         --option="tls certfile = $TLS_DIR/cert.pem" \
         --option="tls keyfile = $TLS_DIR/key.pem" \
-        --option="tls cafile = $TLS_DIR/ca.pem"
+        --option="tls cafile = $TLS_DIR/ca.pem" \
+        --option="ldb:nosync = $LDB_NOSYNC"
 
     # Samba writes its own krb5.conf during provision; expose it to other
     # containers / the Go test on the shared volume.

@@ -86,6 +86,7 @@ type Client struct {
 	mu       sync.Mutex
 	conn     Conn   // nil until the first question, and after a failed call
 	sid      []byte // the domain SID, once read; never read for an rfc2307 record
+	nc       string // the naming context the domain SID was read from
 	inflight int    // questions running
 	closed   bool
 }
@@ -120,21 +121,7 @@ func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool
 	}
 	c.begin()
 	defer c.end()
-	req := Request{Base: c.rec.Base, Scope: ScopeSubtree, Filter: filter, Attrs: c.rec.attrs()}
-	conn, fresh, err := c.connect(ctx)
-	if err != nil {
-		return Answer{}, false, err
-	}
-	res, err := c.search(ctx, conn, req)
-	// A held connection the directory closed while idle fails the first
-	// question on it, so that one is asked again, once, on a new one; a
-	// fresh connection's failure is the directory's answer, not retried.
-	if err != nil && !fresh && errors.Is(err, ErrClosed) {
-		if conn, _, err = c.connect(ctx); err != nil {
-			return Answer{}, false, err
-		}
-		res, err = c.search(ctx, conn, req)
-	}
+	_, res, err := c.do(ctx, Request{Base: c.rec.Base, Scope: ScopeSubtree, Filter: filter, Attrs: c.rec.attrs()})
 	if err != nil {
 		return Answer{}, false, err
 	}
@@ -155,12 +142,23 @@ func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool
 func (c *Client) DomainSID(ctx context.Context) ([]byte, error) {
 	c.begin()
 	defer c.end()
+	_, sid, err := c.domain(ctx)
+	return sid, err
+}
+
+// domain is the base a question about the whole domain searches, and the
+// domain SID: an ad record's naming context, which may hold more than its
+// base, and an rfc2307 record's base, with no SID.
+func (c *Client) domain(ctx context.Context) (string, []byte, error) {
 	if _, _, err := c.connect(ctx); err != nil {
-		return nil, err
+		return "", nil, err
+	}
+	if !c.rec.IsAD() {
+		return c.rec.Base, nil, nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return slices.Clone(c.sid), nil
+	return c.nc, slices.Clone(c.sid), nil
 }
 
 // Test is test-directory's call: on a connection of its own, closed after,
@@ -336,43 +334,43 @@ func (c *Client) establish(ctx context.Context) (Conn, bool, error) {
 		c.mu.Unlock()
 	}
 	if sid == nil && c.rec.IsAD() {
-		sid, err := c.readDomainSID(ctx, conn)
+		nc, sid, err := c.readDomainSID(ctx, conn)
 		if err != nil {
 			return nil, false, err
 		}
 		c.mu.Lock()
-		c.sid = sid
+		c.nc, c.sid = nc, sid
 		c.mu.Unlock()
 	}
 	return conn, fresh, nil
 }
 
-// readDomainSID reads the objectSid of the entry the root DSE's
-// defaultNamingContext names.
-func (c *Client) readDomainSID(ctx context.Context, conn Conn) ([]byte, error) {
+// readDomainSID reads the root DSE's defaultNamingContext and the objectSid
+// of the entry it names.
+func (c *Client) readDomainSID(ctx context.Context, conn Conn) (string, []byte, error) {
 	res, err := c.search(ctx, conn, Request{Scope: ScopeBase, Filter: "(objectClass=*)", Attrs: []string{"defaultNamingContext"}})
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	var nc []byte
 	if len(res.Entries) == 1 {
 		nc = first(res.Entries[0], "defaultNamingContext")
 	}
 	if len(nc) == 0 {
-		return nil, unavailable("domain SID", errors.New("the root DSE names no defaultNamingContext"))
+		return "", nil, unavailable("domain SID", errors.New("the root DSE names no defaultNamingContext"))
 	}
 	res, err = c.search(ctx, conn, Request{Base: string(nc), Scope: ScopeBase, Filter: "(objectSid=*)", Attrs: []string{"objectSid"}})
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	var sid []byte
 	if len(res.Entries) == 1 {
 		sid = first(res.Entries[0], "objectSid")
 	}
 	if len(sid) == 0 {
-		return nil, unavailable("domain SID", fmt.Errorf("the domain object %q holds no objectSid", nc))
+		return "", nil, unavailable("domain SID", fmt.Errorf("the domain object %q holds no objectSid", nc))
 	}
-	return sid, nil
+	return string(nc), sid, nil
 }
 
 // search sends req on conn with the domain-scope control, under the query
@@ -394,15 +392,87 @@ func (c *Client) searchOn(ctx context.Context, conn Conn, req Request) (Result, 
 	defer cancel()
 	res, err := conn.Search(sctx, req)
 	if err != nil {
-		c.mu.Lock()
-		if c.conn == conn {
-			c.conn = nil
-		}
-		c.mu.Unlock()
-		_ = conn.Close()
+		c.drop(conn)
 		return Result{}, unavailable("search", timedOut(sctx, err))
 	}
 	return res, nil
+}
+
+// drop closes conn, so the next question dials again.
+func (c *Client) drop(conn Conn) {
+	c.mu.Lock()
+	if c.conn == conn {
+		c.conn = nil
+	}
+	c.mu.Unlock()
+	_ = conn.Close()
+}
+
+// do sends req on the client's connection, opening it when there is none,
+// and returns the connection that answered. A held connection the directory
+// closed while idle fails the first query on it, so that one is sent again,
+// once, on a new one; a fresh connection's failure is the directory's
+// answer, not retried.
+func (c *Client) do(ctx context.Context, req Request) (Conn, Result, error) {
+	conn, fresh, err := c.connect(ctx)
+	if err != nil {
+		return nil, Result{}, err
+	}
+	res, err := c.search(ctx, conn, req)
+	if err != nil && !fresh && errors.Is(err, ErrClosed) {
+		if conn, _, err = c.connect(ctx); err != nil {
+			return nil, Result{}, err
+		}
+		res, err = c.search(ctx, conn, req)
+	}
+	return conn, res, err
+}
+
+// all sends req as an RFC 2696 paged search and follows its pages to the
+// end; a page that fails, or more than maxPages, fails the whole search. A
+// later page that finds its connection closed, by the directory or by
+// another question's failed call, restarts the search once from its first
+// page on a new connection.
+func (c *Client) all(ctx context.Context, req Request) ([]Entry, error) {
+	req.PageSize = pageSize
+	out, later, err := c.pages(ctx, req)
+	if later && errors.Is(err, ErrClosed) {
+		out, _, err = c.pages(ctx, req)
+	}
+	return out, err
+}
+
+// pages is one run of all: the first page through do, every later one on the
+// connection that answered it, since a directory holds a paged search's
+// cookie per connection and refuses it on another. later reports that a
+// later page failed.
+func (c *Client) pages(ctx context.Context, req Request) (out []Entry, later bool, err error) {
+	conn, res, err := c.do(ctx, req)
+	if err != nil {
+		return nil, false, err
+	}
+	out = res.Entries
+	for n := 1; len(res.Cookie) > 0; n++ {
+		if n == maxPages {
+			// The search is left open on the directory, which counts it
+			// against the connection's open result sets; closing the
+			// connection ends it.
+			c.drop(conn)
+			return nil, false, unavailable("paged search", fmt.Errorf("more than %d pages", maxPages))
+		}
+		req.Cookie = res.Cookie
+		if res, err = c.search(ctx, conn, req); err != nil {
+			// A page that failed on an open connection, as when the caller
+			// stopped waiting, leaves the search open on it; closing the
+			// connection ends it, as at the cap.
+			if !errors.Is(err, ErrClosed) {
+				c.drop(conn)
+			}
+			return nil, true, err
+		}
+		out = append(out, res.Entries...)
+	}
+	return out, false, nil
 }
 
 // answer reads an entry into an Answer.
