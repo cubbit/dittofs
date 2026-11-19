@@ -411,14 +411,14 @@ registers no suite and no group, and changes no `lint-go` tag.
 | E1 ⛔ | Delete v1, declare the surface | v1 deleted with the tests that drive it, harness fixed, landed first; the node's surface and the shared wire types; the new `cmd/dfs` skeleton; architecture tests | 6 | 12.25 | team | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) |
 | E2 | Store records | the view's signatures with `expect`; the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry; the namespace record and its store index | 13 | 35.75 | C | E5; partly E3, E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059, `Node`, `NodeStatus`); the RFC 18 plan's epics 2 and 3 (#4058, the principals generation) |
 | E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 11 | 30 | A | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the `apply` slot); the RFC 18 plan's epics 2 and 7 (#4058, the runner) |
-| E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), each resource's wire types, the client | 12 | 39 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
+| E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), each resource's wire types, the client | 12 | 39.5 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 10 | 25.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 6 | 11.5 | A | E7 |
 | E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 7 | 12 | team | E8 (partly) |
 | E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **65** | **166** | | |
+| | **Total** | | **65** | **166.5** | | |
 
-**Plan estimate: 65 subtasks, 166 man-days, not counting epic 8.**
+**Plan estimate: 65 subtasks, 166.5 man-days, not counting epic 8.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -1325,7 +1325,7 @@ and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 
 ### Epic 4 — The management API
 
-**Epic 4 estimate: 12 subtasks, 39 man-days.**
+**Epic 4 estimate: 12 subtasks, 39.5 man-days.**
 
 The API server answers every in-scope resource and action, writes only records, and maps every
 error to a status.
@@ -1718,7 +1718,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | `raise-format` (header, O2) | each format has one version | unowned; the RFC 13 plan (#4059) defers it too | a format gains a second version |
 | The event streams and `AuditCursor` (RFC 23 §6) (header, O2, §7) | needs RFC 25 §4's spool | RFC 25's plan | the spool exists |
 | A remote store's credential rotation and changed endpoint (RFC 23 §3.3), refused (O2, §7); epic 4's T4.9 refuses `409` a credential set over an existing one until rotation exists as an operation that writes the new version and waits for every node to hold it | needs the capability check and the claim (the RFC 13 plan's D9) | RFC 4 and RFC 27 | both pieces exist |
-| A remote store's credential accepted on its create (epic 4's T4.9): the create refuses one, which is set by `PUT /stores/{id}/credential` after, while RFC 13 §4.2 makes the credential reference required on a remote store, so a store exists without one until that call | the credential's seal is a pre-write step of its own route, and the create has none | unowned | X3, when `Check` judges a store's create against RFC 13 §4.2's required keys. The RFC 13 plan's D9 passes "a credential's first version, sealed when the store is created": if `Check` reads "first" as at the store's create, this route's set is refused once the table lands and no store gets a credential, so X3 reads it as "no credential record yet" or the create takes the credential |
+| A remote store's credential accepted on its create (epic 4's T4.9): the create refuses one, which is set by `PUT /stores/{id}/credential` after, while RFC 13 §4.2 makes the credential reference required on a remote store, so a store exists without one until that call | the credential's seal is a pre-write step of its own route, and the create has none | the RFC 13 plan's epic 5 (#4059) | X3, when `Check` judges a store's create against RFC 13 §4.2's required keys. The RFC 13 plan's D9 passes "a credential's first version, sealed when the store is created": if `Check` reads "first" as at the store's create, this route's set is refused once the table lands and no store gets a credential, so X3 reads it as "no credential record yet" or the create takes the credential |
 | A remote store's and a namespace's delete judged as the removal of its scope (epic 4's T4.9): both delete each setting through `settings.Delete`, and the RFC 13 plan's D9 refuses a delete that changes a bound or location key's effective value, so once the table is handed in neither delete can pass | `Check` judges one key's write, and nothing states a scope's removal | the RFC 13 plan's epic 5 (#4059) | X3, when the table is handed in: `Check` judges a resource's delete as its scope's removal, after `StoreNamed` or `NamespaceNamed` passed |
 | A user's primary group set through the API (RFC 18 §2.1: a local user carries its primary group's gid; epic 4's T4.10): `UserSpec` has no field for it, so an API-created user's files take the user's own principal as group, gid 65534 over NFS | T4.10 built the spec without it, and neither the RFC 18 plan's epic 2 nor its epic 3 writes a user's `Primary` | unowned | the first API user whose files must carry a real group, or T4.10's follow-up |
 | Project quotas (RFC 7 §2.8; epic 4's T4.10) | no plan builds projects, so the routes serve a share's own quota and its users' and groups' only | unowned | a plan builds RFC 7 §2.8's projects |
