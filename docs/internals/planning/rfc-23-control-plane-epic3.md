@@ -145,7 +145,7 @@ that subtasks and tests can cite them.
 | R6 | After start only the node starts, changes or stops a component, and only from records; the node closes what it built | invariant | RFC 23 §2.1; CP1 | T3.1, T3.3 |
 | R7 | The node builds no journal: the engine opens each device's journal through the opener `New` passes | invariant | RFC 23 §2.1 | T3.1 |
 | R8 | The engine reaches open state only through the root's adapter of `CloneHold` onto `CloneOpen`, `CloneClose` and `Served`, so the engine imports no open state | MUST | RFC 23 §2.1 (table row 5); RFC 8 §2.6 | T3.1 |
-| R9 | The node exports `New`, `Start` and `Stop` only, and is not restartable: a second `Start` is an error | MUST | RFC 23 §2.1 (its decision) | T3.3 |
+| R9 | The node exports `New`, `Start`, `Stop` and `Preflight` only, and is not restartable: a second `Start` is an error | MUST | RFC 23 §2.1 (its decision) | T3.3 |
 | R10 | The root refuses to add a share whose configuration names no remote block store, with an error naming the share, and reports it refused | MUST | RFC 8 §2.1; RFC 23 §2.4 | T3.5 |
 | R48 | Start refuses a missing or foreign installation as `metadata.Open` reads the format record; a start creates no installation | MUST | RFC 23 §2.2 (step 1); RFC 13 §2.2 | T3.1 |
 | R49 | No package under `internal/node` but `node` itself imports a component's implementation; the allow-list is D3's, which holds data and wire types and not `nodetest` | MUST NOT | RFC 23 CP16; RFC 23 plan §1.3; D3 | T3.2 |
