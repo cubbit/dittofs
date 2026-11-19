@@ -92,7 +92,7 @@
   fix: planned
   category: feature
   reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two rulings the PR text carries: whether a share''s live dirty bytes with the store put-healthy keep the first row''s retry-later answer (RFC 8 section 10.2), and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker.'
-  issue: '#4206'
+  issue: '#4873'
 
 - test: TestRFC8A_Clone
   message: 'a clone its destination''s journal cannot reserve: engine: the share limit has nothing left to free'
@@ -100,7 +100,7 @@
   fix: planned
   category: feature
   reason: 'The same settled answer as its retry-later sibling for the destination''s share: the destination''s journal limit refusal reads an ended-unreclaimed figure of zero once the refusal''s two repack passes have cycled the share''s live bytes, and answers no space where the row wants the retry-later that outlives the refusal. The row waits on the same two rulings the sibling''s entry names.'
-  issue: '#4206'
+  issue: '#4873'
 
 - test: TestRFC8A_CapacityRacingRefusals
   message: 'the share limit has nothing left to free'
@@ -108,7 +108,7 @@
   fix: planned
   category: feature
   reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two rulings the PR text carries: whether a share''s live dirty bytes with the store put-healthy keep the first row''s retry-later answer (RFC 8 section 10.2), and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker.'
-  issue: '#4206'
+  issue: '#4873'
 - test: TestRFC8A_CapacityNothingLeftToFree
   message: 'the share limit has nothing left to free'
   status: fail
@@ -122,7 +122,7 @@
   fix: planned
   category: feature
   reason: 'What the row demonstrates, on its own bounded assertion now: the refusal over an unresolved window parks the refused write on the share seal''s caller-side fsync — the seal runs in the refusal''s own goroutine and syncs the records of the segment it closes, which the row''s held sync stops. What it waits on: the RFC 8 / RFC 28 ruling the PR text carries — whether the seal may place its marker without a caller-side sync, which the named-predecessor recovery refusal over an unsynced marker stands against, or whether the durability layer learns to seal off the caller''s goroutine. Once ruled, the refusal answers ErrDelay under a tenth of the caller''s bound and the entry leaves.'
-  issue: '#4206'
+  issue: '#4873'
 
 - test: TestRFC8A_CapacityRepackReserveServesAThirdShare
   message: 'the share limit has nothing left to free'
@@ -158,7 +158,7 @@
   fix: planned
   category: feature
   reason: 'The one journal share at its own limit takes the settled no-space answer where the row wants the refusal-later that never becomes no space while another share is healthy: the share''s bytes, none superseded, sit in a single active segment, so each refusal''s scoped pass seals and recycles that one segment whole and the candidacy the settled answer reads is left with nothing. The share rides the same ruling the no-space cluster does — the live dirty bytes with the store put-healthy that keep retry-later, and the seal that owes no caller-side fsync. At the base line it only passed the interim retry-later of the not-built repack.'
-  issue: '#4206'
+  issue: '#4873'
 - test: TestRFC8B_JournalFullOnAFullDevice
   message: 'answered vfs: retry shortly: capacity, want the device''s ErrNoSpace'
   status: fail
