@@ -660,17 +660,18 @@ func (c *journalSeries) shareGauges(ch chan<- prometheus.Metric, js engine.Journ
 		for _, row := range rows {
 			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, row.value, id, row.share)
 		}
-		// decision: the unlabelled sum rides the same series name with an
-		// empty share value, because the client library refuses one name
-		// under two label dimensions — a sum without the share label
-		// beside the labelled rows is what the name cannot carry. The RFC
-		// itself makes the shape deliberate: it asks for the same gauge
-		// "without a share label, as the sum over every share". The
-		// double-count hazard this shape carries is real, so a PromQL total
-		// must read the labelled rows alone — sum(...) share!="" — and
-		// never every row of the name, which counts each share's bytes
-		// once as labelled and once inside the sum. Split the name only if
-		// the RFC's wording or the library ever allows the two shapes.
+		// decision: the unlabelled row with share="" is the total over every
+		// share — the RFC asks for the same gauge "without a share label, as
+		// the sum over every share", and the client library refuses one
+		// name under two label dimensions, so this row rides the name with
+		// an empty share value. Read a total here, directly; the labelled
+		// rows beside it are only the current worst topShares, for ranking
+		// and inspecting individual shares — at more shares than that they
+		// are a truncated view, and an unattached tag holds no labelled row
+		// at all, so summing over share!="" undercounts. Never sum every row
+		// of the name either: the total is its own row, and each labelled row
+		// is already inside it. Split the name only if the RFC's wording or
+		// the library ever allows the two shapes.
 		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, sum, id, "")
 	}
 }

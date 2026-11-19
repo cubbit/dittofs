@@ -542,6 +542,19 @@ func TestJournalSeriesSharesWorstNAndSum(t *testing.T) {
 			t.Errorf("dirty_bytes misses share %s with %d KiB, among the twenty most dirty", shareIDs[i], i+1)
 		}
 	}
+	// The sum row is the total, not the sum of the labelled rows: with more
+	// shares than the worst-n bound, and a tag no attached share holds, the
+	// labelled rows truncate and the unattached one is nowhere labelled, so
+	// summing over share!="" undercounts. The pin: total strictly greater.
+	var labeled float64
+	for _, row := range dirty {
+		if row.share != "" {
+			labeled += row.value
+		}
+	}
+	if sum, _ := splitSum(dirty); !(sum > labeled) {
+		t.Errorf("dirty_bytes sum row %v is not strictly greater than the labelled rows' sum %v: the total covers the shares the worst-n cut and the unattached tag", sum, labeled)
+	}
 
 	// Used bytes, read from the engine's own copy: the labelled rows show the
 	// engine's figures, not the journal's 90000-decoys.
