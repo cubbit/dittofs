@@ -66,6 +66,7 @@ var components = []struct {
 	{entity.ErrWrongShare, answerOf{http.StatusBadRequest, "wrong_share", false}},
 	{entity.ErrCrossProject, answerOf{http.StatusConflict, "cross_project", false}},
 	{entity.ErrInconsistent, answerOf{http.StatusInternalServerError, "inconsistent", false}},
+	{entity.ErrBadRow, answerOf{http.StatusInternalServerError, "bad_row", false}},
 	{entity.ErrMoving, answerOf{http.StatusConflict, "moving", true}},
 	{entity.ErrRehoming, answerOf{http.StatusConflict, "rehoming", true}},
 	// The installation's state refuses a new share, for good.

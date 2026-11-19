@@ -204,7 +204,7 @@ func TestProblemAnswers(t *testing.T) {
 		{status: 422}:                  {"idempotency_mismatch"},
 		{status: 428}:                  {"precondition_required"},
 		{status: 429, retryable: true}: {"throttled"},
-		{status: 500}:                  {"inconsistent", "lost", "corrupt", "io", "file_open", "io_error", "uncommitted_version"},
+		{status: 500}:                  {"inconsistent", "bad_row", "lost", "corrupt", "io", "file_open", "io_error", "uncommitted_version"},
 		{status: 503, retryable: true}: {"starting", "unavailable", "grace", "grace_period", "connection_limit_reached", "closed"},
 	}
 	byCode := map[apiv1.Code]answerOf{}
