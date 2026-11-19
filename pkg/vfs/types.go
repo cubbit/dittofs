@@ -116,6 +116,7 @@ type (
 	Evidence         = identity.Evidence
 	SignInStep       = identity.SignInStep
 	SignInService    = identity.Service // vfs.Service is the filesystem's interface
+	Transport        = identity.Transport
 	NTLMAuthenticate = identity.NTLMAuthenticate
 	SignInResult     = identity.SignInResult
 	Keys             = identity.Keys
@@ -137,6 +138,9 @@ const (
 	ServiceNFS  = identity.ServiceNFS
 	ServiceCIFS = identity.ServiceCIFS
 	ServiceHost = identity.ServiceHost
+
+	TransportNFS = identity.TransportNFS
+	TransportSMB = identity.TransportSMB
 
 	SchemeUID       = identity.SchemeUID
 	SchemeGID       = identity.SchemeGID
