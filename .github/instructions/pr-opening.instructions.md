@@ -51,17 +51,16 @@ estimate.
 
 ```text
 Closes: RFC 8 T3.4, T3.5, T3.6, RFC 9 T5.6, T5.7
-Part of: RFC 1 T7a.2
+Part of: RFC 1 T7.2
 ```
 
 - `Closes:`, with the colon, at the start of the line: the subtasks this PR finishes.
   `Part of:` the same way names a subtask it finishes only in part. Each keyword appears
   at most once.
 - `RFC <n>` opens a group; every id after it, up to the next `RFC`, belongs to that RFC.
-- An id is `T<epic>.<n>`: `T3.4`, or a split row `T4.2a`. A sub-epic's subtask carries the
-  sub-epic's letter, `T7a.2`, and a split row of it `T7a.2a`, even where its document heads
-  the subtask `T7.2`: the letter tells epic 7a's T7.2 from epic 7b's. Never the bare `3.4`
-  or `E3-4`.
+- An id is `T<epic>.<n>` exactly as its document writes it: `T3.4`, a split row
+  `T4.2a`, or `T7.2` for epic 7a, since an epic split into parts numbers its
+  subtasks once across them. Never the bare `3.4` or `E3-4`.
 - If an RFC ever has more than one plan, the plan's slug, from its file name
   `rfc-<n>-<slug>-plan.md`, follows the number: `RFC 8 journal-only-engine T3.4`. With one
   plan, as every RFC has today, leave it out.
