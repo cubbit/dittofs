@@ -2697,3 +2697,63 @@ func TestAMemberInItsCallHoldsTheChainsOnePlace(t *testing.T) {
 		}
 	})
 }
+
+// cuedFlow is a FlowControl declared in the test: the protocol's own, its
+// Admit call numbered at, counting from where seen was zeroed, held until
+// open is closed.
+type cuedFlow struct {
+	core.FlowControl
+	at, seen *atomic.Int64
+	open     chan struct{}
+}
+
+func (f cuedFlow) Admit(ctx context.Context, h core.Header) (func(), error) {
+	if f.seen.Add(1) == f.at.Load() {
+		<-f.open
+	}
+	return f.FlowControl.Admit(ctx, h)
+}
+
+// A chain member's time in its own steps lands under their stages: 1 s held
+// in the first member's Admit, on the reader, or in the second's, on the
+// chain's goroutine, is observed under admit alone, and no later stage of
+// the member absorbs it (RFC 20 §10.1).
+func TestAChainMembersStagesAreTimedFromTheStepBeforeIt(t *testing.T) {
+	for _, n := range []int64{1, 2} {
+		t.Run("member "+strconv.FormatInt(n, 10)+" held in Admit", func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				at, seen, open := new(atomic.Int64), new(atomic.Int64), make(chan struct{})
+				clk, m := newManualClock(), metrics.New("v", "c")
+				s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, clk, func(st *core.Stages) {
+					st.Flow = cuedFlow{st.Flow, at, seen, open}
+				})
+				before, _ := scrape(t, m)
+				_, was := wireSeconds(before)
+				seen.Store(0)
+				at.Store(n)
+				served := start(func() { s.serve(echoIn(1, 7), echoIn(2, inherited)) })
+				synctest.Wait()
+				clk.Advance(time.Second)
+				close(open)
+				if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
+					t.Fatalf("the chain is answered %+v, %v; want both members in one record", rs, err)
+				}
+				<-served.done
+				if err := s.p.Wait(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				after, _ := scrape(t, m)
+				_, sums := wireSeconds(after)
+				for st, v := range sums {
+					want := 0.0
+					if st == "admit" {
+						want = 1
+					}
+					if got := v - was[st]; got != want {
+						t.Errorf("%s observed %v s over the chain, want %v", st, got, want)
+					}
+				}
+			})
+		})
+	}
+}

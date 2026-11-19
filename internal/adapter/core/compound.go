@@ -180,6 +180,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	}
 	if big != nil {
 		p.refused(tr, stageReplyTooBig)
+		p.lap(tr, stageReplyTooBig)
 		p.finish(tr, h, tb, errs, row, Invocation{}, nil, big, release, alone{p}, nil)
 		return
 	}
@@ -189,6 +190,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	if rerr != nil {
 		if st, ok := reservationStage(rerr); ok {
 			p.refused(tr, st)
+			p.lap(tr, st)
 		}
 		p.finish(tr, h, tb, errs, row, Invocation{}, nil, rerr, release, alone{p}, nil)
 		return
@@ -306,7 +308,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		key = p.st.Hold.Key(h)
 	}
 	sent := len(reply.B)
-	p.end(tr, p.send(h, reply, key), status, sent, last)
+	p.end(tr, p.send(nil, h, reply, key), status, sent, last)
 }
 
 // member runs one member of a compound to its status: the row's checks,

@@ -358,6 +358,7 @@ type pipeline struct {
 	label  *labelSeries
 	name   string          // the request span's, until Route names its operation
 	off    map[string]bool // the operations the snapshot switched off, by name
+	times  [stages]bool    // the stages the connection times: timed, but those its protocol left nil
 
 	misbehaved atomic.Bool // a refusal at Unwrap was logged on this connection
 
@@ -378,6 +379,15 @@ type pipeline struct {
 func newPipeline(sh *shared, st Stages, l link) *pipeline {
 	p := &pipeline{sh: sh, st: st, l: l, status: make(chan struct{}, 1)}
 	_, p.noHold = st.Hold.(noHold)
+	for _, s := range timed {
+		p.times[s] = true
+	}
+	// A stage the protocol left nil runs core's default, which is neither
+	// timed nor observed (§10.1).
+	_, defaultUnwrap := st.Security.(passSecurity)
+	_, defaultAdmit := st.Flow.(capped)
+	_, defaultReplay := st.Replay.(noReplay)
+	p.times[stageUnwrap], p.times[stageAdmit], p.times[stageReplayCheck] = !defaultUnwrap, !defaultAdmit, !defaultReplay
 	p.label, p.name = sh.label(st.Protocol), "adapter."+st.Protocol
 	// decision: a switched-off operation is matched by Op.Name, case aside,
 	// so the spelling the op label shows works too, read once per connection
@@ -425,6 +435,7 @@ func newPipeline(sh *shared, st Stages, l link) *pipeline {
 func (p *pipeline) serve(rec *resources.Buf) {
 	tr := p.begin(rec)
 	h, err := p.st.Header.Decode(rec, 0)
+	p.lap(tr, stageDecodeHeader)
 	if h == nil {
 		p.drop(tr, rec, fmt.Errorf("%w: %v", ErrDecode, err))
 		return
@@ -443,6 +454,7 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		return
 	}
 	u, err := p.st.Security.Unwrap(h, rec, nil)
+	p.lap(tr, stageUnwrap)
 	if u == nil {
 		if err == nil {
 			// Unwrap returns a header or an error, never neither (§4.7):
@@ -467,6 +479,7 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		return
 	}
 	release, err := p.st.Flow.Admit(tr.ctx, u)
+	p.lap(tr, stageAdmit)
 	if err != nil {
 		if p.endedByClose(err) {
 			p.end(tr, false, 0, 0, nil)
@@ -533,6 +546,7 @@ func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err
 		// connection, not once per request (§10.3).
 		p.sh.log.LogAttrs(tr.ctx, slog.LevelWarn, "a message the connection's security refused", tr.attrs(err)...)
 	}
+	p.lap(tr, stageMapError)
 	if !send {
 		p.end(tr, false, 0, 0, err)
 		rec.Release()
@@ -585,12 +599,14 @@ func (p *pipeline) answer(tr *track, rec *resources.Buf, h Header, s Status, buf
 		p.l.close(stageFault(err))
 		return
 	}
+	p.lap(tr, stageEncode)
 	n := len(buf.B)
 	var sent bool
 	if !wrap {
 		sent = p.out(buf, 0, 0)
+		p.lap(tr, stageSend)
 	} else {
-		sent = p.send(h, buf, 0)
+		sent = p.send(tr, h, buf, 0)
 	}
 	p.end(tr, sent, s, n, cause)
 	if closeAfter {
@@ -686,14 +702,14 @@ func (alone) halted() bool { return false }
 
 func (a alone) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, _ bool, err error) {
 	n := len(reply.B)
-	a.p.end(tr, a.p.send(h, reply, key), s, n, err)
+	a.p.end(tr, a.p.send(tr, h, reply, key), s, n, err)
 }
 
 func (a alone) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
 	a.p.unanswered(tr, h, tb, reply, err, release)
 }
 
-func (a alone) pended(h Header, interim *resources.Buf, key uint64) { a.p.send(h, interim, key) }
+func (a alone) pended(h Header, interim *resources.Buf, key uint64) { a.p.send(nil, h, interim, key) }
 
 func (alone) resume(answer func()) { answer() }
 
@@ -706,6 +722,7 @@ func (alone) resume(answer func()) { answer() }
 func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Request, release func(), a answerer) (*Request, bool) {
 	ctx := tr.ctx
 	cached, err := a.lookup(tr, h)
+	p.lap(tr, stageReplayCheck)
 	if cached != nil {
 		tr.label.replayHit()
 		tr.cached = true
@@ -758,15 +775,18 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 	}
 	if err != nil && !tr.refused {
 		p.refused(tr, stageRoute)
+		p.lap(tr, stageRoute)
 	}
 	tr.op = op
 	if err == nil {
+		p.lap(tr, stageRoute)
 		args := p.st.Header.Args(rec, h)
 		var n int
 		inv, n, err = op.Decode(args, h.Version())
 		if err == nil && op.Members != nil && (n < 0 || n > len(args)) {
 			err = fmt.Errorf("a compound's arguments of %d bytes, %d in its message", n, len(args))
 		}
+		p.lap(tr, stageDecodeArgs)
 		if err != nil {
 			err = fmt.Errorf("%w: %v", ErrDecode, err)
 			p.refused(tr, stageDecodeArgs)
@@ -795,7 +815,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 				tr.req.clone = bound(cloneWait, tr.req.start)
 			}
 		}
-		reply, err = p.reserve(tr, ts, a, inv, h, r)
+		reply, err = p.reserve(tr, a, inv, h, r)
 	}
 	if a.halted() {
 		// Its chain stopped while it looked up or reserved, its connection
@@ -819,6 +839,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 			pd.reply = reply
 		}
 		err = ts.chains[op.Code](ctx, r)
+		tr.mark = r.callEnd
 	}
 	if pd != nil {
 		if p.parked(pd, release) {
@@ -837,45 +858,45 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 }
 
 // reserve takes the reply buffer of h's attempt through a, its wait timed
-// and its refusal counted.
-func (p *pipeline) reserve(tr *track, ts *tableSeries, a answerer, inv Invocation, h Header, r *Request) (*resources.Buf, error) {
-	start := p.sh.clock.Now()
+// and its refusal counted. resolve_ids starts where it ends.
+func (p *pipeline) reserve(tr *track, a answerer, inv Invocation, h Header, r *Request) (*resources.Buf, error) {
 	n, _ := inv.Bound(r, p.l.record-p.st.Header.ReplyLen(h))
 	reply, err := a.reserve(tr.ctx, n+p.st.Header.ReplyLen(h))
 	if err != nil {
 		if st, ok := reservationStage(err); ok {
 			p.refused(tr, st)
+			p.lapAttempt(tr, st)
 		}
 		return nil, err
 	}
-	r.resolveStart = p.sh.clock.Now()
-	ts.observe(stageReplyWait, r.resolveStart.Sub(start))
+	p.lapAttempt(tr, stageReplyWait)
+	r.resolveStart = tr.mark
 	return reply, nil
 }
 
 // resolve runs inv's Resolve, then the expired credential's check and, where
-// draining, the drain's, each refusal counted (§4.4, §3.1).
+// draining, the drain's, each refusal counted and timed under resolve_ids,
+// which on no refusal the call's start ends (§4.4, §3.1, §10.1).
 func (p *pipeline) resolve(tr *track, r *Request, op *Op, inv Invocation, draining bool) error {
-	if err := inv.Resolve(r); err != nil {
-		p.refused(tr, stageResolveIDs)
-		return err
-	}
-	// The role is asked only while draining or on an expired credential, so
-	// a request served normally pays for no second lookup.
-	expired := p.expired(r)
-	role := op.Role
-	if draining || expired {
-		role = roleOf(op, inv, r)
-	}
-	var err error
-	switch {
-	case expired && !op.Expired && role != RoleRelease:
-		err = ErrExpired
-	case draining && role == RoleNone:
-		err = p.drainErr(tr.ctx, r.Call, handlesOf(inv))
+	err := inv.Resolve(r)
+	if err == nil {
+		// The role is asked only while draining or on an expired credential,
+		// so a request served normally pays for no second lookup.
+		expired := p.expired(r)
+		role := op.Role
+		if draining || expired {
+			role = roleOf(op, inv, r)
+		}
+		switch {
+		case expired && !op.Expired && role != RoleRelease:
+			err = ErrExpired
+		case draining && role == RoleNone:
+			err = p.drainErr(tr.ctx, r.Call, handlesOf(inv))
+		}
 	}
 	if err != nil {
 		p.refused(tr, stageResolveIDs)
+		p.lapAttempt(tr, stageResolveIDs)
 	}
 	return err
 }
@@ -904,6 +925,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 	case err != nil:
 		s, send, notFailure = p.mapped(tr, errs, err, op, h.Version(), true)
 	}
+	p.lap(tr, stageMapError)
 	if ctx.Err() != nil {
 		if reply != nil {
 			reply.Release()
@@ -934,6 +956,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 		p.drop(tr, nil, stageFault(encErr))
 		return
 	}
+	p.lap(tr, stageEncode)
 	release()
 	if op != nil && op.Cacheable {
 		p.st.Replay.Store(h, reply)
@@ -959,6 +982,7 @@ type track struct {
 	try       endedCtx      // ctx ended, for a first try; reused so a try boxes nothing
 	span      trace.Span    // nil on a server with no tracer
 	id        trace.TraceID // drawn even when the request is not traced
+	mark      time.Time     // the end of its last step, which the stage running now is timed from (§10.1)
 	label     *labelSeries
 	table     *tableSeries // from Route on
 	protocol  string       // the label it records under: the stages', then the table's
@@ -981,7 +1005,7 @@ type track struct {
 // adapter.StartRequestSpan, so it takes the drawn ID through the root's ID
 // generator; with a provider that draws its own, the request's lines carry
 // the span's. The request's context starts its first attempt now, the
-// request's arrival (§6.4).
+// request's arrival (§6.4), and so does decode_header, the first stage timed.
 func (p *pipeline) begin(rec *resources.Buf) *track {
 	tr := &track{label: p.label, protocol: p.st.Protocol, bytes: len(rec.B), id: p.sh.traceIDs()}
 	parent := p.ctx
@@ -992,8 +1016,65 @@ func (p *pipeline) begin(rec *resources.Buf) *track {
 		}
 	}
 	tr.req = requestCtx{Context: parent, start: p.sh.clock.Now()}
-	tr.ctx = &tr.req
+	tr.ctx, tr.mark = &tr.req, tr.req.start
 	return tr
+}
+
+// lap ends the request's run of stage st now: the time since its last step
+// ended is observed under st where the connection times st, and the next
+// stage is timed from here. An interim, which answers no request alone, has
+// no track and is timed under no stage.
+//
+// ponytail: each lap is a clock read and an Observe on a histogram every
+// connection of the protocol shares, about 11 per request. Upgrade to
+// per-connection sums flushed periodically, or sharded series, when Observe
+// contention shows in a profile.
+func (p *pipeline) lap(tr *track, st stage) {
+	if tr == nil {
+		return
+	}
+	now := p.sh.clock.Now()
+	if p.times[st] {
+		tr.series().observe(st, now.Sub(tr.mark))
+	}
+	tr.mark = now
+}
+
+// lapAttempt is lap for reply_wait and resolve_ids, the stages each attempt
+// of a request runs: in a table that holds, where a re-drive runs them again,
+// the run is added to the request's sums, which end observes once (§4.6,
+// §10.1).
+func (p *pipeline) lapAttempt(tr *track, st stage) {
+	if !tr.req.holds {
+		p.lap(tr, st)
+		return
+	}
+	now := p.sh.clock.Now()
+	if p.times[st] {
+		tr.req.runs.add(st, now.Sub(tr.mark))
+	}
+	tr.mark = now
+}
+
+// sums is a request's time in each stage it runs more than once, its runs
+// summed, so each is observed once (§10.1).
+type sums struct {
+	d   [stages]time.Duration
+	ran [stages]bool
+}
+
+func (s *sums) add(st stage, d time.Duration) {
+	s.d[st] += d
+	s.ran[st] = true
+}
+
+// observe observes each stage s holds once, under tr's series.
+func (s *sums) observe(tr *track) {
+	for st, ran := range s.ran {
+		if ran {
+			tr.series().observe(stage(st), s.d[st])
+		}
+	}
 }
 
 // requestCtx is a request's one context: its connection's, through the
@@ -1007,6 +1088,7 @@ type requestCtx struct {
 	hold  time.Time // a re-drive's hold deadline; zero for none
 	holds bool      // its table holds
 	clone time.Time // in a table that holds, the clone wait's deadline its row returned at arrival; zero for none
+	runs  sums      // with holds, its attempts' runs of reply_wait and resolve_ids, observed once as it ends
 }
 
 func (c *requestCtx) Value(key any) any {
@@ -1112,6 +1194,7 @@ func (p *pipeline) end(tr *track, sent bool, s Status, reply int, err error) {
 		// The interim of a request still pending: its request goes on.
 		return
 	}
+	tr.req.runs.observe(tr)
 	if tr.flight {
 		tr.series().answered()
 		tr.flight = false
@@ -1251,15 +1334,19 @@ func (p *pipeline) encode(h Header, s Status, reply *resources.Buf, inv Invocati
 	return nil
 }
 
-// send wraps reply under h and hands it to out, and reports whether the
-// writer took it.
-func (p *pipeline) send(h Header, reply *resources.Buf, key uint64) bool {
+// send wraps reply under h and hands it to out, timing wrap and send as tr's,
+// the request it answers, or as no stage for an interim, which has none. It
+// reports whether the writer took it.
+func (p *pipeline) send(tr *track, h Header, reply *resources.Buf, key uint64) bool {
 	if err := p.st.Security.Wrap(h, reply); err != nil {
 		reply.Release()
 		p.l.close(stageFault(err))
 		return false
 	}
-	return p.out(reply, key, key)
+	p.lap(tr, stageWrap)
+	sent := p.out(reply, key, key)
+	p.lap(tr, stageSend)
+	return sent
 }
 
 // interim sends the interim a NoReply row gets in a table that holds, which
@@ -1279,7 +1366,7 @@ func (p *pipeline) interim(ctx context.Context, h Header, buf *resources.Buf) {
 		p.l.close(stageFault(err))
 		return
 	}
-	p.send(h, buf, 0)
+	p.send(nil, h, buf, 0)
 }
 
 // handlesOf is the filehandle inv's arguments name, if any.

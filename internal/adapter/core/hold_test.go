@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"net/netip"
 	"runtime"
 	"slices"
@@ -686,6 +687,41 @@ func cancelOf(id uint64, session uint32) testproto.Msg {
 	return testproto.Msg{Op: testproto.OpCancel, Version: 2, Session: session, Target: id}
 }
 
+// A held request observes reply_wait and resolve_ids once, however many
+// attempts run them, its runs summed: a PutFH and a Create the service
+// answers ErrDelay twice, on a clock that steps 1 ms a read, observe each
+// twice, once per request, summing 4 ms, the PutFH's 1 ms and the Create's
+// three attempts' 1 ms each (RFC 20 §10.1).
+func TestAHeldRequestObservesEachStageOnceItsAttemptsSummed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk, m := newManualClock(), metrics.New("v", "c")
+		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, clk)
+		before, _ := scrape(t, m)
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		clk.step = time.Millisecond
+		s.serve(s.heldChain(1, "f")...)
+		s.interimOf(2)
+		clk.Advance(100 * time.Millisecond)
+		synctest.Wait()
+		clk.Advance(100 * time.Millisecond)
+		if r := s.finalOf(2); r.Status != testproto.StatusOK {
+			t.Fatalf("the held Create's third attempt is answered %+v, want success", r)
+		}
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := scrape(t, m)
+		c0, s0 := wireSeconds(before)
+		c1, s1 := wireSeconds(after)
+		for _, st := range []string{"reply_wait", "resolve_ids"} {
+			if n, sum := c1[st]-c0[st], s1[st]-s0[st]; n != 2 || math.Abs(sum-0.004) > 1e-9 {
+				t.Errorf("%s observed %v times, %v s; want 2, 0.004 s", st, n, sum)
+			}
+		}
+	})
+}
+
 // A cancel ends a hold between attempts at once, alone or as a chain's
 // first or later member: its final reply is the cancel status, the cancel
 // gets no reply of its own, no re-drive is left and no file is made. core
@@ -1158,6 +1194,45 @@ func TestAParkOutlivesTheDeadlineAndTheHoldsBound(t *testing.T) {
 		<-next.done
 		if next.err != nil || len(next.rs) != 1 || next.rs[0].Interim || next.rs[0].ID != keyOf(2) || next.rs[0].Status != testproto.StatusOK {
 			t.Errorf("released, the park is answered %+v (%v), want its final success", next.rs, next.err)
+		}
+	})
+}
+
+// A parked request's map_error and encode are timed from done: the 30 s it
+// waits parked lands in no stage, and its answer observes map_error and
+// encode once each (RFC 20 §10.1).
+func TestAParksWaitIsNoStages(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk, m := newManualClock(), metrics.New("v", "c")
+		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, clk)
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.parkChain(1, "f")...)
+		s.interimOf(2)
+		next := s.recvLater()
+		synctest.Wait()
+		before, _ := scrape(t, m)
+		wasN, wasS := wireSeconds(before)
+		clk.Advance(30 * time.Second)
+		hold.Release()
+		<-next.done
+		if next.err != nil || len(next.rs) != 1 || next.rs[0].Status != testproto.StatusOK {
+			t.Fatalf("the park is answered %+v (%v), want its final success", next.rs, next.err)
+		}
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := scrape(t, m)
+		counts, sums := wireSeconds(after)
+		for _, st := range []string{"map_error", "encode"} {
+			if got := counts[st] - wasN[st]; got != 1 {
+				t.Errorf("%s observed %v times at the park's answer, want once", st, got)
+			}
+		}
+		for st, v := range sums {
+			if got := v - wasS[st]; got != 0 {
+				t.Errorf("%s gained %v s over the park's wait, want none", st, got)
+			}
 		}
 	})
 }

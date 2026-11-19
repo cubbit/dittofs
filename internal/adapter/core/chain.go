@@ -92,6 +92,7 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 		e.st, e.err = stageDecodeHeader, fmt.Errorf("%w: %v", ErrDecode, derr)
 	default:
 		u, err := p.st.Security.Unwrap(h, rec, nil)
+		p.lap(tr, stageUnwrap)
 		if u == nil {
 			if err == nil {
 				err = errUnwrapNeither
@@ -108,7 +109,11 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 		default:
 			if key, ok := p.st.Hold.Cancels(u); ok {
 				e.cancel, e.key = true, key
-			} else if release, err := p.st.Flow.Admit(tr.ctx, u); err != nil {
+				break
+			}
+			release, err := p.st.Flow.Admit(tr.ctx, u)
+			p.lap(tr, stageAdmit)
+			if err != nil {
 				e.st, e.err = stageAdmit, err
 			} else {
 				e.release = release
@@ -245,6 +250,7 @@ func (c *chain) at(off int) entry {
 	p := c.p
 	tr := p.begin(c.rec)
 	h, err := p.st.Header.Decode(c.rec, off)
+	p.lap(tr, stageDecodeHeader)
 	if h == nil {
 		c.abort(tr, fmt.Errorf("%w: %v", ErrDecode, err))
 		return entry{}
@@ -293,6 +299,7 @@ func (c *chain) one(e *entry) bool {
 			prev = c.prevH
 		}
 		u, err := p.st.Security.Unwrap(e.h, c.rec, prev)
+		p.lap(e.tr, stageUnwrap)
 		if u == nil {
 			if err == nil {
 				err = errUnwrapNeither
@@ -312,6 +319,7 @@ func (c *chain) one(e *entry) bool {
 				break
 			}
 			c.admit(e)
+			p.lap(e.tr, stageAdmit)
 			if c.stopped || (p.ctx.Err() != nil && (e.err == nil || p.endedByClose(e.err))) {
 				// A member admitted after close, one whose admission the
 				// close ended, or one after a split that closed the
