@@ -71,6 +71,15 @@ func withNumber(ids entity.ProtocolIDs, scheme entity.ProtocolScheme, n uint32) 
 // bare, syntactically valid address, and any address on a directory
 // principal, one holding a directory entry's ID, whose address the
 // directory supplies. An empty address is none.
+// named refuses a user or group spec naming no one: the API's principals
+// are found by name, and one without a name is listed nowhere.
+func named(name string) error {
+	if name == "" {
+		return &fieldError{field: "spec.name", detail: "a user or group has a name"}
+	}
+	return nil
+}
+
 func emailFor(u entity.User, email string) error {
 	if email == "" {
 		return nil
@@ -119,6 +128,9 @@ func createUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.Co
 	sp := rq.Body.Spec
 	u := entity.User{Principal: entity.NewUser(), Name: sp.Name, Email: sp.Email, Disabled: sp.Disabled,
 		IDs: withNumber(nil, entity.SchemeUID, sp.UID)}
+	if err := named(sp.Name); err != nil {
+		return apiv1.User{}, u.Principal.ID, err
+	}
 	if err := emailFor(u, sp.Email); err != nil {
 		return apiv1.User{}, u.Principal.ID, err
 	}
@@ -144,6 +156,9 @@ func putUser(_ context.Context, rq request[userDoc], _ struct{}, tx entity.Contr
 	sp := rq.Body.Spec
 	u, _, err := tx.User(userAt(rq.ID))
 	if err != nil {
+		return apiv1.User{}, rq.ID, err
+	}
+	if err := named(sp.Name); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
 	if err := emailFor(u, sp.Email); err != nil {

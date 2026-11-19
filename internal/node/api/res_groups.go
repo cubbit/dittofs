@@ -40,6 +40,9 @@ var groupTags = writing[none]{kind: entity.ResourceGroup, raises: true, read: fu
 // identity.id_range, and its SID allocated, in the create's transaction.
 func createGroup(_ context.Context, rq request[groupDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Group, [16]byte, error) {
 	sp := rq.Body.Spec
+	if err := named(sp.Name); err != nil {
+		return apiv1.Group{}, rq.ID, err
+	}
 	g := entity.Group{Principal: entity.NewGroup(), Name: sp.Name, IDs: withNumber(nil, entity.SchemeGID, sp.GID)}
 	a := entity.Alloc{GID: sp.GID == 0, RID: true}
 	if a.GID {
@@ -58,6 +61,9 @@ func createGroup(_ context.Context, rq request[groupDoc], _ struct{}, tx entity.
 // putGroup is PUT and PATCH /groups/{id}: the group's name and gid as the
 // spec states them, under the generation If-Match names, its SID kept.
 func putGroup(_ context.Context, rq request[groupDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Group, [16]byte, error) {
+	if err := named(rq.Body.Spec.Name); err != nil {
+		return apiv1.Group{}, rq.ID, err
+	}
 	g, _, err := tx.Group(groupAt(rq.ID))
 	if err != nil {
 		return apiv1.Group{}, rq.ID, err

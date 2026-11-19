@@ -123,6 +123,7 @@ func TestUserCreate(t *testing.T) {
 		{"a uid alice holds", apiv1.UserSpec{Name: "carol", UID: a.Spec.UID}, http.StatusConflict},
 		{"an invalid address", apiv1.UserSpec{Name: "dave", Email: "not an address"}, http.StatusBadRequest},
 		{"an address with a display name", apiv1.UserSpec{Name: "erin", Email: "Erin <erin@example.com>"}, http.StatusBadRequest},
+		{"no name", apiv1.UserSpec{}, http.StatusBadRequest},
 	} {
 		r := s.do(t, http.MethodPost, "/api/v1/users", jsonOf(t, map[string]any{"spec": tc.spec}), "Idempotency-Key", "c-"+tc.spec.Name)
 		if r.status != tc.code {
