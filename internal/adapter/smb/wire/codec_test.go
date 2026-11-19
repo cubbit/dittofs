@@ -464,7 +464,8 @@ func TestCodecContextDataLength(t *testing.T) {
 // context's and a create context's alike: MS-SMB2 3.3.5.4 has a server
 // ignore a negotiate context it does not know, and RFC 22 section 16 any
 // unknown context, so its length refuses the request no more than its type
-// does.
+// does. A known negotiate context's data past that maximum still decodes to
+// its struct, 3.3.5.4 failing one only when shorter than its structure.
 func TestCodecUnknownContextPastItsMaximum(t *testing.T) {
 	netname := NegotiateContext{ContextType: 5, Data: units('1', '2', '7', '.', '0', '.', '0', '.', '1')}
 	alsi := CreateContext{Name: []byte("AlSi"), AllocationSize: AllocationSize{AllocationSize: 1 << 20}}
@@ -491,6 +492,24 @@ func TestCodecUnknownContextPastItsMaximum(t *testing.T) {
 		}
 		if want := []NegotiateContext{{ContextType: 0x99, Data: kept}, netname}; !reflect.DeepEqual(r.Contexts[2:], want) {
 			t.Errorf("an unknown negotiate context of %d bytes: read\n  %+v\nwant\n  %+v", n, r.Contexts[2:], want)
+		}
+
+		// The first negotiate context, a known one, its struct followed by
+		// zeros up to n bytes of data.
+		req := golden(t, "negotiate-request")
+		pre := span(req, 120, 158)
+		pre = append(bytes.Clone(pre), make([]byte, n-len(pre))...)
+		known := spliced(req, 120, 160, append(pre, make([]byte, (8-n%8)%8)...)...)
+		known = patched(known, 114, le16(uint16(n))...)
+		var k NegotiateRequest
+		if got, err := k.DecodeWire(known, 0x311); err != nil || got != len(known) || len(k.Contexts) != 4 {
+			t.Fatalf("a known negotiate context of %d bytes: %d of %d bytes read into %d contexts: %v", n, got, len(known), len(k.Contexts), err)
+		}
+		if want := []NegotiateContext{
+			{ContextType: 1, Preauth: PreauthIntegrityCapabilities{HashAlgorithms: []uint16{1}, Salt: span(req, 126, 158)}},
+			{ContextType: 2, Encryption: EncryptionCapabilities{Ciphers: []uint16{2, 1, 4, 3}}},
+		}; !reflect.DeepEqual(k.Contexts[:2], want) {
+			t.Errorf("a known negotiate context of %d bytes: read\n  %+v\nwant\n  %+v", n, k.Contexts[:2], want)
 		}
 
 		// A CREATE of no name whose contexts, at 120, are an unknown one with
