@@ -100,10 +100,10 @@ func TestLookupIsExact(t *testing.T) {
 	}
 }
 
-// A SID is looked up under the naming context, as LookupSIDs looks it up,
-// so an entry outside the record's base answers it, while a name is looked
-// up under the base alone.
-func TestLookupBySIDUnderTheNamingContext(t *testing.T) {
+// A SID or an entry ID is looked up under the naming context, as LookupSIDs
+// looks a SID up, so an entry outside the record's base answers it, while a
+// name is looked up under the base alone.
+func TestLookupBySIDOrEntryIDUnderTheNamingContext(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	dn := e.d.AddUser(t, "alice", nil)
@@ -120,6 +120,9 @@ func TestLookupBySIDUnderTheNamingContext(t *testing.T) {
 	}
 	if b, ok, err := c.Lookup(ctx, directory.BySID, a.SID); err != nil || !ok || b.DN != dn {
 		t.Errorf("Lookup by alice's SID under base %s = %q, %v, %v; want %q", e.rec.Base, b.DN, ok, err, dn)
+	}
+	if b, ok, err := c.Lookup(ctx, directory.ByEntryID, a.EntryID); err != nil || !ok || b.DN != dn {
+		t.Errorf("Lookup by alice's entry ID under base %s = %q, %v, %v; want %q", e.rec.Base, b.DN, ok, err, dn)
 	}
 	if got, err := c.LookupSIDs(ctx, [][]byte{a.SID}); err != nil || len(got) != 1 || got[0].DN != dn {
 		t.Errorf("LookupSIDs(alice's SID) under base %s = %v, %v; want %q", e.rec.Base, dnsOf(got), err, dn)
