@@ -40,6 +40,15 @@ func (d *Durability) markDamaged(seg core.SegmentID) {
 	d.damaged[seg] = &damagedRow{}
 }
 
+// NoteDamaged records the segments the open found damaged, so the report and
+// the per-segment rows name them from the first call, like a segment a read
+// found a corrupt record in.
+func (d *Durability) NoteDamaged(segs []core.SegmentID) {
+	for _, s := range segs {
+		d.markDamaged(s)
+	}
+}
+
 // Retired is the runtime's hook for a retired segment: a damaged segment's row
 // is marked retired and kept, so the count survives the retirement, and the
 // copies the table holds in the segment are dropped, so the table is bounded
