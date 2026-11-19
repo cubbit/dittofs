@@ -43,7 +43,6 @@ The Nix flake provides:
 - ACL libraries for POSIX compliance testing
 - pjdfstest for POSIX compliance testing (Linux)
 - pynfs for NFSv4 protocol conformance, as `pynfs-4.0` and `pynfs-4.1`
-- `dfs-postgres-start` / `dfs-postgres-stop` for a PostgreSQL test container
 
 `nix flake check` builds both binaries.
 
@@ -251,18 +250,18 @@ Test suites cover:
 - Idempotency guarantees
 - Edge cases and boundary conditions
 
-Run these commands from the repository root. The runner supplies the required
-`e2e` build tag; preserving `PATH` lets it find Go when running under `sudo`.
+Run these commands from the repository root. `dt` supplies the `e2e` build tag and runs the
+suite as root through `sudo`, so it needs passwordless sudo and a kernel NFS client.
 
 ```bash
-# Run E2E tests (requires root privileges and an NFS client)
-sudo env "PATH=$PATH" ./test/e2e/run-e2e.sh --verbose
+# Run the E2E tests
+test/harness/bin/dt run e2e
 
-# Run specific E2E suite
-sudo env "PATH=$PATH" ./test/e2e/run-e2e.sh --verbose --test '^TestNFSv4BasicOperations$'
+# Run one E2E test
+test/harness/bin/dt run e2e TestNFSv4BasicOperations
 
 # Test the in-memory metadata and block stores
-sudo env "PATH=$PATH" ./test/e2e/run-e2e.sh --verbose --test '^TestStoreMatrixOperations$/^memory$/^memory$'
+test/harness/bin/dt run e2e 'TestStoreMatrixOperations/memory/memory'
 ```
 
 NFSv4/v4.1 tests are in `internal/adapter/nfs/v4/handlers/` and cover sessions, delegations, ACLs, and Kerberos.
