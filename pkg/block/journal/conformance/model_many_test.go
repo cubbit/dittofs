@@ -84,14 +84,14 @@ func TestModelManySeeds(t *testing.T) {
 		before := t.Failed()
 		model.Check(t, name, steps, open,
 			fmt.Sprintf("drawn from seed %d over the alphabet without offload and release, %d steps", s, model.DefaultSteps),
-			fmt.Sprintf("reproduce: DITTOFS_MODEL_SEEDS=%d running TestModelManySeeds; TestModel draws this seed itself with DITTOFS_SEED=%d, and runs this sequence once it is committed as testdata/model/%s", s+1, s, name))
+			fmt.Sprintf("reproduce: DITTOFS_MODEL_SEEDS=%d running TestModelManySeeds, which reruns seeds 0..%d; or commit the shrunk sequence as testdata/model/%s, which TestModel's corpus runs first", s+1, s, name))
 		if !t.Failed() || before {
 			continue
 		}
 		// The first failing seed ends the sweep: Check has already shrunk it
 		// and written its sequence, so the seeds after it would only spend
 		// the run's budget re-reporting what the failing journal cannot pass.
-		t.Errorf("seed %d diverged: rerun it alone with DITTOFS_MODEL_SEEDS=%d, the restriction alphabet above; for TestModel, commit the shrunk sequence as testdata/model/%s or draw the seed with DITTOFS_SEED=%d", s, s+1, name, s)
+		t.Errorf("seed %d diverged: rerun the sweep to it with DITTOFS_MODEL_SEEDS=%d (seeds 0..%d, the same draws, the alphabet above); to replay the finding itself, commit the shrunk sequence above as testdata/model/%s, which TestModel's corpus runs", s, s+1, s, name)
 		return
 	}
 
@@ -101,11 +101,11 @@ func TestModelManySeeds(t *testing.T) {
 	// over the nightly counts they pin the alphabet.
 	//
 	// decision: the append streams a finished sequence's live records sit on
-	// are not asserted, as the data-path test's own decision explains: a
-	// single draw's end state leaves whichever streams its removals emptied
-	// bare, so the two-stream assertion TestModel carries waits there, with
-	// the corpus it runs beside its own draw; and the bytes repacks freed are
-	// not in this alphabet, so no free is asserted either.
+	// are not asserted: a single draw's end state leaves whichever streams
+	// its removals emptied bare, so one seed cannot pin two live append
+	// streams at once and the two-stream assertion stays with the corpus run
+	// TestModel makes over committed sequences; and the bytes repacks freed
+	// are not in this alphabet, so no free is asserted either.
 	if r := reached(); !t.Failed() {
 		if r.Files < 2 {
 			t.Errorf("reached: Files = %d, want at least 2: the draws name four files", r.Files)

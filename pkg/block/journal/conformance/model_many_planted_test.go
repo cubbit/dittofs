@@ -14,10 +14,10 @@ import (
 // plantedSeedBound bounds the planted sweep: sequences of the many-seed
 // model's own alphabet and length, one seed each, on a build whose Truncate
 // carries a known bug. A write before a truncate over its bytes shows the
-// bug in the answer the comparison reads right after the truncate, so the
-// first diverging seed is expected well inside the bound; the first seed
-// itself was where it was looked for first, and no widening of the bound
-// was needed once it tripped there.
+// bug in the answer the comparison reads right after the truncate, and every
+// draw writes many times over, so a diverging seed sits well inside the
+// bound; eight still leaves the sweep several fresh draws past the one that
+// trips, at one bounded run each before it.
 const plantedSeedBound = 8
 
 // plantedTB is the testing.TB the planted leg hands model.Check in place of
