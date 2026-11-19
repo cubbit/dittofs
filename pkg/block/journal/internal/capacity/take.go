@@ -871,9 +871,14 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 // call or copy transfer runs after the seed stored, it is counted again, and
 // if it runs between the read and the store it is added from seedPending,
 // counted twice when the read held it and once when it did not, never zero
-// times. Concurrent seeds of one tag share seeding and
+// times. The held repack copies subtracted are the snapshot taken when the
+// seed began, not what is held at the store: a copy counted during the read
+// may not be in the figure read, and is then counted once by its transfer, or
+// twice when the read held it, never zero times. The snapshot is a local of
+// the seed that took it. Concurrent seeds of one tag share seeding and
 // seedPending, only the one that stores clears them, and the others return at
-// the seeded check, so a pending byte is added once. Landed, CopiesTransfer
+// the seeded check without using their own snapshot, so a pending byte is
+// added once. Landed, CopiesTransfer
 // and Retired point here for this argument. The overcount is one-time per tag
 // per process and bounded to the records in flight at the seed's read: later
 // records are counted once and refunded once at their retirement, so it does
