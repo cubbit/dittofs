@@ -687,7 +687,19 @@
         },
         "type": "object"
       },
-      "JoinDomainParamsRequest": {
+      "JoinDomainRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "credential": {
+            "$ref": "#/components/schemas/JoinCredentialRequest"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/JoinDomainSpecRequest"
+          }
+        },
+        "type": "object"
+      },
+      "JoinDomainSpecRequest": {
         "additionalProperties": false,
         "properties": {
           "account": {
@@ -697,6 +709,10 @@
             "type": "string"
           },
           "mode": {
+            "enum": [
+              "online",
+              "offline"
+            ],
             "type": "string"
           },
           "ou": {
@@ -704,22 +720,6 @@
           },
           "takeover": {
             "type": "boolean"
-          },
-          "version": {
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "type": "object"
-      },
-      "JoinDomainRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "credential": {
-            "$ref": "#/components/schemas/JoinCredentialRequest"
-          },
-          "spec": {
-            "$ref": "#/components/schemas/JoinDomainParamsRequest"
           }
         },
         "type": "object"
@@ -1466,7 +1466,7 @@
     }
   },
   "info": {
-    "description": "The DittoFS node's management API (RFC 23 §4), generated from the API's route table and its wire types.\n\n- A call carries a bearer token unless its operation's security is empty. A caller whose role may not read what a call reaches is answered 404, as though it did not exist; one that may read it but not make the call, 403.\n- A read that answers an ETag answers the record's tag. With ?wait=\u003cduration\u003e, above 0 and at most 1m0s, it is a long poll: it answers once the record changes, or once the wait passes.\n- A listing answers one page: ?limit= (default 100, at most 1000) and ?after=, the opaque cursor the previous page answered as next, which the last page leaves out.\n- A PUT, a PATCH, a DELETE, or a POST action that changes the spec, carries If-Match with the ETag it read, or, a PUT that may create its record, If-None-Match: *; without one it is refused 428, and with a stale one 412. A PATCH body is a JSON merge patch (RFC 7396) of the PUT body: a field present sets it, and null resets it to its default.\n- A POST or a DELETE carries an Idempotency-Key: a retry with the same key and the same request answers what the first answered, and one with another request is refused 422.\n- A request body names no field its type does not have. Its schema requires no field: one left out takes its default, and a handler refuses, 400 naming it, one it needs.\n- A write that starts an operation answers 202 with the operation and its Location; GET /api/v1/operations/{id}?wait= follows it.\n- Every refusal is application/problem+json: its code names the refusal, and retryable says whether the same request may succeed later. Any refusal may carry Retry-After.\n- The API listener also answers the health probes GET /health/live and GET /health/ready, unauthenticated and in text/plain, which this document leaves out.\n\nExtensions on each operation: x-dittofs-role is the least role that may make the call, none for a public one; x-dittofs-role-by-kind is true when the call needs instead the role that starts the kind of the operation it names; x-dittofs-starts is the kind of operation the write starts, answered 202; x-dittofs-waits-applied is true when the write's answer waits, at most 1s, for the node answering it to apply it.",
+    "description": "The DittoFS node's management API (RFC 23 §4), generated from the API's route table and its wire types.\n\n- A call carries a bearer token unless its operation's security is empty. A caller whose role may not read what a call reaches is answered 404, as though it did not exist; one that may read it but not make the call, 403.\n- A read that answers an ETag answers the record's tag. With ?wait=\u003cduration\u003e, above 0 and at most 1m0s, it is a long poll: it answers once the record changes, or once the wait passes.\n- A listing answers one page: ?limit= (default 100, at most 1000) and ?after=, the opaque cursor the previous page answered as next, which the last page leaves out.\n- A PUT, a PATCH, a DELETE, or a POST action that changes the spec, carries If-Match with the ETag it read, or, a PUT that may create its record, If-None-Match: *; without one it is refused 428, and with a stale one 412. A PATCH body is a JSON merge patch (RFC 7396) of the PUT body: a field present sets it, and null resets it to its default.\n- A POST or a DELETE carries an Idempotency-Key: a retry with the same key and the same request answers what the first answered, and one with another request is refused 422.\n- A request body names no field its type does not have. Its schema requires no field: one left out takes its default, and a handler refuses, 400 naming it, one it needs.\n- A write that starts an operation answers 202 with the operation and its Location; GET /api/v1/operations/{id}?wait= follows it.\n- Every refusal is application/problem+json: its code names the refusal, and retryable says whether the same request may succeed later. Any refusal may carry Retry-After.\n- The API listener also answers the health probes GET /health/live and GET /health/ready, unauthenticated and in text/plain, which this document leaves out.\n\nExtensions on each operation: x-dittofs-role is the least role that may make the call, none for a public one; x-dittofs-role-by-kind is true when the call needs instead the role that starts the kind of the operation it names; x-dittofs-starts is the kind of operation the write starts, answered 202, and x-dittofs-may-start the kind it starts only when what it writes calls for one, answered 202 then and as its own answer otherwise; x-dittofs-waits-applied is true when the write's answer waits, at most 1s, for the node answering it to apply it.",
     "title": "DittoFS management API",
     "version": "v1"
   },
@@ -2728,6 +2728,91 @@
           }
         },
         "x-dittofs-role": "viewer"
+      }
+    },
+    "/api/v1/installation/keytab": {
+      "put": {
+        "operationId": "installation_keytab_put",
+        "parameters": [
+          {
+            "description": "The ETag the write expects; the request carries it or If-None-Match.",
+            "in": "header",
+            "name": "If-Match",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A PUT creating its record.",
+            "in": "header",
+            "name": "If-None-Match",
+            "schema": {
+              "const": "*"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretRef"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem409"
+          },
+          "412": {
+            "$ref": "#/components/responses/Problem412"
+          },
+          "422": {
+            "$ref": "#/components/responses/Problem422"
+          },
+          "428": {
+            "$ref": "#/components/responses/Problem428"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem503"
+          }
+        },
+        "x-dittofs-role": "admin",
+        "x-dittofs-waits-applied": true
       }
     },
     "/api/v1/installation:join-domain": {
@@ -4933,6 +5018,30 @@
               }
             }
           },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Accepted",
+            "headers": {
+              "ETag": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "400": {
             "$ref": "#/components/responses/Problem400"
           },
@@ -4964,6 +5073,7 @@
             "$ref": "#/components/responses/Problem503"
           }
         },
+        "x-dittofs-may-start": "identity.nt-hash-delete",
         "x-dittofs-role": "operator",
         "x-dittofs-waits-applied": true
       },
@@ -5141,6 +5251,30 @@
               }
             }
           },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": "Accepted",
+            "headers": {
+              "ETag": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "400": {
             "$ref": "#/components/responses/Problem400"
           },
@@ -5172,6 +5306,7 @@
             "$ref": "#/components/responses/Problem503"
           }
         },
+        "x-dittofs-may-start": "identity.nt-hash-delete",
         "x-dittofs-role": "operator",
         "x-dittofs-waits-applied": true
       }

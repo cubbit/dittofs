@@ -66,6 +66,9 @@ type reads interface {
 	Secret(ctx context.Context, id entity.SecretRef, version uint64) (entity.Secret, error)
 	// Installation is the installation's record.
 	Installation(ctx context.Context) (entity.Installation, error)
+	// Holder is the user or machine whose record holds the spelling id;
+	// false when none does or a group does.
+	Holder(ctx context.Context, id entity.ProtocolID) (entity.User, bool, error)
 }
 
 // errNoStore refuses a call on a node that holds no control-plane store.

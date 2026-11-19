@@ -1,13 +1,17 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"iter"
 	"net/mail"
 	"strconv"
 
+	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // userDoc is a user as its writes carry it: its spec alone.
@@ -97,7 +101,7 @@ func createUser(_ context.Context, rq request[userDoc], link entity.ProtocolID, 
 	if err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
-	if ids, err = withKerberos(ids, sp.Kerberos, link); err != nil {
+	if ids, err = withKerberos(tx, ids, sp.Kerberos, link); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
 	u := entity.User{Principal: entity.NewUser(), Name: sp.Name, Email: sp.Email, Disabled: sp.Disabled, IDs: ids}
@@ -144,7 +148,7 @@ func putUser(_ context.Context, rq request[userDoc], link entity.ProtocolID, tx 
 	if u.IDs, err = withNumber(u.IDs, entity.SchemeUID, sp.UID, "spec.uid"); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
-	if u.IDs, err = withKerberos(u.IDs, sp.Kerberos, link); err != nil {
+	if u.IDs, err = withKerberos(tx, u.IDs, sp.Kerberos, link); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
 	u.Name, u.Email, u.Disabled = sp.Name, sp.Email, sp.Disabled
@@ -210,4 +214,112 @@ var user = watching[apiv1.User]{
 	},
 	tag:   func(u apiv1.User) uint64 { return u.Generation },
 	until: changes(func(first, now apiv1.User) bool { return first.Generation != now.Generation }),
+}
+
+// kerberosLink is the pre-write step of a user's write: the Kerberos name the
+// spec states, with the user SID it links for. A name the user already holds
+// keeps its link, and one a machine holds is moved with the machine's link,
+// each asking nothing; any other is linked for the SID the directory holds
+// under it, asked before the transaction. A name the directory cannot answer
+// for is refused 503 and one it holds no entry for 400 naming it, each before
+// anything is written; with no directory, a new name is refused 503. A name
+// another user holds is refused 409.
+//
+// ponytail: no directory implements KerberosLinkSID yet, so the paths that
+// ask one (an answer, an outage, no entry, another realm, a stale answer
+// within the grace) run in no test, and the SID's encoding into Linked is
+// held only by the store's own refusal of a malformed one. Test them over
+// identitytest's in-memory directory once identity's directory grows the
+// call, as the RFC 18 plan's T6.9 adds it.
+func kerberosLink(ctx context.Context, rq request[userDoc]) (entity.ProtocolID, error) {
+	name := rq.Body.Spec.Kerberos
+	if name == "" {
+		return entity.ProtocolID{}, nil
+	}
+	if len(name) > maxDirectoryName {
+		return entity.ProtocolID{}, tooLong("spec.kerberos")
+	}
+	h, held, err := rq.d.Store.Holder(ctx, entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: name})
+	switch {
+	case err != nil:
+		return entity.ProtocolID{}, err
+	case held && (h.Principal.Kind == entity.PrincipalMachine || h.Principal.ID == entity.PrincipalID(rq.ID)):
+		id, _ := krbOf(h.IDs)
+		return id, nil
+	case held:
+		return entity.ProtocolID{}, &componentError{field: "spec.kerberos", detail: "another user holds " + name, err: vfserr.ErrExist}
+	case rq.d.Directory == nil:
+		return entity.ProtocolID{}, errNoDirectory
+	}
+	s, err := rq.d.Directory.KerberosLinkSID(ctx, name)
+	switch {
+	case errors.Is(err, vfserr.ErrUnknownPrincipal):
+		return entity.ProtocolID{}, &componentError{field: "spec.kerberos", detail: "the directory holds no user " + name, err: err}
+	case err != nil:
+		return entity.ProtocolID{}, err
+	}
+	id := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: name}
+	if s.Revision != 0 {
+		var b bytes.Buffer
+		sid.EncodeSID(&b, &s)
+		id.Linked = b.String()
+	}
+	return id, nil
+}
+
+// krbOf is the krb spelling ids hold, false for none.
+func krbOf(ids entity.ProtocolIDs) (entity.ProtocolID, bool) {
+	for _, id := range ids {
+		if id.Scheme == entity.SchemeKerberos {
+			return id, true
+		}
+	}
+	return entity.ProtocolID{}, false
+}
+
+// withKerberos is ids with its krb spelling the one the spec names: removed
+// when it names none, kept, link and all, when it names the one held, and
+// otherwise link, which the pre-write step took for that name. A name a
+// machine holds, read tracked in tx, is taken from it with the machine's
+// link: the machine is marked deleted in tx, which frees the name for the
+// user's put after it. A link taken for another name than the spec's, or
+// from a machine whose spelling has changed since, is refused 503, as a
+// directory that could not answer is.
+//
+// decision: moving the name marks the machine deleted, since a machine holds
+// its one Kerberos spelling and nothing else, which the store keeps it to,
+// so a machine without it is no principal. Its marked record is left as a
+// deletion's first transaction leaves one, and no operation drops it, since
+// no runner step continues a machine's deletion. Start one once a step
+// does, or once a machine can hold anything a deletion must drop.
+func withKerberos(tx entity.ControlPlaneTx, ids entity.ProtocolIDs, name string, link entity.ProtocolID) (entity.ProtocolIDs, error) {
+	old, held := krbOf(ids)
+	out := make(entity.ProtocolIDs, 0, len(ids)+1)
+	for _, id := range ids {
+		if id.Scheme != entity.SchemeKerberos {
+			out = append(out, id)
+		}
+	}
+	stale := &refusal{code: apiv1.CodeUnavailable, detail: "the user's Kerberos name changed while its link was asked; retry"}
+	switch {
+	case name == "":
+		return out, nil
+	case held && old.Value == name:
+		return append(out, old), nil
+	case link.Value != name:
+		return nil, stale
+	}
+	h, ok, err := tx.Holder(entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: name})
+	if err != nil {
+		return nil, err
+	}
+	if ok && h.Principal.Kind == entity.PrincipalMachine {
+		if mk, _ := krbOf(h.IDs); mk != link {
+			return nil, stale
+		}
+		if err := tx.DeleteUser(h.Principal, h.Generation); err != nil {
+			return nil, err
+		}
+	}
+	return append(out, link), nil
 }

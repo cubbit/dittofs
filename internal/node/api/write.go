@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -50,6 +51,10 @@ type writing[B any] struct {
 	changesSpec bool
 	secret      func(path string) bool
 	auditAs     string
+	// self, when set, is the ID of the one record a path naming no ID
+	// reaches, such as the installation's, which its audit records and its
+	// handler's request name.
+	self func(context.Context, Deps) ([16]byte, error)
 }
 
 // write adapts a write. Its checks run in this order: a query parameter its
@@ -69,6 +74,11 @@ type writing[B any] struct {
 // record it wrote: the path's, or, for a POST on a collection, the one it
 // created.
 //
+// A pre-write step may hold a credential outside the store, under the ID
+// of the operation the write starts, which its opStart's release drops when
+// the write is refused or panics; and it may commit a write of its own
+// before this one, through the request's own, audited as the request.
+//
 // decision: prepare runs before the tag is compared, so a write with a stale
 // tag runs it and is then refused 412. The tag is read inside Write's
 // transaction, tracked, because only there does a match hold until the
@@ -87,12 +97,24 @@ type writing[B any] struct {
 // transaction of its own. After a commit that raises the principals or
 // settings generation, the answer waits for the node to apply it.
 func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) (I, error), h func(context.Context, request[B], I, entity.ControlPlaneTx) (R, [16]byte, error)) adapter {
+	return writeWith(w, prepare, h, nil)
+}
+
+// writeWith is write whose pre-write step's result also names, through
+// starting, the operation the row starts: its ID, its params and the
+// release of what the step holds under it.
+func writeWith[B, I, R any](w writing[B], prepare func(context.Context, request[B]) (I, error), h func(context.Context, request[B], I, entity.ControlPlaneTx) (R, [16]byte, error), starting func(I) opStart) adapter {
 	return adapter{form: formWrite, body: reflect.TypeFor[B](), out: reflect.TypeFor[R](), changesSpec: w.changesSpec, replays: true, raises: w.raises, run: func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (a answer, err error) {
 		if s.d.Store == nil {
 			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
 		}
 		created := rt.creates()
 		sub := r.PathValue("sub")
+		if w.self != nil {
+			if id, err = w.self(ctx, s.d); err != nil {
+				return answer{}, err
+			}
+		}
 		rec := s.auditOf(ctx, r)
 		rec.Target.Kind = w.kind
 		if !created {
@@ -131,7 +153,11 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			s.audits.WithLabelValues("applied").Inc()
 			return nil
 		}
-		if err := decode(bytes.NewReader(body), &rq.Body); err != nil {
+		err = decode(bytes.NewReader(body), &rq.Body)
+		if rt.keyless {
+			clear(body) // it holds a credential, which no digest reads on a keyless row
+		}
+		if err != nil {
 			return answer{}, err
 		}
 		if r.Method == http.MethodPatch {
@@ -178,12 +204,24 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 				return answer{}, err
 			}
 		}
-		st, _ := any(in).(opStart)
+		var st opStart
+		if starting != nil {
+			st = starting(in)
+		}
+		committed := false
+		defer func() {
+			if !committed && st.release != nil {
+				st.release()
+			}
+		}()
 		err = s.d.Store.Write(ctx, entity.WriteMeta{Audit: &rec, Idempotency: idem}, func(tx entity.ControlPlaneTx) error {
 			rq := rq
 			var started *apiv1.Operation
 			rq.start = func(kind apiv1.OpKind, target entity.ResourceRef) error {
-				op, err := s.start(ctx, tx, kind, target, opStart{})
+				if kind != rt.mayStart {
+					return fmt.Errorf("api: %s starts no %s operation", rt.op(), kind)
+				}
+				op, err := start(ctx, tx, kind, target, opStart{})
 				started = &op
 				return err
 			}
@@ -231,7 +269,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 				status, location = http.StatusCreated, r.URL.Path+"/"+idString(wrote)
 			}
 			if rt.starts != "" {
-				op, err := s.start(ctx, tx, rt.starts, entity.ResourceRef{Kind: w.kind, ID: wrote[:]}, st)
+				op, err := start(ctx, tx, rt.starts, entity.ResourceRef{Kind: w.kind, ID: wrote[:]}, st)
 				if err != nil {
 					return err
 				}
@@ -256,11 +294,9 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			return err
 		})
 		if err != nil {
-			if st.release != nil {
-				st.release()
-			}
 			return s.replayed(err)
 		}
+		committed = true
 		s.audits.WithLabelValues("applied").Inc()
 		if idem != nil {
 			s.idempotencyWritten.Inc()
@@ -312,7 +348,7 @@ func (s *Server) awaitApplied(ctx context.Context) {
 // answers it, its progress unknown, as it is before any step records one. A
 // second one of kind on target while one runs is refused 409
 // operation_running naming it.
-func (s *Server) start(ctx context.Context, tx entity.ControlPlaneTx, kind apiv1.OpKind, target entity.ResourceRef, st opStart) (apiv1.Operation, error) {
+func start(ctx context.Context, tx entity.ControlPlaneTx, kind apiv1.OpKind, target entity.ResourceRef, st opStart) (apiv1.Operation, error) {
 	c, _ := auth.CallerFrom(ctx)
 	id := st.id
 	if id == (entity.OperationID{}) {

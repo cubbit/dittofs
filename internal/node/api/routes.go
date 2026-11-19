@@ -19,7 +19,8 @@ import (
 // against and only a public row leaves zero, the right its caller must hold,
 // whether it answers a caller that must change its password, the kind of
 // operation a write row starts on the record it wrote, empty for one that
-// starts none, whether a write row carries a credential and so keeps no
+// starts none, the kind it may start depending on what it writes, which only
+// its handler starts and no other kind, whether a write row carries a credential and so keeps no
 // idempotency record, whether it answers before the node is ready, and its
 // adapter. A row with a verb and no {id} is an action on the one record its
 // path names, served at its pattern followed by :verb.
@@ -30,6 +31,7 @@ type route struct {
 	right           auth.Right
 	mustChange      bool
 	starts          apiv1.OpKind
+	mayStart        apiv1.OpKind
 	keyless         bool
 	beforeReady     bool
 	serve           adapter
@@ -100,7 +102,7 @@ func (rt *route) hasID() bool { return strings.Contains(rt.pattern, "{id}") }
 
 // creates reports whether the row creates its record: a POST on a
 // collection, answered 201 with the record's Location.
-func (rt *route) creates() bool { return rt.method == http.MethodPost && !rt.hasID() }
+func (rt *route) creates() bool { return rt.method == http.MethodPost && !rt.hasID() && rt.verb == "" }
 
 // precondition is what a write row's request must carry: an
 // Idempotency-Key; If-Match; or, a PUT that may create its record, If-Match
@@ -212,8 +214,9 @@ var baseRoutes = []route{
 	{method: http.MethodPost, pattern: "/api/v1/stores", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(stores, nil, createStore)},
 	{method: http.MethodGet, pattern: "/api/v1/stores/{id}", kind: entity.ResourceRemoteStore, right: auth.View, serve: watch(store)},
 	{method: http.MethodDelete, pattern: "/api/v1/stores/{id}", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(tagsOf(stores), settingKeys(storeScope), deleteStore)},
-	{method: http.MethodPut, pattern: "/api/v1/stores/{id}/credential", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(credentials, sealCredential, putCredential)},
-	{method: http.MethodDelete, pattern: "/api/v1/stores/{id}/credential", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(tagsOf(credentials), nil, deleteCredential)},
+	{method: http.MethodPut, pattern: "/api/v1/stores/{id}/credential", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(credentials, storeCredentials.seal, storeCredentials.put)},
+	{method: http.MethodDelete, pattern: "/api/v1/stores/{id}/credential", kind: entity.ResourceRemoteStore, right: auth.Stores, serve: write(tagsOf(credentials), nil, storeCredentials.remove)},
+	{method: http.MethodPut, pattern: "/api/v1/installation/keytab", kind: entity.ResourceInstallation, right: auth.Installation, serve: write(keytabWrites, keytabs.seal, keytabs.put)},
 	{method: http.MethodGet, pattern: "/api/v1/namespaces", kind: entity.ResourceNamespace, right: auth.View, serve: list(namespaceList)},
 	{method: http.MethodPost, pattern: "/api/v1/namespaces", kind: entity.ResourceNamespace, right: auth.Stores, serve: write(namespaces, nil, createNamespace)},
 	{method: http.MethodGet, pattern: "/api/v1/namespaces/{id}", kind: entity.ResourceNamespace, right: auth.View, serve: watch(namespace)},
@@ -221,10 +224,10 @@ var baseRoutes = []route{
 	{method: http.MethodGet, pattern: "/api/v1/adapters/{sub}", kind: entity.ResourceAdapter, right: auth.View, target: adapterRef, sub: subProtocol, serve: watch(adapterRead)},
 	{method: http.MethodPut, pattern: "/api/v1/adapters/{sub}", kind: entity.ResourceAdapter, right: auth.Stores, target: adapterRef, sub: subProtocol, serve: write(adapters, adapterFieldsStep, putAdapter)},
 	{method: http.MethodGet, pattern: "/api/v1/installation", kind: entity.ResourceInstallation, right: auth.View, serve: read(installationRead)},
-	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "resolve-principal", kind: entity.ResourceInstallation, right: auth.Principals, starts: apiv1.OpResolvePrincipal, serve: write(onInstallation[apiv1.ResolvePrincipalParams](), prepareResolve, startOn)},
-	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "test-directory", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpTestDirectory, serve: write(onInstallation[none](), identityDrives, startOn)},
-	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "join-domain", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpJoinDomain, keyless: true, serve: write(onInstallation[apiv1.JoinDomain](), prepareJoin, startOn)},
-	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "rotate-machine-password", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpRotateMachinePassword, serve: write(onInstallation[none](), identityDrives, startOn)},
+	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "resolve-principal", kind: entity.ResourceInstallation, right: auth.Principals, starts: apiv1.OpResolvePrincipal, serve: action(prepareResolve)},
+	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "test-directory", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpTestDirectory, serve: action(identityDrives)},
+	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "join-domain", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpJoinDomain, keyless: true, serve: action(prepareJoin)},
+	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "rotate-machine-password", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpRotateMachinePassword, serve: action(prepareRotate)},
 }
 
 // routes is the whole table: the rows above, and the generic setting

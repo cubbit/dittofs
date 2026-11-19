@@ -605,6 +605,18 @@ func TestActionAccepted(t *testing.T) {
 	}
 }
 
+// A setting's put answered 202 returns the operation it started, and no
+// setting, as turning identity.ntlm off does.
+func TestSettingPutAccepted(t *testing.T) {
+	s := serve(t, admin())
+	s.front.add(fault{match: on(http.MethodPut, "/api/v1/settings/identity.ntlm"), status: http.StatusAccepted,
+		header: http.Header{"Content-Type": {"application/json"}}, body: `{"id":"op1","state":"pending"}`})
+	res, err := dial(t, s.url, newClock()).Settings(client.ScopeInstallation, "").Put(t.Context(), "identity.ntlm", apiv1.SettingSpec{Value: []byte("false")}, `"3"`)
+	if err != nil || res.Operation == nil || res.Operation.ID != "op1" || res.Resource != nil {
+		t.Errorf("Put identity.ntlm answered 202: operation %+v resource %+v err %v, want operation op1 and no setting", res.Operation, res.Resource, err)
+	}
+}
+
 // A delete answered 202 returns its operation, which Wait follows to its
 // end, and which the operation reads and listing answer; a cancel is
 // refused not_cancellable. A query option reaches the route. Only a POST or

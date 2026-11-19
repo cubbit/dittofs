@@ -16,28 +16,27 @@ func ntlmOn(s entity.Setting, ok bool) bool {
 	return !ok || string(bytes.TrimSpace(s.Value)) != "false"
 }
 
-// ntlmWrite runs write, a write of key at scope inside tx returning whether it
-// leaves NTLM on, and, for the installation's identity.ntlm, the rule after
-// it, starting through start the NT-hash deletion the rule says the write
-// starts. A write of any other key runs alone.
-func ntlmWrite(tx entity.ControlPlaneTx, start func(apiv1.OpKind, entity.ResourceRef) error, scope entity.SettingScope, key string, write func() (on bool, err error)) error {
+// ntlmWrite runs write, a write of key at scope inside tx, and, for the
+// installation's identity.ntlm, the rule after it, reading whether NTLM was
+// and is on from the record before and after, starting through start the
+// NT-hash deletion the rule says the write starts. A write of any other key
+// runs alone.
+func ntlmWrite(tx entity.ControlPlaneTx, start func(apiv1.OpKind, entity.ResourceRef) error, scope entity.SettingScope, key string, write func() error) error {
 	if scope.Kind != entity.ScopeInstallation || key != ntlmKey {
-		_, err := write()
-		return err
+		return write()
 	}
 	old, had, err := tx.Setting(scope, key)
 	if err != nil {
 		return err
 	}
-	on, err := write()
+	if err := write(); err != nil {
+		return err
+	}
+	now, has, err := tx.Setting(scope, key)
 	if err != nil {
 		return err
 	}
-	now, _, err := tx.Setting(scope, key)
-	if err != nil {
-		return err
-	}
-	begin, err := ntlmRule(tx, ntlmOn(old, had), on, now.Position)
+	begin, err := ntlmRule(tx, ntlmOn(old, had), ntlmOn(now, has), now.Position) // a delete leaves no record, and NTLM on, so no Off
 	if err != nil || !begin {
 		return err
 	}

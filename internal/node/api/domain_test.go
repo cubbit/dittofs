@@ -311,7 +311,7 @@ func TestOnlineJoinDomain(t *testing.T) {
 		t.Errorf("operation kind %q target %v, want %s on the installation %x", op.Kind, op.Target, apiv1.OpJoinDomain, in.ID)
 	}
 	var params apiv1.JoinDomainParams
-	if err := json.Unmarshal(op.Params, &params); err != nil || params != (apiv1.JoinDomainParams{Mode: apiv1.JoinOnline}) {
+	if err := json.Unmarshal(op.Params, &params); err != nil || params != (apiv1.JoinDomainParams{JoinDomainSpec: apiv1.JoinDomainSpec{Mode: apiv1.JoinOnline}}) {
 		t.Errorf("params %s (%v), want the online join's spec alone", op.Params, err)
 	}
 	if h := d.joins.taken(); len(h) != 1 || h[0].id != op.ID || h[0].released {
@@ -370,7 +370,7 @@ func TestOfflineJoinDomain(t *testing.T) {
 		t.Fatalf("operations: %+v, want one", ops)
 	}
 	var params apiv1.JoinDomainParams
-	if err := json.Unmarshal(ops[0].Params, &params); err != nil || params != (apiv1.JoinDomainParams{Mode: apiv1.JoinOffline, Account: account, Version: 1}) {
+	if err := json.Unmarshal(ops[0].Params, &params); err != nil || params != (apiv1.JoinDomainParams{JoinDomainSpec: apiv1.JoinDomainSpec{Mode: apiv1.JoinOffline, Account: account}, Version: 1}) {
 		t.Errorf("params %s (%v), want the offline join naming version 1", ops[0].Params, err)
 	}
 	audits := d.audits(t)

@@ -462,30 +462,35 @@ func TestImportRules(t *testing.T) {
 // certificate with, the settings table's package, which imports only the
 // entity package and whose table the node hands in, and the secret
 // provider's refusals, apart from the provider, which the node hands in
-// behind an interface the API declares, and identity's value types and the
-// SID's encoding, which the domain's routes hand identity and store, apart
-// from identity's server, also handed in behind interfaces the API declares;
-// nodetest, which imports Badger, is not allowed. Everything
+// behind an interface the API declares, the names onlyNames admits of
+// identity's package, and the SID's encoding, which the domain's routes
+// store, apart from identity's server, also handed in behind interfaces the
+// API declares; nodetest, which imports Badger, is not allowed. Everything
 // else it reaches through an interface it declares or a value the node hands
 // it.
 func componentAllowed(rel string) bool {
 	switch rel {
 	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1",
 		"pkg/metadata/errors", "pkg/metadata/kv", "pkg/vfs/vfserr", "internal/tlsconfig",
-		"pkg/settings", "pkg/secrets/secreterr", "pkg/identity", "pkg/auth/sid":
+		"pkg/settings", "pkg/secrets/secreterr", "pkg/auth/sid":
 		return true
 	}
 	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
 }
 
-// errorsOnly are the allowed packages that also declare a store's interface
-// and an implementation of it, of which a file may use only the error values,
-// the names starting Err.
-var errorsOnly = []string{"pkg/metadata/kv"}
+// onlyNames are the allowed packages of which a file may use only some
+// names: KV, which also declares a store's interface and an implementation
+// of it, only its error values, the names starting Err; and identity's
+// package, whose server and calls the node hands in behind interfaces, only
+// the join credential the API hands identity and the keytab's check.
+var onlyNames = map[string]func(name string) bool{
+	"pkg/metadata/kv": func(n string) bool { return strings.HasPrefix(n, "Err") },
+	"pkg/identity":    func(n string) bool { return n == "JoinCredential" || n == "KeytabNames" },
+}
 
-// nonErrorUses returns each name f uses from the package it imports as imp
-// that is not an error value: every name, under a dot import.
-func nonErrorUses(f *ast.File, imp *ast.ImportSpec, p string) []string {
+// otherUses returns each name f uses from the package it imports as imp
+// that admit does not admit: every name, under a dot import.
+func otherUses(f *ast.File, imp *ast.ImportSpec, p string, admit func(string) bool) []string {
 	name := path.Base(p)
 	if imp.Name != nil {
 		name = imp.Name.Name
@@ -496,7 +501,7 @@ func nonErrorUses(f *ast.File, imp *ast.ImportSpec, p string) []string {
 	var bad []string
 	ast.Inspect(f, func(n ast.Node) bool {
 		if sel, ok := n.(*ast.SelectorExpr); ok {
-			if x, ok := sel.X.(*ast.Ident); ok && x.Name == name && !strings.HasPrefix(sel.Sel.Name, "Err") {
+			if x, ok := sel.X.(*ast.Ident); ok && x.Name == name && !admit(sel.Sel.Name) {
 				bad = append(bad, p+"."+sel.Sel.Name)
 			}
 		}
@@ -544,8 +549,8 @@ func componentImports(root string) ([]string, error) {
 			p, _ := strconv.Unquote(imp.Path.Value)
 			rel, inModule := strings.CutPrefix(p, module)
 			std := !strings.Contains(strings.Split(p, "/")[0], ".")
-			if inModule && slices.Contains(errorsOnly, rel) {
-				for _, u := range nonErrorUses(f, imp, p) {
+			if admit, ok := onlyNames[rel]; inModule && ok {
+				for _, u := range otherUses(f, imp, p, admit) {
 					bad = append(bad, filepath.ToSlash(r)+" uses "+u)
 				}
 				continue
@@ -572,6 +577,7 @@ func TestNoComponentImports(t *testing.T) {
 		{"testdata/arch/component-import", []string{
 			"api/allowed.go imports github.com/cubbit/dittofs/internal/identity",
 			"api/allowed.go imports github.com/dgraph-io/badger/v4",
+			"api/identity.go uses github.com/cubbit/dittofs/pkg/identity.CheckKeytab",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.KV",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.Counting",
 			"api/server.go imports github.com/cubbit/dittofs/pkg/block/engine",

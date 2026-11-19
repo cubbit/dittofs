@@ -206,6 +206,12 @@ const maxSettingKey = 255
 func settingRoutes() []route {
 	var out []route
 	for _, sc := range settingScopes {
+		// An installation setting's write may start the NT-hash deletion,
+		// which identity.ntlm's rule starts.
+		var may apiv1.OpKind
+		if sc.path == "/api/v1/settings" {
+			may = apiv1.OpNTHashDelete
+		}
 		// The key is the audit target, which an index key holds, so it is
 		// bounded before any record is written for it.
 		target := func(id [16]byte, key string) ([]byte, error) {
@@ -233,7 +239,7 @@ func settingRoutes() []route {
 		path := sc.path + "/{sub}"
 		out = append(out,
 			route{method: http.MethodGet, pattern: path, kind: entity.ResourceSetting, right: auth.View, target: target, sub: subSetting, serve: watch(settingRead(sc.scope))},
-			route{method: http.MethodPut, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, serve: write(w, nil,
+			route{method: http.MethodPut, pattern: path, kind: entity.ResourceSetting, right: sc.right, mayStart: may, target: target, sub: subSetting, serve: write(w, nil,
 				func(ctx context.Context, rq request[settingDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Setting, [16]byte, error) {
 					v := rq.Body.Spec.Value
 					if len(v) == 0 || string(v) == "null" {
@@ -241,17 +247,17 @@ func settingRoutes() []route {
 					}
 					var gen uint64
 					st := entity.Setting{Scope: sc.scope(rq.ID), Key: rq.Sub, Value: v}
-					err := ntlmWrite(tx, rq.start, st.Scope, st.Key, func() (on bool, err error) {
+					err := ntlmWrite(tx, rq.start, st.Scope, st.Key, func() (err error) {
 						gen, err = putSetting(ctx, rq.d, tx, st, rq.Expect)
-						return ntlmOn(st, true), err
+						return err
 					})
 					return apiv1.Setting{ID: rq.Sub, Generation: gen, Spec: apiv1.SettingSpec{Value: v}}, rq.ID, err
 				})},
-			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, serve: write(tagsOf(w), nil,
+			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, mayStart: may, target: target, sub: subSetting, serve: write(tagsOf(w), nil,
 				func(ctx context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
 					scope := sc.scope(rq.ID)
-					return none{}, rq.ID, ntlmWrite(tx, rq.start, scope, rq.Sub, func() (bool, error) {
-						return true, deleteSetting(ctx, rq.d, tx, scope, rq.Sub, rq.Expect)
+					return none{}, rq.ID, ntlmWrite(tx, rq.start, scope, rq.Sub, func() error {
+						return deleteSetting(ctx, rq.d, tx, scope, rq.Sub, rq.Expect)
 					})
 				})},
 		)

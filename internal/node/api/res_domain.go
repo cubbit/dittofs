@@ -1,17 +1,15 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
-	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // directory is identity's directory as the API asks it before a write. A
@@ -21,7 +19,7 @@ import (
 // holds no such entry, and the zero SID for a name in another realm, which
 // links for none.
 type directory interface {
-	KerberosLinkSID(ctx context.Context, name string) (identity.SID, error)
+	KerberosLinkSID(ctx context.Context, name string) (sid.SID, error)
 }
 
 // joins holds an online join's administrator credential in memory under the
@@ -31,15 +29,18 @@ type joins interface {
 	HoldJoinCredential(id entity.OperationID, cred identity.JoinCredential) (release func())
 }
 
-// opStart is a pre-write step's result for a row that starts an operation:
-// the operation's ID, picked before the write so the step can hand it to
+// opStart is an installation action's pre-write step's result: the
+// operation's ID, picked before the write so the step can hand it to
 // identity, zero for one the write picks; its params, as its kind decodes
-// them; and the release of what the step holds under the ID, which the write
-// adapter calls when the write is refused, nil for none.
+// them; the release of what the step holds under the ID, which the write
+// adapter calls unless the write commits, nil for none; and check, run in
+// the operation's own transaction on the installation read there, which
+// refuses the start, nil for none.
 type opStart struct {
 	id      entity.OperationID
 	params  []byte
 	release func()
+	check   func(tx entity.ControlPlaneTx, in entity.Installation) error
 }
 
 // The settings and secret owner the domain's routes read and write.
@@ -48,9 +49,15 @@ const (
 	machinePassword = "machine_password"
 )
 
-// maxDirectoryName bounds a principal's name or Kerberos name, in bytes, as
-// the directory's own user principal names are bounded.
+// maxDirectoryName bounds a principal's name, a Kerberos name, a computer
+// account's name and an organisational unit, in bytes, as the directory's own
+// names are bounded.
 const maxDirectoryName = 1024
+
+// tooLong refuses field, longer than maxDirectoryName.
+func tooLong(field string) error {
+	return &fieldError{field: field, detail: "at most " + strconv.Itoa(maxDirectoryName) + " bytes"}
+}
 
 var (
 	errNoDirectory = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no directory to ask"}
@@ -64,20 +71,45 @@ func installationRef(in entity.Installation) entity.ResourceRef {
 	return entity.ResourceRef{Kind: entity.ResourceInstallation, ID: in.ID[:]}
 }
 
-// onInstallation is what the write adapter knows of an action on the
-// installation: a record it compares no tag of, so it reads none.
-func onInstallation[B any]() writing[B] {
-	return writing[B]{kind: entity.ResourceInstallation, read: func(entity.ControlPlaneTx, [16]byte, string) (B, uint64, bool, error) {
-		var b B
-		return b, 0, false, nil
-	}}
+// installationID is the ID of the installation, the one record its paths
+// reach.
+func installationID(ctx context.Context, d Deps) ([16]byte, error) {
+	in, err := d.Store.Installation(ctx)
+	return in.ID, err
 }
 
-// startOn is an action on the installation that writes only the operation its
-// row starts, on the installation read in tx.
-func startOn[B any](_ context.Context, _ request[B], _ opStart, tx entity.ControlPlaneTx) (none, [16]byte, error) {
-	in, err := tx.Installation()
-	return none{}, in.ID, err
+// action adapts an action on the installation whose row starts an operation:
+// prep checks the request and names the operation's ID, params, hold and
+// check; the write starts it, on the installation, once check admits it in
+// the same transaction. Its audit records name the installation by its ID.
+func action[B any](prep func(context.Context, request[B]) (opStart, error)) adapter {
+	w := writing[B]{kind: entity.ResourceInstallation, self: installationID,
+		read: func(entity.ControlPlaneTx, [16]byte, string) (B, uint64, bool, error) {
+			var b B
+			return b, 0, false, nil
+		}}
+	return writeWith(w, prep, func(_ context.Context, rq request[B], st opStart, tx entity.ControlPlaneTx) (none, [16]byte, error) {
+		in, err := tx.Installation()
+		if err == nil && st.check != nil {
+			err = st.check(tx, in)
+		}
+		return none{}, rq.ID, err
+	}, func(st opStart) opStart { return st })
+}
+
+// noneRunning refuses, 409 operation_running naming it, while an operation of
+// any of kinds runs on the installation, read tracked in tx.
+func noneRunning(tx entity.ControlPlaneTx, in entity.Installation, kinds ...apiv1.OpKind) error {
+	for _, k := range kinds {
+		op, ok, err := tx.RunningOperation(string(k), installationRef(in))
+		if err != nil {
+			return err
+		}
+		if ok {
+			return &entity.OperationRunningError{ID: op.ID}
+		}
+	}
+	return nil
 }
 
 // installationRead is GET /installation: its ID and its state.
@@ -109,7 +141,7 @@ func prepareResolve(_ context.Context, rq request[apiv1.ResolvePrincipalParams])
 	case (p.Name == "") == (p.SID == ""):
 		return opStart{}, &fieldError{field: "name", detail: "a principal is named by its name or by its SID, exactly one"}
 	case len(p.Name) > maxDirectoryName:
-		return opStart{}, &fieldError{field: "name", detail: "a name is at most 1024 bytes"}
+		return opStart{}, tooLong("name")
 	case p.SID != "":
 		if _, err := sid.ParseSIDString(p.SID); err != nil {
 			return opStart{}, &fieldError{field: "sid", detail: "not a SID in its string form"}
@@ -122,9 +154,9 @@ func prepareResolve(_ context.Context, rq request[apiv1.ResolvePrincipalParams])
 	return opStart{params: b}, err
 }
 
-// identityDrives is the pre-write step of test-directory and
-// rotate-machine-password, which hand identity nothing: refused 503 while
-// the node holds no identity service to drive the operation.
+// identityDrives is test-directory's pre-write step, which hands identity
+// nothing: refused 503 while the node holds no identity service to drive
+// the operation.
 //
 // decision: resolve-principal, test-directory and rotate-machine-password
 // are gated on Joins, identity's join hold, since it is the one interface
@@ -139,36 +171,50 @@ func identityDrives(_ context.Context, rq request[none]) (opStart, error) {
 	return opStart{}, nil
 }
 
-// prepareJoin is join-domain's pre-write step. An online join's
-// organisational unit outside the directory record's base, or host name that
-// is not a DNS name, is refused 400 before anything is held or written, each
-// left empty for identity's default; then the operation's ID is picked and the
+// prepareRotate is rotate-machine-password's pre-write step: refused 503
+// while the node holds no identity service, and, at its start, 409 while a
+// join runs, so a join and a rotation never run at once.
+func prepareRotate(ctx context.Context, rq request[none]) (opStart, error) {
+	st, err := identityDrives(ctx, rq)
+	st.check = func(tx entity.ControlPlaneTx, in entity.Installation) error {
+		return noneRunning(tx, in, apiv1.OpJoinDomain)
+	}
+	return st, err
+}
+
+// prepareJoin is join-domain's pre-write step. Either mode is refused 503
+// while the node holds no identity service to drive the join, and, at its
+// start, 409 while a rotation runs. An online join's organisational unit
+// outside the directory record's base, or host name that is not a DNS name,
+// is refused 400 before anything is held or written, each left empty for
+// identity's default; then the operation's ID is picked and the
 // administrator credential held under it, so the join's first step finds it,
-// and the adapter releases it when the write creating the operation is
-// refused. An offline join's computer account password is sealed and written
+// and the adapter releases it unless the write creating the operation
+// commits. An offline join's computer account password is sealed and written
 // as a new version of the machine password, in a write of its own committed
-// before the operation's, whose version the operation's params name. Neither
-// credential reaches the params.
+// before the operation's, whose version the operation's params name, and
+// its start is refused 409 unless that version is still the current one.
+// Neither credential reaches the params.
 func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, error) {
-	p, cred := rq.Body.Spec, rq.Body.Credential
+	p, cred := apiv1.JoinDomainParams{JoinDomainSpec: rq.Body.Spec}, rq.Body.Credential
 	switch {
-	case p.Version != 0:
-		return opStart{}, &fieldError{field: "spec.version", detail: "the machine password's version is the server's to write"}
 	case len(p.Account) > maxDirectoryName:
-		return opStart{}, &fieldError{field: "spec.account", detail: "an account name is at most 1024 bytes"}
+		return opStart{}, tooLong("spec.account")
 	case len(cred.Password) == 0:
 		return opStart{}, &fieldError{field: "credential.password", detail: "a join takes a password"}
 	}
 	switch p.Mode {
 	case apiv1.JoinOnline:
-		if cred.User == "" {
+		switch {
+		case cred.User == "":
 			return opStart{}, &fieldError{field: "credential.user", detail: "an online join takes the administrator's name"}
+		case len(p.OU) > maxDirectoryName:
+			return opStart{}, tooLong("spec.ou")
+		case p.DNSHostName != "" && !hostName(p.DNSHostName):
+			return opStart{}, &fieldError{field: "spec.dns_host_name", detail: "not a DNS host name"}
 		}
 		if err := underBase(ctx, rq.d, p.OU); err != nil {
 			return opStart{}, err
-		}
-		if p.DNSHostName != "" && !hostName(p.DNSHostName) {
-			return opStart{}, &fieldError{field: "spec.dns_host_name", detail: "not a DNS host name"}
 		}
 		if rq.d.Joins == nil {
 			return opStart{}, errNoIdentity
@@ -178,7 +224,8 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 			return opStart{}, err
 		}
 		id := entity.OperationID(entity.NewShareID())
-		return opStart{id: id, params: b, release: rq.d.Joins.HoldJoinCredential(id, identity.JoinCredential{User: cred.User, Password: cred.Password})}, nil
+		return opStart{id: id, params: b, check: notRotating,
+			release: rq.d.Joins.HoldJoinCredential(id, identity.JoinCredential{User: cred.User, Password: cred.Password})}, nil
 	case apiv1.JoinOffline:
 		switch {
 		case cred.User != "":
@@ -187,30 +234,50 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 			return opStart{}, &fieldError{field: "spec.account", detail: "an offline join names the account an administrator created"}
 		case p.OU != "" || p.DNSHostName != "" || p.Takeover:
 			return opStart{}, &fieldError{field: "spec", detail: "an offline join creates no account, so it takes no ou, dns_host_name or takeover"}
-		}
-		if rq.d.Sealer == nil {
+		case rq.d.Joins == nil:
+			return opStart{}, errNoIdentity
+		case rq.d.Sealer == nil:
 			return opStart{}, errNoSealer
 		}
-		var err error
-		if p.Version, err = handOver(ctx, rq, cred.Password); err != nil {
+		ref, err := handOver(ctx, rq, cred.Password)
+		if err != nil {
 			return opStart{}, err
 		}
+		p.Version = ref.Version
 		b, err := json.Marshal(p)
-		return opStart{params: b}, err
+		return opStart{params: b, check: func(tx entity.ControlPlaneTx, in entity.Installation) error {
+			if err := notRotating(tx, in); err != nil {
+				return err
+			}
+			cur, ok, err := tx.Secret(in.MachinePassword, 0)
+			if err != nil {
+				return err
+			}
+			if !ok || in.MachinePassword != ref.ID || cur.Version != p.Version {
+				return &refusal{code: apiv1.CodeOperationRunning, detail: "another join wrote the machine password since this one did"}
+			}
+			return nil
+		}}, err
 	}
 	return opStart{}, &fieldError{field: "spec.mode", detail: "a join is online or offline"}
 }
 
+// notRotating refuses a join's start while a rotation runs.
+func notRotating(tx entity.ControlPlaneTx, in entity.Installation) error {
+	return noneRunning(tx, in, apiv1.OpRotateMachinePassword)
+}
+
 // handOver seals password as the machine password's next version, marked
-// handed over, and writes it in a write of its own, audited as a set of the
-// reference, naming a new reference on the installation when it names none
-// yet. That write is refused 409 operation_running while a join or a
-// rotation runs, read tracked in it, so no version a running one did not
-// take becomes current under it. It returns the version written.
-func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte) (uint64, error) {
+// handed over, clears the password, and writes the version in a write of its
+// own, audited as a set of the reference, naming a new reference on the
+// installation when it names none yet. That write is refused 409
+// operation_running while a join or a rotation runs, read tracked in it, so
+// no version a running one did not take becomes current under it. It
+// returns the version written, unsealed fields only.
+func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte) (entity.Secret, error) {
 	in, err := rq.d.Store.Installation(ctx)
 	if err != nil {
-		return 0, err
+		return entity.Secret{}, err
 	}
 	ref := in.MachinePassword
 	if ref == (entity.SecretRef{}) {
@@ -218,22 +285,17 @@ func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte
 	}
 	owner := entity.SecretOwner{Record: installationRef(in), Key: machinePassword}
 	sealed, err := rq.d.Sealer.Seal(ctx, entity.SecretMachinePassword, owner, ref, password, true)
+	clear(password)
 	if err != nil {
-		return 0, err
+		return entity.Secret{}, err
 	}
 	err = rq.own(ctx, installationRef(in), []byte(`{"`+machinePassword+`":"set"}`), func(tx entity.ControlPlaneTx) error {
 		cur, err := tx.Installation()
 		if err != nil {
 			return err
 		}
-		for _, k := range []apiv1.OpKind{apiv1.OpJoinDomain, apiv1.OpRotateMachinePassword} {
-			op, ok, err := tx.RunningOperation(string(k), installationRef(cur))
-			if err != nil {
-				return err
-			}
-			if ok {
-				return &entity.OperationRunningError{ID: op.ID}
-			}
+		if err := noneRunning(tx, cur, apiv1.OpJoinDomain, apiv1.OpRotateMachinePassword); err != nil {
+			return err
 		}
 		switch cur.MachinePassword {
 		case ref:
@@ -246,7 +308,7 @@ func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte
 		}
 		return tx.PutSecret(sealed, sealed.Version-1)
 	})
-	return sealed.Version, err
+	return entity.Secret{ID: sealed.ID, Version: sealed.Version}, err
 }
 
 // underBase refuses an organisational unit that is not a distinguished name
@@ -260,9 +322,6 @@ func underBase(ctx context.Context, d Deps, ou string) error {
 	o, ok := rdns(ou)
 	if !ok {
 		return refuse("not a distinguished name")
-	}
-	if d.Store == nil {
-		return errNoStore
 	}
 	all, err := scopeSettings(ctx, d.Store, entity.SettingScope{Kind: entity.ScopeInstallation})
 	if err != nil {
@@ -324,80 +383,4 @@ func rdns(dn string) ([]string, bool) {
 		return nil, false
 	}
 	return out, true
-}
-
-// kerberosLink is the pre-write step of a user's write: the Kerberos name the
-// spec states, linked for the user SID the directory holds under it, asked
-// before the transaction, unless the user already holds that name, which
-// keeps its link and asks nothing. A name the directory cannot answer for is
-// refused 503 and one it holds no entry for 400 naming it, each before
-// anything is written; with no directory, a new name is refused 503.
-func kerberosLink(ctx context.Context, rq request[userDoc]) (entity.ProtocolID, error) {
-	name := rq.Body.Spec.Kerberos
-	if name == "" {
-		return entity.ProtocolID{}, nil
-	}
-	if len(name) > maxDirectoryName {
-		return entity.ProtocolID{}, &fieldError{field: "spec.kerberos", detail: "a Kerberos name is at most 1024 bytes"}
-	}
-	if rq.ID != ([16]byte{}) && rq.d.Store != nil {
-		u, ok, err := rq.d.Store.User(ctx, userAt(rq.ID))
-		if err != nil {
-			return entity.ProtocolID{}, err
-		}
-		if id, held := krbOf(u.IDs); ok && held && id.Value == name {
-			return id, nil
-		}
-	}
-	if rq.d.Directory == nil {
-		return entity.ProtocolID{}, errNoDirectory
-	}
-	s, err := rq.d.Directory.KerberosLinkSID(ctx, name)
-	switch {
-	case errors.Is(err, vfserr.ErrUnknownPrincipal):
-		return entity.ProtocolID{}, &componentError{field: "spec.kerberos", detail: "the directory holds no user " + name, err: err}
-	case err != nil:
-		return entity.ProtocolID{}, err
-	}
-	id := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: name}
-	if s.Revision != 0 {
-		var b bytes.Buffer
-		sid.EncodeSID(&b, &s)
-		id.Linked = b.String()
-	}
-	return id, nil
-}
-
-// krbOf is the krb spelling ids hold, false for none.
-func krbOf(ids entity.ProtocolIDs) (entity.ProtocolID, bool) {
-	for _, id := range ids {
-		if id.Scheme == entity.SchemeKerberos {
-			return id, true
-		}
-	}
-	return entity.ProtocolID{}, false
-}
-
-// withKerberos is ids with its krb spelling the one the spec names: removed
-// when it names none, kept, link and all, when it names the one held, and
-// otherwise link, which the pre-write step asked for that name. A link asked
-// for another name than the spec's, the user's name changed under the step,
-// is refused 503, as a directory that could not answer for it is.
-func withKerberos(ids entity.ProtocolIDs, name string, link entity.ProtocolID) (entity.ProtocolIDs, error) {
-	old, held := krbOf(ids)
-	out := make(entity.ProtocolIDs, 0, len(ids)+1)
-	for _, id := range ids {
-		if id.Scheme != entity.SchemeKerberos {
-			out = append(out, id)
-		}
-	}
-	switch {
-	case name == "":
-		return out, nil
-	case held && old.Value == name:
-		return append(out, old), nil
-	case link.Value != name:
-		return nil, &refusal{code: apiv1.CodeUnavailable, detail: "the user's Kerberos name changed while its link was asked; retry"}
-	}
-	return append(out, link), nil
 }

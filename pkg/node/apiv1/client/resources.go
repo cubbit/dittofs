@@ -160,11 +160,32 @@ const (
 // Settings is the settings at scope, each named by its key: the
 // installation's, id unused, or those of the node, namespace, remote store
 // or share id names. Get, Put and Delete are GET, PUT and DELETE of
-// .../settings/{key}; no route serves List, Create or Patch.
-func (c *Client) Settings(scope Scope, id string) Resource[apiv1.SettingSpec, apiv1.SettingStatus] {
+// .../settings/{key}; no route serves List, Create or Patch. A Put or a
+// Delete may start an operation, which it returns.
+func (c *Client) Settings(scope Scope, id string) SettingResource {
 	path := "/api/v1/settings"
 	if scope != ScopeInstallation {
 		path = "/api/v1/" + string(scope) + "/" + url.PathEscape(id) + "/settings"
 	}
-	return Resource[apiv1.SettingSpec, apiv1.SettingStatus]{c: c, path: path}
+	return SettingResource{Resource[apiv1.SettingSpec, apiv1.SettingStatus]{c: c, path: path}}
+}
+
+// SettingResource is the settings at one scope, whose write may start an
+// operation, as turning identity.ntlm off starts the NT hashes' deletion.
+type SettingResource struct {
+	Resource[apiv1.SettingSpec, apiv1.SettingStatus]
+}
+
+// Put sets the setting key names, whose tag is etag, or, with etag "*",
+// creates it, returning the operation it started, or the setting.
+func (r SettingResource) Put(ctx context.Context, key string, spec apiv1.SettingSpec, etag string) (Result[apiv1.SettingSpec, apiv1.SettingStatus], error) {
+	rp, err := r.c.write(ctx, http.MethodPut, r.at(key), map[string]any{"spec": spec}, etag, nil)
+	if err != nil {
+		return Result[apiv1.SettingSpec, apiv1.SettingStatus]{}, err
+	}
+	if op, err := accepted(rp); op != nil || err != nil {
+		return Result[apiv1.SettingSpec, apiv1.SettingStatus]{Operation: op}, err
+	}
+	t, err := tagged[apiv1.SettingSpec, apiv1.SettingStatus](rp, nil)
+	return Result[apiv1.SettingSpec, apiv1.SettingStatus]{Resource: &t}, err
 }

@@ -5,7 +5,6 @@ package api
 import (
 	_ "github.com/cubbit/dittofs/internal/identity"
 	_ "github.com/cubbit/dittofs/pkg/auth/sid"
-	_ "github.com/cubbit/dittofs/pkg/identity"
 	_ "github.com/cubbit/dittofs/pkg/metadata/errors"
 	_ "github.com/cubbit/dittofs/pkg/vfs/vfserr"
 	_ "github.com/dgraph-io/badger/v4"

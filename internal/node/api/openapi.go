@@ -32,7 +32,7 @@ var apiDescription = `The DittoFS node's management API (RFC 23 §4), generated 
 - Every refusal is ` + apiv1.MediaTypeProblem + `: its code names the refusal, and retryable says whether the same request may succeed later. Any refusal may carry Retry-After.
 - The API listener also answers the health probes GET /health/live and GET /health/ready, unauthenticated and in text/plain, which this document leaves out.
 
-Extensions on each operation: x-dittofs-role is the least role that may make the call, none for a public one; x-dittofs-role-by-kind is true when the call needs instead the role that starts the kind of the operation it names; x-dittofs-starts is the kind of operation the write starts, answered 202; x-dittofs-waits-applied is true when the write's answer waits, at most ` + appliedWait.String() + `, for the node answering it to apply it.`
+Extensions on each operation: x-dittofs-role is the least role that may make the call, none for a public one; x-dittofs-role-by-kind is true when the call needs instead the role that starts the kind of the operation it names; x-dittofs-starts is the kind of operation the write starts, answered 202, and x-dittofs-may-start the kind it starts only when what it writes calls for one, answered 202 then and as its own answer otherwise; x-dittofs-waits-applied is true when the write's answer waits, at most ` + appliedWait.String() + `, for the node answering it to apply it.`
 
 // OpenAPI is the API's OpenAPI 3.1 document, as JSON, built from the route
 // table, the wire types its adapters carry and the problem table.
@@ -180,6 +180,9 @@ func docOperation(rt *route, id string, sc *schemas) (map[string]any, error) {
 	if a.roleByKind {
 		op["x-dittofs-role-by-kind"] = true
 	}
+	if rt.mayStart != "" {
+		op["x-dittofs-may-start"] = string(rt.mayStart)
+	}
 	if rt.starts != "" {
 		op["x-dittofs-starts"] = string(rt.starts)
 	}
@@ -293,10 +296,13 @@ func docOperation(rt *route, id string, sc *schemas) (map[string]any, error) {
 		// A delete that removes its record answers no ETag.
 		headers["ETag"] = rt.method != http.MethodDelete
 	}
-	if out != nil {
+	answer := func(status int, out reflect.Type, headers map[string]bool) error {
+		if out == nil {
+			return nil
+		}
 		s, err := sc.of(out, modeOut)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		r := map[string]any{"description": http.StatusText(status), "content": map[string]any{"application/json": map[string]any{"schema": s}}}
 		if len(headers) > 0 {
@@ -307,6 +313,15 @@ func docOperation(rt *route, id string, sc *schemas) (map[string]any, error) {
 			r["headers"] = h
 		}
 		responses[strconv.Itoa(status)] = r
+		return nil
+	}
+	if err := answer(status, out, headers); err != nil {
+		return nil, err
+	}
+	if rt.mayStart != "" {
+		if err := answer(http.StatusAccepted, reflect.TypeFor[apiv1.Operation](), map[string]bool{"Location": true, "ETag": false}); err != nil {
+			return nil, err
+		}
 	}
 	op["responses"] = responses
 	return op, nil
@@ -391,6 +406,12 @@ func typed(name string, m mode) map[string]any {
 	return map[string]any{"type": name}
 }
 
+// enums is the values of each closed set a body field takes, which its
+// schema names.
+var enums = map[reflect.Type][]string{
+	reflect.TypeFor[apiv1.JoinMode](): {string(apiv1.JoinOnline), string(apiv1.JoinOffline)},
+}
+
 func (sc *schemas) of(t reflect.Type, m mode) (map[string]any, error) {
 	// ponytail: a pointer is described as what it points to, so a nil one
 	// without omitempty, which encodes as null, is not admitted in an
@@ -422,7 +443,11 @@ func (sc *schemas) of(t reflect.Type, m mode) (map[string]any, error) {
 		s["minimum"] = 0
 		return s, nil
 	case reflect.String:
-		return typed("string", m), nil
+		s = typed("string", m)
+		if vs, ok := enums[t]; ok {
+			s["enum"] = vs
+		}
+		return s, nil
 	case reflect.Slice, reflect.Array:
 		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
 			s = typed("string", m)
