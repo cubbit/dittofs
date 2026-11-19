@@ -23,6 +23,9 @@ func checkNamed(t *testing.T, when string, s Stats) {
 		t.Errorf("%s: ReservedBytes = %d, want >= 0", when, s.ReservedBytes)
 	}
 	for tag, ss := range s.Shares {
+		if ss.DirtyBytes > ss.HeldBytes {
+			t.Errorf("%s: share %d DirtyBytes %d > HeldBytes %d", when, tag, ss.DirtyBytes, ss.HeldBytes)
+		}
 		if ss.HeldBytes+ss.UnreclaimedBytes > ss.UsedBytes {
 			t.Errorf("%s: share %d HeldBytes %d + UnreclaimedBytes %d > UsedBytes %d", when, tag, ss.HeldBytes, ss.UnreclaimedBytes, ss.UsedBytes)
 		}
