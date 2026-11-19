@@ -109,6 +109,10 @@ func TestNetlogonTCPSchannel(t *testing.T) {
 		t.Log("logon.NewSecureChannelClient on ncacn_ip_tcp: bound, upgraded and signed alice in")
 	})
 
+	// Before the channel below, so the channels these set up are superseded
+	// by its challenge, and before the password rotation at its end.
+	t.Run("zeroed reply refused", func(t *testing.T) { secureChannelRefusesZeroReply(ctx, t, dcIP) })
+
 	// The first association carries no authentication: the challenge and the
 	// server's credential need none.
 	cc1, err := dcerpc.Dial(ctx, binding)

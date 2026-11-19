@@ -11,31 +11,20 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
 )
 
-// The NETLOGON operation numbers the secure channel's set-up sends
-// (MS-NRPC §3.5.4).
-const (
-	opReqChallenge  = 4
-	opAuthenticate3 = 26
-)
+// opAuthenticate3 is NetrServerAuthenticate3's operation number (MS-NRPC
+// §3.5.4).
+const opAuthenticate3 = 26
 
-// TestSecureChannelRefusesZeroReply sets up netlogon's secure channel as
-// DITTOFS$ through a connection that zeroes the server challenge or the server
-// credential in the controller's reply: the client refuses either, and an
-// all-zero challenge before it sends NetrServerAuthenticate3 (MS-NRPC §3.1.4.1).
-func TestSecureChannelRefusesZeroReply(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping AD-DC integration test in short mode")
-	}
-	dcIP := setupADDC(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	waitForMachinePassword(t, dcIP, "dittofs", machineAccountPass)
-
+// secureChannelRefusesZeroReply sets up netlogon's secure channel as DITTOFS$
+// with machineAccountPass on the controller at dcIP, through a connection
+// that zeroes the server challenge or the server credential in the
+// controller's reply: the client refuses either, and an all-zero challenge
+// before it sends NetrServerAuthenticate3 (MS-NRPC §3.1.4.1).
+func secureChannelRefusesZeroReply(ctx context.Context, t *testing.T, dcIP string) {
 	for _, tc := range []struct {
 		name    string
 		stubLen int    // the reply whose stub is this long has its first 8 bytes zeroed; 0 for none
@@ -106,8 +95,8 @@ func (r *opRecord) sent(op uint16) bool {
 
 // zeroReplyConn passes a connection through, recording each request PDU's
 // operation number, and zeroes the first 8 stub bytes of every unauthenticated
-// response PDU whose stub is stubLen bytes long. Every PDU is little-endian, as
-// go-msrpc and Samba send them.
+// response PDU whose stub is stubLen bytes long, none when stubLen is under 8.
+// Every PDU is little-endian, as go-msrpc and Samba send them.
 type zeroReplyConn struct {
 	net.Conn
 	stubLen int
@@ -154,7 +143,7 @@ func (c *zeroReplyConn) Read(b []byte) (int, error) {
 		if _, err := io.ReadFull(c.Conn, pdu[pduHeader:]); err != nil {
 			return 0, err
 		}
-		if c.stubLen > 0 && pdu[2] == pduResponse && binary.LittleEndian.Uint16(pdu[10:]) == 0 && n == pduStub+c.stubLen {
+		if c.stubLen >= 8 && pdu[2] == pduResponse && binary.LittleEndian.Uint16(pdu[10:]) == 0 && n == pduStub+c.stubLen {
 			clear(pdu[pduStub : pduStub+8])
 		}
 		c.buf = pdu

@@ -45,8 +45,8 @@ func TestChannelClosedBindsNoAssociation(t *testing.T) {
 	}
 }
 
-// The server challenge is refused when missing, short or all zero, before
-// any session key is computed from it.
+// The server challenge is refused when missing, not 8 bytes, or one byte
+// repeated, before any session key is computed from it.
 func TestCheckServerChallenge(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -54,7 +54,9 @@ func TestCheckServerChallenge(t *testing.T) {
 		want error
 	}{
 		{"nonzero", &logon.Credential{Data: []byte{0, 0, 0, 0, 0, 0, 0, 1}}, nil},
+		{"one byte repeated but the last", &logon.Credential{Data: []byte{7, 7, 7, 7, 7, 7, 7, 8}}, nil},
 		{"all zero", &logon.Credential{Data: make([]byte, 8)}, errServerChallenge},
+		{"one byte repeated", &logon.Credential{Data: bytes.Repeat([]byte{7}, 8)}, errServerChallenge},
 		{"short", &logon.Credential{Data: []byte{1, 2, 3, 4, 5, 6, 7}}, errServerChallenge},
 		{"long", &logon.Credential{Data: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9}}, errServerChallenge},
 		{"missing", nil, errServerChallenge},
@@ -80,7 +82,6 @@ func TestCheckServerCredential(t *testing.T) {
 		{"differs", cred, &logon.Credential{Data: []byte{1, 2, 3, 4, 5, 6, 7, 9}}, errServerCredential},
 		{"all zero, computed all zero", zero, &logon.Credential{Data: zero}, errServerCredential},
 		{"all zero, computed nonzero", cred, &logon.Credential{Data: zero}, errServerCredential},
-		{"all zero, computed all zero from a repeated-byte challenge", zeroComputedCredential(t), &logon.Credential{Data: zero}, errServerCredential},
 		{"missing", cred, nil, errServerCredential},
 	} {
 		if err := checkServerCredential(tc.want, tc.got); !errors.Is(err, tc.err) {
@@ -89,11 +90,47 @@ func TestCheckServerCredential(t *testing.T) {
 	}
 }
 
-// zeroComputedCredential returns a server credential the client computes as
-// all zero: under AES-CFB8 with a zero IV, a server challenge of 8 copies of
-// the first byte of the session key's encryption of zero encrypts to zero. It
-// walks client challenges in order, so the pair it finds is the same each run.
-func zeroComputedCredential(t *testing.T) []byte {
+// A NetrServerAuthenticate3 reply is checked for AES before its server
+// credential, and its credential is checked as checkServerCredential checks
+// it: an all-zero one is refused when the client computed all zero too.
+func TestCheckAuthenticated(t *testing.T) {
+	ctx := context.Background()
+	zeroCfg, zeroCred := zeroComputedCredential(t)
+	cfg := &nlssp.Config{Capabilities: offered, Credential: zeroCfg.Credential,
+		ClientChallenge: zeroCfg.ClientChallenge, ServerChallenge: []byte{1, 2, 3, 4, 5, 6, 7, 8}}
+	cred, err := nlssp.NewSecureCredential(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := cred.Encrypt(ctx, cfg.ServerChallenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := &logon.Credential{Data: make([]byte, 8)}
+	noAES := uint32(nlssp.CapStrongKey | nlssp.CapSecureRPC)
+	for _, tc := range []struct {
+		name  string
+		cred  *nlssp.SecureCredential
+		chal  []byte
+		reply *logon.Authenticate3Response
+		want  error
+	}{
+		{"verifies", cred, cfg.ServerChallenge, &logon.Authenticate3Response{ServerCredential: &logon.Credential{Data: server}, NegotiateFlags: uint32(offered)}, nil},
+		{"all zero, computed all zero", zeroCred, zeroCfg.ServerChallenge, &logon.Authenticate3Response{ServerCredential: zero, NegotiateFlags: uint32(offered)}, errServerCredential},
+		{"no AES, credential does not verify", cred, cfg.ServerChallenge, &logon.Authenticate3Response{ServerCredential: zero, NegotiateFlags: noAES}, errNoAES},
+	} {
+		if err := checkAuthenticated(ctx, tc.cred, tc.chal, tc.reply); !errors.Is(err, tc.want) {
+			t.Errorf("%s: checkAuthenticated = %v, want %v", tc.name, err, tc.want)
+		}
+	}
+}
+
+// zeroComputedCredential returns a configuration and its credential whose
+// server credential the client computes as all zero: under AES-CFB8 with a
+// zero IV, a server challenge of 8 copies of the first byte of the session
+// key's encryption of zero encrypts to zero. It walks client challenges in
+// order, so the pair it finds is the same each run.
+func zeroComputedCredential(t *testing.T) (*nlssp.Config, *nlssp.SecureCredential) {
 	ctx := context.Background()
 	machine := credential.NewFromPassword("DITTOFS$", "password", credential.Workstation("DITTOFS"), credential.Domain("EXAMPLE"))
 	for i := range 1 << 16 {
@@ -110,10 +147,10 @@ func zeroComputedCredential(t *testing.T) []byte {
 				t.Fatalf("Encrypt: %v", err)
 			}
 			if allZero(want) {
-				return want
+				return cfg, cred
 			}
 		}
 	}
 	t.Fatal("no repeated-byte server challenge computed an all-zero credential")
-	return nil
+	return nil, nil
 }
