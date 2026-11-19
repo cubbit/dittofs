@@ -198,6 +198,13 @@ func (r *rotation) start(ctx context.Context, target entity.ResourceRef) error {
 			return nil
 		}
 
+		// ponytail: this write records no audit record of the prune yet
+		// (RFC 23 §6). Write one when the rotation's other state changes
+		// are audited. To name the versions pruned, it will read the
+		// versions held below the current one before Prune and again after
+		// it, in this same write, and record only the numbers that are gone,
+		// never a value. That relies on the transaction seeing its own
+		// deletes, which holds on Badger and is not tested on FoundationDB.
 		err = r.s.deps.Secrets.Prune(
 			ctx, tx, entity.SecretMachinePassword, machineOwner(in), in.MachinePassword,
 		)
