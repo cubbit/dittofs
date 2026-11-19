@@ -27,8 +27,9 @@ import (
 // references to the configuration and DNS partitions for a subtree search of
 // the naming context itself.
 //
-// It reads no paging, no constructed attribute and no extensible match:
-// a request asking for one is refused.
+// It reads no paging, no extensible match, none of the constructed
+// tokenGroups attributes and none of the selectors *, + and 1.1: a request
+// asking for one is refused, where a domain controller would answer it.
 type Directory struct {
 	base      string // the naming context
 	domainSID []byte // the naming context's objectSid
@@ -152,6 +153,11 @@ func (d *Directory) Dial(ctx context.Context, _ directory.Record) (directory.Con
 
 var _ directory.Dialer = (*Directory)(nil).Dial
 
+// unread are the attribute names a domain controller answers and the
+// in-memory directory cannot: the constructed token groups, which it does not
+// compute, and the selectors, which selected would read as names no entry has.
+var unread = []string{"tokenGroups", "tokenGroupsGlobalAndUniversal", "tokenGroupsNoGCAcceptable", "*", "+", "1.1"}
+
 // errClosed is a call on a closed connection.
 var errClosed = errors.New("identitytest: the connection is closed")
 
@@ -187,6 +193,11 @@ func (c *memConn) Search(ctx context.Context, req directory.Request) (directory.
 	}
 	if req.PageSize > 0 || req.Cookie != nil {
 		return directory.Result{}, errors.New("identitytest: the in-memory directory reads no paged search")
+	}
+	for _, a := range req.Attrs {
+		if slices.ContainsFunc(unread, func(u string) bool { return strings.EqualFold(u, a) }) {
+			return directory.Result{}, fmt.Errorf("identitytest: the in-memory directory reads no attribute %q", a)
+		}
 	}
 	f, err := parseFilter(req.Filter)
 	if err != nil {

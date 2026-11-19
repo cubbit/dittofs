@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -153,5 +154,54 @@ func TestDialTLSRefusesAnotherScheme(t *testing.T) {
 	defer func() { _ = first.Close() }()
 	if first.RemoteAddr().String() != sentinel.LocalAddr().String() {
 		t.Error("DialTLS of an http:// address connected to it, want no connection")
+	}
+}
+
+// A call whose context ends while the directory has not answered returns the
+// context's error, the connection closed under it: here StartTLS on an ldap://
+// address, sent to a listener that reads it and never answers.
+func TestDialTLSEndsWithItsContext(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	read := make(chan struct{})
+	go func() {
+		raw, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		t.Cleanup(func() { _ = raw.Close() })
+		if _, err := raw.Read(make([]byte, 1)); err == nil {
+			close(read)
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		c, err := directory.DialTLS(ctx, directory.Record{Address: "ldap://" + ln.Addr().String()})
+		if err == nil {
+			_ = c.Close()
+		}
+		done <- err
+	}()
+	select {
+	case <-read: // the StartTLS request is on the wire
+	case err := <-done:
+		t.Fatalf("DialTLS ended before it sent StartTLS: %v", err)
+	}
+	cancel()
+	// The bound is the assertion: go-ldap's own timeout, a minute, is what
+	// ends a StartTLS nothing closed, and no clock reaches it.
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("DialTLS whose context ended during StartTLS: err %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(10 * time.Second):
+		t.Error("DialTLS outlived its context by 10s, want it ended with the context")
 	}
 }

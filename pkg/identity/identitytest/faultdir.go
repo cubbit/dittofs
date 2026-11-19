@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
@@ -21,7 +22,9 @@ var ErrHold = errors.New("identitytest: held until the context ends")
 // on its own clock; its Err fails the call, ErrHold holding it until its context
 // ends; a search's tearAfter n renames, in the answer's first n entries, the
 // attribute TearAttr names. So the directory has really answered, and a test
-// whose code ignored the answer still fails.
+// whose code ignored the answer still fails. A bind the fault fails closes
+// the connection it was sent on, so the real bind's success leaves nothing
+// bound for a caller that ignored the error.
 type FaultyDirectory struct {
 	next  directory.Dialer
 	fault sim.Fault
@@ -39,7 +42,8 @@ func NewFaultyDirectory(next directory.Dialer, fault sim.Fault) *FaultyDirectory
 
 // TearAttr sets the attribute a torn search answer renames, from, and the
 // name it is given, to, such as a member;range=1500-1499 its range parser
-// must refuse.
+// must refuse. from is matched case-insensitively, as a directory may return
+// the name in another case; a tear before TearAttr panics.
 func (f *FaultyDirectory) TearAttr(from, to string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -98,6 +102,7 @@ type faultyConn struct {
 func (c *faultyConn) Bind(ctx context.Context, name string, password []byte) error {
 	err := c.next.Bind(ctx, name, password)
 	if ferr := c.f.at(ctx, "bind", name, nil); ferr != nil {
+		_ = c.next.Close()
 		return ferr
 	}
 	return err
@@ -117,10 +122,17 @@ func (c *faultyConn) Search(ctx context.Context, req directory.Request) (directo
 		c.f.mu.Lock()
 		from, to := c.f.tearFrom, c.f.tearTo
 		c.f.mu.Unlock()
+		if from == "" {
+			panic("identitytest: a torn search with no attribute to tear: call TearAttr first")
+		}
 		for i := range min(tear, len(res.Entries)) {
-			if v, ok := res.Entries[i].Attrs[from]; ok {
-				delete(res.Entries[i].Attrs, from)
-				res.Entries[i].Attrs[to] = v
+			attrs := res.Entries[i].Attrs
+			for k, v := range attrs {
+				if strings.EqualFold(k, from) {
+					delete(attrs, k)
+					attrs[to] = v
+					break
+				}
 			}
 		}
 	}
