@@ -147,7 +147,7 @@ func (d *Demo) viewSegments() {
 	}
 	segs := d.J.Inspect().Segments()
 	if len(segs) == 0 {
-		d.Printf("(no per-segment accounting yet — it lands with epic 9a; stats carries the totals today)\n")
+		d.Printf("(the journal reports no segments)\n")
 		return
 	}
 	rows := make([]viewRow, 0, len(segs))

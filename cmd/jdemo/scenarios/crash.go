@@ -2,7 +2,6 @@ package scenarios
 
 import (
 	"context"
-	"os"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 
@@ -10,9 +9,12 @@ import (
 )
 
 // CrashStory is the durability half of the paper's story: what the journal
-// promises when things die — retention, the sync mark, and the honest
-// refusal to reopen what recovery has not yet learned to rebuild.
+// promises when things die — retention, the sync mark, and the
+// restart that rebuilds the index from the segments.
 func CrashStory() ([]jdemo.Beat, journal.Settings) {
+	// marks is the receipt the first beat's Sync hands back and the last
+	// beat's Open receives: the caller's own record, kept across the close.
+	var marks []journal.SyncMark
 	writes := []jdemo.Beat{
 		{
 			Title:   "write it, then name its durability",
@@ -28,7 +30,8 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 				v, werr := h.WriteAt(context.Background(), jdemo.StoryFile, 0, []byte("hello world"), 0)
 				d.Codef("    v, err := h.WriteAt(ctx, FILE, 0, []byte(\"hello world\"), 0)")
 				d.Stash(v, werr)
-				marks, serr := h.Sync(context.Background(), jdemo.StoryFile)
+				var serr error
+				marks, serr = h.Sync(context.Background(), jdemo.StoryFile)
 				d.Codef("    marks, err := h.Sync(ctx, FILE)")
 				if serr != nil {
 					d.Yellowf("    // → %v", serr)
@@ -86,34 +89,48 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 			},
 		},
 		{
-			Title:   "close — and the restart that cannot happen yet",
-			Caption: "the journal closes; the recovery pass that reopens it is not built. Open names its own absence — the roadmap, verbatim — and the beats that unlock it are the marks in your hand",
+			Title:   "close, then restart — recovery rebuilds it",
+			Caption: "the journal closes; Open reads the segments back, checks their tails against the marks in your hand, and rebuilds the index — same entries, same bytes",
 			Run: func(d *jdemo.Demo) {
+				before, _ := d.J.Inspect().File(jdemo.StoryFile)
 				d.Codef("    j.Close()")
 				if err := d.J.Close(); err != nil {
 					d.Yellowf("    // → %v", err)
 				}
 				d.J = nil
-				d.Yellowf("    // → journal closed before the restart attempt")
-				// The identity Open expects is the one the state file
-				// carried all along — a fresh demo's open path reads the
-				// same file.
+				d.Yellowf("    // → journal closed; only the directory, the identity and the marks remain")
 				st, lerr := jdemo.LoadState(jdemo.StatePath(d.Dir))
 				if lerr != nil {
 					d.Yellowf("    // → %v", lerr)
 					return
 				}
-				d.Codef("    j2, err := journal.Open(ctx, dir, floor, id, marks, opts...)")
-				_, oerr := journal.Open(context.Background(), d.Dir, journal.Version{},
-					st.ID, nil, d.OpenOptions()...)
+				d.Codef("    j, err = journal.Open(ctx, dir, floor, id, marks, opts...)")
+				j, oerr := journal.Open(context.Background(), d.Dir, d.Stashed,
+					st.ID, marks, d.OpenOptions()...)
 				if oerr != nil {
 					d.Yellowf("    // → %v", oerr)
+					return
 				}
-				// The story's last word: the identity it would reopen.
-				d.Printf("    state file: %s\n", jdemo.StatePath(d.Dir))
-				if _, serr := os.Stat(jdemo.StatePath(d.Dir)); serr == nil {
-					d.Yellowf("    // → present; the identity outlives the process")
+				d.J = j
+				h, herr := j.Share(d.Tag, 0, journal.Version{})
+				if herr != nil {
+					d.Yellowf("    // → share: %v", herr)
+					return
 				}
+				d.H[d.Tag] = h
+				after, ierr := j.Inspect().File(jdemo.StoryFile)
+				if ierr != nil {
+					d.Yellowf("    // → %v", ierr)
+					return
+				}
+				d.Yellowf("    // → reopened: %d index entries before the close, %d after", len(before), len(after))
+				p := make([]byte, 11)
+				d.Codef("    h.ReadAt(ctx, FILE, 0, p)")
+				if _, _, _, _, rerr := h.ReadAt(context.Background(), jdemo.StoryFile, 0, p); rerr != nil {
+					d.Yellowf("    // → %v", rerr)
+					return
+				}
+				d.Yellowf("    // → %q", p)
 			},
 		},
 	}

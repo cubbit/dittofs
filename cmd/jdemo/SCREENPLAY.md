@@ -7,7 +7,7 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
 ## Setup (before the room fills)
 
 - `go run ./cmd/jdemo --dir talk-journal` — named dir, so it survives a rehearsal
-- rm the dir between rehearsals: the journal cannot reopen until recovery lands
+- a named dir is recovered on the next run; rm it for a clean basic story
 - Terminal: dark theme, reasonably tall; the colours are picked for one
 - Have `SESSION.md` next to this — it is the audience-facing contract
 
@@ -177,9 +177,8 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
   The numbers are the journal's own, the *view* is what's pending.
 - **"Why does `used` say 1.25 GB?"** — Segments are accounted at the 256 MB
   cap they can reach, not the bytes they hold.
-- **"Can the journal reopen right now?"** — No: `recovering them is not
-  built` is a live subtask's honest absence — the same rule the CLI enforces,
-  surfacing at the exit-code the process would feel.
+- **"Can the journal reopen right now?"** — Yes: the crash story's last beat
+  does it live — close, `Open` with the marks, same four entries, same bytes.
 
 ---
 
@@ -200,10 +199,10 @@ honest seam. Runs after a basic run if the room wants the safety half.*
 4. **truncate, durable on return.** Watch the marker arrive unsettled.
 5. **the Since feed.** *"Everything a recovering caller replays — this is
    the journal's side of the contract."*
-6. **close, restart refused.** The journal closes, `journal.Open` runs
-   against the state file's identity — and answers the roadmap verbatim:
-   *"recovering them is not built. The identity lives on disk; the pass
-   that reads it back is the next merge."* Don't apologize — point at it.
+6. **close, restart.** The journal closes, `journal.Open` runs against the
+   state file's identity with the marks from beat 1 — recovery rebuilds the
+   index: *"same entries before and after, and the bytes read back. Nothing
+   synced was lost."*
 
 # SCENARIO 3 — limits (--story limits)
 

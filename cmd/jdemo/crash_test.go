@@ -26,19 +26,14 @@ func TestCrashStoryRunsToQuit(t *testing.T) {
 	for _, want := range []string{
 		"h.Sync(ctx, FILE)",     // the mark, real
 		"Through:", "Sequence:", // its fields
-		"retained", // the overwrite's index truth
-		"journal closed before the restart attempt", // the beat's guard note
-		"holds segments; recovering them is not built",
+		"retained",                           // the overwrite's index truth
+		"journal closed; only the directory", // the beat's guard note
+		"reopened: 4 index entries before the close, 4 after",
+		`"heXYo world"`, // the bytes the rebuilt journal serves
 	} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("crash story: screen lacks %q:\n%s", want, tailOf(screen, 700))
 		}
-	}
-	// The honesty order: the close note strictly before the refusal.
-	closeAt := strings.Index(screen, "journal closed before the restart attempt")
-	refuseAt := strings.Index(screen, "holds segments; recovering them is not built")
-	if closeAt < 0 || refuseAt < closeAt {
-		t.Errorf("crash story: the restart refusal (at %d) precedes the close (at %d) — a live directory must never be recovered mid-story", refuseAt, closeAt)
 	}
 	if strings.Contains(screen, "STEP 8 OF") {
 		t.Errorf("crash story: an eighth beat exists; the story is seven")
