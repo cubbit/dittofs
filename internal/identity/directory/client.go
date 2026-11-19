@@ -111,11 +111,11 @@ func unavailable(what string, err error) error {
 }
 
 // Lookup answers "who holds this": the one entry below the record's base
-// holding value under by, false when none does; a SID is looked up under the
-// naming context, as LookupSIDs looks it up, since an ad domain's SIDs are
-// the whole domain's whatever the record's base (RFC 18 §5.1). A value more than one entry
-// holds, a refusal, a referral and a timeout each fail ErrUnavailable,
-// never "no such entry"; continuation references in the answer are ignored.
+// holding value under by, false when none does. A SID or an entry ID is
+// searched under the naming context instead (see the decision below). A
+// value more than one entry holds, a refusal, a referral and a timeout each
+// fail ErrUnavailable, never "no such entry"; continuation references in the
+// answer are ignored.
 func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool, error) {
 	filter, err := c.rec.filter(by, value)
 	if err != nil {
@@ -127,7 +127,15 @@ func (c *Client) Lookup(ctx context.Context, by Key, value []byte) (Answer, bool
 	c.begin()
 	defer c.end()
 	base := c.rec.Base
-	if by == BySID {
+	// decision: a SID is searched under the naming context, as LookupSIDs
+	// does, because an ad domain's SIDs span the whole domain, not only the
+	// record's base; an entry ID follows it, since a principal found by SID
+	// outside the base and later looked up by entry ID would otherwise read
+	// as "no such entry", which a caller takes for a disabled principal. A
+	// name stays under the base, which is what scopes the record's
+	// principals. Withdraw it if the base must also bound who a SID or entry
+	// ID can name, and then bound LookupSIDs and Groups the same way.
+	if by == BySID || by == ByEntryID {
 		if base, _, err = c.domain(ctx); err != nil {
 			return Answer{}, false, err
 		}
@@ -255,8 +263,8 @@ func timedOut(ctx context.Context, err error) error {
 // detach runs f on ctx without its cancellation and waits for it or for ctx
 // to end, so a caller that stops waiting leaves a call other questions share
 // (the connection's dial, bind and domain SID read, a search on it) to finish
-// or be ended by the query timeout, rather than close the connection under
-// them.
+// or be ended by the query timeout. A paged search is the exception: pages
+// closes its connection when its caller stops waiting.
 func detach[T any](ctx context.Context, what string, f func(context.Context) (T, error)) (T, error) {
 	type result struct {
 		v   T
@@ -470,7 +478,16 @@ func (c *Client) pages(ctx context.Context, req Request) (out []Entry, later boo
 		// would leave the search open on the connection; closing it ends the
 		// search, as on a later page. A search that failed has dropped it
 		// already.
-		if conn != nil && !errors.Is(err, ErrClosed) {
+		//
+		// decision: the connection is closed although other questions share
+		// it. That leaves no abandoned paged search open on a healthy
+		// connection, where a directory counts it against a per-connection
+		// limit of open result sets (ad's MaxResultSetsPerConn). The cost: a
+		// concurrent question that opened that connection itself fails
+		// ErrUnavailable once, since do retries a closed connection only when
+		// it did not open it. Withdraw it by giving a paged search a
+		// connection of its own.
+		if conn != nil && ctx.Err() != nil {
 			c.drop(conn)
 		}
 		return nil, false, err
