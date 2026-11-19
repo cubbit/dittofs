@@ -79,12 +79,14 @@ type Stats struct {
 //
 // decision: UnreclaimedBytes is clamped at zero per share. It is the record
 // bytes the set holds for a share less the share's held and retained bytes and
-// the record overhead. Held and retained are read first, then the set's bytes
-// and overhead together in one lock hold. A write in flight inflates the
+// the record overhead. Held and retained are read first, then the set's
+// overhead and bytes, in that order, as atomic loads with no lock held. A write in flight inflates the
 // figure by its payload, the set being charged before held rises; that is not
 // negative. The clamp's remaining job is a release followed by a retire: held
 // falls at publish and the set falls later, at the retire, so a reader that
-// read held first can see the set below it once retirement is wired. Nothing
+// read held first can see the set below it once retirement is wired, and a
+// retire or a forget that lands between the set's two reads (it lowers the
+// bytes before the overhead) can read the figure low as well. Nothing
 // retires a segment the index still holds yet, so production cannot reach
 // that case; the clamp is the guard for when it can.
 //

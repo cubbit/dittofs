@@ -294,8 +294,10 @@ func (h *Headroom) Refund(d Draw) {
 // atLimit reports the one state in which the headroom is drawn: the journal
 // at its limit, the footprint plus a segment cap past the maximum — the
 // same predicate headroom_draws counts by. The footprint is a snapshot
-// read outside any held mutex: the set's lock is of this same capacity
-// domain, and no two locks of one domain are held at once.
+// read outside any held mutex, and without one: the set's counters are
+// atomics, so the read is lock-free. A read in the middle of a change errs
+// high (a recycle raises the footprint before it lowers it), which keeps this
+// gate closed rather than open at the limit.
 func (h *Headroom) atLimit() bool {
 	return h.cfg.MaxBytes > 0 && h.cfg.Footprint()+h.cfg.SegmentCap > h.cfg.MaxBytes
 }

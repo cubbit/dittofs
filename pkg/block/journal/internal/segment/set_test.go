@@ -298,6 +298,69 @@ func TestRecycleAfterRetireAddsNoSpare(t *testing.T) {
 	}
 }
 
+// TestRecycleNeverShowsALowerFootprint: Counters takes no lock, so a reader
+// polling it while one segment cycles through take, record, seal and recycle
+// sees the footprint in the middle of each recycle. The storage is one cap
+// the whole time, so a read below it would let a limit gate admit what the
+// journal maximum does not have; a read above it, during the change, is the
+// safe direction. The poller stops when the cycling does, and the cycling is
+// bounded.
+func TestRecycleNeverShowsALowerFootprint(t *testing.T) {
+	const (
+		segCap = 4096
+		rounds = 3000
+	)
+	s := NewSet(segCap, nil)
+	cur := core.SegmentID(1)
+	if err := s.AddSpare(cur, noMax); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+
+	done := make(chan struct{})
+	low := make(chan int64, 1)
+	go func() {
+		for {
+			select {
+			case <-done:
+				close(low)
+				return
+			default:
+			}
+			if used := s.Counters().UsedBytes; used < segCap {
+				low <- used
+				// Keep draining until told to stop, so the writer is never
+				// blocked on the report.
+				<-done
+				close(low)
+				return
+			}
+		}
+	}()
+
+	for i := 1; i <= rounds; i++ {
+		next := cur + 1
+		for _, op := range []struct {
+			name string
+			fn   func() error
+		}{
+			{"Take", func() error { return s.Take(cur) }},
+			{"AddRecord", func() error { return s.AddRecord(cur, 1, 100, 0) }},
+			{"Seal", func() error { return s.Seal(cur, true) }},
+			{"Recycle", func() error { return s.Recycle(cur, next) }},
+		} {
+			if err := op.fn(); err != nil {
+				close(done)
+				t.Fatalf("round %d, %s: %v", i, op.name, err)
+			}
+		}
+		cur = next
+	}
+	close(done)
+	if used, ok := <-low; ok {
+		t.Fatalf("Counters().UsedBytes read %d during a recycle, want at least the one cap %d the storage occupies throughout", used, segCap)
+	}
+}
+
 // TestRecycleKeepsFootprint: a recycle moves the segment's storage to its
 // new id as a spare at the same accounted size, so the footprint does not
 // move at all — only an unlink lowers it — while the spare pool grows by one

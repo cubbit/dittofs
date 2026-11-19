@@ -1206,7 +1206,8 @@ func (s *Set) Retire(id core.SegmentID) (freed int64, err error) {
 // Recycle carries the recycle step of a retirement: it removes a Sealed
 // segment accounted at its full cap from the set and moves its storage to
 // the spare pool under a fresh id, so the footprint does not move at all —
-// the segment's bytes stay in use, now a spare's — while each of its record
+// the segment's bytes stay in use, now a spare's; a lock-free reader may see
+// it one cap higher in the middle, never lower — while each of its record
 // bytes is released to the share it was accounted to, exactly once. Every
 // refusal is checked before anything changes: a recycle that fails has taken
 // nothing and given nothing.
@@ -1260,10 +1261,21 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 	// The segment leaves and the spare enters under the one lock, before
 	// the observer runs, so a callback reading the set sees the recycle
 	// whole: the footprint unmoved and the fresh id owned.
-	s.removeLocked(old, e)
-	s.spares[fresh] = struct{}{}
+	//
+	// decision: the spare's cap is added to the footprint before the old
+	// segment's is taken off, so a reader that takes no lock (Counters)
+	// can see the footprint one cap too high in the middle of the recycle,
+	// never one cap too low. High is the safe direction for the two gates
+	// that read it at the journal maximum, the headroom's at-limit test and
+	// the admission's footprint snapshot: a read that overstates the
+	// footprint keeps the gate closed, while one that understated it would
+	// admit an append the maximum does not have room for. Overturned if a
+	// reader ever needs the footprint exact at every instant, which would
+	// need a lock or a sequence it retries on.
 	s.c.UsedBytes.Add(s.cap)
 	s.c.Spares.Add(1)
+	s.removeLocked(old, e)
+	s.spares[fresh] = struct{}{}
 	s.mu.Unlock()
 	s.retireSeen(old)
 	return nil
@@ -1272,9 +1284,9 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 // removeLocked takes a segment out of the set and releases what it held:
 // its accounted size from the footprint, its claim (which dies with the
 // entry), and each of its per-tag record bytes from the share it was
-// accounted to, deleting the shares that reach zero so the ledger stays
-// bounded by live state, not by history. The caller holds mu and has already
-// found the entry in the set.
+// accounted to; a share's figure that reaches zero keeps its entry in the
+// per-tag tally (see the ponytail on core.TagTally). The caller holds mu and
+// has already found the entry in the set.
 func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 	delete(s.segs, id)
 	// The removed segment is owed no end event any more: whatever the take
@@ -1286,8 +1298,8 @@ func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 	if e.state != Active {
 		// The segment's leaving takes the no-append measures with it: an
 		// active one never entered them. A per-tag figure that reaches
-		// nothing leaves the ledger bounded by live state, the way the
-		// shares' own maps are; a negative leftover stays for Check.
+		// nothing keeps its entry in the tally (see the ponytail on
+		// core.TagTally); a negative leftover stays for Check.
 		s.c.NoAppendBytes.Add(-(tagSum(e.tags)))
 		s.c.NoAppendOverBytes.Add(-(overSum(e.over)))
 		for tag, n := range e.tags {
