@@ -3599,11 +3599,12 @@ A decoder **MUST** check every length, count and offset against both the bytes
 remaining and the protocol's cap before it allocates or reads: an array count
 of four billion in a 200-byte request is refused, not allocated. The generated
 decoder does so for every field, and the generator refuses a variable-length
-field that carries no maximum, so no command can leave one unbounded. XDR's
-generator also refuses a maximum past a count's 2^32-1, and a struct whose
-largest encoding, its maxima multiplied, does not fit an `int`, so no
-`MaxWire` overflows. Caps are the
-protocol RFCs' sizes ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes),
+field that carries no maximum, so no command can leave one unbounded. The XDR
+codec's generator also refuses a maximum past an XDR length's 2^32-1, and a
+struct whose largest encoding, its maxima multiplied, passes 2^31-1 bytes, so
+no `MaxWire`, nor any sum `core` makes of them with a header's length or a
+compound's members, overflows an `int`. Caps are the protocol RFCs' sizes
+([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes),
 [RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)). A decoder refuses
 trailing bytes the protocol forbids and accepts the ones it allows, as the
 specification says for each message — SMB's 8-byte alignment padding, XDR's

@@ -169,6 +169,9 @@ func readTag(lit *ast.BasicLit) (tag, error) {
 				}
 				t.max = n
 			} else {
+				if uint64(n) > math.MaxUint32 {
+					return t, fmt.Errorf("since=%q is past a minor version, at most 4294967295", val)
+				}
 				t.since = n
 			}
 		case "union":
@@ -324,16 +327,14 @@ func (g *gen) xdrType(e ast.Expr, max int) (t *xtype, took bool, err error) {
 }
 
 // bounds refuses a struct whose largest encoding, every field counted as in
-// the newest version, does not fit an int, so no MaxWire it generates
-// overflows at run time: nested maxima multiply.
+// the newest version and nested maxima multiplied, passes 2^31-1 bytes. core
+// adds a reply's MaxWire to its header's length and chain padding and sums a
+// compound's members' bounds, so each bound under 2^31 keeps every such sum
+// inside an int. Each refusal names the innermost field that passes the bound,
+// once.
 func (g *gen) bounds() {
-	const over = uint64(math.MaxInt) + 1 // every sum and product saturates here
-	add := func(a, b uint64) uint64 {
-		if a >= over-b {
-			return over
-		}
-		return a + b
-	}
+	const over = uint64(math.MaxInt32) + 1                    // every sum and product saturates here
+	add := func(a, b uint64) uint64 { return min(a+b, over) } // one side at most over: no wrap
 	mul := func(a, b uint64) uint64 {
 		if a != 0 && b > over/a {
 			return over
@@ -349,7 +350,7 @@ func (g *gen) bounds() {
 		n := uint64(0)
 		for i, f := range s.fields {
 			switch {
-			case f.t.kind == kVoid, s.union && i == 0:
+			case s.union && i == 0:
 			case s.union:
 				n = max(n, size(f.t))
 			default:
@@ -364,6 +365,8 @@ func (g *gen) bounds() {
 	}
 	size = func(t *xtype) uint64 {
 		switch t.kind {
+		case kUint32, kBool:
+			return 4
 		case kUint64, kInt64:
 			return 8
 		case kFixed:
@@ -380,12 +383,41 @@ func (g *gen) bounds() {
 			return size(t.elem)
 		case kStruct:
 			return str(g.byName[t.name])
+		case kVoid:
+			return 0
 		}
-		return 4
+		panic(fmt.Sprintf("gen: bounds has no size for kind %d", t.kind))
+	}
+	// held reports whether t holds a struct that passes the bound itself, so
+	// the field holding it is not the innermost.
+	held := func(t *xtype) bool {
+		for ; t != nil; t = t.elem {
+			if t.kind == kStruct && str(g.byName[t.name]) >= over {
+				return true
+			}
+		}
+		return false
 	}
 	for _, s := range g.structs {
-		if str(s) >= over {
-			g.errs = append(g.errs, fmt.Errorf("%s: a largest encoding past an int, which MaxWire cannot return: lower a max", s.name))
+		if str(s) < over {
+			continue
+		}
+		n := uint64(0)
+		for i, f := range s.fields {
+			if s.union && i == 0 {
+				continue
+			}
+			if s.union {
+				n = add(4, size(f.t))
+			} else {
+				n = add(n, size(f.t))
+			}
+			if n >= over {
+				if !held(f.t) {
+					g.errorf(f.pos, "%s.%s: a largest encoding past 2147483647 bytes, which MaxWire cannot bound: lower a max", s.name, f.name)
+				}
+				break
+			}
 		}
 	}
 }

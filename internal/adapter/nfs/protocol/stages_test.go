@@ -594,7 +594,8 @@ func TestReplyLenBoundsEncode(t *testing.T) {
 
 // Whatever header Decode returns, a call cut short among them, and whatever
 // status answers it, Encode writes no more than ReplyLen reserved (RFC 20
-// section 4.7), as core answers each: fuzzed over the call's bytes and the
+// section 4.7), as core answers each; it catches an overrun only, not a
+// reservation larger than it need be: fuzzed over the call's bytes and the
 // status, seeded with a NULL answered PROG_MISMATCH, an AUTH_SYS
 // call answered AUTH_BADCRED and a COMPOUND answered an NFS error.
 func FuzzReplyLenBoundsEncode(f *testing.F) {

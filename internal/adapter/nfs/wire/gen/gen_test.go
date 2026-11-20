@@ -47,7 +47,10 @@ func TestGenerateRefuses(t *testing.T) {
 		{"type A struct { B []B `xdr:\"max=2\"` }\ntype B struct { A *A }", "a type that holds itself"},
 		{"type N uint32", "no struct types"},
 		{"type S struct { B []byte `xdr:\"max=4294967296\"` }", `S.B: max="4294967296" is past an XDR length`},
-		{"type S struct { A []T `xdr:\"max=4294967295\"` }\ntype T struct { B []byte `xdr:\"max=4294967295\"` }", "S: a largest encoding past an int"},
+		{"type S struct { B []byte `xdr:\"max=4294967295\"` }", "S.B: a largest encoding past 2147483647 bytes"},
+		{"type S struct { A uint32 `xdr:\"since=4294967296\"` }", `S.A: since="4294967296" is past a minor version`},
+		{"type S struct { A []T `xdr:\"max=65536\"` }\ntype T struct { B []byte `xdr:\"max=65536\"` }", "S.A: a largest encoding past 2147483647 bytes"},
+		{"type U struct { D uint32 `xdr:\"union\"`; A []byte `xdr:\"case=1,max=2147483640\"` }", "U.A: a largest encoding past 2147483647 bytes"},
 	} {
 		t.Run(c.want, func(t *testing.T) {
 			dir := t.TempDir()
@@ -65,17 +68,28 @@ func TestGenerateRefuses(t *testing.T) {
 	}
 }
 
-// An XDR length's largest maximum, 2^32-1, is taken, nested once inside an
-// array of a few: their product still fits an int.
-func TestTakesTheLargestXDRLength(t *testing.T) {
-	dir := t.TempDir()
-	src := "package p\n\ntype S struct {\n\tA []T `xdr:\"max=2\"`\n}\n" +
-		"type T struct {\n\tB []byte `xdr:\"max=4294967295\"`\n}\n"
-	if err := os.WriteFile(filepath.Join(dir, "in.go"), []byte(src), 0o644); err != nil {
-		t.Fatal(err)
+// The largest of each bound is taken: a since of 2^32-1, and the largest
+// encoding 2^31-1 bytes allows, an opaque of 2147483640 bytes, 2147483644 with
+// its count. A struct past it is refused once, at its innermost field, not
+// again at each struct that holds it, through an array or not.
+func TestTheLargestBound(t *testing.T) {
+	gen := func(src string) error {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "in.go"), []byte("package p\n\n"+src+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := generate(dir, []string{"in.go"})
+		return err
 	}
-	if _, err := generate(dir, []string{"in.go"}); err != nil {
-		t.Fatalf("refused: %v", err)
+	if err := gen("type S struct {\n\tA uint32 `xdr:\"since=4294967295\"`\n}"); err != nil {
+		t.Errorf("a since of 4294967295 refused: %v", err)
+	}
+	if err := gen("type S struct {\n\tB []byte `xdr:\"max=2147483640\"`\n}"); err != nil {
+		t.Errorf("an opaque of 2147483640 bytes refused: %v", err)
+	}
+	err := gen("type S struct {\n\tA []T `xdr:\"max=2\"`\n}\ntype T struct {\n\tB []byte `xdr:\"max=4294967295\"`\n}")
+	if err == nil || strings.Count(err.Error(), "a largest encoding") != 1 || !strings.Contains(err.Error(), "T.B: ") {
+		t.Errorf("refused with %v, want one refusal, at T.B", err)
 	}
 }
 
