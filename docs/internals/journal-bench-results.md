@@ -28,8 +28,10 @@ line, which benchstat may treat as a configuration split; `-ignore commit` (or `
 pair them. That is unverified: benchstat was not available where this was written.
 
 The suite refuses a directory on a RAM-backed filesystem (`tmpfs`, `ramfs`) and exits non-zero
-before measuring. A RAM disk formatted with a disk filesystem passes the check, so name the real
-device. The mount options are empty on macOS.
+before measuring: each row fails with exit 1, where an unset `DITTOFS_BENCH_DIR` stops the suite
+with exit 2. The refusal fails closed, a directory whose filesystem cannot be read is refused too,
+and it was checked against a real tmpfs on Linux. A RAM disk formatted with a disk filesystem
+passes the check, so name the real device. The mount options are empty on macOS.
 
 Free space: a 16-stream journal makes about 4.5 GiB of spares when it opens (16 content, one
 headroom and one reserve, each a 256 MiB segment), and J2 and J3 open one per count, so each
@@ -52,10 +54,20 @@ Notes on what a row measures:
 - A journal is opened with its content spares, headroom and repack reserve at full size before
   the timer starts.
 
+Do not quote a figure of this suite as the device's speed: its bursts are short and run on a
+fresh journal, so until the open rows below exist a run reports a warm-cache rate.
+
+To add a result: copy the box's field table (commit, CPU and memory, device and its raw figures,
+operating system and kernel, filesystem and mount options, sync bound) from the `bench.txt` box
+lines into the box's heading below, then each row's figures beside its raw twin, as RFC 1 §9.6
+asks ("each result also records the device's raw figures, the filesystem and mount options").
+The first run on the dedicated host, and the open rows, are tracked by issue #5182.
+
 ## What the suite does not yet measure (open)
 
-RFC 1 §9.6's method asks for more than these rows give. Each item below is OPEN, owned by the
-deferral table of the epic 12 plan, and comes back when a reference-box run exists:
+RFC 1 §9.6's method asks for more than these rows give. Each item below is OPEN, owned by issue
+#5182 and the deferral list of the epic 12 plan, and comes back when a reference-box run exists.
+That run is the precondition for any keep-or-change decision below:
 
 - Write-cache exhaustion: reporting the rate after the device's write cache is full. Bursts are
   short, so a run reports the burst's rate with a warm cache.

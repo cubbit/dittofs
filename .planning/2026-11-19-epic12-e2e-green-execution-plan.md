@@ -108,8 +108,9 @@ disagreement is raised to the user, not silently resolved.
   exists" is the trigger); verify it is on the base at execution, add nothing if it isn't merged yet.
 - RFC 1 §9.6's method items the J1 to J3 suite does not yet measure (PR 4 builds the rows, the
   raw twins and the results file, and records these as OPEN in
-  `docs/internals/journal-bench-results.md`) → **epic 12 follow-up, unowned until the user
-  names a task**; trigger for every row below: a reference-box run of the suite exists. Each
+  `docs/internals/journal-bench-results.md`) → **issue #5182** (the first run on the dedicated
+  host, and these rows after it); trigger for every row below: a reference-box run of the suite
+  exists. Each
   row is its own item: write-cache exhaustion (the rate after the cache is full); more data than
   the journal holds, rolls and refusals timed into latency; submission against completion
   latency; create against overwrite reported apart; the 256 MiB mixed stream, which the suite
