@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -657,24 +658,28 @@ func TestRetireReserveWaitAnswersACancelDuringTheRetirerQuestion(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	// The pool settles its own first pass before the retirer's lock is held:
+	// that pass asks the retirer too, and one parked on its lock keeps the
+	// pool filling.
+	for p.FillingForTest() {
+		runtime.Gosched()
+	}
 	unlock := r.HoldMuForTest()
 	t.Cleanup(unlock)
 
 	waited := make(chan error, 1)
 	go func() { waited <- p.WaitReserveSpare(ctx) }()
-	// With the retirer's lock held the wait can only be inside its question
-	// to the retirer once the pool is idle and the wait has not parked: let
-	// it get there, then cancel, then let the question answer.
-	for p.FillingForTest() || p.ParkedWaitersForTest() != 0 {
-		runtime.Gosched()
-	}
-	for range 1 << 14 {
+	// The wait is inside its question to the retirer when a goroutine stack
+	// shows it blocked in the question; cancel then, and let the question
+	// answer.
+	deadline := time.Now().Add(30 * time.Second)
+	for !questionInFlight() {
+		if time.Now().After(deadline) {
+			t.Fatalf("the reserve wait never reached its question to the retirer")
+		}
 		runtime.Gosched()
 	}
 	cancel()
-	for range 1 << 14 {
-		runtime.Gosched()
-	}
 	unlock()
 
 	select {
@@ -2735,7 +2740,11 @@ func TestRetireStopDropsTheRestOfAnInterruptedPass(t *testing.T) {
 // decided not to refuse, and the pool's own count says so without a timer.
 func awaitParkedUnanswered(t *testing.T, p *segment.Pool, waited <-chan error, format string, args ...any) {
 	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
 	for p.ParkedWaitersForTest() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the wait neither parked nor answered within the backstop")
+		}
 		select {
 		case err := <-waited:
 			t.Fatalf(format, append(args, err)...)
@@ -2743,4 +2752,11 @@ func awaitParkedUnanswered(t *testing.T, p *segment.Pool, waited <-chan error, f
 			runtime.Gosched()
 		}
 	}
+}
+
+// questionInFlight reports whether a goroutine is blocked in the pool wait's
+// question to the retirer, read from the goroutine stacks.
+func questionInFlight() bool {
+	buf := make([]byte, 1<<20)
+	return strings.Contains(string(buf[:runtime.Stack(buf, true)]), "(*Retirer).fullToWaitOn")
 }

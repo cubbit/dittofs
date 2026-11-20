@@ -856,10 +856,11 @@ func (p *Pool) Counters() PoolCounters {
 // refuses, rather than park on a holder that may itself be this caller. The
 // retirer is asked with the pool's lock released, for the retirer's lock is
 // never taken under it, and the settle generation tells the wait whether
-// anything moved while it asked. The ceiling is a copy's own context: a
-// repack pass's carries a deadline only where its caller sets one. Withdrawn
-// if a retirement that cannot succeed is ever left queued indefinitely,
-// which would need the retirer to say when it has given up.
+// anything moved while it asked. The ceiling is the operation's deadline,
+// which every wait on a client operation's path must end at, so a copy's
+// park is bounded by the context it carries; the retirer retries a failing
+// segment once a second until then. Withdrawn once a trace shows a repack
+// copy parked to its deadline behind a retirement that kept failing.
 //
 // decision: the wait guarantees one thing only — that every class holds its
 // goal of ready spares, and that the pool is not mid-fill when it says so.
@@ -1007,7 +1008,7 @@ func (p *Pool) wait(ctx context.Context, short func() bool, missing func() int64
 			// sends the wait back to read the pool again.
 			if r, gen := p.retirer, p.settles; r != nil {
 				p.mu.Unlock()
-				handed := r.fullToHand()
+				handed := r.fullToWaitOn()
 				p.mu.Lock()
 				if p.settles != gen || p.filling || p.recyclingLocked() != 0 || p.stopped || ctx.Err() != nil {
 					continue
