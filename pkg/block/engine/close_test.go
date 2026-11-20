@@ -1269,11 +1269,8 @@ func TestTheRaiseWokenByLoopWorkDuringTheStopRunsAndIsJoinedAfterIt(t *testing.T
 
 	u.write(t, w, 0, fill(8, 'w'))
 
-	next := u.j.Stats().NextVersion.Counter
-
 	dueOnVersion(t, u, 2)
 
-	block := 2 * (u.limit - next - 1)
 	calls0 := len(sl.raiseCalls())
 	started0 = u.e.RaisesStarted()
 	sl.onRaise = func(int) {
@@ -1309,7 +1306,7 @@ func TestTheRaiseWokenByLoopWorkDuringTheStopRunsAndIsJoinedAfterIt(t *testing.T
 		t.Errorf("the raise's store call began on a context that ended: %v", calls[0].ctxErr)
 	}
 
-	want := entity.JournalVersion(journal.Version{Counter: u.limit + block}.Bytes())
+	want := entity.JournalVersion(journal.Version{Counter: u.limit + engine.DefaultVersionBlock}.Bytes())
 	if got := calls[0].to[u.share.ID]; got != want {
 		t.Errorf("the raise asked for the limit %v, want %v", got, want)
 	}

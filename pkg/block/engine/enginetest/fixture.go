@@ -139,6 +139,7 @@ type Fixture struct {
 
 	compose  func(*Fixture, *engine.Engine) Service // builds the service each process start composes; nil for none
 	settings journal.Settings                       // the settings every open of the journal in Dir takes
+	block    uint64                                 // the engine's version block; zero is its default
 	svc      Service                                // the service running now, built by compose
 	serving  bool                                   // svc was started and is not yet stopped
 }
@@ -496,6 +497,13 @@ func WithSegmentCap(n int64) Option {
 		journaltest.SetSegmentCap(&f.settings, n)
 		f.settings.IdleSealBytes = n / 16
 	}
+}
+
+// WithVersionBlock has every engine the fixture builds raise each share's
+// version limit by n versions, falling due below n/2, in place of RFC 8
+// §2.7's 2²⁴, so a row reaches a raise in a few versions.
+func WithVersionBlock(n uint64) Option {
+	return func(f *Fixture) { f.block = n }
 }
 
 // journalOnly fails a control that acts on the journal in Dir, which
@@ -860,6 +868,7 @@ func (f *Fixture) start() {
 		t.Fatalf("fixture: open state: %v", err)
 	}
 	f.Opens = opens
+	d.VersionBlock = f.block
 	open := d.Open
 	// decision: the refuse and fake-journal branches answer without the
 	// composed opener, as fault injection: rows that run them test the fake,

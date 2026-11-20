@@ -44,20 +44,6 @@
   category: feature
   reason: 'the start''s re-application over the recovered journal: the usage after recovery is the bytes re-applied, exactly, and a second restart leaves it unchanged. The open recovers the segments and both files re-apply, but the re-applied bytes are not charged to the share''s usage: it reads 0 bytes, want the 8192 re-applied. The row waits on the re-application charging its bytes to the usage.'
   issue: '#4210'
-- test: TestRFC8A_VersionLimitRaise
-  message: 'the raise halves need a block of 16'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'a block of 16 the conformance package cannot set (TestRFC8A_VersionLimitRaise): the raise halves of the version limit row, at a block of 16 the conformance package cannot set. Init and Open work; the fixture now attaches the share; the row stops at its own check: the raise halves need a block of 16, which this package cannot set yet. The journal''s Share, Draw and SetVersionLimit are built, so the knob is all the row waits for.'
-  issue: '#4206'
-- test: TestRFC8_SelfFenceVersionLimitRaise
-  message: 'the failing raise fences the node'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the engine''s version block, which the conformance package cannot set (versionBlock in engine/recover.go, set only by SetBlockForTest in engine/export_test.go): the version limit''s raise failing for 31s fences the node and its commit clears it. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at its own assertion: at a block of 2^24 the raise falls due only after half a block of draws, which one draw per poll never reaches within the bound, until the package can set a small block.'
-  issue: '#4206'
 - test: TestRFC8A_RemovalCrashedBetweenBatchesResumes
   message: 'want one with cursor 12288'
   status: fail

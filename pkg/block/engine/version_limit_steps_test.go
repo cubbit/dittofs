@@ -11,13 +11,13 @@ import (
 )
 
 // dueOnVersion arms the unit so that the raise falls due on the n-th version
-// the journal issues from now, and on no version before it: the engine's
-// block is set so that half of it is the versions left at the (n-1)-th.
+// the journal issues from now, and on no version before it: the journal's
+// counter skips ahead until half the engine's block is the versions left at
+// the (n-1)-th.
 func dueOnVersion(t *testing.T, u *unit, n uint64) {
 	t.Helper()
 
-	next := u.j.Stats().NextVersion.Counter
-	u.e.SetBlockForTest(2 * (u.limit - next - n + 1))
+	u.j.SkipTo(u.limit - engine.DefaultVersionBlock/2 - n)
 }
 
 // raised reports whether the journal was given a limit above the one the

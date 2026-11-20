@@ -243,6 +243,16 @@ func (j *FakeJournal) SetVersionLimit(mark journal.Version) error {
 	return nil
 }
 
+// SkipTo moves the version counter forward so the next version issued is
+// to+1, issuing none of those it skips, as the journal's counter moves past
+// versions a crash reported and never synced. A to at or below the last
+// version issued moves nothing.
+func (j *FakeJournal) SkipTo(to uint64) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.last = max(j.last, to)
+}
+
 // Stats reports the loss ring and generation, each tag's held bytes and, as
 // its used bytes, the record bytes appended under it, the version limit last
 // set and the next version the counter issues.

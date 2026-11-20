@@ -37,8 +37,7 @@ func newRaiser(t *testing.T, age time.Duration, opts ...starterOption) *starter 
 		opts = append(opts, noApply())
 	}
 
-	s := newStarter(t, opts...)
-	s.e.SetBlockForTest(testBlock)
+	s := newStarter(t, append(opts, withBlock(testBlock))...)
 	s.e.TrackRaisesForTest()
 
 	// Registered after the store's own cleanup, so it runs before the store
@@ -70,6 +69,11 @@ func newRaiser(t *testing.T, age time.Duration, opts ...starterOption) *starter 
 	}
 
 	return s
+}
+
+// withBlock gives the engine a version block of n.
+func withBlock(n uint64) starterOption {
+	return withStartDeps(func(d *engine.Deps) { d.VersionBlock = n })
 }
 
 // applyAge applies settings with an existence age of age.
@@ -800,14 +804,13 @@ func TestBindRaisesEveryShareWithinTrigger(t *testing.T) {
 // A removed binding in the table does not stop the raise of the others.
 func TestRaiseSkipsRemovedBinding(t *testing.T) {
 	removed := entity.NewShareID()
-	s := newStarter(t)
+	s := newStarter(t, withBlock(testBlock))
 	s.lc.removed = map[entity.ShareID]entity.TagRecord{
 		removed: {
 			Tag:   99,
 			State: entity.TagOffloaded,
 		},
 	}
-	s.e.SetBlockForTest(testBlock)
 	s.e.TrackRaisesForTest()
 	applyAge(t, s, time.Second)
 
@@ -1276,8 +1279,7 @@ func requestWaits(done <-chan struct{}) bool {
 // Start writes the limit a block above the next version with the block the
 // engine has, the one the raise uses too.
 func TestStartUsesBlockField(t *testing.T) {
-	s := newStarter(t)
-	s.e.SetBlockForTest(64)
+	s := newStarter(t, withBlock(64))
 
 	if err := s.start(t); err != nil {
 		t.Fatal(err)

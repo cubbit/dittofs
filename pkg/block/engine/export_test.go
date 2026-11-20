@@ -16,6 +16,10 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
+// DefaultVersionBlock is the version block of an engine whose Deps leave it
+// zero.
+const DefaultVersionBlock = defaultVersionBlock
+
 // RecordBytes is what one copy of n payload bytes reserves in the journal.
 var RecordBytes = recordBytes
 
@@ -49,12 +53,6 @@ func (e *Engine) SetJournalsForTest(js ...Journal) {
 	e.mu.Lock()
 	e.journals = vls
 	e.mu.Unlock()
-}
-
-// SetBlockForTest sets the versions one raise of the version limit covers,
-// before Start or Bind.
-func (e *Engine) SetBlockForTest(n uint64) {
-	e.block = n
 }
 
 // TrackRaisesForTest counts the version limit raise goroutines alive and

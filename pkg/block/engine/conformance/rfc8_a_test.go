@@ -417,15 +417,149 @@ func TestRFC8A_VersionLimit(t *testing.T) {
 	}
 }
 
-// TestRFC8A_VersionLimitRaise is the raise halves of the version limit row:
-// every step between the raise's start and its crash, at a block of 16, with
-// the store blocking or failing the raise's commit and failing a Bind's limit
-// write. It stays red until the conformance package can set the block, which
-// only the engine's own tests can today.
+// TestRFC8A_VersionLimitRaise is the raise halves of the version limit row,
+// at a block of 16: the raise commits before the journal is given its limit;
+// a write at the limit while the raise's commit is blocked answers ErrDelay
+// and succeeds once it commits; a raise whose commit fails once with no write
+// pending commits on its own; and a Bind whose limit write fails, after its
+// Share moved the counter to the limit, leaves the raise to the journal. Each
+// step runs on a fixture of its own, so no raise of another is in flight.
+// At this block one write a second already puts the peak rate's term of the
+// trigger above the versions left, so every raise falls due on the next
+// version.
 func TestRFC8A_VersionLimitRaise(t *testing.T) {
-	enginetest.New(t)
+	const block = 16
 
-	t.Fatal("the raise halves need a block of 16, which this package cannot set yet")
+	t.Run("committed before the journal is given it", func(t *testing.T) {
+		f := enginetest.New(t, enginetest.WithVersionBlock(block))
+		_, id := f.File("a")
+		old := journalLimit(f)
+
+		held := f.HoldNextWrite(time.Second, nil)
+		write(t, f, id, 0, []byte("x"))
+		wait(t, "the raise reaches the store", held)
+
+		if got := journalLimit(f); got != old {
+			t.Errorf("journal limit %d while the raise's commit is held, want %d", got, old)
+		}
+
+		f.Clock.Advance(time.Second)
+		eventually(t, "the journal is given the raised limit", func() bool {
+			return journalLimit(f) > old
+		})
+
+		if j, s := journalLimit(f), storeLimit(t, f, f.Share.ID); s < j {
+			t.Errorf("journal limit %d above the committed limit %d", j, s)
+		}
+	})
+
+	t.Run("a write at the limit waits for the blocked raise", func(t *testing.T) {
+		f := enginetest.New(t, enginetest.WithVersionBlock(block))
+		_, id := f.File("a")
+
+		f.HoldNextWrite(time.Second, nil)
+		err := writeToTheLimit(t, f, id, block)
+
+		var noSpace *journal.NoSpaceError
+		if errors.As(err, &noSpace) || !errors.As(err, new(*vfserr.Delay)) {
+			t.Fatalf("the write at the limit = %v, want ErrDelay, not ErrNoSpace", err)
+		}
+
+		f.Clock.Advance(time.Second)
+		write(t, f, id, 0, []byte("x"))
+	})
+
+	t.Run("a raise failing once commits with no write pending", func(t *testing.T) {
+		f := enginetest.New(t, enginetest.WithVersionBlock(block))
+		_, id := f.File("a")
+
+		f.HoldNextWrite(time.Second, errors.New("an injected failure of the raise"))
+
+		if err := writeToTheLimit(t, f, id, block); !errors.As(err, new(*vfserr.Delay)) {
+			t.Fatalf("the write at the limit = %v, want ErrDelay", err)
+		}
+
+		at := journalLimit(f)
+		f.Clock.Advance(time.Second)
+		// The raise retries on the clock; nothing is written or drawn.
+		eventually(t, "the failed raise retries and commits", func() bool {
+			f.Clock.Advance(10 * time.Millisecond)
+			return journalLimit(f) > at
+		})
+
+		write(t, f, id, 0, []byte("x"))
+	})
+
+	t.Run("a failed Bind leaves the raise to the journal", func(t *testing.T) {
+		f := enginetest.New(t, enginetest.WithVersionBlock(block))
+		ctx := t.Context()
+		_, id := f.File("a")
+		last := journalLimit(f)
+
+		up := map[entity.ShareID]entity.JournalVersion{f.Second.ID: entity.VersionOf(last)}
+		if err := f.FS.Store.Lifecycle().RaiseVersionLimits(ctx, up); err != nil {
+			t.Fatal(err)
+		}
+
+		// Of the Bind's writes only its limit write sets a key of the share:
+		// the incarnation raise sets its shard's.
+		f.FailUpdatesSetting(func(key []byte) bool { return bytes.Contains(key, f.Second.ID[:]) })
+
+		if err := f.E.Bind(ctx, f.Second); err == nil {
+			t.Fatal("Bind succeeded with its limit write failing")
+		}
+
+		f.FailUpdatesSetting(nil)
+
+		if next := f.E.Stats().Journals[f.Dir].Stats.NextVersion.Counter; next < last {
+			t.Fatalf("next version %d after the Bind's Share, want at least the limit %d", next, last)
+		}
+
+		eventually(t, "the journal's raise commits with no write", func() bool {
+			return journalLimit(f) > last
+		})
+
+		write(t, f, id, 0, []byte("x"))
+	})
+}
+
+// journalLimit is the version limit the journal was last given.
+func journalLimit(f *enginetest.Fixture) uint64 {
+	return f.E.Stats().Journals[f.Dir].Stats.VersionLimit.Counter
+}
+
+// storeLimit is share id's version limit as the store has committed it.
+func storeLimit(t *testing.T, f *enginetest.Fixture, id entity.ShareID) uint64 {
+	t.Helper()
+
+	limits, err := f.FS.Store.Lifecycle().VersionLimits(t.Context(), []entity.ShareID{id})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return limits[id].Counter()
+}
+
+// writeToTheLimit writes file id until a write is refused, each bounded by a
+// short context so one that waits for a raise ends, and returns that write's
+// error. More than block writes accepted fails the test: the limit is at
+// most a block above the first.
+func writeToTheLimit(t *testing.T, f *enginetest.Fixture, id entity.FileID, block int) error {
+	t.Helper()
+
+	for range block + 1 {
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		_, err := f.E.Write(ctx, f.Share.ID, id, 0, []byte("x"), engine.WriteOpts{Done: func() {}})
+		cancel()
+
+		if err != nil {
+			return err
+		}
+	}
+
+	t.Fatalf("%d writes accepted with the raise held, want at most %d", block+1, block)
+
+	return nil
 }
 
 // A share bound with a limit several blocks above the journal's moves the

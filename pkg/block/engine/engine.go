@@ -7,6 +7,7 @@
 package engine
 
 import (
+	"cmp"
 	"container/list"
 	"context"
 	"encoding/hex"
@@ -168,7 +169,7 @@ func New(d Deps) (*Engine, error) {
 		raised:   map[entity.ShardID]struct{}{},
 		ended:    make(chan struct{}),
 		stopping: make(chan struct{}),
-		block:    versionBlock,
+		block:    cmp.Or(d.VersionBlock, defaultVersionBlock),
 	}
 	e.conflictBound.Store(int64(time.Second))
 	e.raising.ctx, e.raising.cancel = context.WithCancel(context.Background())

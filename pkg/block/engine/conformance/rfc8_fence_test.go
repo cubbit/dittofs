@@ -204,15 +204,16 @@ func TestRFC8B_SelfFenceHeldAfterIdle(t *testing.T) {
 
 // The version limit's raise failing at once for 31 s with no write pending
 // fences the node, and its commit clears the fence: the raise is a retrying
-// owner whatever view method it calls. The draws bring the raise due.
+// owner whatever view method it calls. At a block of 16 one draw brings the
+// raise due, and nothing else is drawn or written after it.
 func TestRFC8_SelfFenceVersionLimitRaise(t *testing.T) {
-	f := enginetest.New(t)
+	f := enginetest.New(t, enginetest.WithVersionBlock(16))
 	_, id := f.File("a")
 	f.FailWrites()
+	if _, err := f.E.Draw(t.Context(), f.Share.ID, id); err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
 	eventually(t, "the failing raise fences the node", func() bool {
-		if _, err := f.E.Draw(t.Context(), f.Share.ID, id); err != nil && !isFenced(err) {
-			t.Fatalf("Draw: %v", err)
-		}
 		f.Clock.Advance(time.Second)
 		return nodeFenced(f)
 	})

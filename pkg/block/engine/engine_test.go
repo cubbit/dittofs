@@ -50,6 +50,9 @@ func TestNewRefusesEachMissingMemberByName(t *testing.T) {
 	typ := reflect.TypeFor[Deps]()
 	for i := range typ.NumField() {
 		name := typ.Field(i).Name
+		if name == "VersionBlock" { // optional: zero is the default block
+			continue
+		}
 		t.Run(name, func(t *testing.T) {
 			d := fullDeps()
 			reflect.ValueOf(&d).Elem().Field(i).SetZero()

@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	// versionBlock is RFC 8 §2.7's block, 2^24 versions; the fixture cannot
-	// set another.
+	// versionBlock is RFC 8 §2.7's block, 2^24 versions, the engine's
+	// default, which the load rows run at.
 	versionBlock = 1 << 24
 
 	// existenceAge is RFC 13's proposed existence_age, the one RFC 8 §2.7's
