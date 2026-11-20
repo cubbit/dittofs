@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/dfsbench/exec"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 )
 
 // benchDataMount is the isolated data volume `dfsbench setup --data-volume-gb`
@@ -89,6 +90,12 @@ const (
 	// fixed-literal convention as zerofsPassword. ponytail: no prod users; don't
 	// generate.
 	dittofsAdminPass = "dfsbench-admin-pw"
+	// The node's identity and the passphrase of its key files, fixed
+	// literals by the same convention: the setup wipes the state every run,
+	// so no two runs share an installation. dfs init still refuses a file
+	// without node.id ("node.id is not set").
+	dittofsNodeID        = "0b9f6a1e-3c2d-4e5f-8a7b-1c2d3e4f5a6b"
+	dittofsKeyPassphrase = "dfsbench-key-passphrase"
 )
 
 // dittofsDataDir holds the subject's metadata (/meta, /meta.db) and local block
@@ -225,13 +232,38 @@ func dittofsSetup(ctx context.Context, env BackendEnv, durability string, maxSiz
 	if err := os.MkdirAll(dittofsDataDir+"/blocks", 0o755); err != nil {
 		return err
 	}
-	// Start the server, then wait for its NFS port before driving dfsctl. The
-	// start reads no admin password from its environment, so the login below
-	// needs an admin that dfs init has set.
-	// DITTOFS_LOGGING_LEVEL=warn pins per-op logging off for the benched server
-	// regardless of the binary's default, so log volume is uniform across A/B runs
-	// (belt-and-suspenders alongside #1738 demoting per-op logs to Debug).
-	start := "DITTOFS_LOGGING_LEVEL=warn dfs start >" + dittofsServerLog + " 2>&1 &"
+	// Initialise the installation, its administrator with the password the
+	// login below uses, then start the server and wait for its NFS port before
+	// driving dfsctl. The cleanup above removed every file of a prior run, so
+	// dfs init never meets a finished installation, which it refuses.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	configPath, passwordFile, err := writeDittofsInit(
+		filepath.Join(home, ".config", "dittofs"),
+		dittofsDataDir,
+	)
+	if err != nil {
+		return fmt.Errorf("dittofs setup: writing the files dfs init reads: %w", err)
+	}
+
+	initArgs := append(
+		dittofsEnv(),
+		"dfs",
+		"init",
+		"--config",
+		configPath,
+		"--admin-password-file",
+		passwordFile,
+	)
+	if err := exec.Sh(ctx, "env", initArgs...); err != nil {
+		return fmt.Errorf("dfs init: %w", err)
+	}
+
+	start := strings.Join(dittofsEnv(), " ") + " dfs start --config " + configPath +
+		" >" + dittofsServerLog + " 2>&1 &"
 	if err := exec.Sh(ctx, "sh", "-c", start); err != nil {
 		return err
 	}
@@ -382,4 +414,82 @@ func dittofsTeardown(ctx context.Context) error {
 func waitPort(ctx context.Context, port string) error {
 	return exec.Sh(ctx, "sh", "-c",
 		fmt.Sprintf("for i in $(seq 1 60); do nc -z 127.0.0.1 %s && exit 0; sleep 1; done; exit 1", port))
+}
+
+// dittofsEnv is the environment dfs init and dfs start run under.
+// DITTOFS_LOGGING_LEVEL=warn pins per-op logging off for the benched server
+// regardless of the binary's default, so log volume is uniform across A/B
+// runs; the level is lower case, the only spelling the server accepts. The
+// passphrase unlocks the two key files writeDittofsInit writes.
+func dittofsEnv() []string {
+	return []string{
+		"DITTOFS_LOGGING_LEVEL=warn",
+		"DITTOFS_ENCRYPTION_PASSPHRASE=" + dittofsKeyPassphrase,
+	}
+}
+
+// writeDittofsInit writes under confDir the files dfs init reads: the
+// server's configuration, the protocol and storage key files it names and
+// the file holding the administrator's first password. The configuration
+// puts the metadata store and the one journal under dataDir. It returns the
+// configuration's path and the password file's.
+func writeDittofsInit(confDir, dataDir string) (configPath, passwordFile string, err error) {
+	if err := os.MkdirAll(confDir, 0o700); err != nil {
+		return "", "", err
+	}
+
+	// The two roles must name two different keys; one passphrase opens both.
+	protocolKeyFile := filepath.Join(confDir, "protocol.key")
+	storageKeyFile := filepath.Join(confDir, "storage.key")
+
+	for _, keyFile := range []string{protocolKeyFile, storageKeyFile} {
+		key, err := keyprovider.GenerateKeyFile(dittofsKeyPassphrase)
+		if err != nil {
+			return "", "", err
+		}
+
+		if err := os.WriteFile(keyFile, key, 0o600); err != nil {
+			return "", "", err
+		}
+	}
+
+	passwordFile = filepath.Join(confDir, "admin-password")
+	if err := os.WriteFile(passwordFile, []byte(dittofsAdminPass), 0o600); err != nil {
+		return "", "", err
+	}
+
+	// logging.output is stderr so the setup's redirect to dittofsServerLog
+	// gets the logs, not the state directory the next setup deletes.
+	config := fmt.Sprintf(`node:
+  id: %s
+logging:
+  output: stderr
+metadata:
+  badger:
+    path: %s
+journals:
+  - path: %s
+keys:
+  protocol:
+    kind: local
+    local:
+      file: %s
+  storage:
+    kind: local
+    local:
+      file: %s
+`,
+		dittofsNodeID,
+		filepath.Join(dataDir, "meta"),
+		filepath.Join(dataDir, "blocks"),
+		protocolKeyFile,
+		storageKeyFile,
+	)
+
+	configPath = filepath.Join(confDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		return "", "", err
+	}
+
+	return configPath, passwordFile, nil
 }
