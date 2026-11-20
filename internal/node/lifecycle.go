@@ -298,8 +298,17 @@ func (n *Node) refuse(ctx context.Context) error {
 			return fmt.Errorf("the journal in %s: %w", dir, err)
 		}
 	}
+	// decision: a copy that cannot be written refuses the start, though the
+	// copy is redundant with the host file's identity: a device that cannot
+	// take a 24-byte file and its directory's sync is not fit to hold a
+	// journal, and starting would leave that device to fail at the engine's
+	// first write instead. Overturned if a device that refuses only small
+	// writes, such as one at a file-count quota, must still serve.
 	b := &n.cfg.Bootstrap
-	return bootstrap.WriteMissingNodeIDs(ctx, b, b.Node.ID, n.meta.Lifecycle().JournalID, n.cfg.Logger)
+	if err := bootstrap.WriteMissingNodeIDs(ctx, b, b.Node.ID, n.meta.Lifecycle().JournalID, n.cfg.Logger); err != nil {
+		return fmt.Errorf("write missing node-id copies: %w", err)
+	}
+	return nil
 }
 
 // openListeners opens the API and the metrics listeners, and logs the
