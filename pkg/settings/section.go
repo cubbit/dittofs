@@ -83,8 +83,8 @@ type Section struct {
 	secretRefs   map[string]entity.SecretKind
 	overrideOnly []string
 	checkTx      func(entity.ControlPlaneTx, Write, any) error
-	// decodeAny is decode for T, so Check builds a value of a type it only
-	// knows at run time.
+	// decodeAny is decode for T, so Check and Read build a value of a type
+	// they only know at run time.
 	decodeAny func(*Section, any, entity.SettingScope, []entity.Setting) (any, error)
 }
 
