@@ -273,7 +273,7 @@ Flags:
 
 ```
       --admin-password-env string    environment variable holding the administrator's first password
-      --admin-password-file string   file holding the administrator's first password
+      --admin-password-file string   file holding the administrator's first password, at most 4 KiB
 ```
 
 Global flags:
