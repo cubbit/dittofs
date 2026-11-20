@@ -473,6 +473,25 @@ func TestRechargeMovesTheWholeCharge(t *testing.T) {
 	}
 }
 
+// A Recharge into the budget a buffer is already charged to keeps its
+// reservation: it needs no room there, so a full hold budget takes it, and
+// the last Release returns the charge once.
+func TestRechargeIntoItsOwnBudgetKeepsTheCharge(t *testing.T) {
+	const charge = 12 * kib
+	receive, hold := NewWaitBudget("receive", mib), NewBudget("hold", charge)
+	b := mustGet(t, NewBufPool(receive), 3)
+	if err := b.Recharge(hold); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Recharge(hold); err != nil || hold.Reserved() != charge || b.Charge() != charge {
+		t.Errorf("a second Recharge into the full hold budget = %v, hold %d, Charge %d; want nil, %d and %d", err, hold.Reserved(), b.Charge(), charge, charge)
+	}
+	b.Release()
+	if receive.Reserved() != 0 || hold.Reserved() != 0 {
+		t.Errorf("after the last Release: receive %d, hold %d; want 0 and 0", receive.Reserved(), hold.Reserved())
+	}
+}
+
 // Recharge reserves from the new budget before it releases the old: refused
 // by a full hold budget, it never lets the receive charge go, so a waiter
 // queued behind it on the receive budget is not granted.

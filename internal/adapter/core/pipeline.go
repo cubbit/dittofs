@@ -192,8 +192,8 @@ func (p *pipeline) takeStatus(ctx context.Context) (at time.Time, ok bool) {
 		return time.Time{}, true
 	default:
 	}
-	at = time.Now().Add(statusWait)
-	wait, cancel := context.WithDeadline(ctx, at)
+	at = p.sh.clock.Now().Add(statusWait)
+	wait, cancel := withClockDeadline(ctx, p.sh.clock, at)
 	defer cancel()
 	select {
 	case p.status <- struct{}{}:
@@ -234,9 +234,9 @@ func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, n int, at t
 	// RFC 24 §4.1's turns bound each client's share of the pool, or when
 	// parks' reply reservations are capped per client.
 	if at.IsZero() {
-		at = time.Now().Add(statusWait)
+		at = sh.clock.Now().Add(statusWait)
 	}
-	wait, cancel := context.WithDeadline(ctx, at)
+	wait, cancel := withClockDeadline(ctx, sh.clock, at)
 	defer cancel()
 	buf, err := sh.reply.Get(wait, key, n)
 	if err != nil {

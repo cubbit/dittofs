@@ -266,6 +266,14 @@ func (p *pipeline) count(pd *pending, refuse bool) (grant bool, err error) {
 			t.floor++
 			t.bytes += c
 			pd.floor = true
+		// ponytail: a chain's members share its record, whose charge stays in
+		// the hold pool from the first member held past the floor until the
+		// chain ends, so a later one is charged nothing more. Until then a
+		// later member the floor takes counts the record on the floor too, and
+		// adapter_hold_pool_bytes drops by it at the answer of each member held
+		// past the floor, reading low while the hold budget stays exact; both
+		// return to zero at the chain's end. Upgrade to core tracking the
+		// chain's record when the floor or that gauge must follow it.
 		case p.sh.hold != nil && pd.rec.Recharge(p.sh.hold) == nil:
 			pd.pool = true
 			p.sh.holdPoolCharged(c)
