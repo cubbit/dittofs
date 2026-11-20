@@ -119,14 +119,17 @@ func (s *Server) signInPassThrough(ctx context.Context, st *State, step identity
 // credentialStatus is each NTSTATUS a controller refuses a logon with
 // because of the user's credentials or account: a wrong password or name,
 // an account locked, disabled, expired or restricted, an expired password,
-// and a trust account's logon. Any other status is the controller failing
-// to answer, ErrUnavailable, which the throttle never counts.
+// a trust account's logon, and the refusals of policy MS-APDS 3.1.5 names,
+// a smart card required, an authentication policy, and NTLM blocked. Any
+// other status is the controller failing to answer, ErrUnavailable, which
+// the throttle never counts.
 var credentialStatus = map[netlogon.Status]bool{
 	netlogon.StatusNoSuchUser: true, netlogon.StatusWrongPassword: true, netlogon.StatusLogonFailure: true,
 	netlogon.StatusAccountRestriction: true, netlogon.StatusInvalidLogonHours: true, netlogon.StatusInvalidWorkstation: true,
 	netlogon.StatusPasswordExpired: true, netlogon.StatusPasswordMustChange: true, netlogon.StatusAccountDisabled: true,
 	netlogon.StatusAccountExpired: true, netlogon.StatusAccountLockedOut: true,
 	netlogon.StatusNologonInterdomainTrust: true, netlogon.StatusNologonWorkstationTrust: true, netlogon.StatusNologonServerTrust: true,
+	netlogon.StatusSmartcardLogonRequired: true, netlogon.StatusAuthFirewallFailed: true, netlogon.StatusNTLMBlocked: true,
 }
 
 // checkReply refuses a reply whose user session key is not 16 bytes or is

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -382,6 +383,12 @@ func TestPassThroughDisabledAndDeleted(t *testing.T) {
 	}
 	res, oc, err = fx.signIn(ntlmStep(string(alicePW), "alice", "CORP", true))
 	refused(t, "alice marked deleted", res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
+	// The mark check refuses before any mint, so the lookup answers no
+	// principal; a sign-in that reached the mint is refused later, with the
+	// same class and outcome but not this text.
+	if want := "no principal for the reply's user SID"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("alice marked deleted: error %v, want the lookup's refusal %q", err, want)
+	}
 	if got, err := fx.s.Find(ctx, pid.Spelling{Scheme: pid.SchemeSID, SID: fx.alice}, pid.FindOpts{}); !errors.Is(err, vfserr.ErrUnknownPrincipal) {
 		t.Errorf("Find of alice's SID after her refused sign-in: %v, %v; want ErrUnknownPrincipal, nothing minted", got, err)
 	}
@@ -393,6 +400,26 @@ func TestPassThroughDisabledAndDeleted(t *testing.T) {
 	}
 	if got := fx.signedIn(t, "alice after her deletion ended", ntlmStep(string(alicePW), "alice", "CORP", true)).Identity.Evidence.Principal; got == p {
 		t.Errorf("alice after her deletion ended: bound %v, the deleted principal; want a new one", got)
+	}
+}
+
+// A controller refusing a logon for its account's policy, MS-APDS 3.1.5's
+// smart card required, authentication policy and NTLM blocked, answers
+// logon_failure, never unavailable.
+func TestPassThroughPolicyRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"STATUS_SMARTCARD_LOGON_REQUIRED", netlogon.StatusSmartcardLogonRequired},
+		{"STATUS_AUTHENTICATION_FIREWALL_FAILED", netlogon.StatusAuthFirewallFailed},
+		{"STATUS_NTLM_BLOCKED", netlogon.StatusNTLMBlocked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newPassThrough(t, sim.Rule{Op: "logon", Key: "alice", Count: 1, Action: sim.FaultAction{Err: tc.err}})
+			res, oc, err := fx.signIn(ntlmStep(string(alicePW), "alice", "CORP", true))
+			refused(t, tc.name, res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
+		})
 	}
 }
 
