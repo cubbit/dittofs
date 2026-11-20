@@ -11,14 +11,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/recovery"
 )
 
-// The names of the node's identity copy and its temporary, which the node
-// writes into a journal's directory (RFC 28 §2.1) and the journal's open leaves
-// alone without reporting them.
-const (
-	NodeIDFileName = format.NodeIDFileName
-	NodeIDTmpName  = format.NodeIDTmpName
-)
-
 // ReadFormat returns the identity of the journal in dir and the installation
 // that created it, read from its format file, without opening the journal.
 // It takes the steps Open takes before it judges the identity, but the check
