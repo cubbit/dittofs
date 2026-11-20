@@ -40,13 +40,6 @@
   category: feature
   reason: 'sync marks reaching the engine''s journal open: a clone of a source whose synced run the journal lost reads ErrLost at the destination and the source''s bytes elsewhere. Init and Open work, and the open now empties the ended segment and serves, but nothing proves the rotted record synced, so the open reads it as a torn tail, cuts it and empties segment 3 without recording the loss, and the source and the destination read zeros over the lost run with a nil error. Cause: the engine keeps no sync marks: its journal open passes nil marks (pkg/block/engine/enginewire/enginewire.go), and JournalOf (pkg/block/engine/journalof.go) drops the marks Sync returns and stubs SyncMarks and MarksRecorded, so no mark proves it. The row waits on the journal keeping a per-stream sync mark that follows every completed sync, then on the engine dropping those stubs and handing the open its recorded marks.'
   issue: '#5261'
-- test: TestContentSuiteOverTheJournal/ALossChangesTheVerifierAndRaisesTheLossSequence
-  message: 'the Content under test cannot be made to lose a write'
-  status: skip
-  fix: planned
-  category: feature
-  reason: 'the fixture failing one file''s sync window (internal/vfs/integration/content_journal_test.go:18): a loss changes the verifier and raises only the lost file''s loss sequence. The run supplies no Lose, so the case skips: the fixture fails a whole sync window, every file pending in it, where the case needs one file''s content lost and another''s loss sequence left alone; the engine''s run over the fake journal covers it. It runs once the fixture can fail one file''s window.'
-  issue: '#4206'
 - test: TestRFC8A_TheJoin
   message: 'the lost extent reads "oooooooo", <nil>; want ErrLost'
   status: fail
