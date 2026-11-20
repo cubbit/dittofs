@@ -3,6 +3,7 @@ package identity
 import (
 	"container/list"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
@@ -85,6 +86,13 @@ func (e *dirEntry) fresh(now time.Time) bool {
 		ttl = dirNotFound
 	}
 	return now.Sub(e.at) < ttl
+}
+
+// servable reports whether e may answer at now, past its TTL, once a query
+// for it has failed: a positive answer no older than the TTL plus grace. A nil
+// e, never answered, is not servable.
+func (e *dirEntry) servable(now time.Time, grace time.Duration) bool {
+	return e != nil && e.found && now.Sub(e.at) <= dirFound+grace
 }
 
 // dirCache is the server's cache of one directory client's answers, built
@@ -226,19 +234,11 @@ func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, g
 		ch := c.flight.DoChan(strconv.Itoa(int(by))+":"+k.value, func() (any, error) {
 			return c.query(context.WithoutCancel(ctx), k, q, value)
 		})
-		select {
-		case r = <-ch:
-		case <-ctx.Done():
-			r.Err = fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())
-		}
+		r = await(ctx, ch)
 	}
 	if r.Err == nil {
 		n := r.Val.(*dirEntry)
-		result := "queried"
-		if !n.found {
-			result = "not_found"
-		}
-		c.lookups.WithLabelValues(q, result).Inc()
+		c.answered(q, n.found)
 		return n.ans, n.found, nil
 	}
 	if errors.Is(r.Err, directory.ErrAmbiguous) {
@@ -253,7 +253,7 @@ func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, g
 	// and a grace of zero serves none past the TTL. Overturned if an operator
 	// needs a disabled directory account stopped sooner than the grace they
 	// set, which a shorter grace already gives.
-	if !fresh && e != nil && e.found && c.clock.Now().Sub(e.at) <= dirFound+grace {
+	if !fresh && e.servable(c.clock.Now(), grace) {
 		c.lookups.WithLabelValues(q, "stale").Inc()
 		return e.ans, true, nil
 	}
@@ -269,14 +269,7 @@ func (c *dirCache) query(ctx context.Context, k dirKey, q string, value []byte) 
 	err := c.run(ctx, q, func(ctx context.Context) error {
 		start := c.clock.Now()
 		ans, found, err := c.client.Lookup(ctx, k.by, value)
-		if err != nil && !errors.Is(err, directory.ErrAmbiguous) {
-			if c.out.raise(start, err) {
-				go c.probe(k, q)
-			}
-			return err
-		}
-		// An answer, ambiguous or not, is the directory's.
-		c.out.clear(c.clock.Now())
+		c.settle(start, err, k, q)
 		if err != nil {
 			return err
 		}
@@ -287,6 +280,39 @@ func (c *dirCache) query(ctx context.Context, k dirKey, q string, value []byte) 
 	return e, err
 }
 
+// settle updates directory_unreachable after a query of k sent at start: a
+// failure raises it and starts the probe loop; an answer, ambiguous or not,
+// is the directory's and clears it.
+func (c *dirCache) settle(start time.Time, err error, k dirKey, q string) {
+	if err != nil && !errors.Is(err, directory.ErrAmbiguous) {
+		if c.out.raise(start, err) {
+			go c.probe(k, q)
+		}
+		return
+	}
+	c.out.clear(c.clock.Now())
+}
+
+// answered counts a lookup a query answered: queried, or not_found.
+func (c *dirCache) answered(q string, found bool) {
+	result := "queried"
+	if !found {
+		result = "not_found"
+	}
+	c.lookups.WithLabelValues(q, result).Inc()
+}
+
+// await is a shared query's result, or ErrUnavailable once ctx ends first;
+// the query runs on for the callers still waiting.
+func await(ctx context.Context, ch <-chan singleflight.Result) singleflight.Result {
+	select {
+	case r := <-ch:
+		return r
+	case <-ctx.Done():
+		return singleflight.Result{Err: fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())}
+	}
+}
+
 // lookupSIDs answers "who holds this SID" for each of sids: from fresh
 // entries where held, the rest asked of the directory directory.SIDBatch at a
 // time, one query per batch, so a ticket's 1 024 SIDs cost 16 queries rather
@@ -294,7 +320,15 @@ func (c *dirCache) query(ctx context.Context, k dirKey, q string, value []byte) 
 // entry holds left out. A batch that fails is answered as a failed lookup
 // is: each of its SIDs from a positive entry within the TTL plus grace,
 // counted stale; any other SID fails the whole lookup ErrUnavailable, counted
-// refused, so a caller never takes a set with holes for a whole one.
+// refused, so a caller never takes a set with holes for a whole one. A batch
+// in which two entries hold one SID fails the whole lookup ErrUnavailable,
+// counted ambiguous once, never served stale.
+//
+// decision: only tests call lookupSIDs today. It is the cache's path for a
+// whole set of SIDs at once, which a Kerberos ticket's PAC carries and SID
+// resolution for a sign-in asks; that caller will reach it through State as
+// dirLookup reaches lookup. Withdraw it if that caller ends up asking SIDs
+// one at a time through lookup instead.
 func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Duration) ([]directory.Answer, error) {
 	const q = "sid"
 	held := map[string]*dirEntry{}
@@ -314,18 +348,18 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 	}
 	for batch := range slices.Chunk(miss, directory.SIDBatch) {
 		got, err := c.querySIDs(ctx, batch)
+		if errors.Is(err, directory.ErrAmbiguous) {
+			c.lookups.WithLabelValues(q, "ambiguous").Inc()
+			return nil, err
+		}
 		for _, s := range batch {
 			if err == nil {
 				n := got[string(s)]
 				held[string(s)] = n
-				if n.found {
-					c.lookups.WithLabelValues(q, "queried").Inc()
-				} else {
-					c.lookups.WithLabelValues(q, "not_found").Inc()
-				}
+				c.answered(q, n.found)
 				continue
 			}
-			if e := held[string(s)]; e != nil && e.found && c.clock.Now().Sub(e.at) <= dirFound+grace {
+			if held[string(s)].servable(c.clock.Now(), grace) {
 				c.lookups.WithLabelValues(q, "stale").Inc()
 				continue
 			}
@@ -346,7 +380,8 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 
 // querySIDs asks the directory who holds each SID of batch in one query, in
 // a slot of its own, and stores an entry for each, "no such entry" for a SID
-// none holds. Its failure raises the outage, and its answer clears it.
+// none holds. Its failure raises the outage, and its answer, ambiguous or
+// not, clears it.
 //
 // ponytail: concurrent lookups share a query only when they ask the same
 // batch, as one user's repeated sign-ins do; two tickets whose SID sets
@@ -356,21 +391,23 @@ func (c *dirCache) querySIDs(ctx context.Context, batch [][]byte) (map[string]*d
 	if c.out.skip(c.clock.Now()) {
 		return nil, errDirUnreachable
 	}
-	// A SID's length is in its own header, so their concatenation is the
-	// batch's key unambiguously.
-	ch := c.flight.DoChan("sids:"+string(slices.Concat(batch...)), func() (any, error) {
+	// Each SID is prefixed with its length, so two batches share a key only
+	// when they hold the same SIDs in the same order.
+	key := []byte("sids:")
+	for _, s := range batch {
+		key = binary.AppendUvarint(key, uint64(len(s)))
+		key = append(key, s...)
+	}
+	ch := c.flight.DoChan(string(key), func() (any, error) {
 		got := map[string]*dirEntry{}
 		err := c.run(context.WithoutCancel(ctx), "sid", func(ctx context.Context) error {
 			start := c.clock.Now()
 			found, err := c.client.LookupSIDs(ctx, batch)
+			c.settle(start, err, dirKey{by: directory.BySID, value: string(batch[0])}, "sid")
 			if err != nil {
-				if c.out.raise(start, err) {
-					go c.probe(dirKey{by: directory.BySID, value: string(batch[0])}, "sid")
-				}
 				return err
 			}
 			now := c.clock.Now()
-			c.out.clear(now)
 			for _, s := range batch {
 				got[string(s)] = &dirEntry{key: dirKey{by: directory.BySID, value: string(s)}, at: now}
 			}
@@ -386,15 +423,11 @@ func (c *dirCache) querySIDs(ctx context.Context, batch [][]byte) (map[string]*d
 		})
 		return got, err
 	})
-	select {
-	case r := <-ch:
-		if r.Err != nil {
-			return nil, r.Err
-		}
-		return r.Val.(map[string]*dirEntry), nil
-	case <-ctx.Done():
-		return nil, fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())
+	r := await(ctx, ch)
+	if r.Err != nil {
+		return nil, r.Err
 	}
+	return r.Val.(map[string]*dirEntry), nil
 }
 
 // groups is user's closure, asked of the directory in a slot of its own and

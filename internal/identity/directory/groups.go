@@ -53,6 +53,9 @@ const (
 )
 
 // SIDBatch is the most SIDs one LookupSIDs query carries in its OR filter.
+// It is exported so that a cache in front of the client can split a set into
+// the same batches before the client does, and share or store each batch's
+// answer as the one query the client sends for it.
 const SIDBatch = orTerms
 
 // LookupSIDs answers "who holds this SID" for each of sids, in batches of at
@@ -96,7 +99,7 @@ func (c *Client) lookupSIDs(ctx context.Context, base string, sids [][]byte) ([]
 			if prev, ok := found[string(a.SID)]; ok {
 				c.log.Warn("identity.directory: a SID held by more than one entry, refused",
 					"first", prev.DN, "second", a.DN)
-				return nil, unavailable("SID lookup", errors.New("two entries hold one SID"))
+				return nil, unavailable("SID lookup", fmt.Errorf("%w: two entries hold one SID", ErrAmbiguous))
 			}
 			found[string(a.SID)] = a
 		}
