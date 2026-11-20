@@ -257,7 +257,9 @@ func changes(sec *Section, scope entity.SettingScope, thing string, v values) []
 // encode compares as changed in every field, since listing a key that did not
 // change costs a reconfigure and missing one leaves a component running a
 // value the operator replaced. A field type whose MarshalJSON drops
-// information would hide a change of that information.
+// information would hide a change of that information. json encodes a nil
+// slice or map as null and an empty one as [] or {}, so the two compare as a
+// change.
 func fieldsOf(v any) (map[string]json.RawMessage, bool) {
 	raw, err := json.Marshal(v)
 	if err != nil {
@@ -277,11 +279,12 @@ func fieldsOf(v any) (map[string]json.RawMessage, bool) {
 // receiver holds nothing else. With a nil prev, or one that holds no value
 // of section, the result holds none either, so Get on it is an error and
 // never the defaults (RFC 13 §6). Neither snapshot is changed: prev is what
-// the running components still read. The whole section is swapped, so in a
-// section with one value per instance or per thing every instance and thing
-// prev holds takes prev's value; one prev does not hold keeps the receiver's
-// outcome, a refusal staying a refusal, since prev's base would hand it the
-// defaults.
+// the running components still read. In a section with one value per instance
+// or per thing, only an instance or thing the receiver refuses takes prev's
+// value, so the others keep their new one; the whole section takes prev's
+// only when the section's own value is refused, since then every instance is.
+// One prev does not hold keeps the receiver's outcome, a refusal staying a
+// refusal, since prev's base would hand it the defaults.
 func (s *Snapshot) Keep(section string, prev *Snapshot) *Snapshot {
 	out := &Snapshot{
 		sections: make(map[string]*entry),
@@ -309,18 +312,43 @@ func (s *Snapshot) Keep(section string, prev *Snapshot) *Snapshot {
 	return out
 }
 
-// keepEntry is prev's entry with every instance and thing of cur that prev
-// does not hold added as cur has it; prev's own entry is not changed.
+// keepEntry is the entry Keep leaves for a refused section. A section with one
+// value, or one whose own value is refused (then every instance is), is prev's
+// entry with every instance and thing of cur that prev does not hold added as
+// cur has it. In a section with one value per instance or per thing whose own
+// value is valid, it is cur's entry with prev's value put back only where cur's
+// is refused. prev's own entry is not changed.
 func keepEntry(prev, cur *entry) *entry {
 	if cur == nil {
 		return prev
 	}
 
-	e := *prev
-	e.instances = merged(prev.instances, cur.instances)
-	e.things = merged(prev.things, cur.things)
+	if cur.instances == nil && cur.things == nil || cur.stored && cur.base.err != nil {
+		e := *prev
+		e.instances = merged(prev.instances, cur.instances)
+		e.things = merged(prev.things, cur.things)
+
+		return &e
+	}
+
+	e := *cur
+	e.instances = keptRefused(prev.instances, cur.instances)
+	e.things = keptRefused(prev.things, cur.things)
 
 	return &e
+}
+
+// keptRefused is cur with each refused value prev holds replaced by prev's.
+func keptRefused[K comparable](prev, cur map[K]outcome) map[K]outcome {
+	out := maps.Clone(cur)
+
+	for k, got := range cur {
+		if was, ok := prev[k]; ok && got.err != nil {
+			out[k] = was
+		}
+	}
+
+	return out
 }
 
 // merged is a copy of prev with every key of cur that prev lacks; prev as it

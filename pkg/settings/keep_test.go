@@ -107,7 +107,7 @@ func TestKeepRefusedSection(t *testing.T) {
 
 		kept := cur.Keep("pol", prev)
 		kpWantF(t, kept, "pol", 0xA, 1)
-		kpWantF(t, kept, "pol", 0xB, 1)
+		kpWantF(t, kept, "pol", 0xB, 2)
 		kpWantF(t, cur, "pol", 0xB, 2)
 	})
 }
