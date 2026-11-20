@@ -145,7 +145,16 @@ func (t Table) Check(
 	// its own settings, and a section's CheckTx reads what else it needs.
 	// Upgrade to a check that judges both sections in one write once a rule
 	// across components is declared.
-	return nil
+
+	// decision: the settings format's schema, one version across every
+	// section, is written only once the installation's active version allows
+	// it, so a rollback before that raise meets no row it cannot decode (RFC 13
+	// §5.5). One write is not covered yet: a field a newer binary added is a new
+	// key under a prefix this binary declares, and setting it before the raise
+	// makes a rollback refuse that section. Withdraw this note once a write that
+	// sets such a field is refused while that binary is newer than the active
+	// version.
+	return sec.gates(tx, w, declared, thing, holds, effective)
 }
 
 // maxSchema is the newest settings schema this binary reads.
