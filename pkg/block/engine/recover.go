@@ -15,9 +15,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
-// versionBlock is how far above the journal's next version start writes
-// each served share's version limit (RFC 8 §2.7, proposal: 2²⁴ versions).
-const versionBlock = 1 << 24
+// defaultVersionBlock is the version block of an engine whose Deps leave it
+// zero (RFC 8 §2.7, proposal: 2²⁴ versions).
+const defaultVersionBlock = 1 << 24
 
 var (
 	// errJournalLost refuses the shares of a device whose recorded journal

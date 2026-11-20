@@ -159,7 +159,7 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 			// and on none before: the first copy made again wakes it.
 			m.e.WaitRaises(t)
 			limit := m.j.Stats().VersionLimit.Counter
-			m.e.SetBlockForTest(2 * (limit - m.j.Stats().NextVersion.Counter))
+			m.j.SkipTo(limit - engine.DefaultVersionBlock/2 - 1)
 
 			if err := m.writeErr(t, m.one.ID, m.src, runLen/2); !isDelay(err, vfserr.DelayClone) {
 				t.Errorf("a write into the source extent before the clone is done: %v, want DelayClone", err)

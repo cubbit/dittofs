@@ -13,8 +13,9 @@ import (
 
 // Deps is what the composition root hands New. Each interface holds exactly
 // the methods the engine calls on that component, and the root passes the
-// component's own type as it. Every member is required: New refuses a missing
-// one by name, so a fixture supplies stubs of the whole interface, never nil.
+// component's own type as it. Every member but VersionBlock is required: New
+// refuses a missing one by name, so a fixture supplies stubs of the whole
+// interface, never nil.
 type Deps struct {
 	// Node is this node's identity, from its bootstrap; JournalID looks up its
 	// devices under it.
@@ -28,6 +29,13 @@ type Deps struct {
 	Clock     Clock
 	Logger    *slog.Logger
 	Tracer    Tracer
+
+	// VersionBlock is the versions one raise of a share's version limit
+	// covers, and how far above the journal's next version start writes it;
+	// the raise falls due below half of it (RFC 8 §2.7). Zero is the RFC's
+	// 2²⁴. It is fixed, not an operator setting (RFC 13 Appendix B), so the
+	// root leaves it zero and only a check of the raise sets it.
+	VersionBlock uint64
 }
 
 // Journal is one device's journal, as the engine calls it.

@@ -81,6 +81,7 @@ func newLoadUnit(t *testing.T, block uint64) *loadUnit {
 	}
 
 	lu.unit = newUnitWith(t, unitConfig{
+		deps:      []func(*engine.Deps){func(d *engine.Deps) { d.VersionBlock = block }},
 		unstarted: true,
 		kv: func(db kv.KV) kv.KV {
 			lu.faults = kvtest.NewFaultKV(db)
@@ -90,7 +91,6 @@ func newLoadUnit(t *testing.T, block uint64) *loadUnit {
 	})
 	lu.file = lu.create(t, "a")
 
-	lu.e.SetBlockForTest(block)
 	lu.e.TrackRaisesForTest()
 	lu.e.SetConflictBound(time.Hour)
 
