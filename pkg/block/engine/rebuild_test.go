@@ -380,16 +380,16 @@ func TestARebuiltCloneWaitsForItsSourcesShard(t *testing.T) {
 	if n := m.content.resumed(m.dst); n != resumed {
 		t.Errorf("the clone's phase 2 ran %d times before its source's shard was served", n-resumed)
 	}
-	if !logged(m.logs, "removal_stalled", m.dst) {
-		t.Error("no removal_stalled line names the destination")
+	if !logged(m.logs, slog.LevelError, "removal_stalled", m.dst) {
+		t.Error("no removal_stalled line at Error names the destination")
 	}
 	if err := m.writeErr(t, m.one.ID, m.src, 0); !isDelay(err, vfserr.DelayClone) {
 		t.Errorf("a write into the source extent while the clone waits: %v, want DelayClone", err)
 	}
 	m.serve(t)
 	m.cloneDone(t, m.src, m.dst)
-	if m.e.RemovalStalled(m.dst) || !logged(m.logs, "removal_stalled cleared", m.dst) {
-		t.Error("removal_stalled not cleared once the source's shard was served")
+	if m.e.RemovalStalled(m.dst) || !logged(m.logs, slog.LevelInfo, "removal_stalled cleared", m.dst) {
+		t.Error("removal_stalled not cleared, at Info, once the source's shard was served")
 	}
 	if got := m.readIn(t, m.one.ID, m.dst, 0, runLen); !bytes.Equal(got, m.want) {
 		t.Error("the rebuilt clone's destination does not read the source")

@@ -240,7 +240,7 @@ func (l *removalLoop) step(it *loopItem) {
 		it.fails++
 		if it.fails >= stallAfter && !it.stalled {
 			it.stalled = true
-			log.Warn("removal_stalled", "file", it.f, "kind", it.kind)
+			log.Log(l.ctx, stallLevel(it.kind), "removal_stalled", "file", it.f, "kind", it.kind)
 			l.e.conds.raise(condKey{conditionRemovalStalled, it}, Condition{
 				Name:    conditionRemovalStalled,
 				Subject: Subject{Scope: ScopeShare, ID: it.b.share.ID.String()},
@@ -272,7 +272,7 @@ func (l *removalLoop) unstall(it *loopItem) {
 		return
 	}
 	it.stalled = false
-	l.e.d.Logger.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
+	l.e.d.Logger.Info("removal_stalled cleared", "file", it.f, "kind", it.kind)
 	l.e.conds.clear(condKey{conditionRemovalStalled, it})
 }
 
@@ -449,10 +449,20 @@ func (l *removalLoop) waiting(it *loopItem, stalled bool) {
 	l.mu.Unlock()
 	switch {
 	case stalled && !was:
-		l.e.d.Logger.Warn("removal_stalled", "file", it.f, "kind", it.kind)
+		l.e.d.Logger.Log(l.ctx, stallLevel(it.kind), "removal_stalled", "file", it.f, "kind", it.kind)
 	case !stalled && was:
-		l.e.d.Logger.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
+		l.e.d.Logger.Info("removal_stalled cleared", "file", it.f, "kind", it.kind)
 	}
+}
+
+// stallLevel is removal_stalled's level at its raise: Error for a clone's,
+// which holds its destination's writes and is unhealthy, Warn for the rest,
+// which are degraded; its clear is logged at Info (RFC 25 section 3.4).
+func stallLevel(k entity.RemovalKind) slog.Level {
+	if k == entity.RemoveClone {
+		return slog.LevelError
+	}
+	return slog.LevelWarn
 }
 
 // phase2 is the item that drops r's masked records and prunes its removal

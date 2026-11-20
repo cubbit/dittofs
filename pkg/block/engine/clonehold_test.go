@@ -469,8 +469,8 @@ func TestAStalledClonePhase2KeepsItsRegistrations(t *testing.T) {
 	if got := u.e.Stats().RemovalRuns["error"]; got < 5 {
 		t.Errorf("stalled after %d failed runs in engine_removal_runs_total{error}, want five first", got)
 	}
-	if !logged(logs, "removal_stalled", dst) {
-		t.Error("no removal_stalled line names the destination")
+	if !logged(logs, slog.LevelError, "removal_stalled", dst) {
+		t.Error("no removal_stalled line at Error names the destination")
 	}
 	s, _ := u.e.Registrations(src)
 	_, d := u.e.Registrations(dst)
@@ -486,7 +486,7 @@ func TestAStalledClonePhase2KeepsItsRegistrations(t *testing.T) {
 	// The clone is answered inside the item's run, and the loop clears the
 	// condition once the run returns, so the clear is awaited, not read.
 	u.until(t, "removal_stalled cleared once phase 2 succeeded", func() bool {
-		return logged(logs, "removal_stalled cleared", dst) && !u.e.RemovalStalled(dst)
+		return logged(logs, slog.LevelInfo, "removal_stalled cleared", dst) && !u.e.RemovalStalled(dst)
 	})
 	s, _ = u.e.Registrations(src)
 	_, d = u.e.Registrations(dst)
@@ -495,10 +495,10 @@ func TestAStalledClonePhase2KeepsItsRegistrations(t *testing.T) {
 	}
 }
 
-// logged reports whether logs hold a line msg naming file f.
-func logged(logs logRecorder, msg string, f entity.FileID) bool {
+// logged reports whether logs hold a line msg at level naming file f.
+func logged(logs logRecorder, level slog.Level, msg string, f entity.FileID) bool {
 	return slices.ContainsFunc(logs.records(), func(r slog.Record) bool {
-		return r.Message == msg && attr(r, "file") == f.String()
+		return r.Level == level && r.Message == msg && attr(r, "file") == f.String()
 	})
 }
 
