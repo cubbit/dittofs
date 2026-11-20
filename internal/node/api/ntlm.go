@@ -28,6 +28,10 @@ func ntlmOn(s entity.Setting, ok bool) bool {
 // to a caller not holding the installation right. A write of any other key
 // runs alone.
 func ntlmWrite(ctx context.Context, tx entity.ControlPlaneTx, start func(apiv1.OpKind, entity.ResourceRef) error, scope entity.SettingScope, key string, write func() error) error {
+	// decision: the admin gate and the rule cover identity.ntlm at the
+	// installation scope only; the settings table's scope check is what
+	// refuses, or leaves inert, the key at any other scope. Overturned if the
+	// table admits identity.ntlm at another scope that identity reads.
 	if scope.Kind != entity.ScopeInstallation || key != ntlmKey {
 		return write()
 	}

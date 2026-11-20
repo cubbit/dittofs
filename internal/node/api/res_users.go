@@ -311,6 +311,9 @@ func holds(c auth.Caller, r auth.Right) bool {
 // against the directory's case and all, so a name under such a realm is
 // stored in a spelling that never matches it. Overturned by the first
 // rfc2307 deployment that uses Kerberos: keep the realm as given there.
+// The user part kept byte for byte lets two users hold alice@CORP and
+// Alice@CORP, both linked to one SID, since AD matches sAMAccountName
+// ignoring case; overturned if a link must be held by one user alone.
 func krbName(name string) (string, error) {
 	if len(name) > maxDirectoryName {
 		return "", tooLong("spec.kerberos")
@@ -357,6 +360,9 @@ func withKerberos(tx entity.ControlPlaneTx, start func(apiv1.OpKind, entity.Reso
 			out = append(out, id)
 		}
 	}
+	// decision: a user PUT replaces the spec whole, so one naming no kerberos
+	// removes the link; PATCH keeps it. Overturned if PUT must keep fields an
+	// older client does not know.
 	if name == "" {
 		return out, nil
 	}
