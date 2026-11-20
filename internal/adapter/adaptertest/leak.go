@@ -13,10 +13,11 @@ import (
 
 // CheckLeaks, called before the test starts anything, fails it at its end
 // when a goroutine or descriptor opened since is still open, the live heap
-// grew past prof's default slack (checked only without the race detector), or
-// a budget of b (nil: none) still holds bytes. Its checks are process-wide, as
-// prof.Watch's are: a test that calls it runs beside no parallel test, and its
-// subtests do not call it.
+// grew past prof's default slack (checked only without the race detector), a
+// budget of b (nil: none) still holds bytes, or its connection limit still
+// counts a connection. Its checks are process-wide, as prof.Watch's are: a
+// test that calls it runs beside no parallel test, and its subtests do not
+// call it.
 func CheckLeaks(t testing.TB, b *resources.Budgets) {
 	t.Helper()
 
@@ -33,8 +34,9 @@ func CheckLeaks(t testing.TB, b *resources.Budgets) {
 	prof.Watch(t, prof.Options{})
 }
 
-// budgetsHeld names each budget of b that still holds bytes, nil when none
-// does or b is nil.
+// budgetsHeld names each budget of b that still holds bytes, and the
+// connection limit while it counts a connection, nil when none does or b is
+// nil.
 func budgetsHeld(b *resources.Budgets) error {
 	if b == nil {
 		return nil
@@ -57,6 +59,11 @@ func budgetsHeld(b *resources.Budgets) error {
 	}
 	if b.Hold != nil {
 		note("Hold", b.Hold.Reserved())
+	}
+	if b.Conns != nil {
+		if n := b.Conns.InUse(); n != 0 {
+			held = append(held, fmt.Errorf("the connection limit still counts %d connections", n))
+		}
 	}
 
 	return errors.Join(held...)

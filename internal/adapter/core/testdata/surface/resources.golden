@@ -14,6 +14,8 @@ func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Rese
 
 func (b *WaitBudget) Reserved() int64
 
+func (l *ConnLimit) InUse() int
+
 func (l *ConnLimit) Release(addr netip.Addr)
 
 func (l *ConnLimit) SetLimit(limit int)

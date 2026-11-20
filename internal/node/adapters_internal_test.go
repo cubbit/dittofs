@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
@@ -526,6 +527,31 @@ func TestADisableAfterARefusalStopsTheAdapter(t *testing.T) {
 	}
 }
 
+// An enable on a port the test holds, with nothing serving SMB, raises
+// adapter_refused naming it, and a disable then clears it: the condition
+// stands only for an enabled adapter nothing serves (RFC 20 §3.7).
+func TestADisableClearsAnAdapterRefused(t *testing.T) {
+	rg := newRig(t)
+	held, _ := heldPort(t)
+	refused := func() bool {
+		return slices.ContainsFunc(rg.smb.conditions(nil, health.Subject{}), func(c health.Condition) bool {
+			return c.Name == "adapter_refused" && c.Subject.Name == "smb"
+		})
+	}
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(held)); r == nil {
+		t.Fatalf("enable smb on the held port %d: applied, want refused", held)
+	}
+	if !refused() {
+		t.Fatal("smb refused with nothing serving it raises no adapter_refused")
+	}
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, false, smbAt(held)); r != nil {
+		t.Fatalf("disable smb: %s, want applied", describe(r))
+	}
+	if refused() {
+		t.Error("smb disabled after its refusal still raises adapter_refused")
+	}
+}
+
 // An enable on a port the test holds, with nothing serving SMB, is refused
 // and retried, and the retry serves once the port is freed (RFC 23 §2.3).
 func TestAnEnableOnAHeldPortIsRetried(t *testing.T) {
@@ -540,6 +566,47 @@ func TestAnEnableOnAHeldPortIsRetried(t *testing.T) {
 	}
 	if err := negotiate(dial(t, held), 1); err != nil {
 		t.Errorf("a NEGOTIATE on port %d: %v", held, err)
+	}
+}
+
+// failingStart is a real adapter with a fault on cue: while cue is set, its
+// Start fails, binding nothing, as one whose port another socket holds.
+type failingStart struct {
+	adapter.Adapter
+	cue *atomic.Bool
+}
+
+func (f failingStart) Start(ctx context.Context) error {
+	if f.cue.Load() {
+		return errors.New("the port is held")
+	}
+	return f.Adapter.Start(ctx)
+}
+
+// SMB's port changed while every start fails: the old adapter is stopped,
+// the new one's start fails and so does the start of one with the settings
+// that last served, so nothing serves SMB, and the change is refused and
+// retried (RFC 23 §2.3).
+func TestAPortChangeWhoseFallbackFailsIsRetried(t *testing.T) {
+	rg := newRig(t)
+	var fails atomic.Bool
+	build := rg.smb.build
+	rg.smb.build = func(d adapter.Deps, s settings.SMB) (adapter.Adapter, error) {
+		a, err := build(d, s)
+		if err != nil {
+			return nil, err
+		}
+		return failingStart{a, &fails}, nil
+	}
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
+		t.Fatalf("enable smb: refused %s", r.rec.Error)
+	}
+	fails.Store(true)
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(freePort(t))); r == nil || !r.retry {
+		t.Fatalf("a port change whose start and fallback both fail: %s, want refused and retried", describe(r))
+	}
+	if rg.smb.running != nil {
+		t.Errorf("after both starts failed smb runs %v; want nothing serving", rg.smb.running)
 	}
 }
 
@@ -595,6 +662,19 @@ func TestTheAPIsPortIsRefused(t *testing.T) {
 	}
 }
 
+// Port 0 is never the API's or the metrics listener's, though one of them
+// listening on a port the system picked names 0: SMB at port 0 serves on a
+// port the system picks for it (RFC 13 §6).
+func TestPortZeroIsNeverTaken(t *testing.T) {
+	rg := newRig(t, 0)
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
+		t.Fatalf("enable smb at port 0 beside a listener at port 0: %s, want applied", describe(r))
+	}
+	if err := negotiate(dial(t, portOf(t, rg.smb.running, "smb")), 1); err != nil {
+		t.Errorf("a NEGOTIATE: %v", err)
+	}
+}
+
 // heldStop is a real adapter with a fault on cue: its Stop drains and stops
 // the adapter, tells stopped, then holds until release closes, as a drain
 // that runs long.
@@ -612,8 +692,10 @@ func (h heldStop) Stop(ctx context.Context) error {
 }
 
 // A disable waiting on a drain that runs two minutes on the node's clock
-// reports its loop idle every 10 s, so the watchdog keeps the node live,
-// and returns once the drain ends (RFC 25 §3.5).
+// reports its loop idle within every 30 s of it, RFC 25 §3.5's cadence for a
+// waiting loop, and returns once the drain ends. The loop's watchdog reads a
+// clock of its own, moved past the 60 s stall before each 30 s of the node's,
+// so only an idle report landing inside those 30 s keeps the loop live.
 func TestADrainWaitKeepsTheLoopLive(t *testing.T) {
 	rg := newRig(t)
 	stopped, release := make(chan struct{}, 1), make(chan struct{})
@@ -628,8 +710,11 @@ func TestADrainWaitKeepsTheLoopLive(t *testing.T) {
 	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb: refused %s", r.rec.Error)
 	}
+	watched := sim.NewTestClock(time.Unix(0, 0))
+	watchdog := health.NewWatchdog(watched)
+	loop := watchdog.Loop(stepReconcile)
 	done := make(chan *refusal, 1)
-	go func() { done <- rg.smb.apply(context.Background(), rg.loop, 0, false, smbAt(0)) }()
+	go func() { done <- rg.smb.apply(context.Background(), loop, 0, false, smbAt(0)) }()
 	t.Cleanup(func() {
 		close(release)
 		if r := <-done; r != nil {
@@ -637,17 +722,20 @@ func TestADrainWaitKeepsTheLoopLive(t *testing.T) {
 		}
 	})
 	select {
-	case <-stopped: // the accept loop is gone: only the call's loop is watched
+	case <-stopped:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the disable never stopped SMB")
 	}
+	// Once the clock has moved, the wait it woke is armed again only after
+	// its idle report.
 	armed := func() { waitFor(t, "the drain's wait on the clock", func() bool { return rg.clock.Pending() == 1 }) }
 	armed()
-	for range 12 {
-		rg.clock.Advance(10 * time.Second)
+	for range 4 {
+		watched.Advance(health.Stall + time.Second)
+		rg.clock.Advance(health.IdleEvery)
 		armed()
-		if !rg.watchdog.Live() {
-			t.Errorf("%v into the drain the node is not live, want its loop reported idle", rg.clock.Elapsed())
+		if !watchdog.Live() {
+			t.Errorf("%v into the drain the loop reported no idle within the last %v", rg.clock.Elapsed(), health.IdleEvery)
 			return
 		}
 	}
@@ -658,46 +746,77 @@ func TestADrainWaitKeepsTheLoopLive(t *testing.T) {
 // clock passes 60 s and lets it go once SMB stops, its answer counts under
 // smb, and its connection's close is logged (RFC 20 §3.4, §3.7). The accept
 // loop reports idle every 10 s on the runtime's clock, which no adapter takes
-// from Deps; the test ends long before that.
+// from Deps. The test runs in a bubble, whose runtime clock moves only while
+// every goroutine in it waits on another: the accept loop, waiting on its
+// socket, never does, so it reports no idle while SMB serves.
 func TestAnAdapterReportsThroughTheNode(t *testing.T) {
-	rg := newRig(t)
-	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
-		t.Fatalf("enable smb: refused %s", r.rec.Error)
-	}
-	c := dial(t, portOf(t, rg.smb.running, "smb"))
-	if err := negotiate(c, 1); err != nil {
-		t.Fatalf("a NEGOTIATE: %v", err)
-	}
-	_ = c.Close()
-	rg.clock.Advance(61 * time.Second)
-	rg.loop.Turn()
-	if rg.watchdog.Live() {
-		t.Error("61 s on, the node is live, want SMB's accept loop, which reports on its own clock, watched and stalled")
-	}
-	if r := rg.smb.apply(t.Context(), rg.loop, 0, false, smbAt(0)); r != nil {
-		t.Fatalf("disable smb: refused %s", r.rec.Error)
-	}
-	if !rg.watchdog.Live() {
-		t.Error("with SMB stopped the node is not live, want its accept loop no longer watched")
-	}
-	mfs, err := rg.reg.Registry().Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
-	counted := false
-	for _, mf := range mfs {
-		for _, m := range mf.GetMetric() {
-			for _, lp := range m.GetLabel() {
-				counted = counted || strings.HasPrefix(mf.GetName(), "dittofs_adapter_") && lp.GetName() == "protocol" && lp.GetValue() == "smb"
+	synctest.Test(t, func(t *testing.T) {
+		rg := newRig(t)
+		if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
+			t.Fatalf("enable smb: refused %s", r.rec.Error)
+		}
+		c := dial(t, portOf(t, rg.smb.running, "smb"))
+		if err := negotiate(c, 1); err != nil {
+			t.Fatalf("a NEGOTIATE: %v", err)
+		}
+		_ = c.Close()
+		rg.clock.Advance(61 * time.Second)
+		rg.loop.Turn()
+		if rg.watchdog.Live() {
+			t.Error("61 s on, the node is live, want SMB's accept loop, which reports on its own clock, watched and stalled")
+		}
+		if r := rg.smb.apply(t.Context(), rg.loop, 0, false, smbAt(0)); r != nil {
+			t.Fatalf("disable smb: refused %s", r.rec.Error)
+		}
+		if !rg.watchdog.Live() {
+			t.Error("with SMB stopped the node is not live, want its accept loop no longer watched")
+		}
+		mfs, err := rg.reg.Registry().Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		counted := false
+		for _, mf := range mfs {
+			for _, m := range mf.GetMetric() {
+				for _, lp := range m.GetLabel() {
+					counted = counted || strings.HasPrefix(mf.GetName(), "dittofs_adapter_") && lp.GetName() == "protocol" && lp.GetValue() == "smb"
+				}
 			}
 		}
+		if !counted {
+			t.Error("the node's registry holds no adapter series under protocol smb")
+		}
+		if l := rg.logs.String(); !strings.Contains(l, `msg="a connection closed"`) || !strings.Contains(l, "protocol=smb") {
+			t.Errorf("the node's log is %q, want smb's connection close", l)
+		}
+	})
+}
+
+// The slot's outcome is read from goroutines other than the calls', as the
+// node's health, readiness and status read it, while the calls store it:
+// under the race detector, a read the outcome does not order after the store
+// fails here.
+func TestAnOutcomeIsReadWhileTheCallsStoreIt(t *testing.T) {
+	rg := newRig(t)
+	stop, read := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(read)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				rg.smb.conditions(nil, health.Subject{})
+			}
+		}
+	}()
+	for _, enabled := range []bool{true, false} {
+		if r := rg.smb.apply(t.Context(), rg.loop, 0, enabled, smbAt(0)); r != nil {
+			t.Errorf("smb enabled %t: refused %s", enabled, r.rec.Error)
+		}
 	}
-	if !counted {
-		t.Error("the node's registry holds no adapter series under protocol smb")
-	}
-	if l := rg.logs.String(); !strings.Contains(l, `msg="a connection closed"`) || !strings.Contains(l, "protocol=smb") {
-		t.Errorf("the node's log is %q, want smb's connection close", l)
-	}
+	close(stop)
+	<-read
 }
 
 // listenAddrs reads an unset adapters.listen as 0.0.0.0, with :: beside it

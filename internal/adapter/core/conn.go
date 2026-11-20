@@ -396,8 +396,15 @@ func (c *Conn) teardown() {
 	// OnClose's context is the server's clock's, not the connection's: the
 	// close has cancelled that one (RFC 20 section 4.7).
 	// The wait and OnClose share one grace, counted from the close: the teardown
-	// ends at most that long after it, so OnClose runs once nothing runs, and its
-	// context ends at the grace's end (RFC 20 section 4.7).
+	// ends at most that long after it. OnClose runs once nothing runs, or at the
+	// grace's end with a request still running, logged at error, and its context
+	// ends at the grace's end (RFC 20 sections 4.7 and 6.5).
+	//
+	// decision: past the grace OnClose runs beside a request still running
+	// rather than wait on it: a request that ignores its cancelled context
+	// would otherwise hold the teardown for good, and with it the Stop that
+	// waits on it, which RFC 20 section 3.1 bounds at 30 s past its drain
+	// deadline. Overturned if OnClose must never run beside a request.
 	at := c.sh.clock.Now().Add(onCloseGrace)
 	if closedAt := c.closedAt.Load(); closedAt != 0 {
 		at = time.Unix(0, closedAt).Add(onCloseGrace)

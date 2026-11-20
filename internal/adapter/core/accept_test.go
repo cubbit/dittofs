@@ -1249,6 +1249,7 @@ func TestARefusedHandoverReleasesItsCountOnce(t *testing.T) {
 	if err := b.Conns.Take(remote); err != nil {
 		t.Fatalf("the refused handover kept its count: %v", err)
 	}
+	defer b.Conns.Release(remote)
 	// ...and the take past the limit, from a fresh address whose own quarter
 	// does not refuse it, still refuses at the limit itself.
 	if err := b.Conns.Take(netip.MustParseAddr("127.0.0.5")); err == nil {

@@ -244,6 +244,10 @@ func (n *Node) Reserve(ctx context.Context, pool string, bytes int64) (resources
 	return resources.Reservation{}, fmt.Errorf("node: no budget %q", pool)
 }
 
+// TakeConn counts one connection on the node's connection count, as an
+// adapter's accept does, and never gives it back.
+func (n *Node) TakeConn() error { return n.budgets.Conns.Take(netip.Addr{}) }
+
 // StatsThrough points the node's snapshot at f: the one seam the engine's
 // series, the journal's and the health evaluator read at every scrape.
 // Production hands the engine's own Stats; a test hands a fault on the same

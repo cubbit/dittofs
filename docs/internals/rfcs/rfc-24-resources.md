@@ -434,6 +434,7 @@ func NewConnLimit(limit int) *ConnLimit
 // ErrConnLimit at the limit, ErrConnQuarter at addr's quarter.
 func (l *ConnLimit) Take(addr netip.Addr) error
 func (l *ConnLimit) Release(addr netip.Addr) // at the connection's teardown
+func (l *ConnLimit) InUse() int              // the connections counted now, for the zero check (§2.7)
 // SetLimit applies a changed connection_limit to connections accepted
 // afterwards; those open stay. An address's quarter is limit / 4, at least 1.
 func (l *ConnLimit) SetLimit(limit int)
@@ -640,7 +641,8 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(budgets.Receive, budget
   no goroutine and open nothing; a release grants the next waiter on the
   releasing goroutine. There is no `Start` or `Close`. After the adapters and
   the service have stopped, the root logs any budget whose `Reserved()` is not
-  zero, and the test harness fails on it.
+  zero, and the connection count if its `InUse()` is not, and the test harness
+  fails on either.
 - **Shared budgets are the root's.** The receive, reply, connection-state and
   hold budgets are shared by every adapter; no adapter may replace or close
   one, and an adapter restarted by the node gets the same ones back.
@@ -654,7 +656,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(budgets.Receive, budget
 | Failure | Behaviour |
 | --- | --- |
 | a control-group file exists but cannot be parsed | start refused, naming the file |
-| a budget not at zero at close | logged at error with the pool and bytes; tests fail on it |
+| a budget not at zero at close | logged at error with the pool and bytes, the connection count as pool `conns` with its connections; tests fail on it |
 | a release past zero | panics in tests; clamps to zero and is counted in production |
 
 ### 2.8 Package layout
