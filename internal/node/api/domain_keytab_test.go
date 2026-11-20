@@ -523,3 +523,63 @@ func TestJoinRefusedForAnAccountTheKeytabHolds(t *testing.T) {
 		t.Errorf("a join of NAS$: answered %d %s, want 202", r.status, r.body)
 	}
 }
+
+// storeKeytab seals kt as the installation's keytab and names it, as a PUT
+// would, without identity applying it.
+func (d *domain) storeKeytab(t *testing.T, kt []byte) (entity.SecretRef, uint64) {
+	t.Helper()
+	ref := entity.SecretRef(uuid.New())
+	sealed, err := d.seal.Seal(t.Context(), entity.SecretKeytab, entity.SecretOwner{Scope: installation, Key: "identity.keytab"}, ref, slices.Clone(kt), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.store.PutSecret(t.Context(), sealed, 0); err != nil {
+		t.Fatal(err)
+	}
+	d.putSetting(t, installation, "identity.keytab", strconv.Quote(uuid.UUID(ref).String()))
+	return ref, sealed.Version
+}
+
+// A join's account is compared in its $ spelling, ASCII letters folded: a
+// keytab key for BUILD01$ refuses a join naming the account in each
+// spelling, 409 naming spec.account. An offline join refused so, and one
+// refused 503 while identity has applied no stored keytab, which says so
+// rather than asking for a retry, write no machine-password version.
+func TestJoinRefusedForEachSpellingOfTheAccount(t *testing.T) {
+	d := serveDomain(t, true)
+	kt := keytabOf(t, "BUILD01$", etypeID.AES256_CTS_HMAC_SHA1_96)
+	ref, ver := d.storeKeytab(t, kt)
+	before := d.secretRows(t)
+	r := d.do(t, http.MethodPost, joinPath, offlineJoin("build01", "pw-0"))
+	if r.status != http.StatusServiceUnavailable || !strings.Contains(r.problem(t).Detail, "identity has not applied") {
+		t.Errorf("a join before identity applied the keytab: answered %d %s, want 503 saying identity has not applied it", r.status, r.body)
+	}
+	if n := d.secretRows(t); n != before {
+		t.Errorf("secret versions after the 503: %d, want %d, no machine password handed over", n, before)
+	}
+	st := d.state
+	st.Settings.Keytab = ref
+	st.Keytab = []secrets.Version{{Number: ver, Value: kt}}
+	if err := d.ids.Apply(st); err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []string{"build01", "BUILD01", "build01$", "BUILD01$"} {
+		r := d.do(t, http.MethodPost, joinPath, offlineJoin(account, "pw-1"))
+		if r.status != http.StatusConflict || r.problem(t).Field != "spec.account" {
+			t.Errorf("an offline join of %s: answered %d %s, want 409 naming spec.account", account, r.status, r.body)
+		}
+		r = d.do(t, http.MethodPost, joinPath, onlineJoin(`,"account":"`+account+`"`, "Administrator", "pw-2"))
+		if r.status != http.StatusConflict || r.problem(t).Field != "spec.account" {
+			t.Errorf("an online join of %s: answered %d %s, want 409 naming spec.account", account, r.status, r.body)
+		}
+	}
+	if n := d.secretRows(t); n != before {
+		t.Errorf("secret versions after the refused joins: %d, want %d, no machine password handed over", n, before)
+	}
+	if in := d.installationRecord(t); in.MachinePassword != (entity.SecretRef{}) {
+		t.Errorf("machine password named: %v, want none", in.MachinePassword)
+	}
+	if ops := d.operations(t); len(ops) != 0 {
+		t.Errorf("operations: %+v, want none", ops)
+	}
+}

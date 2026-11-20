@@ -35,7 +35,7 @@ type directory interface {
 // no keytab.
 type joins interface {
 	HoldJoinCredential(id entity.OperationID, cred identity.JoinCredential) (release func())
-	AppliedKeytab() (entity.SecretRef, uint64, []identity.KeytabName, error)
+	AppliedKeytab() (entity.SecretRef, uint64, []identity.KeytabName)
 }
 
 // opStart is an installation action's pre-write step's result: the
@@ -243,7 +243,7 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 		if err != nil {
 			return opStart{}, err
 		}
-		keytab, err := keytabOf(rq.d, p.Account)
+		keytab, err := keytabOf(ctx, rq.d, p.Account)
 		if err != nil {
 			return opStart{}, err
 		}
@@ -277,7 +277,7 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 		case rq.d.Sealer == nil:
 			return opStart{}, errNoSealer
 		}
-		keytab, err := keytabOf(rq.d, p.Account)
+		keytab, err := keytabOf(ctx, rq.d, p.Account)
 		if err != nil {
 			return opStart{}, err
 		}
@@ -319,13 +319,18 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 // computer account the join names: it refuses the start, 409 naming
 // spec.account, while the keytab holds a key for account, in the realm
 // identity.directory.realm records, or in every realm when none is
-// recorded, as a keytab's put refuses one for a joined account's name. The
-// keytab's names are those of the version identity has applied, asked
-// before the write; the write reads the keytab's setting and current
-// version tracked, and refuses 503 unless they are the reference and version
+// recorded, as a keytab's put refuses one for a joined account's name;
+// account is compared in its $ spelling, which a join may leave off, with
+// ASCII letters folded, as accountHolds compares it. The keytab's names are
+// those of the version identity has applied, asked before the write. The
+// check runs twice, as the keytab's put runs its own: once here, on the
+// settings read from the store, so an offline join it refuses hands no
+// version over, and again in the returned closure, in the write, on the
+// keytab's setting, its current version and the realm read tracked, which
+// refuses 503 unless the setting and version are the reference and version
 // identity applied, so a keytab put since, under a new reference or a new
-// version, is not missed. An account of "" checks
-// nothing.
+// version, is not missed. A keytab stored while identity has applied none
+// is refused 503 saying so in both. An account of "" checks nothing.
 //
 // decision: a join is checked against the account it names only. An online
 // join naming none takes identity's default name, which the API does not
@@ -335,18 +340,39 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 // lets through for one of the joined account's names is dropped from
 // identity's ring and logged at Apply, so no sign-in is verified with it. Overturned when identity checks the
 // stored keytab against the account's names in those writes itself.
-func keytabOf(d Deps, account string) (func(entity.ControlPlaneTx) error, error) {
+func keytabOf(ctx context.Context, d Deps, account string) (func(entity.ControlPlaneTx) error, error) {
 	if account == "" {
 		return func(entity.ControlPlaneTx) error { return nil }, nil
 	}
-	applied, ver, names, err := d.Joins.AppliedKeytab()
+	account = strings.TrimSuffix(account, "$") + "$"
+	applied, ver, names := d.Joins.AppliedKeytab()
+	holds := func(realm entity.Setting, rok bool) error {
+		n, held, err := accountKey(entity.MachineJoin{Joined: true, Account: account}, realm, rok, names)
+		if err != nil || !held {
+			return err
+		}
+		return &componentError{field: "spec.account", detail: "the keytab holds a key for " + n.Name + "@" + n.Realm + ", the account this join derives keys for", err: vfserr.ErrExist}
+	}
+	all, err := scopeSettings(ctx, d.Store, installation)
 	if err != nil {
 		return nil, err
+	}
+	if _, ok := all[keytabKey]; ok {
+		if applied == (entity.SecretRef{}) {
+			return nil, errKeytabUnapplied
+		}
+		realm, rok := all[directoryRealm]
+		if err := holds(realm, rok); err != nil {
+			return nil, err
+		}
 	}
 	return func(tx entity.ControlPlaneTx) error {
 		s, ok, err := tx.Setting(installation, keytabKey)
 		if err != nil || !ok {
 			return err
+		}
+		if applied == (entity.SecretRef{}) {
+			return errKeytabUnapplied
 		}
 		ref, err := refFrom(s.Value)
 		if err != nil {
@@ -363,13 +389,14 @@ func keytabOf(d Deps, account string) (func(entity.ControlPlaneTx) error, error)
 		if err != nil {
 			return err
 		}
-		n, held, err := accountKey(entity.MachineJoin{Joined: true, Account: account}, realm, rok, names)
-		if err != nil || !held {
-			return err
-		}
-		return &componentError{field: "spec.account", detail: "the keytab holds a key for " + n.Name + "@" + n.Realm + ", the account this join derives keys for", err: vfserr.ErrExist}
+		return holds(realm, rok)
 	}, nil
 }
+
+// errKeytabUnapplied refuses a join naming an account while a keytab is
+// stored that identity has not applied, so its names are not known: a
+// retry answers the same until identity applies it.
+var errKeytabUnapplied = &refusal{code: apiv1.CodeUnavailable, detail: "a keytab is stored that identity has not applied, so the join cannot be checked against its names; see identity's log for why it was not applied"}
 
 // notRotating refuses a join's start while a rotation runs.
 func notRotating(tx entity.ControlPlaneTx, in entity.Installation) error {

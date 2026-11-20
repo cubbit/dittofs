@@ -26,18 +26,21 @@ type ringKey struct {
 // Apply, never per sign-in.
 type keyRing map[ringKey]types.EncryptionKey
 
-// buildRing parses each keytab version into one ring.
+// buildRing parses each keytab version into one ring, and returns the name
+// of each key the versions it keeps hold.
 //
 // decision: a version holding a key that is not AES, or that does not parse,
-// contributes no key, whole, and is logged, while Apply still succeeds:
-// refusing the whole State would also hold back every other change it
-// carries, a disable among them, and the import's own check refuses such a
+// contributes no key and no name, whole, and is logged, while Apply still
+// succeeds: refusing the whole State would also hold back every other change
+// it carries, a disable among them, and the import's own check refuses such a
 // keytab before it is ever stored. Overturned if a keytab can reach the store
 // without that check.
-func buildRing(versions []secrets.Version, log *slog.Logger) keyRing {
+func buildRing(versions []secrets.Version, log *slog.Logger) (keyRing, []identity.KeytabName) {
 	ring := keyRing{}
+	var names []identity.KeytabName
 	for _, v := range versions {
-		if err := identity.CheckKeytab(v.Value); err != nil {
+		n, err := identity.KeytabNames(v.Value)
+		if err != nil {
 			log.Warn("identity: keytab version dropped", "version", v.Number, "err", err)
 			continue
 		}
@@ -46,6 +49,7 @@ func buildRing(versions []secrets.Version, log *slog.Logger) keyRing {
 			log.Warn("identity: keytab version dropped", "version", v.Number, "err", err)
 			continue
 		}
+		names = append(names, n...)
 		for _, e := range kt.Entries {
 			k := ringKey{foldASCII(strings.Join(e.Principal.Components, "/")), e.Principal.Realm, e.KVNO, e.Key.KeyType}
 			if _, held := ring[k]; !held { // the current version, first, wins
@@ -53,28 +57,19 @@ func buildRing(versions []secrets.Version, log *slog.Logger) keyRing {
 			}
 		}
 	}
-	return ring
+	return ring, names
 }
 
 // AppliedKeytab is the reference of the keytab in force, the number of its
-// current version and the name of each key its versions in force hold,
-// zero and none while no keytab is in force. A version that does not parse
-// fails the call, since the API's check of a join against it cannot then
-// see its names.
-func (s *Server) AppliedKeytab() (entity.SecretRef, uint64, []identity.KeytabName, error) {
+// current version and the name of each key its versions in force hold, as
+// Apply read them, a version buildRing dropped holding none; zero and none
+// while no keytab is in force.
+func (s *Server) AppliedKeytab() (entity.SecretRef, uint64, []identity.KeytabName) {
 	st := s.state.Load()
 	if st == nil || len(st.Keytab) == 0 {
-		return entity.SecretRef{}, 0, nil, nil
+		return entity.SecretRef{}, 0, nil
 	}
-	var names []identity.KeytabName
-	for _, v := range st.Keytab {
-		n, err := identity.KeytabNames(v.Value)
-		if err != nil {
-			return entity.SecretRef{}, 0, nil, err
-		}
-		names = append(names, n...)
-	}
-	return st.Settings.Keytab, st.Keytab[0].Number, names, nil
+	return st.Settings.Keytab, st.Keytab[0].Number, st.keytabNames
 }
 
 // key is the ring's key for a service name, compared with ASCII letters

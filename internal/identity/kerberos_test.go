@@ -40,7 +40,8 @@ func testRealmAndState(t *testing.T) (*identitytest.Realm, *State) {
 	t.Helper()
 	prof.Watch(t, prof.Options{})
 	r := identitytest.NewRealm(testRealm, "cifs/nas.test", "host/nas.test", "nfs/nas.test")
-	st := &State{keys: buildRing([]secrets.Version{{Number: 1, Value: r.Keytab()}}, slog.New(slog.DiscardHandler))}
+	keys, _ := buildRing([]secrets.Version{{Number: 1, Value: r.Keytab()}}, slog.New(slog.DiscardHandler))
+	st := &State{keys: keys}
 	for _, et := range []int32{etypeID.RC4_HMAC, etypeID.DES3_CBC_SHA1_KD} {
 		st.keys[ringKey{"cifs/nas.test", testRealm, 1, et}] = r.Key("cifs/nas.test", et)
 	}
