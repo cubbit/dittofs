@@ -31,6 +31,7 @@ const (
 	outcomeUnknownDomain outcome = "unknown_domain"
 	outcomeThrottled     outcome = "throttled"
 	outcomeReplay        outcome = "replay"
+	outcomeNoPAC         outcome = "no_pac"
 )
 
 // signInsSpec counts sign-in attempts (RFC 18 §9.2).
@@ -49,9 +50,10 @@ var signInSecondsSpec = metrics.Spec{
 }
 
 // SignIn verifies one handshake round under one State: a Kerberos AP-REQ
-// (RFC 18 §3.3) or a local user's NTLMv2 response (§3.5), refused before its
-// credential is read once its name and client address are past the logon
-// throttle's limit (§3.1). It reads the store, the directory and the secret
+// (RFC 18 §3.3) or a local user's NTLMv2 response (§3.5). Once a name and
+// client address are past the logon throttle's limit (§3.1), an NTLM response
+// is refused before it is checked, and a ticket once it decrypts, since its
+// client name is read from it. It reads the store, the directory and the secret
 // provider, and writes only the directory principal a Kerberos name's first
 // sign-in mints (§4.2's step 3).
 func (s *Server) SignIn(ctx context.Context, step identity.SignInStep) (identity.SignInResult, error) {

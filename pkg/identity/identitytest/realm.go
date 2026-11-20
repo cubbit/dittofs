@@ -109,6 +109,10 @@ type TicketOpts struct {
 	Addresses  []netip.Addr
 	NetBIOS    string // a NetBIOS address the ticket lists after Addresses; none
 	Flags      []int  // the ticket flags set, as gokrb5's iana/flags numbers them; none
+	// Transited is the contents of the ticket's transited field, the realms
+	// a cross-realm ticket passed through, under the domain-X500 encoding;
+	// none.
+	Transited string
 	// PAC is the bytes of a PAC the ticket carries, in an AD-WIN2K-PAC
 	// element inside an AD-IF-RELEVANT one, as a domain controller places
 	// it (MS-PAC 3.1.5); none.
@@ -162,6 +166,7 @@ func (r *Realm) Ticket(o TicketOpts) []byte {
 		StartTime: o.Start,
 		EndTime:   o.End,
 		CAddr:     caddr,
+		Transited: messages.TransitedEncoding{TRType: 1, Contents: []byte(o.Transited)},
 	}
 	if o.PAC != nil {
 		inner, err := asn1.Marshal(types.AuthorizationData{{ADType: adtype.ADWin2KPAC, ADData: o.PAC}})

@@ -166,7 +166,7 @@ func (s *Server) DirectoryWaiting() int { return s.state.Load().dir.Waiting() }
 // ByKerberosName maps user@realm through the directory, as a Kerberos
 // sign-in's third step does, minting with mint.
 func (s *Server) ByKerberosName(ctx context.Context, user, realm string, mint bool) (entity.Principal, error) {
-	return s.byKerberosName(ctx, user, realm, mint)
+	return s.byKerberosName(ctx, s.state.Load(), user, realm, mint)
 }
 
 // OnNTHash has every NTLM sign-in deliver f the NT hash it computed its

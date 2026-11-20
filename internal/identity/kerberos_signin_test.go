@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
+	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 
-	"github.com/cubbit/dittofs/internal/identity/directory"
 	pid "github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -98,8 +98,7 @@ func (k *kerberos) signInAs(t *testing.T, what string, step pid.SignInStep, want
 // name, its realm as the ticket spells it, never for a name with a service
 // part, and an unknown or disabled user refused. Catches step 2 before step
 // 1, a realm folded, a directory principal or an API-only account reached by
-// name, a service name matched as a user, and a disabled user bound (R14 to
-// R18).
+// name, a service name matched as a user, and a disabled user bound.
 func TestKerberosSignInMapsTheName(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -186,7 +185,7 @@ func TestKerberosSignInRefusesADeletedUser(t *testing.T) {
 // ticket's. A re-authentication on a context past its Expires is admitted
 // and its result holds the new ticket's end time. Catches a name rewritten
 // before it reaches the evidence, an Expires taken from anywhere but the
-// ticket, and an expired context refused (R13, R19, R20).
+// ticket, and an expired context refused.
 func TestKerberosSignInEvidence(t *testing.T) {
 	k := kerberosServer(t)
 	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
@@ -214,7 +213,7 @@ func TestKerberosSignInEvidence(t *testing.T) {
 }
 
 // The krb row's read failing is ErrUnavailable, never ErrLogonFailure.
-// Catches an outage read as an unknown name (R21).
+// Catches an outage read as an unknown name.
 func TestKerberosSignInStoreFault(t *testing.T) {
 	k := kerberosServer(t)
 	k.user(t, entity.User{Principal: entity.NewUser(), Name: "alice", IDs: append(fileIDs("1500"), krbID("alice@TEST.REALM"))}, 0)
@@ -227,7 +226,7 @@ func TestKerberosSignInStoreFault(t *testing.T) {
 // key beside its AES one, which the ring drops whole, answer ErrUnavailable,
 // and none of those attempts counts against the pair: once a keytab is
 // applied, the eleventh attempt signs in. Catches an unconfigured keytab
-// answered as a wrong ticket, which would also lock the user out (R21).
+// answered as a wrong ticket, which would also lock the user out.
 func TestKerberosSignInWithoutKeys(t *testing.T) {
 	k := kerberosServer(t)
 	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
@@ -261,7 +260,7 @@ func TestKerberosSignInWithoutKeys(t *testing.T) {
 // on success and the client, and counts once under (protocol, kerberos,
 // outcome); no event carries the ticket or a key. Catches an attempt not
 // recorded, its protocol read from Service rather than Transport, and a
-// credential leaked into the event (R22, R24).
+// credential leaked into the event.
 func TestKerberosSignInRecordsEachAttempt(t *testing.T) {
 	k := kerberosServer(t)
 	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
@@ -325,13 +324,50 @@ func TestKerberosSignInRecordsEachAttempt(t *testing.T) {
 	}
 }
 
-// A ticket carrying a PAC is refused until the PAC is verified, so no PAC
-// is ever used unverified.
+// A ticket carrying a PAC is refused ErrUnavailable until the PAC is
+// verified, so no PAC is ever used unverified, and the refusal does not count
+// on the throttle: after ten of alice's PAC tickets, her PAC-less one from
+// the same address signs in. Catches the refusal counted as a logon failure,
+// which would lock out a domain user whose every ticket carries a PAC.
 func TestKerberosSignInRefusesAnUnverifiedPAC(t *testing.T) {
 	k := kerberosServer(t)
-	k.user(t, entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}, 0)
-	res, oc, err := k.srv.SignInOutcome(context.Background(), k.step(identitytest.TicketOpts{Client: "alice", PAC: []byte("a PAC")}, krbClient))
-	refused(t, "a ticket carrying a PAC", res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
+	k.user(t, alice, 0)
+	for i := range 10 {
+		res, oc, err := k.srv.SignInOutcome(context.Background(), k.step(identitytest.TicketOpts{Client: "alice", Cusec: i, PAC: []byte("a PAC")}, krbClient))
+		refused(t, fmt.Sprintf("alice's PAC ticket %d", i+1), res, oc, err, vfserr.ErrUnavailable, "unavailable")
+	}
+	k.signInAs(t, "alice's PAC-less ticket after ten PAC tickets", k.as("alice"), alice.Principal)
+}
+
+// A cross-realm ticket whose transited field names a realm is refused unless
+// the KDC set TRANSITED-POLICY-CHECKED, as RFC 4120 §2.7 asks of a server
+// that checks no transited realm itself; one with the flag set, and one
+// whose field is empty, sign in. Catches the transited field never read.
+func TestKerberosSignInChecksTransitedRealms(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		transited string
+		flags     []int
+		ok        bool
+	}{
+		{"transited realms the KDC did not check", "MID.REALM", nil, false},
+		{"transited realms the KDC checked", "MID.REALM", []int{flags.TransitedPolicyChecked}, true},
+		{"no transited realm", "", nil, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			k := kerberosServer(t)
+			carol := entity.User{Principal: entity.NewUser(), Name: "carol", IDs: append(fileIDs("1502"), krbID("alice@OTHER.REALM"))}
+			k.user(t, carol, 0)
+			step := k.step(identitytest.TicketOpts{Client: "alice", ClientRealm: "OTHER.REALM", Transited: c.transited, Flags: c.flags}, krbClient)
+			if !c.ok {
+				res, oc, err := k.srv.SignInOutcome(context.Background(), step)
+				refused(t, c.name, res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
+				return
+			}
+			k.signInAs(t, c.name, step, carol.Principal)
+		})
+	}
 }
 
 // Kerberos failures count under the user part with NTLM's: 9 for unknown
@@ -340,7 +376,7 @@ func TestKerberosSignInRefusesAnUnverifiedPAC(t *testing.T) {
 // and count nothing, so the eleventh failure for bob after twenty of them is
 // the first refused. Catches a Kerberos failure the throttle misses, one
 // counted under no name or under the full name, and the throttle asked after
-// the store (R45).
+// the store.
 func TestKerberosSignInThrottle(t *testing.T) {
 	k := kerberosServer(t)
 	from1, from2 := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")
@@ -386,7 +422,7 @@ func TestKerberosSignInThrottle(t *testing.T) {
 // refused throttled; carol's 40 successful sign-ins take her 16 and are then
 // refused unavailable, and alice still signs in. Catches the insert placed
 // ahead of the throttle, and a cache with no per-client cap, which lets one
-// ticket holder fill it and refuse every client (R11, R45).
+// ticket holder fill it and refuse every client.
 func TestKerberosSignInReplayCacheShare(t *testing.T) {
 	k := kerberosServer(t)
 	k.srv.BoundReplay(32, 16)
@@ -420,11 +456,10 @@ func TestKerberosSignInReplayCacheShare(t *testing.T) {
 	k.signInAs(t, "alice after carol's flood", k.step(identitytest.TicketOpts{Client: "alice"}, netip.MustParseAddr("192.0.2.4")), alice.Principal)
 }
 
-// In the directory's realm a Kerberos name reaches the principal holding the
-// directory entry's dir spelling, minted at its first sign-in, never a local
-// user of the same name: step 2 does not run there. Catches step 2 run in
-// the directory's realm, which binds a same-named local user, and step 3
-// not called.
+// In the directory's realm a ticket without a PAC is refused ErrLogonFailure
+// and counted no_pac, before any mapping, so it binds neither the local alice
+// of the same name nor the directory's alice (RFC 18 §3.4). Catches a
+// PAC-less ticket bound by step 1, 2 or 3 in the directory's realm.
 func TestKerberosSignInReachesTheDirectory(t *testing.T) {
 	e := newAD(t)
 	ctx := context.Background()
@@ -441,16 +476,6 @@ func TestKerberosSignInReachesTheDirectory(t *testing.T) {
 	}
 	step := pid.SignInStep{Kerberos: realm.Ticket(identitytest.TicketOpts{Client: "alice", Service: "cifs/nas.corp.example", Now: e.clock.Now()}),
 		Service: pid.ServiceCIFS, Transport: pid.TransportSMB, Client: krbClient}
-	res, err := e.s.SignIn(ctx, step)
-	if err != nil {
-		t.Fatalf("SignIn(alice@CORP.EXAMPLE): %v", err)
-	}
-	p := res.Identity.Evidence.Principal
-	if p == local.Principal {
-		t.Fatal("alice@CORP.EXAMPLE bound the local alice")
-	}
-	a := e.entry(t, directory.ByUserName, "alice")
-	if sp, err := e.spell(t, p, pid.SchemeDir); err != nil || sp.Text != string(a.EntryID) {
-		t.Errorf("the bound principal's dir spelling %q, %v; want alice's entry ID", sp.Text, err)
-	}
+	res, oc, err := e.s.SignInOutcome(ctx, step)
+	refused(t, "alice@CORP.EXAMPLE without a PAC", res, oc, err, vfserr.ErrLogonFailure, "no_pac")
 }

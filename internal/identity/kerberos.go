@@ -146,6 +146,11 @@ func verifyAPReq(st *State, b []byte, svc identity.Service, tr identity.Transpor
 	if types.IsFlagSet(&enc.Flags, flags.Invalid) {
 		return ticket{}, logonFailure("ticket marked invalid")
 	}
+	// RFC 4120 §2.7: a cross-realm ticket whose transited realms the KDC did
+	// not check is refused, since nothing here checks them either.
+	if !types.IsFlagSet(&enc.Flags, flags.TransitedPolicyChecked) && len(enc.Transited.Contents) > 0 {
+		return ticket{}, logonFailure("transited realms not checked")
+	}
 	start := enc.StartTime
 	if start.IsZero() {
 		start = enc.AuthTime
@@ -262,10 +267,25 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 		return identity.SignInResult{}, outcomeUnavailable, err
 	}
 	enc := &t.req.Ticket.DecryptedEncPart
-	if _, ok, err := pacOf(enc.AuthorizationData); err != nil || ok {
-		return identity.SignInResult{}, outcomeLogonFailure, logonFailure("a ticket carrying a PAC, which is not verified yet")
+	_, ok, err := pacOf(enc.AuthorizationData)
+	switch {
+	case err != nil:
+		return identity.SignInResult{}, outcomeLogonFailure, logonFailure("authorization data: %v", err)
+	case ok:
+		// decision: a ticket carrying a PAC is refused ErrUnavailable, not
+		// ErrLogonFailure, while no PAC is verified: a domain controller puts
+		// a PAC in every ticket, so counting the refusal on the throttle would
+		// lock a domain user out of NTLM too after ten ordinary attempts.
+		// Overturned once the PAC is verified, which refuses only a PAC that
+		// fails verification.
+		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: kerberos: a ticket carrying a PAC, which is not verified yet", vfserr.ErrUnavailable)
+	case st.Directory != nil && strings.EqualFold(enc.CRealm, st.Directory.Realm):
+		// RFC 18 §3.4: in the directory's realm, its name in any case, a
+		// ticket without a PAC is refused before any mapping, so a domain
+		// account cannot reach a principal by its name alone.
+		return identity.SignInResult{}, outcomeNoPAC, logonFailure("a ticket without a PAC in the directory's realm")
 	}
-	p, err := s.kerberosPrincipal(ctx, st, enc.CName, enc.CRealm)
+	p, err := s.kerberosPrincipal(ctx, st, name, enc.CName, enc.CRealm)
 	switch {
 	case errors.Is(err, vfserr.ErrUnknownPrincipal):
 		// decision: an unknown user principal is refused, not made anonymous.
@@ -298,9 +318,9 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 	}, outcomeOK, nil
 }
 
-// kerberosPrincipal maps a ticket's client name in realm by RFC 18 §4.2,
-// stopping at the first step that answers: (1) the krb row for the name as
-// the ticket spells it; (2) in a keytab realm other than the directory's,
+// kerberosPrincipal maps a ticket's client name, cname in realm and name as
+// user@realm, by RFC 18 §4.2, stopping at the first step that answers: (1)
+// the krb row for name; (2) in a keytab realm other than the directory's,
 // the local user named by the name, compared as user names are, unless it
 // is a directory principal or has no uid; (3) the directory's entry under
 // the name, minted on first sign-in; (4) ErrUnknownPrincipal. A name with a
@@ -313,10 +333,10 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 // directory record carries no require_pac yet, so no deployment can turn the
 // requirement off. Overturned when require_pac is read, which then runs step
 // 2 there while it is false.
-func (s *Server) kerberosPrincipal(ctx context.Context, st *State, cname types.PrincipalName, realm string) (entity.Principal, error) {
+func (s *Server) kerberosPrincipal(ctx context.Context, st *State, name string, cname types.PrincipalName, realm string) (entity.Principal, error) {
 	user := cname.PrincipalNameString()
 	pr := s.deps.Store.Principals()
-	p, err := pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: user + "@" + realm})
+	p, err := pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: name})
 	switch {
 	case err == nil:
 		return p, nil
@@ -337,7 +357,7 @@ func (s *Server) kerberosPrincipal(ctx context.Context, st *State, cname types.P
 			return entity.Principal{}, fmt.Errorf("%w: local user: %w", vfserr.ErrUnavailable, err)
 		}
 	}
-	p, err = s.byKerberosName(ctx, user, realm, true)
+	p, err = s.byKerberosName(ctx, st, user, realm, true)
 	if err != nil && !errors.Is(err, vfserr.ErrUnknownPrincipal) && !errors.Is(err, vfserr.ErrUnavailable) {
 		err = fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
 	}

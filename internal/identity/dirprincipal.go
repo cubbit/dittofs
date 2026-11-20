@@ -113,14 +113,14 @@ func (s *Server) findDirectoryName(ctx context.Context, st *State, name string, 
 	return entity.Principal{}, vfserr.ErrUnknownPrincipal
 }
 
-// byKerberosName is RFC 18 §4.2's step 3: a Kerberos name in the directory's
-// realm, the realm compared as the KDC spells it, maps to the entry the
-// directory holds under its user part, and then to the principal holding
-// that entry's dir spelling, never to one found by name alone. A user part
-// with a service component matches nothing, and neither, without asking the
-// directory, does a machine account's name, which ends in $ (RFC 18 §2.4).
-func (s *Server) byKerberosName(ctx context.Context, user, realm string, mint bool) (entity.Principal, error) {
-	st := s.state.Load()
+// byKerberosName is RFC 18 §4.2's step 3, under st, the State the ticket was
+// verified under: a Kerberos name in the directory's realm, the realm
+// compared as the KDC spells it, maps to the entry the directory holds under
+// its user part, and then to the principal holding that entry's dir spelling,
+// never to one found by name alone. A user part with a service component
+// matches nothing, and neither, without asking the directory, does a machine
+// account's name, which ends in $ (RFC 18 §2.4).
+func (s *Server) byKerberosName(ctx context.Context, st *State, user, realm string, mint bool) (entity.Principal, error) {
 	if st == nil || st.Directory == nil || realm != st.Directory.Realm || user == "" || strings.Contains(user, "/") || strings.HasSuffix(user, "$") {
 		return entity.Principal{}, vfserr.ErrUnknownPrincipal
 	}
