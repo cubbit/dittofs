@@ -1144,6 +1144,8 @@ follows the RFC as written.
    exemption: a call whose `Protocol` is NLM is admitted with `MinProof` at most `Claimed` and no
    `MinProtection`, and `Root` and `ListShares` from NFSv3 with neither minimum; no adapter can ask
    for it by any other means. E4 makes the change after S2b; E11's NLM calls rely on it.
+   Proposed as RFC text in commit `docs(rfc-17): NLM, MNT and EXPORT meet admission without a
+   share's Kerberos minimums`.
 4. **Who records the series only NFS code can count** (#5090 (a); RFC 20 §10, RFC 25 §2.1). RFC 20
    §10 has `core` record every metric and protocol code none, while only NFS code knows what RFC 21
    §14's six `nfs_*` series count, and also the reason a translation refused an input, an `Adapter`
