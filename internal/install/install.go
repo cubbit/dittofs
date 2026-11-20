@@ -384,14 +384,19 @@ func firstPassword(file, env string) (password []byte, generated bool, err error
 			return nil, false, fmt.Errorf("%w: file %s: %w", ErrPassword, file, err)
 		}
 		defer func() { _ = f.Close() }() // read only, so a close loses nothing
-		b, err := io.ReadAll(io.LimitReader(f, maxPasswordFile+1))
-		if err != nil {
+		// One buffer, sized once, holds every byte read, so clearing it on
+		// a refusal clears all of them.
+		buf := make([]byte, maxPasswordFile+1)
+		n, err := io.ReadFull(f, buf)
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			clear(buf)
 			return nil, false, fmt.Errorf("%w: file %s: %w", ErrPassword, file, err)
 		}
-		if len(b) > maxPasswordFile {
-			clear(b)
+		if n > maxPasswordFile {
+			clear(buf)
 			return nil, false, fmt.Errorf("%w: file %s is longer than %d bytes", ErrPassword, file, maxPasswordFile)
 		}
+		b := buf[:n]
 		if t, ok := bytes.CutSuffix(b, []byte("\r\n")); ok {
 			b = t
 		} else {

@@ -40,7 +40,7 @@ Examples:
 		Args: cobra.NoArgs,
 		RunE: runInit,
 	}
-	cmd.Flags().String("admin-password-file", "", "file holding the administrator's first password")
+	cmd.Flags().String("admin-password-file", "", "file holding the administrator's first password, at most 4 KiB")
 	cmd.Flags().String("admin-password-env", "", "environment variable holding the administrator's first password")
 	cmd.MarkFlagsMutuallyExclusive("admin-password-file", "admin-password-env")
 	return cmd

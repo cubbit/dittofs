@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/internal/install"
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -70,7 +69,7 @@ func TestInitPasswordFileLimit(t *testing.T) {
 	if ents, err := os.ReadDir(filepath.Join(dir, "device")); err != nil || len(ents) != 0 {
 		t.Errorf("journal directory after the refusal: %d entries, %v; want it empty", len(ents), err)
 	}
-	db, err := badgerkv.Open(badgerkv.Options{Dir: filepath.Join(dir, "store"), NodeID: testNode, Clock: time.Now})
+	db, err := badgerkv.Open(badgerkv.Options{Dir: filepath.Join(dir, "store"), NodeID: testNode})
 	if err != nil {
 		t.Fatalf("open the store after the refusal: %v", err)
 	}
