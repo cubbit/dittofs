@@ -1,6 +1,6 @@
 #!/bin/sh
 # One group of the nightly data cell: bench-data.sh GROUP OUTDIR runs the J rows of GROUP
-# beside their raw twins at the small sizes, three counts of one iteration each, and writes
+# beside their raw twins at the small sizes, ten counts of one iteration each, and writes
 # OUTDIR/GROUP.txt for dt's go-bench reader and benchstat, with its cpu, mutex, block and heap
 # profiles beside it. A directory on a RAM-backed filesystem fails the benchmark itself.
 set -u
@@ -28,7 +28,7 @@ mkdir -p "$out" || exit 2
 rm -rf "$dir"/journal-bench-*
 
 # The binary go test keeps beside a profile goes to a scratch name in OUTDIR and is removed.
-DITTOFS_BENCH_DIR=$dir DITTOFS_BENCH_SCALE=small go test -count=3 -benchtime=1x \
+DITTOFS_BENCH_DIR=$dir DITTOFS_BENCH_SCALE=small go test -count=10 -benchtime=1x \
 	-tags=journal_conformance,journal_bench -run '^$' -bench "$pattern" \
 	-o "$out/$group.test" -outputdir "$out" \
 	-cpuprofile "$group.cpu" -mutexprofile "$group.mutex" -mutexprofilefraction "$mutex_fraction" \

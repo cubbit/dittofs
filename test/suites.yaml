@@ -539,18 +539,21 @@ suites:
     # cuts it to end 5 minutes before the limit, so it still cleans up and posts.
     timeout: { test: 3h }
   # journal-bench's bodies at the small sizes (DITTOFS_BENCH_SCALE=small: blocks of 4 to 64 KiB,
-  # bursts of a few MiB), three counts of one iteration, nightly on the dedicated host: dt's
-  # go-bench reader puts each night's medians in the run's results.json for dt history, and
-  # {out} keeps each group's bench.txt-shaped file (for benchstat), its cpu, mutex, block and
-  # heap profiles, and meta.txt (toolchain, filesystem and mount options, the device's raw
-  # fsync probe). One test per group because the reader reads per named test; test/journal/
-  # bench-data.sh runs it. DITTOFS_BENCH_DIR, unset being exit 2 as journal-bench's, is the
-  # host's data drive below; that path is the host owner's to confirm. needs host:dedicated, not a shared runner, whose busy neighbours' noise the
-  # throughput gate admits: one fixed box makes the absolute figures mean something, beside
-  # perf-night's medians. It follows perf-night in this file, which is the order the host's
-  # night runs them in, so perf-night keeps its quiet host and these few minutes come after it.
+  # bursts of a few MiB), ten counts of one iteration, nightly on the dedicated host: dt's
+  # go-bench reader puts each night's medians in the run's summary.json (results.tests[].extra
+  # .metrics) for dt history, and {out} keeps each group's bench.txt-shaped file (for
+  # benchstat), its cpu, mutex, block and heap profiles, and meta.txt (toolchain, filesystem
+  # and mount options, the device's raw fsync probe). One test per group because the reader
+  # reads per named test; test/journal/bench-data.sh runs it. DITTOFS_BENCH_DIR, unset being
+  # exit 2 as journal-bench's, is the host's data drive below, which the host owner confirmed.
+  # needs host:dedicated, not a shared runner, whose busy neighbours' noise the throughput
+  # gate admits: one fixed box makes the absolute figures mean something, beside perf-night's
+  # medians. It follows perf-night in this file, which is the order the host's night runs
+  # them in, so perf-night keeps its quiet host and these few minutes come after it.
   # The host's own `dt run --tier nightly --place dedicated` runs it, as it runs perf-night:
   # tests.yml's plan select names neither, and a hosted job could never be placed on that host.
+  # host:dedicated is met only by --place dedicated, so a hand run of this one cell on the host
+  # goes through that place, which runs the whole nightly tier, perf-night included.
   # decision: the figures are collected, never checked: a regression is a finding, and a
   # check would need a ruling that names a counted bound (RFC 1 §9.7 stays intact: no timing
   # is judged in CI). Nothing posts to the develop-status issue, since the host doesn't post
