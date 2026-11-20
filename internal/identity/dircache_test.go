@@ -841,6 +841,103 @@ func TestDirectoryCacheSIDBatchKeys(t *testing.T) {
 	})
 }
 
+// The SID path keeps the single-key lookup rules (RFC 18 §5.2, §5.3, §5.4,
+// §9.2): a SID a set repeats is one question, answered once; a "no such
+// entry" answer is fresh for 30 seconds; a failed batch serves a positive
+// entry within the TTL plus the grace, each use counted stale, and raises
+// directory_unreachable, degraded, so the next lookup within the probe
+// interval sends no query; a "no such entry" past its 30 seconds is never
+// served stale, nor an entry past the grace, and a refusal makes the
+// condition unhealthy; the first batch the directory answers clears it.
+func TestDirectoryCacheSIDsKeepLookupRules(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		e, c, sid := sidEnv(t)
+		alice, unknown := sid["alice"], []byte("no such SID")
+		if got, err := c.LookupSIDs(ctx, [][]byte{alice, unknown, alice}, 15*time.Minute); err != nil || len(got) != 1 {
+			t.Fatalf("LookupSIDs(alice, unknown, alice) = %d answers, %v; want alice once", len(got), err)
+		}
+		e.wantQueries(t, 4, "three names and one SID batch")
+		e.clock.Advance(29 * time.Second)
+		if got, err := c.LookupSIDs(ctx, [][]byte{unknown}, 15*time.Minute); err != nil || len(got) != 0 {
+			t.Fatalf("LookupSIDs(unknown) at 29 seconds = %d answers, %v; want none", len(got), err)
+		}
+		e.wantQueries(t, 4, `a "no such entry" 29 seconds old`)
+
+		// Every search fails, the probe loop's single-SID question included.
+		e.fail(t, sim.Rule{Op: "search", Key: "*", Action: sim.FaultAction{Err: errors.New("injected directory fault")}})
+		e.clock.Advance(6 * time.Minute)
+		for i := range 2 {
+			if got, err := c.LookupSIDs(ctx, [][]byte{alice}, 15*time.Minute); err != nil || len(got) != 1 {
+				t.Fatalf("LookupSIDs(alice) %d with the directory down = %d answers, %v; want her served stale", i, len(got), err)
+			}
+		}
+		e.wantQueries(t, 5, "two lookups within the probe interval")
+		if got := e.resultsOf(t, "sid")["stale"]; got != 2 {
+			t.Errorf("SID lookups counted stale %v, want 2", got)
+		}
+		wantCondition(t, c, "degraded", "alice served stale")
+		if got, err := c.LookupSIDs(ctx, [][]byte{alice, unknown}, 15*time.Minute); !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+			t.Errorf(`LookupSIDs(alice, unknown) with its "no such entry" expired = %d answers, %v; want none, ErrUnavailable`, len(got), err)
+		}
+		wantCondition(t, c, "unhealthy", "unknown refused")
+		e.clock.Advance(15 * time.Minute)
+		synctest.Wait() // the probe loop's quiet probe, failed
+		if got, err := c.LookupSIDs(ctx, [][]byte{alice}, 15*time.Minute); !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+			t.Errorf("LookupSIDs(alice) past the grace = %d answers, %v; want none, ErrUnavailable", len(got), err)
+		}
+
+		e.fail(t)
+		e.clock.Advance(10 * time.Second) // the next probe is due
+		if got, err := c.LookupSIDs(ctx, [][]byte{alice}, 15*time.Minute); err != nil || len(got) != 1 {
+			t.Fatalf("LookupSIDs(alice) with the directory back = %d answers, %v; want her", len(got), err)
+		}
+		wantCondition(t, c, "", "an answered batch")
+	})
+}
+
+// Concurrent lookups of one SID set share one query (RFC 18 §5.2), which runs
+// on when the caller that opened it leaves: the nine that joined it are
+// answered by it.
+func TestDirectoryCacheSIDsShareOneQuery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e, c, sid := sidEnv(t)
+		// The first SID batch search waits a second, so every lookup asks
+		// before it is answered.
+		e.fail(t, sim.Rule{Op: "search", Key: "(|*", Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+		ctx, cancel := context.WithCancel(context.Background())
+		first := make(chan error, 1)
+		go func() {
+			_, err := c.LookupSIDs(ctx, [][]byte{sid["alice"]}, 0)
+			first <- err
+		}()
+		synctest.Wait()
+		errs := make(chan error, 9)
+		for range 9 {
+			go func() {
+				got, err := c.LookupSIDs(context.Background(), [][]byte{sid["alice"]}, 0)
+				if err == nil && len(got) != 1 {
+					err = fmt.Errorf("%d answers", len(got))
+				}
+				errs <- err
+			}()
+		}
+		synctest.Wait()
+		cancel()
+		if err := <-first; !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("LookupSIDs(alice) by the caller that left = %v, want ErrUnavailable", err)
+		}
+		synctest.Wait()
+		e.clock.Advance(time.Second)
+		for range 9 {
+			if err := <-errs; err != nil {
+				t.Errorf("LookupSIDs(alice) after the first caller left = %v, want her", err)
+			}
+		}
+		e.wantQueries(t, 4, "three names and ten concurrent lookups of one SID set")
+	})
+}
+
 // A changed record's first lookup queries the new client; an Apply that
 // changes only the stale grace keeps the cache, and the grace it sets applies
 // at the next lookup: the bind password resolved through the secret provider.
