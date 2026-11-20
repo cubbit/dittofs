@@ -464,7 +464,7 @@ func evictionServer(t *testing.T) (*resolving, *secrets.Provider) {
 	r.ntlmUser(t, p, "alice", "1500", alicePassword)
 	reg := metrics.New("test", "test")
 	var err error
-	if r.srv, err = identity.New(identity.Deps{Store: r.st, Clock: r.clock, Secrets: p, Metrics: reg}); err != nil {
+	if r.srv, err = identity.New(identity.Deps{Store: r.st, Clock: r.clock, Secrets: p, Metrics: reg, Logons: r.logons}); err != nil {
 		t.Fatal(err)
 	}
 	r.reg = reg

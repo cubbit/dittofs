@@ -37,8 +37,11 @@ type Deps struct {
 	Store   Store
 	Clock   Clock
 	Metrics *metrics.Registry // nil: registers nothing
-	Tracer  trace.Tracer      // the identity.resolve and directory query spans; nil: the no-op tracer
+	Tracer  trace.Tracer      // the identity.authenticate, identity.resolve and directory query spans; nil: the no-op tracer
 	Logger  *slog.Logger
+	// Logons receives each sign-in attempt's logon event; New does not
+	// require it, and while it is nil every sign-in answers ErrUnavailable.
+	Logons LogonSink
 	// Secrets resolves the secrets identity holds by reference; New does not
 	// require it.
 	Secrets SecretProvider
@@ -172,21 +175,23 @@ type Server struct {
 	slotTaken func()
 	tracer    trace.Tracer
 	logger    *slog.Logger
-	refusals  *prometheus.CounterVec // by reason
-	mints     *prometheus.CounterVec // by kind
-	unnamed   *prometheus.CounterVec // by kind
-	remapped  *prometheus.CounterVec // by kind
-	skipped   *prometheus.CounterVec // by reason
-	unmapped  *prometheus.CounterVec // by scheme
-	hashing   chan struct{}          // the password verifications' slots, GOMAXPROCS of them
-	dummy     []byte                 // the hash a password is verified against for an account that cannot sign in
-	dummyNT   [16]byte               // the NT hash an NTLMv2 response is verified against for a user that cannot sign in
-	dummyUser entity.Principal       // the user principal, held by no record, a sign-in reads for a name no user holds
-	dummyRef  entity.SecretRef       // the reference, held by no record, a sign-in resolves for a user with no NT hash to resolve
-	ntHashed  func(nt [16]byte)      // a test's view of each NT hash a sign-in computed its proof with; nil in production
-	verified  func(phc []byte)       // a test's view of each hash VerifyPassword verified against; nil in production
-	holds     holds                  // the joins' administrator credentials
-	throttle  *throttle              // the logon failures per name and client address
+	refusals  *prometheus.CounterVec   // by reason
+	mints     *prometheus.CounterVec   // by kind
+	unnamed   *prometheus.CounterVec   // by kind
+	remapped  *prometheus.CounterVec   // by kind
+	skipped   *prometheus.CounterVec   // by reason
+	unmapped  *prometheus.CounterVec   // by scheme
+	hashing   chan struct{}            // the password verifications' slots, GOMAXPROCS of them
+	dummy     []byte                   // the hash a password is verified against for an account that cannot sign in
+	dummyNT   [16]byte                 // the NT hash an NTLMv2 response is verified against for a user that cannot sign in
+	dummyUser entity.Principal         // the user principal, held by no record, a sign-in reads for a name no user holds
+	dummyRef  entity.SecretRef         // the reference, held by no record, a sign-in resolves for a user with no NT hash to resolve
+	ntHashed  func(nt [16]byte)        // a test's view of each NT hash a sign-in computed its proof with; nil in production
+	verified  func(phc []byte)         // a test's view of each hash VerifyPassword verified against; nil in production
+	holds     holds                    // the joins' administrator credentials
+	throttle  *throttle                // the logon failures per name and client address
+	signIns   *prometheus.CounterVec   // by protocol, mechanism and outcome
+	signInSec *prometheus.HistogramVec // by mechanism
 
 	slots     chan struct{}      // the pass-through's, channelSlots of them
 	chMu      sync.Mutex         // held across the channel's set-up
@@ -262,6 +267,8 @@ func New(d Deps) (*Server, error) {
 	s.skipped = counter(d.Metrics, skippedSpec)
 	s.unmapped = counter(d.Metrics, unmappedSpec)
 	s.mismatches = counter(d.Metrics, mismatchesSpec)
+	s.signIns = counter(d.Metrics, signInsSpec)
+	s.signInSec = histogram(d.Metrics, signInSecondsSpec)
 	s.throttle = newThrottle(throttleBound, counter(d.Metrics, evictionsSpec).WithLabelValues())
 	return s, nil
 }

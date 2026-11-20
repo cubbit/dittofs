@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -27,6 +32,21 @@ const (
 	outcomeThrottled     outcome = "throttled"
 )
 
+// signInsSpec counts sign-in attempts (RFC 18 §9.2).
+var signInsSpec = metrics.Spec{
+	Name:   "identity_authentications_total",
+	Help:   "Sign-in attempts, by protocol, mechanism and outcome.",
+	Labels: []string{"protocol", "mechanism", "outcome"},
+}
+
+// signInSecondsSpec times each sign-in attempt.
+var signInSecondsSpec = metrics.Spec{
+	Name:    "identity_authentication_seconds",
+	Help:    "Sign-in latency, by mechanism.",
+	Labels:  []string{"mechanism"},
+	Buckets: metrics.Request,
+}
+
 // SignIn verifies one handshake round under one State: a local user's
 // NTLMv2 response (RFC 18 §3.5), refused before its credential is read once
 // its name and client address are past the logon throttle's limit (§3.1). It
@@ -36,14 +56,17 @@ func (s *Server) SignIn(ctx context.Context, step identity.SignInStep) (identity
 	return res, err
 }
 
-// signIn is SignIn with the attempt's outcome.
+// signIn is SignIn with the attempt's outcome. Every attempt is recorded
+// here, and only here: one logon event, one count, one latency and, under a
+// sampled parent, one identity.authenticate span. VerifyPassword never
+// reaches it, so an API sign-in emits no logon event (RFC 18 §8.1).
 //
 // decision: on any error the result is zero: no Identity, no Keys, and never
 // a guest or anonymous one. RFC 18 §3.6 has no "map to guest": a wrong
 // password answered with a guest session turns every typo into a session
 // the client did not ask for, and a store outage into access. Null and guest
 // sessions are set up by the adapter's mechanism without SignIn. Every path
-// below answers a zero result with its error already; the check after
+// below answers a zero result with its error already; signInAttempt's check after
 // signInNTLM is the one place that holds the rule for any path added later.
 func (s *Server) signIn(ctx context.Context, step identity.SignInStep) (identity.SignInResult, outcome, error) {
 	a := step.NTLM
@@ -51,15 +74,64 @@ func (s *Server) signIn(ctx context.Context, step identity.SignInStep) (identity
 	// AUTHENTICATE, or an AUTHENTICATE naming no user, is ErrInvalid with no
 	// outcome: it is no attempt of either mechanism, and the adapter sets up
 	// null and guest sessions without SignIn (RFC 20 §4.4), so one reaching
-	// here is a caller's bug, refused, never a session. Overturned if the
-	// adapter is ever meant to hand identity an anonymous AUTHENTICATE.
+	// here is a caller's bug, refused, never a session, and recorded nowhere.
+	// Overturned if the adapter is ever meant to hand identity an anonymous
+	// AUTHENTICATE.
 	switch {
 	case (a == nil) == (len(step.Kerberos) == 0):
 		return identity.SignInResult{}, "", fmt.Errorf("%w: a sign-in step carries exactly one of an AP-REQ and an AUTHENTICATE", vfserr.ErrInvalid)
-	case a == nil:
-		return s.signInKerberos(ctx, step)
-	case a.User == "":
+	case a != nil && a.User == "":
 		return identity.SignInResult{}, "", fmt.Errorf("%w: an AUTHENTICATE with no user name", vfserr.ErrInvalid)
+	}
+	ev := LogonEvent{Time: s.deps.Clock.Now(), Mechanism: "kerberos", Protocol: "smb", Client: step.Client}
+	proof := identity.ProofTicket
+	if a != nil {
+		ev.Mechanism, ev.Name, proof = "ntlm", a.User, identity.ProofSecret
+	}
+	if step.Transport == identity.TransportNFS {
+		ev.Protocol = "nfs"
+	}
+	// Only a sampled request's sign-in opens a span, as only a sampled
+	// request's resolution does (RFC 18 §9.2).
+	span := noSpan
+	if trace.SpanContextFromContext(ctx).IsSampled() {
+		ctx, span = s.tracer.Start(ctx, "identity.authenticate", trace.WithAttributes(attribute.Int("identity.proof", int(proof))))
+	}
+
+	res, oc, err := s.signInAttempt(ctx, step)
+
+	ev.Outcome = string(oc)
+	if oc == outcomeOK {
+		ev.Principal = res.Identity.Evidence.Principal.ID
+		span.SetAttributes(attribute.String("identity.principal", ev.Principal.String()))
+	}
+	span.SetAttributes(attribute.String("identity.outcome", ev.Outcome))
+	if err != nil {
+		span.SetStatus(codes.Error, ev.Outcome)
+	}
+	span.End()
+	s.signIns.WithLabelValues(ev.Protocol, ev.Mechanism, ev.Outcome).Inc()
+	s.signInSec.WithLabelValues(ev.Mechanism).Observe(s.deps.Clock.Now().Sub(ev.Time).Seconds())
+	if s.deps.Logons != nil {
+		s.deps.Logons.Logon(ctx, &ev)
+	}
+	return res, oc, err
+}
+
+// signInAttempt is one classified attempt: a Kerberos step's verification, or an
+// NTLM step's throttle and check.
+func (s *Server) signInAttempt(ctx context.Context, step identity.SignInStep) (identity.SignInResult, outcome, error) {
+	// decision: with no logon sink every attempt is refused ErrUnavailable,
+	// before the throttle and the credential, so no sign-in goes unrecorded;
+	// New accepts a Deps without one, so a server built for another call
+	// still builds. Overturned if a node is ever meant to sign in without an
+	// audit of it.
+	if s.deps.Logons == nil {
+		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: no logon sink", vfserr.ErrUnavailable)
+	}
+	a := step.NTLM
+	if a == nil {
+		return s.signInKerberos(ctx, step)
 	}
 	// decision: the throttle is asked before every refusal of the message,
 	// NTLM off, NTLMv1 or LM and a malformed response, and every
