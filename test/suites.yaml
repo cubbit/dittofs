@@ -538,6 +538,39 @@ suites:
     # A night of one repeat takes about 1 h 30 min, its build and lock wait included. STOP_AFTER
     # cuts it to end 5 minutes before the limit, so it still cleans up and posts.
     timeout: { test: 3h }
+  # journal-bench's bodies at the small sizes (DITTOFS_BENCH_SCALE=small: blocks of 4 to 64 KiB,
+  # bursts of a few MiB), three counts of one iteration, nightly on the dedicated host: dt's
+  # go-bench reader puts each night's medians in the run's results.json for dt history, and
+  # {out} keeps each group's bench.txt-shaped file (for benchstat), its cpu, mutex, block and
+  # heap profiles, and meta.txt (toolchain, filesystem and mount options, the device's raw
+  # fsync probe). One test per group because the reader reads per named test; test/journal/
+  # bench-data.sh runs it. DITTOFS_BENCH_DIR defaults to ~/dittofs-bench, on the host's own
+  # disk. needs host:dedicated, not a shared runner, whose busy neighbours' noise the
+  # throughput gate admits: one fixed box makes the absolute figures mean something, beside
+  # perf-night's medians. It follows perf-night in this file, which is the order the host's
+  # night runs them in, so perf-night keeps its quiet host and these few minutes come after it.
+  # The host's own `dt run --tier nightly --place dedicated` runs it, as it runs perf-night:
+  # tests.yml's plan select names neither, and a hosted job could never be placed on that host.
+  # decision: the figures are collected, never checked: a regression is a finding, and a
+  # check would need a ruling that names a counted bound (RFC 1 §9.7 stays intact: no timing
+  # is judged in CI). blocking: false, so a b.Fatalf fails the cell, never the nightly, and
+  # posts nothing to the develop-status issue.
+  # decision: the host runs develop's latest commit, so the stream starts when storage-v2
+  # reaches develop; empty until then is the design, not a bug.
+  # decision: the host's results directory keeps these figures as long as its own cleanup
+  # does, and no GitHub artifact holds them (GitHub's 90-day default doesn't apply); revisit
+  # with the first trend longer than that is wanted, by offloading older runs, not before.
+  # decision: format exit, as journal-bench's: go test sends no pass event for a passing
+  # benchmark, which a go-json cell grades as failed.
+  journal-bench-data:
+    cmd: test/journal/bench-data.sh {test} {out}
+    tests: [j1, j2, j3]
+    format: exit
+    metrics: go-bench
+    tier: nightly
+    blocking: false
+    needs: [linux, host:dedicated]
+    timeout: { test: 30m, cell: 100m }
   # The system scenarios: a real server in a container, real clients, faults injected.
   # setup.sh takes a scenario by its file name, in its own directory. A run through dt is reported
   # by dt, and never posts to the scenarios' Slack channel.

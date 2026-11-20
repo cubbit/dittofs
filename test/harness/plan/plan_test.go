@@ -94,7 +94,7 @@ func TestConformanceRunsBadgerS3(t *testing.T) {
 // kills it with no cleanup and no post.
 func TestDedicatedHost(t *testing.T) {
 	r := repo(t)
-	want := map[string][]string{"merge": {"system"}, "nightly": {"perf-night", "system", "system/dedicated"}}
+	want := map[string][]string{"merge": {"system"}, "nightly": {"perf-night", "journal-bench-data", "system", "system/dedicated"}}
 	for _, tier := range []string{"pr", "merge", "nightly"} {
 		cells, err := Plan("../../..", r, tier, nil)
 		if err != nil {
