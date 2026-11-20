@@ -90,18 +90,13 @@ func protocolSecrets(t *testing.T, st *kvstore.Store) *secrets.Provider {
 	return p
 }
 
-// newDirPrincipals builds the server over st and a directory of schema,
-// whose NetBIOS domain is KORP and realm CORP.EXAMPLE.
-func newDirPrincipals(t *testing.T, st *kvstore.Store, inst uuid.UUID, schema string) *dirPrincipals {
+// sealBindPassword seals pw through p as the directory's bind credential,
+// under the reference whose first byte is n, and stores it in st.
+func sealBindPassword(t *testing.T, st *kvstore.Store, p *secrets.Provider, n byte, pw []byte) entity.SecretRef {
 	t.Helper()
-	e := &dirPrincipals{st: st, inst: inst, d: identitytest.NewDirectory("DC=corp,DC=example"), fault: &switched{},
-		clock: sim.NewTestClock(time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)), reg: metrics.New("test", "test")}
-	e.f = identitytest.NewFaultyDirectory(e.d.Dial, e.fault)
-	name, pw := e.d.Account()
-	p := protocolSecrets(t, st)
 	owner := entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}
 	var ref entity.SecretRef
-	ref[0] = 1
+	ref[0] = n
 	sec, err := p.Seal(context.Background(), secrets.Protocol, entity.SecretDirectoryCredential, owner, ref, pw, secrets.Meta{})
 	if err != nil {
 		t.Fatal(err)
@@ -111,6 +106,20 @@ func newDirPrincipals(t *testing.T, st *kvstore.Store, inst uuid.UUID, schema st
 		func(tx entity.ControlPlaneTx) error { return tx.PutSecret(sec, sec.Version-1) }); err != nil {
 		t.Fatal(err)
 	}
+	return ref
+}
+
+// newDirPrincipals builds the server over st and a directory of schema,
+// whose NetBIOS domain is KORP and realm CORP.EXAMPLE.
+func newDirPrincipals(t *testing.T, st *kvstore.Store, inst uuid.UUID, schema string) *dirPrincipals {
+	t.Helper()
+	e := &dirPrincipals{st: st, inst: inst, d: identitytest.NewDirectory("DC=corp,DC=example"), fault: &switched{},
+		clock: sim.NewTestClock(time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)), reg: metrics.New("test", "test")}
+	e.f = identitytest.NewFaultyDirectory(e.d.Dial, e.fault)
+	name, pw := e.d.Account()
+	p := protocolSecrets(t, st)
+	ref := sealBindPassword(t, st, p, 1, pw)
+	var err error
 	if e.s, err = identity.New(identity.Deps{Store: st, Clock: e.clock, Metrics: e.reg, Secrets: p, Directory: e.f.Dial}); err != nil {
 		t.Fatal(err)
 	}

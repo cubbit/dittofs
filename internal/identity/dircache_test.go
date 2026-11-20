@@ -101,13 +101,19 @@ func (e *dirEnv) down(t *testing.T) {
 // results is identity_directory_lookups_total{question="name"} by result.
 func (e *dirEnv) results(t *testing.T) map[string]float64 {
 	t.Helper()
+	return e.resultsOf(t, "name")
+}
+
+// resultsOf is identity_directory_lookups_total{question=q} by result.
+func (e *dirEnv) resultsOf(t *testing.T, q string) map[string]float64 {
+	t.Helper()
 	got := map[string]float64{}
 	for _, m := range e.family(t, "identity_directory_lookups_total") {
 		labels := map[string]string{}
 		for _, l := range m.GetLabel() {
 			labels[l.GetName()] = l.GetValue()
 		}
-		if labels["question"] == "name" {
+		if labels["question"] == q {
 			got[labels["result"]] = m.GetCounter().GetValue()
 		}
 	}
@@ -134,7 +140,13 @@ func (e *dirEnv) evictions(t *testing.T) float64 {
 
 func (e *dirEnv) family(t *testing.T, name string) []*dto.Metric {
 	t.Helper()
-	mfs, err := e.reg.Registry().Gather()
+	return family(t, e.reg, name)
+}
+
+// family is the metric family name gathered from reg.
+func family(t *testing.T, reg *metrics.Registry, name string) []*dto.Metric {
+	t.Helper()
+	mfs, err := reg.Registry().Gather()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,4 +668,222 @@ func TestDirectoryCacheSpans(t *testing.T) {
 	if queries != 2 {
 		t.Errorf("query spans %d, want 2: alice's and bob's, none for the fresh answer", queries)
 	}
+}
+
+// A thousand and twenty-four SIDs cost 16 queries, one per batch, and asked
+// again none, every answer fresh and in the order asked.
+func TestDirectoryCacheBatchesSIDs(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	ctx := context.Background()
+	e := newDirEnv(t)
+	name, pw := e.d.Account()
+	plain := directory.NewClient(directory.Record{Address: "ldaps://dc.corp.example", Base: "DC=corp,DC=example",
+		BindName: name, Realm: "CORP.EXAMPLE"}, e.d.Dial, func(context.Context) ([]byte, error) { return pw, nil }, e.clock, nil)
+	t.Cleanup(plain.Close)
+	var sids [][]byte
+	for i := range 1024 {
+		n := fmt.Sprintf("u%04d", i)
+		e.d.AddUser(t, n, nil)
+		a, _, err := plain.Lookup(ctx, directory.ByUserName, []byte(n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sids = append(sids, a.SID)
+	}
+	c := e.cache(t)
+	// total is the queries sent by the end of the round: the warm one adds none.
+	for _, round := range []struct {
+		when  string
+		total uint64
+	}{{"cold", 16}, {"warm", 16}} {
+		got, err := c.LookupSIDs(ctx, sids, 15*time.Minute)
+		if err != nil || len(got) != len(sids) {
+			t.Fatalf("%s: LookupSIDs(1024) = %d answers, %v; want 1024", round.when, len(got), err)
+		}
+		for i, a := range got {
+			if string(a.SID) != string(sids[i]) {
+				t.Fatalf("%s: answer %d holds SID %x, want %x", round.when, i, a.SID, sids[i])
+			}
+		}
+		e.wantQueries(t, round.total, round.when+" lookup of 1024 SIDs")
+	}
+}
+
+// sidEnv is alice, bob and carol in a directory, each looked up by name
+// through a new cache, and their SIDs.
+func sidEnv(t *testing.T) (*dirEnv, *identity.DirectoryCache, map[string][]byte) {
+	t.Helper()
+	e := newDirEnv(t)
+	for _, n := range []string{"alice", "bob", "carol"} {
+		e.d.AddUser(t, n, nil)
+	}
+	c := e.cache(t)
+	sid := map[string][]byte{}
+	for _, n := range []string{"alice", "bob", "carol"} {
+		a, _, err := lookup(c, n, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sid[n] = a.SID
+	}
+	return e, c, sid
+}
+
+// sidsDown fails every SID batch search.
+func (e *dirEnv) sidsDown(t *testing.T) {
+	t.Helper()
+	e.fail(t, sim.Rule{Op: "search", Key: "(|*", Action: sim.FaultAction{Err: errors.New("injected directory fault")}})
+}
+
+// A failed batch serves a SID from a positive entry within the grace, a SID
+// it does not hold fails the whole lookup, and a SID no entry holds is left
+// out of an answered one. A batch in which two entries hold one SID fails
+// the lookup, counted ambiguous, served from no entry, and raises no outage.
+func TestDirectoryCacheSIDsFailWhole(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	ctx := context.Background()
+	t.Run("outage", func(t *testing.T) {
+		e, c, sid := sidEnv(t)
+		if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"], []byte("no such SID"), sid["bob"]}, 0); err != nil || len(got) != 2 {
+			t.Fatalf("LookupSIDs(alice, unknown, bob) = %d answers, %v; want 2", len(got), err)
+		}
+		e.sidsDown(t)
+		e.clock.Advance(6 * time.Minute)
+		if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"], sid["bob"]}, 15*time.Minute); err != nil || len(got) != 2 {
+			t.Errorf("LookupSIDs(alice, bob) with the directory down = %d answers, %v; want both served stale", len(got), err)
+		}
+		if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"], sid["carol"]}, 15*time.Minute); !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+			t.Errorf("LookupSIDs(alice, carol) with carol never asked by SID = %d answers, %v; want none, ErrUnavailable", len(got), err)
+		}
+	})
+	t.Run("two entries hold one SID", func(t *testing.T) {
+		e, c, sid := sidEnv(t)
+		if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"]}, 0); err != nil || len(got) != 1 {
+			t.Fatalf("LookupSIDs(alice) = %d answers, %v; want 1", len(got), err)
+		}
+		e.d.AddUser(t, "twin", map[string][][]byte{"objectSid": {sid["alice"]}})
+		e.clock.Advance(6 * time.Minute)
+		if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"]}, 15*time.Minute); !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+			t.Errorf("LookupSIDs(alice) with a twin holding her SID = %d answers, %v; want none, ErrUnavailable", len(got), err)
+		}
+		if got := e.resultsOf(t, "sid"); got["ambiguous"] != 1 || got["stale"] != 0 {
+			t.Errorf("SID lookups counted ambiguous %v, stale %v; want 1 and 0", got["ambiguous"], got["stale"])
+		}
+		// No outage raised: a user no entry holds yet is still asked, where a
+		// raised outage would refuse it unsent.
+		e.d.AddUser(t, "dave", nil)
+		mustFind(t, c, "dave")
+	})
+}
+
+// A failed batch serves stale only what a failed single lookup would: a
+// "no such entry" SID fails the set rather than being dropped from it, and a
+// positive one is refused past the TTL plus the grace.
+func TestDirectoryCacheSIDsStaleGrace(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	ctx := context.Background()
+	t.Run("no such entry", func(t *testing.T) {
+		e, c, sid := sidEnv(t)
+		unknown := []byte("no such SID")
+		if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"], unknown}, 0); err != nil || len(got) != 1 {
+			t.Fatalf("LookupSIDs(alice, unknown) = %d answers, %v; want 1", len(got), err)
+		}
+		e.sidsDown(t)
+		e.clock.Advance(6 * time.Minute)
+		if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"], unknown}, 15*time.Minute); !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+			t.Errorf("LookupSIDs(alice, unknown) with the directory down = %d answers, %v; want none, ErrUnavailable", len(got), err)
+		}
+		if got := e.resultsOf(t, "sid"); got["stale"] != 0 || got["refused"] != 1 {
+			t.Errorf("SID lookups counted stale %v, refused %v; want 0 and 1: a refused set serves nothing stale", got["stale"], got["refused"])
+		}
+	})
+	t.Run("past the grace", func(t *testing.T) {
+		e, c, sid := sidEnv(t)
+		if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"]}, 0); err != nil || len(got) != 1 {
+			t.Fatalf("LookupSIDs(alice) = %d answers, %v; want 1", len(got), err)
+		}
+		e.sidsDown(t)
+		e.clock.Advance(20*time.Minute + time.Second) // the TTL plus the grace, and a second
+		if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"]}, 15*time.Minute); !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+			t.Errorf("LookupSIDs(alice) past the grace = %d answers, %v; want none, ErrUnavailable", len(got), err)
+		}
+	})
+}
+
+// Concurrent batches whose SIDs concatenate to the same bytes, ["ab", "c"]
+// and ["a", "bc"], are distinct questions: each sends its own query. The
+// searches are held until the query timeout so both are in flight at once.
+func TestDirectoryCacheSIDBatchKeys(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newDirEnv(t)
+		c := e.cache(t)
+		e.fail(t, sim.Rule{Op: "search", Key: "(|*", Action: sim.FaultAction{Err: identitytest.ErrHold}})
+		var wg sync.WaitGroup
+		for _, batch := range [][][]byte{{[]byte("ab"), []byte("c")}, {[]byte("a"), []byte("bc")}} {
+			wg.Go(func() {
+				if _, err := c.LookupSIDs(context.Background(), batch, 0); !errors.Is(err, vfserr.ErrUnavailable) {
+					t.Errorf("LookupSIDs(%q) at the timeout = %v, want ErrUnavailable", batch, err)
+				}
+			})
+		}
+		synctest.Wait()
+		e.clock.Advance(5 * time.Second)
+		wg.Wait()
+		var sent int
+		for _, q := range e.f.Queries() {
+			if strings.HasPrefix(q.Filter, "(|") {
+				sent++
+			}
+		}
+		if sent != 2 {
+			t.Errorf("SID batch searches %d, want 2: one per batch", sent)
+		}
+	})
+}
+
+// A changed record's first lookup queries the new client; an Apply that
+// changes only the stale grace keeps the cache, and the grace it sets applies
+// at the next lookup: the bind password resolved through the secret provider.
+func TestDirectoryCacheFollowsApply(t *testing.T) {
+	e := newAD(t)
+	e.d.AddUser(t, "alice", nil)
+	queries := func() uint64 {
+		for _, m := range family(t, e.reg, "identity_directory_seconds") {
+			return m.GetHistogram().GetSampleCount()
+		}
+		return 0
+	}
+	ask := func(when string, want uint64, found bool) {
+		t.Helper()
+		_, ok, err := e.s.DirectoryLookup(context.Background(), directory.ByUserName, []byte("alice"))
+		if found && (err != nil || !ok) {
+			t.Errorf("%s: lookup = found %v, %v; want found", when, ok, err)
+		}
+		if !found && !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("%s: lookup = found %v, %v; want ErrUnavailable", when, ok, err)
+		}
+		if got := queries(); got != want {
+			t.Errorf("%s: identity_directory_seconds count %d, want %d", when, got, want)
+		}
+	}
+	apply := func(f func(*identity.State)) {
+		t.Helper()
+		st := *e.s.Applied()
+		d := *st.Directory
+		st.Directory = &d
+		f(&st)
+		if err := e.s.Apply(st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ask("first", 1, true)
+	ask("fresh", 1, true)
+	apply(func(st *identity.State) { st.Directory.Address = "ldaps://dc2.corp.example" })
+	ask("after a new record", 2, true)
+	e.fail(t, sim.Rule{Op: "search", Key: userSearches, Action: sim.FaultAction{Err: errors.New("injected directory fault")}})
+	e.clock.Advance(6 * time.Minute)
+	apply(func(st *identity.State) { st.Settings.DirectoryStaleGrace = 0 })
+	ask("grace zero, past the TTL", 3, false)
+	apply(func(st *identity.State) { st.Settings.DirectoryStaleGrace = 15 * time.Minute })
+	ask("grace 15 minutes, within it", 3, true)
 }

@@ -145,6 +145,11 @@ func (c *dirCache) Lookup(ctx context.Context, by directory.Key, value []byte, g
 	return c.lookup(ctx, by, value, grace, fresh)
 }
 
+// LookupSIDs asks the cache who holds each of sids, under grace.
+func (c *dirCache) LookupSIDs(ctx context.Context, sids [][]byte, grace time.Duration) ([]directory.Answer, error) {
+	return c.lookupSIDs(ctx, sids, grace)
+}
+
 // Waiting is the number of queries waiting for one of the 64 slots.
 func (c *dirCache) Waiting() int { return int(c.waiting.Load()) }
 
