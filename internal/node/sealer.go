@@ -30,6 +30,15 @@ func (s providerSealer) Seal(ctx context.Context, kind entity.SecretKind, owner 
 	return s.p.Seal(ctx, role, kind, owner, ref, value, secrets.Meta{HandedOver: handedOver})
 }
 
+// signingSealer is providerSealer as the signing key's rotation seals with
+// it: a signing key is never handed over.
+type signingSealer struct{ providerSealer }
+
+// Seal seals value as providerSealer does, not handed over.
+func (s signingSealer) Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte) (entity.Secret, error) {
+	return s.providerSealer.Seal(ctx, kind, owner, ref, value, false)
+}
+
 // The secret provider, through providerSealer, and the settings table are
 // what the API's Deps take, once the node builds them.
 var _ = api.Deps{Sealer: providerSealer{}, Settings: settings.Table{}}
