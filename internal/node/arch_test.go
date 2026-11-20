@@ -1242,7 +1242,7 @@ func apiExports(dir, path string) ([]string, error) {
 // the ResetAccount the break-glass reset calls, the SealSigningKey the
 // initialisation step seals the first signing key with, and the access
 // tokens and the signing key's rotation the node builds: Tokens, NewTokens,
-// Issue, Verify and their Claims, the KeyVersion the node opens the key's
+// Issue, Verify, Close and their Claims, the KeyVersion the node opens the key's
 // versions as, RotationStep and RotationProgress, and the interfaces their
 // parameters take, Clock, KeyVersions, Sealer and Writer; and nothing else;
 // a planted extra method is caught.
@@ -1258,7 +1258,7 @@ func TestAPIExports(t *testing.T) {
 			"KeyVersion", "KeyVersion.Format", "KeyVersion.LogValue", "KeyVersion.MarshalJSON", "KeyVersion.MarshalYAML",
 			"KeyVersion.String", "KeyVersions", "KeyVersions.Versions", "Local", "NewTokens", "Principals", "Public",
 			"QuotaEvents", "ResetAccount", "Right", "RotationProgress", "RotationStep", "SealSigningKey", "Sealer",
-			"Sealer.Seal", "Self", "Shares", "Stores", "Tokens", "Tokens.Format", "Tokens.Issue", "Tokens.LogValue",
+			"Sealer.Seal", "Self", "Shares", "Stores", "Tokens", "Tokens.Close", "Tokens.Format", "Tokens.Issue", "Tokens.LogValue",
 			"Tokens.String", "Tokens.Verify", "View", "With", "WithLocal", "Writer", "Writer.Write",
 		}},
 		{"testdata/arch/api-exports", "internal/node/api", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},

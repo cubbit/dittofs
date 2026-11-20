@@ -21,6 +21,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/secrets"
+	"slices"
+	"sync"
 )
 
 // HashTree hashes root's whole tree — relative paths, sizes, then contents —
@@ -269,3 +272,42 @@ type failingClose struct {
 }
 
 func (f failingClose) Close() error { return errors.Join(f.KeyProvider.Close(), f.err) }
+
+// KeepSigningKeys has the access tokens read the signing key's versions
+// through a pass-through that keeps every value it handed over, which the
+// returned function lists. The rotation keeps the tokens New built. Call it
+// before Start.
+func (n *Node) KeepSigningKeys(ctx context.Context) (func() [][]byte, error) {
+	in, err := n.meta.Installation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p, err := secrets.New(n.meta.ControlPlane(), map[secrets.Role]keyprovider.KeyProvider{secrets.Storage: n.storageKey})
+	if err != nil {
+		return nil, err
+	}
+	k := &keptKeys{KeyVersions: providerKeys{p}}
+	n.tokens = auth.NewTokens(k, in.ID, in.SigningKey, n.cfg.Clock)
+	return func() [][]byte {
+		k.mu.Lock()
+		defer k.mu.Unlock()
+		return slices.Clone(k.values)
+	}, nil
+}
+
+// keptKeys passes Versions through and keeps every value it handed over.
+type keptKeys struct {
+	auth.KeyVersions
+	mu     sync.Mutex
+	values [][]byte
+}
+
+func (k *keptKeys) Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]auth.KeyVersion, error) {
+	vs, err := k.KeyVersions.Versions(ctx, kind, owner, ref)
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for _, v := range vs {
+		k.values = append(k.values, v.Value)
+	}
+	return vs, err
+}

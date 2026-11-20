@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -87,15 +89,17 @@ func TestHaltLeavesOpenWhatAStuckPartUses(t *testing.T) {
 	}
 }
 
-// A part whose stop fails is kept, like one past its bound: the parts it uses
-// and the store stay open, and a later Stop runs its stop again, then closes
-// the store.
+// A part whose stop fails is kept, like one past its bound: the parts it uses,
+// the store and the storage key stay open, and a later Stop runs its stop
+// again, then closes the store and the key.
 func TestStopRetriesAPartWhoseStopFailed(t *testing.T) {
 	db, err := badgerkv.Open(badgerkv.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := &Node{cfg: Config{Clock: sim.NewTestClock(time.Unix(0, 0)), KV: db}, storageKey: localKey(t)}
+	clk := sim.NewTestClock(time.Unix(0, 0))
+	key := localKey(t)
+	n := &Node{cfg: Config{Clock: clk, KV: db}, storageKey: key, tokens: auth.NewTokens(nil, [16]byte{}, entity.SecretRef{}, clk)}
 	var used, engineStops int
 	n.started("used", func(context.Context) error { used++; return nil })
 	n.started("engine", func(context.Context) error {
@@ -115,6 +119,9 @@ func TestStopRetriesAPartWhoseStopFailed(t *testing.T) {
 	if err := db.View(t.Context(), func(kv.Reader) error { return nil }); err != nil {
 		t.Errorf("the KV after a Stop whose engine stop failed: %v, want it open", err)
 	}
+	if _, _, err := key.Wrap(t.Context(), []byte("a block key")); err != nil {
+		t.Errorf("the storage key after a Stop whose engine stop failed: wrap %v, want it open", err)
+	}
 	if used != 0 {
 		t.Errorf("stops of the part the engine uses, its stop failed: got %d, want 0", used)
 	}
@@ -127,6 +134,9 @@ func TestStopRetriesAPartWhoseStopFailed(t *testing.T) {
 	}
 	if err := db.View(t.Context(), func(kv.Reader) error { return nil }); err == nil {
 		t.Error("the KV after the second Stop: a View succeeded, want it closed")
+	}
+	if _, _, err := key.Wrap(t.Context(), []byte("a block key")); err == nil {
+		t.Error("the storage key after the second Stop: a wrap succeeded, want it closed")
 	}
 }
 

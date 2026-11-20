@@ -43,6 +43,31 @@ func TestStopClosesTheStorageKey(t *testing.T) {
 	}
 }
 
+// Stop clears the bytes of every signing-key version the access tokens
+// read.
+func TestStopClearsTheSigningKey(t *testing.T) {
+	h := nodetest.New(t)
+	kept, err := h.Node().KeepSigningKeys(t.Context())
+	if err != nil {
+		t.Fatalf("keep the signing key's versions: %v", err)
+	}
+	if _, err := h.Node().Tokens().Issue(t.Context(), entity.NewUser(), [16]byte(uuid.New()), h.Clock().Now()); err != nil {
+		t.Fatalf("issue a token: %v", err)
+	}
+	values := kept()
+	if len(values) == 0 || !slices.ContainsFunc(values, func(v []byte) bool { return slices.ContainsFunc(v, func(b byte) bool { return b != 0 }) }) {
+		t.Fatalf("versions read before Stop: %d, want one holding a key", len(values))
+	}
+	if err := h.Node().Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	for i, v := range kept() {
+		if slices.ContainsFunc(v, func(b byte) bool { return b != 0 }) {
+			t.Errorf("version read %d after Stop: %d bytes not all zero, want cleared", i, len(v))
+		}
+	}
+}
+
 // New over a KV holding no installation refuses, and closes the KV it was
 // handed: the watch finds nothing of it left open.
 func TestNewRefusesAKVWithNoInstallation(t *testing.T) {
