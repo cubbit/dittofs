@@ -325,20 +325,13 @@ func TestKerberosSignInRecordsEachAttempt(t *testing.T) {
 	}
 }
 
-// A ticket carrying a PAC is refused ErrUnavailable until the PAC is
-// verified, so no PAC is ever used unverified, and the refusal does not count
-// on the throttle: after ten of alice's PAC tickets, her PAC-less one from
-// the same address signs in. Catches the refusal counted as a logon failure,
-// which would lock out a domain user whose every ticket carries a PAC.
-func TestKerberosSignInRefusesAnUnverifiedPAC(t *testing.T) {
+// A ticket carrying a PAC that does not decode is refused, never read as a
+// ticket without one.
+func TestKerberosSignInRefusesAPACThatDoesNotDecode(t *testing.T) {
 	k := kerberosServer(t)
-	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
-	k.user(t, alice, 0)
-	for i := range 10 {
-		res, oc, err := k.srv.SignInOutcome(context.Background(), k.step(identitytest.TicketOpts{Client: "alice", Cusec: i, PAC: []byte("a PAC")}, krbClient))
-		refused(t, fmt.Sprintf("alice's PAC ticket %d", i+1), res, oc, err, vfserr.ErrUnavailable, "unavailable")
-	}
-	k.signInAs(t, "alice's PAC-less ticket after ten PAC tickets", k.as("alice"), alice.Principal)
+	k.user(t, entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}, 0)
+	res, oc, err := k.srv.SignInOutcome(context.Background(), k.step(identitytest.TicketOpts{Client: "alice", PAC: []byte("a PAC")}, krbClient))
+	refused(t, "a ticket carrying a PAC that does not decode", res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
 }
 
 // A cross-realm ticket whose transited field names a realm is refused unless

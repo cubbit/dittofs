@@ -257,8 +257,9 @@ func (s *Server) signInKerberos(ctx context.Context, step identity.SignInStep, e
 	return res, oc, err
 }
 
-// bindTicket records t's authenticator and binds its client to the
-// principal RFC 18 §4.2 maps it to, refusing a disabled one.
+// bindTicket records t's authenticator, verifies the PAC its ticket carries,
+// and binds its client to the principal RFC 18 §4.2 maps it to, refusing a
+// disabled one.
 func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignInStep, t *ticket, name string, now time.Time) (identity.SignInResult, outcome, error) {
 	switch err := s.replay.insert(t, now); {
 	case errors.Is(err, errReplay):
@@ -267,19 +268,26 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 		return identity.SignInResult{}, outcomeUnavailable, err
 	}
 	enc := &t.req.Ticket.DecryptedEncPart
-	_, ok, err := pacOf(enc.AuthorizationData)
-	switch {
-	case err != nil:
+	raw, ok, err := pacOf(enc.AuthorizationData)
+	if err != nil {
 		return identity.SignInResult{}, outcomeLogonFailure, logonFailure("authorization data: %v", err)
-	case ok:
-		// decision: a ticket carrying a PAC is refused ErrUnavailable, not
-		// ErrLogonFailure, while no PAC is verified: a domain controller puts
-		// a PAC in every ticket, so counting the refusal on the throttle would
-		// lock a domain user out of NTLM too after ten ordinary attempts.
-		// Overturned once the PAC is verified, which refuses only a PAC that
-		// fails verification.
-		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: kerberos: a ticket carrying a PAC, which is not verified yet", vfserr.ErrUnavailable)
-	case st.Directory != nil && strings.EqualFold(enc.CRealm, st.Directory.Realm):
+	}
+	if ok {
+		if _, err := verifyPAC(raw, t.key, enc.CName, enc.AuthTime); err != nil {
+			if errors.Is(err, errPACClient) {
+				// decision: the mismatch is logged with the client address
+				// and no name: RFC 25 §5.4 keeps user names out of log
+				// lines, and neither name is bound to a principal yet, nor
+				// is one bound to log it, since binding may mint. The logon
+				// event carries the ticket's name as presented. Overturned
+				// when RFC 25's logon stream, whose records may carry both
+				// names, replaces log lines for logon events.
+				s.logger.WarnContext(ctx, "identity: a PAC's client information differs from its ticket's", "client", step.Client.String())
+			}
+			return identity.SignInResult{}, outcomeLogonFailure, logonFailure("PAC: %v", err)
+		}
+	}
+	if !ok && st.Directory != nil && strings.EqualFold(enc.CRealm, st.Directory.Realm) {
 		// RFC 18 §3.4: in the directory's realm, its name in any case, a
 		// ticket without a PAC is refused before any mapping, so a domain
 		// account cannot reach a principal by its name alone.
