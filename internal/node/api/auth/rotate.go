@@ -41,12 +41,13 @@ type Rotation struct {
 	store writer
 	seal  sealer
 	tk    *Tokens
+	node  entity.NodeID
 }
 
 // NewRotation returns the rotation of tk's signing key, sealed through s and
-// written to store.
-func NewRotation(store writer, s sealer, tk *Tokens) *Rotation {
-	return &Rotation{store: store, seal: s, tk: tk}
+// written to store, its switch audited as on node.
+func NewRotation(store writer, s sealer, tk *Tokens, node entity.NodeID) *Rotation {
+	return &Rotation{store: store, seal: s, tk: tk, node: node}
 }
 
 // Step runs one turn of the rotation. The first seals the key's next
@@ -78,7 +79,7 @@ func (r *Rotation) Step(ctx context.Context, op entity.Operation) (step.StepResu
 		return step.StepResult{}, fmt.Errorf("%w: %s's target %s names no installation", step.ErrStepFailed, op.Kind, op.Target.Kind)
 	}
 	if len(op.Step) == 0 {
-		return r.switchKey(ctx)
+		return r.switchKey(ctx, op)
 	}
 	var c rotateCursor
 	if err := json.Unmarshal(op.Step, &c); err != nil {
@@ -99,14 +100,15 @@ func (r *Rotation) Step(ctx context.Context, op entity.Operation) (step.StepResu
 }
 
 // switchKey seals the key's next version, commits it as the current one,
-// and refreshes the verifier, answering the cursor that records the switch.
-func (r *Rotation) switchKey(ctx context.Context) (step.StepResult, error) {
+// audited as op's account, and refreshes the verifier, answering the cursor
+// that records the switch.
+func (r *Rotation) switchKey(ctx context.Context, op entity.Operation) (step.StepResult, error) {
 	s, err := SealSigningKey(ctx, r.seal, [16]byte(r.tk.owner.Record.ID), r.tk.ref)
 	if err != nil {
 		return step.StepResult{}, err
 	}
 	var at time.Time
-	err = r.store.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+	err = r.store.Write(ctx, entity.WriteMeta{Audit: r.switchAudit(op, s.Version)}, func(tx entity.ControlPlaneTx) error {
 		at = tx.Now()
 		return tx.PutSecret(s, s.Version-1)
 	})
@@ -119,6 +121,19 @@ func (r *Rotation) switchKey(ctx context.Context) (step.StepResult, error) {
 	_ = r.tk.refresh(ctx)
 	next, _ := json.Marshal(rotateCursor{Phase: phaseSwitched, Version: s.Version, At: at}) // a cursor always encodes
 	return step.StepResult{Next: next}, nil
+}
+
+// switchAudit is the record of the switch to version v: the signing key's
+// versions, never a value, as op's account on the rotation's node.
+func (r *Rotation) switchAudit(op entity.Operation, v uint64) *entity.AuditRecord {
+	change, _ := json.Marshal(map[string]map[string]uint64{"signing_key": {"old": v - 1, "new": v}}) // numbers always marshal
+	return &entity.AuditRecord{
+		Actor:   op.Account,
+		Node:    r.node,
+		Target:  op.Target,
+		Change:  change,
+		Outcome: []byte("applied"),
+	}
 }
 
 // RotationProgress is the rotation's progress, read from its cursor: no

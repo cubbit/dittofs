@@ -304,7 +304,7 @@ func (n *Node) signingKey(cfg Config) (stepRow, error) {
 		return stepRow{}, errors.Join(fmt.Errorf("node: the secret provider: %w", err), n.storageKey.Close())
 	}
 	n.tokens = auth.NewTokens(providerKeys{p}, in.ID, in.SigningKey, cfg.Clock)
-	r := auth.NewRotation(n.meta.ControlPlane(), providerSealer{p}, n.tokens)
+	r := auth.NewRotation(n.meta.ControlPlane(), providerSealer{p}, n.tokens, cfg.Bootstrap.Node.ID)
 	return stepRow{r.Step, auth.RotationProgress}, nil
 }
 

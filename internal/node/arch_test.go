@@ -1084,9 +1084,12 @@ func apiExports(dir, path string) ([]string, error) {
 // OpenAPI, the document cmd/genopenapi writes; and its auth package Caller,
 // CallerFrom, the With its authentication step calls, the local socket's
 // mark, WithLocal and Local, the role table's Right, its rights and Allowed,
-// the ResetAccount the break-glass reset calls, and the SealSigningKey the
-// initialisation step seals the first signing key with, and nothing else; a
-// planted extra method is caught.
+// the ResetAccount the break-glass reset calls, the SealSigningKey the
+// initialisation step seals the first signing key with, and the access
+// tokens and the signing key's rotation the node builds: Tokens, NewTokens,
+// Issue, Verify and their Claims, the KeyVersion the node opens the key's
+// versions as, and Rotation, NewRotation, its Step and RotationProgress; and
+// nothing else; a planted extra method is caught.
 func TestAPIExports(t *testing.T) {
 	want := []string{"Deps", "New", "OpenAPI", "Server", "Server.Start", "Server.Stop"}
 	for _, tc := range []struct {
@@ -1095,8 +1098,11 @@ func TestAPIExports(t *testing.T) {
 	}{
 		{"api", "internal/node/api", want},
 		{"api/auth", "internal/node/api/auth", []string{
-			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Drain", "Installation", "Local", "Principals",
-			"Public", "QuotaEvents", "ResetAccount", "Right", "SealSigningKey", "Self", "Shares", "Stores", "View", "With", "WithLocal",
+			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Claims", "Drain", "Installation",
+			"KeyVersion", "KeyVersion.Format", "KeyVersion.LogValue", "KeyVersion.String", "Local", "NewRotation", "NewTokens",
+			"Principals", "Public", "QuotaEvents", "ResetAccount", "Right", "Rotation", "Rotation.Step", "RotationProgress",
+			"SealSigningKey", "Self", "Shares", "Stores", "Tokens", "Tokens.Format", "Tokens.Issue", "Tokens.LogValue",
+			"Tokens.String", "Tokens.Verify", "View", "With", "WithLocal",
 		}},
 		{"testdata/arch/api-exports", "internal/node/api", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},
 	} {

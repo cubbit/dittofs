@@ -1,6 +1,7 @@
 package node_test
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -89,6 +90,16 @@ func TestRotationKeepsTheOldVersionUntilItsTokensExpire(t *testing.T) {
 	}
 	if cur, stored := held(t, h, ref, 1); cur != 2 || !stored {
 		t.Fatalf("after the switch: current version %d, version 1 stored %v; want 2, and 1 still stored", cur, stored)
+	}
+	var switched []string
+	for a, err := range h.Store().ControlPlane().AuditRecords(ctx, entity.AuditFilter{Target: &op.Target}, nil) {
+		if err != nil {
+			t.Fatalf("list the installation's audit records: %v", err)
+		}
+		switched = append(switched, string(a.Change))
+	}
+	if want := `{"signing_key":{"new":2,"old":1}}`; !slices.Contains(switched, want) {
+		t.Errorf("the installation's audit records after the switch: changes %q, want one %s", switched, want)
 	}
 	if _, err := tk.Verify(ctx, before); err != nil {
 		t.Fatalf("token signed before the switch, verified after it: %v, want verified", err)
