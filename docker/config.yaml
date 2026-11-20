@@ -1,9 +1,9 @@
 # Server configuration for the repository's docker-compose.yml. Only the
 # settings that differ from the built-in defaults are listed.
 #
-# The JWT secret and the initial admin password arrive from the compose file
-# through DITTOFS_CONTROLPLANE_SECRET and DITTOFS_ADMIN_INITIAL_PASSWORD, so no
-# credential is written here.
+# No credential is written here: the server reads no admin password from its
+# environment, and the bootstrap sidecar reads the one it logs in with from
+# COMPOSE_ADMIN_PASSWORD.
 
 logging:
   # Defaults to a file under the state directory; `docker compose logs` reads stdout.

@@ -201,7 +201,7 @@ generate_config() {
     cat > "${CONFIG_FILE}" <<YAML
 # DittoFS Demo Configuration
 logging:
-  level: "INFO"
+  level: "info"
   format: "text"
   output: "stdout"
 
@@ -250,7 +250,6 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=DITTOFS_ADMIN_INITIAL_PASSWORD=${ADMIN_PASSWORD}
 ExecStart=/usr/local/bin/dfs start --config ${CONFIG_FILE}
 Restart=on-failure
 RestartSec=5
