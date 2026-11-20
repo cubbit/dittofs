@@ -131,7 +131,8 @@ func (s *Server) byKerberosName(ctx context.Context, user, realm string, mint bo
 // for: the SID of the user entry the directory holds under the user part,
 // asked fresh only, never served stale (RFC 18 §4.2). It fails
 // ErrUnavailable when no fresh answer can be had and ErrUnknownPrincipal
-// when the directory holds no such entry; a name in another realm, the realm
+// when the directory holds no such entry, or the user part names a service
+// or ends in $, a machine account's (RFC 18 §2.4); a name in another realm, the realm
 // compared case and all, and an entry with no SID give the zero SID, and
 // nothing is minted.
 func (s *Server) KerberosLinkSID(ctx context.Context, name string) (sid.SID, error) {
@@ -147,7 +148,7 @@ func (s *Server) KerberosLinkSID(ctx context.Context, name string) (sid.SID, err
 	if st.Directory == nil || realm != st.Directory.Realm {
 		return sid.SID{}, nil
 	}
-	if strings.Contains(user, "/") {
+	if strings.Contains(user, "/") || strings.HasSuffix(user, "$") {
 		return sid.SID{}, vfserr.ErrUnknownPrincipal
 	}
 	a, ok, err := st.dirLookup(ctx, directory.ByUserName, []byte(user), true)

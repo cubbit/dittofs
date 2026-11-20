@@ -726,6 +726,27 @@ func TestKerberosLinkAsksTheDirectory(t *testing.T) {
 	}
 }
 
+// An operator naming a machine account's Kerberos name in another case,
+// dfs$ while the machine holds DFS$, gets no link to the computer account:
+// the name misses the machine's stored bytes, and the directory, which holds
+// the account, is not asked for a name ending in $, so the write is refused
+// 400 naming spec.kerberos and no user is written.
+func TestKerberosLinkRefusesAMachineAccount(t *testing.T) {
+	d := serveDomainAs(t, false, as(entity.RoleOperator, false))
+	d.dir.AddUser(t, "dfs$", nil)
+	_, m := putMachine(t, d.served, "DFS$@AD.EXAMPLE")
+	r := d.postKerberos(t, "mallory", "dfs$@AD.EXAMPLE")
+	if r.status != http.StatusBadRequest || r.problem(t).Field != "spec.kerberos" {
+		t.Errorf("an operator naming dfs$@AD.EXAMPLE: answered %d %s, want 400 naming spec.kerberos", r.status, r.body)
+	}
+	if _, ok, err := d.store.UserNamed(t.Context(), "mallory"); err != nil || ok {
+		t.Errorf("user mallory: found %v (%v), want none written", ok, err)
+	}
+	if _, ok, err := d.store.User(t.Context(), m); err != nil || !ok {
+		t.Errorf("the machine: found %v (%v), want kept", ok, err)
+	}
+}
+
 // A Kerberos name is checked and stored as identity finds it: one @, a
 // user part and a realm, no space or control character, or 400 naming
 // spec.kerberos; the realm's letters upper-cased, so a name differing from a
