@@ -46,6 +46,8 @@ func TestGenerateRefuses(t *testing.T) {
 		{"type L struct { Next *L }", "L.Next: a type that holds itself"},
 		{"type A struct { B []B `xdr:\"max=2\"` }\ntype B struct { A *A }", "a type that holds itself"},
 		{"type N uint32", "no struct types"},
+		{"type S struct { B []byte `xdr:\"max=4294967296\"` }", `S.B: max="4294967296" is past an XDR length`},
+		{"type S struct { A []T `xdr:\"max=4294967295\"` }\ntype T struct { B []byte `xdr:\"max=4294967295\"` }", "S: a largest encoding past an int"},
 	} {
 		t.Run(c.want, func(t *testing.T) {
 			dir := t.TempDir()
@@ -60,6 +62,20 @@ func TestGenerateRefuses(t *testing.T) {
 				t.Errorf("refused with %v, want %q", err, c.want)
 			}
 		})
+	}
+}
+
+// An XDR length's largest maximum, 2^32-1, is taken, nested once inside an
+// array of a few: their product still fits an int.
+func TestTakesTheLargestXDRLength(t *testing.T) {
+	dir := t.TempDir()
+	src := "package p\n\ntype S struct {\n\tA []T `xdr:\"max=2\"`\n}\n" +
+		"type T struct {\n\tB []byte `xdr:\"max=4294967295\"`\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "in.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generate(dir, []string{"in.go"}); err != nil {
+		t.Fatalf("refused: %v", err)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"math"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -123,6 +124,9 @@ func generate(dir string, files []string) ([]byte, error) {
 	if len(g.errs) == 0 {
 		g.cycles()
 	}
+	if len(g.errs) == 0 {
+		g.bounds()
+	}
 	if len(g.errs) > 0 {
 		return nil, errors.Join(g.errs...)
 	}
@@ -160,6 +164,9 @@ func readTag(lit *ast.BasicLit) (tag, error) {
 				return t, fmt.Errorf("%s=%q is not a count above zero", key, val)
 			}
 			if key == "max" {
+				if uint64(n) > math.MaxUint32 {
+					return t, fmt.Errorf("max=%q is past an XDR length, at most 4294967295", val)
+				}
 				t.max = n
 			} else {
 				t.since = n
@@ -314,6 +321,73 @@ func (g *gen) xdrType(e ast.Expr, max int) (t *xtype, took bool, err error) {
 		}
 	}
 	return nil, false, fmt.Errorf("a type XDR's codec does not know: %s", types.ExprString(e))
+}
+
+// bounds refuses a struct whose largest encoding, every field counted as in
+// the newest version, does not fit an int, so no MaxWire it generates
+// overflows at run time: nested maxima multiply.
+func (g *gen) bounds() {
+	const over = uint64(math.MaxInt) + 1 // every sum and product saturates here
+	add := func(a, b uint64) uint64 {
+		if a >= over-b {
+			return over
+		}
+		return a + b
+	}
+	mul := func(a, b uint64) uint64 {
+		if a != 0 && b > over/a {
+			return over
+		}
+		return a * b
+	}
+	memo := map[string]uint64{}
+	var size func(t *xtype) uint64
+	str := func(s *strct) uint64 {
+		if n, ok := memo[s.name]; ok {
+			return n
+		}
+		n := uint64(0)
+		for i, f := range s.fields {
+			switch {
+			case f.t.kind == kVoid, s.union && i == 0:
+			case s.union:
+				n = max(n, size(f.t))
+			default:
+				n = add(n, size(f.t))
+			}
+		}
+		if s.union {
+			n = add(4, n)
+		}
+		memo[s.name] = n
+		return n
+	}
+	size = func(t *xtype) uint64 {
+		switch t.kind {
+		case kUint64, kInt64:
+			return 8
+		case kFixed:
+			return uint64(pad4(t.n))
+		case kVector:
+			return mul(uint64(t.n), size(t.elem))
+		case kOpaque, kString:
+			return add(4, uint64(pad4(t.n)))
+		case kArray:
+			return add(4, mul(uint64(t.n), size(t.elem)))
+		case kOptional:
+			return add(4, size(t.elem))
+		case kArm:
+			return size(t.elem)
+		case kStruct:
+			return str(g.byName[t.name])
+		}
+		return 4
+	}
+	for _, s := range g.structs {
+		if str(s) >= over {
+			g.errs = append(g.errs, fmt.Errorf("%s: a largest encoding past an int, which MaxWire cannot return: lower a max", s.name))
+		}
+	}
 }
 
 // cycles refuses a type that holds itself.

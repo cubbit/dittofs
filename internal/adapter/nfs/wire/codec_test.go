@@ -191,10 +191,11 @@ func TestCodecByteFieldEndsAtItsLength(t *testing.T) {
 }
 
 // What cannot be the struct is refused: a discriminant with no arm, a string
-// or an array past its bound, a count past the bytes left, a fixed-length
-// opaque cut short, missing padding, and a bool or optional flag other than 0
-// and 1 (RFC 20 section 5.2, RFC 4506). Each input is whole at minor version 0
-// but for the one fault it is named for.
+// or an array past its bound, a fixed-length opaque cut short, missing
+// padding, and a bool or optional flag other than 0 and 1 (RFC 20 section
+// 5.2, RFC 4506); a count past the bytes left is TestCodecClaimedLengths'.
+// Each input is whole at minor version 0 but for the one fault it is named
+// for.
 func TestCodecRefusals(t *testing.T) {
 	word := func(b []byte, vs ...uint32) []byte {
 		for _, v := range vs {
@@ -212,7 +213,6 @@ func TestCodecRefusals(t *testing.T) {
 		{"a discriminant with no arm and no default", &OpenClaim{}, word(nil, 7)},
 		{"a string past its bound", &Sample{}, word(append(word(head(), 9), "abcdefghi\x00\x00\x00"...), 0)},
 		{"an array past its bound", &Sample{}, word(head(), 0, 4, 1, 2, 3, 4)},
-		{"a count past the bytes left", &Sample{}, word(head(), 0, 3, 1, 2)},
 		{"a fixed-length opaque cut short", &Write4Args{}, write[:14]},
 		{"missing padding", &Write4Args{}, write[:len(write)-3]},
 		{"a bool of 2", &Sample{}, word(nil, 1, 2, 3, 2, 0, 0)},
