@@ -151,8 +151,9 @@ type Headroom struct {
 	// repack at the limit leaves a segment standing for records the liveness
 	// tracker still counts, such as an unsettled removal's, so the headroom
 	// those records drew comes back only once they settle and a later pass
-	// retires the segment. Overturned by a journal held at its limit whose
-	// unsettled removals keep its headroom below half for good.
+	// retires the segment. Overturned by a repack pass at the limit that has
+	// retired every sealed segment the liveness tracker does not hold and
+	// still leaves HeadroomBytes below half.
 	drawn atomic.Int64
 	// bySeg is, per segment, the record bytes of drawn records that
 	// appended into it: what Credit returns to drawn once the segment is

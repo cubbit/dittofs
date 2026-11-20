@@ -1408,8 +1408,30 @@ func TestRFC1B_RepackAtTheLimitRecoversTheHeadroom(t *testing.T) {
 
 	// While the deletes are unsettled their records are live, and the
 	// segments holding them are repacked by carrying them.
+	// Every segment is sealed idle first, so no stream has an active segment
+	// and a carried record lands only through a roll, which for a repack copy
+	// takes a repack-reserve spare: a segment that appears during the passes
+	// is that roll's.
 	f.Advance(journaltest.IdleSealAge)
+	before := map[journal.SegmentID]bool{}
+	eventually(t, "the segments were never all sealed idle", func() bool {
+		clear(before)
+		for _, seg := range f.J.Inspect().Segments() {
+			if !seg.Sealed {
+				return false
+			}
+			before[seg.ID] = true
+		}
+		return true
+	})
 	eventually(t, "repack at the limit never freed storage", func() bool { return repack() > 0 })
+	rolled := false
+	for _, seg := range f.J.Inspect().Segments() {
+		rolled = rolled || !before[seg.ID]
+	}
+	if !rolled {
+		t.Fatalf("repack at the limit freed storage with no new segment among %v: no carried record rolled onto a reserve spare", f.J.Inspect().Segments())
+	}
 
 	// Settled, the deletes leave nothing live, and repack retires what is
 	// left of the drawn records' segments.
