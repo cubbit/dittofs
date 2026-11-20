@@ -935,8 +935,9 @@ const credentialWrite = "putCredential"
 // API package, and returns each identifier outside signingKeyFiles that
 // could reach the signing key: a use of the installation's SigningKey field,
 // which names the key's reference; a use of entity.SecretKey, the key's
-// kind; and a call of a PutSecret or PruneSecret method, which writes or
-// drops a version of any secret, but a PutSecret in credentialWrite. Every
+// kind; and a call of a PutSecret, PruneSecret or SetSigningKey method,
+// which writes or drops a version of any secret or names another secret as
+// the key, but a PutSecret in credentialWrite. Every
 // way to write the key needs one of these, so a route writing it is caught
 // whatever it is named; one reaching the reference through another package's
 // function, which none of the API's imports has, is not.
@@ -987,7 +988,7 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 				bad = append(bad, at+" uses Installation.SigningKey")
 			case o == kind:
 				bad = append(bad, at+" uses entity.SecretKey")
-			case (o.Name() == "PutSecret" || o.Name() == "PruneSecret") && isMethod(o):
+			case (o.Name() == "PutSecret" || o.Name() == "PruneSecret" || o.Name() == "SetSigningKey") && isMethod(o):
 				if o.Name() == "PutSecret" && fn == credentialWrite {
 					break
 				}
@@ -1038,6 +1039,7 @@ func TestNoRouteWritesTheSigningKey(t *testing.T) {
 		"routes.go:16 uses entity.SecretKey",
 		"routes.go:18 calls PutSecret",
 		"routes.go:24 calls PruneSecret",
+		"routes.go:30 calls SetSigningKey",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("the planted route: reaches %q, want %q", got, want)

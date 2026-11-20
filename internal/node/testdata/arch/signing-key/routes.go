@@ -23,3 +23,9 @@ func rotate(tx entity.ControlPlaneTx) error {
 func putCredential(tx entity.ControlPlaneTx, ref entity.SecretRef) error {
 	return tx.PruneSecret(ref, 1)
 }
+
+// repoint names another secret as the signing key, which writes the key
+// without its field, its kind or a put.
+func repoint(tx entity.ControlPlaneTx, ref entity.SecretRef) error {
+	return tx.SetSigningKey(ref)
+}

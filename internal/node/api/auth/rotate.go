@@ -95,6 +95,14 @@ func RotationStep(store Writer, s Sealer, tk *Tokens, node entity.NodeID) step.S
 // switchKey seals the key's next version, commits it as the current one,
 // audited as op's account on node, and refreshes the verifier, answering
 // the cursor that records the switch.
+//
+// decision: a switch whose commit lands but whose cursor the runner never
+// writes runs again on the next turn, sealing one more version and auditing
+// a second set. That is safe: the newest version signs, and the prune keeps
+// every version from the last switch on. Adopting the version already
+// written, as the machine password's rotation does, needs the switch's
+// version recorded in the store, which nothing records. Overturned once the
+// installation records the rotation it last switched to.
 func switchKey(ctx context.Context, store Writer, s Sealer, tk *Tokens, node entity.NodeID, op entity.Operation) (step.StepResult, error) {
 	sealed, err := SealSigningKey(ctx, s, [16]byte(tk.owner.Record.ID), tk.ref)
 	if err != nil {
