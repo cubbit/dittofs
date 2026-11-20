@@ -193,7 +193,7 @@ func (e *Engine) Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (e
 		return entity.JournalVersion{}, err
 	}
 
-	v, err := refusing(ctx, e, b, true, b.j.Draw)
+	v, err := refusing(ctx, e, b, true, func() (journal.Version, error) { return b.j.Draw() })
 	if err != nil {
 		return entity.JournalVersion{}, err
 	}

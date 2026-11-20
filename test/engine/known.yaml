@@ -9,13 +9,6 @@
   category: feature
   reason: 'the start''s re-application over the recovered journal: a write synced before its Commit survives the crash whole, its size committed at 24 and its bytes read back; the mtime it read at the write does not — the re-application carries the time of its own replay, not the record''s, so the committed mtime reads the wall clock, want the write''s. The row waits on the start''s replay carrying each record''s staged mtime.'
   issue: '#4210'
-- test: TestRFC8C_DeclaredInterfaces
-  message: 'the engine never calls 1 declared methods: [Journal.Draw]'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the engine passing Journal.Draw as a method value (the method value in engine/write.go), which the architecture test counts as no call (uncalled in engine/conformance/arch_test.go): every other declared method is called, and the row reports Journal.Draw alone until the engine calls it directly.'
-  issue: '#4206'
 - test: TestRFC8A_AttachAfterDeviceLoss
   message: 'fixture: journal init: rename'
   status: fail
