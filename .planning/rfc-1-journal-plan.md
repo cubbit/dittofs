@@ -871,20 +871,20 @@ known failures:
 Candidate subtasks: one per structure (6), scanner, `format` replace, platform per OS, CoW
 and barrier probes, and the conformance tests above.
 
-Subtasks and estimates. These ids are this plan's: the epic 3 document splits and groups the same work differently, so its subtask 3.x is not this list's T3.x:
+Subtasks, numbered and named as their issues and the epic 3 document have them. The epic's man-days come from an earlier breakdown that grouped the work differently, so no subtask carries a figure of its own:
 
-- T3.1 Errors into core, CRC32C and `Seed`, `format` file codec, file names, trace resolution, `journal-fuzz` — 2.5 man-days.
-- T3.2 Segment header and seal marker codecs, `SlotKind` — 1.5 man-days.
-- T3.3 Record header codec and the 14-kind table, `Reach` — 2 man-days.
-- T3.4 Payloads, alignment, record size, payload checksum — 1.5 man-days.
-- T3.5 Catalog entries, trailer, `CheckFooter`, `EntryMatches`, `FooterLen` — 2 man-days.
-- T3.6 Slot scanner: zero gaps, resynchronisation, damage ranges, windowed and allocation-free — 3.5 man-days.
-- T3.7 `format` file atomic replace and read, crash after every step — 1.5 man-days.
-- T3.8 Linux OS storage: `O_EXCL`, `fdatasync`, allocate and zero-fill, `O_DIRECT` aligned reads — 3.5 man-days.
-- T3.9 macOS (`F_FULLFSYNC`, `F_NOCACHE`), Windows (share-delete, flush, no-buffering), other platforms — 4 man-days.
-- T3.10 Admission checks (barriers, CoW, subvolume, flush policy, thin), `ErrUnsafeStorage`, default storage in `Init` and `Open` — 3.5 man-days.
-- T3.11 Loop-device fixtures (ext4, XFS, Btrfs, dm-thin, small fs), platform conformance, `os` leg, `journal-platform` suite — 4.5 man-days.
-- T3.12 Fuzz coverage and review — 1 man-day.
+- T3.1 Format file codec and plain CRC32C (#3469)
+- T3.2 Segment header codec and segment file names (#3470)
+- T3.3 Seal marker codec and seeded CRC32C (#3471)
+- T3.4 Record codec, kinds, bodies and whole-payload verification (#3472)
+- T3.5 Catalog entry, trailer and footer reader (#3473)
+- T3.6 Slot scanner with resynchronisation (#3474)
+- T3.7 Platform, Linux: files, sync and directory sync (#3475)
+- T3.8 Platform, Linux: allocation (#3476)
+- T3.9 Platform, macOS: F_FULLFSYNC and F_PREALLOCATE (#3477)
+- T3.10 Platform, Windows: share-delete, FlushFileBuffers, directory flush, allocation (#3478)
+- T3.11 Probes, Linux: mount options, copy-on-write and Btrfs subvolume (#3479)
+- T3.12 Probes: Windows cache-flush policy (#3480)
 
 ### Epic 4 — Placement index and versions ⛔ (12 subtasks, B)
 
@@ -918,20 +918,20 @@ Fuzz: operation sequences against the reference model. Candidate subtasks: B-tre
 index, span query, retained set, markers, precedence, counters and limit, floor buckets,
 extent bound, drop ranges, per-segment accounting.
 
-Subtasks and estimates. These ids are this plan's: the epic 4 document splits and groups the same work differently, so its E4-n is not this list's T4.n:
+Subtasks, numbered and named as their issues and the epic 4 document have them. The epic's man-days come from an earlier breakdown that grouped the work differently, so no subtask carries a figure of its own:
 
-- T4.1 B-tree with packed leaves, lowest-dirty per node, comparison counts, `AllocsPerOp`, J3/J4 benchmarks — 5 man-days.
-- T4.2 `FileIndex`: write with split and narrow, lookup, exact-gap span, `PlanWrite`, `Repoint` — 4 man-days.
-- T4.3 Removal markers, losses, `FillGaps`, `Settle`, `Since`, change version — 3.5 man-days.
-- T4.4 Offloaded bit: dirty walk, `Mark`, `MarkRange` with stale rule, `Unmark`, release check — 3 man-days.
-- T4.5 Retained set: reasons, reinstate, `HeldOrRetained`, repoint — 2.5 man-days.
-- T4.6 Sharded outer map, file lifecycle, tags and claims, tag conflicts, concurrency — 3 man-days.
-- T4.7 Sequence and version counters, version limit, restore — 1.5 man-days.
-- T4.8 Change version and the 4,096 floor buckets — 1.5 man-days.
-- T4.9 Entry bound with the one-eighth allowance, entry reservations — 2.5 man-days.
-- T4.10 Per-segment bytes, drop ranges with merge, `CanDrop`, index-memory check — 3.5 man-days.
-- T4.11 Builder: precedence, duplicates, losses, forget, bits, counters, concurrent and order-free — 5 man-days.
-- T4.12 `FuzzIndexOps` against the model, `FuzzBuilderOrder`, review — 3.5 man-days.
+- T4.1 Ordered B-tree container (#3365)
+- T4.2 Held-extent set for one file (#3366)
+- T4.3 File index map and lock domain (#3367)
+- T4.4 Precedence and counters (#3368)
+- T4.5 Removal markers, `Since` and `Settle` (#3369)
+- T4.6 Retained-extent set (#3370)
+- T4.7 Change version and floor buckets (#3371)
+- T4.8 Extent bound (#3372)
+- T4.9 Per-segment held and retained bytes (#3373)
+- T4.10 Drop ranges (#3374)
+- T4.11 Order-independent rebuild builder (#3375)
+- T4.12 Inspection read-out, memory check, model fuzz (#3376)
 
 ### Epic 5 — Segments, streams and accounting ⛔ (11 subtasks, A)
 
