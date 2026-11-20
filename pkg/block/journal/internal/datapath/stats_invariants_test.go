@@ -528,3 +528,44 @@ func TestRFC1D_UnreclaimedClampsAStaleHeldFigure(t *testing.T) {
 	}
 	wantUnreclaimed(t, c, "with the set below held", 1, 0)
 }
+
+// TestRFC1D_StatsCountsAWriteLandingBetweenTheReads parks a write after its
+// reservation is taken and before its record is appended, then lands the whole
+// write at each point of Stats' reads. The reservation is read before the set's
+// figures, so the record is in at least one: a read of the reservation after
+// the set's would see neither the uncounted record nor the released
+// reservation.
+func TestRFC1D_StatsCountsAWriteLandingBetweenTheReads(t *testing.T) {
+	const payload = 4096
+	for step := 1; step <= 3; step++ {
+		t.Run(fmt.Sprintf("step %d", step), func(t *testing.T) {
+			parked, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var werr error
+			var parkOnce, landOnce sync.Once
+			var c *Core
+			c, _ = newTestCore(t, func(o *coreOptions) {
+				o.beforeAppend = func() { parkOnce.Do(func() { close(parked); <-release }) }
+				o.statsStep = func(s int) {
+					if s == step {
+						landOnce.Do(func() { close(release); <-done })
+					}
+				}
+			})
+			s := mustShare(t, c, 1)
+			go func() {
+				defer close(done)
+				_, werr = c.WriteAt(context.Background(), s, testFile(1), 0, make([]byte, payload), 1)
+			}()
+			<-parked
+			st := c.Stats()
+			<-done
+			if werr != nil {
+				t.Fatalf("WriteAt: %v", werr)
+			}
+			ss := st.Shares[1]
+			if ss.ReservedBytes+ss.UsedBytes < payload {
+				t.Fatalf("a write landed at Stats step %d: share 1 ReservedBytes %d + UsedBytes %d < %d: the record is in neither", step, ss.ReservedBytes, ss.UsedBytes, payload)
+			}
+		})
+	}
+}

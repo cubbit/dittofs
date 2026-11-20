@@ -106,6 +106,9 @@ func (c *Core) Stats() Stats {
 	var s Stats
 	s.MaxBytes = c.maxBytes
 	reserved, reservedBy := c.cap.ReservedBytes(), c.cap.ReservedByTag()
+	if c.statsStep != nil {
+		c.statsStep(1)
+	}
 	for range 4 {
 		s.DirtyBytes = c.dirty.Load()
 		if c.betweenHeldReads != nil {
@@ -117,6 +120,9 @@ func (c *Core) Stats() Stats {
 	}
 	s.OldestDirty = c.oldestDirty()
 
+	if c.statsStep != nil {
+		c.statsStep(2)
+	}
 	sc := c.set.Counters()
 	s.UsedBytes, s.Segments, s.Sealed = sc.UsedBytes, int(sc.Segments), int(sc.Sealed)
 
@@ -154,6 +160,9 @@ func (c *Core) Stats() Stats {
 	// journal's own records) excepted.
 	figs := c.shareFigures()
 	used, over := c.set.TagFigures()
+	if c.statsStep != nil {
+		c.statsStep(3)
+	}
 	s.Shares = make(map[core.ShareTag]ShareStats)
 	if p := c.registry.Load(); p != nil {
 		for _, h := range *p {

@@ -140,6 +140,10 @@ type coreOptions struct {
 	shareStepSpy func(step int)
 	// betweenHeldReads runs in Stats between its dirty and held reads.
 	betweenHeldReads func()
+	// statsStep runs in Stats after the reservation figures are read, before
+	// the set's counters and after the set's per-tag figures, told which (1,
+	// 2, 3).
+	statsStep func(step int)
 	// tracer is the Tracer the core's Deps carry; nil means no tracing.
 	tracer core.Tracer
 	// state is the State newCore continues from; the zero State builds fresh.
@@ -279,6 +283,13 @@ type Core struct {
 	//
 	// decision: it is nil outside tests, for the same reason stepSpy is.
 	betweenHeldReads func()
+
+	// statsStep is a test seam that stands at three points of Stats' reads,
+	// so a test can land a whole write between the reservation read and the
+	// set's reads.
+	//
+	// decision: it is nil outside tests, for the same reason stepSpy is.
+	statsStep func(step int)
 
 	// rec is the recorder the core's locks report to, the one removals'
 	// wait assertion consults. Nil in production, where every consult
@@ -459,7 +470,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, shareHook: o.shareHook, afterSwap: o.afterSwap, rec: o.recorder, forgetting: make(map[core.ShareTag]struct{})}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, statsStep: o.statsStep, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, shareHook: o.shareHook, afterSwap: o.afterSwap, rec: o.recorder, forgetting: make(map[core.ShareTag]struct{})}
 	c.shares.stepSpy = o.shareStepSpy
 	tbl := newFileLocks()
 	if c.rec != nil {
