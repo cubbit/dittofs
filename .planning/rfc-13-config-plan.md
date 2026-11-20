@@ -581,7 +581,7 @@ The refusal sits at both places a change can enter:
   with no content too, since a store with none can be deleted and created again. RFC 13 §4.2 lists the
   credential reference with the location, and §5.2 proves a new credential the same way, so
   repointing the reference at a freshly sealed `remote credential` is a change like any other. A
-  store location's first value, written when the store is created, has no value before it (no row and no default) and passes; a
+  store location's first value, written when the store is created, has no row at any scope before it, whatever the field's default, and passes. A default here is no old location to prove, since RFC 13 §4.2 makes these fields required with no default; a
   later put, or a delete that changes the effective value, is refused.
 - **The credential, at `Seal`.** `Seal` reads the kind off the stored record, never the caller's: a
   record already there with the `remote credential` kind refuses a new version, and a reseal under
@@ -839,7 +839,7 @@ var Settings = settings.Table{
 // Of panics on a missing or unknown class, an unknown `location` value, a FormatVersion field that is
 // not an integer, a field with no explicit json name (its key is the
 // field's Go name, not a lower-case setting key), a duplicate field name, or a Required,
-// SecretRef or FormatVersion name that is not a field of T, so a typo fails the table's first
+// SecretRef, OverrideOnly or FormatVersion name that is not a field of T, so a typo fails the table's first
 // test instead of making a restart or bound key live.
 func Of[T interface{ Validate() error }](prefix string, scope Scope, def T, opts ...Option) Section
 ```
@@ -914,7 +914,7 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, h
 			return refuseBound(w) // RFC 13 §5.1
 		}
 	}
-	if sec.isStoreLocation(key) && sec.isChange(tx, w) { // a field marked by the `location` tag; a first value, with no value before it, is no change
+	if sec.isStoreLocation(key) && sec.isChange(tx, w) { // a field marked by the `location` tag; a first value, with no row at any scope, is no change
 		// decision: D9. Refused until the capability check finds the claim
 		// (RFC 13 §5.2); withdraw when both are built.
 		return ErrUnproven
