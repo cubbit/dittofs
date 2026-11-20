@@ -8,6 +8,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/types"
 
 	"github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/secrets"
 )
 
@@ -55,24 +56,25 @@ func buildRing(versions []secrets.Version, log *slog.Logger) keyRing {
 	return ring
 }
 
-// AppliedKeytab is the number of the keytab's current version in force and
-// the name of each key its versions in force hold, zero and none while no
-// keytab is in force. A version that does not parse fails the call, since
-// the API's check of a join against it cannot then see its names.
-func (s *Server) AppliedKeytab() (uint64, []identity.KeytabName, error) {
+// AppliedKeytab is the reference of the keytab in force, the number of its
+// current version and the name of each key its versions in force hold,
+// zero and none while no keytab is in force. A version that does not parse
+// fails the call, since the API's check of a join against it cannot then
+// see its names.
+func (s *Server) AppliedKeytab() (entity.SecretRef, uint64, []identity.KeytabName, error) {
 	st := s.state.Load()
 	if st == nil || len(st.Keytab) == 0 {
-		return 0, nil, nil
+		return entity.SecretRef{}, 0, nil, nil
 	}
 	var names []identity.KeytabName
 	for _, v := range st.Keytab {
 		n, err := identity.KeytabNames(v.Value)
 		if err != nil {
-			return 0, nil, err
+			return entity.SecretRef{}, 0, nil, err
 		}
 		names = append(names, n...)
 	}
-	return st.Keytab[0].Number, names, nil
+	return st.Settings.Keytab, st.Keytab[0].Number, names, nil
 }
 
 // key is the ring's key for a service name, compared with ASCII letters

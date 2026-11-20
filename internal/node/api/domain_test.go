@@ -45,7 +45,7 @@ import (
 type heldJoins struct {
 	next interface {
 		HoldJoinCredential(entity.OperationID, pid.JoinCredential) func()
-		AppliedKeytab() (uint64, []pid.KeytabName, error)
+		AppliedKeytab() (entity.SecretRef, uint64, []pid.KeytabName, error)
 	}
 	mu    sync.Mutex
 	holds []*held
@@ -70,7 +70,9 @@ func (h *heldJoins) HoldJoinCredential(id entity.OperationID, cred pid.JoinCrede
 	}
 }
 
-func (h *heldJoins) AppliedKeytab() (uint64, []pid.KeytabName, error) { return h.next.AppliedKeytab() }
+func (h *heldJoins) AppliedKeytab() (entity.SecretRef, uint64, []pid.KeytabName, error) {
+	return h.next.AppliedKeytab()
+}
 
 func (h *heldJoins) taken() []held {
 	h.mu.Lock()

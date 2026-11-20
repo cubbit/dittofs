@@ -471,8 +471,9 @@ func TestKeytabDelete(t *testing.T) {
 
 // A join naming an account the stored keytab holds a key for is refused 409
 // naming spec.account, online and offline, starting no operation, once
-// identity has applied that keytab; before, it is refused 503, since the
-// names checked are those of the version identity applied. A join naming
+// identity has applied that keytab; before, and while identity has applied
+// another keytab of the same version number, it is refused 503, since the
+// names checked are those of the keytab identity applied. A join naming
 // another account starts.
 func TestJoinRefusedForAnAccountTheKeytabHolds(t *testing.T) {
 	d := serveDomain(t, true)
@@ -490,7 +491,18 @@ func TestJoinRefusedForAnAccountTheKeytabHolds(t *testing.T) {
 	if r := d.do(t, http.MethodPost, joinPath, offlineJoin("DFS$", "pw-1")); r.status != http.StatusServiceUnavailable {
 		t.Errorf("a join before identity applied the keytab: answered %d %s, want 503", r.status, r.body)
 	}
+	// identity applies another keytab, of the stored one's version number,
+	// holding no key for DFS$: its names are not the stored keytab's.
 	st := d.state
+	st.Settings.Keytab = entity.SecretRef(uuid.New())
+	st.Keytab = []secrets.Version{{Number: sealed.Version, Value: keytabOf(t, "cifs/nas.ad.example", etypeID.AES256_CTS_HMAC_SHA1_96)}}
+	if err := d.ids.Apply(st); err != nil {
+		t.Fatal(err)
+	}
+	if r := d.do(t, http.MethodPost, joinPath, offlineJoin("DFS$", "pw-1")); r.status != http.StatusServiceUnavailable {
+		t.Errorf("a join while identity applied another keytab of the same version: answered %d %s, want 503", r.status, r.body)
+	}
+	st.Settings.Keytab = ref
 	st.Keytab = []secrets.Version{{Number: sealed.Version, Value: kt}}
 	if err := d.ids.Apply(st); err != nil {
 		t.Fatal(err)

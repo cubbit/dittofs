@@ -28,12 +28,13 @@ type directory interface {
 
 // joins holds an online join's administrator credential in memory under the
 // operation it is handed to, until the join's step takes it or release is
-// called; release zeroes the password. AppliedKeytab is the number of the
-// keytab's current version identity has applied and the name of each key
-// its versions in force hold, zero and none while it holds no keytab.
+// called; release zeroes the password. AppliedKeytab is the reference of
+// the keytab identity has applied, the number of its current version and the
+// name of each key its versions in force hold, zero and none while it holds
+// no keytab.
 type joins interface {
 	HoldJoinCredential(id entity.OperationID, cred identity.JoinCredential) (release func())
-	AppliedKeytab() (uint64, []identity.KeytabName, error)
+	AppliedKeytab() (entity.SecretRef, uint64, []identity.KeytabName, error)
 }
 
 // opStart is an installation action's pre-write step's result: the
@@ -320,8 +321,9 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 // recorded, as a keytab's put refuses one for a joined account's name. The
 // keytab's names are those of the version identity has applied, asked
 // before the write; the write reads the keytab's setting and current
-// version tracked, and refuses 503 when that is not the version identity
-// applied, so a keytab put since is not missed. An account of "" checks
+// version tracked, and refuses 503 unless they are the reference and version
+// identity applied, so a keytab put since, under a new reference or a new
+// version, is not missed. An account of "" checks
 // nothing.
 //
 // decision: a join is checked against the account it names only. An online
@@ -336,7 +338,7 @@ func keytabOf(d Deps, account string) (func(entity.ControlPlaneTx) error, error)
 	if account == "" {
 		return func(entity.ControlPlaneTx) error { return nil }, nil
 	}
-	ver, names, err := d.Joins.AppliedKeytab()
+	applied, ver, names, err := d.Joins.AppliedKeytab()
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +355,7 @@ func keytabOf(d Deps, account string) (func(entity.ControlPlaneTx) error, error)
 		if err != nil {
 			return err
 		}
-		if !ok || cur.Version != ver {
+		if !ok || ref != applied || cur.Version != ver {
 			return &refusal{code: apiv1.CodeUnavailable, detail: "the keytab changed while the join was checked; retry"}
 		}
 		realm, rok, err := tx.Setting(installation, directoryRealm)
