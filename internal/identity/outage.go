@@ -51,18 +51,18 @@ type outage struct {
 
 // skip reports whether a lookup at now goes unasked: true while the outage is
 // raised and the last probe is less than dirProbeEvery old. A lookup it does
-// not skip while raised is the probe.
-func (o *outage) skip(now time.Time) bool {
+// not skip while raised is the probe, which probe reports.
+func (o *outage) skip(now time.Time) (skip, probe bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if !o.raised {
-		return false
+		return false, false
 	}
 	if now.Sub(o.probed) < dirProbeEvery {
-		return true
+		return true, false
 	}
 	o.probed = now
-	return false
+	return false, true
 }
 
 // raise raises the outage for a query that started at start and failed with
