@@ -1569,7 +1569,7 @@ func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
 		// The spare's rename is held after its sync; the retirement of the
 		// full segment, whichever way it goes, syncs the directory and so
 		// makes the temporary name's entry durable.
-		g := journaltest.NewWith(t, roomySpares)
+		g := journaltest.NewUnwatchedWith(t, roomySpares)
 		held := g.Seam.Hold(t, kit.OpRename, "*.spare.tmp")
 		recs, seg := fillSegment(t, g, 0, 0, size)
 		other := writeSynced(t, g, 1, 1, 0, size)
@@ -1826,7 +1826,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	// A crash between the rename and the zeroing sync: the renamed file
 	// still carries the old header, records and trailer under a name none
 	// of them verifies for, and is re-adopted as a spare.
-	e := journaltest.NewUnwatched(t)
+	e := journaltest.NewUnwatchedWith(t, roomySpares)
 	held = e.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	recs, seg = fillSegment(t, e, 0, 0, size)
 	others, _ = fillSegment(t, e, 1, 1, size)
@@ -1872,7 +1872,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	// A segment whose sync failed is unlinked, never recycled, even with
 	// the pool short. A is written and not synced, so the failing sync
 	// covers it, and the journal either re-appends it or fails the window.
-	n := journaltest.NewUnwatched(t)
+	n := journaltest.NewUnwatchedWith(t, roomySpares)
 	held = n.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	fillSegment(t, n, 1, 1, size)
 	a = writeRec(t, n, 0, 0, 0, size)
