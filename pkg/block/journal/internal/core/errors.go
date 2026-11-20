@@ -252,7 +252,7 @@ type NoSpaceError struct {
 
 func (e *NoSpaceError) Error() string {
 	if e.Stale > 0 {
-		return fmt.Sprintf("journal: no space: refused by the %s limit, %d %s missing, %d of them stale in the share's figure",
+		return fmt.Sprintf("journal: no space: refused by the %s limit, %d %s missing, and the share's figure stands %d above the set's",
 			e.Limit, e.Missing, e.Unit, e.Stale)
 	}
 	return fmt.Sprintf("journal: no space: refused by the %s limit, %d %s missing",

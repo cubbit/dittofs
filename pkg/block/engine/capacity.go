@@ -17,6 +17,7 @@ import (
 type refusal struct {
 	limit  journal.Limit
 	device bool
+	stale  int64 // the share's figure above the set's, a diagnostic the table ignores
 }
 
 // row is what the refusal table answers for one refusal.
@@ -37,7 +38,7 @@ func capacityRefusal(err error) (refusal, bool) {
 	case errors.Is(err, journal.ErrJournalReadOnly):
 		return refusal{}, false
 	case errors.As(err, &noSpace):
-		return refusal{limit: noSpace.Limit}, true
+		return refusal{limit: noSpace.Limit, stale: noSpace.Stale}, true
 	case errors.Is(err, syscall.ENOSPC):
 		return refusal{device: true}, true
 	}
@@ -175,6 +176,7 @@ func (e *Engine) answeredAs(b *binding, err error, r refusal, rw row) error {
 		e.d.Logger.Warn("write refused",
 			"share", b.share.ID.String(),
 			"limit", r.String(),
+			"stale", r.stale,
 			"answer", answer.Error(),
 			"suppressed", suppressed,
 		)
