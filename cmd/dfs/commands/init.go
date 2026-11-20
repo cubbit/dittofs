@@ -3,23 +3,91 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/cubbit/dittofs/internal/install"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 )
 
 func newInitCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize a new installation",
-		Long: `Initialize a new DittoFS installation: its first administrator and its
-signing key, kept in the metadata store the server's configuration names.
+		Long: `Initialize a new DittoFS installation: its metadata store, each journal
+directory with the node's identity beside it, the administrator account
+"admin" and the signing key, in the stores the server's configuration names.
+
+The administrator's first password is read from a file or an environment
+variable. With neither, a password is generated and printed once to standard
+output, never to the log, and must be changed at the first sign-in.
+
+Run again after an interruption, init finishes what the interrupted run left;
+over a finished installation it refuses and changes nothing.
 
 Examples:
-  # Initialize the installation the default configuration names
-  dfs init`,
+  # Initialize, generating the administrator's password
+  dfs init
+
+  # Initialize with the password in a file (one trailing newline is dropped)
+  dfs init --admin-password-file /run/secrets/dittofs-admin
+
+  # Initialize with the password in an environment variable
+  DFS_ADMIN_PASSWORD=... dfs init --admin-password-env DFS_ADMIN_PASSWORD`,
 		Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("initializing the installation: %w", errors.ErrUnsupported)
-		},
+		RunE: runInit,
 	}
+	cmd.Flags().String("admin-password-file", "", "file holding the administrator's first password")
+	cmd.Flags().String("admin-password-env", "", "environment variable holding the administrator's first password")
+	cmd.MarkFlagsMutuallyExclusive("admin-password-file", "admin-password-env")
+	return cmd
+}
+
+// runInit reads the bootstrap, opens the storage role's key and the metadata
+// store's KV, and runs the initialisation step over them and the journal
+// directories the bootstrap names. Each error names the step that failed.
+func runInit(cmd *cobra.Command, _ []string) (err error) {
+	configPath, _ := cmd.Flags().GetString("config")
+	file, _ := cmd.Flags().GetString("admin-password-file")
+	env, _ := cmd.Flags().GetString("admin-password-env")
+	ctx := cmd.Context()
+
+	cfg, err := bootstrap.MustLoad(configPath, os.Environ())
+	if err != nil {
+		return err
+	}
+	if err := bootstrap.InitLogger(cfg); err != nil {
+		return err
+	}
+	if err := checkKV(cfg); err != nil {
+		return err
+	}
+	if cfg.Keys.Storage.Kind == "" {
+		return errors.New("keys.storage is not set: the administrator's password and the signing key are sealed under it")
+	}
+	key, err := keyprovider.NewProvider(ctx, cfg.Keys.Storage.Provider())
+	if err != nil {
+		return fmt.Errorf("opening the storage key: %w", err)
+	}
+	defer func() { err = errors.Join(err, key.Close()) }()
+	clock := newSystemClock()
+	kv, err := openKV(cfg, clock)
+	if err != nil {
+		return fmt.Errorf("opening the metadata store: %w", err)
+	}
+	defer func() { err = errors.Join(err, kv.Close()) }()
+	return install.Run(ctx, install.Deps{
+		Bootstrap:    cfg,
+		KV:           kv,
+		StorageKey:   key,
+		Journal:      []journal.Option{journal.WithClock(clock)},
+		PasswordFile: file,
+		PasswordEnv:  env,
+		Out:          cmd.OutOrStdout(),
+		Logger:       slog.Default(),
+	})
 }
