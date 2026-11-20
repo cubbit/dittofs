@@ -42,8 +42,9 @@ type Writer interface {
 // commits nothing, until pruneWait has passed at the node's clock; then the
 // operation ends, pruning every version below the new one in the
 // transaction that ends it. A target other than the installation, and an
-// installation that names no signing key, fail the operation: neither
-// changes on a retry.
+// installation that names no signing key, or no longer names the one tk
+// took at build, read in the switch's write and in the end's, fail the
+// operation: none changes on a retry.
 //
 // A switch whose cursor was not committed runs again and seals one more
 // version. That is safe: the cursor names the last switch, whose store time
@@ -90,6 +91,9 @@ func RotationStep(store Writer, s Sealer, tk *Tokens, node entity.NodeID) step.S
 		}
 		ref := tk.ref
 		return step.StepResult{Done: true, Next: op.Step, End: func(tx entity.ControlPlaneTx) error {
+			if err := stillNames(tx, ref); err != nil {
+				return err
+			}
 			return tx.PruneSecret(ref, c.Version)
 		}}, nil
 	}
@@ -113,6 +117,9 @@ func switchKey(ctx context.Context, store Writer, s Sealer, tk *Tokens, node ent
 	}
 	var at time.Time
 	err = store.Write(ctx, entity.WriteMeta{Audit: switchAudit(op, node)}, func(tx entity.ControlPlaneTx) error {
+		if err := stillNames(tx, tk.ref); err != nil {
+			return err
+		}
 		at = tx.Now()
 		return tx.PutSecret(sealed, sealed.Version-1)
 	})
@@ -125,6 +132,22 @@ func switchKey(ctx context.Context, store Writer, s Sealer, tk *Tokens, node ent
 	_ = tk.refresh(ctx)
 	next, _ := json.Marshal(rotateCursor{Version: sealed.Version, At: at}) // a cursor always encodes
 	return step.StepResult{Next: next}, nil
+}
+
+// stillNames refuses, failing the operation, unless the installation read
+// through tx, tracked, still names ref as its signing key: the reference the
+// tokens took when the node was built. A rotation that seals or prunes
+// another key's versions would leave the key that signs unrotated, its
+// switch audited as set.
+func stillNames(tx entity.ControlPlaneTx, ref entity.SecretRef) error {
+	in, err := tx.Installation()
+	if err != nil {
+		return err
+	}
+	if in.SigningKey != ref {
+		return fmt.Errorf("%w: the installation names signing key %x, not %x, the one this node signs with", step.ErrStepFailed, in.SigningKey, ref)
+	}
+	return nil
 }
 
 // switchAudit is the record of the switch: the signing key set, as a secret
