@@ -926,10 +926,23 @@ func writeCalls(dir, path string) ([]string, error) {
 // rotation step, its one writer after the installation's first version.
 var signingKeyFiles = []string{"auth/rotate.go", "auth/tokens.go"}
 
-// credentialWrite is the API's one function outside signingKeyFiles that
-// may write a secret version: a remote store's credential, which the store
-// refuses to write under the signing key's kind or owner.
-const credentialWrite = "putCredential"
+// credentialFile and credentialWrite name the API's one function outside
+// signingKeyFiles that may write a secret version: the top-level
+// putCredential of res_secrets.go, a remote store's credential, which the
+// store refuses to write under the signing key's kind or owner.
+//
+// decision: the exemption names the function rather than checking the
+// written secret's kind and owner, which the type checker cannot see: the
+// credential reaches PutSecret as a parameter, sealed in another function
+// and handed over by the write adapter. So it is scoped to that one
+// declaration: a method, a closure at package level or a function of the
+// same name in another file is checked. Overturned once a secret write
+// takes its kind and owner as constants a check can read, or a second
+// function must write a secret.
+const (
+	credentialFile  = "res_secrets.go"
+	credentialWrite = "putCredential"
+)
 
 // signingKeyReaches type-checks the package in dir, as import path path, an
 // API package, and returns each identifier outside signingKeyFiles that
@@ -937,7 +950,8 @@ const credentialWrite = "putCredential"
 // which names the key's reference; a use of entity.SecretKey, the key's
 // kind; and a call of a PutSecret, PruneSecret or SetSigningKey method,
 // which writes or drops a version of any secret or names another secret as
-// the key, but a PutSecret in credentialWrite. Every
+// the key, but a PutSecret in the top-level credentialWrite of
+// credentialFile. Every
 // way to write the key needs one of these, so a route writing it is caught
 // whatever it is named; one reaching the reference through another package's
 // function, which none of the API's imports has, is not.
@@ -952,15 +966,18 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 		return nil, err
 	}
 	var field types.Object
-	inst := ent.Scope().Lookup("Installation").Type().Underlying().(*types.Struct)
-	for f := range inst.Fields() {
-		if f.Name() == "SigningKey" {
-			field = f
+	if o := ent.Scope().Lookup("Installation"); o != nil {
+		if inst, ok := o.Type().Underlying().(*types.Struct); ok {
+			for f := range inst.Fields() {
+				if f.Name() == "SigningKey" {
+					field = f
+				}
+			}
 		}
 	}
 	kind := ent.Scope().Lookup("SecretKey")
 	if field == nil || kind == nil {
-		return nil, errors.New("entity declares no Installation.SigningKey or SecretKey")
+		return nil, errors.New("entity declares no Installation struct with a SigningKey field, or no SecretKey")
 	}
 	sub := strings.TrimPrefix(strings.TrimPrefix(path, module+"internal/node/api"), "/")
 	var bad []string
@@ -972,30 +989,30 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 		if slices.Contains(signingKeyFiles, file) {
 			continue
 		}
-		var fn string
-		ast.Inspect(f, func(n ast.Node) bool {
-			if fd, ok := n.(*ast.FuncDecl); ok {
-				fn = fd.Name.Name
-			}
-			id, ok := n.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			at := file + ":" + strconv.Itoa(fset.Position(id.Pos()).Line)
-			switch o := info.Uses[id]; {
-			case o == nil:
-			case o == field:
-				bad = append(bad, at+" uses Installation.SigningKey")
-			case o == kind:
-				bad = append(bad, at+" uses entity.SecretKey")
-			case (o.Name() == "PutSecret" || o.Name() == "PruneSecret" || o.Name() == "SetSigningKey") && isMethod(o):
-				if o.Name() == "PutSecret" && fn == credentialWrite {
-					break
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			exempt := ok && fd.Recv == nil && fd.Name.Name == credentialWrite && filepath.Base(file) == credentialFile && sub == ""
+			ast.Inspect(d, func(n ast.Node) bool {
+				id, ok := n.(*ast.Ident)
+				if !ok {
+					return true
 				}
-				bad = append(bad, at+" calls "+o.Name())
-			}
-			return true
-		})
+				at := file + ":" + strconv.Itoa(fset.Position(id.Pos()).Line)
+				switch o := info.Uses[id]; {
+				case o == nil:
+				case o == field:
+					bad = append(bad, at+" uses Installation.SigningKey")
+				case o == kind:
+					bad = append(bad, at+" uses entity.SecretKey")
+				case (o.Name() == "PutSecret" || o.Name() == "PruneSecret" || o.Name() == "SetSigningKey") && isMethod(o):
+					if o.Name() == "PutSecret" && exempt {
+						break
+					}
+					bad = append(bad, at+" calls "+o.Name())
+				}
+				return true
+			})
+		}
 	}
 	slices.Sort(bad)
 	return bad, nil
@@ -1010,7 +1027,10 @@ func isMethod(o types.Object) bool {
 // No package under api reaches the signing key outside the tokens and the
 // rotation step, so no route writes it (RFC 23 §5.2); a planted route
 // rewriting it through the installation's field, the key's kind and
-// PutSecret, and dropping it through PruneSecret, is caught at each.
+// PutSecret, dropping it through PruneSecret and repointing it is caught at
+// each, and so is a PutSecret outside the credential write's own
+// declaration: in a function of its name in another file, in a method of
+// its name, and in a closure at package level after it.
 func TestNoRouteWritesTheSigningKey(t *testing.T) {
 	var dirs []string
 	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
@@ -1035,14 +1055,23 @@ func TestNoRouteWritesTheSigningKey(t *testing.T) {
 		t.Fatalf("the planted route: %v", err)
 	}
 	want := []string{
+		"res_secrets.go:13 calls PutSecret",
+		"res_secrets.go:20 calls PutSecret",
 		"routes.go:12 uses Installation.SigningKey",
 		"routes.go:16 uses entity.SecretKey",
 		"routes.go:18 calls PutSecret",
-		"routes.go:24 calls PruneSecret",
-		"routes.go:30 calls SetSigningKey",
+		"routes.go:23 calls PruneSecret",
+		"routes.go:29 calls SetSigningKey",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("the planted route: reaches %q, want %q", got, want)
+	}
+	got, err = signingKeyReaches(filepath.Join("testdata", "arch", "signing-key-elsewhere"), module+"internal/node/api")
+	if err != nil {
+		t.Fatalf("the credential write's name in another file: %v", err)
+	}
+	if want := []string{"res_stores.go:8 calls PutSecret"}; !slices.Equal(got, want) {
+		t.Errorf("the credential write's name in another file: reaches %q, want %q", got, want)
 	}
 }
 
