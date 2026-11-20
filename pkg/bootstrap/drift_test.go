@@ -156,7 +156,7 @@ func scanDriftFile(
 		return fmt.Errorf("read %s: %w", file, err)
 	}
 
-	if content == nil {
+	if content == nil || !bytes.Contains(content, []byte(envPrefix)) {
 		return nil
 	}
 
