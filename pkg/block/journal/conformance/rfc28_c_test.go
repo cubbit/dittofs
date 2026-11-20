@@ -1338,19 +1338,27 @@ func TestAwaitSpareWhoseRollReleasesAHeldCreate(t *testing.T) {
 }
 
 // pool is what the spare pool and the reserves look like from outside: the
-// spare names, the create and allocate calls the seam has seen, and what the
-// journal accounts to its storage and its reserves.
+// spare names, the create and allocate calls the seam has seen, the ready
+// content spares, and what the journal accounts to its storage and its repack
+// reserve. Stats names no headroom spare, so a headroom spare re-adopted into
+// another class shows as one content spare too many, or as the refill making
+// the headroom's again, a create the seam counts.
 type pool struct {
-	spares                  []string
-	creates, allocates      int
-	used, headroom, reserve int64
+	spares             []string
+	creates, allocates int
+	content            int
+	used, reserve      int64
 }
 
 func poolNow(t *testing.T, f *journaltest.Fixture) pool {
 	t.Helper()
 
+	// The pool is settled first: a reopen re-adopts its spares and then
+	// refills behind them, and a read racing that refill counts a pool the
+	// crash's open is then compared against but never was.
+	f.WaitSpares()
 	s := f.J.Stats()
-	return pool{spareNames(t, f), f.Seam.Calls(kit.OpCreate), f.Seam.Calls(kit.OpAllocate), s.UsedBytes, s.HeadroomBytes, s.RepackReserveBytes}
+	return pool{spareNames(t, f), f.Seam.Calls(kit.OpCreate), f.Seam.Calls(kit.OpAllocate), s.Spares, s.UsedBytes, s.RepackReserveBytes}
 }
 
 // wantReadopted fails the test unless, after an open, every spare of before
@@ -1372,8 +1380,8 @@ func wantReadopted(t *testing.T, f *journaltest.Fixture, before pool) {
 	if now.creates != before.creates || now.allocates != before.allocates {
 		t.Fatalf("the open created %d and allocated %d segments; every spare was on disk", now.creates-before.creates, now.allocates-before.allocates)
 	}
-	if now.used != before.used || now.headroom != before.headroom || now.reserve != before.reserve {
-		t.Fatalf("after the open UsedBytes = %d, HeadroomBytes = %d, RepackReserveBytes = %d, want %d, %d, %d as before", now.used, now.headroom, now.reserve, before.used, before.headroom, before.reserve)
+	if now.used != before.used || now.content != before.content || now.reserve != before.reserve {
+		t.Fatalf("after the open UsedBytes = %d, Spares = %d, RepackReserveBytes = %d, want %d, %d, %d as before", now.used, now.content, now.reserve, before.used, before.content, before.reserve)
 	}
 
 	s := f.J.Stats()
