@@ -52,6 +52,9 @@ const (
 	orTerms   = 64
 )
 
+// SIDBatch is the most SIDs one LookupSIDs query carries in its OR filter.
+const SIDBatch = orTerms
+
 // LookupSIDs answers "who holds this SID" for each of sids, in batches of at
 // most orTerms in one OR filter: the entries found, in the order of
 // sids, a SID no entry holds left out. A SID two entries hold fails the

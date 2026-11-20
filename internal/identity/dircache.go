@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -284,6 +285,116 @@ func (c *dirCache) query(ctx context.Context, k dirKey, q string, value []byte) 
 		return nil
 	})
 	return e, err
+}
+
+// lookupSIDs answers "who holds this SID" for each of sids: from fresh
+// entries where held, the rest asked of the directory directory.SIDBatch at a
+// time, one query per batch, so a ticket's 1 024 SIDs cost 16 queries rather
+// than one each. It returns the answers found, in the order of sids, a SID no
+// entry holds left out. A batch that fails is answered as a failed lookup
+// is: each of its SIDs from a positive entry within the TTL plus grace,
+// counted stale; any other SID fails the whole lookup ErrUnavailable, counted
+// refused, so a caller never takes a set with holes for a whole one.
+func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Duration) ([]directory.Answer, error) {
+	const q = "sid"
+	held := map[string]*dirEntry{}
+	var miss [][]byte
+	now := c.clock.Now()
+	for _, s := range sids {
+		if _, ok := held[string(s)]; ok || len(s) == 0 {
+			continue
+		}
+		e := c.get(dirKey{by: directory.BySID, value: string(s)})
+		held[string(s)] = e
+		if e != nil && e.fresh(now) {
+			c.lookups.WithLabelValues(q, "fresh").Inc()
+		} else {
+			miss = append(miss, s)
+		}
+	}
+	for batch := range slices.Chunk(miss, directory.SIDBatch) {
+		got, err := c.querySIDs(ctx, batch)
+		for _, s := range batch {
+			if err == nil {
+				n := got[string(s)]
+				held[string(s)] = n
+				if n.found {
+					c.lookups.WithLabelValues(q, "queried").Inc()
+				} else {
+					c.lookups.WithLabelValues(q, "not_found").Inc()
+				}
+				continue
+			}
+			if e := held[string(s)]; e != nil && e.found && c.clock.Now().Sub(e.at) <= dirFound+grace {
+				c.lookups.WithLabelValues(q, "stale").Inc()
+				continue
+			}
+			c.lookups.WithLabelValues(q, "refused").Inc()
+			c.out.refuse()
+			return nil, err
+		}
+	}
+	var out []directory.Answer
+	for _, s := range sids {
+		if e := held[string(s)]; e != nil && e.found {
+			out = append(out, e.ans)
+			held[string(s)] = nil // each SID answered once
+		}
+	}
+	return out, nil
+}
+
+// querySIDs asks the directory who holds each SID of batch in one query, in
+// a slot of its own, and stores an entry for each, "no such entry" for a SID
+// none holds. Its failure raises the outage, and its answer clears it.
+//
+// ponytail: concurrent lookups share a query only when they ask the same
+// batch, as one user's repeated sign-ins do; two tickets whose SID sets
+// overlap ask the shared SIDs twice. Share per SID when a sign-in burst's
+// query count shows the overlap.
+func (c *dirCache) querySIDs(ctx context.Context, batch [][]byte) (map[string]*dirEntry, error) {
+	if c.out.skip(c.clock.Now()) {
+		return nil, errDirUnreachable
+	}
+	// A SID's length is in its own header, so their concatenation is the
+	// batch's key unambiguously.
+	ch := c.flight.DoChan("sids:"+string(slices.Concat(batch...)), func() (any, error) {
+		got := map[string]*dirEntry{}
+		err := c.run(context.WithoutCancel(ctx), "sid", func(ctx context.Context) error {
+			start := c.clock.Now()
+			found, err := c.client.LookupSIDs(ctx, batch)
+			if err != nil {
+				if c.out.raise(start, err) {
+					go c.probe(dirKey{by: directory.BySID, value: string(batch[0])}, "sid")
+				}
+				return err
+			}
+			now := c.clock.Now()
+			c.out.clear(now)
+			for _, s := range batch {
+				got[string(s)] = &dirEntry{key: dirKey{by: directory.BySID, value: string(s)}, at: now}
+			}
+			for _, a := range found {
+				if e := got[string(a.SID)]; e != nil {
+					e.ans, e.found = a, true
+				}
+			}
+			for _, e := range got {
+				c.put(e)
+			}
+			return nil
+		})
+		return got, err
+	})
+	select {
+	case r := <-ch:
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		return r.Val.(map[string]*dirEntry), nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())
+	}
 }
 
 // groups is user's closure, asked of the directory in a slot of its own and

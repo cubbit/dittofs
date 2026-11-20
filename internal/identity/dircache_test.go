@@ -134,7 +134,13 @@ func (e *dirEnv) evictions(t *testing.T) float64 {
 
 func (e *dirEnv) family(t *testing.T, name string) []*dto.Metric {
 	t.Helper()
-	mfs, err := e.reg.Registry().Gather()
+	return family(t, e.reg, name)
+}
+
+// family is the metric family name gathered from reg.
+func family(t *testing.T, reg *metrics.Registry, name string) []*dto.Metric {
+	t.Helper()
+	mfs, err := reg.Registry().Gather()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,4 +662,122 @@ func TestDirectoryCacheSpans(t *testing.T) {
 	if queries != 2 {
 		t.Errorf("query spans %d, want 2: alice's and bob's, none for the fresh answer", queries)
 	}
+}
+
+// A thousand and twenty-four SIDs cost 16 queries, one per batch, and asked
+// again none, every answer fresh and in the order asked.
+func TestDirectoryCacheBatchesSIDs(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	ctx := context.Background()
+	e := newDirEnv(t)
+	name, pw := e.d.Account()
+	plain := directory.NewClient(directory.Record{Address: "ldaps://dc.corp.example", Base: "DC=corp,DC=example",
+		BindName: name, Realm: "CORP.EXAMPLE"}, e.d.Dial, func(context.Context) ([]byte, error) { return pw, nil }, e.clock, nil)
+	t.Cleanup(plain.Close)
+	var sids [][]byte
+	for i := range 1024 {
+		n := fmt.Sprintf("u%04d", i)
+		e.d.AddUser(t, n, nil)
+		a, _, err := plain.Lookup(ctx, directory.ByUserName, []byte(n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sids = append(sids, a.SID)
+	}
+	c := e.cache(t)
+	// total is the queries sent by the end of the round: the warm one adds none.
+	for _, round := range []struct {
+		when  string
+		total uint64
+	}{{"cold", 16}, {"warm", 16}} {
+		got, err := c.LookupSIDs(ctx, sids, 15*time.Minute)
+		if err != nil || len(got) != len(sids) {
+			t.Fatalf("%s: LookupSIDs(1024) = %d answers, %v; want 1024", round.when, len(got), err)
+		}
+		for i, a := range got {
+			if string(a.SID) != string(sids[i]) {
+				t.Fatalf("%s: answer %d holds SID %x, want %x", round.when, i, a.SID, sids[i])
+			}
+		}
+		e.wantQueries(t, round.total, round.when+" lookup of 1024 SIDs")
+	}
+}
+
+// A failed batch serves a SID from a positive entry within the grace, a SID
+// it does not hold fails the whole lookup, and a SID no entry holds is left
+// out of an answered one.
+func TestDirectoryCacheSIDsFailWhole(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	ctx := context.Background()
+	e := newDirEnv(t)
+	for _, n := range []string{"alice", "bob", "carol"} {
+		e.d.AddUser(t, n, nil)
+	}
+	c := e.cache(t)
+	sid := map[string][]byte{}
+	for _, n := range []string{"alice", "bob", "carol"} {
+		a, _, err := lookup(c, n, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sid[n] = a.SID
+	}
+	if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"], []byte("no such SID"), sid["bob"]}, 0); err != nil || len(got) != 2 {
+		t.Fatalf("LookupSIDs(alice, unknown, bob) = %d answers, %v; want 2", len(got), err)
+	}
+	e.fail(t, sim.Rule{Op: "search", Key: "(|*", Action: sim.FaultAction{Err: errors.New("injected directory fault")}})
+	e.clock.Advance(6 * time.Minute)
+	if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"], sid["bob"]}, 15*time.Minute); err != nil || len(got) != 2 {
+		t.Errorf("LookupSIDs(alice, bob) with the directory down = %d answers, %v; want both served stale", len(got), err)
+	}
+	if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"], sid["carol"]}, 15*time.Minute); !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+		t.Errorf("LookupSIDs(alice, carol) with carol never asked by SID = %d answers, %v; want none, ErrUnavailable", len(got), err)
+	}
+}
+
+// A changed record's first lookup queries the new client; an Apply that
+// changes only the stale grace keeps the cache, and the grace it sets applies
+// at the next lookup: the bind password resolved through the secret provider.
+func TestDirectoryCacheFollowsApply(t *testing.T) {
+	e := newAD(t)
+	e.d.AddUser(t, "alice", nil)
+	queries := func() uint64 {
+		for _, m := range family(t, e.reg, "identity_directory_seconds") {
+			return m.GetHistogram().GetSampleCount()
+		}
+		return 0
+	}
+	ask := func(when string, want uint64, found bool) {
+		t.Helper()
+		_, ok, err := e.s.DirectoryLookup(context.Background(), directory.ByUserName, []byte("alice"))
+		if found && (err != nil || !ok) {
+			t.Errorf("%s: lookup = found %v, %v; want found", when, ok, err)
+		}
+		if !found && !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("%s: lookup = found %v, %v; want ErrUnavailable", when, ok, err)
+		}
+		if got := queries(); got != want {
+			t.Errorf("%s: identity_directory_seconds count %d, want %d", when, got, want)
+		}
+	}
+	apply := func(f func(*identity.State)) {
+		t.Helper()
+		st := *e.s.Applied()
+		d := *st.Directory
+		st.Directory = &d
+		f(&st)
+		if err := e.s.Apply(st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ask("first", 1, true)
+	ask("fresh", 1, true)
+	apply(func(st *identity.State) { st.Directory.Address = "ldaps://dc2.corp.example" })
+	ask("after a new record", 2, true)
+	e.fail(t, sim.Rule{Op: "search", Key: userSearches, Action: sim.FaultAction{Err: errors.New("injected directory fault")}})
+	e.clock.Advance(6 * time.Minute)
+	apply(func(st *identity.State) { st.Settings.DirectoryStaleGrace = 0 })
+	ask("grace zero, past the TTL", 3, false)
+	apply(func(st *identity.State) { st.Settings.DirectoryStaleGrace = 15 * time.Minute })
+	ask("grace 15 minutes, within it", 3, true)
 }
