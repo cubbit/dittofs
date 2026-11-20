@@ -112,23 +112,35 @@ func covers(pos, c kvstore.Counters) bool {
 func caughtUp(t *testing.T, h *nodetest.Harness) {
 	t.Helper()
 	c := counters(t, h)
-	deadline := time.Now().Add(30 * time.Second)
+	// The backstop bounds the wait for a pass to end, not the work: a pass
+	// binding many shares on a loaded host can take far longer than an idle
+	// one, and each pass that ends restarts the backstop. Only a reconcile
+	// that stopped ending passes fails here.
+	last := time.Now()
 	for !covers(h.Node().Positions(), c) {
-		if time.Now().After(deadline) {
-			t.Fatalf("positions %+v after 30 s of turns, want them to cover %+v", h.Node().Positions(), c)
+		if time.Since(last) > passStall {
+			t.Fatalf("no reconcile pass ended in %v of turns: positions %+v, want them to cover %+v", passStall, h.Node().Positions(), c)
 		}
-		turn(h)
+		if turn(h) {
+			last = time.Now()
+		}
 	}
 }
 
+// passStall is how long caughtUp waits for a reconcile pass to end before it
+// fails: a generous backstop, as a pass ends within a second on an idle host.
+const passStall = 2 * time.Minute
+
 // turn advances the node's clock a second and waits for a pass to end, or a
-// second of real time.
-func turn(h *nodetest.Harness) {
+// second of real time, reporting whether one ended.
+func turn(h *nodetest.Harness) bool {
 	moved := h.Node().Moved()
 	h.Clock().Advance(time.Second)
 	select {
 	case <-moved:
+		return true
 	case <-time.After(time.Second):
+		return false
 	}
 }
 
