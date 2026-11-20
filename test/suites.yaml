@@ -183,9 +183,9 @@ suites:
   # default 60m, which a real run's counts could outlive.
   # decision: format exit, not go-json: go test -json sends no pass event for a passing
   # benchmark, which a go-json cell grades as failed.
-  # decision: manual until a daily run exists, the ledger row the journal plan carries. The
-  # reference box is the dedicated host, and a figure compares only against that host's own;
-  # the daily run waits for a window on it, or a provisioned runner, as the ledger row says.
+  # decision: manual, at the full sizes. The daily small-size run is journal-bench-data, on the
+  # dedicated host, which is also this suite's reference box: a figure compares only against
+  # that host's own, and the nightly's carry profiler overhead this one's don't.
   # decision: no known: file — a benchmark that refuses to run is a finding to fix; its
   # b.Fatalf line is in bench.txt. A flake goes to quarantine, with an issue and an
   # expiry date, never to a known list.
@@ -544,8 +544,8 @@ suites:
   # {out} keeps each group's bench.txt-shaped file (for benchstat), its cpu, mutex, block and
   # heap profiles, and meta.txt (toolchain, filesystem and mount options, the device's raw
   # fsync probe). One test per group because the reader reads per named test; test/journal/
-  # bench-data.sh runs it. DITTOFS_BENCH_DIR defaults to ~/dittofs-bench, on the host's own
-  # disk. needs host:dedicated, not a shared runner, whose busy neighbours' noise the
+  # bench-data.sh runs it. DITTOFS_BENCH_DIR, unset being exit 2 as journal-bench's, is the
+  # host's data drive below; that path is the host owner's to confirm. needs host:dedicated, not a shared runner, whose busy neighbours' noise the
   # throughput gate admits: one fixed box makes the absolute figures mean something, beside
   # perf-night's medians. It follows perf-night in this file, which is the order the host's
   # night runs them in, so perf-night keeps its quiet host and these few minutes come after it.
@@ -553,18 +553,22 @@ suites:
   # tests.yml's plan select names neither, and a hosted job could never be placed on that host.
   # decision: the figures are collected, never checked: a regression is a finding, and a
   # check would need a ruling that names a counted bound (RFC 1 §9.7 stays intact: no timing
-  # is judged in CI). blocking: false, so a b.Fatalf fails the cell, never the nightly, and
-  # posts nothing to the develop-status issue.
+  # is judged in CI). Nothing posts to the develop-status issue, since the host doesn't post
+  # there; a failure counts in the host run's exit and status, as any cell's does. blocking:
+  # false is the declared intent, and what tests.yml would honour if the cell ever ran there.
   # decision: the host runs develop's latest commit, so the stream starts when storage-v2
   # reaches develop; empty until then is the design, not a bug.
   # decision: the host's results directory keeps these figures as long as its own cleanup
   # does, and no GitHub artifact holds them (GitHub's 90-day default doesn't apply); revisit
   # with the first trend longer than that is wanted, by offloading older runs, not before.
+  # decision: the nightly figures carry the block and mutex profilers' sampled overhead, so
+  # they compare only with other nightly figures, never with a manual journal-bench run.
   # decision: format exit, as journal-bench's: go test sends no pass event for a passing
   # benchmark, which a go-json cell grades as failed.
   journal-bench-data:
     cmd: test/journal/bench-data.sh {test} {out}
     tests: [j1, j2, j3]
+    env: { DITTOFS_BENCH_DIR: /srv/perf/data/journal-bench }
     format: exit
     metrics: go-bench
     tier: nightly

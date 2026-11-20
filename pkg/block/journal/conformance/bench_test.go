@@ -59,6 +59,11 @@ type jbScale struct {
 
 var (
 	jbFull = jbScale{
+		// ponytail: the full streamed burst is half a segment, so a first iteration
+		// on the one stream never rolls and no write waits on a spare; a run of more
+		// than one iteration (-benchtime=Nx) rolls and the wait's spin shows in
+		// allocs/op. Upgrade to a wait for the pool before each roll when a run needs
+		// more than one iteration per journal.
 		burstStreamed: 128 << 20, burstSynced: 16 << 20, mixedStream: 128 << 20,
 		lookups: 100_000, extents: [2]int{1_000, 1_000_000}, warmBytes: 64 << 20,
 		blocks: []string{"4k", "64k", "256k", "1m"}, scalingBlock: 1 << 20,
@@ -87,11 +92,6 @@ func jbSizes(b *testing.B) jbScale {
 	}
 }
 
-// ponytail: the full streamed burst is half a segment, so a first iteration
-// on the one stream never rolls and no write waits on a spare; a run of more
-// than one iteration (-benchtime=Nx) rolls and the wait's spin shows in
-// allocs/op. Upgrade to a wait for the pool before each roll when a run needs
-// more than one iteration per journal.
 const jbWriters = 16
 
 var jbInstall = journal.InstallationID{'j', 'b', 'e', 'n', 'c', 'h'}
@@ -444,7 +444,7 @@ func BenchmarkJ1_WriteRandom(b *testing.B) {
 }
 
 // J1's mixed case: one writer syncing every 4 KiB beside one stream writing a
-// 128 MiB file in 1 MiB blocks, synced at its end, on the one stream. The
+// file in 1 MiB blocks (128 MiB at the full sizes), synced at its end, on the one stream. The
 // metric is the p99 of the small writer's write and sync together.
 func BenchmarkJ1_MixedDurability(b *testing.B) {
 	b.ReportAllocs()
