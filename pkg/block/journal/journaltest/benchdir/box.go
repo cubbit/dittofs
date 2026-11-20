@@ -44,8 +44,13 @@ func (b Box) Print(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "device-raw: %s\n", b.DeviceRaw)
 }
 
-// FsyncProbe is the device's own figure for the run: the p50 and p99 of 64
-// writes of 4 KiB each followed by an fsync, on a file in dir.
+// probeBlocks is how many 4 KiB blocks the device probe overwrites.
+const probeBlocks = 64
+
+// FsyncProbe is the device's own figure for the run, a floor the raw twins
+// compare with: the p50 and p99 of 64 overwrites of 4 KiB each, every one
+// followed by the platform's data flush, in a span of a file in dir that was
+// first filled with zeros and synced. With 64 samples the p99 is the maximum.
 func FsyncProbe(dir string) (string, error) {
 	f, err := os.CreateTemp(dir, "fsync-probe-")
 	if err != nil {
@@ -59,23 +64,33 @@ func FsyncProbe(dir string) (string, error) {
 
 	buf := make([]byte, 4096)
 
+	for i := range probeBlocks {
+		if _, err := f.WriteAt(buf, int64(i*len(buf))); err != nil {
+			return "", fmt.Errorf("fsync probe fill: %w", err)
+		}
+	}
+
+	if err := f.Sync(); err != nil {
+		return "", fmt.Errorf("fsync probe fill sync: %w", err)
+	}
+
 	var took []time.Duration
 
-	for range 64 {
+	for i := range probeBlocks {
 		start := time.Now()
 
-		if _, err := f.Write(buf); err != nil {
+		if _, err := f.WriteAt(buf, int64(i*len(buf))); err != nil {
 			return "", fmt.Errorf("fsync probe write: %w", err)
 		}
 
-		if err := f.Sync(); err != nil {
+		if err := flush(f); err != nil {
 			return "", fmt.Errorf("fsync probe sync: %w", err)
 		}
 
 		took = append(took, time.Since(start))
 	}
 
-	return fmt.Sprintf("write-4KiB-fsync p50=%v p99=%v", percentile(took, 50), percentile(took, 99)), nil
+	return fmt.Sprintf("write-4KiB-overwrite-flush p50=%v p99=%v", percentile(took, 50), percentile(took, 99)), nil
 }
 
 // gitCommit is the checkout's HEAD, with "-dirty" after it when the tree has

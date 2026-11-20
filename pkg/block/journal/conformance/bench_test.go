@@ -19,9 +19,10 @@ import (
 )
 
 // The benchmarks of the journal's write and read paths, run on a real
-// filesystem in real time. Every J1 row has a raw twin that writes the same
-// bytes through os and Sync with the same block size, writers and sync
-// pattern, since a row means something only as a fraction of its twin. Each
+// filesystem in real time. Every J1 row but the mixed-durability one has a
+// raw twin that writes the same bytes through os with the same block size,
+// writers and sync pattern, since a row means something only as a fraction of
+// its twin; the mixed row is judged on its own, with no twin and no target. Each
 // iteration is one burst, so -benchtime=1x -count=10 hands benchstat its
 // samples.
 
@@ -78,23 +79,33 @@ func jbBase(b *testing.B) string {
 	return dir
 }
 
-var jbBoxOnce sync.Once
+var (
+	jbBoxMu   sync.Mutex
+	jbBoxDone bool
+)
 
 // jbPrintBox prints, before the first result line, what each result is
 // recorded with, as key: value lines benchstat reads as configuration.
 func jbPrintBox(b *testing.B, dir string) {
 	b.Helper()
-	jbBoxOnce.Do(func() {
-		box, err := benchdir.Describe(dir)
-		if err != nil {
-			b.Fatalf("bench: %v", err)
-		}
-		box.Print(os.Stdout)
-		fmt.Printf("bench-dir: %s\n", dir)
-		fmt.Printf("sync-bound: %v\n", journal.SyncBound)
-		fmt.Printf("segment-cap-bytes: %d\n", journaltest.SegmentCap)
-		fmt.Printf("writers: %d\n", jbWriters)
-	})
+	jbBoxMu.Lock()
+	defer jbBoxMu.Unlock()
+
+	// A failed read leaves the box unprinted, so a later benchmark tries
+	// again rather than running without its lines.
+	if jbBoxDone {
+		return
+	}
+	box, err := benchdir.Describe(dir)
+	if err != nil {
+		b.Fatalf("bench: %v", err)
+	}
+	box.Print(os.Stdout)
+	fmt.Printf("bench-dir: %s\n", dir)
+	fmt.Printf("sync-bound: %v\n", journal.SyncBound)
+	fmt.Printf("segment-cap-bytes: %d\n", journaltest.SegmentCap)
+	fmt.Printf("writers: %d\n", jbWriters)
+	jbBoxDone = true
 }
 
 // jbClock is the wall clock the journal runs on.
@@ -286,6 +297,17 @@ func jbBurst(b *testing.B, sink jbSink, spec jbSpec) {
 	}
 	b.SetBytes(spec.span * int64(spec.writers))
 
+	// Each writer's block and random source are made before the timer and
+	// reseeded per iteration, so nothing is allocated in the timed loop.
+	bufs := make([][]byte, spec.writers)
+	pcgs := make([]*rand.PCG, spec.writers)
+	rngs := make([]*rand.Rand, spec.writers)
+	for w := range bufs {
+		bufs[w] = make([]byte, spec.block)
+		pcgs[w] = rand.NewPCG(0, 0)
+		rngs[w] = rand.New(pcgs[w])
+	}
+
 	if p, ok := sink.(interface{ prepare(span int64) error }); ok {
 		if err := p.prepare(spec.span * int64(b.N)); err != nil {
 			b.Fatalf("bench: prepare the raw files: %v", err)
@@ -296,8 +318,8 @@ func jbBurst(b *testing.B, sink jbSink, spec jbSpec) {
 	for iter := range b.N {
 		base := int64(iter) * spec.span
 		jbParallel(b, spec.writers, func(w int) error {
-			p := make([]byte, spec.block)
-			rng := rand.New(rand.NewPCG(uint64(iter), uint64(w)))
+			p, rng := bufs[w], rngs[w]
+			pcgs[w].Seed(uint64(iter), uint64(w))
 			for i := range ops {
 				off := base + int64(i*spec.block)
 				if spec.random {
