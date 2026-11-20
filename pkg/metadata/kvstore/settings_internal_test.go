@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
+	"github.com/cubbit/dittofs/pkg/settings"
 )
 
 // settingCtx is the context the settings tests call the store under.
@@ -405,6 +406,108 @@ func TestDeleteSettingUndecodableRow(t *testing.T) {
 
 	if !slices.Equal(stored, []byte{0xFF}) {
 		t.Errorf("undecodable row = %v, want stored as it was", stored)
+	}
+}
+
+// A put of a schema above the binary's registered one is refused whole, so
+// neither the row nor the settings generation moves: a record this
+// store wrote would be a record every reader refuses, so it never lands.
+// A put at the registered schema still writes, under the same generation
+// the refused one named.
+func TestPutSettingRefusesNewerSchema(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s, db := settingStore(t)
+	cp := s.ControlPlane()
+
+	top := settings.Versions()[entity.FormatSettings].Max
+
+	got, err := cp.PutSetting(
+		settingCtx,
+		entity.Setting{
+			Scope:  settingInst,
+			Key:    "k",
+			Value:  []byte("k"),
+			Schema: top,
+		},
+		0,
+	)
+	if err != nil {
+		t.Fatalf("put at the registered schema under 0: %v", err)
+	}
+
+	if got != 1 {
+		t.Errorf("generation of the schema-max put = %d, want 1", got)
+	}
+
+	if _, err := cp.PutSetting(
+		settingCtx,
+		entity.Setting{
+			Scope:  settingInst,
+			Key:    "k",
+			Value:  []byte("newer"),
+			Schema: top + 1,
+		},
+		1,
+	); !errors.Is(err, settings.ErrNewerSchema) {
+		t.Errorf(
+			"newer schema written under 1: %v, want %v",
+			err,
+			settings.ErrNewerSchema,
+		)
+	}
+
+	if got := cfgGen(t, db); got != 1 {
+		t.Errorf("generation after the refused put = %d, want 1", got)
+	}
+
+	rows := 0
+
+	for row, err := range cp.Settings(settingCtx, settingInst) {
+		if err != nil {
+			t.Fatalf("list the installation settings: %v", err)
+		}
+
+		rows++
+
+		if row.Key != "k" || row.Schema != top || row.Generation != 1 ||
+			!slices.Equal(row.Value, []byte("k")) {
+			t.Errorf(
+				"row after the refused put = key %q schema %d generation %d value %q, "+
+					"want k, %d, 1, k",
+				row.Key,
+				row.Schema,
+				row.Generation,
+				row.Value,
+				top,
+			)
+		}
+	}
+
+	if rows != 1 {
+		t.Errorf("rows at the installation scope = %d, want 1", rows)
+	}
+
+	got, err = cp.PutSetting(
+		settingCtx,
+		entity.Setting{
+			Scope:  settingInst,
+			Key:    "k",
+			Value:  []byte("k2"),
+			Schema: top,
+		},
+		1,
+	)
+	if err != nil {
+		t.Fatalf("put at the registered schema under 1: %v", err)
+	}
+
+	if got != 2 {
+		t.Errorf("generation of the second schema-max put = %d, want 2", got)
+	}
+
+	if got := cfgGen(t, db); got != 2 {
+		t.Errorf("generation after the second schema-max put = %d, want 2", got)
 	}
 }
 
