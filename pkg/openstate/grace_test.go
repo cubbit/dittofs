@@ -1327,11 +1327,13 @@ func TestServeLeasesOnlyUnleasedNFSv4Clients(t *testing.T) {
 	g := unstarted(t, f.fs, f.clock)
 	g.start(t, nil)
 	g.renew(t, a)
-	g.clock.advance(leasePeriod / 2)
+	// pass, not advance: a timer sweep beside this one could end a and raise
+	// ClientEnded only after this sweep returned and the sink was read.
+	g.pass(t, leasePeriod/2)
 	if err := g.Recovery().ServeShard(ctx, f.fs.Share.ID, 5, instances.Add(1)); err != nil {
 		t.Fatal(err)
 	}
-	g.clock.advance(leasePeriod / 2)
+	g.pass(t, leasePeriod/2)
 	g.sweep(ctx)
 	if got := g.sink.endedOf(a.Client); len(got) != 1 {
 		t.Errorf("a client leased before the serve, silent a period since: ended %v, want once", got)
