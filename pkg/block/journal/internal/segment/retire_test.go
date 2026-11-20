@@ -613,6 +613,54 @@ func TestRetireClaimRefusedRecycleDoesNotParkTheReserveWait(t *testing.T) {
 	}
 }
 
+// TestRetireReadOnlyQueuedRecycleDoesNotParkTheReserveWait: a queued
+// full-sealed segment in a journal that turned read-only holds no recycle to
+// wait for, for its retirement is refused until the journal writes again, and
+// a copy parked there would hold its source claims for the deadline.
+func TestRetireReadOnlyQueuedRecycleDoesNotParkTheReserveWait(t *testing.T) {
+	seam := newSeam(t)
+	set := segment.NewSet(segCap, nil)
+	m := segment.NewMaker(seam.FS(), set, segCap, 0, nil)
+	c := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(64))
+	p := segment.NewPool(m, segment.Targets{Reserve: 1}, nil, nil)
+	r := segment.NewRetirer(segment.RetirerConfig{
+		Set:      set,
+		Cache:    c,
+		Pool:     p,
+		Maker:    m,
+		FS:       seam.FS(),
+		ReadOnly: func() error { return errors.New("read-only") },
+	})
+	t.Cleanup(r.Stop)
+
+	old, err := m.Make()
+	if err != nil {
+		t.Fatalf("the segment's making: %v", err)
+	}
+	if err := set.Take(old); err != nil {
+		t.Fatalf("the segment's takeover: %v", err)
+	}
+	if err := set.Seal(old, true); err != nil {
+		t.Fatalf("the segment's seal: %v", err)
+	}
+	r.Start()
+	p.Start()
+	t.Cleanup(p.Stop)
+
+	r.Enqueue(old, segment.NotHeld)
+
+	waited := make(chan error, 1)
+	go func() { waited <- p.WaitReserveSpare(t.Context()) }()
+	select {
+	case err := <-waited:
+		if !errors.Is(err, core.ErrNoSpace) {
+			t.Fatalf("the reserve wait over a queued recycle of a read-only journal: %v, want the no-space refusal", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the reserve wait stayed parked behind a queued recycle a read-only journal never runs")
+	}
+}
+
 // TestRetireReserveWaitAnswersACancelDuringTheRetirerQuestion: a context
 // cancelled while the wait is inside its question to the retirer, with the
 // pool's lock released, is answered. The cancel's wake passes while nobody is

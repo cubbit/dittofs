@@ -18,12 +18,17 @@ func (r *Retirer) fullToHand() bool {
 }
 
 // fullToWaitOn is fullToHand less the queued ids refused for another path's
-// claim: a spare wait parks only behind a recycle no claim holder waits on.
+// claim, and none at all while the journal is read-only, whose retirements
+// are refused and whose worker pass returns early: a spare wait parks only
+// behind a recycle that can land and that no claim holder waits on.
 // The refill and the roll keep asking fullToHand, for a claimed segment is
 // still a recycle to come. A caller that reads the answer after leaving the
 // pool's lock tells a stale one by the pool's settle generation, not by the
 // lock.
 func (r *Retirer) fullToWaitOn() bool {
+	if r.cfg.ReadOnly != nil && r.cfg.ReadOnly() != nil {
+		return false
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.started && len(r.full) > len(r.claimBlocked)

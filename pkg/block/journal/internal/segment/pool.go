@@ -853,13 +853,14 @@ func (p *Pool) Counters() PoolCounters {
 // here when its reserve roll is refused, and a repack holds claims, so a
 // retirement refused for another path's claim is not counted as handed: the
 // retirer marks it, kicks the pool, and the wait reads the pool again and
-// refuses, rather than park on a holder that may itself be this caller. The
+// refuses, rather than park on a holder that may itself be this caller; a read-only journal's queue is not counted either, its retirements being refused. The
 // retirer is asked with the pool's lock released, for the retirer's lock is
 // never taken under it, and the settle generation tells the wait whether
 // anything moved while it asked. The ceiling is the operation's deadline,
 // which every wait on a client operation's path must end at, so a copy's
 // park is bounded by the context it carries; the retirer retries a failing
-// segment once a second until then. Withdrawn once a trace shows a repack
+// segment once a second until then. A context with no deadline, which
+// the engine's own wait treats as unbounded, waits until the pool stops. Withdrawn once a trace shows a repack
 // copy parked to its deadline behind a retirement that kept failing.
 //
 // decision: the wait guarantees one thing only — that every class holds its
