@@ -121,36 +121,23 @@ func within(narrow, wide string) bool {
 // The three scope forms of RFC 13 §3 that are not a bare scope.
 var (
 	perThingForm = regexp.MustCompile(`^([a-z ]+), per ([a-z ]+)$`)
-	// decision: "S, N override" is read as "S default, N override", since
-	// Appendix B writes three rows without the word default (the adapters'
-	// ports, sidecar enabled and the port mapper's port) where §3 names only
-	// the form with it; both say one rule. Drop the alias once the appendix
-	// respells those rows. A qualifier after override, as "(in its shard
-	// record)", is the row's own prose.
-	overrideForm = regexp.MustCompile(`^([a-z ]+?)(?: default)?, ([a-z ]+?) override(?: .+)?$`)
+	// A qualifier after override, as "(in its shard record)", is the row's own prose.
+	overrideForm = regexp.MustCompile(`^([a-z ]+?) default, ([a-z ]+?) override(?: .+)?$`)
 )
-
-// noScope is the scope cell of a quantity with no scope.
-//
-// decision: "none" is read as "—", since Appendix B writes three fixed or
-// derived rows' scope as "none" (record caps, fragments per RPC record,
-// connections per address) where §3 names only "—". Drop the alias once the
-// appendix respells those rows.
-func noScope(cell string) bool { return cell == "—" || cell == "none" }
 
 // scopeFormErr is nil when a row's scope cell is one of RFC 13 §3's five
 // scopes in one of its three forms, or no scope with a class of fixed,
 // derived or bootstrap, and else says why not.
 func scopeFormErr(scope, class string) error {
 	unscoped := slices.Contains([]string{"fixed", "derived", "bootstrap"}, class)
-	if noScope(scope) {
+	if scope == "—" {
 		if !unscoped {
 			return fmt.Errorf("no scope with class %q, want fixed, derived or bootstrap", class)
 		}
 		return nil
 	}
 	if unscoped {
-		return fmt.Errorf("class %s with scope %q, want none", class, scope)
+		return fmt.Errorf("class %s with scope %q, want \"—\"", class, scope)
 	}
 	isScope := func(s string) bool { _, ok := wider[s]; return ok }
 	if m := overrideForm.FindStringSubmatch(scope); m != nil {
