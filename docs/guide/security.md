@@ -39,7 +39,6 @@ For the internal mechanism design and threat model, see
 - [Kerberos configuration](#kerberos-configuration)
   - [Server configuration](#server-configuration)
   - [Keytab management](#keytab-management)
-  - [Environment variable overrides](#environment-variable-overrides)
   - [NFS client setup](#nfs-client-setup)
   - [SMB client setup](#smb-client-setup)
 - [Production hardening checklist](#production-hardening-checklist)
@@ -520,17 +519,6 @@ chmod 600 /etc/dittofs/dittofs.keytab
 chown dittofs:dittofs /etc/dittofs/dittofs.keytab
 ```
 
-### Environment variable overrides
-
-Useful for container deployments and CI/CD pipelines:
-
-| Environment variable | Config field | Notes |
-|---------------------|--------------|-------|
-| `DITTOFS_KERBEROS_KEYTAB` | `keytab_path` | Primary override |
-| `DITTOFS_KERBEROS_KEYTAB_PATH` | `keytab_path` | Compatibility alias |
-| `DITTOFS_KERBEROS_PRINCIPAL` | `service_principal` | Primary override |
-| `DITTOFS_KERBEROS_SERVICE_PRINCIPAL` | `service_principal` | Compatibility alias |
-
 ### NFS client setup
 
 ```bash
@@ -579,7 +567,7 @@ smbclient -k //server.example.com/export
 
 ```yaml
 logging:
-  level: WARN
+  level: warn
   format: json
   output: /var/log/dittofs/security.log
 

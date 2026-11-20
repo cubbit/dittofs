@@ -617,12 +617,10 @@ policy-created snapshots list, show, and restore exactly like manual ones.
 
 ### Configuration
 
-- `snapshot.scheduler_poll_interval` (default `1m`,
-  `DITTOFS_SNAPSHOT_SCHEDULER_POLL_INTERVAL`) — how often the daemon
+- `snapshot.scheduler_poll_interval` (default `1m`): how often the daemon
   scans for due policies. The per-share `interval` (not this knob)
   governs how often a share is actually snapshotted.
-- `snapshot.scheduler_disabled` (default `false`,
-  `DITTOFS_SNAPSHOT_SCHEDULER_DISABLED`) — turn the scheduler off
+- `snapshot.scheduler_disabled` (default `false`): turn the scheduler off
   entirely. Policies are still stored.
 
 ### Kubernetes operator

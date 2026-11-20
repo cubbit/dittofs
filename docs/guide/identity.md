@@ -274,12 +274,6 @@ ldap:
     min_version: "1.2"
 ```
 
-Each key has a `DITTOFS_LDAP_*` env equivalent (e.g. `DITTOFS_LDAP_ENABLED`,
-`DITTOFS_LDAP_URL`, `DITTOFS_LDAP_BASE_DN`, `DITTOFS_LDAP_BIND_DN`,
-`DITTOFS_LDAP_BIND_PASSWORD`, `DITTOFS_LDAP_IDMAP`, `DITTOFS_LDAP_NESTED_GROUPS`,
-`DITTOFS_LDAP_TLS_CA_CERT_FILE`, …). The full table is in
-[docs/CONFIGURATION.md §15](configuration.md).
-
 ### Precedence and secret handling
 
 - A **persisted DB row** (set over the API) **wins** over the file/env config on
@@ -366,9 +360,6 @@ kerberos:
   dns_domain: example.com
 ```
 
-Env equivalents include `DITTOFS_KERBEROS_REALM`, `DITTOFS_KERBEROS_NETBIOS_DOMAIN`,
-and `DITTOFS_KERBEROS_DNS_DOMAIN` (see [docs/CONFIGURATION.md §12](configuration.md)).
-
 ### One keytab, both protocols
 
 A keytab can hold multiple service principals, so a single file serves SMB and
@@ -418,7 +409,7 @@ spec:
       url: ldaps://dc.example.com:636
       baseDN: "DC=example,DC=com"
       bindDN: "CN=svc-dittofs,CN=Users,DC=example,DC=com"
-      bindPasswordSecretRef:        # injected as DITTOFS_LDAP_BIND_PASSWORD; never in the ConfigMap
+      bindPasswordSecretRef:        # never in the ConfigMap
         name: dittofs-ldap-secret
         key: bind-password
       idmap: rfc2307                 # rfc2307 | rid
@@ -448,8 +439,8 @@ Operator behavior to know:
 - The optional `krb5ConfSecretRef` is mounted at `/kerberos-krb5/krb5.conf` and
   wins over `krb5Conf` (an in-pod path). When neither is set, the server default
   `/etc/krb5.conf` (typically baked into the image) is used.
-- The LDAP **bind password is injected as `DITTOFS_LDAP_BIND_PASSWORD`** from
-  `bindPasswordSecretRef` and is never written to the ConfigMap.
+- The LDAP **bind password comes from `bindPasswordSecretRef`** and is never
+  written to the ConfigMap.
 - `kerberos.enabled: false` (or omitting the block) renders no `kerberos:` block —
   the server stays AUTH_UNIX/standalone-SMB only.
 
