@@ -1454,3 +1454,119 @@ func TestLoadUnits(t *testing.T) {
 		}
 	}
 }
+
+// A load carries the file it read, empty when the default file is missing,
+// and the two directories with the variable that chose each, the runtime
+// fallback naming the state directory's variable, as MakeRuntimeDir does.
+func TestLoadedCarriesFileAndDirs(t *testing.T) {
+	t.Parallel()
+
+	file := writeFile(t, "logging:\n  level: warn\n")
+	home := t.TempDir()
+
+	for _, tc := range []struct {
+		name       string
+		path       string
+		environ    []string
+		file       string
+		state      string
+		stateVar   string
+		runtime    string
+		runtimeVar string
+	}{
+		{
+			name:       "a named file, the service manager's directories",
+			path:       file,
+			environ:    []string{"STATE_DIRECTORY=/x/state", "RUNTIME_DIRECTORY=/x/run"},
+			file:       file,
+			state:      "/x/state",
+			stateVar:   "STATE_DIRECTORY",
+			runtime:    "/x/run",
+			runtimeVar: "RUNTIME_DIRECTORY",
+		},
+		{
+			name:       "the default file missing, the home's directories",
+			environ:    []string{"HOME=" + home},
+			state:      filepath.Join(home, ".local", "state", "dittofs"),
+			stateVar:   "HOME",
+			runtime:    filepath.Join(home, ".local", "state", "dittofs", "run"),
+			runtimeVar: "HOME",
+		},
+		{
+			name: "the XDG directories",
+			path: file,
+			environ: []string{
+				"XDG_STATE_HOME=/x/xs",
+				"XDG_RUNTIME_DIR=/x/xr",
+				"HOME=" + home,
+			},
+			file:       file,
+			state:      "/x/xs/dittofs",
+			stateVar:   "XDG_STATE_HOME",
+			runtime:    "/x/xr/dittofs",
+			runtimeVar: "XDG_RUNTIME_DIR",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := LoadWithSources(tc.path, tc.environ)
+			if err != nil {
+				t.Fatalf("LoadWithSources: %v", err)
+			}
+
+			for _, f := range []struct {
+				field     string
+				got, want string
+			}{
+				{"File", got.File, tc.file},
+				{"StateDir", got.StateDir, tc.state},
+				{"StateVar", got.StateVar, tc.stateVar},
+				{"RuntimeDir", got.RuntimeDir, tc.runtime},
+				{"RuntimeVar", got.RuntimeVar, tc.runtimeVar},
+			} {
+				if f.got != f.want {
+					t.Errorf("Loaded.%s: got %q, want %q", f.field, f.got, f.want)
+				}
+			}
+		})
+	}
+}
+
+// ConfigPath names the file the flag names, else DITTOFS_CONFIG's, else the
+// default path from XDG_CONFIG_HOME, else from HOME, else none.
+func TestConfigPath(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		flag    string
+		environ []string
+		want    string
+	}{
+		{
+			"the flag over the variable",
+			"/f/config.yaml",
+			[]string{"DITTOFS_CONFIG=/e/config.yaml", "XDG_CONFIG_HOME=/x", "HOME=/h"},
+			"/f/config.yaml",
+		},
+		{
+			"the variable over the default",
+			"",
+			[]string{"DITTOFS_CONFIG=/e/config.yaml", "XDG_CONFIG_HOME=/x", "HOME=/h"},
+			"/e/config.yaml",
+		},
+		{
+			"the config home over the home",
+			"",
+			[]string{"XDG_CONFIG_HOME=/x", "HOME=/h"},
+			"/x/dittofs/config.yaml",
+		},
+		{"the home", "", []string{"HOME=/h"}, "/h/.config/dittofs/config.yaml"},
+		{"nothing set", "", nil, ""},
+	} {
+		if got := ConfigPath(tc.flag, tc.environ); got != tc.want {
+			t.Errorf("%s: ConfigPath(%q): got %q, want %q", tc.name, tc.flag, got, tc.want)
+		}
+	}
+}
