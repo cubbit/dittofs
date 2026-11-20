@@ -562,7 +562,7 @@ Resolution order: user explicit permission → group permission → share defaul
 
 ```bash
 # Start server with debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 
 # Mount and test (macOS)
 sudo mount_smbfs //testuser:testpass@localhost:12445/export /mnt/smb

@@ -137,9 +137,8 @@ metadata:
     index_cache_mb: 1024
 ```
 
-or via env (`DITTOFS_METADATA_BADGER_BLOCK_CACHE_MB=2048`). See
-[CONFIGURATION.md → BadgerDB cache sizing](configuration.md#badgerdb-cache-sizing-config-file)
-for a sizing table keyed to object/metadata count. Aim for a hit-ratio above
+See [CONFIGURATION.md](configuration.md) for a sizing table keyed to
+object/metadata count. Aim for a hit-ratio above
 ~0.8 with no `sets-rejected`.
 
 ### Does metadata persist across server restarts?
@@ -366,7 +365,7 @@ Caveats:
 - Exclude globs (`trash_exclude_patterns`) cause matching
   deletions to bypass the bin entirely.
 
-See [CONFIGURATION.md](configuration.md#recycle-bin-trash) for the
+See [CONFIGURATION.md](configuration.md) for the
 per-share settings, and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
 for the recycle-trap design.
 
@@ -374,13 +373,13 @@ for the recycle-trap design.
 
 **Via environment variable:**
 ```bash
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 **Via configuration:**
 ```yaml
 logging:
-  level: DEBUG
+  level: debug
   format: text
 ```
 
