@@ -114,8 +114,15 @@ func (f *fix) counts(account entity.Principal) {
 func TestResetAdmin(t *testing.T) {
 	f := installedFix(t)
 	ctx := t.Context()
-	before := f.admin()
 	cp := f.store().ControlPlane()
+	// The first password was changed since dfs init, so must-change is
+	// clear until the reset sets it.
+	before := f.admin()
+	before.MustChange = false
+	if _, err := cp.PutUser(ctx, before, before.Generation, entity.Alloc{}); err != nil {
+		t.Fatal(err)
+	}
+	before = f.admin()
 	sess := entity.Session{ID: [16]byte{1}, Account: before.Principal, Refresh: [32]byte{1},
 		Created: f.clock.Now(), Expires: f.clock.Now().Add(24 * time.Hour)}
 	if err := cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.PutSession(sess) }); err != nil {
