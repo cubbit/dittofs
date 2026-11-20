@@ -179,6 +179,9 @@ type Server struct {
 	// slotTaken is a test's pause just after a pass-through call takes its
 	// slot, before it reaches the channel; nil in production.
 	slotTaken func()
+	// awaiting is a test's pause in a pass-through call just before it waits
+	// for its answer, its bound or its caller's hang-up; nil in production.
+	awaiting  func()
 	tracer    trace.Tracer
 	logger    *slog.Logger
 	refusals  *prometheus.CounterVec   // by reason

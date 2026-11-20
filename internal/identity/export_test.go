@@ -28,6 +28,10 @@ func (s *Server) OnStateLoaded(f func()) { s.loaded = f }
 // slot, before it reaches the node's channel.
 func (s *Server) OnSlotTaken(f func()) { s.slotTaken = f }
 
+// OnAwaitAnswer has every pass-through call run f just before it waits for
+// its answer, its bound or its caller's hang-up.
+func (s *Server) OnAwaitAnswer(f func()) { s.awaiting = f }
+
 // Mint runs the mint path over plan.
 func (s *Server) Mint(ctx context.Context, plan func(context.Context) (entity.MintBatch, int, error)) error {
 	return s.mint(ctx, plan)
