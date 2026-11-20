@@ -6,6 +6,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
@@ -289,5 +290,49 @@ func TestRemovalAppliesPastTheBoundWhenItsPreCheckWonTheRace(t *testing.T) {
 	}
 	if rec := removalOf(t, seam, format.KindDeallocate); rec.Header.Version != got.v {
 		t.Fatalf("the record on disk carries %v, the call returned %v", rec.Header.Version, got.v)
+	}
+}
+
+// TestRuntimeLossRefusedAtTheOpenReserveAnOpenLossDrawsIt checks the loss
+// path's wiring to the headroom: at the exhausted drawing side, where only
+// the open reserve is left, a loss raised while the journal runs is refused
+// naming the headroom and hands its piece back, while the same loss raised
+// as one an open's own leg found (AtOpen) draws the reserve, appends and is
+// counted in headroom_draws.
+func TestRuntimeLossRefusedAtTheOpenReserveAnOpenLossDrawsIt(t *testing.T) {
+	ctx := context.Background()
+	c, s, f := removalAtTheLimit(t)
+	drainHeadroom(t, c, s)
+
+	loss := func(atOpen bool) durability.Loss {
+		return durability.Loss{
+			Share:   s.Tag,
+			File:    f,
+			Extent:  core.Extent{Off: 0, Len: 4096},
+			Version: core.Version{Counter: 7},
+			Seq:     core.Seq(1),
+			Reason:  core.LossCorrupt,
+			AtOpen:  atOpen,
+		}
+	}
+	draws := c.headroom.Draws()
+	_, err := c.Durability().Lose(ctx, loss(false))
+	_ = refused(t, err, core.LimitHeadroom)
+	if got := c.headroom.Draws(); got != draws {
+		t.Fatalf("the refused runtime loss drew %d headroom records", got-draws)
+	}
+
+	// The piece the refusal handed back: the same loss raised as an open's
+	// own draws the reserve, where a piece still taken would answer the
+	// zero event.
+	ev, err := c.Durability().Lose(ctx, loss(true))
+	if err != nil {
+		t.Fatalf("raising the refused loss as an open's own: %v", err)
+	}
+	if ev == (core.LossEvent{}) {
+		t.Fatal("raising the refused loss returned the zero event: its piece stayed taken")
+	}
+	if got := c.headroom.Draws(); got != draws+1 {
+		t.Fatalf("headroom_draws = %d after the open's own loss, want %d: its draw went unrecorded", got, draws+1)
 	}
 }

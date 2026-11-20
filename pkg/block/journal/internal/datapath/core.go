@@ -670,6 +670,30 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		SegmentCap: state.Set.Cap(),
 		Admit:      d.Admit,
 	})
+	// Each loss record the durability layer appends draws on the headroom by
+	// the class of caller it serves: an open's own loss (AtOpen, the loss
+	// records an open appends before it serves) on the open reserve, every
+	// other on the drawing side, which the reserve refuses. The settle the
+	// admission returns is drawn only when the record placed — whatever its
+	// sync did, its bytes are in their segment — and refunded when it did
+	// not.
+	d.SetLossAdmission(func(atOpen bool) (settle func(placed bool), err error) {
+		class := capacity.Loss
+		if atOpen {
+			class = capacity.Open
+		}
+		draw, err := c.headroom.Admit(class)
+		if err != nil {
+			return nil, err
+		}
+		return func(placed bool) {
+			if placed {
+				c.headroom.Drawn(draw)
+				return
+			}
+			c.headroom.Refund(draw)
+		}, nil
+	})
 	// The segment cap the admission sizes its pieces and spares by is the
 	// set's own, not Deps': the streams roll and the reader bounds a record
 	// by the set the State carries, so a State that rebuilds a set of

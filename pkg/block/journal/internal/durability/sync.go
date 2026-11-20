@@ -254,6 +254,11 @@ type Durability struct {
 	// reports nothing, so a nil hook is a no-op by the same guard.
 	emptied func([]core.SegmentID, segment.Location)
 
+	// lossAdmit is SetLossAdmission's wiring, drawn through before each loss
+	// record is appended. Nil — never wired — admits every loss record, the
+	// behaviour of a layer whose journal budgets no record headroom.
+	lossAdmit func(atOpen bool) (settle func(placed bool), err error)
+
 	// streams are the append streams a loss record is written through, bound
 	// by Start. It is nil before Start, which Lose reports as an error.
 	streams atomic.Pointer[segment.Streams]

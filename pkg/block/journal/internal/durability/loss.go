@@ -89,13 +89,38 @@ func (d *Durability) StreamIndex(file core.FileID) int {
 	return streams.IndexFor(file)
 }
 
-// decision: Lose applies no admission of its own and does not look at
-// Loss.AtOpen when it appends, so a loss found on a read can draw on the
-// headroom an open reserves for its own records (RFC 1 section 6, "An open
-// keeps part of the headroom for its own records"). Only the data path's
-// record-count admission can keep that reserve for an open's own losses.
-// Withdraw this once that admission exists and Lose is told which class of
-// caller it serves.
+// SetLossAdmission wires the record-count admission every loss record is
+// drawn through, the headroom of the journal that owns this layer. It is not
+// a Config field because the headroom's own config takes this layer's Admit,
+// so the core builds each with the other built and wires the pair only then;
+// it runs before Start, and a Lose before Start is refused before its piece
+// is taken, so no loss record ever appends unwired. admit reserves one loss
+// record's headroom entry — atOpen tells the class, an open's own loss
+// drawing the open reserve where a loss found while the journal runs is
+// refused — and the settle it returns is called once with placed, saying
+// whether the record landed, to draw the entry or refund it by. A settle of
+// nil comes only with an error. Nil, or never called, admits every loss: a
+// layer whose journal budgets no record headroom.
+func (d *Durability) SetLossAdmission(admit func(atOpen bool) (settle func(placed bool), err error)) {
+	d.lossAdmit = admit
+}
+
+// Lose records a loss: it appends and syncs the loss record, leaves the
+// index's marker for a synced loss, raises the generation by the reason's
+// rule, counts the loss, and publishes its event, in that order. The record
+// draws on the headroom through the wired admission, by the class of caller
+// the loss serves: an open's own loss (AtOpen) may draw the open reserve, a
+// loss found while the journal runs may not take the space the next open
+// needs. A refusal appends nothing and hands the piece back, so the loss can
+// be raised again. The event
+// is published last, so a reader that sees it is already owed the record.
+// A piece (Seq and Extent) already taken by an earlier Lose or Place does
+// nothing and returns the zero event with a nil error. That says only that
+// the piece was taken by an earlier call: it says nothing about that call's
+// record being on disk, which may still be in flight, and only the call that
+// took the piece reports whether its record was appended and synced. Every
+// other piece, of a Seq already reported or not, goes through all of it, so
+// no event precedes its own record.
 func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	return d.loseMoved(ctx, l, nil)
 }
@@ -152,7 +177,22 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 		if recErr = d.refuse(); recErr != nil {
 			refused = true
 		} else {
-			at, recErr = d.appendRecord(l)
+			// The loss record's admission, by the class of caller the loss
+			// serves: a refusal returns before the append, like the
+			// read-only one, and the piece is handed back below, so the
+			// loss can be raised again.
+			var settle func(placed bool)
+			if d.lossAdmit != nil {
+				if settle, recErr = d.lossAdmit(l.AtOpen); recErr != nil {
+					refused = true
+				}
+			}
+			if !refused {
+				at, recErr = d.appendRecord(l)
+				if settle != nil {
+					settle(at != (segment.Location{}))
+				}
+			}
 		}
 		if d.afterAppend != nil {
 			d.afterAppend()
