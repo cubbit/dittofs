@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -272,7 +273,9 @@ func (n *Node) started(name string, stop func(context.Context) error, uses ...st
 // refuse refuses a KV of another installation than the one each device's
 // journal names, and a device whose journal cannot be read, before Start
 // writes to it. A device holding no journal is left to the engine, which
-// refuses it at its own start.
+// refuses it at its own start. Then it writes a missing node-id copy beside
+// each journal the store records for this node and device, and beside no
+// other (RFC 23 §2.2 step 1).
 func (n *Node) refuse(ctx context.Context) error {
 	in, err := n.meta.Installation(ctx)
 	if err != nil {
@@ -295,7 +298,8 @@ func (n *Node) refuse(ctx context.Context) error {
 			return fmt.Errorf("the journal in %s: %w", dir, err)
 		}
 	}
-	return nil
+	b := &n.cfg.Bootstrap
+	return bootstrap.WriteMissingNodeIDs(ctx, b, b.Node.ID, n.meta.Lifecycle().JournalID)
 }
 
 // openListeners opens the API and the metrics listeners, and logs the

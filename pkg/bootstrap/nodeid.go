@@ -24,8 +24,8 @@ import (
 // The node-id file's layout, RFC 28 §2.1: the magic, the node's identity, and
 // the CRC32C of the bytes before it, little-endian, not seeded.
 const (
-	nodeIDName      = "node-id"
-	nodeIDTmpName   = "node-id.tmp"
+	nodeIDName      = journal.NodeIDFileName
+	nodeIDTmpName   = journal.NodeIDTmpName
 	nodeIDMagic     = "DNI1"
 	nodeIDCRCOffset = 20
 	nodeIDSize      = 24
