@@ -119,7 +119,7 @@ func (s *Server) RotateStep(ctx context.Context, op entity.Operation) (step.Step
 	var res step.StepResult
 	switch c.Phase {
 	case phaseStart:
-		err = r.start(ctx, op.Target, op.ID)
+		err = r.start(ctx, op)
 	case phasePin:
 		err = r.pin(ctx)
 	case phasePrevious:
@@ -217,11 +217,7 @@ func missingVersions(
 // refusal is one write, so a join started since makes it run again; the prune
 // and its audit record run inside it through tx, so a conflict that reruns
 // the write drops its earlier prune and record with the rest.
-func (r *rotation) start(
-	ctx context.Context,
-	target entity.ResourceRef,
-	id entity.OperationID,
-) error {
+func (r *rotation) start(ctx context.Context, op entity.Operation) error {
 	var pruneErr error
 
 	var rec entity.AuditRecord
@@ -230,14 +226,14 @@ func (r *rotation) start(
 		func(tx entity.ControlPlaneTx) error {
 			pruneErr = nil
 
-			op, running, err := tx.RunningOperation(string(apiv1.OpJoinDomain), target)
+			join, running, err := tx.RunningOperation(string(apiv1.OpJoinDomain), op.Target)
 			if err != nil {
 				return err
 			}
 
 			if running {
 				return problem(http.StatusConflict, apiv1.CodeOperationRunning,
-					fmt.Sprintf("the join %x is running on the installation", op.ID))
+					fmt.Sprintf("the join %x is running on the installation", join.ID))
 			}
 
 			in, err := tx.Installation()
@@ -312,12 +308,13 @@ func (r *rotation) start(
 			}
 
 			rec = entity.AuditRecord{
+				Actor: op.Account,
 				Target: entity.ResourceRef{
 					Kind: entity.ResourceSecret,
 					ID:   in.MachinePassword[:],
 				},
 				Change:  change,
-				Outcome: []byte(uuid.UUID(id).String()),
+				Outcome: []byte(uuid.UUID(op.ID).String()),
 			}
 
 			return nil

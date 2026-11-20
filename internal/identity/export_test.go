@@ -20,10 +20,6 @@ func (s *Server) Applied() *State { return s.state.Load() }
 // ErrNotApplied is Start's refusal before the first Apply.
 var ErrNotApplied = errNotApplied
 
-// HeldVersions is heldVersions, for the tests of the version scan behind
-// the prune's record.
-var HeldVersions = heldVersions
-
 // OnStateLoaded has every Resolve pass call f just after it loads the
 // State, before its first store read, so a test can Apply in between.
 func (s *Server) OnStateLoaded(f func()) { s.loaded = f }

@@ -1,7 +1,6 @@
 package identity_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -811,64 +810,6 @@ func TestRotationPruneGate(t *testing.T) {
 		})
 	}
 
-	// The version scan behind the record, read inside a write of its own
-	// on the fixture's store. With only the current version it finds
-	// nothing below it. With current version 4 and version 1 already
-	// pruned it names exactly 3 and 2, from the top down, and never the
-	// pruned version 1.
-	t.Run("held versions", func(t *testing.T) {
-		fx := newRotation(t)
-		ctx := context.Background()
-
-		var held []uint64
-
-		if err := fx.cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-			var err error
-
-			held, err = identity.HeldVersions(tx, fx.in.MachinePassword, 0)
-			if err != nil {
-				return err
-			}
-
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-
-		if len(held) != 0 {
-			t.Errorf("held versions below the current 1: got %v, want none", held)
-		}
-
-		fx.seal(t, pw3, secrets.Meta{KeyVersion: 2}, nil)
-		fx.seal(t, pw3, secrets.Meta{KeyVersion: 3}, nil)
-		fx.confirm(t, pw4, 4, 4)
-
-		if err := fx.cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-			return tx.PruneSecret(fx.in.MachinePassword, 2)
-		}); err != nil {
-			t.Fatal(err)
-		}
-
-		held = nil
-
-		if err := fx.cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-			var err error
-
-			held, err = identity.HeldVersions(tx, fx.in.MachinePassword, 3)
-			if err != nil {
-				return err
-			}
-
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-
-		if !slices.Equal(held, []uint64{3, 2}) {
-			t.Errorf("held versions, current 4, version 1 pruned: got %v, want [3 2]", held)
-		}
-	})
-
 	// A start with only the current version to keep reaches pin and
 	// records nothing: the prune has no floor below the current version.
 	t.Run("a start below a single version", func(t *testing.T) {
@@ -1017,30 +958,17 @@ func (f erroringPrune) Prune(
 	return f.err
 }
 
-// auditRefusal is a store fault that fails the Set of an audit key while
-// on, matched on the audit's own key prefix so nothing else of the turn
-// fails. It is the same fault the shared kvstore test suite
-// (pkg/metadata/kvstore/kvstoretest) uses in its case for a prune in the
-// caller's write, testPruneSecretInTheCallersWrite.
-type auditRefusal struct {
-	mu sync.Mutex
-	on bool
-}
+// auditRefusal is a store fault that fails the Set of an audit key, matched
+// on the audit's own key prefix so nothing else of the turn fails. It is the
+// same fault the shared kvstore test suite (pkg/metadata/kvstore/kvstoretest)
+// uses in its case for a prune in the caller's write,
+// testPruneSecretInTheCallersWrite.
+type auditRefusal struct{}
 
 var errAuditRefused = errors.New("the audit record's write was refused")
 
-func (f *auditRefusal) set(on bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.on = on
-}
-
 func (f *auditRefusal) At(op string, key []byte) (time.Duration, int, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.on && op == kvtest.OpSet && strings.HasPrefix(string(key), "AU‖") {
+	if op == kvtest.OpSet && strings.HasPrefix(string(key), "AU‖") {
 		return 0, 0, errAuditRefused
 	}
 
@@ -1069,36 +997,6 @@ func (fx *rotFixture) auditRecords(t *testing.T) []entity.AuditRecord {
 	}
 
 	return recs
-}
-
-// sealedVersions are the machine password's sealed records as the store
-// holds them, every version held in number order.
-func sealedVersions(t *testing.T, fx *rotFixture) []entity.Secret {
-	t.Helper()
-
-	var sealed []entity.Secret
-
-	if err := fx.cp.Write(context.Background(), entity.WriteMeta{},
-		func(tx entity.ControlPlaneTx) error {
-			sealed = nil
-
-			for _, v := range fx.versions(t) {
-				s, ok, err := tx.Secret(fx.in.MachinePassword, v.Number)
-				if err != nil {
-					return err
-				}
-
-				if ok {
-					sealed = append(sealed, s)
-				}
-			}
-
-			return nil
-		}); err != nil {
-		t.Fatal(err)
-	}
-
-	return sealed
 }
 
 // versionNumbers are the machine password's versions by number.
@@ -1137,15 +1035,15 @@ func (fx *rotFixture) confirm(t *testing.T, password string, keyVersion, rotatio
 
 // The prune's record commits with its write: one audit record names the
 // machine password, the exact versions the prune dropped and nothing else,
-// never a sealed value, and names the rotation that ran it.
+// never a sealed value, and names the rotation that ran it and the account
+// that started it.
 func TestRotationPruneAuditsItsVersions(t *testing.T) {
 	fx := newRotation(t)
 	fx.confirm(t, pw3, 2, 2)
 	fx.confirm(t, pw3, 3, 3)
-	fx.restart(t, fx.p)
-	sealed := sealedVersions(t, fx)
 	fx.clock.Advance(11 * time.Hour)
 	op := fx.op()
+	op.Account = entity.Principal{Kind: entity.PrincipalUser, ID: entity.PrincipalID(uuid.New())}
 	fx.runs(t, op)
 
 	if got := fx.phase(op); got != "pin" {
@@ -1177,12 +1075,8 @@ func TestRotationPruneAuditsItsVersions(t *testing.T) {
 			rec.Target.Kind, rec.Target.ID)
 	}
 
-	// The exact change above already refuses any value: this loop guards
-	// the same rule on its own, against the sealed bytes the store holds.
-	for _, v := range sealed {
-		if bytes.Contains(rec.Change, v.Value) {
-			t.Errorf("the prune's change holds the sealed value of version %d", v.Version)
-		}
+	if rec.Actor != op.Account {
+		t.Errorf("the prune's actor %+v, want the rotation's account %+v", rec.Actor, op.Account)
 	}
 }
 
@@ -1190,12 +1084,10 @@ func TestRotationPruneAuditsItsVersions(t *testing.T) {
 // the record's write rolls the prune back with it, leaving every version
 // and no record.
 func TestRotationPruneRecordFailsWithItsWrite(t *testing.T) {
-	refusal := &auditRefusal{}
 	fx := newRotation(t)
 	fx.confirm(t, pw3, 2, 2)
 	fx.restart(t, fx.p)
-	refusal.set(true)
-	fx.fkv.SetFault(refusal)
+	fx.fkv.SetFault(&auditRefusal{})
 	fx.clock.Advance(11 * time.Hour)
 	op := fx.op()
 	_, err := step.Run(context.Background(), fx.s.RotateStep, *op)
@@ -1253,10 +1145,16 @@ func TestRotationPruneNamesVersionsBelowReports(t *testing.T) {
 		kept     []uint64
 		recorded bool
 		change   string
+		// pruned has version 1 already pruned before the rotation runs.
+		pruned bool
 	}{
 		{
 			name: "a node holds version 2", holds: 2, kept: []uint64{4, 3, 2},
 			recorded: true, change: `{"pruned":[1]}`,
+		},
+		{
+			name: "version 1 already pruned", holds: 4, pruned: true, kept: []uint64{4},
+			recorded: true, change: `{"pruned":[2,3]}`,
 		},
 		{name: "a node holds version 0", holds: 0, kept: []uint64{4, 3, 2, 1}, recorded: false},
 	} {
@@ -1265,6 +1163,15 @@ func TestRotationPruneNamesVersionsBelowReports(t *testing.T) {
 			fx.confirm(t, pw3, 2, 2)
 			fx.confirm(t, pw3, 3, 3)
 			fx.confirm(t, pw4, 4, 4)
+
+			if tc.pruned {
+				if err := fx.cp.Write(context.Background(), entity.WriteMeta{},
+					func(tx entity.ControlPlaneTx) error {
+						return tx.PruneSecret(fx.in.MachinePassword, 2)
+					}); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			node := entity.NodeID(uuid.New())
 			if _, err := fx.store.Nodes().RegisterNode(context.Background(), entity.Node{
