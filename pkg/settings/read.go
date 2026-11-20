@@ -66,6 +66,11 @@ type levelKey struct {
 // across every scope, and returns the snapshot and the sections it refused,
 // each with its error; a refused section does not stop the others.
 //
+// The walk is not one transaction: AllSettings reads each page in its own,
+// so a write between two pages can leave a snapshot of two states. The caller
+// reads the settings generation before the call and after it, and discards
+// the snapshot if it moved (RFC 23 §2.3).
+//
 // decision: a row no section of table claims, a row whose key does not
 // parse, a row at a scope kind its section does not have, another node's row
 // and, at an OverrideOnly section's narrow scope, a row of a field the option
@@ -334,8 +339,9 @@ func buildThings(sec *Section, byScope map[levelKey]*level, node entity.NodeID) 
 }
 
 // nameThing rewrites the key of every refusal in err, made under the key a
-// per-thing section declares, as the row stored it, with its thing, so the
-// line names the key the operator wrote.
+// per-thing section declares, as the row stored it, with its thing, and
+// rewrites an unknown key's hint the same way, so the line names the key the
+// operator wrote.
 func nameThing(err error, prefix, thing string) {
 	switch err := err.(type) {
 	case *refusal:
@@ -355,6 +361,15 @@ func nameThing(err error, prefix, thing string) {
 		}
 
 		err.key = key
+
+		// An unknown key's hint names the nearest declared key; written for
+		// the thing, it is a key the operator can write.
+		const hint = "unknown key; did you mean "
+		if near, ok := strings.CutPrefix(err.fault.rule, hint); ok {
+			if near, ok = strings.CutSuffix(near, "?"); ok && strings.HasPrefix(near, prefix+".") {
+				err.fault.rule = hint + thingKey(prefix, near, thing) + "?"
+			}
+		}
 	case interface{ Unwrap() []error }:
 		for _, e := range err.Unwrap() {
 			nameThing(e, prefix, thing)
@@ -462,7 +477,9 @@ func (e *entry) err() error {
 	})
 
 	for _, id := range ids {
-		if err := e.instances[id].err; err != nil {
+		// An instance with a refused base carries the base's own refusal,
+		// already counted above.
+		if err := e.instances[id].err; err != nil && err != e.base.err {
 			errs = append(errs, err)
 		}
 	}

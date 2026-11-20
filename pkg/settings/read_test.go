@@ -405,9 +405,12 @@ func TestReadPerScopeDefaults(t *testing.T) {
 	}
 
 	// A stored row the section's Validate refuses is refused under its share,
-	// and a bad installation row of a share override with no share rows.
+	// and a bad installation row of a share override, with two shares that
+	// override it, is reported once, not once per share.
 	s.put(t, rdShareScope(0xA), "dq.port", "61000")
 	s.raw(t, rdInstallation, "rw.port", []byte{0xFF})
+	s.put(t, rdShareScope(0xA), "rw.port", "20")
+	s.put(t, rdShareScope(0xB), "rw.port", "30")
 
 	_, refused = rdRead(t, s.nodes, table, rdNodeA)
 
@@ -508,7 +511,7 @@ func TestReadPerThing(t *testing.T) {
 	_, refused = rdRead(t, odd.nodes, table, rdNodeA)
 
 	quoted := "setting (node 0a000000000000000000000000000000): " +
-		`"journal.` + j1 + `.nosuch": unknown key; did you mean journal.spare_target?`
+		`"journal.` + j1 + `.nosuch": unknown key; did you mean journal.` + j1 + `.spare_target?`
 	if err := refused["journal"]; !errors.Is(err, settings.ErrUnknownKey) ||
 		err.Error() != quoted {
 		t.Fatalf("refused[journal] = %v, want %q", err, quoted)

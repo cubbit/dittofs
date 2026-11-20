@@ -118,7 +118,12 @@ func (t Table) Check(
 	}
 
 	if err := effective.(interface{ Validate() error }).Validate(); err != nil {
-		return refuse(w.Scope, sec.prefix, err.Error(), ErrInvalid)
+		key := sec.prefix
+		if thing != "" {
+			key += "." + thing
+		}
+
+		return refuse(w.Scope, key, err.Error(), ErrInvalid)
 	}
 
 	if sec.checkTx != nil {
