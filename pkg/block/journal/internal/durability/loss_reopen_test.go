@@ -210,4 +210,26 @@ func TestATakeoverOfADeadUnreadClaimRepublishes(t *testing.T) {
 			t.Fatalf("the reopen's ring = %+v, want none: a served report keeps its suppression while the owed record is appended", got)
 		}
 	})
+
+	t.Run("a stopped instance's second Lose of its own piece is dropped", func(t *testing.T) {
+		e := newEnv(t)
+		e.shutdown()
+		e.d.Stop()
+		l := loss(14)
+		if _, err := e.d.Lose(ctx, l); err == nil {
+			t.Fatalf("the dead instance's Lose over closed streams: succeeded, want the refused append")
+		}
+		// The drain of a stopped instance can hand it a second job of the
+		// same piece: its own claim bars the retake — the ring held no
+		// reader, so the dead-unserved rule alone would let it take its own
+		// claim over — and the second Lose answers the dedup's zero event,
+		// never a second event into the ring nobody reads.
+		again, rerr := e.d.Lose(ctx, l)
+		if rerr != nil || again != (core.LossEvent{}) {
+			t.Fatalf("the stopped instance's second Lose of its own piece = %+v, %v, want the zero event and nil: its own claim bars it, never a takeover of itself", again, rerr)
+		}
+		if got := e.d.Stats().Losses; len(got) != 1 {
+			t.Fatalf("the stopped instance's ring = %+v, want its one event: the second Lose published nothing", got)
+		}
+	})
 }
