@@ -1028,6 +1028,8 @@ steps, "§6.3 `MNT` on a Kerberos-only share *(1 node)*"'s `sec=krb5` step (afte
 - `ErrWrongSecurity` as `NFS4ERR_WRONGSEC` and NFSv3's `AUTH_TOOWEAK`; the `require_kerberos` boot
   refusal (RFC 20's plan's ledger); the `ErrNotNegotiated`, `ErrNoSession` and `ErrExpired` rows.
 - Rows on `memory.New` with injected sign-in errors from S6c; rows where `SignIn` succeeds after S6b.
+- knfsd's captures of `RPCSEC_GSS` exchanges at `krb5`, `krb5i` and `krb5p` against a KDC, cut into
+  golden files as E2's are, which E2 leaves out.
 
 ### Epic 14 — Capture diffs against knfsd 🔀
 
