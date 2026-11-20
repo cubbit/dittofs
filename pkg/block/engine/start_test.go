@@ -736,6 +736,17 @@ func (j *logJournal) Stats() journal.Stats {
 	return s
 }
 
+// ReadOnlyState serves its ro override where Stats does, so the narrowed
+// accessor the engine's own checks read keeps answering the state the test
+// staged.
+func (j *logJournal) ReadOnlyState() journal.ReadOnlyState {
+	if ro := j.ro.Load(); ro != nil {
+		return *ro
+	}
+
+	return j.FakeJournal.ReadOnlyState()
+}
+
 func (j *logJournal) Close() error {
 	if err := j.add("close journal"); err != nil {
 		return err

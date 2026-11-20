@@ -46,6 +46,14 @@ type Journal interface {
 	Forget(ctx context.Context, tag journal.ShareTag) error
 	Strand(tag journal.ShareTag) error
 	Stats() journal.Stats
+	// LossGeneration returns the journal's loss generation alone, and
+	// ReadOnlyState its read-only state alone: the reads the engine runs
+	// on its own schedule — the per-write verifier's sample, the fence and
+	// close-stall checks — want one figure each and no loss ring, for the
+	// journal marks its published losses served only to a reader that
+	// takes them away, and the engine's own polls are never that reader.
+	LossGeneration() uint64
+	ReadOnlyState() journal.ReadOnlyState
 	// SyncMarks is the mark of each append stream's last sync, the journal's
 	// Stats.SyncMarks, each naming its stream.
 	SyncMarks() []entity.SyncMark

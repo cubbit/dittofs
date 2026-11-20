@@ -289,6 +289,23 @@ func (j *FakeJournal) Stats() journal.Stats {
 	return s
 }
 
+// LossGeneration returns the generation Stats reports, on the access the
+// engine's own readers use so they serve no loss ring.
+func (j *FakeJournal) LossGeneration() uint64 {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.gen
+}
+
+// ReadOnlyState returns the read-only state Stats reports, on the accessor
+// the engine's own readers use so they serve no loss ring. The name sits
+// beside ReadOnly, which stages the state, not reads it.
+func (j *FakeJournal) ReadOnlyState() journal.ReadOnlyState {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.readOnly
+}
+
 // headroomRefusal reports whether err is a refusal naming the headroom, which
 // a write under a reservation passes (RFC 1 §6).
 func headroomRefusal(err error) bool {
