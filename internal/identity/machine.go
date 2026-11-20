@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -31,6 +32,15 @@ func machineName(user string) bool {
 // anonymous and no grant can name it. Revisit if a KDC is shown to issue
 // machine tickets to names the operator does not control;
 // identity_mints_total{kind="machine"} is the signal.
+//
+// decision: the mint runs after the ticket, its PAC and the PAC's SIDs are
+// checked, but before the sign-in is accepted, so a sign-in can still be
+// refused after minting: the minted record read back failing, gone or
+// disabled, and, when another sign-in's mint took the row first, the PAC's
+// user SID not the one that mint linked. Each leaves a record a ticket for
+// the name would have minted anyway, linked only for a SID a verified PAC
+// carried. Overturned if a refusal that a later sign-in of the same machine
+// would not also meet can follow the mint.
 //
 // decision: the mint goes through identity's one mint path, with this plan,
 // so the re-run on ErrExist, the refusal of a re-run that binds nothing and
@@ -104,7 +114,13 @@ func (s *Server) linkMachine(ctx context.Context, p entity.Principal, name strin
 		linked = string(sd)
 		return err
 	})
-	if err != nil {
+	var se *merrs.StoreError
+	switch {
+	case errors.As(err, &se) && se.Code == merrs.ErrInvalidArgument:
+		// The store refuses the PAC's SID as a link: a refusal of the PAC,
+		// which no retry clears, not the store's fault.
+		return "", logonFailure("link a machine: %v", err)
+	case err != nil:
 		return "", fmt.Errorf("%w: link a machine: %w", vfserr.ErrUnavailable, err)
 	}
 	return linked, nil
@@ -113,17 +129,8 @@ func (s *Server) linkMachine(ctx context.Context, p entity.Principal, name strin
 // kerberosAccount is p's current record as Account reads it, a machine's
 // included, which Account refuses: a machine signs in over Kerberos only.
 func (s *Server) kerberosAccount(ctx context.Context, p entity.Principal) (entity.User, error) {
-	if p.Kind != entity.PrincipalMachine {
-		return s.Account(ctx, p)
-	}
-	u, err := s.deps.Store.Principals().User(ctx, p)
-	switch {
-	case merrs.IsNotFoundError(err):
+	if p.Kind != entity.PrincipalUser && p.Kind != entity.PrincipalMachine {
 		return entity.User{}, vfserr.ErrLogonFailure
-	case err != nil:
-		return entity.User{}, fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
-	case u.Disabled:
-		return entity.User{}, errDisabled
 	}
-	return u, nil
+	return s.record(ctx, p)
 }

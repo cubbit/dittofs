@@ -7,10 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -285,5 +287,78 @@ func TestKerberosMachineMintWritesNothingElse(t *testing.T) {
 	refused(t, "a machine whose mint fails", res, oc, err, vfserr.ErrUnavailable, "unavailable")
 	if after := k.keys(t); !maps.Equal(before, after) {
 		t.Errorf("the failed mint wrote to the store")
+	}
+}
+
+// ownDomain is the installation's own domain SID.
+func (k *kerberos) ownDomain(t *testing.T) string {
+	t.Helper()
+	in, err := k.st.Installation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, _, err := sid.DecodeSID(kvstore.DomainSID(in.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sid.FormatSID(own)
+}
+
+// A machine's first sign-in whose PAC is refused, its logon domain the
+// installation's own (RID 500), or its user SID one the store refuses as a
+// link, a domain SID of too few parts, is refused logon_failure and writes
+// nothing: no record, no link, identity_mints_total{kind="machine"} still 0.
+// The machine then signs in with a valid PAC, minted and linked for it.
+// Catches a record minted or linked before the PAC's SIDs are checked, which
+// locks the machine out for good, and a store's refusal answered unavailable.
+func TestKerberosMachineRefusedPACMintsNothing(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		domain func(k *kerberos, t *testing.T) string
+	}{
+		{"the installation's own domain", func(k *kerberos, t *testing.T) string { return k.ownDomain(t) }},
+		{"a domain SID the store refuses", func(*kerberos, *testing.T) string { return "S-1-5-21-7-7" }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			k := kerberosServer(t)
+			const m, name = "host/b8", "host/b8@TEST.REALM"
+			before := k.keys(t)
+			bad := rid(m, 500)
+			bad.DomainSID = c.domain(k, t)
+			res, oc, err := k.srv.SignInOutcome(context.Background(), k.pacAs(m, bad))
+			refused(t, c.name, res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
+			if after := k.keys(t); !maps.Equal(before, after) {
+				t.Errorf("the refused first sign-in wrote to the store")
+			}
+			if got := k.machines(t); got != 0 {
+				t.Errorf("identity_mints_total{kind=machine} = %v after the refusal, want 0", got)
+			}
+			res, oc, err = k.srv.SignInOutcome(context.Background(), k.pacAs(m, rid(m, 1108)))
+			if err != nil || oc != "ok" {
+				t.Fatalf("the valid PAC's sign-in = %v, outcome %q; want ok", err, oc)
+			}
+			if _, row := k.machineRow(t, name); row.Linked != sidID(pacDomain+"-1108").Value {
+				t.Errorf("Linked %x, want …-1108's", row.Linked)
+			}
+		})
+	}
+}
+
+// A machine minted PAC-less whose first PAC carries a user SID the store
+// refuses as a link is refused logon_failure, not unavailable, and its row
+// stays linked for no SID. Catches the store's refusal of a link answered as
+// the store's fault.
+func TestKerberosMachineLinkRefusedByTheStore(t *testing.T) {
+	k := kerberosServer(t)
+	const m, name = "host/build06", "host/build06@TEST.REALM"
+	if _, oc, err := k.srv.SignInOutcome(context.Background(), k.as(m)); err != nil || oc != "ok" {
+		t.Fatalf("PAC-less first sign-in = %v, outcome %q; want ok", err, oc)
+	}
+	bad := rid(m, 1105)
+	bad.DomainSID = "S-1-5-21-7-7"
+	res, oc, err := k.srv.SignInOutcome(context.Background(), k.pacAs(m, bad))
+	refused(t, "a PAC whose user SID the store refuses", res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
+	if _, row := k.machineRow(t, name); row.Linked != "" {
+		t.Errorf("Linked %x after the refusal, want none", row.Linked)
 	}
 }
