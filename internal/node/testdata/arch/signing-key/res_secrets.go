@@ -2,7 +2,7 @@ package api
 
 import "github.com/cubbit/dittofs/pkg/metadata/entity"
 
-type secretSetting struct{}
+type secretSetting struct{ kind entity.SecretKind }
 
 // put is the credential write's own declaration, whose put is exempt.
 func (secretSetting) put(tx entity.ControlPlaneTx, s entity.Secret) error {
@@ -25,3 +25,13 @@ func (creds) put(tx entity.ControlPlaneTx, s entity.Secret) error {
 func put(tx entity.ControlPlaneTx, s entity.Secret) error {
 	return tx.PutSecret(s, 0)
 }
+
+// A secretSetting of the signing key's kind, and one of a kind that is no
+// constant, are checked; one of another constant kind is not.
+var (
+	_ = secretSetting{kind: entity.SecretKey}
+	_ = secretSetting{kind: kindOf()}
+	_ = secretSetting{kind: entity.SecretKeytab}
+)
+
+func kindOf() entity.SecretKind { return entity.SecretKeytab }

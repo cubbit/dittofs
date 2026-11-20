@@ -4,6 +4,7 @@ import (
 	"errors"
 	"go/ast"
 	gobuild "go/build"
+	"go/constant"
 	"go/importer"
 	"go/parser"
 	"go/token"
@@ -941,7 +942,8 @@ var signingKeyFiles = []string{"auth/rotate.go", "auth/tokens.go"}
 // none) and its name: secretSetting.put, which writes a remote store's
 // credential and the identity keytab, and handOver, an offline join's
 // machine password. The store refuses each under the signing key's kind or
-// owner.
+// owner, and every secretSetting literal is checked to name a constant kind
+// other than the signing key's.
 //
 // decision: the exemption names the functions rather than checking the
 // written secret's kind and owner, which the type checker cannot see: the
@@ -1021,6 +1023,9 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 			fd, ok := d.(*ast.FuncDecl)
 			exempt := ok && sub == "" && isCredentialWrite(file, fd)
 			ast.Inspect(d, func(n ast.Node) bool {
+				if lit, ok := n.(*ast.CompositeLit); ok && sub == "" && !secretKindAllowed(info, lit, kind) {
+					bad = append(bad, file+":"+strconv.Itoa(fset.Position(lit.Pos()).Line)+" builds a secretSetting whose kind is SecretKey or no constant")
+				}
 				id, ok := n.(*ast.Ident)
 				if !ok {
 					return true
@@ -1046,6 +1051,26 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 	return bad, nil
 }
 
+// secretKindAllowed reports whether lit, when it builds a secretSetting,
+// whose put credentialWrites exempts, sets its kind to a constant other than
+// key's value, the signing key's kind; a literal of any other type is
+// allowed. A kind left unset is the zero kind, which is no secret's.
+func secretKindAllowed(info *types.Info, lit *ast.CompositeLit, key types.Object) bool {
+	named, ok := info.Types[lit].Type.(*types.Named)
+	if !ok || named.Obj().Name() != "secretSetting" {
+		return true
+	}
+	for _, el := range lit.Elts {
+		kv, ok := el.(*ast.KeyValueExpr)
+		if k, isID := kv.Key.(*ast.Ident); !ok || !isID || k.Name != "kind" {
+			continue
+		}
+		v := info.Types[kv.Value].Value
+		return v != nil && !constant.Compare(v, token.EQL, key.(*types.Const).Val())
+	}
+	return true
+}
+
 // isMethod reports whether o is a method.
 func isMethod(o types.Object) bool {
 	fn, ok := o.(*types.Func)
@@ -1058,7 +1083,10 @@ func isMethod(o types.Object) bool {
 // PutSecret, dropping it through PruneSecret and repointing it is caught at
 // each, and so is a PutSecret outside the credential write's own
 // declaration: in a function of its name in another file, in a method of
-// its name, and in a closure at package level after it.
+// its name, and in a closure at package level after it; so is a handOver
+// method in the offline join's file, a secretSetting.put in another file,
+// and a secretSetting literal whose kind is the signing key's or no
+// constant.
 func TestNoRouteWritesTheSigningKey(t *testing.T) {
 	var dirs []string
 	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
@@ -1083,9 +1111,13 @@ func TestNoRouteWritesTheSigningKey(t *testing.T) {
 		t.Fatalf("the planted route: %v", err)
 	}
 	want := []string{
+		"res_domain.go:14 calls PutSecret",
 		"res_secrets.go:14 calls PutSecret",
 		"res_secrets.go:21 calls PutSecret",
 		"res_secrets.go:26 calls PutSecret",
+		"res_secrets.go:32 builds a secretSetting whose kind is SecretKey or no constant",
+		"res_secrets.go:32 uses entity.SecretKey",
+		"res_secrets.go:33 builds a secretSetting whose kind is SecretKey or no constant",
 		"routes.go:12 uses Installation.SigningKey",
 		"routes.go:16 uses entity.SecretKey",
 		"routes.go:18 calls PutSecret",
@@ -1099,7 +1131,7 @@ func TestNoRouteWritesTheSigningKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the credential write's name in another file: %v", err)
 	}
-	if want := []string{"res_stores.go:8 calls PutSecret"}; !slices.Equal(got, want) {
+	if want := []string{"res_stores.go:16 calls PutSecret", "res_stores.go:8 calls PutSecret"}; !slices.Equal(got, want) {
 		t.Errorf("the credential write's name in another file: reaches %q, want %q", got, want)
 	}
 }

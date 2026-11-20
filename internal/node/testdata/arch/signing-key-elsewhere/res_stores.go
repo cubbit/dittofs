@@ -7,3 +7,11 @@ import "github.com/cubbit/dittofs/pkg/metadata/entity"
 func handOver(tx entity.ControlPlaneTx, s entity.Secret) error {
 	return tx.PutSecret(s, 0)
 }
+
+// secretSetting is named like the credential write's type, in another file,
+// so its put is checked.
+type secretSetting struct{ kind entity.SecretKind }
+
+func (secretSetting) put(tx entity.ControlPlaneTx, s entity.Secret) error {
+	return tx.PutSecret(s, 0)
+}

@@ -6,3 +6,10 @@ import "github.com/cubbit/dittofs/pkg/metadata/entity"
 func handOver(tx entity.ControlPlaneTx, s entity.Secret) error {
 	return tx.PutSecret(s, 0)
 }
+
+// joiner has a method named like the offline join's write, which is checked.
+type joiner struct{}
+
+func (joiner) handOver(tx entity.ControlPlaneTx, s entity.Secret) error {
+	return tx.PutSecret(s, 0)
+}
