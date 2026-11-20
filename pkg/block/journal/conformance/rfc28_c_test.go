@@ -1393,29 +1393,21 @@ func rollTakesSpare(t *testing.T, f *journaltest.Fixture, spares []string) {
 	}
 }
 
-// rollSynced writes 64 KiB records on file 0 through share 0, each synced,
-// until one lands in a new segment, and returns that segment; the write that
-// rolled is not synced.
-func rollSynced(t *testing.T, f *journaltest.Fixture) journal.SegmentID {
+// takeUnsynced writes one 64 KiB record on file 0 at off through share s
+// and returns the segment the write's whole extent landed in, without
+// syncing anything: the take the write rolls into is returned with its
+// header and its first record both unsynced, the shape a crash makes
+// record-less. The entry answering the take is the one covering the
+// write's last byte: a fresh take is the only segment whose record the
+// write lands in, and a probe of the write's start would answer nothing
+// of it.
+func takeUnsynced(t *testing.T, f *journaltest.Fixture, s, i int, off int64) journal.SegmentID {
 	t.Helper()
 
 	const size = 64 << 10
-	id := journaltest.File(0)
-	var first journal.SegmentID
-	for n := 0; n <= 2*journaltest.FixtureSegmentCap/size; n++ {
-		off := int64(n) * size
-		write(t, f.Share(0), id, off, pattern(fmtTag("q", 0, 0, off), size))
-		seg := entryAt(t, f, id, off).Location.Segment
-		if n == 0 {
-			first = seg
-		}
-		if seg != first {
-			return seg
-		}
-		syncFiles(t, f.Share(0), id)
-	}
-	t.Fatalf("%d bytes of records never rolled a segment of %d", 2*journaltest.FixtureSegmentCap, journaltest.FixtureSegmentCap)
-	return 0
+	id := journaltest.File(i)
+	write(t, f.Share(s), id, off, pattern(fmtTag("q", s, i, off), size))
+	return entryAt(t, f, id, off+size-1).Location.Segment
 }
 
 // TestRFC28C_SparesAreReAdopted checks that a crash costs no spare: every
@@ -1427,7 +1419,11 @@ func rollSynced(t *testing.T, f *journaltest.Fixture) journal.SegmentID {
 func TestRFC28C_SparesAreReAdopted(t *testing.T) {
 	// A take's refill is awaited and the journal reopened, so the pool is
 	// at its target as the open counts it and no spare-making is in flight
-	// when the pool is read.
+	// when the pool is read. The settle after the reopen is owed too: the
+	// row's one write fills a segment whole and spills, so the row takes
+	// twice and the helper awaits one refill; a second refill the close or
+	// the crash loses would cost the pool a spare it could only make again
+	// — the create and allocate wantReadopted refuses.
 	f := journaltest.New(t)
 	awaitSettledSpare(t, f, func() { writeSynced(t, f, 0, 2, 0, journaltest.FixtureSegmentCap) })
 	f.Reopen()
@@ -1439,15 +1435,30 @@ func TestRFC28C_SparesAreReAdopted(t *testing.T) {
 	wantReadopted(t, f, before)
 	rollTakesSpare(t, f, before.spares)
 
-	// Spare-making is parked, so no spare is made between the take and
-	// the crash, and the pool is as it was before the take. The create and
-	// allocate counts are taken once the parked spare maker was released
-	// into the crashed storage, so only the open's own calls are compared.
+	// The take is the rolled one over a proven seal: file 1's record and
+	// file 0's first, both synced, are sealed by the reopen — the open's
+	// own cut-and-seal, whose shrunken accounting a baseline drawn before
+	// it would misread as a loss — so the write the row then makes rolls
+	// over its sealed predecessor into a take whose predecessor's seal is
+	// proven. That take's first record is left unsynced, and spare-making
+	// is parked, so no spare is made between the take and the crash: the
+	// crash drops the take's header and its record together, and the
+	// taken segment comes back record-less, its cap still charged either
+	// way — the baseline the row drew is what the open re-derives.
+	//
+	// The parked spare maker is released into the crashed storage before
+	// the reopen: its make dies there — the only call it reaches is
+	// counted — so its create and allocate are folded into the counts the
+	// open is compared against, and only the open's own calls remain.
 	g := journaltest.NewUnwatched(t)
 	other := writeSynced(t, g, 1, 1, 0, 64<<10)
+	writeSynced(t, g, 0, 0, 0, 64<<10)
+	g.WaitSpares()
+	g.Reopen()
+	g.WaitSpares()
 	before = poolNow(t, g)
 	held := g.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
-	taken := rollSynced(t, g)
+	taken := takeUnsynced(t, g, 0, 0, 64<<10)
 	if err := g.Seam.Crash(); err != nil {
 		t.Fatalf("crash: %v", err)
 	}

@@ -592,14 +592,6 @@
   issue: '#3596'
   message: 'fixture: crash: journal: open refused at recovery: segment 4: a refused range at [65688,65792) that names no record'
 
-- test: TestRFC28C_SparesAreReAdopted
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens and its re-adopted spares reach the pool, so the half where every spare must be on disk passes. The other half fails: a segment a stream took and never synced does not come back as a spare after the crash. The record-less take''s return to the pool (R74) is owed by #4860.'
-  issue: '#4860'
-  message: 'taken and never synced, is not a spare again after the crash'
-
 - test: TestRFC28C_SpareIsWholeOrAbsent/create
   status: fail
   fix: planned
