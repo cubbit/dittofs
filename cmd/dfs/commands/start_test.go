@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -27,6 +29,12 @@ import (
 // holds, one per line, as the dfs binary's main would.
 const childEnv = "DFS_START_CHILD_ARGS"
 
+// signalAfterStartEnv, when set, makes the child send itself SIGTERM once
+// Start returned and wait for the signal to land, before dfs start reads
+// whether a signal arrived: a start that failed for its own reason then ends
+// under a signal, at no particular timing.
+const signalAfterStartEnv = "DFS_START_CHILD_SIGTERM_AFTER_START"
+
 // TestStartChild is the child process the start tests run: dfs itself.
 func TestStartChild(t *testing.T) {
 	args := os.Getenv(childEnv)
@@ -35,7 +43,21 @@ func TestStartChild(t *testing.T) {
 	}
 	root := NewRoot()
 	root.SetArgs(strings.Split(args, "\n"))
-	if err := root.Execute(); err != nil {
+	ctx := context.Background()
+	if os.Getenv(signalAfterStartEnv) != "" {
+		ctx = context.WithValue(ctx, startReturnedKey{}, func(signal context.Context) {
+			self, err := os.FindProcess(os.Getpid())
+			if err == nil {
+				err = self.Signal(syscall.SIGTERM)
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: SIGTERM to itself: %v\n", err)
+				os.Exit(2)
+			}
+			<-signal.Done()
+		})
+	}
+	if err := root.ExecuteContext(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -87,9 +109,10 @@ const nodeUUID = "00112233-4455-6677-8899-aabbccddeeff"
 var testNode = entity.NodeID(uuid.MustParse(nodeUUID))
 
 // bootstrapFile is a bootstrap the tests write: every listener on loopback
-// port 0, logging to stderr. An empty field is left out of the file.
+// port 0 but the API's at api when set, logging to stderr. An empty field is
+// left out of the file.
 type bootstrapFile struct {
-	backend, store, journal, node, key string
+	backend, store, journal, node, key, api string
 }
 
 // write writes b under dir as config.yaml and returns its path.
@@ -114,7 +137,7 @@ func (b bootstrapFile) write(t *testing.T, dir string) string {
 		fmt.Fprintf(&body, "keys:\n  storage:\n    kind: local\n    local:\n      file: '%s'\n", b.key)
 	}
 	fmt.Fprintf(&body, `api:
-  listen: ['127.0.0.1:0']
+  listen: ['%s']
 metrics:
   listen: '127.0.0.1:0'
 adapters:
@@ -122,7 +145,7 @@ adapters:
 blockstore:
   journal:
     path: '%s'
-`, filepath.Join(dir, "blocks"))
+`, cmp.Or(b.api, "127.0.0.1:0"), filepath.Join(dir, "blocks"))
 	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
 		t.Fatal(err)
@@ -130,11 +153,18 @@ blockstore:
 	return path
 }
 
-// installed is the bootstrap of an installation under dir, as dfs init
-// leaves one: the metadata store at dir/store, one journal at dir/device,
-// recorded for the test's node, and the storage key at dir/storage.key. A host whose mount the journal's platform
-// check refuses skips the test.
+// installed writes the bootstrap of the installation under dir and returns
+// its path.
 func installed(t *testing.T, dir string) string {
+	t.Helper()
+	return installation(t, dir).write(t, dir)
+}
+
+// installation is the bootstrap of an installation under dir, as dfs init
+// leaves one: the metadata store at dir/store, one journal at dir/device,
+// recorded for the test's node, and the storage key at dir/storage.key. A
+// host whose mount the journal's platform check refuses skips the test.
+func installation(t *testing.T, dir string) bootstrapFile {
 	t.Helper()
 	ctx := t.Context()
 	scratch := filepath.Join(dir, "scratch")
@@ -178,7 +208,7 @@ func installed(t *testing.T, dir string) string {
 	if err := st.RecordJournal(ctx, jid, testNode, entity.JournalDir(dev)); err != nil {
 		t.Fatalf("record the journal: %v", err)
 	}
-	return bootstrapFile{store: store, journal: dev, node: nodeUUID, key: storageKeyFile(t, dir)}.write(t, dir)
+	return bootstrapFile{store: store, journal: dev, node: nodeUUID, key: storageKeyFile(t, dir)}
 }
 
 // storagePassphrase wraps the storage key the tests write; startChild hands
@@ -322,6 +352,8 @@ func TestRefuseV1(t *testing.T) {
 		{"none there", missing, []string{filepath.Join(dir, "also-missing.db")}, ""},
 		{"beside the bootstrap", present, []string{missing}, "refusing to start: " + present + " is v1's"},
 		{"at a fixed path", missing, []string{missing, present}, "refusing to start: " + present + " is v1's"},
+		// A file where a directory is expected holds no database beneath it.
+		{"under a file, beside and fixed", filepath.Join(present, "controlplane.db"), []string{filepath.Join(present, "controlplane.db")}, ""},
 	} {
 		err := refuseV1(tc.beside, tc.fixed)
 		if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.HasPrefix(err.Error(), tc.want)) {
@@ -348,15 +380,35 @@ func TestRefuseV1(t *testing.T) {
 	if err := refuseV1(missing, []string{p, present}); err == nil || !strings.HasPrefix(err.Error(), "refusing to start: "+present+" is v1's") {
 		t.Errorf("refuseV1 at a fixed path after an unsearchable one = %v, want %s refused: the skip goes on to the next path", err, present)
 	}
+
+	// A path whose parent is a symlink loop cannot be checked for any reason
+	// but permission, so the start is refused there, a fixed path included.
+	loop := filepath.Join(dir, "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	looped := filepath.Join(loop, "controlplane.db")
+	if err := refuseV1(missing, []string{looped}); err == nil || !strings.HasPrefix(err.Error(), "refusing to start: checking for v1's control-plane database at "+looped) {
+		t.Errorf("refuseV1 at a fixed path under a symlink loop = %v, want the check refused, not skipped", err)
+	}
 }
 
 // The command's error once the node stopped: a start that failed for a
 // reason but a signal names its step, a signal exits zero once every part
 // stopped, and a stop that failed or missed its bound names the stop step.
+//
+// The table runs the rule in process; TestStartFailingUnderSIGTERMExitsNonZero
+// runs a start that failed for its own reason under a signal end to end,
+// through a hook that signals the child once Start returned, because no
+// timing can land a signal between the steps that check for cancellation and
+// one that fails on its own.
 func TestAnswer(t *testing.T) {
 	startErr := fmt.Errorf("node: start step engine: %w", context.Canceled)
 	bindErr := errors.New("node: start step listeners: listen tcp 127.0.0.1:1: bind: address already in use")
+	shareErr := errors.New("node: start step engine: share 7: the journal is full")
 	stopErr := errors.New("node: stop engine: not stopped within 30s")
+	ownAndCanceled := errors.Join(shareErr, context.Canceled)
+	bothCanceled := errors.Join(startErr, fmt.Errorf("node: halt: %w", context.Canceled))
 	for _, tc := range []struct {
 		name      string
 		start     error
@@ -370,8 +422,10 @@ func TestAnswer(t *testing.T) {
 		{"a start that failed for its own reason under a signal", bindErr, true, nil, "starting the node: " + bindErr.Error()},
 		{"a stop that missed its bound", nil, true, stopErr, "stopping the node: " + stopErr.Error()},
 		{"both", startErr, false, stopErr, "starting the node: " + startErr.Error() + "\nstopping the node: " + stopErr.Error()},
+		{"an own failure joined with a cancellation under a signal", ownAndCanceled, true, nil, "starting the node: " + ownAndCanceled.Error()},
+		{"only cancellations joined under a signal", bothCanceled, true, nil, ""},
 	} {
-		err := answer(tc.start, tc.signalled, tc.stop)
+		err := answer(tc.start, endedBySignal(tc.start, tc.signalled), tc.stop)
 		got := ""
 		if err != nil {
 			got = err.Error()

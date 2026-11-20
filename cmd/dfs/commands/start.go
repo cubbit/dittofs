@@ -119,9 +119,15 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	if startErr == nil {
 		<-ctx.Done()
 	}
+	if f, ok := base.Value(startReturnedKey{}).(func(context.Context)); ok {
+		f(ctx)
+	}
 	signalled := ctx.Err() != nil && base.Err() == nil
+	// ended decides both the record below and the exit code, so the tests
+	// that read the record read the value the exit code is answered from.
+	ended := endedBySignal(startErr, signalled)
 	if signalled {
-		if errors.Is(startErr, context.Canceled) {
+		if ended {
 			slog.Info("dfs: the start ended on a termination signal", "err", startErr)
 		}
 		slog.Info("dfs: stopping on a termination signal")
@@ -130,23 +136,50 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	if stopErr == nil {
 		slog.Info("dfs: stopped")
 	}
-	return answer(startErr, signalled, stopErr)
+	return answer(startErr, ended, stopErr)
 }
 
+// startReturnedKey keys a hook in the command's context that runs once Start
+// returned, given the signal context, before the command reads whether a
+// signal arrived: a test delivers a signal there to reach a start that failed
+// for its own reason under a signal. Production sets none.
+type startReturnedKey struct{}
+
 // endedBySignal reports whether a termination signal, not a failure of its
-// own, ended the start: a signal arrived and Start succeeded or returned the
-// signal's cancellation. A start that failed for its own reason while a signal
-// arrived did not end on it.
+// own, ended a start that failed: a signal arrived and every error Start
+// returned is the signal's cancellation. A start that failed for its own
+// reason while a signal arrived did not end on it, even when another of its
+// errors is a cancellation.
 func endedBySignal(startErr error, signalled bool) bool {
-	return signalled && (startErr == nil || errors.Is(startErr, context.Canceled))
+	return signalled && onlyCanceled(startErr)
+}
+
+// onlyCanceled reports whether err is non-nil and every leaf of its tree,
+// through both forms of Unwrap, is context.Canceled.
+func onlyCanceled(err error) bool {
+	switch u := err.(type) {
+	case interface{ Unwrap() []error }:
+		errs := u.Unwrap()
+		for _, e := range errs {
+			if !onlyCanceled(e) {
+				return false
+			}
+		}
+		return len(errs) > 0
+	case interface{ Unwrap() error }:
+		if inner := u.Unwrap(); inner != nil {
+			return onlyCanceled(inner)
+		}
+	}
+	return errors.Is(err, context.Canceled)
 }
 
 // answer is the command's error once the node stopped: a Start that failed
-// for any reason but a termination signal, naming its step, joined with
+// but did not end on a termination signal, naming its step, joined with
 // Stop's; otherwise Stop's alone, so a signal exits zero once every part
 // stopped.
-func answer(startErr error, signalled bool, stopErr error) error {
-	if startErr != nil && !endedBySignal(startErr, signalled) {
+func answer(startErr error, ended bool, stopErr error) error {
+	if startErr != nil && !ended {
 		return errors.Join(fmt.Errorf("starting the node: %w", startErr), stopped(stopErr))
 	}
 	return stopped(stopErr)
