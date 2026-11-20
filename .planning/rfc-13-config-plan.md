@@ -405,8 +405,9 @@ flowchart TD
 ### 4.1 Directory layout
 
 ```text
-pkg/bootstrap/              renamed from pkg/config: Bootstrap, Load, refused keys,          E1, E2, E6
-                            node identity, initialise-if-empty (E6)
+pkg/bootstrap/              renamed from pkg/config: Bootstrap, Load, refused keys,          E1, E2
+                            node identity
+cmd/dfs/commands/           dfs start's initialise-if-empty flag, over internal/install     E6
 pkg/settings/               sections, table, snapshot, Get, Check, Diff, versions, metrics   E1, E3, E2 (versions)
 pkg/secrets/                Provider: Seal, Resolve, Prune, Delete; envelope                 E1, E4
 pkg/keyprovider/            moved from pkg/block/middleware/encryption/keyprovider           E1
@@ -1387,8 +1388,9 @@ Outside those rows, the built image's `HEALTHCHECK` on `https://localhost:8080/h
 unverified, since RFC 23's plan's epic 4 serves the API over TLS on every address but loopback
 (`docker-compose.yml`'s probes `/health/ready`), reports healthy
 on its first start after `docker run … init`, with the certificate and key it starts with (RFC 23's plan's D13
-and its §6.1 row naming this epic). No `dt` suite builds the image, so it is checked by
-`docker compose up` on `docker-compose.yml` until a suite does (§6.1).
+and its §6.1 row naming this epic). No `dt` suite builds the image, so it is checked by a
+`docker run … start` of the built image, read with `docker inspect`, until a suite does (§6.1):
+`docker-compose.yml`'s own `healthcheck:` replaces the image's, so `docker compose up` cannot show it.
 
 **Expected content:**
 - Initialise-if-empty, a development and test option, off by default (RFC 13 §2.2), landing with its
@@ -1421,7 +1423,7 @@ and its §6.1 row naming this epic). No `dt` suite builds the image, so it is ch
   never initialise on their own: their entrypoint stays `dfs` and their `CMD` stays `dfs start`, so
   a store volume that is unbound, mistyped or mounted late refuses the start rather than minting a
   new installation (RFC 13 §2.2). Initialisation is an explicit step for them, as it is for
-  `scripts/packaging/dfs.service`, which keeps `dfs start`: `docker run … init`, with the first password
+  the unit file (`packaging/dfs.service` on `feat/storage-v2`, `scripts/packaging/dfs.service` on `develop`), which keeps `dfs start`: `docker run … init`, with the first password
   given by reference to a file the operator mounts (RFC 23 §5.4), since D7 refuses
   `DITTOFS_ADMIN_INITIAL_PASSWORD`, then `docker run … start`, both mounting the same volumes, the
   five the images declare (`Dockerfile`'s `VOLUME`), since an `init` without them writes anonymous
@@ -1530,6 +1532,8 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | `DITTOFS_ENCRYPTION_PASSPHRASE` in the process environment, readable in `/proc/<pid>/environ`, and no check of the bootstrap's and key files' mode or owner (§4.3's `ponytail:`) | `keyprovider`'s local provider reads it today; neither is new here | unowned | a deployment needs the passphrase out of the environment, or a key file is found readable by another user |
 | The image's `HEALTHCHECK` on its first start after `init`, in a `dt` suite (epic 6's **Done when:**), on unverified `https`: the image's `/health/live`, `docker-compose.yml`'s `/health/ready` | no suite builds the image | unowned | a suite builds the image |
 | The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate checks the active versions only and gains the namespace comparison when the key exists, and epic 3's unit test declares one of its own until then | RFC 4 | a plan of RFC 4 declares the key |
+| "§5.1 bound"'s "no content, accepted" half at a namespace and a share scope (epic 5's D6; epic 6's R17) | a namespace holds content for its whole life and a share scope answers an error, since no read in the transaction says what either holds | unowned | the drain is readable in the transaction (D6's own withdrawal), or a share-scope bound setting is declared |
+| "§5.5 dead node"'s single-node sentence as written, an older binary starting on a store a newer one opened (epic 6's D6) | each format has one version, so no older range exists to build | unowned | a format gains a second version, beside the `raise-format` row |
 | the settings table's adapters' rows, which RFC 20's plan's deferral ledger gave this plan | the adapters' section type is RFC 20's T7.6's | RFC 20 plan, its T7.6 | that subtask |
 
 ## 7. RFC coverage
