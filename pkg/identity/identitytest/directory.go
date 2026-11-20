@@ -218,6 +218,9 @@ func (d *Directory) add(name string, classes []string, rid uint32, attrs map[str
 	return dn
 }
 
+// DomainSID is the domain's SID in binary form, as objectSid holds it.
+func (d *Directory) DomainSID() []byte { return bytes.Clone(d.domainSID) }
+
 // Account returns the administrator's DN and password.
 func (d *Directory) Account() (name string, password []byte) {
 	return "CN=Administrator,CN=Users," + d.base, []byte(adminPassword)

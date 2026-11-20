@@ -465,6 +465,65 @@ func TestByKerberosNameReachesTheEntry(t *testing.T) {
 	}
 }
 
+// A directory principal marked deleted is never minted anew while its
+// deletion runs (RFC 18 §3.7): its user, by Kerberos name, is
+// ErrUnknownPrincipal, as an unknown name is, and its group is left out of
+// a member's mint; once the deletion has ended each is minted anew.
+func TestDirectoryMintSkipsMarkedPrincipals(t *testing.T) {
+	e := newAD(t)
+	ctx := context.Background()
+	alice := e.d.AddUser(t, "alice", nil)
+	bob := e.d.AddUser(t, "bob", nil)
+	e.d.AddGroup(t, "eng", map[string][][]byte{"member": {[]byte(alice), []byte(bob)}})
+	p, err := e.s.ByKerberosName(ctx, "alice", "CORP.EXAMPLE", true)
+	if err != nil {
+		t.Fatalf("ByKerberosName(alice): %v", err)
+	}
+	eng, err := e.st.Principals().ByName(ctx, entity.PrincipalGroup, "eng")
+	if err != nil {
+		t.Fatalf("eng after alice's mint: %v", err)
+	}
+	cp, pr := e.st.ControlPlane(), e.st.Principals()
+	u, err := pr.User(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.DeleteUser(ctx, p, u.Generation); err != nil {
+		t.Fatalf("DeleteUser(alice): %v", err)
+	}
+	g, err := e.st.Records().Group(ctx, eng)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.DeleteGroup(ctx, eng, g.Generation); err != nil {
+		t.Fatalf("DeleteGroup(eng): %v", err)
+	}
+
+	if got, err := e.s.ByKerberosName(ctx, "alice", "CORP.EXAMPLE", true); !errors.Is(err, vfserr.ErrUnknownPrincipal) {
+		t.Errorf("ByKerberosName(alice) marked deleted = %v, %v; want ErrUnknownPrincipal", got, err)
+	}
+	if _, err := e.s.ByKerberosName(ctx, "bob", "CORP.EXAMPLE", true); err != nil {
+		t.Fatalf("ByKerberosName(bob) with eng marked deleted: %v", err)
+	}
+	if got, err := pr.ByName(ctx, entity.PrincipalGroup, "eng"); err == nil {
+		t.Errorf("eng minted anew as %v by bob's mint while its deletion runs, want left out", got)
+	}
+
+	for _, q := range []entity.Principal{p, eng} {
+		for done := false; !done; {
+			if done, err = e.st.Nodes().ContinueDelete(ctx, q); err != nil {
+				t.Fatalf("ContinueDelete(%v): %v", q, err)
+			}
+		}
+	}
+	if got, err := e.s.ByKerberosName(ctx, "alice", "CORP.EXAMPLE", true); err != nil || got == p {
+		t.Errorf("ByKerberosName(alice) after her deletion ended = %v, %v; want a new principal", got, err)
+	}
+	if got, err := pr.ByName(ctx, entity.PrincipalGroup, "eng"); err != nil || got == eng {
+		t.Errorf("eng after its deletion ended and alice's mint = %v, %v; want a new principal", got, err)
+	}
+}
+
 // The krb link's SID is asked fresh only: a cached answer is never used
 // while the directory fails, a missing entry, a machine account's name,
 // ending in $, and a computer entry under a name with no $ are

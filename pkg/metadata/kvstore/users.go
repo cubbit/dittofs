@@ -612,12 +612,15 @@ func notFound(err error, p entity.Principal) error {
 	return merrs.NewNotFoundError(p.String(), "principal")
 }
 
-// unindex deletes p's name and protocol-ID rows.
+// unindex deletes p's name and protocol-ID rows, all but a dir spelling's.
 func unindex(tx kv.Txn, p entity.Principal, name string, ids entity.ProtocolIDs) error {
 	if err := tx.Delete(nameKey(nameKind(p.Kind), name)); err != nil {
 		return err
 	}
 	for _, id := range ids {
+		if id.Scheme == entity.SchemeDir {
+			continue // kept until the record goes: see protocolRow
+		}
 		if err := tx.Delete(protocolKey(id)); err != nil {
 			return err
 		}

@@ -50,11 +50,12 @@ var signInSecondsSpec = metrics.Spec{
 }
 
 // SignIn verifies one handshake round under one State: a Kerberos AP-REQ
-// (RFC 18 §3.3) or a local user's NTLMv2 response (§3.5). Once a name and
-// client address are past the logon throttle's limit (§3.1), an NTLM response
-// is refused before it is checked, and a ticket once it decrypts, since its
-// client name is read from it. It reads the store, the directory and the secret
-// provider, and writes only the directory principal a Kerberos name's first
+// (RFC 18 §3.3), or an NTLMv2 response, a local user's or one passed through
+// to a domain controller (§3.5). Once a name and client address are past the
+// logon throttle's limit (§3.1), an NTLM response is refused before it is
+// checked, and a ticket once it decrypts, since its client name is read from
+// it. It reads the store, the directory and the secret provider, and writes
+// only the directory principal a Kerberos name's or a pass-through's first
 // sign-in mints (§4.2's step 3).
 func (s *Server) SignIn(ctx context.Context, step identity.SignInStep) (identity.SignInResult, error) {
 	res, _, err := s.signIn(ctx, step)
@@ -177,8 +178,8 @@ func (s *Server) signInAttempt(ctx context.Context, step identity.SignInStep, ev
 
 // signInNTLM refuses, in order, NTLM turned off, an NTLMv1 or LM response, a
 // malformed response or key exchange and a domain no row routes, each before
-// any credential is read, then checks the response against the local user
-// the message names.
+// any credential is read or anything is sent, then checks the response
+// against the local user the message names, or passes it through.
 func (s *Server) signInNTLM(ctx context.Context, st *State, step identity.SignInStep) (identity.SignInResult, outcome, error) {
 	a := step.NTLM
 	if !st.Settings.NTLM {
@@ -194,22 +195,20 @@ func (s *Server) signInNTLM(ctx context.Context, st *State, step identity.SignIn
 	case err != nil:
 		return identity.SignInResult{}, outcomeLogonFailure, err
 	}
-	if !localDomain(st, a.User, a.Domain) {
-		return identity.SignInResult{}, outcomeUnknownDomain, fmt.Errorf("%w: domain routes nowhere", vfserr.ErrLogonFailure)
+	switch {
+	case localDomain(st, a.User, a.Domain):
+		return s.signInLocal(ctx, step, proof, blob, avFlags)
+	case passThroughDomain(st, a.User, a.Domain):
+		return s.signInPassThrough(ctx, st, step, avFlags)
 	}
-	return s.signInLocal(ctx, step, proof, blob, avFlags)
+	return identity.SignInResult{}, outcomeUnknownDomain, fmt.Errorf("%w: domain routes nowhere", vfserr.ErrLogonFailure)
 }
 
 // localDomain is the domain table's local row (RFC 18 §3.5): a user name
 // holding neither '@' nor '\', since a local name never holds either, sent
 // with an empty domain or the installation's NetBIOS name, ASCII letters
 // folded only, so the Kelvin sign never matches a K. Every other domain is
-// unknown until pass-through adds its row.
-//
-// decision: a UPN under one of the forest's alternate suffixes, or a domain
-// written with a trailing dot, is unknown_domain: nothing reads the forest's
-// suffixes (RFC 18 §3.5). Overturned when a deployment's users sign in with
-// an alternate suffix.
+// pass-through's or unknown.
 func localDomain(st *State, user, domain string) bool {
 	return !strings.ContainsAny(user, `@\`) &&
 		(domain == "" || equalFoldASCII(domain, st.Settings.NetBIOSName))
@@ -272,22 +271,33 @@ func (s *Server) signInLocal(ctx context.Context, step identity.SignInStep, proo
 	case !ok:
 		return identity.SignInResult{}, outcomeLogonFailure, vfserr.ErrLogonFailure
 	}
+	key, err := ntlmKey(base, a, avFlags)
+	if err != nil {
+		return identity.SignInResult{}, outcomeLogonFailure, err
+	}
+	return ntlmResult(step, identity.Evidence{Name: u.Name, Principal: u.Principal}, key), outcomeOK, nil
+}
+
+// ntlmKey is the exported session key of a response whose session base key
+// is base, its MIC checked under it; a failure is ErrLogonFailure.
+func ntlmKey(base [16]byte, a *identity.NTLMAuthenticate, avFlags uint32) ([16]byte, error) {
 	key, err := exportedKey(base, a.Flags, a.EncryptedSessionKey)
 	if err == nil {
 		err = checkMIC(key, a, avFlags)
 	}
 	if err != nil {
-		return identity.SignInResult{}, outcomeLogonFailure, fmt.Errorf("%w: %w", vfserr.ErrLogonFailure, err)
+		return key, fmt.Errorf("%w: %w", vfserr.ErrLogonFailure, err)
 	}
+	return key, nil
+}
+
+// ntlmResult is an NTLM sign-in of step proved by a secret, bound to ev,
+// with key as its session key.
+func ntlmResult(step identity.SignInStep, ev identity.Evidence, key [16]byte) identity.SignInResult {
 	return identity.SignInResult{
-		Identity: identity.Identity{
-			Proof:      identity.ProofSecret,
-			Protection: identity.ProtectionNone,
-			Evidence:   identity.Evidence{Name: u.Name, Principal: u.Principal},
-			Client:     step.Client,
-		},
-		Keys: identity.Keys{Session: key[:]},
-	}, outcomeOK, nil
+		Identity: identity.Identity{Proof: identity.ProofSecret, Protection: identity.ProtectionNone, Evidence: ev, Client: step.Client},
+		Keys:     identity.Keys{Session: key[:]},
+	}
 }
 
 // ntlmUser is the user name finds and outcomeOK when it can sign in over

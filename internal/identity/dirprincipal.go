@@ -196,12 +196,24 @@ func (s *Server) byDir(ctx context.Context, id []byte) (entity.Principal, error)
 	return p, err
 }
 
+// markedDir reports whether a principal marked deleted, its deletion still
+// running, holds the dir spelling id; a store failure is ErrUnavailable.
+func (s *Server) markedDir(ctx context.Context, id []byte) (bool, error) {
+	marked, err := s.deps.Store.Principals().Marked(ctx, entity.ProtocolID{Scheme: entity.SchemeDir, Value: string(id)})
+	if err != nil {
+		err = fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
+	}
+	return marked, err
+}
+
 // dirPrincipal is the principal holding a's dir spelling. With none and mint
 // set, a is minted through the mint path, a user with every group of its
 // closure that is not yet minted, in one batch; without mint it is
 // ErrUnknownPrincipal. A machine's account is never minted (RFC 18 §2.4), nor
 // an ad entry whose SID is not an account of the directory's domain, such as
-// a builtin group, whose SID spells a well-known principal (§4.4).
+// a builtin group, whose SID spells a well-known principal (§4.4), nor an
+// entry whose principal is marked deleted while its deletion runs (§3.7):
+// such a user is ErrUnknownPrincipal, and such a group is left out.
 func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer, mint bool) (entity.Principal, error) {
 	if len(a.EntryID) == 0 {
 		return entity.Principal{}, fmt.Errorf("%w: identity: the directory answered an entry with no ID", vfserr.ErrUnavailable)
@@ -286,6 +298,17 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 				continue
 			case !errors.Is(err, vfserr.ErrUnknownPrincipal):
 				return entity.MintBatch{}, 0, err
+			}
+			// A principal marked deleted is never minted anew: its user is
+			// refused as an unknown name, and a group of its closure is left
+			// out, until its deletion ends.
+			switch marked, err := s.markedDir(ctx, e.EntryID); {
+			case err != nil:
+				return entity.MintBatch{}, 0, err
+			case marked && i == 0:
+				return entity.MintBatch{}, 0, vfserr.ErrUnknownPrincipal
+			case marked:
+				continue
 			}
 			ids, alloc, from, err := dirSpellings(e, st.Settings.IDRange, held)
 			if err != nil {
