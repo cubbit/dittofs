@@ -17,6 +17,7 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
@@ -863,6 +864,7 @@ type drained struct {
 	root, pseudo vfs.Handle // the share's root; the pseudo-root, in no share
 	c            *testproto.Client
 	peer         net.Conn
+	m            *metrics.Registry // the server's
 }
 
 func newDrained(t *testing.T, outer *core.ErrorTable, none uint32) *drained {
@@ -880,7 +882,8 @@ func newDrained(t *testing.T, outer *core.ErrorTable, none uint32) *drained {
 		t.Fatal(err)
 	}
 	faults := vfstest.Faults(moving{Service: svc, share: svc.Store.Share.ID})
-	d := adapter.Deps{Budgets: b, VFS: faults}
+	m := metrics.New("v", "c")
+	d := adapter.Deps{Budgets: b, VFS: faults, Metrics: m}
 	var p core.Protocol = testproto.New(d).WithCall(admin)
 	if outer != nil {
 		r := retable(p, func(op *core.Op, member bool) {
@@ -915,7 +918,7 @@ func newDrained(t *testing.T, outer *core.ErrorTable, none uint32) *drained {
 		}
 	}
 	core.ConnPipeline(conn).Drain()
-	return &drained{t: t, svc: svc, faults: faults, root: root, pseudo: pseudo, c: c, peer: peer}
+	return &drained{t: t, svc: svc, faults: faults, root: root, pseudo: pseudo, c: c, peer: peer, m: m}
 }
 
 // compound sends a version 1 compound of members and lets the bubble settle.
@@ -925,6 +928,21 @@ func (d *drained) compound(members ...testproto.Msg) {
 		d.t.Fatal(err)
 	}
 	synctest.Wait()
+}
+
+// answered is what the request sent last was answered once the bubble
+// settles; where nothing came back, it closes the client's end and reports
+// false.
+func (d *drained) answered() ([]testproto.Reply, bool) {
+	var rs []testproto.Reply
+	read := start(func() { rs, _ = d.c.Recv() })
+	synctest.Wait()
+	if !read.returned() {
+		_ = d.peer.Close()
+		<-read.done
+		return nil, false
+	}
+	return rs, true
 }
 
 // sentNothing reports whether nothing came back, then closes the client's end.
@@ -950,11 +968,13 @@ func (d *drained) made(name string) bool {
 // and ErrDraining, which answers nothing and runs nothing, otherwise, a
 // MoveTarget that fails included (RFC 20 sections 3.1 and 4.7). The moved
 // compound runs to its Create, which names no handle of its own, and is
-// answered there, the Create not applied. A drain that answers ErrMoved
-// without asking, asks about its first or last handle alone, or moves a
-// compound naming none answers one of the others, and one that answers
-// MoveTarget's error answers the failing one; one that decides per member,
-// or refuses every drained compound whole, answers the moved one nothing.
+// answered there, the Create not applied and counted refused at
+// resolve_ids, as every request the drain refuses before its call is
+// (§10.1). A drain that answers ErrMoved without asking, asks about its first
+// or last handle alone, or moves a compound naming none answers one of the
+// others, and one that answers MoveTarget's error answers the failing one;
+// one that decides per member, or refuses every drained compound whole,
+// answers the moved one nothing.
 func TestADrainedCompoundMovesOnlyWhenEveryHandleItNamesHasATarget(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -997,6 +1017,10 @@ func TestADrainedCompoundMovesOnlyWhenEveryHandleItNamesHasATarget(t *testing.T)
 					if hd.Status != testproto.StatusMoved || len(res) != 2 || res[0].Status != testproto.StatusOK || res[1].Op != testproto.OpCreate || res[1].Status != testproto.StatusMoved {
 						t.Errorf("the moved compound is answered %d with %+v, want the PutFH run and the Create's move signal", hd.Status, res)
 					}
+					k := "adapter_refusals_total{protocol=" + testproto.Name + ",stage=resolve_ids}"
+					if got, _ := scrape(t, d.m); got[k] != 1 {
+						t.Errorf("%s = %v, want 1: the Create the drain refused", k, got[k])
+					}
 				}
 				if d.made("f") {
 					t.Error("the drained Create made its file")
@@ -1013,8 +1037,11 @@ func TestADrainedCompoundMovesOnlyWhenEveryHandleItNamesHasATarget(t *testing.T)
 // operation, and a member that does not decode (RFC 20 section 4.7). Run to
 // the first member refused instead, the first is answered the Create's move
 // signal and the third the refusal of an operation its table lacks; refused
-// whole with the drain's error rather than ErrDraining, the second is
-// answered its own table's move signal.
+// whole with the drain's error rather than ErrDraining, or judged by its own
+// table rather than its members', the second is answered its own table's
+// move signal. That table is first shown in effect: it answers a PutFH alone
+// the drain refuses with its move signal, where testproto's own answers
+// nothing (§3.1).
 func TestADrainedCompoundWithANoReplyRefusalAnswersNothing(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -1027,7 +1054,15 @@ func TestADrainedCompoundWithANoReplyRefusalAnswersNothing(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				d := newDrained(t, c.outer, 0)
+				d := newDrained(t, c.outer, testproto.OpPutFH)
+				if c.outer != nil {
+					if err := d.c.Send(testproto.Msg{Op: testproto.OpPutFH, Version: 1, ID: 5, Session: 7, Tree: 1, Handle: d.root}); err != nil {
+						t.Fatal(err)
+					}
+					if rs, ok := d.answered(); !ok || len(rs) != 1 || rs[0].Status != testproto.StatusMoved {
+						t.Fatalf("a PutFH alone the drain refuses is answered %+v, want the compound's own table's move signal", rs)
+					}
+				}
 				d.compound(append([]testproto.Msg{{Op: testproto.OpPutFH, Handle: d.root}}, c.rest...)...)
 				if !d.sentNothing() {
 					t.Error("the compound was answered, want nothing")

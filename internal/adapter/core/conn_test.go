@@ -2602,7 +2602,8 @@ func TestAParkOnAConnectionAViolateClosedIsDropped(t *testing.T) {
 // callback that names one of its members. The chain's message IDs are in no
 // order, as a client may pick them, so its greatest key is its middle
 // member's and its least its last member's, and a Notify names each (RFC 20
-// sections 4.7 and 6.2).
+// sections 4.7 and 6.2). Only that order is checked, the one the writer
+// keeps: the Notifies' messages may overtake each other.
 func TestANotifyGoesAheadOfTheRecordHoldingTheReplyItNames(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := budgets()
@@ -2657,9 +2658,13 @@ func TestANotifyGoesAheadOfTheRecordHoldingTheReplyItNames(t *testing.T) {
 			}
 			got = append(got, ids)
 		}
-		want := [][]uint64{{10}, {13}, {11}, {12, 13, 11}, {14}, {15}}
-		if !slices.EqualFunc(got, want, slices.Equal) {
-			t.Errorf("records by message ID %v, want %v: the Notifies' messages for 13 and 11 ahead of the chain's record", got, want)
+		at := func(ids ...uint64) int {
+			return slices.IndexFunc(got, func(rec []uint64) bool { return slices.Equal(rec, ids) })
+		}
+		for _, target := range []uint64{13, 11} {
+			if n, rec := at(target), at(12, 13, 11); n < 0 || rec < 0 || n > rec {
+				t.Errorf("records by message ID %v: want the Notify's message for %d ahead of the chain's record [12 13 11]", got, target)
+			}
 		}
 	})
 }
