@@ -72,14 +72,19 @@ func TestStartChild(t *testing.T) {
 const childBound = 60 * time.Second
 
 // startChild runs dfs start over the bootstrap at config, its output, both
-// streams, piped back. The child inherits no DITTOFS_ variable from the
+// streams, piped back; with config empty it passes no --config, and the env
+// names the bootstrap. The child inherits no DITTOFS_ variable from the
 // host, whose logging or endpoints would change what the tests read: it gets
 // the storage key's passphrase and the env the test hands it.
 func startChild(t *testing.T, config string, env ...string) (*exec.Cmd, io.Reader) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestStartChild$")
 	host := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "DITTOFS_") })
-	cmd.Env = append(host, childEnv+"=start\n--config\n"+config, "XDG_STATE_HOME="+t.TempDir(),
+	args := "start"
+	if config != "" {
+		args += "\n--config\n" + config
+	}
+	cmd.Env = append(host, childEnv+"="+args, "XDG_STATE_HOME="+t.TempDir(),
 		"DITTOFS_ENCRYPTION_PASSPHRASE="+storagePassphrase)
 	cmd.Env = append(cmd.Env, env...)
 	r, w := io.Pipe()
@@ -257,15 +262,19 @@ func TestStartNoInstallation(t *testing.T) {
 // deployment's directory.
 func TestStartRefusesV1Database(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		b    func(store, dir string) bootstrapFile
+		name  string
+		b     func(store, dir string) bootstrapFile
+		byEnv bool // the bootstrap named by DITTOFS_CONFIG, not --config
 	}{
 		{"a full bootstrap", func(store, dir string) bootstrapFile {
 			return bootstrapFile{store: store, journal: filepath.Join(dir, "device"), node: nodeUUID}
-		}},
+		}, false},
 		{"a bootstrap naming no store or node", func(_, dir string) bootstrapFile {
 			return bootstrapFile{journal: filepath.Join(dir, "device")}
-		}},
+		}, false},
+		{"a bootstrap named by DITTOFS_CONFIG", func(store, dir string) bootstrapFile {
+			return bootstrapFile{store: store, journal: filepath.Join(dir, "device"), node: nodeUUID}
+		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -277,7 +286,16 @@ func TestStartRefusesV1Database(t *testing.T) {
 			if err := os.WriteFile(v1, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			code, out := runChild(t, tc.b(store, dir).write(t, dir))
+			config := tc.b(store, dir).write(t, dir)
+			var code int
+			var out string
+			if tc.byEnv {
+				// XDG_CONFIG_HOME points away, so only the env's file can
+				// lead the check to the v1 database beside it.
+				code, out = runChild(t, "", "DITTOFS_CONFIG="+config, "XDG_CONFIG_HOME="+t.TempDir())
+			} else {
+				code, out = runChild(t, config)
+			}
 			if code == 0 || !strings.Contains(out, "Error: refusing to start: "+v1+" is v1's control-plane database") {
 				t.Fatalf("dfs start beside %s over %s: exit %d, output:\n%s\nwant non-zero naming it", v1, tc.name, code, out)
 			}

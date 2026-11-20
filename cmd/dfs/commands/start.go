@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -61,12 +62,14 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if configPath == "" {
-		// decision: v1's XDG default database, $XDG_CONFIG_HOME/dittofs/controlplane.db,
-		// is probed only without --config, as the file beside the default
-		// bootstrap; a --config elsewhere probes beside that file and at the
-		// fixed /data paths only. Overturned by a v1 deployment that kept its
-		// database at the XDG default while its bootstrap moved elsewhere.
-		configPath = bootstrap.GetDefaultConfigPath()
+		// decision: the v1 check probes beside the bootstrap MustLoad read:
+		// --config's, else DITTOFS_CONFIG's, else the default. So v1's XDG
+		// default database, $XDG_CONFIG_HOME/dittofs/controlplane.db, is probed
+		// only when neither names a file; a bootstrap named elsewhere probes
+		// beside that file and at the fixed /data paths only. Overturned by a
+		// v1 deployment that kept its database at the XDG default while its
+		// bootstrap moved elsewhere.
+		configPath = cmp.Or(os.Getenv("DITTOFS_CONFIG"), bootstrap.GetDefaultConfigPath())
 	}
 	// The v1 check reads nothing of the bootstrap, so it runs before the
 	// bootstrap's own checks: over a v1 directory it is the first refusal.
