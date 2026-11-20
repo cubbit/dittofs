@@ -252,24 +252,26 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 
 ## 2. Epics at a glance
 
-| # | Epic | Content | Est. subtasks | Owner | Blocks |
-| --- | --- | --- | --- | --- | --- |
-| 1 | **Interfaces** ⛔ | Public package, exported symbols, signatures, storage seam, `Stats`, `Tracer`, errors, stubs | 9 | team | **everything** |
-| 2 | **E2E suite + test foundations** ⛔ | Test clock and fault schedule, crash-simulating seam, reference model, profiler, red conformance suite graded by `dt` from `known.yaml`, system scenario catalogue, traceability matrix | 17 | team | **all testing** in 3–12 |
-| 3 | **On-disk format and platform layer** ⛔ | RFC 28 codecs, golden vectors, CRC32C, `format` file replace, per-OS sync, allocation, direct I/O and CoW checks; declares `internal/format` and `internal/platform`; the conformance tests that need them | 12 | A | 5, 7a |
-| 4 | **Placement index and versions** ⛔ | Per-file B-tree, held, retained and marker sets, precedence, sequence and version counters, version limit, floor buckets, extent bound, drop ranges, per-segment bytes | 11 | B | 7a, 8, 9a |
-| 5 | **Segments, streams and accounting** ⛔ | Segment lifecycle, spare pool, append streams, seal, catalog and free tail, recycle and unlink, descriptor cache, storage guard, footprint accounting | 11 | A | 6, 7a, 8 |
-| 6 | **Durability and loss** | `Sync`, group commit, the sync-bound timer, failed-sync windows (re-append or fail), loss records, the loss ring and generation, the read-time corruption rule | 8 | A | 7a (loss records), 8 (Sync, corruption on read), 9a (corruption on repack), 9b (corruption on offer), 13 |
-| 7a | **Recovery and identity: reopening a journal** | `Open` with recovery after a clean exit or a crash (E8 delivers a minimal `Init` and `Open` of a directory with no segment), sync marks, rebuild by catalog and by scan, torn vs corrupt, the unproven tail and its re-append, emptying the segments the open ends, counters, spare re-adoption, offloaded bits, losses and forgets at open, tag conflicts, `Inspector.File` and `All` over the assembled index | 15 | A | 9a, 10 |
-| 7b | **Recovery and identity: the rest** | `Restamp`, `RebuildFormat`, `AcknowledgeUnreadable` and `Acknowledge`, unread records held at open, the journal half of the reconcile, `Verify`, recovery benchmarks, retained extents from hold records | not broken down | A | 9b (holds) |
-| 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 15 | B | 9a, 9b, 13 |
-| 9a | **Reclamation and tags** | Liveness of records and segments, auto-retire, the journal's unread set, `Repack` (also scoped to a share), `Inspector.Segments`, `Forget`, `Strand` | 12 | B | 7a (T9.1) |
-| 9b | **Offload, release and holds** | `Offload`, `OffloadMany`, pins, `report`, `MarkOffloaded`, `Unmark` and the stale rule, `Release`, snapshot holds | not broken down | B | 13 |
-| 10 | **The start check** | A start over an absent store creates nothing and says what it found: not initialised, store lost, unidentifiable journal, v1 state; a node with no journal device is refused ([epic 10](rfc-1-journal-epic10.md)) | 4 (7.75 md) | A | 12 |
-| 11 | **The engine on the RFC 16 store** | superseded: [the RFC 8 part-1 plan](rfc-8-journal-only-engine-plan.md)'s; offload half and salvage are RFC 8's second part | none | rif's team | |
-| 12 | **E2E green** 🔀 | Re-triage `known.yaml`, burn down what 7a and 9a leave, counted checks outside `-race`, the model on many seeds, a soak and J1–J3 without offload, tier registration, profiling baselines ([epic 12](rfc-1-journal-epic12.md)) | 8 (23 md) | team | release |
-| 13 | **The journal's exports** | The `journal_` collector over the journal's full `Stats`, the tracer and logger wiring, and `Stats` served without a walk ([epic 13](rfc-1-journal-epic13.md)) | 4 (14.75 md) | B | 12 |
-| | | | **~125 + E7b + E9b** | | |
+| # | Epic | Content | Subtasks | Man-days | Owner | Blocks |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | **Interfaces** ⛔ | Public package, exported symbols, signatures, storage seam, `Stats`, `Tracer`, errors, stubs | 9 | 9.5 | team | **everything** |
+| 2 | **E2E suite + test foundations** ⛔ | Test clock and fault schedule, crash-simulating seam, reference model, profiler, red conformance suite graded by `dt` from `known.yaml`, system scenario catalogue, traceability matrix | 17 | 91 | team | **all testing** in 3–12 |
+| 3 | **On-disk format and platform layer** ⛔ | RFC 28 codecs, golden vectors, CRC32C, `format` file replace, per-OS sync, allocation, direct I/O and CoW checks; declares `internal/format` and `internal/platform`; the conformance tests that need them | 12 | 31 | A | 5, 7a |
+| 4 | **Placement index and versions** ⛔ | Per-file B-tree, held, retained and marker sets, precedence, sequence and version counters, version limit, floor buckets, extent bound, drop ranges, per-segment bytes | 12 | 38.5 | B | 7a, 8, 9a |
+| 5 | **Segments, streams and accounting** ⛔ | Segment lifecycle, spare pool, append streams, seal, catalog and free tail, recycle and unlink, descriptor cache, storage guard, footprint accounting | 11 | 34.75 | A | 6, 7a, 8 |
+| 6 | **Durability and loss** | `Sync`, group commit, the sync-bound timer, failed-sync windows (re-append or fail), loss records, the loss ring and generation, the read-time corruption rule | 9 | 42 | A | 7a (loss records), 8 (Sync, corruption on read), 9a (corruption on repack), 9b (corruption on offer), 13 |
+| 7a | **Recovery and identity: reopening a journal** | `Open` with recovery after a clean exit or a crash (E8 delivers a minimal `Init` and `Open` of a directory with no segment), sync marks, rebuild by catalog and by scan, torn vs corrupt, the unproven tail and its re-append, emptying the segments the open ends, counters, spare re-adoption, offloaded bits, losses and forgets at open, tag conflicts, `Inspector.File` and `All` over the assembled index | 15 | 53.5 | A | 9a, 10 |
+| 7b | **Recovery and identity: the rest** | `Restamp`, `RebuildFormat`, `AcknowledgeUnreadable` and `Acknowledge`, unread records held at open, the journal half of the reconcile, `Verify`, recovery benchmarks, retained extents from hold records | planned after S4 | planned after S4 | A | 9b (holds) |
+| 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 15 | 60.75 | B | 9a, 9b, 13 |
+| 9a | **Reclamation and tags** | Liveness of records and segments, auto-retire, the journal's unread set, `Repack` (also scoped to a share), `Inspector.Segments`, `Forget`, `Strand` | 12 | 43.5 | B | 7a (T9.1) |
+| 9b | **Offload, release and holds** | `Offload`, `OffloadMany`, pins, `report`, `MarkOffloaded`, `Unmark` and the stale rule, `Release`, snapshot holds | planned after S4 | planned after S4 | B | 13 |
+| 10 | **The start check** | A start over an absent store creates nothing and says what it found: not initialised, store lost, unidentifiable journal, v1 state; a node with no journal device is refused ([epic 10](rfc-1-journal-epic10.md)) | 4 | 7.75 | A | 12 |
+| 11 | **The engine on the RFC 16 store** | superseded: [the RFC 8 part-1 plan](rfc-8-journal-only-engine-plan.md)'s; offload half and salvage are RFC 8's second part | 0 | 0 | rif's team | |
+| 12 | **E2E green** 🔀 | Re-triage `known.yaml`, burn down what 7a and 9a leave, counted checks outside `-race`, the model on many seeds, a soak and J1–J3 without offload, tier registration, profiling baselines ([epic 12](rfc-1-journal-epic12.md)) | 8 | 23 | team | release |
+| 13 | **The journal's exports** | The `journal_` collector over the journal's full `Stats`, the tracer and logger wiring, and `Stats` served without a walk ([epic 13](rfc-1-journal-epic13.md)) | 4 | 14.75 | B | 12 |
+| | **Total** | | **128** | **450** | | |
+
+**Plan estimate: 128 subtasks, 450 man-days, not counting epics 7b and 9b.**
 
 Epics 7 and 9 are each split in two. Epics 7a and 9a are what a share needs to restart, after a
 clean exit or a crash, and to get space back without a remote tier; they are what the
@@ -585,7 +587,9 @@ j.Close() // joins background work (RFC 1 §8.7)
 Each paragraph below gives the epic's content, its RFC sources, and candidate subtasks. A
 detailed breakdown also copies §1.5, following the instruction there.
 
-### Epic 1 — Interfaces ⛔ (≈9 subtasks, team)
+### Epic 1 — Interfaces ⛔ (9 subtasks, team)
+
+**Epic 1 estimate: 9 subtasks, 9.5 man-days.**
 
 Epic 1 creates the packages of §4 marked E1 and declares, with doc comments and stub
 bodies, every symbol and signature of RFC 1 §3–§4 and §7.2. Of the internal interfaces it
@@ -613,7 +617,21 @@ Candidate subtasks:
 8. The storage seam (`storage.FS`, `storage.File`) and `WithStorage`.
 9. Joint review and freeze.
 
+Subtasks and estimates:
+
+- T1.1 Package skeleton and the import test (go/build, other-platform files, test imports) — 1 man-day.
+- T1.2 Value types, `Version` order and big-endian `Bytes`, `TestVersionBytesOrder` — 0.5 man-days.
+- T1.3 Error set, typed errors, `Limit` taxonomy, `ENOSPC` rule, sentinel test — 1 man-day.
+- T1.4 `Init`, `Open`, `Restamp`, options, `Clock`, `Settings`, private limits, signature test — 1 man-day.
+- T1.5 `Journal`, `Handle` and `Reservation` methods with per-call contracts (refusals, version, headroom, durability, lock domain) — 2 man-days.
+- T1.6 Offload, release, repack and holds API, `Offer` and `RepackScope` — 1 man-day.
+- T1.7 `Stats`, `Counters`, `Histogram`, `Tracer`, logger option, inspection API, §3.7/§3.9 field map — 1.5 man-days.
+- T1.8 Storage seam (`storage.FS`, `storage.File`) and `WithStorage` — 0.5 man-days.
+- T1.9 Symbol-to-RFC map, joint review and freeze (S1) — 1 man-day.
+
 ### Epic 2 — E2E suite and test foundations ⛔ (17 subtasks, team)
+
+**Epic 2 estimate: 17 subtasks, 91 man-days.**
 
 Epic 2 delivers §1.4; its breakdown is
 [rfc-1-journal-epic2.md](rfc-1-journal-epic2.md), which supersedes this section where they
@@ -763,7 +781,41 @@ each tier's dependencies are in the epic's file, §7:
   - `SIGKILL` vs power loss, kept distinct;
   - a long soak with capacity below the data written.
 
-### Epic 3 — On-disk format and platform layer ⛔ (≈12 subtasks, A)
+Subtasks and estimates. A subtask over 5 man-days is split into rows with a letter suffix, so the 29 rows below make the epic 2 document's 17 subtasks: T2.5a, T2.5b and T2.13a are its 2.5a, 2.5b and 2.13a, T2.13b–T2.13f are its 2.13b, and each other lettered set is the one subtask of that number:
+
+- T2.1 Crash-simulating seam: per-file unsynced log, lost/torn/reordered crash, durable image, stale reads — 4 man-days.
+- T2.2 `Fault`, seeded `Schedule`, holds, `TestClock` with `Advance` and `SetRate` — 3 man-days.
+- T2.3 Profiling harness: goroutines, descriptors, heap, profiles on failure, non-flaky calibration — 2 man-days.
+- T2.4 Reference model with post-crash acceptable states, `Compare`, model fuzz target — 4 man-days.
+- T2.5a Fixture (`journalv2test.New`), segment-cap setting, suite registration, `known.yaml` — 2 man-days.
+- T2.5b RFC 1 Group D (11 checks) and the two clock checks — 4.5 man-days.
+- T2.6 Model-based test: seeds, shrinking, corpus replay, planted divergence — 3 man-days.
+- T2.7a Group A part 1, first 7 checks (no zero-fill through partial release) — 3 man-days.
+- T2.7b Group A part 1, last 7 checks (release in segment through no pin under repack) — 3 man-days.
+- T2.8a Group A part 2, repack and removal family (10 checks) — 4 man-days.
+- T2.8b Group A part 2, sync-window and loss family (10 checks) — 4 man-days.
+- T2.8c Counted checks: syncs per write and mixed durability, driven by holds — 1.5 man-days.
+- T2.9a Group B part 1, capacity and refusals (8 checks) — 3 man-days.
+- T2.9b Group B part 1, headroom, versions, buckets, accounting (7 checks) — 3 man-days.
+- T2.10a Group B part 2, descriptors, coalescing, index bound, pins, windows (7 checks) — 3 man-days.
+- T2.10b Group B part 2, starvation, no deadlock, background join, per-extent drop, aimed repack (6 checks) — 3 man-days.
+- T2.11a Group C, first 9 checks (reseed after repack through attached share) — 3.5 man-days.
+- T2.11b Group C, last 8 checks (unclaimed tags through loss survives restart) — 3.5 man-days.
+- T2.12a Edge cases: extent shape (9 cases) — 3 man-days.
+- T2.12b Edge cases: lifecycle (7 cases) — 2.5 man-days.
+- T2.12c Edge cases: capacity, storage and opening (9 cases) — 3 man-days.
+- T2.13a `journalv2test/raw` encoders, checked field by field against RFC 28 §2 — 2.5 man-days.
+- T2.13b RFC 28 Group A (9 checks) and Group B (1 check) — 4 man-days.
+- T2.13c RFC 28 Group C, first 13 rows — 4.5 man-days.
+- T2.13d RFC 28 Group C, last 9 rows and the refusal halves of 3 split rows — 4.5 man-days.
+- T2.13e Systematic injection: bit flip per region, lost writes at every sync point, torn at every byte, reordered — 4 man-days.
+- T2.13f Edits from outside, one test per row of RFC 28 §4.4's table — 2 man-days.
+- T2.14 Traceability: `trace.yaml` over every row, `trace_test.go` with its three plants — 2 man-days.
+- T2.15 Review of every conformance test against its row, and S2 — 2 man-days.
+
+### Epic 3 — On-disk format and platform layer ⛔ (12 subtasks, A)
+
+**Epic 3 estimate: 12 subtasks, 31 man-days.**
 
 Epic 3 implements RFC 28 §2 and Appendix A as pure, separately testable layers. It also
 declares `internal/format` and `internal/platform`, which epic 1 leaves to it (§1.5,
@@ -819,7 +871,24 @@ known failures:
 Candidate subtasks: one per structure (6), scanner, `format` replace, platform per OS, CoW
 and barrier probes, and the conformance tests above.
 
-### Epic 4 — Placement index and versions ⛔ (≈11 subtasks, B)
+Subtasks, numbered and named as their issues and the epic 3 document have them. The epic's man-days come from an earlier breakdown that grouped the work differently, so no subtask carries a figure of its own:
+
+- T3.1 Format file codec and plain CRC32C (#3469)
+- T3.2 Segment header codec and segment file names (#3470)
+- T3.3 Seal marker codec and seeded CRC32C (#3471)
+- T3.4 Record codec, kinds, bodies and whole-payload verification (#3472)
+- T3.5 Catalog entry, trailer and footer reader (#3473)
+- T3.6 Slot scanner with resynchronisation (#3474)
+- T3.7 Platform, Linux: files, sync and directory sync (#3475)
+- T3.8 Platform, Linux: allocation (#3476)
+- T3.9 Platform, macOS: F_FULLFSYNC and F_PREALLOCATE (#3477)
+- T3.10 Platform, Windows: share-delete, FlushFileBuffers, directory flush, allocation (#3478)
+- T3.11 Probes, Linux: mount options, copy-on-write and Btrfs subvolume (#3479)
+- T3.12 Probes: Windows cache-flush policy (#3480)
+
+### Epic 4 — Placement index and versions ⛔ (12 subtasks, B)
+
+**Epic 4 estimate: 12 subtasks, 38.5 man-days.**
 
 Epic 4 implements RFC 1 §4 and the version rules of §3.4 and §4.3. It is pure in-memory
 code.
@@ -849,7 +918,24 @@ Fuzz: operation sequences against the reference model. Candidate subtasks: B-tre
 index, span query, retained set, markers, precedence, counters and limit, floor buckets,
 extent bound, drop ranges, per-segment accounting.
 
-### Epic 5 — Segments, streams and accounting ⛔ (≈11 subtasks, A)
+Subtasks, numbered and named as their issues and the epic 4 document have them. The epic's man-days come from an earlier breakdown that grouped the work differently, so no subtask carries a figure of its own:
+
+- T4.1 Ordered B-tree container (#3365)
+- T4.2 Held-extent set for one file (#3366)
+- T4.3 File index map and lock domain (#3367)
+- T4.4 Precedence and counters (#3368)
+- T4.5 Removal markers, `Since` and `Settle` (#3369)
+- T4.6 Retained-extent set (#3370)
+- T4.7 Change version and floor buckets (#3371)
+- T4.8 Extent bound (#3372)
+- T4.9 Per-segment held and retained bytes (#3373)
+- T4.10 Drop ranges (#3374)
+- T4.11 Order-independent rebuild builder (#3375)
+- T4.12 Inspection read-out, memory check, model fuzz (#3376)
+
+### Epic 5 — Segments, streams and accounting ⛔ (11 subtasks, A)
+
+**Epic 5 estimate: 11 subtasks, 34.75 man-days.**
 
 Epic 5 implements RFC 28 §2.2 and §2.4 (writing side), and RFC 1 §6's segment allocation,
 §7.1's auto-retire mechanism, §7.3, §7.4 and §8.5. Its breakdown is
@@ -885,6 +971,8 @@ and supersedes this section where they differ.
 before S3 need the seal's sync, the headroom and the hand-off of a failed segment.
 
 ### Epic 6 — Durability and loss (9 subtasks, A)
+
+**Epic 6 estimate: 9 subtasks, 42 man-days.**
 
 Epic 6 implements RFC 1 §5 and §3.8.
 
@@ -939,7 +1027,11 @@ Epic 6 implements RFC 1 §5 and §3.8.
 - **Span:** `sync`.
 - **Counted check:** the mixed-durability check.
 
-### Epic 7 — Recovery and identity (≈12 subtasks, A)
+### Epic 7a and 7b — Recovery and identity (A)
+
+**Epic 7a estimate: 15 subtasks, 53.5 man-days.**
+
+Epic 7a is broken down in [rfc-1-journal-epic7a.md](rfc-1-journal-epic7a.md). Epic 7b is not broken down and is estimated under its own heading below.
 
 Split in two. [Epic 7a](rfc-1-journal-epic7a.md) reopens a journal after a clean exit or a
 crash, and is the `Open` the journal-only engine calls; epic 7b is the rest, as epic 7a's §1.2
@@ -1046,7 +1138,15 @@ scanner's `scan_resyncs` folded into `Stats`. Span: `open`, with child
 spans per phase. Also the J6, J7 and J9 benchmark harnesses (RFC 28 §4.3), recorded but
 not gated.
 
+### Epic 7b — Recovery and identity: the rest
+
+**Epic 7b estimate: planned after S4.**
+
+Its scope is in epic 7a and 7b's section above, less what epic 7a's document takes.
+
 ### Epic 8 — Data path and capacity ⛔ (15 subtasks, B)
+
+**Epic 8 estimate: 15 subtasks, 60.75 man-days.**
 
 Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.4, §3.6, §3.7,
 §3.10, §6, §8).
@@ -1103,7 +1203,11 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
 Metrics: `written_bytes`, `filled_bytes`, `fill_refused`, `reservation_refused`,
 `headroom_draws`, `index_refusals`, `TagConflicts`. Spans: `fill`, `reserve_refused`.
 
-### Epic 9 — Offload, reclamation, holds and tags (≈13 subtasks, B)
+### Epic 9a and 9b — Offload, reclamation, holds and tags (B)
+
+**Epic 9a estimate: 12 subtasks, 43.5 man-days.**
+
+Epic 9a is broken down in [rfc-1-journal-epic9a.md](rfc-1-journal-epic9a.md). Epic 9b is not broken down and is estimated under its own heading below.
 
 Split in two. [Epic 9a](rfc-1-journal-epic9a.md) is retirement, `Repack`, `Forget` and
 `Strand`, which the journal-only engine calls; epic 9b is offload, `Release` and snapshot
@@ -1159,7 +1263,15 @@ Run once this epic lands, because each calls `Offload` or `Release`: J4, J5 and 
 `Offload` and `Release` steps of epic 12's model alphabet and of its soak's load, and the pin
 bounds (64 per offer, 256 journal-wide), settled by measurement.
 
+### Epic 9b — Offload, release and holds
+
+**Epic 9b estimate: planned after S4.**
+
+Its scope is in epic 9a and 9b's section above, less what epic 9a's document takes.
+
 ### Epic 10 — The start check (4 subtasks, 7.75 man-days, A)
+
+**Epic 10 estimate: 4 subtasks, 7.75 man-days.**
 
 Broken down in [rfc-1-journal-epic10.md](rfc-1-journal-epic10.md). The initialisation step
 (`journal.Init`, `RecordJournal`, the re-run after an interruption) is the RFC 23 plan's epic 5,
@@ -1178,6 +1290,8 @@ backups (RFC 9, 26) and configuration (RFC 13, 15), not only the journal.
 
 ### Epic 11 — The engine on the RFC 16 store (superseded)
 
+**Epic 11 estimate: 0 subtasks, 0 man-days.**
+
 Not broken down, and not built by this plan. The engine, the composition root, the version fence and
 the store contracts are [the RFC 8 part-1 plan](rfc-8-journal-only-engine-plan.md)'s, built by rif's
 team. The offload wiring, salvage, the system e2e rows and the `Content` conformance run are RFC 8's
@@ -1186,11 +1300,15 @@ documents says "epic 11", it means that engine work. The journal's exports are e
 
 ### Epic 12 — E2E green 🔀 (8 subtasks, 23 man-days, team)
 
+**Epic 12 estimate: 8 subtasks, 23 man-days.**
+
 Broken down in [rfc-1-journal-epic12.md](rfc-1-journal-epic12.md). State: `test/journal/known.yaml`
 holds 185 entries at `9efa0702f`, after 7a's reopen landed, and `test/engine/known.yaml` another 26. 114 of the journal's fail on a 7b or 9b call and stay listed with a recorded decision. 53 are other rows the reopen no longer masks, which T12.1 classifies by test name: most are 9a's, 7a's or 7b's. J4, J5, J8, the model's `Offload` and `Release` steps and the
 soak's offload load are epic 9b's (§5, epic 9).
 
 ### Epic 13 — The journal's exports (4 subtasks, 14.75 man-days, B)
+
+**Epic 13 estimate: 4 subtasks, 14.75 man-days.**
 
 Broken down in [rfc-1-journal-epic13.md](rfc-1-journal-epic13.md). What RFC 1 §3.9 and §3.7 require and
 nothing else builds: the `journal_` series over the journal's full `Stats`, the adapter from the
