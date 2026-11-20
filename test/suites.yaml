@@ -176,14 +176,16 @@ suites:
   # device, so run by hand with DITTOFS_BENCH_DIR on it, gating nothing, as engine-bench:
   # JOURNAL_BENCH_COUNT=1 in the environment takes one count. The pattern takes the raw
   # twins (BenchmarkRaw*) with the J rows, since a J row is read only as a fraction of its
-  # twin. A directory on a RAM-backed filesystem fails the benchmark on its own check. No -race: it changes the
-  # latency they measure. No -timeout either: go test applies none to benchmarks, so the
+  # twin. A directory on a RAM-backed filesystem fails the benchmark on its own check, so
+  # that refusal exits 1 (b.Fatalf in the rows), deliberately unlike the unset-variable
+  # guard's 2. No -race: it changes the latency they measure. No -timeout either: go test applies none to benchmarks, so the
   # cell's limit is the guard — engine-bench's, the same headroom, not the registry's
   # default 60m, which a real run's counts could outlive.
   # decision: format exit, not go-json: go test -json sends no pass event for a passing
   # benchmark, which a go-json cell grades as failed.
-  # decision: manual until a reference runner exists, the ledger row the journal plan
-  # carries — a nightly figure compares only against the same host's, and no host is one yet.
+  # decision: manual until a daily run exists, the ledger row the journal plan carries. The
+  # reference box is the dedicated host, and a figure compares only against that host's own;
+  # the daily run waits for a window on it, or a provisioned runner, as the ledger row says.
   # decision: no known: file — a benchmark that refuses to run is a finding to fix; its
   # b.Fatalf line is in bench.txt. A flake goes to quarantine, with an issue and an
   # expiry date, never to a known list.

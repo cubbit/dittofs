@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -71,8 +69,7 @@ func jbBase(b *testing.B) string {
 	if err := benchdir.Refusal(root); err != nil {
 		b.Fatalf("bench: %s: %v", benchDirEnv, err)
 	}
-	name, _ := benchdir.FSType(root)
-	jbPrintBox(root, name)
+	jbPrintBox(b, root)
 
 	dir, err := os.MkdirTemp(root, "journal-bench-")
 	if err != nil {
@@ -86,15 +83,15 @@ var jbBoxOnce sync.Once
 
 // jbPrintBox prints, before the first result line, what each result is
 // recorded with, as key: value lines benchstat reads as configuration.
-func jbPrintBox(dir, fsName string) {
+func jbPrintBox(b *testing.B, dir string) {
+	b.Helper()
 	jbBoxOnce.Do(func() {
-		commit := "unknown"
-		if out, err := exec.Command("git", "describe", "--always", "--dirty").Output(); err == nil {
-			commit = strings.TrimSpace(string(out))
+		box, err := benchdir.Describe(dir)
+		if err != nil {
+			b.Fatalf("bench: %v", err)
 		}
-		fmt.Printf("commit: %s\n", commit)
+		box.Print(os.Stdout)
 		fmt.Printf("bench-dir: %s\n", dir)
-		fmt.Printf("filesystem: %s\n", fsName)
 		fmt.Printf("sync-bound: %v\n", journal.SyncBound)
 		fmt.Printf("segment-cap-bytes: %d\n", core.SegmentCap)
 		fmt.Printf("writers: %d\n", jbWriters)
@@ -142,11 +139,18 @@ func jbOpen(b *testing.B, streams int) *journal.Handle {
 	}
 
 	// Open returns while the pool is still making its spares, and a write
-	// that rolls first is refused: poll the real condition.
+	// that rolls first is refused: poll the real condition, the content
+	// spares and the headroom and repack reserve at their full size, so no
+	// pool work competes with the timed region.
 	deadline := time.Now().Add(30 * time.Minute)
-	for j.Stats().Spares < streams {
+	for {
+		st := j.Stats()
+		if st.Spares >= streams && st.HeadroomBytes >= core.SegmentCap && st.RepackReserveBytes >= core.SegmentCap {
+			break
+		}
 		if time.Now().After(deadline) {
-			b.Fatalf("bench: the pool made %d of %d spares", j.Stats().Spares, streams)
+			b.Fatalf("bench: the pool made %d of %d spares, headroom %d and reserve %d of %d bytes",
+				st.Spares, streams, st.HeadroomBytes, st.RepackReserveBytes, int64(core.SegmentCap))
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -214,7 +218,26 @@ func (r jbRaw) write(w int, off int64, p []byte) (time.Duration, error) {
 	return time.Since(start), err
 }
 
-func (r jbRaw) sync(w int) error { return r.files[w].Sync() }
+func (r jbRaw) sync(w int) error { return jbFlush(r.files[w]) }
+
+// prepare gives every file its full span, zero-filled and synced, as the
+// journal's segments are preallocated, so a timed write overwrites blocks the
+// file already owns instead of extending it.
+func (r jbRaw) prepare(span int64) error {
+	zero := make([]byte, 1<<20)
+	for _, f := range r.files {
+		for off := int64(0); off < span; off += int64(len(zero)) {
+			n := min(int64(len(zero)), span-off)
+			if _, err := f.WriteAt(zero[:n], off); err != nil {
+				return err
+			}
+		}
+		if err := f.Sync(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // jbSpec is one burst: writers each write span bytes in blocks of block, in
 // order or at random aligned offsets within the span, syncing after every
@@ -263,6 +286,12 @@ func jbBurst(b *testing.B, sink jbSink, spec jbSpec) {
 		took[w] = make([]time.Duration, 0, ops*b.N)
 	}
 	b.SetBytes(spec.span * int64(spec.writers))
+
+	if p, ok := sink.(interface{ prepare(span int64) error }); ok {
+		if err := p.prepare(spec.span * int64(b.N)); err != nil {
+			b.Fatalf("bench: prepare the raw files: %v", err)
+		}
+	}
 
 	b.ResetTimer()
 	for iter := range b.N {
@@ -492,12 +521,22 @@ func BenchmarkJ3_WarmRead1m(b *testing.B) {
 }
 
 // The raw twins, on the same filesystem with J1's writers, blocks and sync
-// patterns: each J1 row is a fraction of the twin of its block size.
+// patterns: each J1 row is a fraction of the twin of its own name.
 
-// BenchmarkRawSequential is the twin of J1's sequential rows, a sub-benchmark
-// per block size, with no sync.
+// BenchmarkRawSequential is the twin of J1's sequential rows, with the same
+// block sizes and sync patterns.
 func BenchmarkRawSequential(b *testing.B) {
-	jbForEachMode(b, jbAllSizes, []string{"nosync"}, func(b *testing.B, spec jbSpec) {
+	jbForEachMode(b, jbAllSizes, jbPatterns, func(b *testing.B, spec jbSpec) {
+		jbBurst(b, jbOpenRaw(b, spec.writers), spec)
+	})
+}
+
+// BenchmarkRawRandom is the twin of J1's random rows, with the same block
+// sizes and sync patterns: its 4 KiB row with a sync per write is the device's
+// own fsync rate.
+func BenchmarkRawRandom(b *testing.B) {
+	jbForEachMode(b, jbAllSizes, jbPatterns, func(b *testing.B, spec jbSpec) {
+		spec.random = true
 		jbBurst(b, jbOpenRaw(b, spec.writers), spec)
 	})
 }
@@ -512,19 +551,4 @@ func BenchmarkRawScaling(b *testing.B) {
 			})
 		})
 	}
-}
-
-// BenchmarkRawRandom4k is the twin of J1's random 4 KiB row without a sync.
-func BenchmarkRawRandom4k(b *testing.B) {
-	jbBurst(b, jbOpenRaw(b, jbWriters), jbSpec{
-		writers: jbWriters, block: 4 << 10, span: jbBurstStreamed / jbWriters, random: true,
-	})
-}
-
-// BenchmarkRawFsync4k is the twin of J1's random 4 KiB row with a sync after
-// each write: the device's own fsync rate.
-func BenchmarkRawFsync4k(b *testing.B) {
-	jbBurst(b, jbOpenRaw(b, jbWriters), jbSpec{
-		writers: jbWriters, block: 4 << 10, span: jbBurstSynced / jbWriters, random: true, syncEach: true,
-	})
 }
