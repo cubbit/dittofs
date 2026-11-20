@@ -223,6 +223,7 @@ func Run(t *testing.T, open Opener) {
 		{"PruneSecretInTheCallersWrite", testPruneSecretInTheCallersWrite},
 		{"PruneSecretReadTracked", testPruneSecretReadTracked},
 		{"PruneSecretSeesTheTxsOwnPut", testPruneSecretSeesTheTxsOwnPut},
+		{"WriteSeesItsOwnPrune", testWriteSeesItsOwnPrune},
 		{"AllSettingsPages", testAllSettingsPages},
 		{"AllSettingsWriteBetweenPages", testAllSettingsWriteBetweenPages},
 		{"AllSettingsResumes", testAllSettingsResumes},

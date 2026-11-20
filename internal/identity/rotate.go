@@ -10,6 +10,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/internal/node/step"
 	"github.com/cubbit/dittofs/pkg/health"
@@ -117,7 +119,7 @@ func (s *Server) RotateStep(ctx context.Context, op entity.Operation) (step.Step
 	var res step.StepResult
 	switch c.Phase {
 	case phaseStart:
-		err = r.start(ctx, op.Target)
+		err = r.start(ctx, op.Target, op.ID)
 	case phasePin:
 		err = r.pin(ctx)
 	case phasePrevious:
@@ -158,72 +160,190 @@ func problem(status int, code apiv1.Code, detail string) *apiv1.Problem {
 	return &apiv1.Problem{Status: status, Code: code, Title: "the machine password rotation failed", Detail: detail}
 }
 
+// errNothingPruned is the sentinel of the rotation's first write: the
+// error of an attempt that pruned no version, so the write carries no
+// record of a change that did not happen and commits nothing. start
+// swallows it as the schedule swallows errNotDue.
+var errNothingPruned = errors.New("the rotation pruned no version")
+
+// heldVersions lists the secret's versions held from below down to the
+// first one not held. Versions are written one above the current and
+// pruned from the bottom, so the held ones have no gap, and the bound
+// stops at 1 because version 0 reads the current one.
+func heldVersions(tx entity.ControlPlaneTx, ref entity.SecretRef, below uint64) ([]uint64, error) {
+	var held []uint64
+
+	for n := below; n >= 1; n-- {
+		_, ok, err := tx.Secret(ref, n)
+		if err != nil {
+			return nil, err
+		}
+
+		if !ok {
+			break
+		}
+
+		held = append(held, n)
+	}
+
+	return held, nil
+}
+
+// missingVersions numbers the versions of held the transaction no longer
+// holds: the prune's own deletes, read back inside its write.
+func missingVersions(
+	tx entity.ControlPlaneTx,
+	ref entity.SecretRef,
+	held []uint64,
+) ([]uint64, error) {
+	var gone []uint64
+
+	for _, n := range held {
+		_, ok, err := tx.Secret(ref, n)
+		if err != nil {
+			return nil, err
+		}
+
+		if !ok {
+			gone = append(gone, n)
+		}
+	}
+
+	return gone, nil
+}
+
 // start refuses a join running on the installation and prunes the versions
 // below the current one once the retention has passed since its confirm. The
 // refusal is one write, so a join started since makes it run again; the prune
-// runs inside it through tx, so a conflict that reruns the write drops its
-// earlier prune with the rest.
-func (r *rotation) start(ctx context.Context, target entity.ResourceRef) error {
+// and its audit record run inside it through tx, so a conflict that reruns
+// the write drops its earlier prune and record with the rest.
+func (r *rotation) start(
+	ctx context.Context,
+	target entity.ResourceRef,
+	id entity.OperationID,
+) error {
 	var pruneErr error
-	err := r.s.deps.ControlPlane.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-		pruneErr = nil
-		if op, ok, err := tx.RunningOperation(string(apiv1.OpJoinDomain), target); err != nil {
-			return err
-		} else if ok {
-			return problem(http.StatusConflict, apiv1.CodeOperationRunning, fmt.Sprintf("the join %x is running on the installation", op.ID))
-		}
-		in, err := tx.Installation()
-		if err != nil {
-			return err
-		}
-		if !in.Join.Joined || in.MachinePassword == (entity.SecretRef{}) {
-			return problem(http.StatusConflict, "", "the installation is not joined to a domain")
-		}
-		cur, ok, err := tx.Secret(in.MachinePassword, 0)
-		if err != nil {
-			return err
-		}
-		lr := in.Join.LastRotation
-		// The prune keeps the current version, so it runs only once that is
-		// the confirmed one, the last rotation did not fail and the retention
-		// since the confirm has passed, when every node holds it (RFC 18 §3.5,
-		// RFC 13 §7). A failed rotation may have failed because a node lacks
-		// the current version, so the prune waits for one that completes.
-		//
-		// ponytail: a previous version's sealed value stays in the store,
-		// used by no key and no channel, until the next rotation prunes it, at
-		// most the schedule's period. Prune at the retention's end when a
-		// sealed value's life past its use is shown to matter.
-		if !ok || lr.Failed || cur.Version != lr.Version || tx.Now().Before(lr.Confirmed.Add(retention+clockSkew)) {
+
+	var rec entity.AuditRecord
+
+	err := r.s.deps.ControlPlane.Write(ctx, entity.WriteMeta{Audit: &rec},
+		func(tx entity.ControlPlaneTx) error {
+			pruneErr = nil
+
+			op, running, err := tx.RunningOperation(string(apiv1.OpJoinDomain), target)
+			if err != nil {
+				return err
+			}
+
+			if running {
+				return problem(http.StatusConflict, apiv1.CodeOperationRunning,
+					fmt.Sprintf("the join %x is running on the installation", op.ID))
+			}
+
+			in, err := tx.Installation()
+			if err != nil {
+				return err
+			}
+
+			if !in.Join.Joined || in.MachinePassword == (entity.SecretRef{}) {
+				return problem(
+					http.StatusConflict, "", "the installation is not joined to a domain")
+			}
+
+			cur, ok, err := tx.Secret(in.MachinePassword, 0)
+			if err != nil {
+				return err
+			}
+
+			lr := in.Join.LastRotation
+			// The prune keeps the current version, so it runs only once that is
+			// the confirmed one, the last rotation did not fail and the retention
+			// since the confirm has passed, when every node holds it (RFC 18
+			// §3.5, RFC 13 §7). A failed rotation may have failed because a node
+			// lacks the current version, so the prune waits for one that
+			// completes.
+			//
+			// ponytail: a previous version's sealed value stays in the store,
+			// used by no key and no channel, until the next rotation prunes it,
+			// at most the schedule's period. Prune at the retention's end when
+			// a sealed value's life past its use is shown to matter.
+			if !ok || lr.Failed || cur.Version != lr.Version ||
+				tx.Now().Before(lr.Confirmed.Add(retention+clockSkew)) {
+				return errNothingPruned
+			}
+
+			held, err := heldVersions(tx, in.MachinePassword, cur.Version-1)
+			if err != nil {
+				return err
+			}
+
+			// The prune runs inside this write, so a conflict that reruns it
+			// drops the earlier cut and the record that named it with the
+			// rest (RFC 13 §7). A cut that failed half way through rolls back
+			// with the whole write.
+			pruneErr = r.s.deps.Secrets.Prune(
+				ctx, tx, entity.SecretMachinePassword, machineOwner(in), in.MachinePassword,
+			)
+			if pruneErr != nil {
+				return pruneErr
+			}
+
+			pruned, err := missingVersions(tx, in.MachinePassword, held)
+			if err != nil {
+				return err
+			}
+
+			if len(pruned) == 0 {
+				return errNothingPruned
+			}
+
+			// The record names the versions the prune dropped, its own
+			// deletes read back inside this same write, so it cannot tell of
+			// a drop that rolled back and holds no sealed value (RFC 23 §6,
+			// RFC 13 §7). The numbers are sorted, so the record does not
+			// depend on the order of the scan.
+			slices.Sort(pruned)
+
+			change, err := json.Marshal(struct {
+				Pruned []uint64 `json:"pruned"`
+			}{pruned})
+			if err != nil {
+				return err
+			}
+
+			rec = entity.AuditRecord{
+				Target: entity.ResourceRef{
+					Kind: entity.ResourceSecret,
+					ID:   in.MachinePassword[:],
+				},
+				Change:  change,
+				Outcome: []byte(uuid.UUID(id).String()),
+			}
+
 			return nil
+		})
+	// A write that pruned nothing records nothing: the sentinel is
+	// swallowed as the schedule swallows errNotDue, and the phase moves on.
+	if errors.Is(err, errNothingPruned) {
+		err = nil
+	}
+
+	if err != nil {
+		if pruneErr == nil {
+			return err
 		}
 
-		// ponytail: this write records no audit record of the prune yet
-		// (RFC 23 §6). Write one when the rotation's other state changes
-		// are audited. To name the versions pruned, it will read the
-		// versions held below the current one before Prune and again after
-		// it, in this same write, and record only the numbers that are gone,
-		// never a value. That relies on the transaction seeing its own
-		// deletes, which holds on Badger and is not tested on FoundationDB.
-		err = r.s.deps.Secrets.Prune(
-			ctx, tx, entity.SecretMachinePassword, machineOwner(in), in.MachinePassword,
-		)
-		if err != nil {
-			pruneErr = err
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	// decision: a prune error fails the rotation, recorded, rather than being
-	// retried: RFC 18 §3.5 reports failed a rotation that cannot start by its
-	// schedule, and the next scheduled one prunes again. Overturned if a
-	// transient provider error is shown to fail rotations a retry would save.
-	if pruneErr != nil {
+		// decision: a prune error fails the rotation, recorded, rather than
+		// being retried, and the aborted write leaves no partial cut behind:
+		// RFC 18 §3.5 reports failed a rotation that cannot start by its
+		// schedule, and the next scheduled one prunes again. Overturned if a
+		// transient provider error is shown to fail rotations a retry would
+		// save.
 		return r.fail(ctx, fmt.Sprintf("prune the machine password: %v", pruneErr))
 	}
+
 	r.c.Phase = phasePin
+
 	return nil
 }
 
