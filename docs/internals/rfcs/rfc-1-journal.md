@@ -1384,7 +1384,7 @@ walk can produce is omitted.
 | `SuspectSegments` | gauge | segments holding a record no read could read ([RFC 28 §3.3](rfc-28-journal-format.md#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify)) |
 | `UnreclaimedBytes` | gauge | storage in segments not yet retired that backs no held or retained extent and no live record: released or superseded but still on disk; what repack can recover ([§7.2](#7.2%20Repack)) |
 | `HeadroomBytes` / `RepackReserveBytes` | gauge | the reserved headroom for records without bytes and the repack reserve, each as allocated now ([§6](#6.%20Capacity)) |
-| `HeadroomSparesShort` | gauge | headroom spares an open took for its `reconcile` record and could not make again; every retirement tries the remake until it is zero ([§6](#6.%20Capacity)) |
+| `HeadroomSparesShort` | gauge | headroom spares an open took for its `reconcile` record or its re-appends and could not make again; every retirement tries the remake until it is zero ([§6](#6.%20Capacity)) |
 | `PinnedSegments` | gauge | segments held by running offers ([§3.3](#3.3%20Offload)) |
 | `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§7.4](#7.4%20Open%20descriptors)) |
 | `DamagedSegments` | gauge | segments recovery or a read reports as damaged ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); a torn header or torn tail is never one unless a sync mark proves it synced, and a torn slot above every mark's `Through` never is ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). A damaged segment that an open then empties and unlinks, or retires before emptying, stays counted until the journal closes, with its row in the per-segment breakdown of [§4.4](#4.4%20Inspection) |
@@ -2590,6 +2590,32 @@ a `reconcile` record at once, so a later open with new damage takes another. Eac
 spare taken stays counted in
 `Stats.HeadroomSparesShort` until a retirement remakes it. It is
 accounted to the journal, like the spare pool.
+
+**An open's re-appends take a spare of their own when the reserve has none.** The
+records an open re-appends ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) draw on the repack reserve, which the
+open's directory may not hold: header-only rolls can take the headroom's spares and a
+repack the reserve's before the refill, and the process can crash then, on a device
+with room to spare. The pool is not built when the open re-appends, so a refused open
+would make no spare, and every retry would adopt the same set and refuse the same way.
+The open therefore draws, in this order, the reserve's adopted spares, then the
+headroom's, then a spare it makes itself, outside every limit as the repack reserve is.
+It never takes a content spare, which is the writes' pool. A copy that fails to write
+or sync is retried once in another spare, so an open takes at most two. A make the
+device refuses fails the open with the device's own `ENOSPC`, never with the spare
+refusal: a full device is the operator's to free, and a retry after they do finds the
+make changed. The headroom spares an open took are counted in
+`Stats.HeadroomSparesShort`, as the `reconcile` record's are, until the refill or a
+retirement makes them again; the count is capped at what the open took, so a later
+ordinary take of a headroom spare never reads as the open's debt. Unlike the `reconcile`
+spare's fallback, which makes its spare again before the open serves, this one is
+remade by the pool once it starts.
+
+> decision: a re-appending open borrows from the headroom and makes a spare rather
+> than failing, because the failure is permanent for the directory and the open must
+> serve a journal whose records are on disk. The borrow is bounded by the copy's two
+> attempts and counted, so it is visible until the pool has repaid it. Overturned by an
+> open that must leave the headroom whole, which would have to make its spares before
+> re-appending, and so before the pool exists.
 
 A record of the last class that finds the headroom exhausted fails with
 `ErrNoSpace` naming the headroom rather than overrunning, and the engine
