@@ -388,6 +388,14 @@ func (l *ConnLimit) Release(addr netip.Addr) {
 	l.addrs[addr]--
 }
 
+// InUse is how many connections l counts now, which the node's zero check
+// reads once its adapters have stopped (RFC 24 section 2.7).
+func (l *ConnLimit) InUse() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.open
+}
+
 // SetLimit applies a changed connection_limit to connections accepted
 // afterwards; those open stay. An address's quarter is limit / 4, at least 1.
 // It changes nothing else: the connections open stay counted, per address

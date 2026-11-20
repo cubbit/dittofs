@@ -895,30 +895,38 @@ func TestARefusalRaisesNoAdapterRefusedWhileServingOrDisabled(t *testing.T) {
 }
 
 // A running adapter whose Health names adapter_listener_lost raises it on
-// the node naming the adapter, and turns readiness not_ready; both are read
-// at each evaluation, so once its Health no longer names it both clear (RFC
-// 20 §3.7, RFC 25 §3.4, §3.6).
+// the node naming the adapter, and turns readiness not_ready, NFS as SMB;
+// both are read at each evaluation, so once its Health no longer names it
+// both clear (RFC 20 §3.7, RFC 25 §3.4, §3.6).
 func TestALostListenerTurnsTheNodeNotReady(t *testing.T) {
-	h := nodetest.New(t, nodetest.Watch())
-	turns := watchStatus(h)
-	var cue atomic.Bool
-	h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return lostListener{a, &cue} })
-	h.Node().SetSMB(true, smbAt(0))
-	started(t, h)
-	api, _ := h.Node().Addrs()
+	for _, protocol := range []string{"nfs", "smb"} {
+		t.Run(protocol, func(t *testing.T) {
+			h := nodetest.New(t, nodetest.Watch())
+			turns := watchStatus(h)
+			var cue atomic.Bool
+			h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return lostListener{a, &cue} })
+			if protocol == "nfs" {
+				h.Node().SetNFS(true, nfsAt(0))
+			} else {
+				h.Node().SetSMB(true, smbAt(0))
+			}
+			started(t, h)
+			api, _ := h.Node().Addrs()
 
-	lost := storedCondition{Name: "adapter_listener_lost", Scope: "node", ID: nodeID(h), Subject: "smb"}
-	carries := func(tr statusTurn) bool { return slices.Contains(conditionsOf(t, tr.s), lost) }
-	cue.Store(true)
-	turnAt(t, h, turns, "carrying "+lost.Name, carries)
-	if got := get(t, api, "/health/ready"); got != notReady {
-		t.Errorf("readiness with SMB's listener lost: got %+v, want 503 not_ready", got)
-	}
+			lost := storedCondition{Name: "adapter_listener_lost", Scope: "node", ID: nodeID(h), Subject: protocol}
+			carries := func(tr statusTurn) bool { return slices.Contains(conditionsOf(t, tr.s), lost) }
+			cue.Store(true)
+			turnAt(t, h, turns, "carrying "+lost.Name, carries)
+			if got := get(t, api, "/health/ready"); got != notReady {
+				t.Errorf("readiness with %s's listener lost: got %+v, want 503 not_ready", protocol, got)
+			}
 
-	cue.Store(false)
-	turnAt(t, h, turns, "without "+lost.Name, func(tr statusTurn) bool { return !carries(tr) })
-	if got := get(t, api, "/health/ready"); got != ready {
-		t.Errorf("readiness once SMB's listener is back: got %+v, want 200 ready", got)
+			cue.Store(false)
+			turnAt(t, h, turns, "without "+lost.Name, func(tr statusTurn) bool { return !carries(tr) })
+			if got := get(t, api, "/health/ready"); got != ready {
+				t.Errorf("readiness once %s's listener is back: got %+v, want 200 ready", protocol, got)
+			}
+		})
 	}
 }
 

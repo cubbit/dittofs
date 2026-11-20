@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -107,6 +108,45 @@ func TestStopLogsEachBudgetNotAtZero(t *testing.T) {
 				t.Errorf("budgets logged not at zero after Stop: got %v, want %v", got, tc.reserved)
 			}
 		})
+	}
+}
+
+// A node stopped with connections still counted logs one error record for
+// the count, naming it as pool conns with its connections, as it does a pool
+// holding bytes (RFC 24 §2.7).
+func TestStopLogsTheConnectionCountNotAtZero(t *testing.T) {
+	var logged syncBuffer
+	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		cfg.Logger = slog.New(slog.NewJSONHandler(&logged, nil))
+		return node.New(cfg)
+	}))
+	n := h.Node()
+	if err := n.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for range 2 {
+		if err := n.TakeConn(); err != nil {
+			t.Fatalf("count a connection: %v", err)
+		}
+	}
+	if err := n.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	var got []string
+	for line := range strings.Lines(logged.String()) {
+		var r struct {
+			Level, Msg, Pool string
+			Connections      int
+		}
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		if r.Msg == node.BudgetNotZero {
+			got = append(got, fmt.Sprintf("%s %s %d", r.Level, r.Pool, r.Connections))
+		}
+	}
+	if want := []string{"ERROR conns 2"}; !slices.Equal(got, want) {
+		t.Errorf("zero-check records after a stop with 2 connections counted: got %q, want %q", got, want)
 	}
 }
 

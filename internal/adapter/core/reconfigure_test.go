@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
@@ -716,4 +717,43 @@ func TestASweepClosesOnlyWhatItsDroppedBoundAccepted(t *testing.T) {
 	if rs, err := c.Recv(); err != nil || len(rs) != 1 || len(rs[0].Body) != 1 {
 		t.Fatalf("the connection the second bind accepted was closed by the sweep: %+v (%v)", rs, err)
 	}
+}
+
+// A connection its removed loop hands over as the loop ends, the listener
+// already closed under it, is closed and torn down before Reconfigure
+// returns: each loop hands every connection it accepted to the registry
+// before it ends, and the walk reads the registry only once the loop has
+// ended (RFC 20 section 3.6). A walk that reads it sooner leaves that
+// connection served on an address the settings dropped.
+func TestARemovalClosesAConnectionHandedOverAsItsLoopEnds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		gate := gatedHandover{Protocol: testproto.New(adapter.Deps{}), atHandover: make(chan struct{}), through: make(chan struct{})}
+		srv, err := core.NewServer(adapter.Deps{Budgets: b}, drainOn("127.0.0.1"), core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: gate})
+		if err != nil {
+			t.Fatal(err)
+		}
+		nc, peer := net.Pipe()
+		defer func() { _ = peer.Close() }()
+		core.SetListen(srv, func(context.Context, string, string) (net.Listener, error) {
+			return &handedAtClose{conn: nc, closed: make(chan struct{})}, nil
+		})
+		stopAtEnd(t, srv)
+		if err := srv.Start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- srv.Reconfigure(context.Background(), drainOn()) }()
+		<-gate.atHandover // the removal closed the listener, and its loop hands the connection over
+		synctest.Wait()   // every other goroutine waits: the hand-over on the gate, the removal on its walk
+		close(gate.through)
+		synctest.Wait() // the loop has registered the connection and ended
+		if err := <-done; err != nil {
+			t.Fatalf("Reconfigure removing the address: %v", err)
+		}
+		for range srv.Connections() {
+			t.Fatal("a connection handed over as its loop ended is still registered after Reconfigure returned")
+		}
+	})
 }

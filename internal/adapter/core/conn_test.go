@@ -468,8 +468,9 @@ func TestOnClosesContextEndsAfterTheGrace(t *testing.T) {
 }
 
 // The wait and OnClose share one grace counted from the close: a request that
-// runs past the wait ends the teardown at the grace, and OnClose's context has
-// already ended when it starts (RFC 20 section 4.7).
+// runs past the wait ends the teardown at the grace, OnClose runs beside it,
+// its context already ended when it starts, and the request still running is
+// logged at error (RFC 20 sections 4.7 and 6.5).
 func TestOnClosesDeadlineIsTheWaits(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := budgets()
@@ -504,7 +505,8 @@ func TestOnClosesDeadlineIsTheWaits(t *testing.T) {
 				<-ctx.Done()
 			},
 		}
-		srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+		logged := &loggedBuf{}
+		srv, err := core.NewServer(adapter.Deps{Budgets: b, Logger: slog.New(slog.NewJSONHandler(logged, nil))}, settings.DefaultNFS(), l)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -540,6 +542,9 @@ func TestOnClosesDeadlineIsTheWaits(t *testing.T) {
 		case <-core.ConnDone(conn):
 		case <-time.After(2 * time.Second):
 			t.Fatal("the teardown did not end when the wait's grace ended")
+		}
+		if got := logged.String(); !strings.Contains(got, `"level":"ERROR","msg":"connection teardown: requests still running"`) {
+			t.Errorf("the teardown past the grace logged %q, want the request still running at error", got)
 		}
 		close(release)
 		synctest.Wait()

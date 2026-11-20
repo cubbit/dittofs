@@ -78,8 +78,10 @@ func (s budgetSeries) Collect(ch chan<- prometheus.Metric) {
 }
 
 // checkBudgets is RFC 24 §2.7's zero check: it logs at error each pool still
-// holding bytes, naming the pool and the bytes. It returns nil: a pool not at
-// zero holds nothing a later part waits for.
+// holding bytes, naming the pool and the bytes, and the connection count
+// while it counts a connection, as pool conns with its connections. It
+// returns nil: a pool or count not at zero holds nothing a later part waits
+// for.
 //
 // decision: the check is the stop of a part started just before the
 // filesystem's, which the filesystem's part uses, so it runs once the
@@ -91,6 +93,9 @@ func (n *Node) checkBudgets(context.Context) error {
 		if r := p.reserved(); r != 0 {
 			n.cfg.Logger.Error(budgetNotZero, "pool", p.name, "bytes", r)
 		}
+	}
+	if c := n.budgets.Conns.InUse(); c != 0 {
+		n.cfg.Logger.Error(budgetNotZero, "pool", "conns", "connections", c)
 	}
 	return nil
 }
