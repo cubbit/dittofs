@@ -247,6 +247,8 @@ type startFault struct {
 	epoch      uint64
 	// undone are the parts the failed Start stopped, in order.
 	undone []string
+	// want is text the error carries besides the step's name.
+	want string
 }
 
 // failOn fails the from-th call of op on key.
@@ -279,6 +281,14 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 		{step: "refuse", cfg: func(_ *testing.T, cfg *node.Config) {
 			cfg.Journal = append(cfg.Journal, journal.WithDescriptorBudget(journal.NewDescriptorBudget(-1)))
 		}},
+		// A device whose node-id copy names another node fails the step's
+		// write of the missing copies.
+		{step: "refuse", cfg: func(t *testing.T, cfg *node.Config) {
+			path := filepath.Join(cfg.Bootstrap.Journals[0].Path, journal.NodeIDFileName)
+			if err := os.WriteFile(path, nodeIDCopy(entity.NodeID{'o', 't', 'h', 'e', 'r'}), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "node-id copies differ"},
 		{step: "listeners", cfg: func(t *testing.T, cfg *node.Config) {
 			l, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
@@ -319,6 +329,9 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 			f.SetFault(nil)
 			if err == nil || !strings.Contains(err.Error(), "start step "+tc.step+":") || tc.fault != nil && !errors.Is(err, errInjected) {
 				t.Fatalf("Start: got %v, want an error at start step %s", err, tc.step)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Start: got %v, want it to say %q", err, tc.want)
 			}
 			api, _ := h.Node().Addrs()
 			wantReady := notReady

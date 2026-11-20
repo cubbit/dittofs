@@ -2,7 +2,9 @@ package node_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -14,7 +16,15 @@ import (
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
+
+// nodeIDCopy is a node-id copy naming id, laid out as RFC 28 §2.1 has it: the
+// magic, the identity, then the CRC32C of both, little-endian.
+func nodeIDCopy(id entity.NodeID) []byte {
+	b := append([]byte("DNI1"), id[:]...)
+	return binary.LittleEndian.AppendUint32(b, crc32.Checksum(b, crc32.MakeTable(crc32.Castagnoli)))
+}
 
 // harnessDevice builds a harness and returns it with its one journal
 // directory, every build passing the node through with.
