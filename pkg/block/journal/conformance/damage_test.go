@@ -475,20 +475,24 @@ func rollParked(t *testing.T, d *driven) (parked, journal.SegmentID) {
 func diskWrite(t *testing.T, f *journaltest.Fixture, name string, seg journal.SegmentID) (v journal.Version, ext journal.Extent, end int64, ok bool) {
 	t.Helper()
 
+	// The last one wins: the record a parked write appended is the newest in
+	// its segment, and every earlier write record there is published.
 	b := liveBytes(t, f, name)
+	identity := journalIdentity(t, f)
 	for pos := int64(0); pos+raw.RecordHeaderSize <= int64(len(b)); pos += 8 {
-		h := b[pos : pos+raw.RecordHeaderSize]
-		if string(h[:4]) != "DJR1" || h[4] != 1 ||
-			binary.LittleEndian.Uint64(h[8:16]) != uint64(seg) ||
-			int64(binary.LittleEndian.Uint32(h[88:92])) != pos {
+		if string(b[pos:pos+4]) != "DJR1" {
 			continue
 		}
 
-		length := int64(binary.LittleEndian.Uint64(h[40:48]))
-		v = journal.Version{Epoch: binary.LittleEndian.Uint64(h[56:64]), Counter: binary.LittleEndian.Uint64(h[64:72])}
-		ext = journal.Extent{Off: int64(binary.LittleEndian.Uint64(h[32:40])), Len: length}
-		end = pos + raw.RecordHeaderSize + (8+length+7)/8*8
-		ok = true
+		h, ok2 := raw.ParseRecordHeader(b[pos:pos+raw.RecordHeaderSize], identity)
+		if !ok2 || h.Kind != 1 || h.Segment != uint64(seg) || int64(h.RecordOffset) != pos {
+			continue
+		}
+
+		length := int64(h.Length)
+		v = journal.Version{Epoch: h.Version.Epoch, Counter: h.Version.Counter}
+		ext = journal.Extent{Off: int64(h.Offset), Len: length}
+		end, ok = pos+raw.RecordHeaderSize+(8+length+7)/8*8, true
 	}
 
 	return v, ext, end, ok

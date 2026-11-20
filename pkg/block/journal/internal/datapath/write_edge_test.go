@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -403,6 +404,9 @@ func TestWriteAt_LaterPieceFails(t *testing.T) {
 	if len(recs) != 1 || recs[0].Header.Extent.Off != 0 {
 		t.Fatalf("records of the file on disk = %d, want piece 1's alone at offset 0", len(recs))
 	}
+	if c.liveness.Held(recs[0].Segment) {
+		t.Fatalf("segment %d still reads as held after the write was refused, want the dead record's hold released", recs[0].Segment)
+	}
 	if err := seam.Schedule(); err != nil {
 		t.Fatalf("the seam refused to clear its faults: %v", err)
 	}
@@ -458,5 +462,70 @@ func TestWriteReserved_LaterPieceFailsKeepsThePublishedPieces(t *testing.T) {
 	}
 	if end := p1.Extent.Off + p1.Extent.Len; end >= int64(len(payload)) {
 		t.Fatalf("piece 1 covers %d of %d bytes, want the write cut short", end, len(payload))
+	}
+}
+
+// A segment holding a piece of an unreserved write that is appended and not yet
+// published stays held: the roll that sealed it left no index entry naming the
+// piece, so without a hold on the piece's segment a retirement pass that ran
+// then would unlink it under the entry the publish adds. The hold ends with the
+// publish, and with a refusal of the write.
+func TestWriteAt_UnpublishedPieceKeepsItsSealedSegment(t *testing.T) {
+	var c *Core
+	var seam *kit.Seam
+	f := testFile(14)
+	var appended atomic.Int64
+	atRoll := make(chan struct{})
+	resume := make(chan struct{})
+	var resumeOnce sync.Once
+	release := func() { resumeOnce.Do(func() { close(resume) }) }
+	c, seam = newTestCore(t, func(o *coreOptions) {
+		o.afterAppend = func() {
+			if appended.Add(1) != 2 {
+				return
+			}
+			// The second piece's roll sealed the first piece's segment, and
+			// nothing is published.
+			close(atRoll)
+			<-resume
+		}
+	})
+	// A failed check must not leave the write parked: the core's close, which
+	// runs after this, waits on it.
+	t.Cleanup(release)
+	s := mustShare(t, c, 1)
+
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := c.WriteAt(context.Background(), s, f, 0, make([]byte, 2*testSegmentCap), 1)
+		wrote <- err
+	}()
+	waitIn(t, 30*time.Second, "the write's second piece to append", func() bool {
+		select {
+		case <-atRoll:
+			return true
+		default:
+			return false
+		}
+	})
+
+	recs := fileWrites(t, seam, f)
+	if len(recs) == 0 {
+		t.Fatal("no record of the write is on disk after its roll")
+	}
+	first := recs[0].Segment
+	if _, ok := c.Index().Lookup(f, 0); ok {
+		t.Fatal("the index names the write before its last piece is appended, want nothing published")
+	}
+	if !c.liveness.Held(first) {
+		t.Fatalf("segment %d reads as holding nothing while a piece of an unpublished write sits in it, want it held", first)
+	}
+
+	release()
+	if err := <-wrote; err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if !c.liveness.Held(first) {
+		t.Fatalf("segment %d reads as holding nothing after its piece was published, want its bytes held", first)
 	}
 }

@@ -1202,3 +1202,73 @@ func TestReopenAssembled_ForgetLivenessHoldsItsHoldersTillTheyRetire(t *testing.
 	}
 	waitFor(t, "the forget record's own segment to retire once its last holder has", 30*time.Second, func() bool { return gone(segForget) })
 }
+
+// TestReopenAssembled_ARefusedWriteLeavesItsRecordsToTheScan pins what a
+// restart does with the records of an unreserved write whose later roll was
+// refused: its earlier piece is on disk with the write's version, the index
+// never named it and the caller was told the write failed. The recovery's scan
+// names every record it finds whole, so the piece is held after the reopen, as a
+// piece of a torn write is, though the running journal never held it.
+func TestReopenAssembled_ARefusedWriteLeavesItsRecordsToTheScan(t *testing.T) {
+	f := newAssembledJournal(t)
+	j := f.open(t)
+	withLimit(t, j)
+	h := shareOf(t, j, 1)
+	file := fileOf(1)
+
+	writeAtReady(t, h, file, 0, payload(4096))
+	entries, err := j.Inspect().File(file)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("Inspect.File = %v, %v, want the first write's entry", entries, err)
+	}
+	seg := entries[0].Location.Segment
+	// The pool's spares are ready first, so the roll below meets the injected
+	// failure and not a refusal for want of a spare.
+	if err := j.core.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares: %v", err)
+	}
+	boom := errors.New("injected write failure")
+	var rules []kit.Rule
+	for id := seg + 1; id <= seg+8; id++ {
+		rules = append(rules, kit.Failing(kit.OpWrite, format.SegmentName(id), 0, boom))
+	}
+	if err := f.seam.Schedule(rules...); err != nil {
+		t.Fatalf("the seam refused the faults: %v", err)
+	}
+	size := 2 * core.SegmentCapOf(openSettings())
+	if _, err := h.WriteAt(t.Context(), file, 8192, payload(int(size)), 0); !errors.Is(err, boom) {
+		t.Fatalf("WriteAt = %v, want the injected failure", err)
+	}
+	if err := f.seam.Schedule(); err != nil {
+		t.Fatalf("the seam refused to clear its faults: %v", err)
+	}
+	var held int64
+	entries, _ = j.Inspect().File(file)
+	for _, e := range entries {
+		if e.Kind == EntryHeld {
+			held += e.Extent.Len
+		}
+	}
+	if held != 4096 {
+		t.Fatalf("held bytes after the refused write = %d, want only the first write's 4096", held)
+	}
+	if _, err := h.Sync(t.Context(), file); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	f.crash(t, j)
+
+	j2 := f.reopen(t, Version{}, nil)
+	entries, err = j2.Inspect().File(file)
+	if err != nil {
+		t.Fatalf("Inspect.File after the reopen: %v", err)
+	}
+	held = 0
+	for _, e := range entries {
+		if e.Kind == EntryHeld {
+			held += e.Extent.Len
+		}
+	}
+	if held <= 4096 || held >= 4096+size {
+		t.Fatalf("held bytes after the reopen = %d, want the first write's 4096 and the refused write's first piece, under %d", held, 4096+size)
+	}
+}

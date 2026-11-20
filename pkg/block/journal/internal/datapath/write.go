@@ -57,8 +57,9 @@ import (
 // ahead of the capacity admission and the draw, so checking a file's tag and
 // claiming it are one step: two first writes of one new FileID through two
 // handles cannot both pass the check. The domain is the only one held across
-// the record write, and publishing follows the write of every piece: the index never names
-// a record that is not yet in its segment. Publishing never waits on a sync.
+// the record write, and publishing follows the write of every piece: the index
+// never names a record that is not yet in its segment. Publishing never waits
+// on a sync.
 //
 // Any error returns the zero version. An unreserved write whose later piece
 // fails to append publishes none of its pieces, so the index holds nothing of
@@ -177,6 +178,14 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	// profile of writes spanning many segments shows it.
 	var waiting [4]piece
 	placed := waiting[:0]
+	// Every piece pinned and not yet unpinned is released on the way out, a
+	// refused write's included: its records are dead weight its segments may drop.
+	unpinned := 0
+	defer func() {
+		for _, pc := range placed[unpinned:] {
+			c.liveness.Unpin(pc.pl.Loc.Segment)
+		}
+	}()
 	for done < int64(len(p)) {
 		seq, err := c.counters.NextSeq()
 		if err != nil {
@@ -192,33 +201,32 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			Tag:     s.Tag,
 		}, format.RecordBody{Payload: rest, MTime: mtime}, roll)
 		if err != nil {
-			// decision: an unreserved write that fails on a later piece
-			// publishes nothing and returns no version: the pieces it already
-			// appended stay on disk and counted as the share's, unnamed by the
-			// index, and the grant's unused bytes return with it. A reserved
-			// write publishes each piece as it lands and keeps the ones a
-			// refusal leaves behind, which RFC 1 §6 specifies for it, so its
-			// holder reserves again for what they do not cover. The window a
-			// later piece can fail in is an unreserved roll the grant no
-			// longer covers: the grant fits the write to its stream's roomless
-			// state and holds only the spares the pieces its split sized need,
-			// so a roll whose room
-			// something else spent — the idle sealer sealing the active
-			// segment, a durability re-append or loss record that never passed
-			// the admission, another same-stream writer whose own
-			// spares-holding grant reserved the room this one claimed — draws a
-			// piece beyond the split, and the hold serves it only while a spare
-			// of its own is left: past that the roll runs unreserved and meets
-			// the pool's refusal here. The direction fails closed: the write
-			// that drew the piece is refused rather than admitted past a limit.
-			// A reserved write's interleaved roll is replaced while its hold is
-			// short of what the reservation still needs (the Replace below); its
-			// own ceiling is a spare the pool cannot make, where a full device's
-			// ENOSPC still refuses it here. The remaining cases are failures of
-			// the medium itself, which no reservation can predict. Overturned
-			// by a stream that promises the room between a take and an append,
-			// which no interleaving caller can, or by a write contract that
-			// reports the extent a refused write held.
+			// decision: an unreserved write that fails on a later piece publishes
+			// nothing and returns no version: the pieces it already appended stay on
+			// disk and counted as the share's, unnamed by the index, and the grant's
+			// unused bytes return with it. A reopen's scan names them, as it does a
+			// piece of any torn write, so the running journal and a restarted one
+			// differ on a refused write until its segment retires. A reserved write
+			// publishes each piece as it lands and keeps the ones a refusal leaves
+			// behind, which RFC 1 §6 specifies for it, so its holder reserves again
+			// for what they do not cover. The window a later piece can fail in is an
+			// unreserved roll the grant no longer covers: the grant fits the write to
+			// its stream's roomless state and holds only the spares the pieces its
+			// split sized need, so a roll whose room something else spent — the idle
+			// sealer sealing the active segment, a durability re-append or loss record
+			// that never passed the admission, another same-stream writer whose own
+			// spares-holding grant reserved the room this one claimed — draws a piece
+			// beyond the split, and the hold serves it only while a spare of its own
+			// is left: past that the roll runs unreserved and meets the pool's refusal
+			// here. The direction fails closed: the write that drew the piece is
+			// refused rather than admitted past a limit. A reserved write's
+			// interleaved roll is replaced while its hold is short of what the
+			// reservation still needs (the Replace below); its own ceiling is a spare
+			// the pool cannot make, where a full device's ENOSPC still refuses it
+			// here. The remaining cases are failures of the medium itself, which no
+			// reservation can predict. Overturned by a stream that promises the room
+			// between a take and an append, which no interleaving caller can, or by a
+			// write contract that reports the extent a refused write held.
 			return core.Version{}, published, err
 		}
 		if pl.N <= 0 {
@@ -254,6 +262,10 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		pc := piece{pl: pl, seq: seq, off: off + done}
 		done += pl.N
 		if res == nil {
+			// The piece's segment stays held until the piece is published:
+			// the roll of the next piece seals it, and the index counts
+			// nothing of the piece yet.
+			c.liveness.Pin(pl.Loc.Segment)
 			placed = append(placed, pc)
 			continue
 		}
@@ -268,8 +280,11 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	// in part under a version the caller never receives. A reserved write
 	// publishes each piece as it lands, for a refusal on its roll keeps the
 	// pieces already published and spends its version.
-	for _, pc := range placed {
-		if err := c.publishPiece(s, id, v, grant, pc); err != nil {
+	for i, pc := range placed {
+		err := c.publishPiece(s, id, v, grant, pc)
+		c.liveness.Unpin(pc.pl.Loc.Segment)
+		unpinned = i + 1
+		if err != nil {
 			return core.Version{}, published, err
 		}
 		published += pc.pl.N

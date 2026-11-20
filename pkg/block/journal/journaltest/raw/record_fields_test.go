@@ -67,3 +67,28 @@ func TestWriteBodyOffsetsPinsFieldLayout(t *testing.T) {
 		t.Errorf("payload at [104,107) is % x, want % x", got, testFullRecord.Write.Payload)
 	}
 }
+
+// ParseRecordHeader reads back every field Bytes wrote, and refuses a header
+// under another identity or with a byte changed.
+func TestParseRecordHeaderReadsBackWhatWasBuilt(t *testing.T) {
+	r := testFullRecord
+	b := r.Bytes()[:RecordHeaderSize]
+	h, ok := ParseRecordHeader(b, r.Identity)
+	if !ok {
+		t.Fatal("ParseRecordHeader refused a header Bytes built")
+	}
+	if h.Kind != r.Kind || h.Segment != r.Segment || h.FileID != r.FileID || h.Offset != r.Offset ||
+		h.Length != r.Length || h.Seq != r.Seq || h.Version != r.Version || h.Tag != r.Tag || h.RecordOffset != r.RecordOffset {
+		t.Fatalf("ParseRecordHeader = %+v, want the fields of %+v", h, r)
+	}
+	other := r.Identity
+	other[0] ^= 1
+	if _, ok := ParseRecordHeader(b, other); ok {
+		t.Fatal("ParseRecordHeader accepted a header under another identity")
+	}
+	flipped := append([]byte(nil), b...)
+	flipped[48] ^= 1
+	if _, ok := ParseRecordHeader(flipped, r.Identity); ok {
+		t.Fatal("ParseRecordHeader accepted a header with a changed byte")
+	}
+}
