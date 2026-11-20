@@ -2927,3 +2927,46 @@ func TestPoolCheckAfterAMakeLandsPastStop(t *testing.T) {
 		t.Fatalf("after a make landed past Stop Counters.Spares = %d, want the 1 spare the make landed", c.Spares)
 	}
 }
+
+// TestPoolHoldOnFullDevice: a reservation's hold on a pool whose make failed
+// ENOSPC answers the device's ENOSPC, as the roll does, never the retryable
+// spare limit a caller would retry forever; a pool whose make failed with EIO
+// still answers the spare limit, since no device is full. It catches a hold
+// that reads no device-full state, and one that reads it for any failure.
+func TestPoolHoldOnFullDevice(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("ENOSPC answers ENOSPC", func(t *testing.T) {
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+		awaitDeviceFull(t, true, p)
+		_, err := p.Hold(1)
+		if !errors.Is(err, syscall.ENOSPC) {
+			t.Fatalf("Hold on a full device = %v, want the device's ENOSPC", err)
+		}
+		var ns *core.NoSpaceError
+		if errors.As(err, &ns) || errors.Is(err, core.ErrNoSpace) {
+			t.Fatalf("Hold on a full device = %v, want no NoSpaceError and no ErrNoSpace", err)
+		}
+		p.Stop()
+	})
+
+	t.Run("EIO answers the spare limit", func(t *testing.T) {
+		h := &logRecorder{}
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, slog.New(h))
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 1)
+		_, err := p.Hold(1)
+		var ns *core.NoSpaceError
+		if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
+			t.Fatalf("Hold over an EIO pool = %v, want the spare limit's NoSpaceError", err)
+		}
+		p.Stop()
+	})
+}
