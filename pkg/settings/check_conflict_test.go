@@ -171,3 +171,32 @@ func TestCheckPointReadCount(t *testing.T) {
 		}
 	}
 }
+
+// What a section's CheckTx reads is tracked: the record it read, written
+// through the store's own write between Check and the commit, makes the
+// write retry, and another record does not.
+func TestCheckTxConflict(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	tb := settings.Table{limitSection()}
+
+	for _, c := range []struct {
+		group string
+		want  int
+	}{
+		{limitGroup, 2},
+		{"unrelated", 1},
+	} {
+		t.Run(c.group, func(t *testing.T) {
+			s := open(t)
+			s.netgroup(t, limitGroup)
+
+			got := s.attempts(t, tb, setting(installation, "test.limit.max", "1"), func() {
+				s.netgroup(t, c.group)
+			})
+			if got != c.want {
+				t.Errorf("attempts = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
