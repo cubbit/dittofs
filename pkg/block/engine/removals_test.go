@@ -94,9 +94,11 @@ func TestARemovalRunsItsPhase2AndIsPruned(t *testing.T) {
 // A removal whose phase 2 keeps failing raises removal_stalled after five
 // failures and wedges no other: another file's removal on the same journal
 // completes meanwhile, and the stalled one finishes once the fault clears.
+// A truncate's removal_stalled is degraded: raised at Warn, cleared at Info.
 func TestAFailingRemovalWedgesNoOther(t *testing.T) {
 	x := newResuming()
-	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x })
+	logs := newLogRecorder()
+	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x; d.Logger = slog.New(logs) })
 	f, g := u.create(t, "f"), u.create(t, "g")
 	for _, id := range []entity.FileID{f, g} {
 		u.write(t, id, 0, fill(16, 'a'))
@@ -111,6 +113,9 @@ func TestAFailingRemovalWedgesNoOther(t *testing.T) {
 		t.Fatal(err)
 	}
 	u.until(t, "f is removal_stalled", func() bool { return u.e.RemovalStalled(f) })
+	if !logged(logs, slog.LevelWarn, "removal_stalled", f) {
+		t.Error("no removal_stalled line at Warn names f")
+	}
 	if err := u.e.Truncate(t.Context(), u.share.ID, g, 4); err != nil {
 		t.Fatal(err)
 	}
@@ -122,9 +127,11 @@ func TestAFailingRemovalWedgesNoOther(t *testing.T) {
 	x.failing[f] = false
 	x.mu.Unlock()
 	u.until(t, "f's removal is pruned once the fault clears", func() bool { return u.unpruned(t, f) == 0 })
-	if u.e.RemovalStalled(f) {
-		t.Error("f still removal_stalled after its removal finished")
-	}
+	// The loop clears the condition once the run that pruned returns, so the
+	// clear is awaited, not read.
+	u.until(t, "f's removal_stalled cleared at Info", func() bool {
+		return logged(logs, slog.LevelInfo, "removal_stalled cleared", f) && !u.e.RemovalStalled(f)
+	})
 }
 
 // A phase 2 whose store never answers is cut at the conflict bound, so the
