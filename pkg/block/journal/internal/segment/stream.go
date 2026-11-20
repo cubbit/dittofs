@@ -472,6 +472,20 @@ type Roll struct {
 	// record is placed whole in the next segment, never split. A payload
 	// larger than an empty segment's room is refused with ErrSegmentFull.
 	Whole bool
+	// Pin, when set, is told of the segment each record of the append lands
+	// in before the append leaves it, under the stream's append lock: the
+	// seal drains every appender before it completes, so the pin is raised
+	// before the segment can be sealed, and with it retired. Nil for an
+	// append whose record the index counts at once.
+	Pin Pinner
+}
+
+// Pinner keeps a segment held for a record the index does not count yet. Pin
+// runs under the stream's append lock and takes no lock above the stream's
+// own rank.
+type Pinner interface {
+	Pin(seg core.SegmentID)
+	Unpin(seg core.SegmentID)
 }
 
 // ErrBadRoll is returned by AppendRoll for roll options that do not fit the
@@ -1004,6 +1018,9 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 			// add, which would leave a registered record with no location
 			// returned to its caller.
 			s.sink.Track(written)
+			if r.Pin != nil {
+				r.Pin.Pin(id)
+			}
 		}
 		s.tracker.complete(slot, werr == nil)
 		// The completion ends a reservation the end's event waits on, on the
@@ -1079,6 +1096,9 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		// record's whole size less its payload, the length the index counts held
 		// or retained for it; a kind with no payload placed 0.
 		if err := s.set.AddRecord(id, h.Tag, size, size-placed); err != nil {
+			if r.Pin != nil {
+				r.Pin.Unpin(id) // the caller never learns the record, so it releases nothing
+			}
 			return Placed{}, err
 		}
 		return Placed{Loc: Location{Segment: id, Off: off, Len: size}, N: placed, Rolled: rolled}, nil

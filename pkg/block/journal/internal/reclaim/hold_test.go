@@ -857,3 +857,30 @@ func TestRegisterForget_ConcurrentRetirementOfSnapshotSegment(t *testing.T) {
 		}
 	}
 }
+
+// TestPin_KeepsASegmentHeldUntilItsLastRelease: a pin holds a sealed segment
+// the index counts nothing in, and the release of the last pin fires the
+// candidate once nothing else holds the segment.
+func TestPin_KeepsASegmentHeldUntilItsLastRelease(t *testing.T) {
+	f := newFixture(t)
+	var fired []core.SegmentID
+	tr := New(f.ix, func(seg core.SegmentID) { fired = append(fired, seg) })
+	seg := f.takeIn(t)
+
+	tr.Pin(seg)
+	tr.Pin(seg)
+	if !tr.Held(seg) {
+		t.Fatal("a pinned segment the index counts nothing in reads as not held, want held")
+	}
+	tr.Unpin(seg)
+	if !tr.Held(seg) || len(fired) != 0 {
+		t.Fatalf("after one of two releases: held %v, candidates %v, want held and none", tr.Held(seg), fired)
+	}
+	tr.Unpin(seg)
+	if tr.Held(seg) {
+		t.Fatal("a segment reads as held after its last pin was released, want not held")
+	}
+	if len(fired) != 1 || fired[0] != seg {
+		t.Fatalf("candidates after the last release = %v, want [%d]: the last release crosses to not held", fired, seg)
+	}
+}

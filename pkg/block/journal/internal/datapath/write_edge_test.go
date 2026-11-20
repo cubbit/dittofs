@@ -529,3 +529,31 @@ func TestWriteAt_UnpublishedPieceKeepsItsSealedSegment(t *testing.T) {
 		t.Fatalf("segment %d reads as holding nothing after its piece was published, want its bytes held", first)
 	}
 }
+
+// An unreserved write's piece pins its segment inside the append, before the
+// write counts the record or does anything else: the segment cannot be sealed,
+// and so retired, in the gap between the append and the pin.
+func TestWriteAt_PieceIsPinnedBeforeTheWriteGoesOn(t *testing.T) {
+	var c *Core
+	f := testFile(15)
+	var pinned atomic.Bool
+	var checked atomic.Bool
+	c, _ = newTestCore(t, func(o *coreOptions) {
+		o.beforeWrote = func() {
+			seg, ok := c.Streams().For(f).OpenSegment()
+			if ok && !checked.Swap(true) {
+				pinned.Store(c.liveness.Held(seg))
+			}
+		}
+	})
+	s := mustShare(t, c, 1)
+	if _, err := c.WriteAt(context.Background(), s, f, 0, make([]byte, 4096), 1); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if !checked.Load() {
+		t.Fatal("the write's append never reached the hook")
+	}
+	if !pinned.Load() {
+		t.Fatal("the piece's segment reads as holding nothing when the append returns, want it pinned inside the append")
+	}
+}
