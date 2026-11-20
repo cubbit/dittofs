@@ -26,7 +26,6 @@ func TestGetDefaultConfig(t *testing.T) {
 			MaxAge:     30,
 		},
 	}
-	want.Blockstore.Journal.Path = GetDefaultConfig().Blockstore.Journal.Path
 
 	if got := GetDefaultConfig(); !reflect.DeepEqual(*got, want) {
 		t.Errorf("GetDefaultConfig:\ngot  %+v\nwant %+v", *got, want)
