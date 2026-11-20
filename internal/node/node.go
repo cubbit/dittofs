@@ -13,6 +13,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
+	"github.com/cubbit/dittofs/internal/node/step"
 	"github.com/cubbit/dittofs/internal/sidecar"
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
@@ -21,6 +22,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -28,6 +30,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/secrets"
 )
 
 // Config is what the host supplies and the node cannot build itself.
@@ -83,6 +86,12 @@ type Node struct {
 	// snap is the one deadlined, single-flight engine.Stats fetch the engine
 	// series, the journal series and the health evaluator read.
 	snap *snapshot
+	// storageKey is the storage role's wrapping key the bootstrap's
+	// keys.storage names, nil when it names none; Stop closes it.
+	storageKey keyprovider.KeyProvider
+	// tokens verifies access tokens over the installation's signing key,
+	// nil with no storage key to open it with.
+	tokens *auth.Tokens
 	// ending, when set, is called by step 3 of each share removal once its
 	// bound is set on the clock, before it waits on anything.
 	ending func(entity.ShareID)
@@ -223,8 +232,13 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
+	rotation, err := n.signingKey(cfg)
+	if err != nil {
+		return nil, err
+	}
 	steps := operationSteps(n.meta.Nodes())
 	steps[string(apiv1.OpShareDelete)] = stepRow{n.shareDeletion, n.removalProgress}
+	steps[string(apiv1.OpRotateSigningKey)] = rotation
 	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node.ID, cfg.Logger, steps)
 	n.watchdog = health.NewWatchdog(cfg.Clock)
 	n.sidecars = sidecar.New()
@@ -236,9 +250,9 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 	// decision: the API is handed neither the bootstrap's api.tls
 	// certificate and key nor its api.socket path, though the bootstrap
 	// names them and the API serves TLS on every address but loopback; nor
-	// a signing key or tracer, and in production no Authenticate, as the
-	// installation's signing key is a secret no secret store reads and
-	// Config names no tracer. So a start on an address but loopback is
+	// a signing key or tracer, and in production no Authenticate, as the API
+	// takes neither the access tokens the node builds nor the signing key's
+	// value, and Config names no tracer. So a start on an address but loopback is
 	// refused for want of a certificate even when api.tls names one, no
 	// local socket is served, every call but a public row's answers 401,
 	// every POST and DELETE, which must carry an Idempotency-Key, answers
@@ -265,6 +279,33 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 		Applied:      n.applied,
 	})
 	return n, nil
+}
+
+// signingKey opens the storage key keys.storage names and, over the secret
+// provider it keys, the access tokens of the installation's signing key and
+// the row of its rotation. It is New's last step that can fail, so nothing
+// opened after it needs closing on a failure. With no keys.storage it opens
+// nothing, and the rotation fails, naming the missing key.
+func (n *Node) signingKey(cfg Config) (stepRow, error) {
+	if cfg.Bootstrap.Keys.Storage.Kind == "" {
+		return stepRow{func(context.Context, entity.Operation) (step.StepResult, error) {
+			return step.StepResult{}, fmt.Errorf("%w: keys.storage is not set, and the signing key is sealed under it", step.ErrStepFailed)
+		}, auth.RotationProgress}, nil
+	}
+	in, err := n.meta.Installation(context.Background())
+	if err != nil {
+		return stepRow{}, fmt.Errorf("node: the installation: %w", err)
+	}
+	if n.storageKey, err = keyprovider.NewProvider(context.Background(), cfg.Bootstrap.Keys.Storage.Provider()); err != nil {
+		return stepRow{}, fmt.Errorf("node: the storage key: %w", err)
+	}
+	p, err := secrets.New(n.meta.ControlPlane(), map[secrets.Role]keyprovider.KeyProvider{secrets.Storage: n.storageKey})
+	if err != nil {
+		return stepRow{}, errors.Join(fmt.Errorf("node: the secret provider: %w", err), n.storageKey.Close())
+	}
+	n.tokens = auth.NewTokens(providerKeys{p}, in.ID, in.SigningKey, cfg.Clock)
+	r := auth.NewRotation(n.meta.ControlPlane(), providerSealer{p}, n.tokens)
+	return stepRow{r.Step, auth.RotationProgress}, nil
 }
 
 // connections is every connection open now on the adapters the slots' last

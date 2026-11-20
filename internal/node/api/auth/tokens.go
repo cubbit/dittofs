@@ -54,30 +54,30 @@ func SealSigningKey(ctx context.Context, s sealer, installation [16]byte, ref en
 	return s.Seal(ctx, entity.SecretKey, signingKeyOwner(installation), ref, key)
 }
 
-// keyVersion is one opened version of the signing key. Its value is the raw
+// KeyVersion is one opened version of the signing key. Its value is the raw
 // HMAC key, so every printing path shows the version alone.
-type keyVersion struct {
+type KeyVersion struct {
 	Version uint64
 	Value   []byte
 }
 
 // String prints the version, never the value.
-func (k keyVersion) String() string { return fmt.Sprintf("{version:%d}", k.Version) }
+func (k KeyVersion) String() string { return fmt.Sprintf("{version:%d}", k.Version) }
 
 // Format prints String for every verb, %#v included, so no fmt verb reaches
 // the value.
-func (k keyVersion) Format(f fmt.State, _ rune) { _, _ = fmt.Fprint(f, k.String()) }
+func (k KeyVersion) Format(f fmt.State, _ rune) { _, _ = fmt.Fprint(f, k.String()) }
 
 // LogValue hands slog the version alone.
-func (k keyVersion) LogValue() slog.Value { return slog.Uint64Value(k.Version) }
+func (k KeyVersion) LogValue() slog.Value { return slog.Uint64Value(k.Version) }
 
 // keyVersions opens every version of ref still held, current first, checked
 // against kind and owner.
 type keyVersions interface {
-	Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]keyVersion, error)
+	Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]KeyVersion, error)
 }
 
-// tokens issues and verifies access tokens: HS256 JWTs whose kid names the
+// Tokens issues and verifies access tokens: HS256 JWTs whose kid names the
 // signing key's version, so a token signed before a rotation verifies while
 // its version is held.
 //
@@ -88,27 +88,27 @@ type keyVersions interface {
 // pruned elsewhere, for up to a second, and each node reads the key once a
 // second while tokens are in use. Upgrade: re-read on the node's settings
 // generation, which every secret write raises.
-type tokens struct {
+type Tokens struct {
 	keys  keyVersions
 	owner entity.SecretOwner
 	ref   entity.SecretRef
 	clk   clock
 
 	mu     sync.Mutex
-	held   []keyVersion // current first
+	held   []KeyVersion // current first
 	tried  time.Time    // the last read's start, failed or not
 	failed error        // the last read's error while nothing is held
 }
 
-// newTokens returns the tokens of the signing key ref, owned by
+// NewTokens returns the tokens of the signing key ref, owned by
 // installation's signing_key, opened through keys. Nothing is read until
 // the first issue or verify.
-func newTokens(keys keyVersions, installation [16]byte, ref entity.SecretRef, clk clock) *tokens {
-	return &tokens{keys: keys, owner: signingKeyOwner(installation), ref: ref, clk: clk}
+func NewTokens(keys keyVersions, installation [16]byte, ref entity.SecretRef, clk clock) *Tokens {
+	return &Tokens{keys: keys, owner: signingKeyOwner(installation), ref: ref, clk: clk}
 }
 
 // String prints the key's reference and held versions, never a value.
-func (t *tokens) String() string {
+func (t *Tokens) String() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	vs := make([]uint64, len(t.held))
@@ -119,13 +119,13 @@ func (t *tokens) String() string {
 }
 
 // Format prints String for every verb, so no fmt verb reaches a value.
-func (t *tokens) Format(f fmt.State, _ rune) { _, _ = fmt.Fprint(f, t.String()) }
+func (t *Tokens) Format(f fmt.State, _ rune) { _, _ = fmt.Fprint(f, t.String()) }
 
 // LogValue hands slog String.
-func (t *tokens) LogValue() slog.Value { return slog.StringValue(t.String()) }
+func (t *Tokens) LogValue() slog.Value { return slog.StringValue(t.String()) }
 
 // refresh re-reads every held version of the signing key at once.
-func (t *tokens) refresh(ctx context.Context) error {
+func (t *Tokens) refresh(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.reload(ctx)
@@ -133,7 +133,7 @@ func (t *tokens) refresh(ctx context.Context) error {
 
 // reload reads the versions, recording the attempt before the read so a
 // failing store is read at most once a second too; t.mu is held.
-func (t *tokens) reload(ctx context.Context) error {
+func (t *Tokens) reload(ctx context.Context) error {
 	t.tried = t.clk.Now()
 	ks, err := t.keys.Versions(ctx, entity.SecretKey, t.owner, t.ref)
 	if err == nil && len(ks) == 0 {
@@ -153,7 +153,7 @@ func (t *tokens) reload(ctx context.Context) error {
 // fresh re-reads the versions when the last attempt is a second old or
 // more, and returns a read's error, the last one's while nothing is held;
 // t.mu is held.
-func (t *tokens) fresh(ctx context.Context) error {
+func (t *Tokens) fresh(ctx context.Context) error {
 	if t.clk.Now().Sub(t.tried) >= refreshEvery {
 		if err := t.reload(ctx); err != nil {
 			return err
@@ -166,28 +166,28 @@ func (t *tokens) fresh(ctx context.Context) error {
 }
 
 // current is the version that signs now.
-func (t *tokens) current(ctx context.Context) (keyVersion, error) {
+func (t *Tokens) current(ctx context.Context) (KeyVersion, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if err := t.fresh(ctx); err != nil {
-		return keyVersion{}, err
+		return KeyVersion{}, err
 	}
 	return t.held[0], nil
 }
 
 // byVersion is the held version v, and false when it is not held.
-func (t *tokens) byVersion(ctx context.Context, v uint64) (keyVersion, bool, error) {
+func (t *Tokens) byVersion(ctx context.Context, v uint64) (KeyVersion, bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if err := t.fresh(ctx); err != nil {
-		return keyVersion{}, false, err
+		return KeyVersion{}, false, err
 	}
 	for _, k := range t.held {
 		if k.Version == v {
 			return k, true, nil
 		}
 	}
-	return keyVersion{}, false, nil
+	return KeyVersion{}, false, nil
 }
 
 // accessClaims are an access token's claims: exactly sub, sid, iat and exp,
@@ -197,16 +197,16 @@ type accessClaims struct {
 	jwt.RegisteredClaims
 }
 
-// claims is what a verified access token names.
-type claims struct {
+// Claims is what a verified access token names.
+type Claims struct {
 	Principal entity.Principal
 	Session   [16]byte
 	IssuedAt  time.Time
 }
 
-// issue signs an access token for principal's session, issued at iat in
+// Issue signs an access token for principal's session, issued at iat in
 // whole seconds and expiring accessLife later, with the current version.
-func (t *tokens) issue(ctx context.Context, principal entity.Principal, session [16]byte, iat time.Time) (string, error) {
+func (t *Tokens) Issue(ctx context.Context, principal entity.Principal, session [16]byte, iat time.Time) (string, error) {
 	k, err := t.current(ctx)
 	if err != nil {
 		return "", err
@@ -223,7 +223,7 @@ func (t *tokens) issue(ctx context.Context, principal entity.Principal, session 
 	return tok.SignedString(k.Value)
 }
 
-// verify checks raw's HS256 signature under the version its kid names and
+// Verify checks raw's HS256 signature under the version its kid names and
 // its expiry at the node's clock, with no leeway, and returns its claims.
 // Every refusal wraps errToken; a key that cannot be read is returned as is.
 //
@@ -231,7 +231,7 @@ func (t *tokens) issue(ctx context.Context, principal entity.Principal, session 
 // was issued at runs up to the store's ceiling ahead of a node's clock, and
 // a token issued at it would be refused on a node behind. Its expiry bounds
 // it. Withdraw if issue times move to the node's clock.
-func (t *tokens) verify(ctx context.Context, raw string) (claims, error) {
+func (t *Tokens) Verify(ctx context.Context, raw string) (Claims, error) {
 	var readErr error
 	var c accessClaims
 	_, err := jwt.ParseWithClaims(raw, &c, func(tok *jwt.Token) (any, error) {
@@ -255,15 +255,15 @@ func (t *tokens) verify(ctx context.Context, raw string) (claims, error) {
 		jwt.WithExpirationRequired(),
 	)
 	if readErr != nil {
-		return claims{}, readErr
+		return Claims{}, readErr
 	}
 	if err != nil {
-		return claims{}, fmt.Errorf("%w: %v", errToken, err)
+		return Claims{}, fmt.Errorf("%w: %v", errToken, err)
 	}
 	p, err := entity.ParsePrincipal(c.Subject)
 	sid, serr := hex.DecodeString(c.Session)
 	if err != nil || serr != nil || len(sid) != 16 || c.IssuedAt == nil {
-		return claims{}, fmt.Errorf("%w: its sub, sid or iat is malformed", errToken)
+		return Claims{}, fmt.Errorf("%w: its sub, sid or iat is malformed", errToken)
 	}
-	return claims{Principal: p, Session: [16]byte(sid), IssuedAt: c.IssuedAt.Time}, nil
+	return Claims{Principal: p, Session: [16]byte(sid), IssuedAt: c.IssuedAt.Time}, nil
 }

@@ -38,11 +38,11 @@ func (p provider) Seal(ctx context.Context, kind entity.SecretKind, owner entity
 	return p.p.Seal(ctx, secrets.Storage, kind, owner, ref, value, secrets.Meta{})
 }
 
-func (p provider) Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]keyVersion, error) {
+func (p provider) Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]KeyVersion, error) {
 	vs, err := p.p.Versions(ctx, secrets.Storage, kind, owner, ref)
-	ks := make([]keyVersion, len(vs))
+	ks := make([]KeyVersion, len(vs))
 	for i, v := range vs {
-		ks[i] = keyVersion{Version: v.Number, Value: v.Value}
+		ks[i] = KeyVersion{Version: v.Number, Value: v.Value}
 	}
 	return ks, err
 }
@@ -142,11 +142,11 @@ func (f *keyFix) prune(v uint64) {
 	}
 }
 
-func (f *keyFix) tokens() *tokens { return newTokens(f.prov, f.inst, f.ref, f.clk) }
+func (f *keyFix) tokens() *Tokens { return NewTokens(f.prov, f.inst, f.ref, f.clk) }
 
-func (f *keyFix) issue(tk *tokens) string {
+func (f *keyFix) issue(tk *Tokens) string {
 	f.t.Helper()
-	raw, err := tk.issue(f.t.Context(), f.alice, f.sess, f.clk.Now())
+	raw, err := tk.Issue(f.t.Context(), f.alice, f.sess, f.clk.Now())
 	if err != nil {
 		f.t.Fatalf("issue: %v", err)
 	}
@@ -191,8 +191,8 @@ func TestTokenShape(t *testing.T) {
 		t.Errorf("claims: got %v, want sub %s, iat %d, exp %d", c, f.alice, t0.Unix(), t0.Add(accessLife).Unix())
 	}
 
-	got, err := tk.verify(t.Context(), raw)
-	want := claims{Principal: f.alice, Session: f.sess, IssuedAt: t0}
+	got, err := tk.Verify(t.Context(), raw)
+	want := Claims{Principal: f.alice, Session: f.sess, IssuedAt: t0}
 	if err != nil || got.Principal != want.Principal || got.Session != want.Session || !got.IssuedAt.Equal(want.IssuedAt) {
 		t.Errorf("verify: got %+v, %v; want %+v", got, err, want)
 	}
@@ -204,11 +204,11 @@ func TestTokenExpiry(t *testing.T) {
 	tk := f.tokens()
 	raw := f.issue(tk)
 	f.clk.Advance(accessLife - time.Second)
-	if _, err := tk.verify(t.Context(), raw); err != nil {
+	if _, err := tk.Verify(t.Context(), raw); err != nil {
 		t.Errorf("verify a second before exp: %v, want it to verify", err)
 	}
 	f.clk.Advance(time.Second)
-	if _, err := tk.verify(t.Context(), raw); !errors.Is(err, errToken) {
+	if _, err := tk.Verify(t.Context(), raw); !errors.Is(err, errToken) {
 		t.Errorf("verify at exp: %v, want errToken", err)
 	}
 }
@@ -247,7 +247,7 @@ func TestTokenRefusals(t *testing.T) {
 	under := func(c accessClaims) string { return signClaims(c, jwt.SigningMethodHS256, "1", key.Value) }
 	// The same claims, signed as an access token is, verify, so each
 	// refusal below is its header's or signature's.
-	if _, err := tk.verify(t.Context(), sign(jwt.SigningMethodHS256, "1", key.Value)); err != nil {
+	if _, err := tk.Verify(t.Context(), sign(jwt.SigningMethodHS256, "1", key.Value)); err != nil {
 		t.Fatalf("the claims signed as an access token: %v, want them to verify", err)
 	}
 	for name, raw := range map[string]string{
@@ -263,7 +263,7 @@ func TestTokenRefusals(t *testing.T) {
 		"non-hex sid": under(with(func(c *accessClaims) { c.Session = strings.Repeat("zz", 16) })),
 		"no iat":      under(with(func(c *accessClaims) { c.IssuedAt = nil })),
 	} {
-		if _, err := tk.verify(t.Context(), raw); !errors.Is(err, errToken) {
+		if _, err := tk.Verify(t.Context(), raw); !errors.Is(err, errToken) {
 			t.Errorf("%s: verify got %v, want errToken", name, err)
 		}
 	}
@@ -285,7 +285,7 @@ func TestTokenRotation(t *testing.T) {
 		t.Errorf("kid after the rotation: got %v, want 2", kid)
 	}
 	for name, raw := range map[string]string{"version 1": old, "version 2": cur} {
-		if _, err := tk.verify(t.Context(), raw); err != nil {
+		if _, err := tk.Verify(t.Context(), raw); err != nil {
 			t.Errorf("%s with both held: %v, want it to verify", name, err)
 		}
 	}
@@ -294,10 +294,10 @@ func TestTokenRotation(t *testing.T) {
 	if err := tk.refresh(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tk.verify(t.Context(), old); !errors.Is(err, errToken) {
+	if _, err := tk.Verify(t.Context(), old); !errors.Is(err, errToken) {
 		t.Errorf("version 1 after its prune: %v, want errToken", err)
 	}
-	if _, err := tk.verify(t.Context(), cur); err != nil {
+	if _, err := tk.Verify(t.Context(), cur); err != nil {
 		t.Errorf("version 2 after the prune: %v, want it to verify", err)
 	}
 }
@@ -307,18 +307,18 @@ func TestTokenRotation(t *testing.T) {
 func TestTokenUnknownKidReloads(t *testing.T) {
 	f := newKeyFix(t)
 	here := f.tokens()
-	if _, err := here.verify(t.Context(), f.issue(here)); err != nil {
+	if _, err := here.Verify(t.Context(), f.issue(here)); err != nil {
 		t.Fatal(err)
 	}
 	f.seal()
 	there := f.tokens()
 	raw := f.issue(there) // signed with version 2, which here has not loaded
 
-	if _, err := here.verify(t.Context(), raw); !errors.Is(err, errToken) {
+	if _, err := here.Verify(t.Context(), raw); !errors.Is(err, errToken) {
 		t.Errorf("within a second of the last load: %v, want errToken", err)
 	}
 	f.clk.Advance(refreshEvery)
-	if _, err := here.verify(t.Context(), raw); err != nil {
+	if _, err := here.Verify(t.Context(), raw); err != nil {
 		t.Errorf("a second after the last load: %v, want it to reload and verify", err)
 	}
 }
@@ -361,7 +361,7 @@ type failing struct {
 	err error
 }
 
-func (f *failing) Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]keyVersion, error) {
+func (f *failing) Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]KeyVersion, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -376,20 +376,20 @@ func TestTokenReadFailure(t *testing.T) {
 	raw := f.issue(f.tokens())
 	boom := errors.New("store unavailable")
 	src := &failing{keyVersions: f.prov, err: boom}
-	tk := newTokens(src, f.inst, f.ref, f.clk)
+	tk := NewTokens(src, f.inst, f.ref, f.clk)
 
-	if _, err := tk.verify(t.Context(), raw); !errors.Is(err, boom) || errors.Is(err, errToken) {
+	if _, err := tk.Verify(t.Context(), raw); !errors.Is(err, boom) || errors.Is(err, errToken) {
 		t.Errorf("verify over a failing store: %v, want the store's error and not errToken", err)
 	}
 	src.err = nil
-	if _, err := tk.verify(t.Context(), raw); !errors.Is(err, boom) {
+	if _, err := tk.Verify(t.Context(), raw); !errors.Is(err, boom) {
 		t.Errorf("verify within a second of the failed read: %v, want the same error with no new read", err)
 	}
-	if _, err := tk.issue(t.Context(), f.alice, f.sess, f.clk.Now()); !errors.Is(err, boom) {
+	if _, err := tk.Issue(t.Context(), f.alice, f.sess, f.clk.Now()); !errors.Is(err, boom) {
 		t.Errorf("issue within a second of the failed read: %v, want the same error with no new read", err)
 	}
 	f.clk.Advance(refreshEvery)
-	if _, err := tk.verify(t.Context(), raw); err != nil {
+	if _, err := tk.Verify(t.Context(), raw); err != nil {
 		t.Errorf("verify a second after the failed read: %v, want it to read and verify", err)
 	}
 
@@ -397,10 +397,10 @@ func TestTokenReadFailure(t *testing.T) {
 	// second answers from what is held.
 	f.clk.Advance(refreshEvery)
 	src.err = boom
-	if _, err := tk.verify(t.Context(), raw); !errors.Is(err, boom) || errors.Is(err, errToken) {
+	if _, err := tk.Verify(t.Context(), raw); !errors.Is(err, boom) || errors.Is(err, errToken) {
 		t.Errorf("verify over a failing store with a version held: %v, want the store's error and not errToken", err)
 	}
-	if _, err := tk.verify(t.Context(), raw); err != nil {
+	if _, err := tk.Verify(t.Context(), raw); err != nil {
 		t.Errorf("verify within a second of a failed read with a version held: %v, want the held version to verify", err)
 	}
 }
@@ -436,7 +436,7 @@ func TestTokenStaleNodeCatchesUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.verify(t.Context(), raw); !errors.Is(err, errToken) || !strings.Contains(err.Error(), "version 1 of the signing key is not held") {
+	if _, err := b.Verify(t.Context(), raw); !errors.Is(err, errToken) || !strings.Contains(err.Error(), "version 1 of the signing key is not held") {
 		t.Errorf("b verifying a version 1 token after the prune: %v, want errToken, version 1 not held", err)
 	}
 }
@@ -456,7 +456,7 @@ func TestSigningKeyNotPrinted(t *testing.T) {
 	log.Info("key", slog.Any("k", k), slog.Any("tokens", tk))
 	out := []string{logged.String()}
 	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%x", "%q"} {
-		out = append(out, fmt.Sprintf(verb, k), fmt.Sprintf(verb, tk), fmt.Sprintf(verb, []keyVersion{k}), fmt.Sprintf(verb, struct{ T *tokens }{tk}))
+		out = append(out, fmt.Sprintf(verb, k), fmt.Sprintf(verb, tk), fmt.Sprintf(verb, []KeyVersion{k}), fmt.Sprintf(verb, struct{ T *Tokens }{tk}))
 	}
 	for _, o := range out {
 		for _, enc := range []string{string(k.Value), hex.EncodeToString(k.Value), base64.StdEncoding.EncodeToString(k.Value),

@@ -197,13 +197,14 @@ func (n *Node) Start(ctx context.Context) error {
 
 // Stop turns readiness to draining, then stops what Start started in
 // reverse, each part bounded on the node's clock by its own bound, stopBound
-// for all but the adapters', and closes the metadata store's KV last. A part
-// that misses its bound or whose stop fails leaves open every part it uses,
-// and the store, and the error names it; the parts that do not depend on it
-// still stop. A later Stop waits again for a stop still running, and runs a
-// failed one again. With no Start, Stop closes only the KV. A Stop during a
-// Start waits for it: ending Start's context ends a Start that waits. Ending
-// Stop's own context stops nothing sooner.
+// for all but the adapters', and closes the metadata store's KV and then
+// the storage key last. A part that misses its bound or whose stop fails
+// leaves open every part it uses, and the store, and the error names it; the
+// parts that do not depend on it still stop. A later Stop waits again for a
+// stop still running, and runs a failed one again. With no Start, Stop
+// closes only the KV and the storage key. A Stop during a Start waits for
+// it: ending Start's context ends a Start that waits. Ending Stop's own
+// context stops nothing sooner.
 func (n *Node) Stop(ctx context.Context) error {
 	l := &n.life
 	l.mu.Lock()
@@ -218,7 +219,11 @@ func (n *Node) Stop(ctx context.Context) error {
 	if l.stepped != nil {
 		l.stepped("stop store")
 	}
-	return n.cfg.KV.Close()
+	err := n.cfg.KV.Close()
+	if n.storageKey != nil {
+		err = errors.Join(err, n.storageKey.Close())
+	}
+	return err
 }
 
 // halt stops the parts from keep on, in reverse start order. Each that stops
