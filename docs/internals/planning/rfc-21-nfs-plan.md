@@ -1121,7 +1121,8 @@ follows the RFC as written.
    budget a member before it put in `r.State`, as an NFSv4.1 session's `SEQUENCE` does, or report no
    byte, which refuses that member there, after the members before it ran. A count is only ever
    lowered, and the compound's reservation is not grown." §4.7's `Invocation.Bound` comment names
-   the third ask. E8 makes `core`'s change after S2b.
+   the third ask. E8 makes `core`'s change after S2b. Proposed as RFC text in commit
+   `docs(rfc-20): the compound runner asks each member's bound before it runs`.
 2. **A2. RFC 17 §3.1: a call that marks a back channel down, and `Connect` clearing it** (#5090 1.5).
    RFC 21 §3.4 says the service has no call for it; open state has `ChannelDown`, but on one node
    nothing clears `Reach.Down` again: only `Rebind` does (`pkg/openstate/clients.go`), and
@@ -1132,7 +1133,8 @@ follows the RFC as written.
    `Connect` re-registering a back channel clears `Reach.Down`, as RFC 21 §3.4 has a re-bind do,
    through `Rebind` on one node too. RFC 21 §3.4's sentence on the missing call and its interim are
    removed. The amendment overturns that `decision:`, which E10 rewrites when it adds both after
-   S2b, with a row that a delegation is offered again after the re-bind.
+   S2b, with a row that a delegation is offered again after the re-bind. Proposed as RFC text
+   in commit `docs(rfc-17): ChannelDown, and Connect clears a downed back channel`.
 3. **A3. RFC 17 §4.9: the minimums skipped for NLM, `MNT` and `EXPORT`** (#5090 2.3). RFC 17 §4.9 says
    NFSv3 `MNT` and the NLM calls meet step 2 "as RFC 21 §6.3 and §6.1 decide", and the service can
    already tell each without a new field: `Call.Protocol` names NLM apart from NFSv3
@@ -1142,6 +1144,8 @@ follows the RFC as written.
    exemption: a call whose `Protocol` is NLM is admitted with `MinProof` at most `Claimed` and no
    `MinProtection`, and `Root` and `ListShares` from NFSv3 with neither minimum; no adapter can ask
    for it by any other means. E4 makes the change after S2b; E11's NLM calls rely on it.
+   Proposed as RFC text in commit `docs(rfc-17): NLM, MNT and EXPORT meet admission without a
+   share's Kerberos minimums`.
 4. **Who records the series only NFS code can count** (#5090 (a); RFC 20 §10, RFC 25 §2.1). RFC 20
    §10 has `core` record every metric and protocol code none, while only NFS code knows what RFC 21
    §14's six `nfs_*` series count, and also the reason a translation refused an input, an `Adapter`

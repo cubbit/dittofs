@@ -1771,7 +1771,12 @@ service calls, admitted separately
   before any member runs, against `Framer.MaxRecord` alone, the replies before
   each `READ` counted at their bounds, so such a compound is refused whole, and
   reserves what the clamps leave; one with no `READ` whose bounds pass the cap
-  is refused then too. In an NFSv4.1 session each `READ`'s clamp runs after the
+  is refused then too. Just before a member runs, the runner MUST ask its
+  row's `Bound` hook once more, with the room it was handed; the hook may then
+  lower its count by a budget a member before it put in `r.State`, or report no
+  byte, which refuses that member there, after the members before it ran. A
+  count is only ever lowered, and the compound's reservation is not grown. In
+  an NFSv4.1 session that last ask of each `READ`'s hook comes after the
   compound's `SEQUENCE`, so the NFS row's hook also caps its count at what is
   left of the session's `ca_maxresponsesize`, which that `SEQUENCE` resolved
   ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)), and an operation
@@ -2487,8 +2492,10 @@ type Invocation struct {
 	// (RFC 21 §2.3). Its handler reads the clamped count from its decoded
 	// request: core never reads it. Every other row ignores room and reports
 	// ok. core first calls it with Framer.MaxRecord's bytes less ReplyLen(h),
-	// and a compound's runner again with each member's room (§4.3), so a
-	// count is only ever lowered.
+	// and a compound's runner again with each member's room, before any
+	// member runs, and a third time with that room just before the member
+	// runs, when ok false refuses that member alone, after the members before
+	// it ran (§4.3); so a count is only ever lowered.
 	Bound   func(r *Request, room int) (n int, ok bool)
 	Resolve func(r *Request) error                     // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
@@ -3195,7 +3202,7 @@ var (
 	ErrNoTree         = errors.New("core: no tree")                       // Needs: tree
 	ErrNoFH           = errors.New("core: no current filehandle")         // Needs: NeedsFH
 	ErrTooLong        = errors.New("core: compound past its cap")         // the compound cap (§4.3)
-	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool") // §4.3: or a single-reply compound past its cap that would leave a READ or READ_PLUS less than one byte
+	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool") // §4.3: or a single-reply compound past its cap that would leave a READ or READ_PLUS less than one byte, or a member whose hook's last ask reports no byte
 	ErrExpired        = errors.New("core: credential expired")            // §4.4
 	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
@@ -4274,7 +4281,11 @@ does, both do with ranges that overlap, or one sets an inverted range, as
 `Members`, taking its {1, 1}, hold its names, accepted; one table listed by
 two listeners accepted and checked once; and a table `Route` returns that no
 listener listed, or for a version outside its `OpTable.Versions`, each of
-which closes its connection as `wiring`. The
+which closes its connection as `wiring`. It proves the runner's last ask of a
+member's `Bound` hook (§4.3): a hook that reads a budget an earlier member
+put in `r.State` has its count lowered, never raised, and one that reports no
+byte has its member refused with `ErrReplyTooBig` after the members before it
+ran, with the compound's reservation unchanged. The
 null service of §6.10 serves the allocation gate (`unit/adapter-allocs`), the
 benchmarks, and the tests whose requests never reach the service, as their
 required `Deps.VFS`; nothing asserts on its answers.
