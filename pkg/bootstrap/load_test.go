@@ -1321,8 +1321,13 @@ func TestLoadEveryKey(t *testing.T) {
 
 			b := loads(t, tc.content, nil)
 
-			if !reflect.DeepEqual(b.Bootstrap, tc.want) {
-				t.Errorf("bootstrap:\ngot  %+v\nwant %+v", b.Bootstrap, tc.want)
+			// The file the bootstrap came from is Validate's to read, not a
+			// key's value.
+			got := b.Bootstrap
+			got.where = ""
+
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("bootstrap:\ngot  %+v\nwant %+v", got, tc.want)
 			}
 
 			files := 0
@@ -1361,6 +1366,30 @@ func TestLoadAliasCycle(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("Load of an alias cycle: no return in 30s, the alias is followed again")
+	}
+}
+
+// A relative state directory that the environment given names refuses,
+// naming the variable that chose it, whatever key the default reaches.
+func TestLoadRelativeStateDirectory(t *testing.T) {
+	t.Parallel()
+
+	const want = "environment: XDG_STATE_HOME: must be an absolute path"
+
+	if _, err := Load("", []string{"XDG_STATE_HOME=rel"}); err == nil || err.Error() != want {
+		t.Errorf("Load with XDG_STATE_HOME=rel: got %v, want %q", err, want)
+	}
+}
+
+// With XDG_STATE_HOME unset, the state directory is HOME's, and a relative
+// HOME is the variable the refusal names.
+func TestLoadRelativeHome(t *testing.T) {
+	t.Parallel()
+
+	const want = "environment: HOME: must be an absolute path"
+
+	if _, err := Load("", []string{"HOME=rel"}); err == nil || err.Error() != want {
+		t.Errorf("Load with HOME=rel: got %v, want %q", err, want)
 	}
 }
 

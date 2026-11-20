@@ -126,6 +126,13 @@ func runStart(cmd *cobra.Command, _ []string) error {
 			slog.Warn("dfs: the trace provider did not shut down clean", "err", err)
 		}
 	}()
+	// The local socket's default path is in the runtime directory, which the
+	// node does not make, so the start makes it here, after every refusal
+	// above and before the store opens.
+	if _, err := bootstrap.MakeRuntimeDir(os.Environ()); err != nil {
+		return fmt.Errorf("making the runtime directory: %w", err)
+	}
+
 	store, err := openKV(ctx, cfg, clock)
 	if err != nil {
 		return fmt.Errorf("opening the metadata store: %w", err)

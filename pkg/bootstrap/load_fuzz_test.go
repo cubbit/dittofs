@@ -167,6 +167,7 @@ func FuzzLoad(f *testing.F) {
 		for _, line := range strings.Split(err.Error(), "\n") {
 			if !strings.HasPrefix(line, path+": ") &&
 				!strings.HasPrefix(line, "environment: DITTOFS_") &&
+				!strings.HasPrefix(line, "environment: STATE_DIRECTORY: ") &&
 				!strings.HasPrefix(line, "environment: XDG_STATE_HOME: ") &&
 				!strings.HasPrefix(line, "environment: HOME: ") {
 				t.Errorf("report line %q: neither the file's nor a variable's", line)
@@ -196,6 +197,9 @@ func FuzzLoad(f *testing.F) {
 			t.Fatalf("Load of the re-encoded file: %v\nfile:\n%s", err, encodeBootstrap(t, first))
 		}
 
+		// Each load names the file it read; the file's name is not a key.
+		first.where, second.where = "", ""
+
 		if !reflect.DeepEqual(first, second) {
 			t.Errorf("re-encoded load:\ngot  %+v\nwant %+v", second, first)
 		}
@@ -224,6 +228,10 @@ func encodeBootstrap(t *testing.T, b *Bootstrap) []byte {
 func encodeStruct(v reflect.Value, prefix string, tree map[string]any) {
 	for i := range v.NumField() {
 		f := v.Type().Field(i)
+		if !f.IsExported() {
+			continue
+		}
+
 		key := joinKey(prefix, f.Tag.Get("mapstructure"))
 		fv := v.Field(i)
 
