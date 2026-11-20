@@ -13,13 +13,8 @@ import (
 )
 
 // The filesystem's Content suite holds over the engine on the real journal:
-// the engine fixture, with its second share bound beside the first.
-//
-// decision: Lose is left nil, so the loss case skips. The real journal fails
-// a whole sync window, every file pending in it, and the case asserts that
-// another file's loss sequence stays put; the run over the unit composition
-// covers it over the fake journal, which loses one file. Supply it once the
-// fixture can fail one file's window.
+// the engine fixture, with its second share bound beside the first, and a
+// loss failing the sync window of the file's own Commit.
 func TestContentSuiteOverTheJournal(t *testing.T) {
 	contenttest.Run(t, func(t *testing.T) contenttest.Subject {
 		// Eight concurrent writers each hold a content spare while they run, so the
@@ -43,6 +38,12 @@ func TestContentSuiteOverTheJournal(t *testing.T) {
 					t.Fatal(err)
 				}
 				return id
+			},
+			Lose: func(t *testing.T, id entity.FileID) {
+				f.FailNextWindow()
+				// The Commit fails the window holding id's pending writes, so the
+				// loss is in place when Lose returns; it may answer that failure.
+				_, _, _ = f.E.Commit(t.Context(), f.Share.ID, id, 0, 0)
 			},
 		}
 	})

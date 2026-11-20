@@ -26,7 +26,9 @@ type Subject struct {
 	// file through it is skipped, naming it.
 	Other entity.ShareID
 	// Lose loses file f's content written so far, as a failed sync window
-	// does. nil: the cases that need a loss are skipped, naming it.
+	// does: the window may take every file with a write pending beside f's,
+	// so a case that needs another file left alone commits it first. nil:
+	// the cases that need a loss are skipped, naming it.
 	Lose func(t *testing.T, f entity.FileID)
 }
 
@@ -513,6 +515,7 @@ func aLossChangesTheVerifier(t *testing.T, s Subject) {
 	}
 	f, g := s.File(t), s.File(t)
 	s.write(t, g, 0, "g")
+	s.commit(t, g) // durable, so the window that loses f's write holds none of g's
 	before, other := s.Content.LossSeq(s.Share, f), s.Content.LossSeq(s.Share, g)
 	v := s.write(t, f, 0, "abcd")
 	s.Lose(t, f)
@@ -555,6 +558,7 @@ func anUnboundShareIsFrozen(t *testing.T, s Subject) {
 	f, g := s.File(t), s.File(t)
 	s.write(t, f, 0, "abcd")
 	if s.Lose != nil {
+		s.commit(t, f) // durable, so the window that loses g's write holds none of f's
 		s.write(t, g, 0, "g")
 		s.Lose(t, g) // so a LossSeq that ignored the share would answer above 0
 	}

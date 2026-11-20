@@ -7,8 +7,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'a synced write the crash corrupted is committed as lost at start, charges nothing and reads ErrLost. The row restarts and finds the file empty: the committed size reads 0 and charged 0, want 4096 and 0, and the read answers nil, not ErrLost. Cause: after the restart the open cuts the corrupted record, the stream''s last synced record with nothing after it to prove it synced, as an unproven tail, and a loss counts only when a recorded mark proves it; the engine''s journal open passes nil marks (pkg/block/engine/enginewire.go), so no mark proves it. The row waits on the open being handed the recorded marks.'
-  issue: '#4711'
+  reason: 'a synced write the crash corrupted is committed as lost at start, charges nothing and reads ErrLost. The row restarts and finds the file empty: the committed size reads 0 and charged 0, want 4096 and 0, and the read answers nil, not ErrLost. Cause: after the restart the open cuts the corrupted record, the stream''s last synced record with nothing after it to prove it synced, as an unproven tail, and a loss counts only when a recorded mark proves it; the engine keeps no sync marks: its journal open passes nil marks (pkg/block/engine/enginewire/enginewire.go), and JournalOf (pkg/block/engine/journalof.go) drops the marks Sync returns and stubs SyncMarks and MarksRecorded, so no mark proves it. The row waits on the journal keeping a per-stream sync mark that follows every completed sync, then on the engine dropping those stubs and handing the open its recorded marks.'
+  issue: '#5261'
 - test: TestRFC8A_RetryLaterAtTheShareLimit
   message: 'the share limit has nothing left to free'
   status: fail
@@ -38,22 +38,15 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'sync marks reaching the engine''s journal open: a clone of a source whose synced run the journal lost reads ErrLost at the destination and the source''s bytes elsewhere. Init and Open work, and the open now empties the ended segment and serves, but the engine opens its journal with no sync marks (pkg/block/engine/enginewire/enginewire.go), so nothing proves the rotted record synced: the open reads it as a torn tail, cuts it, empties segment 3 without recording the loss, and the source and the destination read zeros over the lost run with a nil error, until the engine reads its recorded sync marks and hands them to the open.'
-  issue: '#4711'
-- test: TestContentSuiteOverTheJournal/ALossChangesTheVerifierAndRaisesTheLossSequence
-  message: 'the Content under test cannot be made to lose a write'
-  status: skip
-  fix: planned
-  category: feature
-  reason: 'the fixture failing one file''s sync window (internal/vfs/integration/content_journal_test.go:18): a loss changes the verifier and raises only the lost file''s loss sequence. The run supplies no Lose, so the case skips: the fixture fails a whole sync window, every file pending in it, where the case needs one file''s content lost and another''s loss sequence left alone; the engine''s run over the fake journal covers it. It runs once the fixture can fail one file''s window.'
-  issue: '#4206'
+  reason: 'sync marks reaching the engine''s journal open: a clone of a source whose synced run the journal lost reads ErrLost at the destination and the source''s bytes elsewhere. Init and Open work, and the open now empties the ended segment and serves, but nothing proves the rotted record synced, so the open reads it as a torn tail, cuts it and empties segment 3 without recording the loss, and the source and the destination read zeros over the lost run with a nil error. Cause: the engine keeps no sync marks: its journal open passes nil marks (pkg/block/engine/enginewire/enginewire.go), and JournalOf (pkg/block/engine/journalof.go) drops the marks Sync returns and stubs SyncMarks and MarksRecorded, so no mark proves it. The row waits on the journal keeping a per-stream sync mark that follows every completed sync, then on the engine dropping those stubs and handing the open its recorded marks.'
+  issue: '#5261'
 - test: TestRFC8A_TheJoin
   message: 'the lost extent reads "oooooooo", <nil>; want ErrLost'
   status: fail
   fix: planned
   category: feature
-  reason: 'a committed hole reads zeros and a synced record the journal lost reads Lost after the restart. The row gets past the restart, but the lost extent serves the bytes it held before, superseded ones, and answers no error instead of ErrLost. Cause: after the restart the open cuts the corrupted record, the stream''s last synced record with nothing after it to prove it synced, as an unproven tail, and a loss counts only when a recorded mark proves it; the engine''s journal open passes nil marks (pkg/block/engine/enginewire.go), so no mark proves it. The row waits on the open being handed the recorded marks.'
-  issue: '#4711'
+  reason: 'a committed hole reads zeros and a synced record the journal lost reads Lost after the restart. The row gets past the restart, but the lost extent serves the bytes it held before, superseded ones, and answers no error instead of ErrLost. Cause: after the restart the open cuts the corrupted record, the stream''s last synced record with nothing after it to prove it synced, as an unproven tail, and a loss counts only when a recorded mark proves it; the engine keeps no sync marks: its journal open passes nil marks (pkg/block/engine/enginewire/enginewire.go), and JournalOf (pkg/block/engine/journalof.go) drops the marks Sync returns and stubs SyncMarks and MarksRecorded, so no mark proves it. The row waits on the journal keeping a per-stream sync mark that follows every completed sync, then on the engine dropping those stubs and handing the open its recorded marks.'
+  issue: '#5261'
 - test: TestRFC8B_SharedJournal
   message: 'the filling write: engine: the share limit has nothing left to free'
   status: fail
