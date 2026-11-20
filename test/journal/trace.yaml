@@ -48,9 +48,7 @@ rfc1 / 9.4 / A / "`Settle` drops by version, never content":
 rfc1 / 9.4 / A / "no resurrection":
   tests: [TestRFC1A_NoResurrection]
 rfc1 / 9.4 / A / "removal outlives its segment":
-  tests: [TestRFC1A_RemovalOutlivesItsSegment]
-  owner: '#3678'
-  reason: 'the settled delete''s drop gate — the marker dropped only once its unlinks are durable — needs a seam that can crash while a call is still running, so the moment the delete may be dropped is not checked there'
+  tests: [TestRFC1A_RemovalOutlivesItsSegment, TestRFC1A_SettledRemovalOutlivesItsUnlinks]
 rfc1 / 9.4 / A / "removal during offload":
   tests: [TestRFC1A_RemovalDuringOffload]
 rfc1 / 9.4 / A / "neighbours are frozen":
