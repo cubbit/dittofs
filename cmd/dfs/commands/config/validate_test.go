@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 )
 
@@ -276,5 +277,26 @@ func TestValidatePrintsNoEnvironmentValue(t *testing.T) {
 				t.Errorf("validate's error %q holds the variable's value %q", err, tc.value)
 			}
 		})
+	}
+}
+
+// show stops at the same refusal of a relative runtime directory, and
+// prints nothing, neither the value.
+func TestShowRefusesRelativeRuntimeDirectory(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfig(t, "logging:\n  level: warn\n")
+
+	var out bytes.Buffer
+
+	err := runShow(path, hostEnviron(t, "XDG_RUNTIME_DIR=rel/run"), output.FormatYAML, &out)
+
+	want := "environment: XDG_RUNTIME_DIR: must be an absolute path"
+	if err == nil || err.Error() != want {
+		t.Errorf("show's error:\ngot  %v\nwant %q", err, want)
+	}
+
+	if out.Len() != 0 {
+		t.Errorf("show printed %q beside a refusal, want nothing", out.String())
 	}
 }
