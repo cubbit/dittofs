@@ -26,6 +26,7 @@ const (
 	OpDelete     = "delete"
 	OpGuard      = "guard"
 	OpGuardRange = "guard_range"
+	OpClose      = "close"
 )
 
 // ErrUnanswered, as a rule's Err on update, makes the call a store that
@@ -83,8 +84,8 @@ func NewFaultKV(inner kv.KV) *FaultKV {
 // Update and view consult once per call, before the inner call; every other
 // op consults inside the transaction, before the inner op, so it consults
 // again on each attempt the backend retries. A scan consults when its
-// iteration starts, not when Scan is called. Now, Limits and Close consult
-// nothing.
+// iteration starts, not when Scan is called. Close consults close, with an
+// empty key, before the inner Close. Now and Limits consult nothing.
 //
 // How the wrapper applies the results:
 //   - Zero, or a delay alone: performs the operation. The delay is one f has
@@ -210,6 +211,9 @@ func (f *FaultKV) Limits() kv.TxnLimits {
 }
 
 func (f *FaultKV) Close() error {
+	if err := f.consult(OpClose, nil, false); err != nil {
+		return err
+	}
 	return f.inner.Close()
 }
 

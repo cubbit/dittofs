@@ -13,12 +13,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node"
+	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/google/uuid"
 )
 
@@ -344,6 +348,55 @@ func TestAnswer(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%s: answer = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A node whose store's close misses its bound makes dfs start's answer an
+// error naming the store's step, so the command exits non-zero.
+func TestAnswerStoreClosePastItsBound(t *testing.T) {
+	var f *kvtest.FaultKV
+	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		f = kvtest.NewFaultKV(cfg.KV)
+		cfg.KV = f
+		return node.New(cfg)
+	}))
+	if err := h.Node().Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The close waits on a clock of its own, so advancing the node's clock
+	// past the stop bound does not release it.
+	held := sim.NewTestClock(time.Unix(0, 0))
+	sched, err := sim.NewSchedule(1, held, sim.Rule{Op: kvtest.OpClose, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.SetFault(sched)
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- h.Node().Stop(t.Context()) }()
+	// The close is consulted only once Stop armed the store's bound.
+	deadline := time.Now().Add(10 * time.Second)
+	for held.Pending() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the store's close was never held")
+		}
+		runtime.Gosched()
+	}
+	h.Clock().Advance(30 * time.Second)
+	var stopErr error
+	select {
+	case stopErr = <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop still running 10 s after its clock passed the store's bound")
+	}
+	if err := answer(nil, true, stopErr); err == nil || !strings.Contains(err.Error(), "stopping the node: node: stop store: not stopped within") {
+		t.Errorf("answer after a stop on a signal with the store's close held: got %v, want the store's step named", err)
+	}
+
+	// The close is released and ends before the harness closes the KV.
+	held.Advance(time.Hour)
+	if err := h.Node().Stop(t.Context()); err != nil {
+		t.Errorf("Stop once the store's close ended: %v", err)
 	}
 }
 
