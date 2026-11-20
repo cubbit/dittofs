@@ -247,3 +247,12 @@ func StatsThrough(n *Node, f func() engine.Stats) {
 	fn := statsFunc(f)
 	n.snap.stats.Store(&fn)
 }
+
+// Tokens is the access tokens the node verifies with, nil when the
+// bootstrap names no storage key.
+func (n *Node) Tokens() *auth.Tokens { return n.tokens }
+
+// RunnerTurn has the operation runner take one turn, as its loop does at
+// each interval. Call it only on a node not started, whose runner runs no
+// loop of its own.
+func (n *Node) RunnerTurn(ctx context.Context) { n.runner.turn(ctx) }
