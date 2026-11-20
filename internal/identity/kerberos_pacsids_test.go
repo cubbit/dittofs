@@ -102,14 +102,6 @@ func (p *pacSIDs) access(t *testing.T, id pid.Identity, grants ...entity.ShareGr
 	return c.Access
 }
 
-func sids(ss ...string) []pid.SID {
-	var out []pid.SID
-	for _, s := range ss {
-		out = append(out, *sid.ParseSIDMust(s))
-	}
-	return out
-}
-
 func sidStrings(ss []pid.SID) []string {
 	var out []string
 	for i := range ss {
