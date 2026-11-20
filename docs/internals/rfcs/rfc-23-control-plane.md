@@ -1192,8 +1192,12 @@ for turning NTLM back on is this one, and RFC 18 §3.5 points here:
 - The settings route enforces all three, reading `NTLMOff` and the running
   index tracked in the write's own transaction, since a section's validator
   reads no operation. A provisioning apply ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file))
-  writes `identity.ntlm` through the same check, as the API would. A write
-  that starts a deletion answers as a call that starts
+  writes `identity.ntlm` through the same check, as the API would. Only an
+  admin writes `identity.ntlm`: the write takes the installation right, as
+  the keytab's writes do, not the operator's right over settings, since it
+  decides whether NTLM sign-in is accepted at all and turning it off starts
+  the irreversible deletion of every NT hash, so an operator's write is
+  refused `403`. A write that starts a deletion answers as a call that starts
   an operation does (§4.6), `202` with the operation's `Location`, and the
   operation's target is the installation; one that starts none answers as a
   setting's write does.
