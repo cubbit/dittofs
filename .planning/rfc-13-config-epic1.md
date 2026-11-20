@@ -102,7 +102,7 @@ title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no property of a store, a key file or a journal directory is tested here; E2 and E4 test them on real ones |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T1.4, T1.6 | RFC 13 §7's `decision:` note (two wrapping keys) at `secrets.Role`, the site that declares the two roles; RFC 13's plan's D9 `decision:` note at `secrets.ErrUnproven` and `settings.ErrUnproven`; RFC 13's plan's D11 note is E3's, at `Check`'s body, and T1.6's own note on a secret's rotation sits at `Check`'s declaration |
 | rule 10, a test must be able to fail | T1.2 to T1.7 | each test fails on a planted break: a bootstrap key missing from RFC 13's table, a role swapped in the kind table, a `Value` printed by `%v`, an extra export, a symbol with no caller listed |
-| rule 11, a symbol is exported only if RFC 13's interfaces use it, or a component declares through it | T1.3 to T1.7 | the surface frozen here is R5 to R18; T1.7 pins each package's exports and lists each symbol's first caller, `Of`'s `FormatVersion(field)` option (E3's D6, first caller the section of RFC 4's plan that declares the block format version's key) the one export added after the freeze |
+| rule 11, a symbol is exported only if RFC 13's interfaces use it, or a component declares through it | T1.3 to T1.7 | the surface frozen here is R5 to R18; T1.7 pins each package's exports and lists each symbol's first caller, `Of`'s `FormatVersion(field)` option (E3's D6, first caller the section of RFC 4's plan that declares the block format version's key) and `(Table).WithMetrics` (E3's T3.9, first caller E5's T5.9, on the table T5.1 builds); these are the two exports added after the freeze |
 | rule 12, each subtask creates only what it declares | all | each package lands with the subtask that declares its whole surface; a stub is declared only where T1.7 names its caller in a later epic or plan (D4); no test helper lands without the test that uses it |
 
 ## 3. Requirements and invariants
@@ -583,7 +583,7 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
   `OverrideOnly(fields ...string)` (D9), with `OverrideOnly`'s exact signature frozen as part of `pkg/settings`' surface. `Of`'s sixth option, `FormatVersion(field)`, naming the field whose key holds the block
   format version, so that `Check` refuses a version past this node's range with
   `ErrFormatVersion`, is not this subtask's: E3's T3.6 adds it with its gate and to this pin, the
-  one exception to the freeze (E3's D6);
+  one of the two exceptions to the freeze (E3's D6; the other is `(Table).WithMetrics`, E3's T3.9);
   - `Table`, `Snapshot`, `Read(ctx, r entity.SettingsReader, table, node)` returning the snapshot and
     the sections it refused, `Change`, and
     `Get[T any](snap *Snapshot, section string, node entity.NodeID) (T, error)` (an error for a
@@ -644,7 +644,8 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     provisional and listed as gaining one when E4 fills it, and `Of`'s
     `FormatVersion(field)` option, which E3's D6 adds to `pkg/settings` after the freeze, is
     listed with the section of RFC 4's plan that declares the block format version's key
-    as its first caller. `OverrideOnly(fields ...string)` is listed with the node's table (plan §4.4), which
+    as its first caller, and `(Table).WithMetrics(*metrics.Registry) Table`, which E3's T3.9 adds after the freeze, is
+    listed with E5's T5.9, whose call is on the table T5.1 builds, as its first caller. `OverrideOnly(fields ...string)` is listed with the node's table (plan §4.4), which
     declares the adapters' sections, as its first caller.
 - **Acceptance criteria:**
   - Every symbol T1.3 to T1.6 deliver is exported (they are RFC 13's plan's S1 list), and nothing
