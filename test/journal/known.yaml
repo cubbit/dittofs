@@ -224,14 +224,6 @@
   issue: '#3379'
   message: 'stub: Offload'
 
-- test: TestRFC1B_ReadOnlyProbe
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens, a Sync answers the read-only refusal and Stats names the read-only state; Stats never names the probe''s failed check. Needs the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
-  issue: '#3395'
-  message: 'Stats to name the failed check within 2s'
-
 - test: TestRFC1B_ReadOnlyStopsTheDrain
   status: fail
   fix: planned

@@ -363,6 +363,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			HeadroomRecords: s.HeadroomRecords,
 			MaxBytes:        s.MaxBytes,
 			IdleSealBytes:   s.IdleSealBytes,
+			Check:           probeCheck(dir, cfg),
 		})
 		// The re-append's sealed target reaches the continuation as the
 		// active row its all-zero rebuild scan seeded it with, for no fate
@@ -477,6 +478,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		HeadroomRecords: s.HeadroomRecords,
 		MaxBytes:        s.MaxBytes,
 		IdleSealBytes:   s.IdleSealBytes,
+		Check:           probeCheck(dir, cfg),
 	}, datapath.State{Counters: counters})
 	if err != nil {
 		// datapath.New takes its own cleanup when a layer below it fails, and
@@ -524,6 +526,12 @@ func holdDeferredHolders(c *datapath.Core, dir string, id core.JournalID) error 
 		}
 	}
 	return nil
+}
+
+// probeCheck is the platform check the open itself makes of dir, which the
+// read-only probe runs before it makes a spare (RFC 1 §5.4).
+func probeCheck(dir string, cfg core.Config) func() error {
+	return func() error { return platform.CheckDir(dir, cfg.MountProbe) }
 }
 
 // continueFrom is the core an assembled recovery continues as: the deps the

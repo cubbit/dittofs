@@ -33,6 +33,17 @@ func readOnlyRules(err error) []kit.Rule {
 	return rules
 }
 
+// probeUntil lets one probe interval pass per poll until cond holds: the
+// probe arms its timer on its own goroutine once the journal turns read-only,
+// so a single advance can come before the timer it means to fire.
+func probeUntil(t *testing.T, f *journaltest.Fixture, what string, cond func() bool) {
+	t.Helper()
+	eventually(t, what, func() bool {
+		f.Advance(readOnlyProbe)
+		return cond()
+	})
+}
+
 // TestRFC1B_ReadOnlyStopsTheDrain checks that a journal whose storage turns
 // read-only refuses further writes at once, keeps serving what it holds, names
 // the state in Stats, tries a spare every probe interval, and writes again
@@ -75,8 +86,7 @@ func TestRFC1B_ReadOnlyStopsTheDrain(t *testing.T) {
 
 	// A spare is tried every probe interval and made once the faults clear.
 	f.Seam.SetFault(nil)
-	f.Advance(readOnlyProbe)
-	eventually(t, "Stats to report the spare", func() bool { return f.J.Stats().ReadOnly.SpareMade })
+	probeUntil(t, f, "Stats to report the spare", func() bool { return f.J.Stats().ReadOnly.SpareMade })
 
 	f.Crash()
 	wantBytes(t, f.Share(0), id, 0, pa, "A after the reopen")
@@ -88,10 +98,6 @@ func TestRFC1B_ReadOnlyStopsTheDrain(t *testing.T) {
 // TestRFC1B_ReadOnlyProbe checks the probe of a read-only journal: with the
 // device writable but its checks failing, as on a mount without cache
 // flushes, the journal stays read-only, makes no spare and names the check.
-//
-// decision: a mount without cache flushes is modelled as a seam that drops
-// every sync, the one fault the probe's check can see. Overturned once the
-// fixture can fail the probe's check on its own.
 func TestRFC1B_ReadOnlyProbe(t *testing.T) {
 	f := journaltest.New(t)
 	h, id := f.Share(0), journaltest.File(0)
@@ -104,12 +110,14 @@ func TestRFC1B_ReadOnlyProbe(t *testing.T) {
 	stub(t, "Sync", err)
 	eventually(t, "the journal to turn read-only", func() bool { return f.J.Stats().ReadOnly.ReadOnly })
 
+	// The device takes writes again, but its mount no longer flushes its
+	// cache, which the open's platform check refuses.
 	files := len(segmentFiles(t, f))
-	f.Drop(kit.OpSync, "*")
-	f.Advance(readOnlyProbe)
-	eventually(t, "Stats to name the failed check", func() bool { return f.J.Stats().ReadOnly.Check != nil })
-	if ro := f.J.Stats().ReadOnly; !ro.ReadOnly || ro.SpareMade {
-		t.Fatalf("Stats().ReadOnly = %+v, want read-only with no spare under a failing check", ro)
+	f.Seam.SetFault(nil)
+	f.SetMountUnsuitable(true)
+	probeUntil(t, f, "Stats to name the failed check", func() bool { return f.J.Stats().ReadOnly.Check != nil })
+	if ro := f.J.Stats().ReadOnly; !ro.ReadOnly || ro.SpareMade || !errors.Is(ro.Check, journal.ErrUnsuitableStorage) {
+		t.Fatalf("Stats().ReadOnly = %+v, want read-only with no spare and the check naming unsuitable storage", ro)
 	}
 	if got := len(segmentFiles(t, f)); got != files {
 		t.Fatalf("%d segment files after the failed check, want the %d before it: no spare file", got, files)

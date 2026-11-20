@@ -92,6 +92,7 @@ func buildCore(t testing.TB, o coreOptions) (*Core, *kit.Seam) {
 		Descriptors: core.NewDescriptorBudget(64),
 		Tracer:      o.tracer,
 		Targets:     segment.Targets{Content: 2 * testStreams},
+		Check:       o.check,
 	}, o.state, o)
 	if err != nil {
 		t.Fatalf("New: %v", err)

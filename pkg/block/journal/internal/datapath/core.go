@@ -61,6 +61,10 @@ type Deps struct {
 	// core whose wiring never named one; a negative threshold is a setting
 	// bug the sealer's constructor panics on.
 	IdleSealBytes int64
+	// Check runs the checks open makes of the journal's mount and directory,
+	// which the read-only probe runs before it makes its spare. Nil runs
+	// none, which is right only for a core whose directory no open checked.
+	Check func() error
 }
 
 // State is the in-memory state a Core continues from. A zero State builds a
@@ -226,6 +230,9 @@ type coreOptions struct {
 	// the real one: the wrapper must pass every call through and never
 	// answer in the real filesystem's place.
 	wrapFS func(storage.FS) storage.FS
+	// check is the test helper's Deps.Check, the platform check the
+	// read-only probe runs before it makes its spare.
+	check func() error
 }
 
 // Core is the journal's assembled write and read paths: the placement index,
@@ -488,6 +495,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// once a data path does, which is never before d.Start; assigning tr
 	// early keeps the wiring's order readable while the closures stay safe.
 	var tr *reclaim.Tracker
+	var maker *segment.Maker
 	// The recorder is installed before anything is started: the pool's
 	// refill worker, the retirer, the sealer and the durability layer all
 	// reach these locks in the background, and a lock Init'ed after its
@@ -575,6 +583,15 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		// A Sync naming a file with nothing unsynced still gets its mark,
 		// from the file's newest record the index names.
 		Latest: c.latestRecord,
+		// The read-only probe runs the open's own check, then makes its one
+		// spare through the maker rather than the pool, whose refill refuses
+		// while the journal is read-only. The spare stays on disk for the
+		// reopen to adopt; the maker is built below, before d.Start.
+		Check: deps.Check,
+		MakeSpare: func() error {
+			_, err := maker.Make()
+			return err
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -600,7 +617,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	if maxBytes > 0 {
 		makerBytes = maxBytes
 	}
-	maker := segment.NewMaker(fs, state.Set, makerBytes, deps.LastSegment, deps.Log)
+	maker = segment.NewMaker(fs, state.Set, makerBytes, deps.LastSegment, deps.Log)
 	// The pool asks the read-only check before each spare it makes, so a
 	// read-only journal makes none (RFC 1 §5.4). The headroom's spare class
 	// is sized by the records it holds, whole spares at the charge the
