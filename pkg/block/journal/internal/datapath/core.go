@@ -608,20 +608,16 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	//
 	// decision: zero headroom records readies no headroom spare and so
 	// throttles no content write — the journal fails open, holding no
-	// headroom to measure — because zero is the wire value only while the
-	// open path that resolves every setting's default does not exist; the
-	// journals it wires resolve the default and pass the figure here.
-	// Withdraw once a zero HeadroomRecords can reach this from a caller
+	// headroom to measure — because zero reaches here only from a test core
+	// that names none: the open resolves the setting's default, never below
+	// one record, and passes the figure here. Withdraw once a zero HeadroomRecords can reach this from a caller
 	// that names a setting, rather than only a wiring that names none.
 	targets := deps.Targets
 	if o.contentSpares != 0 {
 		targets.Content = o.contentSpares
 	}
 	if headroomRecords > 0 {
-		// Each open stream also needs its seal marker, one footer entry and the
-		// trailer, which a segment cannot seal without.
-		sealReserve := int64(deps.Streams) * (format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize)
-		targets.Headroom = int((int64(headroomRecords)*capacity.RecordCharge + sealReserve + state.Set.Cap() - 1) / state.Set.Cap())
+		targets.Headroom = HeadroomSpares(headroomRecords, deps.Streams, state.Set.Cap())
 	}
 	c.contentTarget = targets.Content
 	c.pool = segment.NewPool(maker, targets, d.Admit, deps.Log)
@@ -1245,4 +1241,15 @@ func Continue(deps Deps, state State, beforeRetire func(*Core) error) (*Core, er
 	}
 	c.retiring.Start()
 	return c, nil
+}
+
+// HeadroomSpares is the headroom spare class's target: records header-only
+// records at the charge the admission table draws by, plus each open stream's
+// seal marker, one footer entry and the trailer, which a segment cannot seal
+// without, in whole segments of segCap bytes rounded up. The open's spare
+// targets and the core's pool are sized by this one figure, so the spares a
+// recovery adopts as headroom are the ones the core's pool keeps.
+func HeadroomSpares(records, streams int, segCap int64) int {
+	sealReserve := int64(streams) * (format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize)
+	return int((int64(records)*capacity.RecordCharge + sealReserve + segCap - 1) / segCap)
 }

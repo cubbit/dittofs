@@ -938,7 +938,7 @@ func TestReopenAssembled_UsedBytesAccountsBySegmentStateNotFileSize(t *testing.T
 	// so the two planted segments' own figures answer UsedBytes less the
 	// spare bytes: the figure a seed that read sizes off the disk could not
 	// report, with the active segment's file short of its accounted cap.
-	sparesBytes := int64(st.Spares)*openSegmentCap + st.HeadroomBytes + st.RepackReserveBytes
+	sparesBytes := int64(st.Spares)*openSegmentCap + j.core.PoolCounters().HeadroomBytes + st.RepackReserveBytes
 	got := st.UsedBytes - sparesBytes
 	want := openSegmentCap + sealedLen
 	if got != want {

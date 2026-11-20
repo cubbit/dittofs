@@ -346,7 +346,7 @@ var journalGauges = []gaugeSpec{
 	// for a journal of clean held content. The series lands with the
 	// counter's source, unchanged here.
 	{"UnreclaimedEndedBytes", "unreclaimed_ended_bytes", "The unreclaimed bytes in segments that take no further append.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.UnreclaimedEndedBytes) }},
-	{"HeadroomBytes", "headroom_bytes", "Reserved headroom for records without bytes.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.HeadroomBytes) }},
+	{"HeadroomBytes", "headroom_bytes", "The headroom's unused reservation for records without bytes, at 224 bytes a record: not allocated storage.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.HeadroomBytes) }},
 	{"RepackReserveBytes", "repack_reserve_bytes", "The repack reserve, as allocated now.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.RepackReserveBytes) }},
 	{"PinnedSegments", "pinned_segments", "Segments held by running offers.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.PinnedSegments) }},
 	{"OpenDescriptors", "open_descriptors", "Open segment descriptors.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.OpenDescriptors) }},

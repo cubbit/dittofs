@@ -183,9 +183,13 @@ type Stats struct {
 	// zero. Kind: gauge.
 	UnreclaimedEndedBytes int64
 
-	// HeadroomBytes is the reserved headroom for records without bytes, and
-	// RepackReserveBytes the repack reserve, each as allocated now. Both are
-	// gauges.
+	// HeadroomBytes is the headroom's unused reservation for records without
+	// bytes: the records the admission may still draw at the limit, without
+	// the open reserve, at the 224-byte charge each record draws. It names no
+	// allocated storage: the headroom's spare segments are counted in
+	// UsedBytes with every other segment. RepackReserveBytes is the
+	// repack reserve's ready spares at the segment cap, as allocated now.
+	// Both are gauges.
 	HeadroomBytes, RepackReserveBytes int64
 
 	// PinnedSegments is the number of segments held by running offers. Kind:
