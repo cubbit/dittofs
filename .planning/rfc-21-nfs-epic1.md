@@ -135,7 +135,7 @@ tests can cite them.
 | R10 | The tag has no cap of its own: only the record bounds it, and no reservation grows with it | invariant | RFC 21 §11.5 (the `COMPOUND` tag) | T1.2 |
 | R11 | A member whose arguments do not decode is `NFS4ERR_BADXDR`; a `COMPOUND` whose own arguments do not is `GARBAGE_ARGS` | MUST | RFC 21 §11, §11.5 (`ErrDecode`) | T1.2, T1.3 |
 | R12 | The compound row carries `MaxMembers`, and its members' table a `ReadOp` and an `EncodeResult`; the table holding it maps `ErrTooLong` and `ErrReplyTooBig` in rows naming neither operations nor versions | MUST | RFC 20 §4.7 (`Op.MaxMembers`, `NewOpTable`) | T1.2 |
-| R13 | A `COMPOUND` past the compound cap is refused before any of its operations runs: `ErrTooLong`, answered `NFS4ERR_TOO_MANY_OPS`, and `NFS4ERR_RESOURCE` over NFSv4.0, which has no such status | MUST | RFC 20 §4.3; RFC 21 §11.5 (`ErrTooLong`) | T1.2, T1.3 |
+| R13 | A `COMPOUND` past the compound cap of 128 operations is refused before any of its operations runs: `ErrTooLong`, answered `NFS4ERR_TOO_MANY_OPS`, and `NFS4ERR_RESOURCE` over NFSv4.0, which has no such status | MUST | RFC 20 §4.3; RFC 21 §11.5 (`ErrTooLong`, the compound cap) | T1.2, T1.3 |
 | R14 | `ErrReplyTooBig` is answered `NFS4ERR_REP_TOO_BIG`, and `NFS4ERR_RESOURCE` over NFSv4.0 | MUST | RFC 21 §11.5 (`ErrReplyTooBig`) | T1.2 |
 | R15 | An operation code the minor version does not define, an NFSv4.1 code sent under NFSv4.0 included, reaches the `ILLEGAL` row and is answered `NFS4ERR_OP_ILLEGAL` | MUST | RFC 21 §11.5 (`core`'s own refusals) | T1.2, T1.3 |
 | R16 | A `COMPOUND` whose minor version is outside the range is answered `NFS4ERR_MINOR_VERS_MISMATCH`, its tag echoed, no results, no operation run; the row RFC 20's scaffold built keeps answering it once it moves to this epic's table | MUST | RFC 21 §2.1, §11.5 (`ErrVersion`) | T1.2 |
@@ -177,8 +177,10 @@ and E8 for the session's); §2.3's clamp of a `READ` (E5) and a session's budget
   `r.Level` and leaves the current stateid unset, as RFC 8881 does after an operation that changes
   the filehandle without returning a stateid (from memory, RFC 8881 §16.2.3.1.2); `SAVEFH` and
   `RESTOREFH` copy the pair whole, stateid included (from memory, the same section). Changing a
-  field after S1 costs every NFSv4 epic's handlers. The session field the outline named is left
-  out, pending the user's answer (§9, question 2). A `decision:` marker at `State`.
+  field after S1 costs every NFSv4 epic's handlers. The state has no session field, as the user
+  decided: E8 pays one registry lookup, under its lock, per member that needs the session, and no
+  placeholder type is declared ahead of its epic; RFC 20 §4.7's "NFS's session" in
+  `Request.State` is the session's budget. A `decision:` marker at `State`.
 - **D3. The request and its state in one allocation.** The router allocates a `COMPOUND`'s
   `core.Request` and its `State` together, as one struct holding both, so `Route` keeps its one
   allocation per call; every other call carries no state. Prior art: none found. A `decision:`
@@ -187,9 +189,9 @@ and E8 for the session's); §2.3's clamp of a `READ` (E5) and a session's budget
 - **D4. The compound cap is 128 operations.** RFC 21 names no number and RFC 20 §4.3 leaves it to
   the protocol RFC. 128 is above every compound a supported client was seen to send and is what
   `develop`'s server answered (RFC 20 Appendix B); knfsd's limit was 50 and later 200 (from memory).
-  E8 reports it as `ca_maxoperations`, which pins it. Pending the user's answer (§9, question 1);
-  the answer is proposed as an RFC 21 §11.5 amendment, and a `decision:` marker at the constant
-  names the ceiling: a client that sends more is refused whole.
+  E8 reports it as `ca_maxoperations`, which pins it. The user chose it over 50 and 200, and
+  RFC 21 §11.5 now states it; a `decision:` marker at the constant names the ceiling: a client
+  that sends more is refused whole.
 - **D5. `ILLEGAL` takes every byte after an undefined operation code.** An undefined code's
   arguments cannot be known, so `ILLEGAL`'s decoder consumes what is left of the compound; the
   members before it run, `ILLEGAL` fails, and the compound is answered `NFS4ERR_OP_ILLEGAL` there,
@@ -395,27 +397,10 @@ A suggestion only: one pull request per subtask works as well, T1.1 and T1.2 at 
 
 ## 9. Open points
 
-1. **The compound cap, pending the user's answer.** Recommended and written in place: 128 (D4).
-   Options: (a) 128, `develop`'s value, above any compound Linux, macOS or pynfs sends that the
-   team has seen; (b) 50, knfsd's long-standing `NFSD_MAX_OPS_PER_COMPOUND` (from memory), which a
-   client with long compounds meets sooner; (c) 200, knfsd's newer value (from memory), which
-   costs nothing per compound but lets one compound hold a larger reservation before
-   `ErrReplyTooBig` refuses it. Once answered, the document's pull request proposes for RFC 21
-   §11.5, after its `ErrTooLong` sentence: "The compound cap is 128 operations, and an NFSv4.1
-   session's `ca_maxoperations` reports it (§3.1)." R13 then cites it.
-2. **The session in the state, pending the user's answer.** Recommended and written in place: no
-   session field (D2); E8's members find the adapter's session by `r.Call.Session`, which the router
-   sets, and the state carries only the budget a `READ`'s hook reads. Options: (a) as written, which
-   costs E8 one registry lookup per member that needs the session, under its lock;
-   (b) `Session *Session` in `State`, with an empty `Session` type here that E8 fills, which is a
-   placeholder rule 12 forbids; (c) E8 adds that field to `State` when it lands, an addition no
-   earlier epic reads. Option (a) reads RFC 20 §4.7's "NFS's session" in `Request.State` as the
-   session's budget, and departs from the outline's "the session its `SEQUENCE` resolved", hence
-   the question.
-3. **A defined code with no row** is answered `NFS4ERR_NOTSUPP`, also under a minor version
+1. **A defined code with no row** is answered `NFS4ERR_NOTSUPP`, also under a minor version
    lacking it, where RFC 21 §11.5 wants `NFS4ERR_OP_ILLEGAL`, until its own row lands (D6); the
    epics adding the last rows (E5's and E12's `NFS4ERR_NOTSUPP` rows) close the gap. E16's
    totality test checks the end state.
-4. **The amendment A1** to RFC 20 §4.3 and §4.7, open with the RFC's author, decides whether a
+2. **The amendment A1** to RFC 20 §4.3 and §4.7, open with the RFC's author, decides whether a
    `READ`'s hook can read `MaxReply` at all; the field is here either way, and is read only by E5
    and E8 once A1 is agreed.

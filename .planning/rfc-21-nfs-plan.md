@@ -120,8 +120,9 @@ node, a kernel client or both adapters, and the benchmarks.
 ### 1.3 What epic 1 must deliver
 
 - **`nfs/protocol`'s request state** (RFC 20 §4.7's `Request.State`): what a `COMPOUND`'s members
-  read and set, the current and saved file handles, the current stateid (RFC 21 §5.2), the session
-  its `SEQUENCE` resolved and its reply budget (RFC 21 §2.3, §3.1; D15), the minor version. Six
+  read and set, the current and saved file handles, the current stateid (RFC 21 §5.2), and the reply
+  budget of the session its `SEQUENCE` resolved (RFC 21 §2.3, §3.1; D15); the session itself is
+  found by `r.Call.Session`, and the minor version is the request's `Version`. Six
   epics on three tracks read it; it is frozen at S1.
 - **`nfs/ops/v4`'s handler set, `COMPOUND` row and members' table** (RFC 20 §4.3, §4.7's compound
   row with `Decode`, `EncodeHead` and `Members`, §4.8; RFC 21 §11's compound paragraph): the one
