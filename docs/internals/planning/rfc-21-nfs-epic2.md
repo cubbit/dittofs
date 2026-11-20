@@ -1,17 +1,17 @@
 # Epic 2: NFS adapter v2 test foundations
 
-**Sources:** [RFC 20](../docs/internals/rfcs/rfc-20-adapters.md) §7.2 (handlers against a
+**Sources:** [RFC 20](../rfcs/rfc-20-adapters.md) §7.2 (handlers against a
 verified service) for NFS, §4.3's one-call rule as §7.2 reads it, §4.7's compound reply
 (`Members.EncodeResult` before a member's `Encode`), §5.4's vectors from captures of the reference
 server, and Appendix C's reference profile for NFS;
-[RFC 14](../docs/internals/rfcs/rfc-14-open-state.md) §4.2's `ErrNoGrace`, with §2.1's, §4.3's and
+[RFC 14](../rfcs/rfc-14-open-state.md) §4.2's `ErrNoGrace`, with §2.1's, §4.3's and
 §5.3's sentences that name it, §11.3's declaration and §12's rows L3 and L50 for it;
-[RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §4.3's `NoGrace` kind;
-[RFC 21](../docs/internals/rfcs/rfc-21-nfs.md) §2.1's programs, for the capture areas, and §11.5's
+[RFC 17](../rfcs/rfc-17-vfs.md) §4.3's `NoGrace` kind;
+[RFC 21](../rfcs/rfc-21-nfs.md) §2.1's programs, for the capture areas, and §11.5's
 `NoGrace` row, for the service's half. Every citation is `develop`'s text, which holds the RFC 21
 implementation plan's amendments A1 to A4 and reaches `feat/storage-v2` with the cherry-pick of RFC
 changes. RFC 20 §2.5's `adaptertest/nfsharness/`, NFS's handler harness, is this epic's too.
-Cited, not owned: [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.11 (test doubles);
+Cited, not owned: [RFC 29](../rfcs/rfc-29-test-harness.md) §4.11 (test doubles);
 the `test/pcap-corpus` README's layout.
 **Track:** the team.
 **Epic 2 estimate: 3 subtasks, 7.5 man-days.**
@@ -92,15 +92,15 @@ cited by number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | `NoGrace` is tested in `pkg/openstate` over its own durable-record tests and on `memory.New`; the runner is built from the allowed kinds: `memory.New` (kind 2, held to RFC 17 §8's suite), `vfstest.Faults` (kind 3) and S0's recording wrapper, which records and passes through |
+| rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | `NoGrace` is tested in `pkg/openstate` over its own durable-record tests and on `memory.New`; the runner is built from the allowed kinds: `memory.New` (kind 2, held to RFC 17 §8's suite), `vfstest.Faults` (kind 3) and S0's recording wrapper, which records and passes through |
 | rule 2, fuzz tests where relevant | none | nothing here decodes a peer's bytes: the captures seed E1's `FuzzCompound` and `FuzzCodec` and later epics' targets |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | none | no series, span or log line is added; `NoGrace` is a value of the service's closed error set, counted by `core` where an adapter answers it |
 | rule 4, profiling: leaks, allocations and contention | T2.2 | the runner's `New` calls `adaptertest.CheckLeaks` first, on the top-level test, as its contract asks, so every handler test checks leaks and none runs in parallel; nothing here takes a lock on a hot path |
-| rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T2.1, T2.2 | `NoGrace` asserted on the error `memory.New` returns, which an adapter maps; the runner returns the bytes a client would read |
+| rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T2.1, T2.2 | `NoGrace` asserted on the error `memory.New` returns, which an adapter maps; the runner returns the bytes a client would read |
 | rule 6, known failures shrink | none | no suite with a `known.yaml` is run or registered |
 | rule 7, v2 ignores v1 | T2.3 | the captures are of the Linux server, never of `develop`'s adapter |
 | rule 8, real dependencies for properties of those dependencies | T2.2, T2.3 | the real filesystem in memory for the service's answers; knfsd's own bytes for golden files, never vectors the codec under test made |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1 | D5's `decision:` marker at its code site; `openstate`'s comments on `admit` and `ErrNoReclaim` rewritten to name `ErrNoGrace` |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T2.1 | D5's `decision:` marker at its code site; `openstate`'s comments on `admit` and `ErrNoReclaim` rewritten to name `ErrNoGrace` |
 | rule 10, a test must be able to fail | all | NFS's runner cases fail on a second or a missing mutating call; `NoGrace`'s tests fail with the check removed; `TestParseCaptured` fails on a file of another program |
 | rule 11, a symbol is exported only if an interface uses it | T2.1, T2.2 | `openstate.ErrNoGrace` and `vfs.StateNoGrace` are exported, for the adapters' rows; the lifted runner's exports, for SMB's harness and `nfsharness`; `nfsharness`'s, for every NFS handler epic's tests |
 | rule 12, each subtask creates only what it declares | all | `nfsharness` holds only what NFS adds to the runner, the request state and a member's head, and arrives with its two cases, whose next consumers are E3's and E4's handler tests; the golden files with E3's, E4's and E5's vectors |

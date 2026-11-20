@@ -1,10 +1,10 @@
 # Epic 1: NFS adapter v2 surface
 
-**Sources:** [RFC 21](../docs/internals/rfcs/rfc-21-nfs.md) §2.1's minor-version rules, §2.3's
+**Sources:** [RFC 21](../rfcs/rfc-21-nfs.md) §2.1's minor-version rules, §2.3's
 paragraph on a session's reply budget in `Request.State`, §5.2's current stateid, §11's paragraph
 on decoding a `COMPOUND`, §11.5's paragraphs on `core`'s own refusals, the `COMPOUND` tag and the
 fault status, §11.7's request span, and §12's N26 for the operation codes;
-[RFC 20](../docs/internals/rfcs/rfc-20-adapters.md) §4.2's needs row, §4.3's compound cap, §4.7's
+[RFC 20](../rfcs/rfc-20-adapters.md) §4.2's needs row, §4.3's compound cap, §4.7's
 `Request.State`, `Op`, `Invocation`, `OpTable` and `NewOpTable` as a compound row uses them, §4.8's
 NFSv4 row and its `New` example, §5.4's rule that a command without a vector fails its suite, and
 §10.1's `protocol` label. Every RFC 20 and RFC 21 citation is `develop`'s text, which holds
@@ -104,15 +104,15 @@ cited by number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the state and the tables are tested as pure values and through `core`'s real pipeline over loopback, on `vfstest.Null` where a server needs a service, since nothing here calls one; no test double |
+| rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | the state and the tables are tested as pure values and through `core`'s real pipeline over loopback, on `vfstest.Null` where a server needs a service, since nothing here calls one; no test double |
 | rule 2, fuzz tests where relevant | T1.3 | the `COMPOUND` row's decoder and `ILLEGAL`'s read a peer's bytes: T1.3's `FuzzCompound` holds the first to the header parse as an independent decoder, and `FuzzCodec` round-trips every struct the generator wrote for `ops/v4`, seeded with the vectors (R22) |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T1.2, T1.3 | no recorder in NFS code; the NFSv4 table is labelled `nfs4` and its rows named `COMPOUND` and `ILLEGAL`, which `core` turns into RFC 21 §11.7's span names, as `core`'s `TestEachMemberHasASpan` checks for any compound row, and, lower-cased, the `op` label, checked over loopback (R21) |
 | rule 4, profiling: leaks, allocations and contention | T1.1, T1.3 | the router still allocates once per call, a `COMPOUND`'s state included (D3); every loopback test ends with `adaptertest.CheckLeaks`; no registry, table or timer here, so no mutex profile |
-| rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T1.1, T1.3 | the cap and `ILLEGAL` are asserted on the reply bytes a client reads over loopback; the state's filehandle on the `Request.Level` `core`'s needs check reads |
+| rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T1.1, T1.3 | the cap and `ILLEGAL` are asserted on the reply bytes a client reads over loopback; the state's filehandle on the `Request.Level` `core`'s needs check reads |
 | rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover, and nothing here is listed in a `known.yaml` |
 | rule 7, v2 ignores v1 | all | nothing from `develop`'s `v4` package; the cap's value is decided in §4, not copied |
 | rule 8, real dependencies for properties of those dependencies | T1.3 | golden vectors written by hand from RFC 8881's and RFC 7530's XDR, never from the encoder under test; real TCP over loopback through `core` |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T1.1, T1.2 | `decision:` markers for D2, D3, D4, D5 and D6 at their code sites; `nfs.go`'s marker on its empty tables rewritten to name the four tables still empty |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T1.1, T1.2 | `decision:` markers for D2, D3, D4, D5 and D6 at their code sites; `nfs.go`'s marker on its empty tables rewritten to name the four tables still empty |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer |
 | rule 11, a symbol is exported only if an interface uses it | T1.1, T1.2 | exported: `protocol.State`, `Current`, `Stateid` and `SetFH` for `ops/v4`; `v4.Handlers` and `v4.Table` for `nfs.go`. Everything else in `ops/v4` is unexported. Frozen at S1 |
 | rule 12, each subtask creates only what it declares | all | `ops/v4` arrives with its first rows; no operation file, translation or callback before the epic that calls it; each export names its consumer |
