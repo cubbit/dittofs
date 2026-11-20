@@ -161,7 +161,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 			// stopped before any reader reached the event its loss
 			// published: the report Reported credits answered nothing, so
 			// this call publishes the loss itself. Raised stays set, for
-			// the overtake instance already raised the generation, and a
+			// the instance the take overtook already raised it, and a
 			// second raise would count again a loss no reader was told of.
 			l.Reported = false
 		}
