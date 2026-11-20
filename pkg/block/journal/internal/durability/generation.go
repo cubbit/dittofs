@@ -188,13 +188,16 @@ func (s *dirState) heldLocked(k piece, d *Durability) bool {
 	}
 	// An unplaced claim bars no other taker: the record it names never
 	// landed, so the piece is still owed, and the claim's word is read by
-	// the takeover that follows, never by the hold. The claim's own
-	// instance still holds against its own later Lose, which answers the
-	// zero event its earlier take published.
+	// the takeover that follows, never by the hold. Its own instance it
+	// bars still, however the claim is kept: a second Lose of the piece
+	// through the taking Durability itself — a stopped one can queue two —
+	// answers the dedup's zero event, never a takeover of its own claim.
 	if c.d != d && c.unplaced {
 		return false
 	}
-	return c.placed || !c.d.claimsDead() || c.d.claimServed(c.ev)
+	// The same-instance arm holds placed or not, live or stopped: the
+	// earlier take is this instance's own report.
+	return c.placed || c.d == d || !c.d.claimsDead() || c.d.claimServed(c.ev)
 }
 
 // setClaimEvent records that the claim d holds on k published ev into d's
