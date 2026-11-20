@@ -91,12 +91,11 @@ func TestStartWritesTheMissingNodeIDCopy(t *testing.T) {
 // A replaced device's directory, empty or holding a journal the store does
 // not record for it, gets no node-id copy at the start.
 func TestStartWritesNoNodeIDCopyBesideAnUnrecordedJournal(t *testing.T) {
-	for name, replace := range map[string]func(t *testing.T, dev string){
-		"empty": func(*testing.T, string) {},
-		"a journal the store does not record": func(t *testing.T, dev string) {
+	for name, replace := range map[string]func(t *testing.T, dev string, install [16]byte){
+		"empty": func(*testing.T, string, [16]byte) {},
+		"a journal the store does not record": func(t *testing.T, dev string, install [16]byte) {
 			// The harness's installation, so the start's refusal of another
 			// installation's journal does not stop it first.
-			install := journal.InstallationID{'n', 'o', 'd', 'e', 't', 'e', 's', 't'}
 			if _, err := journal.Init(t.Context(), dev, install, journaltest.SuitableMount()); err != nil {
 				t.Fatalf("init the replacement journal: %v", err)
 			}
@@ -110,7 +109,11 @@ func TestStartWritesNoNodeIDCopyBesideAnUnrecordedJournal(t *testing.T) {
 			if err := os.Mkdir(dev, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			replace(t, dev)
+			in, err := h.Store().Installation(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			replace(t, dev, in.ID)
 
 			// With no share bound, the engine opens no journal and refuses
 			// nothing, so the start completes: step 1, which writes the
@@ -122,7 +125,7 @@ func TestStartWritesNoNodeIDCopyBesideAnUnrecordedJournal(t *testing.T) {
 				t.Fatalf("Stop: %v", err)
 			}
 
-			_, err := os.Stat(filepath.Join(dev, journal.NodeIDFileName))
+			_, err = os.Stat(filepath.Join(dev, journal.NodeIDFileName))
 			if !errors.Is(err, fs.ErrNotExist) {
 				t.Errorf("the node-id copy in the replaced device: stat %v, want none written", err)
 			}

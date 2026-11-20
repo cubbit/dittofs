@@ -241,8 +241,16 @@ Global flags:
 
 Initialize a new installation
 
-Initialize a new DittoFS installation: its first administrator and its
-signing key, kept in the metadata store the server's configuration names.
+Initialize a new DittoFS installation: its metadata store, each journal
+directory with the node's identity beside it, the administrator account
+"admin" and the signing key, in the stores the server's configuration names.
+
+The administrator's first password is read from a file or an environment
+variable. With neither, a password is generated and printed once to standard
+output, never to the log, and must be changed at the first sign-in.
+
+Run again after an interruption, init finishes what the interrupted run left;
+over a finished installation it refuses and changes nothing.
 
 ```
 dfs init [flags]
@@ -251,8 +259,21 @@ dfs init [flags]
 **Examples:**
 
 ```bash
-# Initialize the installation the default configuration names
+# Initialize, generating the administrator's password
 dfs init
+
+# Initialize with the password in a file (one trailing newline is dropped)
+dfs init --admin-password-file /run/secrets/dittofs-admin
+
+# Initialize with the password in an environment variable
+DFS_ADMIN_PASSWORD=... dfs init --admin-password-env DFS_ADMIN_PASSWORD
+```
+
+Flags:
+
+```
+      --admin-password-env string    environment variable holding the administrator's first password
+      --admin-password-file string   file holding the administrator's first password
 ```
 
 Global flags:

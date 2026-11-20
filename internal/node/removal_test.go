@@ -53,8 +53,8 @@ func deleteShare(t *testing.T, h *nodetest.Harness, sh entity.Share) entity.Oper
 // createFiles creates n files in sh's root, named f0 onwards.
 func createFiles(t *testing.T, h *nodetest.Harness, sh entity.Share, n int) []entity.File {
 	t.Helper()
-	if _, err := h.Store().ControlPlane().PutUser(t.Context(), entity.User{Principal: anAdmin.Principal, Name: "admin"}, 0, entity.Alloc{}); err != nil {
-		t.Fatalf("create the admin: %v", err)
+	if _, err := h.Store().ControlPlane().PutUser(t.Context(), entity.User{Principal: anAdmin.Principal, Name: "files-admin"}, 0, entity.Alloc{}); err != nil {
+		t.Fatalf("create the files' owner: %v", err)
 	}
 	if _, err := h.Store().ControlPlane().SetGrant(t.Context(), entity.ShareGrant{Share: sh.ID, Principal: anAdmin.Principal, Access: entity.AccessAdmin}, 0); err != nil {
 		t.Fatalf("grant share %s: %v", sh.Name, err)

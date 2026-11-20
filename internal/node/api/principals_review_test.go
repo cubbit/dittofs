@@ -89,8 +89,8 @@ func TestRoleHoldersAreHiddenFromNonAdmins(t *testing.T) {
 		t.Fatalf("store's admin after the operator's writes: %+v, %v; want it unchanged", u, ok)
 	}
 	w.set(entity.NewUser(), entity.RoleAdmin)
-	if got := listed(); !slices.Equal(got, []string{"alice", "root", "?name=rootroot"}) {
-		t.Errorf("an admin lists %v, want alice and root, and root by name", got)
+	if got := listed(); !slices.Equal(got, []string{"admin", "alice", "root", "?name=rootroot"}) {
+		t.Errorf("an admin lists %v, want the installation's admin, alice and root, and root by name", got)
 	}
 	if r := s.do(t, http.MethodGet, path, ""); r.status != http.StatusOK {
 		t.Errorf("an admin GETs the admin: answered %d %s, want 200", r.status, r.body)
@@ -111,6 +111,14 @@ func TestLastAdmin(t *testing.T) {
 			t.Fatalf("put admin %s: %v", name, err)
 		}
 		return p, gen
+	}
+	// The installation's own administrator is deleted, so root is the last.
+	installed, ok, err := s.store.UserNamed(t.Context(), "admin")
+	if err != nil || !ok {
+		t.Fatalf("the installation's administrator: %v, %v", ok, err)
+	}
+	if err := s.store.DeleteUser(t.Context(), installed.Principal, installed.Generation); err != nil {
+		t.Fatalf("delete the installation's administrator: %v", err)
 	}
 	root, gen := putAdmin("root")
 	w.set(root, entity.RoleAdmin)
@@ -219,8 +227,8 @@ func TestPutCreatesNoPrincipal(t *testing.T) {
 			t.Errorf("PUT * %s: answered %d %s, want 404", path, r.status, r.body)
 		}
 	}
-	if n := s.userCount(t); n != 0 {
-		t.Errorf("users after the PUTs: %d, want none", n)
+	if n := s.userCount(t); n != 1 {
+		t.Errorf("users after the PUTs: %d, want the installation's administrator alone", n)
 	}
 }
 
@@ -460,8 +468,8 @@ func TestNameAndEmailBounds(t *testing.T) {
 	if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "spec.email" {
 		t.Errorf("POST a 255-byte address: answered %d %+v, want 400 naming spec.email", r.status, p)
 	}
-	if n := s.userCount(t); n != 1 {
-		t.Errorf("users stored after the refusals: %d, want alice alone", n)
+	if n := s.userCount(t); n != 2 {
+		t.Errorf("users stored after the refusals: %d, want the installation's administrator and alice alone", n)
 	}
 	if rec, _ := s.userRecord(t, u.ID); rec.Name != "alice" || etagOf(rec.Generation) != tag {
 		t.Errorf("store's alice after the refused edits: %+v, want her unchanged", rec)

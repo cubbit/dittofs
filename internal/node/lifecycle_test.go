@@ -482,7 +482,11 @@ func TestStartRefusesAJournalOfAnotherInstallation(t *testing.T) {
 		cfg.Bootstrap.Journals = []bootstrap.Journal{{Path: dir}}
 		return node.New(cfg)
 	}))
-	err := h.Node().Start(t.Context())
+	in, err := h.Store().Installation(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = h.Node().Start(t.Context())
 	if err == nil {
 		t.Fatal("Start over a journal of another installation: nil error, want the refusal")
 	}
@@ -491,7 +495,7 @@ func TestStartRefusesAJournalOfAnotherInstallation(t *testing.T) {
 		"the device's dir":         dir,
 		"the journal's identity":   fmt.Sprintf("%x", jid),
 		"the journal installation": fmt.Sprintf("%x", journal.InstallationID{15: 9}),
-		"the store's installation": fmt.Sprintf("%x", [16]byte{'n', 'o', 'd', 'e', 't', 'e', 's', 't'}),
+		"the store's installation": fmt.Sprintf("%x", in.ID),
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal must name %s: %q missing from %q", what, want, err.Error())

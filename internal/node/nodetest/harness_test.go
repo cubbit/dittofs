@@ -1,8 +1,10 @@
 package nodetest
 
 import (
+	"context"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/install"
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
@@ -68,5 +70,33 @@ func TestRestartBuildsThroughWithNew(t *testing.T) {
 	}
 	if h.Node() != built[1] {
 		t.Errorf("Node after Restart: got %p, want the second node %p, not the first %p", h.Node(), built[1], built[0])
+	}
+}
+
+// The harness's installation holds the one account the initialisation step
+// creates. A node started over it once that account is deleted creates none:
+// only the initialisation step creates the administrator.
+func TestStartCreatesNoAccount(t *testing.T) {
+	h := New(t, Watch())
+	ctx := t.Context()
+	cp := h.Store().ControlPlane()
+	admin, ok, err := cp.UserNamed(ctx, install.AdminName)
+	if err != nil || !ok || admin.Role != entity.RoleAdmin {
+		t.Fatalf("UserNamed(%q) after New: got %v, %t, %v; want the administrator", install.AdminName, admin, ok, err)
+	}
+	if err := cp.DeleteUser(ctx, admin.Principal, admin.Generation); err != nil {
+		t.Fatalf("DeleteUser of the administrator: %v", err)
+	}
+	h.Restart(t)
+	if err := h.Node().Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := h.Node().Stop(context.Background()); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	for u, err := range h.Store().ControlPlane().Users(ctx, "") {
+		t.Errorf("user after the start: %v (%v), want none", u, err)
 	}
 }
