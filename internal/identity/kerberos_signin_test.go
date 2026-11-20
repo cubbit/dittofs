@@ -13,6 +13,8 @@ import (
 	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 
+	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/pkg/auth/sid"
 	pid "github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -450,10 +452,11 @@ func TestKerberosSignInReplayCacheShare(t *testing.T) {
 	k.signInAs(t, "alice after carol's flood", k.step(identitytest.TicketOpts{Client: "alice"}, netip.MustParseAddr("192.0.2.4")), alice.Principal)
 }
 
-// In the directory's realm a ticket without a PAC is refused ErrLogonFailure
-// and counted no_pac, before any mapping, so it binds neither the local alice
-// of the same name nor the directory's alice (RFC 18 §3.4). Catches a
-// PAC-less ticket bound by step 1, 2 or 3 in the directory's realm.
+// In the directory's realm a ticket whose PAC carries the directory entry's
+// SID reaches the principal holding that entry's dir spelling, minted at its
+// first sign-in, never a local user of the same name: step 2 does not run
+// there. Catches step 2 run in the directory's realm, which binds a
+// same-named local user, and step 3 not called.
 func TestKerberosSignInReachesTheDirectory(t *testing.T) {
 	e := newAD(t)
 	ctx := context.Background()
@@ -462,14 +465,51 @@ func TestKerberosSignInReachesTheDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.d.AddUser(t, "alice", nil)
+	realm := e.kerberos(t)
+	res, err := e.s.SignIn(ctx, e.ticket(realm, "alice", e.logonOf(t, "alice")))
+	if err != nil {
+		t.Fatalf("SignIn(alice@CORP.EXAMPLE): %v", err)
+	}
+	p := res.Identity.Evidence.Principal
+	if p == local.Principal {
+		t.Fatal("alice@CORP.EXAMPLE bound the local alice")
+	}
+	a := e.entry(t, directory.ByUserName, "alice")
+	if sp, err := e.spell(t, p, pid.SchemeDir); err != nil || sp.Text != string(a.EntryID) {
+		t.Errorf("the bound principal's dir spelling %q, %v; want alice's entry ID", sp.Text, err)
+	}
+}
+
+// kerberos applies a keytab of the directory's realm, CORP.EXAMPLE, for
+// cifs/nas.corp.example, and returns the realm.
+func (e *dirPrincipals) kerberos(t *testing.T) *identitytest.Realm {
+	t.Helper()
 	realm := identitytest.NewRealm("CORP.EXAMPLE", "cifs/nas.corp.example")
 	st := *e.s.Applied()
 	st.Keytab = []secrets.Version{{Number: 1, Value: realm.Keytab()}}
 	if err := e.s.Apply(st); err != nil {
 		t.Fatal(err)
 	}
-	step := pid.SignInStep{Kerberos: realm.Ticket(identitytest.TicketOpts{Client: "alice", Service: "cifs/nas.corp.example", Now: e.clock.Now()}),
-		Service: pid.ServiceCIFS, Transport: pid.TransportSMB, Client: krbClient}
-	res, oc, err := e.s.SignInOutcome(ctx, step)
-	refused(t, "alice@CORP.EXAMPLE without a PAC", res, oc, err, vfserr.ErrLogonFailure, "no_pac")
+	return realm
+}
+
+// ticket is an SMB step presenting realm's cifs/nas.corp.example ticket for
+// client, issued now, carrying a PAC for logon, or none for nil.
+func (e *dirPrincipals) ticket(realm *identitytest.Realm, client string, logon *identitytest.LogonInfo) pid.SignInStep {
+	o := identitytest.TicketOpts{Client: client, Service: "cifs/nas.corp.example", Now: e.clock.Now()}
+	if logon != nil {
+		o.PAC = realm.PAC(identitytest.PACOpts{Service: o.Service, Client: client, AuthTime: o.Now, Logon: []identitytest.LogonInfo{*logon}})
+	}
+	return pid.SignInStep{Kerberos: realm.Ticket(o), Service: pid.ServiceCIFS, Transport: pid.TransportSMB, Client: krbClient}
+}
+
+// logonOf is the logon information of the directory's user name, under the
+// SID the directory holds for it.
+func (e *dirPrincipals) logonOf(t *testing.T, name string) *identitytest.LogonInfo {
+	t.Helper()
+	sp := sidOf(t, e.entry(t, directory.ByUserName, name))
+	n := len(sp.SID.SubAuthorities)
+	domain := sp.SID
+	domain.SubAuthorities, domain.SubAuthorityCount = domain.SubAuthorities[:n-1], uint8(n-1)
+	return &identitytest.LogonInfo{Name: name, Domain: "KORP", DomainSID: sid.FormatSID(&domain), UserRID: sp.SID.SubAuthorities[n-1]}
 }

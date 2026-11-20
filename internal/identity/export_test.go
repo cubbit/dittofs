@@ -6,9 +6,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/jcmturner/gokrb5/v8/iana/nametype"
-	"github.com/jcmturner/gokrb5/v8/types"
-
 	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/pkg/health"
@@ -237,13 +234,3 @@ func (s *Server) BoundReplay(bound, share int) { s.replay = newReplayCache(bound
 
 // ReplayLen is the number of entries s's replay cache holds.
 func (s *Server) ReplayLen() int { return s.replay.Len() }
-
-// PACEvidence is the evidence's SIDs and deny-only SIDs a sign-in takes from
-// raw, a PAC verified under key for client at authTime.
-func (s *Server) PACEvidence(ctx context.Context, raw []byte, key types.EncryptionKey, client string, authTime time.Time) (sids, deny []identity.SID, err error) {
-	logon, err := verifyPAC(raw, key, types.NewPrincipalName(nametype.KRB_NT_PRINCIPAL, client), authTime)
-	if err != nil {
-		return nil, nil, err
-	}
-	return s.pacSIDs(ctx, logon)
-}

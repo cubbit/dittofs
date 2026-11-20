@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"testing"
@@ -118,6 +119,31 @@ func TestRecordNameAttrDefaults(t *testing.T) {
 		}
 		if got := tc.r.IsAD(); got != tc.ad {
 			t.Errorf("%s: IsAD = %t, want %t", tc.name, got, tc.ad)
+		}
+	}
+}
+
+// require_pac reads true unless the record sets it false: a record built
+// without it, and one decoded from JSON with no require_pac key, require the
+// PAC. Catches a missing row read as false, which fails open (RFC 18 §3.4).
+func TestRecordPACRequired(t *testing.T) {
+	if !(directory.Record{}).PACRequired() {
+		t.Error("PACRequired of a record built without require_pac = false, want true")
+	}
+	for _, c := range []struct {
+		json string
+		want bool
+	}{
+		{`{"schema":"ad"}`, true},
+		{`{"require_pac":true}`, true},
+		{`{"require_pac":false}`, false},
+	} {
+		var r directory.Record
+		if err := json.Unmarshal([]byte(c.json), &r); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.PACRequired(); got != c.want {
+			t.Errorf("PACRequired of %s = %v, want %v", c.json, got, c.want)
 		}
 	}
 }
