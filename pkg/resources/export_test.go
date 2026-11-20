@@ -8,3 +8,6 @@ func (b *Budget) clampTo(l *slog.Logger) { b.c.panics, b.c.log = false, l }
 
 // clampTo is Budget's, for a WaitBudget.
 func (b *WaitBudget) clampTo(l *slog.Logger) { b.c.panics, b.c.log = false, l }
+
+// clampTo is Budget's, for a ConnLimit.
+func (l *ConnLimit) clampTo(lg *slog.Logger) { l.under.panics, l.under.log = false, lg }

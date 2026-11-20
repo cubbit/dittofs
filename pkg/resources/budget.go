@@ -24,22 +24,42 @@ import (
 	"testing"
 )
 
-// count is the bytes reserved from one budget of either kind, under its one
-// mutex.
-type count struct {
-	name    string
-	ceiling int64
-
+// underflow is a count's rule at a release past zero (RFC 24 section 2.7):
+// the count's owner clamps it under its own mutex, then the rule panics in a
+// test binary or, outside one, logs once. A budget's count and the connection
+// count each hold one.
+type underflow struct {
+	name   string       // the count's, in the panic and the record
 	panics bool         // a release past zero panics: set in a test binary, read once at construction
 	log    *slog.Logger // where a clamp is logged; nil is slog's default
 
+	pastZero bool // a release past zero was already logged, under the owner's mutex
+}
+
+func newUnderflow(name string) underflow {
+	return underflow{name: name, panics: testing.Testing()}
+}
+
+// pastLocked records a release past zero, under the owner's mutex, and
+// reports whether it is the first on this count.
+func (u *underflow) pastLocked() (first bool) {
+	first = !u.pastZero
+	u.pastZero = true
+	return first
+}
+
+// count is the bytes reserved from one budget of either kind, under its one
+// mutex.
+type count struct {
+	underflow
+	ceiling int64
+
 	mu       sync.Mutex
 	reserved int64
-	pastZero bool // a release past zero was already logged
 }
 
 func newCount(name string, ceiling int64) count {
-	return count{name: name, ceiling: ceiling, panics: testing.Testing()}
+	return count{underflow: newUnderflow(name), ceiling: ceiling}
 }
 
 func (c *count) read() int64 {
@@ -63,9 +83,7 @@ func (c *count) lowerLocked(n int64) (past, first bool) {
 		return false, false
 	}
 	c.reserved = 0
-	first = !c.pastZero
-	c.pastZero = true
-	return true, first
+	return true, c.pastLocked()
 }
 
 // negative refuses a charge below zero, which would lower the count with no
@@ -74,21 +92,22 @@ func negative(c *count, n int64) error {
 	return fmt.Errorf("resources: reserve %d bytes from %s: a charge cannot be negative", n, c.name)
 }
 
-// reportPastZero is called with the mutex released, so the budget stays usable
-// after the panic.
-func (c *count) reportPastZero(first bool) {
-	if c.panics {
-		panic(fmt.Sprintf("resources: release past zero on %s", c.name))
+// reportPastZero is called with the owner's mutex released, so the count
+// stays usable after the panic.
+func (u *underflow) reportPastZero(first bool) {
+	if u.panics {
+		panic(fmt.Sprintf("resources: release past zero on %s", u.name))
 	}
-	// ponytail: one Error record per budget stands in for RFC 24 §10's count
-	// of releases past zero, since a budget is given no registry and no
-	// logger; the counter replaces it when a budget can reach a registry.
+	// ponytail: one Error record per count stands in for RFC 24 §10's count
+	// of releases past zero, since a budget and the connection count are given
+	// no registry and no logger; the counter replaces it when they can reach a
+	// registry.
 	if first {
-		log := c.log
+		log := u.log
 		if log == nil {
 			log = slog.Default()
 		}
-		log.Error("resources: release past zero, count clamped", "budget", c.name)
+		log.Error("resources: release past zero, count clamped", "budget", u.name)
 	}
 }
 
@@ -336,6 +355,8 @@ type Budgets struct {
 // counts connections, not bytes: their memory is the connection-state
 // budget's.
 type ConnLimit struct {
+	under underflow // named conns, as the zero check names the count (RFC 24 section 2.7)
+
 	mu    sync.Mutex
 	limit int
 	open  int                // the node's connections open now
@@ -349,7 +370,7 @@ func (l *ConnLimit) quarter() int { return max(l.limit/4, 1) }
 // NewConnLimit builds a count of limit connections for the node, its
 // addresses each held to a quarter of it.
 func NewConnLimit(limit int) *ConnLimit {
-	return &ConnLimit{limit: limit, addrs: map[netip.Addr]int{}}
+	return &ConnLimit{under: newUnderflow("conns"), limit: limit, addrs: map[netip.Addr]int{}}
 }
 
 // Take counts one connection from addr at accept, or refuses at once:
@@ -376,16 +397,31 @@ func (l *ConnLimit) Take(addr netip.Addr) error {
 }
 
 // Release returns one connection of addr, at the connection's teardown, its
-// address's entry dropped at zero.
+// address's entry dropped at zero. A Release for an address holding no
+// connection is a release past zero: it changes no count, and panics in a
+// test binary or, outside one, logs once at Error (RFC 24 section 2.7).
+//
+// decision: past zero is read on the address's count. Every connection the
+// node counts is counted under its address, so the node's count never goes
+// below zero, and a Release for an address holding none leaves it alone
+// rather than lower it for another address's connection, whose leak the zero
+// check would then miss. Withdraw it if Take ever counts a connection under
+// no address.
 func (l *ConnLimit) Release(addr netip.Addr) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.open--
-	if l.addrs[addr] <= 1 {
-		delete(l.addrs, addr)
+	switch held := l.addrs[addr]; held {
+	case 0:
+		first := l.under.pastLocked()
+		l.mu.Unlock()
+		l.under.reportPastZero(first)
 		return
+	case 1:
+		delete(l.addrs, addr)
+	default:
+		l.addrs[addr] = held - 1
 	}
-	l.addrs[addr]--
+	l.open--
+	l.mu.Unlock()
 }
 
 // InUse is how many connections l counts now, which the node's zero check

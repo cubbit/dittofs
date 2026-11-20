@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"net/netip"
 	"strconv"
@@ -742,5 +743,104 @@ func TestAnAddressEntryIsDroppedAtZero(t *testing.T) {
 	l.Release(peer)
 	if n := len(l.addrs); n != 0 {
 		t.Errorf("after both addresses released the count keeps %d entries, want 0", n)
+	}
+}
+
+// releasedPastZero releases one connection of addr from l, and returns what
+// that panicked with, or nil.
+func releasedPastZero(l *ConnLimit, addr netip.Addr) (v any) {
+	defer func() { v = recover() }()
+	l.Release(addr)
+	return nil
+}
+
+// A second Release of the node's last connection panics in a test binary,
+// naming the connection count, and leaves the count at zero and usable (RFC
+// 24 section 2.7).
+func TestConnLimitReleasePastZeroPanicsInTests(t *testing.T) {
+	l := NewConnLimit(8)
+	mustTake(t, l, client)
+	l.Release(client)
+	v := releasedPastZero(l, client)
+	if msg, _ := v.(string); !strings.Contains(msg, "release past zero on conns") {
+		t.Errorf("a second Release of the last connection panicked with %v, want a release past zero on conns", v)
+	}
+	if n := l.InUse(); n != 0 {
+		t.Errorf("after the panic InUse() = %d, want 0", n)
+	}
+	mustTake(t, l, client)
+	if n := l.InUse(); n != 1 {
+		t.Errorf("a Take after the panic leaves InUse() = %d, want 1", n)
+	}
+	l.Release(client)
+	if n, entries := l.InUse(), len(l.addrs); n != 0 || entries != 0 {
+		t.Errorf("its Release leaves InUse() = %d with %d address entries, want 0 and none", n, entries)
+	}
+}
+
+// A Release for an address holding no connection is a release past zero
+// too: it panics in a test binary and lowers no count, so another address's
+// connection stays counted for the zero check, and the address gets no entry.
+func TestConnLimitReleaseForAnAddressNeverTakenPanics(t *testing.T) {
+	l := NewConnLimit(8)
+	peer := netip.MustParseAddr("192.0.2.2")
+	mustTake(t, l, client)
+	if v := releasedPastZero(l, peer); v == nil {
+		t.Error("a Release for an address never taken did not panic")
+	}
+	if n := l.InUse(); n != 1 {
+		t.Errorf("after it InUse() = %d, want 1: the other address's connection is still open", n)
+	}
+	if want := map[netip.Addr]int{client: 1}; !maps.Equal(l.addrs, want) {
+		t.Errorf("after it the address counts are %v, want %v", l.addrs, want)
+	}
+	l.Release(client)
+	if n, entries := l.InUse(), len(l.addrs); n != 0 || entries != 0 {
+		t.Errorf("the last Release leaves InUse() = %d with %d address entries, want 0 and none", n, entries)
+	}
+}
+
+// Outside tests a release past zero, for an address holding none or of the
+// node's last connection, lowers no count, and each limit logs one Error
+// record naming conns however many of its releases pass zero.
+func TestConnLimitReleasePastZeroClampsAndLogsOncePerLimit(t *testing.T) {
+	h := &records{}
+	peer := netip.MustParseAddr("192.0.2.2")
+	for i := 1; i <= 2; i++ {
+		l := NewConnLimit(8)
+		l.clampTo(slog.New(h))
+		mustTake(t, l, client)
+		mustTake(t, l, peer)
+		l.Release(client)
+		l.Release(client) // past zero on client's count, peer's connection open
+		if n := l.InUse(); n != 1 {
+			t.Errorf("limit %d: a second Release for client leaves InUse() = %d, want peer's 1", i, n)
+		}
+		l.Release(peer)
+		l.Release(peer) // past zero on the node's count
+		if n, entries := l.InUse(), len(l.addrs); n != 0 || entries != 0 {
+			t.Errorf("limit %d: a second Release of the last connection leaves InUse() = %d with %d address entries, want 0 and none", i, n, entries)
+		}
+		// The limit still counts.
+		mustTake(t, l, client)
+		if n := l.InUse(); n != 1 {
+			t.Errorf("limit %d: a Take after the clamps leaves InUse() = %d, want 1", i, n)
+		}
+		l.Release(client)
+		if len(h.got) != i {
+			t.Errorf("after limit %d's releases past zero %d records, want %d: one per limit", i, len(h.got), i)
+		}
+	}
+	for _, r := range h.got {
+		var name string
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "budget" {
+				name = a.Value.String()
+			}
+			return true
+		})
+		if r.Level != slog.LevelError || name != "conns" {
+			t.Errorf("record %q at %v naming %q, want Error naming conns", r.Message, r.Level, name)
+		}
 	}
 }
