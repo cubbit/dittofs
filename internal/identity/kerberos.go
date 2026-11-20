@@ -279,12 +279,13 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 		if logon, err = verifyPAC(raw, t.key, enc.CName, enc.AuthTime); err != nil {
 			if errors.Is(err, errPACClient) {
 				// decision: the mismatch is logged with the client address
-				// and no name: RFC 25 §5.4 keeps user names out of log
-				// lines, and neither name is bound to a principal yet, nor
-				// is one bound to log it, since binding may mint. The logon
-				// event carries the ticket's name as presented. Overturned
-				// when RFC 25's logon stream, whose records may carry both
-				// names, replaces log lines for logon events.
+				// alone, not the selected record's principal ID that other
+				// PAC mismatches log: it is checked before the mapping, so
+				// no record is selected yet, and selecting one to log it
+				// could mint. RFC 25 §5.4 keeps both names out of log lines;
+				// the logon event carries the ticket's name as presented.
+				// Overturned if the client check ever moves after the
+				// mapping, when the record's principal ID is logged too.
 				s.logger.WarnContext(ctx, "identity: a PAC's client information differs from its ticket's", "client", step.Client.String())
 			}
 			return identity.SignInResult{}, outcomeLogonFailure, logonFailure("PAC: %v", err)

@@ -3,10 +3,12 @@ package identitytest
 import (
 	"bytes"
 	"encoding/binary"
+	"hash/crc32"
 	"time"
 	"unicode/utf16"
 
 	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/iana/chksumtype"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/iana/keyusage"
 	"github.com/jcmturner/gokrb5/v8/types"
@@ -65,11 +67,14 @@ type PACOpts struct {
 	Client   string    // PAC_CLIENT_INFO's name; "alice"
 	AuthTime time.Time // PAC_CLIENT_INFO's time: the ticket's authentication time
 	Logon    []LogonInfo
-	// ServerType is the server signature's type; the keyed checksum of the
-	// key's encryption type.
+	// ServerType is the server signature's type, and the checksum its value
+	// is computed with: a keyed one under Key, or under the realm's key of
+	// Service of the checksum's own encryption type when Key's differs; the
+	// keyed checksum of the key's encryption type.
 	ServerType int32
-	// ServerLen is the server signature value's length; 12. Its first 12
-	// bytes hold the checksum, the rest zero.
+	// ServerLen is the server signature value's length; the checksum's, 4
+	// for CRC32 and 12 for the others. The checksum fills its first bytes,
+	// the rest zero.
 	ServerLen int
 	// Extra are buffers laid out after the signatures, as given; the server
 	// signature covers them as it covers every byte.
@@ -100,6 +105,9 @@ func (r *Realm) PAC(o PACOpts) []byte {
 	}
 	if o.ServerLen == 0 {
 		o.ServerLen = 12
+		if o.ServerType == chksumtype.CRC32 {
+			o.ServerLen = 4
+		}
 	}
 	var bufs []PACBuffer
 	for _, l := range o.Logon {
@@ -109,25 +117,42 @@ func (r *Realm) PAC(o PACOpts) []byte {
 	ci := binary.LittleEndian.AppendUint64(nil, filetime(o.AuthTime))
 	ci = binary.LittleEndian.AppendUint16(ci, uint16(len(name)))
 	bufs = append(bufs, PACBuffer{PACClientInfo, append(ci, name...)})
+	kdc := mustKey(etypeID.AES256_CTS_HMAC_SHA1_96)
+	ket, _ := crypto.GetEtype(kdc.KeyType)
 	srv := len(bufs)
 	bufs = append(bufs,
 		PACBuffer{PACServerSignature, append(le32(uint32(o.ServerType)), make([]byte, o.ServerLen)...)},
-		PACBuffer{PACKDCSignature, append(le32(uint32(et.GetHashID())), make([]byte, 12)...)})
+		PACBuffer{PACKDCSignature, append(le32(uint32(ket.GetHashID())), make([]byte, 12)...)})
 	bufs = append(bufs, o.Extra...)
 	b, offs := layout(bufs)
-	sum, err := et.GetChecksumHash(o.Key.KeyValue, b, keyusage.KERB_NON_KERB_CKSUM_SALT)
-	if err != nil {
-		panic(err)
+	sk := o.Key
+	if ce, err := crypto.GetChksumEtype(o.ServerType); err == nil && ce.GetETypeID() != sk.KeyType {
+		sk = r.Key(o.Service, ce.GetETypeID())
 	}
-	copy(b[offs[srv]+4:], sum)
-	kdc := mustKey(etypeID.AES256_CTS_HMAC_SHA1_96)
-	ket, _ := crypto.GetEtype(kdc.KeyType)
+	copy(b[offs[srv]+4:], checksum(o.ServerType, sk, b))
 	ksum, err := ket.GetChecksumHash(kdc.KeyValue, b[offs[srv]+4:offs[srv]+4+o.ServerLen], keyusage.KERB_NON_KERB_CKSUM_SALT)
 	if err != nil {
 		panic(err)
 	}
 	copy(b[offs[srv+1]+4:], ksum)
 	return b
+}
+
+// checksum is b's checksum of type typ: CRC32 unkeyed (RFC 3961 §6.1.3),
+// any other the keyed checksum gokrb5 knows for typ, computed under key.
+func checksum(typ int32, key types.EncryptionKey, b []byte) []byte {
+	if typ == chksumtype.CRC32 {
+		return le32(^crc32.Update(^uint32(0), crc32.IEEETable, b))
+	}
+	et, err := crypto.GetChksumEtype(typ)
+	if err != nil {
+		panic(err)
+	}
+	sum, err := et.GetChecksumHash(key.KeyValue, b, keyusage.KERB_NON_KERB_CKSUM_SALT)
+	if err != nil {
+		panic(err)
+	}
+	return sum
 }
 
 // EncodePAC lays bufs out as a PAC, as given, signing nothing: the header,
