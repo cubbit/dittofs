@@ -132,6 +132,9 @@ type coreOptions struct {
 	// stepSpy runs in Account between its three counter updates, told how many
 	// have been applied.
 	stepSpy func(step int)
+	// shareStepSpy runs in the share ledger's apply between its updates of a
+	// share's figures, told how many have been applied.
+	shareStepSpy func(step int)
 	// betweenHeldReads runs in Stats between its dirty and held reads.
 	betweenHeldReads func()
 	// tracer is the Tracer the core's Deps carry; nil means no tracing.
@@ -454,6 +457,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	}
 
 	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, shareHook: o.shareHook, afterSwap: o.afterSwap, rec: o.recorder, forgetting: make(map[core.ShareTag]struct{})}
+	c.shares.stepSpy = o.shareStepSpy
 	tbl := newFileLocks()
 	if c.rec != nil {
 		tbl.SetRecorder(c.rec)

@@ -227,7 +227,7 @@ func TestRecordedCoreFixture(t *testing.T) {
 	expectOutOfOrder(t, c, rec, lockorder.SegmentAppend, "pool",
 		[]lockorder.Rank{lockorder.Capacity}, func() { c.pool.ReadyContent() })
 	expectOutOfOrder(t, c, rec, lockorder.SegmentAppend, "set",
-		[]lockorder.Rank{lockorder.Capacity}, func() { c.set.Counters() })
+		[]lockorder.Rank{lockorder.Capacity}, func() { c.set.ShareBytes(1) })
 	// A view of a written file takes the shard's file map lock, releases
 	// it, then the file's index lock: two acquisitions out of order, the
 	// map's first.
@@ -236,9 +236,9 @@ func TestRecordedCoreFixture(t *testing.T) {
 			c.index.Span(fid(40), core.Extent{Off: 0, Len: 1024})
 		})
 	expectOutOfOrder(t, c, rec, lockorder.SegmentAppend, "capacity admission",
-		[]lockorder.Rank{lockorder.Capacity}, func() { c.cap.ReservedBytes() })
+		[]lockorder.Rank{lockorder.Capacity}, func() { c.cap.HeldEntries() })
 	expectOutOfOrder(t, c, rec, lockorder.SegmentAppend, "headroom",
-		[]lockorder.Rank{lockorder.Capacity}, func() { c.headroom.Draws() })
+		[]lockorder.Rank{lockorder.Capacity}, func() { c.headroom.Spent() })
 	expectOutOfOrder(t, c, rec, lockorder.Capacity, "file append table",
 		[]lockorder.Rank{lockorder.FileAppend}, func() {
 			unlock := c.domains.Lock(fid(99))

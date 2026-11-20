@@ -1606,7 +1606,12 @@ func TestRFC1B_SegmentAndRecordAccounting(t *testing.T) {
 	f.Advance(2 * journaltest.IdleSealAge)
 	eventually(t, "the idle segments were not sealed with the accounting settled", func() bool {
 		for _, id := range due {
-			if s, ok := segmentInfo(f, id); !ok || !s.Sealed {
+			// Sealed is listed before the seal's truncation is accounted: the
+			// ledger takes the seal first and the shrink of the freed tail
+			// after, with no lock between, so a segment still at its cap has
+			// not returned its tail to UsedBytes yet. A tail summed now
+			// would miss it while UsedBytes falls by it a moment later.
+			if s, ok := segmentInfo(f, id); !ok || !s.Sealed || s.Allocated >= journaltest.FixtureSegmentCap {
 				return false
 			}
 		}

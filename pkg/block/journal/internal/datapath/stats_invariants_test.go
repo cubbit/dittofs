@@ -23,6 +23,9 @@ func checkNamed(t *testing.T, when string, s Stats) {
 		t.Errorf("%s: ReservedBytes = %d, want >= 0", when, s.ReservedBytes)
 	}
 	for tag, ss := range s.Shares {
+		if ss.DirtyBytes > ss.HeldBytes {
+			t.Errorf("%s: share %d DirtyBytes %d > HeldBytes %d", when, tag, ss.DirtyBytes, ss.HeldBytes)
+		}
 		if ss.HeldBytes+ss.UnreclaimedBytes > ss.UsedBytes {
 			t.Errorf("%s: share %d HeldBytes %d + UnreclaimedBytes %d > UsedBytes %d", when, tag, ss.HeldBytes, ss.UnreclaimedBytes, ss.UsedBytes)
 		}
@@ -31,7 +34,10 @@ func checkNamed(t *testing.T, when string, s Stats) {
 
 // TestRFC1D_NamedInequalitiesHold samples Stats in a tight loop while writers,
 // truncates and removals run, between Account's counter updates and between a
-// record's append and its publish, and every sample keeps the inequalities.
+// record's append and its publish, and every sample keeps the inequalities. It
+// checks the bound under load: the order of the share ledger's own updates is
+// pinned by TestRFC1D_ShareUpdateOrderKeepsDirtyUnderHeld, which a concurrent
+// sampler cannot, because Stats' bounded re-read resolves that transient.
 func TestRFC1D_NamedInequalitiesHold(t *testing.T) {
 	var c *Core
 	c, _ = newTestCore(t, func(o *coreOptions) {
@@ -97,6 +103,15 @@ func TestRFC1D_NamedInequalitiesHold(t *testing.T) {
 	if st := c.Stats(); st.HeldBytes > st.UsedBytes {
 		t.Errorf("quiescent: HeldBytes %d > UsedBytes %d: held bytes live in allocated segments", st.HeldBytes, st.UsedBytes)
 	}
+	// The maintained figures Stats serves, against a full walk of what they
+	// count: the set's counters and per-tag tallies against its segments, and
+	// the pool's ready counts against its lists.
+	if err := c.set.Check(); err != nil {
+		t.Errorf("quiescent: the set's maintained figures disagree with a walk: %v", err)
+	}
+	if err := c.pool.Check(); err != nil {
+		t.Errorf("quiescent: the pool's maintained figures disagree with a walk: %v", err)
+	}
 }
 
 // TestRFC1D_DirtyUnderHeldWhenAFallLandsBetweenTheReads lands a whole fall of
@@ -150,6 +165,55 @@ func TestRFC1D_UpdateOrderKeepsDirtyUnderHeld(t *testing.T) {
 	for i, st := range seen {
 		if st.DirtyBytes > st.HeldBytes {
 			t.Errorf("sample %d between counter updates: DirtyBytes %d > HeldBytes %d", i, st.DirtyBytes, st.HeldBytes)
+		}
+	}
+}
+
+// TestRFC1D_ShareUpdateOrderKeepsDirtyUnderHeld applies share-level deltas, one
+// writer, and reads Stats between each pair of the share ledger's updates:
+// every share's dirty bytes stay at most its held bytes, and so do the core's.
+// With one writer the pair stays out of order for all of shareFigures'
+// re-reads, so a wrong update order shows here and nowhere a concurrent
+// sampler could resolve it.
+func TestRFC1D_ShareUpdateOrderKeepsDirtyUnderHeld(t *testing.T) {
+	var c *Core
+	var applied int
+	check := func(what string) {
+		st := c.Stats()
+		applied++
+		if st.DirtyBytes > st.HeldBytes {
+			t.Errorf("%s, step sample %d: core DirtyBytes %d > HeldBytes %d", what, applied, st.DirtyBytes, st.HeldBytes)
+		}
+		if _, ok := st.Shares[7]; !ok {
+			t.Fatalf("%s, step sample %d: Stats lists no share 7, so no share figure was checked", what, applied)
+		}
+		for tag, ss := range st.Shares {
+			if ss.DirtyBytes > ss.HeldBytes {
+				t.Errorf("%s, step sample %d: share %d DirtyBytes %d > HeldBytes %d", what, applied, tag, ss.DirtyBytes, ss.HeldBytes)
+			}
+		}
+	}
+	var what string
+	c, _ = newTestCore(t, func(o *coreOptions) {
+		o.shareStepSpy = func(int) { check(what) }
+	})
+	// Stats lists a share that has a handle, so one is attached for the tag.
+	mustShare(t, c, 7)
+	f := testFile(9)
+	for _, step := range []struct {
+		what string
+		d    index.HeldDelta
+	}{
+		{"a write", index.HeldDelta{Tag: 7, File: f, HeldBytes: 100, DirtyBytes: 100, Dirty: index.BecameDirty}},
+		{"a retained delta", index.HeldDelta{Tag: 7, File: f, RetainedBytes: 50}},
+		{"a clean-to-dirty transition", index.HeldDelta{Tag: 7, File: testFile(10), HeldBytes: 30, DirtyBytes: 30, Dirty: index.BecameDirty}},
+		{"a removal", index.HeldDelta{Tag: 7, File: f, HeldBytes: -100, DirtyBytes: -100, Dirty: index.BecameClean}},
+	} {
+		what = step.what
+		before := applied
+		c.Account(step.d)
+		if applied-before != 2 {
+			t.Fatalf("%s: the share step spy ran %d times, want 2", step.what, applied-before)
 		}
 	}
 }

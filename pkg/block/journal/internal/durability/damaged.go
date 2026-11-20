@@ -38,6 +38,7 @@ func (d *Durability) markDamaged(seg core.SegmentID) {
 		d.damaged = map[core.SegmentID]*damagedRow{}
 	}
 	d.damaged[seg] = &damagedRow{}
+	d.publishDamagedLocked()
 }
 
 // Retired is the runtime's hook for a retired segment: a damaged segment's row
@@ -48,6 +49,7 @@ func (d *Durability) Retired(seg core.SegmentID) {
 	d.dmu.Lock()
 	if r, ok := d.damaged[seg]; ok {
 		r.retired = true
+		d.publishDamagedLocked()
 	}
 	d.dmu.Unlock()
 	d.dropCopies(seg)
@@ -74,12 +76,16 @@ func (d *Durability) countUnproduced(seg core.SegmentID, delta int) {
 	n := d.unproduced[seg] + delta
 	if n <= 0 {
 		delete(d.unproduced, seg)
-		return
+	} else {
+		if d.unproduced == nil {
+			d.unproduced = map[core.SegmentID]int{}
+		}
+		d.unproduced[seg] = n
 	}
-	if d.unproduced == nil {
-		d.unproduced = map[core.SegmentID]int{}
+	// A count of an undamaged segment shows in no row.
+	if _, ok := d.damaged[seg]; ok {
+		d.publishDamagedLocked()
 	}
-	d.unproduced[seg] = n
 }
 
 // blocksLocked reports whether seg's row r blocks reclamation. The caller
@@ -119,16 +125,38 @@ func (d *Durability) ReclaimBlocked(seg core.SegmentID) bool {
 	return ok && d.blocksLocked(seg, r)
 }
 
-// damagedReport returns the count and the rows in segment order. It reads the
-// rows and the counts they block on under dmu; it takes no stream lock, makes
-// no index call and walks nothing.
-func (d *Durability) damagedReport() (uint64, []DamagedRow) {
-	d.dmu.Lock()
+// damagedSnap is the immutable report the damaged rows and counts last
+// published.
+type damagedSnap struct {
+	count uint64
+	rows  []DamagedRow
+}
+
+// publishDamagedLocked rebuilds the report from the rows and the counts they
+// block on and publishes it, the caller holding dmu. Every change to a row or
+// to the count a row blocks on ends in it, so a reader never needs dmu.
+//
+// ponytail: each change rebuilds and sorts the rows, O(damaged segments log
+// damaged segments). Damage events are rare and the rows stay few, so a
+// rebuild per event costs nothing a profile would show. Upgrade to patching
+// the one changed row into the sorted slice when a journal with thousands of
+// damaged segments takes a burst of them.
+func (d *Durability) publishDamagedLocked() {
 	rows := make([]DamagedRow, 0, len(d.damaged))
 	for seg, r := range d.damaged {
 		rows = append(rows, DamagedRow{Segment: seg, Retired: r.retired, BlocksReclaim: d.blocksLocked(seg, r)})
 	}
-	d.dmu.Unlock()
 	slices.SortFunc(rows, func(a, b DamagedRow) int { return cmp.Compare(a.Segment, b.Segment) })
-	return uint64(len(rows)), rows
+	d.damagedView.Store(&damagedSnap{count: uint64(len(rows)), rows: rows})
+}
+
+// damagedReport returns the count and a copy of the rows in segment order,
+// from the report the last change published. It takes no lock, makes no index
+// call and walks nothing.
+func (d *Durability) damagedReport() (uint64, []DamagedRow) {
+	v := d.damagedView.Load()
+	if v == nil {
+		return 0, []DamagedRow{}
+	}
+	return v.count, slices.Clone(v.rows)
 }

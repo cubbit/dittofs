@@ -334,18 +334,27 @@ type Durability struct {
 	count     int
 	nextEvent uint64
 
-	// dmu guards damaged and unproduced.
+	// dmu guards damaged, unproduced and the publish of damagedView.
 	//
 	// decision: dmu is a leaf mutex over the damaged rows and the count of held
-	// records each segment cannot produce, held only for a map access and
-	// never across an index call, an Append or any other lock, so Stats reads
-	// the damage without a lock a write needs. A hold's count changes under a
-	// stream's mu, which takes dmu inside it.
+	// records each segment cannot produce, never held across an index call, an
+	// Append or any other lock. Under it a change also rebuilds, sorts and
+	// allocates the published report (publishDamagedLocked), which is more
+	// than a map access, and a hold's count changes under a stream's mu, which
+	// takes dmu inside it. Stats no longer takes dmu: it reads damagedView. The
+	// rebuild under dmu is acceptable because only damage events and holds of
+	// a damaged segment reach it, which are rare, and its cost is the ponytail
+	// at publishDamagedLocked. Overturned if a path that runs per write ever
+	// takes dmu.
 	dmu     sync.Mutex
 	damaged map[core.SegmentID]*damagedRow
 	// unproduced counts, per segment, the held records the index may still
 	// name at a corrupt place in it (pinLocked).
 	unproduced map[core.SegmentID]int
+
+	// damagedView is the report of the rows above, replaced under dmu at every
+	// change and read without it.
+	damagedView atomic.Pointer[damagedSnap]
 
 	// copyMu guards copies, the table of other copies of re-appended records.
 	//
@@ -418,10 +427,13 @@ type Durability struct {
 	// lock inside it, and nothing takes mu while holding that lock. That is
 	// an unranked lock held above a ranked one, which the lock recorder
 	// cannot see.
-	mu      sync.Mutex
-	made    map[uint32]*stream
-	started bool
-	stopped bool
+	mu   sync.Mutex
+	made map[uint32]*stream
+	// madeView is the list of made, replaced by Sink under mu and read
+	// without it.
+	madeView atomic.Pointer[[]*stream]
+	started  bool
+	stopped  bool
 
 	// afterSync, when set by a test, runs in the worker after a stream sync
 	// returns and before the worker takes the stream's lock.
@@ -748,6 +760,11 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 	}
 	st := newStream(d, no)
 	d.made[no] = st
+	list := make([]*stream, 0, len(d.made))
+	for _, s := range d.made {
+		list = append(list, s)
+	}
+	d.madeView.Store(&list)
 	return segment.Sink{
 		Track: func(w segment.Written) {
 			st.mu.Lock()
@@ -998,6 +1015,20 @@ func (d *Durability) Stats() Part {
 		p.LastSyncError = &sf
 	}
 
+	// decision: this deviates from RFC 1 section 3.7's MUST NOT block a write:
+	// a loss-path write can wait on lmu while Stats copies the ring. Stats
+	// still takes lmu, and through the directory's generation
+	// read the directory state's mutex (dirState.mu), the two locks left on
+	// its path. The ring and the generation must be read as one step, so a
+	// snapshot never holds a raise without its event, and the loss path keeps
+	// them together under lmu. A write path that loses a record can wait on
+	// lmu while Stats copies the ring (up to LossRingSize events) and reads
+	// the generation. The wait is bounded and in memory: it sits only on the
+	// loss path, no I/O happens under lmu, and the one lock taken inside it,
+	// dirState.mu, is a leaf that guards maps and a counter and is never held
+	// across I/O. Overturned if a section under lmu ever does I/O or takes a
+	// lock a writer can hold across a blocking call, which a published copy
+	// of the ring and the generation would then replace.
 	d.lmu.Lock()
 	// This instance's ring and the directory's generation are read in one
 	// section, and lmu holds the raise and the publish of a Lose together,
@@ -1426,14 +1457,15 @@ func (st *stream) movedCopyErrorLocked(at, now segment.Location) error {
 	return fmt.Errorf("durability: the record placed at %+v moved to %+v behind its failed window", at, now)
 }
 
+// snapshot returns the streams made so far, in no order, from the list Sink
+// publishes with each new stream. It takes no lock, so the stats read of it
+// never waits on d.mu. The slice is shared and read-only: Sink replaces it
+// whole and no caller changes it.
 func (d *Durability) snapshot() []*stream {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	made := make([]*stream, 0, len(d.made))
-	for _, st := range d.made {
-		made = append(made, st)
+	if v := d.madeView.Load(); v != nil {
+		return *v
 	}
-	return made
+	return nil
 }
 
 // targetsOf returns, for each id, the last record of that file in each

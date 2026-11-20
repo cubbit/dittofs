@@ -422,8 +422,8 @@ func TestStreamsUnderRecorder(t *testing.T) {
 	probe := lockorder.StorageGuard
 	e.rec.Acquire(probe, "probe")
 	_ = e.ss.Stream(0).Room()
-	_ = e.pool.Counters()
-	_ = e.set.Counters()
+	_ = e.pool.ReadyContent()
+	_ = e.set.ShareBytes(1)
 	vs := e.rec.Violations()
 	e.rec.Release("probe")
 	// One report per lock: rank storage guard is held, so each capacity
@@ -852,7 +852,7 @@ func TestStreamRollsTwiceUnderRecorder(t *testing.T) {
 	probe := lockorder.StorageGuard
 	rec.Acquire(probe, "probe")
 	_ = s.Room()
-	_ = e.pool.Counters()
+	_ = e.pool.ReadyContent()
 	vs := rec.Violations()
 	rec.Release("probe")
 	if got := len(vs) - reported; got < 2 {

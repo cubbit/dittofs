@@ -147,16 +147,22 @@ type Pool struct {
 	// means writable.
 	readOnly func() error
 
-	mu         lockorder.Mutex
-	ready      [Reserve + 1][]core.SegmentID // the ready spares per class, FIFO; guarded by mu
-	held       int                           // spares owed to open holds; guarded by mu
-	pending    int                           // the largest ask of a refused Hold the refill has not yet made up, a level not a sum; guarded by mu
-	incoming   [Reserve + 1]int              // recycles in flight, reserved per class; guarded by mu
-	holdTaken  int                           // the open's held takes: segments on disk the open did not re-adopt, standing in the headroom the pool must not re-fill; guarded by mu
-	started    bool                          // guarded by mu
-	stopped    bool                          // guarded by mu
-	deviceFull bool                          // guarded by mu
-	retirer    *Retirer                      // the source of recycled spares, nil when none; guarded by mu
+	mu    lockorder.Mutex
+	ready [Reserve + 1][]core.SegmentID // the ready spares per class, FIFO; guarded by mu
+	// held is the spares owed to open holds. It is moved under mu, with the
+	// conditions that read it beside the ready lengths, and is an atomic so
+	// Counters reads it without the lock.
+	held atomic.Int64
+	// readyN mirrors len(ready) per class, stored under mu at every change, so
+	// Counters reads it without the lock.
+	readyN     [Reserve + 1]atomic.Int64
+	pending    int              // the largest ask of a refused Hold the refill has not yet made up, a level not a sum; guarded by mu
+	incoming   [Reserve + 1]int // recycles in flight, reserved per class; guarded by mu
+	holdTaken  int              // the open's held takes: segments on disk the open did not re-adopt, standing in the headroom the pool must not re-fill; guarded by mu
+	started    bool             // guarded by mu
+	stopped    bool             // guarded by mu
+	deviceFull bool             // guarded by mu
+	retirer    *Retirer         // the source of recycled spares, nil when none; guarded by mu
 
 	// parked counts the WaitSpares calls sitting on the settle condition,
 	// for the test that sequences an event against a wait it must confirm is
@@ -283,6 +289,7 @@ func (p *Pool) Adopt(id core.SegmentID, c Class) error {
 		return ErrStarted
 	}
 	p.ready[c] = append(p.ready[c], id)
+	p.mirrorReady(c)
 	return nil
 }
 
@@ -350,7 +357,7 @@ func (p *Pool) Take(c Class) (core.SegmentID, error) {
 		// The unreserved take leaves the holds their spares: taking one an
 		// open hold owes would let a reserved write meet the no-spare
 		// refusal the hold exists to keep it from.
-		if int64(len(p.ready[Content])) > int64(p.held) {
+		if int64(len(p.ready[Content])) > p.held.Load() {
 			id = p.popLocked(Content)
 		}
 	default:
@@ -411,6 +418,7 @@ func (p *Pool) TakeReserveAbove(floor core.SegmentID) (core.SegmentID, error) {
 		if r > floor {
 			id = r
 			p.ready[Reserve] = slices.Delete(p.ready[Reserve], i, i+1)
+			p.mirrorReady(Reserve)
 			break
 		}
 	}
@@ -479,8 +487,8 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 	// is re-recorded by its own next refused retry, which is the loop the
 	// level exists to serve.
 	ready := int64(len(p.ready[Content]))
-	if ready-int64(p.held) < int64(n) {
-		missing := int64(n) - (ready - int64(p.held))
+	if ready-p.held.Load() < int64(n) {
+		missing := int64(n) - (ready - p.held.Load())
 		if missing > int64(n) {
 			// A replace can leave held above ready, and the refusal never
 			// blames a shortage past the hold it refuses: capped at n.
@@ -493,7 +501,7 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 		return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: missing, Unit: core.UnitSegments}
 	}
 	p.pending = 0
-	p.held += n
+	p.held.Add(int64(n))
 	p.mu.Unlock()
 	return &Hold{p: p, left: n}, nil
 }
@@ -548,7 +556,7 @@ func (h *Hold) Take() (core.SegmentID, error) {
 		// this hold's own demand, the exact one the replace stands for, taken
 		// ahead of every unreserved write.
 		h.left--
-		h.p.held--
+		h.p.held.Add(-1)
 		id := h.p.popLocked(Content)
 		h.p.mu.Unlock()
 
@@ -584,7 +592,7 @@ func (h *Hold) Replace() {
 		return
 	}
 	h.left++
-	h.p.held++
+	h.p.held.Add(1)
 	h.p.mu.Unlock()
 
 	h.p.Kick()
@@ -608,7 +616,7 @@ func (h *Hold) Close() {
 		return
 	}
 	h.closed = true
-	h.p.held -= h.left
+	h.p.held.Add(-int64(h.left))
 	h.left = 0
 	h.p.mu.Unlock()
 }
@@ -680,6 +688,7 @@ func (p *Pool) recycled(id core.SegmentID, c Class) {
 	p.mu.Lock()
 	p.incoming[c]--
 	p.ready[c] = append(p.ready[c], id)
+	p.mirrorReady(c)
 	if c == Content {
 		p.settleDemandLocked()
 	}
@@ -723,7 +732,7 @@ func (p *Pool) Kick() {
 func (p *Pool) ReadyContent() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return max(len(p.ready[Content])-p.held, 0)
+	return max(len(p.ready[Content])-int(p.held.Load()), 0)
 }
 
 // DeviceFull reports whether a make has failed with ENOSPC and no spare has
@@ -764,7 +773,7 @@ func (p *Pool) DeviceFull() bool {
 // would ask the check to wait on the queue's unlinks instead.
 func (p *Pool) journalRefuses() *core.NoSpaceError {
 	p.mu.Lock()
-	callable := len(p.ready[Content]) > 0 || p.held > 0 || p.pending > 0
+	callable := len(p.ready[Content]) > 0 || int(p.held.Load()) > 0 || p.pending > 0
 	p.mu.Unlock()
 	if callable {
 		return nil
@@ -783,16 +792,36 @@ func (p *Pool) countSpareRefusal() {
 	p.spareRefusals.Add(1)
 }
 
-// Counters returns the pool's maintained counters: one lock and a copy, the
-// slice lengths read as maintained state, no walk of any class.
-func (p *Pool) Counters() PoolCounters {
+// Check compares the ready counts Counters reads with the ready lists they
+// mirror, for every class, under mu, and reports the first that differs naming
+// the class. It is the pool's verification of last resort, as Set.Check is the
+// set's: a path that changes a list and forgets to store its count leaves
+// Counters wrong for good and no other figure shows it.
+func (p *Pool) Check() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	for c := Content; c <= Reserve; c++ {
+		if got, want := p.readyN[c].Load(), int64(len(p.ready[c])); got != want {
+			return fmt.Errorf("pool: the %s class counts %d ready spares and holds %d", c, got, want)
+		}
+	}
+	return nil
+}
+
+// mirrorReady stores class c's ready count where Counters reads it; the
+// caller holds mu.
+func (p *Pool) mirrorReady(c Class) { p.readyN[c].Store(int64(len(p.ready[c]))) }
+
+// Counters returns the pool's maintained counters: atomic loads, taking no
+// lock, the counts read as maintained state, no walk of any class. The fields
+// are read one after another, so a move between two shows in one and not the
+// other.
+func (p *Pool) Counters() PoolCounters {
 	return PoolCounters{
-		Spares:             int64(len(p.ready[Content])),
-		HeadroomBytes:      int64(len(p.ready[Headroom])) * p.m.set.cap,
-		RepackReserveBytes: int64(len(p.ready[Reserve])) * p.m.set.cap,
-		Held:               int64(p.held),
+		Spares:             p.readyN[Content].Load(),
+		HeadroomBytes:      p.readyN[Headroom].Load() * p.m.set.cap,
+		RepackReserveBytes: p.readyN[Reserve].Load() * p.m.set.cap,
+		Held:               p.held.Load(),
 		SpareRefusals:      p.spareRefusals.Load(),
 	}
 }
@@ -893,7 +922,7 @@ func (p *Pool) WaitReserveSpare(ctx context.Context) error {
 // spares past those the open holds keep for their reservations, and the
 // headroom spares. The caller holds mu.
 func (p *Pool) recordReadyLocked() int {
-	return max(len(p.ready[Content])-p.held, 0) + len(p.ready[Headroom])
+	return max(len(p.ready[Content])-int(p.held.Load()), 0) + len(p.ready[Headroom])
 }
 
 // recordShortLocked reports whether the pool holds fewer than n spares a
@@ -1187,6 +1216,7 @@ func (p *Pool) refill() bool {
 			// could reach.
 			if err == nil {
 				p.ready[c] = append(p.ready[c], id)
+				p.mirrorReady(c)
 			}
 			p.settleLocked()
 			p.mu.Unlock()
@@ -1216,6 +1246,7 @@ func (p *Pool) refill() bool {
 			return true
 		}
 		p.ready[c] = append(p.ready[c], id)
+		p.mirrorReady(c)
 		if c == Content {
 			p.settleDemandLocked()
 		}
@@ -1231,7 +1262,7 @@ func (p *Pool) refill() bool {
 // counts against a level that does not move as spares land, so each landed
 // spare closes the gap by exactly one. The caller holds mu.
 func (p *Pool) contentGoalLocked() int {
-	return p.held + max(p.t.Content, p.pending)
+	return int(p.held.Load()) + max(p.t.Content, p.pending)
 }
 
 // settleDemandLocked clears the demand level once the ready content spares
@@ -1241,7 +1272,7 @@ func (p *Pool) contentGoalLocked() int {
 // count rises. A retry that a take beat to those spares is refused again and
 // records its ask anew. The caller holds mu.
 func (p *Pool) settleDemandLocked() {
-	if p.pending > 0 && len(p.ready[Content]) >= p.held+p.pending {
+	if p.pending > 0 && len(p.ready[Content]) >= int(p.held.Load())+p.pending {
 		p.pending = 0
 	}
 }
@@ -1251,6 +1282,7 @@ func (p *Pool) settleDemandLocked() {
 func (p *Pool) popLocked(c Class) core.SegmentID {
 	id := p.ready[c][0]
 	p.ready[c] = p.ready[c][1:]
+	p.mirrorReady(c)
 	if len(p.ready[c]) == 0 {
 		// Release the slice's hold on the popped id, so a long-lived pool
 		// does not pin one id's storage per take.

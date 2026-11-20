@@ -112,6 +112,7 @@ func (s *Stream) stopLocked(err error) {
 func (s *Stream) endLocked(cause EndCause, err error) (core.SegmentID, bool) {
 	id := s.id
 	s.sealState = sealEnded
+	s.openSeg.Store(0)
 	// The refusal that ends a segment also decides whether the stream
 	// survives it: an EROFS says the device is read-only, so every later
 	// journal call would fail too, and a failure in a segment taken to

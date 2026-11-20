@@ -3,6 +3,7 @@ package segment
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"math"
@@ -295,6 +296,106 @@ func TestRecycleAfterRetireAddsNoSpare(t *testing.T) {
 	}
 	if got := logs.attr(rec, "op"); got != "recycle" {
 		t.Fatalf("the refused recycle logged the op as %v, want recycle", got)
+	}
+}
+
+// TestRecycleFootprintIsNeverLowAtAnyStep: a recycle moves the footprint in
+// two steps, and Counters takes no lock, so a reader can land between them.
+// The storage is one cap throughout, so a read below it would let a limit gate
+// admit what the journal maximum does not have; a read above it is the safe
+// direction. The seam reads the counters after each step, single-goroutine,
+// so the check does not depend on the scheduler.
+func TestRecycleFootprintIsNeverLowAtAnyStep(t *testing.T) {
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	var steps []int
+	var failures []string
+	s.recycleSpy = func(step int) {
+		steps = append(steps, step)
+		if used := s.Counters().UsedBytes; used < segCap {
+			failures = append(failures, fmt.Sprintf("step %d read UsedBytes %d", step, used))
+		}
+	}
+	if err := s.AddSpare(1, noMax); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	for _, op := range []func() error{
+		func() error { return s.Take(1) },
+		func() error { return s.AddRecord(1, 1, 100, 0) },
+		func() error { return s.Seal(1, true) },
+		func() error { return s.Recycle(1, 2) },
+	} {
+		if err := op(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(steps) != 2 || steps[0] != 1 || steps[1] != 2 {
+		t.Fatalf("the recycle seam ran at steps %v, want [1 2]", steps)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("the footprint read below the one cap %d the storage occupies throughout a recycle: %v", segCap, failures)
+	}
+}
+
+// TestRecycleNeverShowsALowerFootprintToAReader: the same footprint as seen by
+// a real lock-free reader polling while one segment cycles through take,
+// record, seal and recycle. It depends on the scheduler landing the reader
+// inside a recycle, so it is the weaker guard; the seam test above is the one
+// that holds at any CPU count. The poller stops when the cycling does, and
+// the cycling is bounded.
+func TestRecycleNeverShowsALowerFootprintToAReader(t *testing.T) {
+	const (
+		segCap = 4096
+		rounds = 3000
+	)
+	s := NewSet(segCap, nil)
+	cur := core.SegmentID(1)
+	if err := s.AddSpare(cur, noMax); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+
+	done := make(chan struct{})
+	low := make(chan int64, 1)
+	go func() {
+		for {
+			select {
+			case <-done:
+				close(low)
+				return
+			default:
+			}
+			if used := s.Counters().UsedBytes; used < segCap {
+				low <- used
+				// Keep draining until told to stop, so the writer is never
+				// blocked on the report.
+				<-done
+				close(low)
+				return
+			}
+		}
+	}()
+
+	for i := 1; i <= rounds; i++ {
+		next := cur + 1
+		for _, op := range []struct {
+			name string
+			fn   func() error
+		}{
+			{"Take", func() error { return s.Take(cur) }},
+			{"AddRecord", func() error { return s.AddRecord(cur, 1, 100, 0) }},
+			{"Seal", func() error { return s.Seal(cur, true) }},
+			{"Recycle", func() error { return s.Recycle(cur, next) }},
+		} {
+			if err := op.fn(); err != nil {
+				close(done)
+				t.Fatalf("round %d, %s: %v", i, op.name, err)
+			}
+		}
+		cur = next
+	}
+	close(done)
+	if used, ok := <-low; ok {
+		t.Fatalf("Counters().UsedBytes read %d during a recycle, want at least the one cap %d the storage occupies throughout", used, segCap)
 	}
 }
 
@@ -892,7 +993,7 @@ func TestRetireKeepsADroppedShareTotalForTheCheck(t *testing.T) {
 	// total that ends a release below zero exercises the branch that keeps
 	// it; a positive leftover is kept by any implementation of the rule.
 	s.mu.Lock()
-	s.tags[tag] -= segCap // far below both segments' bytes together
+	s.tags.Add(tag, -segCap) // far below both segments' bytes together
 	s.mu.Unlock()
 
 	// The retire of the smaller holder takes its share of the tag negative,
@@ -901,7 +1002,7 @@ func TestRetireKeepsADroppedShareTotalForTheCheck(t *testing.T) {
 	if _, err := s.Retire(two); err != nil {
 		t.Fatalf("the retire of the smaller holder: %v", err)
 	}
-	_, kept := s.tags[tag]
+	kept := s.tags.Get(tag) < 0
 	if !kept {
 		t.Fatal("the negative share total was deleted by the retire's release, want it kept for the check")
 	}
@@ -1004,7 +1105,7 @@ func TestCheckComparesTheEntriesHeldWithTheirTags(t *testing.T) {
 	e.held = e.size + 1
 	e.tags[tag] = e.size + 1
 	s.segs[id] = e
-	s.tags[tag] = e.size + 1
+	s.tags.Set(tag, e.size+1)
 	s.mu.Unlock()
 	if err := s.Check(); err == nil {
 		t.Fatal("a held total above the size was not reported")
@@ -1068,15 +1169,15 @@ func TestCheckComparesEveryMaintainedCountWithTheSet(t *testing.T) {
 		// names the drifted figure, not just any mismatch it can find.
 		says string
 	}{
-		{"footprint", func(s *Set) { s.c.UsedBytes -= segCap }, "the set's sizes make"},
-		{"segment count", func(s *Set) { s.c.Segments-- }, "counts do not match"},
-		{"sealed count", func(s *Set) { s.c.Sealed++ }, "counts do not match"},
-		{"spare count", func(s *Set) { s.c.Spares++ }, "counts do not match"},
+		{"footprint", func(s *Set) { s.c.UsedBytes.Add(-segCap) }, "the set's sizes make"},
+		{"segment count", func(s *Set) { s.c.Segments.Add(-1) }, "counts do not match"},
+		{"sealed count", func(s *Set) { s.c.Sealed.Add(1) }, "counts do not match"},
+		{"spare count", func(s *Set) { s.c.Spares.Add(1) }, "counts do not match"},
 		// no entry charges it, so only the shares' totals comparison can
 		// report it
-		{"share total", func(s *Set) { s.tags[core.ShareTag(9)] = 1 }, "shares' record bytes"},
+		{"share total", func(s *Set) { s.tags.Set(core.ShareTag(9), 1) }, "shares' record bytes"},
 		// likewise for the overhead totals
-		{"share overhead", func(s *Set) { s.over[core.ShareTag(9)] = 1 }, "overhead bytes"},
+		{"share overhead", func(s *Set) { s.over.Set(core.ShareTag(9), 1) }, "overhead bytes"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			drift(c.name, c.says, c.corrupt)
